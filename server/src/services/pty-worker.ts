@@ -52,6 +52,9 @@ interface SpawnMessage {
   agentType?: string;
   sessionCommand?: string;
   cliType?: 'claude' | 'codex';
+  /** When set, resume this Claude conversation (`--resume <uuid>`) instead of
+   *  launching a new session with `task` as the prompt. */
+  resumeUuid?: string;
   cols: number;
   rows: number;
   useTmux: boolean;
@@ -256,7 +259,14 @@ function cleanupPipePane(sessionId: string, fifoPath?: string): void {
    session command builder
    ================================================================ */
 
-function buildSessionCommand(task: string, direct = false, sessionCmd = '', cliType: 'claude' | 'codex' = 'claude'): string {
+function buildSessionCommand(task: string, direct = false, sessionCmd = '', cliType: 'claude' | 'codex' = 'claude', resumeUuid?: string): string {
+  // Resume an existing Claude conversation: load + replay it and wait for input.
+  // No prompt positional, so nothing is auto-submitted.
+  if (resumeUuid) {
+    const baseCmd = sessionCmd || 'claude';
+    const cmd = `${baseCmd} --resume ${resumeUuid}`;
+    return direct ? `command ${cmd}` : cmd;
+  }
   const escaped = task.replace(/'/g, "'\\''");
   if (cliType === 'codex') {
     // --no-alt-screen prevents Codex from using the alternate screen buffer,
@@ -446,7 +456,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
     } else {
       // session mode
       if (msg.useTmux) {
-        const command = buildSessionCommand(msg.task, true, sessionCmd, cliType);
+        const command = buildSessionCommand(msg.task, true, sessionCmd, cliType, msg.resumeUuid);
         await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
@@ -459,7 +469,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
           env: sessionEnv(),
         });
       } else if (msg.useDtach) {
-        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType);
+        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeUuid);
         await dtachCreate(msg.sessionId, msg.projectPath, command);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
@@ -467,7 +477,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
           env: sessionEnv(),
         });
       } else {
-        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType);
+        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeUuid);
         ptyProcess = pty.spawn(shell, ['-i', '-c', command], {
           name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
           env: sessionEnv(),

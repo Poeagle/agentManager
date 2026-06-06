@@ -8,7 +8,7 @@ import { FileExplorer } from './FileExplorer';
 import { GitPanel } from './GitPanel';
 import { SessionLauncher } from './SessionLauncher';
 import { WebPageView } from './WebPageView';
-import { api, type Session } from '../lib/api';
+import { api, type ClaudeHistoryItem } from '../lib/api';
 import { CloseTabModal } from './CloseTabModal';
 import { SessionHistoryPanel } from './SessionHistoryPanel';
 import { useShortcut, markKeyboardNav } from '../lib/shortcuts';
@@ -148,13 +148,8 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
     () => new Map((sessionsData?.sessions || []).map((s) => [s.id, s])),
     [sessionsData]
   );
-  // All sessions for this project (any status) — feeds the Session-history panel.
-  const projectAllSessions = useMemo(
-    () => (sessionsData?.sessions || []).filter((s: Session) => s.project_id === projectId),
-    [sessionsData, projectId]
-  );
-  // Which history session is currently being resumed (shows a spinner on its row).
-  const [resumingId, setResumingId] = useState<string | null>(null);
+  // Which Claude history conversation (uuid) is currently being resumed.
+  const [resumingUuid, setResumingUuid] = useState<string | null>(null);
 
   // Initialize from persisted state or defaults
   const [initialized] = useState(() => {
@@ -542,46 +537,49 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
     setShowLauncher(false);
   }
 
-  // Open a session picked from the Session-history panel: jump if already a tab,
-  // bring an active session into a live tab, or resume an ended Claude session.
-  async function handleOpenHistorySession(session: Session) {
-    const id = session.id;
-    if (terminalInstances.some((t) => t.id === id)) {
-      setActiveTerminalId(id);
-      setShowLauncher(false);
-      setShowAllTerminals(false);
-      setActiveWebPageId(null);
-      setActiveMode('terminal');
-      focusTerminalById(id);
+  // Open a Claude history conversation: jump to / open its live session if one
+  // is currently running, otherwise resume from the conversation log.
+  async function handleOpenHistorySession(item: ClaudeHistoryItem) {
+    if (item.liveSessionId && ['running', 'detached', 'pending'].includes(item.liveStatus || '')) {
+      const id = item.liveSessionId;
+      if (terminalInstances.some((t) => t.id === id)) {
+        setActiveTerminalId(id);
+        setShowLauncher(false);
+        setShowAllTerminals(false);
+        setActiveWebPageId(null);
+        setActiveMode('terminal');
+        focusTerminalById(id);
+      } else {
+        unhideSession(id);
+        setActiveMode('terminal');
+      }
       return;
     }
-    if (['running', 'detached', 'pending'].includes(session.status)) {
-      unhideSession(id); // adds a tab + activates it (reads task for labeling)
-      setActiveMode('terminal');
-      return;
-    }
-    // Ended session → resume (Claude only; the panel disables non-resumable rows).
-    if (session.cli_type === 'codex' || !session.claude_session_id) return;
+    // Resume from the on-disk conversation log → fresh live session.
     try {
-      setResumingId(id);
-      await api.sessions.resume(id);
+      setResumingUuid(item.uuid);
+      const res = await api.sessions.resumeClaude({ project_id: projectId, claude_session_id: item.uuid, title: item.title });
+      const newId = res.session?.id;
       await queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      unhideSession(id);
-      setActiveMode('terminal');
+      await queryClient.invalidateQueries({ queryKey: ['claude-history', projectId] });
+      if (newId) {
+        handleSessionCreated(newId, undefined, 'session');
+        setActiveMode('terminal');
+      }
     } catch (err) {
-      console.error('Failed to resume session:', err);
+      console.error('Failed to resume Claude session:', err);
       alert(`续上失败: ${(err as Error).message}`);
     } finally {
-      setResumingId(null);
+      setResumingUuid(null);
     }
   }
 
-  async function handleDeleteHistorySession(session: Session) {
+  async function handleDeleteHistorySession(item: ClaudeHistoryItem) {
     try {
-      await api.sessions.deleteRecord(session.id);
-      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      await api.sessions.deleteClaudeHistory(item.uuid, projectId);
+      queryClient.invalidateQueries({ queryKey: ['claude-history', projectId] });
     } catch (err) {
-      console.error('Failed to delete session:', err);
+      console.error('Failed to delete Claude history:', err);
       alert(`删除失败: ${(err as Error).message}`);
     }
   }
@@ -1753,9 +1751,9 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
           >
             {activeMode === 'history' && (
               <SessionHistoryPanel
-                sessions={projectAllSessions}
+                projectId={projectId}
                 openTabIds={new Set(terminalInstances.map((t) => t.id))}
-                busyId={resumingId}
+                busyUuid={resumingUuid}
                 onOpen={handleOpenHistorySession}
                 onDelete={handleDeleteHistorySession}
               />

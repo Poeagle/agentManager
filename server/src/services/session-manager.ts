@@ -1960,6 +1960,53 @@ export async function resumeSessionById(sessionId: string): Promise<{ ok: boolea
 }
 
 /**
+ * Resume a Claude conversation log (uuid) as a fresh AgentManager session by
+ * launching `claude --resume <uuid>` directly. Claude loads and replays the
+ * full prior conversation and waits for input — nothing is auto-submitted (this
+ * is NOT the crash-recovery path, which starts a blank session and injects a
+ * `/resume` command). Returns the new session.
+ */
+export async function resumeClaudeSession(projectPath: string, projectId: string | null, claudeUuid: string, task: string): Promise<Session> {
+  const db = getDb();
+  const id = nanoid(12);
+  // Keep claude_session_id = uuid: `--resume` continues writing to the SAME log,
+  // so this row stays linked to that conversation.
+  db.prepare(`
+    INSERT INTO sessions (id, project_id, task, status, cli_type, claude_session_id)
+    VALUES (?, ?, ?, 'running', 'claude', ?)
+  `).run(id, projectId || null, task || 'Resumed session', claudeUuid);
+
+  const preSpawnFiles = snapshotClaudeSessionFiles(projectPath);
+  const worker = await forkWorker();
+  const active = wireWorker(id, worker, projectPath, preSpawnFiles);
+  active.cliType = 'claude';
+  getOrCreateTracker(id);
+
+  const claudeCmd = getSetting('session_claude_command') || 'claude';
+  // Pass the resume uuid via resumeUuid (NOT baked into sessionCommand): the worker
+  // builds `claude --resume <uuid>` with NO positional prompt, so the replayed
+  // conversation waits for input instead of auto-submitting `task`.
+  worker.send({
+    type: 'spawn',
+    sessionId: id,
+    projectPath,
+    task: task || 'Resumed session',
+    mode: 'session',
+    cols: 120,
+    rows: 40,
+    useTmux: config.useTmux,
+    useDtach: config.useDtach,
+    sessionCommand: claudeCmd,
+    resumeUuid: claudeUuid,
+    cliType: 'claude',
+  });
+
+  insertEvent({ session_id: id, type: 'session_resume', data: { task, projectPath, claudeSessionId: claudeUuid, via: '--resume' } });
+  pushSystemEvent(`[AgentManager] Resumed Claude session ${claudeUuid} as ${id}`);
+  return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
+}
+
+/**
  * Permanently delete an ended session: its DB row, events, any leftover PTY
  * replay rows, and the Claude JSONL conversation file. Refuses if the session
  * is still active (must be stopped first).

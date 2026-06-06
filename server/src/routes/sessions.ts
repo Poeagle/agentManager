@@ -13,6 +13,7 @@ import { userProjectIds, userOwnsProject, userOwnsProjectPath, userOwnsSession }
 import { mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { prunePastesDir } from '../services/paste-cleanup.js';
+import { listClaudeSessions, deleteClaudeSession } from '../services/claude-history.js';
 
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
   // List sessions
@@ -131,6 +132,69 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     if (!userOwnsSession(req.user!.id, id)) return reply.status(404).send({ error: 'Session not found' });
     const result = sessionManager.purgeSessionRecord(id);
     if (!result.ok) return reply.status(409).send({ error: result.error });
+    return { ok: true };
+  });
+
+  /* ---- Claude on-disk conversation history (keyed by project path) ---- */
+
+  // Resolve { projectPath, projectId } from a query/body, enforcing ownership.
+  function resolveProject(userId: string, pid?: string, ppath?: string): { ok: true; path: string; id: string | null } | { ok: false; code: number; error: string } {
+    if (pid) {
+      if (!userOwnsProject(userId, pid)) return { ok: false, code: 404, error: 'Project not found' };
+      const p = getDb().prepare('SELECT path FROM projects WHERE id = ?').get(pid) as { path: string } | undefined;
+      if (!p?.path) return { ok: false, code: 404, error: 'Project path not found' };
+      return { ok: true, path: p.path, id: pid };
+    }
+    if (ppath) {
+      if (!userOwnsProjectPath(userId, ppath)) return { ok: false, code: 404, error: 'Project not found' };
+      const p = getDb().prepare('SELECT id FROM projects WHERE path = ? AND owner_id = ?').get(ppath, userId) as { id: string } | undefined;
+      return { ok: true, path: ppath, id: p?.id ?? null };
+    }
+    return { ok: false, code: 400, error: 'project_id or project_path is required' };
+  }
+
+  // List a project's Claude conversation logs, with live AgentManager status.
+  app.get<{ Querystring: { project_id?: string; project_path?: string } }>('/sessions/claude-history', async (req, reply) => {
+    const r = resolveProject(req.user!.id, req.query.project_id, req.query.project_path);
+    if (!r.ok) return reply.status(r.code).send({ error: r.error });
+
+    const items = listClaudeSessions(r.path);
+    const liveByUuid = new Map<string, { id: string; status: string }>();
+    if (items.length && r.id) {
+      const uuids = items.map((i) => i.uuid);
+      const rows = getDb()
+        .prepare(`SELECT id, status, claude_session_id FROM sessions WHERE project_id = ? AND claude_session_id IN (${uuids.map(() => '?').join(',')})`)
+        .all(r.id, ...uuids) as { id: string; status: string; claude_session_id: string }[];
+      for (const row of rows) liveByUuid.set(row.claude_session_id, { id: row.id, status: row.status });
+    }
+    const sessions = items.map((i) => {
+      const l = liveByUuid.get(i.uuid);
+      return { ...i, liveSessionId: l?.id ?? null, liveStatus: l?.status ?? null };
+    });
+    return { projectId: r.id, sessions };
+  });
+
+  // Resume a Claude conversation log by uuid (creates a fresh live session).
+  app.post<{ Body: { project_id?: string; project_path?: string; claude_session_id?: string; title?: string } }>('/sessions/resume-claude', async (req, reply) => {
+    const body = (req.body || {}) as { project_id?: string; project_path?: string; claude_session_id?: string; title?: string };
+    if (!body.claude_session_id) return reply.status(400).send({ error: 'claude_session_id is required' });
+    const r = resolveProject(req.user!.id, body.project_id, body.project_path);
+    if (!r.ok) return reply.status(r.code).send({ error: r.error });
+    try {
+      const session = await sessionManager.resumeClaudeSession(r.path, r.id, body.claude_session_id, body.title || 'Resumed session');
+      return { ok: true, session };
+    } catch (err: any) {
+      return reply.status(500).send({ error: `Failed to resume: ${err?.message || 'unknown error'}` });
+    }
+  });
+
+  // Permanently delete a Claude conversation log (+ any AM record bound to it).
+  app.delete<{ Params: { uuid: string }; Querystring: { project_id?: string; project_path?: string } }>('/sessions/claude-history/:uuid', async (req, reply) => {
+    const r = resolveProject(req.user!.id, req.query.project_id, req.query.project_path);
+    if (!r.ok) return reply.status(r.code).send({ error: r.error });
+    const removed = deleteClaudeSession(r.path, req.params.uuid);
+    try { getDb().prepare('DELETE FROM sessions WHERE claude_session_id = ?').run(req.params.uuid); } catch { /* ignore */ }
+    if (!removed) return reply.status(404).send({ error: 'Conversation log not found' });
     return { ok: true };
   });
 

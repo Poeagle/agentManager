@@ -80,6 +80,13 @@ export const api = {
     // Permanently delete an ended session from history (record + events + JSONL).
     deleteRecord: (id: string) =>
       fetchJSON<{ ok: boolean }>(`/sessions/${id}/record`, { method: 'DELETE' }),
+    // Claude on-disk conversation history for a project (the real, complete history).
+    claudeHistory: (projectId: string) =>
+      fetchJSON<{ projectId: string | null; sessions: ClaudeHistoryItem[] }>(`/sessions/claude-history?project_id=${encodeURIComponent(projectId)}`),
+    resumeClaude: (data: { project_id: string; claude_session_id: string; title?: string }) =>
+      fetchJSON<{ ok: boolean; session: Session }>('/sessions/resume-claude', { method: 'POST', body: JSON.stringify(data) }),
+    deleteClaudeHistory: (uuid: string, projectId: string) =>
+      fetchJSON<{ ok: boolean }>(`/sessions/claude-history/${encodeURIComponent(uuid)}?project_id=${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
     renderedOutput: (id: string, cols?: number, rows?: number) => {
       const qs = new URLSearchParams();
       if (cols) qs.set('cols', String(cols));
@@ -311,6 +318,18 @@ export interface Session {
   processState?: 'busy' | 'idle' | 'waiting_for_input';
   promptType?: 'choice' | 'confirmation' | 'text' | null;
   isPermission?: boolean;
+}
+
+export interface ClaudeHistoryItem {
+  uuid: string;
+  title: string;
+  startTime: string | null;
+  lastActivity: number;
+  sizeBytes: number;
+  model: string | null;
+  /** Set when an AgentManager session is currently bound to this conversation. */
+  liveSessionId: string | null;
+  liveStatus: string | null;
 }
 
 export interface Event {
