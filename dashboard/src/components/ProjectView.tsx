@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Monitor, FolderTree, Code2, GitBranch, Home, Plus, X, Download, LayoutGrid, Maximize2, Minimize2, ExternalLink, Globe, Zap, Bot, TerminalSquare, Columns3, Rows3, ChevronDown, History } from 'lucide-react';
@@ -12,8 +12,7 @@ import { api, type Session } from '../lib/api';
 import { CloseTabModal } from './CloseTabModal';
 import { SessionHistoryPanel } from './SessionHistoryPanel';
 import { useShortcut, markKeyboardNav } from '../lib/shortcuts';
-import { useStreamStore } from '../lib/websocket';
-import { signalForSession, sessionSignal, SessionSignalDot } from '../lib/session-signal';
+import { LiveSessionSignalDot } from '../lib/session-signal';
 
 interface ProjectViewProps {
   projectId: string;
@@ -108,7 +107,13 @@ const sidebarButtons = [
   { id: 'history' as const, icon: History, title: 'Session 历史' },
 ] as const;
 
-export function ProjectView({ projectId, projectPath, projectName: _projectName, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled, onHiddenSessionsChange }: ProjectViewProps) {
+// Memoized so unrelated Dashboard re-renders (sessions list updates, signal
+// ticks, tab switches of OTHER projects) don't re-render every mounted project
+// view. Props from App are referentially stable (strings/bools + useCallback'd
+// handlers), so the shallow compare holds.
+export const ProjectView = memo(ProjectViewImpl);
+
+function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled, onHiddenSessionsChange }: ProjectViewProps) {
   const queryClient = useQueryClient();
 
   // Fetch project data for SessionLauncher
@@ -143,9 +148,6 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
     () => new Map((sessionsData?.sessions || []).map((s) => [s.id, s])),
     [sessionsData]
   );
-  // Live process-state pushed over the stream (busy/idle/waiting_for_input).
-  const liveStates = useStreamStore((s) => s.liveStates);
-
   // All sessions for this project (any status) — feeds the Session-history panel.
   const projectAllSessions = useMemo(
     () => (sessionsData?.sessions || []).filter((s: Session) => s.project_id === projectId),
@@ -1012,10 +1014,9 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                 {terminalInstances.map((inst) => {
                   const isActive = !showLauncher && !showAllTerminals && !activeWebPageId && inst.id === activeTerminalId;
                   const session = sessionLookup.get(inst.id);
-                  // Status signal light for this tab (live process-state, falling back to lifecycle status)
+                  // Status signal light — a leaf component subscribes to just this
+                  // session's live state, so a state tick doesn't re-render the view.
                   const sigSession = allSessionLookup.get(inst.id);
-                  const live = liveStates[inst.id];
-                  const signal = sigSession ? signalForSession(sigSession, liveStates) : (live ? sessionSignal(undefined, live) : null);
                   const isTerminal = inst.label.startsWith('Terminal');
                   const isAgent = inst.label.startsWith('Agent');
                   const isCodex = session?.cli_type === 'codex';
@@ -1041,9 +1042,9 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                       className="flex items-center gap-0.5 rounded-md shrink-0 group"
                       style={{ background: isActive ? 'var(--bg-tertiary)' : 'transparent' }}
                     >
-                      {signal && (
-                        <span className="pl-2 flex items-center" title={signal.title}>
-                          <SessionSignalDot signal={signal} active={isActive} />
+                      {sigSession && (
+                        <span className="pl-2 flex items-center">
+                          <LiveSessionSignalDot session={sigSession} active={isActive} />
                         </span>
                       )}
                       {editingTerminalId === inst.id ? (
@@ -1753,7 +1754,6 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
             {activeMode === 'history' && (
               <SessionHistoryPanel
                 sessions={projectAllSessions}
-                liveStates={liveStates}
                 openTabIds={new Set(terminalInstances.map((t) => t.id))}
                 busyId={resumingId}
                 onOpen={handleOpenHistorySession}

@@ -14,6 +14,7 @@
 import { Lock } from 'lucide-react';
 import type { Session } from './api';
 import type { LiveSessionState } from './websocket';
+import { useStreamStore } from './websocket';
 
 export interface Signal {
   color: string;
@@ -93,6 +94,61 @@ export function rollupSignal(signals: (Signal | null)[]): Signal | null {
     if (r > bestRank) { bestRank = r; best = s; }
   }
   return best;
+}
+
+/**
+ * A session signal dot that subscribes to ONLY its own session's live state.
+ * Rendering this as a leaf (instead of reading the whole `liveStates` map in a
+ * big parent) keeps a session.state tick from re-rendering entire ProjectViews —
+ * the zustand selector returns the same reference for unrelated sessions, so
+ * only the dot whose session actually changed re-renders.
+ */
+export function LiveSessionSignalDot({
+  session, active, size,
+}: {
+  session: Session;
+  active?: boolean;
+  size?: number;
+}) {
+  const live = useStreamStore((s) => s.liveStates[session.id]);
+  const terminal = session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled';
+  const signal = sessionSignal(session.status, terminal ? undefined : (live ?? liveFromSession(session)));
+  return <SessionSignalDot signal={signal} active={active} size={size} />;
+}
+
+/**
+ * Aggregate signal dot for a project tab. Subscribes to the live-state map
+ * itself (a cheap leaf) so it updates in real time without re-rendering the
+ * whole Dashboard / its mounted ProjectViews. Renders nothing when no session
+ * currently warrants attention.
+ */
+export function ProjectRollupDot({
+  sessions, active, size = 6,
+}: {
+  sessions: Session[];
+  active?: boolean;
+  size?: number;
+}) {
+  const liveStates = useStreamStore((s) => s.liveStates);
+  const rollup = rollupSignal(
+    sessions
+      .filter((s) => {
+        if (liveStates[s.id]) return true;
+        if (s.status === 'running' || s.status === 'pending' || s.status === 'detached') return true;
+        if (s.status === 'failed' && s.completed_at) {
+          const t = Date.parse(s.completed_at + (s.completed_at.endsWith('Z') ? '' : 'Z'));
+          if (!Number.isNaN(t) && Date.now() - t < 10 * 60 * 1000) return true;
+        }
+        return false;
+      })
+      .map((s) => signalForSession(s, liveStates))
+  );
+  if (!rollup) return null;
+  return (
+    <span className="pl-2 flex items-center">
+      <SessionSignalDot signal={rollup} active={active} size={size} />
+    </span>
+  );
 }
 
 export function SessionSignalDot({

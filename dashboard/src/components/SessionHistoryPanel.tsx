@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { Clock, Trash2, Play, CornerUpRight, Loader2, Check, X } from 'lucide-react';
 import type { Session } from '../lib/api';
-import type { LiveSessionState } from '../lib/websocket';
-import { signalForSession, SessionSignalDot } from '../lib/session-signal';
+import { LiveSessionSignalDot } from '../lib/session-signal';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 
 const ACTIVE = new Set(['running', 'detached', 'pending']);
@@ -40,17 +39,15 @@ function isResumable(s: Session): boolean {
 }
 
 function SessionRow({
-  session, isOpen, live, busy, onOpen, onDelete,
+  session, isOpen, busy, onOpen, onDelete,
 }: {
   session: Session;
   isOpen: boolean;
-  live: LiveSessionState | undefined;
   busy: boolean;
   onOpen: (s: Session) => void;
   onDelete: (s: Session) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
-  const signal = signalForSession(session, live ? { [session.id]: live } : {});
   const active = ACTIVE.has(session.status);
   const canOpen = active || isResumable(session);
   const isCodex = session.cli_type === 'codex';
@@ -68,7 +65,7 @@ function SessionRow({
       className="flex items-center gap-2 px-2 py-1.5 rounded-md group"
       style={{ background: isOpen ? 'var(--bg-tertiary)' : 'transparent' }}
     >
-      <SessionSignalDot signal={signal} active size={7} />
+      <LiveSessionSignalDot session={session} active size={7} />
       {isCodex
         ? <CodexIcon className="w-3.5 h-3.5 shrink-0" style={{ color: '#7A9DFF' }} />
         : <ClaudeIcon className="w-3.5 h-3.5 shrink-0" style={{ color: '#D97757' }} />}
@@ -133,10 +130,9 @@ function SessionRow({
 }
 
 export function SessionHistoryPanel({
-  sessions, liveStates, openTabIds, busyId, onOpen, onDelete,
+  sessions, openTabIds, busyId, onOpen, onDelete,
 }: {
   sessions: Session[];
-  liveStates: Record<string, LiveSessionState>;
   openTabIds: Set<string>;
   busyId: string | null;
   onOpen: (s: Session) => void;
@@ -156,7 +152,6 @@ export function SessionHistoryPanel({
           key={s.id}
           session={s}
           isOpen={openTabIds.has(s.id)}
-          live={liveStates[s.id]}
           busy={busyId === s.id}
           onOpen={onOpen}
           onDelete={onDelete}

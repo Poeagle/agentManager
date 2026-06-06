@@ -15,7 +15,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { ActiveTerminals } from './components/ActiveTerminals';
 import { installShortcutDispatcher, useShortcut, useShortcutStore, markKeyboardNav } from './lib/shortcuts';
 import { applyTheme } from './lib/themes';
-import { signalForSession, rollupSignal, SessionSignalDot } from './lib/session-signal';
+import { ProjectRollupDot } from './lib/session-signal';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -60,7 +60,8 @@ function saveAppState(userId: string, activeTab: string, projectTabs: ProjectTab
 
 function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => void }) {
   const connected = useStreamStore((s) => s.connected);
-  const liveStates = useStreamStore((s) => s.liveStates);
+  // Stable so memo(ProjectView) isn't busted by a new function identity each render.
+  const handleFocusSessionHandled = useCallback(() => setFocusSessionId(null), []);
   const [savedState] = useState(() => loadAppState(authUser.id));
   const [activeTab, setActiveTab] = useState<string>(savedState?.activeTab ?? 'home');
   const [focusSessionId, setFocusSessionId] = useState<string | null>(null);
@@ -487,23 +488,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         {projectTabs.map((tab) => {
           const tabId = `project-${tab.projectId}`;
           const isActive = activeTab === tabId;
-          // Aggregate signal across the project's *currently relevant* sessions
-          // (live, or active by status, or a recent failure) so a project tab
-          // reflects what needs attention now — not stale completed history.
-          const rollup = rollupSignal(
-            sessions
-              .filter((s) => {
-                if (s.project_id !== tab.projectId) return false;
-                if (liveStates[s.id]) return true;
-                if (s.status === 'running' || s.status === 'pending' || s.status === 'detached') return true;
-                if (s.status === 'failed' && s.completed_at) {
-                  const t = Date.parse(s.completed_at + (s.completed_at.endsWith('Z') ? '' : 'Z'));
-                  if (!Number.isNaN(t) && Date.now() - t < 10 * 60 * 1000) return true;
-                }
-                return false;
-              })
-              .map((s) => signalForSession(s, liveStates))
-          );
 
           return (
             <div
@@ -511,11 +495,11 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
               className="flex items-center gap-1 rounded-md shrink-0 group"
               style={{ background: isActive ? 'var(--bg-tertiary)' : 'transparent' }}
             >
-              {rollup && (
-                <span className="pl-2 flex items-center">
-                  <SessionSignalDot signal={rollup} active={isActive} size={6} />
-                </span>
-              )}
+              <ProjectRollupDot
+                sessions={sessions.filter((s) => s.project_id === tab.projectId)}
+                active={isActive}
+                size={6}
+              />
               {editingTabId === tab.projectId ? (
                 <div className="flex items-center gap-1.5 pl-3 pr-1 py-1.5 max-w-[180px]">
                   <FolderOpen className="w-3 h-3 shrink-0" style={{ color: 'var(--accent)' }} />
@@ -638,7 +622,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                   active={isActive && !showActiveTerminals}
                   terminalsSuspended={showActiveTerminals}
                   focusSessionId={isActive ? focusSessionId : null}
-                  onFocusSessionHandled={() => setFocusSessionId(null)}
+                  onFocusSessionHandled={handleFocusSessionHandled}
                   onHiddenSessionsChange={getHiddenSessionsCallback(tab.projectId)}
                 />
               )}
