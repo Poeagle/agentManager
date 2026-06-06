@@ -1,0 +1,24 @@
+[Unit]
+Description=AgentManager Orchestration Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__AGENTMANAGER_DIR__/server
+ExecStartPre=/bin/sh -c '__NODE_BIN__ -e "require(\'better-sqlite3\'); require(\'node-pty-prebuilt-multiarch\')" 2>/dev/null || "$(dirname __NODE_BIN__)/npm" rebuild better-sqlite3 node-pty-prebuilt-multiarch'
+ExecStart=__NODE_BIN__ dist/index.js
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PORT=42010
+StandardOutput=journal
+StandardError=journal
+
+# Graceful shutdown
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

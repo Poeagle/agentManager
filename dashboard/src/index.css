@@ -1,0 +1,198 @@
+@import "tailwindcss";
+
+/* ── Themes ──────────────────────────────────────────────────────────────
+   The whole app reads these CSS variables, so swapping a theme = swapping
+   this block. `:root` holds the default (Midnight) for the no-attribute case;
+   `applyTheme()` sets `data-theme` on <html> to pick one of the variants.
+   Theme ids/labels are mirrored in src/lib/themes.ts. */
+:root,
+:root[data-theme="midnight"] {
+  --bg-primary: #0f1117;
+  --bg-secondary: #1a1d27;
+  --bg-tertiary: #242833;
+  --border: #2e3340;
+  --text-primary: #e4e8f1;
+  --text-secondary: #8b92a8;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --success: #22c55e;
+  --warning: #eab308;
+  --error: #ef4444;
+}
+
+:root[data-theme="light"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f3f4f6;
+  --bg-tertiary: #e7e9ee;
+  --border: #d4d7e0;
+  --text-primary: #1a1d27;
+  --text-secondary: #5b6472;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --success: #16a34a;
+  --warning: #d97706;
+  --error: #dc2626;
+}
+
+:root[data-theme="slate"] {
+  --bg-primary: #16181d;
+  --bg-secondary: #1f2228;
+  --bg-tertiary: #2a2e36;
+  --border: #363b45;
+  --text-primary: #e6e8ed;
+  --text-secondary: #9aa0ac;
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --success: #22c55e;
+  --warning: #eab308;
+  --error: #ef4444;
+}
+
+:root[data-theme="nord"] {
+  --bg-primary: #2e3440;
+  --bg-secondary: #373e4c;
+  --bg-tertiary: #434c5e;
+  --border: #4c566a;
+  --text-primary: #eceff4;
+  --text-secondary: #aeb6c6;
+  --accent: #5e81ac;
+  --accent-hover: #81a1c1;
+  --success: #a3be8c;
+  --warning: #ebcb8b;
+  --error: #bf616a;
+}
+
+:root[data-theme="dracula"] {
+  --bg-primary: #282a36;
+  --bg-secondary: #313342;
+  --bg-tertiary: #3b3e4f;
+  --border: #44475a;
+  --text-primary: #f8f8f2;
+  --text-secondary: #a0a4bd;
+  --accent: #7c5cd6;
+  --accent-hover: #6a4ec0;
+  --success: #50fa7b;
+  --warning: #f1fa8c;
+  --error: #ff5555;
+}
+
+:root[data-theme="solarized"] {
+  --bg-primary: #002b36;
+  --bg-secondary: #073642;
+  --bg-tertiary: #0d4450;
+  --border: #194e5a;
+  --text-primary: #c3cdcd;
+  --text-secondary: #7d9095;
+  --accent: #268bd2;
+  --accent-hover: #2076b8;
+  --success: #859900;
+  --warning: #b58900;
+  --error: #dc322f;
+}
+
+html {
+  font-size: var(--app-font-size, 16px);
+}
+
+body {
+  margin: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+/* Global interactive element styles */
+button, [role="button"], select, a, summary {
+  cursor: pointer;
+}
+
+button:not(:disabled):hover,
+[role="button"]:not(:disabled):hover {
+  filter: brightness(1.15);
+}
+
+button:not(:disabled):active,
+[role="button"]:not(:disabled):active {
+  filter: brightness(0.95);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+select:hover {
+  filter: brightness(1.1);
+}
+
+/* Hide xterm.js cursor for Claude Code sessions (the CLI renders its own cursor) */
+.hide-xterm-cursor .xterm-cursor-layer {
+  display: none !important;
+}
+
+/* Markdown preview styles */
+.markdown-preview {
+  font-size: 14px;
+  line-height: 1.7;
+  max-width: 860px;
+}
+.markdown-preview h1 { font-size: 2em; font-weight: 700; margin: 1em 0 0.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+.markdown-preview h2 { font-size: 1.5em; font-weight: 600; margin: 1em 0 0.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+.markdown-preview h3 { font-size: 1.25em; font-weight: 600; margin: 1em 0 0.5em; }
+.markdown-preview h4 { font-size: 1em; font-weight: 600; margin: 1em 0 0.5em; }
+.markdown-preview p { margin: 0.75em 0; }
+.markdown-preview a { color: var(--accent); text-decoration: underline; }
+.markdown-preview ul, .markdown-preview ol { padding-left: 2em; margin: 0.5em 0; }
+.markdown-preview li { margin: 0.25em 0; }
+.markdown-preview code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.9em;
+  background: var(--bg-tertiary);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+.markdown-preview pre {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1em;
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+.markdown-preview pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+.markdown-preview blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 1em;
+  margin: 0.75em 0;
+  color: var(--text-secondary);
+}
+.markdown-preview table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.75em 0;
+}
+.markdown-preview th, .markdown-preview td {
+  border: 1px solid var(--border);
+  padding: 0.5em 0.75em;
+  text-align: left;
+}
+.markdown-preview th {
+  background: var(--bg-secondary);
+  font-weight: 600;
+}
+.markdown-preview hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.5em 0;
+}
+.markdown-preview img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+.markdown-preview input[type="checkbox"] {
+  margin-right: 0.5em;
+}

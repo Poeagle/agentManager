@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aigenius.agentmanager</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>(__NODE_BIN__ -e "require('better-sqlite3'); require('node-pty-prebuilt-multiarch')" 2&gt;/dev/null || "$(dirname __NODE_BIN__)/npm" rebuild better-sqlite3 node-pty-prebuilt-multiarch) &amp;&amp; exec __NODE_BIN__ __AGENTMANAGER_DIR__/server/dist/index.js</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__AGENTMANAGER_DIR__/server</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>PORT</key>
+    <string>42010</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>__AGENTMANAGER_DIR__/logs/agentmanager.log</string>
+  <key>StandardErrorPath</key>
+  <string>__AGENTMANAGER_DIR__/logs/agentmanager-error.log</string>
+
+  <key>UserName</key>
+  <string>__USER__</string>
+</dict>
+</plist>

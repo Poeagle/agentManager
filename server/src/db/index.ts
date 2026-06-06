@@ -1,0 +1,209 @@
+import Database from 'better-sqlite3';
+import { dirname, join } from 'path';
+import { existsSync } from 'fs';
+import { config } from '../config.js';
+
+let db: Database.Database;
+
+export function getDb(): Database.Database {
+  if (!db) {
+    throw new Error('Database not initialized. Call initDb() first.');
+  }
+  return db;
+}
+
+export function initDb(): void {
+  db = new Database(config.dbPath);
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+
+  // Create tables
+  db.exec(`
+    -- Projects registered with AgentManager
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      path TEXT NOT NULL UNIQUE,
+      description TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Sessions
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      project_id TEXT REFERENCES projects(id),
+      task TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',  -- pending, running, completed, failed, cancelled
+      pid INTEGER,
+      started_at TEXT,
+      completed_at TEXT,
+      exit_code INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Events from Claude Code hooks
+    CREATE TABLE IF NOT EXISTS events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT REFERENCES sessions(id),
+      type TEXT NOT NULL,          -- tool_use, tool_result, edit, command, task, error
+      tool_name TEXT,
+      data TEXT,                   -- JSON payload
+      timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Task queue
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      project_id TEXT REFERENCES projects(id),
+      title TEXT NOT NULL,
+      description TEXT,
+      priority INTEGER DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'queued',  -- queued, running, completed, failed
+      session_id TEXT REFERENCES sessions(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      started_at TEXT,
+      completed_at TEXT
+    );
+
+    -- PTY output storage (replaces in-memory buffer)
+    CREATE TABLE IF NOT EXISTS pty_output (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      data TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- App settings (key-value store)
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    -- Indexes
+    CREATE INDEX IF NOT EXISTS idx_pty_output_session_seq ON pty_output(session_id, seq);
+    CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
+    CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+    CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+
+    -- Users (multi-tenant auth)
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      display_name TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL DEFAULT 'member',   -- admin | member
+      disabled INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Auth login sessions (cookie tokens)
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+  `);
+
+  // Migrations — idempotent column additions
+  try { db.exec('ALTER TABLE sessions ADD COLUMN claude_session_id TEXT'); } catch {}
+  try { db.exec('ALTER TABLE projects ADD COLUMN ruflo_prompt TEXT'); } catch {}
+  // Migrate old column name
+  try { db.exec('ALTER TABLE projects RENAME COLUMN claude_flow_prompt TO ruflo_prompt'); } catch {}
+  // Rename ruflo_prompt → session_prompt
+  try { db.exec('ALTER TABLE projects RENAME COLUMN ruflo_prompt TO session_prompt'); } catch {}
+  try { db.exec('ALTER TABLE projects ADD COLUMN openclaw_prompt TEXT'); } catch {}
+  try { db.exec('ALTER TABLE sessions ADD COLUMN terminal_cols INTEGER DEFAULT 120'); } catch {}
+  try { db.exec('ALTER TABLE sessions ADD COLUMN external_socket TEXT'); } catch {}
+  try { db.exec('ALTER TABLE projects ADD COLUMN default_web_url TEXT'); } catch {}
+  try { db.exec('ALTER TABLE events ADD COLUMN project_id TEXT REFERENCES projects(id)'); } catch {}
+  try { db.exec('ALTER TABLE sessions ADD COLUMN pre_popout_cols INTEGER'); } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id)'); } catch {}
+  // Per-project accent color for card title bar
+  try { db.exec("ALTER TABLE projects ADD COLUMN color TEXT DEFAULT ''"); } catch {}
+  // Multi-tenant: project ownership
+  try { db.exec('ALTER TABLE projects ADD COLUMN owner_id TEXT REFERENCES users(id)'); } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_id)'); } catch {}
+  // Per-project flag to launch sessions with --dangerously-skip-permissions
+  try { db.exec('ALTER TABLE projects ADD COLUMN skip_permissions INTEGER DEFAULT 0'); } catch {}
+  // Codex support: track which CLI (claude or codex) launched the session
+  try { db.exec("ALTER TABLE sessions ADD COLUMN cli_type TEXT DEFAULT 'claude'"); } catch {}
+
+  // Note: orphaned process cleanup is handled by cleanupStaleRunningSessions()
+  // which is called after initDb() in index.ts — it kills processes AND marks DB records.
+
+  // Migrate projects from dev-swarm.db if agentmanager.db is empty (one-time
+  // migration from an old development setup)
+  migrateProjectsFromDevSwarm();
+
+  console.log('📦 Database initialized');
+}
+
+function migrateProjectsFromDevSwarm(): void {
+  const count = (db.prepare('SELECT COUNT(*) as n FROM projects').get() as { n: number }).n;
+  if (count > 0) return; // already has projects, nothing to migrate
+
+  const devSwarmPath = join(dirname(config.dbPath), 'dev-swarm.db');
+  if (!existsSync(devSwarmPath)) return;
+
+  try {
+    const src = new Database(devSwarmPath, { readonly: true });
+
+    // Source DB may have ruflo_prompt or session_prompt depending on version
+    let projects: Array<Record<string, unknown>>;
+    try {
+      projects = src.prepare(
+        'SELECT id, name, path, description, created_at, updated_at, session_prompt, openclaw_prompt, default_web_url FROM projects'
+      ).all() as Array<Record<string, unknown>>;
+    } catch {
+      // Fallback: old schema with ruflo_prompt
+      projects = src.prepare(
+        'SELECT id, name, path, description, created_at, updated_at, ruflo_prompt AS session_prompt, openclaw_prompt, default_web_url FROM projects'
+      ).all() as Array<Record<string, unknown>>;
+    }
+
+    // Only migrate sessions whose project_id exists in the projects we're bringing over
+    const projectIds = projects.map((p) => p.id as string);
+    const sessions = projectIds.length > 0
+      ? src.prepare(
+          `SELECT id, project_id, task, status, pid, started_at, completed_at, exit_code,
+                  created_at, updated_at, claude_session_id, terminal_cols, external_socket,
+                  pre_popout_cols, cli_type
+           FROM sessions WHERE project_id IN (${projectIds.map(() => '?').join(',')})`
+        ).all(...projectIds) as Array<Record<string, unknown>>
+      : [];
+
+    src.close();
+
+    if (projects.length === 0) return;
+
+    const insertProject = db.prepare(
+      `INSERT OR IGNORE INTO projects (id, name, path, description, created_at, updated_at, session_prompt, openclaw_prompt, default_web_url)
+       VALUES (@id, @name, @path, @description, @created_at, @updated_at, @session_prompt, @openclaw_prompt, @default_web_url)`
+    );
+    const insertSession = db.prepare(
+      `INSERT OR IGNORE INTO sessions (id, project_id, task, status, pid, started_at, completed_at, exit_code,
+                                       created_at, updated_at, claude_session_id, terminal_cols, external_socket,
+                                       pre_popout_cols, cli_type)
+       VALUES (@id, @project_id, @task, @status, @pid, @started_at, @completed_at, @exit_code,
+               @created_at, @updated_at, @claude_session_id, @terminal_cols, @external_socket,
+               @pre_popout_cols, @cli_type)`
+    );
+
+    const tx = db.transaction(() => {
+      for (const row of projects) insertProject.run(row);
+      for (const row of sessions) insertSession.run(row);
+    });
+    tx();
+
+    console.log(`📦 Migrated ${projects.length} project(s) and ${sessions.length} session(s) from dev-swarm.db`);
+  } catch (err) {
+    console.warn('⚠️  Failed to migrate projects from dev-swarm.db:', err);
+  }
+}

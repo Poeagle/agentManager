@@ -1,0 +1,6 @@
+{
+  "version": "1",
+  "channel": "stable",
+  "name": "agentmanager",
+  "description": "AgentManager orchestration dashboard"
+}
