@@ -10,14 +10,21 @@ interface Selected {
   dirName: string; name: string; path: string; readOnly: boolean;
 }
 
-export function SkillsManager({ active }: { active: boolean }) {
+/**
+ * Per-project skill manager. Lists the project's own skills
+ * (<project>/.claude/skills — read/write) plus the global skill stores
+ * (~/.claude/skills, ~/.codex/skills — read-only reference). Whole-skill
+ * CRUD is allowed only in the project store; the files inside a skill are
+ * edited via the shared FileExplorer (read-only for global skills).
+ */
+export function ProjectSkillsPanel({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
   const [selected, setSelected] = useState<Selected | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [createIn, setCreateIn] = useState<SkillGroup | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const groupsQuery = useQuery({ queryKey: ['skills'], queryFn: () => api.skills.list(), enabled: active });
+  const groupsQuery = useQuery({ queryKey: ['skills', projectId], queryFn: () => api.skills.list(projectId) });
   const groups = groupsQuery.data?.groups ?? [];
 
   // Keep selection valid as the list refreshes (e.g. after create/delete).
@@ -30,8 +37,8 @@ export function SkillsManager({ active }: { active: boolean }) {
   }, [groups]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const deleteMutation = useMutation({
-    mutationFn: () => api.skills.remove(selected!.tool, selected!.scope, selected!.dirName),
-    onSuccess: () => { setConfirmDelete(false); setSelected(null); qc.invalidateQueries({ queryKey: ['skills'] }); },
+    mutationFn: () => api.skills.remove(projectId, selected!.tool, selected!.scope, selected!.dirName),
+    onSuccess: () => { setConfirmDelete(false); setSelected(null); qc.invalidateQueries({ queryKey: ['skills', projectId] }); },
     onError: (e: Error) => { setConfirmDelete(false); setError(e.message); },
   });
 
@@ -98,7 +105,7 @@ export function SkillsManager({ active }: { active: boolean }) {
           <div className="flex-1 flex flex-col items-center justify-center gap-2" style={{ color: 'var(--text-secondary)' }}>
             <Sparkles className="w-8 h-8" style={{ opacity: 0.4 }} />
             <p className="text-sm">从左侧选择一个技能</p>
-            <p className="text-xs" style={{ opacity: 0.7 }}>按 agent 工具 → 标准目录分组</p>
+            <p className="text-xs" style={{ opacity: 0.7 }}>本项目可增删改 · 全局为只读参考</p>
           </div>
         ) : (
           <>
@@ -110,7 +117,7 @@ export function SkillsManager({ active }: { active: boolean }) {
                   <h2 className="text-sm font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{selected.name}</h2>
                   {selected.readOnly && (
                     <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>
-                      <Lock className="w-2.5 h-2.5" /> 系统
+                      <Lock className="w-2.5 h-2.5" /> 全局 · 只读
                     </span>
                   )}
                 </div>
@@ -123,9 +130,14 @@ export function SkillsManager({ active }: { active: boolean }) {
               )}
             </div>
 
-            {/* The skill's files — reuse the app's FileExplorer (tree + CodeMirror + markdown preview). */}
+            {/* The skill's files — reuse the app's FileExplorer (read-only for global skills). */}
             <div className="flex-1 min-h-0">
-              <FileExplorer key={selected.path} rootPath={selected.path} instanceId={`skill-${selected.tool}-${selected.scope}-${selected.dirName}`} />
+              <FileExplorer
+                key={selected.path}
+                rootPath={selected.path}
+                instanceId={`skill-${projectId}-${selected.tool}-${selected.scope}-${selected.dirName}`}
+                readOnly={selected.readOnly}
+              />
             </div>
           </>
         )}
@@ -144,11 +156,12 @@ export function SkillsManager({ active }: { active: boolean }) {
 
       {createIn && (
         <NewSkillModal
+          projectId={projectId}
           group={createIn}
           onClose={() => setCreateIn(null)}
           onCreated={(skill) => {
             setCreateIn(null);
-            qc.invalidateQueries({ queryKey: ['skills'] });
+            qc.invalidateQueries({ queryKey: ['skills', projectId] });
             setSelected({ groupKey: createIn.key, tool: createIn.tool, scope: createIn.scope, dirName: skill.dirName, name: skill.dirName, path: skill.path, readOnly: createIn.readOnly });
           }}
         />
@@ -157,7 +170,8 @@ export function SkillsManager({ active }: { active: boolean }) {
   );
 }
 
-function NewSkillModal({ group, onClose, onCreated }: {
+function NewSkillModal({ projectId, group, onClose, onCreated }: {
+  projectId: string;
   group: SkillGroup;
   onClose: () => void;
   onCreated: (skill: { dirName: string; path: string }) => void;
@@ -167,7 +181,7 @@ function NewSkillModal({ group, onClose, onCreated }: {
   const [error, setError] = useState<string | null>(null);
 
   const createMutation = useMutation({
-    mutationFn: () => api.skills.create(group.tool, group.scope, { name: name.trim(), description: description.trim() || undefined }),
+    mutationFn: () => api.skills.create(projectId, group.tool, group.scope, { name: name.trim(), description: description.trim() || undefined }),
     onSuccess: (res) => onCreated({ dirName: res.dirName, path: res.path }),
     onError: (e: Error) => setError(e.message),
   });

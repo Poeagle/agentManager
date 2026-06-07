@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Monitor, FolderTree, Code2, GitBranch, Home, Plus, X, Download, LayoutGrid, Maximize2, Minimize2, ExternalLink, Globe, Zap, Bot, TerminalSquare, Columns3, Rows3, ChevronDown, History } from 'lucide-react';
+import { Monitor, FolderTree, Code2, GitBranch, Home, Plus, X, Download, LayoutGrid, Maximize2, Minimize2, ExternalLink, Globe, Zap, Bot, TerminalSquare, Columns3, Rows3, ChevronDown, History, Sparkles } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { Terminal } from './Terminal';
 import { FileExplorer } from './FileExplorer';
@@ -11,6 +11,7 @@ import { WebPageView } from './WebPageView';
 import { api, type ClaudeHistoryItem } from '../lib/api';
 import { CloseTabModal } from './CloseTabModal';
 import { SessionHistoryPanel } from './SessionHistoryPanel';
+import { ProjectSkillsPanel } from './ProjectSkillsPanel';
 import { useShortcut, markKeyboardNav } from '../lib/shortcuts';
 import { LiveSessionSignalDot } from '../lib/session-signal';
 
@@ -46,7 +47,7 @@ interface WebPageInstance {
   url: string;
 }
 
-type ActiveMode = 'terminal' | 'explorer' | 'events' | 'git' | 'history';
+type ActiveMode = 'terminal' | 'explorer' | 'events' | 'git' | 'history' | 'skills';
 
 interface PersistedState {
   activeMode: ActiveMode;
@@ -105,6 +106,7 @@ const sidebarButtons = [
   { id: 'explorer' as const, icon: FolderTree, title: 'File Explorer' },
   { id: 'git' as const, icon: GitBranch, title: 'Source Control' },
   { id: 'history' as const, icon: History, title: 'Session 历史' },
+  { id: 'skills' as const, icon: Sparkles, title: 'Skills' },
 ] as const;
 
 // Memoized so unrelated Dashboard re-renders (sessions list updates, signal
@@ -1757,6 +1759,16 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
                 onOpen={handleOpenHistorySession}
                 onDelete={handleDeleteHistorySession}
               />
+            )}
+          </div>
+
+          {/* Project skills panel */}
+          <div
+            className="h-full absolute inset-0"
+            style={{ display: activeMode === 'skills' ? 'block' : 'none' }}
+          >
+            {activeMode === 'skills' && (
+              <ProjectSkillsPanel projectId={projectId} />
             )}
           </div>
         </div>

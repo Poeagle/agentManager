@@ -32,6 +32,7 @@ interface FileExplorerProps {
   refreshFilePath?: string | null; // when set, reload this file if it's open and not dirty
   openFileRequest?: { path: string; key: number } | null; // when key changes, open & reveal this file
   onFileSaved?: (filePath: string) => void; // notify parent when a file is saved
+  readOnly?: boolean; // when true, disable all writes (save/rename/delete/paste) — view-only
 }
 
 interface TreeNode {
@@ -425,7 +426,7 @@ function TreeItem({
   );
 }
 
-export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRequest, onFileSaved }: FileExplorerProps) {
+export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRequest, onFileSaved, readOnly = false }: FileExplorerProps) {
   // Resolve initial path from persisted state or prop
   const [initialState] = useState(() => instanceId ? loadExplorerState(instanceId) : null);
   const [currentPath, setCurrentPath] = useState(initialState?.currentPath ?? rootPath);
@@ -776,6 +777,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
 
   // Save compare changes to disk
   async function saveCompareChanges() {
+    if (readOnly) return;
     if (!compareState || compareState.appliedHunks.size === 0) return;
     setSaving(true);
     setSaveMessage(null);
@@ -830,7 +832,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
 
   // Save active tab
   const handleSave = useCallback(async () => {
-    if (!activeTab || !isDirty) return;
+    if (readOnly || !activeTab || !isDirty) return;
     setSaving(true);
     setSaveMessage(null);
     try {
@@ -845,7 +847,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
     } finally {
       setSaving(false);
     }
-  }, [activeTab, isDirty]);
+  }, [activeTab, isDirty, readOnly]);
 
   // Ctrl+S / Cmd+S keyboard shortcut
   useEffect(() => {
@@ -1169,14 +1171,17 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
       },
     ];
 
+    // In read-only mode, only expose non-mutating actions (open/copy).
     if (node) {
       items.push({ kind: 'separator' });
-      items.push({
-        kind: 'item',
-        label: 'Cut',
-        icon: <Scissors className="w-3.5 h-3.5" />,
-        onClick: () => setClipboard({ kind: 'cut', path: node.fullPath, isDir }),
-      });
+      if (!readOnly) {
+        items.push({
+          kind: 'item',
+          label: 'Cut',
+          icon: <Scissors className="w-3.5 h-3.5" />,
+          onClick: () => setClipboard({ kind: 'cut', path: node.fullPath, isDir }),
+        });
+      }
       items.push({
         kind: 'item',
         label: 'Copy',
@@ -1185,30 +1190,32 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
       });
     }
 
-    // Paste — only meaningful when target is a directory (or empty area)
-    items.push({
-      kind: 'item',
-      label: clipboard ? `Paste ${clipboard.kind === 'cut' ? '(move)' : '(copy)'}` : 'Paste',
-      icon: <Clipboard className="w-3.5 h-3.5" />,
-      onClick: () => handlePaste(containingDir),
-      disabled: !clipboard || (!isDir && !!node),
-    });
+    if (!readOnly) {
+      // Paste — only meaningful when target is a directory (or empty area)
+      items.push({
+        kind: 'item',
+        label: clipboard ? `Paste ${clipboard.kind === 'cut' ? '(move)' : '(copy)'}` : 'Paste',
+        icon: <Clipboard className="w-3.5 h-3.5" />,
+        onClick: () => handlePaste(containingDir),
+        disabled: !clipboard || (!isDir && !!node),
+      });
 
-    if (node) {
-      items.push({ kind: 'separator' });
-      items.push({
-        kind: 'item',
-        label: 'Rename',
-        icon: <Edit3 className="w-3.5 h-3.5" />,
-        onClick: () => setRenamingPath(node.fullPath),
-      });
-      items.push({
-        kind: 'item',
-        label: 'Delete',
-        icon: <Trash2 className="w-3.5 h-3.5" />,
-        danger: true,
-        onClick: () => setPendingDelete({ path: targetPath, isDir }),
-      });
+      if (node) {
+        items.push({ kind: 'separator' });
+        items.push({
+          kind: 'item',
+          label: 'Rename',
+          icon: <Edit3 className="w-3.5 h-3.5" />,
+          onClick: () => setRenamingPath(node.fullPath),
+        });
+        items.push({
+          kind: 'item',
+          label: 'Delete',
+          icon: <Trash2 className="w-3.5 h-3.5" />,
+          danger: true,
+          onClick: () => setPendingDelete({ path: targetPath, isDir }),
+        });
+      }
     }
 
     setContextMenu({ x: e.clientX, y: e.clientY, items });
@@ -1231,6 +1238,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
   }
 
   async function submitRename(path: string, newName: string) {
+    if (readOnly) { setRenamingPath(null); return; }
     setRenamingPath(null);
     try {
       const result = await api.files.rename(path, newName);
@@ -1247,6 +1255,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
   }
 
   async function confirmDelete() {
+    if (readOnly) { setPendingDelete(null); return; }
     if (!pendingDelete) return;
     const { path, isDir } = pendingDelete;
     setPendingDelete(null);
@@ -1264,7 +1273,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
   }
 
   async function handlePaste(destDir: string) {
-    if (!clipboard) return;
+    if (readOnly || !clipboard) return;
     const src = clipboard.path;
     const kind = clipboard.kind;
     const sourceParent = getParentDir(src);
@@ -1542,7 +1551,12 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
                     {saveMessage}
                   </span>
                 )}
-                {isDirty && (
+                {readOnly && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>
+                    只读
+                  </span>
+                )}
+                {!readOnly && isDirty && (
                   <button
                     onClick={handleSave}
                     disabled={saving}

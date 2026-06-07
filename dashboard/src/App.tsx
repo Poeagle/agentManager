@@ -7,9 +7,8 @@ import { AuthGate } from './components/AuthGate';
 import { AccountModal } from './components/AccountModal';
 import { ProjectDashboard } from './components/ProjectDashboard';
 import { ProjectView, cleanupProjectStorage } from './components/ProjectView';
-import { X, LayoutGrid, FolderOpen, Monitor, Settings, ArrowUpCircle, LogOut, Users, Plus, Sparkles } from 'lucide-react';
+import { X, LayoutGrid, FolderOpen, Monitor, Settings, ArrowUpCircle, LogOut, Users, Plus } from 'lucide-react';
 import { AgentGuideButton } from './components/AgentGuide';
-import { SkillsManager } from './components/SkillsManager';
 import { CloseTabModal } from './components/CloseTabModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ActiveTerminals } from './components/ActiveTerminals';
@@ -63,7 +62,11 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   // Stable so memo(ProjectView) isn't busted by a new function identity each render.
   const handleFocusSessionHandled = useCallback(() => setFocusSessionId(null), []);
   const [savedState] = useState(() => loadAppState(authUser.id));
-  const [activeTab, setActiveTab] = useState<string>(savedState?.activeTab ?? 'home');
+  // 'skills' was a removed top-level tab (skills are now per-project); fall back to home.
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    const t = savedState?.activeTab ?? 'home';
+    return t === 'skills' ? 'home' : t;
+  });
   const [focusSessionId, setFocusSessionId] = useState<string | null>(null);
   // Inline tab-rename: which tab is being renamed + its draft text.
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
@@ -463,19 +466,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           Projects
         </button>
 
-        {/* Skills tab */}
-        <button
-          onClick={() => { setActiveTab('skills'); dismissActiveTerminals(); }}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors shrink-0"
-          style={{
-            background: activeTab === 'skills' ? 'var(--bg-tertiary)' : 'transparent',
-            color: activeTab === 'skills' ? 'var(--text-primary)' : 'var(--text-secondary)',
-          }}
-        >
-          <Sparkles className="w-3.5 h-3.5" />
-          Skills
-        </button>
-
         {/* Divider */}
         {projectTabs.length > 0 && (
           <div
@@ -588,12 +578,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
             active={activeTab === 'home'}
             onSelectedProjectChange={(id) => { homeSelectedProjectIdRef.current = id; }}
           />
-        </div>
-        <div
-          className="h-full"
-          style={{ display: activeTab === 'skills' ? 'block' : 'none' }}
-        >
-          <SkillsManager active={activeTab === 'skills'} />
         </div>
         {projectTabs.map((tab) => {
           const tabId = `project-${tab.projectId}`;

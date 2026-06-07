@@ -3,14 +3,24 @@ import { readdir, readFile, writeFile, mkdir, rm } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
 import { homedir } from 'os';
 import { existsSync } from 'fs';
+import { getDb } from '../db/index.js';
+import { userOwnsProject } from '../auth.js';
 
 /* ================================================================
    Skill manager — enumerate / create / delete SKILL.md-format skills
-   across the agent tools AgentManager supports (Claude Code, Codex).
+   for a PROJECT.
 
    A "skill" is a sub-directory containing a SKILL.md file
-   (frontmatter: name/description). Skills are global/shared on the
-   filesystem (not per-user). Grouped by tool -> standard directory.
+   (frontmatter: name/description). Scoped per project:
+
+     • 本项目  <project>/.claude/skills   — read/write (CRUD)
+     • 全局    ~/.claude/skills           — read-only reference
+     • 全局    ~/.codex/skills            — read-only reference
+     • 全局    ~/.codex/skills/.system    — read-only reference
+
+   Only the project location is writable; the global ones are listed
+   for reference (skills inherited into every project) but can't be
+   created/deleted from here.
 
    Browsing/editing the FILES inside a skill is handled by the shared
    FileExplorer component via the generic /api/files endpoints — this
@@ -18,38 +28,53 @@ import { existsSync } from 'fs';
    ================================================================ */
 
 interface SkillLocation {
-  key: string;                 // 'claude:user'
+  key: string;                 // 'claude:project'
   tool: 'claude' | 'codex';
   toolLabel: string;           // 'Claude Code'
-  scope: 'user' | 'system';
+  scope: 'project' | 'user' | 'system';
   label: string;               // shown as the directory group label
   dir: string;                 // absolute path to the skills directory
-  readOnly: boolean;           // system stores: can't create/delete whole skills here
+  readOnly: boolean;           // global stores: can't create/delete whole skills here
   excludeDirs?: string[];      // sub-dir names to skip (e.g. Codex's '.system')
 }
 
-/** Single source of truth for where each tool keeps its skills. */
-function getLocations(): SkillLocation[] {
+/** Single source of truth for where skills live, relative to a project. */
+function getLocations(projectPath: string): SkillLocation[] {
   const home = homedir();
   return [
     {
+      key: 'claude:project', tool: 'claude', toolLabel: 'Claude Code', scope: 'project',
+      label: '本项目 · .claude/skills', dir: join(projectPath, '.claude', 'skills'), readOnly: false,
+    },
+    {
       key: 'claude:user', tool: 'claude', toolLabel: 'Claude Code', scope: 'user',
-      label: 'skills', dir: join(home, '.claude', 'skills'), readOnly: false,
+      label: '全局 · ~/.claude/skills', dir: join(home, '.claude', 'skills'), readOnly: true,
     },
     {
       key: 'codex:user', tool: 'codex', toolLabel: 'Codex', scope: 'user',
-      label: 'skills', dir: join(home, '.codex', 'skills'), readOnly: false,
+      label: '全局 · ~/.codex/skills', dir: join(home, '.codex', 'skills'), readOnly: true,
       excludeDirs: ['.system'],
     },
     {
       key: 'codex:system', tool: 'codex', toolLabel: 'Codex', scope: 'system',
-      label: 'skills · system', dir: join(home, '.codex', 'skills', '.system'), readOnly: true,
+      label: '全局 · ~/.codex/skills/.system', dir: join(home, '.codex', 'skills', '.system'), readOnly: true,
     },
   ];
 }
 
-function findLocation(tool: string, scope: string): SkillLocation | undefined {
-  return getLocations().find((l) => l.tool === tool && l.scope === scope);
+function findLocation(projectPath: string, tool: string, scope: string): SkillLocation | undefined {
+  return getLocations(projectPath).find((l) => l.tool === tool && l.scope === scope);
+}
+
+/** Resolve { path } from a project id, enforcing ownership. */
+function resolveProjectPath(userId: string, projectId: string | undefined):
+  | { ok: true; path: string }
+  | { ok: false; code: number; error: string } {
+  if (!projectId) return { ok: false, code: 400, error: 'project_id is required' };
+  if (!userOwnsProject(userId, projectId)) return { ok: false, code: 404, error: 'Project not found' };
+  const p = getDb().prepare('SELECT path FROM projects WHERE id = ?').get(projectId) as { path: string } | undefined;
+  if (!p?.path) return { ok: false, code: 404, error: 'Project path not found' };
+  return { ok: true, path: p.path };
 }
 
 const SKILL_NAME_RE = /^[A-Za-z0-9._-]+$/;
@@ -114,10 +139,13 @@ async function listSkillsIn(loc: SkillLocation) {
 }
 
 export const skillsRoutes: FastifyPluginAsync = async (app) => {
-  // List all skills grouped by tool -> standard directory.
-  app.get('/skills', async () => {
+  // List a project's skills grouped by location (project + global references).
+  app.get<{ Querystring: { project_id?: string } }>('/skills', async (req, reply) => {
+    const r = resolveProjectPath(req.user!.id, req.query.project_id);
+    if (!r.ok) return reply.status(r.code).send({ error: r.error });
+
     const groups = [];
-    for (const loc of getLocations()) {
+    for (const loc of getLocations(r.path)) {
       groups.push({
         key: loc.key,
         tool: loc.tool,
@@ -133,35 +161,42 @@ export const skillsRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // Create a new skill (scaffolds <dir>/<name>/SKILL.md). Files inside are
-  // then edited via the FileExplorer / /api/files endpoints.
-  app.post<{ Params: { tool: string; scope: string }; Body: { name: string; description?: string; content?: string } }>(
+  // then edited via the FileExplorer / /api/files endpoints. Project scope only.
+  app.post<{ Params: { tool: string; scope: string }; Body: { project_id?: string; name: string; description?: string; content?: string } }>(
     '/skills/:tool/:scope',
     async (req, reply) => {
-      const loc = findLocation(req.params.tool, req.params.scope);
+      const body = (req.body || {}) as { project_id?: string; name: string; description?: string; content?: string };
+      const r = resolveProjectPath(req.user!.id, body.project_id);
+      if (!r.ok) return reply.status(r.code).send({ error: r.error });
+
+      const loc = findLocation(r.path, req.params.tool, req.params.scope);
       if (!loc) return reply.status(404).send({ error: 'Unknown skill location' });
       if (loc.readOnly) return reply.status(403).send({ error: 'This skill location is read-only' });
 
-      const { name, description, content } = req.body || ({} as any);
+      const { name, description, content } = body;
       if (!isValidSkillName(name)) {
         return reply.status(400).send({ error: 'Invalid skill name — use letters, digits, dot, underscore or hyphen' });
       }
       const skillDir = resolveSkillDir(loc, name)!;
       if (existsSync(skillDir)) return reply.status(409).send({ error: 'A skill with this name already exists' });
 
-      const body = content && content.trim()
+      const skillBody = content && content.trim()
         ? content
         : `---\nname: ${name}\ndescription: ${description?.trim() || 'TODO: describe when this skill should be used.'}\n---\n\n# ${name}\n\nTODO: write the skill instructions here.\n`;
       await mkdir(skillDir, { recursive: true });
-      await writeFile(join(skillDir, 'SKILL.md'), body, 'utf-8');
+      await writeFile(join(skillDir, 'SKILL.md'), skillBody, 'utf-8');
       return { ok: true, tool: loc.tool, scope: loc.scope, dirName: name, path: skillDir };
     },
   );
 
-  // Delete a skill (removes the whole skill directory).
-  app.delete<{ Params: { tool: string; scope: string; name: string } }>(
+  // Delete a skill (removes the whole skill directory). Project scope only.
+  app.delete<{ Params: { tool: string; scope: string; name: string }; Querystring: { project_id?: string } }>(
     '/skills/:tool/:scope/:name',
     async (req, reply) => {
-      const loc = findLocation(req.params.tool, req.params.scope);
+      const r = resolveProjectPath(req.user!.id, req.query.project_id);
+      if (!r.ok) return reply.status(r.code).send({ error: r.error });
+
+      const loc = findLocation(r.path, req.params.tool, req.params.scope);
       if (!loc) return reply.status(404).send({ error: 'Unknown skill location' });
       if (loc.readOnly) return reply.status(403).send({ error: 'This skill location is read-only' });
       const skillDir = resolveSkillDir(loc, req.params.name);

@@ -139,14 +139,16 @@ export const api = {
       }),
   },
   skills: {
-    list: () => fetchJSON<{ groups: SkillGroup[] }>('/skills'),
-    create: (tool: string, scope: string, data: { name: string; description?: string; content?: string }) =>
+    // Project-scoped: lists the project's own skills + global read-only references.
+    list: (projectId: string) =>
+      fetchJSON<{ groups: SkillGroup[] }>(`/skills?project_id=${encodeURIComponent(projectId)}`),
+    create: (projectId: string, tool: string, scope: string, data: { name: string; description?: string; content?: string }) =>
       fetchJSON<{ ok: boolean; tool: string; scope: string; dirName: string; path: string }>(`/skills/${tool}/${scope}`, {
         method: 'POST',
-        body: JSON.stringify(data),
+        body: JSON.stringify({ ...data, project_id: projectId }),
       }),
-    remove: (tool: string, scope: string, name: string) =>
-      fetchJSON<{ ok: boolean }>(`/skills/${tool}/${scope}/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    remove: (projectId: string, tool: string, scope: string, name: string) =>
+      fetchJSON<{ ok: boolean }>(`/skills/${tool}/${scope}/${encodeURIComponent(name)}?project_id=${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
   },
   files: {
     list: (path: string, showHidden?: boolean) =>
