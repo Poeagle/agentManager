@@ -165,6 +165,21 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
     return saved;
   });
 
+  // id → custom terminal-tab name: the cross-device-shareable slice of
+  // terminalInstances. Seeded from the local cache, merged with server state on
+  // mount, and consulted by the session-sync reconciliation below so a custom
+  // name survives even when a tab is re-derived from a live session.
+  const terminalLabelsRef = useRef<Record<string, string>>(
+    Object.fromEntries(
+      (initialized?.terminalInstances ?? [])
+        .filter((t) => t.customLabel?.trim())
+        .map((t) => [t.id, t.customLabel!.trim()]),
+    ),
+  );
+  // Flips true once this project's server state has been pulled, so the
+  // debounced write-back doesn't clobber the server before we've read it.
+  const projHydratedRef = useRef(false);
+
   const [activeMode, setActiveMode] = useState<ActiveMode>(
     initialized?.activeMode ?? 'terminal'
   );
@@ -213,9 +228,13 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
     setEditingTerminalValue(inst.customLabel?.trim() || inst.label);
   }, []);
   const commitTerminalRename = useCallback((id: string) => {
+    const v = editingTerminalValue.trim();
+    // Keep the synced label map in lockstep so reconciliation can re-apply it.
+    if (v) terminalLabelsRef.current[id] = v;
+    else delete terminalLabelsRef.current[id];
     setTerminalInstances((prev) =>
       prev.map((t) =>
-        t.id === id ? { ...t, customLabel: editingTerminalValue.trim() || undefined } : t,
+        t.id === id ? { ...t, customLabel: v || undefined } : t,
       ),
     );
     setEditingTerminalId(null);
@@ -391,14 +410,18 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
       let terminalCount = 0;
       let agentCount = 0;
       const relabeled = filtered.map((t) => {
+        // Restore a synced custom name if one arrived from the server after this
+        // instance was first created locally.
+        const synced = terminalLabelsRef.current[t.id];
+        const withCustom = synced && synced !== t.customLabel ? { ...t, customLabel: synced } : t;
         const session = sessionById.get(t.id);
-        if (!session) return t; // not yet known — keep as-is
+        if (!session) return withCustom; // not yet known — keep as-is
         const isTerminal = session.task === 'Terminal';
         const isAgent = session.task.startsWith('Agent (');
         const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
         const num = isTerminal ? ++terminalCount : isAgent ? ++agentCount : ++sessionCount;
         const newLabel = `${prefix} ${num}`;
-        return newLabel !== t.label ? { ...t, label: newLabel } : t;
+        return newLabel !== withCustom.label ? { ...withCustom, label: newLabel } : withCustom;
       });
 
       // Add new sessions not yet tracked (skip user-closed sessions)
@@ -409,7 +432,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
           const isAgent = s.task.startsWith('Agent (');
           const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
           const num = isTerminal ? ++terminalCount : isAgent ? ++agentCount : ++sessionCount;
-          newTerminals.push({ id: s.id, label: `${prefix} ${num}` });
+          newTerminals.push({ id: s.id, label: `${prefix} ${num}`, customLabel: terminalLabelsRef.current[s.id] });
         }
       }
 
@@ -422,7 +445,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
         return 0; // preserve relative order within each group
       });
       // Check if anything actually changed
-      if (result.length === prev.length && newTerminals.length === 0 && result.every((t, i) => t.id === prev[i]?.id && t.label === prev[i]?.label)) return prev;
+      if (result.length === prev.length && newTerminals.length === 0 && result.every((t, i) => t.id === prev[i]?.id && t.label === prev[i]?.label && t.customLabel === prev[i]?.customLabel)) return prev;
 
       return result;
     });
@@ -506,7 +529,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
     initialized?.activeExplorerId ?? explorerInstances[0].id
   );
 
-  // Persist state whenever it changes
+  // Persist state to localStorage (instant-paint cache + offline fallback).
   useEffect(() => {
     persistState(projectId, {
       activeMode,
@@ -519,6 +542,78 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
       showLauncher,
     });
   }, [projectId, activeMode, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, webPageInstances, activeWebPageId, showLauncher]);
+
+  // ── Cross-device sync: pull this project's shared sub-tab state (terminal
+  // custom names + explorer/web-page tabs) on mount. Active selection, view
+  // mode and grid layout stay per-device, so they're never read or written here.
+  useEffect(() => {
+    let cancelled = false;
+    api.userState.getAll()
+      .then(({ state }) => {
+        if (cancelled) return;
+        const ps = state?.[`project:${projectId}`] as {
+          terminalLabels?: Record<string, string>;
+          explorerInstances?: ExplorerInstance[];
+          webPageInstances?: WebPageInstance[];
+        } | undefined;
+        if (!ps) {
+          // First run for this project: seed the server from local state.
+          api.userState.set(`project:${projectId}`, {
+            terminalLabels: terminalLabelsRef.current,
+            explorerInstances,
+            webPageInstances,
+          }).catch(() => {});
+          return;
+        }
+        if (ps.terminalLabels) {
+          terminalLabelsRef.current = { ...terminalLabelsRef.current, ...ps.terminalLabels };
+          setTerminalInstances((prev) =>
+            prev.map((t) => {
+              const cl = terminalLabelsRef.current[t.id];
+              return cl && cl !== t.customLabel ? { ...t, customLabel: cl } : t;
+            }),
+          );
+        }
+        // Web-page and explorer tabs aren't derived from sessions, so merge the
+        // server's set in (union by id, server wins) to restore them on a new device.
+        if (Array.isArray(ps.webPageInstances) && ps.webPageInstances.length) {
+          setWebPageInstances((prev) => {
+            const byId = new Map(prev.map((w) => [w.id, w]));
+            for (const w of ps.webPageInstances!) byId.set(w.id, w);
+            return [...byId.values()];
+          });
+        }
+        if (Array.isArray(ps.explorerInstances) && ps.explorerInstances.length) {
+          setExplorerInstances((prev) => {
+            const byId = new Map(prev.map((e) => [e.id, e]));
+            for (const e of ps.explorerInstances!) byId.set(e.id, e);
+            return [...byId.values()];
+          });
+        }
+      })
+      .catch(() => { /* offline / unauthenticated: keep localStorage state */ })
+      .finally(() => { if (!cancelled) projHydratedRef.current = true; });
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  // Debounced write-back of the shared subset after hydration. terminalLabels is
+  // derived from live instances, so closed tabs drop out of the synced set.
+  useEffect(() => {
+    if (!projHydratedRef.current) return;
+    const h = setTimeout(() => {
+      const terminalLabels: Record<string, string> = {};
+      for (const t of terminalInstances) {
+        const cl = t.customLabel?.trim();
+        if (cl) terminalLabels[t.id] = cl;
+      }
+      api.userState.set(`project:${projectId}`, {
+        terminalLabels,
+        explorerInstances,
+        webPageInstances,
+      }).catch(() => {});
+    }, 600);
+    return () => clearTimeout(h);
+  }, [projectId, terminalInstances, explorerInstances, webPageInstances]);
 
   function handleOpenVSCode() {
     api.files.openVSCode(projectPath).catch((err) => {

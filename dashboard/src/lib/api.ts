@@ -294,6 +294,17 @@ export const api = {
       uninstall: () => fetchJSON<{ ok: boolean; removed: string[] }>('/settings/statusline/uninstall', { method: 'POST' }),
     },
   },
+  // Per-user UI view state — cross-device sync of open tabs + custom names.
+  userState: {
+    getAll: () => fetchJSON<{ state: Record<string, any> }>('/user-state'),
+    set: (key: string, value: unknown) =>
+      fetchJSON<{ ok: boolean }>(`/user-state/${encodeURIComponent(key)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ value }),
+      }),
+    remove: (key: string) =>
+      fetchJSON<{ ok: boolean }>(`/user-state/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+  },
   health: () => fetchJSON<{ name: string; version: string; status: string; uptime?: number; reconnecting?: boolean; reconnectTotal?: number; reconnectDone?: number }>('/health'),
   openFolder: (path: string) =>
     fetchJSON<{ ok: boolean }>('/open-folder', { method: 'POST', body: JSON.stringify({ path }) }),

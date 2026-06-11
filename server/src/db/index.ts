@@ -109,6 +109,16 @@ export function initDb(): void {
       last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+
+    -- Per-user UI view state (cross-device sync of open tabs + custom names).
+    -- key is 'app' (top-level project tabs) or 'project:<id>' (a project's sub-tabs).
+    CREATE TABLE IF NOT EXISTS user_ui_state (
+      user_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, key)
+    );
   `);
 
   // Migrations — idempotent column additions
