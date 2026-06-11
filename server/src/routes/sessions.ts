@@ -115,6 +115,54 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  // Save an arbitrary pasted/dropped file into the session's project and return
+  // its absolute path — the paste-image model generalized to any file so the
+  // user can drop a document and ask Claude about it. The original filename is
+  // preserved (sanitized) for readability; the `paste-` prefix keeps it under
+  // the same retention sweep as pasted images.
+  app.post<{
+    Params: { id: string };
+    Body: { dataUrl?: string; filename?: string };
+  }>('/sessions/:id/paste-file', { bodyLimit: 50 * 1024 * 1024 }, async (req, reply) => {
+    const { id } = req.params;
+    if (!userOwnsSession(req.user!.id, id)) return reply.status(404).send({ error: 'Session not found' });
+
+    const session = sessionManager.getSession(id);
+    const projectId = (session as any)?.project_id;
+    const proj = projectId
+      ? (getDb().prepare('SELECT path FROM projects WHERE id = ?').get(projectId) as { path: string } | undefined)
+      : undefined;
+    if (!proj?.path) return reply.status(400).send({ error: 'Session has no associated project path' });
+
+    const dataUrl = req.body?.dataUrl || '';
+    const m = dataUrl.match(/^data:[^;,]*;base64,([A-Za-z0-9+/=]+)$/);
+    if (!m) return reply.status(400).send({ error: 'Expected a base64 data URL' });
+    const b64 = m[1];
+    if (b64.length > 50_000_000) return reply.status(413).send({ error: 'File too large (max ~35MB)' });
+
+    let buf: Buffer;
+    try { buf = Buffer.from(b64, 'base64'); } catch { return reply.status(400).send({ error: 'Invalid base64 data' }); }
+
+    // Reduce to a safe basename: strip any path, drop leading dots (no hidden
+    // files / traversal), allow only a conservative character set.
+    const rawName = (req.body?.filename || '').toString();
+    const base = (rawName.split(/[\\/]/).pop() || '').trim();
+    const safe = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(0, 100) || 'file';
+
+    try {
+      const dir = join(proj.path, '.agentmanager', 'pastes');
+      mkdirSync(dir, { recursive: true });
+      const gi = join(proj.path, '.agentmanager', '.gitignore');
+      if (!existsSync(gi)) writeFileSync(gi, '*\n', 'utf-8');
+      const filePath = join(dir, `paste-${Date.now()}-${safe}`);
+      writeFileSync(filePath, buf);
+      prunePastesDir(dir); // bound the directory: drop old / excess pastes
+      return { ok: true, path: filePath };
+    } catch (err: any) {
+      return reply.status(500).send({ error: `Failed to save file: ${err?.message || 'unknown error'}` });
+    }
+  });
+
   // Resume an ended Claude session — re-launch the CLI and /resume the
   // conversation. Reuses the same session id (it comes back to life as running).
   app.post<{ Params: { id: string } }>('/sessions/:id/resume', async (req, reply) => {

@@ -74,6 +74,12 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ dataUrl }),
       }),
+    // Upload a pasted/dropped file (any type); returns the absolute path saved in the project.
+    pasteFile: (id: string, dataUrl: string, filename: string) =>
+      fetchJSON<{ ok: boolean; path: string }>(`/sessions/${id}/paste-file`, {
+        method: 'POST',
+        body: JSON.stringify({ dataUrl, filename }),
+      }),
     // Resume an ended Claude session (re-launch + /resume); reuses the same id.
     resume: (id: string) =>
       fetchJSON<{ ok: boolean; session: Session }>(`/sessions/${id}/resume`, { method: 'POST', body: JSON.stringify({}) }),

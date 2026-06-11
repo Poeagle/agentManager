@@ -234,39 +234,54 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     // built-in paste handler from also firing (which would cause double paste)
     const xtermTextarea = containerRef.current.querySelector('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null;
     const pasteTarget = xtermTextarea || containerRef.current;
+    const dropEl = containerRef.current;
+
+    // The server-side CLI can't see the browser clipboard / OS drag, so any
+    // pasted or dropped file is uploaded, saved into the project, and its path
+    // injected into the terminal — the user can then ask Claude about it.
+    const injectPath = (p?: string) => {
+      const ww = wsRef.current;
+      if (!p || !ww || ww.readyState !== WebSocket.OPEN) return;
+      const needsQuote = /[\s"\\]/.test(p);
+      const q = needsQuote ? `"${p.replace(/(["\\])/g, '\\$1')}"` : p;
+      ww.send(JSON.stringify({ type: 'input', data: `${q} `, paste: true }));
+    };
+    const uploadFile = (file: File) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const dataUrl = reader.result as string;
+          // Images keep their dedicated endpoint/limit; anything else goes generic.
+          const res = file.type.startsWith('image/')
+            ? await api.sessions.pasteImage(sessionId, dataUrl)
+            : await api.sessions.pasteFile(sessionId, dataUrl, file.name);
+          injectPath(res?.path);
+        } catch (err) {
+          console.error('[paste-file] upload failed:', err);
+        }
+      };
+      reader.readAsDataURL(file);
+    };
+
     const pasteHandler = (ev: Event) => {
       const ce = ev as ClipboardEvent;
       const w = wsRef.current;
 
-      // Image paste: the server-side CLI can't see the browser clipboard, so we
-      // upload the image, save it in the project, and inject its path so Claude
-      // can read the file. An image takes precedence over any text in the paste.
+      // A pasted file (image or any document) takes precedence over text.
       const items = ce.clipboardData?.items;
       if (items) {
+        const files: File[] = [];
         for (let i = 0; i < items.length; i++) {
-          const it = items[i];
-          if (it.kind === 'file' && it.type.startsWith('image/')) {
-            const file = it.getAsFile();
-            if (!file) continue;
-            ce.preventDefault();
-            ce.stopImmediatePropagation();
-            const reader = new FileReader();
-            reader.onload = async () => {
-              try {
-                const res = await api.sessions.pasteImage(sessionId, reader.result as string);
-                const ww = wsRef.current;
-                if (res?.path && ww && ww.readyState === WebSocket.OPEN) {
-                  const needsQuote = /[\s"\\]/.test(res.path);
-                  const p = needsQuote ? `"${res.path.replace(/(["\\])/g, '\\$1')}"` : res.path;
-                  ww.send(JSON.stringify({ type: 'input', data: `${p} `, paste: true }));
-                }
-              } catch (err) {
-                console.error('[paste-image] upload failed:', err);
-              }
-            };
-            reader.readAsDataURL(file);
-            return;
+          if (items[i].kind === 'file') {
+            const f = items[i].getAsFile();
+            if (f) files.push(f);
           }
+        }
+        if (files.length) {
+          ce.preventDefault();
+          ce.stopImmediatePropagation();
+          files.forEach(uploadFile);
+          return;
         }
       }
 
@@ -278,6 +293,22 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       }
     };
     pasteTarget.addEventListener('paste', pasteHandler, { capture: true });
+
+    // Drag-and-drop onto the terminal — the reliable path for non-image files,
+    // since browsers don't always expose pasted file bytes but drop always does.
+    const dragOverHandler = (ev: DragEvent) => {
+      if (ev.dataTransfer?.types?.includes('Files')) ev.preventDefault();
+    };
+    const dropHandler = (ev: DragEvent) => {
+      const files = ev.dataTransfer?.files;
+      if (files && files.length) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        Array.from(files).forEach(uploadFile);
+      }
+    };
+    dropEl.addEventListener('dragover', dragOverHandler);
+    dropEl.addEventListener('drop', dropHandler);
 
     termRef.current = term;
     fitRef.current = fitAddon;
@@ -544,6 +575,8 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeObserver.disconnect();
       pasteTarget.removeEventListener('paste', pasteHandler, { capture: true } as EventListenerOptions);
+      dropEl.removeEventListener('dragover', dragOverHandler);
+      dropEl.removeEventListener('drop', dropHandler);
       wsRef.current?.close();
       term.dispose();
     };
