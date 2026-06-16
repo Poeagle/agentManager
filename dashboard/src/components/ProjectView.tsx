@@ -923,11 +923,13 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
 
   // Focus a terminal's xterm textarea after switching views
   function focusTerminalById(sessionId: string) {
-    setTimeout(() => {
+    // Terminals stay mounted, sized and connected, so switching only needs to wait
+    // for the visibility flip to commit before focusing — one frame, not a fixed 100ms.
+    requestAnimationFrame(() => {
       window.dispatchEvent(new CustomEvent('agentmanager:focus-terminal', {
         detail: { sessionId },
       }));
-    }, 100);
+    });
   }
 
   function handleWebPageCreated(url: string) {
@@ -1776,7 +1778,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
                             <Terminal
                               sessionId={term.id}
                               visible={termVisible}
-                              suspended={terminalsSuspended || (!gridMode && !termVisible)}
+                              suspended={terminalsSuspended || !active}
                               passiveResize={gridMode && !isExpanded && projectSessions.find((s) => s.id === term.id)?.task === 'Terminal'}
                               hideCursor={projectSessions.find((s) => s.id === term.id)?.task !== 'Terminal' && projectSessions.some((s) => s.id === term.id)}
                               cliType={sessionLookup.get(term.id)?.cli_type as 'claude' | 'codex' | undefined}
