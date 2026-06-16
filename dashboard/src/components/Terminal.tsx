@@ -143,10 +143,9 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     if (!containerRef.current) return;
     // Create terminal
     const term = new XTerm({
-      cursorBlink: false,
-      cursorStyle: hideCursor ? 'bar' : 'block',
-      cursorWidth: hideCursor ? 1 : undefined,
-      cursorInactiveStyle: hideCursor ? 'none' : 'outline',
+      cursorBlink: true,
+      cursorStyle: 'block',
+      cursorInactiveStyle: 'outline',
       fontSize: configuredFontSize,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
       scrollback: 10000,
@@ -154,8 +153,8 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       theme: {
         background: '#0f1117',
         foreground: '#e4e8f1',
-        cursor: hideCursor ? '#0f1117' : '#3b82f6',
-        cursorAccent: hideCursor ? '#0f1117' : undefined,
+        cursor: '#3b82f6',
+        cursorAccent: '#0f1117',
         selectionBackground: '#3b82f680',
         black: '#1a1d27',
         red: '#ef4444',
@@ -682,17 +681,24 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    if (hideCursor) {
+    // Only Codex renders its own cursor — hide xterm's there to avoid a double
+    // cursor. Claude positions the real terminal cursor at its input box and
+    // relies on it, and plain shells obviously need it, so both keep a visible
+    // blinking cursor (the app's own DECTCEM still drives show/hide, so there's
+    // no double cursor if Claude ever decides to draw its own).
+    const forceHide = hideCursor && cliType === 'codex';
+    if (forceHide) {
       // DECTCEM: hide cursor at VT level + make cursor transparent
       term.write('\x1b[?25l');
       term.options.cursorBlink = false;
       term.options.cursorInactiveStyle = 'none';
     } else {
       term.write('\x1b[?25h');
-      term.options.cursorBlink = false;
+      term.options.cursorBlink = true;
+      term.options.cursorStyle = 'block';
       term.options.cursorInactiveStyle = 'outline';
     }
-  }, [hideCursor]);
+  }, [hideCursor, cliType]);
 
   // Re-focus and refit terminal when it becomes visible.
   // Single RAF + short delay ensures DOM layout is settled before measuring.
@@ -876,7 +882,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       </div>
       <div
         ref={containerRef}
-        className={`h-full w-full overflow-hidden${hideCursor ? ' hide-xterm-cursor' : ''}`}
+        className={`h-full w-full overflow-hidden${hideCursor && cliType === 'codex' ? ' hide-xterm-cursor' : ''}`}
         style={{
           padding: '4px',
           background: '#0f1117',
