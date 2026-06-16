@@ -140,9 +140,32 @@ export function ActiveTerminals({ onBack, onGoToSession, openProjectIds, hiddenS
     queryFn: () => api.projects.list(),
   });
 
+  // Custom tab names live per-project under `project:<id>` → terminalLabels.
+  // We read the synced state so renames done inside a project also show here.
+  const { data: userStateData } = useQuery({
+    queryKey: ['user-state'],
+    queryFn: () => api.userState.getAll(),
+    staleTime: 10_000,
+  });
+
   const sessions = sessionsData?.sessions || [];
   const projects = projectsData?.projects || [];
   const projectMap = new Map<string, Project>(projects.map((p) => [p.id, p]));
+
+  // Flatten every project's terminalLabels into one sessionId → custom-name
+  // lookup (session IDs are globally unique).
+  const customLabels = new Map<string, string>();
+  const allUserState = userStateData?.state || {};
+  for (const key of Object.keys(allUserState)) {
+    if (!key.startsWith('project:')) continue;
+    const labels = allUserState[key]?.terminalLabels as Record<string, string> | undefined;
+    if (!labels) continue;
+    for (const [sid, name] of Object.entries(labels)) {
+      if (name?.trim()) customLabels.set(sid, name.trim());
+    }
+  }
+  // Display text for a session card: the user's custom tab name wins, else the task.
+  const displayName = (s: Session) => customLabels.get(s.id) || s.task || 'Terminal';
 
   const activeSessions = sessions.filter(
     (s) => s.status === 'running' || s.status === 'detached'
@@ -228,14 +251,17 @@ export function ActiveTerminals({ onBack, onGoToSession, openProjectIds, hiddenS
   useEffect(() => {
     if (cards.length === 0 || refreshedRef.current) return;
     refreshedRef.current = true;
-    const t = setTimeout(() => {
-      for (const { session } of cards) {
+    // Stagger per-card so many terminals don't reset+repaint in one frame, which
+    // spikes CPU and makes the width reflow race worse.
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    cards.forEach(({ session }, i) => {
+      timers.push(setTimeout(() => {
         window.dispatchEvent(new CustomEvent('agentmanager:refresh-terminal', {
           detail: { sessionId: session.id },
         }));
-      }
-    }, 500);
-    return () => clearTimeout(t);
+      }, 500 + i * 70));
+    });
+    return () => { for (const t of timers) clearTimeout(t); };
   }, [cards.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const jumpToSession = useCallback((sessionId: string) => {
@@ -438,7 +464,7 @@ export function ActiveTerminals({ onBack, onGoToSession, openProjectIds, hiddenS
                         {groupLabel}
                       </span>
                       <span className="truncate min-w-0 flex-1" style={{ color: 'var(--text-secondary)' }}>
-                        {session.task || 'Terminal'}
+                        {displayName(session)}
                       </span>
                       <div
                         className="w-1.5 h-1.5 rounded-full shrink-0"
@@ -501,7 +527,7 @@ export function ActiveTerminals({ onBack, onGoToSession, openProjectIds, hiddenS
                 >
                   <span>{groupLabel}</span>
                   <span style={{ color: 'var(--text-secondary)' }} className="max-w-[160px] truncate">
-                    {session.task || 'Terminal'}
+                    {displayName(session)}
                   </span>
                 </button>
                 <div
@@ -604,7 +630,7 @@ export function ActiveTerminals({ onBack, onGoToSession, openProjectIds, hiddenS
                     {groupLabel}
                   </span>
                   <span className="text-[10px] truncate min-w-0 ml-auto" style={{ color: 'var(--text-secondary)' }}>
-                    {session.task || 'Terminal'}
+                    {displayName(session)}
                   </span>
                   <div
                     className="w-1.5 h-1.5 rounded-full shrink-0"
@@ -731,7 +757,7 @@ export function ActiveTerminals({ onBack, onGoToSession, openProjectIds, hiddenS
                 {expanded.groupLabel}
               </span>
               <span className="text-xs ml-2 truncate" style={{ color: 'var(--text-secondary)' }}>
-                {expanded.session.task || 'Terminal'}
+                {displayName(expanded.session)}
               </span>
               <div className="flex items-center gap-2 ml-auto shrink-0">
                 {expanded.projectId && (

@@ -112,16 +112,24 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     }
 
     if (hideCursorRef.current) {
-      // Claude session/agent: reset first to clear stacked renders, then
-      // SIGWINCH-toggle so Claude redraws into the now-clean buffer.
-      term.reset();
+      // Claude session/agent: match the PTY to our width first and let tmux +
+      // Claude reflow, THEN clear and SIGWINCH-toggle so the clean redraw lands
+      // in an already-reset buffer. Resetting up-front (the old order) left a
+      // gap where the freshly-resized redraw streamed into a buffer we were
+      // about to clear — racing the grid's initial resize and re-garbling.
       const cols = term.cols;
       const rows = term.rows;
-      w.send(JSON.stringify({ type: 'resize', cols: cols - 1, rows }));
+      w.send(JSON.stringify({ type: 'resize', cols, rows }));
       setTimeout(() => {
         if (w.readyState !== WebSocket.OPEN) return;
-        w.send(JSON.stringify({ type: 'resize', cols, rows }));
-      }, 100);
+        term.reset();
+        w.send(JSON.stringify({ type: 'resize', cols: cols - 1, rows }));
+        setTimeout(() => {
+          if (w.readyState === WebSocket.OPEN) {
+            w.send(JSON.stringify({ type: 'resize', cols, rows }));
+          }
+        }, 80);
+      }, 150);
       return;
     }
 
@@ -526,19 +534,23 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
               cols: term.cols,
               rows: term.rows,
             }));
-            // Force PTY redraw via SIGWINCH toggle
-            const cols = term.cols;
-            const rows = term.rows;
-            setTimeout(() => {
-              if (w.readyState === WebSocket.OPEN) {
-                w.send(JSON.stringify({ type: 'resize', cols: cols - 1, rows }));
-                setTimeout(() => {
-                  if (w.readyState === WebSocket.OPEN) {
-                    w.send(JSON.stringify({ type: 'resize', cols, rows }));
-                  }
-                }, 50);
-              }
-            }, 50);
+            // Force PTY redraw via SIGWINCH toggle. Skip for Codex: it doesn't
+            // redraw on SIGWINCH and the extra resize just stacks duplicate
+            // output in tmux scrollback (cleaned up later via capture-pane).
+            if (cliTypeRef.current !== 'codex') {
+              const cols = term.cols;
+              const rows = term.rows;
+              setTimeout(() => {
+                if (w.readyState === WebSocket.OPEN) {
+                  w.send(JSON.stringify({ type: 'resize', cols: cols - 1, rows }));
+                  setTimeout(() => {
+                    if (w.readyState === WebSocket.OPEN) {
+                      w.send(JSON.stringify({ type: 'resize', cols, rows }));
+                    }
+                  }, 50);
+                }
+              }, 50);
+            }
           } else {
             // WS not open yet — send when it connects
             pendingResize = true;

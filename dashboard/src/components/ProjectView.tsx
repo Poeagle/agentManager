@@ -1004,19 +1004,20 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
   // Dispatch refresh-terminal event for each terminal after layout settles.
   useEffect(() => {
     if (!gridMode) { setGridMounted(false); setGridShowAll(false); return; }
-    const t1 = setTimeout(() => {
-      setGridMounted(true);
-    }, 100);
-    const t2 = setTimeout(() => setGridMounted(false), 250);
-    // Trigger refresh after layout is fully settled — same as clicking refresh button
-    const t3 = setTimeout(() => {
-      for (const term of terminalInstances) {
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    timers.push(setTimeout(() => setGridMounted(true), 100));
+    timers.push(setTimeout(() => setGridMounted(false), 250));
+    // Trigger refresh after layout settles — same as clicking the refresh button.
+    // Stagger per-terminal so many cards don't reset+repaint in one frame, which
+    // spikes CPU and makes the width reflow race worse.
+    terminalInstances.forEach((term, i) => {
+      timers.push(setTimeout(() => {
         window.dispatchEvent(new CustomEvent('agentmanager:refresh-terminal', {
           detail: { sessionId: term.id },
         }));
-      }
-    }, 500);
-    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+      }, 500 + i * 70));
+    });
+    return () => { for (const t of timers) clearTimeout(t); };
   }, [gridMode, terminalInstances]);
 
   // Shown vs hidden sessions in grid — hiddenSessions are sessions with closed tabs
@@ -1025,7 +1026,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
     const isTerminal = s.task === 'Terminal';
     const isAgent = s.task?.startsWith('Agent (');
     const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
-    return { id: s.id, label: `${prefix} (hidden)` };
+    return { id: s.id, label: `${prefix} (hidden)`, customLabel: terminalLabelsRef.current[s.id] };
   });
   const allGridInstances = [...terminalInstances, ...hiddenAsInstances];
   const gridVisibleInstances = gridShowAll ? allGridInstances : terminalInstances;
@@ -1714,7 +1715,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
                             );
                           })()}
                           <span className={`font-medium shrink-0 ${isExpanded ? 'text-sm' : 'text-xs'}`} style={{ color: 'var(--text-primary)' }}>
-                            {term.label}
+                            {term.customLabel?.trim() || term.label}
                           </span>
                           <span className={`truncate min-w-0 ml-auto ${isExpanded ? 'text-xs ml-2' : 'text-[10px]'}`} style={{ color: 'var(--text-secondary)' }}>
                             {projectSessions.find((s) => s.id === term.id)?.task || 'Terminal'}
