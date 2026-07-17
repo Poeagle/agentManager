@@ -4,7 +4,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { RotateCcw, ExternalLink, ZoomIn, ZoomOut } from 'lucide-react';
+import { RotateCcw, ExternalLink, ZoomIn, ZoomOut, Loader2, Check, AlertCircle } from 'lucide-react';
 import { isKeyboardNavActive } from '../lib/shortcuts';
 import { api } from '../lib/api';
 import { HistoryViewer } from './HistoryViewer';
@@ -17,6 +17,42 @@ function notifyServerAlive() {
   for (const fn of serverAliveListeners) fn();
 }
 
+// Copy text to the clipboard with a fallback for non-secure contexts.
+// navigator.clipboard is only exposed over HTTPS or http://localhost; when the
+// dashboard is opened via a LAN IP over plain HTTP (e.g. http://192.168.x.x:port)
+// it's undefined, so writeText() would throw and copy silently fails. Fall back
+// to a hidden <textarea> + execCommand('copy'), which works without a secure context.
+function writeClipboard(text: string) {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+    return;
+  }
+  fallbackCopy(text);
+}
+function fallbackCopy(text: string) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.setAttribute('readonly', '');
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  } catch { /* nothing more we can do */ }
+}
+
+// Strip mouse-tracking enable sequences (DECSET 1000/1001/1002/1003) from terminal
+// output so the browser xterm never enters mouse-reporting mode. Otherwise a TUI
+// that turns on mouse tracking (e.g. Claude Code 2.1.18x) captures the user's
+// drag-select and copies it into the tmux buffer via an OSC52 the browser can't
+// reach ("copied N chars to tmux buffer"), instead of letting xterm do a native
+// selection the user can Ctrl+Shift+C out. Belt-and-suspenders with the server's
+// CLAUDE_CODE_DISABLE_MOUSE=1 — and the only thing that fixes already-running
+// sessions (they re-assert mouse mode on redraw) without restarting them.
+const MOUSE_ENABLE_RE = /\x1b\[\?100[0123]h/g;
+
 
 // Global terminal connection tracking — lets App.tsx show a "connecting" indicator
 const pendingTerminals = new Set<string>();
@@ -28,6 +64,16 @@ export function onTerminalConnectionChange(fn: () => void) {
 }
 function notifyConnectionChange() {
   for (const fn of connectionListeners) fn();
+}
+
+// Live progress for a pasted/dropped file being shared with the session.
+interface UploadItem {
+  id: number;
+  name: string;
+  phase: 'reading' | 'uploading' | 'done' | 'error';
+  percent: number;      // 0..100, meaningful when `determinate`
+  determinate: boolean; // false → render an indeterminate (animated) bar
+  error?: string;
 }
 
 interface TerminalProps {
@@ -55,6 +101,9 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const [connected, setConnected] = useState(false);
+  // Progress of in-flight pasted/dropped file uploads (rendered as an overlay).
+  const [uploads, setUploads] = useState<UploadItem[]>([]);
+  const uploadSeqRef = useRef(0);
 
   // Read terminal font size from settings
   const { data: settingsData } = useQuery({
@@ -214,7 +263,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.ctrlKey && e.shiftKey && e.key === 'C' && e.type === 'keydown') {
         const sel = term.getSelection();
-        if (sel) navigator.clipboard.writeText(sel);
+        if (sel) writeClipboard(sel);
         e.preventDefault();
         return false;
       }
@@ -222,16 +271,22 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       // Can't rely on browser firing a paste event — synthetic keystrokes
       // (e.g. from text expanders like espanso via xdotool) don't trigger it.
       if (e.ctrlKey && e.shiftKey && e.key === 'V' && e.type === 'keydown') {
-        navigator.clipboard.readText().then(text => {
-          if (text) {
-            const w = wsRef.current;
-            if (w && w.readyState === WebSocket.OPEN) {
-              w.send(JSON.stringify({ type: 'input', data: text, paste: true }));
+        // navigator.clipboard.readText needs a secure context; when unavailable
+        // (LAN IP over HTTP) fall through so the browser's native paste —
+        // right-click / Shift+Insert — fires the paste handler below instead.
+        if (navigator.clipboard?.readText && window.isSecureContext) {
+          navigator.clipboard.readText().then(text => {
+            if (text) {
+              const w = wsRef.current;
+              if (w && w.readyState === WebSocket.OPEN) {
+                w.send(JSON.stringify({ type: 'input', data: text, paste: true }));
+              }
             }
-          }
-        }).catch(() => {});
-        e.preventDefault();
-        return false;
+          }).catch(() => {});
+          e.preventDefault();
+          return false;
+        }
+        return true;
       }
       return true;
     });
@@ -254,18 +309,38 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       ww.send(JSON.stringify({ type: 'input', data: `${q} `, paste: true }));
     };
     const uploadFile = (file: File) => {
+      const uid = ++uploadSeqRef.current;
+      const isImage = file.type.startsWith('image/');
+      const name = file.name || (isImage ? 'pasted image' : 'file');
+      setUploads(prev => [...prev, { id: uid, name, phase: 'reading', percent: 0, determinate: false }]);
+      const patch = (u: Partial<UploadItem>) =>
+        setUploads(prev => prev.map(it => (it.id === uid ? { ...it, ...u } : it)));
+      const dismissAfter = (ms: number) =>
+        setTimeout(() => setUploads(prev => prev.filter(it => it.id !== uid)), ms);
+
       const reader = new FileReader();
       reader.onload = async () => {
         try {
           const dataUrl = reader.result as string;
+          patch({ phase: 'uploading', percent: 0, determinate: false });
+          const onProgress = (f: number) =>
+            patch({ phase: 'uploading', percent: Math.round(f * 100), determinate: true });
           // Images keep their dedicated endpoint/limit; anything else goes generic.
-          const res = file.type.startsWith('image/')
-            ? await api.sessions.pasteImage(sessionId, dataUrl)
-            : await api.sessions.pasteFile(sessionId, dataUrl, file.name);
+          const res = isImage
+            ? await api.sessions.pasteImage(sessionId, dataUrl, onProgress)
+            : await api.sessions.pasteFile(sessionId, dataUrl, file.name, onProgress);
           injectPath(res?.path);
+          patch({ phase: 'done', percent: 100, determinate: true });
+          dismissAfter(1800);
         } catch (err) {
           console.error('[paste-file] upload failed:', err);
+          patch({ phase: 'error', error: err instanceof Error ? err.message : 'Upload failed' });
+          dismissAfter(6000);
         }
+      };
+      reader.onerror = () => {
+        patch({ phase: 'error', error: 'Failed to read file' });
+        dismissAfter(6000);
       };
       reader.readAsDataURL(file);
     };
@@ -327,7 +402,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     function flushWrite() {
       rafId = null;
       if (pendingData) {
-        const data = pendingData;
+        const data = pendingData.replace(MOUSE_ENABLE_RE, '');
         pendingData = '';
         term.write(data);
       }
@@ -888,6 +963,50 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           background: '#0f1117',
         }}
       />
+      {uploads.length > 0 && (
+        <div className="absolute bottom-3 right-3 z-20 flex flex-col gap-2 pointer-events-none" style={{ maxWidth: '260px' }}>
+          {uploads.map(u => (
+            <div
+              key={u.id}
+              className="rounded-md px-3 py-2 shadow-lg text-xs"
+              style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+            >
+              <div className="flex items-center gap-2">
+                {u.phase === 'done' ? (
+                  <Check className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--success)' }} />
+                ) : u.phase === 'error' ? (
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--error)' }} />
+                ) : (
+                  <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" style={{ color: 'var(--accent)' }} />
+                )}
+                <span className="truncate flex-1" title={u.name}>{u.name}</span>
+                {u.phase === 'uploading' && u.determinate && (
+                  <span className="tabular-nums opacity-70">{u.percent}%</span>
+                )}
+              </div>
+              {u.phase === 'error' ? (
+                <div className="mt-1 text-[11px]" style={{ color: 'var(--error)' }}>{u.error || 'Upload failed'}</div>
+              ) : (
+                <>
+                  <div className="mt-1.5 h-1 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+                    <div
+                      className={`h-full rounded-full${!u.determinate && u.phase !== 'done' ? ' upload-indeterminate' : ''}`}
+                      style={{
+                        width: u.phase === 'done' ? '100%' : u.determinate ? `${u.percent}%` : '40%',
+                        background: u.phase === 'done' ? 'var(--success)' : 'var(--accent)',
+                        transition: 'width 0.15s ease-out',
+                      }}
+                    />
+                  </div>
+                  <div className="mt-1 text-[11px] opacity-60">
+                    {u.phase === 'reading' ? 'Preparing…' : u.phase === 'uploading' ? 'Uploading…' : 'Shared with the session'}
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {showHistory && (
         <HistoryViewer sessionId={sessionId} onClose={() => setShowHistory(false)} />
       )}

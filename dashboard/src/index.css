@@ -1,5 +1,15 @@
 @import "tailwindcss";
 
+/* Indeterminate progress bar — used by the terminal file-upload overlay while
+   file size / upload total isn't yet known (reading, or a non-computable POST). */
+@keyframes upload-indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+.upload-indeterminate {
+  animation: upload-indeterminate 1.1s ease-in-out infinite;
+}
+
 /* ── Themes ──────────────────────────────────────────────────────────────
    The whole app reads these CSS variables, so swapping a theme = swapping
    this block. `:root` holds the default (Midnight) for the no-attribute case;

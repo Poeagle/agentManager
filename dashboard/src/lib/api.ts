@@ -14,6 +14,35 @@ async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+// POST JSON with upload-progress reporting. fetch() can't observe request-body
+// upload progress, so pasted/dropped file uploads go through XMLHttpRequest,
+// which fires `upload.onprogress`. `onProgress` receives a 0..1 fraction.
+function uploadWithProgress<T>(url: string, body: unknown, onProgress?: (fraction: number) => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}${url}`);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.responseType = 'json';
+    xhr.withCredentials = true;
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(e.loaded / e.total);
+      };
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response as T);
+      } else {
+        const r = xhr.response as { error?: string } | null;
+        reject(new Error(r?.error || `API error: ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.onabort = () => reject(new Error('Upload cancelled'));
+    xhr.send(JSON.stringify(body));
+  });
+}
+
 export interface AuthUser { id: string; username: string; display_name: string; role: 'admin' | 'member'; disabled?: number; created_at?: string; }
 export interface AuthStatus { needsSetup: boolean; authenticated: boolean; user: AuthUser | null; }
 export interface AuthCredentials { username: string; password: string; display_name?: string; }
@@ -69,17 +98,13 @@ export const api = {
     popOut: (id: string) =>
       fetchJSON<{ ok: boolean; terminal?: string; socketPath?: string; error?: string }>(`/sessions/${id}/pop-out`, { method: 'POST' }),
     // Upload a pasted image; returns the absolute path saved in the project.
-    pasteImage: (id: string, dataUrl: string) =>
-      fetchJSON<{ ok: boolean; path: string }>(`/sessions/${id}/paste-image`, {
-        method: 'POST',
-        body: JSON.stringify({ dataUrl }),
-      }),
+    // onProgress (0..1) reports upload progress (via XHR — fetch can't).
+    pasteImage: (id: string, dataUrl: string, onProgress?: (fraction: number) => void) =>
+      uploadWithProgress<{ ok: boolean; path: string }>(`/sessions/${id}/paste-image`, { dataUrl }, onProgress),
     // Upload a pasted/dropped file (any type); returns the absolute path saved in the project.
-    pasteFile: (id: string, dataUrl: string, filename: string) =>
-      fetchJSON<{ ok: boolean; path: string }>(`/sessions/${id}/paste-file`, {
-        method: 'POST',
-        body: JSON.stringify({ dataUrl, filename }),
-      }),
+    // onProgress (0..1) reports upload progress (via XHR — fetch can't).
+    pasteFile: (id: string, dataUrl: string, filename: string, onProgress?: (fraction: number) => void) =>
+      uploadWithProgress<{ ok: boolean; path: string }>(`/sessions/${id}/paste-file`, { dataUrl, filename }, onProgress),
     // Resume an ended Claude session (re-launch + /resume); reuses the same id.
     resume: (id: string) =>
       fetchJSON<{ ok: boolean; session: Session }>(`/sessions/${id}/resume`, { method: 'POST', body: JSON.stringify({}) }),
