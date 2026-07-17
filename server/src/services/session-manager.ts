@@ -5,6 +5,7 @@ import { readFile, readdirSync, readFileSync, writeFileSync as fsWriteFileSync, 
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'crypto';
 import { getDb } from '../db/index.js';
 import { insertEvent, broadcastEphemeral } from './event-store.js';
 import { config } from '../config.js';
@@ -12,6 +13,7 @@ import { getSetting } from '../routes/settings.js';
 import { nanoid } from 'nanoid';
 import type { WebSocket } from 'ws';
 import { getOrCreateTracker, removeTracker, recoverFromBuffer } from './session-state.js';
+import { encodeDir } from './claude-history.js';
 
 const nodeRequire = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = nodeRequire('@xterm/headless') as { Terminal: any };
@@ -174,6 +176,8 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Maximum rows to keep per session in pty_output (prevents unbounded growth)
 const MAX_PTY_ROWS_PER_SESSION = 2000;
+// Maximum number of ended-session final-screen snapshots to retain.
+const MAX_SESSION_SNAPSHOTS = 200;
 let pruneCounter = 0;
 
 function queuePtyInsert(sessionId: string, seq: number, data: string): void {
@@ -288,7 +292,7 @@ function readRecentOutput(sessionId: string, limit: number): string[] {
  * perfectly restore the visual state. Handles resize markers so the headless
  * terminal dimensions match the original session at each point.
  */
-async function serializeSessionOutput(sessionId: string, cols: number, rows: number): Promise<string | null> {
+async function serializeSessionOutput(sessionId: string, cols: number, rows: number, opts?: { serializeScrollback?: number }): Promise<string | null> {
   const db = getDb();
   // Read up to 5000 chunks (enough for most sessions, caps processing time)
   const dbRows = db.prepare(
@@ -353,7 +357,9 @@ async function serializeSessionOutput(sessionId: string, cols: number, rows: num
     term.resize(cols, rows);
   }
 
-  const result = serializeAddon.serialize();
+  const result = opts?.serializeScrollback != null
+    ? serializeAddon.serialize({ scrollback: opts.serializeScrollback })
+    : serializeAddon.serialize();
   term.dispose();
 
   // Strip trailing blank lines (headless terminal captures all visible rows)
@@ -364,6 +370,49 @@ async function serializeSessionOutput(sessionId: string, cols: number, rows: num
   // Convert \n → \r\n for xterm.js (bare \n = LF-only → staircase)
   const cleaned = lines.join('\r\n');
   return cleaned || null;
+}
+
+/**
+ * Capture a bounded final-screen snapshot of a session's terminal — rendered
+ * from its stored pty_output — into session_snapshots. Called right before the
+ * replay data is deleted at session end, so an ended session can later be
+ * reopened and restored to how it looked when it closed. Bounded scrollback
+ * keeps the stored string small; the total number of snapshots is capped.
+ */
+export async function captureFinalSnapshot(sessionId: string, cols?: number, rows?: number): Promise<void> {
+  try {
+    const db = getDb();
+    let c = cols;
+    if (!c) {
+      const s = db.prepare('SELECT terminal_cols FROM sessions WHERE id = ?').get(sessionId) as { terminal_cols?: number } | undefined;
+      c = s?.terminal_cols || 120;
+    }
+    const r = rows || 40;
+    const rendered = await serializeSessionOutput(sessionId, c, r, { serializeScrollback: 1000 });
+    if (!rendered) return; // no replay data left → nothing to snapshot
+    db.prepare(`
+      INSERT OR REPLACE INTO session_snapshots (session_id, cols, rows, rendered, created_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+    `).run(sessionId, c, r, rendered);
+    // Bound total snapshots — keep only the most recent ones.
+    db.prepare(`
+      DELETE FROM session_snapshots WHERE session_id IN (
+        SELECT session_id FROM session_snapshots ORDER BY created_at DESC LIMIT -1 OFFSET ?
+      )
+    `).run(MAX_SESSION_SNAPSHOTS);
+  } catch (err) {
+    console.error('Failed to capture final snapshot for', sessionId, err);
+  }
+}
+
+/** The stored final-screen snapshot for an ended session, or null. */
+export function getSessionSnapshot(sessionId: string): { rendered: string; cols: number; rows: number } | null {
+  try {
+    const row = getDb().prepare(
+      'SELECT rendered, cols, rows FROM session_snapshots WHERE session_id = ?'
+    ).get(sessionId) as { rendered: string; cols: number; rows: number } | undefined;
+    return row || null;
+  } catch { return null; }
 }
 
 /** Paginated output query: chunks before a given seq (or from the end if no before) */
@@ -555,7 +604,7 @@ function dtachListAgentmanagerSessions(): string[] {
 
 /** Snapshot existing .jsonl UUIDs in a Claude project dir (for diffing after spawn) */
 function snapshotClaudeSessionFiles(projectPath: string): Set<string> {
-  const claudeProjectDir = join(homedir(), '.claude', 'projects', projectPath.replace(/\//g, '-'));
+  const claudeProjectDir = join(homedir(), '.claude', 'projects', encodeDir(projectPath));
   try {
     return new Set(
       readdirSync(claudeProjectDir)
@@ -647,7 +696,7 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
     } catch { /* ignore */ }
 
     if (projectPath) {
-      const sanitized = projectPath.replace(/\//g, '-');
+      const sanitized = encodeDir(projectPath);
       const jsonlPath = join(homedir(), '.claude', 'projects', sanitized, uuid + '.jsonl');
       tracker.setJsonlFile(jsonlPath);
       console.log(`  JSONL output file: ${jsonlPath}`);
@@ -656,7 +705,7 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
 
   // Fallback: diff ~/.claude/projects/<path>/ against pre-spawn snapshot
   if (projectPath && preSpawnFiles) {
-    const claudeProjectDir = join(homedir(), '.claude', 'projects', projectPath.replace(/\//g, '-'));
+    const claudeProjectDir = join(homedir(), '.claude', 'projects', encodeDir(projectPath));
     let fileScanDone = false;
     const unsub = tracker.onStateChange(async (state) => {
       if (fileScanDone || uuidPersisted) { fileScanDone = true; return; }
@@ -743,12 +792,19 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
       }
 
       case 'exit': {
-        // PTY exited in the worker — flush pending writes, then delete pty_output
+        // PTY exited in the worker — flush pending writes, snapshot, then delete pty_output
         if (pendingInserts.has(sessionId)) {
           flushPtyInserts();
         }
-        // Session is done — delete replay data immediately
-        try { getDb().prepare('DELETE FROM pty_output WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
+        // Capture a final-screen snapshot BEFORE deleting the replay data, so
+        // this session can be reopened later and restored to how it looked when
+        // it closed. Covers the OOM-kills-tmux case too: when the tmux server
+        // dies, the attach client exits code 0 and lands here. The pty_output
+        // DELETE is deferred into the snapshot's continuation so the serialize
+        // reads the rows first.
+        captureFinalSnapshot(sessionId, active.cols).finally(() => {
+          try { getDb().prepare('DELETE FROM pty_output WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
+        });
         removeTracker(sessionId);
         activeSessions.delete(sessionId);
 
@@ -894,6 +950,21 @@ export function createSession(_projectPath: string, task: string, projectId?: st
   return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
 }
 
+/**
+ * Assign a Claude conversation id up front and persist it immediately, so the
+ * tmux↔conversation mapping is deterministic and the session is resumable even
+ * if output-based capture never fires. Passed to the worker as `assignSessionId`
+ * (→ `claude --session-id <uuid>`). Only for fresh Claude launches. The later
+ * capture path is a no-op here since it only writes when claude_session_id IS NULL.
+ */
+function assignClaudeSessionId(sessionId: string): string {
+  const uuid = randomUUID();
+  try {
+    getDb().prepare('UPDATE sessions SET claude_session_id = ? WHERE id = ? AND claude_session_id IS NULL').run(uuid, sessionId);
+  } catch { /* non-fatal — capture path can still fill it in */ }
+  return uuid;
+}
+
 export async function spawnSession(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
   const preSpawnFiles = snapshotClaudeSessionFiles(projectPath);
 
@@ -913,6 +984,8 @@ export async function spawnSession(sessionId: string, projectPath: string, task:
     sessionCommand += ' --dangerously-skip-permissions';
   }
 
+  const assignSessionId = cliType === 'claude' ? assignClaudeSessionId(sessionId) : undefined;
+
   // Tell the worker to spawn the session
   worker.send({
     type: 'spawn',
@@ -926,6 +999,7 @@ export async function spawnSession(sessionId: string, projectPath: string, task:
     useDtach: config.useDtach,
     sessionCommand,
     cliType,
+    assignSessionId,
   });
 
   insertEvent({
@@ -981,6 +1055,8 @@ export async function spawnAgent(sessionId: string, projectPath: string, task: s
     sessionCommand += ' --dangerously-skip-permissions';
   }
 
+  const assignSessionId = cliType === 'claude' ? assignClaudeSessionId(sessionId) : undefined;
+
   worker.send({
     type: 'spawn',
     sessionId,
@@ -994,6 +1070,7 @@ export async function spawnAgent(sessionId: string, projectPath: string, task: s
     useDtach: config.useDtach,
     sessionCommand,
     cliType,
+    assignSessionId,
   });
 
   insertEvent({
@@ -1631,6 +1708,7 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
     tlog(`[CLEANUP] session listing: ${Date.now() - t1}ms (${stale.length} stale, ${aliveTmux.size} tmux, ${aliveDtach.size} dtach)`);
     let detached = 0;
     let cleaned = 0;
+    const cleanedIds: string[] = [];
 
     for (const { id, project_path: _project_path } of stale) {
       const inTmux = aliveTmux.has(id);
@@ -1648,7 +1726,15 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
           WHERE id = ?
         `).run(id);
         cleaned++;
+        cleanedIds.push(id);
       }
+    }
+
+    // Snapshot the last screen of sessions whose tmux vanished while the server
+    // was down (their pty_output survived) BEFORE the startup purge below wipes
+    // it — lets them be reopened and restored to their closing state.
+    for (const id of cleanedIds) {
+      await captureFinalSnapshot(id);
     }
 
     tlog(`[CLEANUP] done in ${Date.now() - t0}ms (${detached} detached, ${cleaned} cleaned)`);
@@ -1893,9 +1979,11 @@ export async function resumeCrashedSession(staleSession: Session, projectPath: s
 
   const tracker = getOrCreateTracker(sessionId);
 
-  // Update DB: mark as running again
+  // Update DB: mark as running again. Keep claude_session_id — `/resume <uuid>`
+  // (sent below) continues that exact conversation, so the id stays valid and
+  // the session remains resumable even if output-based re-capture never fires.
   db.prepare(`
-    UPDATE sessions SET status = 'running', claude_session_id = NULL, updated_at = datetime('now')
+    UPDATE sessions SET status = 'running', updated_at = datetime('now')
     WHERE id = ?
   `).run(sessionId);
 
@@ -2024,13 +2112,14 @@ export function purgeSessionRecord(sessionId: string): { ok: boolean; error?: st
     if (session.claude_session_id && session.project_id) {
       const proj = db.prepare('SELECT path FROM projects WHERE id = ?').get(session.project_id) as { path: string } | undefined;
       if (proj?.path) {
-        const jsonl = join(homedir(), '.claude', 'projects', proj.path.replace(/\//g, '-'), `${session.claude_session_id}.jsonl`);
+        const jsonl = join(homedir(), '.claude', 'projects', encodeDir(proj.path), `${session.claude_session_id}.jsonl`);
         if (existsSync(jsonl)) unlinkSync(jsonl);
       }
     }
   } catch { /* non-fatal */ }
 
   try { db.prepare('DELETE FROM pty_output WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
+  try { db.prepare('DELETE FROM session_snapshots WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
   try { db.prepare('DELETE FROM events WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
   db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
   return { ok: true };

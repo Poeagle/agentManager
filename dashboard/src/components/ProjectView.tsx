@@ -11,6 +11,7 @@ import { WebPageView } from './WebPageView';
 import { api, type ClaudeHistoryItem } from '../lib/api';
 import { CloseTabModal } from './CloseTabModal';
 import { SessionHistoryPanel } from './SessionHistoryPanel';
+import { HistoryViewer } from './HistoryViewer';
 import { ProjectSkillsPanel } from './ProjectSkillsPanel';
 import { useShortcut, markKeyboardNav } from '../lib/shortcuts';
 import { LiveSessionSignalDot } from '../lib/session-signal';
@@ -398,11 +399,17 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
       const aliveIds = new Set(projectSessions.map((s) => s.id));
       // Build set of all session IDs the server knows about (any status)
       const allServerIds = new Set((sessionsData?.sessions || []).map((s: any) => s.id));
+      // Sessions the server reports as ended — kept as tabs (in an ended state)
+      // so the user can view the last screen / resume, instead of being evicted.
+      const endedIds = new Set(
+        (sessionsData?.sessions || [])
+          .filter((s: any) => s.status === 'completed' || s.status === 'failed' || s.status === 'cancelled')
+          .map((s: any) => s.id)
+      );
 
-      // Remove sessions only if the server explicitly reports them as dead
-      // (completed/failed/cancelled). Keep sessions the server hasn't seen yet
-      // (just created locally, not in the poll response yet).
-      const filtered = prev.filter((t) => aliveIds.has(t.id) || !allServerIds.has(t.id));
+      // Keep a tab if its session is still alive, ended (view/resume), or not yet
+      // seen by the server (just created locally, not in the poll response yet).
+      const filtered = prev.filter((t) => aliveIds.has(t.id) || endedIds.has(t.id) || !allServerIds.has(t.id));
 
       // Relabel existing instances based on actual session data.
       // This fixes tabs restored from localStorage with stale labels.
@@ -700,6 +707,20 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
     );
   }, [projectSessions, closedIdsVersion, terminalInstances]);
 
+  // Recently-ended sessions for this project that aren't already open as tabs —
+  // reopening one restores its last screen (from the snapshot) and offers Resume.
+  const endedSessions = useMemo(() => {
+    const openTabIds = new Set(terminalInstances.map((t) => t.id));
+    return (sessionsData?.sessions || [])
+      .filter((s: any) =>
+        s.project_id === projectId &&
+        (s.status === 'completed' || s.status === 'failed' || s.status === 'cancelled') &&
+        !openTabIds.has(s.id)
+      )
+      .sort((a: any, b: any) => (b.completed_at || b.created_at || '').localeCompare(a.completed_at || a.created_at || ''))
+      .slice(0, 12);
+  }, [sessionsData, projectId, terminalInstances]);
+
   function unhideSession(id: string) {
     closedSessionIds.current.delete(id);
     setClosedIdsVersion((v) => v + 1);
@@ -754,6 +775,16 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
     setShowLauncher(false);
     queryClient.invalidateQueries({ queryKey: ['sessions'] });
     setShowAdoptMenu(false);
+  }
+
+  // Permanently delete an ended session record (row + events + snapshot).
+  async function deleteEndedSession(id: string) {
+    try {
+      await api.sessions.deleteRecord(id);
+    } catch (err) {
+      console.error('Failed to delete session record:', err);
+    }
+    queryClient.invalidateQueries({ queryKey: ['sessions'] });
   }
 
   const [showAdoptMenu, setShowAdoptMenu] = useState(false);
@@ -863,6 +894,19 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
           setActiveTerminalId(oldId);
         }, 50);
         return;
+      }
+
+      // Ended session (completed/failed/cancelled): resume it in place — reuses
+      // the same id and reloads the Claude conversation. Once it's running again,
+      // the tab re-renders from the ended (HistoryViewer) view to a live Terminal.
+      if (oldSession && ['completed', 'failed', 'cancelled'].includes(oldSession.status)) {
+        if (oldSession.cli_type !== 'codex' && oldSession.claude_session_id) {
+          await api.sessions.resume(oldId);
+          setActiveTerminalId(oldId);
+          queryClient.invalidateQueries({ queryKey: ['sessions'] });
+          return;
+        }
+        // Not resumable (plain terminal / codex) — fall through to a fresh session.
       }
 
       const result = await api.sessions.create({
@@ -1249,7 +1293,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
                       }
                     }}
                     className="flex items-center gap-1 px-2 rounded-md shrink-0 transition-colors text-xs"
-                    title={hiddenSessions.length > 0 ? `${hiddenSessions.length} hidden session(s) — click to restore` : 'Scan for external sessions to adopt'}
+                    title={hiddenSessions.length > 0 ? `${hiddenSessions.length} hidden session(s) — click to restore` : endedSessions.length > 0 ? `${endedSessions.length} recent ended session(s) — click to reopen` : 'Scan for external sessions to adopt'}
                     style={{
                       height: 28,
                       color: hiddenSessions.length > 0 ? '#f59e0b' : showAdoptMenu ? 'var(--warning, #f59e0b)' : 'var(--text-secondary)',
@@ -1378,6 +1422,59 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
                             </button>
                           );
                         })
+                      )}
+
+                      {/* Ended / recent sessions — reopen to restore the last screen + resume */}
+                      {endedSessions.length > 0 && (
+                        <>
+                          <div className="mx-3 my-1" style={{ height: 1, background: 'var(--border)' }} />
+                          <div
+                            className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
+                            style={{ color: 'var(--text-secondary)' }}
+                          >
+                            Ended / Recent
+                          </div>
+                          {endedSessions.map((s: any) => {
+                            const isTerminal = s.task === 'Terminal';
+                            const isAgent = s.task?.startsWith('Agent (');
+                            const isCodex = s.cli_type === 'codex';
+                            const cliLabel = isCodex ? 'Codex' : 'Claude';
+                            const typeLabel = isTerminal ? 'Terminal' : `${cliLabel} ${isAgent ? 'Agent' : 'Session'}`;
+                            const typeColor = isTerminal ? '#f59e0b' : isCodex ? '#10b981' : isAgent ? '#ef4444' : '#60a5fa';
+                            const when = s.completed_at || s.created_at;
+                            return (
+                              <div key={s.id} className="flex items-center group/ended hover:bg-[var(--bg-tertiary)] transition-colors">
+                                <button
+                                  onClick={() => unhideSession(s.id)}
+                                  className="flex-1 min-w-0 text-left px-3 py-2 text-xs"
+                                  style={{ color: 'var(--text-primary)' }}
+                                  title="Reopen — restore the last screen and resume"
+                                >
+                                  <div className="flex items-center gap-1.5">
+                                    <span
+                                      className="text-[9px] font-semibold px-1.5 py-0.5 rounded"
+                                      style={{ background: `${typeColor}20`, color: typeColor }}
+                                    >
+                                      {typeLabel}
+                                    </span>
+                                    <span className="truncate">{isTerminal ? 'Interactive shell' : (s.task?.slice(0, 50) || 'Session')}</span>
+                                  </div>
+                                  <div className="truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                                    {s.status} · {when ? new Date(when + (when.endsWith('Z') ? '' : 'Z')).toLocaleString() : 'unknown'}
+                                  </div>
+                                </button>
+                                <button
+                                  onClick={() => deleteEndedSession(s.id)}
+                                  className="px-2 self-stretch opacity-0 group-hover/ended:opacity-70 hover:!opacity-100 transition-opacity"
+                                  style={{ color: 'var(--error)' }}
+                                  title="Delete from history"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </>
                       )}
                     </div>,
                     document.body
@@ -1652,6 +1749,13 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
                     if (termVisible || gridMode) mountedTerminals.current.add(term.id);
                     const shouldMount = gridMode || mountedTerminals.current.has(term.id);
 
+                    // Ended sessions render a read-only "last screen" view (restored
+                    // from the final-screen snapshot) with a Resume action, instead
+                    // of a live Terminal that couldn't attach.
+                    const endedSession = allSessionLookup.get(term.id);
+                    const isEnded = !!endedSession && (endedSession.status === 'completed' || endedSession.status === 'failed' || endedSession.status === 'cancelled');
+                    const canResume = isEnded && endedSession!.cli_type !== 'codex' && !!endedSession!.claude_session_id;
+
                     return (
                       <div
                         key={term.id}
@@ -1774,7 +1878,17 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
                           )}
                         </div>
                         <div className={gridMode ? "flex-1 min-h-0" : "h-full"}>
-                          {shouldMount && (
+                          {shouldMount && (isEnded ? (
+                            <div className="relative h-full w-full">
+                              <HistoryViewer
+                                sessionId={term.id}
+                                title="Session ended — last screen"
+                                closeTitle="Close tab"
+                                onResume={canResume ? () => reconnectTerminal(term.id) : undefined}
+                                onClose={() => closeTerminalTab(term.id)}
+                              />
+                            </div>
+                          ) : (
                             <Terminal
                               sessionId={term.id}
                               visible={termVisible}
@@ -1785,7 +1899,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
                               onReconnect={() => reconnectTerminal(term.id)}
                               onPopOut={() => closeTerminalTab(term.id)}
                             />
-                          )}
+                          ))}
                         </div>
                       </div>
                     );

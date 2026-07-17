@@ -55,6 +55,9 @@ interface SpawnMessage {
   /** When set, resume this Claude conversation (`--resume <uuid>`) instead of
    *  launching a new session with `task` as the prompt. */
   resumeUuid?: string;
+  /** When set (fresh Claude launch), pass `--session-id <uuid>` so the server
+   *  assigns the conversation id up front instead of guessing it afterwards. */
+  assignSessionId?: string;
   cols: number;
   rows: number;
   useTmux: boolean;
@@ -135,7 +138,13 @@ async function tmuxCreate(
   // the shell starts — tmux new-session -d inherits from the tmux server's env,
   // not the client's, so the env option on execFileAsync alone isn't enough.
   const envCmd = 'env';
-  const envArgs = ['-u', 'NODE_ENV', '-u', 'PORT', '-u', 'AGENTMANAGER_API_PORT', '-u', 'AGENTMANAGER_DASH_PORT'];
+  // Disable Claude Code's mouse mode (added in 2.1.18x). Otherwise a mouse
+  // drag-select in the browser xterm is delivered to Claude (it enables xterm
+  // mouse tracking), which treats it as its own selection and copies it via
+  // `tmux load-buffer -w -` — flashing "copied N chars to tmux buffer" and never
+  // reaching the user's clipboard — instead of being a native xterm selection the
+  // user can highlight and Ctrl+Shift+C out. Any non-empty value disables it.
+  const envArgs = ['-u', 'NODE_ENV', '-u', 'PORT', '-u', 'AGENTMANAGER_API_PORT', '-u', 'AGENTMANAGER_DASH_PORT', 'CLAUDE_CODE_DISABLE_MOUSE=1'];
   const runArgs = command
     ? [envCmd, ...envArgs, shell, '-i', '-c', command]
     : [envCmd, ...envArgs, shell, '-i'];
@@ -259,7 +268,7 @@ function cleanupPipePane(sessionId: string, fifoPath?: string): void {
    session command builder
    ================================================================ */
 
-function buildSessionCommand(task: string, direct = false, sessionCmd = '', cliType: 'claude' | 'codex' = 'claude', resumeUuid?: string): string {
+function buildSessionCommand(task: string, direct = false, sessionCmd = '', cliType: 'claude' | 'codex' = 'claude', resumeUuid?: string, assignSessionId?: string): string {
   // Resume an existing Claude conversation: load + replay it and wait for input.
   // No prompt positional, so nothing is auto-submitted.
   if (resumeUuid) {
@@ -278,16 +287,19 @@ function buildSessionCommand(task: string, direct = false, sessionCmd = '', cliT
     }
     return cmd;
   }
-  // Claude: launch with configured command (may include flags like --dangerously-skip-permissions)
+  // Claude: launch with configured command (may include flags like --dangerously-skip-permissions).
+  // --session-id pins the conversation uuid the server assigned, so the
+  // tmux↔conversation mapping is known from the start (uuid is a safe [0-9a-f-] literal).
   const baseCmd = sessionCmd || 'claude';
-  const cmd = `${baseCmd} '${escaped}'`;
+  const sid = assignSessionId ? ` --session-id ${assignSessionId}` : '';
+  const cmd = `${baseCmd}${sid} '${escaped}'`;
   if (direct) {
     return `command ${cmd}`;
   }
   return cmd;
 }
 
-function buildAgentCommand(agentType: string, task: string, direct = false, sessionCmd = '', cliType: 'claude' | 'codex' = 'claude'): string {
+function buildAgentCommand(agentType: string, task: string, direct = false, sessionCmd = '', cliType: 'claude' | 'codex' = 'claude', assignSessionId?: string): string {
   const escapedType = agentType.replace(/'/g, "'\\''");
   const escapedTask = task.replace(/'/g, "'\\''");
 
@@ -302,10 +314,12 @@ function buildAgentCommand(agentType: string, task: string, direct = false, sess
     cmd = `${baseCmd} --no-alt-screen '${escapedPrompt}'`;
   } else {
     const baseCmd = sessionCmd || 'claude';
+    // --session-id pins the server-assigned conversation uuid (see buildSessionCommand).
+    const sid = assignSessionId ? ` --session-id ${assignSessionId}` : '';
     // Claude CLI uses --agent to load agent definitions from .claude/agents/
     cmd = task
-      ? `${baseCmd} --agent '${escapedType}' '${escapedTask}'`
-      : `${baseCmd} --agent '${escapedType}'`;
+      ? `${baseCmd}${sid} --agent '${escapedType}' '${escapedTask}'`
+      : `${baseCmd}${sid} --agent '${escapedType}'`;
   }
 
   if (direct) {
@@ -427,7 +441,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
       }
     } else if (msg.mode === 'agent' && msg.agentType) {
       // agent mode — launch CLI with --agent flag
-      const command = buildAgentCommand(msg.agentType, msg.task, msg.useTmux, sessionCmd, cliType);
+      const command = buildAgentCommand(msg.agentType, msg.task, msg.useTmux, sessionCmd, cliType, msg.assignSessionId);
       if (msg.useTmux) {
         await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command);
         const pp = setupPipePane(msg.sessionId);
@@ -456,7 +470,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
     } else {
       // session mode
       if (msg.useTmux) {
-        const command = buildSessionCommand(msg.task, true, sessionCmd, cliType, msg.resumeUuid);
+        const command = buildSessionCommand(msg.task, true, sessionCmd, cliType, msg.resumeUuid, msg.assignSessionId);
         await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
@@ -469,7 +483,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
           env: sessionEnv(),
         });
       } else if (msg.useDtach) {
-        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeUuid);
+        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeUuid, msg.assignSessionId);
         await dtachCreate(msg.sessionId, msg.projectPath, command);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
@@ -477,7 +491,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
           env: sessionEnv(),
         });
       } else {
-        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeUuid);
+        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeUuid, msg.assignSessionId);
         ptyProcess = pty.spawn(shell, ['-i', '-c', command], {
           name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
           env: sessionEnv(),

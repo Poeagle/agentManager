@@ -384,6 +384,14 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     // prevent the headless terminal from choking on very large sessions.
     const allChunks = sessionManager.querySessionOutput(req.params.id, { limit: 50000 });
 
+    // Replay data gone (an ended session — pty_output was deleted on exit)?
+    // Fall back to the final-screen snapshot captured when the session closed,
+    // so it can still be restored to how it looked at the end.
+    if (allChunks.chunks.length === 0) {
+      const snap = sessionManager.getSessionSnapshot(req.params.id);
+      return { rendered: snap?.rendered ?? '' };
+    }
+
     // Separate resize markers from data chunks. Find first resize to set
     // initial dimensions, then build ordered segments.
     let initCols = fallbackCols;

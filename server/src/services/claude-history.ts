@@ -24,8 +24,10 @@ const PROJECTS_ROOT = join(homedir(), '.claude', 'projects');
 const HEAD_BYTES = 64 * 1024;
 
 /** Claude encodes the cwd into the dir name by replacing every non-alphanumeric
- *  char with '-' (so `/home/u/dolphindb_manager` → `-home-u-dolphindb-manager`). */
-function encodeDir(projectPath: string): string {
+ *  char with '-' (so `/home/u/dolphindb_manager` → `-home-u-dolphindb-manager`).
+ *  Exported so the session manager builds the SAME path (its old `/`-only
+ *  encoding missed `_`, breaking uuid capture / cleanup for underscore paths). */
+export function encodeDir(projectPath: string): string {
   return projectPath.replace(/[^a-zA-Z0-9]/g, '-');
 }
 

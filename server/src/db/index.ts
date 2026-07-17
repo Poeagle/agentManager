@@ -76,6 +76,18 @@ export function initDb(): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Final-screen snapshot captured when a session ends, so an ended session
+    -- can be reopened and restored to how it looked when it closed. The rendered
+    -- column is a SerializeAddon redraw string (written straight into an xterm).
+    -- One row per session; total rows are capped in captureFinalSnapshot().
+    CREATE TABLE IF NOT EXISTS session_snapshots (
+      session_id TEXT PRIMARY KEY,
+      cols INTEGER NOT NULL DEFAULT 120,
+      rows INTEGER NOT NULL DEFAULT 40,
+      rendered TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     -- App settings (key-value store)
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,

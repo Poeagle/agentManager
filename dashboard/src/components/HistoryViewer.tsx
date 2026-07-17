@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { X, Loader2, ScrollText } from 'lucide-react';
+import { X, Loader2, ScrollText, Play } from 'lucide-react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
@@ -9,10 +9,17 @@ import '@xterm/xterm/css/xterm.css';
 interface HistoryViewerProps {
   sessionId: string;
   onClose: () => void;
+  /** Badge label (default "Viewing History"). */
+  title?: string;
+  /** Close-button tooltip (default "Close History (back to live terminal)"). */
+  closeTitle?: string;
+  /** When set, shows a "Resume" button (ended-session mode). */
+  onResume?: () => void;
 }
 
-export function HistoryViewer({ sessionId, onClose }: HistoryViewerProps) {
+export function HistoryViewer({ sessionId, onClose, title, closeTitle, onResume }: HistoryViewerProps) {
   const [loading, setLoading] = useState(true);
+  const [empty, setEmpty] = useState(false);
   const termContainerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -75,18 +82,29 @@ export function HistoryViewer({ sessionId, onClose }: HistoryViewerProps) {
       fitAddon.fit();
       const cols = term.cols || 120;
       const rows = term.rows || 40;
-      api.sessions.renderedOutput(sessionId, cols, rows).then(({ rendered }) => {
-        if (!rendered) { setLoading(false); return; }
-        term.write(rendered);
-        requestAnimationFrame(() => {
-          term.scrollToBottom();
+      let attempts = 0;
+      const load = () => {
+        api.sessions.renderedOutput(sessionId, cols, rows).then(({ rendered }) => {
+          if (!rendered) {
+            // A just-ended session's final-screen snapshot may still be being
+            // captured — retry once before giving up on showing anything.
+            if (attempts++ < 1) { setTimeout(load, 700); return; }
+            setEmpty(true);
+            setLoading(false);
+            return;
+          }
+          term.write(rendered);
+          requestAnimationFrame(() => {
+            term.scrollToBottom();
+            setLoading(false);
+          });
+        }).catch((err) => {
+          console.error('Failed to load rendered history:', err);
+          term.write(`\x1b[31mFailed to load history: ${err.message}\x1b[0m`);
           setLoading(false);
         });
-      }).catch((err) => {
-        console.error('Failed to load rendered history:', err);
-        term.write(`\x1b[31mFailed to load history: ${err.message}\x1b[0m`);
-        setLoading(false);
-      });
+      };
+      load();
     });
 
     return () => {
@@ -106,13 +124,24 @@ export function HistoryViewer({ sessionId, onClose }: HistoryViewerProps) {
           style={{ background: 'var(--accent)', color: 'white' }}
         >
           <ScrollText className="w-3 h-3" />
-          Viewing History
+          {title || 'Viewing History'}
         </div>
+        {onResume && (
+          <button
+            onClick={onResume}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium hover:opacity-90 transition-opacity"
+            style={{ background: 'var(--success)', color: 'white' }}
+            title="Resume this session — reload the conversation and continue"
+          >
+            <Play className="w-3 h-3" />
+            Resume
+          </button>
+        )}
         <button
           onClick={onClose}
           className="p-1.5 rounded-md hover:opacity-80 transition-opacity"
           style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
-          title="Close History (back to live terminal)"
+          title={closeTitle || 'Close History (back to live terminal)'}
         >
           <X className="w-4 h-4" />
         </button>
@@ -122,6 +151,26 @@ export function HistoryViewer({ sessionId, onClose }: HistoryViewerProps) {
         <div className="absolute inset-0 flex items-center justify-center z-10" style={{ color: 'var(--text-secondary)' }}>
           <Loader2 className="w-5 h-5 animate-spin mr-2" />
           Loading history...
+        </div>
+      )}
+
+      {empty && !loading && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center z-10 px-6 text-center" style={{ color: 'var(--text-secondary)' }}>
+          <ScrollText className="w-8 h-8 mb-3 opacity-40" />
+          <div className="text-sm font-medium mb-1" style={{ color: 'var(--text-primary)' }}>No saved screen for this session</div>
+          <div className="text-xs max-w-sm leading-relaxed">
+            Its last screen wasn't saved — it likely ended before screen restore was available (e.g. an earlier crash).
+            {onResume ? ' You can still resume to reload the conversation.' : ''}
+          </div>
+          {onResume && (
+            <button
+              onClick={onResume}
+              className="mt-4 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 transition-opacity"
+              style={{ background: 'var(--success)', color: 'white' }}
+            >
+              <Play className="w-3.5 h-3.5" /> Resume conversation
+            </button>
+          )}
         </div>
       )}
 
