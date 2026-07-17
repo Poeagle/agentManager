@@ -21,11 +21,23 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
       }
     });
 
+    // Heartbeat: a periodic ping keeps idle reverse proxies / SSH tunnels from
+    // dropping the connection, and gives the client a liveness signal so it can
+    // detect a silent drop (no close frame) and reconnect. Cleared on close.
+    const heartbeat = setInterval(() => {
+      try {
+        socket.send(JSON.stringify({ type: 'ping', timestamp: new Date().toISOString() }));
+      } catch {
+        // Socket closed mid-send
+      }
+    }, 25000);
+
     socket.on('close', () => {
+      clearInterval(heartbeat);
       unsubscribe();
     });
 
-    // Send initial ping
+    // Send initial handshake
     socket.send(JSON.stringify({ type: 'connected', timestamp: new Date().toISOString() }));
   });
 };

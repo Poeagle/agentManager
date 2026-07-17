@@ -44,22 +44,72 @@ export const useStreamStore = create<StreamState>((set) => ({
 }));
 
 let ws: WebSocket | null = null;
+let lastMessageAt = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let watchdogInstalled = false;
+
+// The server sends a heartbeat every ~25s. If nothing arrives for this long the
+// socket is treated as silently dead (e.g. an idle tunnel dropped it without a
+// close frame) and recycled.
+const STALE_MS = 60_000;
+
+function scheduleReconnect(delay = 3000) {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectStream();
+  }, delay);
+}
+
+/** Reconnect if the socket is missing/closed, or recycle it if it's gone stale. */
+function ensureFresh() {
+  if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+    connectStream();
+  } else if (ws.readyState === WebSocket.OPEN && Date.now() - lastMessageAt > STALE_MS) {
+    try { ws.close(); } catch { /* noop */ } // onclose schedules the reconnect
+  }
+}
+
+function installWatchdog() {
+  if (watchdogInstalled || typeof window === 'undefined') return;
+  watchdogInstalled = true;
+  // Catch silent drops even while the tab sits idle.
+  setInterval(ensureFresh, 20_000);
+  // Reconnect promptly when the user returns to the tab or the network is back —
+  // these are exactly the moments a tunnel-dropped socket needs recovering.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') ensureFresh();
+  });
+  window.addEventListener('online', ensureFresh);
+}
 
 export function connectStream() {
-  if (ws) return;
+  installWatchdog();
+
+  // Already connected or connecting — nothing to do.
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  // Drop any half-dead socket before opening a new one.
+  if (ws) { try { ws.onclose = null; ws.onerror = null; ws.close(); } catch { /* noop */ } ws = null; }
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = `${protocol}//${window.location.host}/api/stream`;
 
   ws = new WebSocket(url);
+  lastMessageAt = Date.now();
 
   ws.onopen = () => {
+    lastMessageAt = Date.now();
     useStreamStore.getState().setConnected(true);
   };
 
   ws.onmessage = (msg) => {
+    lastMessageAt = Date.now();
     try {
       const event = JSON.parse(msg.data);
+
+      // Heartbeat / handshake frames are keepalive only — nothing to render.
+      if (event.type === 'ping' || event.type === 'connected') return;
 
       // Live process-state: update the per-session map directly. This is a
       // high-frequency, ephemeral signal — keep it out of the event feed and
@@ -93,11 +143,10 @@ export function connectStream() {
   ws.onclose = () => {
     useStreamStore.getState().setConnected(false);
     ws = null;
-    // Reconnect after 3s
-    setTimeout(connectStream, 3000);
+    scheduleReconnect(3000);
   };
 
   ws.onerror = () => {
-    ws?.close();
+    try { ws?.close(); } catch { /* noop */ }
   };
 }

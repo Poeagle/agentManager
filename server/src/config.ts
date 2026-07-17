@@ -43,7 +43,7 @@ export const config = {
   isDev: process.env.NODE_ENV !== 'production',
   logLevel: process.env.LOG_LEVEL || 'info',
   authToken: process.env.AGENTMANAGER_TOKEN || null,
-  dbPath: process.env.DB_PATH || (() => {
+  dbPath: process.env.AGENTMANAGER_DB_PATH || (() => {
     const dir = join(homedir(), '.agentmanager');
     mkdirSync(dir, { recursive: true });
     return join(dir, 'agentmanager.db');

@@ -24,7 +24,7 @@ DEV_DB="${DEV_DB:-$HOME/.agentmanager-dev/agentmanager.db}"
 CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC='\033[0m'
 log() { echo -e "${CYAN}[dev-isolated]${NC} $1"; }
 
-# 设了 DB_PATH 时 server 不会自动建目录,先确保存在
+# 设了 AGENTMANAGER_DB_PATH 时 server 不会自动建目录,先确保存在
 mkdir -p "$(dirname "$DEV_DB")"
 
 # 防重复启动:端口被占就退出(避免误连到别的进程)
@@ -45,5 +45,5 @@ cd "$ROOT_DIR"
 export AGENTMANAGER_SKIP_UPDATE_CHECK=1
 # --kill-others: 任一进程退出/Ctrl-C 时,另一个也一起停,不留孤儿
 exec npx concurrently --kill-others --names "api,ui" --prefix-colors "cyan,magenta" \
-  "cd server && DB_PATH=${DEV_DB} PORT=${DEV_API_PORT} npm run dev" \
+  "cd server && AGENTMANAGER_DB_PATH=${DEV_DB} PORT=${DEV_API_PORT} npm run dev" \
   "cd dashboard && VITE_PORT=${DEV_UI_PORT} VITE_API_TARGET=http://127.0.0.1:${DEV_API_PORT} npm run dev -- --host 127.0.0.1"
