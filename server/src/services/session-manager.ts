@@ -14,6 +14,7 @@ import { nanoid } from 'nanoid';
 import type { WebSocket } from 'ws';
 import { getOrCreateTracker, removeTracker, recoverFromBuffer } from './session-state.js';
 import { encodeDir } from './claude-history.js';
+import { tmuxCursorRestoreSequence } from '../lib/terminal-cursor.js';
 import {
   cliTypeFromArgv,
   codexSessionIdFromOpenTargets,
@@ -1765,32 +1766,51 @@ export function requestCapture(sessionId: string, ws: WebSocket): Promise<void> 
     proc.stdout!.on('data', (chunk: string) => chunks.push(chunk));
 
     proc.on('close', (code) => {
-      const stdout = trimCaptureOutput(chunks.join(''));
-      tlog(`[CAPTURE] ${sessionId}: done in ${Date.now() - t0}ms (${stdout.length} bytes, code=${code})`);
-      if (code === 0 && stdout) {
-        // Convert \n to \r\n for xterm.js — bare \n causes staircase (LF without CR)
-        const converted = stdout.replace(/\r?\n/g, '\r\n');
-        captureCache.set(sessionId, { data: converted, ts: Date.now() });
+      const finalizeCapture = async () => {
+        const stdout = trimCaptureOutput(chunks.join(''));
+        tlog(`[CAPTURE] ${sessionId}: done in ${Date.now() - t0}ms (${stdout.length} bytes, code=${code})`);
+        if (code === 0 && stdout) {
+          // Convert \n to \r\n for xterm.js — bare \n causes staircase (LF without CR)
+          const converted = stdout.replace(/\r?\n/g, '\r\n');
+          // capture-pane contains cell contents but not the live cursor. Query
+          // tmux immediately after capture and append an ANSI cursor restore so
+          // xterm does not leave the cursor after the snapshot's last text row.
+          let cursorRestore = '';
+          try {
+            const { stdout: cursorOutput } = await execFileAsync('tmux', [
+              ...tmuxArgsForSession(sessionId),
+              'display-message', '-p', '-t', name,
+              '#{cursor_x},#{cursor_y},#{cursor_flag}',
+            ], { encoding: 'utf8' });
+            cursorRestore = tmuxCursorRestoreSequence(cursorOutput);
+          } catch {
+            // Keep the text snapshot even if the pane exits during cursor lookup.
+          }
+          const restored = converted + cursorRestore;
+          captureCache.set(sessionId, { data: restored, ts: Date.now() });
 
-        // Replace the replay buffer with this clean capture — prevents stale
-        // raw chunks (recorded at different widths) from being replayed on
-        // future reconnects and causing duplicated/garbled content.
-        const active = activeSessions.get(sessionId);
-        if (active) {
-          active.replayBuffer.length = 0;
-          active.replayBuffer.push(converted);
-          active.replayBytes = converted.length;
+          // Replace the replay buffer with this clean capture — prevents stale
+          // raw chunks (recorded at different widths) from being replayed on
+          // future reconnects and causing duplicated/garbled content.
+          const active = activeSessions.get(sessionId);
+          if (active) {
+            active.replayBuffer.length = 0;
+            active.replayBuffer.push(restored);
+            active.replayBytes = restored.length;
+          }
+
+          try {
+            ws.send(JSON.stringify({
+              type: 'output',
+              sessionId,
+              data: '\x1b[H\x1b[2J\x1b[3J' + restored,
+            }));
+          } catch { /* ws may have closed */ }
         }
-
-        try {
-          ws.send(JSON.stringify({
-            type: 'output',
-            sessionId,
-            data: '\x1b[H\x1b[2J\x1b[3J' + converted,
-          }));
-        } catch { /* ws may have closed */ }
-      }
-      resolve();
+      };
+      finalizeCapture().catch((err) => {
+        tlog(`[CAPTURE] ${sessionId}: finalize failed: ${err instanceof Error ? err.message : String(err)}`);
+      }).finally(resolve);
     });
 
     proc.on('error', () => resolve());

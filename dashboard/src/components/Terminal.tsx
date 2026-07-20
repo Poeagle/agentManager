@@ -811,33 +811,6 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     }
   }, [configuredFontSize]);
 
-  // Reactively hide/show the xterm.js cursor when hideCursor prop changes
-  // (e.g. when session data loads after mount)
-  useEffect(() => {
-    const term = termRef.current;
-    if (!term) return;
-    // Only Codex renders its own cursor — hide xterm's there to avoid a double
-    // cursor. Claude positions the real terminal cursor at its input box and
-    // relies on it, and plain shells obviously need it, so both keep a visible
-    // blinking cursor (the app's own DECTCEM still drives show/hide, so there's
-    // no double cursor if Claude ever decides to draw its own).
-    // Full-screen CLIs render and position their own input cursor. xterm's
-    // independent cursor can be left at the last cell after a resize/replay,
-    // producing a misleading second cursor in the lower-right corner.
-    const forceHide = hideCursor;
-    if (forceHide) {
-      // DECTCEM: hide cursor at VT level + make cursor transparent
-      term.write('\x1b[?25l');
-      term.options.cursorBlink = false;
-      term.options.cursorInactiveStyle = 'none';
-    } else {
-      term.write('\x1b[?25h');
-      term.options.cursorBlink = true;
-      term.options.cursorStyle = 'block';
-      term.options.cursorInactiveStyle = 'outline';
-    }
-  }, [hideCursor, cliType]);
-
   // Re-focus and refit terminal when it becomes visible.
   // Single RAF + short delay ensures DOM layout is settled before measuring.
   // Skip auto-focus when the tab change came from a keyboard shortcut —
@@ -1054,7 +1027,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       </div>
       <div
         ref={containerRef}
-        className={`h-full w-full overflow-hidden${hideCursor && cliType === 'codex' ? ' hide-xterm-cursor' : ''}`}
+        className="h-full w-full overflow-hidden"
         style={{
           padding: '4px',
           background: '#0f1117',
