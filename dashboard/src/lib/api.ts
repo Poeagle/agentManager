@@ -97,7 +97,8 @@ export const api = {
     },
     popOut: (id: string) =>
       fetchJSON<{ ok: boolean; terminal?: string; socketPath?: string; error?: string }>(`/sessions/${id}/pop-out`, { method: 'POST' }),
-    // Upload a pasted image; returns the absolute path saved in the project.
+    // Upload a pasted image; returns the absolute path saved in the project for
+    // either Claude or Codex to inspect.
     // onProgress (0..1) reports upload progress (via XHR — fetch can't).
     pasteImage: (id: string, dataUrl: string, onProgress?: (fraction: number) => void) =>
       uploadWithProgress<{ ok: boolean; path: string }>(`/sessions/${id}/paste-image`, { dataUrl }, onProgress),
@@ -510,4 +511,3 @@ export interface SessionStateResponse {
   promptType: 'choice' | 'confirmation' | 'text' | null;
   choices: string[] | null;
 }
-

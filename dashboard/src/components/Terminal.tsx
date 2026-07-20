@@ -4,7 +4,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { RotateCcw, ExternalLink, ZoomIn, ZoomOut, Loader2, Check, AlertCircle } from 'lucide-react';
+import { RotateCcw, ExternalLink, ZoomIn, ZoomOut, Loader2, Check, AlertCircle, Paperclip } from 'lucide-react';
 import { isKeyboardNavActive } from '../lib/shortcuts';
 import { api } from '../lib/api';
 import { HistoryViewer } from './HistoryViewer';
@@ -41,6 +41,25 @@ function fallbackCopy(text: string) {
     document.execCommand('copy');
     document.body.removeChild(ta);
   } catch { /* nothing more we can do */ }
+}
+
+function openTerminalLink(url: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+
+  const confirmed = window.confirm(
+    `Do you want to navigate to ${parsed.href}?\n\nWARNING: This link could potentially be dangerous`,
+  );
+  if (!confirmed) return;
+
+  // In a regular browser this opens a real tab. The Tauri-only interceptor in
+  // main.tsx routes it through the host when running inside the desktop webview.
+  window.open(parsed.href, '_blank', 'noopener,noreferrer');
 }
 
 // Strip mouse-tracking enable sequences (DECSET 1000/1001/1002/1003) from terminal
@@ -104,6 +123,8 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   // Progress of in-flight pasted/dropped file uploads (rendered as an overlay).
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const uploadSeqRef = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadFileRef = useRef<(file: File) => void>(() => {});
 
   // Read terminal font size from settings
   const { data: settingsData } = useQuery({
@@ -118,15 +139,18 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   const connectFnRef = useRef<(() => void) | null>(null);
   const disconnectFnRef = useRef<(() => void) | null>(null);
   const isSuspendedRef = useRef(suspended);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   const passiveResizeRef = useRef(passiveResize);
   passiveResizeRef.current = passiveResize;
   const hideCursorRef = useRef(hideCursor);
   hideCursorRef.current = hideCursor;
   const cliTypeRef = useRef(cliType);
   cliTypeRef.current = cliType;
-  // Debounce timer for Codex capture-pane refreshes — prevents multiple
-  // effects (suspension + visible) from stacking duplicate captures.
-  const codexRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Debounce fresh-screen snapshots when a terminal becomes visible. Hidden
+  // WebGL canvases can lose their painted texture, and a truncated raw replay
+  // can contain only a TUI's latest status-line redraw.
+  const displayRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   isSuspendedRef.current = suspended;
 
   // Hard refresh — the dedicated "screen is messed up, fix it" path. Always
@@ -199,6 +223,12 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
       scrollback: 10000,
       allowProposedApi: true,
+      linkHandler: {
+        activate: (event, url) => {
+          event.preventDefault();
+          openTerminalLink(url);
+        },
+      },
       theme: {
         background: '#0f1117',
         foreground: '#e4e8f1',
@@ -241,23 +271,21 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       // WebGL not available, canvas2d renderer is the default fallback
     }
 
-    // Make URLs in terminal output clickable — open in system browser
+    // Make plain-text URLs clickable. OSC 8 links use the linkHandler above.
     term.loadAddon(new WebLinksAddon((event, url) => {
       event.preventDefault();
       console.log('[agentmanager] Link clicked in terminal:', url);
-      // Route through the server API to call xdg-open/open (avoids xterm.js
-      // WebLinksAddon's window.open() which opens about:blank).
-      fetch('/api/open-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
-      }).catch(e => console.error('[agentmanager] open-url failed:', e));
+      openTerminalLink(url);
     }));
 
     // Fit after a small delay to ensure container is sized
     requestAnimationFrame(() => {
       fitAddon.fit();
     });
+
+    // Incremented whenever the browser emits a real paste event. Ctrl+Shift+V
+    // uses it to decide whether its text-only compatibility fallback is needed.
+    let pasteEventSequence = 0;
 
     // Intercept Ctrl+Shift+C to copy selection
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
@@ -267,40 +295,40 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         e.preventDefault();
         return false;
       }
-      // Ctrl+Shift+V: read clipboard explicitly and send as input.
-      // Can't rely on browser firing a paste event — synthetic keystrokes
-      // (e.g. from text expanders like espanso via xdotool) don't trigger it.
-      if (e.ctrlKey && e.shiftKey && e.key === 'V' && e.type === 'keydown') {
-        // navigator.clipboard.readText needs a secure context; when unavailable
-        // (LAN IP over HTTP) fall through so the browser's native paste —
-        // right-click / Shift+Insert — fires the paste handler below instead.
-        if (navigator.clipboard?.readText && window.isSecureContext) {
-          navigator.clipboard.readText().then(text => {
-            if (text) {
-              const w = wsRef.current;
-              if (w && w.readyState === WebSocket.OPEN) {
-                w.send(JSON.stringify({ type: 'input', data: text, paste: true }));
+      // Let the browser perform both its regular paste (Ctrl+V) and terminal-
+      // style paste (Ctrl+Shift+V). Chromium treats the latter as plain-text
+      // paste, so pasteHandler also recovers images from the Clipboard API when
+      // that event arrives without clipboard data.
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'v' && e.type === 'keydown') {
+        const sequenceBeforeKey = pasteEventSequence;
+        setTimeout(() => {
+          if (pasteEventSequence !== sequenceBeforeKey) return;
+          if (navigator.clipboard?.readText && window.isSecureContext) {
+            navigator.clipboard.readText().then(text => {
+              if (text) {
+                const w = wsRef.current;
+                if (w && w.readyState === WebSocket.OPEN) {
+                  w.send(JSON.stringify({ type: 'input', data: text, paste: true }));
+                }
               }
-            }
-          }).catch(() => {});
-          e.preventDefault();
-          return false;
-        }
-        return true;
+            }).catch(() => {});
+          }
+        }, 0);
+        // Keep xterm from consuming the keydown. The browser can then perform
+        // its default paste action and expose image/file ClipboardItems.
+        return false;
       }
       return true;
     });
 
-    // Handle paste via native browser event — works in all contexts including WebKitGTK/Tauri
-    // Listen on xterm's hidden textarea in capture phase, stop propagation to prevent xterm's
-    // built-in paste handler from also firing (which would cause double paste)
-    const xtermTextarea = containerRef.current.querySelector('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null;
-    const pasteTarget = xtermTextarea || containerRef.current;
+    // Capture on the stable terminal container, before xterm's hidden textarea
+    // handles the event. The textarea can be recreated as xterm changes state.
+    const pasteTarget = containerRef.current;
     const dropEl = containerRef.current;
 
     // The server-side CLI can't see the browser clipboard / OS drag, so any
     // pasted or dropped file is uploaded, saved into the project, and its path
-    // injected into the terminal — the user can then ask Claude about it.
+    // injected into the terminal so the active Claude or Codex CLI can inspect it.
     const injectPath = (p?: string) => {
       const ww = wsRef.current;
       if (!p || !ww || ww.readyState !== WebSocket.OPEN) return;
@@ -325,8 +353,10 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           patch({ phase: 'uploading', percent: 0, determinate: false });
           const onProgress = (f: number) =>
             patch({ phase: 'uploading', percent: Math.round(f * 100), determinate: true });
-          // Images keep their dedicated endpoint/limit; anything else goes generic.
-          const res = isImage
+          // The image endpoint validates formats that Codex/Claude can inspect
+          // directly. Other image formats still use the generic file endpoint.
+          const usesImageEndpoint = /^(image\/(png|jpeg|jpg|gif|webp))$/i.test(file.type);
+          const res = usesImageEndpoint
             ? await api.sessions.pasteImage(sessionId, dataUrl, onProgress)
             : await api.sessions.pasteFile(sessionId, dataUrl, file.name, onProgress);
           injectPath(res?.path);
@@ -344,27 +374,29 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       };
       reader.readAsDataURL(file);
     };
+    uploadFileRef.current = uploadFile;
 
     const pasteHandler = (ev: Event) => {
       const ce = ev as ClipboardEvent;
       const w = wsRef.current;
+      pasteEventSequence++;
 
       // A pasted file (image or any document) takes precedence over text.
+      const files = Array.from(ce.clipboardData?.files || []);
       const items = ce.clipboardData?.items;
-      if (items) {
-        const files: File[] = [];
+      if (!files.length && items) {
         for (let i = 0; i < items.length; i++) {
           if (items[i].kind === 'file') {
             const f = items[i].getAsFile();
             if (f) files.push(f);
           }
         }
-        if (files.length) {
-          ce.preventDefault();
-          ce.stopImmediatePropagation();
-          files.forEach(uploadFile);
-          return;
-        }
+      }
+      if (files.length) {
+        ce.preventDefault();
+        ce.stopImmediatePropagation();
+        files.forEach(uploadFile);
+        return;
       }
 
       const text = ce.clipboardData?.getData('text');
@@ -372,6 +404,25 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         w.send(JSON.stringify({ type: 'input', data: text, paste: true }));
         ce.preventDefault();
         ce.stopImmediatePropagation();
+        return;
+      }
+
+      // Chromium exposes an image as an empty ClipboardEvent for
+      // Ctrl+Shift+V ("paste as plain text"). Recover it explicitly in secure
+      // contexts. On plain LAN HTTP the attachment button remains available.
+      if (navigator.clipboard?.read && window.isSecureContext) {
+        ce.preventDefault();
+        ce.stopImmediatePropagation();
+        navigator.clipboard.read().then(items => {
+          for (const item of items) {
+            const imageType = item.types.find(type => type.startsWith('image/'));
+            if (!imageType) continue;
+            item.getType(imageType).then(blob => {
+              const subtype = imageType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+              uploadFile(new File([blob], `clipboard.${subtype}`, { type: imageType }));
+            }).catch(() => {});
+          }
+        }).catch(() => {});
       }
     };
     pasteTarget.addEventListener('paste', pasteHandler, { capture: true });
@@ -466,6 +517,26 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         }
         term.focus();
         notifyServerAlive();
+
+        // A project switch reconnects the socket after the visible effect has
+        // already run (while readyState was still CONNECTING). Complete the
+        // repaint/snapshot path here as well so the active tab cannot get stuck
+        // showing only the tail of the raw replay.
+        if (visibleRef.current && !passiveResizeRef.current) {
+          requestAnimationFrame(() => {
+            if (ws.readyState !== WebSocket.OPEN || !visibleRef.current) return;
+            fitAddon.fit();
+            term.refresh(0, term.rows - 1);
+            ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+            if (displayRefreshTimer.current) clearTimeout(displayRefreshTimer.current);
+            displayRefreshTimer.current = setTimeout(() => {
+              displayRefreshTimer.current = null;
+              if (ws.readyState === WebSocket.OPEN && visibleRef.current) {
+                ws.send(JSON.stringify({ type: 'refresh' }));
+              }
+            }, 500);
+          });
+        }
 
         // Force tmux reflow: resize to cols-1 then back to correct width.
         // Only for sessions (hideCursor=true) where CLI redraws
@@ -661,6 +732,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeObserver.disconnect();
       pasteTarget.removeEventListener('paste', pasteHandler, { capture: true } as EventListenerOptions);
+      if (uploadFileRef.current === uploadFile) uploadFileRef.current = () => {};
       dropEl.removeEventListener('dragover', dragOverHandler);
       dropEl.removeEventListener('drop', dropHandler);
       wsRef.current?.close();
@@ -685,31 +757,6 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       if (termRef.current && connectFnRef.current) {
         termRef.current.reset();
         connectFnRef.current();
-        // For Codex: raw replay buffer contains garbled chunks from different widths.
-        // After reconnect settles, refit to current container width, send resize
-        // to the server (tmux pane may be at a different width from Active Sessions
-        // grid), then trigger a capture-pane refresh for clean display.
-        // Use debounced timer so visible effect's refresh doesn't stack with this one.
-        if (cliType === 'codex') {
-          if (codexRefreshTimer.current) clearTimeout(codexRefreshTimer.current);
-          codexRefreshTimer.current = setTimeout(() => {
-            codexRefreshTimer.current = null;
-            const term = termRef.current;
-            const fit = fitRef.current;
-            const w = wsRef.current;
-            if (term && w && w.readyState === WebSocket.OPEN) {
-              if (fit) fit.fit();
-              w.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-              // Allow tmux + Codex to reflow at new width before capturing
-              setTimeout(() => {
-                if (w.readyState === WebSocket.OPEN) {
-                  term.reset();
-                  w.send(JSON.stringify({ type: 'refresh' }));
-                }
-              }, 300);
-            }
-          }, 500);
-        }
       }
     }
   }, [suspended]);
@@ -792,29 +839,38 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         const w = wsRef.current;
         if (fit && term) {
           fit.fit();
+          // WebGL may discard a hidden canvas texture. Repaint the complete
+          // local buffer immediately instead of waiting for the next changed row.
+          term.refresh(0, term.rows - 1);
           if (!passiveResizeRef.current && w && w.readyState === WebSocket.OPEN) {
             w.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-            // Codex: after resize, send capture-pane refresh for correct display.
-            // Raw replay chunks from different widths render garbled for Codex.
-            // Debounced so it doesn't stack with the suspension effect's refresh.
-            if (cliType === 'codex') {
-              if (codexRefreshTimer.current) clearTimeout(codexRefreshTimer.current);
-              codexRefreshTimer.current = setTimeout(() => {
-                codexRefreshTimer.current = null;
-                if (!cancelled && w.readyState === WebSocket.OPEN) {
-                  term.reset();
-                  w.send(JSON.stringify({ type: 'refresh' }));
-                }
-              }, 500);
-            }
+            // A terminal tab can contain a full-screen TUI even when the
+            // session metadata says "Terminal". Its bounded raw replay may end
+            // with only a spinner/status-line update, so request a rendered tmux
+            // snapshot for every visible tab. Do not clear locally first: the
+            // server snapshot carries its own clear sequence, while a failed or
+            // unavailable capture leaves the existing screen intact.
+            if (displayRefreshTimer.current) clearTimeout(displayRefreshTimer.current);
+            displayRefreshTimer.current = setTimeout(() => {
+              displayRefreshTimer.current = null;
+              if (!cancelled && w.readyState === WebSocket.OPEN) {
+                w.send(JSON.stringify({ type: 'refresh' }));
+              }
+            }, 500);
           }
           term.scrollToBottom();
           if (!skipFocus) term.focus();
         }
       });
-      return () => { cancelled = true; };
+      return () => {
+        cancelled = true;
+        if (displayRefreshTimer.current) {
+          clearTimeout(displayRefreshTimer.current);
+          displayRefreshTimer.current = null;
+        }
+      };
     }
-  }, [visible, suspended, cliType]);
+  }, [visible, suspended]);
 
   // Re-focus terminal when returning from a different browser tab
   useEffect(() => {
@@ -824,6 +880,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         term.focus();
         requestAnimationFrame(() => {
           fitRef.current?.fit();
+          term.refresh(0, term.rows - 1);
           term.scrollToBottom();
           term.focus();
         });
@@ -866,6 +923,28 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       <div className="absolute top-2 right-5 z-10 flex items-center gap-2">
         {connected && !suspended && (
           <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                Array.from(e.currentTarget.files || []).forEach(file => uploadFileRef.current(file));
+                e.currentTarget.value = '';
+              }}
+            />
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                fileInputRef.current?.click();
+              }}
+              className="flex h-6 w-6 items-center justify-center rounded text-xs transition-all opacity-70 hover:!opacity-100"
+              style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              title="Attach images or files"
+              aria-label="Attach images or files"
+            >
+              <Paperclip className="w-3 h-3" />
+            </button>
             <button
               onClick={() => {
                 const term = termRef.current;

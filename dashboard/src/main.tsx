@@ -3,8 +3,10 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 
-// Intercept external-link opens (clicks, window.open, detached <a>.click) and
-// route them through the server's /api/open-url so they open in the real browser.
+// Tauri's WebKitGTK webview cannot open external browser tabs itself. Only in
+// that environment, route external-link opens through the local server. A
+// regular browser must retain native window.open/<a> behavior so links open in
+// the browser the user is actually viewing.
 
 function isExternalUrl(url: string) {
   return (url.startsWith('http://') || url.startsWith('https://')) &&
@@ -19,7 +21,7 @@ function openExternal(url: string) {
   });
 }
 
-{
+if ('__TAURI_INTERNALS__' in window) {
   // 1) Catch <a> clicks in the DOM
   document.addEventListener('click', (e) => {
     const a = (e.target as HTMLElement).closest?.('a[href]') as HTMLAnchorElement | null;

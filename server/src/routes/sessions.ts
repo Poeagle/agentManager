@@ -71,7 +71,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // Save a pasted image into the session's project and return its absolute path.
-  // The dashboard injects that path into the terminal so the CLI (Claude) can
+  // The dashboard injects that path into the terminal so the active CLI can
   // read the file — the server-side process can't see the browser's clipboard,
   // so we upload + reference by path instead of forwarding the paste.
   app.post<{
@@ -117,7 +117,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
 
   // Save an arbitrary pasted/dropped file into the session's project and return
   // its absolute path — the paste-image model generalized to any file so the
-  // user can drop a document and ask Claude about it. The original filename is
+  // user can drop a document and ask Claude or Codex about it. The original filename is
   // preserved (sanitized) for readability; the `paste-` prefix keeps it under
   // the same retention sweep as pasted images.
   app.post<{
