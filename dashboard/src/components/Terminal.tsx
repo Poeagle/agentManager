@@ -528,13 +528,19 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
             fitAddon.fit();
             term.refresh(0, term.rows - 1);
             ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-            if (displayRefreshTimer.current) clearTimeout(displayRefreshTimer.current);
-            displayRefreshTimer.current = setTimeout(() => {
-              displayRefreshTimer.current = null;
-              if (ws.readyState === WebSocket.OPEN && visibleRef.current) {
-                ws.send(JSON.stringify({ type: 'refresh' }));
-              }
-            }, 500);
+            // Codex needs a rendered tmux snapshot after a tab switch because
+            // it does not redraw on SIGWINCH. Claude and plain terminals must
+            // keep the original PTY cursor state; capture-pane has no cursor
+            // metadata and would move xterm's cursor to the replay tail.
+            if (cliTypeRef.current === 'codex') {
+              if (displayRefreshTimer.current) clearTimeout(displayRefreshTimer.current);
+              displayRefreshTimer.current = setTimeout(() => {
+                displayRefreshTimer.current = null;
+                if (ws.readyState === WebSocket.OPEN && visibleRef.current) {
+                  ws.send(JSON.stringify({ type: 'refresh' }));
+                }
+              }, 500);
+            }
           });
         }
 
@@ -857,13 +863,15 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
             // snapshot for every visible tab. Do not clear locally first: the
             // server snapshot carries its own clear sequence, while a failed or
             // unavailable capture leaves the existing screen intact.
-            if (displayRefreshTimer.current) clearTimeout(displayRefreshTimer.current);
-            displayRefreshTimer.current = setTimeout(() => {
-              displayRefreshTimer.current = null;
-              if (!cancelled && w.readyState === WebSocket.OPEN) {
-                w.send(JSON.stringify({ type: 'refresh' }));
-              }
-            }, 500);
+            if (cliTypeRef.current === 'codex') {
+              if (displayRefreshTimer.current) clearTimeout(displayRefreshTimer.current);
+              displayRefreshTimer.current = setTimeout(() => {
+                displayRefreshTimer.current = null;
+                if (!cancelled && w.readyState === WebSocket.OPEN) {
+                  w.send(JSON.stringify({ type: 'refresh' }));
+                }
+              }, 500);
+            }
           }
           term.scrollToBottom();
           if (!skipFocus) term.focus();
