@@ -1,8 +1,8 @@
 import { fork, execFile, execFileSync, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { createRequire } from 'module';
-import { readFile, readdirSync, readFileSync, writeFileSync as fsWriteFileSync, existsSync, appendFileSync, unlinkSync } from 'fs';
-import { join, dirname } from 'path';
+import { readFile, readdirSync, readFileSync, writeFileSync as fsWriteFileSync, existsSync, appendFileSync, unlinkSync, mkdirSync, openSync, readSync, closeSync, readlinkSync, renameSync, statSync, type Dirent } from 'fs';
+import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
@@ -105,6 +105,8 @@ export interface Session {
   status: string;
   pid: number | null;
   claude_session_id: string | null;
+  codex_session_id: string | null;
+  cli_type?: 'claude' | 'codex';
   started_at: string | null;
   completed_at: string | null;
   exit_code: number | null;
@@ -127,6 +129,7 @@ interface ActiveSession {
 }
 
 const activeSessions = new Map<string, ActiveSession>();
+const sessionRecoveryPromises = new Map<string, Promise<boolean>>();
 
 /* Pending spawns: sessions created via REST API that await terminal dimensions
    from the first WebSocket connection before actually starting. */
@@ -140,6 +143,444 @@ interface PendingSpawn {
   cliType?: 'claude' | 'codex';
 }
 const pendingSpawns = new Map<string, PendingSpawn>();
+
+/* Durable Codex identity bridge. Fresh Codex TUI sessions choose their own
+ * UUID, so a per-launch SessionStart hook writes it here. Keeping the binding
+ * next to the SQLite DB means it survives both process and machine restarts. */
+const CODEX_BINDINGS_DIR = join(dirname(config.dbPath), 'codex-bindings');
+const CODEX_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function codexBindingPath(sessionId: string): string {
+  mkdirSync(CODEX_BINDINGS_DIR, { recursive: true });
+  return join(CODEX_BINDINGS_DIR, `${sessionId}.json`);
+}
+
+/** Read a hook-written binding and persist it into the canonical session row. */
+function ingestCodexSessionBinding(sessionId: string): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(codexBindingPath(sessionId), 'utf8')) as { session_id?: unknown };
+    const nativeId = typeof parsed.session_id === 'string' ? parsed.session_id : '';
+    if (!CODEX_SESSION_ID_RE.test(nativeId)) return null;
+    const row = getDb().prepare('SELECT cli_type, codex_session_id FROM sessions WHERE id = ?').get(sessionId) as {
+      cli_type: string | null;
+      codex_session_id: string | null;
+    } | undefined;
+    if (!row || row.cli_type !== 'codex') return null;
+    // A SessionStart hook also runs on resume. It must confirm the same UUID,
+    // never silently rebind an existing tab to a different Codex conversation.
+    if (row.codex_session_id && row.codex_session_id !== nativeId) {
+      console.warn(`  Ignoring conflicting Codex binding for ${sessionId}: ${nativeId}`);
+      return null;
+    }
+    if (!row.codex_session_id) {
+      getDb().prepare('UPDATE sessions SET codex_session_id = ?, updated_at = datetime(\'now\') WHERE id = ?')
+        .run(nativeId, sessionId);
+      console.log(`  Captured Codex conversation ${nativeId} for session ${sessionId}`);
+    }
+    return nativeId;
+  } catch {
+    return null;
+  }
+}
+
+/** Pick up bindings that were written just before the server crashed/rebooted. */
+function ingestAllCodexSessionBindings(): void {
+  try {
+    mkdirSync(CODEX_BINDINGS_DIR, { recursive: true });
+    for (const name of readdirSync(CODEX_BINDINGS_DIR)) {
+      const match = /^([A-Za-z0-9_-]{6,64})\.json$/.exec(name);
+      if (match) ingestCodexSessionBinding(match[1]);
+    }
+  } catch { /* non-fatal */ }
+}
+
+interface CodexRolloutIdentity {
+  id: string;
+  cwd: string;
+  startedAt: number;
+  firstPrompt: string;
+}
+
+function readFilePrefix(path: string, maxBytes = 512 * 1024): string {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'r');
+    const buffer = Buffer.allocUnsafe(maxBytes);
+    const bytes = readSync(fd, buffer, 0, maxBytes, 0);
+    return buffer.subarray(0, bytes).toString('utf8');
+  } catch {
+    return '';
+  } finally {
+    if (fd !== null) try { closeSync(fd); } catch { /* ignore */ }
+  }
+}
+
+function collectCodexRollouts(dir: string, result: CodexRolloutIdentity[]): void {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      collectCodexRollouts(path, result);
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+    const idMatch = /([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.jsonl$/i.exec(entry.name);
+    if (!idMatch) continue;
+    const prefix = readFilePrefix(path);
+    const timestampMatch = /"timestamp":"([^"]+)"/.exec(prefix);
+    const cwdMatch = /"cwd":("(?:\\.|[^"\\])*")/.exec(prefix);
+    if (!timestampMatch || !cwdMatch) continue;
+    let cwd = '';
+    let firstPrompt = '';
+    try { cwd = JSON.parse(cwdMatch[1]); } catch { continue; }
+    const promptMatch = /"type":"user_message","message":("(?:\\.|[^"\\])*")/.exec(prefix);
+    if (promptMatch) {
+      try { firstPrompt = JSON.parse(promptMatch[1]); } catch { /* optional */ }
+    }
+    const startedAt = Date.parse(timestampMatch[1]);
+    if (!cwd || !Number.isFinite(startedAt)) continue;
+    result.push({ id: idMatch[1], cwd, startedAt, firstPrompt });
+  }
+}
+
+/**
+ * Upgrade path for Codex tabs created before native UUID capture existed.
+ * Bind only a unique path/time (and, when necessary, first-prompt) match. An
+ * ambiguous legacy session is deliberately left unbound instead of risking a
+ * tab opening the wrong conversation.
+ */
+function backfillLegacyCodexSessionIds(): void {
+  const db = getDb();
+  const unbound = db.prepare(`
+    SELECT s.id, s.task, s.created_at, p.path AS project_path
+    FROM sessions s JOIN projects p ON p.id = s.project_id
+    WHERE s.cli_type = 'codex' AND s.codex_session_id IS NULL
+  `).all() as Array<{ id: string; task: string; created_at: string; project_path: string }>;
+  if (unbound.length === 0) return;
+
+  const rollouts: CodexRolloutIdentity[] = [];
+  const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
+  collectCodexRollouts(join(codexHome, 'sessions'), rollouts);
+  if (rollouts.length === 0) return;
+
+  const used = new Set(
+    (db.prepare('SELECT codex_session_id FROM sessions WHERE codex_session_id IS NOT NULL').all() as Array<{ codex_session_id: string }>)
+      .map((row) => row.codex_session_id),
+  );
+  let captured = 0;
+  let ambiguous = 0;
+  for (const session of unbound) {
+    const createdAt = Date.parse(`${session.created_at.replace(' ', 'T')}Z`);
+    if (!Number.isFinite(createdAt)) continue;
+    let candidates = rollouts.filter((rollout) =>
+      !used.has(rollout.id)
+      && rollout.cwd === session.project_path
+      && Math.abs(rollout.startedAt - createdAt) <= 5 * 60 * 1000,
+    );
+    if (candidates.length > 1) {
+      const agentTask = session.task.startsWith('Agent (') && session.task.includes('): ')
+        ? session.task.slice(session.task.indexOf('): ') + 3)
+        : session.task;
+      const byPrompt = candidates.filter((rollout) =>
+        !!agentTask && rollout.firstPrompt.includes(agentTask),
+      );
+      if (byPrompt.length === 1) candidates = byPrompt;
+    }
+    if (candidates.length !== 1) {
+      if (candidates.length > 1) ambiguous++;
+      continue;
+    }
+    const nativeId = candidates[0].id;
+    db.prepare('UPDATE sessions SET codex_session_id = ?, updated_at = datetime(\'now\') WHERE id = ? AND codex_session_id IS NULL')
+      .run(nativeId, session.id);
+    used.add(nativeId);
+    captured++;
+  }
+  if (captured > 0) console.log(`  Backfilled ${captured} legacy Codex conversation binding(s)`);
+  if (ambiguous > 0) console.warn(`  Left ${ambiguous} legacy Codex session(s) unbound because multiple conversations matched`);
+}
+
+/** Poll briefly after launch so the mapping reaches SQLite immediately. */
+function watchCodexSessionBinding(sessionId: string, attempts = 150): void {
+  if (ingestCodexSessionBinding(sessionId) || attempts <= 0) return;
+  const timer = setTimeout(() => watchCodexSessionBinding(sessionId, attempts - 1), 200);
+  timer.unref();
+}
+
+function nativeConversationId(session: Pick<Session, 'cli_type' | 'claude_session_id' | 'codex_session_id'>): string | null {
+  return session.cli_type === 'codex' ? session.codex_session_id : session.claude_session_id;
+}
+
+/* ================================================================
+   Plain-terminal CLI identity detection
+
+   A user can start `claude` or `codex` manually inside a Terminal tab. Those
+   launches bypass the managed command builders above, so monitor the terminal's
+   foreground process tree and dynamically bind the same AgentManager session
+   row to the native CLI conversation.
+   ================================================================ */
+
+interface DetectedCliIdentity {
+  cliType: 'claude' | 'codex';
+  nativeId: string;
+  pid: number;
+}
+
+const terminalCliMonitorTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const terminalCliMonitorIdentities = new Map<string, DetectedCliIdentity>();
+let clockTicksPerSecond: number | null = null;
+
+function procChildren(pid: number): number[] {
+  try {
+    return readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8')
+      .trim().split(/\s+/).filter(Boolean).map(Number).filter(Number.isFinite);
+  } catch {
+    return [];
+  }
+}
+
+function procTree(rootPid: number, limit = 128): number[] {
+  const result: number[] = [];
+  const queue = [rootPid];
+  const seen = new Set<number>();
+  while (queue.length > 0 && result.length < limit) {
+    const pid = queue.shift()!;
+    if (!Number.isFinite(pid) || pid <= 0 || seen.has(pid)) continue;
+    seen.add(pid);
+    result.push(pid);
+    queue.push(...procChildren(pid));
+  }
+  return result;
+}
+
+function procArgs(pid: number): string[] {
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`).toString().split('\0').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function findCliProcess(rootPid: number): { pid: number; cliType: 'claude' | 'codex'; args: string[] } | null {
+  // Breadth-first order chooses the top-level CLI, not one of its descendants
+  // such as codex-code-mode-host.
+  for (const pid of procTree(rootPid)) {
+    const args = procArgs(pid);
+    const command = basename(args[0] || '').toLowerCase();
+    if (command === 'codex') return { pid, cliType: 'codex', args };
+    if (command === 'claude') return { pid, cliType: 'claude', args };
+  }
+  return null;
+}
+
+function codexIdFromOpenRollout(cliPid: number): string | null {
+  const ids = new Set<string>();
+  // The Codex TUI keeps its active rollout JSONL open. Search the CLI and its
+  // descendants in case a release moves the writer into a child process.
+  for (const pid of procTree(cliPid, 64)) {
+    let fds: string[] = [];
+    try { fds = readdirSync(`/proc/${pid}/fd`); } catch { continue; }
+    for (const fd of fds) {
+      try {
+        const target = readlinkSync(`/proc/${pid}/fd/${fd}`);
+        const match = /\/rollout-[^/]*-([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.jsonl(?: \(deleted\))?$/i.exec(target);
+        if (match) ids.add(match[1]);
+      } catch { /* fd closed during inspection */ }
+    }
+  }
+  return ids.size === 1 ? [...ids][0] : null;
+}
+
+function explicitClaudeId(args: string[]): string | null {
+  for (let i = 1; i < args.length; i++) {
+    if (['--session-id', '--resume', '-r'].includes(args[i]) && args[i + 1]) {
+      const raw = args[i + 1];
+      const fileId = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.jsonl)?$/i.exec(raw)?.[1];
+      if (fileId && UUID_RE.test(fileId)) return fileId;
+    }
+  }
+  return null;
+}
+
+function processStartedAt(pid: number): number | null {
+  try {
+    if (!clockTicksPerSecond) {
+      clockTicksPerSecond = parseInt(execFileSync('getconf', ['CLK_TCK'], { encoding: 'utf8' }).trim(), 10) || 100;
+    }
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const closeParen = stat.lastIndexOf(')');
+    if (closeParen < 0) return null;
+    // Fields after comm start at proc field 3; starttime is field 22 => index 19.
+    const fields = stat.slice(closeParen + 2).trim().split(/\s+/);
+    const startTicks = Number(fields[19]);
+    const uptimeSeconds = Number(readFileSync('/proc/uptime', 'utf8').split(/\s+/)[0]);
+    if (!Number.isFinite(startTicks) || !Number.isFinite(uptimeSeconds)) return null;
+    return Date.now() - (uptimeSeconds - startTicks / clockTicksPerSecond) * 1000;
+  } catch {
+    return null;
+  }
+}
+
+function claudeIdFromProjectLog(cliPid: number, args: string[], projectPath: string, appSessionId: string): string | null {
+  const explicit = explicitClaudeId(args);
+  if (explicit) return explicit;
+
+  const startedAt = processStartedAt(cliPid);
+  if (!startedAt) return null;
+  const dir = join(homedir(), '.claude', 'projects', encodeDir(projectPath));
+  let files: string[] = [];
+  try {
+    files = readdirSync(dir).filter((name) => UUID_RE.test(name.replace(/\.jsonl$/, '')) && name.endsWith('.jsonl'));
+  } catch {
+    return null;
+  }
+
+  const used = new Set(
+    (getDb().prepare(`
+      SELECT claude_session_id FROM sessions
+      WHERE id != ? AND claude_session_id IS NOT NULL
+    `).all(appSessionId) as Array<{ claude_session_id: string }>).map((row) => row.claude_session_id),
+  );
+  const candidates: Array<{ id: string; delta: number }> = [];
+  for (const file of files) {
+    const id = file.slice(0, -'.jsonl'.length);
+    if (used.has(id)) continue;
+    const path = join(dir, file);
+    const prefix = readFilePrefix(path, 64 * 1024);
+    const timestamp = /"timestamp":"([^"]+)"/.exec(prefix)?.[1];
+    let fileStartedAt = timestamp ? Date.parse(timestamp) : NaN;
+    if (!Number.isFinite(fileStartedAt)) {
+      try { fileStartedAt = statSync(path).birthtimeMs || statSync(path).ctimeMs; } catch { continue; }
+    }
+    const delta = Math.abs(fileStartedAt - startedAt);
+    if (delta <= 30_000) candidates.push({ id, delta });
+  }
+  candidates.sort((a, b) => a.delta - b.delta);
+  // Require a unique close match. If two Claude sessions were launched in the
+  // same project at nearly the same instant, leave the tab unbound rather than
+  // attach it to the wrong conversation.
+  if (candidates.length === 1) return candidates[0].id;
+  if (candidates.length > 1 && candidates[1].delta - candidates[0].delta > 5_000) return candidates[0].id;
+  return null;
+}
+
+async function terminalRootPid(sessionId: string): Promise<number | null> {
+  if (config.useTmux) {
+    try {
+      const { stdout } = await execFileAsync('tmux', [
+        '-L', TMUX_SERVER, 'display-message', '-p', '-t', tmuxSessionName(sessionId), '#{pane_pid}',
+      ], { encoding: 'utf8' });
+      const pid = parseInt(stdout.trim(), 10);
+      if (pid > 0) return pid;
+    } catch { /* fall through */ }
+  }
+  if (config.useDtach) {
+    try {
+      const { stdout } = await execFileAsync('fuser', [dtachSocket(sessionId)], { encoding: 'utf8' });
+      const pid = stdout.trim().split(/\s+/).map(Number).find((value) => value > 0);
+      if (pid) return pid;
+    } catch { /* fall through */ }
+  }
+  try {
+    const row = getDb().prepare('SELECT pid FROM sessions WHERE id = ?').get(sessionId) as { pid: number | null } | undefined;
+    return row?.pid && row.pid > 0 ? row.pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistTerminalCliIdentity(sessionId: string, identity: DetectedCliIdentity): void {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT task, project_id, cli_type, claude_session_id, codex_session_id
+    FROM sessions WHERE id = ?
+  `).get(sessionId) as Pick<Session, 'task' | 'project_id' | 'cli_type' | 'claude_session_id' | 'codex_session_id'> | undefined;
+  if (!row || row.task !== 'Terminal') return;
+  const oldNativeId = nativeConversationId(row);
+  if (row.cli_type === identity.cliType && oldNativeId === identity.nativeId) return;
+
+  if (identity.cliType === 'codex') {
+    db.prepare(`
+      UPDATE sessions SET cli_type = 'codex', codex_session_id = ?, claude_session_id = NULL,
+        updated_at = datetime('now') WHERE id = ? AND task = 'Terminal'
+    `).run(identity.nativeId, sessionId);
+    // Mirror hook-created bindings so a DB restart can ingest the identity even
+    // if it happened immediately after this write.
+    try {
+      const target = codexBindingPath(sessionId);
+      const temp = `${target}.${process.pid}.tmp`;
+      fsWriteFileSync(temp, JSON.stringify({ session_id: identity.nativeId, source: 'terminal-process', captured_at: new Date().toISOString() }));
+      renameSync(temp, target);
+    } catch { /* DB remains canonical */ }
+  } else {
+    db.prepare(`
+      UPDATE sessions SET cli_type = 'claude', claude_session_id = ?, codex_session_id = NULL,
+        updated_at = datetime('now') WHERE id = ? AND task = 'Terminal'
+    `).run(identity.nativeId, sessionId);
+  }
+
+  const active = activeSessions.get(sessionId);
+  if (active) active.cliType = identity.cliType;
+  insertEvent({
+    session_id: sessionId,
+    project_id: row.project_id || undefined,
+    type: 'session.identity',
+    data: { cliType: identity.cliType, nativeSessionId: identity.nativeId, source: 'terminal-process', pid: identity.pid },
+  });
+  console.log(`  Bound Terminal ${sessionId} to ${identity.cliType} conversation ${identity.nativeId}`);
+}
+
+async function inspectTerminalCli(sessionId: string, projectPath: string): Promise<void> {
+  const rootPid = await terminalRootPid(sessionId);
+  if (!rootPid) return;
+  const cli = findCliProcess(rootPid);
+  if (!cli) {
+    terminalCliMonitorIdentities.delete(sessionId);
+    return;
+  }
+  const previous = terminalCliMonitorIdentities.get(sessionId);
+  if (previous?.pid === cli.pid && previous.cliType === cli.cliType) return;
+  const nativeId = cli.cliType === 'codex'
+    ? codexIdFromOpenRollout(cli.pid)
+    : claudeIdFromProjectLog(cli.pid, cli.args, projectPath, sessionId);
+  if (!nativeId) return;
+  const identity = { ...cli, nativeId };
+  persistTerminalCliIdentity(sessionId, identity);
+  terminalCliMonitorIdentities.set(sessionId, identity);
+}
+
+function stopTerminalCliMonitor(sessionId: string): void {
+  const timer = terminalCliMonitorTimers.get(sessionId);
+  if (timer) clearTimeout(timer);
+  terminalCliMonitorTimers.delete(sessionId);
+  terminalCliMonitorIdentities.delete(sessionId);
+}
+
+function startTerminalCliMonitor(sessionId: string, projectPath: string): void {
+  if (terminalCliMonitorTimers.has(sessionId)) return;
+  const tick = async () => {
+    if (!activeSessions.has(sessionId)) {
+      stopTerminalCliMonitor(sessionId);
+      return;
+    }
+    try { await inspectTerminalCli(sessionId, projectPath); } catch { /* retry */ }
+    if (!activeSessions.has(sessionId)) {
+      stopTerminalCliMonitor(sessionId);
+      return;
+    }
+    const timer = setTimeout(tick, 1000);
+    timer.unref();
+    terminalCliMonitorTimers.set(sessionId, timer);
+  };
+  const timer = setTimeout(tick, 250);
+  timer.unref();
+  terminalCliMonitorTimers.set(sessionId, timer);
+}
 
 export function registerPendingSpawn(sessionId: string, info: PendingSpawn): void {
   pendingSpawns.set(sessionId, info);
@@ -775,7 +1216,7 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
       case 'pty-data': {
         // Raw PTY output for state tracking (not necessarily display output)
         tracker.onData(msg.data);
-        if (!uuidPersisted && tracker.claudeSessionId) {
+        if (!uuidPersisted && active.cliType !== 'codex' && tracker.claudeSessionId) {
           persistUuid(tracker.claudeSessionId);
         }
         break;
@@ -807,6 +1248,7 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
         });
         removeTracker(sessionId);
         activeSessions.delete(sessionId);
+        stopTerminalCliMonitor(sessionId);
 
         const db = getDb();
         const status = msg.exitCode === 0 ? 'completed' : 'failed';
@@ -860,6 +1302,7 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
       }
       removeTracker(sessionId);
       activeSessions.delete(sessionId);
+      stopTerminalCliMonitor(sessionId);
 
       // Check if the underlying tmux/dtach session is still alive (async to avoid blocking)
       const tmuxAlive = config.useTmux ? await tmuxExistsAsync(sessionId) : false;
@@ -966,7 +1409,7 @@ function assignClaudeSessionId(sessionId: string): string {
 }
 
 export async function spawnSession(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
-  const preSpawnFiles = snapshotClaudeSessionFiles(projectPath);
+  const preSpawnFiles = cliType === 'claude' ? snapshotClaudeSessionFiles(projectPath) : undefined;
 
   const worker = await forkWorker();
   const active = wireWorker(sessionId, worker, projectPath, preSpawnFiles);
@@ -985,6 +1428,7 @@ export async function spawnSession(sessionId: string, projectPath: string, task:
   }
 
   const assignSessionId = cliType === 'claude' ? assignClaudeSessionId(sessionId) : undefined;
+  const bindingPath = cliType === 'codex' ? codexBindingPath(sessionId) : undefined;
 
   // Tell the worker to spawn the session
   worker.send({
@@ -1000,7 +1444,10 @@ export async function spawnSession(sessionId: string, projectPath: string, task:
     sessionCommand,
     cliType,
     assignSessionId,
+    codexBindingPath: bindingPath,
   });
+
+  if (cliType === 'codex') watchCodexSessionBinding(sessionId);
 
   insertEvent({
     session_id: sessionId,
@@ -1029,6 +1476,8 @@ export async function spawnTerminal(sessionId: string, projectPath: string, cols
     useDtach: config.useDtach,
   });
 
+  startTerminalCliMonitor(sessionId, projectPath);
+
   insertEvent({
     session_id: sessionId,
     type: 'session_start',
@@ -1037,7 +1486,7 @@ export async function spawnTerminal(sessionId: string, projectPath: string, cols
 }
 
 export async function spawnAgent(sessionId: string, projectPath: string, task: string, agentType: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
-  const preSpawnFiles = snapshotClaudeSessionFiles(projectPath);
+  const preSpawnFiles = cliType === 'claude' ? snapshotClaudeSessionFiles(projectPath) : undefined;
 
   const worker = await forkWorker();
   const active = wireWorker(sessionId, worker, projectPath, preSpawnFiles);
@@ -1056,6 +1505,7 @@ export async function spawnAgent(sessionId: string, projectPath: string, task: s
   }
 
   const assignSessionId = cliType === 'claude' ? assignClaudeSessionId(sessionId) : undefined;
+  const bindingPath = cliType === 'codex' ? codexBindingPath(sessionId) : undefined;
 
   worker.send({
     type: 'spawn',
@@ -1071,7 +1521,10 @@ export async function spawnAgent(sessionId: string, projectPath: string, task: s
     sessionCommand,
     cliType,
     assignSessionId,
+    codexBindingPath: bindingPath,
   });
+
+  if (cliType === 'codex') watchCodexSessionBinding(sessionId);
 
   insertEvent({
     session_id: sessionId,
@@ -1093,6 +1546,9 @@ export async function reconnectSession(sessionId: string, opts?: { skipPipePaneR
   const db = getDb();
   const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as Session | undefined;
   if (!session || session.status !== 'detached') return false;
+  const project = session.project_id
+    ? db.prepare('SELECT path FROM projects WHERE id = ?').get(session.project_id) as { path: string } | undefined
+    : undefined;
 
   // Quick check if underlying session is alive before forking a worker (async to avoid blocking)
   const tCheck = Date.now();
@@ -1108,7 +1564,7 @@ export async function reconnectSession(sessionId: string, opts?: { skipPipePaneR
     tlog(`[RECONNECT] ${sessionId}: fork=${forkTime}ms`);
 
     const t2 = Date.now();
-    const active = wireWorker(sessionId, worker);
+    const active = wireWorker(sessionId, worker, project?.path);
     tlog(`[RECONNECT] ${sessionId}: wireWorker=${Date.now() - t2}ms`);
     active.cols = session.terminal_cols || 120;
     active.task = session.task || '';
@@ -1127,6 +1583,10 @@ export async function reconnectSession(sessionId: string, opts?: { skipPipePaneR
       useTmux: config.useTmux,
       useDtach: config.useDtach,
     });
+
+    if (session.task === 'Terminal' && project?.path) {
+      startTerminalCliMonitor(sessionId, project.path);
+    }
 
     // Bootstrap state detection from the last few output chunks
     const t3 = Date.now();
@@ -1483,6 +1943,7 @@ export async function killSession(sessionId: string): Promise<boolean> {
     }, 2000);
 
     activeSessions.delete(sessionId);
+    stopTerminalCliMonitor(sessionId);
     removeTracker(sessionId);
   }
 
@@ -1561,6 +2022,7 @@ export function releaseSession(sessionId: string): boolean {
   }
 
   activeSessions.delete(sessionId);
+  stopTerminalCliMonitor(sessionId);
   removeTracker(sessionId);
 
   // Mark as released (still running externally, available for re-adoption)
@@ -1674,6 +2136,7 @@ export function killAllSessions(): void {
     } catch { /* DB might already be closed */ }
 
     activeSessions.delete(id);
+    stopTerminalCliMonitor(id);
   }
 }
 
@@ -1691,14 +2154,19 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
   tlog(`[CLEANUP] start`);
   recordServerStart();
   const db = getDb();
+  // A Codex SessionStart hook may have persisted its UUID milliseconds before
+  // the server died. Ingest those durable files before deciding which stale
+  // sessions are resumable.
+  ingestAllCodexSessionBindings();
+  backfillLegacyCodexSessionIds();
 
   if (config.useDtach || config.useTmux) {
     const stale = db.prepare(`
-      SELECT s.id, s.pid, p.path as project_path FROM sessions s
+      SELECT s.*, p.path as project_path FROM sessions s
       LEFT JOIN projects p ON s.project_id = p.id
       WHERE s.status IN ('running', 'pending', 'detached')
       OR (s.status = 'failed' AND (s.completed_at IS NULL OR s.completed_at > datetime('now', '-1 hour')))
-    `).all() as { id: string; pid: number; project_path: string | null }[];
+    `).all() as Array<Session & { project_path: string | null }>;
 
     if (stale.length === 0) { tlog(`[CLEANUP] no stale sessions, done in ${Date.now() - t0}ms`); return; }
 
@@ -1709,8 +2177,10 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
     let detached = 0;
     let cleaned = 0;
     const cleanedIds: string[] = [];
+    const resumable: Array<{ session: Session; projectPath: string }> = [];
 
-    for (const { id, project_path: _project_path } of stale) {
+    for (const row of stale) {
+      const { id } = row;
       const inTmux = aliveTmux.has(id);
       const inDtach = aliveDtach.has(id);
       tlog(`[CLEANUP] session ${id}: tmux=${inTmux}, dtach=${inDtach}`);
@@ -1727,6 +2197,15 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
         `).run(id);
         cleaned++;
         cleanedIds.push(id);
+        // Only sessions that were active before startup are crash-recovery
+        // candidates. A normally completed/failed session must stay ended.
+        if (
+          ['running', 'pending', 'detached'].includes(row.status)
+          && row.project_path
+          && nativeConversationId(row)
+        ) {
+          resumable.push({ session: row, projectPath: row.project_path });
+        }
       }
     }
 
@@ -1740,66 +2219,76 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
     tlog(`[CLEANUP] done in ${Date.now() - t0}ms (${detached} detached, ${cleaned} cleaned)`);
     if (detached > 0) console.log(`  Found ${detached} detached session(s) available for reconnect`);
     if (cleaned > 0) console.log(`  Cleaned up ${cleaned} dead session(s) from previous run`);
+
+    // If tmux/dtach also vanished (host reboot, OOM, manual cleanup), rebuild
+    // the CLI process around the exact persisted Claude/Codex conversation.
+    for (const { session, projectPath } of resumable) {
+      if (isAtSessionLimit()) {
+        console.warn(`  [SESSION CAP] Already ${activeSessions.size} active sessions (max ${MAX_ACTIVE_SESSIONS}) — stopping conversation recovery`);
+        break;
+      }
+      try {
+        // Per-conversation recovery has its own short-window circuit breaker;
+        // an unrelated server restart storm must not suppress valid sessions.
+        await resumeCrashedSession(session, projectPath);
+      } catch (err) {
+        console.error(`  Failed to recover session ${session.id}:`, err);
+      }
+    }
   } else {
     const stale = db.prepare(`
-      SELECT id, pid, claude_session_id, project_id, task FROM sessions WHERE status IN ('running', 'pending') AND pid IS NOT NULL
-    `).all() as { id: string; pid: number; claude_session_id: string | null; project_id: string | null; task: string }[];
+      SELECT * FROM sessions WHERE status IN ('running', 'pending') AND pid IS NOT NULL
+    `).all() as Session[];
 
     for (const { id, pid } of stale) {
-      killOrphanedProcess(pid, id);
+      killOrphanedProcess(pid!, id);
     }
 
-    const resumable = stale.filter(s => s.claude_session_id && s.project_id);
+    const resumable = stale.filter(s => nativeConversationId(s) && s.project_id);
     const nonResumable = stale.length - resumable.length;
 
     if (nonResumable > 0) {
       const updated = db.prepare(`
         UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
-        WHERE status IN ('running', 'pending') AND (claude_session_id IS NULL OR project_id IS NULL)
+        WHERE status IN ('running', 'pending') AND (
+          project_id IS NULL
+          OR (cli_type = 'codex' AND codex_session_id IS NULL)
+          OR (COALESCE(cli_type, 'claude') != 'codex' AND claude_session_id IS NULL)
+        )
       `).run();
       if (updated.changes > 0) {
         console.log(`  Cleaned up ${updated.changes} stale session(s) from previous crash`);
       }
     }
 
-    // Circuit breaker: skip auto-resume if server is restart-looping
-    if (isRestartStorm()) {
-      console.warn(`  [CIRCUIT BREAKER] Server restarted ${RESTART_STORM_THRESHOLD}+ times in ${RESTART_WINDOW_MS / 60000}min — skipping auto-resume of ${resumable.length} session(s) to prevent runaway spawning`);
-      const markFailed = db.prepare(`
-        UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
-        WHERE id = ?
-      `);
-      for (const s of resumable) markFailed.run(s.id);
-    } else {
-      for (const session of resumable) {
-        // Session cap: don't resume if we'd exceed the limit
-        if (isAtSessionLimit()) {
-          console.warn(`  [SESSION CAP] Already ${activeSessions.size} active sessions (max ${MAX_ACTIVE_SESSIONS}) — skipping resume of remaining sessions`);
-          const markFailed = db.prepare(`
-            UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
-            WHERE id = ?
-          `);
-          for (const s of resumable.slice(resumable.indexOf(session))) markFailed.run(s.id);
-          break;
-        }
+    for (const session of resumable) {
+      // Session cap: don't resume if we'd exceed the limit
+      if (isAtSessionLimit()) {
+        console.warn(`  [SESSION CAP] Already ${activeSessions.size} active sessions (max ${MAX_ACTIVE_SESSIONS}) — skipping resume of remaining sessions`);
+        const markFailed = db.prepare(`
+          UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
+          WHERE id = ?
+        `);
+        for (const s of resumable.slice(resumable.indexOf(session))) markFailed.run(s.id);
+        break;
+      }
 
-        const project = db.prepare('SELECT path FROM projects WHERE id = ?').get(session.project_id!) as { path: string } | undefined;
-        if (!project) {
-          db.prepare(`
-            UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
-            WHERE id = ?
-          `).run(session.id);
-          continue;
-        }
-        try {
-          await resumeCrashedSession(session as Session, project.path);
-        } catch (err) {
-          console.error(`  Failed to resume session ${session.id}:`, err);
-          db.prepare(`
-            UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
-            WHERE id = ?
-          `).run(session.id);
-        }
+      const project = db.prepare('SELECT path FROM projects WHERE id = ?').get(session.project_id!) as { path: string } | undefined;
+      if (!project) {
+        db.prepare(`
+          UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
+          WHERE id = ?
+        `).run(session.id);
+        continue;
+      }
+      try {
+        await resumeCrashedSession(session, project.path);
+      } catch (err) {
+        console.error(`  Failed to resume session ${session.id}:`, err);
+        db.prepare(`
+          UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
+          WHERE id = ?
+        `).run(session.id);
       }
     }
   }
@@ -1947,20 +2436,23 @@ export async function autoReconnectDetachedSessions(): Promise<void> {
   }
 }
 
-/**
- * Resume a crashed session by spawning a fresh CLI process
- * and sending `/resume <uuid>` once it's ready for input.
- */
+/** Resume a crashed session by launching the CLI directly on its exact native
+ * conversation. The AgentManager session id stays unchanged, so every project
+ * tab continues to point at the same durable row before and after recovery. */
 export async function resumeCrashedSession(staleSession: Session, projectPath: string, skipCircuitBreaker = false): Promise<void> {
   const db = getDb();
   const sessionId = staleSession.id;
-  const claudeUuid = staleSession.claude_session_id!;
+  const sessionCliType = staleSession.cli_type === 'codex' ? 'codex' as const : 'claude' as const;
+  const nativeSessionId = nativeConversationId(staleSession);
+  if (!nativeSessionId) throw new Error(`No ${sessionCliType} conversation id is stored for ${sessionId}`);
   const task = staleSession.task;
 
   // Per-session circuit breaker: don't resume sessions that keep crashing.
   // Skipped for user-initiated manual resume (not a crash loop).
   const resumeCount = (db.prepare(`
-    SELECT COUNT(*) as cnt FROM events WHERE session_id = ? AND type = 'session_resume'
+    SELECT COUNT(*) as cnt FROM events
+    WHERE session_id = ? AND type = 'session_resume'
+      AND timestamp > datetime('now', '-5 minutes')
   `).get(sessionId) as { cnt: number })?.cnt || 0;
   if (!skipCircuitBreaker && resumeCount >= MAX_SESSION_RESUMES) {
     console.warn(`  [SESSION CIRCUIT BREAKER] Session ${sessionId} already resumed ${resumeCount} times — marking as failed to prevent crash loop`);
@@ -1971,24 +2463,21 @@ export async function resumeCrashedSession(staleSession: Session, projectPath: s
     return;
   }
 
-  console.log(`  Resuming crashed session ${sessionId} (Claude session ${claudeUuid}, attempt ${resumeCount + 1}/${MAX_SESSION_RESUMES})`);
+  console.log(`  Recovering crashed session ${sessionId} (${sessionCliType} conversation ${nativeSessionId}, attempt ${resumeCount + 1}/${MAX_SESSION_RESUMES})`);
 
-  const preSpawnFiles = snapshotClaudeSessionFiles(projectPath);
+  const preSpawnFiles = sessionCliType === 'claude' ? snapshotClaudeSessionFiles(projectPath) : undefined;
   const worker = await forkWorker();
   const active = wireWorker(sessionId, worker, projectPath, preSpawnFiles);
 
-  const tracker = getOrCreateTracker(sessionId);
+  getOrCreateTracker(sessionId);
 
-  // Update DB: mark as running again. Keep claude_session_id — `/resume <uuid>`
-  // (sent below) continues that exact conversation, so the id stays valid and
-  // the session remains resumable even if output-based re-capture never fires.
+  // Mark the same row alive again. The native conversation id is retained, and
+  // completed/error fields from the vanished process are cleared.
   db.prepare(`
-    UPDATE sessions SET status = 'running', updated_at = datetime('now')
+    UPDATE sessions SET status = 'running', completed_at = NULL, exit_code = NULL, updated_at = datetime('now')
     WHERE id = ?
   `).run(sessionId);
 
-  // Tell worker to spawn a session
-  const sessionCliType = (staleSession as any).cli_type === 'codex' ? 'codex' as const : 'claude' as const;
   active.cliType = sessionCliType;
   const sessionCommand = sessionCliType === 'codex'
     ? getSetting('session_codex_command')
@@ -2005,54 +2494,90 @@ export async function resumeCrashedSession(staleSession: Session, projectPath: s
     useDtach: config.useDtach,
     sessionCommand,
     cliType: sessionCliType,
+    resumeSessionId: nativeSessionId,
+    codexBindingPath: sessionCliType === 'codex' ? codexBindingPath(sessionId) : undefined,
   });
 
-  // One-shot listener: send /resume when the process is ready for input
-  let resumeSent = false;
-  const unsubscribe = tracker.onStateChange((state) => {
-    if (!resumeSent && state.processState === 'waiting_for_input') {
-      resumeSent = true;
-      active.worker.send({ type: 'input', data: `/resume ${claudeUuid}\n` });
-      console.log(`  Sent /resume ${claudeUuid} to session ${sessionId}`);
-      unsubscribe();
-    }
-  });
+  if (task === 'Terminal') startTerminalCliMonitor(sessionId, projectPath);
+
+  if (sessionCliType === 'codex') watchCodexSessionBinding(sessionId);
 
   insertEvent({
     session_id: sessionId,
     type: 'session_resume',
-    data: { task, projectPath, claudeSessionId: claudeUuid },
+    data: { task, projectPath, cliType: sessionCliType, nativeSessionId, via: 'native-resume' },
   });
 
   pushSystemEvent(`[AgentManager] Session ${sessionId} resumed after crash: ${task.slice(0, 60)}`);
 }
 
-/**
- * User-initiated resume of an ended Claude session: re-launch the CLI and send
- * `/resume <uuid>` to continue the conversation. Reuses the same session id.
- */
-export async function resumeSessionById(sessionId: string): Promise<{ ok: boolean; error?: string }> {
+/** User-initiated resume of an ended Claude or Codex conversation. */
+export async function resumeSessionById(sessionId: string, skipCircuitBreaker = true): Promise<{ ok: boolean; error?: string }> {
   const session = getSession(sessionId);
   if (!session) return { ok: false, error: 'Session not found' };
-  if (activeSessions.has(sessionId) || ['running', 'detached', 'pending'].includes(session.status)) {
+  if (activeSessions.has(sessionId) || ['running', 'detached', 'pending', 'released'].includes(session.status)) {
     return { ok: false, error: 'Session is still active' };
   }
-  if ((session as any).cli_type === 'codex') return { ok: false, error: 'Resume is only supported for Claude sessions' };
-  if (!session.claude_session_id) return { ok: false, error: 'No Claude session id was captured — this session cannot be resumed' };
+  const cliType = session.cli_type === 'codex' ? 'Codex' : 'Claude';
+  if (!nativeConversationId(session)) return { ok: false, error: `No ${cliType} conversation id was captured — this session cannot be resumed` };
   if (!session.project_id) return { ok: false, error: 'Session has no associated project' };
   const proj = getDb().prepare('SELECT path FROM projects WHERE id = ?').get(session.project_id) as { path: string } | undefined;
   if (!proj?.path) return { ok: false, error: 'Project path not found' };
 
-  await resumeCrashedSession(session, proj.path, true);
+  await resumeCrashedSession(session, proj.path, skipCircuitBreaker);
   return { ok: true };
+}
+
+/**
+ * Last-chance recovery used when a browser opens a persisted tab but neither an
+ * active worker nor a reconnectable terminal wrapper can be found. This also
+ * repairs rows left as `running` when a worker vanished before marking them
+ * detached. Concurrent browser connections share one recovery attempt.
+ */
+export function recoverSessionOnAttach(sessionId: string): Promise<boolean> {
+  if (activeSessions.has(sessionId)) return Promise.resolve(true);
+  const existing = sessionRecoveryPromises.get(sessionId);
+  if (existing) return existing;
+
+  const recovery = (async () => {
+    if (activeSessions.has(sessionId)) return true;
+    const db = getDb();
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as Session | undefined;
+    if (
+      !session
+      || !['running', 'detached', 'pending', 'completed', 'failed'].includes(session.status)
+      || !session.project_id
+      || !nativeConversationId(session)
+    ) return false;
+    const project = db.prepare('SELECT path FROM projects WHERE id = ?').get(session.project_id) as { path: string } | undefined;
+    if (!project?.path) return false;
+
+    // A wrapper may still exist while only the server-side status is stale.
+    const tmuxAlive = config.useTmux ? await tmuxExistsAsync(sessionId) : false;
+    const dtachAlive = config.useDtach ? await dtachExistsAsync(sessionId) : false;
+    if (tmuxAlive || dtachAlive) {
+      db.prepare("UPDATE sessions SET status = 'detached', updated_at = datetime('now') WHERE id = ?").run(sessionId);
+      return reconnectSession(sessionId);
+    }
+
+    await resumeCrashedSession(session, project.path);
+    return activeSessions.has(sessionId);
+  })().catch((err) => {
+    console.error(`[RECOVER] Failed to restore persisted session ${sessionId}:`, err);
+    return false;
+  }).finally(() => {
+    sessionRecoveryPromises.delete(sessionId);
+  });
+
+  sessionRecoveryPromises.set(sessionId, recovery);
+  return recovery;
 }
 
 /**
  * Resume a Claude conversation log (uuid) as a fresh AgentManager session by
  * launching `claude --resume <uuid>` directly. Claude loads and replays the
- * full prior conversation and waits for input — nothing is auto-submitted (this
- * is NOT the crash-recovery path, which starts a blank session and injects a
- * `/resume` command). Returns the new session.
+ * full prior conversation and waits for input — nothing is auto-submitted.
+ * Returns the new session.
  */
 export async function resumeClaudeSession(projectPath: string, projectId: string | null, claudeUuid: string, task: string): Promise<Session> {
   const db = getDb();
@@ -2071,7 +2596,7 @@ export async function resumeClaudeSession(projectPath: string, projectId: string
   getOrCreateTracker(id);
 
   const claudeCmd = getSetting('session_claude_command') || 'claude';
-  // Pass the resume uuid via resumeUuid (NOT baked into sessionCommand): the worker
+  // Pass the resume uuid via resumeSessionId (NOT baked into sessionCommand): the worker
   // builds `claude --resume <uuid>` with NO positional prompt, so the replayed
   // conversation waits for input instead of auto-submitting `task`.
   worker.send({
@@ -2085,7 +2610,7 @@ export async function resumeClaudeSession(projectPath: string, projectId: string
     useTmux: config.useTmux,
     useDtach: config.useDtach,
     sessionCommand: claudeCmd,
-    resumeUuid: claudeUuid,
+    resumeSessionId: claudeUuid,
     cliType: 'claude',
   });
 
@@ -2121,6 +2646,7 @@ export function purgeSessionRecord(sessionId: string): { ok: boolean; error?: st
   try { db.prepare('DELETE FROM pty_output WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
   try { db.prepare('DELETE FROM session_snapshots WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
   try { db.prepare('DELETE FROM events WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
+  try { unlinkSync(join(CODEX_BINDINGS_DIR, `${sessionId}.json`)); } catch { /* ignore */ }
   db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
   return { ok: true };
 }

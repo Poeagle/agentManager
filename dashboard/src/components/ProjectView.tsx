@@ -56,6 +56,8 @@ interface PersistedState {
   activeExplorerId: string | null;
   terminalInstances: TerminalInstance[];
   activeTerminalId: string | null;
+  /** Running sessions whose tabs the user explicitly hid without killing. */
+  hiddenSessionIds?: string[];
   webPageInstances?: WebPageInstance[];
   activeWebPageId?: string | null;
   /** When true, the "new session" launcher tab is active instead of a terminal */
@@ -177,9 +179,9 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
         .map((t) => [t.id, t.customLabel!.trim()]),
     ),
   );
-  // Flips true once this project's server state has been pulled, so the
-  // debounced write-back doesn't clobber the server before we've read it.
-  const projHydratedRef = useRef(false);
+  // State guarantees the first complete post-hydration tab snapshot is
+  // written even when nothing else changes afterward.
+  const [projHydrated, setProjHydrated] = useState(false);
 
   const [activeMode, setActiveMode] = useState<ActiveMode>(
     initialized?.activeMode ?? 'terminal'
@@ -214,6 +216,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(
     initialized?.activeTerminalId ?? null
   );
+  const autoResumeAttemptsRef = useRef(new Set<string>());
 
   // ── Inline session-tab rename ──────────────────────────────────────
   // ProjectView refocuses the active terminal (xterm) on session updates / tab
@@ -357,7 +360,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
   }, [active]);
 
   // Track sessions the user explicitly closed so the sync effect doesn't re-add them
-  const closedSessionIds = useRef(new Set<string>());
+  const closedSessionIds = useRef(new Set<string>(initialized?.hiddenSessionIds ?? []));
   // Counter to force re-render when closedSessionIds changes (refs don't trigger re-renders)
   const [closedIdsVersion, setClosedIdsVersion] = useState(0);
 
@@ -379,7 +382,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
     // Prune closed IDs that are no longer alive on the server (kill completed)
     const allAliveIds = new Set(
       (sessionsData?.sessions || [])
-        .filter((s: any) => s.status === 'running' || s.status === 'detached')
+        .filter((s: any) => s.status === 'running' || s.status === 'detached' || s.status === 'pending')
         .map((s: any) => s.id)
     );
     let pruned = false;
@@ -544,15 +547,16 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
       activeExplorerId,
       terminalInstances,
       activeTerminalId,
+      hiddenSessionIds: [...closedSessionIds.current],
       webPageInstances,
       activeWebPageId,
       showLauncher,
     });
-  }, [projectId, activeMode, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, webPageInstances, activeWebPageId, showLauncher]);
+  }, [projectId, activeMode, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion, webPageInstances, activeWebPageId, showLauncher]);
 
-  // ── Cross-device sync: pull this project's shared sub-tab state (terminal
-  // custom names + explorer/web-page tabs) on mount. Active selection, view
-  // mode and grid layout stay per-device, so they're never read or written here.
+  // ── Cross-device sync: the terminal tab list uses stable AgentManager
+  // session IDs. Persisting it (plus hidden/active IDs) makes the tab-to-native
+  // conversation mapping survive browser, service and machine restarts.
   useEffect(() => {
     let cancelled = false;
     api.userState.getAll()
@@ -560,6 +564,9 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
         if (cancelled) return;
         const ps = state?.[`project:${projectId}`] as {
           terminalLabels?: Record<string, string>;
+          terminalInstances?: TerminalInstance[];
+          activeTerminalId?: string | null;
+          hiddenSessionIds?: string[];
           explorerInstances?: ExplorerInstance[];
           webPageInstances?: WebPageInstance[];
         } | undefined;
@@ -567,6 +574,9 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
           // First run for this project: seed the server from local state.
           api.userState.set(`project:${projectId}`, {
             terminalLabels: terminalLabelsRef.current,
+            terminalInstances,
+            activeTerminalId,
+            hiddenSessionIds: [...closedSessionIds.current],
             explorerInstances,
             webPageInstances,
           }).catch(() => {});
@@ -580,6 +590,33 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
               return cl && cl !== t.customLabel ? { ...t, customLabel: cl } : t;
             }),
           );
+        }
+        if (Array.isArray(ps.hiddenSessionIds)) {
+          closedSessionIds.current = new Set(ps.hiddenSessionIds);
+          setClosedIdsVersion((v) => v + 1);
+        }
+        if (Array.isArray(ps.terminalInstances)) {
+          setTerminalInstances((prev) => {
+            const hidden = closedSessionIds.current;
+            const byId = new Map(prev.filter((t) => !hidden.has(t.id)).map((t) => [t.id, t]));
+            const ordered: TerminalInstance[] = [];
+            for (const saved of ps.terminalInstances!) {
+              if (hidden.has(saved.id)) continue;
+              const current = byId.get(saved.id);
+              ordered.push(current ? { ...saved, ...current, customLabel: current.customLabel || saved.customLabel } : saved);
+              byId.delete(saved.id);
+            }
+            return [...ordered, ...byId.values()];
+          });
+        } else if (closedSessionIds.current.size > 0) {
+          setTerminalInstances((prev) => prev.filter((t) => !closedSessionIds.current.has(t.id)));
+        }
+        if (
+          ps.activeTerminalId
+          && !closedSessionIds.current.has(ps.activeTerminalId)
+        ) {
+          setActiveTerminalId(ps.activeTerminalId);
+          setShowLauncher(false);
         }
         // Web-page and explorer tabs aren't derived from sessions, so merge the
         // server's set in (union by id, server wins) to restore them on a new device.
@@ -599,14 +636,15 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
         }
       })
       .catch(() => { /* offline / unauthenticated: keep localStorage state */ })
-      .finally(() => { if (!cancelled) projHydratedRef.current = true; });
+      .finally(() => { if (!cancelled) setProjHydrated(true); });
     return () => { cancelled = true; };
   }, [projectId]);
 
-  // Debounced write-back of the shared subset after hydration. terminalLabels is
-  // derived from live instances, so closed tabs drop out of the synced set.
+  // Debounced write-back after hydration. The backend session row remains the
+  // source of truth for whether a CLI exists; this state preserves presentation
+  // order, active selection and explicit hidden tabs.
   useEffect(() => {
-    if (!projHydratedRef.current) return;
+    if (!projHydrated) return;
     const h = setTimeout(() => {
       const terminalLabels: Record<string, string> = {};
       for (const t of terminalInstances) {
@@ -615,12 +653,39 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
       }
       api.userState.set(`project:${projectId}`, {
         terminalLabels,
+        terminalInstances,
+        activeTerminalId,
+        hiddenSessionIds: [...closedSessionIds.current],
         explorerInstances,
         webPageInstances,
       }).catch(() => {});
     }, 600);
     return () => clearTimeout(h);
-  }, [projectId, terminalInstances, explorerInstances, webPageInstances]);
+  }, [projHydrated, projectId, terminalInstances, activeTerminalId, closedIdsVersion, explorerInstances, webPageInstances]);
+
+  // An open tab is a durable promise to the user: if its terminal container
+  // vanished while the dashboard/server was unavailable, reopen the exact
+  // native Claude/Codex conversation as soon as project state is hydrated.
+  // Cancelled sessions are excluded because cancellation is an explicit stop.
+  useEffect(() => {
+    if (!projHydrated || !sessionsData) return;
+    const openIds = new Set(terminalInstances.map((terminal) => terminal.id));
+    for (const session of sessionsData.sessions) {
+      if (
+        session.project_id !== projectId
+        || !openIds.has(session.id)
+        || !['completed', 'failed'].includes(session.status)
+      ) continue;
+      const hasNativeConversation = session.cli_type === 'codex'
+        ? !!session.codex_session_id
+        : !!session.claude_session_id;
+      if (!hasNativeConversation || autoResumeAttemptsRef.current.has(session.id)) continue;
+      autoResumeAttemptsRef.current.add(session.id);
+      api.sessions.resume(session.id, true)
+        .then(() => queryClient.invalidateQueries({ queryKey: ['sessions'] }))
+        .catch((err) => console.error(`Failed to auto-restore session ${session.id}:`, err));
+    }
+  }, [projHydrated, projectId, sessionsData, terminalInstances, queryClient]);
 
   function handleOpenVSCode() {
     api.files.openVSCode(projectPath).catch((err) => {
@@ -897,16 +962,20 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
       }
 
       // Ended session (completed/failed/cancelled): resume it in place — reuses
-      // the same id and reloads the Claude conversation. Once it's running again,
+      // the same id and reloads the native Claude/Codex conversation. Once it's running again,
       // the tab re-renders from the ended (HistoryViewer) view to a live Terminal.
       if (oldSession && ['completed', 'failed', 'cancelled'].includes(oldSession.status)) {
-        if (oldSession.cli_type !== 'codex' && oldSession.claude_session_id) {
+        const resumable = oldSession.cli_type === 'codex'
+          ? !!oldSession.codex_session_id
+          : !!oldSession.claude_session_id;
+        if (resumable) {
           await api.sessions.resume(oldId);
           setActiveTerminalId(oldId);
           queryClient.invalidateQueries({ queryKey: ['sessions'] });
           return;
         }
-        // Not resumable (plain terminal / codex) — fall through to a fresh session.
+        // Not resumable (plain terminal or an old uncaptured CLI session) —
+        // fall through to a fresh session.
       }
 
       const result = await api.sessions.create({
@@ -1754,7 +1823,9 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
                     // of a live Terminal that couldn't attach.
                     const endedSession = allSessionLookup.get(term.id);
                     const isEnded = !!endedSession && (endedSession.status === 'completed' || endedSession.status === 'failed' || endedSession.status === 'cancelled');
-                    const canResume = isEnded && endedSession!.cli_type !== 'codex' && !!endedSession!.claude_session_id;
+                    const canResume = isEnded && (endedSession!.cli_type === 'codex'
+                      ? !!endedSession!.codex_session_id
+                      : !!endedSession!.claude_session_id);
 
                     return (
                       <div

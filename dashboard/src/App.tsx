@@ -73,9 +73,9 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   const [editingTabValue, setEditingTabValue] = useState('');
   // Set when Escape cancels editing, so the input's onBlur doesn't also commit.
   const skipTabBlurCommitRef = useRef(false);
-  // Flips true once the server's UI state has been pulled, so the debounced
-  // write-back below doesn't clobber the server with local data before we've read it.
-  const serverHydratedRef = useRef(false);
+  // State (rather than a ref) guarantees the first complete post-hydration
+  // snapshot is written even when nothing else changes afterward.
+  const [serverHydrated, setServerHydrated] = useState(false);
   const [projectTabs, setProjectTabs] = useState<ProjectTab[]>(() => {
     const tabs = savedState?.projectTabs ?? [];
     // Deduplicate by projectId
@@ -199,14 +199,14 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     saveAppState(authUser.id, activeTab, projectTabs);
   }, [activeTab, projectTabs]);
 
-  // ── Cross-device sync: pull the shared `projectTabs` (open tabs + custom
-  // names) from the server once on mount. activeTab stays per-device.
+  // ── Cross-device sync: pull the open project tabs and active project. This
+  // server-side copy is the durable fallback when browser storage is lost.
   useEffect(() => {
     let cancelled = false;
     api.userState.getAll()
       .then(({ state }) => {
         if (cancelled) return;
-        const serverApp = state?.app as { projectTabs?: ProjectTab[] } | undefined;
+        const serverApp = state?.app as { projectTabs?: ProjectTab[]; activeTab?: string } | undefined;
         const tabs = serverApp?.projectTabs;
         if (Array.isArray(tabs)) {
           const seen = new Set<string>();
@@ -216,28 +216,37 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
             return true;
           });
           setProjectTabs(deduped);
-          // If our locally-active tab no longer exists in the shared set, fall back home.
-          setActiveTab((cur) =>
-            cur !== 'home' && !deduped.some((t) => `project-${t.projectId}` === cur) ? 'home' : cur,
-          );
+          const serverActive = serverApp?.activeTab;
+          if (
+            serverActive === 'home'
+            || (typeof serverActive === 'string' && deduped.some((t) => `project-${t.projectId}` === serverActive))
+          ) {
+            setActiveTab(serverActive);
+          } else {
+            // If neither server nor local selection points at an open tab,
+            // recover safely to Home.
+            setActiveTab((cur) =>
+              cur !== 'home' && !deduped.some((t) => `project-${t.projectId}` === cur) ? 'home' : cur,
+            );
+          }
         } else {
           // First run for this user: seed the server from whatever we have locally.
-          api.userState.set('app', { projectTabs }).catch(() => {});
+          api.userState.set('app', { projectTabs, activeTab }).catch(() => {});
         }
       })
       .catch(() => { /* offline / unauthenticated: keep using localStorage */ })
-      .finally(() => { if (!cancelled) serverHydratedRef.current = true; });
+      .finally(() => { if (!cancelled) setServerHydrated(true); });
     return () => { cancelled = true; };
   }, [authUser.id]);
 
   // Debounced write-back of the shared tab set to the server (after hydration).
   useEffect(() => {
-    if (!serverHydratedRef.current) return;
+    if (!serverHydrated) return;
     const h = setTimeout(() => {
-      api.userState.set('app', { projectTabs }).catch(() => {});
+      api.userState.set('app', { projectTabs, activeTab }).catch(() => {});
     }, 500);
     return () => clearTimeout(h);
-  }, [projectTabs]);
+  }, [serverHydrated, projectTabs, activeTab]);
 
   // Tab navigation shortcuts — cycle across 'home' + open project tabs.
   // markKeyboardNav() raises a short-lived flag so the newly visible

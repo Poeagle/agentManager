@@ -156,6 +156,10 @@ export function initDb(): void {
   try { db.exec('ALTER TABLE projects ADD COLUMN skip_permissions INTEGER DEFAULT 0'); } catch {}
   // Codex support: track which CLI (claude or codex) launched the session
   try { db.exec("ALTER TABLE sessions ADD COLUMN cli_type TEXT DEFAULT 'claude'"); } catch {}
+  // Native Codex conversation UUID. Together with claude_session_id this keeps
+  // the AgentManager tab -> CLI conversation mapping durable even when the
+  // server and its tmux/dtach process both disappear.
+  try { db.exec('ALTER TABLE sessions ADD COLUMN codex_session_id TEXT'); } catch {}
 
   // Note: orphaned process cleanup is handled by cleanupStaleRunningSessions()
   // which is called after initDb() in index.ts — it kills processes AND marks DB records.

@@ -2,7 +2,7 @@ import { FastifyPluginAsync } from 'fastify';
 import {
   attachTerminal, writeToSession, resizeSession, reconnectSession,
   getPendingSpawn, consumePendingSpawn, spawnSession, spawnTerminal, spawnAdopt, spawnAgent,
-  sendReplay,
+  sendReplay, recoverSessionOnAttach,
 } from '../services/session-manager.js';
 import { getDb } from '../db/index.js';
 
@@ -121,6 +121,9 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
           await reconnectSession(sessionId);
           attached = attachTerminal(sessionId, socket);
         }
+        if (!attached && await recoverSessionOnAttach(sessionId)) {
+          attached = attachTerminal(sessionId, socket);
+        }
         if (!attached) {
           // Mark dead sessions as failed so they stop appearing in the grid
           getDb().prepare(`
@@ -150,6 +153,9 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
       let attached = attachTerminal(sessionId, socket);
       if (!attached) {
         await reconnectSession(sessionId);
+        attached = attachTerminal(sessionId, socket);
+      }
+      if (!attached && await recoverSessionOnAttach(sessionId)) {
         attached = attachTerminal(sessionId, socket);
       }
       if (!attached) {

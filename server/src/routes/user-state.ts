@@ -4,10 +4,9 @@ import { getDb } from '../db/index.js';
 /**
  * Per-user UI view state — the cross-device "same screen everywhere" store.
  *
- * Holds only the *shareable* slice of the dashboard's view: which project tabs
- * are open + their custom names (`app`), and each project's terminal labels /
- * explorer + web-page sub-tabs (`project:<id>`). Per-device bits (active tab,
- * grid layout) stay in the browser's localStorage and never come here.
+ * Holds the durable dashboard view: open/active project tabs (`app`), and each
+ * project's terminal order, active/hidden session ids, labels, explorer tabs
+ * and web-page tabs (`project:<id>`). Grid sizing remains device-local.
  *
  * Scoped to req.user.id — every /api/* route is already gated by authHook, so a
  * logged-in user only ever reads/writes their own rows.

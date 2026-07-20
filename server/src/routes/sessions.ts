@@ -163,12 +163,14 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  // Resume an ended Claude session — re-launch the CLI and /resume the
-  // conversation. Reuses the same session id (it comes back to life as running).
-  app.post<{ Params: { id: string } }>('/sessions/:id/resume', async (req, reply) => {
+  // Resume an ended Claude or Codex conversation in place. The AgentManager
+  // session id (and therefore the project tab mapping) remains unchanged.
+  app.post<{ Params: { id: string }; Body: { automatic?: boolean } }>('/sessions/:id/resume', async (req, reply) => {
     const { id } = req.params;
     if (!userOwnsSession(req.user!.id, id)) return reply.status(404).send({ error: 'Session not found' });
-    const result = await sessionManager.resumeSessionById(id);
+    // Automatic page restoration keeps the crash-loop breaker enabled. A user
+    // explicitly pressing Resume is allowed to make a fresh attempt.
+    const result = await sessionManager.resumeSessionById(id, req.body?.automatic !== true);
     if (!result.ok) return reply.status(400).send({ error: result.error });
     return { ok: true, session: sessionManager.getSession(id) };
   });

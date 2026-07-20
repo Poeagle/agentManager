@@ -106,9 +106,12 @@ export const api = {
     // onProgress (0..1) reports upload progress (via XHR — fetch can't).
     pasteFile: (id: string, dataUrl: string, filename: string, onProgress?: (fraction: number) => void) =>
       uploadWithProgress<{ ok: boolean; path: string }>(`/sessions/${id}/paste-file`, { dataUrl, filename }, onProgress),
-    // Resume an ended Claude session (re-launch + /resume); reuses the same id.
-    resume: (id: string) =>
-      fetchJSON<{ ok: boolean; session: Session }>(`/sessions/${id}/resume`, { method: 'POST', body: JSON.stringify({}) }),
+    // Resume an ended Claude/Codex conversation; reuses the same app session id.
+    resume: (id: string, automatic = false) =>
+      fetchJSON<{ ok: boolean; session: Session }>(`/sessions/${id}/resume`, {
+        method: 'POST',
+        body: JSON.stringify(automatic ? { automatic: true } : {}),
+      }),
     // Permanently delete an ended session from history (record + events + JSONL).
     deleteRecord: (id: string) =>
       fetchJSON<{ ok: boolean }>(`/sessions/${id}/record`, { method: 'DELETE' }),
@@ -359,6 +362,7 @@ export interface Session {
   created_at: string;
   cli_type?: 'claude' | 'codex';
   claude_session_id?: string | null;
+  codex_session_id?: string | null;
   // Live process-state (present when the session has an active in-memory tracker).
   processState?: 'busy' | 'idle' | 'waiting_for_input';
   promptType?: 'choice' | 'confirmation' | 'text' | null;
