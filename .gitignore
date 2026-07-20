@@ -22,6 +22,12 @@ CLAUDE.md.*.bak
 # TypeScript build cache
 *.tsbuildinfo
 
+# Test output and isolated runtime data
+coverage/
+playwright-report/
+test-results/
+.test-data/
+
 # Codex local configuration
 .codex/
 .agents/

@@ -8,6 +8,9 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc && cp -r src/data/agents dist/data/ && cp src/data/statusline.sh dist/data/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "start": "env NODE_ENV=production node dist/index.js"
   },
   "dependencies": {
@@ -32,8 +35,10 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.15",
     "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^4.1.10",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10"
   },
   "overrides": {
     "fast-uri": ">=3.1.2"

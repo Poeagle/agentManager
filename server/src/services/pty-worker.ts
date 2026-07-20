@@ -16,6 +16,7 @@ import { existsSync, unlinkSync, mkdirSync, createReadStream, readFileSync, read
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import type { ReadStream } from 'fs';
+import { buildAgentCommand, buildSessionCommand } from './cli-command.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -265,110 +266,6 @@ function cleanupPipePane(sessionId: string, fifoPath?: string): void {
   try { execFileSync('tmux', ['-L', server, 'pipe-pane', '-t', name]); } catch { /* ignore */ }
   const path = fifoPath || join(PIPE_PANE_DIR, `${sessionId}.fifo`);
   try { unlinkSync(path); } catch { /* ignore */ }
-}
-
-/* ================================================================
-   session command builder
-   ================================================================ */
-
-function shellSingleQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-function tomlBasicString(value: string): string {
-  return `"${value
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')}"`;
-}
-
-/**
- * Add a per-launch SessionStart hook that records Codex's real conversation
- * UUID. Codex does not let callers choose the UUID for a fresh TUI session, so
- * this hook is the deterministic bridge between our stable tab id and Codex's
- * native resumable thread id. The hook only writes an AgentManager-owned local
- * file; it does not need an unauthenticated HTTP endpoint.
- */
-function codexIdentityFlags(bindingPath?: string): string {
-  if (!bindingPath) return '';
-  const script = [
-    "const fs=require('fs');",
-    'try{',
-    "const raw=fs.readFileSync(0,'utf8');",
-    'const input=raw?JSON.parse(raw):{};',
-    "const id=typeof input.session_id==='string'?input.session_id:'';",
-    "if(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)){",
-    'const target=process.argv[1];',
-    "const tmp=target+'.'+process.pid+'.tmp';",
-    "fs.writeFileSync(tmp,JSON.stringify({session_id:id,cwd:input.cwd||'',captured_at:new Date().toISOString()}));",
-    'fs.renameSync(tmp,target);',
-    '}',
-    '}catch{}',
-  ].join('');
-  const hookCommand = `node -e ${shellSingleQuote(script)} ${shellSingleQuote(bindingPath)}`;
-  const hookConfig = `hooks.SessionStart=[{matcher="startup|resume",hooks=[{type="command",command=${tomlBasicString(hookCommand)},timeout=5}]}]`;
-  // This hook is generated entirely by AgentManager for this invocation. Force
-  // hooks on and bypass the interactive trust prompt so identity capture cannot
-  // silently fail on a headless/server launch.
-  return ` --enable hooks --dangerously-bypass-hook-trust -c ${shellSingleQuote(hookConfig)}`;
-}
-
-function buildSessionCommand(task: string, direct = false, sessionCmd = '', cliType: 'claude' | 'codex' = 'claude', resumeSessionId?: string, assignSessionId?: string, codexBindingPath?: string): string {
-  // Resume the exact native conversation and wait for input. No positional
-  // prompt is passed, so resuming never submits the old task a second time.
-  if (resumeSessionId) {
-    const baseCmd = sessionCmd || (cliType === 'codex' ? 'codex' : 'claude');
-    const cmd = cliType === 'codex'
-      ? `${baseCmd} resume${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(resumeSessionId)}`
-      : `${baseCmd} --resume ${shellSingleQuote(resumeSessionId)}`;
-    return direct ? `command bash -c ${shellSingleQuote(cmd)}` : cmd;
-  }
-  if (cliType === 'codex') {
-    // --no-alt-screen prevents Codex from using the alternate screen buffer,
-    // which fixes resize/reflow issues in tmux and embedded terminals
-    const baseCmd = sessionCmd || 'codex';
-    const cmd = `${baseCmd}${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(task)}`;
-    if (direct) {
-      return `command bash -c ${shellSingleQuote(cmd)}`;
-    }
-    return cmd;
-  }
-  // Claude: launch with configured command (may include flags like --dangerously-skip-permissions).
-  // --session-id pins the conversation uuid the server assigned, so the
-  // tmux↔conversation mapping is known from the start (uuid is a safe [0-9a-f-] literal).
-  const baseCmd = sessionCmd || 'claude';
-  const sid = assignSessionId ? ` --session-id ${assignSessionId}` : '';
-  const cmd = `${baseCmd}${sid} ${shellSingleQuote(task)}`;
-  if (direct) {
-    return `command ${cmd}`;
-  }
-  return cmd;
-}
-
-function buildAgentCommand(agentType: string, task: string, direct = false, sessionCmd = '', cliType: 'claude' | 'codex' = 'claude', assignSessionId?: string, codexBindingPath?: string): string {
-  let cmd: string;
-  if (cliType === 'codex') {
-    const baseCmd = sessionCmd || 'codex';
-    // Codex CLI doesn't have --agent flag. Pass the agent role as part of the prompt.
-    const prompt = task
-      ? `You are a ${agentType} agent. ${task}`
-      : `You are a ${agentType} agent. Ask me what I want you to do.`;
-    cmd = `${baseCmd}${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(prompt)}`;
-  } else {
-    const baseCmd = sessionCmd || 'claude';
-    // --session-id pins the server-assigned conversation uuid (see buildSessionCommand).
-    const sid = assignSessionId ? ` --session-id ${assignSessionId}` : '';
-    // Claude CLI uses --agent to load agent definitions from .claude/agents/
-    cmd = task
-      ? `${baseCmd}${sid} --agent ${shellSingleQuote(agentType)} ${shellSingleQuote(task)}`
-      : `${baseCmd}${sid} --agent ${shellSingleQuote(agentType)}`;
-  }
-
-  if (direct) {
-    return `command bash -c ${shellSingleQuote(cmd)}`;
-  }
-  return cmd;
 }
 
 /* ================================================================

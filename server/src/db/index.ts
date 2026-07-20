@@ -12,6 +12,13 @@ export function getDb(): Database.Database {
   return db;
 }
 
+/** Close the current connection. Primarily used by isolated tests and graceful tooling. */
+export function closeDb(): void {
+  if (!db) return;
+  db.close();
+  db = undefined as unknown as Database.Database;
+}
+
 export function initDb(): void {
   db = new Database(config.dbPath);
   db.pragma('journal_mode = WAL');

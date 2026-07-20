@@ -2,7 +2,7 @@ import { fork, execFile, execFileSync, spawn, type ChildProcess } from 'child_pr
 import { promisify } from 'util';
 import { createRequire } from 'module';
 import { readFile, readdirSync, readFileSync, writeFileSync as fsWriteFileSync, existsSync, appendFileSync, unlinkSync, mkdirSync, openSync, readSync, closeSync, readlinkSync, renameSync, statSync, type Dirent } from 'fs';
-import { join, dirname, basename } from 'path';
+import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
@@ -14,6 +14,13 @@ import { nanoid } from 'nanoid';
 import type { WebSocket } from 'ws';
 import { getOrCreateTracker, removeTracker, recoverFromBuffer } from './session-state.js';
 import { encodeDir } from './claude-history.js';
+import {
+  cliTypeFromArgv,
+  codexSessionIdFromOpenTargets,
+  explicitClaudeSessionId,
+  nativeConversationId,
+  selectClaudeSessionCandidate,
+} from './session-identity.js';
 
 const nodeRequire = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = nodeRequire('@xterm/headless') as { Terminal: any };
@@ -312,10 +319,6 @@ function watchCodexSessionBinding(sessionId: string, attempts = 150): void {
   timer.unref();
 }
 
-function nativeConversationId(session: Pick<Session, 'cli_type' | 'claude_session_id' | 'codex_session_id'>): string | null {
-  return session.cli_type === 'codex' ? session.codex_session_id : session.claude_session_id;
-}
-
 /* ================================================================
    Plain-terminal CLI identity detection
 
@@ -371,15 +374,14 @@ function findCliProcess(rootPid: number): { pid: number; cliType: 'claude' | 'co
   // such as codex-code-mode-host.
   for (const pid of procTree(rootPid)) {
     const args = procArgs(pid);
-    const command = basename(args[0] || '').toLowerCase();
-    if (command === 'codex') return { pid, cliType: 'codex', args };
-    if (command === 'claude') return { pid, cliType: 'claude', args };
+    const cliType = cliTypeFromArgv(args);
+    if (cliType) return { pid, cliType, args };
   }
   return null;
 }
 
 function codexIdFromOpenRollout(cliPid: number): string | null {
-  const ids = new Set<string>();
+  const targets: string[] = [];
   // The Codex TUI keeps its active rollout JSONL open. Search the CLI and its
   // descendants in case a release moves the writer into a child process.
   for (const pid of procTree(cliPid, 64)) {
@@ -387,24 +389,11 @@ function codexIdFromOpenRollout(cliPid: number): string | null {
     try { fds = readdirSync(`/proc/${pid}/fd`); } catch { continue; }
     for (const fd of fds) {
       try {
-        const target = readlinkSync(`/proc/${pid}/fd/${fd}`);
-        const match = /\/rollout-[^/]*-([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.jsonl(?: \(deleted\))?$/i.exec(target);
-        if (match) ids.add(match[1]);
+        targets.push(readlinkSync(`/proc/${pid}/fd/${fd}`));
       } catch { /* fd closed during inspection */ }
     }
   }
-  return ids.size === 1 ? [...ids][0] : null;
-}
-
-function explicitClaudeId(args: string[]): string | null {
-  for (let i = 1; i < args.length; i++) {
-    if (['--session-id', '--resume', '-r'].includes(args[i]) && args[i + 1]) {
-      const raw = args[i + 1];
-      const fileId = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.jsonl)?$/i.exec(raw)?.[1];
-      if (fileId && UUID_RE.test(fileId)) return fileId;
-    }
-  }
-  return null;
+  return codexSessionIdFromOpenTargets(targets);
 }
 
 function processStartedAt(pid: number): number | null {
@@ -427,7 +416,7 @@ function processStartedAt(pid: number): number | null {
 }
 
 function claudeIdFromProjectLog(cliPid: number, args: string[], projectPath: string, appSessionId: string): string | null {
-  const explicit = explicitClaudeId(args);
+  const explicit = explicitClaudeSessionId(args);
   if (explicit) return explicit;
 
   const startedAt = processStartedAt(cliPid);
@@ -446,7 +435,7 @@ function claudeIdFromProjectLog(cliPid: number, args: string[], projectPath: str
       WHERE id != ? AND claude_session_id IS NOT NULL
     `).all(appSessionId) as Array<{ claude_session_id: string }>).map((row) => row.claude_session_id),
   );
-  const candidates: Array<{ id: string; delta: number }> = [];
+  const candidates: Array<{ id: string; startedAt: number }> = [];
   for (const file of files) {
     const id = file.slice(0, -'.jsonl'.length);
     if (used.has(id)) continue;
@@ -457,16 +446,9 @@ function claudeIdFromProjectLog(cliPid: number, args: string[], projectPath: str
     if (!Number.isFinite(fileStartedAt)) {
       try { fileStartedAt = statSync(path).birthtimeMs || statSync(path).ctimeMs; } catch { continue; }
     }
-    const delta = Math.abs(fileStartedAt - startedAt);
-    if (delta <= 30_000) candidates.push({ id, delta });
+    candidates.push({ id, startedAt: fileStartedAt });
   }
-  candidates.sort((a, b) => a.delta - b.delta);
-  // Require a unique close match. If two Claude sessions were launched in the
-  // same project at nearly the same instant, leave the tab unbound rather than
-  // attach it to the wrong conversation.
-  if (candidates.length === 1) return candidates[0].id;
-  if (candidates.length > 1 && candidates[1].delta - candidates[0].delta > 5_000) return candidates[0].id;
-  return null;
+  return selectClaudeSessionCandidate(startedAt, candidates, used);
 }
 
 async function terminalRootPid(sessionId: string): Promise<number | null> {

@@ -83,6 +83,21 @@ npm run dev                  # server :42010 + dashboard with hot reload
 bash scripts/dev-isolated.sh # or an isolated instance on separate ports + db
 ```
 
+## Testing
+
+The repository includes isolated server and dashboard tests, coverage gates,
+and Playwright browser tests. The E2E runner uses a repository-local test HOME
+and SQLite database, so it cannot touch normal AgentManager sessions.
+
+```bash
+npm test              # unit + integration
+npm run test:coverage # enforced coverage
+npm run test:e2e      # Chromium
+npm run test:all      # coverage + build + E2E
+```
+
+See [docs/testing.md](docs/testing.md) for architecture and authoring guidance.
+
 ## Configuration
 
 Optional — copy `.env.example` to `.env` in the project root:
