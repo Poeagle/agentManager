@@ -1728,7 +1728,7 @@ function trimCaptureOutput(output: string): string {
  */
 // Cache capture-pane results to avoid hammering tmux server (which is single-threaded
 // and may be busy processing pipe-pane output, causing 2.5s delays).
-const captureCache = new Map<string, { data: string; cursor?: { x: number; y: number }; ts: number }>();
+const captureCache = new Map<string, { data: string; ts: number }>();
 const CAPTURE_CACHE_TTL = 2000; // 2 seconds
 
 export function requestCapture(sessionId: string, ws: WebSocket): Promise<void> {
@@ -1743,7 +1743,7 @@ export function requestCapture(sessionId: string, ws: WebSocket): Promise<void> 
       ws.send(JSON.stringify({
         type: 'output',
         sessionId,
-        data: '\x1b[H\x1b[2J\x1b[3J' + cached.data + (cached.cursor ? `\x1b[${cached.cursor.y + 1};${cached.cursor.x + 1}H` : ''),
+        data: '\x1b[H\x1b[2J\x1b[3J' + cached.data,
       }));
     } catch { /* ws may have closed */ }
     return Promise.resolve();
@@ -1764,24 +1764,13 @@ export function requestCapture(sessionId: string, ws: WebSocket): Promise<void> 
     proc.stdout!.setEncoding('utf8');
     proc.stdout!.on('data', (chunk: string) => chunks.push(chunk));
 
-    proc.on('close', async (code) => {
+    proc.on('close', (code) => {
       const stdout = trimCaptureOutput(chunks.join(''));
       tlog(`[CAPTURE] ${sessionId}: done in ${Date.now() - t0}ms (${stdout.length} bytes, code=${code})`);
       if (code === 0 && stdout) {
-        // capture-pane does not include the tmux cursor position. Query it
-        // separately and restore it after writing the snapshot; otherwise a
-        // replay ending in a newline leaves xterm's cursor at the bottom-right.
-        let cursor: { x: number; y: number } | undefined;
-        try {
-          const { stdout: pos } = await execFileAsync('tmux', [
-            ...tmuxArgsForSession(sessionId), 'display-message', '-p', '-t', name, '#{cursor_x},#{cursor_y}',
-          ]);
-          const [x, y] = String(pos).trim().split(',').map(Number);
-          if (Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0) cursor = { x, y };
-        } catch { /* cursor query is best-effort */ }
         // Convert \n to \r\n for xterm.js — bare \n causes staircase (LF without CR)
         const converted = stdout.replace(/\r?\n/g, '\r\n');
-        captureCache.set(sessionId, { data: converted, cursor, ts: Date.now() });
+        captureCache.set(sessionId, { data: converted, ts: Date.now() });
 
         // Replace the replay buffer with this clean capture — prevents stale
         // raw chunks (recorded at different widths) from being replayed on
@@ -1789,16 +1778,15 @@ export function requestCapture(sessionId: string, ws: WebSocket): Promise<void> 
         const active = activeSessions.get(sessionId);
         if (active) {
           active.replayBuffer.length = 0;
-          const replayed = converted + (cursor ? `\x1b[${cursor.y + 1};${cursor.x + 1}H` : '');
-          active.replayBuffer.push(replayed);
-          active.replayBytes = replayed.length;
+          active.replayBuffer.push(converted);
+          active.replayBytes = converted.length;
         }
 
         try {
           ws.send(JSON.stringify({
             type: 'output',
             sessionId,
-            data: '\x1b[H\x1b[2J\x1b[3J' + converted + (cursor ? `\x1b[${cursor.y + 1};${cursor.x + 1}H` : ''),
+            data: '\x1b[H\x1b[2J\x1b[3J' + converted,
           }));
         } catch { /* ws may have closed */ }
       }

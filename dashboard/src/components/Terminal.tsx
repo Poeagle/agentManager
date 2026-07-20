@@ -666,8 +666,15 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     let firstResize = true;
 
-    function doResize() {
+    function doResize(initial = false) {
       fitAddon.fit();
+      // The first resize follows the initial replay. For TUIs, that replay is
+      // only a transitional stream at the old pane width; clear it before the
+      // real-size snapshot arrives so its final newline cannot leave xterm's
+      // cursor stranded in the lower-right corner.
+      if (initial && (hideCursorRef.current || cliTypeRef.current === 'codex')) {
+        term.reset();
+      }
       if (term.cols !== lastCols || term.rows !== lastRows) {
         lastCols = term.cols;
         lastRows = term.rows;
@@ -711,7 +718,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       if (firstResize) {
         // Send first resize immediately (triggers server replay + spawn)
         firstResize = false;
-        doResize();
+        doResize(true);
         return;
       }
 
