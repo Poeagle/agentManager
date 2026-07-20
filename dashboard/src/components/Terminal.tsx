@@ -821,7 +821,10 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     // relies on it, and plain shells obviously need it, so both keep a visible
     // blinking cursor (the app's own DECTCEM still drives show/hide, so there's
     // no double cursor if Claude ever decides to draw its own).
-    const forceHide = hideCursor && cliType === 'codex';
+    // Full-screen CLIs render and position their own input cursor. xterm's
+    // independent cursor can be left at the last cell after a resize/replay,
+    // producing a misleading second cursor in the lower-right corner.
+    const forceHide = hideCursor;
     if (forceHide) {
       // DECTCEM: hide cursor at VT level + make cursor transparent
       term.write('\x1b[?25l');
