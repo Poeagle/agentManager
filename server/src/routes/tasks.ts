@@ -64,8 +64,9 @@ export const taskRoutes: FastifyPluginAsync = async (app) => {
     Body: { status: string };
   }>('/tasks/:id', async (req, reply) => {
     const db = getDb();
-    const owns = db.prepare('SELECT 1 FROM tasks t JOIN projects p ON t.project_id = p.id WHERE t.id = ? AND p.owner_id = ?').get(req.params.id, req.user!.id);
-    if (!owns) return reply.status(404).send({ error: 'Task not found' });
+    const task = db.prepare('SELECT project_id FROM tasks WHERE id = ?').get(req.params.id) as { project_id: string | null } | undefined;
+    if (!task) return reply.status(404).send({ error: 'Task not found' });
+    if (task.project_id && !userOwnsProject(req.user!.id, task.project_id)) return reply.status(404).send({ error: 'Task not found' });
     const result = db.prepare('UPDATE tasks SET status = ?, updated_at = datetime(\'now\') WHERE id = ?')
       .run(req.body.status, req.params.id);
 

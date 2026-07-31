@@ -43,7 +43,7 @@ function uploadWithProgress<T>(url: string, body: unknown, onProgress?: (fractio
   });
 }
 
-export interface AuthUser { id: string; username: string; display_name: string; role: 'admin' | 'member'; disabled?: number; created_at?: string; }
+export interface AuthUser { id: string; username: string; display_name: string; role: 'admin' | 'member'; disabled?: number; max_tabs?: number; created_at?: string; }
 export interface AuthStatus { needsSetup: boolean; authenticated: boolean; user: AuthUser | null; }
 export interface AuthCredentials { username: string; password: string; display_name?: string; }
 
@@ -59,10 +59,25 @@ export const api = {
   },
   users: {
     list: () => fetchJSON<{ users: AuthUser[] }>('/users'),
-    create: (data: { username: string; password: string; display_name?: string; role?: 'admin' | 'member' }) =>
+    create: (data: { username: string; password: string; display_name?: string; role?: 'admin' | 'member'; max_tabs?: number }) =>
       fetchJSON<{ user: AuthUser }>('/users', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: { role?: 'admin' | 'member'; disabled?: boolean; password?: string }) =>
+    update: (id: string, data: { role?: 'admin' | 'member'; disabled?: boolean; password?: string; max_tabs?: number }) =>
       fetchJSON<{ user: AuthUser }>(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    delete: (id: string) =>
+      fetchJSON<{ ok: boolean; closed_sessions: number }>(`/users/${id}`, { method: 'DELETE' }),
+  },
+  admin: {
+    monitor: () => fetchJSON<AdminMonitorResponse>('/admin/monitor'),
+    renameMonitorTab: (userId: string, projectId: string, sessionId: string, name: string) =>
+      fetchJSON<{ ok: boolean; tab: { id: string; name: string } }>(
+        `/admin/monitor/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}/tabs/${encodeURIComponent(sessionId)}`,
+        { method: 'PATCH', body: JSON.stringify({ name }) },
+      ),
+    deleteMonitorTab: (userId: string, projectId: string, sessionId: string) =>
+      fetchJSON<{ ok: boolean; session_continues: boolean }>(
+        `/admin/monitor/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}/tabs/${encodeURIComponent(sessionId)}`,
+        { method: 'DELETE' },
+      ),
   },
   sessions: {
     list: (status?: string) =>
@@ -172,11 +187,41 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify({ skip_permissions: skipPermissions }),
       }),
+    access: (id: string) =>
+      fetchJSON<{ access: ProjectUserAccess[] }>(`/projects/${id}/access`),
+    setAccess: (id: string, userId: string, access: ProjectToolPermissions) =>
+      fetchJSON<{ ok: boolean; access: ProjectUserAccess }>(`/projects/${id}/access/${userId}`, {
+        method: 'PUT',
+        body: JSON.stringify(access),
+      }),
+    removeAccess: (id: string, userId: string) =>
+      fetchJSON<{ ok: boolean }>(`/projects/${id}/access/${userId}`, { method: 'DELETE' }),
   },
   skills: {
     // Project-scoped: lists the project's own skills + global read-only references.
     list: (projectId: string) =>
       fetchJSON<{ groups: SkillGroup[] }>(`/skills?project_id=${encodeURIComponent(projectId)}`),
+    marketplaceSearch: (projectId: string, query: string) => {
+      const params = new URLSearchParams({ project_id: projectId });
+      if (query.trim()) params.set('q', query.trim());
+      return fetchJSON<SkillMarketplaceSearchResponse>(`/skills/marketplace/search?${params.toString()}`);
+    },
+    marketplaceInstall: (
+      projectId: string,
+      skill: Pick<SkillMarketplaceResult, 'provider' | 'slug' | 'author' | 'skillId'>,
+      targets: SkillInstallTargetId[],
+    ) =>
+      fetchJSON<SkillMarketplaceInstallResponse>('/skills/marketplace/install', {
+        method: 'POST',
+        body: JSON.stringify({
+          project_id: projectId,
+          provider: skill.provider,
+          slug: skill.slug,
+          ...(skill.provider === 'clawhub' && skill.author ? { ownerHandle: skill.author } : {}),
+          ...(skill.skillId ? { skillId: skill.skillId } : {}),
+          targets,
+        }),
+      }),
     create: (projectId: string, tool: string, scope: string, data: { name: string; description?: string; content?: string }) =>
       fetchJSON<{ ok: boolean; tool: string; scope: string; dirName: string; path: string }>(`/skills/${tool}/${scope}`, {
         method: 'POST',
@@ -192,6 +237,14 @@ export const api = {
       fetchJSON<{ path: string; content: string; extension: string; size: number }>(
         `/files/read?path=${encodeURIComponent(path)}`
       ),
+    export: async (path: string, signal?: AbortSignal) => {
+      const res = await fetch(`${API_BASE}/files/export?path=${encodeURIComponent(path)}`, { signal });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error || `API error: ${res.status}`);
+      }
+      return res;
+    },
     write: (path: string, content: string) =>
       fetchJSON<{ ok: boolean; size: number }>('/files/write', {
         method: 'PUT',
@@ -369,6 +422,66 @@ export interface Session {
   isPermission?: boolean;
 }
 
+export interface AdminMonitorSession {
+  id: string;
+  project_id: string | null;
+  task: string;
+  status: string;
+  mode: 'session' | 'terminal' | 'agent' | null;
+  agent_type: string | null;
+  cli_type: 'claude' | 'codex' | null;
+  created_by_user_id: string;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  last_activity_at: string;
+  last_output: string | null;
+  root_pid: number | null;
+  process_count: number;
+  memory_bytes: number | null;
+  process_state: 'busy' | 'idle' | 'waiting_for_input' | null;
+  prompt_type: 'choice' | 'confirmation' | 'text' | null;
+  choices: string[] | null;
+  is_permission: boolean;
+}
+
+export interface AdminMonitorProject {
+  id: string | null;
+  name: string;
+  path: string | null;
+  is_open: boolean;
+  is_active: boolean;
+  custom_name: string | null;
+  state_updated_at: string | null;
+  tabs: AdminMonitorTab[];
+  sessions: AdminMonitorSession[];
+}
+
+export interface AdminMonitorTab {
+  id: string;
+  name: string;
+  kind: 'session';
+  is_active: boolean;
+}
+
+export interface AdminMonitorUser extends AuthUser {
+  online: boolean;
+  last_seen_at: string | null;
+  active_sessions: number;
+  open_projects: number;
+  memory_bytes: number;
+  projects: AdminMonitorProject[];
+}
+
+export interface AdminMonitorResponse {
+  generated_at: string;
+  active_users: number;
+  active_sessions: number;
+  total_memory_bytes: number;
+  users: AdminMonitorUser[];
+}
+
 export interface ClaudeHistoryItem {
   uuid: string;
   title: string;
@@ -401,6 +514,26 @@ export interface Project {
   skip_permissions: number;
   color: string;
   created_at: string;
+  tool_access?: ProjectToolPermissions;
+}
+
+export interface ProjectToolPermissions {
+  can_session: boolean;
+  can_agent: boolean;
+  can_terminal: boolean;
+  can_claude: boolean;
+  can_codex: boolean;
+}
+
+export interface ProjectUserAccess extends ProjectToolPermissions {
+  user_id: string;
+  username: string;
+  display_name: string;
+  role: 'admin' | 'member';
+  owner_id?: string | null;
+  granted_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface FileEntry {
@@ -466,6 +599,61 @@ export interface SkillGroup {
   dir: string;
   readOnly: boolean;
   skills: SkillSummary[];
+}
+
+export type SkillMarketplaceProviderId = 'clawhub' | 'skills.sh';
+export type SkillInstallTargetId = 'claude-code' | 'codex' | 'openclaw';
+
+export interface SkillMarketplaceResult {
+  id: string;
+  provider: SkillMarketplaceProviderId;
+  providerLabel: string;
+  skillId?: string;
+  slug: string;
+  name: string;
+  description: string;
+  author: string | null;
+  downloads: number;
+  installs: number | null;
+  version: string | null;
+  url: string;
+  featured: boolean;
+  official: boolean;
+  installed: boolean;
+  installedTargets: SkillInstallTargetId[];
+}
+
+export interface SkillMarketplaceProviderStatus {
+  id: SkillMarketplaceProviderId;
+  label: string;
+  enabled: boolean;
+  ok: boolean;
+  message?: string;
+}
+
+export interface SkillMarketplaceSearchResponse {
+  query: string;
+  skills: SkillMarketplaceResult[];
+  providers: SkillMarketplaceProviderStatus[];
+  installTargets: SkillInstallTarget[];
+}
+
+export interface SkillInstallTarget {
+  id: SkillInstallTargetId;
+  label: string;
+  description: string;
+}
+
+export interface SkillMarketplaceInstallResponse {
+  ok: boolean;
+  tool: string;
+  scope: string;
+  dirName: string;
+  path: string;
+  name: string;
+  description: string;
+  installedTargets: SkillInstallTargetId[];
+  destinations: { id: SkillInstallTargetId; label: string; path: string }[];
 }
 
 export interface BrowseResult {

@@ -9,21 +9,48 @@ import * as sessionManager from '../services/session-manager.js';
 import { RESIZE_MARKER, registerPendingSpawn, getSessionTmuxServer } from '../services/session-manager.js';
 import { getTracker } from '../services/session-state.js';
 import { getDb } from '../db/index.js';
-import { userProjectIds, userOwnsProject, userOwnsProjectPath, userOwnsSession } from '../auth.js';
+import { getUserTabUsage, isAdmin, userCanUseSessionTool, userCanUseToolForProject, userOwnsProject, userOwnsProjectPath, userProjectIds } from '../auth.js';
 import { mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { prunePastesDir } from '../services/paste-cleanup.js';
 import { listClaudeSessions, deleteClaudeSession } from '../services/claude-history.js';
+
+function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' | 'agent' {
+  if (mode === 'terminal' || mode === 'agent') return mode;
+  return 'session';
+}
+
+function normalizeCliType(cliType: string | null | undefined): 'claude' | 'codex' {
+  return cliType === 'codex' ? 'codex' : 'claude';
+}
+
+function canAccessSessionByRow(userId: string, row: {
+  id: string;
+  project_id: string | null;
+  mode: string | null;
+  cli_type?: string | null;
+  created_by_user_id: string | null;
+}): boolean {
+  if (isAdmin(userId)) return true;
+  if (row.created_by_user_id !== userId) return false;
+  if (!row.project_id) return true;
+  return userCanUseToolForProject(userId, row.project_id, normalizeMode(row.mode), normalizeCliType(row.cli_type));
+}
+
+function canAccessSessionById(userId: string, sessionId: string, mode: 'session' | 'terminal' | 'agent', cliType: 'claude' | 'codex'): boolean {
+  return userCanUseSessionTool(userId, sessionId, cliType, mode);
+}
 
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
   // List sessions
   app.get<{
     Querystring: { status?: string };
   }>('/sessions', async (req) => {
-    const all = sessionManager.listSessions(req.query.status);
+    const all = sessionManager.listSessionsForUser(req.user!.id, req.query.status);
     const owned = userProjectIds(req.user!.id);
     const sessions = all
-      .filter((s: any) => s.project_id && owned.has(s.project_id))
+      .filter((s: any) => !s.project_id || owned.has(s.project_id))
+      .filter((s: any) => canAccessSessionByRow(req.user!.id, s))
       // Enrich with live process-state (busy/idle/waiting_for_input) so tab signal
       // lights are correct on first load, before any WS state_change arrives.
       .map((s: any) => {
@@ -40,6 +67,10 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.get<{
     Querystring: { project_path?: string };
   }>('/sessions/discoverable', async (req) => {
+    if (!isAdmin(req.user!.id)) return { sessions: [] };
+    if (req.query.project_path && !userOwnsProjectPath(req.user!.id, req.query.project_path)) {
+      return { sessions: [] };
+    }
     const sessions = await sessionManager.discoverExternalSessions(req.query.project_path);
     return { sessions };
   });
@@ -48,14 +79,21 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.post<{
     Body: { socket_path: string; project_id?: string };
   }>('/sessions/adopt', async (req, reply) => {
+    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
     const { socket_path, project_id } = req.body as any;
     if (!socket_path) {
       return reply.status(400).send({ error: 'socket_path is required' });
     }
+    if (!project_id || !userCanUseToolForProject(req.user!.id, project_id, 'terminal', 'claude')) {
+      return reply.status(400).send({ error: 'project_id is required and must be accessible' });
+    }
 
-    const session = await sessionManager.adoptDtachSession(socket_path, project_id);
+    const session = await sessionManager.adoptDtachSession(socket_path, project_id, req.user!.id);
     if (!session) {
       return reply.status(404).send({ error: 'Socket not found or not alive' });
+    }
+    if (!canAccessSessionById(req.user!.id, session.id, 'terminal', normalizeCliType(session.cli_type))) {
+      return reply.status(403).send({ error: 'Project not found or not yours' });
     }
 
     return { ok: true, session };
@@ -66,7 +104,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     Params: { id: string };
   }>('/sessions/:id', async (req, reply) => {
     const session = sessionManager.getSession(req.params.id);
-    if (!session || !userOwnsSession(req.user!.id, req.params.id)) return reply.status(404).send({ error: 'Session not found' });
+    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
     return { session };
   });
 
@@ -79,9 +117,8 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     Body: { dataUrl?: string };
   }>('/sessions/:id/paste-image', { bodyLimit: 15 * 1024 * 1024 }, async (req, reply) => {
     const { id } = req.params;
-    if (!userOwnsSession(req.user!.id, id)) return reply.status(404).send({ error: 'Session not found' });
-
     const session = sessionManager.getSession(id);
+    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
     const projectId = (session as any)?.project_id;
     const proj = projectId
       ? (getDb().prepare('SELECT path FROM projects WHERE id = ?').get(projectId) as { path: string } | undefined)
@@ -125,9 +162,9 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     Body: { dataUrl?: string; filename?: string };
   }>('/sessions/:id/paste-file', { bodyLimit: 50 * 1024 * 1024 }, async (req, reply) => {
     const { id } = req.params;
-    if (!userOwnsSession(req.user!.id, id)) return reply.status(404).send({ error: 'Session not found' });
-
     const session = sessionManager.getSession(id);
+    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
+
     const projectId = (session as any)?.project_id;
     const proj = projectId
       ? (getDb().prepare('SELECT path FROM projects WHERE id = ?').get(projectId) as { path: string } | undefined)
@@ -167,7 +204,8 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   // session id (and therefore the project tab mapping) remains unchanged.
   app.post<{ Params: { id: string }; Body: { automatic?: boolean } }>('/sessions/:id/resume', async (req, reply) => {
     const { id } = req.params;
-    if (!userOwnsSession(req.user!.id, id)) return reply.status(404).send({ error: 'Session not found' });
+    const session = sessionManager.getSession(id);
+    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
     // Automatic page restoration keeps the crash-loop breaker enabled. A user
     // explicitly pressing Resume is allowed to make a fresh attempt.
     const result = await sessionManager.resumeSessionById(id, req.body?.automatic !== true);
@@ -179,7 +217,8 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   // Claude JSONL conversation file. Refuses (409) while the session is active.
   app.delete<{ Params: { id: string } }>('/sessions/:id/record', async (req, reply) => {
     const { id } = req.params;
-    if (!userOwnsSession(req.user!.id, id)) return reply.status(404).send({ error: 'Session not found' });
+    const session = sessionManager.getSession(id);
+    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
     const result = sessionManager.purgeSessionRecord(id);
     if (!result.ok) return reply.status(409).send({ error: result.error });
     return { ok: true };
@@ -190,14 +229,18 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   // Resolve { projectPath, projectId } from a query/body, enforcing ownership.
   function resolveProject(userId: string, pid?: string, ppath?: string): { ok: true; path: string; id: string | null } | { ok: false; code: number; error: string } {
     if (pid) {
-      if (!userOwnsProject(userId, pid)) return { ok: false, code: 404, error: 'Project not found' };
+      if (!userCanUseToolForProject(userId, pid, 'session', 'claude')) {
+        return { ok: false, code: 404, error: 'Project not found' };
+      }
       const p = getDb().prepare('SELECT path FROM projects WHERE id = ?').get(pid) as { path: string } | undefined;
       if (!p?.path) return { ok: false, code: 404, error: 'Project path not found' };
       return { ok: true, path: p.path, id: pid };
     }
     if (ppath) {
-      if (!userOwnsProjectPath(userId, ppath)) return { ok: false, code: 404, error: 'Project not found' };
-      const p = getDb().prepare('SELECT id FROM projects WHERE path = ? AND owner_id = ?').get(ppath, userId) as { id: string } | undefined;
+      const p = getDb().prepare('SELECT id FROM projects WHERE path = ?').get(ppath) as { id: string } | undefined;
+      if (!p?.id || !userCanUseToolForProject(userId, p.id, 'session', 'claude')) {
+        return { ok: false, code: 404, error: 'Project not found' };
+      }
       return { ok: true, path: ppath, id: p?.id ?? null };
     }
     return { ok: false, code: 400, error: 'project_id or project_path is required' };
@@ -208,13 +251,22 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const r = resolveProject(req.user!.id, req.query.project_id, req.query.project_path);
     if (!r.ok) return reply.status(r.code).send({ error: r.error });
 
-    const items = listClaudeSessions(r.path);
+    let items = listClaudeSessions(r.path);
+    if (!isAdmin(req.user!.id)) {
+      const ownRows = getDb().prepare(`
+        SELECT DISTINCT claude_session_id AS uuid
+        FROM sessions
+        WHERE project_id = ? AND created_by_user_id = ? AND claude_session_id IS NOT NULL
+      `).all(r.id, req.user!.id) as { uuid: string }[];
+      const ownUuids = new Set(ownRows.map((row) => row.uuid));
+      items = items.filter((item) => ownUuids.has(item.uuid));
+    }
     const liveByUuid = new Map<string, { id: string; status: string }>();
     if (items.length && r.id) {
       const uuids = items.map((i) => i.uuid);
-      const rows = getDb()
-        .prepare(`SELECT id, status, claude_session_id FROM sessions WHERE project_id = ? AND claude_session_id IN (${uuids.map(() => '?').join(',')})`)
-        .all(r.id, ...uuids) as { id: string; status: string; claude_session_id: string }[];
+      const rows = (isAdmin(req.user!.id)
+        ? getDb().prepare(`SELECT id, status, claude_session_id FROM sessions WHERE project_id = ? AND claude_session_id IN (${uuids.map(() => '?').join(',')})`).all(r.id, ...uuids)
+        : getDb().prepare(`SELECT id, status, claude_session_id FROM sessions WHERE project_id = ? AND created_by_user_id = ? AND claude_session_id IN (${uuids.map(() => '?').join(',')})`).all(r.id, req.user!.id, ...uuids)) as { id: string; status: string; claude_session_id: string }[];
       for (const row of rows) liveByUuid.set(row.claude_session_id, { id: row.id, status: row.status });
     }
     const sessions = items.map((i) => {
@@ -228,10 +280,19 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Body: { project_id?: string; project_path?: string; claude_session_id?: string; title?: string } }>('/sessions/resume-claude', async (req, reply) => {
     const body = (req.body || {}) as { project_id?: string; project_path?: string; claude_session_id?: string; title?: string };
     if (!body.claude_session_id) return reply.status(400).send({ error: 'claude_session_id is required' });
+    const usage = getUserTabUsage(req.user!.id);
+    if (!usage.allowed) return reply.status(429).send({ error: `已达到活动标签页上限（${usage.limit}）` });
     const r = resolveProject(req.user!.id, body.project_id, body.project_path);
     if (!r.ok) return reply.status(r.code).send({ error: r.error });
+    if (!isAdmin(req.user!.id)) {
+      const own = getDb().prepare(`
+        SELECT 1 FROM sessions
+        WHERE project_id = ? AND created_by_user_id = ? AND claude_session_id = ?
+      `).get(r.id, req.user!.id, body.claude_session_id);
+      if (!own) return reply.status(404).send({ error: 'Conversation not found' });
+    }
     try {
-      const session = await sessionManager.resumeClaudeSession(r.path, r.id, body.claude_session_id, body.title || 'Resumed session');
+      const session = await sessionManager.resumeClaudeSession(r.path, r.id, body.claude_session_id, body.title || 'Resumed session', req.user!.id);
       return { ok: true, session };
     } catch (err: any) {
       return reply.status(500).send({ error: `Failed to resume: ${err?.message || 'unknown error'}` });
@@ -242,8 +303,18 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.delete<{ Params: { uuid: string }; Querystring: { project_id?: string; project_path?: string } }>('/sessions/claude-history/:uuid', async (req, reply) => {
     const r = resolveProject(req.user!.id, req.query.project_id, req.query.project_path);
     if (!r.ok) return reply.status(r.code).send({ error: r.error });
+    if (!isAdmin(req.user!.id)) {
+      const own = getDb().prepare(`
+        SELECT 1 FROM sessions
+        WHERE project_id = ? AND created_by_user_id = ? AND claude_session_id = ?
+      `).get(r.id, req.user!.id, req.params.uuid);
+      if (!own) return reply.status(404).send({ error: 'Conversation not found' });
+    }
     const removed = deleteClaudeSession(r.path, req.params.uuid);
-    try { getDb().prepare('DELETE FROM sessions WHERE claude_session_id = ?').run(req.params.uuid); } catch { /* ignore */ }
+    try {
+      if (isAdmin(req.user!.id)) getDb().prepare('DELETE FROM sessions WHERE claude_session_id = ?').run(req.params.uuid);
+      else getDb().prepare('DELETE FROM sessions WHERE claude_session_id = ? AND created_by_user_id = ?').run(req.params.uuid, req.user!.id);
+    } catch { /* ignore */ }
     if (!removed) return reply.status(404).send({ error: 'Conversation log not found' });
     return { ok: true };
   });
@@ -261,18 +332,28 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   }>('/sessions', async (req, reply) => {
     const { project_path, task, project_id, mode, agent_type, cli_type } = req.body as any;
     const cliType = cli_type === 'codex' ? 'codex' : 'claude';
+    const requestedMode = mode === 'terminal' ? 'terminal' : mode === 'agent' ? 'agent' : 'session';
+    const usage = getUserTabUsage(req.user!.id);
+    if (!usage.allowed) return reply.status(429).send({ error: `已达到活动标签页上限（${usage.limit}）` });
 
-    // Ownership: a new session must belong to one of the caller's projects.
-    if (!userOwnsProject(req.user!.id, project_id) && !userOwnsProjectPath(req.user!.id, project_path)) {
-      return reply.status(403).send({ error: 'Project not found or not yours' });
+    if (!project_path) return reply.status(400).send({ error: 'project_path is required' });
+
+    let resolvedProjectId = project_id || null;
+    if (resolvedProjectId) {
+      if (!userCanUseToolForProject(req.user!.id, resolvedProjectId, requestedMode, requestedMode === 'terminal' ? 'claude' : cliType)) {
+        return reply.status(403).send({ error: 'Project not found or not yours' });
+      }
+    } else {
+      const row = getDb().prepare('SELECT id, path FROM projects WHERE path = ?').get(project_path) as { id: string; path: string } | undefined;
+      if (!row || !userCanUseToolForProject(req.user!.id, row.id, requestedMode, requestedMode === 'terminal' ? 'claude' : cliType)) {
+        return reply.status(403).send({ error: 'Project not found or not yours' });
+      }
+      resolvedProjectId = row.id;
     }
 
     if (mode === 'terminal') {
-      if (!project_path) {
-        return reply.status(400).send({ error: 'project_path is required' });
-      }
-      const session = sessionManager.createSession(project_path, 'Terminal', project_id);
-      registerPendingSpawn(session.id, { projectPath: project_path, task: 'Terminal', mode: 'terminal', projectId: project_id });
+      const session = sessionManager.createSession(project_path, 'Terminal', resolvedProjectId, 'claude', req.user!.id, 'terminal');
+      registerPendingSpawn(session.id, { projectPath: project_path, task: 'Terminal', mode: 'terminal', projectId: resolvedProjectId });
       return { ok: true, session };
     }
 
@@ -284,13 +365,13 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       if (!agent_type) {
         return reply.status(400).send({ error: 'agent_type is required for agent mode' });
       }
-      const session = sessionManager.createSession(project_path, `Agent (${agent_type}): ${task}`, project_id, cliType);
-      registerPendingSpawn(session.id, { projectPath: project_path, task, mode: 'agent', agentType: agent_type, projectId: project_id, cliType });
+      const session = sessionManager.createSession(project_path, `Agent (${agent_type}): ${task}`, resolvedProjectId, cliType, req.user!.id, 'agent', agent_type);
+      registerPendingSpawn(session.id, { projectPath: project_path, task, mode: 'agent', agentType: agent_type, projectId: resolvedProjectId, cliType });
       return { ok: true, session };
     }
 
-    const session = sessionManager.createSession(project_path, task, project_id, cliType);
-    registerPendingSpawn(session.id, { projectPath: project_path, task, mode: 'session', projectId: project_id, cliType });
+    const session = sessionManager.createSession(project_path, task, resolvedProjectId, cliType, req.user!.id, 'session');
+    registerPendingSpawn(session.id, { projectPath: project_path, task, mode: 'session', projectId: resolvedProjectId, cliType });
 
     return { ok: true, session };
   });
@@ -300,7 +381,8 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     Params: { id: string };
   }>('/sessions/:id', async (req, reply) => {
     const id = req.params.id;
-    if (!userOwnsSession(req.user!.id, id)) return reply.status(404).send({ error: 'Session not found' });
+    const session = sessionManager.getSession(id);
+    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
     try {
       const killed = await Promise.race([
         sessionManager.killSession(id),
@@ -330,8 +412,8 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // Concise context summary for cross-session awareness (low token cost)
-  app.get('/context', async () => {
-    const running = sessionManager.listSessions('running');
+  app.get('/context', async (req) => {
+    const running = sessionManager.listSessionsForUser(req.user!.id, 'running').filter((session) => canAccessSessionByRow(req.user!.id, session));
     if (running.length === 0) return { active: false, summary: 'No active AgentManager sessions.' };
 
     const sessions = running.map(s => {
@@ -348,9 +430,11 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.post<{
     Params: { id: string };
   }>('/sessions/:id/reconnect', async (req, reply) => {
+    const session = sessionManager.getSession(req.params.id);
+    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
+
     const reconnected = await sessionManager.reconnectSession(req.params.id);
     if (!reconnected) return reply.status(404).send({ error: 'Session not found or not detached' });
-    const session = sessionManager.getSession(req.params.id);
     return { ok: true, session };
   });
 
@@ -360,7 +444,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     Querystring: { before?: string; limit?: string };
   }>('/sessions/:id/output', async (req, reply) => {
     const session = sessionManager.getSession(req.params.id);
-    if (!session) return reply.status(404).send({ error: 'Session not found' });
+    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
 
     const before = req.query.before ? parseInt(req.query.before, 10) : undefined;
     const limit = Math.min(parseInt(req.query.limit || '500', 10) || 500, 2000);
@@ -376,7 +460,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     Querystring: { cols?: string; rows?: string };
   }>('/sessions/:id/rendered-output', async (req, reply) => {
     const session = sessionManager.getSession(req.params.id);
-    if (!session) return reply.status(404).send({ error: 'Session not found' });
+    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
 
     // Fallback dimensions if no resize markers exist
     const fallbackCols = Math.min(parseInt(req.query.cols || '120', 10) || 120, 300);
@@ -490,8 +574,9 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.post<{
     Params: { id: string };
   }>('/sessions/:id/pop-out', async (req, reply) => {
+    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
     const session = sessionManager.getSession(req.params.id);
-    if (!session) return reply.status(404).send({ error: 'Session not found' });
+    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
 
     const sessionId = req.params.id;
     const socketPath = sessionManager.getSessionSocketPath(sessionId);

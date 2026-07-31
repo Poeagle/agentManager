@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { join, dirname } from 'path';
 import { config } from '../config.js';
+import { userOwnsFilesystemPath } from '../auth.js';
 
 const AGENTMANAGER_HOOK_MARKER = '# agentmanager-events-hook';
 // Legacy marker from the previous product name — kept so installs can detect and
@@ -133,6 +134,15 @@ function uninstallHook(settings: ClaudeSettings): ClaudeSettings {
 }
 
 export const hooksRoutes: FastifyPluginAsync = async (app) => {
+  app.addHook('preHandler', async (req, reply) => {
+    const query = (req.query || {}) as Record<string, unknown>;
+    const body = (req.body || {}) as Record<string, unknown>;
+    const path = typeof query.path === 'string' ? query.path : typeof body.path === 'string' ? body.path : null;
+    if (path && !userOwnsFilesystemPath(req.user!.id, path)) {
+      return reply.status(403).send({ error: 'Project not assigned to this user' });
+    }
+  });
+
   // Check if the AgentManager events hook is installed for a project
   app.get<{
     Querystring: { path: string };

@@ -105,6 +105,19 @@ function detectPrompt(text: string): { type: PromptType; choices: string[] | nul
   return { type: null, choices: null, isPermission: false };
 }
 
+/** Infer the actionable state of a quiescent session from a captured output tail.
+ * Used when a durable tmux session survived a server restart and therefore has
+ * no in-memory SessionStateTracker yet. */
+export function inferQuiescentSessionState(text: string): Pick<SessionState, 'processState' | 'promptType' | 'choices' | 'isPermission'> {
+  const prompt = detectPrompt(strip(text));
+  return {
+    processState: prompt.type ? 'waiting_for_input' : 'idle',
+    promptType: prompt.type,
+    choices: prompt.choices,
+    isPermission: prompt.isPermission,
+  };
+}
+
 /* ================================================================
    SessionStateTracker — one per active session
    ================================================================ */

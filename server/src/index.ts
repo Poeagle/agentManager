@@ -35,7 +35,7 @@ import type { AppRouter } from './trpc/router.js';
 import { killAllSessions, cleanupStaleRunningSessions, autoReconnectDetachedSessions, getReconnectStatus, startPendingSessionWatchdog } from './services/session-manager.js';
 import { sweepAllPastes } from './services/paste-cleanup.js';
 import { config } from './config.js';
-import { authHook } from './auth.js';
+import { authHook, isAdmin as isAdminUser, userOwnsFilesystemPath } from './auth.js';
 import { authRoutes } from './routes/auth.js';
 import { userRoutes } from './routes/users.js';
 import { appendFileSync, writeFileSync } from 'fs';
@@ -163,6 +163,9 @@ async function start() {
     if (!path || typeof path !== 'string') {
       return reply.status(400).send({ error: 'Invalid path' });
     }
+    if (!isAdminUser(req.user!.id) || !userOwnsFilesystemPath(req.user!.id, path)) {
+      return reply.status(403).send({ error: 'Admin only' });
+    }
     const { spawn } = await import('child_process');
     const isMac = process.platform === 'darwin';
     // macOS: 'open' opens Finder; Linux: 'xdg-open' opens default file manager
@@ -176,6 +179,9 @@ async function start() {
     const { path } = req.body as { path?: string };
     if (!path || typeof path !== 'string') {
       return reply.status(400).send({ error: 'Invalid path' });
+    }
+    if (!isAdminUser(req.user!.id) || !userOwnsFilesystemPath(req.user!.id, path)) {
+      return reply.status(403).send({ error: 'Admin only' });
     }
     const { spawn, exec } = await import('child_process');
     const isMac = process.platform === 'darwin';
@@ -299,7 +305,8 @@ async function start() {
   });
 
   // Restart server — exits the process so the parent (CLI/systemd/Electron) can relaunch
-  app.post('/api/restart', async () => {
+  app.post('/api/restart', async (req, reply) => {
+    if (!isAdminUser(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
     setTimeout(() => process.exit(0), 500);
     return { ok: true, message: 'Server restarting...' };
   });

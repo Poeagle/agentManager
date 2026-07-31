@@ -1,7 +1,16 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { insertEvent, getEvents } from '../services/event-store.js';
 import { getDb } from '../db/index.js';
-import { userProjectIds, userOwnsSession } from '../auth.js';
+import { isAdmin, userProjectIds, userCanUseSessionTool, userOwnsSession } from '../auth.js';
+
+function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' | 'agent' {
+  if (mode === 'terminal' || mode === 'agent') return mode;
+  return 'session';
+}
+
+function normalizeCliType(cliType: string | null | undefined): 'claude' | 'codex' {
+  return cliType === 'codex' ? 'codex' : 'claude';
+}
 
 /**
  * Check if a session_id exists in the sessions table.
@@ -76,7 +85,14 @@ export const eventRoutes: FastifyPluginAsync = async (app) => {
     // Ownership: reject explicit queries for projects/sessions the user doesn't own.
     const owned = userProjectIds(req.user!.id);
     if (resolvedProjectId && !owned.has(resolvedProjectId)) return { events: [] };
-    if (session_id && !userOwnsSession(req.user!.id, session_id)) return { events: [] };
+    if (session_id) {
+      const row = getDb().prepare('SELECT mode, cli_type FROM sessions WHERE id = ?').get(session_id) as
+        | { mode: string | null; cli_type: string | null }
+        | undefined;
+      if (!row || !userCanUseSessionTool(req.user!.id, session_id, normalizeCliType(row.cli_type), normalizeMode(row.mode))) {
+        return { events: [] };
+      }
+    }
 
     const events = getEvents({
       session_id,
@@ -85,9 +101,11 @@ export const eventRoutes: FastifyPluginAsync = async (app) => {
       limit: limit ? parseInt(limit, 10) : 100,
       since,
     });
-    // When not scoped to a specific project/session, drop other users' events.
-    const scoped = !!(resolvedProjectId || session_id);
-    const result = scoped ? events : events.filter((e: any) => e.project_id && owned.has(e.project_id));
+    // Project membership is not session ownership: members only receive events
+    // attached to sessions they created. Admins retain the project-wide view.
+    const result = isAdmin(req.user!.id)
+      ? events
+      : events.filter((e: any) => e.session_id && userOwnsSession(req.user!.id, e.session_id));
     return { events: result };
   });
 };

@@ -1245,6 +1245,8 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
   const queryClient = useQueryClient();
   const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null);
   const selectedCardRef = useRef<HTMLDivElement | null>(null);
+  const { data: authStatus } = useQuery({ queryKey: ['auth-status'], queryFn: () => api.auth.status(), staleTime: 60_000 });
+  const isAdmin = authStatus?.user?.role === 'admin';
 
   // Listen for open-project events from the form's create success handler
   useEffect(() => {
@@ -1368,10 +1370,10 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
   const [showStatuslinePrompt, setShowStatuslinePrompt] = useState(false);
 
   useEffect(() => {
-    if (settingsData?.settings?.statusline_prompted === 'false') {
-      setShowStatuslinePrompt(true);
-    }
-  }, [settingsData]);
+    setShowStatuslinePrompt(
+      isAdmin && settingsData?.settings?.statusline_prompted === 'false',
+    );
+  }, [isAdmin, settingsData]);
 
   // Sessions — driven by WebSocket invalidation, no polling needed
   const { data: sessionsData } = useQuery({
@@ -1484,14 +1486,14 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                 </span>
               </button>
             </div>
-            <button
+            {isAdmin && <button
               onClick={() => setView({ mode: 'add' })}
               className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium"
               style={{ background: 'var(--accent)', color: 'white' }}
             >
               <Plus className="w-4 h-4" />
               Add Project
-            </button>
+            </button>}
           </div>
           {/* Search / filter bar */}
           <div className="relative mt-3">
@@ -1526,7 +1528,7 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
         <div className="pb-6">
         <div className="mx-auto px-6" style={{ maxWidth: '82rem' }}>
           {/* Skip permissions all toggle */}
-          {projects.length > 0 && (
+          {isAdmin && projects.length > 0 && (
             <div className="flex items-center justify-end gap-3 mb-3">
               <label className="flex items-center gap-1.5 cursor-pointer select-none">
                 <input
@@ -1559,16 +1561,16 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
           >
             <Folder className="w-12 h-12 mx-auto mb-4" style={{ color: 'var(--text-secondary)', opacity: 0.5 }} />
             <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
-              No projects registered yet. Add a project folder to get started.
+              {isAdmin ? 'No projects registered yet. Add a project folder to get started.' : '你目前没有被分配任何项目，请联系管理员。'}
             </p>
-            <button
+            {isAdmin && <button
               onClick={() => setView({ mode: 'add' })}
               className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm mx-auto"
               style={{ background: 'var(--accent)', color: 'white' }}
             >
               <Plus className="w-4 h-4" />
               Add Project
-            </button>
+            </button>}
           </div>
         ) : (
           <div className="flex flex-col gap-6">
@@ -1584,6 +1586,7 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                     {projects.map((project, idx) => {
               const isSelected = selectedCardIndex === idx;
+              const access = project.tool_access || { can_session: true, can_agent: true, can_terminal: true, can_claude: true, can_codex: true };
 
               return (
                 <div
@@ -1643,7 +1646,7 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                     </div>
 
                     {/* Skip permissions toggle */}
-                    <label
+                    {isAdmin && <label
                       className="flex items-center gap-1.5 cursor-pointer select-none"
                       onClick={(e) => e.stopPropagation()}
                       title="Launch Claude sessions with --dangerously-skip-permissions (auto-approve all tool calls)"
@@ -1662,13 +1665,14 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                       <span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>
                         Skip permissions
                       </span>
-                    </label>
+                    </label>}
 
                     {/* Row 1: Launch buttons — dual icons, type-colored, stretched */}
                     <div className="grid grid-cols-5 gap-1 mt-auto pt-1" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => onOpenProject(project.id, project.name, 'session', 'claude')}
-                        className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs"
+                        disabled={!access.can_session || !access.can_claude}
+                        className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs disabled:opacity-25 disabled:cursor-not-allowed"
                         style={{ background: '#3b82f610', borderColor: '#3b82f630', color: '#60a5fa' }}
                         title="Claude Session"
                       >
@@ -1677,7 +1681,8 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                       </button>
                       <button
                         onClick={() => onOpenProject(project.id, project.name, 'agent', 'claude')}
-                        className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs"
+                        disabled={!access.can_agent || !access.can_claude}
+                        className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs disabled:opacity-25 disabled:cursor-not-allowed"
                         style={{ background: '#ef444410', borderColor: '#ef444430', color: '#ef4444' }}
                         title="Claude Agent"
                       >
@@ -1686,7 +1691,8 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                       </button>
                       <button
                         onClick={() => onOpenProject(project.id, project.name, 'session', 'codex')}
-                        className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs"
+                        disabled={!access.can_session || !access.can_codex}
+                        className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs disabled:opacity-25 disabled:cursor-not-allowed"
                         style={{ background: '#3b82f610', borderColor: '#3b82f630', color: '#60a5fa' }}
                         title="Codex Session"
                       >
@@ -1695,7 +1701,8 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                       </button>
                       <button
                         onClick={() => onOpenProject(project.id, project.name, 'agent', 'codex')}
-                        className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs"
+                        disabled={!access.can_agent || !access.can_codex}
+                        className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs disabled:opacity-25 disabled:cursor-not-allowed"
                         style={{ background: '#ef444410', borderColor: '#ef444430', color: '#ef4444' }}
                         title="Codex Agent"
                       >
@@ -1704,7 +1711,8 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                       </button>
                       <button
                         onClick={() => onOpenProject(project.id, project.name, 'terminal')}
-                        className="flex items-center justify-center p-1.5 rounded-lg border text-xs"
+                        disabled={!access.can_terminal}
+                        className="flex items-center justify-center p-1.5 rounded-lg border text-xs disabled:opacity-25 disabled:cursor-not-allowed"
                         style={{ background: '#f59e0b10', borderColor: '#f59e0b30', color: '#f59e0b' }}
                         title="Terminal"
                       >
@@ -1712,7 +1720,7 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                       </button>
                     </div>
                     {/* Row 2: Utility buttons */}
-                    <div className="grid grid-cols-4 gap-1" onClick={(e) => e.stopPropagation()}>
+                    {isAdmin && <div className="grid grid-cols-4 gap-1" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => api.openFolder(project.path)}
                         className="flex items-center justify-center p-1.5 rounded-lg border text-xs"
@@ -1745,7 +1753,7 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
-                    </div>
+                    </div>}
                   </div>
                 </div>
               );
@@ -1774,7 +1782,7 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
         />
       )}
 
-      {showStatuslinePrompt && (
+      {isAdmin && showStatuslinePrompt && (
         <StatuslinePromptModal
           onClose={() => setShowStatuslinePrompt(false)}
         />

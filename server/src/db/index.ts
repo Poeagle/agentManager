@@ -41,6 +41,9 @@ export function initDb(): void {
       id TEXT PRIMARY KEY,
       project_id TEXT REFERENCES projects(id),
       task TEXT NOT NULL,
+      created_by_user_id TEXT REFERENCES users(id),
+      mode TEXT NOT NULL DEFAULT 'session',  -- session | terminal | agent
+      agent_type TEXT,
       status TEXT NOT NULL DEFAULT 'pending',  -- pending, running, completed, failed, cancelled
       pid INTEGER,
       started_at TEXT,
@@ -116,6 +119,7 @@ export function initDb(): void {
       display_name TEXT NOT NULL DEFAULT '',
       role TEXT NOT NULL DEFAULT 'member',   -- admin | member
       disabled INTEGER NOT NULL DEFAULT 0,
+      max_tabs INTEGER NOT NULL DEFAULT 10,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -138,6 +142,23 @@ export function initDb(): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (user_id, key)
     );
+
+    -- Per-project access control (user/project grant + tool whitelist).
+    CREATE TABLE IF NOT EXISTS project_user_access (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      can_session INTEGER NOT NULL DEFAULT 1,
+      can_agent INTEGER NOT NULL DEFAULT 1,
+      can_terminal INTEGER NOT NULL DEFAULT 1,
+      can_claude INTEGER NOT NULL DEFAULT 1,
+      can_codex INTEGER NOT NULL DEFAULT 1,
+      granted_by TEXT REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (project_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_user_access_user ON project_user_access(user_id);
+    CREATE INDEX IF NOT EXISTS idx_project_user_access_project ON project_user_access(project_id);
   `);
 
   // Migrations — idempotent column additions
@@ -167,6 +188,44 @@ export function initDb(): void {
   // the AgentManager tab -> CLI conversation mapping durable even when the
   // server and its tmux/dtach process both disappear.
   try { db.exec('ALTER TABLE sessions ADD COLUMN codex_session_id TEXT'); } catch {}
+  // Session metadata used for authorization and enforcement.
+  try { db.exec('ALTER TABLE sessions ADD COLUMN created_by_user_id TEXT REFERENCES users(id)'); } catch {}
+  try { db.exec("ALTER TABLE sessions ADD COLUMN mode TEXT DEFAULT 'session'"); } catch {}
+  try { db.exec('ALTER TABLE sessions ADD COLUMN agent_type TEXT'); } catch {}
+  try { db.exec('ALTER TABLE users ADD COLUMN max_tabs INTEGER NOT NULL DEFAULT 10'); } catch {}
+  // Permissions table for explicit project access (safe no-op on new installs).
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS project_user_access (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        can_session INTEGER NOT NULL DEFAULT 1,
+        can_agent INTEGER NOT NULL DEFAULT 1,
+        can_terminal INTEGER NOT NULL DEFAULT 1,
+        can_claude INTEGER NOT NULL DEFAULT 1,
+        can_codex INTEGER NOT NULL DEFAULT 1,
+        granted_by TEXT REFERENCES users(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (project_id, user_id)
+      )
+    `);
+  } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_project_user_access_user ON project_user_access(user_id)'); } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_project_user_access_project ON project_user_access(project_id)'); } catch {}
+  try {
+    const ownerRows = db.prepare('SELECT id, owner_id FROM projects WHERE owner_id IS NOT NULL').all() as { id: string; owner_id: string }[];
+    const grant = db.prepare(`
+      INSERT OR IGNORE INTO project_user_access (project_id, user_id, can_session, can_agent, can_terminal, can_claude, can_codex)
+      VALUES (?, ?, 1, 1, 1, 1, 1)
+    `);
+    const tx = db.transaction(() => {
+      for (const row of ownerRows) grant.run(row.id, row.owner_id);
+    });
+    tx();
+  } catch {}
+  // Older sessions had no explicit mode metadata; default to regular interactive session.
+  try { db.exec("UPDATE sessions SET mode = 'session' WHERE mode IS NULL OR mode = ''"); } catch {}
 
   // Note: orphaned process cleanup is handled by cleanupStaleRunningSessions()
   // which is called after initDb() in index.ts — it kills processes AND marks DB records.

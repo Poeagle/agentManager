@@ -3,10 +3,26 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as { Terminal: any };
 const { SerializeAddon } = require('@xterm/addon-serialize') as { SerializeAddon: any };
-import { isSessionActive, writeToSession, getActiveSession, querySessionOutputSince, getSession } from '../services/session-manager.js';
+import { isSessionActive, writeToSession, querySessionOutputSince, getSession } from '../services/session-manager.js';
 import { RESIZE_MARKER } from '../services/session-manager.js';
 import { getTracker, getOrCreateTracker } from '../services/session-state.js';
-import type { ExecuteResult, SessionState } from '../services/session-state.js';
+import type { SessionState } from '../services/session-state.js';
+import { userCanUseSessionTool } from '../auth.js';
+
+function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' | 'agent' {
+  if (mode === 'terminal' || mode === 'agent') return mode;
+  return 'session';
+}
+
+function normalizeCliType(cliType: string | null | undefined): 'claude' | 'codex' {
+  return cliType === 'codex' ? 'codex' : 'claude';
+}
+
+function canAccessAgentSession(userId: string, sessionId: string): boolean {
+  const session = getSession(sessionId);
+  if (!session) return false;
+  return userCanUseSessionTool(userId, sessionId, normalizeCliType(session.cli_type), normalizeMode(session.mode));
+}
 
 const DEFAULT_TIMEOUT = 30_000;
 const DEFAULT_QUIESCENCE = 2000;
@@ -18,21 +34,38 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
      ---------------------------------------------------------------- */
   app.get('/agent/capabilities', async () => ({
     name: 'AgentManager Agent API',
-    version: '1.1.0',
-    description: 'Structured control layer for AgentManager sessions. All session interaction MUST go through these APIs. The execute endpoint returns clean, readable output rendered through a virtual terminal — no ANSI artifacts, no TUI garbage.',
+    version: '1.2.0',
+    description: 'Authenticated, structured control layer for permitted AgentManager sessions. The display and execute endpoints return clean, readable output rendered through a virtual terminal — no ANSI artifacts or TUI garbage.',
+    authentication: {
+      type: 'HttpOnly session cookie',
+      cookieName: 'agentmanager_session',
+      login: 'POST /api/auth/login with { username, password }; persist the Set-Cookie response in a private cookie jar.',
+      usage: 'Send the cookie on every protected REST request and WebSocket handshake. Same-origin browser requests use credentials: "include".',
+      errors: { 401: 'Missing, expired, or invalid login session.' },
+      security: 'Never put credentials or cookie values in an agent prompt, logs, or source control.',
+    },
+    authorization: {
+      projects: 'GET /api/projects returns only visible projects plus tool_access flags for the authenticated user.',
+      sessions: 'Members can create only permitted mode/CLI combinations and can control only sessions they created. Admins can access all projects and sessions.',
+      createSession: 'The project must already be registered. Supply project_id and its matching project_path; project_path alone is resolved only when it exactly matches a registered project.',
+    },
     critical: [
+      'AUTHENTICATE before reading capabilities or calling any other protected endpoint.',
+      'ALWAYS read GET /api/agent/capabilities after authentication before creating or controlling sessions.',
       'NEVER read PTY output directly, scrape temp files, or parse raw terminal data.',
-      'ALWAYS use POST /api/sessions/:id/execute to send input AND read output.',
-      'The execute response "output" field contains clean rendered text — trust it.',
-      'Use GET /api/sessions/:id/state to check prompt type and choices before responding.',
+      'Use GET /api/sessions/:id/display for read-only monitoring and POST /api/sessions/:id/execute only when sending input.',
+      'The display and execute response "output" fields contain clean rendered text — trust them.',
+      'Use the state embedded in GET /api/sessions/:id/display (or GET /state) to check prompt type and choices before responding.',
       'The state "choices" array gives you exact option text for choice prompts — use it.',
     ],
     quickstart: [
-      '1. POST /api/sessions — create session (returns session id)',
-      '2. GET /api/sessions/:id/display — poll for rendered output + state (single call, cursor-based)',
-      '3. POST /api/sessions/:id/execute — send input, get clean rendered output back',
-      '4. Read output field + state.promptType + state.choices to decide next action',
-      '5. Repeat 2-4 until done. Use ?since=cursor from display response for incremental updates.',
+      '1. POST /api/auth/login — authenticate once and persist the returned cookie securely',
+      '2. GET /api/agent/capabilities — read this current contract',
+      '3. GET /api/projects — select a visible project whose tool_access permits the desired mode and CLI',
+      '4. POST /api/sessions — create a permitted session (returns session id)',
+      '5. GET /api/sessions/:id/display — poll for rendered output + state (single call, cursor-based)',
+      '6. POST /api/sessions/:id/execute — send input only when needed and receive clean rendered output',
+      '7. Repeat 5-6 until done. Use ?since=cursor from the display response for incremental updates.',
     ],
     stateMachine: {
       states: {
@@ -53,6 +86,45 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       text: 'Free-form text prompt (trailing "> " or "? "). Respond with text.',
     },
     endpoints: [
+      {
+        method: 'POST',
+        path: '/api/auth/login',
+        public: true,
+        description: 'Authenticate and set the HttpOnly agentmanager_session cookie. Use a cookie-capable client and keep the returned cookie private.',
+        request: {
+          username: { type: 'string', required: true },
+          password: { type: 'string', required: true },
+        },
+        response: { user: 'Authenticated user (password hash omitted)', setCookie: 'agentmanager_session (HttpOnly; SameSite=Lax)' },
+        errors: { 400: 'Missing username/password', 401: 'Invalid username or password' },
+      },
+      {
+        method: 'GET',
+        path: '/api/projects',
+        description: 'List projects visible to the authenticated user. Each project includes tool_access flags: can_session, can_agent, can_terminal, can_claude, and can_codex.',
+        response: { projects: 'Project[] with tool_access' },
+      },
+      {
+        method: 'GET',
+        path: '/api/sessions',
+        description: 'List sessions visible to the authenticated user. Optional ?status=running filter.',
+        response: { sessions: 'Session[]' },
+      },
+      {
+        method: 'POST',
+        path: '/api/sessions',
+        description: 'Create a session in a registered project using a mode and CLI permitted by the authenticated user.',
+        request: {
+          project_id: { type: 'string', required: false, recommended: true, description: 'ID returned by GET /api/projects.' },
+          project_path: { type: 'string', required: true, description: 'Must match the registered project path.' },
+          task: { type: 'string', required: false, description: 'Required for session and agent modes; ignored for terminal mode.' },
+          mode: { type: 'session | agent | terminal', required: false, default: 'session' },
+          cli_type: { type: 'claude | codex', required: false, default: 'claude', description: 'Used by session and agent modes.' },
+          agent_type: { type: 'string', required: false, description: 'Required when mode is agent.' },
+        },
+        response: { ok: 'true', session: 'Created session; use session.id for control endpoints.' },
+        errors: { 400: 'Missing required fields', 401: 'Not authenticated', 403: 'Project or requested tool combination is not permitted', 429: 'Active tab/session limit reached' },
+      },
       {
         method: 'GET',
         path: '/api/sessions/:id/display',
@@ -76,7 +148,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       {
         method: 'POST',
         path: '/api/sessions/:id/cancel',
-        description: 'Cancel a stuck execute request. Returns { ok: true } if one was cancelled, { ok: false } if none pending.',
+        description: 'Cancel a pending execute wait. This does not interrupt the underlying CLI process or send Ctrl-C. Returns { ok: true } if one was cancelled, { ok: false } if none was pending.',
       },
       {
         method: 'GET',
@@ -95,7 +167,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         path: '/api/sessions/:id/execute',
         description: 'Send input and get clean rendered output. Output is processed through a virtual terminal that handles all TUI cursor movements, screen redraws, and ANSI codes — you get readable text, not raw terminal data. Only one execute per session at a time (409 if busy).',
         request: {
-          input: { type: 'string', required: true, description: 'Text to send (carriage return appended automatically)' },
+          input: { type: 'string', required: true, description: 'Text to send (carriage return appended automatically). An empty string intentionally sends Enter.' },
           waitFor: { type: 'string', required: false, description: 'Regex pattern — resolve early when matched in output' },
           timeout: { type: 'number', required: false, default: 30000, description: 'Max ms to wait before returning with status "timeout"' },
           stripAnsi: { type: 'boolean', required: false, default: true, description: 'Render through virtual terminal for clean output (default true, always use true)' },
@@ -140,9 +212,10 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       },
     ],
     tips: [
-      'The output field from execute is CLEAN TEXT — read it directly, do not try to strip or parse it further.',
+      'The output fields from display and execute are CLEAN TEXT — read them directly; do not strip ANSI or parse raw PTY data.',
       'Always check state before sending input. If state is "busy", wait for idle or waiting_for_input.',
       'For interactive prompts, read promptType and choices from state to decide what to send.',
+      'Prefer explicit input. An empty input string is valid and intentionally sends Enter, which may accept a prompt default.',
       'Use waitFor regex for commands with known output patterns to get faster responses.',
       'Increase quiescenceMs for slow commands (e.g. builds, installs) to avoid premature completion.',
       'Use GET /api/sessions/:id/display for read-only monitoring — it returns rendered output + state in one call with cursor-based incremental polling.',
@@ -153,7 +226,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         description: 'Agents controlling AgentManager sessions should run a periodic health check to avoid getting stuck on long-running commands or unresponsive sessions.',
         recommendation: 'Run a 30-second cron/interval that polls GET /api/sessions to check for stuck sessions and GET /api/sessions/:id/state for any session you are actively managing.',
         checkLogic: [
-          'If a session state is "busy" for more than 120 seconds, consider sending POST /api/sessions/:id/cancel to unblock.',
+          'If an execute request has waited too long, POST /api/sessions/:id/cancel cancels that wait only; it does not interrupt the CLI process.',
+          'If the underlying CLI process is intentionally running a long command, keep polling display. Use the normal terminal/session controls if a user-authorized interrupt is required.',
           'If a session you started is no longer in the sessions list or has status "failed", it crashed — check if it auto-resumed (status "running" with same id) or start a new one.',
           'Never let a single exec call block your main loop for more than 60 seconds. Use the timeout parameter (default 30s) and handle "timeout" status gracefully.',
         ],
@@ -164,7 +238,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         forSlowCommands: { timeout: 120000, quiescenceMs: 5000 },
       },
       crashRecovery: {
-        description: 'AgentManager automatically resumes crashed sessions that have a captured Claude session UUID. On server restart, sessions with a claude_session_id are re-spawned and sent /resume <uuid> to restore context.',
+        description: 'AgentManager automatically resumes crashed Claude or Codex sessions that have a captured native conversation ID.',
         agentAction: 'After a server restart, poll GET /api/sessions?status=running to discover auto-resumed sessions. Your session IDs remain stable.',
       },
     },
@@ -186,6 +260,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const { id } = req.params;
     const body = req.body as any;
 
+    if (!canAccessAgentSession(req.user!.id, id)) {
+      return reply.status(404).send({ error: 'Session not found or not running' });
+    }
     if (!isSessionActive(id)) {
       return reply.status(404).send({ error: 'Session not found or not running' });
     }
@@ -249,6 +326,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     Params: { id: string };
   }>('/sessions/:id/cancel', async (req, reply) => {
     const { id } = req.params;
+
+    if (!canAccessAgentSession(req.user!.id, id)) {
+      return reply.status(404).send({ error: 'Session tracker not found' });
+    }
+
     const tracker = getTracker(id);
     if (!tracker) {
       return reply.status(404).send({ error: 'Session tracker not found' });
@@ -265,6 +347,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   }>('/sessions/:id/state', async (req, reply) => {
     const { id } = req.params;
 
+    if (!canAccessAgentSession(req.user!.id, id)) {
+      return reply.status(404).send({ error: 'Session not found or not running' });
+    }
     if (!isSessionActive(id)) {
       return reply.status(404).send({ error: 'Session not found or not running' });
     }
@@ -288,6 +373,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   }>('/sessions/:id/display', async (req, reply) => {
     const { id } = req.params;
 
+    if (!canAccessAgentSession(req.user!.id, id)) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
     const session = getSession(id);
     if (!session) return reply.status(404).send({ error: 'Session not found' });
 
@@ -402,6 +490,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   }>('/sessions/:id/agent', { websocket: true }, (socket, req) => {
     const { id } = req.params;
 
+    if (!canAccessAgentSession(req.user!.id, id)) {
+      socket.send(JSON.stringify({ type: 'error', message: 'Session not found or not running' }));
+      socket.close();
+      return;
+    }
     if (!isSessionActive(id)) {
       socket.send(JSON.stringify({ type: 'error', message: 'Session not found or not running' }));
       socket.close();

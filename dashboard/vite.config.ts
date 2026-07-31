@@ -7,9 +7,11 @@ export default defineConfig({
   server: {
     // dev server 端口;agentmanager-dev 用 VITE_PORT 覆盖。仅影响 dev——vite build 不读 server.*
     port: Number(process.env.VITE_PORT) || 42011,
+    // 监听所有网卡，让局域网内的其他设备也能打开并登录 dev dashboard。
+    host: true,
     // Vite 7 默认拒绝 Host 头不在白名单里的请求(返回 "Blocked request. This host is
-    // not allowed.")。dev server 只绑 127.0.0.1、经自己的反代/隧道用域名访问,这里放行
-    // 所有 host;否则用域名打开会 403。仅 dev 生效——生产是 Fastify 托管的静态构建,不受影响。
+    // not allowed.")。放行所有 host，否则用局域网 IP、域名、反代或隧道打开会
+    // 403。仅 dev 生效——生产是 Fastify 托管的静态构建，不受影响。
     allowedHosts: true,
     proxy: {
       '/api': {

@@ -15,8 +15,14 @@ import { HistoryViewer } from './HistoryViewer';
 import { ProjectSkillsPanel } from './ProjectSkillsPanel';
 import { useShortcut, markKeyboardNav } from '../lib/shortcuts';
 import { LiveSessionSignalDot } from '../lib/session-signal';
+import {
+  reconcileHydratedTerminalInstances,
+  shouldAutoRestoreSession,
+  type TerminalInstance,
+} from '../lib/project-session-state';
 
 interface ProjectViewProps {
+  currentUserId: string;
   projectId: string;
   projectPath: string;
   projectName: string;
@@ -33,13 +39,6 @@ interface ProjectViewProps {
 interface ExplorerInstance {
   id: string;
   label: string;
-}
-
-interface TerminalInstance {
-  id: string; // session ID
-  label: string;
-  /** User-set tab name. Falls back to the auto-generated label when empty. */
-  customLabel?: string;
 }
 
 interface WebPageInstance {
@@ -66,13 +65,21 @@ interface PersistedState {
 
 let nextExplorerSeq = 1;
 
-function storageKey(projectId: string) {
-  return `agentmanager-project-${projectId}`;
+function storageKey(userId: string, projectId: string) {
+  return `agentmanager-project-${userId}-${projectId}`;
 }
 
-function loadPersistedState(projectId: string): PersistedState | null {
+function ownsExplorerTab(userId: string, projectId: string, id: string) {
+  return id.startsWith(`${userId}-${projectId}-explorer-`);
+}
+
+function ownsWebPageTab(userId: string, projectId: string, id: string) {
+  return id.startsWith(`${userId}-${projectId}-webpage-`);
+}
+
+function loadPersistedState(userId: string, projectId: string): PersistedState | null {
   try {
-    const raw = localStorage.getItem(storageKey(projectId));
+    const raw = localStorage.getItem(storageKey(userId, projectId));
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed && parsed.activeMode && Array.isArray(parsed.explorerInstances)) {
@@ -82,16 +89,23 @@ function loadPersistedState(projectId: string): PersistedState | null {
   return null;
 }
 
-function persistState(projectId: string, state: PersistedState) {
+function persistState(userId: string, projectId: string, state: PersistedState) {
   try {
-    localStorage.setItem(storageKey(projectId), JSON.stringify(state));
+    localStorage.setItem(storageKey(userId, projectId), JSON.stringify(state));
   } catch {}
 }
 
+function isLiveSessionStatus(status: string) {
+  return status === 'running'
+    || status === 'detached'
+    || status === 'pending'
+    || status === 'launching';
+}
+
 /** Remove all localStorage entries for a project and its explorer instances */
-export function cleanupProjectStorage(projectId: string) {
+export function cleanupProjectStorage(userId: string, projectId: string) {
   try {
-    const raw = localStorage.getItem(storageKey(projectId));
+    const raw = localStorage.getItem(storageKey(userId, projectId));
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed?.explorerInstances) {
@@ -100,7 +114,7 @@ export function cleanupProjectStorage(projectId: string) {
         }
       }
     }
-    localStorage.removeItem(storageKey(projectId));
+    localStorage.removeItem(storageKey(userId, projectId));
   } catch {}
 }
 
@@ -118,7 +132,7 @@ const sidebarButtons = [
 // handlers), so the shallow compare holds.
 export const ProjectView = memo(ProjectViewImpl);
 
-function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled, onHiddenSessionsChange }: ProjectViewProps) {
+function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _projectName, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled, onHiddenSessionsChange }: ProjectViewProps) {
   const queryClient = useQueryClient();
 
   // Fetch project data for SessionLauncher
@@ -130,7 +144,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
 
   // Fetch running sessions for this project
   // No refetchInterval — driven by WebSocket invalidation (websocket.ts).
-  const { data: sessionsData } = useQuery({
+  const { data: sessionsData, isSuccess: sessionsLoaded } = useQuery({
     queryKey: ['sessions'],
     queryFn: () => api.sessions.list(),
   });
@@ -158,7 +172,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
 
   // Initialize from persisted state or defaults
   const [initialized] = useState(() => {
-    const saved = loadPersistedState(projectId);
+    const saved = loadPersistedState(currentUserId, projectId);
     if (saved) {
       for (const e of saved.explorerInstances) {
         const match = e.id.match(/-explorer-(\d+)$/);
@@ -213,9 +227,41 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
   const [terminalInstances, setTerminalInstances] = useState<TerminalInstance[]>(
     initialized?.terminalInstances ?? []
   );
+  const locallyCreatedSessionIds = useRef(new Set<string>());
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(
     initialized?.activeTerminalId ?? null
   );
+  // Set once server project state has been read. Ended sessions may auto-resume
+  // only when the authoritative state says their tab was still open.
+  const canonicalOpenSessionIdsRef = useRef<Set<string> | null>(null);
+  // Hydration runs once, so read the latest live-session set through a ref when
+  // its request resolves instead of capturing the first render's empty query.
+  const activeProjectSessionIdsRef = useRef(new Set<string>());
+  activeProjectSessionIdsRef.current = new Set(projectSessions.map((session) => session.id));
+
+  // Server/browser state written before per-user isolation may contain another
+  // account's session IDs. A local ended tab is valid only when it is also in
+  // the authoritative server project state; live and just-created tabs remain.
+  useEffect(() => {
+    if (!sessionsLoaded) return;
+    const knownSessionIds = new Set((sessionsData?.sessions || []).map((session) => session.id));
+    const allowed = new Set(
+      (sessionsData?.sessions || [])
+        .filter((session) => isLiveSessionStatus(session.status))
+        .map((session) => session.id),
+    );
+    for (const id of canonicalOpenSessionIdsRef.current ?? []) {
+      if (knownSessionIds.has(id)) allowed.add(id);
+    }
+    for (const id of locallyCreatedSessionIds.current) {
+      if (knownSessionIds.has(id)) locallyCreatedSessionIds.current.delete(id);
+    }
+    setTerminalInstances((prev) => {
+      const next = prev.filter((tab) => allowed.has(tab.id) || locallyCreatedSessionIds.current.has(tab.id));
+      return next.length === prev.length ? prev : next;
+    });
+    setActiveTerminalId((prev) => prev && !allowed.has(prev) && !locallyCreatedSessionIds.current.has(prev) ? null : prev);
+  }, [sessionsLoaded, sessionsData, projHydrated]);
   const autoResumeAttemptsRef = useRef(new Set<string>());
 
   // ── Inline session-tab rename ──────────────────────────────────────
@@ -315,11 +361,11 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
   const [expandedTerminalId, setExpandedTerminalId] = useState<string | null>(null);
   const [gridFocusedId, setGridFocusedId] = useState<string | null>(null);
   const [gridColumns, setGridColumns] = useState(() => {
-    const saved = localStorage.getItem(`agentmanager-project-grid-cols-${projectId}`);
+    const saved = localStorage.getItem(`agentmanager-project-grid-cols-${currentUserId}-${projectId}`);
     return saved ? Math.min(10, Math.max(1, parseInt(saved, 10) || 3)) : 3;
   });
   const [gridRows, setGridRows] = useState<number | 'auto'>(() => {
-    const saved = localStorage.getItem(`agentmanager-project-grid-rows-${projectId}`);
+    const saved = localStorage.getItem(`agentmanager-project-grid-rows-${currentUserId}-${projectId}`);
     if (!saved || saved === 'auto') return 'auto';
     return Math.min(6, Math.max(1, parseInt(saved, 10) || 2));
   });
@@ -336,11 +382,16 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
   const mountedTerminals = useRef(new Set<string>());
 
   // Web page instances
-  const [webPageInstances, setWebPageInstances] = useState<WebPageInstance[]>(
-    initialized?.webPageInstances ?? []
+  const [webPageInstances, setWebPageInstances] = useState<WebPageInstance[]>(() =>
+    (initialized?.webPageInstances ?? []).filter((tab) =>
+      ownsWebPageTab(currentUserId, projectId, tab.id),
+    ),
   );
   const [activeWebPageId, setActiveWebPageId] = useState<string | null>(
-    initialized?.activeWebPageId ?? null
+    initialized?.activeWebPageId
+      && ownsWebPageTab(currentUserId, projectId, initialized.activeWebPageId)
+      ? initialized.activeWebPageId
+      : null,
   );
 
   // Close-tab confirmation modal state
@@ -361,6 +412,40 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
 
   // Track sessions the user explicitly closed so the sync effect doesn't re-add them
   const closedSessionIds = useRef(new Set<string>(initialized?.hiddenSessionIds ?? []));
+
+  // Keep an affected user's already-open page in sync when an administrator
+  // renames or removes one of their session tabs from the monitor page.
+  useEffect(() => {
+    const handleAdminTabState = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        targetUserId?: string;
+        projectId?: string;
+        sessionId?: string;
+        action?: 'rename' | 'delete';
+        name?: string;
+      }>).detail;
+      if (detail?.targetUserId !== currentUserId || detail.projectId !== projectId || !detail.sessionId) return;
+      if (detail.action === 'rename' && detail.name) {
+        terminalLabelsRef.current[detail.sessionId] = detail.name;
+        setTerminalInstances((prev) => prev.map((tab) => (
+          tab.id === detail.sessionId ? { ...tab, customLabel: detail.name } : tab
+        )));
+        return;
+      }
+      if (detail.action === 'delete') {
+        closedSessionIds.current.add(detail.sessionId);
+        canonicalOpenSessionIdsRef.current?.delete(detail.sessionId);
+        locallyCreatedSessionIds.current.delete(detail.sessionId);
+        delete terminalLabelsRef.current[detail.sessionId];
+        setClosedIdsVersion((value) => value + 1);
+        setTerminalInstances((prev) => prev.filter((tab) => tab.id !== detail.sessionId));
+        setActiveTerminalId((activeId) => activeId === detail.sessionId ? null : activeId);
+        if (activeTerminalId === detail.sessionId) setShowLauncher(false);
+      }
+    };
+    window.addEventListener('agentmanager:user-tab-state', handleAdminTabState);
+    return () => window.removeEventListener('agentmanager:user-tab-state', handleAdminTabState);
+  }, [activeTerminalId, currentUserId, projectId]);
   // Counter to force re-render when closedSessionIds changes (refs don't trigger re-renders)
   const [closedIdsVersion, setClosedIdsVersion] = useState(0);
 
@@ -412,7 +497,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
 
       // Keep a tab if its session is still alive, ended (view/resume), or not yet
       // seen by the server (just created locally, not in the poll response yet).
-      const filtered = prev.filter((t) => aliveIds.has(t.id) || endedIds.has(t.id) || !allServerIds.has(t.id));
+      const filtered = prev.filter((t) => aliveIds.has(t.id) || endedIds.has(t.id) || (!sessionsLoaded && !allServerIds.has(t.id)));
 
       // Relabel existing instances based on actual session data.
       // This fixes tabs restored from localStorage with stale labels.
@@ -459,7 +544,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
 
       return result;
     });
-  }, [projectSessions]);
+  }, [projectSessions, sessionsLoaded, sessionsData]);
 
   // If terminals appeared and launcher was showing, switch to terminal
   // (but not if the user explicitly navigated to the Home/launcher tab)
@@ -515,6 +600,23 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
     }
 
     // Regular session ID focus
+    if (!terminalInstances.some((tab) => tab.id === focusSessionId)) {
+      const target = (sessionsData?.sessions || []).find((session) => session.id === focusSessionId && session.project_id === projectId);
+      if (target) {
+        closedSessionIds.current.delete(focusSessionId);
+        canonicalOpenSessionIdsRef.current?.add(focusSessionId);
+        setClosedIdsVersion((value) => value + 1);
+        const prefix = target.task === 'Terminal' ? 'Terminal' : target.task?.startsWith('Agent (') ? 'Agent' : 'Session';
+        const count = terminalInstances.filter((tab) => tab.label.startsWith(prefix)).length + 1;
+        setTerminalInstances((prev) => [...prev, { id: focusSessionId, label: `${prefix} ${count}` }]);
+        setActiveTerminalId(focusSessionId);
+        setActiveWebPageId(null);
+        setShowLauncher(false);
+        setShowAllTerminals(false);
+        setActiveMode('terminal');
+        return;
+      }
+    }
     if (terminalInstances.some((t) => t.id === focusSessionId)) {
       setActiveTerminalId(focusSessionId);
       setActiveWebPageId(null);
@@ -524,24 +626,28 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
       onFocusSessionHandled?.();
       focusTerminalById(focusSessionId);
     }
-  }, [focusSessionId, terminalInstances]);
+  }, [focusSessionId, terminalInstances, sessionsData, projectId]);
 
   // Explorer instances
   const [explorerInstances, setExplorerInstances] = useState<ExplorerInstance[]>(() => {
-    if (initialized?.explorerInstances?.length) {
-      return initialized.explorerInstances;
-    }
-    const id = `${projectId}-explorer-${nextExplorerSeq++}`;
+    const owned = (initialized?.explorerInstances ?? []).filter((tab) =>
+      ownsExplorerTab(currentUserId, projectId, tab.id),
+    );
+    if (owned.length) return owned;
+    const id = `${currentUserId}-${projectId}-explorer-${nextExplorerSeq++}`;
     return [{ id, label: 'Explorer 1' }];
   });
 
-  const [activeExplorerId, setActiveExplorerId] = useState(
-    initialized?.activeExplorerId ?? explorerInstances[0].id
+  const [activeExplorerId, setActiveExplorerId] = useState(() =>
+    initialized?.activeExplorerId
+      && explorerInstances.some((tab) => tab.id === initialized.activeExplorerId)
+      ? initialized.activeExplorerId
+      : explorerInstances[0].id,
   );
 
   // Persist state to localStorage (instant-paint cache + offline fallback).
   useEffect(() => {
-    persistState(projectId, {
+    persistState(currentUserId, projectId, {
       activeMode,
       explorerInstances,
       activeExplorerId,
@@ -552,7 +658,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
       activeWebPageId,
       showLauncher,
     });
-  }, [projectId, activeMode, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion, webPageInstances, activeWebPageId, showLauncher]);
+  }, [currentUserId, projectId, activeMode, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion, webPageInstances, activeWebPageId, showLauncher]);
 
   // ── Cross-device sync: the terminal tab list uses stable AgentManager
   // session IDs. Persisting it (plus hidden/active IDs) makes the tab-to-native
@@ -572,6 +678,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
         } | undefined;
         if (!ps) {
           // First run for this project: seed the server from local state.
+          canonicalOpenSessionIdsRef.current = new Set(terminalInstances.map((terminal) => terminal.id));
           api.userState.set(`project:${projectId}`, {
             terminalLabels: terminalLabelsRef.current,
             terminalInstances,
@@ -596,20 +703,32 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
           setClosedIdsVersion((v) => v + 1);
         }
         if (Array.isArray(ps.terminalInstances)) {
+          canonicalOpenSessionIdsRef.current = new Set(
+            ps.terminalInstances
+              .filter((terminal) => !closedSessionIds.current.has(terminal.id))
+              .map((terminal) => terminal.id),
+          );
           setTerminalInstances((prev) => {
-            const hidden = closedSessionIds.current;
-            const byId = new Map(prev.filter((t) => !hidden.has(t.id)).map((t) => [t.id, t]));
-            const ordered: TerminalInstance[] = [];
-            for (const saved of ps.terminalInstances!) {
-              if (hidden.has(saved.id)) continue;
-              const current = byId.get(saved.id);
-              ordered.push(current ? { ...saved, ...current, customLabel: current.customLabel || saved.customLabel } : saved);
-              byId.delete(saved.id);
-            }
-            return [...ordered, ...byId.values()];
+            const retainLocalIds = new Set(activeProjectSessionIdsRef.current);
+            for (const id of locallyCreatedSessionIds.current) retainLocalIds.add(id);
+            return reconcileHydratedTerminalInstances(
+              prev,
+              ps.terminalInstances!,
+              closedSessionIds.current,
+              retainLocalIds,
+            );
           });
         } else if (closedSessionIds.current.size > 0) {
+          canonicalOpenSessionIdsRef.current = new Set(
+            terminalInstances
+              .filter((terminal) => !closedSessionIds.current.has(terminal.id))
+              .map((terminal) => terminal.id),
+          );
           setTerminalInstances((prev) => prev.filter((t) => !closedSessionIds.current.has(t.id)));
+        } else {
+          // Legacy server state without a tab list: preserve the local snapshot
+          // once, then the next write upgrades it to the canonical format.
+          canonicalOpenSessionIdsRef.current = new Set(terminalInstances.map((terminal) => terminal.id));
         }
         if (
           ps.activeTerminalId
@@ -621,16 +740,22 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
         // Web-page and explorer tabs aren't derived from sessions, so merge the
         // server's set in (union by id, server wins) to restore them on a new device.
         if (Array.isArray(ps.webPageInstances) && ps.webPageInstances.length) {
+          const ownedWebPages = ps.webPageInstances.filter((tab) =>
+            ownsWebPageTab(currentUserId, projectId, tab.id),
+          );
           setWebPageInstances((prev) => {
             const byId = new Map(prev.map((w) => [w.id, w]));
-            for (const w of ps.webPageInstances!) byId.set(w.id, w);
+            for (const w of ownedWebPages) byId.set(w.id, w);
             return [...byId.values()];
           });
         }
         if (Array.isArray(ps.explorerInstances) && ps.explorerInstances.length) {
+          const ownedExplorers = ps.explorerInstances.filter((tab) =>
+            ownsExplorerTab(currentUserId, projectId, tab.id),
+          );
           setExplorerInstances((prev) => {
             const byId = new Map(prev.map((e) => [e.id, e]));
-            for (const e of ps.explorerInstances!) byId.set(e.id, e);
+            for (const e of ownedExplorers) byId.set(e.id, e);
             return [...byId.values()];
           });
         }
@@ -638,7 +763,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
       .catch(() => { /* offline / unauthenticated: keep localStorage state */ })
       .finally(() => { if (!cancelled) setProjHydrated(true); });
     return () => { cancelled = true; };
-  }, [projectId]);
+  }, [currentUserId, projectId]);
 
   // Debounced write-back after hydration. The backend session row remains the
   // source of truth for whether a CLI exists; this state preserves presentation
@@ -669,17 +794,12 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
   // Cancelled sessions are excluded because cancellation is an explicit stop.
   useEffect(() => {
     if (!projHydrated || !sessionsData) return;
+    const canonicalOpenIds = canonicalOpenSessionIdsRef.current;
+    if (!canonicalOpenIds) return;
     const openIds = new Set(terminalInstances.map((terminal) => terminal.id));
     for (const session of sessionsData.sessions) {
-      if (
-        session.project_id !== projectId
-        || !openIds.has(session.id)
-        || !['completed', 'failed'].includes(session.status)
-      ) continue;
-      const hasNativeConversation = session.cli_type === 'codex'
-        ? !!session.codex_session_id
-        : !!session.claude_session_id;
-      if (!hasNativeConversation || autoResumeAttemptsRef.current.has(session.id)) continue;
+      if (!shouldAutoRestoreSession(session, projectId, openIds, canonicalOpenIds)) continue;
+      if (autoResumeAttemptsRef.current.has(session.id)) continue;
       autoResumeAttemptsRef.current.add(session.id);
       api.sessions.resume(session.id, true)
         .then(() => queryClient.invalidateQueries({ queryKey: ['sessions'] }))
@@ -694,6 +814,8 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
   }
 
   function handleSessionCreated(sessionId: string, _projectName?: string, mode?: 'session' | 'terminal') {
+    locallyCreatedSessionIds.current.add(sessionId);
+    canonicalOpenSessionIdsRef.current?.add(sessionId);
     const isTerminal = mode === 'terminal';
     setTerminalInstances((prev) => {
       if (prev.some((t) => t.id === sessionId)) return prev;
@@ -909,38 +1031,65 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
     }
   }
 
-  function closeTerminal(id: string) {
+  function removeTerminalTabFromState(id: string) {
+    const remaining = terminalInstances.filter((terminal) => terminal.id !== id);
+    const nextActiveTerminalId = activeTerminalId === id
+      ? remaining[0]?.id ?? null
+      : activeTerminalId;
+    const nextShowLauncher = activeTerminalId === id && remaining.length === 0
+      ? true
+      : activeTerminalId === id
+        ? false
+        : showLauncher;
+
     closedSessionIds.current.add(id);
+    canonicalOpenSessionIdsRef.current?.delete(id);
+    locallyCreatedSessionIds.current.delete(id);
+    delete terminalLabelsRef.current[id];
+    setClosedIdsVersion((v) => v + 1);
+    setTerminalInstances(remaining);
+    setActiveTerminalId(nextActiveTerminalId);
+    setShowLauncher(nextShowLauncher);
+
+    // A process/browser crash must not let the previous local or server
+    // snapshot resurrect this tab on the next startup. Persist this user action
+    // immediately; the normal debounced writer will still reconcile later UI.
+    const hiddenSessionIds = [...closedSessionIds.current];
+    const terminalLabels: Record<string, string> = {};
+    for (const terminal of remaining) {
+      const customLabel = terminal.customLabel?.trim();
+      if (customLabel) terminalLabels[terminal.id] = customLabel;
+    }
+    persistState(currentUserId, projectId, {
+      activeMode,
+      explorerInstances,
+      activeExplorerId,
+      terminalInstances: remaining,
+      activeTerminalId: nextActiveTerminalId,
+      hiddenSessionIds,
+      webPageInstances,
+      activeWebPageId,
+      showLauncher: nextShowLauncher,
+    });
+    api.userState.set(`project:${projectId}`, {
+      terminalLabels,
+      terminalInstances: remaining,
+      activeTerminalId: nextActiveTerminalId,
+      hiddenSessionIds,
+      explorerInstances,
+      webPageInstances,
+    }).catch((err) => console.error('Failed to persist closed terminal tab:', id, err));
+  }
+
+  function closeTerminal(id: string) {
+    removeTerminalTabFromState(id);
     api.sessions.kill(id)
       .then(() => queryClient.invalidateQueries({ queryKey: ['sessions'] }))
       .catch((err) => console.error('Failed to kill session:', id, err));
-    setTerminalInstances((prev) => prev.filter((t) => t.id !== id));
-    if (activeTerminalId === id) {
-      const remaining = terminalInstances.filter((t) => t.id !== id);
-      if (remaining.length > 0) {
-        setActiveTerminalId(remaining[0].id);
-        setShowLauncher(false);
-      } else {
-        setActiveTerminalId(null);
-        setShowLauncher(true);
-      }
-    }
   }
 
   function closeTerminalTab(id: string) {
-    closedSessionIds.current.add(id);
-    setClosedIdsVersion((v) => v + 1);
-    setTerminalInstances((prev) => prev.filter((t) => t.id !== id));
-    if (activeTerminalId === id) {
-      const remaining = terminalInstances.filter((t) => t.id !== id);
-      if (remaining.length > 0) {
-        setActiveTerminalId(remaining[0].id);
-        setShowLauncher(false);
-      } else {
-        setActiveTerminalId(null);
-        setShowLauncher(true);
-      }
-    }
+    removeTerminalTabFromState(id);
     queryClient.invalidateQueries({ queryKey: ['sessions'] });
   }
 
@@ -993,7 +1142,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
   }
 
   function addExplorer() {
-    const id = `${projectId}-explorer-${nextExplorerSeq++}`;
+    const id = `${currentUserId}-${projectId}-explorer-${nextExplorerSeq++}`;
     const label = `Explorer ${explorerInstances.length + 1}`;
     setExplorerInstances((prev) => [...prev, { id, label }]);
     setActiveExplorerId(id);
@@ -1010,7 +1159,7 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
   let nextWebPageSeq = webPageInstances.length + 1;
 
   function addWebPage(url: string) {
-    const id = `${projectId}-webpage-${Date.now()}`;
+    const id = `${currentUserId}-${projectId}-webpage-${Date.now()}`;
     const label = `Web ${nextWebPageSeq++}`;
     setWebPageInstances((prev) => [...prev, { id, label, url }]);
     setActiveWebPageId(id);
@@ -1083,11 +1232,11 @@ function ProjectViewImpl({ projectId, projectPath, projectName: _projectName, ac
 
   // Persist grid preferences
   useEffect(() => {
-    localStorage.setItem(`agentmanager-project-grid-cols-${projectId}`, String(gridColumns));
-  }, [gridColumns, projectId]);
+    localStorage.setItem(`agentmanager-project-grid-cols-${currentUserId}-${projectId}`, String(gridColumns));
+  }, [gridColumns, currentUserId, projectId]);
   useEffect(() => {
-    localStorage.setItem(`agentmanager-project-grid-rows-${projectId}`, String(gridRows));
-  }, [gridRows, projectId]);
+    localStorage.setItem(`agentmanager-project-grid-rows-${currentUserId}-${projectId}`, String(gridRows));
+  }, [gridRows, currentUserId, projectId]);
 
   // Calculate grid card height
   useEffect(() => {

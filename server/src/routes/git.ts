@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from 'fastify';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { isAdmin, userOwnsFilesystemPath } from '../auth.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -19,6 +20,18 @@ async function isGitRepo(path: string): Promise<boolean> {
 }
 
 export const gitRoutes: FastifyPluginAsync = async (app) => {
+  app.addHook('preHandler', async (req, reply) => {
+    const query = (req.query || {}) as Record<string, unknown>;
+    const body = (req.body || {}) as Record<string, unknown>;
+    const path = typeof query.path === 'string' ? query.path : typeof body.path === 'string' ? body.path : null;
+    if (path && !userOwnsFilesystemPath(req.user!.id, path)) {
+      return reply.status(403).send({ error: 'Project not assigned to this user' });
+    }
+    if (!path && req.url.startsWith('/git/gh-accounts') && !isAdmin(req.user!.id)) {
+      return reply.status(403).send({ error: 'Admin only' });
+    }
+  });
+
   // GET /git/status — branch name + changed files
   app.get<{ Querystring: { path: string } }>('/git/status', async (req, reply) => {
     const { path } = req.query;

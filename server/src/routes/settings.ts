@@ -4,6 +4,7 @@ import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
+import { isAdmin } from '../auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -43,6 +44,7 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
   app.put<{
     Body: { settings: Record<string, string> };
   }>('/settings', async (req, reply) => {
+    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Settings are read-only for members' });
     const { settings } = req.body;
     if (!settings || typeof settings !== 'object') {
       return reply.status(400).send({ error: 'settings object is required' });
@@ -101,7 +103,8 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // Install AgentManager statusline to global ~/.claude/settings.json
-  app.post('/settings/statusline/install', async () => {
+  app.post('/settings/statusline/install', async (req, reply) => {
+    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
     const scriptDest = getStatuslineScriptPath();
     const scriptSrc = join(__dirname, '..', 'data', 'statusline.sh');
 
@@ -122,7 +125,8 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // Uninstall AgentManager statusline from global ~/.claude/settings.json
-  app.post('/settings/statusline/uninstall', async () => {
+  app.post('/settings/statusline/uninstall', async (req, reply) => {
+    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
     const scriptPath = getStatuslineScriptPath();
     const removed: string[] = [];
 

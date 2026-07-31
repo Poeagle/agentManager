@@ -484,6 +484,7 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
         return (
           <AgentGuideModal
             onClose={() => setShowOpenClaw(false)}
+            projectId={proj.id}
             projectName={proj.name}
             projectPath={proj.path}
             task={task.trim() || undefined}

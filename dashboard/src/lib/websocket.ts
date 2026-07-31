@@ -116,8 +116,8 @@ export function connectStream() {
       // don't trigger a sessions refetch.
       if (event.type === 'session.state') {
         if (event.session_id) {
-          let d: any = {};
-          try { d = event.data ? JSON.parse(event.data) : {}; } catch {}
+          let d: { processState?: 'busy' | 'idle' | 'waiting_for_input'; promptType?: 'choice' | 'confirmation' | 'text' | null; isPermission?: boolean } = {};
+          try { d = event.data ? JSON.parse(event.data) : {}; } catch { /* ignore malformed state payload */ }
           if (d.processState) {
             useStreamStore.getState().setLiveState(event.session_id, {
               processState: d.processState,
@@ -125,8 +125,17 @@ export function connectStream() {
               isPermission: !!d.isPermission,
               at: Date.now(),
             });
+            queryClientRef?.invalidateQueries({ queryKey: ['admin-monitor'] });
           }
         }
+        return;
+      }
+
+      if (event.type === 'user.tab_state') {
+        let detail: Record<string, unknown> = {};
+        try { detail = event.data ? JSON.parse(event.data) : {}; } catch { /* ignore malformed tab payload */ }
+        window.dispatchEvent(new CustomEvent('agentmanager:user-tab-state', { detail }));
+        queryClientRef?.invalidateQueries({ queryKey: ['admin-monitor'] });
         return;
       }
 
@@ -134,6 +143,7 @@ export function connectStream() {
       // Invalidate sessions query on session lifecycle events so we don't need aggressive polling
       if (event.type?.startsWith('session.') && queryClientRef) {
         queryClientRef.invalidateQueries({ queryKey: ['sessions'] });
+        queryClientRef.invalidateQueries({ queryKey: ['admin-monitor'] });
       }
     } catch {
       // Ignore parse errors

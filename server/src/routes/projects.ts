@@ -6,6 +6,8 @@ import { join, resolve, basename } from 'path';
 import { homedir } from 'os';
 import { existsSync } from 'fs';
 import { installDefaultAgents } from '../data/default-agents.js';
+import { getProjectToolAccess, isAdmin as isAdminUser, setProjectToolAccess, removeProjectUserAccess, userOwnsProject, userProjectIds } from '../auth.js';
+import { killSession } from '../services/session-manager.js';
 
 export interface Project {
   id: string;
@@ -17,8 +19,29 @@ export interface Project {
   default_web_url: string | null;
   skip_permissions: number;
   color: string;
+  owner_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface ProjectAccessRow {
+  user_id: string;
+  can_session: number;
+  can_agent: number;
+  can_terminal: number;
+  can_claude: number;
+  can_codex: number;
+  granted_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function isProjectManager(userId: string, ownerId: string | null): boolean {
+  return !!(ownerId && ownerId === userId) || isAdminUser(userId);
+}
+
+function toBool(v: number): boolean {
+  return Number(v) === 1;
 }
 
 /** ~/.agentmanager/projects.json — portable backup, not the source of truth */
@@ -31,6 +54,50 @@ async function exportToConfig(): Promise<void> {
   const rows = db.prepare('SELECT name, path, description, session_prompt, openclaw_prompt, default_web_url FROM projects ORDER BY name COLLATE NOCASE').all();
   await mkdir(AGENTMANAGER_DIR, { recursive: true });
   await writeFile(PROJECTS_FILE, JSON.stringify({ projects: rows }, null, 2), 'utf-8');
+}
+
+function findProjectById(db: ReturnType<typeof getDb>, projectId: string): Project | undefined {
+  return db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as Project | undefined;
+}
+
+function canReadProject(userId: string, projectId: string): boolean {
+  return userOwnsProject(userId, projectId);
+}
+
+function canWriteProject(userId: string, project: Project): boolean {
+  if (!project) return false;
+  return isProjectManager(userId, project.owner_id);
+}
+
+function parseAccessRow(row: ProjectAccessRow | undefined) {
+  if (!row) return null;
+  return {
+    can_session: toBool(row.can_session),
+    can_agent: toBool(row.can_agent),
+    can_terminal: toBool(row.can_terminal),
+    can_claude: toBool(row.can_claude),
+    can_codex: toBool(row.can_codex),
+    granted_by: row.granted_by,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+async function stopUserSessions(userId: string): Promise<void> {
+  const rows = getDb().prepare(`
+    SELECT id FROM sessions
+    WHERE created_by_user_id = ? AND status IN ('pending', 'running', 'detached', 'released')
+  `).all(userId) as { id: string }[];
+  await Promise.allSettled(rows.map((row) => killSession(row.id)));
+}
+
+async function stopAllMemberSessions(): Promise<void> {
+  const rows = getDb().prepare(`
+    SELECT s.id FROM sessions s
+    JOIN users u ON u.id = s.created_by_user_id
+    WHERE u.role != 'admin' AND s.status IN ('pending', 'running', 'detached', 'released')
+  `).all() as { id: string }[];
+  await Promise.allSettled(rows.map((row) => killSession(row.id)));
 }
 
 /**
@@ -73,15 +140,35 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
   // List projects
   app.get('/projects', async (req) => {
     const db = getDb();
-    const projects = db.prepare('SELECT * FROM projects WHERE owner_id = ? ORDER BY name COLLATE NOCASE').all(req.user!.id);
-    return { projects };
+    const isAdmin = isAdminUser(req.user!.id);
+    const allowedProjectIds = [...userProjectIds(req.user!.id)];
+    if (!isAdmin && allowedProjectIds.length === 0) return { projects: [] };
+
+    const projects = isAdmin
+      ? db.prepare('SELECT * FROM projects ORDER BY name COLLATE NOCASE').all()
+      : db.prepare(`SELECT * FROM projects WHERE id IN (${allowedProjectIds.map(() => '?').join(',')}) ORDER BY name COLLATE NOCASE`).all(...allowedProjectIds);
+    return {
+      projects: (projects as Project[]).map((project) => {
+        const access = getProjectToolAccess(req.user!.id, project.id);
+        return {
+          ...project,
+          tool_access: access ? {
+            can_session: access.canSession,
+            can_agent: access.canAgent,
+            can_terminal: access.canTerminal,
+            can_claude: access.canClaude,
+            can_codex: access.canCodex,
+          } : null,
+        };
+      }),
+    };
   });
 
   // Get single project
   app.get<{ Params: { id: string } }>('/projects/:id', async (req, reply) => {
     const db = getDb();
-    const project = db.prepare('SELECT * FROM projects WHERE id = ? AND owner_id = ?').get(req.params.id, req.user!.id);
-    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    const project = findProjectById(db, req.params.id);
+    if (!project || !canReadProject(req.user!.id, req.params.id)) return reply.status(404).send({ error: 'Project not found' });
     return { project };
   });
 
@@ -89,6 +176,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
   app.post<{
     Body: { name: string; path: string; description?: string; session_prompt?: string; openclaw_prompt?: string; default_web_url?: string; color?: string };
   }>('/projects', async (req, reply) => {
+    if (!isAdminUser(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
     const { name, path, description, session_prompt, openclaw_prompt, default_web_url, color } = req.body;
     if (!name || !path) return reply.status(400).send({ error: 'name and path are required' });
 
@@ -100,6 +188,20 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
 
     db.prepare('INSERT INTO projects (id, name, path, description, session_prompt, openclaw_prompt, default_web_url, color, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, name, path, description || null, session_prompt || null, openclaw_prompt || null, default_web_url || null, color || '', req.user!.id);
+
+    setProjectToolAccess({
+      projectId: id,
+      userId: req.user!.id,
+      canSession: true,
+      canAgent: true,
+      canTerminal: true,
+      canClaude: true,
+      canCodex: true,
+      grantedBy: req.user!.id,
+    });
+    // A new registered project must immediately become invisible inside every
+    // member's existing OS sandbox.
+    await stopAllMemberSessions();
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
     await exportToConfig();
@@ -116,6 +218,11 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     Body: { name?: string; description?: string; session_prompt?: string | null; openclaw_prompt?: string | null; default_web_url?: string | null; skip_permissions?: number; color?: string };
   }>('/projects/:id', async (req, reply) => {
     const db = getDb();
+    const existing = findProjectById(db, req.params.id);
+    if (!existing || !canWriteProject(req.user!.id, existing)) {
+      return reply.status(404).send({ error: 'Project not found' });
+    }
+
     const updates: string[] = [];
     const params: unknown[] = [];
 
@@ -131,9 +238,8 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
 
     updates.push("updated_at = datetime('now')");
     params.push(req.params.id);
-    params.push(req.user!.id);
 
-    const result = db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ? AND owner_id = ?`).run(...params);
+    const result = db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`).run(...params);
     if (result.changes === 0) return reply.status(404).send({ error: 'Project not found' });
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
@@ -145,9 +251,9 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
   // Delete project
   app.delete<{ Params: { id: string } }>('/projects/:id', async (req, reply) => {
     const db = getDb();
-    // Verify ownership before touching anything.
-    const owned = db.prepare('SELECT 1 FROM projects WHERE id = ? AND owner_id = ?').get(req.params.id, req.user!.id);
-    if (!owned) return reply.status(404).send({ error: 'Project not found' });
+    const project = findProjectById(db, req.params.id);
+    if (!project || !canWriteProject(req.user!.id, project)) return reply.status(404).send({ error: 'Project not found' });
+
     // Nullify foreign key references before deleting (sessions/tasks/events may reference this project)
     db.prepare('UPDATE sessions SET project_id = NULL WHERE project_id = ?').run(req.params.id);
     db.prepare('UPDATE tasks SET project_id = NULL WHERE project_id = ?').run(req.params.id);
@@ -164,8 +270,9 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     Body: { skip_permissions: boolean };
   }>('/projects/skip-permissions-all', async (req, reply) => {
     const db = getDb();
+    if (!isAdminUser(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
     const val = req.body.skip_permissions ? 1 : 0;
-    const result = db.prepare('UPDATE projects SET skip_permissions = ?, updated_at = datetime(\'now\') WHERE owner_id = ?').run(val, req.user!.id);
+    const result = db.prepare('UPDATE projects SET skip_permissions = ?, updated_at = datetime(\'now\')').run(val);
     return { ok: true, updated: result.changes };
   });
 
@@ -174,8 +281,8 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     Params: { id: string };
   }>('/projects/:id/agents', async (req, reply) => {
     const db = getDb();
-    const project = db.prepare('SELECT * FROM projects WHERE id = ? AND owner_id = ?').get(req.params.id, req.user!.id) as Project | undefined;
-    if (!project) return reply.status(404).send({ error: 'Project not found' });
+    const project = findProjectById(db, req.params.id);
+    if (!project || !canReadProject(req.user!.id, req.params.id)) return reply.status(404).send({ error: 'Project not found' });
 
     const agents: { name: string; type: string; description: string; category: string }[] = [];
 
@@ -222,10 +329,124 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     return { agents: unique };
   });
 
+  // Read project-level tool access grants
+  app.get<{
+    Params: { id: string };
+  }>('/projects/:id/access', async (req, reply) => {
+    const db = getDb();
+    const project = findProjectById(db, req.params.id);
+    if (!project || !canWriteProject(req.user!.id, project)) {
+      return reply.status(404).send({ error: 'Project not found' });
+    }
+
+    const rows = db.prepare(`
+      SELECT
+        a.user_id,
+        a.can_session,
+        a.can_agent,
+        a.can_terminal,
+        a.can_claude,
+        a.can_codex,
+        a.granted_by,
+        a.updated_at,
+        a.created_at,
+        u.username,
+        u.display_name,
+        u.role
+      FROM project_user_access a
+      JOIN users u ON u.id = a.user_id
+      WHERE a.project_id = ?
+      ORDER BY u.username COLLATE NOCASE
+    `).all(req.params.id) as (ProjectAccessRow & { username: string; display_name: string; role: string })[];
+
+    const access = rows.map((row) => ({
+      ...parseAccessRow(row),
+      user_id: row.user_id,
+      username: row.username,
+      display_name: row.display_name,
+      role: row.role,
+      owner_id: project.owner_id,
+    }));
+
+    return { access };
+  });
+
+  // Update/create a project's user grant
+  app.put<{
+    Params: { id: string; userId: string };
+    Body: {
+      can_session: boolean;
+      can_agent: boolean;
+      can_terminal: boolean;
+      can_claude: boolean;
+      can_codex: boolean;
+    };
+  }>('/projects/:id/access/:userId', async (req, reply) => {
+    const db = getDb();
+    const project = findProjectById(db, req.params.id);
+    if (!project || !canWriteProject(req.user!.id, project)) {
+      return reply.status(404).send({ error: 'Project not found' });
+    }
+
+    const target = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.userId) as { id: string } | undefined;
+    if (!target) return reply.status(404).send({ error: 'User not found' });
+
+    const body = req.body || {};
+    const keys: Array<keyof typeof body> = ['can_session', 'can_agent', 'can_terminal', 'can_claude', 'can_codex'];
+    for (const key of keys) {
+      if (typeof body[key] !== 'boolean') {
+        return reply.status(400).send({ error: `Field ${key} is required` });
+      }
+    }
+
+    setProjectToolAccess({
+      projectId: req.params.id,
+      userId: req.params.userId,
+      canSession: body.can_session,
+      canAgent: body.can_agent,
+      canTerminal: body.can_terminal,
+      canClaude: body.can_claude,
+      canCodex: body.can_codex,
+      grantedBy: req.user!.id,
+    });
+    // The hidden-path list is fixed when a process starts, so grant changes
+    // terminate this user's live sessions and take effect immediately.
+    await stopUserSessions(req.params.userId);
+
+    return {
+      ok: true,
+      access: {
+        user_id: req.params.userId,
+        can_session: body.can_session,
+        can_agent: body.can_agent,
+        can_terminal: body.can_terminal,
+        can_claude: body.can_claude,
+        can_codex: body.can_codex,
+      },
+    };
+  });
+
+  // Remove a project's explicit user grant
+  app.delete<{
+    Params: { id: string; userId: string };
+  }>('/projects/:id/access/:userId', async (req, reply) => {
+    const db = getDb();
+    const project = findProjectById(db, req.params.id);
+    if (!project || !canWriteProject(req.user!.id, project)) {
+      return reply.status(404).send({ error: 'Project not found' });
+    }
+
+    const removed = removeProjectUserAccess(req.params.id, req.params.userId);
+    if (removed === 0) return reply.status(404).send({ error: 'Grant not found' });
+    await stopUserSessions(req.params.userId);
+    return { ok: true };
+  });
+
   // Browse directories (for folder picker UI)
   app.get<{
     Querystring: { path?: string };
   }>('/browse', async (req, reply) => {
+    if (!isAdminUser(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
     const dirPath = resolve(req.query.path || homedir());
 
     try {

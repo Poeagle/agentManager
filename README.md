@@ -83,6 +83,10 @@ npm run dev                  # server :42010 + dashboard with hot reload
 bash scripts/dev-isolated.sh # or an isolated instance on separate ports + db
 ```
 
+Both development commands listen on all network interfaces. Devices on the
+same network can sign in at `http://<host-ip>:42011` (subject to the host
+firewall); the isolated command uses the same dashboard port by default.
+
 ## Testing
 
 The repository includes isolated server and dashboard tests, coverage gates,

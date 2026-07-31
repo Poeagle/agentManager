@@ -3,8 +3,31 @@ import {
   attachTerminal, writeToSession, resizeSession, reconnectSession,
   getPendingSpawn, consumePendingSpawn, spawnSession, spawnTerminal, spawnAdopt, spawnAgent,
   sendReplay, recoverSessionOnAttach,
+  getSession,
 } from '../services/session-manager.js';
 import { getDb } from '../db/index.js';
+import { userCanUseSessionTool } from '../auth.js';
+
+function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' | 'agent' {
+  if (mode === 'terminal' || mode === 'agent') return mode;
+  return 'session';
+}
+
+function normalizeCliType(cliType: string | null | undefined): 'claude' | 'codex' {
+  return cliType === 'codex' ? 'codex' : 'claude';
+}
+
+function canAccessSession(req: { user?: { id?: string } } | undefined, sessionId: string): boolean {
+  if (!req?.user?.id) return false;
+  const session = getSession(sessionId);
+  if (!session) return false;
+  return userCanUseSessionTool(
+    req.user.id,
+    sessionId,
+    normalizeCliType(session.cli_type),
+    normalizeMode(session.mode),
+  );
+}
 
 /**
  * Terminal WebSocket route
@@ -20,12 +43,9 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
     Querystring: { passive?: string; attempt?: string };
   }>('/terminal/:sessionId', { websocket: true }, (socket, req) => {
     const { sessionId } = req.params;
-    // Ownership: if the session belongs to a project, it must be the user's.
-    // (Sessions with no project — pending/adopted — pass through for trusted teams.)
-    const ownerRow = getDb().prepare(
-      'SELECT p.owner_id AS owner FROM sessions s LEFT JOIN projects p ON s.project_id = p.id WHERE s.id = ?'
-    ).get(sessionId) as { owner: string | null } | undefined;
-    if (ownerRow?.owner && ownerRow.owner !== req.user?.id) {
+    // Ownership: session/project permissions are enforced through the same
+    // matrix as regular REST API reads/writes.
+    if (!canAccessSession(req, sessionId)) {
       try { socket.close(1008, 'Unauthorized'); } catch { /* ignore */ }
       return;
     }

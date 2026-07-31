@@ -67,6 +67,9 @@ interface SpawnMessage {
   useTmux: boolean;
   useDtach: boolean;
   workingDir?: string;
+  /** Project roots this member is not allowed to see. Linux systemd masks
+   *  these paths inside the spawned terminal/agent mount namespace. */
+  inaccessiblePaths?: string[];
 }
 
 interface ReconnectMessage {
@@ -109,6 +112,35 @@ function tmuxSessionName(sessionId: string): string {
   return `of-${sessionId}`;
 }
 
+function sandboxUnitName(sessionId: string): string {
+  return `agentmanager-sandbox-${sessionId.replace(/[^A-Za-z0-9_.-]/g, '-')}`;
+}
+
+function sandboxCommand(
+  sessionId: string,
+  projectPath: string,
+  program: string,
+  args: string[],
+  inaccessiblePaths: string[] = [],
+): { program: string; args: string[] } {
+  if (inaccessiblePaths.length === 0) return { program, args };
+  const properties = inaccessiblePaths.flatMap((path) => ['-p', `InaccessiblePaths=${path}`]);
+  return {
+    program: 'systemd-run',
+    args: [
+      '--user', '--quiet', '--wait', '--collect', '--pty', '--service-type=exec',
+      `--unit=${sandboxUnitName(sessionId)}`,
+      `--working-directory=${projectPath}`,
+      ...properties,
+      '--', program, ...args,
+    ],
+  };
+}
+
+async function stopSandbox(sessionId: string): Promise<void> {
+  await execFileAsync('systemctl', ['--user', 'stop', `${sandboxUnitName(sessionId)}.service`]).catch(() => {});
+}
+
 /** Find which tmux server hosts a session (checks legacy servers too) */
 function findTmuxServer(sessionId: string): string | null {
   const name = tmuxSessionName(sessionId);
@@ -131,6 +163,7 @@ async function tmuxCreate(
   cols: number,
   rows: number,
   command?: string,
+  inaccessiblePaths: string[] = [],
 ): Promise<void> {
   const name = tmuxSessionName(sessionId);
   if (tmuxExists(sessionId)) {
@@ -149,14 +182,16 @@ async function tmuxCreate(
   // reaching the user's clipboard — instead of being a native xterm selection the
   // user can highlight and Ctrl+Shift+C out. Any non-empty value disables it.
   const envArgs = ['-u', 'NODE_ENV', '-u', 'PORT', '-u', 'AGENTMANAGER_API_PORT', '-u', 'AGENTMANAGER_DASH_PORT', 'CLAUDE_CODE_DISABLE_MOUSE=1'];
-  const runArgs = command
+  const baseRunArgs = command
     ? [envCmd, ...envArgs, shell, '-i', '-c', command]
     : [envCmd, ...envArgs, shell, '-i'];
+  await stopSandbox(sessionId);
+  const sandboxed = sandboxCommand(sessionId, projectPath, baseRunArgs[0], baseRunArgs.slice(1), inaccessiblePaths);
 
   await execFileAsync('tmux', [
     ...tmuxBaseArgs, 'new-session', '-d', '-s', name,
     '-x', String(cols), '-y', String(rows),
-    ...runArgs,
+    sandboxed.program, ...sandboxed.args,
   ], {
     cwd: projectPath,
     env: sessionEnv(),
@@ -180,9 +215,11 @@ async function tmuxKill(sessionId: string): Promise<void> {
   for (const server of [TMUX_SERVER]) {
     try {
       await execFileAsync('tmux', ['-L', server, 'kill-session', '-t', name]);
+      await stopSandbox(sessionId);
       return;
     } catch { /* try next */ }
   }
+  await stopSandbox(sessionId);
 }
 
 /* ================================================================
@@ -204,14 +241,16 @@ function dtachExists(sessionId: string): boolean {
   }
 }
 
-async function dtachCreate(sessionId: string, projectPath: string, command: string): Promise<void> {
+async function dtachCreate(sessionId: string, projectPath: string, command: string, inaccessiblePaths: string[] = []): Promise<void> {
   const sock = dtachSocket(sessionId);
   if (existsSync(sock)) {
     try { unlinkSync(sock); } catch { /* ignore */ }
   }
   const shell = process.env.SHELL || '/bin/bash';
+  await stopSandbox(sessionId);
+  const sandboxed = sandboxCommand(sessionId, projectPath, shell, ['-i', '-c', command], inaccessiblePaths);
   await execFileAsync('dtach', [
-    '-n', sock, '-Ez', shell, '-i', '-c', command,
+    '-n', sock, '-Ez', sandboxed.program, ...sandboxed.args,
   ], {
     cwd: projectPath,
     env: sessionEnv(),
@@ -233,6 +272,15 @@ async function dtachKill(sessionId: string): Promise<void> {
     }, 2000);
   } catch { /* fuser failed */ }
   try { unlinkSync(sock); } catch { /* ignore */ }
+  await stopSandbox(sessionId);
+}
+
+function spawnDirect(msg: SpawnMessage, program: string, args: string[]): pty.IPty {
+  const sandboxed = sandboxCommand(msg.sessionId, msg.projectPath, program, args, msg.inaccessiblePaths);
+  return pty.spawn(sandboxed.program, sandboxed.args, {
+    name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
+    env: sessionEnv(),
+  });
 }
 
 /* ================================================================
@@ -355,7 +403,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
   try {
     if (msg.mode === 'terminal') {
       if (msg.useTmux) {
-        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows);
+        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, undefined, msg.inaccessiblePaths);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
           pipePaneStream = pp.stream;
@@ -367,23 +415,20 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
           env: sessionEnv(),
         });
       } else if (msg.useDtach) {
-        await dtachCreate(msg.sessionId, msg.projectPath, shell);
+        await dtachCreate(msg.sessionId, msg.projectPath, shell, msg.inaccessiblePaths);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
           name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
           env: sessionEnv(),
         });
       } else {
-        ptyProcess = pty.spawn(shell, ['-i'], {
-          name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
-          env: sessionEnv(),
-        });
+        ptyProcess = spawnDirect(msg, shell, ['-i']);
       }
     } else if (msg.mode === 'agent' && msg.agentType) {
       // agent mode — launch CLI with --agent flag
       const command = buildAgentCommand(msg.agentType, msg.task, msg.useTmux, sessionCmd, cliType, msg.assignSessionId, msg.codexBindingPath);
       if (msg.useTmux) {
-        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command);
+        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command, msg.inaccessiblePaths);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
           pipePaneStream = pp.stream;
@@ -395,23 +440,20 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
           env: sessionEnv(),
         });
       } else if (msg.useDtach) {
-        await dtachCreate(msg.sessionId, msg.projectPath, command);
+        await dtachCreate(msg.sessionId, msg.projectPath, command, msg.inaccessiblePaths);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
           name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
           env: sessionEnv(),
         });
       } else {
-        ptyProcess = pty.spawn(shell, ['-i', '-c', command], {
-          name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
-          env: sessionEnv(),
-        });
+        ptyProcess = spawnDirect(msg, shell, ['-i', '-c', command]);
       }
     } else {
       // session mode
       if (msg.useTmux) {
         const command = buildSessionCommand(msg.task, true, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath);
-        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command);
+        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command, msg.inaccessiblePaths);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
           pipePaneStream = pp.stream;
@@ -424,7 +466,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
         });
       } else if (msg.useDtach) {
         const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath);
-        await dtachCreate(msg.sessionId, msg.projectPath, command);
+        await dtachCreate(msg.sessionId, msg.projectPath, command, msg.inaccessiblePaths);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
           name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
@@ -432,10 +474,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
         });
       } else {
         const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath);
-        ptyProcess = pty.spawn(shell, ['-i', '-c', command], {
-          name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
-          env: sessionEnv(),
-        });
+        ptyProcess = spawnDirect(msg, shell, ['-i', '-c', command]);
       }
     }
 

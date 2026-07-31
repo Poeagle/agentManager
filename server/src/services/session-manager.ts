@@ -14,6 +14,7 @@ import { nanoid } from 'nanoid';
 import type { WebSocket } from 'ws';
 import { getOrCreateTracker, removeTracker, recoverFromBuffer } from './session-state.js';
 import { encodeDir } from './claude-history.js';
+import { inaccessibleProjectPaths } from '../auth.js';
 import { tmuxCursorRestoreSequence } from '../lib/terminal-cursor.js';
 import {
   cliTypeFromArgv,
@@ -112,6 +113,9 @@ export interface Session {
   task: string;
   status: string;
   pid: number | null;
+  mode: 'session' | 'terminal' | 'agent' | null;
+  agent_type: string | null;
+  created_by_user_id: string | null;
   claude_session_id: string | null;
   codex_session_id: string | null;
   cli_type?: 'claude' | 'codex';
@@ -475,6 +479,16 @@ async function terminalRootPid(sessionId: string): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve the process that owns a session's actual terminal workload.
+ * For tmux this is the pane shell (not the short-lived attach client); for
+ * dtach/direct sessions it falls back to the durable process recorded in DB.
+ * Used by the administrator resource monitor.
+ */
+export async function getSessionProcessRootPid(sessionId: string): Promise<number | null> {
+  return terminalRootPid(sessionId);
 }
 
 function persistTerminalCliIdentity(sessionId: string, identity: DetectedCliIdentity): void {
@@ -1364,14 +1378,22 @@ function forkWorker(): Promise<ChildProcess> {
    Session lifecycle
    ================================================================ */
 
-export function createSession(_projectPath: string, task: string, projectId?: string, cliType?: 'claude' | 'codex'): Session {
+export function createSession(
+  _projectPath: string,
+  task: string,
+  projectId?: string,
+  cliType: 'claude' | 'codex' = 'claude',
+  createdByUserId?: string,
+  mode: 'session' | 'terminal' | 'agent' = 'session',
+  agentType?: string,
+): Session {
   const db = getDb();
   const id = nanoid(12);
 
   db.prepare(`
-    INSERT INTO sessions (id, project_id, task, status, cli_type)
-    VALUES (?, ?, ?, 'pending', ?)
-  `).run(id, projectId || null, task, cliType || 'claude');
+    INSERT INTO sessions (id, project_id, task, status, cli_type, created_by_user_id, mode, agent_type)
+    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
+  `).run(id, projectId || null, task, cliType || 'claude', createdByUserId || null, mode || 'session', agentType || null);
 
   return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
 }
@@ -1412,6 +1434,7 @@ export async function spawnSession(sessionId: string, projectPath: string, task:
 
   const assignSessionId = cliType === 'claude' ? assignClaudeSessionId(sessionId) : undefined;
   const bindingPath = cliType === 'codex' ? codexBindingPath(sessionId) : undefined;
+  const creator = getDb().prepare('SELECT created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as { created_by_user_id: string | null } | undefined;
 
   // Tell the worker to spawn the session
   worker.send({
@@ -1428,6 +1451,7 @@ export async function spawnSession(sessionId: string, projectPath: string, task:
     cliType,
     assignSessionId,
     codexBindingPath: bindingPath,
+    inaccessiblePaths: creator?.created_by_user_id ? inaccessibleProjectPaths(creator.created_by_user_id) : [],
   });
 
   if (cliType === 'codex') watchCodexSessionBinding(sessionId);
@@ -1446,6 +1470,7 @@ export async function spawnTerminal(sessionId: string, projectPath: string, cols
   const active = wireWorker(sessionId, worker, projectPath);
   active.cols = cols;
   active.task = 'Terminal';
+  const creator = getDb().prepare('SELECT created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as { created_by_user_id: string | null } | undefined;
 
   worker.send({
     type: 'spawn',
@@ -1457,6 +1482,7 @@ export async function spawnTerminal(sessionId: string, projectPath: string, cols
     rows,
     useTmux: config.useTmux,
     useDtach: config.useDtach,
+    inaccessiblePaths: creator?.created_by_user_id ? inaccessibleProjectPaths(creator.created_by_user_id) : [],
   });
 
   startTerminalCliMonitor(sessionId, projectPath);
@@ -1489,6 +1515,7 @@ export async function spawnAgent(sessionId: string, projectPath: string, task: s
 
   const assignSessionId = cliType === 'claude' ? assignClaudeSessionId(sessionId) : undefined;
   const bindingPath = cliType === 'codex' ? codexBindingPath(sessionId) : undefined;
+  const creator = getDb().prepare('SELECT created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as { created_by_user_id: string | null } | undefined;
 
   worker.send({
     type: 'spawn',
@@ -1505,6 +1532,7 @@ export async function spawnAgent(sessionId: string, projectPath: string, task: s
     cliType,
     assignSessionId,
     codexBindingPath: bindingPath,
+    inaccessiblePaths: creator?.created_by_user_id ? inaccessibleProjectPaths(creator.created_by_user_id) : [],
   });
 
   if (cliType === 'codex') watchCodexSessionBinding(sessionId);
@@ -1904,6 +1932,9 @@ function killPidTree(pid: number): void {
 export async function killSession(sessionId: string): Promise<boolean> {
   const active = activeSessions.get(sessionId);
   console.log(`[KILL] Killing session ${sessionId} (active=${!!active})`);
+  // A pending REST-created session may not have connected its first websocket
+  // yet. Remove its deferred spawn so it cannot start after being cancelled.
+  pendingSpawns.delete(sessionId);
 
   // 1. Notify all subscribers of termination
   for (const ws of active?.subscribers ?? []) {
@@ -1949,11 +1980,13 @@ export async function killSession(sessionId: string): Promise<boolean> {
     removeTracker(sessionId);
   }
 
-  // 5. Kill adopted external session processes (fire and forget)
-  if (active?.externalSocket) {
-    const sock = active.externalSocket;
+  // 5. Kill dtach/adopted external processes, including released sessions
+  // that no longer have an in-memory worker.
+  const externalSocket = active?.externalSocket || getSessionSocketPath(sessionId);
+  if (externalSocket) {
+    const sock = externalSocket;
     adoptedSockets.delete(sock);
-    execFileAsync('fuser', [sock]).then(({ stdout }) => {
+    await execFileAsync('fuser', [sock]).then(({ stdout }) => {
       const pids = stdout.trim().split(/\s+/).filter(Boolean).map(Number);
       for (const pid of pids) {
         try { process.kill(pid, 'SIGTERM'); } catch { /* dead */ }
@@ -1966,8 +1999,13 @@ export async function killSession(sessionId: string): Promise<boolean> {
     }).catch(() => { /* fuser failed */ });
   }
 
-  // 6. Fallback: kill by DB PID if no active session (e.g. server restarted)
+  // 6. Fallback: kill the durable tmux session and DB PID when there is no
+  // active worker (e.g. server restarted or the session was popped out).
   if (!active) {
+    if (config.useTmux && await tmuxExistsAsync(sessionId)) {
+      const name = tmuxSessionName(sessionId);
+      await execFileAsync('tmux', [...tmuxArgsForSession(sessionId), 'kill-session', '-t', name]).catch(() => {});
+    }
     try {
       const session = getDb().prepare('SELECT pid FROM sessions WHERE id = ?').get(sessionId) as { pid: number | null } | undefined;
       if (session?.pid && pidAlive(session.pid)) {
@@ -1981,7 +2019,7 @@ export async function killSession(sessionId: string): Promise<boolean> {
   const db = getDb();
   const result = db.prepare(`
     UPDATE sessions SET status = 'cancelled', completed_at = datetime('now'), updated_at = datetime('now')
-    WHERE id = ? AND status IN ('running', 'pending', 'detached')
+    WHERE id = ? AND status IN ('running', 'pending', 'launching', 'detached', 'released')
   `).run(sessionId);
 
   console.log(`[KILL] Session ${sessionId} killed (db_updated=${result.changes > 0})`);
@@ -2057,6 +2095,28 @@ export function listSessions(status?: string): Session[] {
     )
     ORDER BY created_at DESC
   `).all() as Session[];
+}
+
+/** Same list semantics as listSessions, but applies member ownership before
+ * the inactive-history limit so one user's history cannot crowd out another's. */
+export function listSessionsForUser(userId: string, status?: string): Session[] {
+  const db = getDb();
+  const role = db.prepare('SELECT role FROM users WHERE id = ?').get(userId) as { role: string } | undefined;
+  if (role?.role === 'admin') return listSessions(status);
+  if (status) {
+    return db.prepare('SELECT * FROM sessions WHERE created_by_user_id = ? AND status = ? ORDER BY created_at DESC').all(userId, status) as Session[];
+  }
+  return db.prepare(`
+    SELECT * FROM sessions
+    WHERE created_by_user_id = ? AND status IN ('running', 'pending', 'launching')
+    UNION ALL
+    SELECT * FROM (
+      SELECT * FROM sessions
+      WHERE created_by_user_id = ? AND status NOT IN ('running', 'pending', 'launching')
+      ORDER BY created_at DESC LIMIT 50
+    )
+    ORDER BY created_at DESC
+  `).all(userId, userId) as Session[];
 }
 
 export function isSessionActive(sessionId: string): boolean {
@@ -2498,6 +2558,7 @@ export async function resumeCrashedSession(staleSession: Session, projectPath: s
     cliType: sessionCliType,
     resumeSessionId: nativeSessionId,
     codexBindingPath: sessionCliType === 'codex' ? codexBindingPath(sessionId) : undefined,
+    inaccessiblePaths: staleSession.created_by_user_id ? inaccessibleProjectPaths(staleSession.created_by_user_id) : [],
   });
 
   if (task === 'Terminal') startTerminalCliMonitor(sessionId, projectPath);
@@ -2581,15 +2642,15 @@ export function recoverSessionOnAttach(sessionId: string): Promise<boolean> {
  * full prior conversation and waits for input — nothing is auto-submitted.
  * Returns the new session.
  */
-export async function resumeClaudeSession(projectPath: string, projectId: string | null, claudeUuid: string, task: string): Promise<Session> {
+export async function resumeClaudeSession(projectPath: string, projectId: string | null, claudeUuid: string, task: string, createdByUserId?: string): Promise<Session> {
   const db = getDb();
   const id = nanoid(12);
   // Keep claude_session_id = uuid: `--resume` continues writing to the SAME log,
   // so this row stays linked to that conversation.
   db.prepare(`
-    INSERT INTO sessions (id, project_id, task, status, cli_type, claude_session_id)
-    VALUES (?, ?, ?, 'running', 'claude', ?)
-  `).run(id, projectId || null, task || 'Resumed session', claudeUuid);
+    INSERT INTO sessions (id, project_id, task, status, cli_type, claude_session_id, created_by_user_id)
+    VALUES (?, ?, ?, 'running', 'claude', ?, ?)
+  `).run(id, projectId || null, task || 'Resumed session', claudeUuid, createdByUserId || null);
 
   const preSpawnFiles = snapshotClaudeSessionFiles(projectPath);
   const worker = await forkWorker();
@@ -2614,6 +2675,7 @@ export async function resumeClaudeSession(projectPath: string, projectId: string
     sessionCommand: claudeCmd,
     resumeSessionId: claudeUuid,
     cliType: 'claude',
+    inaccessiblePaths: createdByUserId ? inaccessibleProjectPaths(createdByUserId) : [],
   });
 
   insertEvent({ session_id: id, type: 'session_resume', data: { task, projectPath, claudeSessionId: claudeUuid, via: '--resume' } });
@@ -2782,7 +2844,11 @@ export async function discoverExternalSessions(projectPath?: string): Promise<Di
   return results;
 }
 
-export async function adoptDtachSession(socketPath: string, projectId?: string): Promise<Session | null> {
+export async function adoptDtachSession(
+  socketPath: string,
+  projectId?: string,
+  createdByUserId?: string,
+): Promise<Session | null> {
   // Handle re-adoption of released AgentManager tmux sessions
   if (socketPath.startsWith('tmux:')) {
     return readoptReleasedSession(socketPath.replace('tmux:', ''), projectId);
@@ -2826,7 +2892,7 @@ export async function adoptDtachSession(socketPath: string, projectId?: string):
     task = 'Adopted external session';
   }
 
-  const session = createSession(projectPath, task, projectId || undefined);
+  const session = createSession(projectPath, task, projectId || undefined, undefined, createdByUserId, 'terminal');
   const db = getDb();
 
   // Lazy adopt: register as pending spawn so the tmux wrapper is created

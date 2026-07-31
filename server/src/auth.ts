@@ -6,6 +6,8 @@
  * ownership/filtering lives in the route handlers (see projects.owner_id).
  */
 import { randomBytes, scryptSync, timingSafeEqual } from 'crypto';
+import { realpathSync } from 'fs';
+import { dirname, resolve, sep } from 'path';
 import { nanoid } from 'nanoid';
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { getDb } from './db/index.js';
@@ -16,6 +18,7 @@ export interface User {
   display_name: string;
   role: 'admin' | 'member';
   disabled: number;
+  max_tabs: number;
   created_at: string;
 }
 
@@ -48,7 +51,7 @@ export function verifyPassword(password: string, stored: string): boolean {
 
 /* ── User DB ops ───────────────────────────────────────────────────── */
 
-const PUBLIC_COLS = 'id, username, display_name, role, disabled, created_at';
+const PUBLIC_COLS = 'id, username, display_name, role, disabled, max_tabs, created_at';
 
 export function getUserCount(): number {
   return (getDb().prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n;
@@ -71,15 +74,16 @@ export function createUser(opts: {
   password: string;
   display_name?: string;
   role?: 'admin' | 'member';
+  max_tabs?: number;
 }): User {
   const id = nanoid(12);
   const username = opts.username.trim();
   getDb()
     .prepare(
-      `INSERT INTO users (id, username, password_hash, display_name, role)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO users (id, username, password_hash, display_name, role, max_tabs)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, username, hashPassword(opts.password), opts.display_name?.trim() || username, opts.role || 'member');
+    .run(id, username, hashPassword(opts.password), opts.display_name?.trim() || username, opts.role || 'member', opts.max_tabs ?? 10);
   return findUserById(id)!;
 }
 
@@ -185,33 +189,261 @@ export async function authHook(req: FastifyRequest, reply: FastifyReply) {
 
 /* ── Data-ownership access helpers (soft multi-tenant) ─────────────── */
 
-/** All project IDs owned by a user. */
+export interface ProjectToolAccess {
+  project_id: string;
+  canSession: boolean;
+  canAgent: boolean;
+  canTerminal: boolean;
+  canClaude: boolean;
+  canCodex: boolean;
+}
+
+type RawProjectAccess = {
+  can_session: number;
+  can_agent: number;
+  can_terminal: number;
+  can_claude: number;
+  can_codex: number;
+};
+
+function bool(v: unknown): boolean {
+  return Number(v) === 1;
+}
+
+export function isAdmin(userId: string): boolean {
+  const row = getDb().prepare("SELECT role FROM users WHERE id = ?").get(userId) as { role: string } | undefined;
+  return row?.role === 'admin';
+}
+
+export function getUserTabUsage(userId: string): { limit: number; used: number; allowed: boolean } {
+  const user = findUserById(userId);
+  if (!user) return { limit: 0, used: 0, allowed: false };
+  if (user.role === 'admin') return { limit: Number.MAX_SAFE_INTEGER, used: 0, allowed: true };
+  const used = (getDb().prepare(`
+    SELECT COUNT(*) AS n FROM sessions
+    WHERE created_by_user_id = ? AND status IN ('pending', 'launching', 'running', 'detached', 'released')
+  `).get(userId) as { n: number }).n;
+  const limit = Math.max(0, Number(user.max_tabs) || 0);
+  return { limit, used, allowed: used < limit };
+}
+
+function mapProjectToolAccess(projectId: string, row: RawProjectAccess | undefined): ProjectToolAccess | null {
+  if (!row) return null;
+  const access: ProjectToolAccess = {
+    project_id: projectId,
+    canSession: bool(row.can_session),
+    canAgent: bool(row.can_agent),
+    canTerminal: bool(row.can_terminal),
+    canClaude: bool(row.can_claude),
+    canCodex: bool(row.can_codex),
+  };
+  if (!access.canSession && !access.canAgent && !access.canTerminal && !access.canClaude && !access.canCodex) return null;
+  return access;
+}
+
+export function getProjectToolAccess(userId: string, projectId: string | null | undefined): ProjectToolAccess | null {
+  if (!projectId) return null;
+  if (isAdmin(userId)) {
+    return {
+      project_id: projectId,
+      canSession: true,
+      canAgent: true,
+      canTerminal: true,
+      canClaude: true,
+      canCodex: true,
+    };
+  }
+
+  const explicit = getDb()
+    .prepare('SELECT can_session, can_agent, can_terminal, can_claude, can_codex FROM project_user_access WHERE project_id = ? AND user_id = ?')
+    .get(projectId, userId) as RawProjectAccess | undefined;
+  if (explicit) return mapProjectToolAccess(projectId, explicit);
+
+  // Fallback for old owner_id models.
+  const ownerMatch = getDb().prepare('SELECT 1 FROM projects WHERE id = ? AND owner_id = ?').get(projectId, userId);
+  if (ownerMatch) {
+    return {
+      project_id: projectId,
+      canSession: true,
+      canAgent: true,
+      canTerminal: true,
+      canClaude: true,
+      canCodex: true,
+    };
+  }
+
+  return null;
+}
+
 export function userProjectIds(userId: string): Set<string> {
-  const rows = getDb().prepare('SELECT id FROM projects WHERE owner_id = ?').all(userId) as { id: string }[];
-  return new Set(rows.map((r) => r.id));
+  if (isAdmin(userId)) {
+    const rows = getDb().prepare('SELECT id FROM projects').all() as { id: string }[];
+    return new Set(rows.map((r) => r.id));
+  }
+  const accessRows = getDb().prepare(`
+    SELECT project_id AS id
+    FROM project_user_access
+    WHERE user_id = ?
+      AND (can_session = 1 OR can_agent = 1 OR can_terminal = 1 OR can_claude = 1 OR can_codex = 1)
+  `).all(userId) as { id: string }[];
+  const ownerRows = getDb().prepare(`
+    SELECT p.id
+    FROM projects p
+    WHERE p.owner_id = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM project_user_access a WHERE a.project_id = p.id AND a.user_id = ?
+      )
+  `).all(userId, userId) as { id: string }[];
+  const ids = new Set<string>(accessRows.map((r) => r.id));
+  for (const row of ownerRows) ids.add(row.id);
+  return ids;
 }
 
-/** Does the user own this project id? */
 export function userOwnsProject(userId: string, projectId: string | null | undefined): boolean {
-  if (!projectId) return false;
-  return !!getDb().prepare('SELECT 1 FROM projects WHERE id = ? AND owner_id = ?').get(projectId, userId);
+  return getProjectToolAccess(userId, projectId) !== null;
 }
 
-/** Does the user own the project at this filesystem path? */
 export function userOwnsProjectPath(userId: string, path: string | null | undefined): boolean {
   if (!path) return false;
-  return !!getDb().prepare('SELECT 1 FROM projects WHERE path = ? AND owner_id = ?').get(path, userId);
+  const row = getDb().prepare('SELECT id FROM projects WHERE path = ?').get(path) as { id: string } | undefined;
+  return getProjectToolAccess(userId, row?.id) !== null;
 }
 
-/** Does the user own the project behind this session? (session.project_id → owner) */
+/**
+ * Authorize an existing filesystem path (or a not-yet-created child) against
+ * the user's assigned project roots. realpath closes symlink-based escapes.
+ */
+export function userOwnsFilesystemPath(userId: string, path: string | null | undefined): boolean {
+  if (!path) return false;
+  if (isAdmin(userId)) return true;
+
+  let target: string;
+  try {
+    target = realpathSync(resolve(path));
+  } catch {
+    try {
+      target = resolve(realpathSync(dirname(resolve(path))), resolve(path).split(sep).pop() || '');
+    } catch {
+      return false;
+    }
+  }
+
+  const ids = [...userProjectIds(userId)];
+  if (ids.length === 0) return false;
+  const rows = getDb().prepare(`SELECT path FROM projects WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids) as { path: string }[];
+  return rows.some((row) => {
+    let root: string;
+    try { root = realpathSync(resolve(row.path)); } catch { return false; }
+    return target === root || target.startsWith(root + sep);
+  });
+}
+
+/** Registered project roots hidden from a member's spawned shell/agent. */
+export function inaccessibleProjectPaths(userId: string): string[] {
+  if (isAdmin(userId)) return [];
+  const allowed = userProjectIds(userId);
+  const rows = getDb().prepare('SELECT id, path FROM projects').all() as { id: string; path: string }[];
+  return rows
+    .filter((row) => !allowed.has(row.id))
+    .map((row) => resolve(row.path))
+    .filter((path, index, all) => all.indexOf(path) === index);
+}
+
 export function userOwnsSession(userId: string, sessionId: string | null | undefined): boolean {
   if (!sessionId) return false;
-  return !!getDb()
-    .prepare('SELECT 1 FROM sessions s JOIN projects p ON s.project_id = p.id WHERE s.id = ? AND p.owner_id = ?')
-    .get(sessionId, userId);
+  if (isAdmin(userId)) return true;
+
+  const session = getDb().prepare('SELECT project_id, created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as
+    | { project_id: string | null; created_by_user_id: string | null }
+    | undefined;
+  if (!session) return false;
+  return session.created_by_user_id === userId;
+}
+
+export function userCanUseToolForProject(
+  userId: string,
+  projectId: string | null | undefined,
+  toolMode: 'session' | 'terminal' | 'agent',
+  cliType: 'claude' | 'codex' = 'claude',
+): boolean {
+  const access = getProjectToolAccess(userId, projectId);
+  if (!access) return false;
+  const modeAllowed = toolMode === 'terminal'
+    ? access.canTerminal
+    : toolMode === 'agent'
+      ? access.canAgent
+      : access.canSession;
+  if (toolMode === 'terminal') return modeAllowed;
+  const cliAllowed = cliType === 'codex' ? access.canCodex : access.canClaude;
+  return modeAllowed && cliAllowed;
+}
+
+export function userCanUseSessionTool(userId: string, sessionId: string, cliType: 'claude' | 'codex', toolMode: 'session' | 'terminal' | 'agent'): boolean {
+  const row = getDb().prepare('SELECT project_id, mode, created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as
+    | { project_id: string | null; mode: string | null; created_by_user_id: string | null }
+    | undefined;
+  if (!row) return false;
+  if (isAdmin(userId)) return true;
+  // Project membership grants permission to create a session, not permission
+  // to inspect or control another user's session in the same project.
+  if (row.created_by_user_id !== userId) return false;
+  if (!row.project_id) return true;
+  if (row.mode === 'agent' && toolMode !== 'agent') return false;
+  const resolvedMode = row.mode === 'agent' ? 'agent' : (row.mode === 'terminal' ? 'terminal' : 'session');
+  return userCanUseToolForProject(userId, row.project_id, resolvedMode as 'session' | 'terminal' | 'agent', cliType);
+}
+
+export function setProjectToolAccess(params: {
+  projectId: string;
+  userId: string;
+  canSession: boolean;
+  canAgent: boolean;
+  canTerminal: boolean;
+  canClaude: boolean;
+  canCodex: boolean;
+  grantedBy: string;
+}): void {
+  getDb()
+    .prepare(`
+      INSERT INTO project_user_access (project_id, user_id, can_session, can_agent, can_terminal, can_claude, can_codex, granted_by, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(project_id, user_id) DO UPDATE SET
+        can_session = excluded.can_session,
+        can_agent = excluded.can_agent,
+        can_terminal = excluded.can_terminal,
+        can_claude = excluded.can_claude,
+        can_codex = excluded.can_codex,
+        granted_by = excluded.granted_by,
+        updated_at = datetime('now')
+    `)
+    .run(
+      params.projectId,
+      params.userId,
+      params.canSession ? 1 : 0,
+      params.canAgent ? 1 : 0,
+      params.canTerminal ? 1 : 0,
+      params.canClaude ? 1 : 0,
+      params.canCodex ? 1 : 0,
+      params.grantedBy,
+    );
+}
+
+export function removeProjectUserAccess(projectId: string, userId: string): number {
+  return getDb().prepare('DELETE FROM project_user_access WHERE project_id = ? AND user_id = ?').run(projectId, userId).changes;
 }
 
 /** Assign all ownerless projects to a user (first-admin migration). Returns count. */
 export function claimOrphanProjects(ownerId: string): number {
   return getDb().prepare('UPDATE projects SET owner_id = ? WHERE owner_id IS NULL').run(ownerId).changes as number;
+}
+
+export function getSessionAccess(sessionId: string): {
+  project_id: string | null;
+  mode: string | null;
+  cli_type: string | null;
+  created_by_user_id: string | null;
+} | null {
+  return getDb().prepare('SELECT project_id, mode, cli_type, created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as
+    | { project_id: string | null; mode: string | null; cli_type: string | null; created_by_user_id: string | null }
+    | null;
 }

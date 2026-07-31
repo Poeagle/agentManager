@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { Folder, FolderOpen, File, ChevronRight, ChevronDown, ChevronUp, Loader2, Save, Circle, Eye, Pencil, Home, X, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, GitCompareArrows, FolderOpen as FolderOpenIcon, Terminal, Scissors, Copy as CopyIcon, Clipboard, Trash2, Edit3 } from 'lucide-react';
+import { Folder, FolderOpen, File, ChevronRight, ChevronDown, ChevronUp, Loader2, Save, Circle, Eye, Pencil, Home, X, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, GitCompareArrows, FolderOpen as FolderOpenIcon, Terminal, Scissors, Copy as CopyIcon, Clipboard, Trash2, Edit3, Download } from 'lucide-react';
 import { api, type FileEntry } from '../lib/api';
+import { isExportTransferActive, startExportTransfer, useExportTransferStore } from '../lib/export-transfer';
 import { ConfirmModal } from './ConfirmModal';
 import {
   type HunkInfo,
@@ -499,6 +500,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
   const [pendingDelete, setPendingDelete] = useState<{ path: string; isDir: boolean } | null>(null);
   const [clipboard, setClipboard] = useState<{ kind: 'cut' | 'copy'; path: string; isDir: boolean } | null>(null);
   const [actionMessage, setActionMessage] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
+  const exportInProgress = useExportTransferStore((state) => isExportTransferActive(state.task));
 
   useEffect(() => {
     if (!actionMessage) return;
@@ -1174,6 +1176,15 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
     // In read-only mode, only expose non-mutating actions (open/copy).
     if (node) {
       items.push({ kind: 'separator' });
+      items.push({
+        kind: 'item',
+        label: exportInProgress ? 'Export in progress…' : 'Export to local folder…',
+        icon: exportInProgress
+          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          : <Download className="w-3.5 h-3.5" />,
+        onClick: () => handleExport(node.fullPath, isDir, node.entry.name),
+        disabled: exportInProgress,
+      });
       if (!readOnly) {
         items.push({
           kind: 'item',
@@ -1219,6 +1230,10 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
     }
 
     setContextMenu({ x: e.clientX, y: e.clientY, items });
+  }
+
+  function handleExport(path: string, isDirectory: boolean, name: string) {
+    void startExportTransfer({ path, isDirectory, name });
   }
 
   async function handleOpenInFolder(path: string) {

@@ -1,7 +1,10 @@
 import { FastifyPluginAsync } from 'fastify';
-import { readdir, stat, readFile, writeFile, rm, rename, cp } from 'fs/promises';
+import { readdir, stat, lstat, readFile, writeFile, rm, rename, cp } from 'fs/promises';
+import { createReadStream } from 'fs';
 import { join, resolve, extname, dirname, basename } from 'path';
 import { exec } from 'child_process';
+import { userOwnsFilesystemPath } from '../auth.js';
+import { createDirectoryExport } from '../services/file-export-process.js';
 
 interface FileEntry {
   name: string;
@@ -10,7 +13,23 @@ interface FileEntry {
   extension: string;
 }
 
+function attachmentHeader(fileName: string) {
+  const fallback = fileName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
+  const encoded = encodeURIComponent(fileName).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
 export const fileRoutes: FastifyPluginAsync = async (app) => {
+  app.addHook('preHandler', async (req, reply) => {
+    const query = (req.query || {}) as Record<string, unknown>;
+    const body = (req.body || {}) as Record<string, unknown>;
+    const paths = [query.path, body.path, body.pathA, body.pathB, body.src, body.destDir]
+      .filter((value): value is string => typeof value === 'string' && value.length > 0);
+    if (paths.some((path) => !userOwnsFilesystemPath(req.user!.id, path))) {
+      return reply.status(403).send({ error: 'Path is outside your assigned projects' });
+    }
+  });
+
   // List directory contents
   app.get<{
     Querystring: { path: string; showHidden?: string };
@@ -83,6 +102,60 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
       if (err.code === 'ENOENT') return reply.status(404).send({ error: 'File not found' });
       return reply.status(500).send({ error: 'Failed to read file' });
     }
+  });
+
+  // Export a file as-is or stream a portable ZIP for a directory. Symlinks and
+  // special files are intentionally skipped by streamDirectoryZip.
+  app.get<{
+    Querystring: { path: string };
+  }>('/files/export', async (req, reply) => {
+    const targetPath = req.query.path;
+    if (!targetPath) return reply.status(400).send({ error: 'path query parameter is required' });
+
+    const resolved = resolve(targetPath);
+    let stats;
+    try {
+      stats = await lstat(resolved);
+    } catch (err: any) {
+      if (err.code === 'ENOENT') return reply.status(404).send({ error: 'Path not found' });
+      return reply.status(500).send({ error: 'Failed to inspect export path' });
+    }
+
+    if (stats.isFile()) {
+      const fileName = basename(resolved);
+      reply.header('Content-Type', 'application/octet-stream');
+      reply.header('Content-Length', stats.size);
+      reply.header('Content-Disposition', attachmentHeader(fileName));
+      reply.header('Cache-Control', 'no-store');
+      return reply.send(createReadStream(resolved));
+    }
+
+    if (!stats.isDirectory()) {
+      return reply.status(400).send({ error: 'Only files and directories can be exported' });
+    }
+
+    const directoryName = basename(resolved) || 'export';
+    const directoryExport = createDirectoryExport(resolved);
+    const cancelExport = () => directoryExport.cancel();
+    reply.raw.once('close', cancelExport);
+
+    let exportReady;
+    try {
+      exportReady = await directoryExport.ready;
+    } catch (error) {
+      reply.raw.removeListener('close', cancelExport);
+      if (reply.raw.destroyed) return reply;
+      const message = error instanceof Error ? error.message : 'Failed to create directory export';
+      return reply.status(500).send({ error: message });
+    }
+
+    reply.header('Content-Type', 'application/zip');
+    reply.header('Content-Disposition', attachmentHeader(`${directoryName}.zip`));
+    reply.header('Cache-Control', 'no-store');
+    reply.header('X-Export-Estimated-Size', exportReady.estimatedSize);
+    reply.header('X-Export-Source-Bytes', exportReady.sourceBytes);
+    reply.header('X-Export-Entry-Count', exportReady.entryCount);
+    return reply.send(exportReady.stream);
   });
 
   // Write file contents

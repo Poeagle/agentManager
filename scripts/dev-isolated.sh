@@ -37,7 +37,7 @@ for p in "$DEV_API_PORT" "$DEV_UI_PORT"; do
 done
 
 log "dev 后端 : http://localhost:${DEV_API_PORT}   (DB: ${DEV_DB})"
-log "dev 前端 : http://localhost:${DEV_UI_PORT}"
+log "dev 前端 : http://localhost:${DEV_UI_PORT}   (局域网: http://<本机IP>:${DEV_UI_PORT})"
 log "prod :42010 不受影响。按 Ctrl-C 停止 dev。"
 echo
 
@@ -46,4 +46,4 @@ export AGENTMANAGER_SKIP_UPDATE_CHECK=1
 # --kill-others: 任一进程退出/Ctrl-C 时,另一个也一起停,不留孤儿
 exec npx concurrently --kill-others --names "api,ui" --prefix-colors "cyan,magenta" \
   "cd server && AGENTMANAGER_DB_PATH=${DEV_DB} PORT=${DEV_API_PORT} npm run dev" \
-  "cd dashboard && VITE_PORT=${DEV_UI_PORT} VITE_API_TARGET=http://127.0.0.1:${DEV_API_PORT} npm run dev -- --host 127.0.0.1"
+  "cd dashboard && VITE_PORT=${DEV_UI_PORT} VITE_API_TARGET=http://127.0.0.1:${DEV_API_PORT} npm run dev"

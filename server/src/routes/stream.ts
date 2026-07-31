@@ -1,6 +1,6 @@
 import { FastifyPluginAsync } from 'fastify';
 import { subscribe } from '../services/event-store.js';
-import { userOwnsProject } from '../auth.js';
+import { isAdmin, userOwnsProject, userOwnsSession } from '../auth.js';
 
 /**
  * WebSocket stream for real-time events to the dashboard.
@@ -11,9 +11,21 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
     const userId = req.user?.id;
     // Subscribe to events
     const unsubscribe = subscribe((event: any) => {
+      // Administrator tab-management events are private to the affected user
+      // (administrators also receive them so their monitor refreshes).
+      if (event.type === 'user.tab_state') {
+        let data: { targetUserId?: string } = {};
+        try { data = event.data ? JSON.parse(event.data) : {}; } catch { /* ignore malformed data */ }
+        if (!userId || (!isAdmin(userId) && data.targetUserId !== userId)) return;
+        try { socket.send(JSON.stringify(event)); } catch { /* socket closed */ }
+        return;
+      }
       // Only forward events belonging to the user's projects. Events without a
       // project_id are system-level (e.g. pings) and pass through.
       if (event.project_id && (!userId || !userOwnsProject(userId, event.project_id))) return;
+      if (event.project_id && userId && !isAdmin(userId)) {
+        if (!event.session_id || !userOwnsSession(userId, event.session_id)) return;
+      }
       try {
         socket.send(JSON.stringify(event));
       } catch {

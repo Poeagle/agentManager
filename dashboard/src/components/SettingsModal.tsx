@@ -19,6 +19,7 @@ import {
 
 interface SettingsModalProps {
   onClose: () => void;
+  readOnly?: boolean;
 }
 
 function CommandInput({
@@ -59,7 +60,7 @@ function CommandInput({
   );
 }
 
-export function SettingsModal({ onClose }: SettingsModalProps) {
+export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps) {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ['settings'],
@@ -187,6 +188,12 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
 
         {/* Body — 2-column grid */}
         <div className="px-6 py-5 overflow-y-auto" style={{ maxHeight: '65vh' }}>
+          {readOnly && (
+            <div className="mb-4 rounded-lg px-3 py-2 text-xs" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}>
+              普通用户只能查看设置，只有管理员可以修改。
+            </div>
+          )}
+          <fieldset disabled={readOnly} className="contents">
           {isLoading ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'var(--text-secondary)' }} />
@@ -502,6 +509,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
 
           {/* Keyboard Shortcuts — full-width section */}
           {!isLoading && <ShortcutsSection />}
+          </fieldset>
         </div>
 
         {/* Footer */}
@@ -520,7 +528,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           >
             Cancel
           </button>
-          <button
+          {!readOnly && <button
             onClick={handleSave}
             disabled={mutation.isPending}
             className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium transition-colors"
@@ -536,7 +544,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
               <Check className="w-3.5 h-3.5" />
             ) : null}
             {saved ? 'Saved' : 'Save'}
-          </button>
+          </button>}
         </div>
       </div>
     </div>

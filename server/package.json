@@ -24,6 +24,7 @@
     "better-sqlite3": "^11.7.0",
     "dotenv": "^16.4.0",
     "fastify": "^5.8.5",
+    "fflate": "^0.8.3",
     "nanoid": "^5.0.0",
     "node-pty-prebuilt-multiarch": "^0.10.1-pre.5",
     "pino-pretty": "^13.1.3",
