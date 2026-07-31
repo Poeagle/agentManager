@@ -27,13 +27,11 @@ interface ProjectViewProps {
   projectPath: string;
   projectName: string;
   active?: boolean;
-  /** When true, disconnect terminal WebSockets (another view is using the sessions) */
+  /** When true, disconnect terminal WebSockets while a global monitor is visible. */
   terminalsSuspended?: boolean;
   /** When set, switch to this terminal session ID and clear it */
   focusSessionId?: string | null;
   onFocusSessionHandled?: () => void;
-  /** Report hidden (closed-tab) session IDs to parent */
-  onHiddenSessionsChange?: (sessionIds: string[]) => void;
 }
 
 interface ExplorerInstance {
@@ -132,7 +130,7 @@ const sidebarButtons = [
 // handlers), so the shallow compare holds.
 export const ProjectView = memo(ProjectViewImpl);
 
-function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _projectName, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled, onHiddenSessionsChange }: ProjectViewProps) {
+function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _projectName, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled }: ProjectViewProps) {
   const queryClient = useQueryClient();
 
   // Fetch project data for SessionLauncher
@@ -449,11 +447,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
   // Counter to force re-render when closedSessionIds changes (refs don't trigger re-renders)
   const [closedIdsVersion, setClosedIdsVersion] = useState(0);
 
-  // Report hidden session IDs to parent (for Active Sessions filtering)
-  useEffect(() => {
-    onHiddenSessionsChange?.([...closedSessionIds.current]);
-  }, [closedIdsVersion, onHiddenSessionsChange]);
-
   // Sync terminal instances with server sessions (auto-detect running sessions)
   const syncedRef = useRef(false);
   useEffect(() => {
@@ -554,7 +547,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
     }
   }, [terminalInstances, activeTerminalId, activeWebPageId, showLauncher]);
 
-  // Focus a specific session when requested (e.g. from Active Sessions "go to" button or voice command)
+  // Focus a specific session when requested (e.g. from the admin monitor or a quick-launch command)
   useEffect(() => {
     if (!focusSessionId) return;
 

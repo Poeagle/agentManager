@@ -7,11 +7,10 @@ import { AuthGate } from './components/AuthGate';
 import { AccountModal } from './components/AccountModal';
 import { ProjectDashboard } from './components/ProjectDashboard';
 import { ProjectView, cleanupProjectStorage } from './components/ProjectView';
-import { X, LayoutGrid, FolderOpen, Monitor, Activity, Settings, ArrowUpCircle, LogOut, Users, Plus } from 'lucide-react';
+import { X, LayoutGrid, FolderOpen, Activity, Settings, ArrowUpCircle, LogOut, Users, Plus } from 'lucide-react';
 import { AgentGuideButton } from './components/AgentGuide';
 import { CloseTabModal } from './components/CloseTabModal';
 import { SettingsModal } from './components/SettingsModal';
-import { ActiveTerminals } from './components/ActiveTerminals';
 import { AdminMonitorPage } from './components/AdminMonitorPage';
 import { installShortcutDispatcher, useShortcut, useShortcutStore, markKeyboardNav } from './lib/shortcuts';
 import { applyTheme } from './lib/themes';
@@ -115,26 +114,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     return () => uninstall();
   }, []);
 
-  // Track hidden session IDs reported by each ProjectView
-  const hiddenSessionIdsRef = useRef<Map<string, string[]>>(new Map());
-  const [hiddenSessionIds, setHiddenSessionIds] = useState<string[]>([]);
-  const handleHiddenSessionsChange = useCallback((projectId: string, sessionIds: string[]) => {
-    hiddenSessionIdsRef.current.set(projectId, sessionIds);
-    const all: string[] = [];
-    for (const ids of hiddenSessionIdsRef.current.values()) all.push(...ids);
-    setHiddenSessionIds(all);
-  }, []);
-  // Stable per-project callbacks to avoid inline arrow re-creation on every render
-  const hiddenSessionsCallbacksRef = useRef<Map<string, (ids: string[]) => void>>(new Map());
-  const getHiddenSessionsCallback = useCallback((projectId: string) => {
-    let cb = hiddenSessionsCallbacksRef.current.get(projectId);
-    if (!cb) {
-      cb = (ids: string[]) => handleHiddenSessionsChange(projectId, ids);
-      hiddenSessionsCallbacksRef.current.set(projectId, cb);
-    }
-    return cb;
-  }, [handleHiddenSessionsChange]);
-
   const queryClient = useQueryClient();
 
   const { data: projectsData, isSuccess: projectsLoaded } = useQuery({
@@ -186,18 +165,9 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     }
   }, []);
 
-  const activeSessionCount = sessions.filter(
-    (s) => s.status === 'running' || s.status === 'detached'
-  ).length;
-  const [showActiveTerminals, setShowActiveTerminals] = useState(false);
   const [showAdminMonitor, setShowAdminMonitor] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
-  const dismissActiveTerminals = useCallback(() => {
-    setShowActiveTerminals(false);
-    // Fire a resize event so terminals re-fit to their restored container size
-    requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
-  }, []);
   const dismissAdminMonitor = useCallback(() => {
     setShowAdminMonitor(false);
     requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
@@ -425,7 +395,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           {authUser.role === 'admin' && (
             <button
               onClick={() => {
-                dismissActiveTerminals();
                 setShowAdminMonitor(true);
               }}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors"
@@ -440,22 +409,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
               <span className="hidden sm:inline">用户监控</span>
             </button>
           )}
-          <button
-            onClick={() => { setShowAdminMonitor(false); setShowActiveTerminals(true); }}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors"
-            style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
-          >
-            <Monitor className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Active Sessions</span>
-            {activeSessionCount > 0 && (
-              <span
-                className="text-[10px] px-1.5 py-0.5 rounded-full font-bold"
-                style={{ background: 'var(--accent)', color: 'white' }}
-              >
-                {activeSessionCount}
-              </span>
-            )}
-          </button>
           <AgentGuideButton />
           <button
             onClick={() => setShowSettings(true)}
@@ -546,7 +499,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       >
         {/* Home tab */}
         <button
-          onClick={() => { setActiveTab('home'); dismissActiveTerminals(); setShowAdminMonitor(false); }}
+          onClick={() => { setActiveTab('home'); setShowAdminMonitor(false); }}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors shrink-0"
           style={{
             background: activeTab === 'home' ? 'var(--bg-tertiary)' : 'transparent',
@@ -603,7 +556,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                 </div>
               ) : (
                 <button
-                  onClick={() => { setActiveTab(tabId); dismissActiveTerminals(); setShowAdminMonitor(false); }}
+                  onClick={() => { setActiveTab(tabId); setShowAdminMonitor(false); }}
                   onDoubleClick={() => beginTabRename(tab)}
                   className="flex items-center gap-1.5 pl-3 pr-1 py-1.5 text-xs font-medium transition-colors max-w-[180px]"
                   style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
@@ -629,7 +582,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         })}
         {/* New-project "+" — jump home to add a project */}
         {authUser.role === 'admin' && <button
-          onClick={() => { setActiveTab('home'); dismissActiveTerminals(); setShowAdminMonitor(false); window.dispatchEvent(new CustomEvent('agentmanager:add-project')); }}
+          onClick={() => { setActiveTab('home'); setShowAdminMonitor(false); window.dispatchEvent(new CustomEvent('agentmanager:add-project')); }}
           className="flex items-center justify-center rounded-md shrink-0 transition-colors ml-0.5"
           style={{ width: 26, height: 26, color: 'var(--text-secondary)', background: 'transparent' }}
           title="添加项目"
@@ -649,26 +602,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                 if (!project) return;
                 handleOpenProject(projectId, project.name);
                 setFocusSessionId(sessionId);
-              }}
-            />
-          </div>
-        )}
-        {showActiveTerminals && (
-          <div className="absolute inset-0 z-20">
-            <ActiveTerminals
-              onBack={dismissActiveTerminals}
-              openProjectIds={projectTabs.map((t) => t.projectId)}
-              hiddenSessionIds={hiddenSessionIds}
-              onGoToSession={(projectId, sessionId) => {
-                const tab = projectTabs.find((t) => t.projectId === projectId);
-                if (tab) {
-                  setActiveTab(`project-${projectId}`);
-                } else {
-                  const project = projects.find((p) => p.id === projectId);
-                  if (project) handleOpenProject(projectId, project.name);
-                }
-                if (sessionId) setFocusSessionId(sessionId);
-                dismissActiveTerminals();
               }}
             />
           </div>
@@ -708,11 +641,10 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                   projectId={tab.projectId}
                   projectPath={projectPath}
                   projectName={projectName}
-                  active={isActive && !showActiveTerminals && !showAdminMonitor}
-                  terminalsSuspended={showActiveTerminals || showAdminMonitor}
+                  active={isActive && !showAdminMonitor}
+                  terminalsSuspended={showAdminMonitor}
                   focusSessionId={isActive ? focusSessionId : null}
                   onFocusSessionHandled={handleFocusSessionHandled}
-                  onHiddenSessionsChange={getHiddenSessionsCallback(tab.projectId)}
                 />
               )}
             </div>

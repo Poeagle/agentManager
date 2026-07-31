@@ -17,8 +17,6 @@ Key features:
 - **AI coding sessions** — Launch Claude Code or Codex sessions per project, or
   pick a built-in specialist agent (code review, debugging, security, testing,
   infra, and more) defined in `.claude/agents/*.md`.
-- **Live monitoring** — An active-sessions grid streams every running session's
-  output in real time over WebSocket.
 - **Persistent terminals** — Full terminals backed by tmux. Pop a session out to
   your own terminal (`tmux attach`), work, then adopt it back. Sessions survive
   server restarts and reboots with full scrollback.

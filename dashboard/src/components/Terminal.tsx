@@ -99,7 +99,7 @@ interface TerminalProps {
   sessionId: string;
   visible?: boolean;
   /** When true, disconnect the WebSocket and stop receiving data.
-   *  Used to yield the session to another Terminal (e.g. ActiveTerminals grid). */
+   *  Used to yield the session while a global monitor owns the foreground. */
   suspended?: boolean;
   /** When true, don't send resize commands to the server PTY.
    *  Grid/thumbnail views use this to avoid corrupting the PTY column width
