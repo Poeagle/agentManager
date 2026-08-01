@@ -245,10 +245,10 @@ export const api = {
       }
       return res;
     },
-    write: (path: string, content: string) =>
+    write: (path: string, content: string, expectedContent?: string) =>
       fetchJSON<{ ok: boolean; size: number }>('/files/write', {
         method: 'PUT',
-        body: JSON.stringify({ path, content }),
+        body: JSON.stringify({ path, content, expectedContent }),
       }),
     openVSCode: (path: string) =>
       fetchJSON<{ ok: boolean }>('/open-vscode', {
@@ -384,7 +384,7 @@ export const api = {
   },
   // Per-user UI view state — cross-device sync of open tabs + custom names.
   userState: {
-    getAll: () => fetchJSON<{ state: Record<string, any> }>('/user-state'),
+    getAll: () => fetchJSON<{ state: Record<string, unknown> }>('/user-state'),
     set: (key: string, value: unknown) =>
       fetchJSON<{ ok: boolean }>(`/user-state/${encodeURIComponent(key)}`, {
         method: 'PUT',
@@ -399,7 +399,7 @@ export const api = {
   openTerminal: (path: string) =>
     fetchJSON<{ ok: boolean }>('/open-terminal', { method: 'POST', body: JSON.stringify({ path }) }),
   versionCheck: () =>
-    fetchJSON<{ current: string; latest: string; name: string; url: string; prerelease: boolean; channel: string; updateAvailable: boolean }>('/version-check'),
+    fetchJSON<{ current: string; latest: string; name: string; url: string; prerelease: boolean; channel: string; updateAvailable: boolean; unavailable?: boolean }>('/version-check'),
 };
 
 // Types

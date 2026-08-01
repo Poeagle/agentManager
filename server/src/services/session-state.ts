@@ -27,7 +27,9 @@ export interface SessionState {
 
 export interface ExecuteRequest {
   input: string;
-  waitFor?: RegExp;
+  /** Literal text to look for. User-supplied regular expressions are not run
+   * on the server event loop. */
+  waitFor?: string;
   timeout: number;
   quiescenceMs: number;
   stripAnsi: boolean;
@@ -38,6 +40,23 @@ export interface ExecuteResult {
   output: string;
   durationMs: number;
   state: SessionState;
+}
+
+export interface ExecuteHandle {
+  /** Resolves after the JSONL cursor is captured and output tracking is armed. */
+  ready: Promise<void>;
+  result: Promise<ExecuteResult>;
+}
+
+interface PendingExecute {
+  request: ExecuteRequest;
+  output: string;
+  startTime: number;
+  resolve: (result: ExecuteResult) => void;
+  reject: (err: Error) => void;
+  timeoutTimer: ReturnType<typeof setTimeout> | null;
+  quiescenceTimer: ReturnType<typeof setTimeout> | null;
+  armed: boolean;
 }
 
 type StateChangeListener = (state: SessionState) => void;
@@ -124,6 +143,7 @@ export function inferQuiescentSessionState(text: string): Pick<SessionState, 'pr
 
 const DEFAULT_QUIESCENCE_MS = 2000;
 const JSONL_POLL_INTERVAL_MS = 1000;
+const MAX_PENDING_EXECUTE_OUTPUT = 256 * 1024;
 
 const CLAUDE_SESSION_UUID_RE = /Session:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
@@ -157,15 +177,7 @@ export class SessionStateTracker {
   private _quiescenceMs: number = DEFAULT_QUIESCENCE_MS;
 
   // Execute request lifecycle
-  private _pendingExecute: {
-    request: ExecuteRequest;
-    output: string;
-    startTime: number;
-    resolve: (result: ExecuteResult) => void;
-    reject: (err: Error) => void;
-    timeoutTimer: ReturnType<typeof setTimeout>;
-    quiescenceTimer: ReturnType<typeof setTimeout> | null;
-  } | null = null;
+  private _pendingExecute: PendingExecute | null = null;
 
   // Listeners
   private _stateListeners = new Set<StateChangeListener>();
@@ -288,11 +300,15 @@ export class SessionStateTracker {
     }
 
     // Accumulate for pending execute
-    if (this._pendingExecute) {
+    if (this._pendingExecute?.armed) {
       this._pendingExecute.output += this._pendingExecute.request.stripAnsi ? cleaned : data;
+      if (this._pendingExecute.output.length > MAX_PENDING_EXECUTE_OUTPUT) {
+        this._pendingExecute.output = this._pendingExecute.output.slice(-MAX_PENDING_EXECUTE_OUTPUT);
+      }
 
-      // Check waitFor pattern
-      if (this._pendingExecute.request.waitFor?.test(this._pendingExecute.output)) {
+      // Literal matching is deterministic and cannot trigger regex backtracking.
+      if (this._pendingExecute.request.waitFor
+        && this._pendingExecute.output.includes(this._pendingExecute.request.waitFor)) {
         this._resolveExecute('pattern_matched');
         return;
       }
@@ -316,42 +332,56 @@ export class SessionStateTracker {
 
   /* ---- Execute request lifecycle ---- */
 
-  async execute(request: ExecuteRequest): Promise<ExecuteResult> {
+  execute(request: ExecuteRequest): ExecuteHandle {
     if (this._pendingExecute) {
       throw new Error('Session already has a pending execute request');
     }
 
-    // Try to discover JSONL file if not already set
-    this._tryDiscoverJsonlFile();
-
-    // Mark current JSONL file position — on resolve we read new entries after this
-    this._jsonlMark = await this._jsonl.mark();
-    const hasJsonl = this._jsonl.hasFile();
-
-    console.log(`  [EXEC] Starting execute for session ${this.sessionId} (JSONL: ${hasJsonl}, mark: ${this._jsonlMark})`);
-
-    return new Promise<ExecuteResult>((resolve, reject) => {
-      const timeoutTimer = setTimeout(() => {
-        this._resolveExecute('timeout');
-      }, request.timeout);
-
-      this._pendingExecute = {
+    let resultResolve!: (result: ExecuteResult) => void;
+    let resultReject!: (error: Error) => void;
+    const result = new Promise<ExecuteResult>((resolve, reject) => {
+      resultResolve = resolve;
+      resultReject = reject;
+    });
+    // A preparation failure rejects both ready and result; attach a handler so
+    // callers awaiting ready first do not create an unhandled rejection window.
+    void result.catch(() => {});
+    const pending: PendingExecute = {
         request,
         output: '',
         startTime: Date.now(),
-        resolve,
-        reject,
-        timeoutTimer,
+        resolve: resultResolve,
+        reject: resultReject,
+        timeoutTimer: null,
         quiescenceTimer: null,
+        armed: false,
       };
+    // Reserve synchronously before any await so concurrent callers cannot both
+    // pass hasPendingExecute and overwrite each other.
+    this._pendingExecute = pending;
 
-      // When JSONL is available, poll it for new assistant entries
-      // This is the primary completion signal — decoupled from PTY quiescence
+    const ready = (async () => {
+      this._tryDiscoverJsonlFile();
+      this._jsonlMark = await this._jsonl.mark();
+      if (this._pendingExecute !== pending) throw new Error('Execute request was cancelled');
+      const hasJsonl = this._jsonl.hasFile();
+      pending.armed = true;
+      pending.timeoutTimer = setTimeout(() => {
+        this._resolveExecute('timeout');
+      }, request.timeout);
+      console.log(`  [EXEC] Starting execute for session ${this.sessionId} (JSONL: ${hasJsonl}, mark: ${this._jsonlMark})`);
       if (hasJsonl) {
         this._startJsonlPolling();
       }
-      // Otherwise, quiescence timer will be started on first data (via onData)
+    })().catch((error: unknown) => {
+      if (this._pendingExecute === pending) {
+        this._pendingExecute = null;
+        pending.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+      throw error;
     });
+
+    return { ready, result };
   }
 
   /* ---- JSONL polling — primary completion signal when JSONL is available ---- */
@@ -435,7 +465,7 @@ export class SessionStateTracker {
     }
 
     // Clean up timers
-    clearTimeout(pending.timeoutTimer);
+    if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
     if (pending.quiescenceTimer) clearTimeout(pending.quiescenceTimer);
     this._stopJsonlPolling();
     this._pendingExecute = null;
@@ -493,7 +523,7 @@ export class SessionStateTracker {
   cancelExecute(): boolean {
     if (!this._pendingExecute) return false;
     const pending = this._pendingExecute;
-    clearTimeout(pending.timeoutTimer);
+    if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
     if (pending.quiescenceTimer) clearTimeout(pending.quiescenceTimer);
     this._stopJsonlPolling();
     this._pendingExecute = null;
@@ -529,7 +559,7 @@ export class SessionStateTracker {
     this._stopJsonlPolling();
 
     if (this._pendingExecute) {
-      clearTimeout(this._pendingExecute.timeoutTimer);
+      if (this._pendingExecute.timeoutTimer) clearTimeout(this._pendingExecute.timeoutTimer);
       if (this._pendingExecute.quiescenceTimer) clearTimeout(this._pendingExecute.quiescenceTimer);
       this._pendingExecute.reject(new Error('Session tracker destroyed'));
       this._pendingExecute = null;

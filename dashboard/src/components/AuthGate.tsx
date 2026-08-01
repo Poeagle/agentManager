@@ -1,5 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api, type AuthUser, type AuthStatus } from '../lib/api';
+import { confirmDiscardAllEditors } from '../lib/unsaved-files';
 
 /**
  * Gates the whole app behind login. While loading, shows a spinner; if the
@@ -7,26 +9,25 @@ import { api, type AuthUser, type AuthStatus } from '../lib/api';
  * shows login; once authenticated, renders the app via the children render-prop.
  */
 export function AuthGate({ children }: { children: (user: AuthUser, logout: () => void) => React.ReactNode }) {
-  const [state, setState] = useState<AuthStatus | null>(null);
-
-  const refresh = useCallback(async () => {
-    try {
-      setState(await api.auth.status());
-    } catch {
-      setState({ needsSetup: false, authenticated: false, user: null });
-    }
-  }, []);
-
-  useEffect(() => { refresh(); }, [refresh]);
+  const { data, isPending, isError } = useQuery<AuthStatus>({
+    queryKey: ['auth-status'],
+    queryFn: api.auth.status,
+    retry: false,
+    staleTime: 30_000,
+  });
+  const state = isError
+    ? { needsSetup: false, authenticated: false, user: null }
+    : data;
 
   const logout = useCallback(async () => {
+    if (!confirmDiscardAllEditors()) return;
     try { await api.auth.logout(); } catch { /* ignore */ }
     // Full reload so no in-memory state from the previous user (React Query
     // cache, open tabs, WebSocket) can leak into the next session.
     window.location.reload();
   }, []);
 
-  if (!state) {
+  if (isPending || !state) {
     return (
       <div className="h-screen flex items-center justify-center" style={{ background: 'var(--bg)' }}>
         <div className="w-6 h-6 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />

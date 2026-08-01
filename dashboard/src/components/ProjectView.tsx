@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Monitor, FolderTree, Code2, GitBranch, Home, Plus, X, Download, LayoutGrid, Maximize2, Minimize2, ExternalLink, Globe, Zap, Bot, TerminalSquare, Columns3, Rows3, ChevronDown, History, Sparkles } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { Terminal } from './Terminal';
-import { FileExplorer } from './FileExplorer';
+import { FileExplorer, type FileRefreshRequest } from './FileExplorer';
 import { GitPanel } from './GitPanel';
 import { SessionLauncher } from './SessionLauncher';
 import { WebPageView } from './WebPageView';
@@ -20,6 +20,7 @@ import {
   shouldAutoRestoreSession,
   type TerminalInstance,
 } from '../lib/project-session-state';
+import { confirmDiscardExplorer } from '../lib/unsaved-files';
 
 interface ProjectViewProps {
   currentUserId: string;
@@ -83,14 +84,18 @@ function loadPersistedState(userId: string, projectId: string): PersistedState |
     if (parsed && parsed.activeMode && Array.isArray(parsed.explorerInstances)) {
       return parsed;
     }
-  } catch {}
+  } catch {
+    // Ignore corrupt or unavailable local storage and use defaults.
+  }
   return null;
 }
 
 function persistState(userId: string, projectId: string, state: PersistedState) {
   try {
     localStorage.setItem(storageKey(userId, projectId), JSON.stringify(state));
-  } catch {}
+  } catch {
+    // Persistence is best effort (for example, private browsing may reject it).
+  }
 }
 
 function isLiveSessionStatus(status: string) {
@@ -98,22 +103,6 @@ function isLiveSessionStatus(status: string) {
     || status === 'detached'
     || status === 'pending'
     || status === 'launching';
-}
-
-/** Remove all localStorage entries for a project and its explorer instances */
-export function cleanupProjectStorage(userId: string, projectId: string) {
-  try {
-    const raw = localStorage.getItem(storageKey(userId, projectId));
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed?.explorerInstances) {
-        for (const inst of parsed.explorerInstances) {
-          localStorage.removeItem(`agentmanager-explorer-${inst.id}`);
-        }
-      }
-    }
-    localStorage.removeItem(storageKey(userId, projectId));
-  } catch {}
 }
 
 const sidebarButtons = [
@@ -130,7 +119,7 @@ const sidebarButtons = [
 // handlers), so the shallow compare holds.
 export const ProjectView = memo(ProjectViewImpl);
 
-function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _projectName, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled }: ProjectViewProps) {
+function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled }: ProjectViewProps) {
   const queryClient = useQueryClient();
 
   // Fetch project data for SessionLauncher
@@ -460,8 +449,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
     // Prune closed IDs that are no longer alive on the server (kill completed)
     const allAliveIds = new Set(
       (sessionsData?.sessions || [])
-        .filter((s: any) => s.status === 'running' || s.status === 'detached' || s.status === 'pending')
-        .map((s: any) => s.id)
+        .filter((session) => session.status === 'running' || session.status === 'detached' || session.status === 'pending')
+        .map((session) => session.id)
     );
     let pruned = false;
     for (const id of closedSessionIds.current) {
@@ -479,13 +468,13 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
       const existingIds = new Set(prev.map((t) => t.id));
       const aliveIds = new Set(projectSessions.map((s) => s.id));
       // Build set of all session IDs the server knows about (any status)
-      const allServerIds = new Set((sessionsData?.sessions || []).map((s: any) => s.id));
+      const allServerIds = new Set((sessionsData?.sessions || []).map((session) => session.id));
       // Sessions the server reports as ended — kept as tabs (in an ended state)
       // so the user can view the last screen / resume, instead of being evicted.
       const endedIds = new Set(
         (sessionsData?.sessions || [])
-          .filter((s: any) => s.status === 'completed' || s.status === 'failed' || s.status === 'cancelled')
-          .map((s: any) => s.id)
+          .filter((session) => session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled')
+          .map((session) => session.id)
       );
 
       // Keep a tab if its session is still alive, ended (view/resume), or not yet
@@ -619,7 +608,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
       onFocusSessionHandled?.();
       focusTerminalById(focusSessionId);
     }
-  }, [focusSessionId, terminalInstances, sessionsData, projectId]);
+  }, [focusSessionId, onFocusSessionHandled, project?.session_prompt, projectId, projectPath, queryClient, sessionsData, terminalInstances]);
 
   // Explorer instances
   const [explorerInstances, setExplorerInstances] = useState<ExplorerInstance[]>(() => {
@@ -756,6 +745,9 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
       .catch(() => { /* offline / unauthenticated: keep localStorage state */ })
       .finally(() => { if (!cancelled) setProjHydrated(true); });
     return () => { cancelled = true; };
+    // This is a one-time hydration for a project. Including the hydrated state
+    // itself would turn the server read into a write/read feedback loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUserId, projectId]);
 
   // Debounced write-back after hydration. The backend session row remains the
@@ -881,9 +873,9 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
     if (closedSessionIds.current.size === 0) return [];
     // Only show hidden sessions for this project, and exclude sessions with open tabs
     const openTabIds = new Set(terminalInstances.map((t) => t.id));
-    return projectSessions.filter((s: any) =>
-      closedSessionIds.current.has(s.id) &&
-      !openTabIds.has(s.id)
+    return projectSessions.filter((session) =>
+      closedSessionIds.current.has(session.id) &&
+      !openTabIds.has(session.id)
     );
   }, [projectSessions, closedIdsVersion, terminalInstances]);
 
@@ -892,12 +884,12 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
   const endedSessions = useMemo(() => {
     const openTabIds = new Set(terminalInstances.map((t) => t.id));
     return (sessionsData?.sessions || [])
-      .filter((s: any) =>
-        s.project_id === projectId &&
-        (s.status === 'completed' || s.status === 'failed' || s.status === 'cancelled') &&
-        !openTabIds.has(s.id)
+      .filter((session) =>
+        session.project_id === projectId &&
+        (session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled') &&
+        !openTabIds.has(session.id)
       )
-      .sort((a: any, b: any) => (b.completed_at || b.created_at || '').localeCompare(a.completed_at || a.created_at || ''))
+      .sort((a, b) => (b.completed_at || b.created_at || '').localeCompare(a.completed_at || a.created_at || ''))
       .slice(0, 12);
   }, [sessionsData, projectId, terminalInstances]);
 
@@ -907,7 +899,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
 
     // Find the session data to determine its type and re-add the tab
     const allSessions = sessionsData?.sessions || [];
-    const session = allSessions.find((s: any) => s.id === id);
+    const session = allSessions.find((candidate) => candidate.id === id);
     if (session) {
       setTerminalInstances((prev) => {
         if (prev.some((t) => t.id === id)) return prev;
@@ -936,10 +928,10 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
 
     const allSessions = sessionsData?.sessions || [];
     setTerminalInstances((prev) => {
-      let updated = [...prev];
+      const updated = [...prev];
       for (const id of ids) {
         if (updated.some((t) => t.id === id)) continue;
-        const session = allSessions.find((s: any) => s.id === id && (s.status === 'running' || s.status === 'detached'));
+        const session = allSessions.find((candidate) => candidate.id === id && (candidate.status === 'running' || candidate.status === 'detached'));
         if (!session) continue;
         const isTerminal = session.task === 'Terminal';
         const isAgent = session.task?.startsWith('Agent (');
@@ -1143,6 +1135,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
 
   function closeExplorer(id: string) {
     if (explorerInstances.length <= 1) return;
+    if (!confirmDiscardExplorer(id)) return;
     setExplorerInstances((prev) => prev.filter((e) => e.id !== id));
     if (activeExplorerId === id) {
       setActiveExplorerId(explorerInstances[0].id === id ? explorerInstances[1]?.id : explorerInstances[0].id);
@@ -1192,11 +1185,11 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
   }
 
   // Cross-tab refresh coordination
-  const [gitSavedFile, setGitSavedFile] = useState<string | null>(null);
+  const [gitSavedFile, setGitSavedFile] = useState<FileRefreshRequest | null>(null);
   const [explorerSavedFile, setExplorerSavedFile] = useState<string | null>(null);
 
   const handleGitFileSaved = useCallback((filePath: string) => {
-    setGitSavedFile(filePath);
+    setGitSavedFile((previous) => ({ path: filePath, revision: (previous?.revision ?? 0) + 1 }));
   }, []);
 
   const handleExplorerFileSaved = useCallback((filePath: string) => {
@@ -1553,7 +1546,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
                               </button>
                             )}
                           </div>
-                          {hiddenSessions.map((s: any) => {
+                          {hiddenSessions.map((s) => {
                             const isTerminal = s.task === 'Terminal';
                             const isAgent = s.task?.startsWith('Agent (');
                             const isCodex = s.cli_type === 'codex';
@@ -1645,7 +1638,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
                           >
                             Ended / Recent
                           </div>
-                          {endedSessions.map((s: any) => {
+                          {endedSessions.map((s) => {
                             const isTerminal = s.task === 'Terminal';
                             const isAgent = s.task?.startsWith('Agent (');
                             const isCodex = s.cli_type === 'codex';
@@ -2105,7 +2098,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
                             <Terminal
                               sessionId={term.id}
                               visible={termVisible}
-                              suspended={terminalsSuspended || !active}
+                              suspended={terminalsSuspended || !termVisible}
                               passiveResize={gridMode && !isExpanded && projectSessions.find((s) => s.id === term.id)?.task === 'Terminal'}
                               hideCursor={projectSessions.find((s) => s.id === term.id)?.task !== 'Terminal' && projectSessions.some((s) => s.id === term.id)}
                               cliType={sessionLookup.get(term.id)?.cli_type as 'claude' | 'codex' | undefined}
@@ -2158,7 +2151,14 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, projectName: _
                 display: activeMode === 'explorer' && activeExplorerId === expl.id ? 'block' : 'none',
               }}
             >
-              <FileExplorer rootPath={projectPath} instanceId={expl.id} refreshFilePath={gitSavedFile} openFileRequest={expl.id === activeExplorerId ? openInExplorerRequest : null} onFileSaved={handleExplorerFileSaved} />
+              <FileExplorer
+                rootPath={projectPath}
+                instanceId={expl.id}
+                active={active && activeMode === 'explorer' && activeExplorerId === expl.id}
+                refreshFileRequest={gitSavedFile}
+                openFileRequest={expl.id === activeExplorerId ? openInExplorerRequest : null}
+                onFileSaved={handleExplorerFileSaved}
+              />
             </div>
           ))}
 

@@ -4,6 +4,25 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('/node_modules/')) return undefined;
+          if (id.includes('/@xterm/')) return 'terminal-vendor';
+          if (/\/@codemirror\/lang-(css|html|javascript|json|markdown)\//.test(id)
+            || /\/@lezer\/(css|html|javascript|json|markdown)\//.test(id)) return 'editor-web-languages';
+          if (/\/@codemirror\/lang-(cpp|java|python|rust)\//.test(id)
+            || /\/@lezer\/(cpp|java|python|rust)\//.test(id)) return 'editor-code-languages';
+          if (id.includes('/@codemirror/') || id.includes('/@lezer/') || id.includes('/@uiw/')) return 'editor-core';
+          if (id.includes('/react-markdown/') || id.includes('/remark-') || id.includes('/micromark') || id.includes('/mdast-')) return 'markdown-vendor';
+          if (id.includes('/lucide-react/')) return 'icons-vendor';
+          if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/') || id.includes('/@tanstack/') || id.includes('/zustand/')) return 'react-vendor';
+          return undefined;
+        },
+      },
+    },
+  },
   server: {
     // dev server 端口;agentmanager-dev 用 VITE_PORT 覆盖。仅影响 dev——vite build 不读 server.*
     port: Number(process.env.VITE_PORT) || 42011,

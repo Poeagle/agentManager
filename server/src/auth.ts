@@ -5,12 +5,13 @@
  * Soft multi-tenant model: this enforces *who is logged in*. Per-row data
  * ownership/filtering lives in the route handlers (see projects.owner_id).
  */
-import { randomBytes, scryptSync, timingSafeEqual } from 'crypto';
-import { realpathSync } from 'fs';
-import { dirname, resolve, sep } from 'path';
+import { createHmac, randomBytes, scrypt, scryptSync, timingSafeEqual } from 'crypto';
+import { chmodSync, readFileSync, realpathSync, writeFileSync } from 'fs';
+import { dirname, join, resolve, sep } from 'path';
 import { nanoid } from 'nanoid';
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { getDb } from './db/index.js';
+import { config } from './config.js';
 
 export interface User {
   id: string;
@@ -32,6 +33,8 @@ declare module 'fastify' {
 const SESSION_COOKIE = 'agentmanager_session';
 const SESSION_TTL_DAYS = 30;
 const SESSION_TTL_SECONDS = SESSION_TTL_DAYS * 24 * 60 * 60;
+export const MIN_PASSWORD_LENGTH = 6;
+export const MAX_PASSWORD_LENGTH = 256;
 
 /* ── Password hashing (scrypt) ─────────────────────────────────────── */
 
@@ -41,12 +44,90 @@ export function hashPassword(password: string): string {
   return `scrypt$${salt.toString('hex')}$${hash.toString('hex')}`;
 }
 
+/** Password hashing used by request handlers; never blocks the event loop. */
+export async function hashPasswordAsync(password: string): Promise<string> {
+  const salt = randomBytes(16);
+  const hash = await new Promise<Buffer>((resolvePromise, reject) => {
+    scrypt(password, salt, 64, (error, derivedKey) => {
+      if (error) reject(error);
+      else resolvePromise(derivedKey);
+    });
+  });
+  return `scrypt$${salt.toString('hex')}$${hash.toString('hex')}`;
+}
+
 export function verifyPassword(password: string, stored: string): boolean {
   const [scheme, saltHex, hashHex] = stored.split('$');
-  if (scheme !== 'scrypt' || !saltHex || !hashHex) return false;
+  if (scheme !== 'scrypt' || !/^[0-9a-f]{32}$/i.test(saltHex || '') || !/^[0-9a-f]{128}$/i.test(hashHex || '')) return false;
   const expected = Buffer.from(hashHex, 'hex');
   const actual = scryptSync(password, Buffer.from(saltHex, 'hex'), expected.length);
   return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+/** Password verification used by public login routes; never blocks the event loop. */
+export async function verifyPasswordAsync(password: string, stored: string): Promise<boolean> {
+  const [scheme, saltHex, hashHex] = stored.split('$');
+  if (scheme !== 'scrypt' || !/^[0-9a-f]{32}$/i.test(saltHex || '') || !/^[0-9a-f]{128}$/i.test(hashHex || '')) return false;
+  const expected = Buffer.from(hashHex, 'hex');
+  const actual = await new Promise<Buffer>((resolvePromise, reject) => {
+    scrypt(password, Buffer.from(saltHex, 'hex'), expected.length, (error, derivedKey) => {
+      if (error) reject(error);
+      else resolvePromise(derivedKey);
+    });
+  });
+  return timingSafeEqual(expected, actual);
+}
+
+export function passwordLengthError(password: unknown): string | null {
+  if (typeof password !== 'string') return 'password must be a string';
+  if (password.length < MIN_PASSWORD_LENGTH) return `Password must be at least ${MIN_PASSWORD_LENGTH} characters`;
+  if (password.length > MAX_PASSWORD_LENGTH) return `Password must be at most ${MAX_PASSWORD_LENGTH} characters`;
+  return null;
+}
+
+/* ── Per-project event hook authentication ─────────────────────────── */
+
+const hookMasterCache = new Map<string, string>();
+
+function hookMasterSecret(): string {
+  if (config.hookSecret) return config.hookSecret;
+  const secretPath = join(dirname(config.dbPath), '.events-hook-secret');
+  const cached = hookMasterCache.get(secretPath);
+  if (cached) return cached;
+
+  let secret: string;
+  try {
+    secret = readFileSync(secretPath, 'utf8').trim();
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') throw error;
+    secret = randomBytes(32).toString('base64url');
+    try {
+      writeFileSync(secretPath, `${secret}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    } catch (error: any) {
+      if (error?.code !== 'EEXIST') throw error;
+      secret = readFileSync(secretPath, 'utf8').trim();
+    }
+  }
+  if (secret.length < 32) throw new Error('Hook secret is too short');
+  try { chmodSync(secretPath, 0o600); } catch { /* best effort */ }
+  hookMasterCache.set(secretPath, secret);
+  return secret;
+}
+
+/** Derive a stable secret bound to one exact registered project root. */
+export function getEventHookSecret(projectPath: string): string | null {
+  const row = getDb().prepare('SELECT path FROM projects WHERE path = ?').get(projectPath) as { path: string } | undefined;
+  if (!row) return null;
+  return createHmac('sha256', hookMasterSecret()).update(row.path).digest('base64url');
+}
+
+export function eventHookSecretMatches(projectPath: string, candidate: string | undefined): boolean {
+  if (!candidate) return false;
+  const expected = getEventHookSecret(projectPath);
+  if (!expected) return false;
+  const left = Buffer.from(expected);
+  const right = Buffer.from(candidate);
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 /* ── User DB ops ───────────────────────────────────────────────────── */
@@ -76,6 +157,38 @@ export function createUser(opts: {
   role?: 'admin' | 'member';
   max_tabs?: number;
 }): User {
+  return insertUser(opts, hashPassword(opts.password));
+}
+
+export async function createUserAsync(opts: {
+  username: string;
+  password: string;
+  display_name?: string;
+  role?: 'admin' | 'member';
+  max_tabs?: number;
+}): Promise<User> {
+  return insertUser(opts, await hashPasswordAsync(opts.password));
+}
+
+/** Hash first, then atomically claim first-run setup so concurrent requests cannot create two admins. */
+export async function createInitialAdminAsync(opts: {
+  username: string;
+  password: string;
+  display_name?: string;
+}): Promise<User | null> {
+  const passwordHash = await hashPasswordAsync(opts.password);
+  return getDb().transaction(() => {
+    if (getUserCount() !== 0) return null;
+    return insertUser({ ...opts, role: 'admin' }, passwordHash);
+  })();
+}
+
+function insertUser(opts: {
+  username: string;
+  display_name?: string;
+  role?: 'admin' | 'member';
+  max_tabs?: number;
+}, passwordHash: string): User {
   const id = nanoid(12);
   const username = opts.username.trim();
   getDb()
@@ -83,12 +196,17 @@ export function createUser(opts: {
       `INSERT INTO users (id, username, password_hash, display_name, role, max_tabs)
        VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, username, hashPassword(opts.password), opts.display_name?.trim() || username, opts.role || 'member', opts.max_tabs ?? 10);
+    .run(id, username, passwordHash, opts.display_name?.trim() || username, opts.role || 'member', opts.max_tabs ?? 10);
   return findUserById(id)!;
 }
 
 export function setUserPassword(id: string, password: string): void {
   getDb().prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), id);
+}
+
+export async function setUserPasswordAsync(id: string, password: string): Promise<void> {
+  const passwordHash = await hashPasswordAsync(password);
+  getDb().prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
 }
 
 /* ── Login sessions ────────────────────────────────────────────────── */
@@ -141,21 +259,27 @@ export function readSessionCookie(req: FastifyRequest): string | null {
     const eq = part.indexOf('=');
     if (eq === -1) continue;
     if (part.slice(0, eq).trim() === SESSION_COOKIE) {
-      return decodeURIComponent(part.slice(eq + 1).trim());
+      try {
+        return decodeURIComponent(part.slice(eq + 1).trim());
+      } catch {
+        return null;
+      }
     }
   }
   return null;
 }
 
 export function setSessionCookie(reply: FastifyReply, token: string): void {
+  const secure = config.secureCookies ? '; Secure' : '';
   reply.header(
     'Set-Cookie',
-    `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}`,
+    `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}${secure}`,
   );
 }
 
 export function clearSessionCookie(reply: FastifyReply): void {
-  reply.header('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+  const secure = config.secureCookies ? '; Secure' : '';
+  reply.header('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
 }
 
 /* ── Auth gate (Fastify onRequest hook) ────────────────────────────── */
@@ -328,14 +452,17 @@ export function userOwnsFilesystemPath(userId: string, path: string | null | und
     }
   }
 
-  const ids = [...userProjectIds(userId)];
-  if (ids.length === 0) return false;
-  const rows = getDb().prepare(`SELECT path FROM projects WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids) as { path: string }[];
-  return rows.some((row) => {
+  const rows = getDb().prepare('SELECT id, path FROM projects').all() as { id: string; path: string }[];
+  const matches = rows.flatMap((row) => {
     let root: string;
-    try { root = realpathSync(resolve(row.path)); } catch { return false; }
-    return target === root || target.startsWith(root + sep);
+    try { root = realpathSync(resolve(row.path)); } catch { return []; }
+    return target === root || target.startsWith(root + sep) ? [{ id: row.id, root }] : [];
   });
+  // Nested registered projects are separate authorization boundaries. The
+  // most specific project wins, so access to /work never implies access to a
+  // separately registered /work/secret project.
+  matches.sort((a, b) => b.root.length - a.root.length);
+  return matches.length > 0 && getProjectToolAccess(userId, matches[0].id) !== null;
 }
 
 /** Registered project roots hidden from a member's spawned shell/agent. */

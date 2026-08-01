@@ -339,21 +339,28 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     if (!project_path) return reply.status(400).send({ error: 'project_path is required' });
 
     let resolvedProjectId = project_id || null;
+    let canonicalProjectPath: string;
     if (resolvedProjectId) {
-      if (!userCanUseToolForProject(req.user!.id, resolvedProjectId, requestedMode, requestedMode === 'terminal' ? 'claude' : cliType)) {
+      const row = getDb().prepare('SELECT id, path FROM projects WHERE id = ?').get(resolvedProjectId) as { id: string; path: string } | undefined;
+      if (!row || !userCanUseToolForProject(req.user!.id, resolvedProjectId, requestedMode, requestedMode === 'terminal' ? 'claude' : cliType)) {
         return reply.status(403).send({ error: 'Project not found or not yours' });
       }
+      if (project_path !== row.path) {
+        return reply.status(400).send({ error: 'project_path does not match project_id' });
+      }
+      canonicalProjectPath = row.path;
     } else {
       const row = getDb().prepare('SELECT id, path FROM projects WHERE path = ?').get(project_path) as { id: string; path: string } | undefined;
       if (!row || !userCanUseToolForProject(req.user!.id, row.id, requestedMode, requestedMode === 'terminal' ? 'claude' : cliType)) {
         return reply.status(403).send({ error: 'Project not found or not yours' });
       }
       resolvedProjectId = row.id;
+      canonicalProjectPath = row.path;
     }
 
     if (mode === 'terminal') {
-      const session = sessionManager.createSession(project_path, 'Terminal', resolvedProjectId, 'claude', req.user!.id, 'terminal');
-      registerPendingSpawn(session.id, { projectPath: project_path, task: 'Terminal', mode: 'terminal', projectId: resolvedProjectId });
+      const session = sessionManager.createSession(canonicalProjectPath, 'Terminal', resolvedProjectId, 'claude', req.user!.id, 'terminal');
+      registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task: 'Terminal', mode: 'terminal', projectId: resolvedProjectId });
       return { ok: true, session };
     }
 
@@ -365,13 +372,13 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       if (!agent_type) {
         return reply.status(400).send({ error: 'agent_type is required for agent mode' });
       }
-      const session = sessionManager.createSession(project_path, `Agent (${agent_type}): ${task}`, resolvedProjectId, cliType, req.user!.id, 'agent', agent_type);
-      registerPendingSpawn(session.id, { projectPath: project_path, task, mode: 'agent', agentType: agent_type, projectId: resolvedProjectId, cliType });
+      const session = sessionManager.createSession(canonicalProjectPath, `Agent (${agent_type}): ${task}`, resolvedProjectId, cliType, req.user!.id, 'agent', agent_type);
+      registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task, mode: 'agent', agentType: agent_type, projectId: resolvedProjectId, cliType });
       return { ok: true, session };
     }
 
-    const session = sessionManager.createSession(project_path, task, resolvedProjectId, cliType, req.user!.id, 'session');
-    registerPendingSpawn(session.id, { projectPath: project_path, task, mode: 'session', projectId: resolvedProjectId, cliType });
+    const session = sessionManager.createSession(canonicalProjectPath, task, resolvedProjectId, cliType, req.user!.id, 'session');
+    registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task, mode: 'session', projectId: resolvedProjectId, cliType });
 
     return { ok: true, session };
   });
@@ -383,30 +390,30 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const id = req.params.id;
     const session = sessionManager.getSession(id);
     if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
+    let killTimeout: ReturnType<typeof setTimeout> | null = null;
     try {
       const killed = await Promise.race([
         sessionManager.killSession(id),
-        new Promise<boolean>((resolve) => setTimeout(() => {
+        new Promise<boolean>((resolve) => { killTimeout = setTimeout(() => {
           console.log(`[KILL] Session ${id} kill timed out after 3s, forcing DB update`);
-          // Force DB update even if kill is stuck
           try {
-            getDb().prepare(`
-              UPDATE sessions SET status = 'cancelled', completed_at = datetime('now'), updated_at = datetime('now')
-              WHERE id = ? AND status IN ('running', 'pending', 'detached')
-            `).run(id);
-          } catch { /* ignore */ }
-          resolve(true);
-        }, 3000)),
+            resolve(sessionManager.markSessionCancelledIfProcessBearing(id));
+          } catch {
+            resolve(false);
+          }
+        }, 3000); }),
       ]);
+      if (killTimeout) clearTimeout(killTimeout);
       if (!killed) return reply.status(404).send({ error: 'Session not found or not running' });
-    } catch {
-      // Kill threw — still mark as cancelled
+    } catch (error) {
+      if (killTimeout) clearTimeout(killTimeout);
       try {
-        getDb().prepare(`
-          UPDATE sessions SET status = 'cancelled', completed_at = datetime('now'), updated_at = datetime('now')
-          WHERE id = ? AND status IN ('running', 'pending', 'detached')
-        `).run(id);
-      } catch { /* ignore */ }
+        if (!sessionManager.markSessionCancelledIfProcessBearing(id)) {
+          return reply.status(500).send({ error: 'Failed to stop session' });
+        }
+      } catch {
+        return reply.status(500).send({ error: 'Failed to stop session' });
+      }
     }
     return { ok: true };
   });

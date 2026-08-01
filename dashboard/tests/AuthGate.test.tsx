@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthGate } from '../src/components/AuthGate';
 import { api } from '../src/lib/api';
@@ -23,6 +24,15 @@ vi.mock('../src/lib/api', async () => {
 
 beforeEach(() => vi.clearAllMocks());
 
+function renderAuthGate(children: Parameters<typeof AuthGate>[0]['children']) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <AuthGate>{children}</AuthGate>
+    </QueryClientProvider>,
+  );
+}
+
 describe('AuthGate', () => {
   it('renders authenticated content with the resolved user', async () => {
     vi.mocked(api.auth.status).mockResolvedValue({
@@ -30,13 +40,13 @@ describe('AuthGate', () => {
       authenticated: true,
       user: { id: 'u1', username: 'alice', display_name: 'Alice', role: 'admin' },
     });
-    render(<AuthGate>{(user) => <div>Welcome {user.display_name}</div>}</AuthGate>);
+    renderAuthGate((user) => <div>Welcome {user.display_name}</div>);
     expect(await screen.findByText('Welcome Alice')).toBeInTheDocument();
   });
 
   it('shows first-run setup and validates required credentials', async () => {
     vi.mocked(api.auth.status).mockResolvedValue({ needsSetup: true, authenticated: false, user: null });
-    render(<AuthGate>{() => <div>private</div>}</AuthGate>);
+    renderAuthGate(() => <div>private</div>);
     expect(await screen.findByRole('heading', { name: '创建管理员账户' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '创建并进入' })).toBeDisabled();
   });
@@ -45,7 +55,7 @@ describe('AuthGate', () => {
     vi.mocked(api.auth.status).mockResolvedValue({ needsSetup: false, authenticated: false, user: null });
     vi.mocked(api.auth.login).mockRejectedValue(new Error('Invalid username or password'));
     const user = userEvent.setup();
-    render(<AuthGate>{() => <div>private</div>}</AuthGate>);
+    renderAuthGate(() => <div>private</div>);
 
     await user.type(await screen.findByLabelText('用户名'), 'alice');
     await user.type(screen.getByLabelText('密码'), 'wrong-password');

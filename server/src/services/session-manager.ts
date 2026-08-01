@@ -2,7 +2,7 @@ import { fork, execFile, execFileSync, spawn, type ChildProcess } from 'child_pr
 import { promisify } from 'util';
 import { createRequire } from 'module';
 import { readFile, readdirSync, readFileSync, writeFileSync as fsWriteFileSync, existsSync, appendFileSync, unlinkSync, mkdirSync, openSync, readSync, closeSync, readlinkSync, renameSync, statSync, type Dirent } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
@@ -14,7 +14,7 @@ import { nanoid } from 'nanoid';
 import type { WebSocket } from 'ws';
 import { getOrCreateTracker, removeTracker, recoverFromBuffer } from './session-state.js';
 import { encodeDir } from './claude-history.js';
-import { inaccessibleProjectPaths } from '../auth.js';
+import { inaccessibleProjectPaths, isAdmin } from '../auth.js';
 import { tmuxCursorRestoreSequence } from '../lib/terminal-cursor.js';
 import {
   cliTypeFromArgv,
@@ -31,8 +31,9 @@ const { SerializeAddon } = nodeRequire('@xterm/addon-serialize') as { SerializeA
 const execFileAsync = promisify(execFile);
 const readFileAsync = promisify(readFile);
 
-const TIMING_LOG = '/tmp/agentmanager-timing.log';
+const TIMING_LOG = process.env.AGENTMANAGER_TIMING_LOG?.trim() || null;
 function tlog(s: string): void {
+  if (!TIMING_LOG) return;
   try { appendFileSync(TIMING_LOG, `[${new Date().toISOString()}] ${s}\n`); } catch {}
 }
 
@@ -52,6 +53,36 @@ const MAX_ACTIVE_SESSIONS = 30;
 const RECONNECT_BATCH_SIZE = 5;
 /** Max times a single session can be auto-resumed before giving up */
 const MAX_SESSION_RESUMES = 3;
+export const PROCESS_BEARING_SESSION_STATUSES = new Set([
+  'pending',
+  'launching',
+  'running',
+  'detached',
+  'released',
+]);
+
+export function sessionStatusMayHaveProcess(status: string): boolean {
+  return PROCESS_BEARING_SESSION_STATUSES.has(status);
+}
+
+export function shouldDetachSessionOnShutdown(
+  useTmux: boolean,
+  useDtach: boolean,
+  externalSocket?: string,
+): boolean {
+  return useTmux || useDtach || !!externalSocket;
+}
+
+export function markSessionCancelledIfProcessBearing(sessionId: string): boolean {
+  const db = getDb();
+  const result = db.prepare(`
+    UPDATE sessions SET status = 'cancelled', completed_at = datetime('now'), updated_at = datetime('now')
+    WHERE id = ? AND status IN ('pending', 'launching', 'running', 'detached', 'released')
+  `).run(sessionId);
+  if (result.changes > 0) return true;
+  const row = db.prepare('SELECT status FROM sessions WHERE id = ?').get(sessionId) as { status: string } | undefined;
+  return row?.status === 'cancelled';
+}
 
 function recordServerStart(): void {
   let timestamps: number[] = [];
@@ -125,23 +156,167 @@ export interface Session {
   created_at: string;
   updated_at: string;
   terminal_cols: number | null;
+  terminal_rows: number | null;
 }
 
 interface ActiveSession {
   worker: ChildProcess;
+  businessReady: boolean;
+  lifecycleReady: Promise<void>;
+  resolveLifecycleReady: () => void;
+  rejectLifecycleReady: (error: Error) => void;
   subscribers: Set<WebSocket>;
   seq: number; // monotonic counter for pty_output rows
   cols: number; // last known terminal column width
+  rows: number; // last known terminal row height
   task: string; // 'Terminal' for plain shells, task description for session
   cliType?: 'claude' | 'codex'; // CLI type — Codex needs special capture handling
   externalSocket?: string; // external dtach socket (adopted sessions)
   replayBuffer: string[];  // ring buffer of recent output chunks for instant replay
   replayBytes: number;     // total bytes in replayBuffer
   wsPendingData: string | null; // batched WS output waiting to be sent
+  wsFlushTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const activeSessions = new Map<string, ActiveSession>();
 const sessionRecoveryPromises = new Map<string, Promise<boolean>>();
+const sessionLifecyclePromises = new Map<string, Promise<unknown>>();
+const cancelledSessionLifecycles = new Set<string>();
+type SessionLifecycleListener = (active: boolean) => void;
+const sessionLifecycleListeners = new Map<string, Set<SessionLifecycleListener>>();
+
+// Keep every WebSocket frame bounded and disconnect clients that cannot drain.
+// 64K UTF-16 code units are at most ~256KB of UTF-8 payload.
+const MAX_WS_OUTPUT_CHARS = 64 * 1024;
+const MAX_WS_BUFFERED_BYTES = 1024 * 1024;
+
+function sendTerminalOutput(ws: WebSocket, sessionId: string, data: string): boolean {
+  for (let offset = 0; offset < data.length; offset += MAX_WS_OUTPUT_CHARS) {
+    if (ws.readyState !== 1) return false;
+    const chunk = data.slice(offset, offset + MAX_WS_OUTPUT_CHARS);
+    if (ws.bufferedAmount + Buffer.byteLength(chunk) > MAX_WS_BUFFERED_BYTES) {
+      try { ws.close(1013, 'Terminal client is too slow'); } catch { /* already closed */ }
+      return false;
+    }
+    try {
+      ws.send(JSON.stringify({ type: 'output', sessionId, data: chunk }));
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function flushWebSocketOutput(sessionId: string, active: ActiveSession): void {
+  if (active.wsFlushTimer) clearTimeout(active.wsFlushTimer);
+  active.wsFlushTimer = null;
+  const data = active.wsPendingData;
+  active.wsPendingData = null;
+  if (!data) return;
+  for (const ws of active.subscribers) {
+    if (!sendTerminalOutput(ws, sessionId, data)) active.subscribers.delete(ws);
+  }
+}
+
+function queueWebSocketOutput(sessionId: string, active: ActiveSession, data: string): void {
+  // Flush full chunks immediately so the main-process batch itself is bounded.
+  active.wsPendingData = (active.wsPendingData || '') + data;
+  while ((active.wsPendingData?.length || 0) >= MAX_WS_OUTPUT_CHARS) {
+    const pending: string = active.wsPendingData ?? '';
+    const chunk = pending.slice(0, MAX_WS_OUTPUT_CHARS);
+    active.wsPendingData = pending.slice(MAX_WS_OUTPUT_CHARS) || null;
+    for (const ws of active.subscribers) {
+      if (!sendTerminalOutput(ws, sessionId, chunk)) active.subscribers.delete(ws);
+    }
+  }
+  if (!active.wsFlushTimer && active.wsPendingData) {
+    active.wsFlushTimer = setTimeout(() => {
+      if (activeSessions.get(sessionId) === active) flushWebSocketOutput(sessionId, active);
+    }, 16);
+  }
+}
+
+export function sensitiveHostPathsForSandbox(dbPath: string, userHome: string): string[] {
+  return [
+    dirname(resolve(dbPath)),
+    `-${join(userHome, '.ssh')}`,
+    `-${join(userHome, '.gnupg')}`,
+    `-${join(userHome, '.aws')}`,
+    `-${join(userHome, '.kube')}`,
+    `-${join(userHome, '.config', 'gh')}`,
+    `-${join(userHome, '.netrc')}`,
+    `-${join(userHome, '.npmrc')}`,
+  ];
+}
+
+function workerSandboxPolicy(createdByUserId: string | null | undefined): {
+  inaccessiblePaths: string[];
+  sandboxRequired: boolean;
+} {
+  if (!createdByUserId || isAdmin(createdByUserId)) {
+    return { inaccessiblePaths: [], sandboxRequired: false };
+  }
+  return {
+    inaccessiblePaths: [...new Set([
+      ...inaccessibleProjectPaths(createdByUserId),
+      ...sensitiveHostPathsForSandbox(config.dbPath, homedir()),
+    ])],
+    sandboxRequired: true,
+  };
+}
+
+function clearWebSocketOutput(active: ActiveSession): void {
+  if (active.wsFlushTimer) clearTimeout(active.wsFlushTimer);
+  active.wsFlushTimer = null;
+  active.wsPendingData = null;
+}
+
+/** Serialize worker creation for one session. Concurrent callers wait for the
+ * same operation instead of forking competing PTY workers. */
+function runSessionLifecycle<T>(
+  sessionId: string,
+  operation: () => Promise<T>,
+  afterExisting: () => T,
+): Promise<T> {
+  const existing = sessionLifecyclePromises.get(sessionId);
+  if (existing) return existing.then(afterExisting);
+
+  cancelledSessionLifecycles.delete(sessionId);
+  const promise = Promise.resolve().then(operation);
+  sessionLifecyclePromises.set(sessionId, promise);
+  return promise.finally(() => {
+    if (sessionLifecyclePromises.get(sessionId) === promise) {
+      sessionLifecyclePromises.delete(sessionId);
+      cancelledSessionLifecycles.delete(sessionId);
+      notifySessionLifecycleListeners(sessionId, isSessionActive(sessionId));
+    }
+  });
+}
+
+function rejectCancelledLifecycle(sessionId: string, worker: ChildProcess): void {
+  if (!cancelledSessionLifecycles.has(sessionId)) return;
+  try { worker.kill('SIGKILL'); } catch { /* worker already exited */ }
+  throw new Error('Session was cancelled while its PTY worker was starting');
+}
+
+function notifySessionLifecycleListeners(sessionId: string, active: boolean): void {
+  const listeners = sessionLifecycleListeners.get(sessionId);
+  if (!listeners) return;
+  sessionLifecycleListeners.delete(sessionId);
+  for (const listener of listeners) {
+    try { listener(active); } catch { /* isolate websocket listeners */ }
+  }
+}
+
+/** Wait for an in-flight spawn/reconnect, if any. Used by concurrent WebSocket
+ * attaches that lost the pending-spawn race. */
+export async function waitForSessionLifecycle(sessionId: string): Promise<boolean> {
+  const existing = sessionLifecyclePromises.get(sessionId);
+  if (existing) {
+    try { await existing; } catch { return false; }
+  }
+  return isSessionActive(sessionId);
+}
 
 /* Pending spawns: sessions created via REST API that await terminal dimensions
    from the first WebSocket connection before actually starting. */
@@ -155,6 +330,47 @@ interface PendingSpawn {
   cliType?: 'claude' | 'codex';
 }
 const pendingSpawns = new Map<string, PendingSpawn>();
+
+/** Subscribe once to completion of a pending spawn/reconnect lifecycle. The
+ * returned cleanup must be called when the waiting socket closes. */
+export function subscribeSessionLifecycle(
+  sessionId: string,
+  listener: SessionLifecycleListener,
+): () => void {
+  let subscribed = true;
+  const invoke = (active: boolean) => {
+    if (!subscribed) return;
+    subscribed = false;
+    listener(active);
+  };
+
+  let listeners = sessionLifecycleListeners.get(sessionId);
+  if (!listeners) {
+    listeners = new Set();
+    sessionLifecycleListeners.set(sessionId, listeners);
+  }
+  listeners.add(invoke);
+
+  // Re-check after registering so completion cannot be lost between the
+  // route's pending-spawn check and this subscription.
+  if (isSessionActive(sessionId)) {
+    listeners.delete(invoke);
+    if (listeners.size === 0) sessionLifecycleListeners.delete(sessionId);
+    queueMicrotask(() => invoke(true));
+  } else if (!pendingSpawns.has(sessionId) && !sessionLifecyclePromises.has(sessionId)) {
+    listeners.delete(invoke);
+    if (listeners.size === 0) sessionLifecycleListeners.delete(sessionId);
+    queueMicrotask(() => invoke(false));
+  }
+
+  return () => {
+    if (!subscribed) return;
+    subscribed = false;
+    const current = sessionLifecycleListeners.get(sessionId);
+    current?.delete(invoke);
+    if (current?.size === 0) sessionLifecycleListeners.delete(sessionId);
+  };
+}
 
 /* Durable Codex identity bridge. Fresh Codex TUI sessions choose their own
  * UUID, so a per-launch SessionStart hook writes it here. Keeping the binding
@@ -602,15 +818,104 @@ let _insertStmt: Database.Statement | null = null;
 function getInsertStmt(): Database.Statement {
   if (!_insertStmt) {
     _insertStmt = getDb().prepare(
-      'INSERT INTO pty_output (session_id, seq, data) VALUES (?, ?, ?)'
+      'INSERT OR IGNORE INTO pty_output (session_id, seq, data) VALUES (?, ?, ?)'
     );
   }
   return _insertStmt;
 }
 
-// Batch insert buffer: accumulate chunks and flush every 100ms
-const pendingInserts = new Map<string, { sessionId: string; seq: number; data: string }[]>();
+export interface PendingPtyInsert {
+  sessionId: string;
+  seq: number;
+  data: string;
+}
+
+/** Byte-bounded per-session batches. Failed commits leave this buffer intact;
+ * explicit cancellation can discard exactly one session without affecting the
+ * accounting for other terminals. */
+export class PendingPtyInsertBuffer {
+  private batches = new Map<string, PendingPtyInsert[]>();
+  private bytes = 0;
+
+  constructor(readonly maxBytes: number) {}
+
+  enqueue(row: PendingPtyInsert): boolean {
+    const bytes = Buffer.byteLength(row.data);
+    if (bytes > this.maxBytes - this.bytes) return false;
+    let batch = this.batches.get(row.sessionId);
+    if (!batch) {
+      batch = [];
+      this.batches.set(row.sessionId, batch);
+    }
+    batch.push(row);
+    this.bytes += bytes;
+    return true;
+  }
+
+  discard(sessionId: string): void {
+    const batch = this.batches.get(sessionId);
+    if (!batch) return;
+    for (const row of batch) this.bytes -= Buffer.byteLength(row.data);
+    this.batches.delete(sessionId);
+  }
+
+  coalesced(): PendingPtyInsert[] {
+    const rows: PendingPtyInsert[] = [];
+    for (const [sessionId, batch] of this.batches) {
+      let output: PendingPtyInsert | null = null;
+      for (const row of batch) {
+        // Resize/control markers are ordering boundaries. Combining across one
+        // would turn the marker into ordinary output and corrupt replay.
+        if (row.data.charCodeAt(0) === 0) {
+          if (output) rows.push(output);
+          output = null;
+          rows.push(row);
+        } else if (output) {
+          output = { sessionId, seq: row.seq, data: output.data + row.data };
+        } else {
+          output = { ...row };
+        }
+      }
+      if (output) rows.push(output);
+    }
+    return rows;
+  }
+
+  clear(): void {
+    this.batches.clear();
+    this.bytes = 0;
+  }
+
+  has(sessionId: string): boolean { return this.batches.has(sessionId); }
+  get size(): number { return this.batches.size; }
+  get byteLength(): number { return this.bytes; }
+}
+
+export function commitPendingPtyInserts(
+  buffer: PendingPtyInsertBuffer,
+  commit: (rows: PendingPtyInsert[]) => void,
+): boolean {
+  const rows = buffer.coalesced();
+  if (rows.length === 0) {
+    buffer.clear();
+    return true;
+  }
+  try {
+    commit(rows);
+    buffer.clear();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Batch insert buffer: accumulate chunks and flush every 250ms.
+const MAX_PENDING_INSERT_BYTES = 16 * 1024 * 1024;
+const pendingInserts = new PendingPtyInsertBuffer(MAX_PENDING_INSERT_BYTES);
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+let lastPendingInsertWarning = 0;
+const PTY_FLUSH_RETRY_MS = 1000;
+const sessionReplayFinalizers = new Map<string, Promise<void>>();
 
 // Maximum rows to keep per session in pty_output (prevents unbounded growth)
 const MAX_PTY_ROWS_PER_SESSION = 2000;
@@ -619,52 +924,46 @@ const MAX_SESSION_SNAPSHOTS = 200;
 let pruneCounter = 0;
 
 function queuePtyInsert(sessionId: string, seq: number, data: string): void {
-  let batch = pendingInserts.get(sessionId);
-  if (!batch) {
-    batch = [];
-    pendingInserts.set(sessionId, batch);
+  if (!pendingInserts.enqueue({ sessionId, seq, data })) {
+    const now = Date.now();
+    if (now - lastPendingInsertWarning > 10_000) {
+      lastPendingInsertWarning = now;
+      console.error(`PTY output persistence queue reached ${MAX_PENDING_INSERT_BYTES} bytes; dropping replay-only data until SQLite recovers`);
+    }
+    return;
   }
-  batch.push({ sessionId, seq, data });
 
   if (!flushTimer) {
     flushTimer = setTimeout(flushPtyInserts, 250);
   }
 }
 
-function flushPtyInserts(): void {
+function flushPtyInserts(): boolean {
+  if (flushTimer) clearTimeout(flushTimer);
   flushTimer = null;
-  const db = getDb();
-  const stmt = getInsertStmt();
-
-  // Coalesce: merge all chunks per session into one row to minimize DB writes
-  const coalesced: { sessionId: string; seq: number; data: string }[] = [];
-  for (const [sessionId, batch] of pendingInserts) {
-    if (batch.length === 0) continue;
-    if (batch.length === 1) {
-      coalesced.push(batch[0]);
-    } else {
-      // Combine all chunks, use the last seq number
-      const combined = batch.map(r => r.data).join('');
-      coalesced.push({ sessionId, seq: batch[batch.length - 1].seq, data: combined });
-    }
-  }
-
-  if (coalesced.length === 0) {
-    pendingInserts.clear();
-    return;
-  }
-
-  const insertAll = db.transaction(() => {
-    for (const row of coalesced) {
-      stmt.run(row.sessionId, row.seq, row.data);
-    }
-  });
+  let db;
+  let stmt: Database.Statement;
   try {
-    insertAll();
-    pendingInserts.clear();
+    db = getDb();
+    stmt = getInsertStmt();
   } catch (err) {
-    console.error('Failed to flush pty_output inserts:', err);
-    // Don't clear pendingInserts — retry on next flush cycle
+    console.error('Failed to prepare pty_output flush:', err);
+    if (!flushTimer) flushTimer = setTimeout(flushPtyInserts, PTY_FLUSH_RETRY_MS);
+    return false;
+  }
+
+  const committed = commitPendingPtyInserts(pendingInserts, (rows) => {
+    db.transaction(() => {
+      for (const row of rows) {
+        stmt.run(row.sessionId, row.seq, row.data);
+      }
+    })();
+  });
+  if (!committed) {
+    console.error('Failed to flush pty_output inserts');
+    // Keep the bounded queue and retry even if no further PTY data arrives.
+    if (!flushTimer) flushTimer = setTimeout(flushPtyInserts, PTY_FLUSH_RETRY_MS);
+    return false;
   }
 
   // Prune old rows every ~240 flushes (~60s) as a safety net.
@@ -674,18 +973,109 @@ function flushPtyInserts(): void {
     pruneCounter = 0;
     prunePtyOutput();
   }
+  return true;
+}
+
+function discardPendingPtyOutput(sessionId: string): void {
+  pendingInserts.discard(sessionId);
+  if (pendingInserts.size === 0 && flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+}
+
+export async function finalizeReplayThroughSeq(
+  maxSeq: number,
+  capture: (maxSeq: number) => Promise<boolean>,
+  remove: (maxSeq: number) => void,
+): Promise<boolean> {
+  if (!(await capture(maxSeq))) return false;
+  remove(maxSeq);
+  return true;
+}
+
+function finalizeSessionReplayAfterExit(sessionId: string, cols: number, rows: number): Promise<void> {
+  const existing = sessionReplayFinalizers.get(sessionId);
+  if (existing) return existing;
+
+  const finalizer = (async () => {
+    while (pendingInserts.has(sessionId) && !flushPtyInserts()) {
+      await new Promise<void>((resolvePromise) => {
+        const retry = setTimeout(resolvePromise, PTY_FLUSH_RETRY_MS + 10);
+        retry.unref();
+      });
+    }
+    const maxSeq = (getDb().prepare(
+      'SELECT MAX(seq) AS maxSeq FROM pty_output WHERE session_id = ?',
+    ).get(sessionId) as { maxSeq: number | null }).maxSeq;
+    if (maxSeq == null) return;
+    let finalized = false;
+    while (!finalized) {
+      finalized = await finalizeReplayThroughSeq(
+        maxSeq,
+        (boundary) => captureFinalSnapshot(sessionId, cols, rows, boundary),
+        (boundary) => {
+          getDb().prepare('DELETE FROM pty_output WHERE session_id = ? AND seq <= ?')
+            .run(sessionId, boundary);
+        },
+      );
+      if (!finalized) {
+        await new Promise<void>((resolvePromise) => {
+          const retry = setTimeout(resolvePromise, PTY_FLUSH_RETRY_MS);
+          retry.unref();
+        });
+      }
+    }
+  })().finally(() => {
+    if (sessionReplayFinalizers.get(sessionId) === finalizer) {
+      sessionReplayFinalizers.delete(sessionId);
+    }
+  });
+  sessionReplayFinalizers.set(sessionId, finalizer);
+  return finalizer;
+}
+
+export async function waitForSessionReplayFinalization(sessionId: string): Promise<void> {
+  const finalizer = sessionReplayFinalizers.get(sessionId);
+  if (finalizer) await finalizer;
+}
+
+/** Synchronously drain queued PTY output. Graceful shutdown calls this before
+ * exiting so the final sub-250ms output batch is not silently lost. */
+export function flushPendingPtyOutput(): boolean {
+  if (pendingInserts.size === 0) {
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = null;
+    return true;
+  }
+  return flushPtyInserts();
+}
+
+export async function flushPendingPtyOutputWithRetry(
+  attempts = 4,
+  retryDelayMs = 250,
+  flush: () => boolean = flushPendingPtyOutput,
+): Promise<boolean> {
+  const count = Math.max(1, Math.floor(attempts));
+  for (let attempt = 1; attempt <= count; attempt++) {
+    try {
+      if (flush()) return true;
+    } catch (err) {
+      if (attempt === count) {
+        console.error('Final PTY output flush failed:', err);
+      }
+    }
+    if (attempt < count) {
+      await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, retryDelayMs));
+    }
+  }
+  return false;
 }
 
 /** Delete old pty_output rows beyond the per-session cap */
 function prunePtyOutput(): void {
   try {
     const db = getDb();
-    // Delete rows for completed/cancelled/failed sessions entirely
-    const dead = db.prepare(`
-      DELETE FROM pty_output WHERE session_id IN (
-        SELECT id FROM sessions WHERE status IN ('completed', 'cancelled', 'failed')
-      )
-    `).run();
     // For active sessions, keep only the last MAX_PTY_ROWS_PER_SESSION rows
     const trimmed = db.prepare(`
       DELETE FROM pty_output WHERE rowid IN (
@@ -699,7 +1089,7 @@ function prunePtyOutput(): void {
     `).run(MAX_PTY_ROWS_PER_SESSION);
 
     // Periodic VACUUM when we deleted a lot of data
-    const totalDeleted = dead.changes + trimmed.changes;
+    const totalDeleted = trimmed.changes;
     if (totalDeleted > 500) {
       const freePages = (db.pragma('freelist_count') as { freelist_count: number }[])[0].freelist_count;
       const pageSize = (db.pragma('page_size') as { page_size: number }[])[0].page_size;
@@ -730,12 +1120,21 @@ function readRecentOutput(sessionId: string, limit: number): string[] {
  * perfectly restore the visual state. Handles resize markers so the headless
  * terminal dimensions match the original session at each point.
  */
-async function serializeSessionOutput(sessionId: string, cols: number, rows: number, opts?: { serializeScrollback?: number }): Promise<string | null> {
+async function serializeSessionOutput(
+  sessionId: string,
+  cols: number,
+  rows: number,
+  opts?: { serializeScrollback?: number; maxSeq?: number },
+): Promise<string | null> {
   const db = getDb();
   // Read up to 5000 chunks (enough for most sessions, caps processing time)
-  const dbRows = db.prepare(
-    'SELECT data FROM pty_output WHERE session_id = ? ORDER BY seq ASC LIMIT 5000'
-  ).all(sessionId) as { data: string }[];
+  const dbRows = opts?.maxSeq == null
+    ? db.prepare(
+      'SELECT data FROM pty_output WHERE session_id = ? ORDER BY seq ASC LIMIT 5000',
+    ).all(sessionId) as { data: string }[]
+    : db.prepare(
+      'SELECT data FROM pty_output WHERE session_id = ? AND seq <= ? ORDER BY seq ASC LIMIT 5000',
+    ).all(sessionId, opts.maxSeq) as { data: string }[];
   if (dbRows.length === 0) return null;
 
   // Find first resize marker for initial dimensions
@@ -817,17 +1216,25 @@ async function serializeSessionOutput(sessionId: string, cols: number, rows: num
  * reopened and restored to how it looked when it closed. Bounded scrollback
  * keeps the stored string small; the total number of snapshots is capped.
  */
-export async function captureFinalSnapshot(sessionId: string, cols?: number, rows?: number): Promise<void> {
+export async function captureFinalSnapshot(
+  sessionId: string,
+  cols?: number,
+  rows?: number,
+  maxSeq?: number,
+): Promise<boolean> {
   try {
     const db = getDb();
     let c = cols;
-    if (!c) {
-      const s = db.prepare('SELECT terminal_cols FROM sessions WHERE id = ?').get(sessionId) as { terminal_cols?: number } | undefined;
+    let r = rows;
+    if (!c || !r) {
+      const s = db.prepare('SELECT terminal_cols, terminal_rows FROM sessions WHERE id = ?').get(sessionId) as
+        | { terminal_cols?: number; terminal_rows?: number }
+        | undefined;
       c = s?.terminal_cols || 120;
+      r = s?.terminal_rows || 40;
     }
-    const r = rows || 40;
-    const rendered = await serializeSessionOutput(sessionId, c, r, { serializeScrollback: 1000 });
-    if (!rendered) return; // no replay data left → nothing to snapshot
+    const rendered = await serializeSessionOutput(sessionId, c, r, { serializeScrollback: 1000, maxSeq });
+    if (!rendered) return true; // no renderable replay data left
     db.prepare(`
       INSERT OR REPLACE INTO session_snapshots (session_id, cols, rows, rendered, created_at)
       VALUES (?, ?, ?, ?, datetime('now'))
@@ -838,8 +1245,10 @@ export async function captureFinalSnapshot(sessionId: string, cols?: number, row
         SELECT session_id FROM session_snapshots ORDER BY created_at DESC LIMIT -1 OFFSET ?
       )
     `).run(MAX_SESSION_SNAPSHOTS);
+    return true;
   } catch (err) {
     console.error('Failed to capture final snapshot for', sessionId, err);
+    return false;
   }
 }
 
@@ -1067,6 +1476,31 @@ const broadcastWiredTrackers = new WeakSet<object>();
  */
 function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: string, preSpawnFiles?: Set<string>): ActiveSession {
   const tracker = getOrCreateTracker(sessionId);
+  let readySettled = false;
+  let resolveReadyPromise!: () => void;
+  let rejectReadyPromise!: (error: Error) => void;
+  let readyTimeout: ReturnType<typeof setTimeout>;
+  const lifecycleReady = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolveReadyPromise = resolvePromise;
+    rejectReadyPromise = rejectPromise;
+  });
+  const resolveLifecycleReady = () => {
+    if (readySettled) return;
+    readySettled = true;
+    clearTimeout(readyTimeout);
+    resolveReadyPromise();
+  };
+  const rejectLifecycleReady = (error: Error) => {
+    if (readySettled) return;
+    readySettled = true;
+    clearTimeout(readyTimeout);
+    rejectReadyPromise(error);
+  };
+  readyTimeout = setTimeout(
+    () => rejectLifecycleReady(new Error('PTY lifecycle timed out before ready')),
+    30_000,
+  );
+  readyTimeout.unref();
 
   if (projectPath) {
     tracker.setProjectPath(projectPath, preSpawnFiles);
@@ -1109,13 +1543,19 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
 
   const active: ActiveSession = {
     worker,
+    businessReady: false,
+    lifecycleReady,
+    resolveLifecycleReady,
+    rejectLifecycleReady,
     subscribers: new Set(),
     seq: startSeq,
     cols: 120,
+    rows: 40,
     task: '',  // set by caller (spawnSession/spawnTerminal/reconnectSession)
     replayBuffer: [],
     replayBytes: 0,
     wsPendingData: null,
+    wsFlushTimer: null,
   };
 
   activeSessions.set(sessionId, active);
@@ -1174,11 +1614,22 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
 
   // Handle IPC messages from the worker
   worker.on('message', (msg: any) => {
+    // Ignore late messages from a worker that was released, killed, or replaced.
+    if (activeSessions.get(sessionId) !== active) return;
     switch (msg.type) {
       case 'output': {
         // Display output — store in DB for replay on restart
         active.seq++;
         queuePtyInsert(sessionId, active.seq, msg.data);
+
+        // In direct/dtach mode the same worker message is both display output
+        // and the state tracker's raw PTY stream, avoiding duplicate IPC copies.
+        if (msg.track) {
+          tracker.onData(msg.data);
+          if (!uuidPersisted && active.cliType !== 'codex' && tracker.claudeSessionId) {
+            persistUuid(tracker.claudeSessionId);
+          }
+        }
 
         // Maintain replay buffer (last ~200KB) for instant replay without tmux capture-pane
         active.replayBuffer.push(msg.data);
@@ -1188,25 +1639,9 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
           active.replayBytes -= removed.length;
         }
 
-        // Batch WebSocket output to avoid flooding the browser event queue.
-        // Individual pipe-pane chunks are tiny and arrive hundreds/sec — sending
-        // each as a separate WS message starves browser keyboard input events.
-        if (!active.wsPendingData) {
-          active.wsPendingData = msg.data;
-          setTimeout(() => {
-            const data = active.wsPendingData!;
-            active.wsPendingData = null;
-            for (const ws of active.subscribers) {
-              try {
-                ws.send(JSON.stringify({ type: 'output', sessionId, data }));
-              } catch {
-                active.subscribers.delete(ws);
-              }
-            }
-          }, 16); // ~60fps — one WS message per frame
-        } else {
-          active.wsPendingData += msg.data;
-        }
+        // Batch to ~60fps, bound frame size, and evict clients whose socket
+        // buffer exceeds the explicit high-water mark.
+        queueWebSocketOutput(sessionId, active, msg.data);
         break;
       }
 
@@ -1222,29 +1657,43 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
       case 'ready': {
         // Worker has spawned the PTY
         const db = getDb();
-        db.prepare(`
+        const result = db.prepare(`
           UPDATE sessions SET status = 'running', pid = ?, started_at = COALESCE(started_at, datetime('now')), updated_at = datetime('now')
-          WHERE id = ?
+          WHERE id = ? AND status IN ('pending', 'detached', 'launching', 'running')
         `).run(msg.pid, sessionId);
+        if (result.changes === 0) {
+          // The pending watchdog or a user cancellation won while spawn was
+          // blocked. Do not resurrect the completed row or leak its worker.
+          try { worker.send({ type: 'kill' }); } catch { /* worker already gone */ }
+          activeSessions.delete(sessionId);
+          clearWebSocketOutput(active);
+          removeTracker(sessionId);
+          stopTerminalCliMonitor(sessionId);
+          active.rejectLifecycleReady(new Error('Session was cancelled before PTY became ready'));
+        } else {
+          active.businessReady = true;
+          active.resolveLifecycleReady();
+        }
         break;
       }
 
       case 'exit': {
-        // PTY exited in the worker — flush pending writes, snapshot, then delete pty_output
-        if (pendingInserts.has(sessionId)) {
-          flushPtyInserts();
-        }
+        active.rejectLifecycleReady(new Error('PTY exited before ready'));
+        flushWebSocketOutput(sessionId, active);
         // Capture a final-screen snapshot BEFORE deleting the replay data, so
         // this session can be reopened later and restored to how it looked when
         // it closed. Covers the OOM-kills-tmux case too: when the tmux server
         // dies, the attach client exits code 0 and lands here. The pty_output
         // DELETE is deferred into the snapshot's continuation so the serialize
         // reads the rows first.
-        captureFinalSnapshot(sessionId, active.cols).finally(() => {
-          try { getDb().prepare('DELETE FROM pty_output WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
+        // A failed SQLite flush retains its in-memory batch and defers this
+        // finalization. That prevents both tail loss and retry resurrection.
+        void finalizeSessionReplayAfterExit(sessionId, active.cols, active.rows).catch((err) => {
+          console.error(`Failed to finalize replay for ${sessionId}:`, err);
         });
         removeTracker(sessionId);
         activeSessions.delete(sessionId);
+        clearWebSocketOutput(active);
         stopTerminalCliMonitor(sessionId);
 
         const db = getDb();
@@ -1280,6 +1729,7 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
 
       case 'error': {
         console.error(`[WORKER] Error for session ${sessionId}: ${msg.message}`);
+        active.rejectLifecycleReady(new Error(msg.message || 'PTY lifecycle failed'));
         break;
       }
 
@@ -1292,13 +1742,15 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
 
   // Handle worker process exit (crash, disconnect)
   worker.on('exit', async (code, _signal) => {
-    if (activeSessions.has(sessionId)) {
+    active.rejectLifecycleReady(new Error(`PTY worker exited before ready (${code ?? -1})`));
+    if (activeSessions.get(sessionId) === active) {
       // Worker died unexpectedly — clean up
       if (pendingInserts.has(sessionId)) {
         flushPtyInserts();
       }
       removeTracker(sessionId);
       activeSessions.delete(sessionId);
+      clearWebSocketOutput(active);
       stopTerminalCliMonitor(sessionId);
 
       // Check if the underlying tmux/dtach session is still alive (async to avoid blocking)
@@ -1327,6 +1779,7 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
   });
 
   worker.on('error', (err) => {
+    active.rejectLifecycleReady(err);
     console.error(`[WORKER] Process error for session ${sessionId}:`, err);
   });
 
@@ -1413,12 +1866,15 @@ function assignClaudeSessionId(sessionId: string): string {
   return uuid;
 }
 
-export async function spawnSession(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
+async function spawnSessionUnlocked(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
+  if (activeSessions.has(sessionId)) return;
   const preSpawnFiles = cliType === 'claude' ? snapshotClaudeSessionFiles(projectPath) : undefined;
 
   const worker = await forkWorker();
+  rejectCancelledLifecycle(sessionId, worker);
   const active = wireWorker(sessionId, worker, projectPath, preSpawnFiles);
   active.cols = cols;
+  active.rows = rows;
   active.task = task;
   active.cliType = cliType;
 
@@ -1451,8 +1907,9 @@ export async function spawnSession(sessionId: string, projectPath: string, task:
     cliType,
     assignSessionId,
     codexBindingPath: bindingPath,
-    inaccessiblePaths: creator?.created_by_user_id ? inaccessibleProjectPaths(creator.created_by_user_id) : [],
+    ...workerSandboxPolicy(creator?.created_by_user_id),
   });
+  await active.lifecycleReady;
 
   if (cliType === 'codex') watchCodexSessionBinding(sessionId);
 
@@ -1465,10 +1922,21 @@ export async function spawnSession(sessionId: string, projectPath: string, task:
   pushSystemEvent(`[AgentManager] Session ${sessionId} started: ${task.slice(0, 60)}`);
 }
 
-export async function spawnTerminal(sessionId: string, projectPath: string, cols = 180, rows = 40): Promise<void> {
+export function spawnSession(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
+  return runSessionLifecycle(
+    sessionId,
+    () => spawnSessionUnlocked(sessionId, projectPath, task, cols, rows, cliType),
+    () => undefined,
+  );
+}
+
+async function spawnTerminalUnlocked(sessionId: string, projectPath: string, cols = 180, rows = 40): Promise<void> {
+  if (activeSessions.has(sessionId)) return;
   const worker = await forkWorker();
+  rejectCancelledLifecycle(sessionId, worker);
   const active = wireWorker(sessionId, worker, projectPath);
   active.cols = cols;
+  active.rows = rows;
   active.task = 'Terminal';
   const creator = getDb().prepare('SELECT created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as { created_by_user_id: string | null } | undefined;
 
@@ -1482,8 +1950,9 @@ export async function spawnTerminal(sessionId: string, projectPath: string, cols
     rows,
     useTmux: config.useTmux,
     useDtach: config.useDtach,
-    inaccessiblePaths: creator?.created_by_user_id ? inaccessibleProjectPaths(creator.created_by_user_id) : [],
+    ...workerSandboxPolicy(creator?.created_by_user_id),
   });
+  await active.lifecycleReady;
 
   startTerminalCliMonitor(sessionId, projectPath);
 
@@ -1494,12 +1963,23 @@ export async function spawnTerminal(sessionId: string, projectPath: string, cols
   });
 }
 
-export async function spawnAgent(sessionId: string, projectPath: string, task: string, agentType: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
+export function spawnTerminal(sessionId: string, projectPath: string, cols = 180, rows = 40): Promise<void> {
+  return runSessionLifecycle(
+    sessionId,
+    () => spawnTerminalUnlocked(sessionId, projectPath, cols, rows),
+    () => undefined,
+  );
+}
+
+async function spawnAgentUnlocked(sessionId: string, projectPath: string, task: string, agentType: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
+  if (activeSessions.has(sessionId)) return;
   const preSpawnFiles = cliType === 'claude' ? snapshotClaudeSessionFiles(projectPath) : undefined;
 
   const worker = await forkWorker();
+  rejectCancelledLifecycle(sessionId, worker);
   const active = wireWorker(sessionId, worker, projectPath, preSpawnFiles);
   active.cols = cols;
+  active.rows = rows;
   active.task = `Agent (${agentType}): ${task}`;
   active.cliType = cliType;
 
@@ -1532,8 +2012,9 @@ export async function spawnAgent(sessionId: string, projectPath: string, task: s
     cliType,
     assignSessionId,
     codexBindingPath: bindingPath,
-    inaccessiblePaths: creator?.created_by_user_id ? inaccessibleProjectPaths(creator.created_by_user_id) : [],
+    ...workerSandboxPolicy(creator?.created_by_user_id),
   });
+  await active.lifecycleReady;
 
   if (cliType === 'codex') watchCodexSessionBinding(sessionId);
 
@@ -1546,12 +2027,21 @@ export async function spawnAgent(sessionId: string, projectPath: string, task: s
   pushSystemEvent(`[AgentManager] Agent ${agentType} session ${sessionId} started: ${task.slice(0, 60)}`);
 }
 
+export function spawnAgent(sessionId: string, projectPath: string, task: string, agentType: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
+  return runSessionLifecycle(
+    sessionId,
+    () => spawnAgentUnlocked(sessionId, projectPath, task, agentType, cols, rows, cliType),
+    () => undefined,
+  );
+}
+
 /**
  * Reconnect to a detached session (tmux or dtach) after a server restart.
  * Forks a new worker process that attaches to the surviving session.
  */
-export async function reconnectSession(sessionId: string, opts?: { skipPipePaneReplay?: boolean }): Promise<boolean> {
+async function reconnectSessionUnlocked(sessionId: string, opts?: { skipPipePaneReplay?: boolean }): Promise<boolean> {
   const t0 = Date.now();
+  await waitForSessionReplayFinalization(sessionId);
   if (activeSessions.has(sessionId)) return false;
 
   const db = getDb();
@@ -1571,6 +2061,7 @@ export async function reconnectSession(sessionId: string, opts?: { skipPipePaneR
   try {
     const t1 = Date.now();
     const worker = await forkWorker();
+    rejectCancelledLifecycle(sessionId, worker);
     const forkTime = Date.now() - t1;
     tlog(`[RECONNECT] ${sessionId}: fork=${forkTime}ms`);
 
@@ -1578,6 +2069,7 @@ export async function reconnectSession(sessionId: string, opts?: { skipPipePaneR
     const active = wireWorker(sessionId, worker, project?.path);
     tlog(`[RECONNECT] ${sessionId}: wireWorker=${Date.now() - t2}ms`);
     active.cols = session.terminal_cols || 120;
+    active.rows = session.terminal_rows || 40;
     active.task = session.task || '';
     active.cliType = ((session as any).cli_type === 'codex' ? 'codex' : 'claude') as 'claude' | 'codex';
 
@@ -1590,10 +2082,11 @@ export async function reconnectSession(sessionId: string, opts?: { skipPipePaneR
       type: 'reconnect',
       sessionId,
       cols: session.terminal_cols || 120,
-      rows: 40,
+      rows: session.terminal_rows || 40,
       useTmux: config.useTmux,
       useDtach: config.useDtach,
     });
+    await active.lifecycleReady;
 
     if (session.task === 'Terminal' && project?.path) {
       startTerminalCliMonitor(sessionId, project.path);
@@ -1618,7 +2111,7 @@ export async function reconnectSession(sessionId: string, opts?: { skipPipePaneR
         const serialized = await serializeSessionOutput(
           sessionId,
           session.terminal_cols || 120,
-          40,
+          session.terminal_rows || 40,
         );
         if (serialized) {
           active.replayBuffer.push(serialized);
@@ -1666,6 +2159,14 @@ export async function reconnectSession(sessionId: string, opts?: { skipPipePaneR
   }
 }
 
+export function reconnectSession(sessionId: string, opts?: { skipPipePaneReplay?: boolean }): Promise<boolean> {
+  return runSessionLifecycle(
+    sessionId,
+    () => reconnectSessionUnlocked(sessionId, opts),
+    () => isSessionActive(sessionId),
+  );
+}
+
 /* ================================================================
    Terminal attachment
    ================================================================ */
@@ -1673,7 +2174,7 @@ export async function reconnectSession(sessionId: string, opts?: { skipPipePaneR
 export function attachTerminal(sessionId: string, ws: WebSocket, options?: { skipReplay?: boolean; skipSubscribe?: boolean }): boolean {
   tlog(`[ATTACH] ${sessionId}: start (active=${activeSessions.has(sessionId)})`);
   const active = activeSessions.get(sessionId);
-  if (!active) return false;
+  if (!active?.businessReady || ws.readyState !== 1) return false;
 
   if (!options?.skipSubscribe) {
     active.subscribers.add(ws);
@@ -1717,7 +2218,7 @@ export function sendReplay(sessionId: string, ws: WebSocket, preferCapture = fal
       // Capture failed — fall back to buffer replay
       if (active.replayBuffer.length > 0) {
         const data = '\x1b[H\x1b[2J\x1b[3J' + active.replayBuffer.join('');
-        try { ws.send(JSON.stringify({ type: 'output', sessionId, data })); } catch {}
+        sendTerminalOutput(ws, sessionId, data);
       }
     });
     return;
@@ -1727,9 +2228,7 @@ export function sendReplay(sessionId: string, ws: WebSocket, preferCapture = fal
     // Fast path: replay from in-memory buffer (instant, no tmux round-trip)
     const data = '\x1b[H\x1b[2J\x1b[3J' + active.replayBuffer.join('');
     tlog(`[REPLAY] ${sessionId}: from buffer (${active.replayBytes} bytes)`);
-    try {
-      ws.send(JSON.stringify({ type: 'output', sessionId, data }));
-    } catch { /* ws closed */ }
+    sendTerminalOutput(ws, sessionId, data);
     return;
   }
 
@@ -1768,13 +2267,7 @@ export function requestCapture(sessionId: string, ws: WebSocket): Promise<void> 
   const cached = captureCache.get(sessionId);
   if (cached && (Date.now() - cached.ts) < CAPTURE_CACHE_TTL) {
     tlog(`[CAPTURE] ${sessionId}: from cache (${cached.data.length} bytes)`);
-    try {
-      ws.send(JSON.stringify({
-        type: 'output',
-        sessionId,
-        data: '\x1b[H\x1b[2J\x1b[3J' + cached.data,
-      }));
-    } catch { /* ws may have closed */ }
+    sendTerminalOutput(ws, sessionId, '\x1b[H\x1b[2J\x1b[3J' + cached.data);
     return Promise.resolve();
   }
 
@@ -1827,13 +2320,7 @@ export function requestCapture(sessionId: string, ws: WebSocket): Promise<void> 
             active.replayBytes = restored.length;
           }
 
-          try {
-            ws.send(JSON.stringify({
-              type: 'output',
-              sessionId,
-              data: '\x1b[H\x1b[2J\x1b[3J' + restored,
-            }));
-          } catch { /* ws may have closed */ }
+          sendTerminalOutput(ws, sessionId, '\x1b[H\x1b[2J\x1b[3J' + restored);
         }
       };
       finalizeCapture().catch((err) => {
@@ -1847,43 +2334,69 @@ export function requestCapture(sessionId: string, ws: WebSocket): Promise<void> 
 
 export function writeToSession(sessionId: string, data: string, bracketedPaste?: boolean): boolean {
   const active = activeSessions.get(sessionId);
-  if (!active) return false;
+  if (!active || typeof data !== 'string') return false;
   // Send input to the worker process via IPC
   active.worker.send({ type: 'input', data, bracketedPaste });
   return true;
 }
 
+export const TERMINAL_DIMENSIONS = {
+  minCols: 2,
+  maxCols: 1000,
+  minRows: 1,
+  maxRows: 500,
+} as const;
+
+export function isValidTerminalDimensions(cols: unknown, rows: unknown): cols is number {
+  return Number.isInteger(cols)
+    && Number.isInteger(rows)
+    && (cols as number) >= TERMINAL_DIMENSIONS.minCols
+    && (cols as number) <= TERMINAL_DIMENSIONS.maxCols
+    && (rows as number) >= TERMINAL_DIMENSIONS.minRows
+    && (rows as number) <= TERMINAL_DIMENSIONS.maxRows;
+}
+
 export function resizeSession(sessionId: string, cols: number, rows: number): boolean {
   const active = activeSessions.get(sessionId);
-  if (!active) return false;
+  if (!active || !isValidTerminalDimensions(cols, rows)) return false;
+
+  // ResizeObserver and reconnect code frequently repeat the current dimensions.
+  // A no-op must not emit SIGWINCH, append replay markers, or write SQLite.
+  if (active.cols === cols && active.rows === rows) return true;
 
   // Send resize to the worker process via IPC
   active.worker.send({ type: 'resize', cols, rows });
 
   active.cols = cols;
+  active.rows = rows;
 
   // Store resize event in the PTY output stream
   active.seq++;
   queuePtyInsert(sessionId, active.seq, `${RESIZE_MARKER}${cols},${rows}`);
 
-  // Persist last known cols
+  // Persist last known dimensions
   try {
     const db = getDb();
-    db.prepare('UPDATE sessions SET terminal_cols = ? WHERE id = ?').run(cols, sessionId);
+    db.prepare('UPDATE sessions SET terminal_cols = ?, terminal_rows = ? WHERE id = ?').run(cols, rows, sessionId);
   } catch {}
   return true;
 }
 
-export function getSessionCols(sessionId: string): number {
+export function getSessionDimensions(sessionId: string): { cols: number; rows: number } {
   const active = activeSessions.get(sessionId);
-  if (active) return active.cols;
+  if (active) return { cols: active.cols, rows: active.rows };
   try {
-    const db = getDb();
-    const row = db.prepare('SELECT terminal_cols FROM sessions WHERE id = ?').get(sessionId) as { terminal_cols: number | null } | undefined;
-    return row?.terminal_cols || 250;
+    const row = getDb().prepare(
+      'SELECT terminal_cols, terminal_rows FROM sessions WHERE id = ?',
+    ).get(sessionId) as { terminal_cols: number | null; terminal_rows: number | null } | undefined;
+    return { cols: row?.terminal_cols || 250, rows: row?.terminal_rows || 40 };
   } catch {
-    return 250;
+    return { cols: 250, rows: 40 };
   }
+}
+
+export function getSessionCols(sessionId: string): number {
+  return getSessionDimensions(sessionId).cols;
 }
 
 /* ================================================================
@@ -1934,7 +2447,11 @@ export async function killSession(sessionId: string): Promise<boolean> {
   console.log(`[KILL] Killing session ${sessionId} (active=${!!active})`);
   // A pending REST-created session may not have connected its first websocket
   // yet. Remove its deferred spawn so it cannot start after being cancelled.
-  pendingSpawns.delete(sessionId);
+  const wasPending = pendingSpawns.delete(sessionId);
+  if (wasPending || sessionLifecyclePromises.has(sessionId)) {
+    cancelledSessionLifecycles.add(sessionId);
+  }
+  if (!active) notifySessionLifecycleListeners(sessionId, false);
 
   // 1. Notify all subscribers of termination
   for (const ws of active?.subscribers ?? []) {
@@ -1943,26 +2460,14 @@ export async function killSession(sessionId: string): Promise<boolean> {
     } catch { /* ignore */ }
   }
 
-  // 2. Run SONA session-end hook before killing (consolidates learning data)
-  try {
-    const sess = getDb().prepare('SELECT project_id FROM sessions WHERE id = ?').get(sessionId) as { project_id: string | null } | undefined;
-    if (sess?.project_id) {
-      const proj = getDb().prepare('SELECT path FROM projects WHERE id = ?').get(sess.project_id) as { path: string } | undefined;
-      const hookHandler = proj?.path ? join(proj.path, '.claude', 'helpers', 'hook-handler.cjs') : null;
-      if (hookHandler && existsSync(hookHandler)) {
-        await execFileAsync('node', [hookHandler, 'session-end'], {
-          cwd: proj!.path, timeout: 5000,
-        }).catch(() => { /* non-fatal — don't block kill */ });
-      }
-    }
-  } catch { /* ignore */ }
-
-  // 3. Delete pty_output immediately — no point keeping replay data for a killed session
+  // 2. Discard any not-yet-flushed batch before deleting durable replay so the
+  // scheduled flush cannot resurrect output for a cancelled session.
+  discardPendingPtyOutput(sessionId);
   try {
     getDb().prepare('DELETE FROM pty_output WHERE session_id = ?').run(sessionId);
   } catch { /* ignore */ }
 
-  // 4. Tell the worker to kill everything (non-blocking from our perspective)
+  // 3. Tell the worker to kill everything (non-blocking from our perspective)
   if (active) {
     try {
       active.worker.send({ type: 'kill' });
@@ -1976,11 +2481,12 @@ export async function killSession(sessionId: string): Promise<boolean> {
     }, 2000);
 
     activeSessions.delete(sessionId);
+    clearWebSocketOutput(active);
     stopTerminalCliMonitor(sessionId);
     removeTracker(sessionId);
   }
 
-  // 5. Kill dtach/adopted external processes, including released sessions
+  // 4. Kill dtach/adopted external processes, including released sessions
   // that no longer have an in-memory worker.
   const externalSocket = active?.externalSocket || getSessionSocketPath(sessionId);
   if (externalSocket) {
@@ -1999,7 +2505,7 @@ export async function killSession(sessionId: string): Promise<boolean> {
     }).catch(() => { /* fuser failed */ });
   }
 
-  // 6. Fallback: kill the durable tmux session and DB PID when there is no
+  // 5. Fallback: kill the durable tmux session and DB PID when there is no
   // active worker (e.g. server restarted or the session was popped out).
   if (!active) {
     if (config.useTmux && await tmuxExistsAsync(sessionId)) {
@@ -2062,6 +2568,7 @@ export function releaseSession(sessionId: string): boolean {
   }
 
   activeSessions.delete(sessionId);
+  clearWebSocketOutput(active);
   stopTerminalCliMonitor(sessionId);
   removeTracker(sessionId);
 
@@ -2120,7 +2627,7 @@ export function listSessionsForUser(userId: string, status?: string): Session[] 
 }
 
 export function isSessionActive(sessionId: string): boolean {
-  return activeSessions.has(sessionId);
+  return activeSessions.get(sessionId)?.businessReady === true;
 }
 
 export function getActiveSession(sessionId: string): ActiveSession | undefined {
@@ -2182,22 +2689,35 @@ export function getSessionTmuxServer(sessionId: string): string {
  */
 export function killAllSessions(): void {
   const db = getDb();
+  flushPendingPtyOutput();
   for (const [id, active] of activeSessions) {
-    // Kill the worker process only — leave tmux/dtach alive for reconnect.
-    // Do NOT send { type: 'kill' } — that tells the worker to kill tmux too.
-    try {
-      active.worker.kill('SIGKILL');
-    } catch { /* ignore */ }
-
-    // Mark as detached so autoReconnectDetachedSessions picks them up on next startup
-    try {
-      db.prepare(`
-        UPDATE sessions SET status = 'detached', updated_at = datetime('now')
-        WHERE id = ? AND status IN ('running', 'pending')
-      `).run(id);
-    } catch { /* DB might already be closed */ }
+    const durable = shouldDetachSessionOnShutdown(config.useTmux, config.useDtach, active.externalSocket);
+    if (durable) {
+      // Stop only our attach worker; the tmux/dtach wrapper survives restart.
+      try { active.worker.kill('SIGKILL'); } catch { /* worker already gone */ }
+      try {
+        db.prepare(`
+          UPDATE sessions SET status = 'detached', updated_at = datetime('now')
+          WHERE id = ? AND status IN ('pending', 'launching', 'running', 'detached', 'released')
+        `).run(id);
+      } catch { /* DB might already be closed */ }
+    } else {
+      // A direct PTY has nothing durable to reconnect to. Ask the worker to
+      // kill its process tree and mark the row ended instead of stranding it.
+      try { active.worker.send({ type: 'kill' }); } catch {
+        try { active.worker.kill('SIGTERM'); } catch { /* worker already gone */ }
+      }
+      try {
+        db.prepare(`
+          UPDATE sessions SET status = 'failed', exit_code = -1,
+            completed_at = datetime('now'), updated_at = datetime('now')
+          WHERE id = ? AND status IN ('pending', 'launching', 'running', 'detached', 'released')
+        `).run(id);
+      } catch { /* DB might already be closed */ }
+    }
 
     activeSessions.delete(id);
+    clearWebSocketOutput(active);
     stopTerminalCliMonitor(id);
   }
 }
@@ -2436,11 +2956,23 @@ export function startPendingSessionWatchdog(): void {
       for (const { id } of stale) {
         // Clean up any pending spawn record
         pendingSpawns.delete(id);
+        notifySessionLifecycleListeners(id, false);
         db.prepare(`
           UPDATE sessions SET status = 'failed', exit_code = -1,
             completed_at = datetime('now'), updated_at = datetime('now')
           WHERE id = ? AND status = 'pending'
         `).run(id);
+        const active = activeSessions.get(id);
+        if (active) {
+          for (const ws of active.subscribers) {
+            try { ws.send(JSON.stringify({ type: 'error', message: 'Session spawn timed out' })); } catch { /* closed */ }
+          }
+          try { active.worker.send({ type: 'kill' }); } catch { /* worker already gone */ }
+          activeSessions.delete(id);
+          clearWebSocketOutput(active);
+          removeTracker(id);
+          stopTerminalCliMonitor(id);
+        }
         console.log(`[WATCHDOG] Auto-failed stale pending session ${id}`);
       }
     } catch { /* non-fatal */ }
@@ -2501,9 +3033,11 @@ export async function autoReconnectDetachedSessions(): Promise<void> {
 /** Resume a crashed session by launching the CLI directly on its exact native
  * conversation. The AgentManager session id stays unchanged, so every project
  * tab continues to point at the same durable row before and after recovery. */
-export async function resumeCrashedSession(staleSession: Session, projectPath: string, skipCircuitBreaker = false): Promise<void> {
+async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: string, skipCircuitBreaker = false): Promise<void> {
   const db = getDb();
   const sessionId = staleSession.id;
+  await waitForSessionReplayFinalization(sessionId);
+  if (activeSessions.has(sessionId)) return;
   const sessionCliType = staleSession.cli_type === 'codex' ? 'codex' as const : 'claude' as const;
   const nativeSessionId = nativeConversationId(staleSession);
   if (!nativeSessionId) throw new Error(`No ${sessionCliType} conversation id is stored for ${sessionId}`);
@@ -2529,7 +3063,10 @@ export async function resumeCrashedSession(staleSession: Session, projectPath: s
 
   const preSpawnFiles = sessionCliType === 'claude' ? snapshotClaudeSessionFiles(projectPath) : undefined;
   const worker = await forkWorker();
+  rejectCancelledLifecycle(sessionId, worker);
   const active = wireWorker(sessionId, worker, projectPath, preSpawnFiles);
+  active.cols = staleSession.terminal_cols || 120;
+  active.rows = staleSession.terminal_rows || 40;
 
   getOrCreateTracker(sessionId);
 
@@ -2550,16 +3087,17 @@ export async function resumeCrashedSession(staleSession: Session, projectPath: s
     projectPath,
     task,
     mode: 'session',
-    cols: 120,
-    rows: 40,
+    cols: active.cols,
+    rows: active.rows,
     useTmux: config.useTmux,
     useDtach: config.useDtach,
     sessionCommand,
     cliType: sessionCliType,
     resumeSessionId: nativeSessionId,
     codexBindingPath: sessionCliType === 'codex' ? codexBindingPath(sessionId) : undefined,
-    inaccessiblePaths: staleSession.created_by_user_id ? inaccessibleProjectPaths(staleSession.created_by_user_id) : [],
+    ...workerSandboxPolicy(staleSession.created_by_user_id),
   });
+  await active.lifecycleReady;
 
   if (task === 'Terminal') startTerminalCliMonitor(sessionId, projectPath);
 
@@ -2572,6 +3110,14 @@ export async function resumeCrashedSession(staleSession: Session, projectPath: s
   });
 
   pushSystemEvent(`[AgentManager] Session ${sessionId} resumed after crash: ${task.slice(0, 60)}`);
+}
+
+export function resumeCrashedSession(staleSession: Session, projectPath: string, skipCircuitBreaker = false): Promise<void> {
+  return runSessionLifecycle(
+    staleSession.id,
+    () => resumeCrashedSessionUnlocked(staleSession, projectPath, skipCircuitBreaker),
+    () => undefined,
+  );
 }
 
 /** User-initiated resume of an ended Claude or Codex conversation. */
@@ -2598,12 +3144,13 @@ export async function resumeSessionById(sessionId: string, skipCircuitBreaker = 
  * detached. Concurrent browser connections share one recovery attempt.
  */
 export function recoverSessionOnAttach(sessionId: string): Promise<boolean> {
-  if (activeSessions.has(sessionId)) return Promise.resolve(true);
+  if (isSessionActive(sessionId)) return Promise.resolve(true);
   const existing = sessionRecoveryPromises.get(sessionId);
   if (existing) return existing;
 
   const recovery = (async () => {
-    if (activeSessions.has(sessionId)) return true;
+    await waitForSessionReplayFinalization(sessionId);
+    if (isSessionActive(sessionId)) return true;
     const db = getDb();
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as Session | undefined;
     if (
@@ -2624,7 +3171,7 @@ export function recoverSessionOnAttach(sessionId: string): Promise<boolean> {
     }
 
     await resumeCrashedSession(session, project.path);
-    return activeSessions.has(sessionId);
+    return isSessionActive(sessionId);
   })().catch((err) => {
     console.error(`[RECOVER] Failed to restore persisted session ${sessionId}:`, err);
     return false;
@@ -2654,6 +3201,7 @@ export async function resumeClaudeSession(projectPath: string, projectId: string
 
   const preSpawnFiles = snapshotClaudeSessionFiles(projectPath);
   const worker = await forkWorker();
+  rejectCancelledLifecycle(id, worker);
   const active = wireWorker(id, worker, projectPath, preSpawnFiles);
   active.cliType = 'claude';
   getOrCreateTracker(id);
@@ -2675,8 +3223,9 @@ export async function resumeClaudeSession(projectPath: string, projectId: string
     sessionCommand: claudeCmd,
     resumeSessionId: claudeUuid,
     cliType: 'claude',
-    inaccessiblePaths: createdByUserId ? inaccessibleProjectPaths(createdByUserId) : [],
+    ...workerSandboxPolicy(createdByUserId),
   });
+  await active.lifecycleReady;
 
   insertEvent({ session_id: id, type: 'session_resume', data: { task, projectPath, claudeSessionId: claudeUuid, via: '--resume' } });
   pushSystemEvent(`[AgentManager] Resumed Claude session ${claudeUuid} as ${id}`);
@@ -2692,7 +3241,7 @@ export function purgeSessionRecord(sessionId: string): { ok: boolean; error?: st
   const db = getDb();
   const session = getSession(sessionId);
   if (!session) return { ok: false, error: 'Session not found' };
-  if (activeSessions.has(sessionId) || ['running', 'detached', 'pending'].includes(session.status)) {
+  if (activeSessions.has(sessionId) || sessionStatusMayHaveProcess(session.status)) {
     return { ok: false, error: 'Stop the session before deleting it' };
   }
 
@@ -2971,7 +3520,8 @@ async function readoptReleasedSession(tmuxName: string, _projectId?: string): Pr
 /**
  * Actually spawn the adopt worker — called when the browser sends its real dimensions.
  */
-export async function spawnAdopt(sessionId: string, socketPath: string, projectPath: string, task: string, cols: number, rows: number): Promise<void> {
+async function spawnAdoptUnlocked(sessionId: string, socketPath: string, projectPath: string, task: string, cols: number, rows: number): Promise<void> {
+  if (activeSessions.has(sessionId)) return;
   // Detach all existing dtach -a clients for this socket BEFORE we attach.
   // This disconnects the user's real terminal so it doesn't fight with AgentManager.
   // We use pkill to SIGHUP dtach clients matching the socket path.
@@ -2996,10 +3546,12 @@ export async function spawnAdopt(sessionId: string, socketPath: string, projectP
   }
 
   const worker = await forkWorker();
+  rejectCancelledLifecycle(sessionId, worker);
   const active = wireWorker(sessionId, worker, projectPath);
   active.task = task;
   active.externalSocket = socketPath;
   active.cols = cols;
+  active.rows = rows;
 
   worker.send({
     type: 'adopt',
@@ -3010,6 +3562,7 @@ export async function spawnAdopt(sessionId: string, socketPath: string, projectP
     rows,
     useTmux: config.useTmux,
   });
+  await active.lifecycleReady;
 
   insertEvent({
     session_id: sessionId,
@@ -3018,6 +3571,14 @@ export async function spawnAdopt(sessionId: string, socketPath: string, projectP
   });
 
   pushSystemEvent(`[AgentManager] Adopted external session ${sessionId}: ${task.slice(0, 60)}`);
+}
+
+export function spawnAdopt(sessionId: string, socketPath: string, projectPath: string, task: string, cols: number, rows: number): Promise<void> {
+  return runSessionLifecycle(
+    sessionId,
+    () => spawnAdoptUnlocked(sessionId, socketPath, projectPath, task, cols, rows),
+    () => undefined,
+  );
 }
 
 function killOrphanedProcess(pid: number, sessionId: string): void {

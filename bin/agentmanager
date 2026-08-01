@@ -4,8 +4,17 @@
 
 set -euo pipefail
 
-# Resolve install directory (follow symlinks to find the real script location)
-REAL_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
+# Resolve install directory without GNU-only `readlink -f` (absent on stock macOS).
+REAL_SCRIPT="${BASH_SOURCE[0]}"
+while [ -L "$REAL_SCRIPT" ]; do
+  LINK_DIR="$(cd "$(dirname "$REAL_SCRIPT")" && pwd -P)"
+  LINK_TARGET="$(readlink "$REAL_SCRIPT")"
+  case "$LINK_TARGET" in
+    /*) REAL_SCRIPT="$LINK_TARGET" ;;
+    *) REAL_SCRIPT="$LINK_DIR/$LINK_TARGET" ;;
+  esac
+done
+REAL_SCRIPT="$(cd "$(dirname "$REAL_SCRIPT")" && pwd -P)/$(basename "$REAL_SCRIPT")"
 SCRIPT_DIR="$(cd "$(dirname "$REAL_SCRIPT")" && pwd)"
 AGENTMANAGER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -416,26 +425,15 @@ cmd_update() {
     esac
   fi
 
-  # Run the local update script (git pull + rebuild)
-  local update_script="$AGENTMANAGER_DIR/scripts/update.sh"
-  if [ -f "$update_script" ]; then
-    export AGENTMANAGER_DIR="$AGENTMANAGER_DIR"
-    bash "$update_script"
-    local exit_code=$?
-
-    if [ $exit_code -eq 0 ]; then
-      log_ok "Update complete!"
-      # Restart if running
-      if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-        log_info "Restarting..."
-        cmd_restart
-      fi
-    else
-      log_error "Update failed (exit code $exit_code)"
-    fi
+  # Release archives intentionally contain no .git directory. Reuse the
+  # verified archive installer instead of a git pull/rebuild path.
+  local installer="$AGENTMANAGER_DIR/scripts/install.sh"
+  if [ -f "$installer" ]; then
+    AGENTMANAGER_INSTALL_DIR="$AGENTMANAGER_DIR" \
+      AGENTMANAGER_VERSION="$latest_version" \
+      bash "$installer"
   else
-    log_error "Update script not found: $update_script"
-    log_info "You can update manually: cd $AGENTMANAGER_DIR && git pull && npm run build"
+    log_error "Installer not found: $installer"
     exit 1
   fi
 }

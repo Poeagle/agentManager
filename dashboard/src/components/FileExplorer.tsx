@@ -3,16 +3,15 @@ import { Folder, FolderOpen, File, ChevronRight, ChevronDown, ChevronUp, Loader2
 import { api, type FileEntry } from '../lib/api';
 import { isExportTransferActive, startExportTransfer, useExportTransferStore } from '../lib/export-transfer';
 import { ConfirmModal } from './ConfirmModal';
+import { SplitHalf, OverviewRuler } from './DiffComponents';
 import {
   type HunkInfo,
   parseHunks,
   parseSplitRows,
-  SplitHalf,
-  OverviewRuler,
   MONO,
   ROW_H,
   HUNK_HIGHLIGHT,
-} from './DiffComponents';
+} from '../lib/diff-model';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
@@ -26,14 +25,54 @@ import { cpp } from '@codemirror/lang-cpp';
 import { oneDark } from '@codemirror/theme-one-dark';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { setEditorDirty } from '../lib/unsaved-files';
+
+export interface FileRefreshRequest {
+  path: string;
+  revision: number;
+}
 
 interface FileExplorerProps {
   rootPath: string;
   instanceId?: string; // unique ID for localStorage persistence
-  refreshFilePath?: string | null; // when set, reload this file if it's open and not dirty
+  active?: boolean; // only the active explorer may handle global shortcuts
+  refreshFileRequest?: FileRefreshRequest | null; // reload matching clean tabs whenever revision changes
   openFileRequest?: { path: string; key: number } | null; // when key changes, open & reveal this file
   onFileSaved?: (filePath: string) => void; // notify parent when a file is saved
   readOnly?: boolean; // when true, disable all writes (save/rename/delete/paste) — view-only
+}
+
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+async function restoreExpandedNodes(
+  nodes: TreeNode[],
+  expandedPaths: Set<string>,
+  showHidden: boolean,
+): Promise<TreeNode[]> {
+  return Promise.all(nodes.map(async (node) => {
+    if (node.entry.type !== 'directory' || !expandedPaths.has(node.fullPath)) return node;
+
+    try {
+      const data = await api.files.list(node.fullPath, showHidden);
+      const children: TreeNode[] = data.files.map((file) => ({
+        entry: file,
+        fullPath: `${node.fullPath}/${file.name}`,
+        children: undefined,
+        loaded: false,
+        expanded: false,
+      }));
+      return {
+        ...node,
+        children: await restoreExpandedNodes(children, expandedPaths, showHidden),
+        loaded: true,
+        expanded: true,
+      };
+    } catch {
+      return node;
+    }
+  }));
 }
 
 interface TreeNode {
@@ -159,14 +198,18 @@ function loadExplorerState(instanceId: string): PersistedExplorerState | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed && Array.isArray(parsed.expandedPaths)) return parsed;
-  } catch {}
+  } catch {
+    // Ignore malformed or unavailable persisted explorer state.
+  }
   return null;
 }
 
 function saveExplorerState(instanceId: string, state: PersistedExplorerState) {
   try {
     localStorage.setItem(explorerStorageKey(instanceId), JSON.stringify(state));
-  } catch {}
+  } catch {
+    // Explorer persistence is best effort.
+  }
 }
 
 // Collect all expanded paths from the tree
@@ -290,12 +333,10 @@ function TreeItem({
   const isRenaming = renamingPath === node.fullPath;
   const isCut = cutPath === node.fullPath;
   const [loading, setLoading] = useState(false);
-  const [renameValue, setRenameValue] = useState(node.entry.name);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (isRenaming) {
-      setRenameValue(node.entry.name);
       // Focus input and select the basename (excluding extension) for files
       setTimeout(() => {
         const el = renameInputRef.current;
@@ -327,7 +368,7 @@ function TreeItem({
   }
 
   function commitRename() {
-    const trimmed = renameValue.trim();
+    const trimmed = renameInputRef.current?.value.trim() ?? '';
     if (!trimmed || trimmed === node.entry.name) {
       onRenameCancel();
       return;
@@ -375,8 +416,7 @@ function TreeItem({
         {isRenaming ? (
           <input
             ref={renameInputRef}
-            value={renameValue}
-            onChange={(e) => setRenameValue(e.target.value)}
+            defaultValue={node.entry.name}
             onClick={(e) => e.stopPropagation()}
             onDoubleClick={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
@@ -388,6 +428,7 @@ function TreeItem({
                 commitRename();
               } else if (e.key === 'Escape') {
                 e.preventDefault();
+                e.currentTarget.value = node.entry.name;
                 onRenameCancel();
               }
             }}
@@ -427,7 +468,7 @@ function TreeItem({
   );
 }
 
-export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRequest, onFileSaved, readOnly = false }: FileExplorerProps) {
+export function FileExplorer({ rootPath, instanceId, active = true, refreshFileRequest, openFileRequest, onFileSaved, readOnly = false }: FileExplorerProps) {
   // Resolve initial path from persisted state or prop
   const [initialState] = useState(() => instanceId ? loadExplorerState(instanceId) : null);
   const [currentPath, setCurrentPath] = useState(initialState?.currentPath ?? rootPath);
@@ -492,6 +533,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const saveInFlightRef = useRef(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   // Context menu / file ops state
@@ -514,9 +556,9 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
   const isMarkdown = activeTab ? isMarkdownFile(activeTab.extension) : false;
 
   // Helper to update a specific tab
-  function updateTab(path: string, updates: Partial<FileTab>) {
+  const updateTab = useCallback((path: string, updates: Partial<FileTab>) => {
     setTabs(prev => prev.map(t => t.path === path ? { ...t, ...updates } : t));
-  }
+  }, []);
 
   // Reveal a file in the tree: expand ancestor folders and scroll to it
   async function revealFileInTree(filePath: string) {
@@ -581,15 +623,22 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
     if (!activeTabPath || restoringRef.current || revealingRef.current) return;
     revealingRef.current = true;
     revealFileInTree(activeTabPath).finally(() => { revealingRef.current = false; });
+    // revealFileInTree intentionally follows the selected path; its other
+    // values only affect how that one reveal is performed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTabPath]);
 
   // Open a file as a preview (single-click) or pinned (double-click)
+  const openFileRequestSequence = useRef(0);
   async function openFile(path: string, pin: boolean) {
+    const requestSequence = ++openFileRequestSequence.current;
     // If already open, just switch to it (and pin if double-click)
     const existing = tabs.find(t => t.path === path);
     if (existing) {
       if (pin) updateTab(path, { pinned: true });
       setActiveTabPath(path);
+      setFileLoading(false);
+      setFileError(null);
       return;
     }
 
@@ -597,6 +646,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
     setFileError(null);
     try {
       const data = await api.files.read(path);
+      if (requestSequence !== openFileRequestSequence.current) return;
       const newTab: FileTab = {
         path: data.path,
         name: path.split('/').pop() || path,
@@ -627,10 +677,11 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
         return [...prev, newTab];
       });
       setActiveTabPath(data.path);
-    } catch (err: any) {
-      setFileError(err.message || 'Failed to read file');
+    } catch (error) {
+      if (requestSequence !== openFileRequestSequence.current) return;
+      setFileError(getErrorMessage(error, 'Failed to read file'));
     } finally {
-      setFileLoading(false);
+      if (requestSequence === openFileRequestSequence.current) setFileLoading(false);
     }
   }
 
@@ -644,6 +695,9 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
 
   function closeTab(path: string) {
     const idx = tabs.findIndex(t => t.path === path);
+    const closing = tabs[idx];
+    if (closing && closing.editedContent !== closing.content
+      && !window.confirm(`Discard unsaved changes to ${closing.name}?`)) return;
     setTabs(prev => prev.filter(t => t.path !== path));
     if (activeTabPath === path) {
       const remaining = tabs.filter(t => t.path !== path);
@@ -711,8 +765,8 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
         appliedHunks: new Map(),
       });
       setCompareHunk(0);
-    } catch (err: any) {
-      setFileError(err.message || 'Failed to compare files');
+    } catch (error) {
+      setFileError(getErrorMessage(error, 'Failed to compare files'));
     } finally {
       setFileLoading(false);
     }
@@ -743,7 +797,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
   function buildEffectiveContent(side: 'left' | 'right'): string {
     if (!compareState) return '';
     const isLeft = side === 'left';
-    let lines = (isLeft ? compareState.leftContent : compareState.rightContent).split('\n');
+    const lines = (isLeft ? compareState.leftContent : compareState.rightContent).split('\n');
 
     // Collect hunks that affect this side
     const applicableHunks: { hunk: HunkInfo; dir: 'left' | 'right' }[] = [];
@@ -781,6 +835,8 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
   async function saveCompareChanges() {
     if (readOnly) return;
     if (!compareState || compareState.appliedHunks.size === 0) return;
+    if (saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
     setSaving(true);
     setSaveMessage(null);
 
@@ -792,7 +848,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
 
       if (leftChanged) {
         const newContent = buildEffectiveContent('left');
-        await api.files.write(compareState.leftPath, newContent);
+        await api.files.write(compareState.leftPath, newContent, compareState.leftContent);
         const leftTab = tabs.find(t => t.path === compareState.leftPath);
         if (leftTab) updateTab(compareState.leftPath, { content: newContent, editedContent: newContent });
         onFileSaved?.(compareState.leftPath);
@@ -800,7 +856,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
 
       if (rightChanged) {
         const newContent = buildEffectiveContent('right');
-        await api.files.write(compareState.rightPath, newContent);
+        await api.files.write(compareState.rightPath, newContent, compareState.rightContent);
         const rightTab = tabs.find(t => t.path === compareState.rightPath);
         if (rightTab) updateTab(compareState.rightPath, { content: newContent, editedContent: newContent });
         onFileSaved?.(compareState.rightPath);
@@ -824,10 +880,11 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
         appliedHunks: new Map(),
       });
       setCompareHunk(0);
-    } catch (err: any) {
+    } catch {
       setSaveMessage('Save failed');
       setTimeout(() => setSaveMessage(null), 3000);
     } finally {
+      saveInFlightRef.current = false;
       setSaving(false);
     }
   }
@@ -835,65 +892,86 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
   // Save active tab
   const handleSave = useCallback(async () => {
     if (readOnly || !activeTab || !isDirty) return;
+    if (saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
     setSaving(true);
     setSaveMessage(null);
     try {
-      const result = await api.files.write(activeTab.path, activeTab.editedContent);
+      const result = await api.files.write(activeTab.path, activeTab.editedContent, activeTab.content);
       updateTab(activeTab.path, { content: activeTab.editedContent, size: result.size });
       setSaveMessage('Saved');
       onFileSaved?.(activeTab.path);
       setTimeout(() => setSaveMessage(null), 2000);
-    } catch (err: any) {
+    } catch {
       setSaveMessage('Save failed');
       setTimeout(() => setSaveMessage(null), 3000);
     } finally {
+      saveInFlightRef.current = false;
       setSaving(false);
     }
-  }, [activeTab, isDirty, readOnly]);
+  }, [activeTab, isDirty, onFileSaved, readOnly, updateTab]);
 
   // Ctrl+S / Cmd+S keyboard shortcut
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+      if (active && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        handleSave();
+        void handleSave();
       }
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleSave]);
+  }, [active, handleSave]);
 
   // External "open this file" request — e.g. user clicked an icon in the git panel
   const lastOpenRequestKey = useRef<number | null>(null);
   useEffect(() => {
-    if (!openFileRequest) return;
+    if (!openFileRequest || !rootLoaded) return;
     if (openFileRequest.key === lastOpenRequestKey.current) return;
     lastOpenRequestKey.current = openFileRequest.key;
-    // Defer until root has loaded so reveal can find the node
-    if (!rootLoaded) return;
-    openFile(openFileRequest.path, true);
+    void openFile(openFileRequest.path, true);
     // openFile sets activeTabPath, which the existing reveal effect picks up
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openFileRequest, rootLoaded]);
 
   // Refresh open tab when another view (e.g. git diff) saved it
-  const lastRefreshPath = useRef<string | null>(null);
+  const lastRefreshRevision = useRef<number | null>(null);
   useEffect(() => {
-    if (!refreshFilePath || refreshFilePath === lastRefreshPath.current) return;
-    lastRefreshPath.current = refreshFilePath;
+    if (!refreshFileRequest || refreshFileRequest.revision === lastRefreshRevision.current) return;
+    lastRefreshRevision.current = refreshFileRequest.revision;
+    const refreshFilePath = refreshFileRequest.path;
 
     // Find any open tab matching this path that isn't dirty
     const tab = tabs.find(t => t.path === refreshFilePath);
     if (tab && tab.editedContent === tab.content) {
+      const expectedContent = tab.content;
+      const expectedRevision = refreshFileRequest.revision;
       api.files.read(refreshFilePath).then((data) => {
-        updateTab(refreshFilePath, {
-          content: data.content,
-          editedContent: data.content,
-          size: data.size,
-        });
+        if (lastRefreshRevision.current !== expectedRevision) return;
+        setTabs((currentTabs) => currentTabs.map((currentTab) => {
+          if (currentTab.path !== refreshFilePath
+            || currentTab.content !== expectedContent
+            || currentTab.editedContent !== currentTab.content) return currentTab;
+          return {
+            ...currentTab,
+            content: data.content,
+            editedContent: data.content,
+            size: data.size,
+          };
+        }));
       }).catch(() => {});
     }
-  }, [refreshFilePath, tabs]);
+  }, [refreshFileRequest, tabs]);
+
+  const hasUnsavedTabs = useMemo(
+    () => tabs.some((tab) => tab.editedContent !== tab.content),
+    [tabs],
+  );
+  useEffect(() => {
+    if (!instanceId) return;
+    setEditorDirty(instanceId, rootPath, hasUnsavedTabs);
+    return () => setEditorDirty(instanceId, rootPath, false);
+  }, [hasUnsavedTabs, instanceId, rootPath]);
 
   // Persist explorer state on changes
   useEffect(() => {
@@ -909,132 +987,94 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
     });
   }, [instanceId, tree, activeTabPath, rootLoaded, currentPath, tabs, showHidden]);
 
-  // Load root directory and restore persisted state
-  const loadRoot = useCallback(async () => {
-    if (rootLoaded) return;
-    try {
-      const data = await api.files.list(currentPath, showHidden);
-      const savedState = instanceId ? loadExplorerState(instanceId) : null;
-      const expandedSet = new Set(savedState?.expandedPaths ?? []);
+  // Load the root from an effect. A generation guard prevents a slow response
+  // for an old path from replacing the tree after the user navigates elsewhere.
+  const rootLoadSequence = useRef(0);
+  const tabsRestoredRef = useRef(false);
+  useEffect(() => {
+    const requestSequence = ++rootLoadSequence.current;
+    let cancelled = false;
 
-      const nodes: TreeNode[] = data.files.map((f) => ({
-        entry: f,
-        fullPath: `${currentPath}/${f.name}`,
-        children: undefined,
-        loaded: false,
-        expanded: false,
-      }));
+    const load = async () => {
+      try {
+        const data = await api.files.list(currentPath, showHidden);
+        const savedState = instanceId ? loadExplorerState(instanceId) : null;
+        const expandedPaths = new Set(savedState?.expandedPaths ?? []);
+        const rootNodes: TreeNode[] = data.files.map((file) => ({
+          entry: file,
+          fullPath: `${currentPath}/${file.name}`,
+          children: undefined,
+          loaded: false,
+          expanded: false,
+        }));
+        const restoredTree = await restoreExpandedNodes(rootNodes, expandedPaths, showHidden);
 
-      setTree(nodes);
-      setRootLoaded(true);
-
-      // Restore expanded directories
-      if (savedState && expandedSet.size > 0) {
-        restoringRef.current = true;
-        await restoreExpandedPaths(nodes, expandedSet, rootPath);
-        restoringRef.current = false;
-      }
-
-      // Restore open tabs
-      if (savedState?.openTabPaths?.length) {
-        restoringRef.current = true;
-        const restoredTabs: FileTab[] = [];
-        for (const { path, pinned } of savedState.openTabPaths) {
+        let restoredTabs: FileTab[] = [];
+        if (!tabsRestoredRef.current && savedState?.openTabPaths?.length) {
+          const loadedTabs = await Promise.all(savedState.openTabPaths.map(async ({ path, pinned }) => {
+            try {
+              const fileData = await api.files.read(path);
+              return {
+                path: fileData.path,
+                name: path.split('/').pop() || path,
+                pinned,
+                content: fileData.content,
+                editedContent: fileData.content,
+                extension: fileData.extension,
+                size: fileData.size,
+                viewMode: isMarkdownFile(fileData.extension) ? 'preview' as const : 'edit' as const,
+              };
+            } catch {
+              return null;
+            }
+          }));
+          restoredTabs = loadedTabs.filter((tab): tab is FileTab => tab !== null);
+        } else if (!tabsRestoredRef.current && savedState?.selectedFile) {
           try {
-            const fileData = await api.files.read(path);
-            restoredTabs.push({
+            const fileData = await api.files.read(savedState.selectedFile);
+            restoredTabs = [{
               path: fileData.path,
-              name: path.split('/').pop() || path,
-              pinned,
+              name: savedState.selectedFile.split('/').pop() || savedState.selectedFile,
+              pinned: true,
               content: fileData.content,
               editedContent: fileData.content,
               extension: fileData.extension,
               size: fileData.size,
               viewMode: isMarkdownFile(fileData.extension) ? 'preview' : 'edit',
-            });
+            }];
           } catch {
-            // File may have been deleted — skip
+            // The legacy file may have been deleted.
           }
         }
+
+        if (cancelled || requestSequence !== rootLoadSequence.current) return;
+        restoringRef.current = true;
+        setTree(restoredTree);
         if (restoredTabs.length > 0) {
           setTabs(restoredTabs);
-          setActiveTabPath(savedState.activeTabPath ?? restoredTabs[0].path);
+          const savedActivePath = savedState?.activeTabPath;
+          setActiveTabPath(
+            savedActivePath && restoredTabs.some((tab) => tab.path === savedActivePath)
+              ? savedActivePath
+              : restoredTabs[0].path,
+          );
         }
+        tabsRestoredRef.current = true;
+        setRootLoaded(true);
         restoringRef.current = false;
-      } else if (savedState?.selectedFile) {
-        // Legacy: restore single selected file as a pinned tab
-        restoringRef.current = true;
-        try {
-          const fileData = await api.files.read(savedState.selectedFile);
-          setTabs([{
-            path: fileData.path,
-            name: savedState.selectedFile.split('/').pop() || savedState.selectedFile,
-            pinned: true,
-            content: fileData.content,
-            editedContent: fileData.content,
-            extension: fileData.extension,
-            size: fileData.size,
-            viewMode: isMarkdownFile(fileData.extension) ? 'preview' : 'edit',
-          }]);
-          setActiveTabPath(fileData.path);
-        } catch {
-          // File may have been deleted — just skip
-        }
+      } catch (error) {
+        if (cancelled || requestSequence !== rootLoadSequence.current) return;
         restoringRef.current = false;
+        setFileError(getErrorMessage(error, 'Failed to load directory'));
+        setRootLoaded(true);
       }
-    } catch (err) {
-      console.error('Failed to load root directory:', err);
-    }
-  }, [currentPath, rootLoaded, instanceId, showHidden]);
+    };
 
-  // Recursively restore expanded directories
-  async function restoreExpandedPaths(currentNodes: TreeNode[], expandedSet: Set<string>, _rootPath: string) {
-    // Find directories in current nodes that should be expanded
-    const toExpand = currentNodes.filter(
-      (n) => n.entry.type === 'directory' && expandedSet.has(n.fullPath)
-    );
-
-    for (const node of toExpand) {
-      try {
-        const data = await api.files.list(node.fullPath, showHidden);
-        const children: TreeNode[] = data.files.map((f) => ({
-          entry: f,
-          fullPath: `${node.fullPath}/${f.name}`,
-          children: undefined,
-          loaded: false,
-          expanded: false,
-        }));
-
-        // Update tree with this expanded node
-        setTree((prev) =>
-          updateNodeInTree(prev, node.fullPath, {
-            children,
-            loaded: true,
-            expanded: true,
-          })
-        );
-
-        // Recurse into children that also need expanding
-        await restoreExpandedPaths(children, expandedSet, _rootPath);
-      } catch {
-        // Skip directories that can't be read
-      }
-    }
-  }
-
-  if (!rootLoaded) {
-    loadRoot();
-  }
-
-  // Reload tree when showHidden changes
-  const prevShowHidden = useRef(showHidden);
-  useEffect(() => {
-    if (prevShowHidden.current !== showHidden) {
-      prevShowHidden.current = showHidden;
-      setTree([]);
-      setRootLoaded(false);
-    }
-  }, [showHidden]);
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentPath, instanceId, showHidden]);
 
   function navigateTo(path: string) {
     const trimmed = path.trim().replace(/\/+$/, '') || '/';
@@ -1146,8 +1186,8 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
           expanded: true,
         });
       });
-    } catch (err: any) {
-      setActionMessage({ kind: 'error', text: err.message || 'Failed to refresh directory' });
+    } catch (error) {
+      setActionMessage({ kind: 'error', text: getErrorMessage(error, 'Failed to refresh directory') });
     }
   }
 
@@ -1239,16 +1279,16 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
   async function handleOpenInFolder(path: string) {
     try {
       await api.openFolder(path);
-    } catch (err: any) {
-      setActionMessage({ kind: 'error', text: err.message || 'Failed to open folder' });
+    } catch (error) {
+      setActionMessage({ kind: 'error', text: getErrorMessage(error, 'Failed to open folder') });
     }
   }
 
   async function handleOpenInTerminal(path: string) {
     try {
       await api.openTerminal(path);
-    } catch (err: any) {
-      setActionMessage({ kind: 'error', text: err.message || 'Failed to open terminal' });
+    } catch (error) {
+      setActionMessage({ kind: 'error', text: getErrorMessage(error, 'Failed to open terminal') });
     }
   }
 
@@ -1264,8 +1304,8 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
       if (clipboard?.path === path) setClipboard(null);
       await refreshDirectory(getParentDir(path));
       setActionMessage({ kind: 'info', text: `Renamed to ${newName}` });
-    } catch (err: any) {
-      setActionMessage({ kind: 'error', text: err.message || 'Failed to rename' });
+    } catch (error) {
+      setActionMessage({ kind: 'error', text: getErrorMessage(error, 'Failed to rename') });
     }
   }
 
@@ -1282,8 +1322,8 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
       if (clipboard?.path === path) setClipboard(null);
       await refreshDirectory(getParentDir(path));
       setActionMessage({ kind: 'info', text: `Deleted ${isDir ? 'folder' : 'file'}` });
-    } catch (err: any) {
-      setActionMessage({ kind: 'error', text: err.message || 'Failed to delete' });
+    } catch (error) {
+      setActionMessage({ kind: 'error', text: getErrorMessage(error, 'Failed to delete') });
     }
   }
 
@@ -1315,17 +1355,21 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
       }
       await refreshDirectory(destDir);
       setActionMessage({ kind: 'info', text: kind === 'cut' ? 'Moved' : 'Copied' });
-    } catch (err: any) {
-      setActionMessage({ kind: 'error', text: err.message || `Failed to ${kind === 'cut' ? 'move' : 'copy'}` });
+    } catch (error) {
+      setActionMessage({ kind: 'error', text: getErrorMessage(error, `Failed to ${kind === 'cut' ? 'move' : 'copy'}`) });
     }
   }
 
-  // Build CodeMirror extensions for active tab
-  const extensions = [];
-  if (activeTab) {
-    const langExt = getLanguageExtension(activeTab.extension);
-    if (langExt) extensions.push(langExt);
-  }
+  const activeExtension = activeTab?.extension;
+  const extensions = useMemo(() => {
+    if (!activeExtension) return [];
+    const languageExtension = getLanguageExtension(activeExtension);
+    return languageExtension ? [languageExtension] : [];
+  }, [activeExtension]);
+
+  const handleEditorChange = useCallback((value: string) => {
+    if (activeTabPath) updateTab(activeTabPath, { editedContent: value });
+  }, [activeTabPath, updateTab]);
 
   return (
     <div ref={containerRef} className="h-full flex">
@@ -1363,7 +1407,11 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
           </button>
           <button
             type="button"
-            onClick={() => setShowHidden(h => !h)}
+            onClick={() => {
+              setTree([]);
+              setRootLoaded(false);
+              setShowHidden((value) => !value);
+            }}
             className="flex items-center justify-center rounded shrink-0 transition-colors hover:bg-[var(--bg-tertiary)]"
             style={{ width: 24, height: 24, color: showHidden ? 'var(--accent)' : 'var(--text-tertiary)' }}
             title={showHidden ? 'Hide dotfiles' : 'Show dotfiles'}
@@ -1633,7 +1681,7 @@ export function FileExplorer({ rootPath, instanceId, refreshFilePath, openFileRe
                 <CodeMirror
                   key={activeTab.path}
                   value={activeTab.editedContent}
-                  onChange={(value) => updateTab(activeTab.path, { editedContent: value })}
+                  onChange={handleEditorChange}
                   extensions={extensions}
                   theme={oneDark}
                   height="100%"
@@ -1898,7 +1946,6 @@ function FileCompareView({
                     num={r.leftNum}
                     text={r.leftText}
                     type={r.leftType === 'removed' ? 'normal' : r.leftType}
-                    side="left"
                     isCurrentHunk={isCurrent}
                     isEditable={false}
                   />
@@ -1911,7 +1958,6 @@ function FileCompareView({
                   num={r.leftNum}
                   text={r.leftText}
                   type={r.leftType}
-                  side="left"
                   isCurrentHunk={isCurrent}
                   isEditable={false}
                 />
@@ -2007,7 +2053,6 @@ function FileCompareView({
                     num={r.leftNum ?? r.rightNum}
                     text={r.leftType === 'removed' ? r.leftText : r.rightType === 'added' ? r.leftText : r.rightText}
                     type="normal"
-                    side="right"
                     isCurrentHunk={isCurrent}
                     isEditable={false}
                   />
@@ -2023,7 +2068,6 @@ function FileCompareView({
                   num={r.rightNum}
                   text={r.rightText}
                   type={r.rightType}
-                  side="right"
                   isCurrentHunk={isCurrent}
                   isEditable={false}
                 />

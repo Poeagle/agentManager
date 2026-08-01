@@ -89,6 +89,8 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
   useEffect(() => {
     if (data?.settings) {
       const s = data.settings;
+      // Query data is the external source that hydrates this editable form.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSessionClaudeCmd(s.session_claude_command || '');
       setSessionCodexCmd(s.session_codex_command || '');
       setAgentClaudeCmd(s.agent_claude_command || '');
@@ -308,7 +310,10 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
                       onClick={async () => {
                         try {
                           await fetch('/api/restart', { method: 'POST' });
-                        } catch {}
+                        } catch {
+                          // The server may close the connection before the response
+                          // arrives because the restart has already begun.
+                        }
                       }}
                       className="flex items-center gap-1.5 mt-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors hover:opacity-80"
                       style={{ background: 'var(--warning)', color: '#000' }}
@@ -443,64 +448,7 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
                   <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
                     Custom status bar for Claude Code showing git branch, model, context usage, cost, and session duration.
                   </p>
-                  {(() => {
-                    const { data: slData, isLoading: slLoading } = useQuery({
-                      queryKey: ['statusline'],
-                      queryFn: () => api.settings.statusline.get(),
-                    });
-                    const [slBusy, setSlBusy] = useState(false);
-                    const [slResult, setSlResult] = useState<string | null>(null);
-
-                    const handleToggle = async () => {
-                      setSlBusy(true);
-                      setSlResult(null);
-                      try {
-                        if (slData?.installed) {
-                          await api.settings.statusline.uninstall();
-                          setSlResult('Status bar removed.');
-                        } else {
-                          await api.settings.statusline.install();
-                          setSlResult('Status bar installed! It will appear on your next Claude Code interaction.');
-                        }
-                        queryClient.invalidateQueries({ queryKey: ['statusline'] });
-                      } catch (err: any) {
-                        setSlResult(`Error: ${err.message || 'Failed'}`);
-                      } finally {
-                        setSlBusy(false);
-                      }
-                    };
-
-                    return (
-                      <>
-                        <button
-                          onClick={handleToggle}
-                          disabled={slBusy || slLoading}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors hover:opacity-80"
-                          style={{
-                            background: slData?.installed ? '#ef4444' : '#06b6d4',
-                            color: '#fff',
-                            opacity: slBusy || slLoading ? 0.6 : 1,
-                          }}
-                        >
-                          {slBusy ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : slData?.installed ? (
-                            <Trash2 className="w-3 h-3" />
-                          ) : (
-                            <Download className="w-3 h-3" />
-                          )}
-                          {slBusy
-                            ? (slData?.installed ? 'Removing...' : 'Installing...')
-                            : (slData?.installed ? 'Uninstall Status Bar' : 'Install Status Bar')}
-                        </button>
-                        {slResult && (
-                          <p className="text-xs mt-1" style={{ color: slResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
-                            {slResult}
-                          </p>
-                        )}
-                      </>
-                    );
-                  })()}
+                  <StatuslineSettings />
                 </div>
 
               </div>
@@ -548,6 +496,67 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
         </div>
       </div>
     </div>
+  );
+}
+
+function StatuslineSettings() {
+  const queryClient = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ['statusline'],
+    queryFn: () => api.settings.statusline.get(),
+  });
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const handleToggle = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      if (data?.installed) {
+        await api.settings.statusline.uninstall();
+        setResult('Status bar removed.');
+      } else {
+        await api.settings.statusline.install();
+        setResult('Status bar installed! It will appear on your next Claude Code interaction.');
+      }
+      await queryClient.invalidateQueries({ queryKey: ['statusline'] });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed';
+      setResult(`Error: ${message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        onClick={handleToggle}
+        disabled={busy || isLoading}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors hover:opacity-80"
+        style={{
+          background: data?.installed ? '#ef4444' : '#06b6d4',
+          color: '#fff',
+          opacity: busy || isLoading ? 0.6 : 1,
+        }}
+      >
+        {busy ? (
+          <Loader2 className="w-3 h-3 animate-spin" />
+        ) : data?.installed ? (
+          <Trash2 className="w-3 h-3" />
+        ) : (
+          <Download className="w-3 h-3" />
+        )}
+        {busy
+          ? (data?.installed ? 'Removing...' : 'Installing...')
+          : (data?.installed ? 'Uninstall Status Bar' : 'Install Status Bar')}
+      </button>
+      {result && (
+        <p className="text-xs mt-1" style={{ color: result.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
+          {result}
+        </p>
+      )}
+    </>
   );
 }
 

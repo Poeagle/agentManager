@@ -5,8 +5,34 @@ import { isAdmin, userOwnsFilesystemPath } from '../auth.js';
 
 const execFileAsync = promisify(execFile);
 
+const DISABLED_HOOKS_PATH = process.platform === 'win32' ? 'NUL' : '/dev/null';
+const SAFE_GIT_CONFIG: Array<[string, string]> = [
+  ['core.hooksPath', DISABLED_HOOKS_PATH],
+  ['core.fsmonitor', 'false'],
+];
+
+/** Apply high-precedence config to Git and to Git subprocesses launched by gh. */
+function safeGitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_CONFIG_COUNT: String(SAFE_GIT_CONFIG.length),
+    GIT_TERMINAL_PROMPT: '0',
+  };
+  SAFE_GIT_CONFIG.forEach(([key, value], index) => {
+    env[`GIT_CONFIG_KEY_${index}`] = key;
+    env[`GIT_CONFIG_VALUE_${index}`] = value;
+  });
+  return env;
+}
+
 async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync('git', args, { cwd, maxBuffer: 5 * 1024 * 1024 });
+  const safeArgs = SAFE_GIT_CONFIG.flatMap(([key, value]) => ['-c', `${key}=${value}`]);
+  const { stdout } = await execFileAsync('git', [...safeArgs, ...args], {
+    cwd,
+    env: safeGitEnv(),
+    encoding: 'utf8',
+    maxBuffer: 5 * 1024 * 1024,
+  });
   return stdout;
 }
 
@@ -17,6 +43,24 @@ async function isGitRepo(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function validGitHubName(value: string): boolean {
+  return value.length > 0
+    && value.length <= 100
+    && /^[A-Za-z0-9_.-]+$/.test(value)
+    && !value.startsWith('-');
+}
+
+function validGitRefInput(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 255 || value.startsWith('-')) return false;
+  if (value.includes('..') || value.includes('@{') || value.includes('//')) return false;
+  if (value.split('/').some((part) => !part || part.startsWith('-') || part.startsWith('.') || part.endsWith('.lock'))) return false;
+  if (value.endsWith('/') || value.endsWith('.')) return false;
+  for (const character of value) {
+    if (character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127 || '~^:?*[\\'.includes(character)) return false;
+  }
+  return true;
 }
 
 export const gitRoutes: FastifyPluginAsync = async (app) => {
@@ -89,7 +133,7 @@ export const gitRoutes: FastifyPluginAsync = async (app) => {
     if (!(await isGitRepo(path))) return reply.status(400).send({ error: 'Not a git repository' });
 
     try {
-      const n = Math.min(parseInt(limit || '20') || 20, 100);
+      const n = Math.max(1, Math.min(parseInt(limit || '20') || 20, 100));
       const out = await git(path, [
         'log',
         `-${n}`,
@@ -121,11 +165,12 @@ export const gitRoutes: FastifyPluginAsync = async (app) => {
     if (!(await isGitRepo(path))) return reply.status(400).send({ error: 'Not a git repository' });
 
     try {
-      const showArgs = ['show', '--format=', hash];
+      const commit = (await git(path, ['rev-parse', '--verify', '--end-of-options', `${hash}^{commit}`])).trim();
+      const showArgs = ['show', '--format=', commit];
       if (ignoreWhitespace === 'true') showArgs.push('-w');
       if (fullFile === 'true') showArgs.push('-U99999');
       const [nameStatusOut, diffOut] = await Promise.all([
-        git(path, ['diff-tree', '--no-commit-id', '-r', '--name-status', hash]),
+        git(path, ['diff-tree', '--no-commit-id', '-r', '--name-status', commit]),
         git(path, showArgs),
       ]);
 
@@ -271,7 +316,7 @@ export const gitRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Body: { path: string; branch: string; isRemote?: boolean } }>('/git/checkout', async (req, reply) => {
     const { path, branch, isRemote } = req.body || {};
     if (!path) return reply.status(400).send({ error: 'path is required' });
-    if (!branch) return reply.status(400).send({ error: 'branch is required' });
+    if (!validGitRefInput(branch)) return reply.status(400).send({ error: 'A valid branch is required' });
     if (!(await isGitRepo(path))) return reply.status(400).send({ error: 'Not a git repository' });
 
     try {
@@ -279,7 +324,7 @@ export const gitRoutes: FastifyPluginAsync = async (app) => {
         const localName = branch.replace(/^origin\//, '');
         await git(path, ['switch', '-c', localName, '--track', branch]);
       } else {
-        await git(path, ['switch', branch]);
+        await git(path, ['switch', '--', branch]);
       }
       return { ok: true };
     } catch (err: any) {
@@ -305,12 +350,16 @@ export const gitRoutes: FastifyPluginAsync = async (app) => {
   app.get('/git/gh-accounts', async (_req, reply) => {
     try {
       // Get the authenticated user's login
-      const { stdout: userOut } = await execFileAsync('gh', ['api', '/user', '--jq', '.login'], { maxBuffer: 1024 * 1024 });
+      const { stdout: userOut } = await execFileAsync('gh', ['api', '/user', '--jq', '.login'], {
+        env: safeGitEnv(), encoding: 'utf8', maxBuffer: 1024 * 1024,
+      });
       const username = userOut.trim();
       if (!username) return { accounts: [] };
 
       // Get organizations the user belongs to
-      const { stdout: orgsOut } = await execFileAsync('gh', ['api', '/user/orgs', '--jq', '.[].login'], { maxBuffer: 1024 * 1024 }).catch(() => ({ stdout: '' }));
+      const { stdout: orgsOut } = await execFileAsync('gh', ['api', '/user/orgs', '--jq', '.[].login'], {
+        env: safeGitEnv(), encoding: 'utf8', maxBuffer: 1024 * 1024,
+      }).catch(() => ({ stdout: '' }));
       const orgs = orgsOut.split('\n').map(l => l.trim()).filter(Boolean);
 
       return { accounts: [username, ...orgs] };
@@ -321,8 +370,14 @@ export const gitRoutes: FastifyPluginAsync = async (app) => {
 
   // POST /git/create-repo — initialize git repo and create GitHub remote
   app.post<{ Body: { path: string; name?: string; owner?: string; private?: boolean; defaultBranch?: string } }>('/git/create-repo', async (req, reply) => {
+    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
     const { path, name, owner, private: isPrivate = true, defaultBranch = 'main' } = req.body || {};
     if (!path) return reply.status(400).send({ error: 'path is required' });
+    if (!validGitRefInput(defaultBranch)) return reply.status(400).send({ error: 'Invalid default branch' });
+    const repoName = name || path.split('/').pop() || 'my-repo';
+    if (!validGitHubName(repoName) || (owner !== undefined && !validGitHubName(owner))) {
+      return reply.status(400).send({ error: 'Invalid GitHub repository or owner name' });
+    }
 
     try {
       const isRepo = await isGitRepo(path);
@@ -348,7 +403,6 @@ export const gitRoutes: FastifyPluginAsync = async (app) => {
       }
 
       // Create GitHub repo via gh CLI
-      const repoName = name || path.split('/').pop() || 'my-repo';
       const fullName = owner ? `${owner}/${repoName}` : repoName;
       const visibility = isPrivate ? '--private' : '--public';
 
@@ -358,7 +412,7 @@ export const gitRoutes: FastifyPluginAsync = async (app) => {
         '--source', path,
         '--remote', 'origin',
         '--push',
-      ], { cwd: path, maxBuffer: 5 * 1024 * 1024 });
+      ], { cwd: path, env: safeGitEnv(), encoding: 'utf8', maxBuffer: 5 * 1024 * 1024 });
 
       return { ok: true, output: stdout.trim() };
     } catch (err: any) {
@@ -374,8 +428,8 @@ export const gitRoutes: FastifyPluginAsync = async (app) => {
     if (!(await isGitRepo(path))) return reply.status(400).send({ error: 'Not a git repository' });
 
     try {
-      const { stdout, stderr } = await execFileAsync('git', ['pull'], { cwd: path, maxBuffer: 5 * 1024 * 1024 });
-      return { ok: true, output: (stdout || stderr || '').trim() };
+      const stdout = await git(path, ['pull']);
+      return { ok: true, output: stdout.trim() };
     } catch (err: any) {
       const msg = err.stderr?.trim() || err.message;
       return reply.status(500).send({ error: msg });

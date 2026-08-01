@@ -15,6 +15,11 @@ npm run test:all         # coverage + production builds + E2E
 Use `npm --prefix server run test:watch` or
 `npm --prefix dashboard run test:watch` while developing one package.
 
+Coverage reports include the full production TypeScript source (apart from
+generated agent data and the browser entrypoint), including currently untested
+files. The enforced percentages are repository-wide regression floors, not a
+claim that only a hand-picked subset has high coverage.
+
 The first local E2E run may require:
 
 ```bash

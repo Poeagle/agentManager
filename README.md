@@ -22,8 +22,8 @@ Key features:
   server restarts and reboots with full scrollback.
 - **Git & files** — Side-by-side diffs, staged/unstaged changes, commit history,
   and a file explorer to review and commit what the agents changed.
-- **Multi-user** — Username/password login with per-user content isolation; each
-  user sees only their own projects and sessions.
+- **Multi-user** — Username/password login with project/session access controls;
+  each user sees only assigned projects and sessions.
 - **Skills** — Browse and edit `SKILL.md`-format skills for Claude Code and Codex
   from a built-in Skills page.
 - **In-app browser** — Open and test web pages alongside your sessions.
@@ -81,9 +81,10 @@ npm run dev                  # server :42010 + dashboard with hot reload
 bash scripts/dev-isolated.sh # or an isolated instance on separate ports + db
 ```
 
-Both development commands listen on all network interfaces. Devices on the
-same network can sign in at `http://<host-ip>:42011` (subject to the host
-firewall); the isolated command uses the same dashboard port by default.
+The API is loopback-only by default. Vite's development UI listens on all
+interfaces, but remote browsers cannot use the API unless you explicitly set
+`AGENTMANAGER_ALLOW_LAN=true` (and protect the host with a firewall or reverse
+proxy). The isolated command uses the same dashboard port by default.
 
 ## Testing
 
@@ -102,15 +103,33 @@ See [docs/testing.md](docs/testing.md) for architecture and authoring guidance.
 
 ## Configuration
 
-Optional — copy `.env.example` to `.env` in the project root:
+Optional — copy `server/.env.example` to `server/.env`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `42010` | Server port |
-| `DB_PATH` | `~/.agentmanager/agentmanager.db` | SQLite database path |
+| `HOST` | `127.0.0.1` | Explicit listen address (overrides `AGENTMANAGER_ALLOW_LAN`) |
+| `AGENTMANAGER_ALLOW_LAN` | `false` | Listen on all interfaces when `true` |
+| `AGENTMANAGER_DB_PATH` | `~/.agentmanager/agentmanager.db` | SQLite database path |
+| `AGENTMANAGER_HTTPS` | `false` | Mark login cookies `Secure`; enable behind HTTPS only |
+| `AGENTMANAGER_HOOK_SECRET` | generated | Master secret used to authenticate project event hooks |
+| `AGENTMANAGER_ALLOW_LEGACY_LOCAL_HOOKS` | `true` | Temporarily accept secretless hooks from loopback; set `false` after reinstalling hooks |
 | `LOG_LEVEL` | `info` | Log verbosity (`trace`/`debug`/`info`/`warn`/`error`) |
 | `AGENTMANAGER_USE_TMUX` | `true` | Use tmux for session persistence |
 | `AGENTMANAGER_USE_DTACH` | `true` | Use dtach for detach/reattach |
+
+Changing project access or registering a new project stops existing member
+sessions so the operating-system sandbox can be rebuilt with the new policy.
+
+### Security model
+
+AgentManager runs local developer tools under the host account. On Linux,
+member terminals require a systemd sandbox and hide other registered projects,
+AgentManager state, host credentials, and shared temporary sockets. This is a
+defense-in-depth boundary for a trusted team, not a substitute for separate OS
+users or containers against hostile tenants. Administrators run unsandboxed by
+design; grant access only to people trusted with the host and its configured AI
+CLI credentials.
 
 ## License
 

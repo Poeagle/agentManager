@@ -7,7 +7,8 @@ import { isSessionActive, writeToSession, querySessionOutputSince, getSession } 
 import { RESIZE_MARKER } from '../services/session-manager.js';
 import { getTracker, getOrCreateTracker } from '../services/session-state.js';
 import type { SessionState } from '../services/session-state.js';
-import { userCanUseSessionTool } from '../auth.js';
+import { readSessionCookie, userCanUseSessionTool } from '../auth.js';
+import { registerUserConnection } from '../services/user-connections.js';
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' | 'agent' {
   if (mode === 'terminal' || mode === 'agent') return mode;
@@ -26,6 +27,50 @@ function canAccessAgentSession(userId: string, sessionId: string): boolean {
 
 const DEFAULT_TIMEOUT = 30_000;
 const DEFAULT_QUIESCENCE = 2000;
+const MAX_EXECUTE_INPUT_BYTES = 64 * 1024;
+const MAX_WAIT_FOR_LENGTH = 512;
+const MAX_EXECUTE_TIMEOUT = 120_000;
+const MAX_EXECUTE_QUIESCENCE = 30_000;
+const MAX_AGENT_MESSAGE_BYTES = 128 * 1024;
+
+interface ValidatedExecuteRequest {
+  input: string;
+  waitFor?: string;
+  timeout: number;
+  quiescenceMs: number;
+  stripAnsi: boolean;
+}
+
+export function validateExecuteRequest(value: unknown): { ok: true; request: ValidatedExecuteRequest } | { ok: false; error: string } {
+  if (!value || typeof value !== 'object') return { ok: false, error: 'Request body must be an object' };
+  const body = value as Record<string, unknown>;
+  if (typeof body.input !== 'string') return { ok: false, error: 'input is required and must be a string' };
+  if (Buffer.byteLength(body.input) > MAX_EXECUTE_INPUT_BYTES) return { ok: false, error: 'input is too large' };
+  if (body.waitFor !== undefined && (typeof body.waitFor !== 'string' || body.waitFor.length > MAX_WAIT_FOR_LENGTH)) {
+    return { ok: false, error: `waitFor must be a literal string of at most ${MAX_WAIT_FOR_LENGTH} characters` };
+  }
+  const timeout = body.timeout ?? DEFAULT_TIMEOUT;
+  if (!Number.isInteger(timeout) || (timeout as number) < 100 || (timeout as number) > MAX_EXECUTE_TIMEOUT) {
+    return { ok: false, error: `timeout must be an integer between 100 and ${MAX_EXECUTE_TIMEOUT}` };
+  }
+  const quiescenceMs = body.quiescenceMs ?? DEFAULT_QUIESCENCE;
+  if (!Number.isInteger(quiescenceMs) || (quiescenceMs as number) < 100 || (quiescenceMs as number) > MAX_EXECUTE_QUIESCENCE) {
+    return { ok: false, error: `quiescenceMs must be an integer between 100 and ${MAX_EXECUTE_QUIESCENCE}` };
+  }
+  if (body.stripAnsi !== undefined && typeof body.stripAnsi !== 'boolean') {
+    return { ok: false, error: 'stripAnsi must be a boolean' };
+  }
+  return {
+    ok: true,
+    request: {
+      input: body.input,
+      waitFor: typeof body.waitFor === 'string' && body.waitFor ? body.waitFor : undefined,
+      timeout: timeout as number,
+      quiescenceMs: quiescenceMs as number,
+      stripAnsi: body.stripAnsi !== false,
+    },
+  };
+}
 
 export const agentRoutes: FastifyPluginAsync = async (app) => {
 
@@ -168,7 +213,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         description: 'Send input and get clean rendered output. Output is processed through a virtual terminal that handles all TUI cursor movements, screen redraws, and ANSI codes — you get readable text, not raw terminal data. Only one execute per session at a time (409 if busy).',
         request: {
           input: { type: 'string', required: true, description: 'Text to send (carriage return appended automatically). An empty string intentionally sends Enter.' },
-          waitFor: { type: 'string', required: false, description: 'Regex pattern — resolve early when matched in output' },
+          waitFor: { type: 'string', required: false, description: 'Literal text — resolve early when matched in output' },
           timeout: { type: 'number', required: false, default: 30000, description: 'Max ms to wait before returning with status "timeout"' },
           stripAnsi: { type: 'boolean', required: false, default: true, description: 'Render through virtual terminal for clean output (default true, always use true)' },
           quiescenceMs: { type: 'number', required: false, default: 2000, description: 'Ms of silence before considering output complete' },
@@ -216,7 +261,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       'Always check state before sending input. If state is "busy", wait for idle or waiting_for_input.',
       'For interactive prompts, read promptType and choices from state to decide what to send.',
       'Prefer explicit input. An empty input string is valid and intentionally sends Enter, which may accept a prompt default.',
-      'Use waitFor regex for commands with known output patterns to get faster responses.',
+      'Use literal waitFor text for commands with known output to get faster responses.',
       'Increase quiescenceMs for slow commands (e.g. builds, installs) to avoid premature completion.',
       'Use GET /api/sessions/:id/display for read-only monitoring — it returns rendered output + state in one call with cursor-based incremental polling.',
       'The display endpoint cursor is opaque — save it from the response and pass it back as ?since= to get only new content.',
@@ -258,7 +303,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     };
   }>('/sessions/:id/execute', async (req, reply) => {
     const { id } = req.params;
-    const body = req.body as any;
+    const body = req.body;
 
     if (!canAccessAgentSession(req.user!.id, id)) {
       return reply.status(404).send({ error: 'Session not found or not running' });
@@ -276,39 +321,22 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(409).send({ error: 'Session already processing an execute request' });
     }
 
-    const input = body.input;
-    if (typeof input !== 'string') {
-      return reply.status(400).send({ error: 'input is required and must be a string' });
-    }
-
-    let waitFor: RegExp | undefined;
-    if (body.waitFor) {
-      try {
-        waitFor = new RegExp(body.waitFor);
-      } catch {
-        return reply.status(400).send({ error: 'Invalid waitFor regex' });
-      }
-    }
-
-    const timeout = body.timeout ?? DEFAULT_TIMEOUT;
-    const quiescenceMs = body.quiescenceMs ?? DEFAULT_QUIESCENCE;
-    const stripAnsi = body.stripAnsi !== false; // default true
+    const validated = validateExecuteRequest(body);
+    if (!validated.ok) return reply.status(400).send({ error: validated.error });
+    const executeRequest = validated.request;
 
     // Set up execute listener before writing input
-    const executePromise = tracker.execute({
-      input,
-      waitFor,
-      timeout,
-      quiescenceMs,
-      stripAnsi,
+    const execution = tracker.execute({
+      ...executeRequest,
     });
+    await execution.ready;
 
     // Reset output buffer and write input to PTY
     tracker.resetOutputBuffer();
-    writeToSession(id, input);
+    writeToSession(id, executeRequest.input);
     setTimeout(() => writeToSession(id, '\r'), 50);
 
-    const result = await executePromise;
+    const result = await execution.result;
 
     return {
       id,
@@ -490,6 +518,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   }>('/sessions/:id/agent', { websocket: true }, (socket, req) => {
     const { id } = req.params;
 
+    if (!registerUserConnection(req.user!.id, readSessionCookie(req), socket)) return;
+
     if (!canAccessAgentSession(req.user!.id, id)) {
       socket.send(JSON.stringify({ type: 'error', message: 'Session not found or not running' }));
       socket.close();
@@ -526,6 +556,10 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
 
     // Handle incoming messages
     socket.on('message', async (raw: Buffer | string) => {
+      if (Buffer.byteLength(raw) > MAX_AGENT_MESSAGE_BYTES) {
+        try { socket.close(1009, 'Agent message is too large'); } catch { /* already closed */ }
+        return;
+      }
       try {
         const msg = JSON.parse(raw.toString());
 
@@ -540,41 +574,36 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
               return;
             }
 
-            let waitFor: RegExp | undefined;
-            if (msg.waitFor) {
-              try { waitFor = new RegExp(msg.waitFor); } catch {
-                socket.send(JSON.stringify({
-                  type: 'execute_result',
-                  requestId: msg.requestId,
-                  error: 'Invalid waitFor regex',
-                }));
-                return;
-              }
-            }
-
-            const executePromise = tracker.execute({
-              input: msg.input,
-              waitFor,
-              timeout: msg.timeout ?? DEFAULT_TIMEOUT,
-              quiescenceMs: msg.quiescenceMs ?? DEFAULT_QUIESCENCE,
-              stripAnsi: msg.stripAnsi !== false,
-            });
-
-            tracker.resetOutputBuffer();
-            writeToSession(id, msg.input);
-            setTimeout(() => writeToSession(id, '\r'), 50);
-
-            try {
-              const result = await executePromise;
+            const validated = validateExecuteRequest(msg);
+            if (!validated.ok) {
               socket.send(JSON.stringify({
                 type: 'execute_result',
-                requestId: msg.requestId,
+                requestId: typeof msg.requestId === 'string' ? msg.requestId.slice(0, 128) : undefined,
+                error: validated.error,
+              }));
+              return;
+            }
+            const requestId = typeof msg.requestId === 'string' ? msg.requestId.slice(0, 128) : undefined;
+
+            const execution = tracker.execute({
+              ...validated.request,
+            });
+
+            try {
+              await execution.ready;
+              tracker.resetOutputBuffer();
+              writeToSession(id, validated.request.input);
+              setTimeout(() => writeToSession(id, '\r'), 50);
+              const result = await execution.result;
+              socket.send(JSON.stringify({
+                type: 'execute_result',
+                requestId,
                 ...result,
               }));
             } catch (err: any) {
               socket.send(JSON.stringify({
                 type: 'execute_result',
-                requestId: msg.requestId,
+                requestId,
                 error: err.message,
               }));
             }

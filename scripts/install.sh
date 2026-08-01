@@ -16,7 +16,11 @@
 #   AGENTMANAGER_INSTALL_DIR=/opt/agentmanager bash install.sh
 #
 # For private repos / pre-release testing:
-#   AGENTMANAGER_ARCHIVE_URL="https://example.com/agentmanager-v0.1.0.tar.gz" bash install.sh
+#   AGENTMANAGER_VERSION=0.1.0 \
+#   AGENTMANAGER_ARCHIVE_URL="https://example.com/agentmanager-v0.1.0.tar.gz" \
+#   AGENTMANAGER_ARCHIVE_SHA256="<64 hex characters>" bash install.sh
+# Custom archives require an explicit checksum. To intentionally install an
+# unverifiable development artifact, set AGENTMANAGER_ALLOW_UNVERIFIED=1.
 
 set -euo pipefail
 
@@ -24,6 +28,9 @@ INSTALL_DIR="${AGENTMANAGER_INSTALL_DIR:-$HOME/agentmanager}"
 GITHUB_REPO="${AGENTMANAGER_GITHUB_REPO:-ai-genius-automations/agentmanager}"
 VERSION="${AGENTMANAGER_VERSION:-latest}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+ARCHIVE_SHA256="${AGENTMANAGER_ARCHIVE_SHA256:-}"
+CHECKSUM_URL="${AGENTMANAGER_CHECKSUM_URL:-}"
+ALLOW_UNVERIFIED="${AGENTMANAGER_ALLOW_UNVERIFIED:-0}"
 
 # Build auth header array for curl (used for private repo access)
 AUTH_HEADER=()
@@ -50,7 +57,17 @@ TOTAL_STEPS=5
 # Detect the target user (if running as root via sudo, install for the real user)
 if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
   TARGET_USER="$SUDO_USER"
-  TARGET_HOME=$(eval echo "~$SUDO_USER")
+  if command -v getent >/dev/null 2>&1; then
+    TARGET_HOME=$(getent passwd "$SUDO_USER" | awk -F: 'NR==1 { print $6 }')
+  elif command -v dscl >/dev/null 2>&1; then
+    TARGET_HOME=$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory | awk 'NR==1 { print $2 }')
+  else
+    TARGET_HOME=""
+  fi
+  if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
+    echo "Cannot determine home directory for $SUDO_USER" >&2
+    exit 1
+  fi
   INSTALL_DIR="${AGENTMANAGER_INSTALL_DIR:-$TARGET_HOME/agentmanager}"
 elif [ "$(id -u)" -eq 0 ]; then
   TARGET_USER="root"
@@ -58,6 +75,34 @@ elif [ "$(id -u)" -eq 0 ]; then
 else
   TARGET_USER="$(whoami)"
   TARGET_HOME="$HOME"
+fi
+
+validate_version() {
+  local version="$1"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]
+}
+
+canonicalize_install_dir() {
+  local requested="$1"
+  local parent leaf
+  parent=$(dirname "$requested")
+  leaf=$(basename "$requested")
+  [ -n "$leaf" ] && [ "$leaf" != "." ] && [ "$leaf" != ".." ] || return 1
+  mkdir -p "$parent"
+  parent=$(cd "$parent" && pwd -P)
+  INSTALL_DIR="$parent/$leaf"
+  [ "$INSTALL_DIR" != "/" ] && [ "$INSTALL_DIR" != "$TARGET_HOME" ]
+}
+
+if ! canonicalize_install_dir "$INSTALL_DIR"; then
+  echo "Unsafe install directory: $INSTALL_DIR" >&2
+  exit 1
+fi
+if [ -e "$INSTALL_DIR" ] &&
+   { [ ! -d "$INSTALL_DIR" ] || [ ! -f "$INSTALL_DIR/version.json" ] ||
+     [ ! -f "$INSTALL_DIR/bin/agentmanager" ] || [ ! -d "$INSTALL_DIR/server" ]; }; then
+  echo "Refusing to replace a path that is not an AgentManager installation: $INSTALL_DIR" >&2
+  exit 1
 fi
 
 OS="$(uname -s)"
@@ -247,49 +292,161 @@ log_ok "Prerequisites met (Node ${NODE_VER}, Claude Code ${CLAUDE_VER})"
 log_step 2 "Downloading AgentManager..."
 
 ARCHIVE_URL="${AGENTMANAGER_ARCHIVE_URL:-}"
+CUSTOM_ARCHIVE=false
+[ -n "$ARCHIVE_URL" ] && CUSTOM_ARCHIVE=true
+RELEASE_INFO=""
 
-if [ -z "$ARCHIVE_URL" ]; then
-  # Resolve version from GitHub Releases API
+if [ "$CUSTOM_ARCHIVE" = true ] && [ "$VERSION" = "latest" ]; then
+  log_error "Custom archives require an explicit AGENTMANAGER_VERSION."
+  exit 1
+fi
+
+if [ "$CUSTOM_ARCHIVE" = false ]; then
   if [ "$VERSION" = "latest" ]; then
     log_info "Fetching latest release from GitHub..."
-    RELEASE_INFO=$(curl -sf "${AUTH_HEADER[@]}" "https://api.github.com/repos/$GITHUB_REPO/releases/latest" 2>/dev/null || echo "")
+    RELEASE_INFO=$(curl -sf "${AUTH_HEADER[@]}" "https://api.github.com/repos/$GITHUB_REPO/releases/latest" 2>/dev/null || true)
     if [ -z "$RELEASE_INFO" ]; then
       RELEASE_INFO=$(curl -sf "${AUTH_HEADER[@]}" "https://api.github.com/repos/$GITHUB_REPO/releases" 2>/dev/null | node -e '
         let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
-          try{const a=JSON.parse(d);if(a[0])console.log(JSON.stringify(a[0]))}catch{}
-        })' 2>/dev/null || echo "")
+          try{const a=JSON.parse(d);if(a[0])process.stdout.write(JSON.stringify(a[0]));else process.exit(1)}catch{process.exit(1)}
+        })' 2>/dev/null || true)
     fi
     if [ -z "$RELEASE_INFO" ]; then
-      log_error "No releases found. Set AGENTMANAGER_ARCHIVE_URL to install from a direct URL."
+      log_error "No releases found."
       exit 1
     fi
-    VERSION=$(echo "$RELEASE_INFO" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{console.log(JSON.parse(d).tag_name.replace(/^v/,""))}catch{process.exit(1)}})' 2>/dev/null)
-  elif [ -n "$GITHUB_TOKEN" ]; then
-    # Explicit version with token — fetch release info for API asset URL (CDN won't work for private repos)
-    log_info "Fetching release v${VERSION} from GitHub API..."
-    RELEASE_INFO=$(curl -sf "${AUTH_HEADER[@]}" "https://api.github.com/repos/$GITHUB_REPO/releases/tags/v${VERSION}" 2>/dev/null || echo "")
-  fi
-
-  # For private repos, extract the API asset URL (browser_download_url / CDN won't work with token)
-  if [ -n "$GITHUB_TOKEN" ] && [ -n "${RELEASE_INFO:-}" ]; then
-    ARCHIVE_URL=$(echo "$RELEASE_INFO" | node -e '
+    VERSION=$(printf '%s' "$RELEASE_INFO" | node -e '
       let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
-        try{const r=JSON.parse(d);const a=(r.assets||[]).find(x=>x.name.endsWith(".tar.gz"));
-        if(a)console.log(a.url);else process.exit(1)}catch{process.exit(1)}
-      })' 2>/dev/null || echo "")
-  fi
-
-  if [ -z "$ARCHIVE_URL" ]; then
-    ARCHIVE_URL="https://github.com/$GITHUB_REPO/releases/download/v${VERSION}/agentmanager-v${VERSION}.tar.gz"
+        try{const v=JSON.parse(d).tag_name.replace(/^v/,"");process.stdout.write(v)}catch{process.exit(1)}
+      })')
+  elif [ -n "$GITHUB_TOKEN" ]; then
+    log_info "Fetching release v${VERSION} from GitHub API..."
+    RELEASE_INFO=$(curl -sf "${AUTH_HEADER[@]}" "https://api.github.com/repos/$GITHUB_REPO/releases/tags/v${VERSION}" 2>/dev/null || true)
   fi
 fi
 
-TMPFILE=$(mktemp)
+if ! validate_version "$VERSION"; then
+  log_error "Invalid release version: $VERSION"
+  exit 1
+fi
+
+ARCHIVE_NAME="agentmanager-v${VERSION}.tar.gz"
+if [ "$CUSTOM_ARCHIVE" = false ]; then
+  if [ -n "$GITHUB_TOKEN" ] && [ -n "$RELEASE_INFO" ]; then
+    ARCHIVE_URL=$(ASSET_NAME="$ARCHIVE_NAME" node -e '
+      let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
+        try{const a=(JSON.parse(d).assets||[]).find(x=>x.name===process.env.ASSET_NAME);
+          if(!a)process.exit(1);process.stdout.write(a.url)}catch{process.exit(1)}
+      })' <<< "$RELEASE_INFO" 2>/dev/null || true)
+    CHECKSUM_URL=$(ASSET_NAME="$ARCHIVE_NAME.sha256" node -e '
+      let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
+        try{const a=(JSON.parse(d).assets||[]).find(x=>x.name===process.env.ASSET_NAME);
+          if(!a)process.exit(1);process.stdout.write(a.url)}catch{process.exit(1)}
+      })' <<< "$RELEASE_INFO" 2>/dev/null || true)
+  else
+    ARCHIVE_URL="https://github.com/$GITHUB_REPO/releases/download/v${VERSION}/$ARCHIVE_NAME"
+    CHECKSUM_URL="$ARCHIVE_URL.sha256"
+  fi
+  if [ -z "$ARCHIVE_URL" ] || [ -z "$CHECKSUM_URL" ]; then
+    log_error "Release is missing $ARCHIVE_NAME or its checksum asset."
+    exit 1
+  fi
+elif [ -z "$ARCHIVE_SHA256" ] && [ -z "$CHECKSUM_URL" ] && [ "$ALLOW_UNVERIFIED" != "1" ]; then
+  log_error "Custom archives require AGENTMANAGER_ARCHIVE_SHA256 or AGENTMANAGER_CHECKSUM_URL."
+  log_error "Set AGENTMANAGER_ALLOW_UNVERIFIED=1 only for a trusted local development artifact."
+  exit 1
+fi
+
+INSTALL_PARENT=$(dirname "$INSTALL_DIR")
+LOCK_DIR="$INSTALL_PARENT/.agentmanager-install.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  LOCK_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+  if [[ "$LOCK_PID" =~ ^[0-9]+$ ]] && kill -0 "$LOCK_PID" 2>/dev/null; then
+    log_error "Another AgentManager install or update is already running."
+    exit 1
+  fi
+  rm -f "$LOCK_DIR/pid" 2>/dev/null || true
+  rmdir "$LOCK_DIR" 2>/dev/null || true
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    log_error "Could not recover a stale install lock."
+    exit 1
+  fi
+fi
+printf '%s\n' "$$" > "$LOCK_DIR/pid"
+WORK_DIR=""
+cleanup_early_lock() { rm -f "$LOCK_DIR/pid" 2>/dev/null || true; rmdir "$LOCK_DIR" 2>/dev/null || true; }
+trap cleanup_early_lock EXIT INT TERM
+WORK_DIR=$(mktemp -d "$INSTALL_PARENT/.agentmanager-install.XXXXXX")
+chmod 700 "$WORK_DIR"
+TMPFILE="$WORK_DIR/$ARCHIVE_NAME"
+CHECKSUM_FILE="$WORK_DIR/$ARCHIVE_NAME.sha256"
+EXTRACT_DIR="$WORK_DIR/extract"
+BACKUP_DIR="$WORK_DIR/previous"
+FAILED_DIR="$WORK_DIR/failed"
+ROLLBACK_ARMED=false
+SERVICE_TYPE="direct"
+
+cleanup_installer() {
+  local exit_code=$?
+  trap - EXIT INT TERM
+  set +e
+  if [ "$ROLLBACK_ARMED" = true ]; then
+    rollback_install || true
+  fi
+  if [ "$ROLLBACK_ARMED" = false ] && [ -n "${WORK_DIR:-}" ] && [ -d "$WORK_DIR" ] &&
+     [ "$(dirname "$WORK_DIR")" = "$INSTALL_PARENT" ] &&
+     [[ "$(basename "$WORK_DIR")" == .agentmanager-install.* ]]; then
+    rm -rf "$WORK_DIR"
+  fi
+  rm -f "$LOCK_DIR/pid" 2>/dev/null || true
+  rmdir "$LOCK_DIR" 2>/dev/null || true
+  exit "$exit_code"
+}
+trap cleanup_installer EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 log_info "Downloading $ARCHIVE_URL..."
 if ! curl -fSL "${AUTH_HEADER[@]}" -H "Accept: application/octet-stream" --progress-bar -o "$TMPFILE" "$ARCHIVE_URL" 2>&1; then
-  rm -f "$TMPFILE"
   log_error "Download failed. Check the URL or version and try again."
   exit 1
+fi
+
+if [ -n "$CHECKSUM_URL" ]; then
+  if ! curl -fsSL "${AUTH_HEADER[@]}" -H "Accept: application/octet-stream" -o "$CHECKSUM_FILE" "$CHECKSUM_URL"; then
+    log_error "Checksum download failed; refusing to install an unverified release."
+    exit 1
+  fi
+  ARCHIVE_SHA256=$(EXPECTED_NAME="$ARCHIVE_NAME" node -e '
+    const fs=require("fs");const lines=fs.readFileSync(process.argv[1],"utf8").split(/\r?\n/);
+    for(const line of lines){const m=line.trim().match(/^([0-9a-fA-F]{64})(?:\s+\*?([^\s]+))?$/);
+      if(!m)continue;if(m[2]&&require("path").basename(m[2])!==process.env.EXPECTED_NAME)process.exit(2);
+      process.stdout.write(m[1].toLowerCase());process.exit(0)}process.exit(1)
+  ' "$CHECKSUM_FILE") || {
+    log_error "Checksum file is invalid or names a different archive."
+    exit 1
+  }
+fi
+
+if [ -n "$ARCHIVE_SHA256" ]; then
+  if [[ ! "$ARCHIVE_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    log_error "Archive SHA-256 must contain exactly 64 hexadecimal characters."
+    exit 1
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL_SHA256=$(sha256sum "$TMPFILE" | awk '{ print $1 }')
+  else
+    ACTUAL_SHA256=$(shasum -a 256 "$TMPFILE" | awk '{ print $1 }')
+  fi
+  ACTUAL_SHA256=$(printf '%s' "$ACTUAL_SHA256" | tr '[:upper:]' '[:lower:]')
+  ARCHIVE_SHA256=$(printf '%s' "$ARCHIVE_SHA256" | tr '[:upper:]' '[:lower:]')
+  if [ "$ACTUAL_SHA256" != "$ARCHIVE_SHA256" ]; then
+    log_error "Release checksum verification failed."
+    exit 1
+  fi
+  log_ok "SHA-256 verified"
+else
+  log_warn "Installing custom archive without integrity verification (explicit opt-out)."
 fi
 
 log_ok "Downloaded ($(du -h "$TMPFILE" | cut -f1))"
@@ -298,13 +455,13 @@ log_ok "Downloaded ($(du -h "$TMPFILE" | cut -f1))"
 
 log_step 3 "Installing to $INSTALL_DIR..."
 
-# Stop existing server if running — try PID file first, then CLI, then pkill.
+# PID fallback for an old installation whose CLI cannot stop cleanly.
 _stop_pid_file() {
   local pidfile="$1"
   if [ -f "$pidfile" ]; then
     local pid
     pid=$(cat "$pidfile" 2>/dev/null || echo "")
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && kill -0 "$pid" 2>/dev/null; then
       log_info "Stopping existing server (PID $pid)..."
       kill "$pid" 2>/dev/null || true
       sleep 1
@@ -312,14 +469,8 @@ _stop_pid_file() {
     fi
   fi
 }
-_stop_pid_file "$INSTALL_DIR/.agentmanager.pid"
-# Fallback: use CLI stop if available
-if command -v agentmanager &>/dev/null; then
-  agentmanager stop 2>/dev/null || true
-fi
-# Fallback: kill any remaining server process on our port. Respect a
-# user-customized port — read from existing server/.env or settings DB before
-# the extraction replaces $INSTALL_DIR. Falls back to 42010.
+# Resolve the port for the post-start health check. Respect a user-customized
+# value from the environment, installed .env, or settings database.
 _resolve_install_port() {
   local default_port=42010
   if [ -n "${PORT:-}" ] && [[ "${PORT}" =~ ^[0-9]+$ ]]; then echo "$PORT"; return; fi
@@ -347,161 +498,188 @@ _resolve_install_port() {
   fi
   echo "$default_port"
 }
-KILL_PORT="$(_resolve_install_port)"
-# Linux uses GNU fuser (-s/-k/port/tcp). macOS ships a totally different
-# `fuser` that takes -cfu and file paths only — invoking it with Linux
-# syntax prints the macOS usage banner. Gate fuser on Linux and let
-# Darwin (and other BSDs) fall through to lsof.
-if [ "$OS" = "Linux" ] && command -v fuser &>/dev/null; then
-  if fuser -s "${KILL_PORT}/tcp" 2>/dev/null; then
-    log_info "Force-stopping process on port ${KILL_PORT}..."
-    fuser -k -TERM "${KILL_PORT}/tcp" 2>/dev/null || true
-    sleep 1
-    fuser -s "${KILL_PORT}/tcp" 2>/dev/null && fuser -k -KILL "${KILL_PORT}/tcp" 2>/dev/null || true
-  fi
-elif command -v lsof &>/dev/null; then
-  pids="$(lsof -ti "tcp:${KILL_PORT}" 2>/dev/null || true)"
-  if [ -n "$pids" ]; then
-    log_info "Force-stopping process on port ${KILL_PORT}..."
-    echo "$pids" | xargs -r kill -TERM 2>/dev/null || true
-    sleep 1
-    pids="$(lsof -ti "tcp:${KILL_PORT}" 2>/dev/null || true)"
-    [ -n "$pids" ] && echo "$pids" | xargs -r kill -KILL 2>/dev/null || true
-  fi
+EXPECTED_ROOT="agentmanager-v${VERSION}"
+ENTRY_LIST="$WORK_DIR/archive-entries.txt"
+if ! tar tzf "$TMPFILE" > "$ENTRY_LIST"; then
+  log_error "Release archive is not a readable gzip-compressed tar file."
+  exit 1
 fi
-
-# Catch stale agentmanager servers the port-based kill above missed. Port-based
-# detection is blind to any prior install bound to a non-default port — a
-# leftover server on 42011 (old default) or a dev-mode PORT=42012 survives
-# every subsequent upgrade. Mirrors agentmanager-pro's _kill_stale_pro_servers.
-#
-# CRITICAL: match "agentmanager/server" WITHOUT matching "agentmanager-pro/server".
-# Pro is a separate app with its own installer; we must never touch it. Every
-# pattern below either explicitly excludes "agentmanager-pro" or uses a case
-# ordering that short-circuits on it first. Verified against a machine running
-# both apps before shipping.
-_kill_stale_agentmanager_servers() {
-  local target_uid
-  target_uid=$(id -u "$TARGET_USER" 2>/dev/null || echo "")
-  [ -z "$target_uid" ] && return 0
-
-  local pids=""
-
-  # Pattern 1: pgrep cmdline match, then explicitly filter out Pro cmdlines.
-  # pgrep's regex doesn't do negative lookahead, so we post-filter instead.
-  if command -v pgrep >/dev/null 2>&1; then
-    for pid in $(pgrep -u "$target_uid" -f 'agentmanager/server/dist/index\.js' 2>/dev/null); do
-      local cl
-      cl=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || echo '')
-      case "$cl" in
-        *agentmanager-pro*) continue ;;
-      esac
-      pids="$pids $pid"
-    done
+if [ ! -s "$ENTRY_LIST" ]; then
+  log_error "Release archive is empty."
+  exit 1
+fi
+while IFS= read -r entry; do
+  trimmed="${entry%/}"
+  if [ -z "$trimmed" ] || [[ "$trimmed" == /* ]] || [[ "$trimmed" == *\\* ]]; then
+    log_error "Unsafe archive entry: $entry"
+    exit 1
   fi
-
-  # Pattern 2: Linux /proc/cwd — case ordering matters. Pro exclusion fires
-  # FIRST so "*/agentmanager-pro/server/*" short-circuits before it could match
-  # "*/agentmanager/server/*".
-  if [ -d /proc ]; then
-    for pid_dir in /proc/[0-9]*; do
-      local pid="${pid_dir##*/}"
-      [ "$pid" = "$$" ] && continue
-      [ "$pid" = "$PPID" ] && continue
-      local p_uid
-      p_uid=$(stat -c %u "$pid_dir" 2>/dev/null || echo "-1")
-      [ "$p_uid" = "$target_uid" ] || continue
-      local cwd
-      cwd=$(readlink "$pid_dir/cwd" 2>/dev/null || true)
-      case "$cwd" in
-        */agentmanager-pro/*) continue ;;
-        */agentmanager/server|*/agentmanager/server/*) ;;
-        *) continue ;;
-      esac
-      local cmdline
-      cmdline=$(tr '\0' ' ' < "$pid_dir/cmdline" 2>/dev/null || true)
-      case "$cmdline" in
-        *pty-worker*) continue ;;
-        *agentmanager-pro*) continue ;;
-        *node*dist/index.js*) pids="$pids $pid" ;;
-      esac
-    done
-  fi
-
-  pids=$(echo "$pids" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
-  [ -z "$pids" ] && return 0
-
-  for pid in $pids; do
-    [ "$pid" = "$$" ] && continue
-    [ "$pid" = "$PPID" ] && continue
-    log_info "Stopping stale agentmanager server (PID $pid)..."
-    kill -TERM "$pid" 2>/dev/null || true
-  done
-  sleep 2
-  for pid in $pids; do
-    [ "$pid" = "$$" ] && continue
-    [ "$pid" = "$PPID" ] && continue
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
+  case "$trimmed" in
+    "$EXPECTED_ROOT"|"$EXPECTED_ROOT"/*) ;;
+    *) log_error "Archive entry escapes $EXPECTED_ROOT: $entry"; exit 1 ;;
+  esac
+  IFS='/' read -r -a path_parts <<< "$trimmed"
+  for part in "${path_parts[@]}"; do
+    if [ -z "$part" ] || [ "$part" = "." ] || [ "$part" = ".." ]; then
+      log_error "Unsafe archive entry: $entry"
+      exit 1
     fi
   done
-}
-_kill_stale_agentmanager_servers
+done < "$ENTRY_LIST"
 
-# Extract
-EXTRACT_DIR=$(mktemp -d)
+while IFS= read -r listing; do
+  entry_type="${listing:0:1}"
+  if [ "$entry_type" != "-" ] && [ "$entry_type" != "d" ]; then
+    log_error "Release archive may only contain regular files and directories."
+    exit 1
+  fi
+done < <(tar tvzf "$TMPFILE")
+
+mkdir -p "$EXTRACT_DIR"
 tar xzf "$TMPFILE" -C "$EXTRACT_DIR"
-rm -f "$TMPFILE"
-
-EXTRACTED=$(ls -d "$EXTRACT_DIR"/agentmanager-* 2>/dev/null | head -1)
-if [ -z "$EXTRACTED" ] || [ ! -d "$EXTRACTED" ]; then
-  log_error "Archive does not contain expected agentmanager-vX.Y.Z directory"
-  rm -rf "$EXTRACT_DIR"
+EXTRACTED="$EXTRACT_DIR/$EXPECTED_ROOT"
+if [ ! -d "$EXTRACTED" ]; then
+  log_error "Archive does not contain $EXPECTED_ROOT."
   exit 1
 fi
 
-# Preserve user data from existing install
-if [ -d "$INSTALL_DIR" ]; then
-  for keep in logs .agentmanager .agentmanager.pid; do
-    [ -e "$INSTALL_DIR/$keep" ] && cp -r "$INSTALL_DIR/$keep" "$EXTRACT_DIR/_keep_$keep" 2>/dev/null || true
-  done
-  rm -rf "$INSTALL_DIR"
-fi
-
-mv "$EXTRACTED" "$INSTALL_DIR"
-
-for keep in logs .agentmanager .agentmanager.pid; do
-  [ -e "$EXTRACT_DIR/_keep_$keep" ] && mv "$EXTRACT_DIR/_keep_$keep" "$INSTALL_DIR/$keep" 2>/dev/null || true
-done
-rm -rf "$EXTRACT_DIR"
-
-mkdir -p "$INSTALL_DIR/logs"
-
-# Read version from installed package
-if [ -f "$INSTALL_DIR/version.json" ]; then
-  VERSION=$(node -e "console.log(require('$INSTALL_DIR/version.json').version)" 2>/dev/null || echo "$VERSION")
-fi
-
-# Install server production dependencies (native modules compile on this platform)
-# Reset CWD — the old $INSTALL_DIR was deleted and replaced above, so the shell's
-# working directory may no longer exist (causes npm "uv_cwd" ENOENT).
-cd "$INSTALL_DIR" || cd /
-log_info "Installing server dependencies..."
-if ! npm install --omit=dev --prefix "$INSTALL_DIR/server" 2>&1; then
-  # On Node 22+, node-gyp 11.x has a known post-build ENOENT on
-  # `build/node_gyp_bins` that exits non-zero even when the native module
-  # actually built successfully. If better-sqlite3 and node-pty load, the
-  # install is functionally complete — accept it and continue.
-  if (cd "$INSTALL_DIR/server" \
-       && node -e "require('better-sqlite3'); require('node-pty-prebuilt-multiarch')") >/dev/null 2>&1; then
-    log_warn "npm install exited non-zero, but native modules load — continuing"
-  else
-    log_error "npm install failed — see errors above"
+for required in version.json bin/agentmanager server/package.json server/package-lock.json server/dist/index.js; do
+  if [ ! -f "$EXTRACTED/$required" ]; then
+    log_error "Archive is missing $required."
     exit 1
   fi
+done
+if ! node -e '
+  const actual=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).version;
+  if(actual!==process.argv[2]){console.error(`expected ${process.argv[2]}, got ${actual}`);process.exit(1)}
+' "$EXTRACTED/version.json" "$VERSION"; then
+  log_error "Archive version metadata does not match v${VERSION}."
+  exit 1
 fi
 
-log_ok "AgentManager v${VERSION} installed to $INSTALL_DIR"
+# Do all slow, failure-prone dependency work before stopping the live server.
+log_info "Installing server dependencies in staging..."
+if ! npm ci --omit=dev --prefix "$EXTRACTED/server" 2>&1; then
+  log_warn "npm ci exited non-zero — verifying the dependency tree before deciding."
+fi
+if ! npm ls --omit=dev --depth=0 --prefix "$EXTRACTED/server" >/dev/null; then
+  log_error "Staged production dependency tree is incomplete."
+  exit 1
+fi
+if ! (cd "$EXTRACTED/server" && node -e "require('better-sqlite3'); require('node-pty-prebuilt-multiarch')") >/dev/null 2>&1; then
+  log_info "Rebuilding native modules for the current Node runtime..."
+  npm rebuild better-sqlite3 node-pty-prebuilt-multiarch --prefix "$EXTRACTED/server"
+fi
+if ! (cd "$EXTRACTED/server" && node -e "require('better-sqlite3'); require('node-pty-prebuilt-multiarch')") >/dev/null 2>&1; then
+  log_error "Native module verification failed; the existing installation was not touched."
+  exit 1
+fi
+chmod +x "$EXTRACTED/bin/agentmanager"
+
+_run_cli_as_target() {
+  local cli_path="$1"
+  local action="$2"
+  if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "root" ]; then
+    if command -v runuser >/dev/null 2>&1; then
+      runuser -u "$TARGET_USER" -- env "PATH=$TARGET_HOME/.local/bin:$PATH" "$cli_path" "$action"
+    else
+      sudo -u "$TARGET_USER" env "PATH=$TARGET_HOME/.local/bin:$PATH" "$cli_path" "$action"
+    fi
+  else
+    "$cli_path" "$action"
+  fi
+}
+
+_start_current_install() {
+  case "$SERVICE_TYPE" in
+    systemd) $SUDO systemctl start agentmanager ;;
+    launchd) launchctl start com.aigenius.agentmanager ;;
+    *) _run_cli_as_target "$INSTALL_DIR/bin/agentmanager" start ;;
+  esac
+}
+
+_stop_current_install() {
+  case "$SERVICE_TYPE" in
+    systemd) $SUDO systemctl stop agentmanager ;;
+    launchd) launchctl stop com.aigenius.agentmanager 2>/dev/null || true ;;
+    *)
+      [ -x "$INSTALL_DIR/bin/agentmanager" ] && \
+        _run_cli_as_target "$INSTALL_DIR/bin/agentmanager" stop 2>/dev/null || true
+      ;;
+  esac
+  _stop_pid_file "$INSTALL_DIR/.agentmanager.pid"
+}
+
+rollback_install() {
+  log_error "Installation failed after replacement; restoring the previous installation."
+  _stop_current_install >/dev/null 2>&1 || true
+  # Infer the exact rename phase from the filesystem. This also closes the tiny
+  # signal window between an atomic mv and the following shell assignment.
+  if [ -e "$BACKUP_DIR" ] && [ -e "$INSTALL_DIR" ]; then
+    rm -rf "$FAILED_DIR"
+    if ! mv "$INSTALL_DIR" "$FAILED_DIR"; then
+      log_error "Could not move the failed release aside. Recovery files remain in $WORK_DIR."
+      return 1
+    fi
+  fi
+  if [ -e "$BACKUP_DIR" ]; then
+    if ! mv "$BACKUP_DIR" "$INSTALL_DIR"; then
+      log_error "Could not restore the previous release. Recovery files remain in $WORK_DIR."
+      return 1
+    fi
+    if ! _start_current_install; then
+      log_error "Previous files were restored, but the previous server could not be restarted."
+    else
+      log_warn "Previous AgentManager installation restored."
+    fi
+  elif [ -e "$EXTRACTED" ] && [ -e "$INSTALL_DIR" ]; then
+    # The old tree was never renamed; only the stop/preserve phase failed.
+    if ! _start_current_install; then
+      log_error "The existing files are intact, but the existing server could not be restarted."
+    fi
+  elif [ ! -e "$EXTRACTED" ] && [ -e "$INSTALL_DIR" ]; then
+    # Fresh install: the staged tree was renamed into place, but there is no
+    # previous release to restore.
+    rm -rf "$FAILED_DIR"
+    if ! mv "$INSTALL_DIR" "$FAILED_DIR"; then
+      log_error "Could not move the failed fresh install aside. Recovery files remain in $WORK_DIR."
+      return 1
+    fi
+  fi
+  ROLLBACK_ARMED=false
+}
+
+if [ "$OS" = "Linux" ] && systemctl is-active --quiet agentmanager 2>/dev/null; then
+  SERVICE_TYPE="systemd"
+elif [ "$OS" = "Darwin" ] && launchctl list com.aigenius.agentmanager >/dev/null 2>&1; then
+  SERVICE_TYPE="launchd"
+fi
+
+log_info "Stopping the existing server for the final directory switch..."
+ROLLBACK_ARMED=true
+_stop_current_install
+
+# Copy mutable local configuration only after the old server has stopped.
+if [ -e "$INSTALL_DIR" ]; then
+  if [ -d "$INSTALL_DIR" ]; then
+    for keep in logs .agentmanager server/.env; do
+      if [ -e "$INSTALL_DIR/$keep" ]; then
+        rm -rf "$EXTRACTED/$keep"
+        mkdir -p "$(dirname "$EXTRACTED/$keep")"
+        cp -a "$INSTALL_DIR/$keep" "$EXTRACTED/$keep"
+      fi
+    done
+    rm -f "$EXTRACTED/.agentmanager.pid"
+  fi
+  mv "$INSTALL_DIR" "$BACKUP_DIR"
+fi
+
+# Both directories are siblings on the same filesystem, so each rename is
+# atomic. The EXIT trap restores BACKUP_DIR if any subsequent step fails.
+mv "$EXTRACTED" "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/logs"
+
+log_ok "AgentManager v${VERSION} staged at $INSTALL_DIR"
 
 # --- Step 4: Install CLI -----------------------------------------------------
 
@@ -564,32 +742,33 @@ log_ok "CLI: $LINK_DIR/agentmanager"
 
 log_step 5 "Starting AgentManager..."
 
-# Start (as target user if we're root)
-if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "root" ]; then
-  su - "$TARGET_USER" -c "PATH=\"$LINK_DIR:\$PATH\" agentmanager start"
-else
-  "$LINK_DIR/agentmanager" start
+_start_current_install
+
+START_PORT="$(_resolve_install_port)"
+SERVER_READY=false
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -fsS --max-time 1 "http://127.0.0.1:${START_PORT}/api/health" >/dev/null 2>&1; then
+    SERVER_READY=true
+    break
+  fi
+  sleep 0.5
+done
+if [ "$SERVER_READY" != true ]; then
+  log_error "The new server did not pass its health check on port ${START_PORT}."
+  exit 1
 fi
 
-# --- Step 5b: Install agentmanager shell function ----------------------------
+# Replacement and startup both succeeded. The previous tree can now be removed.
+ROLLBACK_ARMED=false
+rm -rf "$BACKUP_DIR" || log_warn "Could not remove the previous release staging directory."
 
-# Shell function for launching Claude Code sessions from the terminal.
-# Works in bash and zsh, on Linux and macOS.
+# --- Step 5b: Remove obsolete shell-function shadowing -----------------------
 
+# Older installers defined an `agentmanager()` shell function that intercepted
+# every CLI subcommand. Remove it so the installed executable handles update,
+# status, start, and all other commands.
 AGENTMANAGER_FUNC_MARKER="# AgentManager session launcher function"
 AGENTMANAGER_FUNC_END="# end-agentmanager-session"
-AGENTMANAGER_FUNC_BODY='agentmanager() {
-  local DEFAULT_PROMPT="start up and then ask me what I want you to do. DO NOT DO ANYTHING ELSE, NO TASKS! Just initialize and then prompt me"
-  local prompt="${*:-$DEFAULT_PROMPT}"
-
-  if [ "$PWD" = "$HOME" ]; then
-    echo "Note: Claude Code always prompts for workspace trust when run from your home directory. cd into a project to skip this."
-  fi
-
-  claude "$prompt"
-} '"$AGENTMANAGER_FUNC_END"
-
-# Cross-platform sed -i (BSD sed on macOS requires -i '', GNU sed does not)
 _sed_i() {
   if [ "$OS" = "Darwin" ]; then
     sed -i '' "$@"
@@ -598,12 +777,11 @@ _sed_i() {
   fi
 }
 
-# Legacy markers for cleanup (old hivemind versions)
 LEGACY_MARKERS=(
   "# AgentManager hivemind launcher function|# end-agentmanager-hivemind"
 )
 
-_install_shell_func() {
+_remove_shadowing_shell_func() {
   local RC_FILE="$1"
   [ ! -f "$RC_FILE" ] && return
 
@@ -635,14 +813,11 @@ _install_shell_func() {
     fi
   fi
 
-  echo "" >> "$RC_FILE"
-  echo "$AGENTMANAGER_FUNC_MARKER" >> "$RC_FILE"
-  echo "$AGENTMANAGER_FUNC_BODY" >> "$RC_FILE"
-  log_ok "Installed agentmanager() shell function in $(basename "$RC_FILE")"
+  log_info "Removed obsolete agentmanager() shell function from $(basename "$RC_FILE")"
 }
 
-_install_shell_func "$TARGET_HOME/.bashrc"
-_install_shell_func "$TARGET_HOME/.zshrc"
+_remove_shadowing_shell_func "$TARGET_HOME/.bashrc"
+_remove_shadowing_shell_func "$TARGET_HOME/.zshrc"
 
 # --- Done --------------------------------------------------------------------
 

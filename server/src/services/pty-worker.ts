@@ -26,17 +26,30 @@ const execFileAsync = promisify(execFile);
  *  - PORT / AGENTMANAGER_*_PORT: prevents sandbox port assignments from overriding
  *    child project .env files (dotenv won't override existing env vars) */
 function sessionEnv(): Record<string, string> {
-  const { NODE_ENV, PORT, AGENTMANAGER_API_PORT, AGENTMANAGER_DASH_PORT, ...rest } = process.env;
+  const allowedKeys = [
+    'HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH',
+    'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+    'COLORTERM', 'TMPDIR',
+    'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'XDG_RUNTIME_DIR',
+    'NVM_BIN', 'NVM_DIR', 'FNM_DIR', 'PNPM_HOME', 'VOLTA_HOME', 'BUN_INSTALL',
+    'EDITOR', 'VISUAL', 'PAGER',
+  ] as const;
+  const env: Record<string, string> = {};
+  for (const key of allowedKeys) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
   return {
-    ...rest,
+    ...env,
     TERM: 'xterm-256color',
     AGENTMANAGER_SESSION: '1',
     HEADLESS_WORKERS_DISABLED: '1',
   };
 }
 
-const TIMING_LOG = '/tmp/agentmanager-timing.log';
+const TIMING_LOG = process.env.AGENTMANAGER_TIMING_LOG?.trim() || null;
 function tlog(s: string): void {
+  if (!TIMING_LOG) return;
   try { appendFileSync(TIMING_LOG, `[${new Date().toISOString()}] ${s}\n`); } catch {}
 }
 
@@ -70,6 +83,9 @@ interface SpawnMessage {
   /** Project roots this member is not allowed to see. Linux systemd masks
    *  these paths inside the spawned terminal/agent mount namespace. */
   inaccessiblePaths?: string[];
+  /** Members must always use the explicit systemd sandbox, even when there are
+   * currently no other registered project roots to mask. */
+  sandboxRequired?: boolean;
 }
 
 interface ReconnectMessage {
@@ -116,14 +132,15 @@ function sandboxUnitName(sessionId: string): string {
   return `agentmanager-sandbox-${sessionId.replace(/[^A-Za-z0-9_.-]/g, '-')}`;
 }
 
-function sandboxCommand(
+export function buildSandboxCommand(
   sessionId: string,
   projectPath: string,
   program: string,
   args: string[],
   inaccessiblePaths: string[] = [],
+  sandboxRequired = false,
 ): { program: string; args: string[] } {
-  if (inaccessiblePaths.length === 0) return { program, args };
+  if (!sandboxRequired) return { program, args };
   const properties = inaccessiblePaths.flatMap((path) => ['-p', `InaccessiblePaths=${path}`]);
   return {
     program: 'systemd-run',
@@ -131,6 +148,12 @@ function sandboxCommand(
       '--user', '--quiet', '--wait', '--collect', '--pty', '--service-type=exec',
       `--unit=${sandboxUnitName(sessionId)}`,
       `--working-directory=${projectPath}`,
+      '-p', 'NoNewPrivileges=yes',
+      '-p', 'PrivateTmp=yes',
+      '-p', 'PrivateDevices=yes',
+      '-p', 'ProtectKernelTunables=yes',
+      '-p', 'ProtectKernelModules=yes',
+      '-p', 'ProtectControlGroups=yes',
       ...properties,
       '--', program, ...args,
     ],
@@ -164,6 +187,7 @@ async function tmuxCreate(
   rows: number,
   command?: string,
   inaccessiblePaths: string[] = [],
+  sandboxRequired = false,
 ): Promise<void> {
   const name = tmuxSessionName(sessionId);
   if (tmuxExists(sessionId)) {
@@ -186,7 +210,7 @@ async function tmuxCreate(
     ? [envCmd, ...envArgs, shell, '-i', '-c', command]
     : [envCmd, ...envArgs, shell, '-i'];
   await stopSandbox(sessionId);
-  const sandboxed = sandboxCommand(sessionId, projectPath, baseRunArgs[0], baseRunArgs.slice(1), inaccessiblePaths);
+  const sandboxed = buildSandboxCommand(sessionId, projectPath, baseRunArgs[0], baseRunArgs.slice(1), inaccessiblePaths, sandboxRequired);
 
   await execFileAsync('tmux', [
     ...tmuxBaseArgs, 'new-session', '-d', '-s', name,
@@ -241,14 +265,14 @@ function dtachExists(sessionId: string): boolean {
   }
 }
 
-async function dtachCreate(sessionId: string, projectPath: string, command: string, inaccessiblePaths: string[] = []): Promise<void> {
+async function dtachCreate(sessionId: string, projectPath: string, command: string, inaccessiblePaths: string[] = [], sandboxRequired = false): Promise<void> {
   const sock = dtachSocket(sessionId);
   if (existsSync(sock)) {
     try { unlinkSync(sock); } catch { /* ignore */ }
   }
   const shell = process.env.SHELL || '/bin/bash';
   await stopSandbox(sessionId);
-  const sandboxed = sandboxCommand(sessionId, projectPath, shell, ['-i', '-c', command], inaccessiblePaths);
+  const sandboxed = buildSandboxCommand(sessionId, projectPath, shell, ['-i', '-c', command], inaccessiblePaths, sandboxRequired);
   await execFileAsync('dtach', [
     '-n', sock, '-Ez', sandboxed.program, ...sandboxed.args,
   ], {
@@ -276,7 +300,7 @@ async function dtachKill(sessionId: string): Promise<void> {
 }
 
 function spawnDirect(msg: SpawnMessage, program: string, args: string[]): pty.IPty {
-  const sandboxed = sandboxCommand(msg.sessionId, msg.projectPath, program, args, msg.inaccessiblePaths);
+  const sandboxed = buildSandboxCommand(msg.sessionId, msg.projectPath, program, args, msg.inaccessiblePaths, msg.sandboxRequired);
   return pty.spawn(sandboxed.program, sandboxed.args, {
     name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
     env: sessionEnv(),
@@ -339,10 +363,112 @@ let currentSessionId: string | null = null;
 let hasPipePane = false;
 let useTmux = false;
 let useDtach = false;
+let currentCols = 0;
+let currentRows = 0;
+let ipcBackpressured = false;
+const MAX_WORKER_INPUT_BYTES = 256 * 1024;
+const MAX_PENDING_WORKER_INPUT_BYTES = 64 * 1024;
+const MIN_COLS = 2;
+const MAX_COLS = 1000;
+const MIN_ROWS = 1;
+const MAX_ROWS = 500;
 
-function send(msg: Record<string, unknown>): void {
-  if (process.send) {
-    process.send(msg);
+interface QueuedWorkerInput {
+  data: string;
+  bracketedPaste: boolean;
+}
+
+export class PendingWorkerControls {
+  private inputs: QueuedWorkerInput[] = [];
+  private inputBytes = 0;
+  private resize: { cols: number; rows: number } | null = null;
+  private closeAction: 'kill' | 'release' | null = null;
+
+  constructor(private readonly maxInputBytes = MAX_PENDING_WORKER_INPUT_BYTES) {}
+
+  enqueueInput(data: string, bracketedPaste = false): boolean {
+    if (typeof data !== 'string') return false;
+    const bytes = Buffer.byteLength(data) + 1;
+    if (bytes > this.maxInputBytes - this.inputBytes) return false;
+    this.inputs.push({ data, bracketedPaste });
+    this.inputBytes += bytes;
+    return true;
+  }
+
+  setResize(cols: number, rows: number): boolean {
+    if (!Number.isInteger(cols) || !Number.isInteger(rows)
+      || cols < MIN_COLS || cols > MAX_COLS || rows < MIN_ROWS || rows > MAX_ROWS) return false;
+    this.resize = { cols, rows };
+    return true;
+  }
+
+  takeResize(): { cols: number; rows: number } | null {
+    const resize = this.resize;
+    this.resize = null;
+    return resize;
+  }
+
+  drainInputs(): QueuedWorkerInput[] {
+    const inputs = this.inputs;
+    this.inputs = [];
+    this.inputBytes = 0;
+    return inputs;
+  }
+
+  clear(): void {
+    this.inputs = [];
+    this.inputBytes = 0;
+    this.resize = null;
+    this.closeAction = null;
+  }
+
+  requestClose(action: 'kill' | 'release'): void {
+    this.inputs = [];
+    this.inputBytes = 0;
+    this.resize = null;
+    if (action === 'kill' || this.closeAction === null) this.closeAction = action;
+  }
+
+  get byteLength(): number { return this.inputBytes; }
+  get requestedClose(): 'kill' | 'release' | null { return this.closeAction; }
+}
+
+interface PausableOutputSource {
+  pause(): void;
+  resume(): void;
+}
+
+export function setOutputSourcePaused(
+  paused: boolean,
+  hasPipe: boolean,
+  pipeSource: PausableOutputSource | null,
+  directSource: PausableOutputSource | null,
+): void {
+  const source = hasPipe ? pipeSource : directSource;
+  if (paused) source?.pause();
+  else source?.resume();
+}
+
+function send(msg: Record<string, unknown>): boolean {
+  if (!process.send) return false;
+  // State tracking is best-effort during IPC congestion. Display output is
+  // preserved; pausing pipe-pane prevents its queue from growing further.
+  if (ipcBackpressured && msg.type === 'pty-data') return false;
+  try {
+    let queuedBehindBackpressure = false;
+    const writable = process.send(msg, (err) => {
+      if (!queuedBehindBackpressure) return;
+      ipcBackpressured = false;
+      if (!err) setOutputSourcePaused(false, hasPipePane, pipePaneStream, ptyProcess);
+    });
+    queuedBehindBackpressure = !writable;
+    if (!writable) {
+      ipcBackpressured = true;
+      setOutputSourcePaused(true, hasPipePane, pipePaneStream, ptyProcess);
+    }
+    return writable;
+  } catch {
+    return false;
   }
 }
 
@@ -350,14 +476,15 @@ function wireOutput(): void {
   if (!ptyProcess) return;
 
   ptyProcess.onData((data: string) => {
-    // Always send PTY output for state tracking in the parent
-    send({ type: 'pty-data', data });
-
-    if (!hasPipePane) {
+    if (hasPipePane) {
+      // pipe-pane is the display stream; the attached PTY is used only for
+      // best-effort process-state tracking.
+      send({ type: 'pty-data', data });
+    } else {
       // No pipe-pane: PTY output IS the display output.
       // Strip focus reporting sequences so TUIs can't enable focus events on the client xterm.
       const filtered = data.replace(FOCUS_REPORT_RE, '');
-      if (filtered) send({ type: 'output', data: filtered });
+      if (filtered) send({ type: 'output', data: filtered, track: true });
     }
   });
 
@@ -392,10 +519,17 @@ function wireOutput(): void {
    Spawn handlers
    ================================================================ */
 
-async function handleSpawn(msg: SpawnMessage): Promise<void> {
+interface LifecycleReady {
+  pid: number;
+  tmux?: boolean;
+}
+
+async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
   currentSessionId = msg.sessionId;
   useTmux = msg.useTmux;
   useDtach = msg.useDtach;
+  currentCols = msg.cols;
+  currentRows = msg.rows;
   const shell = process.env.SHELL || '/bin/bash';
   const sessionCmd = msg.sessionCommand || 'claude';
   const cliType = msg.cliType || 'claude';
@@ -403,7 +537,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
   try {
     if (msg.mode === 'terminal') {
       if (msg.useTmux) {
-        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, undefined, msg.inaccessiblePaths);
+        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, undefined, msg.inaccessiblePaths, msg.sandboxRequired);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
           pipePaneStream = pp.stream;
@@ -415,7 +549,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
           env: sessionEnv(),
         });
       } else if (msg.useDtach) {
-        await dtachCreate(msg.sessionId, msg.projectPath, shell, msg.inaccessiblePaths);
+        await dtachCreate(msg.sessionId, msg.projectPath, shell, msg.inaccessiblePaths, msg.sandboxRequired);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
           name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
@@ -428,7 +562,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
       // agent mode — launch CLI with --agent flag
       const command = buildAgentCommand(msg.agentType, msg.task, msg.useTmux, sessionCmd, cliType, msg.assignSessionId, msg.codexBindingPath);
       if (msg.useTmux) {
-        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command, msg.inaccessiblePaths);
+        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command, msg.inaccessiblePaths, msg.sandboxRequired);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
           pipePaneStream = pp.stream;
@@ -440,7 +574,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
           env: sessionEnv(),
         });
       } else if (msg.useDtach) {
-        await dtachCreate(msg.sessionId, msg.projectPath, command, msg.inaccessiblePaths);
+        await dtachCreate(msg.sessionId, msg.projectPath, command, msg.inaccessiblePaths, msg.sandboxRequired);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
           name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
@@ -453,7 +587,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
       // session mode
       if (msg.useTmux) {
         const command = buildSessionCommand(msg.task, true, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath);
-        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command, msg.inaccessiblePaths);
+        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command, msg.inaccessiblePaths, msg.sandboxRequired);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
           pipePaneStream = pp.stream;
@@ -466,7 +600,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
         });
       } else if (msg.useDtach) {
         const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath);
-        await dtachCreate(msg.sessionId, msg.projectPath, command, msg.inaccessiblePaths);
+        await dtachCreate(msg.sessionId, msg.projectPath, command, msg.inaccessiblePaths, msg.sandboxRequired);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
           name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
@@ -479,29 +613,28 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
     }
 
     wireOutput();
-    send({ type: 'ready', pid: ptyProcess.pid });
+    return { pid: ptyProcess.pid };
   } catch (err: any) {
-    send({ type: 'error', message: `Spawn failed: ${err.message}` });
-    process.exit(1);
+    throw new Error(`Spawn failed: ${err.message}`);
   }
 }
 
-async function handleReconnect(msg: ReconnectMessage): Promise<void> {
+async function handleReconnect(msg: ReconnectMessage): Promise<LifecycleReady> {
   const t0 = Date.now();
   currentSessionId = msg.sessionId;
   useTmux = msg.useTmux;
   useDtach = msg.useDtach;
+  currentCols = msg.cols;
+  currentRows = msg.rows;
 
   try {
     const hasTmuxSession = msg.useTmux && tmuxExists(msg.sessionId);
     const hasDtachSession = msg.useDtach && dtachExists(msg.sessionId);
-    const log = (s: string) => appendFileSync('/tmp/agentmanager-timing.log', s + '\n');
+    const log = (s: string) => tlog(s);
     log(`[PTY-WORKER] ${msg.sessionId}: exists_check=${Date.now()-t0}ms`);
 
     if (!hasTmuxSession && !hasDtachSession) {
-      send({ type: 'error', message: 'No tmux or dtach session found to reconnect' });
-      process.exit(1);
-      return;
+      throw new Error('No tmux or dtach session found to reconnect');
     }
 
     if (hasTmuxSession) {
@@ -531,17 +664,18 @@ async function handleReconnect(msg: ReconnectMessage): Promise<void> {
 
     wireOutput();
     console.log(`[PTY-WORKER] ${msg.sessionId}: total_reconnect=${Date.now()-t0}ms`);
-    send({ type: 'ready', pid: ptyProcess.pid, tmux: hasTmuxSession });
+    return { pid: ptyProcess.pid, tmux: hasTmuxSession };
   } catch (err: any) {
     console.log(`[PTY-WORKER] ${msg.sessionId}: reconnect_failed=${Date.now()-t0}ms err=${err.message}`);
-    send({ type: 'error', message: `Reconnect failed: ${err.message}` });
-    process.exit(1);
+    throw new Error(`Reconnect failed: ${err.message}`);
   }
 }
 
-async function handleAdopt(msg: AdoptMessage): Promise<void> {
+async function handleAdopt(msg: AdoptMessage): Promise<LifecycleReady> {
   currentSessionId = msg.sessionId;
   useTmux = msg.useTmux;
+  currentCols = msg.cols;
+  currentRows = msg.rows;
 
   try {
     // Use -r none on initial attach — the browser's resize will trigger SIGWINCH
@@ -568,43 +702,14 @@ async function handleAdopt(msg: AdoptMessage): Promise<void> {
     }
 
     wireOutput();
-    send({ type: 'ready', pid: ptyProcess.pid });
-
-    // Force a redraw: -r none starts blank, so do a cols-1→cols resize trick
-    // to trigger SIGWINCH through dtach, making the app re-render its screen.
-    // Delay to let pipe-pane fully initialize and start capturing.
-    setTimeout(() => {
-      if (ptyProcess && msg.useTmux) {
-        try {
-          execFileSync('tmux', [
-            ...tmuxBaseArgs, 'resize-pane', '-t', tmuxSessionName(msg.sessionId), '-x', String(msg.cols - 1),
-          ], { stdio: 'ignore' });
-          setTimeout(() => {
-            try {
-              execFileSync('tmux', [
-                ...tmuxBaseArgs, 'resize-pane', '-t', tmuxSessionName(msg.sessionId), '-x', String(msg.cols),
-              ], { stdio: 'ignore' });
-            } catch { /* ignore */ }
-          }, 50);
-        } catch { /* ignore */ }
-      } else if (ptyProcess) {
-        // Non-tmux: resize the PTY directly
-        try {
-          ptyProcess.resize(msg.cols - 1, msg.rows);
-          setTimeout(() => {
-            try { ptyProcess!.resize(msg.cols, msg.rows); } catch { /* ignore */ }
-          }, 50);
-        } catch { /* ignore */ }
-      }
-    }, 300);
+    return { pid: ptyProcess.pid };
   } catch (err: any) {
-    send({ type: 'error', message: `Adopt failed: ${err.message}` });
-    process.exit(1);
+    throw new Error(`Adopt failed: ${err.message}`);
   }
 }
 
 function handleInput(data: string, isBracketedPaste = false): void {
-  if (!ptyProcess) return;
+  if (!ptyProcess || typeof data !== 'string' || Buffer.byteLength(data) > MAX_WORKER_INPUT_BYTES) return;
   const cleaned = data.replace(TERMINAL_RESPONSE_RE, '');
   if (!cleaned) return;
   if (isBracketedPaste) {
@@ -618,7 +723,16 @@ function handleInput(data: string, isBracketedPaste = false): void {
 
 function handleResize(cols: number, rows: number): void {
   if (!ptyProcess) return;
-  ptyProcess.resize(cols, rows);
+  if (!Number.isInteger(cols) || !Number.isInteger(rows)
+    || cols < MIN_COLS || cols > MAX_COLS || rows < MIN_ROWS || rows > MAX_ROWS) return;
+  if (cols === currentCols && rows === currentRows) return;
+  try {
+    ptyProcess.resize(cols, rows);
+    currentCols = cols;
+    currentRows = rows;
+  } catch (err) {
+    send({ type: 'error', message: `Resize failed: ${err instanceof Error ? err.message : String(err)}` });
+  }
 }
 
 /** Capture the current tmux pane content (with escape sequences) and send via IPC.
@@ -721,17 +835,91 @@ async function handleRelease(): Promise<void> {
    Main IPC message handler
    ================================================================ */
 
-process.on('message', async (msg: ParentMessage) => {
+type WorkerPhase = 'idle' | 'starting' | 'ready' | 'closing' | 'closed';
+let workerPhase: WorkerPhase = 'idle';
+let closeAction: 'kill' | 'release' = 'kill';
+const pendingControls = new PendingWorkerControls();
+
+async function startLifecycle(msg: SpawnMessage | ReconnectMessage | AdoptMessage): Promise<void> {
+  workerPhase = 'starting';
+  try {
+    const ready = msg.type === 'spawn'
+      ? await handleSpawn(msg)
+      : msg.type === 'reconnect'
+        ? await handleReconnect(msg)
+        : await handleAdopt(msg);
+
+    // A kill/release received while creation was blocked must run against the
+    // newly-created PTY/session before this worker exits.
+    if ((workerPhase as WorkerPhase) === 'closing') {
+      const startupClose = pendingControls.requestedClose || closeAction;
+      pendingControls.clear();
+      if (startupClose === 'release') await handleRelease();
+      else await handleKill();
+      workerPhase = 'closed';
+      return;
+    }
+
+    const resize = pendingControls.takeResize();
+    if (resize) handleResize(resize.cols, resize.rows);
+    workerPhase = 'ready';
+    send({ type: 'ready', ...ready });
+    for (const input of pendingControls.drainInputs()) {
+      handleInput(input.data, input.bracketedPaste);
+    }
+  } catch (err) {
+    pendingControls.clear();
+    workerPhase = 'closing';
+    send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+    await handleKill().catch(() => {});
+    workerPhase = 'closed';
+    setTimeout(() => process.exit(1), 50);
+  }
+}
+
+function receiveParentMessage(msg: ParentMessage): void {
+  if (workerPhase === 'closed') return;
+
+  if (workerPhase === 'idle') {
+    if (msg.type === 'spawn' || msg.type === 'reconnect' || msg.type === 'adopt') {
+      void startLifecycle(msg);
+    } else if (msg.type === 'kill' || msg.type === 'release') {
+      workerPhase = 'closed';
+      send({ type: 'killed' });
+      setTimeout(() => process.exit(0), 50);
+    }
+    return;
+  }
+
+  if (workerPhase === 'starting') {
+    if (msg.type === 'input') {
+      if (!pendingControls.enqueueInput(msg.data, msg.bracketedPaste)) {
+        pendingControls.requestClose('kill');
+        workerPhase = 'closing';
+        closeAction = 'kill';
+        send({ type: 'error', message: 'Pending worker input is too large' });
+      }
+    } else if (msg.type === 'resize') {
+      pendingControls.setResize(msg.cols, msg.rows);
+    } else if (msg.type === 'kill' || msg.type === 'release') {
+      pendingControls.requestClose(msg.type);
+      workerPhase = 'closing';
+      closeAction = msg.type;
+    } else if (msg.type === 'capture') {
+      send({ type: 'capture', data: null });
+    }
+    return;
+  }
+
+  if (workerPhase === 'closing') {
+    if (msg.type === 'kill') {
+      closeAction = 'kill';
+      pendingControls.requestClose('kill');
+    }
+    return;
+  }
+
   switch (msg.type) {
-    case 'spawn':
-      await handleSpawn(msg);
-      break;
-    case 'reconnect':
-      await handleReconnect(msg);
-      break;
-    case 'adopt':
-      await handleAdopt(msg as AdoptMessage);
-      break;
     case 'input':
       handleInput(msg.data, msg.bracketedPaste);
       break;
@@ -742,16 +930,33 @@ process.on('message', async (msg: ParentMessage) => {
       handleCapture();
       break;
     case 'kill':
-      await handleKill();
+      workerPhase = 'closing';
+      closeAction = 'kill';
+      void handleKill().finally(() => { workerPhase = 'closed'; });
       break;
     case 'release':
-      await handleRelease();
+      workerPhase = 'closing';
+      closeAction = 'release';
+      void handleRelease().finally(() => { workerPhase = 'closed'; });
+      break;
+    case 'spawn':
+    case 'reconnect':
+    case 'adopt':
+      send({ type: 'error', message: 'PTY lifecycle is already initialized' });
       break;
   }
-});
+}
+
+process.on('message', receiveParentMessage);
 
 // If the parent dies, clean up and exit
 process.on('disconnect', () => {
+  if (workerPhase === 'starting' || workerPhase === 'closing') {
+    pendingControls.requestClose('kill');
+    closeAction = 'kill';
+    workerPhase = 'closing';
+    return;
+  }
   if (ptyProcess) {
     try { ptyProcess.kill('SIGTERM'); } catch { /* dead */ }
   }

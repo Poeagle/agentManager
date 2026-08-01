@@ -1,5 +1,10 @@
+import Database from 'better-sqlite3';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { getDb } from '../src/db/index.js';
+import { config } from '../src/config.js';
+import { closeDb, getDb, initDb } from '../src/db/index.js';
 import { createTestDatabase } from './helpers/database.js';
 
 let cleanup: (() => void) | undefined;
@@ -14,10 +19,45 @@ describe('database schema and durable session identity', () => {
       'claude_session_id',
       'codex_session_id',
       'cli_type',
+      'terminal_cols',
+      'terminal_rows',
     ]));
 
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
     expect(tables.map((table) => table.name)).toContain('user_ui_state');
+    expect(db.pragma('user_version', { simple: true })).toBe(2);
+  });
+
+  it('preserves legacy project prompt data while migrating', () => {
+    closeDb();
+    const dir = mkdtempSync(join(tmpdir(), 'agentmanager-legacy-db-'));
+    const path = join(dir, 'agentmanager.db');
+    const legacy = new Database(path);
+    legacy.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        path TEXT NOT NULL UNIQUE,
+        description TEXT,
+        claude_flow_prompt TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    legacy.prepare('INSERT INTO projects (id, name, path, claude_flow_prompt) VALUES (?, ?, ?, ?)')
+      .run('legacy', 'Legacy', '/tmp/legacy', 'keep this prompt');
+    legacy.close();
+
+    config.dbPath = path;
+    initDb();
+    const migrated = getDb().prepare('SELECT session_prompt FROM projects WHERE id = ?').get('legacy') as { session_prompt: string };
+    expect(migrated.session_prompt).toBe('keep this prompt');
+    expect(getDb().pragma('user_version', { simple: true })).toBe(2);
+
+    cleanup = () => {
+      closeDb();
+      rmSync(dir, { recursive: true, force: true });
+    };
   });
 
   it('persists a stable app session to Codex conversation mapping', () => {

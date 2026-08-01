@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api, type AuthUser, type Project, type ProjectToolPermissions, type ProjectUserAccess } from '../lib/api';
 import { Check, Loader2, ShieldCheck, X } from 'lucide-react';
 
@@ -223,18 +224,19 @@ function ChangePassword() {
 }
 
 function UserAdmin({ currentUserId }: { currentUserId: string }) {
-  const [users, setUsers] = useState<AuthUser[]>([]);
   const [err, setErr] = useState('');
   const [nu, setNu] = useState({ username: '', password: '', display_name: '', role: 'member' as 'admin' | 'member', max_tabs: 10 });
 
-  const refresh = useCallback(async () => {
-    try { setUsers((await api.users.list()).users); } catch (e) { setErr(e instanceof Error ? e.message : ''); }
-  }, []);
-  useEffect(() => { refresh(); }, [refresh]);
+  const usersQuery = useQuery({
+    queryKey: ['users'],
+    queryFn: api.users.list,
+  });
+  const users = usersQuery.data?.users ?? [];
+  const displayedError = err || (usersQuery.error instanceof Error ? usersQuery.error.message : '');
 
   const act = async (fn: () => Promise<unknown>) => {
     setErr('');
-    try { await fn(); await refresh(); } catch (e) { setErr(e instanceof Error ? e.message : '失败'); }
+    try { await fn(); await usersQuery.refetch(); } catch (e) { setErr(e instanceof Error ? e.message : '失败'); }
   };
 
   const create = (e: React.FormEvent) => {
@@ -271,7 +273,7 @@ function UserAdmin({ currentUserId }: { currentUserId: string }) {
               className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
             >重置密码</button>
             {u.role !== 'admin' && (
-              <TabLimitInput value={u.max_tabs ?? 10} onSave={(max_tabs) => act(() => api.users.update(u.id, { max_tabs }))} />
+              <TabLimitInput key={`${u.id}:${u.max_tabs ?? 10}`} value={u.max_tabs ?? 10} onSave={(max_tabs) => act(() => api.users.update(u.id, { max_tabs }))} />
             )}
             {u.id !== currentUserId && (
               <>
@@ -320,14 +322,13 @@ function UserAdmin({ currentUserId }: { currentUserId: string }) {
         </div>
       </form>
 
-      {err && <div className="text-xs" style={{ color: 'var(--error)' }}>{err}</div>}
+      {displayedError && <div className="text-xs" style={{ color: 'var(--error)' }}>{displayedError}</div>}
     </div>
   );
 }
 
 function TabLimitInput({ value, onSave }: { value: number; onSave: (value: number) => void }) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
   return (
     <label className="flex items-center gap-1 text-xs" style={{ color: 'var(--text-secondary)' }} title="最多活动会话标签数；0 表示禁止创建">
       上限

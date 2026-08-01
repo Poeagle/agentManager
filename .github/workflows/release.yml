@@ -35,7 +35,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: server-archive
-          path: agentmanager-v*.tar.gz
+          path: agentmanager-v*.tar.gz*
 
   # Create GitHub Release with all assets
   release:
@@ -60,7 +60,7 @@ jobs:
           # Mark as pre-release if tag contains alpha/beta/rc
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
           files: |
-            release-assets/server-archive/*.tar.gz
+            release-assets/server-archive/*.tar.gz*
           fail_on_unmatched_files: false
 
       # Publish to npm using granular access token
@@ -71,4 +71,3 @@ jobs:
           npm publish --access public
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-

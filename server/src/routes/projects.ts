@@ -1,13 +1,14 @@
 import { FastifyPluginAsync } from 'fastify';
 import { getDb } from '../db/index.js';
 import { nanoid } from 'nanoid';
-import { readdir, mkdir, readFile, writeFile } from 'fs/promises';
-import { join, resolve, basename } from 'path';
+import { readdir, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'fs/promises';
+import { dirname, join, resolve, basename } from 'path';
 import { homedir } from 'os';
 import { existsSync } from 'fs';
 import { installDefaultAgents } from '../data/default-agents.js';
 import { getProjectToolAccess, isAdmin as isAdminUser, setProjectToolAccess, removeProjectUserAccess, userOwnsProject, userProjectIds } from '../auth.js';
 import { killSession } from '../services/session-manager.js';
+import { config } from '../config.js';
 
 export interface Project {
   id: string;
@@ -44,16 +45,31 @@ function toBool(v: number): boolean {
   return Number(v) === 1;
 }
 
-/** ~/.agentmanager/projects.json — portable backup, not the source of truth */
-const AGENTMANAGER_DIR = join(homedir(), '.agentmanager');
-const PROJECTS_FILE = join(AGENTMANAGER_DIR, 'projects.json');
+/** projects.json beside the configured DB — portable backup, not the source of truth. */
+function projectsFile(): string {
+  return join(dirname(config.dbPath), 'projects.json');
+}
+
+async function canonicalProjectDirectory(input: string): Promise<string> {
+  const canonical = await realpath(resolve(input));
+  const info = await stat(canonical);
+  if (!info.isDirectory()) throw new Error('Project path is not a directory');
+  return canonical;
+}
 
 /** Export current DB projects to the config file (for portability across DB resets) */
 async function exportToConfig(): Promise<void> {
   const db = getDb();
   const rows = db.prepare('SELECT name, path, description, session_prompt, openclaw_prompt, default_web_url FROM projects ORDER BY name COLLATE NOCASE').all();
-  await mkdir(AGENTMANAGER_DIR, { recursive: true });
-  await writeFile(PROJECTS_FILE, JSON.stringify({ projects: rows }, null, 2), 'utf-8');
+  const destination = projectsFile();
+  await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+  const temporary = `${destination}.${process.pid}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify({ projects: rows }, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    await rename(temporary, destination);
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
+  }
 }
 
 function findProjectById(db: ReturnType<typeof getDb>, projectId: string): Project | undefined {
@@ -116,18 +132,44 @@ export async function initProjects(): Promise<void> {
 
   // DB is empty — try importing from config file
   try {
-    const raw = await readFile(PROJECTS_FILE, 'utf-8');
+    const raw = await readFile(projectsFile(), 'utf-8');
     const data = JSON.parse(raw);
     const configs = Array.isArray(data.projects) ? data.projects : [];
 
-    let imported = 0;
+    const prepared: Array<Record<string, unknown>> = [];
     for (const p of configs) {
-      if (!p.name || !p.path) continue;
-      const id = nanoid(12);
-      db.prepare('INSERT INTO projects (id, name, path, description, session_prompt, openclaw_prompt, default_web_url) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(id, p.name, p.path, p.description || null, p.session_prompt || null, p.openclaw_prompt || null, p.default_web_url || null);
-      imported++;
+      if (!p || typeof p !== 'object' || typeof p.name !== 'string' || !p.name.trim() || typeof p.path !== 'string') continue;
+      try {
+        prepared.push({
+          ...p,
+          id: nanoid(12),
+          name: p.name.trim(),
+          path: await canonicalProjectDirectory(p.path),
+        });
+      } catch {
+        // Ignore stale or inaccessible paths in the portable backup.
+      }
     }
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO projects
+        (id, name, path, description, session_prompt, openclaw_prompt, default_web_url)
+      VALUES (@id, @name, @path, @description, @session_prompt, @openclaw_prompt, @default_web_url)
+    `);
+    const imported = db.transaction((rows: Array<Record<string, unknown>>) => {
+      let changes = 0;
+      for (const row of rows) {
+        changes += insert.run({
+          id: row.id,
+          name: row.name,
+          path: row.path,
+          description: row.description || null,
+          session_prompt: row.session_prompt || null,
+          openclaw_prompt: row.openclaw_prompt || null,
+          default_web_url: row.default_web_url || null,
+        }).changes;
+      }
+      return changes;
+    })(prepared);
     if (imported > 0) {
       console.log(`  Imported ${imported} projects from ~/.agentmanager/projects.json`);
     }
@@ -177,17 +219,25 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     Body: { name: string; path: string; description?: string; session_prompt?: string; openclaw_prompt?: string; default_web_url?: string; color?: string };
   }>('/projects', async (req, reply) => {
     if (!isAdminUser(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
-    const { name, path, description, session_prompt, openclaw_prompt, default_web_url, color } = req.body;
-    if (!name || !path) return reply.status(400).send({ error: 'name and path are required' });
+    const { name, path, description, session_prompt, openclaw_prompt, default_web_url, color } = req.body ?? {};
+    if (typeof name !== 'string' || !name.trim() || name.length > 128 || typeof path !== 'string' || !path.trim()) {
+      return reply.status(400).send({ error: 'A valid name and path are required' });
+    }
+    let canonicalPath: string;
+    try {
+      canonicalPath = await canonicalProjectDirectory(path);
+    } catch {
+      return reply.status(400).send({ error: 'Project path must be an existing directory' });
+    }
 
     const db = getDb();
     const id = nanoid(12);
 
-    const existing = db.prepare('SELECT id FROM projects WHERE path = ?').get(path);
+    const existing = db.prepare('SELECT id FROM projects WHERE path = ?').get(canonicalPath);
     if (existing) return reply.status(409).send({ error: 'Project with this path already exists' });
 
     db.prepare('INSERT INTO projects (id, name, path, description, session_prompt, openclaw_prompt, default_web_url, color, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, name, path, description || null, session_prompt || null, openclaw_prompt || null, default_web_url || null, color || '', req.user!.id);
+      .run(id, name.trim(), canonicalPath, description || null, session_prompt || null, openclaw_prompt || null, default_web_url || null, color || '', req.user!.id);
 
     setProjectToolAccess({
       projectId: id,
@@ -254,11 +304,26 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     const project = findProjectById(db, req.params.id);
     if (!project || !canWriteProject(req.user!.id, project)) return reply.status(404).send({ error: 'Project not found' });
 
-    // Nullify foreign key references before deleting (sessions/tasks/events may reference this project)
-    db.prepare('UPDATE sessions SET project_id = NULL WHERE project_id = ?').run(req.params.id);
-    db.prepare('UPDATE tasks SET project_id = NULL WHERE project_id = ?').run(req.params.id);
-    db.prepare('UPDATE events SET project_id = NULL WHERE project_id = ?').run(req.params.id);
-    const result = db.prepare('DELETE FROM projects WHERE id = ?').run(req.params.id);
+    // A live process must never outlive the project registration that defines
+    // its filesystem boundary. Stop it before removing the foreign key.
+    const activeSessions = db.prepare(`
+      SELECT id FROM sessions
+      WHERE project_id = ?
+        AND status IN ('pending', 'launching', 'running', 'detached', 'released')
+    `).all(req.params.id) as { id: string }[];
+    try {
+      await Promise.all(activeSessions.map((session) => killSession(session.id)));
+    } catch {
+      return reply.status(500).send({ error: 'Failed to stop active project sessions' });
+    }
+
+    const result = db.transaction((projectId: string) => {
+      // Preserve history while removing the project itself.
+      db.prepare('UPDATE sessions SET project_id = NULL WHERE project_id = ?').run(projectId);
+      db.prepare('UPDATE tasks SET project_id = NULL WHERE project_id = ?').run(projectId);
+      db.prepare('UPDATE events SET project_id = NULL WHERE project_id = ?').run(projectId);
+      return db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
+    })(req.params.id);
     if (result.changes === 0) return reply.status(404).send({ error: 'Project not found' });
 
     await exportToConfig();

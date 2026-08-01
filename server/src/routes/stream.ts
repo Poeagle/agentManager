@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from 'fastify';
 import { subscribe } from '../services/event-store.js';
-import { isAdmin, userOwnsProject, userOwnsSession } from '../auth.js';
+import { isAdmin, readSessionCookie, userOwnsProject, userOwnsSession } from '../auth.js';
+import { registerUserConnection } from '../services/user-connections.js';
 
 /**
  * WebSocket stream for real-time events to the dashboard.
@@ -9,6 +10,7 @@ import { isAdmin, userOwnsProject, userOwnsSession } from '../auth.js';
 export const streamRoutes: FastifyPluginAsync = async (app) => {
   app.get('/stream', { websocket: true }, (socket, req) => {
     const userId = req.user?.id;
+    if (!userId || !registerUserConnection(userId, readSessionCookie(req), socket)) return;
     // Subscribe to events
     const unsubscribe = subscribe((event: any) => {
       // Administrator tab-management events are private to the affected user

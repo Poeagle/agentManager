@@ -337,7 +337,9 @@ export const useShortcutStore = create<ShortcutStore>((set, get) => ({
         set({ bindings: parsed as Bindings, loaded: true });
         return;
       }
-    } catch {}
+    } catch {
+      // Ignore malformed persisted settings and fall back to defaults.
+    }
     set({ bindings: {}, loaded: true });
   },
   getEffective: (actionId) => {

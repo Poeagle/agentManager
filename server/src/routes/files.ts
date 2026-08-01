@@ -2,8 +2,8 @@ import { FastifyPluginAsync } from 'fastify';
 import { readdir, stat, lstat, readFile, writeFile, rm, rename, cp } from 'fs/promises';
 import { createReadStream } from 'fs';
 import { join, resolve, extname, dirname, basename } from 'path';
-import { exec } from 'child_process';
-import { userOwnsFilesystemPath } from '../auth.js';
+import { execFile } from 'child_process';
+import { isAdmin, userOwnsFilesystemPath } from '../auth.js';
 import { createDirectoryExport } from '../services/file-export-process.js';
 
 interface FileEntry {
@@ -160,9 +160,9 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 
   // Write file contents
   app.put<{
-    Body: { path: string; content: string };
+    Body: { path: string; content: string; expectedContent?: string };
   }>('/files/write', async (req, reply) => {
-    const { path: filePath, content } = req.body || {};
+    const { path: filePath, content, expectedContent } = req.body || {};
     if (!filePath) return reply.status(400).send({ error: 'path is required' });
     if (typeof content !== 'string') return reply.status(400).send({ error: 'content is required' });
 
@@ -171,6 +171,13 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
     try {
       // Verify file exists (won't create new files)
       await stat(resolved);
+      if (expectedContent !== undefined) {
+        if (typeof expectedContent !== 'string') return reply.status(400).send({ error: 'expectedContent must be a string' });
+        const currentContent = await readFile(resolved, 'utf-8');
+        if (currentContent !== expectedContent) {
+          return reply.status(409).send({ error: 'File changed on disk; reload it before saving' });
+        }
+      }
       await writeFile(resolved, content, 'utf-8');
       const newStats = await stat(resolved);
       return { ok: true, size: newStats.size };
@@ -197,15 +204,17 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
     return new Promise((resolvePromise) => {
       // Use -U3 for 3-line context (default) and histogram algorithm for better hunk splitting.
       // git diff --no-index exits 1 when files differ — that's not an error.
-      exec(
-        `git diff --no-index -U1 --diff-algorithm=histogram -- "${resolvedA}" "${resolvedB}"`,
+      execFile(
+        'git',
+        ['diff', '--no-index', '-U1', '--diff-algorithm=histogram', '--', resolvedA, resolvedB],
         { maxBuffer: 5 * 1024 * 1024 },
         (err, stdout) => {
           // Exit code 1 = files differ (normal), 0 = identical
           if (err && err.code !== 1) {
             // Fallback to diff -u if git not available
-            exec(
-              `diff -u "${resolvedA}" "${resolvedB}"`,
+            execFile(
+              'diff',
+              ['-u', resolvedA, resolvedB],
               { maxBuffer: 5 * 1024 * 1024 },
               (err2, stdout2) => {
                 reply.send({ diff: stdout2 || '' });
@@ -392,13 +401,14 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
   app.post<{
     Body: { path: string };
   }>('/open-vscode', async (req, reply) => {
+    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
     const { path } = req.body;
     if (!path) return reply.status(400).send({ error: 'path is required' });
 
     const resolved = resolve(path);
 
     return new Promise((resolvePromise) => {
-      exec(`code "${resolved}"`, (err) => {
+      execFile('code', [resolved], (err) => {
         if (err) {
           reply.status(500).send({ error: 'Failed to open VS Code', details: err.message });
         } else {

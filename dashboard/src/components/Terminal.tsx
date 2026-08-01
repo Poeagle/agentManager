@@ -62,27 +62,19 @@ function openTerminalLink(url: string) {
   window.open(parsed.href, '_blank', 'noopener,noreferrer');
 }
 
-// Strip mouse-tracking enable sequences (DECSET 1000/1001/1002/1003) from terminal
-// output so the browser xterm never enters mouse-reporting mode. Otherwise a TUI
-// that turns on mouse tracking (e.g. Claude Code 2.1.18x) captures the user's
-// drag-select and copies it into the tmux buffer via an OSC52 the browser can't
-// reach ("copied N chars to tmux buffer"), instead of letting xterm do a native
-// selection the user can Ctrl+Shift+C out. Belt-and-suspenders with the server's
-// CLAUDE_CODE_DISABLE_MOUSE=1 — and the only thing that fixes already-running
-// sessions (they re-assert mouse mode on redraw) without restarting them.
-const MOUSE_ENABLE_RE = /\x1b\[\?100[0123]h/g;
+const WRITE_CHUNK_SIZE = 16 * 1024;
+const MAX_QUEUED_OUTPUT = 512 * 1024;
+const HEARTBEAT_INTERVAL_MS = 20_000;
+const HEARTBEAT_TIMEOUT_MS = 8_000;
 
-
-// Global terminal connection tracking — lets App.tsx show a "connecting" indicator
-const pendingTerminals = new Set<string>();
-const connectionListeners = new Set<() => void>();
-export function getPendingTerminalCount() { return pendingTerminals.size; }
-export function onTerminalConnectionChange(fn: () => void) {
-  connectionListeners.add(fn);
-  return () => { connectionListeners.delete(fn); };
-}
-function notifyConnectionChange() {
-  for (const fn of connectionListeners) fn();
+function sanitizeTerminalOutput(data: string) {
+  let sanitized = data;
+  for (const mode of ['1000', '1001', '1002', '1003']) {
+    sanitized = sanitized.split(`\u001b[?${mode}h`).join('');
+  }
+  return sanitized
+    .split('\u001b[?1004h').join('')
+    .split('\u001b[?1004l').join('');
 }
 
 // Live progress for a pasted/dropped file being shared with the session.
@@ -133,6 +125,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     staleTime: 30_000,
   });
   const configuredFontSize = Number(settingsData?.settings?.terminal_font_size) || 12;
+  const initialFontSizeRef = useRef(configuredFontSize);
   const [showHistory, setShowHistory] = useState(false);
 
   // Expose connect/disconnect so the suspension effect can control it
@@ -147,11 +140,26 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   hideCursorRef.current = hideCursor;
   const cliTypeRef = useRef(cliType);
   cliTypeRef.current = cliType;
+  const onExitRef = useRef(onExit);
+  onExitRef.current = onExit;
+  const lastSentSizeRef = useRef<{ socket: WebSocket; cols: number; rows: number } | null>(null);
   // Debounce fresh-screen snapshots when a terminal becomes visible. Hidden
   // WebGL canvases can lose their painted texture, and a truncated raw replay
   // can contain only a TUI's latest status-line redraw.
   const displayRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   isSuspendedRef.current = suspended;
+
+  const sendCurrentSize = useCallback(() => {
+    if (passiveResizeRef.current) return;
+    const socket = wsRef.current;
+    const term = termRef.current;
+    if (!term || !socket || socket.readyState !== WebSocket.OPEN) return;
+
+    const previous = lastSentSizeRef.current;
+    if (previous?.socket === socket && previous.cols === term.cols && previous.rows === term.rows) return;
+    socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+    lastSentSizeRef.current = { socket, cols: term.cols, rows: term.rows };
+  }, []);
 
   // Hard refresh — the dedicated "screen is messed up, fix it" path. Always
   // clears the xterm buffer first so stale stacked renders are discarded,
@@ -175,7 +183,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     if (cliTypeRef.current === 'codex') {
       // Codex doesn't redraw on SIGWINCH. Send resize so tmux pane matches
       // our width, then clear and request a capture-pane refresh.
-      w.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      sendCurrentSize();
       setTimeout(() => {
         if (w.readyState !== WebSocket.OPEN) return;
         term.reset();
@@ -190,18 +198,11 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       // in an already-reset buffer. Resetting up-front (the old order) left a
       // gap where the freshly-resized redraw streamed into a buffer we were
       // about to clear — racing the grid's initial resize and re-garbling.
-      const cols = term.cols;
-      const rows = term.rows;
-      w.send(JSON.stringify({ type: 'resize', cols, rows }));
+      sendCurrentSize();
       setTimeout(() => {
         if (w.readyState !== WebSocket.OPEN) return;
         term.reset();
-        w.send(JSON.stringify({ type: 'resize', cols: cols - 1, rows }));
-        setTimeout(() => {
-          if (w.readyState === WebSocket.OPEN) {
-            w.send(JSON.stringify({ type: 'resize', cols, rows }));
-          }
-        }, 80);
+        w.send(JSON.stringify({ type: 'refresh' }));
       }, 150);
       return;
     }
@@ -210,7 +211,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     term.reset();
     disconnectFnRef.current?.();
     setTimeout(() => connectFnRef.current?.(), 50);
-  }, []);
+  }, [sendCurrentSize]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -219,7 +220,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       cursorBlink: true,
       cursorStyle: 'block',
       cursorInactiveStyle: 'outline',
-      fontSize: configuredFontSize,
+      fontSize: initialFontSizeRef.current,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
       scrollback: 10000,
       allowProposedApi: true,
@@ -446,17 +447,56 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     termRef.current = term;
     fitRef.current = fitAddon;
 
-    // RAF-based write batching — accumulate WS data and flush once per frame
-    let pendingData = '';
-    let rafId: number | null = null;
+    // Write a small chunk per frame and wait for xterm's parser callback before
+    // scheduling the next one. The bounded queue prevents a noisy background
+    // process from turning one frame into a multi-megabyte synchronous parse.
+    const writeQueue: string[] = [];
+    let queuedOutputSize = 0;
+    let writeInProgress = false;
+    let writeFrame: number | null = null;
+    let outputWasDropped = false;
+    let disposed = false;
 
-    function flushWrite() {
-      rafId = null;
-      if (pendingData) {
-        const data = pendingData.replace(MOUSE_ENABLE_RE, '');
-        pendingData = '';
-        term.write(data);
+    function scheduleNextWrite() {
+      if (disposed || writeInProgress || writeFrame !== null) return;
+      if (writeQueue.length === 0) {
+        if (outputWasDropped) {
+          outputWasDropped = false;
+          const socket = wsRef.current;
+          if (socket?.readyState === WebSocket.OPEN && visibleRef.current) {
+            socket.send(JSON.stringify({ type: 'refresh' }));
+          }
+        }
+        return;
       }
+
+      writeFrame = requestAnimationFrame(() => {
+        writeFrame = null;
+        if (disposed) return;
+        const chunk = writeQueue.shift();
+        if (!chunk) return;
+        queuedOutputSize -= chunk.length;
+        writeInProgress = true;
+        term.write(chunk, () => {
+          writeInProgress = false;
+          scheduleNextWrite();
+        });
+      });
+    }
+
+    function enqueueOutput(rawData: string) {
+      const data = sanitizeTerminalOutput(rawData);
+      for (let offset = 0; offset < data.length; offset += WRITE_CHUNK_SIZE) {
+        const chunk = data.slice(offset, offset + WRITE_CHUNK_SIZE);
+        while (queuedOutputSize + chunk.length > MAX_QUEUED_OUTPUT && writeQueue.length > 0) {
+          const dropped = writeQueue.shift();
+          if (dropped) queuedOutputSize -= dropped.length;
+          outputWasDropped = true;
+        }
+        writeQueue.push(chunk);
+        queuedOutputSize += chunk.length;
+      }
+      scheduleNextWrite();
     }
 
     // Send user input to server
@@ -481,17 +521,44 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     let reconnectAttempts = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let intentionalClose = false;
-    // Suspension: close without showing disconnect messages or triggering reconnect
-    let suspendedClose = false;
-    // Set when doResize wanted to send but WS wasn't open yet
-    let pendingResize = false;
+    let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+    let heartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
+    let protocolReady = false;
+    const quietCloseSockets = new WeakSet<WebSocket>();
+
+    function stopHeartbeat() {
+      if (heartbeatInterval !== null) clearInterval(heartbeatInterval);
+      if (heartbeatTimeout !== null) clearTimeout(heartbeatTimeout);
+      heartbeatInterval = null;
+      heartbeatTimeout = null;
+    }
+
+    function markSocketAlive(ws: WebSocket) {
+      if (wsRef.current !== ws) return;
+      if (heartbeatTimeout !== null) clearTimeout(heartbeatTimeout);
+      heartbeatTimeout = null;
+    }
+
+    function startHeartbeat(ws: WebSocket) {
+      stopHeartbeat();
+      heartbeatInterval = setInterval(() => {
+        if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN || isSuspendedRef.current) return;
+        if (heartbeatTimeout !== null) return;
+        ws.send(JSON.stringify({ type: 'ping' }));
+        heartbeatTimeout = setTimeout(() => {
+          heartbeatTimeout = null;
+          if (wsRef.current === ws && ws.readyState === WebSocket.OPEN) ws.close();
+        }, HEARTBEAT_TIMEOUT_MS);
+      }, HEARTBEAT_INTERVAL_MS);
+    }
+
     function connectWs() {
-      if (isSuspendedRef.current) return;
+      if (disposed || isSuspendedRef.current) return;
 
       // Close any existing connection first
       const old = wsRef.current;
       if (old && (old.readyState === WebSocket.OPEN || old.readyState === WebSocket.CONNECTING)) {
-        suspendedClose = true;
+        quietCloseSockets.add(old);
         old.close();
         wsRef.current = null;
       }
@@ -502,20 +569,26 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       params.set('attempt', String(reconnectAttempts));
       const ws = new WebSocket(`${protocol}//${window.location.host}/api/terminal/${sessionId}?${params}`);
       wsRef.current = ws;
-      pendingTerminals.add(sessionId);
-      notifyConnectionChange();
 
       ws.onopen = () => {
-        setConnected(true);
-        pendingTerminals.delete(sessionId);
-        notifyConnectionChange();
+        if (wsRef.current !== ws || disposed) return;
+        protocolReady = false;
+        setConnected(false);
+        startHeartbeat(ws);
+        fitAddon.fit();
+        // The measured size starts/attaches the server PTY. The connection is
+        // usable only after the server's explicit ready acknowledgement.
+        sendCurrentSize();
+      };
+
+      function markProtocolReady() {
+        if (protocolReady || wsRef.current !== ws || disposed) return;
+        protocolReady = true;
         reconnectAttempts = 0;
-        // If a resize was missed while WS was connecting, send it now.
-        if (pendingResize) {
-          pendingResize = false;
-          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-        }
-        term.focus();
+        setConnected(true);
+        fitAddon.fit();
+        sendCurrentSize();
+        if (visibleRef.current) term.focus();
         notifyServerAlive();
 
         // A project switch reconnects the socket after the visible effect has
@@ -527,7 +600,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
             if (ws.readyState !== WebSocket.OPEN || !visibleRef.current) return;
             fitAddon.fit();
             term.refresh(0, term.rows - 1);
-            ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+            sendCurrentSize();
             // Codex needs a rendered tmux snapshot after a tab switch because
             // it does not redraw on SIGWINCH. Claude and plain terminals must
             // keep the original PTY cursor state; capture-pane has no cursor
@@ -543,54 +616,34 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
             }
           });
         }
-
-        // Force tmux reflow: resize to cols-1 then back to correct width.
-        // Only for sessions (hideCursor=true) where CLI redraws
-        // on SIGWINCH. Plain terminals (bash) don't redraw old output, so
-        // force-resize just corrupts the tmux pane history via lossy reflow.
-        // SKIP for Codex: Codex TUI redraws accumulate in tmux scrollback,
-        // causing capture-pane to show duplicate output.
-        if (!passiveResizeRef.current && hideCursorRef.current && cliTypeRef.current !== 'codex') {
-          const cols = term.cols;
-          const rows = term.rows;
-          setTimeout(() => {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'resize', cols: cols - 1, rows }));
-              setTimeout(() => {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-                }
-              }, 100);
-            }
-          }, 200);
-        }
-      };
+      }
 
       ws.onmessage = (event) => {
+        markSocketAlive(ws);
         try {
           const msg = JSON.parse(event.data);
           switch (msg.type) {
+            case 'pong':
+              break;
+            case 'ready':
+              markProtocolReady();
+              break;
             case 'output':
-              reconnectAttempts = 0;
-              // Defense-in-depth: strip focus reporting enable/disable sequences
-              // so xterm.js never enters sendFocusMode (which causes focus/blur
-              // events to be sent as input, corrupting Codex TUI rendering)
-              pendingData += msg.data.replace(/\x1b\[\?1004[hl]/g, '');
-              if (rafId === null) {
-                rafId = requestAnimationFrame(flushWrite);
-              }
+              enqueueOutput(msg.data);
               break;
             case 'exit':
               if (msg.reason === 'popped-out') {
-                term.write(`\r\n\x1b[36m[Popped out to system terminal]\x1b[0m\r\n`);
+                enqueueOutput(`\r\n\x1b[36m[Popped out to system terminal]\x1b[0m\r\n`);
               } else {
-                term.write(`\r\n\x1b[33m[Process exited with code ${msg.exitCode}]\x1b[0m\r\n`);
+                enqueueOutput(`\r\n\x1b[33m[Process exited with code ${msg.exitCode}]\x1b[0m\r\n`);
               }
               intentionalClose = true;
-              onExit?.(msg.exitCode);
+              onExitRef.current?.(msg.exitCode);
               break;
             case 'error':
-              term.write(`\r\n\x1b[31m[Error: ${msg.message}]\x1b[0m\r\n`);
+              enqueueOutput(`\r\n\x1b[31m[Error: ${msg.message}]\x1b[0m\r\n`);
+              protocolReady = false;
+              setConnected(false);
               intentionalClose = true;
               break;
           }
@@ -600,13 +653,16 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       };
 
       ws.onclose = () => {
-        setConnected(false);
-        if (suspendedClose) {
-          suspendedClose = false;
-          return;
+        const isCurrentSocket = wsRef.current === ws;
+        if (isCurrentSocket) {
+          wsRef.current = null;
+          stopHeartbeat();
+          protocolReady = false;
+          setConnected(false);
         }
+        if (disposed || quietCloseSockets.has(ws) || !isCurrentSocket) return;
         if (intentionalClose) {
-          term.write('\r\n\x1b[90m[Disconnected]\x1b[0m\r\n');
+          enqueueOutput('\r\n\x1b[90m[Disconnected]\x1b[0m\r\n');
           return;
         }
 
@@ -615,14 +671,14 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           const delay = Math.min(100 * Math.pow(1.5, reconnectAttempts), 5000);
           reconnectAttempts++;
           if (!passiveResizeRef.current) {
-            term.write(`\r\n\x1b[90m[Disconnected — reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts}/30)...]\x1b[0m\r\n`);
+            enqueueOutput(`\r\n\x1b[90m[Disconnected — reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts}/30)...]\x1b[0m\r\n`);
           }
           reconnectTimer = setTimeout(() => {
             term.clear();
             connectWs();
           }, delay);
         } else {
-          term.write('\r\n\x1b[31m[Connection lost — max reconnect attempts reached]\x1b[0m\r\n');
+          enqueueOutput('\r\n\x1b[31m[Connection lost — max reconnect attempts reached]\x1b[0m\r\n');
         }
       };
     }
@@ -632,11 +688,21 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
+      writeQueue.length = 0;
+      queuedOutputSize = 0;
+      outputWasDropped = false;
+      if (writeFrame !== null) {
+        cancelAnimationFrame(writeFrame);
+        writeFrame = null;
+      }
       const ws = wsRef.current;
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        suspendedClose = true;
+        quietCloseSockets.add(ws);
         ws.close();
       }
+      stopHeartbeat();
+      protocolReady = false;
+      setConnected(false);
       wsRef.current = null;
     }
 
@@ -684,36 +750,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       if (term.cols !== lastCols || term.rows !== lastRows) {
         lastCols = term.cols;
         lastRows = term.rows;
-        if (!passiveResizeRef.current) {
-          const w = wsRef.current;
-          if (w && w.readyState === WebSocket.OPEN) {
-            w.send(JSON.stringify({
-              type: 'resize',
-              cols: term.cols,
-              rows: term.rows,
-            }));
-            // Force PTY redraw via SIGWINCH toggle. Skip for Codex: it doesn't
-            // redraw on SIGWINCH and the extra resize just stacks duplicate
-            // output in tmux scrollback (cleaned up later via capture-pane).
-            if (cliTypeRef.current !== 'codex') {
-              const cols = term.cols;
-              const rows = term.rows;
-              setTimeout(() => {
-                if (w.readyState === WebSocket.OPEN) {
-                  w.send(JSON.stringify({ type: 'resize', cols: cols - 1, rows }));
-                  setTimeout(() => {
-                    if (w.readyState === WebSocket.OPEN) {
-                      w.send(JSON.stringify({ type: 'resize', cols, rows }));
-                    }
-                  }, 50);
-                }
-              }, 50);
-            }
-          } else {
-            // WS not open yet — send when it connects
-            pendingResize = true;
-          }
-        }
+        sendCurrentSize();
       }
     }
 
@@ -734,24 +771,29 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     resizeObserver.observe(containerRef.current);
 
     return () => {
+      disposed = true;
       intentionalClose = true;
-      pendingTerminals.delete(sessionId);
-      notifyConnectionChange();
       serverAliveListeners.delete(onServerAlive);
       connectFnRef.current = null;
       disconnectFnRef.current = null;
-      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (writeFrame !== null) cancelAnimationFrame(writeFrame);
       if (reconnectTimer !== null) clearTimeout(reconnectTimer);
       if (resizeTimer) clearTimeout(resizeTimer);
+      stopHeartbeat();
       resizeObserver.disconnect();
       pasteTarget.removeEventListener('paste', pasteHandler, { capture: true } as EventListenerOptions);
       if (uploadFileRef.current === uploadFile) uploadFileRef.current = () => {};
       dropEl.removeEventListener('dragover', dragOverHandler);
       dropEl.removeEventListener('drop', dropHandler);
-      wsRef.current?.close();
+      const socket = wsRef.current;
+      if (socket) {
+        quietCloseSockets.add(socket);
+        socket.close();
+      }
+      wsRef.current = null;
       term.dispose();
     };
-  }, [sessionId, onExit]);
+  }, [sendCurrentSize, sessionId]);
 
   // Suspension effect: disconnect WebSocket when suspended, reconnect when resumed.
   // This ensures only one Terminal connects to a given session at a time.
@@ -795,21 +837,13 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   useEffect(() => {
     const term = termRef.current;
     const fit = fitRef.current;
-    const w = wsRef.current;
     if (!term) return;
     if (term.options.fontSize !== configuredFontSize) {
       term.options.fontSize = configuredFontSize;
       fit?.fit();
-      // Notify PTY of new dimensions and force redraw via SIGWINCH toggle
-      if (w && w.readyState === WebSocket.OPEN) {
-        w.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-        setTimeout(() => {
-          w.send(JSON.stringify({ type: 'resize', cols: term.cols - 1, rows: term.rows }));
-          setTimeout(() => w.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })), 50);
-        }, 50);
-      }
+      sendCurrentSize();
     }
-  }, [configuredFontSize]);
+  }, [configuredFontSize, sendCurrentSize]);
 
   // Re-focus and refit terminal when it becomes visible.
   // Single RAF + short delay ensures DOM layout is settled before measuring.
@@ -832,7 +866,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           // local buffer immediately instead of waiting for the next changed row.
           term.refresh(0, term.rows - 1);
           if (!passiveResizeRef.current && w && w.readyState === WebSocket.OPEN) {
-            w.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+            sendCurrentSize();
             // A terminal tab can contain a full-screen TUI even when the
             // session metadata says "Terminal". Its bounded raw replay may end
             // with only a spinner/status-line update, so request a rendered tmux
@@ -861,7 +895,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         }
       };
     }
-  }, [visible, suspended]);
+  }, [sendCurrentSize, visible, suspended]);
 
   // Re-focus terminal when returning from a different browser tab
   useEffect(() => {
@@ -871,6 +905,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         term.focus();
         requestAnimationFrame(() => {
           fitRef.current?.fit();
+          sendCurrentSize();
           term.refresh(0, term.rows - 1);
           term.scrollToBottom();
           term.focus();
@@ -879,7 +914,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     }
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [visible, suspended]);
+  }, [sendCurrentSize, visible, suspended]);
 
 
   // Voice command / external refresh event — shares the hardRefresh path so
@@ -940,20 +975,12 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
               onClick={() => {
                 const term = termRef.current;
                 const fit = fitRef.current;
-                const w = wsRef.current;
                 if (!term) return;
                 const current = term.options.fontSize || 13;
                 if (current > 6) {
                   term.options.fontSize = current - 1;
                   fit?.fit();
-                  if (w && w.readyState === WebSocket.OPEN) {
-                    w.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-                    // Force PTY redraw via SIGWINCH toggle
-                    setTimeout(() => {
-                      w.send(JSON.stringify({ type: 'resize', cols: term.cols - 1, rows: term.rows }));
-                      setTimeout(() => w.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })), 50);
-                    }, 50);
-                  }
+                  sendCurrentSize();
                 }
               }}
               className="flex items-center gap-1 px-1.5 py-1 rounded text-xs transition-all opacity-70 hover:!opacity-100"
@@ -966,19 +993,12 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
               onClick={() => {
                 const term = termRef.current;
                 const fit = fitRef.current;
-                const w = wsRef.current;
                 if (!term) return;
                 const current = term.options.fontSize || 13;
                 if (current < 32) {
                   term.options.fontSize = current + 1;
                   fit?.fit();
-                  if (w && w.readyState === WebSocket.OPEN) {
-                    w.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-                    setTimeout(() => {
-                      w.send(JSON.stringify({ type: 'resize', cols: term.cols - 1, rows: term.rows }));
-                      setTimeout(() => w.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })), 50);
-                    }, 50);
-                  }
+                  sendCurrentSize();
                 }
               }}
               className="flex items-center gap-1 px-1.5 py-1 rounded text-xs transition-all opacity-70 hover:!opacity-100"

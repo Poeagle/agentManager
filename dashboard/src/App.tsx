@@ -1,21 +1,24 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
-import { trpc, createTRPCClient } from './lib/trpc';
 import { connectStream, useStreamStore, setQueryClient } from './lib/websocket';
 import { api, type AuthUser } from './lib/api';
 import { AuthGate } from './components/AuthGate';
-import { AccountModal } from './components/AccountModal';
-import { ProjectDashboard } from './components/ProjectDashboard';
-import { ProjectView, cleanupProjectStorage } from './components/ProjectView';
+import { cleanupProjectStorage } from './lib/project-view-storage';
+import { confirmDiscardProject } from './lib/unsaved-files';
 import { X, LayoutGrid, FolderOpen, Activity, Settings, ArrowUpCircle, LogOut, Users, Plus } from 'lucide-react';
 import { AgentGuideButton } from './components/AgentGuide';
 import { CloseTabModal } from './components/CloseTabModal';
-import { SettingsModal } from './components/SettingsModal';
-import { AdminMonitorPage } from './components/AdminMonitorPage';
 import { installShortcutDispatcher, useShortcut, useShortcutStore, markKeyboardNav } from './lib/shortcuts';
 import { applyTheme } from './lib/themes';
 import { ProjectRollupDot } from './lib/session-signal';
 import { ExportTransferOverlay } from './components/ExportTransferOverlay';
+import { ErrorBoundary } from './components/ErrorBoundary';
+
+const AccountModal = lazy(() => import('./components/AccountModal').then((module) => ({ default: module.AccountModal })));
+const ProjectView = lazy(() => import('./components/ProjectView').then((module) => ({ default: module.ProjectView })));
+const ProjectDashboard = lazy(() => import('./components/ProjectDashboard').then((module) => ({ default: module.ProjectDashboard })));
+const SettingsModal = lazy(() => import('./components/SettingsModal').then((module) => ({ default: module.SettingsModal })));
+const AdminMonitorPage = lazy(() => import('./components/AdminMonitorPage').then((module) => ({ default: module.AdminMonitorPage })));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -28,13 +31,17 @@ const queryClient = new QueryClient({
     },
   },
 });
-const trpcClient = createTRPCClient();
-
 interface ProjectTab {
   projectId: string;
   projectName: string;
   /** User-set tab label. Falls back to projectName when empty. */
   customName?: string;
+}
+
+const ACTIVE_SESSION_STATUSES = new Set(['pending', 'launching', 'running', 'detached', 'released']);
+
+function isActiveSessionStatus(status: string): boolean {
+  return ACTIVE_SESSION_STATUSES.has(status);
 }
 
 const APP_STATE_KEY_PREFIX = 'agentmanager-app-state-v2';
@@ -48,27 +55,27 @@ function loadAppState(userId: string): { activeTab: string; projectTabs: Project
     if (parsed && typeof parsed.activeTab === 'string' && Array.isArray(parsed.projectTabs)) {
       return parsed;
     }
-  } catch {}
+  } catch { /* corrupt or unavailable local storage */ }
   return null;
 }
 
 function saveAppState(userId: string, activeTab: string, projectTabs: ProjectTab[]) {
   try {
     localStorage.setItem(appStateKey(userId), JSON.stringify({ activeTab, projectTabs }));
-  } catch {}
+  } catch { /* storage quota or privacy mode */ }
 }
 
 function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => void }) {
   const connected = useStreamStore((s) => s.connected);
-  // Stable so memo(ProjectView) isn't busted by a new function identity each render.
-  const handleFocusSessionHandled = useCallback(() => setFocusSessionId(null), []);
   const [savedState] = useState(() => loadAppState(authUser.id));
   // 'skills' was a removed top-level tab (skills are now per-project); fall back to home.
-  const [activeTab, setActiveTab] = useState<string>(() => {
+  const [activeTabState, setActiveTab] = useState<string>(() => {
     const t = savedState?.activeTab ?? 'home';
     return t === 'skills' ? 'home' : t;
   });
   const [focusSessionId, setFocusSessionId] = useState<string | null>(null);
+  // Stable so memo(ProjectView) isn't busted by a new function identity each render.
+  const handleFocusSessionHandled = useCallback(() => setFocusSessionId(null), []);
   // Inline tab-rename: which tab is being renamed + its draft text.
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [editingTabValue, setEditingTabValue] = useState('');
@@ -77,7 +84,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   // State (rather than a ref) guarantees the first complete post-hydration
   // snapshot is written even when nothing else changes afterward.
   const [serverHydrated, setServerHydrated] = useState(false);
-  const [projectTabs, setProjectTabs] = useState<ProjectTab[]>(() => {
+  const [projectTabsState, setProjectTabs] = useState<ProjectTab[]>(() => {
     const tabs = savedState?.projectTabs ?? [];
     // Deduplicate by projectId
     const seen = new Set<string>();
@@ -87,6 +94,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       return true;
     });
   });
+  const initialAppStateRef = useRef({ activeTab: activeTabState, projectTabs: projectTabsState });
 
   // Apply saved app font size on load
   const { data: appSettings } = useQuery({
@@ -141,15 +149,18 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   });
   const [updateDismissed, setUpdateDismissed] = useState(false);
 
-  const projects = projectsData?.projects || [];
-  const sessions = sessionsData?.sessions || [];
-
-  useEffect(() => {
-    if (!projectsLoaded) return;
-    const allowed = new Set(projects.map((project) => project.id));
-    setProjectTabs((prev) => prev.filter((tab) => allowed.has(tab.projectId)));
-    setActiveTab((prev) => prev === 'home' || allowed.has(prev.replace(/^project-/, '')) ? prev : 'home');
-  }, [projectsLoaded, projectsData]);
+  const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
+  const sessions = useMemo(() => sessionsData?.sessions ?? [], [sessionsData]);
+  const allowedProjectIds = useMemo(() => new Set(projects.map((project) => project.id)), [projects]);
+  const projectTabs = useMemo(
+    () => projectsLoaded ? projectTabsState.filter((tab) => allowedProjectIds.has(tab.projectId)) : projectTabsState,
+    [allowedProjectIds, projectTabsState, projectsLoaded],
+  );
+  const activeTab = !projectsLoaded
+    || activeTabState === 'home'
+    || allowedProjectIds.has(activeTabState.replace(/^project-/, ''))
+    ? activeTabState
+    : 'home';
 
   // Copy update command to clipboard and show brief confirmation.
   const [updateCopied, setUpdateCopied] = useState(false);
@@ -176,12 +187,12 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   useEffect(() => {
     setQueryClient(queryClient);
     connectStream();
-  }, []);
+  }, [queryClient]);
 
   // Persist app state to localStorage (instant-paint cache + offline fallback).
   useEffect(() => {
     saveAppState(authUser.id, activeTab, projectTabs);
-  }, [activeTab, projectTabs]);
+  }, [authUser.id, activeTab, projectTabs]);
 
   // ── Cross-device sync: pull the open project tabs and active project. This
   // server-side copy is the durable fallback when browser storage is lost.
@@ -215,7 +226,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           }
         } else {
           // First run for this user: seed the server from whatever we have locally.
-          api.userState.set('app', { projectTabs, activeTab }).catch(() => {});
+          api.userState.set('app', initialAppStateRef.current).catch(() => {});
         }
       })
       .catch(() => { /* offline / unauthenticated: keep using localStorage */ })
@@ -261,13 +272,37 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     if (activeTab === 'home') return homeSelectedProjectIdRef.current;
     return null;
   }, [activeTab]);
+
+  const handleOpenProject = useCallback((
+    projectId: string,
+    projectName: string,
+    quickLaunch?: 'session' | 'agent' | 'terminal',
+    cliType?: 'claude' | 'codex',
+  ) => {
+    setShowAdminMonitor(false);
+    if (quickLaunch) {
+      const access = projects.find((project) => project.id === projectId)?.tool_access;
+      const modeAllowed = !access || (quickLaunch === 'terminal' ? access.can_terminal : quickLaunch === 'agent' ? access.can_agent : access.can_session);
+      const cliAllowed = quickLaunch === 'terminal' || !access || (cliType === 'codex' ? access.can_codex : access.can_claude);
+      if (!modeAllowed || !cliAllowed) return;
+    }
+    setProjectTabs((prev) => prev.some((tab) => tab.projectId === projectId)
+      ? prev
+      : [...prev, { projectId, projectName }]);
+    setActiveTab(`project-${projectId}`);
+    if (quickLaunch) {
+      const suffix = cliType && cliType !== 'claude' ? `_${cliType}` : '';
+      setFocusSessionId(`__voice_create_${quickLaunch}${suffix}`);
+    }
+  }, [projects]);
+
   const launchForCurrent = useCallback((quickLaunch: 'session' | 'terminal', cliType?: 'claude' | 'codex') => {
     const pid = resolveCurrentProjectId();
     if (!pid) return;
     const project = projects.find((p) => p.id === pid);
     if (!project) return;
     handleOpenProject(pid, project.name, quickLaunch, cliType);
-  }, [projects, resolveCurrentProjectId]);
+  }, [handleOpenProject, projects, resolveCurrentProjectId]);
   useShortcut('session.launchClaude', () => launchForCurrent('session', 'claude'));
   useShortcut('session.launchCodex', () => launchForCurrent('session', 'codex'));
   useShortcut('session.launchTerminal', () => launchForCurrent('terminal'));
@@ -279,52 +314,34 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     if (el && typeof el.blur === 'function') el.blur();
   });
 
-  function handleOpenProject(projectId: string, projectName: string, quickLaunch?: 'session' | 'agent' | 'terminal', cliType?: 'claude' | 'codex') {
-    setShowAdminMonitor(false);
-    if (quickLaunch) {
-      const access = projects.find((project) => project.id === projectId)?.tool_access;
-      const modeAllowed = !access || (quickLaunch === 'terminal' ? access.can_terminal : quickLaunch === 'agent' ? access.can_agent : access.can_session);
-      const cliAllowed = quickLaunch === 'terminal' || !access || (cliType === 'codex' ? access.can_codex : access.can_claude);
-      if (!modeAllowed || !cliAllowed) return;
-    }
-    setProjectTabs((prev) => {
-      if (prev.find((t) => t.projectId === projectId)) return prev;
-      return [...prev, { projectId, projectName }];
-    });
-    setActiveTab(`project-${projectId}`);
-    if (quickLaunch) {
-      const suffix = cliType && cliType !== 'claude' ? `_${cliType}` : '';
-      setFocusSessionId(`__voice_create_${quickLaunch}${suffix}`);
-    }
-  }
-
   const [confirmClose, setConfirmClose] = useState<{ projectId: string; count: number } | null>(null);
 
   const closeProjectTab = useCallback(async (projectId: string) => {
     // Fetch fresh session list — cached data may be stale (e.g. right after quick-launch)
     let runningSessions = sessions.filter(
-      (s) => s.project_id === projectId && (s.status === 'running' || s.status === 'detached')
+      (s) => s.project_id === projectId && isActiveSessionStatus(s.status)
     );
-    if (runningSessions.length === 0) {
-      try {
-        const fresh = await api.sessions.list();
-        runningSessions = (fresh.sessions || []).filter(
-          (s: any) => s.project_id === projectId && (s.status === 'running' || s.status === 'detached')
-        );
-      } catch {}
-    }
+    try {
+      const fresh = await api.sessions.list();
+      runningSessions = (fresh.sessions || []).filter(
+        (s) => s.project_id === projectId && isActiveSessionStatus(s.status)
+      );
+    } catch { /* cached sessions remain the fallback */ }
 
     if (runningSessions.length > 0) {
       setConfirmClose({ projectId, count: runningSessions.length });
       return;
     }
 
+    const projectPath = projects.find((project) => project.id === projectId)?.path;
+    if (projectPath && !confirmDiscardProject(projectPath)) return;
+
     cleanupProjectStorage(authUser.id, projectId);
     setProjectTabs((prev) => prev.filter((t) => t.projectId !== projectId));
     if (activeTab === `project-${projectId}`) {
       setActiveTab('home');
     }
-  }, [sessions, activeTab]);
+  }, [activeTab, authUser.id, projects, sessions]);
 
   // ── Inline tab rename ──────────────────────────────────────────────
   const beginTabRename = useCallback((tab: ProjectTab) => {
@@ -352,31 +369,33 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   async function confirmCloseProject() {
     if (!confirmClose) return;
     const { projectId } = confirmClose;
+    const projectPath = projects.find((project) => project.id === projectId)?.path;
+    if (projectPath && !confirmDiscardProject(projectPath)) return;
 
-    // Close tab immediately
-    cleanupProjectStorage(authUser.id, projectId);
-    setProjectTabs((prev) => prev.filter((t) => t.projectId !== projectId));
-    if (activeTab === `project-${projectId}`) {
-      setActiveTab('home');
-    }
-    setConfirmClose(null);
-
-    // Kill sessions in the background — fetch fresh list to catch recently created ones
+    // Fetch fresh state and stop every process-bearing session before unmounting
+    // the project. A failed stop leaves the tab open and visible.
     let runningSessions = sessions.filter(
-      (s) => s.project_id === projectId && (s.status === 'running' || s.status === 'detached')
+      (s) => s.project_id === projectId && isActiveSessionStatus(s.status)
     );
     try {
       const fresh = await api.sessions.list();
       const freshRunning = (fresh.sessions || []).filter(
-        (s: any) => s.project_id === projectId && (s.status === 'running' || s.status === 'detached')
+        (s) => s.project_id === projectId && isActiveSessionStatus(s.status)
       );
-      if (freshRunning.length > runningSessions.length) {
-        runningSessions = freshRunning;
-      }
-    } catch {}
+      runningSessions = freshRunning;
+    } catch { /* cached sessions remain the fallback */ }
 
-    Promise.all(runningSessions.map((s) => api.sessions.kill(s.id).catch(() => {})))
-      .then(() => queryClient.invalidateQueries({ queryKey: ['sessions'] }));
+    try {
+      await Promise.all(runningSessions.map((s) => api.sessions.kill(s.id)));
+    } catch {
+      window.alert('One or more sessions could not be stopped. The project tab was kept open.');
+      return;
+    }
+    cleanupProjectStorage(authUser.id, projectId);
+    setProjectTabs((prev) => prev.filter((t) => t.projectId !== projectId));
+    if (activeTab === `project-${projectId}`) setActiveTab('home');
+    setConfirmClose(null);
+    await queryClient.invalidateQueries({ queryKey: ['sessions'] });
   }
 
   return (
@@ -595,26 +614,34 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       <main className="flex-1 min-h-0 overflow-hidden relative">
         {showAdminMonitor && authUser.role === 'admin' && (
           <div className="absolute inset-0 z-30">
-            <AdminMonitorPage
-              onBack={dismissAdminMonitor}
-              onOpenSession={(projectId, sessionId) => {
-                const project = projects.find((value) => value.id === projectId);
-                if (!project) return;
-                handleOpenProject(projectId, project.name);
-                setFocusSessionId(sessionId);
-              }}
-            />
+            <ErrorBoundary label="Admin monitor">
+              <Suspense fallback={<div className="h-full" style={{ background: 'var(--bg-primary)' }} />}>
+                <AdminMonitorPage
+                  onBack={dismissAdminMonitor}
+                  onOpenSession={(projectId, sessionId) => {
+                    const project = projects.find((value) => value.id === projectId);
+                    if (!project) return;
+                    handleOpenProject(projectId, project.name);
+                    setFocusSessionId(sessionId);
+                  }}
+                />
+              </Suspense>
+            </ErrorBoundary>
           </div>
         )}
         <div
           className="h-full"
           style={{ display: activeTab === 'home' ? 'block' : 'none' }}
         >
-          <ProjectDashboard
-            onOpenProject={handleOpenProject}
-            active={activeTab === 'home' && !showAdminMonitor}
-            onSelectedProjectChange={(id) => { homeSelectedProjectIdRef.current = id; }}
-          />
+          <ErrorBoundary label="Projects">
+            <Suspense fallback={<div className="h-full" style={{ background: 'var(--bg-primary)' }} />}>
+              <ProjectDashboard
+                onOpenProject={handleOpenProject}
+                active={activeTab === 'home' && !showAdminMonitor}
+                onSelectedProjectChange={(id) => { homeSelectedProjectIdRef.current = id; }}
+              />
+            </Suspense>
+          </ErrorBoundary>
         </div>
         {projectTabs.map((tab) => {
           const tabId = `project-${tab.projectId}`;
@@ -636,16 +663,20 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                   </p>
                 </div>
               ) : (
-                <ProjectView
-                  currentUserId={authUser.id}
-                  projectId={tab.projectId}
-                  projectPath={projectPath}
-                  projectName={projectName}
-                  active={isActive && !showAdminMonitor}
-                  terminalsSuspended={showAdminMonitor}
-                  focusSessionId={isActive ? focusSessionId : null}
-                  onFocusSessionHandled={handleFocusSessionHandled}
-                />
+                <ErrorBoundary label={projectName}>
+                  <Suspense fallback={<div className="h-full" style={{ background: 'var(--bg-primary)' }} />}>
+                    <ProjectView
+                      currentUserId={authUser.id}
+                      projectId={tab.projectId}
+                      projectPath={projectPath}
+                      projectName={projectName}
+                      active={isActive && !showAdminMonitor}
+                      terminalsSuspended={showAdminMonitor}
+                      focusSessionId={isActive ? focusSessionId : null}
+                      onFocusSessionHandled={handleFocusSessionHandled}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
               )}
             </div>
           );
@@ -660,6 +691,8 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           onHide={() => {
             // Hide the project tab but keep sessions running
             const { projectId } = confirmClose;
+            const projectPath = projects.find((project) => project.id === projectId)?.path;
+            if (projectPath && !confirmDiscardProject(projectPath)) return;
             cleanupProjectStorage(authUser.id, projectId);
             setProjectTabs((prev) => prev.filter((t) => t.projectId !== projectId));
             if (activeTab === `project-${projectId}`) {
@@ -672,8 +705,10 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         />
       )}
 
-      {showSettings && <SettingsModal readOnly={authUser.role !== 'admin'} onClose={() => setShowSettings(false)} />}
-      {showAccount && <AccountModal currentUser={authUser} onClose={() => setShowAccount(false)} />}
+      <Suspense fallback={null}>
+        {showSettings && <SettingsModal readOnly={authUser.role !== 'admin'} onClose={() => setShowSettings(false)} />}
+        {showAccount && <AccountModal currentUser={authUser} onClose={() => setShowAccount(false)} />}
+      </Suspense>
       <ExportTransferOverlay />
     </div>
   );
@@ -681,12 +716,12 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
 
 export default function App() {
   return (
-    <trpc.Provider client={trpcClient} queryClient={queryClient}>
-      <QueryClientProvider client={queryClient}>
+    <QueryClientProvider client={queryClient}>
+      <ErrorBoundary label="AgentManager">
         <AuthGate>
           {(user, logout) => <Dashboard authUser={user} onLogout={logout} />}
         </AuthGate>
-      </QueryClientProvider>
-    </trpc.Provider>
+      </ErrorBoundary>
+    </QueryClientProvider>
   );
 }

@@ -3,173 +3,16 @@
  */
 import { useState, useEffect, useRef, useMemo, forwardRef } from 'react';
 import { FileDiff } from 'lucide-react';
-
-/* ================================================================
-   Types & parsing
-   ================================================================ */
-
-export interface HunkInfo {
-  index: number;
-  oldStart: number;
-  oldCount: number;
-  newStart: number;
-  newCount: number;
-  oldLines: string[];    // lines removed (without the - prefix)
-  newLines: string[];    // lines added (without the + prefix)
-  oldContent: string[];  // full old side in order: context + removed lines
-  newContent: string[];  // full new side in order: context + added lines
-}
-
-export interface SplitRow {
-  leftNum: number | null; leftText: string; leftType: 'normal' | 'removed' | 'header' | 'separator';
-  rightNum: number | null; rightText: string; rightType: 'normal' | 'added' | 'header' | 'separator';
-  hunkIndex: number | null;
-}
-
-export type MarkerType = 'added' | 'removed' | 'modified' | null;
-
-/** Parse hunk metadata from raw unified diff text for a single file */
-export function parseHunks(diff: string): HunkInfo[] {
-  const lines = diff.split('\n');
-  const hunks: HunkInfo[] = [];
-  let hunkIdx = -1;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.startsWith('@@')) {
-      const m = line.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
-      if (m) {
-        hunkIdx++;
-        hunks.push({
-          index: hunkIdx,
-          oldStart: parseInt(m[1]),
-          oldCount: m[2] ? parseInt(m[2]) : 1,
-          newStart: parseInt(m[3]),
-          newCount: m[4] ? parseInt(m[4]) : 1,
-          oldLines: [],
-          newLines: [],
-          oldContent: [],
-          newContent: [],
-        });
-      }
-      continue;
-    }
-
-    if (hunkIdx < 0) continue;
-    const hunk = hunks[hunkIdx];
-    if (!hunk) continue;
-
-    if (line.startsWith('-') && !line.startsWith('---')) {
-      hunk.oldLines.push(line.slice(1));
-      hunk.oldContent.push(line.slice(1));
-    } else if (line.startsWith('+') && !line.startsWith('+++')) {
-      hunk.newLines.push(line.slice(1));
-      hunk.newContent.push(line.slice(1));
-    } else if (line.startsWith(' ')) {
-      // Context line — present in both old and new
-      // (In unified diff, even empty source lines are prefixed with a space)
-      hunk.oldContent.push(line.slice(1));
-      hunk.newContent.push(line.slice(1));
-    }
-  }
-  return hunks;
-}
-
-export function parseSplitRows(raw: string): SplitRow[] {
-  const lines = raw.split('\n');
-  const result: SplitRow[] = [];
-  let lNum = 0, rNum = 0;
-  let currentHunkIdx = -1;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    if (line.startsWith('diff --git')) {
-      const name = extractFileName(line);
-      result.push({ leftNum: null, leftText: name, leftType: 'separator', rightNum: null, rightText: name, rightType: 'separator', hunkIndex: null });
-      continue;
-    }
-
-    if (line.startsWith('@@')) {
-      currentHunkIdx++;
-      const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)/);
-      if (m) { lNum = parseInt(m[1]) - 1; rNum = parseInt(m[2]) - 1; }
-      result.push({ leftNum: null, leftText: line, leftType: 'header', rightNum: null, rightText: '', rightType: 'header', hunkIndex: currentHunkIdx });
-      continue;
-    }
-
-    if (line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++') || line.startsWith('\\')) {
-      result.push({ leftNum: null, leftText: line, leftType: 'header', rightNum: null, rightText: '', rightType: 'header', hunkIndex: null });
-      continue;
-    }
-
-    if (line.startsWith('-')) {
-      const removed: string[] = [], added: string[] = [];
-      let j = i;
-      while (j < lines.length && lines[j].startsWith('-')) { removed.push(lines[j].slice(1)); j++; }
-      while (j < lines.length && lines[j].startsWith('+')) { added.push(lines[j].slice(1)); j++; }
-      const max = Math.max(removed.length, added.length);
-      for (let k = 0; k < max; k++) {
-        const hasL = k < removed.length, hasR = k < added.length;
-        result.push({
-          leftNum: hasL ? ++lNum : null, leftText: hasL ? removed[k] : '', leftType: hasL ? 'removed' : 'normal',
-          rightNum: hasR ? ++rNum : null, rightText: hasR ? added[k] : '', rightType: hasR ? 'added' : 'normal',
-          hunkIndex: currentHunkIdx,
-        });
-      }
-      i = j - 1;
-      continue;
-    }
-
-    if (line.startsWith('+')) {
-      rNum++;
-      result.push({ leftNum: null, leftText: '', leftType: 'normal', rightNum: rNum, rightText: line.slice(1), rightType: 'added', hunkIndex: currentHunkIdx });
-      continue;
-    }
-
-    if (line.length > 0 || i < lines.length - 1) {
-      lNum++; rNum++;
-      const text = line.startsWith(' ') ? line.slice(1) : line;
-      result.push({ leftNum: lNum, leftText: text, leftType: 'normal', rightNum: rNum, rightText: text, rightType: 'normal', hunkIndex: currentHunkIdx });
-    }
-  }
-  return result;
-}
-
-export function extractFileName(diffLine: string): string {
-  const m = diffLine.match(/diff --git a\/(.*?) b\//);
-  return m ? m[1] : diffLine;
-}
-
-export function filterDiffToFile(diff: string, filePath: string): string {
-  const lines = diff.split('\n');
-  let capturing = false;
-  const result: string[] = [];
-  for (const line of lines) {
-    if (line.startsWith('diff --git')) {
-      capturing = line.includes(`a/${filePath}`) || line.includes(`b/${filePath}`);
-    }
-    if (capturing) result.push(line);
-  }
-  return result.join('\n');
-}
-
-export function lineStyle(line: string) {
-  if (line.startsWith('+') && !line.startsWith('+++')) return { color: 'var(--success)', bg: 'rgba(63,185,80,0.08)' };
-  if (line.startsWith('-') && !line.startsWith('---')) return { color: 'var(--error)', bg: 'rgba(248,81,73,0.08)' };
-  if (line.startsWith('@@')) return { color: 'var(--accent)', bg: 'transparent' };
-  if (line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) return { color: 'var(--text-tertiary)', bg: 'transparent' };
-  return { color: 'inherit', bg: 'transparent' };
-}
-
-/* ================================================================
-   Constants
-   ================================================================ */
-
-export const GUTTER_W = 44;
-export const ROW_H = 20;
-export const MONO = "var(--font-mono, 'JetBrains Mono', 'Fira Code', monospace)";
-export const HUNK_HIGHLIGHT = 'rgba(234,179,8,0.08)';
+import {
+  extractFileName,
+  GUTTER_W,
+  HUNK_HIGHLIGHT,
+  lineStyle,
+  MONO,
+  parseSplitRows,
+  ROW_H,
+  type MarkerType,
+} from '../lib/diff-model';
 
 /* ================================================================
    FileSeparator
@@ -192,13 +35,12 @@ export const SplitHalf = forwardRef<HTMLDivElement, {
   num: number | null;
   text: string;
   type: string;
-  side: 'left' | 'right';
   isCurrentHunk: boolean;
   isEditable: boolean;
   isEdited?: boolean;
   onEdit?: (text: string) => void;
   onClick?: () => void;
-}>(function SplitHalf({ num, text, type, side: _side, isCurrentHunk, isEditable, isEdited, onEdit, onClick }, ref) {
+}>(function SplitHalf({ num, text, type, isCurrentHunk, isEditable, isEdited, onEdit, onClick }, ref) {
   if (type === 'separator') {
     return (
       <div ref={ref} className="flex items-center px-2 text-xs font-semibold" style={{ height: ROW_H + 8, background: 'var(--accent)', color: '#fff', letterSpacing: '0.02em' }}>
@@ -360,8 +202,8 @@ export function OverviewRuler({ markers, scrollRef, onJump }: {
    UnifiedDiff
    ================================================================ */
 
-export function UnifiedDiff({ diff, currentHunk, hunks: _hunks, onHunkClick, revertedHunks }: {
-  diff: string; currentHunk: number; hunks: HunkInfo[]; onHunkClick: (idx: number) => void; revertedHunks: Set<number>;
+export function UnifiedDiff({ diff, currentHunk, onHunkClick, revertedHunks }: {
+  diff: string; currentHunk: number; onHunkClick: (idx: number) => void; revertedHunks: Set<number>;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const hunkRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -467,8 +309,8 @@ export function UnifiedDiff({ diff, currentHunk, hunks: _hunks, onHunkClick, rev
    SplitDiff with synced dual-panel scroll
    ================================================================ */
 
-export function SplitDiff({ diff, currentHunk, hunks: _hunks, onHunkClick, isEditable, onLineEdit, editedLines, revertedHunks }: {
-  diff: string; currentHunk: number; hunks: HunkInfo[]; onHunkClick: (idx: number) => void;
+export function SplitDiff({ diff, currentHunk, onHunkClick, isEditable, onLineEdit, editedLines, revertedHunks }: {
+  diff: string; currentHunk: number; onHunkClick: (idx: number) => void;
   isEditable: boolean; onLineEdit: (lineNum: number, text: string) => void; editedLines: Map<number, string>; revertedHunks: Set<number>;
 }) {
   const rows = useMemo(() => parseSplitRows(diff), [diff]);
@@ -540,7 +382,6 @@ export function SplitDiff({ diff, currentHunk, hunks: _hunks, onHunkClick, isEdi
                   key={i} ref={refCb}
                   num={r.leftNum} text={r.leftText}
                   type={r.leftType === 'removed' ? 'normal' : r.leftType}
-                  side="left"
                   isCurrentHunk={r.hunkIndex === currentHunk}
                   isEditable={false}
                   onClick={undefined}
@@ -555,7 +396,6 @@ export function SplitDiff({ diff, currentHunk, hunks: _hunks, onHunkClick, isEdi
                 num={r.leftNum}
                 text={r.leftText}
                 type={r.leftType}
-                side="left"
                 isCurrentHunk={r.hunkIndex === currentHunk}
                 isEditable={false}
                 onClick={isHunkHeader && r.hunkIndex !== null ? () => onHunkClick(r.hunkIndex!) : undefined}
@@ -581,7 +421,6 @@ export function SplitDiff({ diff, currentHunk, hunks: _hunks, onHunkClick, isEdi
                   key={i}
                   num={r.leftNum} text={r.leftText}
                   type="normal"
-                  side="right"
                   isCurrentHunk={r.hunkIndex === currentHunk}
                   isEditable={false}
                   onClick={undefined}
@@ -596,7 +435,6 @@ export function SplitDiff({ diff, currentHunk, hunks: _hunks, onHunkClick, isEdi
                 num={r.rightNum}
                 text={edited !== undefined ? edited : r.rightText}
                 type={r.rightType}
-                side="right"
                 isCurrentHunk={r.hunkIndex === currentHunk}
                 isEditable={isEditable && r.rightType !== 'header' && r.rightType !== 'separator' && r.rightNum !== null}
                 isEdited={edited !== undefined}

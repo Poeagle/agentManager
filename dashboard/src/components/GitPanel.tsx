@@ -21,12 +21,9 @@ import {
   FolderTree,
 } from 'lucide-react';
 import { api, type GitFileStatus, type GitCommit, type CommitFile, type GitBranch as GitBranchInfo } from '../lib/api';
-import {
-  parseHunks,
-  filterDiffToFile,
-  UnifiedDiff,
-  SplitDiff,
-} from './DiffComponents';
+import { UnifiedDiff, SplitDiff } from './DiffComponents';
+import { applyDiffDraft, parseHunks, filterDiffToFile } from '../lib/diff-model';
+import { setEditorDirty } from '../lib/unsaved-files';
 
 /* ================================================================
    Types & helpers
@@ -63,6 +60,10 @@ function statusLabel(s: string) {
     case 'R': return 'Renamed'; case 'C': return 'Copied'; case '?': return 'Untracked';
     case 'U': return 'Conflict'; default: return s;
   }
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error && error.message ? error.message : 'Git operation failed';
 }
 
 /* ================================================================
@@ -131,6 +132,7 @@ export function GitPanel({ projectPath, isVisible, onFileSaved, onOpenInExplorer
   const [detail, setDetail] = useState<DetailView | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [diffContent, setDiffContent] = useState('');
+  const [diffBaseContent, setDiffBaseContent] = useState<string | null>(null);
   const [commitFiles, setCommitFiles] = useState<CommitFile[]>([]);
   const [commitDiff, setCommitDiff] = useState('');
 
@@ -138,6 +140,14 @@ export function GitPanel({ projectPath, isVisible, onFileSaved, onOpenInExplorer
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
   const [fullFile, setFullFile] = useState(false);
   const [selectedCommitFile, setSelectedCommitFile] = useState<string | null>(null);
+  const [diffDirty, setDiffDirty] = useState(false);
+  const dirtyRegistryId = `git-diff:${projectPath}`;
+  const detailRequestSequence = useRef(0);
+
+  useEffect(() => {
+    setEditorDirty(dirtyRegistryId, projectPath, diffDirty);
+    return () => setEditorDirty(dirtyRegistryId, projectPath, false);
+  }, [diffDirty, dirtyRegistryId, projectPath]);
 
   const hasLoadedOnce = useRef(false);
 
@@ -154,43 +164,79 @@ export function GitPanel({ projectPath, isVisible, onFileSaved, onOpenInExplorer
       setFiles(statusRes.files);
       setRemoteUrl(statusRes.remoteUrl ?? null);
       setCommits(logRes.commits);
-    } catch (err: any) { setError(err.message); }
+    } catch (err) { setError(errorMessage(err)); }
     finally { setLoading(false); }
   }, [projectPath]);
 
   useEffect(() => { refresh(); hasLoadedOnce.current = true; }, [refresh]);
   useEffect(() => { if (isVisible && hasLoadedOnce.current) refresh(); }, [isVisible, refresh]);
 
-  // Re-fetch when toggles change
-  useEffect(() => {
-    if (!detail) return;
-    if (detail.type === 'diff') fetchDiff(detail.path, detail.staged);
-    else fetchCommitDetail(detail.hash);
-  }, [ignoreWhitespace, fullFile]);
-
-  async function fetchDiff(path: string, staged: boolean) {
+  const fetchDiff = useCallback(async (path: string, staged: boolean) => {
+    const requestSequence = ++detailRequestSequence.current;
     setDetailLoading(true);
-    try { const res = await api.git.diff(projectPath, path, staged, ignoreWhitespace, fullFile); setDiffContent(res.diff); }
-    catch { setDiffContent('Failed to load diff'); }
-    finally { setDetailLoading(false); }
-  }
+    try {
+      const [res, base] = await Promise.all([
+        api.git.diff(projectPath, path, staged, ignoreWhitespace, fullFile),
+        staged ? Promise.resolve(null) : api.files.read(`${projectPath.replace(/\/$/, '')}/${path}`).then((file) => file.content),
+      ]);
+      if (requestSequence === detailRequestSequence.current) {
+        setDiffContent(res.diff);
+        setDiffBaseContent(base);
+      }
+    } catch {
+      if (requestSequence === detailRequestSequence.current) {
+        setDiffContent('Failed to load diff');
+        setDiffBaseContent(null);
+      }
+    } finally {
+      if (requestSequence === detailRequestSequence.current) setDetailLoading(false);
+    }
+  }, [fullFile, ignoreWhitespace, projectPath]);
 
-  async function fetchCommitDetail(hash: string) {
+  const fetchCommitDetail = useCallback(async (hash: string) => {
+    const requestSequence = ++detailRequestSequence.current;
     setDetailLoading(true);
     try {
       const res = await api.git.show(projectPath, hash, ignoreWhitespace, fullFile);
+      if (requestSequence !== detailRequestSequence.current) return;
       setCommitFiles(res.files);
       setCommitDiff(res.diff);
       setSelectedCommitFile(null);
-    } catch { setCommitFiles([]); setCommitDiff('Failed to load commit details'); }
-    finally { setDetailLoading(false); }
-  }
+    } catch {
+      if (requestSequence !== detailRequestSequence.current) return;
+      setCommitFiles([]);
+      setCommitDiff('Failed to load commit details');
+    } finally {
+      if (requestSequence === detailRequestSequence.current) setDetailLoading(false);
+    }
+  }, [fullFile, ignoreWhitespace, projectPath]);
+
+  useEffect(() => {
+    if (!detail) return;
+    if (detail.type === 'diff') void fetchDiff(detail.path, detail.staged);
+    else void fetchCommitDetail(detail.hash);
+  }, [detail, fetchCommitDetail, fetchDiff]);
 
   const { staged, changed, untracked } = categorizeFiles(files);
 
   const handleStage = async (fps: string[]) => { await api.git.stage(projectPath, fps); setSelectedFiles(prev => { const next = new Set(prev); fps.forEach(f => next.delete(f)); return next; }); refresh(); };
   const handleUnstage = async (fps: string[]) => { await api.git.unstage(projectPath, fps); refresh(); };
-  const handleDiscard = async (fps: string[]) => { await api.git.discard(projectPath, fps); setSelectedFiles(prev => { const next = new Set(prev); fps.forEach(f => next.delete(f)); return next; }); refresh(); };
+  const handleDiscard = async (paths: string[]) => {
+    if (paths.length === 0) return;
+    const label = paths.length === 1 ? paths[0] : `${paths.length} files`;
+    if (!window.confirm(`Discard all uncommitted changes in ${label}? This cannot be undone.`)) return;
+    try {
+      await api.git.discard(projectPath, paths);
+      setSelectedFiles((previous) => {
+        const next = new Set(previous);
+        paths.forEach((path) => next.delete(path));
+        return next;
+      });
+      await refresh();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
 
   const toggleFileSelect = (path: string) => {
     setSelectedFiles(prev => {
@@ -202,6 +248,9 @@ export function GitPanel({ projectPath, isVisible, onFileSaved, onOpenInExplorer
 
   const selectedUnstagedPaths = [...selectedFiles].filter(p =>
     changed.some(f => f.file.path === p) || untracked.some(f => f.file.path === p)
+  );
+  const selectedTrackedPaths = selectedUnstagedPaths.filter((path) =>
+    changed.some((file) => file.file.path === path),
   );
 
   const handleCommit = async () => {
@@ -217,19 +266,19 @@ export function GitPanel({ projectPath, isVisible, onFileSaved, onOpenInExplorer
       setSelectedFiles(new Set());
       refresh();
     }
-    catch (err: any) { setError(err.message); } finally { setCommitting(false); }
+    catch (err) { setError(errorMessage(err)); } finally { setCommitting(false); }
   };
 
   const handlePush = async () => {
     if (pushing) return; setPushing(true);
     try { await api.git.push(projectPath); refresh(); }
-    catch (err: any) { setError(err.message); } finally { setPushing(false); }
+    catch (err) { setError(errorMessage(err)); } finally { setPushing(false); }
   };
 
   const handlePull = async () => {
     if (pulling) return; setPulling(true);
     try { await api.git.pull(projectPath); refresh(); }
-    catch (err: any) { setError(err.message); } finally { setPulling(false); }
+    catch (err) { setError(errorMessage(err)); } finally { setPulling(false); }
   };
 
   const openBranchPicker = async () => {
@@ -249,7 +298,7 @@ export function GitPanel({ projectPath, isVisible, onFileSaved, onOpenInExplorer
     try {
       await api.git.checkout(projectPath, name, isRemote);
       refresh();
-    } catch (err: any) { setError(err.message); }
+    } catch (err) { setError(errorMessage(err)); }
     finally { setSwitching(false); }
   };
 
@@ -265,23 +314,48 @@ export function GitPanel({ projectPath, isVisible, onFileSaved, onOpenInExplorer
     return () => document.removeEventListener('mousedown', handler);
   }, [branchPickerOpen]);
 
+  const confirmDiscardDiffDraft = () => {
+    if (!diffDirty) return true;
+    const confirmed = window.confirm('Discard unsaved diff edits?');
+    if (confirmed) setDiffDirty(false);
+    return confirmed;
+  };
+
+  const closeDetail = () => {
+    if (!confirmDiscardDiffDraft()) return;
+    detailRequestSequence.current++;
+    setDetailLoading(false);
+    setDetail(null);
+  };
+
   const handleViewDiff = (path: string, staged: boolean) => {
-    if (detail?.type === 'diff' && detail.path === path && detail.staged === staged) { setDetail(null); return; }
+    if (detail?.type === 'diff' && detail.path === path && detail.staged === staged) {
+      closeDetail();
+      return;
+    }
+    if (!confirmDiscardDiffDraft()) return;
+    setDiffDirty(false);
+    setDetailLoading(true);
     setDetail({ type: 'diff', path, staged });
-    fetchDiff(path, staged);
   };
 
   const handleViewCommit = (commit: GitCommit) => {
-    if (detail?.type === 'commit' && detail.hash === commit.hash) { setDetail(null); return; }
+    if (detail?.type === 'commit' && detail.hash === commit.hash) {
+      closeDetail();
+      return;
+    }
+    if (!confirmDiscardDiffDraft()) return;
+    setDiffDirty(false);
+    setDetailLoading(true);
     setDetail({ type: 'commit', hash: commit.hash, message: commit.message });
-    fetchCommitDetail(commit.hash);
   };
 
   // When DiffViewer saves a file, re-fetch diff and notify parent
   const handleDiffChanged = () => {
     if (detail?.type === 'diff') {
-      fetchDiff(detail.path, detail.staged);
-      refresh();
+      setDiffDirty(false);
+      void fetchDiff(detail.path, detail.staged);
+      void refresh();
       onFileSaved?.(detail.path);
     }
   };
@@ -397,7 +471,7 @@ export function GitPanel({ projectPath, isVisible, onFileSaved, onOpenInExplorer
               style={{ background: 'var(--accent)', color: '#fff' }}>
               <Plus className="w-3 h-3 inline mr-0.5" style={{ verticalAlign: '-2px' }} />Stage
             </button>
-            <button onClick={() => { handleDiscard(selectedUnstagedPaths); }} className="px-2 py-0.5 text-xs rounded font-medium transition-colors"
+            <button onClick={() => { handleDiscard(selectedTrackedPaths); }} disabled={selectedTrackedPaths.length === 0} className="px-2 py-0.5 text-xs rounded font-medium transition-colors disabled:opacity-40"
               style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>
               <Undo2 className="w-3 h-3 inline mr-0.5" style={{ verticalAlign: '-2px' }} />Discard
             </button>
@@ -513,13 +587,23 @@ export function GitPanel({ projectPath, isVisible, onFileSaved, onOpenInExplorer
                 <ToggleBtn active={diffMode === 'unified'} onClick={() => setDiffMode('unified')} title="Unified diff"><Rows3 className="w-3.5 h-3.5" /></ToggleBtn>
                 <ToggleBtn active={diffMode === 'split'} onClick={() => setDiffMode('split')} title="Side-by-side diff"><Columns2 className="w-3.5 h-3.5" /></ToggleBtn>
                 <div className="w-px h-4 mx-0.5" style={{ background: 'var(--border)' }} />
-                <ToggleBtn active={fullFile} onClick={() => setFullFile(!fullFile)} title={fullFile ? 'Full file context' : 'Diff hunks only'}><FileText className="w-3.5 h-3.5" /></ToggleBtn>
-                <ToggleBtn active={ignoreWhitespace} onClick={() => setIgnoreWhitespace(!ignoreWhitespace)} title={ignoreWhitespace ? 'Ignoring whitespace' : 'Showing all changes'}><Space className="w-3.5 h-3.5" /></ToggleBtn>
+                <ToggleBtn active={fullFile} onClick={() => {
+                  if (!confirmDiscardDiffDraft()) return;
+                  setDiffDirty(false);
+                  setDetailLoading(true);
+                  setFullFile(!fullFile);
+                }} title={fullFile ? 'Full file context' : 'Diff hunks only'}><FileText className="w-3.5 h-3.5" /></ToggleBtn>
+                <ToggleBtn active={ignoreWhitespace} onClick={() => {
+                  if (!confirmDiscardDiffDraft()) return;
+                  setDiffDirty(false);
+                  setDetailLoading(true);
+                  setIgnoreWhitespace(!ignoreWhitespace);
+                }} title={ignoreWhitespace ? 'Ignoring whitespace' : 'Showing all changes'}><Space className="w-3.5 h-3.5" /></ToggleBtn>
                 <div className="w-px h-4 mx-0.5" style={{ background: 'var(--border)' }} />
                 {onOpenInExplorer && detail.type === 'diff' && (
                   <button onClick={() => onOpenInExplorer(`${projectPath.replace(/\/$/, '')}/${detail.path}`)} title="Reveal in file explorer" className="p-1 rounded hover:bg-white/10" style={{ color: 'var(--text-secondary)' }}><FolderTree className="w-3.5 h-3.5" /></button>
                 )}
-                <button onClick={() => setDetail(null)} className="p-1 rounded hover:bg-white/10" style={{ color: 'var(--text-secondary)' }}><X className="w-3.5 h-3.5" /></button>
+                <button onClick={closeDetail} className="p-1 rounded hover:bg-white/10" style={{ color: 'var(--text-secondary)' }} title="Close diff"><X className="w-3.5 h-3.5" /></button>
               </div>
             </div>
 
@@ -550,8 +634,9 @@ export function GitPanel({ projectPath, isVisible, onFileSaved, onOpenInExplorer
                 mode={diffMode}
                 isEditable={!!isEditable}
                 filePath={editFilePath}
-                projectPath={projectPath}
+                baseContent={diffBaseContent}
                 onDiffChanged={handleDiffChanged}
+                onDirtyChange={setDiffDirty}
               />
             )}
           </>
@@ -570,11 +655,12 @@ interface DiffViewerProps {
   mode: DiffMode;
   isEditable: boolean;
   filePath?: string;
-  projectPath?: string;
+  baseContent?: string | null;
   onDiffChanged?: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
-function DiffViewer({ diff, mode, isEditable, filePath, projectPath: _projectPath, onDiffChanged }: DiffViewerProps) {
+function DiffViewer({ diff, mode, isEditable, filePath, baseContent, onDiffChanged, onDirtyChange }: DiffViewerProps) {
   const [currentHunk, setCurrentHunk] = useState(0);
   const [revertedHunks, setRevertedHunks] = useState<Set<number>>(new Set());
   const [undoHistory, setUndoHistory] = useState<number[]>([]);
@@ -583,16 +669,12 @@ function DiffViewer({ diff, mode, isEditable, filePath, projectPath: _projectPat
 
   const hunks = useMemo(() => parseHunks(diff), [diff]);
 
-  // Reset state when diff changes
-  useEffect(() => {
-    setCurrentHunk(0);
-    setRevertedHunks(new Set());
-    setUndoHistory([]);
-    setEditedLines(new Map());
-  }, [diff]);
-
   const dirty = editedLines.size > 0 || revertedHunks.size > 0;
   const changeCount = editedLines.size + revertedHunks.size;
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
 
   if (!diff) return <div className="flex-1 flex items-center justify-center text-xs" style={{ color: 'var(--text-tertiary)' }}>No diff available (new or binary file?)</div>;
 
@@ -613,6 +695,7 @@ function DiffViewer({ diff, mode, isEditable, filePath, projectPath: _projectPat
       return next;
     });
     setUndoHistory(prev => [...prev, hunkIdx]);
+    onDirtyChange?.(true);
   };
 
   // Redo: restore the last undone hunk (in-memory only)
@@ -630,39 +713,15 @@ function DiffViewer({ diff, mode, isEditable, filePath, projectPath: _projectPat
 
   // Save: apply all in-memory reverts + edits to file, then refresh
   const handleSave = async () => {
-    if (!filePath || !dirty) return;
+    if (!filePath || baseContent == null || !dirty) return;
     setSaving(true);
     try {
-      const fileData = await api.files.read(filePath);
-      const lines = fileData.content.split('\n');
-
-      // Apply reverted hunks (process from bottom to top to avoid offset issues)
-      // Replace the full hunk range (newStart..newStart+newCount-1) with old content
-      const sortedReverted = [...revertedHunks]
-        .map(idx => hunks[idx])
-        .filter(Boolean)
-        .sort((a, b) => b.newStart - a.newStart);
-
-      for (const hunk of sortedReverted) {
-        const start = hunk.newStart - 1;
-        const deleteCount = hunk.newCount;
-        lines.splice(start, deleteCount, ...hunk.oldContent);
-      }
-
-      // Apply edited lines (adjust for any offset from reverts above)
-      // Note: edited lines reference the NEW file's line numbers, so if we've
-      // already reverted some hunks, those line numbers may have shifted.
-      // For simplicity, apply edits only to non-reverted regions.
-      for (const [lineNum, newText] of editedLines) {
-        if (lineNum > 0 && lineNum <= lines.length) {
-          lines[lineNum - 1] = newText;
-        }
-      }
-
-      await api.files.write(filePath, lines.join('\n'));
+      const nextContent = applyDiffDraft(baseContent, hunks, revertedHunks, editedLines);
+      await api.files.write(filePath, nextContent, baseContent);
       setRevertedHunks(new Set());
       setUndoHistory([]);
       setEditedLines(new Map());
+      onDirtyChange?.(false);
       onDiffChanged?.();
     } catch (err) {
       console.error('Failed to save changes:', err);
@@ -677,6 +736,7 @@ function DiffViewer({ diff, mode, isEditable, filePath, projectPath: _projectPat
       next.set(lineNum, text);
       return next;
     });
+    onDirtyChange?.(true);
   };
 
   return (
@@ -729,8 +789,8 @@ function DiffViewer({ diff, mode, isEditable, filePath, projectPath: _projectPat
       )}
 
       {mode === 'unified'
-        ? <UnifiedDiff diff={diff} currentHunk={currentHunk} hunks={hunks} onHunkClick={goToHunk} revertedHunks={revertedHunks} />
-        : <SplitDiff diff={diff} currentHunk={currentHunk} hunks={hunks} onHunkClick={goToHunk}
+        ? <UnifiedDiff diff={diff} currentHunk={currentHunk} onHunkClick={goToHunk} revertedHunks={revertedHunks} />
+        : <SplitDiff diff={diff} currentHunk={currentHunk} onHunkClick={goToHunk}
             isEditable={isEditable} onLineEdit={handleLineEdit} editedLines={editedLines} revertedHunks={revertedHunks} />
       }
     </>

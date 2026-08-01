@@ -7,13 +7,13 @@ process.env.UV_THREADPOOL_SIZE = '16';
 import { enrichProcessPath } from './utils/enrich-path.js';
 enrichProcessPath();
 
-import Fastify from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { initDb, getDb } from './db/index.js';
+import { closeDb, initDb, getDb } from './db/index.js';
 import { eventRoutes } from './routes/events.js';
 import { sessionRoutes } from './routes/sessions.js';
 import { taskRoutes } from './routes/tasks.js';
@@ -26,23 +26,30 @@ import { agentRoutes } from './routes/agent.js';
 import { settingsRoutes } from './routes/settings.js';
 import { skillsRoutes } from './routes/skills.js';
 import { userStateRoutes } from './routes/user-state.js';
-import { appRouter } from './trpc/router.js';
 import {
-  fastifyTRPCPlugin,
-  type FastifyTRPCPluginOptions,
-} from '@trpc/server/adapters/fastify';
-import type { AppRouter } from './trpc/router.js';
-import { killAllSessions, cleanupStaleRunningSessions, autoReconnectDetachedSessions, getReconnectStatus, startPendingSessionWatchdog } from './services/session-manager.js';
+  killAllSessions,
+  cleanupStaleRunningSessions,
+  autoReconnectDetachedSessions,
+  flushPendingPtyOutputWithRetry,
+  getReconnectStatus,
+  startPendingSessionWatchdog,
+} from './services/session-manager.js';
 import { sweepAllPastes } from './services/paste-cleanup.js';
 import { config } from './config.js';
 import { authHook, isAdmin as isAdminUser, userOwnsFilesystemPath } from './auth.js';
 import { authRoutes } from './routes/auth.js';
 import { userRoutes } from './routes/users.js';
-import { appendFileSync, writeFileSync } from 'fs';
+import { appendFile, writeFile } from 'fs/promises';
 import { installDefaultAgents } from './data/default-agents.js';
-const tlog = (s: string) => { try { appendFileSync('/tmp/agentmanager-timing.log', `[${new Date().toISOString()}] ${s}\n`); } catch {} };
+const timingLogPath = process.env.AGENTMANAGER_TIMING_LOG;
+const tlog = (message: string) => {
+  if (!timingLogPath) return;
+  void appendFile(timingLogPath, `[${new Date().toISOString()}] ${message}\n`).catch(() => {});
+};
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+let server: FastifyInstance | null = null;
+let shuttingDown = false;
 
 // Event loop lag detector — logs when the event loop is blocked for >100ms
 let _lagLast = Date.now();
@@ -65,9 +72,9 @@ async function start() {
       },
     },
   });
+  server = app;
 
-  // Clear timing log for fresh run
-  try { writeFileSync('/tmp/agentmanager-timing.log', ''); } catch {}
+  if (timingLogPath) await writeFile(timingLogPath, '').catch(() => {});
 
   // Install default agents to ~/.claude/agents/ if not present
   try {
@@ -121,7 +128,7 @@ async function start() {
   await app.register(authRoutes, { prefix: '/api' });
   await app.register(userRoutes, { prefix: '/api' });
 
-  // API routes (REST for hooks, will add tRPC later)
+  // REST API routes
   await app.register(eventRoutes, { prefix: '/api' });
   await app.register(sessionRoutes, { prefix: '/api' });
   await app.register(taskRoutes, { prefix: '/api' });
@@ -135,17 +142,9 @@ async function start() {
   await app.register(skillsRoutes, { prefix: '/api' });
   await app.register(userStateRoutes, { prefix: '/api' });
 
-  // tRPC
-  await app.register(fastifyTRPCPlugin, {
-    prefix: '/api/trpc',
-    trpcOptions: {
-      router: appRouter,
-      createContext: ({ req }: any) => ({ user: req.user }),
-    } as FastifyTRPCPluginOptions<AppRouter>['trpcOptions'],
-  });
-
   // Open URL in the system browser (used by the dashboard's external-link handler)
   app.post('/api/open-url', async (req, reply) => {
+    if (!isAdminUser(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
     const { url } = req.body as { url?: string };
     if (!url || typeof url !== 'string' || !(url.startsWith('http://') || url.startsWith('https://'))) {
       return reply.status(400).send({ error: 'Invalid URL' });
@@ -228,8 +227,12 @@ async function start() {
   }
 
   app.get('/api/version-check', async (req, reply) => {
+    const requestedChannel = (req.query as Record<string, string>).channel || 'stable';
+    if (!['stable', 'beta', 'canary'].includes(requestedChannel)) {
+      return reply.code(400).send({ error: 'channel must be stable, beta, or canary' });
+    }
+    const channel = requestedChannel;
     try {
-      const channel = (req.query as Record<string, string>).channel || 'stable';
       const now = Date.now();
       const cached = _versionCache.get(channel);
       if (cached && (now - cached.checkedAt) < 300_000) {
@@ -242,7 +245,17 @@ async function start() {
       });
 
       if (!resp.ok) {
-        return reply.status(502).send({ error: 'GitHub API request failed' });
+        const fallback = cached;
+        return {
+          current: serverVersion,
+          latest: fallback?.version || '',
+          name: fallback?.name || '',
+          url: fallback?.url || '',
+          prerelease: fallback?.prerelease || false,
+          channel,
+          updateAvailable: !!fallback?.version && fallback.version !== serverVersion,
+          unavailable: true,
+        };
       }
 
       const releases = (await resp.json() as GitHubRelease[]).filter(r => !r.draft);
@@ -272,7 +285,17 @@ async function start() {
         updateAvailable: latestVersion !== '' && latestVersion !== serverVersion,
       };
     } catch {
-      return reply.status(500).send({ error: 'Version check failed' });
+      const fallback = _versionCache.get(channel);
+      return {
+        current: serverVersion,
+        latest: fallback?.version || '',
+        name: fallback?.name || '',
+        url: fallback?.url || '',
+        prerelease: fallback?.prerelease || false,
+        channel,
+        updateAvailable: !!fallback?.version && fallback.version !== serverVersion,
+        unavailable: true,
+      };
     }
   });
 
@@ -307,7 +330,7 @@ async function start() {
   // Restart server — exits the process so the parent (CLI/systemd/Electron) can relaunch
   app.post('/api/restart', async (req, reply) => {
     if (!isAdminUser(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
-    setTimeout(() => process.exit(0), 500);
+    setTimeout(() => { void shutdown(0); }, 500);
     return { ok: true, message: 'Server restarting...' };
   });
 
@@ -366,20 +389,47 @@ async function start() {
 
 start().catch((err) => {
   console.error('Failed to start AgentManager:', err);
-  process.exit(1);
+  void shutdown(1);
 });
 
-// Graceful shutdown — kill all PTY sessions
-function shutdown() {
+// Graceful shutdown: stop accepting work, persist output, detach workers,
+// checkpoint, and close the database. Cleanup steps are isolated so one failure
+// cannot skip the remaining steps.
+async function shutdown(exitCode = 0): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log('\n🌊 Shutting down AgentManager...');
-  killAllSessions();
-  process.exit(0);
+  const forceExit = setTimeout(() => process.exit(exitCode || 1), 5000);
+  forceExit.unref();
+  const recordFailure = (step: string, error: unknown) => {
+    console.error(`Shutdown ${step} failed:`, error);
+    exitCode ||= 1;
+  };
+
+  // Start closing listeners first, then tear down the long-lived terminal
+  // workers that may otherwise keep WebSocket requests open.
+  const closeServer = server?.close().catch((error) => recordFailure('server close', error));
+  try {
+    if (!(await flushPendingPtyOutputWithRetry())) {
+      recordFailure('PTY flush', new Error('queued terminal output could not be persisted after retries'));
+    }
+  } catch (error) { recordFailure('PTY flush', error); }
+  try { killAllSessions(); } catch (error) { recordFailure('session detach', error); }
+  if (closeServer) await closeServer;
+  try { getDb().pragma('wal_checkpoint(TRUNCATE)'); } catch (error) { recordFailure('database checkpoint', error); }
+  try { closeDb(); } catch (error) { recordFailure('database close', error); }
+
+  clearTimeout(forceExit);
+  process.exit(exitCode);
 }
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.once('SIGINT', () => { void shutdown(0); });
+process.once('SIGTERM', () => { void shutdown(0); });
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception — cleaning up sessions:', err);
-  killAllSessions();
-  process.exit(1);
+  void shutdown(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection — cleaning up sessions:', reason);
+  void shutdown(1);
 });

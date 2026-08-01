@@ -116,6 +116,10 @@ function prevFolderName(path: string): string {
   return parts[parts.length - 1] || '';
 }
 
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
 const inputStyle = {
   background: 'var(--bg-tertiary)',
   borderColor: 'var(--border)',
@@ -234,7 +238,7 @@ function ProjectForm({
 
   const updateMutation = useMutation({
     mutationFn: () => {
-      const fields: Record<string, string | number | null | undefined> = {};
+      const fields: Parameters<typeof api.projects.update>[1] = {};
       if (name !== project!.name) fields.name = name;
       if (description !== (project!.description || '')) fields.description = description;
       if (defaultWebUrl !== (project!.default_web_url || '')) fields.default_web_url = defaultWebUrl || null;
@@ -244,7 +248,7 @@ function ProjectForm({
         fields.openclaw_prompt = openclawPrompt || null;
       // Always send color to ensure save works even if only color changed
       fields.color = projectColor || '';
-      return api.projects.update(project!.id, fields as any);
+      return api.projects.update(project!.id, fields);
     },
     onSuccess: async () => {
       const savePath = project!.path;
@@ -290,7 +294,7 @@ function ProjectForm({
     queryKey: ['gh-accounts'],
     queryFn: () => api.git.ghAccounts(),
   });
-  const ghAccounts = accountsData?.accounts || [];
+  const ghAccounts = useMemo(() => accountsData?.accounts ?? [], [accountsData?.accounts]);
 
   // Auto-set repo name and owner when path changes
   useEffect(() => {
@@ -589,8 +593,8 @@ function ProjectForm({
                           setRepoResult({ ok: true, message: 'Repository created successfully!' });
                           queryClient.invalidateQueries({ queryKey: ['git-status', projectPath] });
                           setCreateRepo(false);
-                        } catch (err: any) {
-                          setRepoResult({ ok: false, message: err.message || 'Failed to create repository' });
+                        } catch (err: unknown) {
+                          setRepoResult({ ok: false, message: errorMessage(err, 'Failed to create repository') });
                         } finally {
                           setRepoCreating(false);
                         }
@@ -1041,8 +1045,8 @@ function GitInfoBadge({ projectPath }: { projectPath: string }) {
               await api.git.checkout(projectPath, switchTarget.name, switchTarget.isRemote);
               queryClient.invalidateQueries({ queryKey: ['git-status', projectPath] });
               queryClient.invalidateQueries({ queryKey: ['git-branches', projectPath] });
-            } catch (err: any) {
-              alert('Branch switch failed: ' + (err.message || 'Unknown error'));
+            } catch (err: unknown) {
+              alert('Branch switch failed: ' + errorMessage(err, 'Unknown error'));
             } finally {
               setSwitching(false);
               setSwitchTarget(null);
@@ -1084,7 +1088,7 @@ function CreateRepoModal({ projectPath, onClose, onCreated }: {
     queryFn: () => api.git.ghAccounts(),
   });
 
-  const accounts = accountsData?.accounts || [];
+  const accounts = useMemo(() => accountsData?.accounts ?? [], [accountsData?.accounts]);
 
   // Auto-select first account
   useEffect(() => {
@@ -1110,8 +1114,8 @@ function CreateRepoModal({ projectPath, onClose, onCreated }: {
         defaultBranch: defaultBranch.trim() || 'main',
       });
       onCreated();
-    } catch (err: any) {
-      setError(err.message || 'Failed to create repository');
+    } catch (err: unknown) {
+      setError(errorMessage(err, 'Failed to create repository'));
     } finally {
       setCreating(false);
     }
@@ -1243,7 +1247,7 @@ function CreateRepoModal({ projectPath, onClose, onCreated }: {
 export function ProjectDashboard({ onOpenProject, active = true, onSelectedProjectChange }: ProjectDashboardProps) {
   const [view, setView] = useState<ViewState>({ mode: 'list' });
   const queryClient = useQueryClient();
-  const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null);
+  const [selectedCardIndexState, setSelectedCardIndex] = useState<number | null>(null);
   const selectedCardRef = useRef<HTMLDivElement | null>(null);
   const { data: authStatus } = useQuery({ queryKey: ['auth-status'], queryFn: () => api.auth.status(), staleTime: 60_000 });
   const isAdmin = authStatus?.user?.role === 'admin';
@@ -1270,7 +1274,7 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
     queryFn: () => api.projects.list(),
   });
 
-  const allProjects = projectsData?.projects || [];
+  const allProjects = useMemo(() => projectsData?.projects ?? [], [projectsData?.projects]);
   const [searchQuery, setSearchQuery] = useState('');
 
   const projects = useMemo(() => {
@@ -1283,6 +1287,9 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
         (p.description && p.description.toLowerCase().includes(q))
     );
   }, [allProjects, searchQuery]);
+  const selectedCardIndex = selectedCardIndexState === null || projects.length === 0
+    ? null
+    : Math.min(selectedCardIndexState, projects.length - 1);
 
   // Keyboard card navigation — only active when this page is visible and not
   // in add/edit view. Arrow keys move selection; Enter opens the selected
@@ -1338,14 +1345,6 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
     });
   }, cardsActive);
 
-  // Clamp selection to valid range when projects list changes.
-  useEffect(() => {
-    if (selectedCardIndex === null) return;
-    if (selectedCardIndex >= projects.length) {
-      setSelectedCardIndex(projects.length === 0 ? null : projects.length - 1);
-    }
-  }, [projects.length, selectedCardIndex]);
-
   // Scroll the selected card into view when it changes via keyboard.
   useEffect(() => {
     if (selectedCardRef.current) {
@@ -1367,13 +1366,10 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
     queryFn: () => api.settings.get(),
     staleTime: 60_000,
   });
-  const [showStatuslinePrompt, setShowStatuslinePrompt] = useState(false);
-
-  useEffect(() => {
-    setShowStatuslinePrompt(
-      isAdmin && settingsData?.settings?.statusline_prompted === 'false',
-    );
-  }, [isAdmin, settingsData]);
+  const [statuslinePromptDismissed, setStatuslinePromptDismissed] = useState(false);
+  const showStatuslinePrompt = !statuslinePromptDismissed
+    && isAdmin
+    && settingsData?.settings?.statusline_prompted === 'false';
 
   // Sessions — driven by WebSocket invalidation, no polling needed
   const { data: sessionsData } = useQuery({
@@ -1784,7 +1780,7 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
 
       {isAdmin && showStatuslinePrompt && (
         <StatuslinePromptModal
-          onClose={() => setShowStatuslinePrompt(false)}
+          onClose={() => setStatuslinePromptDismissed(true)}
         />
       )}
 

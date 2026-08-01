@@ -4,16 +4,28 @@ import { readFileSync } from 'fs';
 import { promisify } from 'util';
 import { getDb } from '../db/index.js';
 import {
-  listUsers, createUser, findUserById, findUserByUsername,
-  setUserPassword, destroyUserSessions, verifyPassword,
+  listUsers, createUserAsync, findUserById, findUserByUsername,
+  setUserPasswordAsync, destroyUserSessions, verifyPasswordAsync,
+  passwordLengthError, createSession as createAuthSession, setSessionCookie,
 } from '../auth.js';
 import { getTracker, inferQuiescentSessionState } from '../services/session-state.js';
 import { getSessionProcessRootPid, killSession, RESIZE_MARKER } from '../services/session-manager.js';
 import { broadcastEphemeral } from '../services/event-store.js';
 import { cleanOutput } from '../lib/ansi.js';
 import { VirtualTerminal } from '../lib/virtual-terminal.js';
+import { revokeUserConnections } from '../services/user-connections.js';
 
 const execFileAsync = promisify(execFile);
+
+async function stopActiveUserSessions(userId: string): Promise<number> {
+  const sessions = getDb().prepare(`
+    SELECT id FROM sessions
+    WHERE created_by_user_id = ?
+      AND status IN ('pending', 'launching', 'running', 'detached', 'released')
+  `).all(userId) as { id: string }[];
+  await Promise.allSettled(sessions.map((session) => killSession(session.id)));
+  return sessions.length;
+}
 
 interface ProcessSample {
   pid: number;
@@ -534,20 +546,31 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     if (!requireAdmin(req, reply)) return;
     const { username, password, display_name, role, max_tabs } = (req.body ?? {}) as Record<string, unknown>;
     if (!username || !password) return reply.code(400).send({ error: 'username and password required' });
-    if (String(password).length < 6) return reply.code(400).send({ error: 'Password must be at least 6 characters' });
+    if (typeof username !== 'string' || !username.trim() || username.length > 64) {
+      return reply.code(400).send({ error: 'username must be between 1 and 64 characters' });
+    }
+    const passwordError = passwordLengthError(password);
+    if (passwordError) return reply.code(400).send({ error: passwordError });
     if (findUserByUsername(String(username).trim())) return reply.code(409).send({ error: 'Username already exists' });
     const maxTabsValue = max_tabs === undefined ? 10 : Number(max_tabs);
     if (!Number.isInteger(maxTabsValue) || maxTabsValue < 0 || maxTabsValue > 100) {
       return reply.code(400).send({ error: 'max_tabs must be an integer between 0 and 100' });
     }
-    const user = createUser({
-      username: String(username),
-      password: String(password),
-      display_name: display_name ? String(display_name) : undefined,
-      role: role === 'admin' ? 'admin' : 'member',
-      max_tabs: maxTabsValue,
-    });
-    return { user };
+    try {
+      const user = await createUserAsync({
+        username: username.trim(),
+        password: password as string,
+        display_name: display_name ? String(display_name) : undefined,
+        role: role === 'admin' ? 'admin' : 'member',
+        max_tabs: maxTabsValue,
+      });
+      return { user };
+    } catch (error) {
+      if (error instanceof Error && /UNIQUE constraint failed: users\.username/.test(error.message)) {
+        return reply.code(409).send({ error: 'Username already exists' });
+      }
+      throw error;
+    }
   });
 
   // Update a user: role / disabled / reset password (admin).
@@ -558,6 +581,24 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     if (!target) return reply.code(404).send({ error: 'User not found' });
     const { role, disabled, password, max_tabs } = (req.body ?? {}) as Record<string, unknown>;
     const db = getDb();
+
+    if (role !== undefined && role !== 'admin' && role !== 'member') {
+      return reply.code(400).send({ error: 'role must be admin or member' });
+    }
+    if (disabled !== undefined && typeof disabled !== 'boolean') {
+      return reply.code(400).send({ error: 'disabled must be a boolean' });
+    }
+    if (password !== undefined) {
+      const passwordError = passwordLengthError(password);
+      if (passwordError) return reply.code(400).send({ error: passwordError });
+    }
+    let maxTabsValue: number | undefined;
+    if (max_tabs !== undefined) {
+      maxTabsValue = Number(max_tabs);
+      if (!Number.isInteger(maxTabsValue) || maxTabsValue < 0 || maxTabsValue > 100) {
+        return reply.code(400).send({ error: 'max_tabs must be an integer between 0 and 100' });
+      }
+    }
 
     // Don't let the last active admin be demoted/disabled into a lockout.
     const losingAdmin = target.role === 'admin' && (role === 'member' || disabled === true);
@@ -571,19 +612,21 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     }
     if (disabled !== undefined) {
       db.prepare('UPDATE users SET disabled = ? WHERE id = ?').run(disabled ? 1 : 0, id);
-      if (disabled) destroyUserSessions(id); // kick out active sessions
     }
     if (password !== undefined) {
-      if (String(password).length < 6) return reply.code(400).send({ error: 'Password must be at least 6 characters' });
-      setUserPassword(id, String(password));
-      destroyUserSessions(id); // force re-login with the new password
+      await setUserPasswordAsync(id, password as string);
     }
-    if (max_tabs !== undefined) {
-      const value = Number(max_tabs);
-      if (!Number.isInteger(value) || value < 0 || value > 100) {
-        return reply.code(400).send({ error: 'max_tabs must be an integer between 0 and 100' });
-      }
-      db.prepare('UPDATE users SET max_tabs = ? WHERE id = ?').run(value, id);
+    if (maxTabsValue !== undefined) {
+      db.prepare('UPDATE users SET max_tabs = ? WHERE id = ?').run(maxTabsValue, id);
+    }
+
+    // Credential revocation must also terminate already-upgraded WebSockets and
+    // PTYs. Demoting an admin restarts their unsandboxed sessions under member
+    // policy the next time they log in.
+    if (disabled === true || password !== undefined || (target.role === 'admin' && role === 'member')) {
+      destroyUserSessions(id);
+      revokeUserConnections(id);
+      await stopActiveUserSessions(id);
     }
     return { user: findUserById(id) };
   });
@@ -610,6 +653,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     // Revoke access before the asynchronous process shutdown begins.
     db.prepare('UPDATE users SET disabled = 1 WHERE id = ?').run(id);
     destroyUserSessions(id);
+    revokeUserConnections(id);
     await Promise.all(activeSessions.map(async (session) => {
       try { await killSession(session.id); } catch { /* force DB state below */ }
     }));
@@ -639,12 +683,20 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
   app.post('/auth/change-password', async (req, reply) => {
     const { current_password, new_password } = (req.body ?? {}) as Record<string, unknown>;
     if (!current_password || !new_password) return reply.code(400).send({ error: 'current and new password required' });
-    if (String(new_password).length < 6) return reply.code(400).send({ error: 'Password must be at least 6 characters' });
+    const currentPasswordError = passwordLengthError(current_password);
+    if (currentPasswordError) return reply.code(400).send({ error: currentPasswordError });
+    const newPasswordError = passwordLengthError(new_password);
+    if (newPasswordError) return reply.code(400).send({ error: newPasswordError });
     const row = findUserByUsername(req.user!.username);
-    if (!row || !verifyPassword(String(current_password), row.password_hash)) {
+    if (!row || !await verifyPasswordAsync(current_password as string, row.password_hash)) {
       return reply.code(403).send({ error: 'Current password is incorrect' });
     }
-    setUserPassword(req.user!.id, String(new_password));
+    await setUserPasswordAsync(req.user!.id, new_password as string);
+    // Rotate the current login token and revoke all existing WebSockets. The
+    // underlying PTYs remain detached and reconnect under the fresh cookie.
+    destroyUserSessions(req.user!.id);
+    revokeUserConnections(req.user!.id);
+    setSessionCookie(reply, createAuthSession(req.user!.id));
     return { ok: true };
   });
 };

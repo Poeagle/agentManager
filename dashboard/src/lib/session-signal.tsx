@@ -11,89 +11,41 @@
 // "Live" process-state takes precedence over the DB lifecycle status: a session
 // that is `running` in the DB but `waiting_for_input` live shows yellow.
 
+import { useSyncExternalStore } from 'react';
 import { Lock } from 'lucide-react';
 import type { Session } from './api';
-import type { LiveSessionState } from './websocket';
 import { useStreamStore } from './websocket';
+import {
+  liveFromSession,
+  rollupSignal,
+  sessionSignal,
+  signalForSession,
+  type Signal,
+} from './session-signal-model';
 
-export interface Signal {
-  color: string;
-  /** Intrinsic animation (busy). */
-  pulse: boolean;
-  /** "Needs you / notable" — pulses while the tab is not the active one. */
-  attention: boolean;
-  /** Render a lock glyph instead of a plain dot (authorization prompt). */
-  lock: boolean;
-  title: string;
-}
+let clockSnapshot = Date.now();
+let clockTimer: ReturnType<typeof setInterval> | null = null;
+const clockListeners = new Set<() => void>();
 
-const C = {
-  blue: '#3b82f6',
-  yellow: '#eab308',
-  green: '#22c55e',
-  red: '#ef4444',
-  grey: '#6b7280',
-};
-
-type LiveLike = Pick<LiveSessionState, 'processState' | 'promptType' | 'isPermission'> | undefined | null;
-
-/** Derive a live-state object from a session row's bootstrap fields (from sessions.list). */
-export function liveFromSession(s: Session): LiveLike {
-  if (!s.processState) return undefined;
-  return { processState: s.processState, promptType: s.promptType ?? null, isPermission: !!s.isPermission };
-}
-
-export function sessionSignal(status: string | undefined, live: LiveLike): Signal | null {
-  if (live) {
-    if (live.processState === 'busy') {
-      return { color: C.blue, pulse: true, attention: false, lock: false, title: '运行中' };
-    }
-    if (live.processState === 'waiting_for_input') {
-      if (live.isPermission) {
-        return { color: C.yellow, pulse: false, attention: true, lock: true, title: '等待授权' };
-      }
-      const t =
-        live.promptType === 'confirmation' ? '等待确认 (Y/n)'
-        : live.promptType === 'choice' ? '等待选择'
-        : '等待输入';
-      return { color: C.yellow, pulse: false, attention: true, lock: false, title: t };
-    }
-    if (live.processState === 'idle') {
-      return { color: C.green, pulse: false, attention: false, lock: false, title: '已完成 · 等待你' };
-    }
+function subscribeClock(listener: () => void): () => void {
+  clockListeners.add(listener);
+  if (!clockTimer) {
+    clockTimer = setInterval(() => {
+      clockSnapshot = Date.now();
+      for (const notify of clockListeners) notify();
+    }, 30_000);
   }
-  switch (status) {
-    case 'completed': return { color: C.green, pulse: false, attention: false, lock: false, title: '已结束' };
-    case 'failed':    return { color: C.red,   pulse: false, attention: true,  lock: false, title: '出错' };
-    case 'running':   return { color: C.blue,  pulse: true,  attention: false, lock: false, title: '运行中' };
-    case 'pending':   return { color: C.grey,  pulse: false, attention: false, lock: false, title: '启动中' };
-    case 'detached':  return { color: C.grey,  pulse: false, attention: false, lock: false, title: '游离(未连接)' };
-    case 'cancelled': return { color: C.grey,  pulse: false, attention: false, lock: false, title: '已取消' };
-  }
-  return null;
+  return () => {
+    clockListeners.delete(listener);
+    if (clockListeners.size === 0 && clockTimer) {
+      clearInterval(clockTimer);
+      clockTimer = null;
+    }
+  };
 }
 
-/** Resolve a session's signal, preferring the live WS store over the row bootstrap.
- *  Once a session reaches a terminal lifecycle status, the process (and its
- *  tracker) is gone — any lingering live entry is stale, so the status wins. */
-export function signalForSession(s: Session, liveStates: Record<string, LiveSessionState>): Signal | null {
-  const terminal = s.status === 'completed' || s.status === 'failed' || s.status === 'cancelled';
-  const live = terminal ? undefined : (liveStates[s.id] ?? liveFromSession(s));
-  return sessionSignal(s.status, live);
-}
-
-const RANK: Record<string, number> = { [C.red]: 4, [C.yellow]: 3, [C.blue]: 2, [C.green]: 1, [C.grey]: 0 };
-
-/** Highest-priority signal across a project's sessions (red > yellow > blue > green > grey). */
-export function rollupSignal(signals: (Signal | null)[]): Signal | null {
-  let best: Signal | null = null;
-  let bestRank = -1;
-  for (const s of signals) {
-    if (!s) continue;
-    const r = RANK[s.color] ?? 0;
-    if (r > bestRank) { bestRank = r; best = s; }
-  }
-  return best;
+function getClockSnapshot(): number {
+  return clockSnapshot;
 }
 
 /**
@@ -130,6 +82,7 @@ export function ProjectRollupDot({
   size?: number;
 }) {
   const liveStates = useStreamStore((s) => s.liveStates);
+  const now = useSyncExternalStore(subscribeClock, getClockSnapshot, getClockSnapshot);
   const rollup = rollupSignal(
     sessions
       .filter((s) => {
@@ -137,7 +90,7 @@ export function ProjectRollupDot({
         if (s.status === 'running' || s.status === 'pending' || s.status === 'detached') return true;
         if (s.status === 'failed' && s.completed_at) {
           const t = Date.parse(s.completed_at + (s.completed_at.endsWith('Z') ? '' : 'Z'));
-          if (!Number.isNaN(t) && Date.now() - t < 10 * 60 * 1000) return true;
+          if (!Number.isNaN(t) && now - t < 10 * 60 * 1000) return true;
         }
         return false;
       })

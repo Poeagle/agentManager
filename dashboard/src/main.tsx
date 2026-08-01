@@ -39,7 +39,7 @@ if ('__TAURI_INTERNALS__' in window) {
   // WebKitGTK blocks the empty window.open() entirely.
   // Fix: return a proxy that captures the URL when location.href is set.
   const origOpen = window.open;
-  window.open = function(url?: string | URL, ...args: any[]) {
+  window.open = function(url?: string | URL, target?: string, features?: string): Window | null {
     const urlStr = url?.toString() || '';
 
     // Direct URL passed — handle external URLs
@@ -60,10 +60,10 @@ if ('__TAURI_INTERNALS__' in window) {
           }
         }
       };
-      return { opener: null, location: locationProxy, close() {} } as any;
+      return { opener: null, location: locationProxy, close() {} } as unknown as Window;
     }
 
-    return origOpen.call(this, url, ...args);
+    return origOpen.call(window, url, target, features);
   };
 
   // 3) Catch detached <a>.click() — backup for any other link mechanism

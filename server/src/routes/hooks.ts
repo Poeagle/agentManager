@@ -2,7 +2,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { join, dirname } from 'path';
 import { config } from '../config.js';
-import { userOwnsFilesystemPath } from '../auth.js';
+import { getEventHookSecret, userOwnsFilesystemPath } from '../auth.js';
+import { shellSingleQuote } from '../services/cli-command.js';
 
 const AGENTMANAGER_HOOK_MARKER = '# agentmanager-events-hook';
 // Legacy marker from the previous product name — kept so installs can detect and
@@ -18,7 +19,8 @@ const HOOK_MARKERS = [AGENTMANAGER_HOOK_MARKER, ...LEGACY_HOOK_MARKERS];
 function buildHookCommand(projectPath: string): string {
   const port = config.port || 42010;
   const url = `http://localhost:${port}/api/events`;
-  const escapedPath = projectPath.replace(/"/g, '\\"');
+  const secret = getEventHookSecret(projectPath);
+  if (!secret) throw new Error('Project path must be registered before installing hooks');
   const nodeScript = [
     "const fs=require('fs');",
     "const http=require('http');",
@@ -41,15 +43,15 @@ function buildHookCommand(projectPath: string): string {
     "}",
     "});",
     "const target=new URL(process.argv[3]);",
+    "const secret=process.argv[4]||'';",
     "const mod=target.protocol==='https:'?https:http;",
-    "const req=mod.request(target,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)},timeout:1500},res=>res.resume());",
+    "const req=mod.request(target,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body),'X-AgentManager-Hook-Secret':secret},timeout:1500},res=>res.resume());",
     "req.on('error',()=>{});",
     "req.on('timeout',()=>req.destroy());",
     "req.end(body);",
     "}catch{}",
   ].join('');
-  const escapedScript = nodeScript.replace(/["\\$`]/g, '\\$&');
-  return `TMP=$(mktemp "\${TMPDIR:-/tmp}/agentmanager-hook.XXXXXX"); cat > "$TMP"; (node -e "${escapedScript}" "$TMP" "${escapedPath}" "${url}" >/dev/null 2>&1 || true; rm -f "$TMP") </dev/null >/dev/null 2>&1 & ${AGENTMANAGER_HOOK_MARKER}`;
+  return `TMP=$(mktemp "\${TMPDIR:-/tmp}/agentmanager-hook.XXXXXX"); cat > "$TMP"; (node -e ${shellSingleQuote(nodeScript)} "$TMP" ${shellSingleQuote(projectPath)} ${shellSingleQuote(url)} ${shellSingleQuote(secret)} >/dev/null 2>&1 || true; rm -f "$TMP") </dev/null >/dev/null 2>&1 & ${AGENTMANAGER_HOOK_MARKER}`;
 }
 
 interface ClaudeSettings {
