@@ -221,7 +221,11 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
 
       const attachPassive = (): boolean => {
         if (closed || !socketIsOpen(socket) || !isSessionActive(sessionId)) return false;
-        attached = attachTerminal(sessionId, socket);
+        // A raw replay may start halfway through a TUI control sequence after
+        // the bounded journal has rolled over. Subscribe first, then recover
+        // from the authoritative current pane whenever tmux is available.
+        attached = attachTerminal(sessionId, socket, { skipReplay: true });
+        if (attached) sendReplay(sessionId, socket, true, 'screen');
         return attached;
       };
 
@@ -293,8 +297,12 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
         // resizeSession a true no-op. Existing sessions resize before subscribing,
         // so their resize redraw cannot race ahead of the initial replay.
         if (!resizeSession(sessionId, cols, rows)) throw new Error('Failed to resize terminal');
-        attached = attachTerminal(sessionId, socket);
+        // Reattaching after a hidden page must start from a complete rendered
+        // pane, not the tail of the raw output journal. This applies equally to
+        // explicit sessions and to Claude/Codex launched inside Terminal tabs.
+        attached = attachTerminal(sessionId, socket, { skipReplay: true });
         if (!attached) throw new Error('Failed to attach terminal');
+        sendReplay(sessionId, socket, true, 'history');
 
         // This ack is the only point at which the browser may enable keyboard
         // input. Inputs that raced with async spawn/attach are flushed in order.

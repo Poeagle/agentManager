@@ -62,8 +62,11 @@ function openTerminalLink(url: string) {
   window.open(parsed.href, '_blank', 'noopener,noreferrer');
 }
 
-const WRITE_CHUNK_SIZE = 16 * 1024;
-const MAX_QUEUED_OUTPUT = 512 * 1024;
+const WRITE_CHUNK_SIZE = 64 * 1024;
+// Recovery snapshots can include the same 10,000 lines that xterm retains as
+// scrollback. Keep this above the server's bounded 4 MiB capture so restoring
+// history never evicts the leading clear/style state from the parser queue.
+const MAX_QUEUED_OUTPUT = 10 * 1024 * 1024;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const HEARTBEAT_TIMEOUT_MS = 8_000;
 
@@ -223,6 +226,12 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       fontSize: initialFontSizeRef.current,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
       scrollback: 10000,
+      // xterm deliberately skips the cursor's logical line during resize by
+      // default because classic shells usually redraw it themselves. Codex's
+      // composer does not always redraw on SIGWINCH, so a long in-progress
+      // prompt could keep its old width and disappear past the right edge
+      // after a tab/layout resize. Reflow it with the rest of the buffer.
+      reflowCursorLine: true,
       allowProposedApi: true,
       linkHandler: {
         activate: (event, url) => {

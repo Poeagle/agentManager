@@ -4,15 +4,19 @@ import { fileURLToPath } from 'url';
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildSandboxCommand,
+  classifyTerminalOutput,
   PendingWorkerControls,
-  setOutputSourcePaused,
+  setOutputSourcesPaused,
 } from '../src/services/pty-worker.js';
 import {
   commitPendingPtyInserts,
+  boundTmuxPaneCapture,
+  composeTmuxHistoryRecovery,
   finalizeReplayThroughSeq,
   flushPendingPtyOutputWithRetry,
   PendingPtyInsertBuffer,
   RESIZE_MARKER,
+  serializeTmuxPaneCapture,
   sensitiveHostPathsForSandbox,
   shouldDetachSessionOnShutdown,
 } from '../src/services/session-manager.js';
@@ -45,18 +49,56 @@ describe('PTY worker startup controls', () => {
     expect(controls.drainInputs()).toEqual([]);
   });
 
-  it('pauses and resumes the direct PTY when there is no pipe-pane', () => {
+  it('pauses every active output source during IPC backpressure', () => {
     const pipe = { pause: vi.fn(), resume: vi.fn() };
     const direct = { pause: vi.fn(), resume: vi.fn() };
-    setOutputSourcePaused(true, false, pipe, direct);
-    setOutputSourcePaused(false, false, pipe, direct);
+    setOutputSourcesPaused(true, false, pipe, direct);
+    setOutputSourcesPaused(false, false, pipe, direct);
     expect(direct.pause).toHaveBeenCalledOnce();
     expect(direct.resume).toHaveBeenCalledOnce();
     expect(pipe.pause).not.toHaveBeenCalled();
+
+    setOutputSourcesPaused(true, true, pipe, direct);
+    setOutputSourcesPaused(false, true, pipe, direct);
+    expect(pipe.pause).toHaveBeenCalledOnce();
+    expect(pipe.resume).toHaveBeenCalledOnce();
+    expect(direct.pause).toHaveBeenCalledTimes(2);
+    expect(direct.resume).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the attached tmux stream for display and pipe-pane only for replay', () => {
+    expect(classifyTerminalOutput('attached', true, 'live')).toEqual({
+      type: 'output', data: 'live', track: true, persist: false,
+    });
+    expect(classifyTerminalOutput('pipe', true, 'durable')).toEqual({
+      type: 'output', data: 'durable', display: false,
+    });
+    expect(classifyTerminalOutput('attached', false, 'direct')).toEqual({
+      type: 'output', data: 'direct', track: true,
+    });
+    expect(classifyTerminalOutput('attached', true, '\x1b[?1004h')).toBeNull();
   });
 });
 
 describe('terminal shutdown durability', () => {
+  it('serializes a pane without scrolling away its first row or removing blank geometry', () => {
+    expect(serializeTmuxPaneCapture('top\n\nbottom\n', '<cursor>')).toBe('top\r\n\r\nbottom<cursor>');
+    expect(serializeTmuxPaneCapture('top\n\n', '<cursor>')).toBe('top\r\n<cursor>');
+    expect(serializeTmuxPaneCapture('\n\n')).toBe('\r\n');
+  });
+
+  it('bounds recovery history only at complete line boundaries', () => {
+    expect(boundTmuxPaneCapture('short\nhistory\n', 100)).toBe('short\nhistory\n');
+    expect(boundTmuxPaneCapture('old\nmiddle\ncurrent\n', 12)).toBe('\x1b[0mcurrent\n');
+  });
+
+  it('repaints the current screen without erasing reconstructed scrollback', () => {
+    expect(composeTmuxHistoryRecovery('old one\nold two\n', 'current\n', '<cursor>')).toBe(
+      'old one\r\nold two\x1b[H\x1b[2Jcurrent<cursor>',
+    );
+    expect(composeTmuxHistoryRecovery('history\n', 'screen\n')).not.toContain('\x1b[3J');
+  });
+
   it('detaches only sessions backed by tmux, dtach, or an external socket', () => {
     expect(shouldDetachSessionOnShutdown(false, false)).toBe(false);
     expect(shouldDetachSessionOnShutdown(true, false)).toBe(true);

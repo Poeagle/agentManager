@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { execFile } from 'child_process';
 import { readFileSync } from 'fs';
+import { cpus, freemem, hostname, loadavg, platform, totalmem, uptime } from 'os';
 import { promisify } from 'util';
 import { getDb } from '../db/index.js';
 import {
@@ -16,6 +17,89 @@ import { VirtualTerminal } from '../lib/virtual-terminal.js';
 import { revokeUserConnections } from '../services/user-connections.js';
 
 const execFileAsync = promisify(execFile);
+
+interface CpuSnapshot {
+  idle: number;
+  total: number;
+}
+
+let previousCpuSnapshot: CpuSnapshot | null = null;
+
+function cpuSnapshot(): CpuSnapshot {
+  return cpus().reduce((sample, cpu) => {
+    const total = Object.values(cpu.times).reduce((sum, value) => sum + value, 0);
+    return { idle: sample.idle + cpu.times.idle, total: sample.total + total };
+  }, { idle: 0, total: 0 });
+}
+
+async function readCpuUsagePercent(): Promise<number> {
+  let before = previousCpuSnapshot;
+  if (!before) {
+    before = cpuSnapshot();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const after = cpuSnapshot();
+  previousCpuSnapshot = after;
+  const totalDelta = after.total - before.total;
+  const idleDelta = after.idle - before.idle;
+  if (totalDelta <= 0) return 0;
+  return Math.min(100, Math.max(0, ((totalDelta - idleDelta) / totalDelta) * 100));
+}
+
+function availableMemoryBytes(): number {
+  if (platform() === 'linux') {
+    try {
+      const match = readFileSync('/proc/meminfo', 'utf8').match(/^MemAvailable:\s+(\d+)\s+kB$/m);
+      if (match) return Number(match[1]) * 1024;
+    } catch { /* fall back to the portable free-memory value */ }
+  }
+  return freemem();
+}
+
+async function readDiskUsage() {
+  try {
+    const { stdout } = await execFileAsync('df', ['-Pk', process.cwd()], { encoding: 'utf8' });
+    const line = stdout.trim().split('\n').at(-1)?.trim();
+    const columns = line?.split(/\s+/) ?? [];
+    if (columns.length < 6) return null;
+    const totalBytes = Number(columns[1]) * 1024;
+    const usedBytes = Number(columns[2]) * 1024;
+    const availableBytes = Number(columns[3]) * 1024;
+    if (![totalBytes, usedBytes, availableBytes].every(Number.isFinite) || totalBytes <= 0) return null;
+    return {
+      total_bytes: totalBytes,
+      used_bytes: usedBytes,
+      available_bytes: availableBytes,
+      usage_percent: Math.min(100, Math.max(0, (usedBytes / totalBytes) * 100)),
+      mount: columns.slice(5).join(' '),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function readServerResources() {
+  const [cpuUsagePercent, disk] = await Promise.all([readCpuUsagePercent(), readDiskUsage()]);
+  const memoryTotal = totalmem();
+  const memoryAvailable = Math.min(memoryTotal, Math.max(0, availableMemoryBytes()));
+  const memoryUsed = memoryTotal - memoryAvailable;
+  return {
+    hostname: hostname(),
+    uptime_seconds: Math.floor(uptime()),
+    cpu: {
+      usage_percent: cpuUsagePercent,
+      core_count: cpus().length,
+      load_average_1m: loadavg()[0] ?? 0,
+    },
+    memory: {
+      total_bytes: memoryTotal,
+      used_bytes: memoryUsed,
+      available_bytes: memoryAvailable,
+      usage_percent: memoryTotal > 0 ? (memoryUsed / memoryTotal) * 100 : 0,
+    },
+    disk,
+  };
+}
 
 async function stopActiveUserSessions(userId: string): Promise<number> {
   const sessions = getDb().prepare(`
@@ -221,6 +305,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
   // recent 20 per user/project so the page remains useful on long-lived installs.
   app.get('/admin/monitor', async (req, reply) => {
     if (!requireAdmin(req, reply)) return;
+    const serverResourcesPromise = readServerResources();
     const db = getDb();
     const users = db.prepare(`
       SELECT u.id, u.username, u.display_name, u.role, u.disabled, u.max_tabs,
@@ -469,6 +554,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
 
     return {
       generated_at: new Date().toISOString(),
+      server_resources: await serverResourcesPromise,
       active_users: monitorUsers.filter((user) => user.active_sessions > 0).length,
       active_sessions: monitorUsers.reduce((total, user) => total + user.active_sessions, 0),
       total_memory_bytes: monitorUsers.reduce((total, user) => total + user.memory_bytes, 0),

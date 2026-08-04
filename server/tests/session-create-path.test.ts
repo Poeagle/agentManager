@@ -12,6 +12,7 @@ describe('session creation project identity', () => {
   let app: FastifyInstance;
   let cleanup: () => void;
   let cookie: string;
+  let adminId: string;
   let projectPath: string;
 
   beforeEach(async () => {
@@ -21,6 +22,7 @@ describe('session creation project identity', () => {
     mkdirSync(projectPath);
 
     const admin = createUser({ username: 'session-path-admin', password: 'password1', role: 'admin' });
+    adminId = admin.id;
     cookie = `agentmanager_session=${createAuthSession(admin.id)}`;
     getDb().prepare('INSERT INTO projects (id, name, path, owner_id) VALUES (?, ?, ?, ?)')
       .run('project-1', 'Project', projectPath, admin.id);
@@ -75,5 +77,24 @@ describe('session creation project identity', () => {
       projectId: 'project-1',
       projectPath,
     });
+  });
+
+  it('keeps the regular session list scoped to the current admin account', async () => {
+    const otherAdmin = createUser({ username: 'other-session-admin', password: 'password2', role: 'admin' });
+    const insert = getDb().prepare(`
+      INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
+      VALUES (?, 'project-1', ?, 'running', 'session', 'claude', ?)
+    `);
+    insert.run('own-session', 'Own work', adminId);
+    insert.run('other-session', 'Other admin work', otherAdmin.id);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/sessions',
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().sessions.map((session: { id: string }) => session.id)).toEqual(['own-session']);
   });
 });

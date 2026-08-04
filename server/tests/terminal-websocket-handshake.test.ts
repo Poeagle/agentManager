@@ -144,6 +144,8 @@ describe('terminal websocket handshake', () => {
       ['session-1', 'second', true],
       ['session-1', 'third', false],
     ]);
+    expect(manager.attachTerminal).toHaveBeenCalledWith('session-1', expect.anything(), { skipReplay: true });
+    expect(manager.sendReplay).toHaveBeenCalledWith('session-1', expect.anything(), true, 'history');
     client.socket.close();
     second.socket.close();
   });
@@ -158,6 +160,8 @@ describe('terminal websocket handshake', () => {
     manager.lifecycleListener?.(true);
     expect(await client.next('ready')).toMatchObject({ type: 'ready', passive: true });
     expect(manager.attachTerminal).toHaveBeenCalledTimes(1);
+    expect(manager.attachTerminal).toHaveBeenCalledWith('session-1', expect.anything(), { skipReplay: true });
+    expect(manager.sendReplay).toHaveBeenCalledWith('session-1', expect.anything(), true, 'screen');
     client.socket.close();
 
     await new Promise((resolve) => client.socket.once('close', resolve));

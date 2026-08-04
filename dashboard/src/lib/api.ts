@@ -476,6 +476,28 @@ export interface AdminMonitorUser extends AuthUser {
 
 export interface AdminMonitorResponse {
   generated_at: string;
+  server_resources: {
+    hostname: string;
+    uptime_seconds: number;
+    cpu: {
+      usage_percent: number;
+      core_count: number;
+      load_average_1m: number;
+    };
+    memory: {
+      total_bytes: number;
+      used_bytes: number;
+      available_bytes: number;
+      usage_percent: number;
+    };
+    disk: {
+      total_bytes: number;
+      used_bytes: number;
+      available_bytes: number;
+      usage_percent: number;
+      mount: string;
+    } | null;
+  };
   active_users: number;
   active_sessions: number;
   total_memory_bytes: number;

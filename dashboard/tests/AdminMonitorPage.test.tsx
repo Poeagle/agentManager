@@ -49,6 +49,24 @@ function session(overrides: Partial<AdminMonitorSession> = {}): AdminMonitorSess
 
 const response: AdminMonitorResponse = {
   generated_at: '2026-07-31T12:00:00.000Z',
+  server_resources: {
+    hostname: 'agent-host-01',
+    uptime_seconds: 183845,
+    cpu: { usage_percent: 37.4, core_count: 8, load_average_1m: 2.14 },
+    memory: {
+      total_bytes: 16 * 1024 * 1024 * 1024,
+      used_bytes: 10 * 1024 * 1024 * 1024,
+      available_bytes: 6 * 1024 * 1024 * 1024,
+      usage_percent: 62.5,
+    },
+    disk: {
+      total_bytes: 256 * 1024 * 1024 * 1024,
+      used_bytes: 192 * 1024 * 1024 * 1024,
+      available_bytes: 64 * 1024 * 1024 * 1024,
+      usage_percent: 75,
+      mount: '/',
+    },
+  },
   active_users: 1,
   active_sessions: 1,
   total_memory_bytes: 128 * 1024 * 1024,
@@ -102,6 +120,9 @@ describe('administrator monitor page', () => {
     );
 
     expect(await screen.findByRole('heading', { name: '用户与会话监控' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '服务器资源' })).toBeInTheDocument();
+    expect(await screen.findByText('agent-host-01')).toBeInTheDocument();
+    expect(screen.getByText('37%')).toBeInTheDocument();
     expect(await screen.findByText(/Investigate query latency/)).toBeInTheDocument();
     expect(screen.getAllByText('128 MiB').length).toBeGreaterThan(0);
     expect(screen.getByText('DolphinDB Manager')).toBeInTheDocument();

@@ -1150,7 +1150,11 @@ async function serializeSessionOutput(
   }
 
   const term = new HeadlessTerminal({
-    cols: initCols, rows: initRows, scrollback: 10000, allowProposedApi: true,
+    cols: initCols,
+    rows: initRows,
+    scrollback: 10000,
+    reflowCursorLine: true,
+    allowProposedApi: true,
   });
   const serializeAddon = new SerializeAddon();
   term.loadAddon(serializeAddon);
@@ -1618,12 +1622,22 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
     if (activeSessions.get(sessionId) !== active) return;
     switch (msg.type) {
       case 'output': {
-        // Display output — store in DB for replay on restart
-        active.seq++;
-        queuePtyInsert(sessionId, active.seq, msg.data);
+        // tmux has two output paths with deliberately separate jobs:
+        // the attached-client stream drives the live browser, while pipe-pane
+        // supplies durable replay. Direct/dtach output performs both jobs.
+        if (msg.persist !== false) {
+          active.seq++;
+          queuePtyInsert(sessionId, active.seq, msg.data);
 
-        // In direct/dtach mode the same worker message is both display output
-        // and the state tracker's raw PTY stream, avoiding duplicate IPC copies.
+          // Maintain replay buffer (last ~200KB) for instant replay without tmux capture-pane
+          active.replayBuffer.push(msg.data);
+          active.replayBytes += msg.data.length;
+          while (active.replayBytes > 200_000 && active.replayBuffer.length > 1) {
+            const removed = active.replayBuffer.shift()!;
+            active.replayBytes -= removed.length;
+          }
+        }
+
         if (msg.track) {
           tracker.onData(msg.data);
           if (!uuidPersisted && active.cliType !== 'codex' && tracker.claudeSessionId) {
@@ -1631,25 +1645,10 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
           }
         }
 
-        // Maintain replay buffer (last ~200KB) for instant replay without tmux capture-pane
-        active.replayBuffer.push(msg.data);
-        active.replayBytes += msg.data.length;
-        while (active.replayBytes > 200_000 && active.replayBuffer.length > 1) {
-          const removed = active.replayBuffer.shift()!;
-          active.replayBytes -= removed.length;
-        }
-
-        // Batch to ~60fps, bound frame size, and evict clients whose socket
-        // buffer exceeds the explicit high-water mark.
-        queueWebSocketOutput(sessionId, active, msg.data);
-        break;
-      }
-
-      case 'pty-data': {
-        // Raw PTY output for state tracking (not necessarily display output)
-        tracker.onData(msg.data);
-        if (!uuidPersisted && active.cliType !== 'codex' && tracker.claudeSessionId) {
-          persistUuid(tracker.claudeSessionId);
+        if (msg.display !== false) {
+          // Batch to ~60fps, bound frame size, and evict clients whose socket
+          // buffer exceeds the explicit high-water mark.
+          queueWebSocketOutput(sessionId, active, msg.data);
         }
         break;
       }
@@ -2126,15 +2125,13 @@ async function reconnectSessionUnlocked(sessionId: string, opts?: { skipPipePane
       try {
         const name = tmuxSessionName(sessionId);
         const { stdout: rawStdout } = await execFileAsync('tmux', [
-          ...tmuxArgsForSession(sessionId), 'capture-pane', '-t', name, '-p', '-e', '-T', '-S', '-',
+          ...tmuxArgsForSession(sessionId), 'capture-pane', '-t', name, '-p', '-e', '-T', '-S', '-10000',
         ], { encoding: 'utf8', maxBuffer: 5 * 1024 * 1024 });
-        const stdout = trimCaptureOutput(rawStdout);
+        const stdout = serializeTmuxPaneCapture(boundTmuxPaneCapture(rawStdout));
         if (stdout) {
-          // Convert \n to \r\n for xterm.js — bare \n causes staircase (LF without CR)
-          const converted = stdout.replace(/\r?\n/g, '\r\n');
-          active.replayBuffer.push(converted);
-          active.replayBytes = converted.length;
-          captureCache.set(sessionId, { data: converted, ts: Date.now() });
+          active.replayBuffer.push(stdout);
+          active.replayBytes = stdout.length;
+          captureCache.set(captureCacheKey(sessionId, 'history'), { data: stdout, ts: Date.now() });
         }
         tlog(`[RECONNECT] ${sessionId}: capture-seed=${Date.now() - seedStart}ms (${stdout?.length || 0} bytes)`);
       } catch { /* tmux might not be ready yet */ }
@@ -2204,7 +2201,9 @@ export const RESIZE_MARKER = '\x00RESIZE:';
  *  replay buffer. This produces a correct rendering at the current terminal width,
  *  which is important for TUIs like Codex that use cursor positioning — raw replay
  *  of chunks recorded at a different width produces garbled output. */
-export function sendReplay(sessionId: string, ws: WebSocket, preferCapture = false): void {
+type CaptureMode = 'screen' | 'history';
+
+export function sendReplay(sessionId: string, ws: WebSocket, preferCapture = false, captureMode: CaptureMode = 'history'): void {
   const active = activeSessions.get(sessionId);
   if (!active) return;
 
@@ -2212,9 +2211,9 @@ export function sendReplay(sessionId: string, ws: WebSocket, preferCapture = fal
   // use capture-pane for a pixel-perfect rendering at the current dimensions.
   if (preferCapture && config.useTmux) {
     // Invalidate stale capture cache so we get a fresh capture at new dimensions
-    captureCache.delete(sessionId);
+    captureCache.delete(captureCacheKey(sessionId, captureMode));
     tlog(`[REPLAY] ${sessionId}: preferCapture — using tmux capture-pane`);
-    requestCapture(sessionId, ws).catch(() => {
+    requestCapture(sessionId, ws, captureMode).catch(() => {
       // Capture failed — fall back to buffer replay
       if (active.replayBuffer.length > 0) {
         const data = '\x1b[H\x1b[2J\x1b[3J' + active.replayBuffer.join('');
@@ -2234,19 +2233,37 @@ export function sendReplay(sessionId: string, ws: WebSocket, preferCapture = fal
 
   // Fallback: tmux capture-pane (only needed right after reconnect before
   // pipe-pane data arrives — typically fast at that point)
-  requestCapture(sessionId, ws).catch(() => {});
+  requestCapture(sessionId, ws, captureMode).catch(() => {});
 }
 
-/** Strip trailing blank lines from capture-pane output.
- *  capture-pane captures all visible rows, including empty ones below the prompt.
- *  This prevents replay from showing a bunch of blank space with the cursor at the bottom. */
-function trimCaptureOutput(output: string): string {
-  // Split by newlines, strip trailing empty/whitespace-only lines (may contain ANSI resets)
-  const lines = output.split('\n');
-  while (lines.length > 0 && lines[lines.length - 1].replace(/\x1b\[[0-9;]*m/g, '').trim() === '') {
-    lines.pop();
-  }
-  return lines.join('\n');
+/** Convert a tmux pane snapshot into an xterm-safe, geometry-preserving stream. */
+export function serializeTmuxPaneCapture(output: string, cursorRestore = ''): string {
+  // capture-pane terminates the final screen row with a newline. Remove exactly
+  // that delimiter so writing a pane with `rows` rows does not scroll xterm by
+  // one line. Preserve every other blank row because it is part of TUI geometry.
+  const pane = output.replace(/\r?\n$/, '').replace(/\r?\n/g, '\r\n');
+  return pane + cursorRestore;
+}
+
+const MAX_RECOVERY_CAPTURE_CHARS = 4 * 1024 * 1024;
+
+/** Keep the newest complete capture lines within the browser recovery budget. */
+export function boundTmuxPaneCapture(output: string, maxChars = MAX_RECOVERY_CAPTURE_CHARS): string {
+  if (output.length <= maxChars) return output;
+  const firstCompleteLine = output.indexOf('\n', output.length - maxChars);
+  const tail = firstCompleteLine >= 0 ? output.slice(firstCompleteLine + 1) : output.slice(-maxChars);
+  // A retained line can inherit SGR state from discarded history. Reset once
+  // at the new boundary so colors/styles cannot leak into the recovered pane.
+  return `\x1b[0m${tail}`;
+}
+
+/** Build scrollback first, then repaint only the visible viewport from a newer capture. */
+export function composeTmuxHistoryRecovery(history: string, screen: string, cursorRestore = ''): string {
+  const scrollback = serializeTmuxPaneCapture(boundTmuxPaneCapture(history));
+  const currentScreen = serializeTmuxPaneCapture(screen, cursorRestore);
+  // ED 2 clears the visible viewport but deliberately omits ED 3, which would
+  // erase the scrollback we just reconstructed.
+  return `${scrollback}\x1b[H\x1b[2J${currentScreen}`;
 }
 
 /**
@@ -2258,13 +2275,17 @@ function trimCaptureOutput(output: string): string {
 // and may be busy processing pipe-pane output, causing 2.5s delays).
 const captureCache = new Map<string, { data: string; ts: number }>();
 const CAPTURE_CACHE_TTL = 2000; // 2 seconds
+function captureCacheKey(sessionId: string, mode: CaptureMode): string {
+  return `${sessionId}:${mode}`;
+}
 
-export function requestCapture(sessionId: string, ws: WebSocket): Promise<void> {
+export function requestCapture(sessionId: string, ws: WebSocket, mode: CaptureMode = 'history'): Promise<void> {
   const t0 = Date.now();
   if (!config.useTmux) return Promise.resolve();
 
   // Serve from cache if fresh
-  const cached = captureCache.get(sessionId);
+  const cacheKey = captureCacheKey(sessionId, mode);
+  const cached = captureCache.get(cacheKey);
   if (cached && (Date.now() - cached.ts) < CAPTURE_CACHE_TTL) {
     tlog(`[CAPTURE] ${sessionId}: from cache (${cached.data.length} bytes)`);
     sendTerminalOutput(ws, sessionId, '\x1b[H\x1b[2J\x1b[3J' + cached.data);
@@ -2275,11 +2296,11 @@ export function requestCapture(sessionId: string, ws: WebSocket): Promise<void> 
   const name = tmuxSessionName(sessionId);
   return new Promise((resolve) => {
     const chunks: string[] = [];
-    // Always use -S - to capture full scrollback history. Duplicate output
-    // from Codex redraws is prevented on the client side by skipping the
-    // force-resize trick for Codex sessions (Terminal.tsx).
+    // Active terminals recover the same 10,000-line scrollback configured in
+    // xterm. Passive grid thumbnails only need the current visible pane.
     const captureArgs = [
-      ...tmuxArgsForSession(sessionId), 'capture-pane', '-t', name, '-p', '-e', '-T', '-S', '-',
+      ...tmuxArgsForSession(sessionId), 'capture-pane', '-t', name, '-p', '-e', '-T',
+      ...(mode === 'history' ? ['-S', '-10000'] : []),
     ];
     const proc = spawn('tmux', captureArgs, { stdio: ['ignore', 'pipe', 'ignore'] });
 
@@ -2288,14 +2309,28 @@ export function requestCapture(sessionId: string, ws: WebSocket): Promise<void> 
 
     proc.on('close', (code) => {
       const finalizeCapture = async () => {
-        const stdout = trimCaptureOutput(chunks.join(''));
+        const stdout = boundTmuxPaneCapture(chunks.join(''));
         tlog(`[CAPTURE] ${sessionId}: done in ${Date.now() - t0}ms (${stdout.length} bytes, code=${code})`);
         if (code === 0 && stdout) {
-          // Convert \n to \r\n for xterm.js — bare \n causes staircase (LF without CR)
-          const converted = stdout.replace(/\r?\n/g, '\r\n');
+          // History and an active TUI can diverge while the capture is running.
+          // Fetch the visible pane again and overlay it without clearing the
+          // scrollback constructed from the history capture.
+          let currentScreen = stdout;
+          if (mode === 'history') {
+            try {
+              const { stdout: screenOutput } = await execFileAsync('tmux', [
+                ...tmuxArgsForSession(sessionId),
+                'capture-pane', '-t', name, '-p', '-e', '-T',
+              ], { encoding: 'utf8', maxBuffer: 5 * 1024 * 1024 });
+              currentScreen = screenOutput;
+            } catch {
+              // The history tail remains a usable fallback if the pane exits.
+            }
+          }
+
           // capture-pane contains cell contents but not the live cursor. Query
-          // tmux immediately after capture and append an ANSI cursor restore so
-          // xterm does not leave the cursor after the snapshot's last text row.
+          // tmux immediately after the current-screen capture and append an ANSI
+          // cursor restore so xterm ends at the same viewport coordinates.
           let cursorRestore = '';
           try {
             const { stdout: cursorOutput } = await execFileAsync('tmux', [
@@ -2307,8 +2342,10 @@ export function requestCapture(sessionId: string, ws: WebSocket): Promise<void> 
           } catch {
             // Keep the text snapshot even if the pane exits during cursor lookup.
           }
-          const restored = converted + cursorRestore;
-          captureCache.set(sessionId, { data: restored, ts: Date.now() });
+          const restored = mode === 'history'
+            ? composeTmuxHistoryRecovery(stdout, currentScreen, cursorRestore)
+            : serializeTmuxPaneCapture(currentScreen, cursorRestore);
+          captureCache.set(cacheKey, { data: restored, ts: Date.now() });
 
           // Replace the replay buffer with this clean capture — prevents stale
           // raw chunks (recorded at different widths) from being replayed on
@@ -2604,12 +2641,11 @@ export function listSessions(status?: string): Session[] {
   `).all() as Session[];
 }
 
-/** Same list semantics as listSessions, but applies member ownership before
- * the inactive-history limit so one user's history cannot crowd out another's. */
+/** Same list semantics as listSessions, but always applies account ownership
+ * before the inactive-history limit. The regular project UI is user-scoped
+ * even for administrators; global visibility belongs to /admin/monitor. */
 export function listSessionsForUser(userId: string, status?: string): Session[] {
   const db = getDb();
-  const role = db.prepare('SELECT role FROM users WHERE id = ?').get(userId) as { role: string } | undefined;
-  if (role?.role === 'admin') return listSessions(status);
   if (status) {
     return db.prepare('SELECT * FROM sessions WHERE created_by_user_id = ? AND status = ? ORDER BY created_at DESC').all(userId, status) as Session[];
   }

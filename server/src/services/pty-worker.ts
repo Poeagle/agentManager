@@ -438,33 +438,35 @@ interface PausableOutputSource {
   resume(): void;
 }
 
-export function setOutputSourcePaused(
+export function setOutputSourcesPaused(
   paused: boolean,
   hasPipe: boolean,
   pipeSource: PausableOutputSource | null,
   directSource: PausableOutputSource | null,
 ): void {
-  const source = hasPipe ? pipeSource : directSource;
-  if (paused) source?.pause();
-  else source?.resume();
+  const sources = hasPipe ? [pipeSource, directSource] : [directSource];
+  for (const source of sources) {
+    if (paused) source?.pause();
+    else source?.resume();
+  }
 }
 
 function send(msg: Record<string, unknown>): boolean {
   if (!process.send) return false;
-  // State tracking is best-effort during IPC congestion. Display output is
-  // preserved; pausing pipe-pane prevents its queue from growing further.
-  if (ipcBackpressured && msg.type === 'pty-data') return false;
+  // Once the IPC queue fills, pause both the interactive display stream and
+  // the durable pipe-pane journal. The message that crossed the high-water
+  // mark is already queued and its callback resumes both sources after drain.
   try {
     let queuedBehindBackpressure = false;
     const writable = process.send(msg, (err) => {
       if (!queuedBehindBackpressure) return;
       ipcBackpressured = false;
-      if (!err) setOutputSourcePaused(false, hasPipePane, pipePaneStream, ptyProcess);
+      if (!err) setOutputSourcesPaused(false, hasPipePane, pipePaneStream, ptyProcess);
     });
     queuedBehindBackpressure = !writable;
     if (!writable) {
       ipcBackpressured = true;
-      setOutputSourcePaused(true, hasPipePane, pipePaneStream, ptyProcess);
+      setOutputSourcesPaused(true, hasPipePane, pipePaneStream, ptyProcess);
     }
     return writable;
   } catch {
@@ -472,27 +474,37 @@ function send(msg: Record<string, unknown>): boolean {
   }
 }
 
+export function classifyTerminalOutput(source: 'attached' | 'pipe', hasPipe: boolean, rawData: string) {
+  const data = rawData.replace(FOCUS_REPORT_RE, '');
+  if (!data) return null;
+
+  if (source === 'attached' && hasPipe) {
+    // The attached tmux client is the authoritative live screen. Its stream is
+    // synchronized with browser input and must drive xterm, but pipe-pane owns
+    // durable replay so this copy must not be persisted a second time.
+    return { type: 'output', data, track: true, persist: false } as const;
+  }
+  if (source === 'pipe') {
+    // pipe-pane is an application-output journal. It is reliable for replay,
+    // but it can be temporarily out of sync with the attached client's TUI.
+    return { type: 'output', data, display: false } as const;
+  }
+  return { type: 'output', data, track: true } as const;
+}
+
 function wireOutput(): void {
   if (!ptyProcess) return;
 
   ptyProcess.onData((data: string) => {
-    if (hasPipePane) {
-      // pipe-pane is the display stream; the attached PTY is used only for
-      // best-effort process-state tracking.
-      send({ type: 'pty-data', data });
-    } else {
-      // No pipe-pane: PTY output IS the display output.
-      // Strip focus reporting sequences so TUIs can't enable focus events on the client xterm.
-      const filtered = data.replace(FOCUS_REPORT_RE, '');
-      if (filtered) send({ type: 'output', data: filtered, track: true });
-    }
+    const message = classifyTerminalOutput('attached', hasPipePane, data);
+    if (message) send(message);
   });
 
   if (pipePaneStream) {
     pipePaneStream.on('data', (chunk: string | Buffer) => {
       const raw = typeof chunk === 'string' ? chunk : chunk.toString();
-      const data = raw.replace(FOCUS_REPORT_RE, '');
-      if (data) send({ type: 'output', data });
+      const message = classifyTerminalOutput('pipe', true, raw);
+      if (message) send(message);
     });
 
     pipePaneStream.on('error', (err) => {

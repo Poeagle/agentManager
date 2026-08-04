@@ -11,13 +11,16 @@ import {
   ChevronRight,
   ChevronsUpDown,
   CircleHelp,
+  Cpu,
   FolderOpen,
+  HardDrive,
   ExternalLink,
   Loader2,
   MemoryStick,
   Pencil,
   RefreshCw,
   Search,
+  Server,
   ShieldCheck,
   TerminalSquare,
   Trash2,
@@ -27,6 +30,7 @@ import {
 import {
   api,
   type AdminMonitorProject,
+  type AdminMonitorResponse,
   type AdminMonitorSession,
   type AdminMonitorTab,
   type AdminMonitorUser,
@@ -81,6 +85,14 @@ function formatBytes(bytes: number | null): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KiB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(bytes < 100 * 1024 * 1024 ? 1 : 0)} MiB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GiB`;
+}
+
+function formatUptime(seconds: number): string {
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3_600);
+  if (days > 0) return `${days} 天 ${hours} 小时`;
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  return hours > 0 ? `${hours} 小时 ${minutes} 分钟` : `${minutes} 分钟`;
 }
 
 function statusMeta(status: string) {
@@ -187,6 +199,8 @@ export function AdminMonitorPage({ onBack, onOpenSession }: {
             </button>
           </div>
         </header>
+
+        <ServerResourceOverview resources={data?.server_resources} loading={isLoading} />
 
         <section className="grid grid-cols-2 border-b sm:grid-cols-4" style={{ borderColor: 'var(--border)' }}>
           <Telemetry label="运行用户" value={`${data?.active_users ?? 0}`} detail={`${onlineUsers} 人在线`} icon={<Users className="h-4 w-4" />} />
@@ -655,6 +669,91 @@ function Telemetry({ label, value, detail, icon }: { label: string; value: strin
       <span className="hidden sm:block" style={{ color: 'var(--accent)' }}>{icon}</span>
       <div className="min-w-0"><div className="font-mono text-lg font-semibold tabular-nums sm:text-xl">{value}</div><div className="text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>{label}</div><div className="hidden truncate text-[10px] lg:block" style={{ color: 'var(--text-muted)' }}>{detail}</div></div>
     </div>
+  );
+}
+
+type ServerResources = NonNullable<AdminMonitorResponse['server_resources']>;
+
+function ServerResourceOverview({ resources, loading }: { resources: ServerResources | undefined; loading: boolean }) {
+  const highestUsage = resources
+    ? Math.max(resources.cpu.usage_percent, resources.memory.usage_percent, resources.disk?.usage_percent ?? 0)
+    : 0;
+  const health = highestUsage >= 90
+    ? { label: '资源告警', color: 'var(--error)' }
+    : highestUsage >= 75
+      ? { label: '负载偏高', color: '#f59e0b' }
+      : { label: '运行平稳', color: 'var(--success)' };
+
+  return (
+    <section aria-label="服务器资源" className="border-b py-4 sm:py-5" style={{ borderColor: 'var(--border)' }}>
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: 'var(--text-secondary)' }}>
+            <Server className="h-3.5 w-3.5" />服务器资源
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            <span className="font-mono">{resources?.hostname ?? (loading ? '读取服务器信息…' : '未知主机')}</span>
+            {resources && <><span>持续运行 {formatUptime(resources.uptime_seconds)}</span><span>5 秒自动刷新</span></>}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 text-[11px] font-medium" style={{ color: health.color }}>
+          <span className={`h-1.5 w-1.5 rounded-full ${loading ? 'animate-pulse motion-reduce:animate-none' : ''}`} style={{ background: health.color }} />
+          {loading && !resources ? '采样中' : health.label}
+        </div>
+      </div>
+
+      <div className="grid gap-2 lg:grid-cols-3">
+        <ResourceGauge
+          label="CPU"
+          value={resources?.cpu.usage_percent}
+          detail={resources ? `${resources.cpu.core_count} 核 · 1 分钟负载 ${resources.cpu.load_average_1m.toFixed(2)}` : '正在采集处理器负载'}
+          icon={<Cpu className="h-4 w-4" />}
+        />
+        <ResourceGauge
+          label="物理内存"
+          value={resources?.memory.usage_percent}
+          detail={resources ? `${formatBytes(resources.memory.used_bytes)} / ${formatBytes(resources.memory.total_bytes)}` : '正在读取可用内存'}
+          icon={<MemoryStick className="h-4 w-4" />}
+        />
+        <ResourceGauge
+          label="磁盘"
+          value={resources?.disk?.usage_percent}
+          detail={resources?.disk ? `${formatBytes(resources.disk.used_bytes)} / ${formatBytes(resources.disk.total_bytes)} · ${resources.disk.mount}` : '当前平台无法读取磁盘用量'}
+          icon={<HardDrive className="h-4 w-4" />}
+        />
+      </div>
+    </section>
+  );
+}
+
+function ResourceGauge({ label, value, detail, icon }: {
+  label: string;
+  value: number | undefined;
+  detail: string;
+  icon: ReactNode;
+}) {
+  const normalized = value === undefined ? 0 : Math.min(100, Math.max(0, value));
+  const color = normalized >= 90 ? 'var(--error)' : normalized >= 75 ? '#f59e0b' : 'var(--accent)';
+  return (
+    <article className="relative overflow-hidden rounded-lg px-3.5 py-3.5 sm:px-4" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-2 text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+          <span style={{ color }}>{icon}</span>{label}
+        </div>
+        <span className="font-mono text-xl font-semibold leading-none tabular-nums" style={{ color: value === undefined ? 'var(--text-muted)' : 'var(--text-primary)' }}>
+          {value === undefined ? '—' : `${Math.round(value)}%`}
+        </span>
+      </div>
+      <div className="relative mt-3 h-1.5 overflow-hidden rounded-full" style={{ background: 'var(--bg-tertiary)' }}>
+        <div className="h-full rounded-full transition-[width,background-color] duration-500 motion-reduce:transition-none" style={{ width: `${normalized}%`, background: color }} />
+        <span className="absolute inset-y-0 left-3/4 w-px bg-white/30" />
+        <span className="absolute inset-y-0 left-[90%] w-px bg-white/45" />
+      </div>
+      <div className="mt-2 flex items-center justify-between gap-3 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+        <span className="truncate" title={detail}>{detail}</span>
+        <span className="shrink-0 font-mono">75 / 90</span>
+      </div>
+    </article>
   );
 }
 

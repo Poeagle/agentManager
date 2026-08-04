@@ -63,6 +63,20 @@ describe('administrator monitoring', () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body).toMatchObject({ active_users: 1, active_sessions: 2, total_memory_bytes: 0 });
+    expect(body.server_resources).toMatchObject({
+      hostname: expect.any(String),
+      uptime_seconds: expect.any(Number),
+      cpu: {
+        usage_percent: expect.any(Number),
+        core_count: expect.any(Number),
+        load_average_1m: expect.any(Number),
+      },
+      memory: {
+        total_bytes: expect.any(Number),
+        used_bytes: expect.any(Number),
+        usage_percent: expect.any(Number),
+      },
+    });
     const monitoredMember = body.users.find((user: any) => user.id === member.id);
     expect(monitoredMember).toMatchObject({
       username: 'member',
