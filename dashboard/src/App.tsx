@@ -419,7 +419,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
               onClick={() => {
                 setShowAdminMonitor(true);
               }}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors"
+              className="flex h-7 items-center gap-1.5 px-2.5 rounded-md text-xs font-medium transition-colors"
               style={{
                 background: showAdminMonitor ? 'color-mix(in srgb, var(--accent) 16%, var(--bg-tertiary))' : 'var(--bg-tertiary)',
                 color: showAdminMonitor ? 'var(--accent)' : 'var(--text-secondary)',

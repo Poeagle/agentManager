@@ -40,7 +40,7 @@ export function CodexQuotaIndicator() {
     <div
       aria-label={quota ? `Codex 周额度剩余 ${quota.remainingPercent}%` : 'Codex 周额度'}
       title={title}
-      className="relative flex h-9 min-w-[126px] items-center gap-2 overflow-hidden rounded-md border px-2.5 sm:min-w-[158px]"
+      className="relative flex h-7 items-center gap-1.5 overflow-hidden rounded-md border px-2.5"
       style={{
         borderColor: 'var(--border)',
         background: 'var(--bg-tertiary)',
@@ -48,17 +48,14 @@ export function CodexQuotaIndicator() {
       }}
     >
       <CodexIcon className="h-3.5 w-3.5 shrink-0" style={{ color }} />
-      <div className="min-w-0 flex-1 leading-none">
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="text-[9px] font-medium" style={{ color: 'var(--text-muted)' }}>Codex 周额度</span>
-          <strong className="font-mono text-[11px] tabular-nums" style={{ color }}>
-            {quota ? `${quota.remainingPercent}%` : quotaQuery.isError ? '不可用' : '读取中'}
-          </strong>
-        </div>
-        <time className="mt-1 block font-mono text-[9px] tabular-nums" dateTime={quota?.checkedAt} style={{ color: 'var(--text-muted)' }}>
-          检测 {checkedTime}
-        </time>
-      </div>
+      <span className="text-[10px] font-medium" style={{ color: 'var(--text-muted)' }}>Codex</span>
+      <strong className="font-mono text-[11px] tabular-nums" style={{ color }}>
+        {quota ? `${quota.remainingPercent}%` : quotaQuery.isError ? '不可用' : '读取中'}
+      </strong>
+      <span aria-hidden="true" className="text-[9px]" style={{ color: 'var(--border)' }}>·</span>
+      <time className="whitespace-nowrap font-mono text-[9px] tabular-nums" dateTime={quota?.checkedAt} style={{ color: 'var(--text-muted)' }}>
+        检测 {checkedTime}
+      </time>
       <span
         aria-hidden="true"
         className={`h-1.5 w-1.5 shrink-0 rounded-full ${quotaQuery.isFetching ? 'animate-pulse motion-reduce:animate-none' : ''}`}
