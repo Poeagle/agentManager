@@ -181,14 +181,13 @@ export function ScheduledTasksPanel({
   ), [sessionTabs]);
   const projectSessions = useMemo(() => (
     (sessionsQuery.data?.sessions ?? [])
-      .filter((session) => session.project_id === projectId)
+      .filter((session) => session.project_id === projectId && tabNames.has(session.id))
       .sort((a, b) => {
-        const aOpen = tabNames.has(a.id) ? 1 : 0;
-        const bOpen = tabNames.has(b.id) ? 1 : 0;
-        if (aOpen !== bOpen) return bOpen - aOpen;
-        return (b.created_at || '').localeCompare(a.created_at || '');
+        const aIndex = sessionTabs.findIndex((tab) => tab.id === a.id);
+        const bIndex = sessionTabs.findIndex((tab) => tab.id === b.id);
+        return aIndex - bIndex;
       })
-  ), [projectId, sessionsQuery.data?.sessions, tabNames]);
+  ), [projectId, sessionTabs, sessionsQuery.data?.sessions, tabNames]);
   const selectedTask = editor.id ? tasks.find((task) => task.id === editor.id) : undefined;
   const runsQuery = useQuery({
     queryKey: ['scheduled-task-runs', editor.id],

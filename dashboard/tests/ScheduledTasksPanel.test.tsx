@@ -48,6 +48,14 @@ const session: Session = {
   pid: null, started_at: null, completed_at: null, exit_code: null, created_at: '2026-08-13T00:00:00Z',
 };
 
+const historicalSession: Session = {
+  ...session,
+  id: 'session-history',
+  task: 'Old terminal',
+  status: 'completed',
+  created_at: '2026-07-01T00:00:00Z',
+};
+
 function renderPanel(sessionTabs: Array<{ id: string; label: string; customLabel?: string }> = []) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={client}><ScheduledTasksPanel projectId="project-1" sessionTabs={sessionTabs} /></QueryClientProvider>);
@@ -64,7 +72,7 @@ beforeEach(() => {
       session_id: session.id, error: null, started_at: '2026-08-13T01:00:00Z', completed_at: '2026-08-13T01:00:01Z',
     },
   });
-  vi.mocked(api.sessions.list).mockResolvedValue({ sessions: [session] });
+  vi.mocked(api.sessions.list).mockResolvedValue({ sessions: [session, historicalSession] });
   vi.mocked(api.scheduledTasks.create).mockImplementation(async (input) => ({
     ok: true,
     task: { ...task, ...input, id: 'schedule-new', enabled: input.enabled ? 1 : 0 },
@@ -110,5 +118,6 @@ describe('ScheduledTasksPanel', () => {
     await screen.findByText('每日代码巡检');
     await user.click(screen.getByRole('button', { name: /现有标签页/ }));
     expect(screen.getByRole('option', { name: '代码巡检主会话 · Session · running' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /Old terminal/ })).not.toBeInTheDocument();
   });
 });
