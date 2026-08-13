@@ -35,6 +35,7 @@ describe('CodexQuotaIndicator', () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.getByLabelText('Codex 周额度剩余 65%')).toBeInTheDocument();
+    expect(screen.getByText(/检测 \d{2}:\d{2}:\d{2}/)).toBeInTheDocument();
     expect(api.codexQuota.read).toHaveBeenCalledTimes(1);
 
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
