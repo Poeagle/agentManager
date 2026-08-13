@@ -185,6 +185,8 @@ export const api = {
       fetchJSON<{ ok: boolean; run: ScheduledTaskRun }>(`/scheduled-tasks/${id}/run`, { method: 'POST' }),
     runs: (id: string) =>
       fetchJSON<{ runs: ScheduledTaskRun[] }>(`/scheduled-tasks/${id}/runs`),
+    codexQuota: (projectId: string) =>
+      fetchJSON<{ quota: CodexWeeklyQuota }>(`/scheduled-tasks/codex-quota?project_id=${encodeURIComponent(projectId)}`),
   },
   projects: {
     list: () => fetchJSON<{ projects: Project[] }>('/projects'),
@@ -465,6 +467,11 @@ export interface ScheduledTaskInput {
   new_cli_type?: 'claude' | 'codex' | null;
   new_agent_type?: string | null;
   inactive_policy?: 'resume' | 'fail';
+  stop_at?: string | null;
+  max_successful_runs?: number | null;
+  quota_remaining_below?: number | null;
+  max_consecutive_failures?: number | null;
+  stop_on_target_unavailable?: boolean;
   enabled?: boolean;
 }
 
@@ -473,8 +480,13 @@ export interface ScheduledTask extends Omit<ScheduledTaskInput, 'enabled'> {
   user_id: string;
   enabled: number;
   next_run_at: string | null;
+  successful_runs: number;
+  consecutive_failures: number;
+  last_quota_remaining: number | null;
+  stopped_at: string | null;
+  stop_reason: string | null;
   last_run_at: string | null;
-  last_status: 'success' | 'failed' | null;
+  last_status: 'success' | 'failed' | 'stopped' | null;
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -485,11 +497,20 @@ export interface ScheduledTaskRun {
   task_id: string;
   trigger: 'scheduled' | 'manual';
   scheduled_for: string;
-  status: 'running' | 'success' | 'failed';
+  status: 'running' | 'success' | 'failed' | 'stopped';
   session_id: string | null;
   error: string | null;
   started_at: string;
   completed_at: string | null;
+}
+
+export interface CodexWeeklyQuota {
+  usedPercent: number;
+  remainingPercent: number;
+  windowDurationMins: number;
+  resetsAt: number | null;
+  planType: string | null;
+  checkedAt: string;
 }
 
 export interface AdminMonitorSession {

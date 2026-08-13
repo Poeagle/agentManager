@@ -12,7 +12,7 @@ vi.mock('../src/lib/api', async () => {
     api: {
       ...actual.api,
       scheduledTasks: {
-        list: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), run: vi.fn(), runs: vi.fn(),
+        list: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), run: vi.fn(), runs: vi.fn(), codexQuota: vi.fn(),
       },
       sessions: { ...actual.api.sessions, list: vi.fn() },
     },
@@ -36,6 +36,11 @@ const task: ScheduledTask = {
   inactive_policy: 'resume',
   enabled: 1,
   next_run_at: '2026-08-14T01:30:00.000Z',
+  successful_runs: 0,
+  consecutive_failures: 0,
+  last_quota_remaining: null,
+  stopped_at: null,
+  stop_reason: null,
   last_run_at: null,
   last_status: null,
   last_error: null,
@@ -70,6 +75,12 @@ beforeEach(() => {
     run: {
       id: 'run-1', task_id: task.id, trigger: 'manual', scheduled_for: task.next_run_at!, status: 'success',
       session_id: session.id, error: null, started_at: '2026-08-13T01:00:00Z', completed_at: '2026-08-13T01:00:01Z',
+    },
+  });
+  vi.mocked(api.scheduledTasks.codexQuota).mockResolvedValue({
+    quota: {
+      usedPercent: 35, remainingPercent: 65, windowDurationMins: 10080,
+      resetsAt: 1787196804, planType: 'pro', checkedAt: '2026-08-13T08:00:00Z',
     },
   });
   vi.mocked(api.sessions.list).mockResolvedValue({ sessions: [session, historicalSession] });
@@ -119,5 +130,27 @@ describe('ScheduledTasksPanel', () => {
     await user.click(screen.getByRole('button', { name: /现有标签页/ }));
     expect(screen.getByRole('option', { name: '代码巡检主会话 · Session · running' })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: /Old terminal/ })).not.toBeInTheDocument();
+  });
+
+  it('configures stop guards and shows the live Codex weekly quota', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await screen.findByText('每日代码巡检');
+
+    await user.click(screen.getByRole('button', { name: 'Codex' }));
+    expect(await screen.findByText('剩余 65%')).toBeInTheDocument();
+    await user.type(screen.getByRole('spinbutton', { name: /成功执行后停止/ }), '2');
+    await user.type(screen.getByRole('spinbutton', { name: /连续失败后停止/ }), '3');
+    await user.type(screen.getByRole('spinbutton', { name: /Codex 周额度低于/ }), '20');
+    await user.type(screen.getByPlaceholderText('例如：每日代码巡检'), '受保护任务');
+    await user.type(screen.getByPlaceholderText('到时间后发送给标签页的完整指令…'), '继续工作');
+    await user.click(screen.getByRole('button', { name: '创建任务' }));
+
+    await waitFor(() => expect(api.scheduledTasks.create).toHaveBeenCalledWith(expect.objectContaining({
+      new_cli_type: 'codex',
+      max_successful_runs: 2,
+      max_consecutive_failures: 3,
+      quota_remaining_below: 20,
+    })));
   });
 });

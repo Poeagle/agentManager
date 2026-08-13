@@ -5,12 +5,14 @@ import {
   CalendarClock,
   CheckCircle2,
   Clock3,
+  Gauge,
   History,
   Loader2,
   Pause,
   Pencil,
   Play,
   Plus,
+  ShieldCheck,
   TerminalSquare,
   Trash2,
   XCircle,
@@ -52,6 +54,11 @@ interface EditorState {
   newCliType: 'claude' | 'codex';
   newAgentType: string;
   inactivePolicy: 'resume' | 'fail';
+  stopAtLocal: string;
+  maxSuccessfulRuns: string;
+  quotaRemainingBelow: string;
+  maxConsecutiveFailures: string;
+  stopOnTargetUnavailable: boolean;
   enabled: boolean;
 }
 
@@ -75,8 +82,20 @@ function emptyEditor(): EditorState {
     newCliType: 'claude',
     newAgentType: 'coder',
     inactivePolicy: 'resume',
+    stopAtLocal: '',
+    maxSuccessfulRuns: '',
+    quotaRemainingBelow: '',
+    maxConsecutiveFailures: '',
+    stopOnTargetUnavailable: false,
     enabled: true,
   };
+}
+
+function isoToLocalInput(value: string | null | undefined): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
 
 function editorFromTask(task: ScheduledTask): EditorState {
@@ -98,6 +117,11 @@ function editorFromTask(task: ScheduledTask): EditorState {
     newCliType: task.new_cli_type ?? 'claude',
     newAgentType: task.new_agent_type ?? 'coder',
     inactivePolicy: task.inactive_policy ?? 'resume',
+    stopAtLocal: isoToLocalInput(task.stop_at),
+    maxSuccessfulRuns: task.max_successful_runs?.toString() ?? '',
+    quotaRemainingBelow: task.quota_remaining_below?.toString() ?? '',
+    maxConsecutiveFailures: task.max_consecutive_failures?.toString() ?? '',
+    stopOnTargetUnavailable: !!task.stop_on_target_unavailable,
     enabled: !!task.enabled,
   };
 }
@@ -127,6 +151,13 @@ function formatDate(value: string | null, timezone: string): string {
     minute: '2-digit',
     hour12: false,
   }).format(date);
+}
+
+function formatEpochSeconds(value: number | null): string {
+  if (!value) return '未知';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date(value * 1000));
 }
 
 function sessionDateLabel(value: string | null | undefined): string {
@@ -188,6 +219,18 @@ export function ScheduledTasksPanel({
         return aIndex - bIndex;
       })
   ), [projectId, sessionTabs, sessionsQuery.data?.sessions, tabNames]);
+  const selectedTargetSession = projectSessions.find((session) => session.id === editor.targetSessionId);
+  const usesCodexQuota = editor.targetType === 'new'
+    ? editor.newMode !== 'terminal' && editor.newCliType === 'codex'
+    : selectedTargetSession?.mode !== 'terminal' && selectedTargetSession?.cli_type === 'codex';
+  const quotaQuery = useQuery({
+    queryKey: ['codex-weekly-quota', projectId],
+    queryFn: () => api.scheduledTasks.codexQuota(projectId),
+    enabled: usesCodexQuota,
+    refetchInterval: usesCodexQuota ? 60_000 : false,
+    staleTime: 30_000,
+    retry: false,
+  });
   const selectedTask = editor.id ? tasks.find((task) => task.id === editor.id) : undefined;
   const runsQuery = useQuery({
     queryKey: ['scheduled-task-runs', editor.id],
@@ -216,6 +259,23 @@ export function ScheduledTasksPanel({
       if (!editor.prompt.trim()) throw new Error('请输入提示词');
       if (editor.targetType === 'existing' && !editor.targetSessionId) throw new Error('请选择目标标签页');
       if (editor.scheduleKind === 'weekly' && editor.weeklyDays.length === 0) throw new Error('请至少选择一天');
+      const parseOptionalInteger = (value: string, label: string, max: number) => {
+        if (!value.trim()) return null;
+        const parsed = Number(value);
+        if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) throw new Error(`${label}必须为 1–${max} 的整数`);
+        return parsed;
+      };
+      const maxSuccessfulRuns = parseOptionalInteger(editor.maxSuccessfulRuns, '成功执行次数', 1_000_000);
+      const maxConsecutiveFailures = parseOptionalInteger(editor.maxConsecutiveFailures, '连续失败次数', 1_000_000);
+      const quotaRemainingBelow = usesCodexQuota
+        ? parseOptionalInteger(editor.quotaRemainingBelow, 'Codex 周额度下限', 100)
+        : null;
+      let stopAt: string | null = null;
+      if (editor.stopAtLocal) {
+        const date = new Date(editor.stopAtLocal);
+        if (Number.isNaN(date.getTime())) throw new Error('截止时间无效');
+        stopAt = date.toISOString();
+      }
       const scheduleValue = editor.scheduleKind === 'weekly'
         ? `${[...editor.weeklyDays].sort((a, b) => a - b).join(',')}@${editor.weeklyTime}`
         : editor.scheduleValue;
@@ -232,6 +292,11 @@ export function ScheduledTasksPanel({
         new_cli_type: editor.targetType === 'new' ? editor.newCliType : null,
         new_agent_type: editor.targetType === 'new' && editor.newMode === 'agent' ? editor.newAgentType : null,
         inactive_policy: editor.inactivePolicy,
+        stop_at: stopAt,
+        max_successful_runs: maxSuccessfulRuns,
+        quota_remaining_below: quotaRemainingBelow,
+        max_consecutive_failures: maxConsecutiveFailures,
+        stop_on_target_unavailable: editor.targetType === 'existing' && editor.stopOnTargetUnavailable,
         enabled: editor.enabled,
       };
       return editor.id
@@ -331,6 +396,7 @@ export function ScheduledTasksPanel({
                 {tasks.map((task) => {
                   const selected = editor.id === task.id;
                   const failed = task.last_status === 'failed';
+                  const stopped = !!task.stop_reason;
                   return (
                     <article
                       key={task.id}
@@ -340,15 +406,15 @@ export function ScheduledTasksPanel({
                         background: selected ? 'color-mix(in srgb, var(--accent) 7%, var(--bg-secondary))' : 'var(--bg-secondary)',
                       }}
                     >
-                      <span className="absolute -left-[15px] top-4 h-2.5 w-2.5 rounded-full border-2" style={{ borderColor: 'var(--bg-primary)', background: task.enabled ? failed ? 'var(--error)' : 'var(--accent)' : 'var(--text-muted)' }} />
+                      <span className="absolute -left-[15px] top-4 h-2.5 w-2.5 rounded-full border-2" style={{ borderColor: 'var(--bg-primary)', background: task.enabled ? failed ? 'var(--error)' : 'var(--accent)' : stopped ? '#f59e0b' : 'var(--text-muted)' }} />
                       <button onClick={() => { setEditor(editorFromTask(task)); setFormError(''); }} className="block w-full text-left">
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <h3 className="truncate text-sm font-semibold">{task.name}</h3>
                             <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{scheduleDescription(task)} · {task.timezone}</p>
                           </div>
-                          <span className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium" style={{ color: task.enabled ? 'var(--success)' : 'var(--text-muted)', background: 'var(--bg-tertiary)' }}>
-                            {task.enabled ? '运行中' : '已暂停'}
+                          <span className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium" style={{ color: task.enabled ? 'var(--success)' : stopped ? '#f59e0b' : 'var(--text-muted)', background: 'var(--bg-tertiary)' }}>
+                            {task.enabled ? '运行中' : stopped ? '已停止' : '已暂停'}
                           </span>
                         </div>
                         <div className="mt-3 flex items-center justify-between gap-2 border-t pt-2" style={{ borderColor: 'var(--border)' }}>
@@ -357,13 +423,14 @@ export function ScheduledTasksPanel({
                             {formatDate(task.next_run_at, task.timezone)}
                           </time>
                         </div>
-                        {task.last_error && <p className="mt-2 line-clamp-2 text-[10px]" style={{ color: 'var(--error)' }}>{task.last_error}</p>}
+                        {task.stop_reason && <p className="mt-2 line-clamp-2 text-[10px]" style={{ color: '#f59e0b' }}>{task.stop_reason}</p>}
+                        {!task.stop_reason && task.last_error && <p className="mt-2 line-clamp-2 text-[10px]" style={{ color: 'var(--error)' }}>{task.last_error}</p>}
                       </button>
                       <div className="mt-2 flex items-center justify-end gap-1">
-                        <button onClick={() => void runNow(task)} disabled={runningId === task.id} className="rounded p-1.5 hover:bg-white/5 disabled:opacity-40" title="立即执行" style={{ color: 'var(--accent)' }}>
+                        <button onClick={() => void runNow(task)} disabled={runningId === task.id || stopped} className="rounded p-1.5 hover:bg-white/5 disabled:opacity-40" title={stopped ? '请先重新启用任务' : '立即执行'} style={{ color: 'var(--accent)' }}>
                           {runningId === task.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
                         </button>
-                        <button onClick={() => void toggleTask(task)} className="rounded p-1.5 hover:bg-white/5" title={task.enabled ? '暂停' : '启用'} style={{ color: 'var(--text-secondary)' }}>
+                        <button onClick={() => void toggleTask(task)} className="rounded p-1.5 hover:bg-white/5" title={task.enabled ? '暂停' : stopped ? '重新启用' : '启用'} style={{ color: 'var(--text-secondary)' }}>
                           {task.enabled ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
                         </button>
                         <button onClick={() => setEditor(editorFromTask(task))} className="rounded p-1.5 hover:bg-white/5" title="编辑" style={{ color: 'var(--text-secondary)' }}><Pencil className="h-3.5 w-3.5" /></button>
@@ -459,6 +526,65 @@ export function ScheduledTasksPanel({
                 <textarea value={editor.prompt} onChange={(event) => setEditor({ ...editor, prompt: event.target.value })} rows={7} maxLength={100000} placeholder="到时间后发送给标签页的完整指令…" className={`${fieldClass} resize-y leading-relaxed`} style={fieldStyle} />
               </label>
 
+              <section className="overflow-hidden rounded-xl border" style={{ borderColor: 'var(--border)', background: 'var(--bg-primary)' }}>
+                <div className="flex items-start gap-3 border-b px-3 py-3" style={{ borderColor: 'var(--border)' }}>
+                  <div className="mt-0.5 rounded-lg p-2" style={{ background: 'color-mix(in srgb, #f59e0b 11%, transparent)', color: '#f59e0b' }}>
+                    <ShieldCheck className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-semibold">停止护栏</h3>
+                    <p className="mt-0.5 text-[10px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>满足任一条件就停止后续调度，不会关闭或 kill 当前标签页。</p>
+                  </div>
+                </div>
+                <div className="grid gap-3 p-3 sm:grid-cols-2">
+                  <label className="space-y-1.5 text-xs">
+                    <span style={{ color: 'var(--text-secondary)' }}>截止时间</span>
+                    <input type="datetime-local" value={editor.stopAtLocal} onChange={(event) => setEditor({ ...editor, stopAtLocal: event.target.value })} className={fieldClass} style={fieldStyle} />
+                    <small className="block" style={{ color: 'var(--text-muted)' }}>按当前浏览器本地时间</small>
+                  </label>
+                  <label className="space-y-1.5 text-xs">
+                    <span style={{ color: 'var(--text-secondary)' }}>成功执行后停止</span>
+                    <div className="flex items-center gap-2"><input type="number" min={1} max={1000000} value={editor.maxSuccessfulRuns} onChange={(event) => setEditor({ ...editor, maxSuccessfulRuns: event.target.value })} placeholder="不限" className={fieldClass} style={fieldStyle} /><span className="shrink-0" style={{ color: 'var(--text-muted)' }}>次</span></div>
+                  </label>
+                  <label className="space-y-1.5 text-xs">
+                    <span style={{ color: 'var(--text-secondary)' }}>连续失败后停止</span>
+                    <div className="flex items-center gap-2"><input type="number" min={1} max={1000000} value={editor.maxConsecutiveFailures} onChange={(event) => setEditor({ ...editor, maxConsecutiveFailures: event.target.value })} placeholder="不限" className={fieldClass} style={fieldStyle} /><span className="shrink-0" style={{ color: 'var(--text-muted)' }}>次</span></div>
+                  </label>
+                  <label className="space-y-1.5 text-xs">
+                    <span className="flex items-center gap-1.5" style={{ color: usesCodexQuota ? 'var(--text-secondary)' : 'var(--text-muted)' }}><Gauge className="h-3.5 w-3.5" />Codex 周额度低于</span>
+                    <div className="flex items-center gap-2"><input type="number" min={1} max={100} disabled={!usesCodexQuota} value={usesCodexQuota ? editor.quotaRemainingBelow : ''} onChange={(event) => setEditor({ ...editor, quotaRemainingBelow: event.target.value })} placeholder={usesCodexQuota ? '不限' : '选择 Codex 标签页'} className={`${fieldClass} disabled:cursor-not-allowed disabled:opacity-45`} style={fieldStyle} /><span className="shrink-0" style={{ color: 'var(--text-muted)' }}>%</span></div>
+                  </label>
+                </div>
+
+                {usesCodexQuota && (
+                  <div className="mx-3 mb-3 rounded-lg border px-3 py-2.5" style={{ borderColor: 'color-mix(in srgb, var(--accent) 22%, var(--border))', background: 'color-mix(in srgb, var(--accent) 5%, transparent)' }}>
+                    {quotaQuery.isLoading ? (
+                      <div className="flex items-center gap-2 text-[10px]" style={{ color: 'var(--text-muted)' }}><Loader2 className="h-3 w-3 animate-spin" />正在读取 Codex 周额度…</div>
+                    ) : quotaQuery.data?.quota ? (
+                      <>
+                        <div className="flex items-center justify-between gap-3 text-[10px]"><span style={{ color: 'var(--text-secondary)' }}>当前周额度</span><strong className="font-mono text-xs tabular-nums" style={{ color: quotaQuery.data.quota.remainingPercent < 20 ? 'var(--error)' : 'var(--accent)' }}>剩余 {quotaQuery.data.quota.remainingPercent}%</strong></div>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ background: 'var(--bg-tertiary)' }}><div className="h-full rounded-full transition-[width]" style={{ width: `${quotaQuery.data.quota.remainingPercent}%`, background: quotaQuery.data.quota.remainingPercent < 20 ? 'var(--error)' : 'var(--accent)' }} /></div>
+                        <div className="mt-1.5 flex justify-between text-[9px]" style={{ color: 'var(--text-muted)' }}><span>{quotaQuery.data.quota.planType?.toUpperCase() ?? 'Codex'} · 已用 {quotaQuery.data.quota.usedPercent}%</span><span>重置 {formatEpochSeconds(quotaQuery.data.quota.resetsAt)}</span></div>
+                      </>
+                    ) : (
+                      <p className="text-[10px]" style={{ color: 'var(--error)' }}>{quotaQuery.error instanceof Error ? quotaQuery.error.message : '无法读取 Codex 周额度'}</p>
+                    )}
+                  </div>
+                )}
+
+                <div className="border-t px-3 py-2.5" style={{ borderColor: 'var(--border)' }}>
+                  {editor.targetType === 'existing' && (
+                    <label className="flex items-start gap-2 text-xs">
+                      <input type="checkbox" checked={editor.stopOnTargetUnavailable} onChange={(event) => setEditor({ ...editor, stopOnTargetUnavailable: event.target.checked })} className="mt-0.5 accent-orange-500" />
+                      <span><strong className="block text-[11px] font-medium">目标标签页无法恢复时停止</strong><small style={{ color: 'var(--text-muted)' }}>避免标签页已删除后继续产生失败记录</small></span>
+                    </label>
+                  )}
+                  {selectedTask && (selectedTask.successful_runs > 0 || selectedTask.consecutive_failures > 0) && (
+                    <p className="mt-2 font-mono text-[9px] tabular-nums" style={{ color: 'var(--text-muted)' }}>累计成功 {selectedTask.successful_runs} 次 · 当前连续失败 {selectedTask.consecutive_failures} 次</p>
+                  )}
+                </div>
+              </section>
+
               <div className="flex items-center justify-between gap-3 border-t pt-4" style={{ borderColor: 'var(--border)' }}>
                 <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
                   {selectedTask?.last_run_at ? `上次执行：${formatDate(selectedTask.last_run_at, selectedTask.timezone)}` : '尚未执行'}
@@ -476,7 +602,7 @@ export function ScheduledTasksPanel({
                 <div className="max-h-44 space-y-1 overflow-y-auto">
                   {runsQuery.isLoading ? <Loader2 className="mx-auto my-4 h-4 w-4 animate-spin" /> : (runsQuery.data?.runs.length ?? 0) === 0 ? <p className="py-3 text-center text-[10px]" style={{ color: 'var(--text-muted)' }}>还没有执行记录</p> : runsQuery.data?.runs.map((run) => (
                     <div key={run.id} className="flex items-start gap-2 rounded-md px-2 py-1.5 text-[10px]" style={{ background: 'var(--bg-tertiary)' }}>
-                      {run.status === 'success' ? <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0" style={{ color: 'var(--success)' }} /> : run.status === 'failed' ? <XCircle className="mt-0.5 h-3 w-3 shrink-0" style={{ color: 'var(--error)' }} /> : <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin" />}
+                      {run.status === 'success' ? <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0" style={{ color: 'var(--success)' }} /> : run.status === 'failed' ? <XCircle className="mt-0.5 h-3 w-3 shrink-0" style={{ color: 'var(--error)' }} /> : run.status === 'stopped' ? <Pause className="mt-0.5 h-3 w-3 shrink-0" style={{ color: '#f59e0b' }} /> : <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin" />}
                       <div className="min-w-0 flex-1"><div className="flex justify-between gap-2"><span>{run.trigger === 'manual' ? '手动执行' : '计划执行'}</span><time className="font-mono" style={{ color: 'var(--text-muted)' }}>{formatDate(run.started_at, editor.timezone)}</time></div>{run.error && <p className="mt-0.5 truncate" title={run.error} style={{ color: 'var(--error)' }}>{run.error}</p>}</div>
                     </div>
                   ))}

@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import { getDb } from '../db/index.js';
 import { userCanUseToolForProject, userOwnsProject } from '../auth.js';
 import { nextScheduledAt, validateSchedule, type ScheduleKind } from '../services/schedule.js';
+import { readCodexWeeklyQuota } from '../services/codex-quota.js';
 import {
   runScheduledTask,
   type ScheduledInactivePolicy,
@@ -24,6 +25,11 @@ interface ScheduledTaskInput {
   new_cli_type?: 'claude' | 'codex' | null;
   new_agent_type?: string | null;
   inactive_policy?: ScheduledInactivePolicy;
+  stop_at?: string | null;
+  max_successful_runs?: number | null;
+  quota_remaining_below?: number | null;
+  max_consecutive_failures?: number | null;
+  stop_on_target_unavailable?: boolean;
   enabled?: boolean;
 }
 
@@ -38,10 +44,15 @@ function validateRawInput(raw: unknown): string | null {
   for (const key of ['project_id', 'name', 'prompt', 'schedule_kind', 'schedule_value', 'timezone', 'target_type', 'inactive_policy']) {
     if (value[key] !== undefined && typeof value[key] !== 'string') return `${key} 必须是字符串`;
   }
-  for (const key of ['target_session_id', 'new_mode', 'new_cli_type', 'new_agent_type']) {
+  for (const key of ['target_session_id', 'new_mode', 'new_cli_type', 'new_agent_type', 'stop_at']) {
     if (value[key] !== undefined && value[key] !== null && typeof value[key] !== 'string') return `${key} 必须是字符串或 null`;
   }
-  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') return 'enabled 必须是布尔值';
+  for (const key of ['max_successful_runs', 'quota_remaining_below', 'max_consecutive_failures']) {
+    if (value[key] !== undefined && value[key] !== null && typeof value[key] !== 'number') return `${key} 必须是数字或 null`;
+  }
+  for (const key of ['enabled', 'stop_on_target_unavailable']) {
+    if (value[key] !== undefined && typeof value[key] !== 'boolean') return `${key} 必须是布尔值`;
+  }
   return null;
 }
 
@@ -75,6 +86,14 @@ function validateTarget(userId: string, input: ScheduledTaskInput): string | nul
   return null;
 }
 
+function targetUsesCodex(input: ScheduledTaskInput): boolean {
+  if (input.target_type === 'new') return input.new_mode !== 'terminal' && input.new_cli_type === 'codex';
+  if (!input.target_session_id) return false;
+  const session = getDb().prepare('SELECT mode, cli_type FROM sessions WHERE id = ?')
+    .get(input.target_session_id) as { mode: string | null; cli_type: string | null } | undefined;
+  return !!session && session.mode !== 'terminal' && session.cli_type === 'codex';
+}
+
 function normalizeInput(raw: Partial<ScheduledTaskInput>, base?: ScheduledTaskRow): ScheduledTaskInput {
   return {
     project_id: raw.project_id ?? base?.project_id ?? '',
@@ -89,6 +108,13 @@ function normalizeInput(raw: Partial<ScheduledTaskInput>, base?: ScheduledTaskRo
     new_cli_type: raw.new_cli_type !== undefined ? raw.new_cli_type : base?.new_cli_type,
     new_agent_type: raw.new_agent_type !== undefined ? raw.new_agent_type : base?.new_agent_type,
     inactive_policy: raw.inactive_policy ?? base?.inactive_policy ?? 'resume',
+    stop_at: raw.stop_at !== undefined ? raw.stop_at : base?.stop_at,
+    max_successful_runs: raw.max_successful_runs !== undefined ? raw.max_successful_runs : base?.max_successful_runs,
+    quota_remaining_below: raw.quota_remaining_below !== undefined ? raw.quota_remaining_below : base?.quota_remaining_below,
+    max_consecutive_failures: raw.max_consecutive_failures !== undefined ? raw.max_consecutive_failures : base?.max_consecutive_failures,
+    stop_on_target_unavailable: raw.stop_on_target_unavailable !== undefined
+      ? raw.stop_on_target_unavailable
+      : base ? !!base.stop_on_target_unavailable : false,
     enabled: raw.enabled !== undefined ? raw.enabled : base ? !!base.enabled : true,
   };
 }
@@ -103,10 +129,47 @@ function validateInput(userId: string, input: ScheduledTaskInput): string | null
   } catch (error) {
     return error instanceof Error ? error.message : '周期设置无效';
   }
-  return validateTarget(userId, input);
+  const targetError = validateTarget(userId, input);
+  if (targetError) return targetError;
+  if (input.stop_at != null) {
+    const stopAt = Date.parse(input.stop_at);
+    if (!Number.isFinite(stopAt)) return '截止时间无效';
+    if (input.enabled && stopAt <= Date.now()) return '启用任务时，截止时间必须晚于当前时间';
+  }
+  for (const [value, label] of [
+    [input.max_successful_runs, '成功执行次数'],
+    [input.max_consecutive_failures, '连续失败次数'],
+  ] as const) {
+    if (value != null && (!Number.isInteger(value) || value < 1 || value > 1_000_000)) return `${label}必须为 1–1000000 的整数`;
+  }
+  if (input.quota_remaining_below != null) {
+    if (!Number.isInteger(input.quota_remaining_below) || input.quota_remaining_below < 1 || input.quota_remaining_below > 100) {
+      return 'Codex 周额度下限必须为 1–100 的整数';
+    }
+    if (!targetUsesCodex(input)) return 'Codex 周额度停止条件仅适用于 Codex Session 或 Agent';
+  }
+  if (input.stop_on_target_unavailable && input.target_type !== 'existing') {
+    return '目标标签页不可用停止条件仅适用于现有标签页';
+  }
+  return null;
 }
 
 export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
+  app.get<{ Querystring: { project_id?: string } }>('/scheduled-tasks/codex-quota', async (req, reply) => {
+    const projectId = req.query.project_id;
+    if (!projectId || !userOwnsProject(req.user!.id, projectId)) {
+      return reply.status(404).send({ error: '项目不存在或无权访问' });
+    }
+    const canUseCodex = userCanUseToolForProject(req.user!.id, projectId, 'session', 'codex')
+      || userCanUseToolForProject(req.user!.id, projectId, 'agent', 'codex');
+    if (!canUseCodex) return reply.status(403).send({ error: '当前项目未授权使用 Codex' });
+    try {
+      return { quota: await readCodexWeeklyQuota() };
+    } catch (error) {
+      return reply.status(503).send({ error: error instanceof Error ? error.message : 'Codex 周额度不可用' });
+    }
+  });
+
   app.get<{ Querystring: { project_id?: string } }>('/scheduled-tasks', async (req, reply) => {
     if (req.query.project_id && !userOwnsProject(req.user!.id, req.query.project_id)) {
       return reply.status(404).send({ error: 'Project not found' });
@@ -148,8 +211,9 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       INSERT INTO scheduled_tasks (
         id, user_id, project_id, name, prompt, schedule_kind, schedule_value, timezone,
         target_type, target_session_id, new_mode, new_cli_type, new_agent_type,
-        inactive_policy, enabled, next_run_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        inactive_policy, stop_at, max_successful_runs, quota_remaining_below,
+        max_consecutive_failures, stop_on_target_unavailable, enabled, next_run_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       req.user!.id,
@@ -165,6 +229,11 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       input.target_type === 'new' ? (input.new_cli_type ?? 'claude') : null,
       input.target_type === 'new' && input.new_mode === 'agent' ? input.new_agent_type?.trim() : null,
       input.inactive_policy ?? 'resume',
+      input.stop_at ?? null,
+      input.max_successful_runs ?? null,
+      input.quota_remaining_below ?? null,
+      input.max_consecutive_failures ?? null,
+      input.target_type === 'existing' && input.stop_on_target_unavailable ? 1 : 0,
       input.enabled ? 1 : 0,
       nextRun,
     );
@@ -188,11 +257,15 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       : scheduleChanged || !current.next_run_at
         ? nextScheduledAt(input.schedule_kind, input.schedule_value, input.timezone)
         : current.next_run_at;
+    const restartingStoppedTask = !!input.enabled && !current.enabled && !!current.stopped_at;
     getDb().prepare(`
       UPDATE scheduled_tasks SET
         project_id = ?, name = ?, prompt = ?, schedule_kind = ?, schedule_value = ?, timezone = ?,
         target_type = ?, target_session_id = ?, new_mode = ?, new_cli_type = ?, new_agent_type = ?,
-        inactive_policy = ?, enabled = ?, next_run_at = ?, updated_at = datetime('now')
+        inactive_policy = ?, stop_at = ?, max_successful_runs = ?, quota_remaining_below = ?,
+        max_consecutive_failures = ?, stop_on_target_unavailable = ?, enabled = ?, next_run_at = ?,
+        successful_runs = ?, consecutive_failures = ?, stopped_at = ?, stop_reason = ?,
+        updated_at = datetime('now')
       WHERE id = ? AND user_id = ?
     `).run(
       input.project_id,
@@ -207,8 +280,17 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       input.target_type === 'new' ? (input.new_cli_type ?? 'claude') : null,
       input.target_type === 'new' && input.new_mode === 'agent' ? input.new_agent_type?.trim() : null,
       input.inactive_policy ?? 'resume',
+      input.stop_at ?? null,
+      input.max_successful_runs ?? null,
+      input.quota_remaining_below ?? null,
+      input.max_consecutive_failures ?? null,
+      input.target_type === 'existing' && input.stop_on_target_unavailable ? 1 : 0,
       input.enabled ? 1 : 0,
       nextRun,
+      restartingStoppedTask ? 0 : current.successful_runs,
+      restartingStoppedTask ? 0 : current.consecutive_failures,
+      input.enabled ? null : current.stopped_at,
+      input.enabled ? null : current.stop_reason,
       req.params.id,
       req.user!.id,
     );
@@ -225,7 +307,7 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Params: { id: string } }>('/scheduled-tasks/:id/run', async (req, reply) => {
     if (!taskForUser(req.params.id, req.user!.id)) return reply.status(404).send({ error: '定时任务不存在' });
     const run = await runScheduledTask(req.params.id, 'manual');
-    if (run.status === 'failed') return reply.status(409).send({ error: run.error, run });
+    if (run.status !== 'success') return reply.status(409).send({ error: run.error, run });
     return { ok: true, run };
   });
 };

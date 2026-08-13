@@ -4,7 +4,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { config } from '../config.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -158,6 +158,16 @@ function createCurrentSchema(): void {
       inactive_policy TEXT NOT NULL DEFAULT 'resume',
       enabled INTEGER NOT NULL DEFAULT 1,
       next_run_at TEXT,
+      stop_at TEXT,
+      max_successful_runs INTEGER,
+      quota_remaining_below INTEGER,
+      max_consecutive_failures INTEGER,
+      stop_on_target_unavailable INTEGER NOT NULL DEFAULT 0,
+      successful_runs INTEGER NOT NULL DEFAULT 0,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      last_quota_remaining INTEGER,
+      stopped_at TEXT,
+      stop_reason TEXT,
       last_run_at TEXT,
       last_status TEXT,
       last_error TEXT,
@@ -283,6 +293,19 @@ function migrateLegacySessionOwnership(): void {
   `);
 }
 
+function migrateScheduledTaskStopConditions(): void {
+  addColumn('scheduled_tasks', 'stop_at', 'TEXT');
+  addColumn('scheduled_tasks', 'max_successful_runs', 'INTEGER');
+  addColumn('scheduled_tasks', 'quota_remaining_below', 'INTEGER');
+  addColumn('scheduled_tasks', 'max_consecutive_failures', 'INTEGER');
+  addColumn('scheduled_tasks', 'stop_on_target_unavailable', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('scheduled_tasks', 'successful_runs', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('scheduled_tasks', 'consecutive_failures', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('scheduled_tasks', 'last_quota_remaining', 'INTEGER');
+  addColumn('scheduled_tasks', 'stopped_at', 'TEXT');
+  addColumn('scheduled_tasks', 'stop_reason', 'TEXT');
+}
+
 function runMigrations(): void {
   const current = db.pragma('user_version', { simple: true }) as number;
   if (current > SCHEMA_VERSION) {
@@ -294,6 +317,7 @@ function runMigrations(): void {
     if (current < 1) migrateLegacySchema();
     if (current < 2) migrateTerminalDimensionsAndOutputKeys();
     if (current < 3) migrateLegacySessionOwnership();
+    if (current < 5) migrateScheduledTaskStopConditions();
     createCurrentIndexes();
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
   });
