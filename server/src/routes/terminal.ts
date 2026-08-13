@@ -11,6 +11,8 @@ import {
   spawnAdopt,
   spawnAgent,
   sendReplay,
+  sendIncrementalReplay,
+  terminalGeometryMatches,
   recoverSessionOnAttach,
   getSession,
   isSessionActive,
@@ -188,7 +190,7 @@ async function ensureSessionActive(sessionId: string): Promise<boolean> {
 export const terminalRoutes: FastifyPluginAsync = async (app) => {
   app.get<{
     Params: { sessionId: string };
-    Querystring: { passive?: string; attempt?: string };
+    Querystring: { passive?: string; attempt?: string; cursor?: string };
   }>('/terminal/:sessionId', { websocket: true }, (socket, req) => {
     const { sessionId } = req.params;
     if (!req.user?.id || !registerUserConnection(req.user.id, readSessionCookie(req), socket)) return;
@@ -198,6 +200,9 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const isPassive = req.query.passive === '1';
+    const requestedCursor = typeof req.query.cursor === 'string' && /^\d+$/.test(req.query.cursor)
+      ? Number(req.query.cursor)
+      : null;
     const pending = getPendingSpawn(sessionId);
 
     // A passive/grid socket is strictly read-only. It may request a fresh
@@ -301,17 +306,24 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
         // For a newly spawned PTY these dimensions are already current, making
         // resizeSession a true no-op. Existing sessions resize before subscribing,
         // so their resize redraw cannot race ahead of the initial replay.
+        const geometryUnchanged = terminalGeometryMatches(sessionId, cols, rows);
         if (!resizeSession(sessionId, cols, rows)) throw new Error('Failed to resize terminal');
         // Reattaching after a hidden page must start from a complete rendered
         // pane, not the tail of the raw output journal. This applies equally to
         // explicit sessions and to Claude/Codex launched inside Terminal tabs.
         attached = attachTerminal(sessionId, socket, { skipReplay: true });
         if (!attached) throw new Error('Failed to attach terminal');
-        sendReplay(sessionId, socket, true, 'history');
+        const resumedIncrementally = requestedCursor !== null
+          && geometryUnchanged
+          && sendIncrementalReplay(sessionId, socket, requestedCursor, cols, rows);
+        if (!resumedIncrementally) {
+          sendJson(socket, { type: 'recovery', mode: 'full' });
+          await sendReplay(sessionId, socket, true, 'history');
+        }
 
         // This ack is the only point at which the browser may enable keyboard
         // input. Inputs that raced with async spawn/attach are flushed in order.
-        if (!sendJson(socket, { type: 'ready', sessionId })) {
+        if (!sendJson(socket, { type: 'ready', sessionId, recovery: resumedIncrementally ? 'incremental' : 'full' })) {
           pendingInputs.clear();
           return false;
         }
@@ -367,6 +379,7 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
         // Routine tab/display refreshes repaint only the viewport so the
         // browser's existing scrollback survives. Full history replacement is
         // reserved for explicit recovery after a local reset or dropped data.
+        if (msg.history) sendJson(socket, { type: 'recovery', mode: 'full' });
         sendReplay(sessionId, socket, true, msg.history ? 'history' : 'screen');
       }
     });

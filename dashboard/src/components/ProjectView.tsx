@@ -16,6 +16,7 @@ import { ProjectSkillsPanel } from './ProjectSkillsPanel';
 import { ScheduledTasksPanel } from './ScheduledTasksPanel';
 import { LiveSessionSignalDot } from '../lib/session-signal';
 import { SessionActivityAge } from '../lib/session-activity';
+import { promoteWarmTerminal, TERMINAL_COLD_DELAY_MS } from '../lib/warm-terminal-pool';
 import {
   reconcileHydratedTerminalInstances,
   shouldAutoRestoreSession,
@@ -299,6 +300,96 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       ? initialized.activeWebPageId
       : null,
   );
+
+  // Keep the three most recently used terminals hot. Older terminals retain
+  // their painted xterm buffer for a grace period, then disconnect and resume
+  // incrementally from a display cursor the next time they are selected.
+  const initialWarmTerminalId = active && !showLauncher && !activeWebPageId ? activeTerminalId : null;
+  const [warmTerminalIds, setWarmTerminalIds] = useState<Set<string>>(
+    () => new Set(initialWarmTerminalId ? [initialWarmTerminalId] : []),
+  );
+  const warmTerminalIdsRef = useRef(warmTerminalIds);
+  const recentWarmTerminalIdsRef = useRef<string[]>(initialWarmTerminalId ? [initialWarmTerminalId] : []);
+  const coolingTimersRef = useRef(new Map<string, number>());
+  const foregroundTerminalIdRef = useRef<string | null>(initialWarmTerminalId);
+
+  const updateWarmTerminalIds = useCallback((update: (current: Set<string>) => Set<string>) => {
+    setWarmTerminalIds((current) => {
+      const next = update(current);
+      warmTerminalIdsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const scheduleTerminalCooling = useCallback((terminalId: string, forceWhenBackground = false) => {
+    const existing = coolingTimersRef.current.get(terminalId);
+    if (existing !== undefined) window.clearTimeout(existing);
+    const timer = window.setTimeout(() => {
+      coolingTimersRef.current.delete(terminalId);
+      if (foregroundTerminalIdRef.current === terminalId) return;
+      if (!forceWhenBackground && recentWarmTerminalIdsRef.current.includes(terminalId)) return;
+      updateWarmTerminalIds((current) => {
+        if (!current.has(terminalId)) return current;
+        const next = new Set(current);
+        next.delete(terminalId);
+        return next;
+      });
+    }, TERMINAL_COLD_DELAY_MS);
+    coolingTimersRef.current.set(terminalId, timer);
+  }, [updateWarmTerminalIds]);
+
+  const keepTerminalWarm = useCallback((terminalId: string) => {
+    const cooling = coolingTimersRef.current.get(terminalId);
+    if (cooling !== undefined) {
+      window.clearTimeout(cooling);
+      coolingTimersRef.current.delete(terminalId);
+    }
+    const promoted = promoteWarmTerminal(recentWarmTerminalIdsRef.current, terminalId);
+    recentWarmTerminalIdsRef.current = promoted.recent;
+    updateWarmTerminalIds((current) => {
+      if (current.has(terminalId)) return current;
+      const next = new Set(current);
+      next.add(terminalId);
+      return next;
+    });
+    for (const coolingId of promoted.cooling) scheduleTerminalCooling(coolingId);
+  }, [scheduleTerminalCooling, updateWarmTerminalIds]);
+
+  useEffect(() => {
+    const foregroundId = active
+      && activeMode === 'terminal'
+      && !showLauncher
+      && !activeWebPageId
+      ? activeTerminalId
+      : null;
+    foregroundTerminalIdRef.current = foregroundId;
+    if (foregroundId) {
+      keepTerminalWarm(foregroundId);
+      return;
+    }
+    for (const terminalId of warmTerminalIdsRef.current) {
+      scheduleTerminalCooling(terminalId, true);
+    }
+  }, [active, activeMode, activeTerminalId, activeWebPageId, keepTerminalWarm, scheduleTerminalCooling, showLauncher]);
+
+  useEffect(() => {
+    const existingIds = new Set(terminalInstances.map((terminal) => terminal.id));
+    recentWarmTerminalIdsRef.current = recentWarmTerminalIdsRef.current.filter((id) => existingIds.has(id));
+    for (const [id, timer] of coolingTimersRef.current) {
+      if (existingIds.has(id)) continue;
+      window.clearTimeout(timer);
+      coolingTimersRef.current.delete(id);
+    }
+    updateWarmTerminalIds((current) => {
+      const next = new Set([...current].filter((id) => existingIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [terminalInstances, updateWarmTerminalIds]);
+
+  useEffect(() => () => {
+    for (const timer of coolingTimersRef.current.values()) window.clearTimeout(timer);
+    coolingTimersRef.current.clear();
+  }, []);
 
   // Close-tab confirmation modal state
   const [closeConfirm, setCloseConfirm] = useState<{
@@ -1631,7 +1722,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         <Terminal
                           sessionId={term.id}
                           visible={termVisible}
-                          suspended={terminalsSuspended || !termVisible}
+                          suspended={terminalsSuspended || !warmTerminalIds.has(term.id)}
                           hideCursor={projectSessions.find((session) => session.id === term.id)?.task !== 'Terminal' && projectSessions.some((session) => session.id === term.id)}
                           cliType={sessionLookup.get(term.id)?.cli_type as 'claude' | 'codex' | undefined}
                           onReconnect={() => reconnectTerminal(term.id)}

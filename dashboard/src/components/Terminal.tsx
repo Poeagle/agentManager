@@ -145,6 +145,8 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
   const lastSentSizeRef = useRef<{ socket: WebSocket; cols: number; rows: number } | null>(null);
+  const appliedCursorRef = useRef<number | null>(null);
+  const lastVisibleSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   // Debounce fresh-screen snapshots when a terminal becomes visible. Hidden
   // WebGL canvases can lose their painted texture, and a truncated raw replay
   // can contain only a TUI's latest status-line redraw.
@@ -458,7 +460,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     // Write a small chunk per frame and wait for xterm's parser callback before
     // scheduling the next one. The bounded queue prevents a noisy background
     // process from turning one frame into a multi-megabyte synchronous parse.
-    const writeQueue: string[] = [];
+    const writeQueue: Array<{ data: string; cursor?: number }> = [];
     let queuedOutputSize = 0;
     let writeInProgress = false;
     let writeFrame: number | null = null;
@@ -483,26 +485,33 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         if (disposed) return;
         const chunk = writeQueue.shift();
         if (!chunk) return;
-        queuedOutputSize -= chunk.length;
+        queuedOutputSize -= chunk.data.length;
         writeInProgress = true;
-        term.write(chunk, () => {
+        term.write(chunk.data, () => {
+          if (chunk.cursor !== undefined) appliedCursorRef.current = chunk.cursor;
           writeInProgress = false;
           scheduleNextWrite();
         });
       });
     }
 
-    function enqueueOutput(rawData: string) {
+    function enqueueOutput(rawData: string, cursor?: number) {
       const data = sanitizeTerminalOutput(rawData);
+      if (!data && cursor !== undefined) {
+        appliedCursorRef.current = cursor;
+        return;
+      }
       for (let offset = 0; offset < data.length; offset += WRITE_CHUNK_SIZE) {
-        const chunk = data.slice(offset, offset + WRITE_CHUNK_SIZE);
-        while (queuedOutputSize + chunk.length > MAX_QUEUED_OUTPUT && writeQueue.length > 0) {
+        const chunkData = data.slice(offset, offset + WRITE_CHUNK_SIZE);
+        const isLastChunk = offset + WRITE_CHUNK_SIZE >= data.length;
+        while (queuedOutputSize + chunkData.length > MAX_QUEUED_OUTPUT && writeQueue.length > 0) {
           const dropped = writeQueue.shift();
-          if (dropped) queuedOutputSize -= dropped.length;
+          if (dropped) queuedOutputSize -= dropped.data.length;
           outputWasDropped = true;
+          appliedCursorRef.current = null;
         }
-        writeQueue.push(chunk);
-        queuedOutputSize += chunk.length;
+        writeQueue.push({ data: chunkData, ...(isLastChunk && cursor !== undefined ? { cursor } : {}) });
+        queuedOutputSize += chunkData.length;
       }
       scheduleNextWrite();
     }
@@ -575,6 +584,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       const params = new URLSearchParams();
       if (passiveResizeRef.current) params.set('passive', '1');
       params.set('attempt', String(reconnectAttempts));
+      if (appliedCursorRef.current !== null) params.set('cursor', String(appliedCursorRef.current));
       const ws = new WebSocket(`${protocol}//${window.location.host}/api/terminal/${sessionId}?${params}`);
       wsRef.current = ws;
 
@@ -609,19 +619,6 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
             fitAddon.fit();
             term.refresh(0, term.rows - 1);
             sendCurrentSize();
-            // Codex needs a rendered tmux snapshot after a tab switch because
-            // it does not redraw on SIGWINCH. Claude and plain terminals must
-            // keep the original PTY cursor state; capture-pane has no cursor
-            // metadata and would move xterm's cursor to the replay tail.
-            if (cliTypeRef.current === 'codex') {
-              if (displayRefreshTimer.current) clearTimeout(displayRefreshTimer.current);
-              displayRefreshTimer.current = setTimeout(() => {
-                displayRefreshTimer.current = null;
-                if (ws.readyState === WebSocket.OPEN && visibleRef.current) {
-                  ws.send(JSON.stringify({ type: 'refresh' }));
-                }
-              }, 500);
-            }
           });
         }
       }
@@ -637,7 +634,15 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
               markProtocolReady();
               break;
             case 'output':
-              enqueueOutput(msg.data);
+              enqueueOutput(msg.data, Number.isSafeInteger(msg.cursor) ? msg.cursor : undefined);
+              break;
+            case 'recovery':
+              if (msg.mode === 'full') {
+                writeQueue.length = 0;
+                queuedOutputSize = 0;
+                appliedCursorRef.current = null;
+                term.reset();
+              }
               break;
             case 'exit':
               if (msg.reason === 'popped-out') {
@@ -803,8 +808,9 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     };
   }, [sendCurrentSize, sessionId]);
 
-  // Suspension effect: disconnect WebSocket when suspended, reconnect when resumed.
-  // This ensures only one Terminal connects to a given session at a time.
+  // Suspension effect: cold terminals disconnect their transport but retain
+  // the painted xterm buffer. Reconnect supplies only the missing display
+  // stream when its cursor and geometry are still valid.
   // Skip the initial mount — the main effect already handles the first connection.
   const suspendInitRef = useRef(true);
   useEffect(() => {
@@ -815,12 +821,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     if (suspended) {
       disconnectFnRef.current?.();
     } else {
-      // Resume — full reset of xterm (clears viewport + scrollback) then
-      // reconnect so the server replay renders into a completely clean terminal.
-      if (termRef.current && connectFnRef.current) {
-        termRef.current.reset();
-        connectFnRef.current();
-      }
+      connectFnRef.current?.();
     }
   }, [suspended]);
 
@@ -866,19 +867,20 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         const term = termRef.current;
         const w = wsRef.current;
         if (fit && term) {
+          const previousSize = lastVisibleSizeRef.current;
           fit.fit();
+          const geometryChanged = !!previousSize
+            && (previousSize.cols !== term.cols || previousSize.rows !== term.rows);
+          lastVisibleSizeRef.current = { cols: term.cols, rows: term.rows };
           // WebGL may discard a hidden canvas texture. Repaint the complete
           // local buffer immediately instead of waiting for the next changed row.
           term.refresh(0, term.rows - 1);
           if (!passiveResizeRef.current && w && w.readyState === WebSocket.OPEN) {
             sendCurrentSize();
-            // A terminal tab can contain a full-screen TUI even when the
-            // session metadata says "Terminal". Its bounded raw replay may end
-            // with only a spinner/status-line update, so request a rendered tmux
-            // snapshot for every visible tab. Do not clear locally first: the
-            // server snapshot carries its own clear sequence, while a failed or
-            // unavailable capture leaves the existing screen intact.
-            if (cliTypeRef.current === 'codex') {
+            // Codex needs a viewport snapshot after an actual geometry change,
+            // but a same-size warm tab switch can repaint entirely from xterm's
+            // retained local buffer with no server round-trip.
+            if (cliTypeRef.current === 'codex' && geometryChanged) {
               if (displayRefreshTimer.current) clearTimeout(displayRefreshTimer.current);
               displayRefreshTimer.current = setTimeout(() => {
                 displayRefreshTimer.current = null;

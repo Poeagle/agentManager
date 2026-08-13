@@ -22,6 +22,8 @@ const manager = vi.hoisted(() => ({
   spawnAdopt: vi.fn(async () => {}),
   spawnAgent: vi.fn(async () => {}),
   sendReplay: vi.fn(),
+  sendIncrementalReplay: vi.fn(() => true),
+  terminalGeometryMatches: vi.fn(() => true),
   recoverSessionOnAttach: vi.fn(async () => false),
   getSession: vi.fn(() => ({ id: 'session-1', mode: 'terminal', cli_type: 'claude' })),
   isSessionActive: vi.fn(() => manager.active),
@@ -188,5 +190,31 @@ describe('terminal websocket handshake', () => {
     listener?.(true);
     await new Promise((resolve) => setImmediate(resolve));
     expect(manager.attachTerminal).not.toHaveBeenCalled();
+  });
+
+  it('resumes from a display cursor without requesting a full history capture', async () => {
+    manager.active = true;
+    const client = await connect(`${baseUrl}/terminal/session-1?cursor=42`);
+    await client.next('connected');
+    client.socket.send(JSON.stringify({ type: 'resize', cols: 120, rows: 40 }));
+
+    expect(await client.next('ready')).toMatchObject({ recovery: 'incremental' });
+    expect(manager.sendIncrementalReplay).toHaveBeenCalledWith('session-1', expect.anything(), 42, 120, 40);
+    expect(manager.sendReplay).not.toHaveBeenCalled();
+    client.socket.close();
+  });
+
+  it('falls back to a full snapshot when terminal geometry changed', async () => {
+    manager.active = true;
+    manager.terminalGeometryMatches.mockReturnValueOnce(false);
+    const client = await connect(`${baseUrl}/terminal/session-1?cursor=42`);
+    await client.next('connected');
+    client.socket.send(JSON.stringify({ type: 'resize', cols: 140, rows: 50 }));
+
+    expect(await client.next('recovery')).toMatchObject({ mode: 'full' });
+    expect(await client.next('ready')).toMatchObject({ recovery: 'full' });
+    expect(manager.sendIncrementalReplay).not.toHaveBeenCalled();
+    expect(manager.sendReplay).toHaveBeenCalledWith('session-1', expect.anything(), true, 'history');
+    client.socket.close();
   });
 });

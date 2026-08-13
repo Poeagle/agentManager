@@ -178,7 +178,11 @@ interface ActiveSession {
   externalSocket?: string; // external dtach socket (adopted sessions)
   replayBuffer: string[];  // ring buffer of recent output chunks for instant replay
   replayBytes: number;     // total bytes in replayBuffer
+  displaySeq: number; // monotonic cursor for the browser-facing attached stream
+  displayReplay: Array<{ seq: number; data: string }>;
+  displayReplayBytes: number;
   wsPendingData: string | null; // batched WS output waiting to be sent
+  wsPendingCursor: number | null;
   wsFlushTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -193,8 +197,18 @@ const sessionLifecycleListeners = new Map<string, Set<SessionLifecycleListener>>
 // 64K UTF-16 code units are at most ~256KB of UTF-8 payload.
 const MAX_WS_OUTPUT_CHARS = 64 * 1024;
 const MAX_WS_BUFFERED_BYTES = 1024 * 1024;
+const MAX_DISPLAY_REPLAY_BYTES = 4 * 1024 * 1024;
+const MAX_DISPLAY_REPLAY_FRAMES = 4000;
 
-function sendTerminalOutput(ws: WebSocket, sessionId: string, data: string): boolean {
+function sendTerminalOutput(ws: WebSocket, sessionId: string, data: string, cursor?: number): boolean {
+  if (data.length === 0) {
+    try {
+      ws.send(JSON.stringify({ type: 'output', sessionId, data: '', ...(cursor !== undefined ? { cursor } : {}) }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
   for (let offset = 0; offset < data.length; offset += MAX_WS_OUTPUT_CHARS) {
     if (ws.readyState !== 1) return false;
     const chunk = data.slice(offset, offset + MAX_WS_OUTPUT_CHARS);
@@ -203,7 +217,13 @@ function sendTerminalOutput(ws: WebSocket, sessionId: string, data: string): boo
       return false;
     }
     try {
-      ws.send(JSON.stringify({ type: 'output', sessionId, data: chunk }));
+      const isLastChunk = offset + MAX_WS_OUTPUT_CHARS >= data.length;
+      ws.send(JSON.stringify({
+        type: 'output',
+        sessionId,
+        data: chunk,
+        ...(isLastChunk && cursor !== undefined ? { cursor } : {}),
+      }));
     } catch {
       return false;
     }
@@ -215,22 +235,27 @@ function flushWebSocketOutput(sessionId: string, active: ActiveSession): void {
   if (active.wsFlushTimer) clearTimeout(active.wsFlushTimer);
   active.wsFlushTimer = null;
   const data = active.wsPendingData;
+  const cursor = active.wsPendingCursor;
   active.wsPendingData = null;
+  active.wsPendingCursor = null;
   if (!data) return;
   for (const ws of active.subscribers) {
-    if (!sendTerminalOutput(ws, sessionId, data)) active.subscribers.delete(ws);
+    if (!sendTerminalOutput(ws, sessionId, data, cursor ?? undefined)) active.subscribers.delete(ws);
   }
 }
 
-function queueWebSocketOutput(sessionId: string, active: ActiveSession, data: string): void {
+function queueWebSocketOutput(sessionId: string, active: ActiveSession, data: string, cursor: number): void {
   // Flush full chunks immediately so the main-process batch itself is bounded.
   active.wsPendingData = (active.wsPendingData || '') + data;
+  active.wsPendingCursor = cursor;
   while ((active.wsPendingData?.length || 0) >= MAX_WS_OUTPUT_CHARS) {
     const pending: string = active.wsPendingData ?? '';
     const chunk = pending.slice(0, MAX_WS_OUTPUT_CHARS);
     active.wsPendingData = pending.slice(MAX_WS_OUTPUT_CHARS) || null;
+    const chunkCursor = active.wsPendingData ? undefined : active.wsPendingCursor ?? undefined;
+    if (!active.wsPendingData) active.wsPendingCursor = null;
     for (const ws of active.subscribers) {
-      if (!sendTerminalOutput(ws, sessionId, chunk)) active.subscribers.delete(ws);
+      if (!sendTerminalOutput(ws, sessionId, chunk, chunkCursor)) active.subscribers.delete(ws);
     }
   }
   if (!active.wsFlushTimer && active.wsPendingData) {
@@ -273,6 +298,7 @@ function clearWebSocketOutput(active: ActiveSession): void {
   if (active.wsFlushTimer) clearTimeout(active.wsFlushTimer);
   active.wsFlushTimer = null;
   active.wsPendingData = null;
+  active.wsPendingCursor = null;
 }
 
 /** Serialize worker creation for one session. Concurrent callers wait for the
@@ -1614,7 +1640,11 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
     task: '',  // set by caller (spawnSession/spawnTerminal/reconnectSession)
     replayBuffer: [],
     replayBytes: 0,
+    displaySeq: 0,
+    displayReplay: [],
+    displayReplayBytes: 0,
     wsPendingData: null,
+    wsPendingCursor: null,
     wsFlushTimer: null,
   };
 
@@ -1703,9 +1733,19 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
         }
 
         if (msg.display !== false) {
+          active.displaySeq++;
+          active.displayReplay.push({ seq: active.displaySeq, data: msg.data });
+          active.displayReplayBytes += Buffer.byteLength(msg.data);
+          while (
+            active.displayReplay.length > 1
+            && (active.displayReplayBytes > MAX_DISPLAY_REPLAY_BYTES || active.displayReplay.length > MAX_DISPLAY_REPLAY_FRAMES)
+          ) {
+            const removed = active.displayReplay.shift()!;
+            active.displayReplayBytes -= Buffer.byteLength(removed.data);
+          }
           // Batch to ~60fps, bound frame size, and evict clients whose socket
           // buffer exceeds the explicit high-water mark.
-          queueWebSocketOutput(sessionId, active, msg.data);
+          queueWebSocketOutput(sessionId, active, msg.data, active.displaySeq);
         }
         break;
       }
@@ -2241,6 +2281,63 @@ export function attachTerminal(sessionId: string, ws: WebSocket, options?: { ski
   return true;
 }
 
+const MAX_INCREMENTAL_REPLAY_BYTES = 512 * 1024;
+
+export function buildIncrementalDisplayReplay(
+  frames: ReadonlyArray<{ seq: number; data: string }>,
+  currentSeq: number,
+  since: number,
+  maxBytes = MAX_INCREMENTAL_REPLAY_BYTES,
+): { data: string; cursor: number } | null {
+  if (!Number.isSafeInteger(since) || since < 0 || since > currentSeq) return null;
+  const missing = frames.filter((frame) => frame.seq > since);
+  if (since < currentSeq && (missing.length === 0 || missing[0].seq !== since + 1)) return null;
+  const bytes = missing.reduce((total, frame) => total + Buffer.byteLength(frame.data), 0);
+  if (bytes > maxBytes) return null;
+  return { data: missing.map((frame) => frame.data).join(''), cursor: currentSeq };
+}
+
+export function terminalGeometryMatches(sessionId: string, cols: number, rows: number): boolean {
+  const active = activeSessions.get(sessionId);
+  return !!active?.businessReady && active.cols === cols && active.rows === rows;
+}
+
+/**
+ * Resume a browser terminal without replacing its existing xterm buffer.
+ * Returns false when the cursor has fallen out of the bounded display ring,
+ * the server restarted, or the PTY geometry changed; callers then send a full
+ * authoritative tmux snapshot instead.
+ */
+export function sendIncrementalReplay(
+  sessionId: string,
+  ws: WebSocket,
+  since: number,
+  cols: number,
+  rows: number,
+): boolean {
+  const active = activeSessions.get(sessionId);
+  if (
+    !active?.businessReady
+    || ws.readyState !== 1
+    || !Number.isSafeInteger(since)
+    || since < 0
+    || since > active.displaySeq
+    || active.cols !== cols
+    || active.rows !== rows
+  ) return false;
+
+  const replay = buildIncrementalDisplayReplay(active.displayReplay, active.displaySeq, since);
+  if (!replay) return false;
+
+  try {
+    ws.send(JSON.stringify({ type: 'recovery', mode: 'incremental', cursor: replay.cursor }));
+  } catch {
+    return false;
+  }
+  if (!replay.data) return true;
+  return sendTerminalOutput(ws, sessionId, replay.data, replay.cursor);
+}
+
 // Resize marker prefix stored in pty_output — allows history replay to
 // resize the headless terminal at the correct points in the data stream.
 export const RESIZE_MARKER = '\x00RESIZE:';
@@ -2264,7 +2361,7 @@ export function frameTmuxCapture(mode: CaptureMode, data: string): string {
     : `\x1b[H\x1b[2J${data}`;
 }
 
-export function sendReplay(sessionId: string, ws: WebSocket, preferCapture = false, captureMode: CaptureMode = 'history'): void {
+export async function sendReplay(sessionId: string, ws: WebSocket, preferCapture = false, captureMode: CaptureMode = 'history'): Promise<void> {
   const active = activeSessions.get(sessionId);
   if (!active) return;
 
@@ -2274,12 +2371,12 @@ export function sendReplay(sessionId: string, ws: WebSocket, preferCapture = fal
     // Invalidate stale capture cache so we get a fresh capture at new dimensions
     captureCache.delete(captureCacheKey(sessionId, captureMode));
     tlog(`[REPLAY] ${sessionId}: preferCapture — using tmux capture-pane`);
-    requestCapture(sessionId, ws, captureMode).catch(() => {
+    await requestCapture(sessionId, ws, captureMode).catch(() => {
       // A full recovery may fall back to the journal. A routine viewport
       // repaint must leave the existing browser contents intact if capture
       // fails; replaying a partial journal would erase valid scrollback.
       if (captureMode === 'history' && active.replayBuffer.length > 0) {
-        sendTerminalOutput(ws, sessionId, frameTmuxCapture('history', active.replayBuffer.join('')));
+        sendTerminalOutput(ws, sessionId, frameTmuxCapture('history', active.replayBuffer.join('')), active.displaySeq);
       }
     });
     return;
@@ -2289,13 +2386,13 @@ export function sendReplay(sessionId: string, ws: WebSocket, preferCapture = fal
     // Fast path: replay from in-memory buffer (instant, no tmux round-trip)
     const data = frameTmuxCapture('history', active.replayBuffer.join(''));
     tlog(`[REPLAY] ${sessionId}: from buffer (${active.replayBytes} bytes)`);
-    sendTerminalOutput(ws, sessionId, data);
+    sendTerminalOutput(ws, sessionId, data, active.displaySeq);
     return;
   }
 
   // Fallback: tmux capture-pane (only needed right after reconnect before
   // pipe-pane data arrives — typically fast at that point)
-  requestCapture(sessionId, ws, captureMode).catch(() => {});
+  await requestCapture(sessionId, ws, captureMode).catch(() => {});
 }
 
 /** Convert a tmux pane snapshot into an xterm-safe, geometry-preserving stream. */
@@ -2350,7 +2447,13 @@ export function requestCapture(sessionId: string, ws: WebSocket, mode: CaptureMo
   const cached = captureCache.get(cacheKey);
   if (cached && (Date.now() - cached.ts) < CAPTURE_CACHE_TTL) {
     tlog(`[CAPTURE] ${sessionId}: from cache (${cached.data.length} bytes)`);
-    sendTerminalOutput(ws, sessionId, frameTmuxCapture(mode, cached.data));
+    const active = activeSessions.get(sessionId);
+    sendTerminalOutput(
+      ws,
+      sessionId,
+      frameTmuxCapture(mode, cached.data),
+      mode === 'history' ? active?.displaySeq : undefined,
+    );
     return Promise.resolve();
   }
 
@@ -2419,7 +2522,12 @@ export function requestCapture(sessionId: string, ws: WebSocket, mode: CaptureMo
             active.replayBytes = restored.length;
           }
 
-          sendTerminalOutput(ws, sessionId, frameTmuxCapture(mode, restored));
+          sendTerminalOutput(
+            ws,
+            sessionId,
+            frameTmuxCapture(mode, restored),
+            mode === 'history' ? active?.displaySeq : undefined,
+          );
         }
       };
       finalizeCapture().catch((err) => {
