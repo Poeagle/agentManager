@@ -72,18 +72,22 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
   };
 }
 
-export const agentRoutes: FastifyPluginAsync = async (app) => {
-
-  /* ----------------------------------------------------------------
-     GET /agent/capabilities — Self-describing API for agent discovery
-     ---------------------------------------------------------------- */
-  app.get('/agent/capabilities', async () => ({
+/**
+ * The single source of truth for the supported external Agent API surface.
+ * The dashboard guide and its copyable prompt both render this response.
+ */
+export function getAgentApiContract() {
+  return {
     name: 'AgentManager Agent API',
-    version: '1.2.0',
-    description: 'Authenticated, structured control layer for permitted AgentManager sessions. The display and execute endpoints return clean, readable output rendered through a virtual terminal — no ANSI artifacts or TUI garbage.',
+    version: '2.0.0',
+    updatedAt: '2026-08-13',
+    scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, and Codex quota reads. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
+    description: 'Authenticated automation API for permitted AgentManager projects, sessions, and scheduled tasks. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
       type: 'HttpOnly session cookie',
       cookieName: 'agentmanager_session',
+      loginEndpoint: '/api/auth/login',
+      capabilitiesEndpoint: '/api/agent/capabilities',
       login: 'POST /api/auth/login with { username, password }; persist the Set-Cookie response in a private cookie jar.',
       usage: 'Send the cookie on every protected REST request and WebSocket handshake. Same-origin browser requests use credentials: "include".',
       errors: { 401: 'Missing, expired, or invalid login session.' },
@@ -91,7 +95,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     },
     authorization: {
       projects: 'GET /api/projects returns only visible projects plus tool_access flags for the authenticated user.',
-      sessions: 'Members can create only permitted mode/CLI combinations and can control only sessions they created. Admins can access all projects and sessions.',
+      sessions: 'Members can create only permitted mode/CLI combinations and can control only their own sessions. Administrators can monitor and interact with permitted sessions, but DELETE /api/sessions/:id may kill only a session created by the logged-in user.',
+      scheduledTasks: 'Scheduled tasks, their run history, and existing-session targets are always restricted to the logged-in user.',
       createSession: 'The project must already be registered. Supply project_id and its matching project_path; project_path alone is resolved only when it exactly matches a registered project.',
     },
     critical: [
@@ -102,6 +107,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       'The display and execute response "output" fields contain clean rendered text — trust them.',
       'Use the state embedded in GET /api/sessions/:id/display (or GET /state) to check prompt type and choices before responding.',
       'The state "choices" array gives you exact option text for choice prompts — use it.',
+      'DELETE /api/sessions/:id can kill only a session created by the logged-in user, including for administrators.',
+      'Scheduled tasks can target only the logged-in user\'s open tabs or create a permitted new tab.',
     ],
     quickstart: [
       '1. POST /api/auth/login — authenticate once and persist the returned cookie securely',
@@ -132,6 +139,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     },
     endpoints: [
       {
+        category: 'Authentication',
         method: 'POST',
         path: '/api/auth/login',
         public: true,
@@ -144,18 +152,75 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         errors: { 400: 'Missing username/password', 401: 'Invalid username or password' },
       },
       {
+        category: 'Authentication',
+        method: 'GET',
+        path: '/api/agent/capabilities',
+        description: 'Return this current, versioned Agent API contract. The dashboard guide and Copy All output render this response.',
+        response: { contract: 'The JSON object represented by this response.' },
+      },
+      {
+        category: 'Projects',
         method: 'GET',
         path: '/api/projects',
         description: 'List projects visible to the authenticated user. Each project includes tool_access flags: can_session, can_agent, can_terminal, can_claude, and can_codex.',
         response: { projects: 'Project[] with tool_access' },
       },
       {
+        category: 'Projects',
+        method: 'GET',
+        path: '/api/projects/:id',
+        description: 'Read one visible registered project.',
+        response: { project: 'Project' },
+        errors: { 404: 'Project not found or not visible' },
+      },
+      {
+        category: 'Projects',
+        method: 'GET',
+        path: '/api/projects/:id/agents',
+        description: 'List Claude agent definitions available for agent-mode session creation in a visible project.',
+        response: { agents: 'Array of { name, type, description, category }' },
+      },
+      {
+        category: 'Projects',
+        method: 'POST',
+        path: '/api/projects',
+        description: 'Register an existing project directory. Administrator only.',
+        request: {
+          name: { type: 'string', required: true },
+          path: { type: 'string', required: true, description: 'Existing directory path.' },
+          description: { type: 'string', required: false },
+        },
+        errors: { 400: 'Invalid name/path', 403: 'Administrator only', 409: 'Path is already registered' },
+      },
+      {
+        category: 'Projects',
+        method: 'PATCH',
+        path: '/api/projects/:id',
+        description: 'Update project metadata. Project owner or administrator only.',
+      },
+      {
+        category: 'Projects',
+        method: 'DELETE',
+        path: '/api/projects/:id',
+        description: 'Stop its active sessions and remove the project registration. Project owner or administrator only; session history is retained.',
+      },
+      {
+        category: 'Sessions',
         method: 'GET',
         path: '/api/sessions',
         description: 'List sessions visible to the authenticated user. Optional ?status=running filter.',
         response: { sessions: 'Session[]' },
       },
       {
+        category: 'Sessions',
+        method: 'GET',
+        path: '/api/sessions/:id',
+        description: 'Read one session visible to the authenticated user.',
+        response: { session: 'Session' },
+        errors: { 404: 'Session not found or not visible' },
+      },
+      {
+        category: 'Sessions',
         method: 'POST',
         path: '/api/sessions',
         description: 'Create a session in a registered project using a mode and CLI permitted by the authenticated user.',
@@ -171,6 +236,22 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         errors: { 400: 'Missing required fields', 401: 'Not authenticated', 403: 'Project or requested tool combination is not permitted', 429: 'Active tab/session limit reached' },
       },
       {
+        category: 'Sessions',
+        method: 'DELETE',
+        path: '/api/sessions/:id',
+        description: 'Kill a running session. This is creator-only: even an administrator cannot kill another user\'s session through this endpoint.',
+        response: { ok: 'true' },
+        errors: { 404: 'Session is not owned by the logged-in user or is not running' },
+      },
+      {
+        category: 'Sessions',
+        method: 'POST',
+        path: '/api/sessions/:id/resume',
+        description: 'Resume an ended Claude or Codex conversation in place while preserving the AgentManager session id.',
+        response: { ok: 'true', session: 'Resumed Session' },
+      },
+      {
+        category: 'Session control',
         method: 'GET',
         path: '/api/sessions/:id/display',
         description: 'Rendered terminal output + inline state for polling. Returns clean text (no ANSI), with cursor-based incremental fetching. No side effects — safe for periodic polling.',
@@ -191,11 +272,13 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         },
       },
       {
+        category: 'Session control',
         method: 'POST',
         path: '/api/sessions/:id/cancel',
         description: 'Cancel a pending execute wait. This does not interrupt the underlying CLI process or send Ctrl-C. Returns { ok: true } if one was cancelled, { ok: false } if none was pending.',
       },
       {
+        category: 'Session control',
         method: 'GET',
         path: '/api/sessions/:id/state',
         description: 'Get current session state without side effects.',
@@ -208,6 +291,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         },
       },
       {
+        category: 'Session control',
         method: 'POST',
         path: '/api/sessions/:id/execute',
         description: 'Send input and get clean rendered output. Output is processed through a virtual terminal that handles all TUI cursor movements, screen redraws, and ANSI codes — you get readable text, not raw terminal data. Only one execute per session at a time (409 if busy).',
@@ -232,6 +316,13 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         },
       },
       {
+        category: 'Session control',
+        method: 'GET',
+        path: '/api/context',
+        description: 'Return a concise, low-token summary of the logged-in user\'s active sessions.',
+      },
+      {
+        category: 'Session control',
         method: 'WS',
         path: '/api/sessions/:id/agent',
         description: 'Real-time structured WebSocket. Receives state changes and clean output. Can send execute requests.',
@@ -254,6 +345,75 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
           { type: 'execute_result', fields: { requestId: 'string', status: 'string', output: 'string', durationMs: 'number', state: 'SessionState' }, description: 'Result of an execute request.' },
           { type: 'state', fields: { requestId: 'string', '...': 'SessionState fields' }, description: 'Response to get_state.' },
         ],
+      },
+      {
+        category: 'Scheduled tasks',
+        method: 'GET',
+        path: '/api/scheduled-tasks?project_id=:projectId',
+        description: 'List scheduled tasks owned by the logged-in user, optionally filtered by an owned project.',
+      },
+      {
+        category: 'Scheduled tasks',
+        method: 'GET',
+        path: '/api/scheduled-tasks/:id/runs',
+        description: 'List the latest 50 runs for one scheduled task owned by the logged-in user.',
+      },
+      {
+        category: 'Scheduled tasks',
+        method: 'POST',
+        path: '/api/scheduled-tasks',
+        description: 'Create a periodic task targeting one of the user\'s open tabs or a permitted new tab.',
+        request: {
+          project_id: { type: 'string', required: true },
+          name: { type: 'string', required: true },
+          prompt: { type: 'string', required: true },
+          schedule_kind: { type: 'interval | daily | weekly | cron', required: true },
+          schedule_value: { type: 'string', required: true },
+          timezone: { type: 'IANA timezone string', required: true },
+          target_type: { type: 'existing | new', required: true },
+          target_session_id: { type: 'string | null', required: false, description: 'Required for an existing target and must be the user\'s open tab.' },
+          new_mode: { type: 'session | agent | terminal', required: false },
+          new_cli_type: { type: 'claude | codex', required: false },
+          new_agent_type: { type: 'string | null', required: false, description: 'Required when a new target uses agent mode.' },
+          inactive_policy: { type: 'resume | fail', required: false, default: 'resume' },
+          stop_at: { type: 'ISO timestamp | null', required: false },
+          daily_stop_time: { type: 'HH:mm | null', required: false },
+          max_successful_runs: { type: 'integer | null', required: false },
+          quota_remaining_below: { type: 'integer 1..100 | null', required: false, description: 'Codex Session/Agent only.' },
+          max_consecutive_failures: { type: 'integer | null', required: false },
+          stop_on_target_unavailable: { type: 'boolean', required: false, description: 'Existing target only.' },
+          enabled: { type: 'boolean', required: false, default: true },
+        },
+      },
+      {
+        category: 'Scheduled tasks',
+        method: 'PATCH',
+        path: '/api/scheduled-tasks/:id',
+        description: 'Update an owned scheduled task. Accepts any subset of the creation fields.',
+      },
+      {
+        category: 'Scheduled tasks',
+        method: 'DELETE',
+        path: '/api/scheduled-tasks/:id',
+        description: 'Delete a scheduled task owned by the logged-in user.',
+      },
+      {
+        category: 'Scheduled tasks',
+        method: 'POST',
+        path: '/api/scheduled-tasks/:id/run',
+        description: 'Run an owned scheduled task immediately and return its run record.',
+      },
+      {
+        category: 'Quota',
+        method: 'GET',
+        path: '/api/codex-quota',
+        description: 'Read the current Codex weekly quota snapshot and detection time.',
+      },
+      {
+        category: 'Quota',
+        method: 'GET',
+        path: '/api/scheduled-tasks/codex-quota?project_id=:projectId',
+        description: 'Read Codex weekly quota after verifying the user owns the project and may use Codex there.',
       },
     ],
     tips: [
@@ -287,7 +447,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         agentAction: 'After a server restart, poll GET /api/sessions?status=running to discover auto-resumed sessions. Your session IDs remain stable.',
       },
     },
-  }));
+  } as const;
+}
+
+export const agentRoutes: FastifyPluginAsync = async (app) => {
+  app.get('/agent/capabilities', async () => getAgentApiContract());
 
   /* ----------------------------------------------------------------
      POST /sessions/:id/execute — Send input and wait for response

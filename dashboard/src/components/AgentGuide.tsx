@@ -1,5 +1,7 @@
-import { useState } from 'react';
-import { Bot, X, Copy, Check, Play } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { AlertCircle, Bot, Check, Copy, Loader2, Play, RefreshCw, X } from 'lucide-react';
+import { api, type AgentApiContract, type AgentApiEndpoint } from '../lib/api';
 
 export function AgentGuideButton() {
   const [open, setOpen] = useState(false);
@@ -15,7 +17,6 @@ export function AgentGuideButton() {
         <Bot className="w-4 h-4" />
         <span className="hidden sm:inline">Agent API</span>
       </button>
-
       {open && <AgentGuideModal onClose={() => setOpen(false)} />}
     </>
   );
@@ -30,53 +31,97 @@ interface AgentGuideModalProps {
   additionalInstructions?: string;
 }
 
-export function AgentGuideModal({ onClose, projectId, projectName, projectPath, task, additionalInstructions }: AgentGuideModalProps) {
-  // The dashboard and API are served from the same origin in production and
-  // through Vite's /api proxy in development. Respect reverse proxies and the
-  // configured server port instead of assuming the historical default :42010.
+interface GuideContext {
+  projectId?: string;
+  projectName: string;
+  projectPath: string;
+  task?: string;
+  additionalInstructions?: string;
+}
+
+export function AgentGuideModal({
+  onClose,
+  projectId,
+  projectName,
+  projectPath,
+  task,
+  additionalInstructions,
+}: AgentGuideModalProps) {
   const baseUrl = window.location.origin;
   const [copiedAll, setCopiedAll] = useState(false);
-  const hasContext = !!(projectName && projectPath);
+  const context = projectName && projectPath
+    ? { projectId, projectName, projectPath, task, additionalInstructions }
+    : undefined;
+  const { data: contract, isLoading, error, refetch, isFetching } = useQuery({
+    queryKey: ['agent-api-capabilities'],
+    queryFn: api.agent.capabilities,
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
 
-  const copyFullGuide = () => {
-    const text = hasContext
-      ? generateContextualGuide(baseUrl, projectName!, projectPath!, task, additionalInstructions, projectId)
-      : generatePlainTextGuide(baseUrl);
-    navigator.clipboard.writeText(text);
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  const endpointGroups = useMemo(() => {
+    const groups = new Map<string, AgentApiEndpoint[]>();
+    for (const endpoint of contract?.endpoints ?? []) {
+      const group = groups.get(endpoint.category) ?? [];
+      group.push(endpoint);
+      groups.set(endpoint.category, group);
+    }
+    return [...groups.entries()];
+  }, [contract]);
+
+  async function copyFullGuide() {
+    if (!contract) return;
+    await navigator.clipboard.writeText(generateGuide(contract, baseUrl, context));
     setCopiedAll(true);
-    setTimeout(() => setCopiedAll(false), 2500);
-  };
+    window.setTimeout(() => setCopiedAll(false), 2500);
+  }
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.6)' }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div
         className="relative rounded-xl border shadow-2xl w-full max-w-5xl max-h-[85vh] flex flex-col"
         style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}
       >
-        {/* Header */}
         <div
           className="flex items-center justify-between px-6 py-4 border-b shrink-0"
           style={{ borderColor: 'var(--border)' }}
         >
-          <div className="flex items-center gap-2">
-            <Bot className="w-5 h-5" style={{ color: 'var(--accent)' }} />
-            <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-              {hasContext ? `Run ${projectName} with OpenClaw` : 'Agent Integration Guide'}
+          <div className="flex items-center gap-2 min-w-0">
+            <Bot className="w-5 h-5 shrink-0" style={{ color: 'var(--accent)' }} />
+            <h2 className="text-lg font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
+              {context ? `Run ${context.projectName} with Agent API` : 'Agent API'}
             </h2>
+            {contract && (
+              <span
+                className="px-2 py-0.5 rounded-full text-[10px] font-mono shrink-0"
+                style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
+              >
+                v{contract.version} · {contract.updatedAt}
+              </span>
+            )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={copyFullGuide}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              disabled={!contract}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40"
               style={{
                 background: copiedAll ? 'var(--success)' : 'var(--bg-tertiary)',
                 color: copiedAll ? 'white' : 'var(--text-secondary)',
               }}
-              title="Copy entire guide as plain text (for pasting into agent prompts)"
+              title="Copy the live backend contract as a plain-text agent guide"
             >
               {copiedAll ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
               {copiedAll ? 'Copied!' : 'Copy All'}
@@ -87,286 +132,147 @@ export function AgentGuideModal({ onClose, projectId, projectName, projectPath, 
           </div>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
-          {/* Project context banner */}
-          {hasContext && (
-            <div
-              className="rounded-lg border p-4 space-y-2"
-              style={{ background: 'var(--bg-primary)', borderColor: 'var(--accent)', borderWidth: '1px' }}
-            >
-              <div className="flex items-center gap-2 text-sm font-medium" style={{ color: 'var(--accent)' }}>
-                <Play className="w-4 h-4" />
-                Ready to Run
-              </div>
-              <div className="text-sm space-y-1" style={{ color: 'var(--text-secondary)' }}>
-                <div><span className="font-medium" style={{ color: 'var(--text-primary)' }}>Project:</span> {projectName}</div>
-                {projectId && <div><span className="font-medium" style={{ color: 'var(--text-primary)' }}>ID:</span> <code className="text-xs font-mono">{projectId}</code></div>}
-                <div><span className="font-medium" style={{ color: 'var(--text-primary)' }}>Path:</span> <code className="text-xs font-mono">{projectPath}</code></div>
-                {task && <div><span className="font-medium" style={{ color: 'var(--text-primary)' }}>Task:</span> {task}</div>}
-                {additionalInstructions && (
-                  <div>
-                    <span className="font-medium" style={{ color: 'var(--text-primary)' }}>Additional Instructions:</span>
-                    <pre className="text-xs mt-1 whitespace-pre-wrap" style={{ color: 'var(--text-secondary)' }}>{additionalInstructions}</pre>
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          {isLoading && <LoadingState />}
+          {error && !contract && <ErrorState message={error instanceof Error ? error.message : 'Failed to load Agent API contract'} retry={() => refetch()} loading={isFetching} />}
+          {contract && (
+            <div className="space-y-7">
+              {context && <ProjectContextBanner context={context} />}
+
+              <Section title="Live contract">
+                <p>{contract.description}</p>
+                <p className="mt-2 text-xs">{contract.scope}</p>
+                <div
+                  className="mt-3 px-3 py-2 rounded-lg text-xs flex items-center gap-2"
+                  style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                  Loaded from <code>{contract.authentication.capabilitiesEndpoint}</code>; this page contains no separate endpoint list.
+                </div>
+              </Section>
+
+              <Section title="Authentication">
+                <p>{contract.authentication.login}</p>
+                <p className="mt-1">{contract.authentication.usage}</p>
+                <CodeBlock text={loginCurl(contract, baseUrl)} />
+                <p className="text-xs">{contract.authentication.security}</p>
+              </Section>
+
+              <Section title="Authorization boundaries">
+                <DefinitionList values={contract.authorization} />
+              </Section>
+
+              {context && (
+                <Section title="Create this project session">
+                  <CodeBlock text={contextSessionCurl(baseUrl, context)} />
+                </Section>
+              )}
+
+              <Section title="Quick start">
+                <ol className="list-decimal pl-5 space-y-1.5">
+                  {contract.quickstart.map((step) => <li key={step}>{step.replace(/^\d+\.\s*/, '')}</li>)}
+                </ol>
+              </Section>
+
+              <Section title="Critical rules">
+                <ul className="space-y-1.5">
+                  {contract.critical.map((rule) => <Rule key={rule}>{rule}</Rule>)}
+                </ul>
+              </Section>
+
+              <Section title={`Integration endpoints (${contract.endpoints.length})`}>
+                <div className="space-y-5">
+                  {endpointGroups.map(([category, endpoints]) => (
+                    <div key={category}>
+                      <h4 className="text-xs uppercase tracking-wider font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
+                        {category}
+                      </h4>
+                      <div className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+                        {endpoints.map((endpoint) => <EndpointDetails key={`${endpoint.method}-${endpoint.path}`} endpoint={endpoint} />)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Section>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <Section title="Session states">
+                  <DefinitionList values={contract.stateMachine.states} />
+                  <div className="mt-3 space-y-1.5">
+                    {contract.stateMachine.transitions.map((transition) => (
+                      <div key={`${transition.from}-${transition.to}-${transition.trigger}`} className="text-xs">
+                        <code>{transition.from}</code> → <code>{transition.to}</code>: {transition.trigger}
+                      </div>
+                    ))}
                   </div>
-                )}
+                </Section>
+                <Section title="Prompt types">
+                  <DefinitionList values={contract.promptTypes} />
+                </Section>
               </div>
-              <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                Click "Copy All" to copy the full command with project details, then paste it to OpenClaw.
-              </p>
+
+              <Section title="Operational tips">
+                <ul className="space-y-1.5">
+                  {contract.tips.map((tip) => <Rule key={tip}>{tip}</Rule>)}
+                </ul>
+              </Section>
+
+              <Section title="Operational guidance">
+                <JsonDetails title="Current backend guidance" value={contract.operationalGuidance} />
+              </Section>
             </div>
           )}
-
-          {/* Intro */}
-          <Section title="Overview">
-            <p>
-              External bot agents (like OpenClaw) can fully control AgentManager sessions via the REST API.
-              Create permitted sessions, send commands, read output, and respond to prompts — all programmatically.
-            </p>
-          </Section>
-
-          {/* Authentication */}
-          <Section title="Authentication Required">
-            <p>
-              Agent API requests use the same <code>agentmanager_session</code> login cookie as the dashboard.
-              Browser requests on this origin already include it. External clients must log in once and keep the
-              returned cookie for every REST request and WebSocket handshake.
-            </p>
-            <CodeBlock text={`# Store the HttpOnly login cookie without printing it
-umask 077
-curl --fail --silent --show-error \\
-  -c ./agentmanager.cookies \\
-  -H 'Content-Type: application/json' \\
-  -d '{"username":"YOUR_USERNAME","password":"YOUR_PASSWORD"}' \\
-  ${baseUrl}/api/auth/login
-
-# Reuse it on every subsequent API request
-curl --fail --silent --show-error \\
-  -b ./agentmanager.cookies \\
-  ${baseUrl}/api/agent/capabilities`} />
-            <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
-              Keep the cookie file private and never paste real credentials or cookie values into an agent prompt.
-              Unauthenticated requests return <code>401</code>.
-            </p>
-          </Section>
-
-          {/* Capabilities endpoint */}
-          <Section title="Self-Describing API">
-            <p>
-              The capabilities endpoint returns the current agent-control contract, state machine, prompt types, and operational guidance.
-              After authentication, point your agent here first:
-            </p>
-            <CodeBlock text={`GET ${baseUrl}/api/agent/capabilities`} />
-            <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
-              This is the single source of truth for the agent-control contract. It includes the core integration endpoints,
-              request/response schemas, error codes, and tips.
-            </p>
-          </Section>
-
-          {/* Quick start */}
-          <Section title="Quick Start">
-            <ol className="list-decimal list-inside space-y-2">
-              <li>
-                <strong>Authenticate</strong> and persist the returned session cookie, as shown above.
-              </li>
-              <li>
-                <strong>List accessible projects</strong> and select one whose <code>tool_access</code> permits the requested mode and CLI:
-                <CodeBlock text={`GET ${baseUrl}/api/projects`} />
-              </li>
-              <li>
-                <strong>Create a session</strong> in that registered project:
-                <CodeBlock text={`POST ${baseUrl}/api/sessions
-Content-Type: application/json
-
-{
-  "project_id": "project-id-from-step-2",
-  "project_path": "/path/to/project",
-  "task": "Fix the login bug",
-  "mode": "session",
-  "cli_type": "codex"
-}`} />
-                <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  <code>mode</code> is <code>session</code>, <code>agent</code>, or <code>terminal</code>.
-                  Agent mode also requires <code>agent_type</code>; interactive modes support <code>cli_type</code> values
-                  <code> claude</code> and <code>codex</code>.
-                </p>
-              </li>
-              <li>
-                <strong>Poll for output + state</strong> with a single call (no side effects):
-                <CodeBlock text={`GET ${baseUrl}/api/sessions/:id/display?lines=100
-
-# Returns rendered terminal text + inline state:
-{
-  "sessionId": "...",
-  "processState": "idle",
-  "promptType": "choice",
-  "choices": ["Option A", "Option B"],
-  "output": "...last 100 lines of clean terminal text...",
-  "cursor": 1234,
-  "truncated": false
-}`} />
-              </li>
-              <li>
-                <strong>Poll incrementally</strong> — pass the <code>cursor</code> from previous response to only get new content:
-                <CodeBlock text={`GET ${baseUrl}/api/sessions/:id/display?lines=100&since=1234`} />
-              </li>
-              <li>
-                <strong>Send input</strong> when the session needs it (<code>waiting_for_input</code> or <code>idle</code>):
-                <CodeBlock text={`POST ${baseUrl}/api/sessions/:id/execute
-Content-Type: application/json
-
-{
-  "input": "your response or command",
-  "timeout": 60000,
-  "quiescenceMs": 5000
-}`} />
-              </li>
-              <li>
-                <strong>Repeat the polling and input steps</strong> until the task is complete.
-              </li>
-            </ol>
-          </Section>
-
-          {/* Key rules */}
-          <Section title="Critical Rules">
-            <ul className="space-y-1.5">
-              <Rule>Authenticate first, then read <code>/api/agent/capabilities</code> before creating or controlling sessions.</Rule>
-              <Rule>Only projects, sessions, modes, and CLIs granted to the logged-in user are visible or controllable.</Rule>
-              <Rule>Use <code>GET /sessions/:id/display</code> for read-only monitoring — output + state in one call with cursor-based incremental polling.</Rule>
-              <Rule>Use <code>POST /sessions/:id/execute</code> to send input and get the response.</Rule>
-              <Rule>Send input only to answer a prompt or issue a command. Prefer explicit responses; an empty string intentionally sends Enter and may accept a prompt default.</Rule>
-              <Rule>NEVER read PTY output directly, scrape temp files, or parse raw terminal data.</Rule>
-              <Rule>Check <code>processState</code> before sending input — if <code>busy</code>, wait.</Rule>
-              <Rule>When <code>promptType</code> is <code>choice</code>, use the <code>choices</code> array to pick the right option number.</Rule>
-              <Rule>Use <code>timeout: 60000</code> and <code>quiescenceMs: 5000</code> for interactive coding sessions.</Rule>
-            </ul>
-          </Section>
-
-          {/* Reading output */}
-          <Section title="Reading Output (Display vs Execute)">
-            <p>
-              <strong><code>GET /sessions/:id/display</code></strong> — Read-only. Returns the last N lines of rendered terminal text
-              plus inline state (processState, promptType, choices) in a single call. Use the <code>cursor</code> value
-              for incremental polling — pass it back as <code>?since=cursor</code> to only get new content.
-              This is the <strong>recommended way to monitor</strong> what a session is doing.
-            </p>
-            <p className="mt-2">
-              <strong><code>POST /sessions/:id/execute</code></strong> — Send input and get output. Only returns
-              <strong> new output generated after your input</strong>. Use this when you need to interact, not just observe.
-              Prefer meaningful text (e.g. <code>"Ready"</code>); an empty string deliberately sends Enter.
-            </p>
-          </Section>
-
-          {/* WebSocket */}
-          <Section title="Real-Time WebSocket (Optional)">
-            <p>
-              For lower latency, connect via WebSocket instead of polling:
-            </p>
-            <CodeBlock text={`WS ${baseUrl.replace('http', 'ws')}/api/sessions/:id/agent`} />
-            <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-              The WebSocket handshake must carry the login cookie. It supports <code>execute</code> and <code>get_state</code>
-              messages and pushes <code>state_change</code> and <code>output</code> events in real-time.
-            </p>
-          </Section>
-
-          {/* All endpoints summary */}
-          <Section title="Integration Endpoints">
-            <div className="space-y-1 font-mono text-xs">
-              <EndpointRow method="POST" path="/api/auth/login" desc="Login and set session cookie (public)" />
-              <EndpointRow method="GET" path="/api/projects" desc="List accessible projects + tool access" />
-              <EndpointRow method="POST" path="/api/projects" desc="Add a project (admin only)" />
-              <EndpointRow method="DELETE" path="/api/projects/:id" desc="Remove a project (owner/admin)" />
-              <EndpointRow method="GET" path="/api/sessions" desc="List accessible sessions" />
-              <EndpointRow method="POST" path="/api/sessions" desc="Create a permitted session" />
-              <EndpointRow method="DELETE" path="/api/sessions/:id" desc="Kill a session" />
-              <EndpointRow method="GET" path="/api/sessions/:id/state" desc="Get session state" />
-              <EndpointRow method="GET" path="/api/sessions/:id/display" desc="Rendered output + state (polling)" />
-              <EndpointRow method="POST" path="/api/sessions/:id/execute" desc="Send input, get output" />
-              <EndpointRow method="POST" path="/api/sessions/:id/cancel" desc="Cancel pending execute wait (not the CLI)" />
-              <EndpointRow method="GET" path="/api/agent/capabilities" desc="Agent control contract (self-describing)" />
-              <EndpointRow method="GET" path="/api/context" desc="Concise session summary (low tokens)" />
-              <EndpointRow method="WS" path="/api/sessions/:id/agent" desc="Real-time agent WebSocket" />
-            </div>
-          </Section>
-
-          {/* Example bot loop */}
-          <Section title="Example Agent Loop">
-            <CodeBlock text={`// Minimal agent control loop
-const BASE = "${baseUrl}/api";
-
-// This browser-oriented example reuses the dashboard's HttpOnly login cookie.
-// External runtimes must use an equivalent cookie jar after POST /auth/login.
-async function api(path, init = {}) {
-  const response = await fetch(\`\${BASE}\${path}\`, {
-    credentials: "include",
-    ...init,
-    headers: { "Content-Type": "application/json", ...init.headers }
-  });
-  if (!response.ok) throw new Error(\`API \${response.status}: \${await response.text()}\`);
-  return response.json();
-}
-
-// 1. Authenticate first, then read capabilities
-const caps = await api("/agent/capabilities");
-
-// 2. Select a permitted project, then create a session
-const { projects } = await api("/projects");
-const project = projects.find(p =>
-  p.tool_access?.can_session && (p.tool_access.can_codex || p.tool_access.can_claude)
-);
-if (!project) throw new Error("No project permits interactive sessions");
-const cliType = project.tool_access.can_codex ? "codex" : "claude";
-
-const { session } = await api("/sessions", {
-  method: "POST",
-  body: JSON.stringify({
-    project_id: project.id,
-    project_path: project.path,
-    task: "Fix the auth middleware",
-    mode: "session",
-    cli_type: cliType
-  })
-});
-
-// 3. Poll display endpoint for output + state (single call)
-let cursor = null;
-async function pollDisplay(id) {
-  const path = cursor
-    ? \`/sessions/\${id}/display?lines=100&since=\${cursor}\`
-    : \`/sessions/\${id}/display?lines=100\`;
-  const data = await api(path);
-  cursor = data.cursor; // save for next incremental poll
-  return data;
-}
-
-// 4. Wait for session to be ready, reading output along the way
-let display;
-while (true) {
-  display = await pollDisplay(session.id);
-  if (display.output) console.log(display.output);
-  if (display.processState !== "busy") break;
-  await new Promise(r => setTimeout(r, 2000));
-}
-
-// 5. Interact when session needs input
-while (true) {
-  if (display.processState === "waiting_for_input" || display.processState === "idle") {
-    const input = decideInput(display); // your logic using output + promptType + choices
-
-    const result = await api(\`/sessions/\${session.id}/execute\`, {
-      method: "POST",
-      body: JSON.stringify({ input, timeout: 60000, quiescenceMs: 5000 })
-    });
-    console.log(result.output);
-  }
-
-  // Poll for new output
-  await new Promise(r => setTimeout(r, 2000));
-  display = await pollDisplay(session.id);
-  if (display.output) console.log(display.output);
-}`} />
-          </Section>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function LoadingState() {
+  return (
+    <div className="h-64 flex flex-col items-center justify-center gap-3" style={{ color: 'var(--text-secondary)' }}>
+      <Loader2 className="w-5 h-5 animate-spin" />
+      <span className="text-sm">Loading the live backend contract…</span>
+    </div>
+  );
+}
+
+function ErrorState({ message, retry, loading }: { message: string; retry: () => void; loading: boolean }) {
+  return (
+    <div className="h-64 flex flex-col items-center justify-center gap-3 text-center">
+      <AlertCircle className="w-6 h-6" style={{ color: 'var(--error)' }} />
+      <div>
+        <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>The current Agent API contract could not be loaded.</p>
+        <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>{message}</p>
+      </div>
+      <button
+        onClick={retry}
+        disabled={loading}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs"
+        style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }}
+      >
+        <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+        Retry
+      </button>
+    </div>
+  );
+}
+
+function ProjectContextBanner({ context }: { context: GuideContext }) {
+  return (
+    <div
+      className="rounded-lg border p-4 space-y-2"
+      style={{ background: 'var(--bg-primary)', borderColor: 'var(--accent)' }}
+    >
+      <div className="flex items-center gap-2 text-sm font-medium" style={{ color: 'var(--accent)' }}>
+        <Play className="w-4 h-4" />
+        Ready to run
+      </div>
+      <div className="text-sm space-y-1" style={{ color: 'var(--text-secondary)' }}>
+        <div><strong style={{ color: 'var(--text-primary)' }}>Project:</strong> {context.projectName}</div>
+        {context.projectId && <div><strong style={{ color: 'var(--text-primary)' }}>ID:</strong> <code>{context.projectId}</code></div>}
+        <div><strong style={{ color: 'var(--text-primary)' }}>Path:</strong> <code>{context.projectPath}</code></div>
+        {context.task && <div><strong style={{ color: 'var(--text-primary)' }}>Task:</strong> {context.task}</div>}
       </div>
     </div>
   );
@@ -374,38 +280,91 @@ while (true) {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div>
+    <section>
       <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>{title}</h3>
-      <div className="text-sm leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-        {children}
-      </div>
+      <div className="text-sm leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{children}</div>
+    </section>
+  );
+}
+
+function EndpointDetails({ endpoint }: { endpoint: AgentApiEndpoint }) {
+  const hasDetails = endpoint.request || endpoint.response || endpoint.errors || endpoint.incomingMessages || endpoint.outgoingMessages;
+  return (
+    <details className="group" style={{ borderBottom: '1px solid var(--border)' }}>
+      <summary className={`px-3 py-2.5 list-none ${hasDetails ? 'cursor-pointer' : 'cursor-default'}`}>
+        <div className="flex items-start gap-3">
+          <MethodBadge method={endpoint.method} />
+          <div className="min-w-0 flex-1">
+            <code className="text-xs break-all" style={{ color: 'var(--text-primary)' }}>{endpoint.path}</code>
+            <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>{endpoint.description}</p>
+          </div>
+          {endpoint.public && <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--success)' }}>Public</span>}
+        </div>
+      </summary>
+      {hasDetails && (
+        <div className="px-3 pb-3 pl-[5.75rem] space-y-2">
+          {endpoint.request && <JsonDetails title="Request" value={endpoint.request} />}
+          {endpoint.response && <JsonDetails title="Response" value={endpoint.response} />}
+          {endpoint.errors && <JsonDetails title="Errors" value={endpoint.errors} />}
+          {endpoint.incomingMessages && <JsonDetails title="WebSocket input" value={endpoint.incomingMessages} />}
+          {endpoint.outgoingMessages && <JsonDetails title="WebSocket output" value={endpoint.outgoingMessages} />}
+        </div>
+      )}
+    </details>
+  );
+}
+
+function MethodBadge({ method }: { method: AgentApiEndpoint['method'] }) {
+  const color = method === 'GET' ? '#60a5fa'
+    : method === 'POST' ? '#34d399'
+      : method === 'DELETE' ? '#f87171'
+        : method === 'WS' ? '#a78bfa'
+          : '#fbbf24';
+  return (
+    <span className="w-16 shrink-0 text-[11px] font-mono font-bold" style={{ color }}>{method}</span>
+  );
+}
+
+function JsonDetails({ title, value }: { title: string; value: unknown }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: 'var(--text-secondary)' }}>{title}</div>
+      <pre
+        className="text-[11px] leading-relaxed p-2 rounded-md overflow-x-auto"
+        style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+      >
+        {JSON.stringify(value, null, 2)}
+      </pre>
     </div>
+  );
+}
+
+function DefinitionList({ values }: { values: Record<string, string> }) {
+  return (
+    <dl className="space-y-2">
+      {Object.entries(values).map(([name, description]) => (
+        <div key={name}>
+          <dt><code style={{ color: 'var(--text-primary)' }}>{name}</code></dt>
+          <dd className="text-xs mt-0.5">{description}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
 function CodeBlock({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text);
+  async function copy() {
+    await navigator.clipboard.writeText(text);
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
+    window.setTimeout(() => setCopied(false), 2000);
+  }
   return (
     <div className="relative group mt-2 mb-2">
-      <pre
-        className="text-xs font-mono p-3 rounded-lg overflow-x-auto"
-        style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
-      >
+      <pre className="text-xs font-mono p-3 pr-10 rounded-lg overflow-x-auto" style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
         {text}
       </pre>
-      <button
-        onClick={handleCopy}
-        className="absolute top-2 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
-        title="Copy"
-      >
+      <button onClick={copy} className="absolute top-2 right-2 p-1 rounded opacity-60 group-hover:opacity-100" style={{ background: 'var(--bg-tertiary)' }}>
         {copied ? <Check className="w-3 h-3" style={{ color: 'var(--success)' }} /> : <Copy className="w-3 h-3" />}
       </button>
     </div>
@@ -414,210 +373,124 @@ function CodeBlock({ text }: { text: string }) {
 
 function Rule({ children }: { children: React.ReactNode }) {
   return (
-    <li className="text-sm flex gap-2" style={{ color: 'var(--text-secondary)' }}>
-      <span style={{ color: 'var(--accent)' }}>*</span>
+    <li className="text-sm flex gap-2">
+      <span style={{ color: 'var(--accent)' }}>•</span>
       <span>{children}</span>
     </li>
   );
 }
 
-function generatePlainTextGuide(baseUrl: string): string {
-  return `# AgentManager Agent Integration Guide
+function absoluteUrl(baseUrl: string, path: string): string {
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  return `${baseUrl}${normalized}`;
+}
 
-## Overview
-External bot agents can fully control AgentManager sessions via the REST API.
-Create permitted sessions, send commands, read output, and respond to prompts — all programmatically.
-Base URL: ${baseUrl}
-
-## Authentication (REQUIRED FIRST)
-All Agent API endpoints require the HttpOnly agentmanager_session login cookie.
-Log in once with a private cookie jar, then reuse that jar for every REST request and WebSocket handshake:
-
-umask 077
+function loginCurl(contract: AgentApiContract, baseUrl: string): string {
+  return `umask 077
 curl --fail --silent --show-error \\
   -c ./agentmanager.cookies \\
   -H 'Content-Type: application/json' \\
   -d '{"username":"YOUR_USERNAME","password":"YOUR_PASSWORD"}' \\
-  ${baseUrl}/api/auth/login
-
-Never paste real credentials or cookie values into an agent prompt. If the client has no authenticated cookie, stop and ask the user to establish one. A missing or expired cookie returns HTTP 401.
-
-## Self-Describing API
-After authentication, read the current contract before doing anything else:
-
-curl --fail --silent --show-error \\
-  -b ./agentmanager.cookies \\
-  ${baseUrl}/api/agent/capabilities
-
-This is the source of truth for the agent control endpoints, request/response schemas, state machine, prompt types, errors, and operational guidance.
-
-## Quick Start
-
-Every request below must reuse the authenticated cookie.
-
-1. List projects visible to the logged-in user. Check tool_access for the requested mode and CLI:
-   GET ${baseUrl}/api/projects
-
-2. Create a session in a registered, permitted project:
-   POST ${baseUrl}/api/sessions
-   Content-Type: application/json
-   {"project_id":"project-id","project_path":"/path/to/project","task":"Fix the login bug","mode":"session","cli_type":"codex"}
-
-   mode: session | agent | terminal
-   cli_type: claude | codex (for session/agent modes)
-   agent mode additionally requires agent_type.
-
-3. Poll for output + state (single call, no side effects):
-   GET ${baseUrl}/api/sessions/:id/display?lines=100
-   Returns: { sessionId, processState, promptType, choices, output: "rendered text", cursor: 1234, truncated: false }
-
-4. Poll incrementally — pass cursor from the previous response to get only new content:
-   GET ${baseUrl}/api/sessions/:id/display?lines=100&since=1234
-
-5. Send input when processState is "idle" or "waiting_for_input":
-   POST ${baseUrl}/api/sessions/:id/execute
-   Content-Type: application/json
-   {"input": "your response", "timeout": 60000, "quiescenceMs": 5000}
-
-6. Repeat steps 3-5 until the task is complete.
-
-## Critical Rules
-- Authenticate first, then read /api/agent/capabilities before creating or controlling sessions.
-- Only projects, sessions, modes, and CLIs granted to the logged-in user are visible or controllable. Members can control only their own sessions.
-- Use GET /api/sessions/:id/display for read-only monitoring — output + state in one call with cursor-based incremental polling.
-- Use POST /api/sessions/:id/execute to send input and get the response.
-- Send input only to answer a prompt or issue a command. Prefer explicit responses; input "" intentionally sends Enter and may accept a prompt default.
-- NEVER read PTY output directly, scrape temp files, or parse raw terminal data.
-- Check processState before sending input — if "busy", wait.
-- When promptType is "choice", use the choices array to pick the right option number.
-- Use timeout: 60000 and quiescenceMs: 5000 for interactive coding sessions.
-
-## Reading Output (Display vs Execute)
-GET /sessions/:id/display — Read-only. Returns the last N lines of rendered terminal text plus inline state (processState, promptType, choices) in a single call. Use the cursor value for incremental polling — pass it back as ?since=cursor to only get new content. This is the RECOMMENDED way to monitor what a session is doing.
-
-POST /sessions/:id/execute — Send input and get output. Only returns NEW output generated AFTER your input. Use this when you need to interact, not just observe.
-
-## Real-Time WebSocket (Optional)
-For lower latency, connect via WebSocket instead of polling:
-WS ${baseUrl.replace('http', 'ws')}/api/sessions/:id/agent
-The handshake must include the login cookie. Supports "execute" and "get_state" messages and pushes "state_change" and "output" events.
-
-## Integration Endpoints
-POST   /api/auth/login            — Login and set session cookie (public)
-GET    /api/projects              — List accessible projects + tool access
-POST   /api/projects              — Add a project (admin only)
-DELETE /api/projects/:id          — Remove a project (owner/admin)
-GET    /api/sessions              — List accessible sessions
-POST   /api/sessions              — Create a permitted session
-DELETE /api/sessions/:id          — Kill a session
-GET    /api/sessions/:id/state    — Get session state
-GET    /api/sessions/:id/display  — Rendered output + state (polling)
-POST   /api/sessions/:id/execute  — Send input, get output
-POST   /api/sessions/:id/cancel   — Cancel a pending execute wait (does not stop the CLI process)
-GET    /api/agent/capabilities    — Agent control contract (self-describing)
-GET    /api/context               — Concise session summary (low tokens)
-WS     /api/sessions/:id/agent    — Real-time agent WebSocket
-`;
+  ${absoluteUrl(baseUrl, contract.authentication.loginEndpoint)}`;
 }
 
-function generateContextualGuide(baseUrl: string, projectName: string, projectPath: string, task?: string, additionalInstructions?: string, projectId?: string): string {
-  const effectiveTask = task?.trim() || 'Start up and ask me what I want you to do and NOTHING ELSE';
-  // Build the full task string for the API call: task + additional instructions separated
-  const fullTaskForApi = additionalInstructions
-    ? `${effectiveTask}\n\n---\nAdditional Instructions:\n${additionalInstructions}`
+function contextSessionCurl(baseUrl: string, context: GuideContext): string {
+  const effectiveTask = context.task?.trim() || 'Start up and ask me what I want you to do and NOTHING ELSE';
+  const prompt = context.additionalInstructions
+    ? `${effectiveTask}\n\n---\nAdditional Instructions:\n${context.additionalInstructions}`
     : effectiveTask;
-
-  const instructionsSection = additionalInstructions
-    ? `\n## Additional Instructions\n${additionalInstructions}\n`
-    : '';
-
-  const sessionRequest = {
-    ...(projectId ? { project_id: projectId } : {}),
-    project_path: projectPath,
-    task: fullTaskForApi,
+  const body = {
+    ...(context.projectId ? { project_id: context.projectId } : {}),
+    project_path: context.projectPath,
+    task: prompt,
     mode: 'session',
     cli_type: 'claude',
   };
-
-  return `# AgentManager Agent Command — ${projectName}
-
-## Project Details
-- **Project:** ${projectName}
-- **Project ID:** ${projectId || 'Look up with GET /api/projects'}
-- **Path:** ${projectPath}
-- **Task:** ${effectiveTask}
-- **Base URL:** ${baseUrl}
-${instructionsSection}
-## Authentication Prerequisite
-All endpoints below require an agentmanager_session login cookie. Reuse a private, pre-provisioned cookie jar on every REST request and the WebSocket handshake. Never request or expose a password/cookie in chat. If no authenticated cookie is available or an endpoint returns HTTP 401, stop and ask the user to establish authentication.
-
-## FIRST: Read Capabilities (after authentication)
-GET ${baseUrl}/api/agent/capabilities
-
-## Quick Start
-
-1. Create a session for this project:
-   POST ${baseUrl}/api/sessions
-   Content-Type: application/json
-   ${JSON.stringify(sessionRequest)}
-
-2. Poll for output + state (single call, no side effects):
-   GET ${baseUrl}/api/sessions/:id/display?lines=100
-   Returns: { sessionId, processState, promptType, choices, output: "rendered text", cursor: 1234, truncated: false }
-
-3. Poll incrementally — pass cursor from previous response to only get new content:
-   GET ${baseUrl}/api/sessions/:id/display?lines=100&since=1234
-
-4. Send input when the session needs it (processState is "idle" or "waiting_for_input"):
-   POST ${baseUrl}/api/sessions/:id/execute
-   Content-Type: application/json
-   {"input": "your response or command", "timeout": 60000, "quiescenceMs": 5000}
-
-5. Repeat steps 2-4 until the task is complete.
-
-## Critical Rules
-- Authenticate first, then read /api/agent/capabilities before creating or controlling sessions.
-- The logged-in user must have session + Claude access to this project and may control only their own sessions (admins may control all).
-- Use GET /api/sessions/:id/display for read-only monitoring — output + state in one call with cursor-based incremental polling.
-- Use POST /api/sessions/:id/execute to send input and get the response.
-- Send input only to answer a prompt or issue a command. Prefer explicit responses; input "" intentionally sends Enter and may accept a prompt default.
-- NEVER read PTY output directly, scrape temp files, or parse raw terminal data.
-- Check processState before sending input — if "busy", wait.
-- When promptType is "choice", use the choices array to pick the right option number.
-- Use timeout: 60000 and quiescenceMs: 5000 for interactive coding sessions.
-
-## Reading Output (Display vs Execute)
-GET /sessions/:id/display — Read-only. Returns the last N lines of rendered terminal text plus inline state. Use the cursor value for incremental polling. This is the RECOMMENDED way to monitor what a session is doing.
-POST /sessions/:id/execute — Send input and get output. Only returns NEW output generated AFTER your input. Use this when you need to interact, not just observe.
-
-## Integration Endpoints
-POST   /api/auth/login            — Login and set session cookie (public)
-GET    /api/projects              — List accessible projects + tool access
-POST   /api/projects              — Add a project (admin only)
-DELETE /api/projects/:id          — Remove a project (owner/admin)
-GET    /api/sessions              — List accessible sessions
-POST   /api/sessions              — Create a permitted session
-DELETE /api/sessions/:id          — Kill a session
-GET    /api/sessions/:id/state    — Get session state
-GET    /api/sessions/:id/display  — Rendered output + state (polling)
-POST   /api/sessions/:id/execute  — Send input, get output
-POST   /api/sessions/:id/cancel   — Cancel a pending execute wait (does not stop the CLI process)
-GET    /api/agent/capabilities    — Agent control contract (self-describing)
-GET    /api/context               — Concise session summary (low tokens)
-WS     /api/sessions/:id/agent    — Real-time agent WebSocket
-`;
+  return `curl --fail --silent --show-error \\
+  -b ./agentmanager.cookies \\
+  -H 'Content-Type: application/json' \\
+  -d '${JSON.stringify(body)}' \\
+  ${baseUrl}/api/sessions`;
 }
 
-function EndpointRow({ method, path, desc }: { method: string; path: string; desc: string }) {
-  const methodColor = method === 'POST' ? 'var(--success)' :
-    method === 'DELETE' ? 'var(--error)' :
-    method === 'WS' ? 'var(--accent)' : 'var(--text-secondary)';
+export function generateGuide(contract: AgentApiContract, baseUrl: string, context?: GuideContext): string {
+  const lines = [
+    `# ${contract.name}`,
+    '',
+    `Contract version: ${contract.version}`,
+    `Updated: ${contract.updatedAt}`,
+    `Base URL: ${baseUrl}`,
+    '',
+    '## Scope',
+    contract.description,
+    contract.scope,
+  ];
 
-  return (
-    <div className="flex items-baseline gap-2 py-0.5">
-      <span className="w-12 text-right font-bold shrink-0" style={{ color: methodColor }}>{method}</span>
-      <span style={{ color: 'var(--text-primary)' }}>{path}</span>
-      <span className="text-[10px] ml-auto" style={{ color: 'var(--text-secondary)' }}>{desc}</span>
-    </div>
+  if (context) {
+    lines.push(
+      '',
+      '## Project context',
+      `Project: ${context.projectName}`,
+      `Project ID: ${context.projectId || 'Look up with GET /api/projects'}`,
+      `Path: ${context.projectPath}`,
+      `Task: ${context.task?.trim() || 'Start up and ask me what I want you to do and NOTHING ELSE'}`,
+      '',
+      '## Create this project session',
+      contextSessionCurl(baseUrl, context),
+    );
+  }
+
+  lines.push(
+    '',
+    '## Authentication',
+    contract.authentication.login,
+    contract.authentication.usage,
+    contract.authentication.security,
+    `Authentication errors: ${JSON.stringify(contract.authentication.errors)}`,
+    '',
+    loginCurl(contract, baseUrl),
+    '',
+    '## Quick start',
+    ...contract.quickstart,
+    '',
+    '## Authorization',
+    ...Object.entries(contract.authorization).map(([name, value]) => `- ${name}: ${value}`),
+    '',
+    '## Critical rules',
+    ...contract.critical.map((rule) => `- ${rule}`),
+    '',
+    `## Integration endpoints (${contract.endpoints.length})`,
   );
+
+  let category = '';
+  for (const endpoint of contract.endpoints) {
+    if (endpoint.category !== category) {
+      category = endpoint.category;
+      lines.push('', `### ${category}`);
+    }
+    lines.push(`${endpoint.method.padEnd(6)} ${endpoint.path} — ${endpoint.description}`);
+    if (endpoint.request) lines.push(`Request: ${JSON.stringify(endpoint.request)}`);
+    if (endpoint.response) lines.push(`Response: ${JSON.stringify(endpoint.response)}`);
+    if (endpoint.errors) lines.push(`Errors: ${JSON.stringify(endpoint.errors)}`);
+    if (endpoint.incomingMessages) lines.push(`WebSocket input: ${JSON.stringify(endpoint.incomingMessages)}`);
+    if (endpoint.outgoingMessages) lines.push(`WebSocket output: ${JSON.stringify(endpoint.outgoingMessages)}`);
+  }
+
+  lines.push(
+    '',
+    '## Session states',
+    ...Object.entries(contract.stateMachine.states).map(([name, value]) => `- ${name}: ${value}`),
+    ...contract.stateMachine.transitions.map((transition) => `- ${transition.from} -> ${transition.to}: ${transition.trigger}`),
+    '',
+    '## Prompt types',
+    ...Object.entries(contract.promptTypes).map(([name, value]) => `- ${name}: ${value}`),
+    '',
+    '## Operational tips',
+    ...contract.tips.map((tip) => `- ${tip}`),
+    '',
+    '## Operational guidance',
+    JSON.stringify(contract.operationalGuidance, null, 2),
+  );
+
+  return lines.join('\n');
 }

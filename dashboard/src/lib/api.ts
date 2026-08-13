@@ -47,6 +47,48 @@ export interface AuthUser { id: string; username: string; display_name: string; 
 export interface AuthStatus { needsSetup: boolean; authenticated: boolean; user: AuthUser | null; }
 export interface AuthCredentials { username: string; password: string; display_name?: string; }
 
+export interface AgentApiEndpoint {
+  category: string;
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE' | 'WS';
+  path: string;
+  description: string;
+  public?: boolean;
+  request?: Record<string, unknown>;
+  response?: Record<string, unknown>;
+  errors?: Record<string, string>;
+  incomingMessages?: unknown[];
+  outgoingMessages?: unknown[];
+}
+
+export interface AgentApiContract {
+  name: string;
+  version: string;
+  updatedAt: string;
+  scope: string;
+  description: string;
+  authentication: {
+    type: string;
+    cookieName: string;
+    loginEndpoint: string;
+    capabilitiesEndpoint: string;
+    login: string;
+    usage: string;
+    errors: Record<string, string>;
+    security: string;
+  };
+  authorization: Record<string, string>;
+  critical: string[];
+  quickstart: string[];
+  stateMachine: {
+    states: Record<string, string>;
+    transitions: Array<{ from: string; to: string; trigger: string }>;
+  };
+  promptTypes: Record<string, string>;
+  endpoints: AgentApiEndpoint[];
+  tips: string[];
+  operationalGuidance: Record<string, unknown>;
+}
+
 // Sessions
 export const api = {
   auth: {
@@ -372,6 +414,7 @@ export const api = {
       }),
   },
   agent: {
+    capabilities: () => fetchJSON<AgentApiContract>('/agent/capabilities'),
     execute: (sessionId: string, opts: {
       input: string;
       waitFor?: string;
