@@ -87,6 +87,10 @@ describe('session creation project identity', () => {
     `);
     insert.run('own-session', 'Own work', adminId);
     insert.run('other-session', 'Other admin work', otherAdmin.id);
+    getDb().prepare(`
+      INSERT INTO pty_output (session_id, seq, data, created_at)
+      VALUES ('own-session', 1, 'latest output', '2026-08-05 06:30:00')
+    `).run();
 
     const response = await app.inject({
       method: 'GET',
@@ -95,6 +99,11 @@ describe('session creation project identity', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().sessions.map((session: { id: string }) => session.id)).toEqual(['own-session']);
+    expect(response.json().sessions).toEqual([
+      expect.objectContaining({
+        id: 'own-session',
+        last_activity_at: '2026-08-05T06:30:00Z',
+      }),
+    ]);
   });
 });

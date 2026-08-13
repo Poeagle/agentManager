@@ -4,7 +4,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { config } from '../config.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 4;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -141,6 +141,42 @@ function createCurrentSchema(): void {
       PRIMARY KEY (project_id, user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      schedule_kind TEXT NOT NULL,
+      schedule_value TEXT NOT NULL,
+      timezone TEXT NOT NULL DEFAULT 'UTC',
+      target_type TEXT NOT NULL,
+      target_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+      new_mode TEXT,
+      new_cli_type TEXT,
+      new_agent_type TEXT,
+      inactive_policy TEXT NOT NULL DEFAULT 'resume',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      next_run_at TEXT,
+      last_run_at TEXT,
+      last_status TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES scheduled_tasks(id) ON DELETE CASCADE,
+      trigger TEXT NOT NULL,
+      scheduled_for TEXT NOT NULL,
+      status TEXT NOT NULL,
+      session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+      error TEXT,
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT
+    );
+
   `);
 }
 
@@ -156,6 +192,9 @@ function createCurrentIndexes(): void {
     CREATE INDEX IF NOT EXISTS idx_project_user_access_user ON project_user_access(user_id);
     CREATE INDEX IF NOT EXISTS idx_project_user_access_project ON project_user_access(project_id);
     CREATE INDEX IF NOT EXISTS idx_pty_output_session_seq ON pty_output(session_id, seq);
+    CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_due ON scheduled_tasks(enabled, next_run_at);
+    CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_user_project ON scheduled_tasks(user_id, project_id);
+    CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task ON scheduled_task_runs(task_id, started_at DESC);
   `);
 }
 
@@ -218,6 +257,32 @@ function migrateTerminalDimensionsAndOutputKeys(): void {
   `);
 }
 
+/**
+ * Sessions created before per-user ownership was introduced have no creator,
+ * even though their project already has an explicit owner. Claim those rows
+ * once during the v2 -> v3 upgrade. Keeping this as a versioned migration (as
+ * opposed to a permanent COALESCE fallback in every query) ensures sessions
+ * orphaned later by account deletion remain unowned.
+ */
+function migrateLegacySessionOwnership(): void {
+  db.exec(`
+    UPDATE sessions
+    SET created_by_user_id = (
+      SELECT projects.owner_id
+      FROM projects
+      WHERE projects.id = sessions.project_id
+    )
+    WHERE created_by_user_id IS NULL
+      AND project_id IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM projects
+        WHERE projects.id = sessions.project_id
+          AND projects.owner_id IS NOT NULL
+      )
+  `);
+}
+
 function runMigrations(): void {
   const current = db.pragma('user_version', { simple: true }) as number;
   if (current > SCHEMA_VERSION) {
@@ -228,6 +293,7 @@ function runMigrations(): void {
     createCurrentSchema();
     if (current < 1) migrateLegacySchema();
     if (current < 2) migrateTerminalDimensionsAndOutputKeys();
+    if (current < 3) migrateLegacySessionOwnership();
     createCurrentIndexes();
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
   });

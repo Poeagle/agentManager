@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Monitor, FolderTree, Code2, GitBranch, Home, Plus, X, Download, LayoutGrid, Maximize2, Minimize2, ExternalLink, Globe, Zap, Bot, TerminalSquare, Columns3, Rows3, ChevronDown, History, Sparkles } from 'lucide-react';
+import { Monitor, FolderTree, Code2, GitBranch, Home, Plus, X, Download, LayoutGrid, Maximize2, Minimize2, ExternalLink, Globe, Zap, Bot, TerminalSquare, Columns3, Rows3, ChevronDown, History, Sparkles, CalendarClock } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { Terminal } from './Terminal';
 import { FileExplorer, type FileRefreshRequest } from './FileExplorer';
@@ -13,8 +13,10 @@ import { CloseTabModal } from './CloseTabModal';
 import { SessionHistoryPanel } from './SessionHistoryPanel';
 import { HistoryViewer } from './HistoryViewer';
 import { ProjectSkillsPanel } from './ProjectSkillsPanel';
+import { ScheduledTasksPanel } from './ScheduledTasksPanel';
 import { useShortcut, markKeyboardNav } from '../lib/shortcuts';
 import { LiveSessionSignalDot } from '../lib/session-signal';
+import { SessionActivityAge } from '../lib/session-activity';
 import {
   reconcileHydratedTerminalInstances,
   shouldAutoRestoreSession,
@@ -46,7 +48,7 @@ interface WebPageInstance {
   url: string;
 }
 
-type ActiveMode = 'terminal' | 'explorer' | 'events' | 'git' | 'history' | 'skills';
+type ActiveMode = 'terminal' | 'explorer' | 'events' | 'git' | 'history' | 'skills' | 'scheduled';
 
 interface PersistedState {
   activeMode: ActiveMode;
@@ -110,6 +112,7 @@ const sidebarButtons = [
   { id: 'explorer' as const, icon: FolderTree, title: 'File Explorer' },
   { id: 'git' as const, icon: GitBranch, title: 'Source Control' },
   { id: 'history' as const, icon: History, title: 'Session 历史' },
+  { id: 'scheduled' as const, icon: CalendarClock, title: '定时任务' },
   { id: 'skills' as const, icon: Sparkles, title: 'Skills' },
 ] as const;
 
@@ -1433,6 +1436,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         >
                           {tabIcon}
                           <span className="truncate">{inst.customLabel?.trim() || inst.label}</span>
+                          <SessionActivityAge session={sigSession} />
                         </button>
                       )}
                       <button
@@ -2195,6 +2199,13 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
             {activeMode === 'skills' && (
               <ProjectSkillsPanel projectId={projectId} />
             )}
+          </div>
+
+          <div
+            className="h-full absolute inset-0"
+            style={{ display: activeMode === 'scheduled' ? 'block' : 'none' }}
+          >
+            {activeMode === 'scheduled' && <ScheduledTasksPanel projectId={projectId} />}
           </div>
         </div>
       </div>

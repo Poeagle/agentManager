@@ -16,11 +16,15 @@ import { getOrCreateTracker, removeTracker, recoverFromBuffer } from './session-
 import { encodeDir } from './claude-history.js';
 import { inaccessibleProjectPaths, isAdmin } from '../auth.js';
 import { tmuxCursorRestoreSequence } from '../lib/terminal-cursor.js';
+import { withAllPermissions } from './cli-command.js';
 import {
+  type CodexRolloutCandidate,
   cliTypeFromArgv,
+  codexRolloutCandidateFromPrefix,
   codexSessionIdFromOpenTargets,
   explicitClaudeSessionId,
   nativeConversationId,
+  selectCodexRolloutCandidate,
   selectClaudeSessionCandidate,
 } from './session-identity.js';
 
@@ -422,13 +426,6 @@ function ingestAllCodexSessionBindings(): void {
   } catch { /* non-fatal */ }
 }
 
-interface CodexRolloutIdentity {
-  id: string;
-  cwd: string;
-  startedAt: number;
-  firstPrompt: string;
-}
-
 function readFilePrefix(path: string, maxBytes = 512 * 1024): string {
   let fd: number | null = null;
   try {
@@ -443,7 +440,7 @@ function readFilePrefix(path: string, maxBytes = 512 * 1024): string {
   }
 }
 
-function collectCodexRollouts(dir: string, result: CodexRolloutIdentity[]): void {
+function collectCodexRollouts(dir: string, result: CodexRolloutCandidate[]): void {
   let entries: Dirent[];
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -459,20 +456,8 @@ function collectCodexRollouts(dir: string, result: CodexRolloutIdentity[]): void
     if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
     const idMatch = /([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.jsonl$/i.exec(entry.name);
     if (!idMatch) continue;
-    const prefix = readFilePrefix(path);
-    const timestampMatch = /"timestamp":"([^"]+)"/.exec(prefix);
-    const cwdMatch = /"cwd":("(?:\\.|[^"\\])*")/.exec(prefix);
-    if (!timestampMatch || !cwdMatch) continue;
-    let cwd = '';
-    let firstPrompt = '';
-    try { cwd = JSON.parse(cwdMatch[1]); } catch { continue; }
-    const promptMatch = /"type":"user_message","message":("(?:\\.|[^"\\])*")/.exec(prefix);
-    if (promptMatch) {
-      try { firstPrompt = JSON.parse(promptMatch[1]); } catch { /* optional */ }
-    }
-    const startedAt = Date.parse(timestampMatch[1]);
-    if (!cwd || !Number.isFinite(startedAt)) continue;
-    result.push({ id: idMatch[1], cwd, startedAt, firstPrompt });
+    const candidate = codexRolloutCandidateFromPrefix(readFilePrefix(path), idMatch[1]);
+    if (candidate) result.push(candidate);
   }
 }
 
@@ -482,19 +467,21 @@ function collectCodexRollouts(dir: string, result: CodexRolloutIdentity[]): void
  * ambiguous legacy session is deliberately left unbound instead of risking a
  * tab opening the wrong conversation.
  */
-function backfillLegacyCodexSessionIds(): void {
+function backfillLegacyCodexSessionIds(): Set<string> {
   const db = getDb();
   const unbound = db.prepare(`
     SELECT s.id, s.task, s.created_at, p.path AS project_path
     FROM sessions s JOIN projects p ON p.id = s.project_id
-    WHERE s.cli_type = 'codex' AND s.codex_session_id IS NULL
+    WHERE s.codex_session_id IS NULL
+      AND s.claude_session_id IS NULL
+      AND (s.cli_type = 'codex' OR s.task = 'Terminal')
   `).all() as Array<{ id: string; task: string; created_at: string; project_path: string }>;
-  if (unbound.length === 0) return;
+  if (unbound.length === 0) return new Set();
 
-  const rollouts: CodexRolloutIdentity[] = [];
+  const rollouts: CodexRolloutCandidate[] = [];
   const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
   collectCodexRollouts(join(codexHome, 'sessions'), rollouts);
-  if (rollouts.length === 0) return;
+  if (rollouts.length === 0) return new Set();
 
   const used = new Set(
     (db.prepare('SELECT codex_session_id FROM sessions WHERE codex_session_id IS NOT NULL').all() as Array<{ codex_session_id: string }>)
@@ -502,35 +489,38 @@ function backfillLegacyCodexSessionIds(): void {
   );
   let captured = 0;
   let ambiguous = 0;
+  const capturedIds = new Set<string>();
   for (const session of unbound) {
     const createdAt = Date.parse(`${session.created_at.replace(' ', 'T')}Z`);
     if (!Number.isFinite(createdAt)) continue;
-    let candidates = rollouts.filter((rollout) =>
-      !used.has(rollout.id)
-      && rollout.cwd === session.project_path
-      && Math.abs(rollout.startedAt - createdAt) <= 5 * 60 * 1000,
-    );
-    if (candidates.length > 1) {
-      const agentTask = session.task.startsWith('Agent (') && session.task.includes('): ')
+    const expectedPrompt = session.task === 'Terminal'
+      ? ''
+      : session.task.startsWith('Agent (') && session.task.includes('): ')
         ? session.task.slice(session.task.indexOf('): ') + 3)
         : session.task;
-      const byPrompt = candidates.filter((rollout) =>
-        !!agentTask && rollout.firstPrompt.includes(agentTask),
+    const nativeId = selectCodexRolloutCandidate(createdAt, session.project_path, rollouts, used, expectedPrompt);
+    if (!nativeId) {
+      const possibleMatches = rollouts.filter((rollout) =>
+        !used.has(rollout.id)
+        && rollout.cwd === session.project_path
+        && Math.abs(rollout.startedAt - createdAt) <= 5 * 60 * 1000,
       );
-      if (byPrompt.length === 1) candidates = byPrompt;
-    }
-    if (candidates.length !== 1) {
-      if (candidates.length > 1) ambiguous++;
+      if (possibleMatches.length > 1) ambiguous++;
       continue;
     }
-    const nativeId = candidates[0].id;
-    db.prepare('UPDATE sessions SET codex_session_id = ?, updated_at = datetime(\'now\') WHERE id = ? AND codex_session_id IS NULL')
+    db.prepare(`
+      UPDATE sessions SET cli_type = 'codex', codex_session_id = ?, claude_session_id = NULL,
+        updated_at = datetime('now')
+      WHERE id = ? AND codex_session_id IS NULL AND claude_session_id IS NULL
+    `)
       .run(nativeId, session.id);
     used.add(nativeId);
+    capturedIds.add(session.id);
     captured++;
   }
   if (captured > 0) console.log(`  Backfilled ${captured} legacy Codex conversation binding(s)`);
   if (ambiguous > 0) console.warn(`  Left ${ambiguous} legacy Codex session(s) unbound because multiple conversations matched`);
+  return capturedIds;
 }
 
 /** Poll briefly after launch so the mapping reaches SQLite immediately. */
@@ -557,6 +547,7 @@ interface DetectedCliIdentity {
 
 const terminalCliMonitorTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const terminalCliMonitorIdentities = new Map<string, DetectedCliIdentity>();
+const terminalCliRolloutScans = new Map<string, { pid: number; scannedAt: number }>();
 let clockTicksPerSecond: number | null = null;
 
 function procChildren(pid: number): number[] {
@@ -634,6 +625,45 @@ function processStartedAt(pid: number): number | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Fallback for Codex releases/process layouts that don't keep the rollout file
+ * open. Search only the launch day's nearby directories, then require a unique
+ * cwd + process-start match before binding the Terminal to a conversation.
+ */
+function codexIdFromProjectRollout(cliPid: number, projectPath: string, appSessionId: string): string | null {
+  const now = Date.now();
+  const previous = terminalCliRolloutScans.get(appSessionId);
+  if (previous?.pid === cliPid && now - previous.scannedAt < 2_000) return null;
+  terminalCliRolloutScans.set(appSessionId, { pid: cliPid, scannedAt: now });
+
+  const startedAt = processStartedAt(cliPid);
+  if (!startedAt) return null;
+  const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
+  const sessionRoot = join(codexHome, 'sessions');
+  const rollouts: CodexRolloutCandidate[] = [];
+  const visited = new Set<string>();
+  for (const offset of [-24 * 60 * 60 * 1000, 0, 24 * 60 * 60 * 1000]) {
+    const date = new Date(startedAt + offset);
+    const dir = join(
+      sessionRoot,
+      String(date.getUTCFullYear()),
+      String(date.getUTCMonth() + 1).padStart(2, '0'),
+      String(date.getUTCDate()).padStart(2, '0'),
+    );
+    if (visited.has(dir)) continue;
+    visited.add(dir);
+    collectCodexRollouts(dir, rollouts);
+  }
+  if (rollouts.length === 0) return null;
+  const used = new Set(
+    (getDb().prepare(`
+      SELECT codex_session_id FROM sessions
+      WHERE id != ? AND codex_session_id IS NOT NULL
+    `).all(appSessionId) as Array<{ codex_session_id: string }>).map((row) => row.codex_session_id),
+  );
+  return selectCodexRolloutCandidate(startedAt, projectPath, rollouts, used, '', 30_000);
 }
 
 function claudeIdFromProjectLog(cliPid: number, args: string[], projectPath: string, appSessionId: string): string | null {
@@ -759,7 +789,7 @@ async function inspectTerminalCli(sessionId: string, projectPath: string): Promi
   const previous = terminalCliMonitorIdentities.get(sessionId);
   if (previous?.pid === cli.pid && previous.cliType === cli.cliType) return;
   const nativeId = cli.cliType === 'codex'
-    ? codexIdFromOpenRollout(cli.pid)
+    ? codexIdFromOpenRollout(cli.pid) || codexIdFromProjectRollout(cli.pid, projectPath, sessionId)
     : claudeIdFromProjectLog(cli.pid, cli.args, projectPath, sessionId);
   if (!nativeId) return;
   const identity = { ...cli, nativeId };
@@ -772,6 +802,7 @@ function stopTerminalCliMonitor(sessionId: string): void {
   if (timer) clearTimeout(timer);
   terminalCliMonitorTimers.delete(sessionId);
   terminalCliMonitorIdentities.delete(sessionId);
+  terminalCliRolloutScans.delete(sessionId);
 }
 
 function startTerminalCliMonitor(sessionId: string, projectPath: string): void {
@@ -1472,6 +1503,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // Trackers that already have a dashboard-stream broadcast listener attached, so
 // reconnects (which reuse the same tracker) don't stack duplicate listeners.
 const broadcastWiredTrackers = new WeakSet<object>();
+const dashboardActivityBroadcasters = new WeakMap<object, (at: number) => void>();
 
 /**
  * Fork a PTY worker and wire up IPC message handlers.
@@ -1516,24 +1548,48 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
   if (!broadcastWiredTrackers.has(tracker)) {
     broadcastWiredTrackers.add(tracker);
     let projectId: string | null | undefined; // undefined = not yet resolved
-    tracker.onStateChange((state) => {
+    let lastActivityBroadcastAt = 0;
+    const resolveProjectId = () => {
       if (projectId === undefined) {
         try {
           projectId = (getDb().prepare('SELECT project_id FROM sessions WHERE id = ?').get(sessionId) as { project_id: string | null } | undefined)?.project_id ?? null;
         } catch { projectId = null; }
       }
-      if (!projectId) return; // skip until we can attribute it to a project (ownership filtering)
+      return projectId;
+    };
+    const broadcastActivity = (lastActivity: number) => {
+      const resolvedProjectId = resolveProjectId();
+      if (!resolvedProjectId) return;
+      if (lastActivity - lastActivityBroadcastAt < 5_000) return;
+      lastActivityBroadcastAt = lastActivity;
+      broadcastEphemeral({
+        type: 'session.activity',
+        session_id: sessionId,
+        project_id: resolvedProjectId,
+        data: { lastActivity },
+      });
+    };
+    tracker.onStateChange((state) => {
+      const resolvedProjectId = resolveProjectId();
+      if (!resolvedProjectId) return; // skip until we can attribute it to a project (ownership filtering)
       broadcastEphemeral({
         type: 'session.state',
         session_id: sessionId,
-        project_id: projectId,
+        project_id: resolvedProjectId,
         data: {
           processState: state.processState,
           promptType: state.promptType,
           isPermission: state.isPermission,
+          lastActivity: state.lastActivity,
         },
       });
+      lastActivityBroadcastAt = Math.max(lastActivityBroadcastAt, state.lastActivity);
     });
+
+    // Sustained output can remain in the same process state for minutes, so a
+    // state-change-only signal would leave the tab timestamp stale. The worker
+    // output handler below calls this throttled broadcaster for fresh output.
+    dashboardActivityBroadcasters.set(tracker, broadcastActivity);
   }
 
   // Resume seq counter from DB to avoid collisions after reconnect
@@ -1640,6 +1696,7 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
 
         if (msg.track) {
           tracker.onData(msg.data);
+          dashboardActivityBroadcasters.get(tracker)?.(tracker.state.lastActivity);
           if (!uuidPersisted && active.cliType !== 'codex' && tracker.claudeSessionId) {
             persistUuid(tracker.claudeSessionId);
           }
@@ -1865,6 +1922,15 @@ function assignClaudeSessionId(sessionId: string): string {
   return uuid;
 }
 
+/** Resolve the project opt-in for both fresh launches and native resumes. */
+function projectCliCommand(projectPath: string, settingKey: string, cliType: 'claude' | 'codex'): string {
+  const command = getSetting(settingKey) || cliType;
+  const project = getDb().prepare('SELECT skip_permissions FROM projects WHERE path = ?').get(projectPath) as
+    | { skip_permissions: number }
+    | undefined;
+  return withAllPermissions(command, cliType, !!project?.skip_permissions);
+}
+
 async function spawnSessionUnlocked(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
   if (activeSessions.has(sessionId)) return;
   const preSpawnFiles = cliType === 'claude' ? snapshotClaudeSessionFiles(projectPath) : undefined;
@@ -1877,15 +1943,11 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
   active.task = task;
   active.cliType = cliType;
 
-  let sessionCommand = cliType === 'codex'
-    ? getSetting('session_codex_command')
-    : getSetting('session_claude_command');
-
-  // Check per-project skip_permissions flag
-  const proj = getDb().prepare('SELECT skip_permissions FROM projects WHERE path = ?').get(projectPath) as { skip_permissions: number } | undefined;
-  if (proj?.skip_permissions && cliType === 'claude' && !sessionCommand.includes('--dangerously-skip-permissions')) {
-    sessionCommand += ' --dangerously-skip-permissions';
-  }
+  const sessionCommand = projectCliCommand(
+    projectPath,
+    cliType === 'codex' ? 'session_codex_command' : 'session_claude_command',
+    cliType,
+  );
 
   const assignSessionId = cliType === 'claude' ? assignClaudeSessionId(sessionId) : undefined;
   const bindingPath = cliType === 'codex' ? codexBindingPath(sessionId) : undefined;
@@ -1982,15 +2044,11 @@ async function spawnAgentUnlocked(sessionId: string, projectPath: string, task: 
   active.task = `Agent (${agentType}): ${task}`;
   active.cliType = cliType;
 
-  let sessionCommand = cliType === 'codex'
-    ? getSetting('agent_codex_command')
-    : getSetting('agent_claude_command');
-
-  // Check per-project skip_permissions flag
-  const proj = getDb().prepare('SELECT skip_permissions FROM projects WHERE path = ?').get(projectPath) as { skip_permissions: number } | undefined;
-  if (proj?.skip_permissions && cliType === 'claude' && !sessionCommand.includes('--dangerously-skip-permissions')) {
-    sessionCommand += ' --dangerously-skip-permissions';
-  }
+  const sessionCommand = projectCliCommand(
+    projectPath,
+    cliType === 'codex' ? 'agent_codex_command' : 'agent_claude_command',
+    cliType,
+  );
 
   const assignSessionId = cliType === 'claude' ? assignClaudeSessionId(sessionId) : undefined;
   const bindingPath = cliType === 'codex' ? codexBindingPath(sessionId) : undefined;
@@ -2203,6 +2261,14 @@ export const RESIZE_MARKER = '\x00RESIZE:';
  *  of chunks recorded at a different width produces garbled output. */
 type CaptureMode = 'screen' | 'history';
 
+/** Frame a tmux capture for xterm. A full recovery replaces scrollback;
+ * a routine screen repaint deliberately preserves it. */
+export function frameTmuxCapture(mode: CaptureMode, data: string): string {
+  return mode === 'history'
+    ? `\x1b[H\x1b[2J\x1b[3J${data}`
+    : `\x1b[H\x1b[2J${data}`;
+}
+
 export function sendReplay(sessionId: string, ws: WebSocket, preferCapture = false, captureMode: CaptureMode = 'history'): void {
   const active = activeSessions.get(sessionId);
   if (!active) return;
@@ -2214,10 +2280,11 @@ export function sendReplay(sessionId: string, ws: WebSocket, preferCapture = fal
     captureCache.delete(captureCacheKey(sessionId, captureMode));
     tlog(`[REPLAY] ${sessionId}: preferCapture — using tmux capture-pane`);
     requestCapture(sessionId, ws, captureMode).catch(() => {
-      // Capture failed — fall back to buffer replay
-      if (active.replayBuffer.length > 0) {
-        const data = '\x1b[H\x1b[2J\x1b[3J' + active.replayBuffer.join('');
-        sendTerminalOutput(ws, sessionId, data);
+      // A full recovery may fall back to the journal. A routine viewport
+      // repaint must leave the existing browser contents intact if capture
+      // fails; replaying a partial journal would erase valid scrollback.
+      if (captureMode === 'history' && active.replayBuffer.length > 0) {
+        sendTerminalOutput(ws, sessionId, frameTmuxCapture('history', active.replayBuffer.join('')));
       }
     });
     return;
@@ -2225,7 +2292,7 @@ export function sendReplay(sessionId: string, ws: WebSocket, preferCapture = fal
 
   if (active.replayBuffer.length > 0) {
     // Fast path: replay from in-memory buffer (instant, no tmux round-trip)
-    const data = '\x1b[H\x1b[2J\x1b[3J' + active.replayBuffer.join('');
+    const data = frameTmuxCapture('history', active.replayBuffer.join(''));
     tlog(`[REPLAY] ${sessionId}: from buffer (${active.replayBytes} bytes)`);
     sendTerminalOutput(ws, sessionId, data);
     return;
@@ -2288,7 +2355,7 @@ export function requestCapture(sessionId: string, ws: WebSocket, mode: CaptureMo
   const cached = captureCache.get(cacheKey);
   if (cached && (Date.now() - cached.ts) < CAPTURE_CACHE_TTL) {
     tlog(`[CAPTURE] ${sessionId}: from cache (${cached.data.length} bytes)`);
-    sendTerminalOutput(ws, sessionId, '\x1b[H\x1b[2J\x1b[3J' + cached.data);
+    sendTerminalOutput(ws, sessionId, frameTmuxCapture(mode, cached.data));
     return Promise.resolve();
   }
 
@@ -2357,7 +2424,7 @@ export function requestCapture(sessionId: string, ws: WebSocket, mode: CaptureMo
             active.replayBytes = restored.length;
           }
 
-          sendTerminalOutput(ws, sessionId, '\x1b[H\x1b[2J\x1b[3J' + restored);
+          sendTerminalOutput(ws, sessionId, frameTmuxCapture(mode, restored));
         }
       };
       finalizeCapture().catch((err) => {
@@ -2776,7 +2843,7 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
   // the server died. Ingest those durable files before deciding which stale
   // sessions are resumable.
   ingestAllCodexSessionBindings();
-  backfillLegacyCodexSessionIds();
+  const backfilledCodexSessions = backfillLegacyCodexSessionIds();
 
   if (config.useDtach || config.useTmux) {
     const stale = db.prepare(`
@@ -2818,7 +2885,8 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
         // Only sessions that were active before startup are crash-recovery
         // candidates. A normally completed/failed session must stay ended.
         if (
-          ['running', 'pending', 'detached'].includes(row.status)
+          (['running', 'pending', 'detached'].includes(row.status)
+            || (row.status === 'failed' && row.exit_code === -1 && backfilledCodexSessions.has(row.id)))
           && row.project_path
           && nativeConversationId(row)
         ) {
@@ -3114,9 +3182,11 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
   `).run(sessionId);
 
   active.cliType = sessionCliType;
-  const sessionCommand = sessionCliType === 'codex'
-    ? getSetting('session_codex_command')
-    : getSetting('session_claude_command');
+  const sessionCommand = projectCliCommand(
+    projectPath,
+    sessionCliType === 'codex' ? 'session_codex_command' : 'session_claude_command',
+    sessionCliType,
+  );
   worker.send({
     type: 'spawn',
     sessionId,
@@ -3242,7 +3312,7 @@ export async function resumeClaudeSession(projectPath: string, projectId: string
   active.cliType = 'claude';
   getOrCreateTracker(id);
 
-  const claudeCmd = getSetting('session_claude_command') || 'claude';
+  const claudeCmd = projectCliCommand(projectPath, 'session_claude_command', 'claude');
   // Pass the resume uuid via resumeSessionId (NOT baked into sessionCommand): the worker
   // builds `claude --resume <uuid>` with NO positional prompt, so the replayed
   // conversation waits for input instead of auto-submitting `task`.

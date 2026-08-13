@@ -26,6 +26,8 @@ import { agentRoutes } from './routes/agent.js';
 import { settingsRoutes } from './routes/settings.js';
 import { skillsRoutes } from './routes/skills.js';
 import { userStateRoutes } from './routes/user-state.js';
+import { scheduledTaskRoutes } from './routes/scheduled-tasks.js';
+import { startScheduledTaskScheduler, stopScheduledTaskScheduler } from './services/scheduled-task-runner.js';
 import {
   killAllSessions,
   cleanupStaleRunningSessions,
@@ -116,6 +118,7 @@ async function start() {
   // Watchdog: auto-fail sessions stuck in "pending" for >90s (e.g. browser closed
   // before WebSocket connected, or spawn command hangs on registry check/npm install)
   startPendingSessionWatchdog();
+  startScheduledTaskScheduler();
 
   // Plugins
   await app.register(cors, {
@@ -141,6 +144,7 @@ async function start() {
   await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(skillsRoutes, { prefix: '/api' });
   await app.register(userStateRoutes, { prefix: '/api' });
+  await app.register(scheduledTaskRoutes, { prefix: '/api' });
 
   // Open URL in the system browser (used by the dashboard's external-link handler)
   app.post('/api/open-url', async (req, reply) => {
@@ -414,6 +418,7 @@ async function shutdown(exitCode = 0): Promise<void> {
       recordFailure('PTY flush', new Error('queued terminal output could not be persisted after retries'));
     }
   } catch (error) { recordFailure('PTY flush', error); }
+  try { stopScheduledTaskScheduler(); } catch (error) { recordFailure('scheduler stop', error); }
   try { killAllSessions(); } catch (error) { recordFailure('session detach', error); }
   if (closeServer) await closeServer;
   try { getDb().pragma('wal_checkpoint(TRUNCATE)'); } catch (error) { recordFailure('database checkpoint', error); }

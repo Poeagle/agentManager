@@ -146,6 +146,17 @@ describe('terminal websocket handshake', () => {
     ]);
     expect(manager.attachTerminal).toHaveBeenCalledWith('session-1', expect.anything(), { skipReplay: true });
     expect(manager.sendReplay).toHaveBeenCalledWith('session-1', expect.anything(), true, 'history');
+
+    manager.sendReplay.mockClear();
+    client.socket.send(JSON.stringify({ type: 'refresh' }));
+    await vi.waitFor(() => expect(manager.sendReplay).toHaveBeenCalledWith(
+      'session-1', expect.anything(), true, 'screen',
+    ));
+    manager.sendReplay.mockClear();
+    client.socket.send(JSON.stringify({ type: 'refresh', history: true }));
+    await vi.waitFor(() => expect(manager.sendReplay).toHaveBeenCalledWith(
+      'session-1', expect.anything(), true, 'history',
+    ));
     client.socket.close();
     second.socket.close();
   });

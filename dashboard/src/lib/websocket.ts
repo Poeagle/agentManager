@@ -21,8 +21,10 @@ interface StreamState {
   // Live per-session process-state, pushed via the `session.state` stream message.
   // Drives the tab signal lights without polling or refetching the sessions list.
   liveStates: Record<string, LiveSessionState>;
+  activityAt: Record<string, number>;
   addEvent: (event: Event) => void;
   setLiveState: (sessionId: string, state: LiveSessionState) => void;
+  setActivity: (sessionId: string, at: number) => void;
   setConnected: (connected: boolean) => void;
   clearEvents: () => void;
 }
@@ -31,6 +33,7 @@ export const useStreamStore = create<StreamState>((set) => ({
   events: [],
   connected: false,
   liveStates: {},
+  activityAt: {},
   addEvent: (event) =>
     set((state) => ({
       events: [event, ...state.events].slice(0, 500), // Keep last 500
@@ -39,6 +42,10 @@ export const useStreamStore = create<StreamState>((set) => ({
     set((state) => ({
       liveStates: { ...state.liveStates, [sessionId]: live },
     })),
+  setActivity: (sessionId, at) =>
+    set((state) => (state.activityAt[sessionId] ?? 0) >= at
+      ? state
+      : { activityAt: { ...state.activityAt, [sessionId]: at } }),
   setConnected: (connected) => set({ connected }),
   clearEvents: () => set({ events: [] }),
 }));
@@ -116,8 +123,9 @@ export function connectStream() {
       // don't trigger a sessions refetch.
       if (event.type === 'session.state') {
         if (event.session_id) {
-          let d: { processState?: 'busy' | 'idle' | 'waiting_for_input'; promptType?: 'choice' | 'confirmation' | 'text' | null; isPermission?: boolean } = {};
+          let d: { processState?: 'busy' | 'idle' | 'waiting_for_input'; promptType?: 'choice' | 'confirmation' | 'text' | null; isPermission?: boolean; lastActivity?: number } = {};
           try { d = event.data ? JSON.parse(event.data) : {}; } catch { /* ignore malformed state payload */ }
+          if (Number.isFinite(d.lastActivity)) useStreamStore.getState().setActivity(event.session_id, Number(d.lastActivity));
           if (d.processState) {
             useStreamStore.getState().setLiveState(event.session_id, {
               processState: d.processState,
@@ -127,6 +135,15 @@ export function connectStream() {
             });
             queryClientRef?.invalidateQueries({ queryKey: ['admin-monitor'] });
           }
+        }
+        return;
+      }
+
+      if (event.type === 'session.activity') {
+        if (event.session_id) {
+          let d: { lastActivity?: number } = {};
+          try { d = event.data ? JSON.parse(event.data) : {}; } catch { /* ignore malformed activity payload */ }
+          if (Number.isFinite(d.lastActivity)) useStreamStore.getState().setActivity(event.session_id, Number(d.lastActivity));
         }
         return;
       }

@@ -41,6 +41,12 @@ function canAccessSessionById(userId: string, sessionId: string, mode: 'session'
   return userCanUseSessionTool(userId, sessionId, cliType, mode);
 }
 
+function sqliteUtcToIso(value: string | null | undefined): string | null {
+  if (!value) return null;
+  if (/Z$|[+-]\d\d:\d\d$/.test(value)) return value;
+  return `${value.replace(' ', 'T')}Z`;
+}
+
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
   // List sessions
   app.get<{
@@ -48,16 +54,33 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   }>('/sessions', async (req) => {
     const all = sessionManager.listSessionsForUser(req.user!.id, req.query.status);
     const owned = userProjectIds(req.user!.id);
-    const sessions = all
+    const visible = all
       .filter((s: any) => !s.project_id || owned.has(s.project_id))
-      .filter((s: any) => canAccessSessionByRow(req.user!.id, s))
+      .filter((s: any) => canAccessSessionByRow(req.user!.id, s));
+    const outputActivity = new Map<string, string>();
+    if (visible.length > 0) {
+      const placeholders = visible.map(() => '?').join(',');
+      const rows = getDb().prepare(`
+        SELECT session_id, MAX(created_at) AS last_activity_at
+        FROM pty_output
+        WHERE session_id IN (${placeholders})
+        GROUP BY session_id
+      `).all(...visible.map((session: any) => session.id)) as Array<{ session_id: string; last_activity_at: string }>;
+      for (const row of rows) outputActivity.set(row.session_id, row.last_activity_at);
+    }
+    const sessions = visible
       // Enrich with live process-state (busy/idle/waiting_for_input) so tab signal
       // lights are correct on first load, before any WS state_change arrives.
       .map((s: any) => {
         const st = getTracker(s.id)?.state;
-        return st
-          ? { ...s, processState: st.processState, promptType: st.promptType, isPermission: st.isPermission }
-          : s;
+        const lastActivityAt = st?.lastActivity
+          ? new Date(st.lastActivity).toISOString()
+          : sqliteUtcToIso(outputActivity.get(s.id) ?? s.updated_at ?? s.completed_at ?? s.started_at ?? s.created_at);
+        return {
+          ...s,
+          last_activity_at: lastActivityAt,
+          ...(st ? { processState: st.processState, promptType: st.promptType, isPermission: st.isPermission } : {}),
+        };
       });
     return { sessions };
   });
@@ -389,7 +412,12 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   }>('/sessions/:id', async (req, reply) => {
     const id = req.params.id;
     const session = sessionManager.getSession(id);
-    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
+    // Viewing and terminating are separate permissions. Administrators may
+    // inspect another user's session for monitoring, but closing a tab must
+    // never stop a process owned by that other user.
+    if (!session || session.created_by_user_id !== req.user!.id) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
     let killTimeout: ReturnType<typeof setTimeout> | null = null;
     try {
       const killed = await Promise.race([

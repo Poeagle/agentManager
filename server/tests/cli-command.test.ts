@@ -4,6 +4,7 @@ import {
   buildSessionCommand,
   codexIdentityFlags,
   shellSingleQuote,
+  withAllPermissions,
 } from '../src/services/cli-command.js';
 
 const SESSION_ID = '019f7f9d-6ad7-7110-8615-8410399fd932';
@@ -42,5 +43,12 @@ describe('CLI command construction', () => {
   it('quotes arbitrary shell values and omits hooks without a binding path', () => {
     expect(shellSingleQuote("a'b")).toBe("'a'\\''b'");
     expect(codexIdentityFlags()).toBe('');
+  });
+
+  it('applies explicit all-permissions mode to Claude and Codex exactly once', () => {
+    expect(withAllPermissions('claude', 'claude', true)).toBe('claude --dangerously-skip-permissions');
+    expect(withAllPermissions('codex', 'codex', true)).toBe('codex --dangerously-bypass-approvals-and-sandbox');
+    expect(withAllPermissions('codex --yolo', 'codex', true)).toBe('codex --yolo');
+    expect(withAllPermissions('claude', 'claude', false)).toBe('claude');
   });
 });

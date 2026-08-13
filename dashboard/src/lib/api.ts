@@ -164,6 +164,28 @@ export const api = {
         body: JSON.stringify(data),
       }),
   },
+  scheduledTasks: {
+    list: (projectId?: string) => {
+      const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+      return fetchJSON<{ tasks: ScheduledTask[] }>(`/scheduled-tasks${query}`);
+    },
+    create: (data: ScheduledTaskInput) =>
+      fetchJSON<{ ok: boolean; task: ScheduledTask }>('/scheduled-tasks', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: Partial<ScheduledTaskInput>) =>
+      fetchJSON<{ ok: boolean; task: ScheduledTask }>(`/scheduled-tasks/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) =>
+      fetchJSON<{ ok: boolean }>(`/scheduled-tasks/${id}`, { method: 'DELETE' }),
+    run: (id: string) =>
+      fetchJSON<{ ok: boolean; run: ScheduledTaskRun }>(`/scheduled-tasks/${id}/run`, { method: 'POST' }),
+    runs: (id: string) =>
+      fetchJSON<{ runs: ScheduledTaskRun[] }>(`/scheduled-tasks/${id}/runs`),
+  },
   projects: {
     list: () => fetchJSON<{ projects: Project[] }>('/projects'),
     create: (data: { name: string; path: string; description?: string; session_prompt?: string; openclaw_prompt?: string; default_web_url?: string; color?: string }) =>
@@ -413,13 +435,61 @@ export interface Session {
   completed_at: string | null;
   exit_code: number | null;
   created_at: string;
+  updated_at?: string;
+  last_activity_at?: string | null;
   cli_type?: 'claude' | 'codex';
+  mode?: 'session' | 'terminal' | 'agent';
+  agent_type?: string | null;
   claude_session_id?: string | null;
   codex_session_id?: string | null;
   // Live process-state (present when the session has an active in-memory tracker).
   processState?: 'busy' | 'idle' | 'waiting_for_input';
   promptType?: 'choice' | 'confirmation' | 'text' | null;
   isPermission?: boolean;
+}
+
+export type ScheduleKind = 'interval' | 'daily' | 'weekly' | 'cron';
+export type ScheduledTargetType = 'existing' | 'new';
+export type ScheduledNewMode = 'session' | 'agent' | 'terminal';
+
+export interface ScheduledTaskInput {
+  project_id: string;
+  name: string;
+  prompt: string;
+  schedule_kind: ScheduleKind;
+  schedule_value: string;
+  timezone: string;
+  target_type: ScheduledTargetType;
+  target_session_id?: string | null;
+  new_mode?: ScheduledNewMode | null;
+  new_cli_type?: 'claude' | 'codex' | null;
+  new_agent_type?: string | null;
+  inactive_policy?: 'resume' | 'fail';
+  enabled?: boolean;
+}
+
+export interface ScheduledTask extends Omit<ScheduledTaskInput, 'enabled'> {
+  id: string;
+  user_id: string;
+  enabled: number;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_status: 'success' | 'failed' | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScheduledTaskRun {
+  id: string;
+  task_id: string;
+  trigger: 'scheduled' | 'manual';
+  scheduled_for: string;
+  status: 'running' | 'success' | 'failed';
+  session_id: string | null;
+  error: string | null;
+  started_at: string;
+  completed_at: string | null;
 }
 
 export interface AdminMonitorSession {
@@ -536,6 +606,7 @@ export interface Project {
   skip_permissions: number;
   color: string;
   created_at: string;
+  updated_at?: string;
   tool_access?: ProjectToolPermissions;
 }
 

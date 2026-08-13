@@ -15,12 +15,21 @@ describe('terminal websocket protocol', () => {
       ok: true,
       message: { type: 'input', data: 'hello', paste: false },
     });
+    expect(parseTerminalClientMessage('{"type":"refresh"}')).toEqual({
+      ok: true,
+      message: { type: 'refresh', history: false },
+    });
+    expect(parseTerminalClientMessage('{"type":"refresh","history":true}')).toEqual({
+      ok: true,
+      message: { type: 'refresh', history: true },
+    });
 
     expect(parseTerminalClientMessage('raw terminal input')).toEqual({
       ok: false,
       error: 'Invalid terminal message',
     });
     expect(parseTerminalClientMessage('{"type":"input","data":1}').ok).toBe(false);
+    expect(parseTerminalClientMessage('{"type":"refresh","history":"yes"}').ok).toBe(false);
     expect(parseTerminalClientMessage('{"type":"unknown"}').ok).toBe(false);
   });
 

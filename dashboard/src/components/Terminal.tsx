@@ -190,7 +190,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       setTimeout(() => {
         if (w.readyState !== WebSocket.OPEN) return;
         term.reset();
-        w.send(JSON.stringify({ type: 'refresh' }));
+        w.send(JSON.stringify({ type: 'refresh', history: true }));
       }, 300);
       return;
     }
@@ -205,7 +205,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       setTimeout(() => {
         if (w.readyState !== WebSocket.OPEN) return;
         term.reset();
-        w.send(JSON.stringify({ type: 'refresh' }));
+        w.send(JSON.stringify({ type: 'refresh', history: true }));
       }, 150);
       return;
     }
@@ -473,7 +473,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           outputWasDropped = false;
           const socket = wsRef.current;
           if (socket?.readyState === WebSocket.OPEN && visibleRef.current) {
-            socket.send(JSON.stringify({ type: 'refresh' }));
+            socket.send(JSON.stringify({ type: 'refresh', history: true }));
           }
         }
         return;

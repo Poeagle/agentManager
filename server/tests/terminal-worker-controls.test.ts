@@ -12,6 +12,7 @@ import {
   commitPendingPtyInserts,
   boundTmuxPaneCapture,
   composeTmuxHistoryRecovery,
+  frameTmuxCapture,
   finalizeReplayThroughSeq,
   flushPendingPtyOutputWithRetry,
   PendingPtyInsertBuffer,
@@ -97,6 +98,12 @@ describe('terminal shutdown durability', () => {
       'old one\r\nold two\x1b[H\x1b[2Jcurrent<cursor>',
     );
     expect(composeTmuxHistoryRecovery('history\n', 'screen\n')).not.toContain('\x1b[3J');
+  });
+
+  it('preserves browser scrollback for routine screen refreshes', () => {
+    expect(frameTmuxCapture('screen', 'current')).toBe('\x1b[H\x1b[2Jcurrent');
+    expect(frameTmuxCapture('screen', 'current')).not.toContain('\x1b[3J');
+    expect(frameTmuxCapture('history', 'all history')).toBe('\x1b[H\x1b[2J\x1b[3Jall history');
   });
 
   it('detaches only sessions backed by tmux, dtach, or an external socket', () => {

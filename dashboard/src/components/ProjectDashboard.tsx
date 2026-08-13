@@ -1523,7 +1523,7 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
         {/* Project cards grid */}
         <div className="pb-6">
         <div className="mx-auto px-6" style={{ maxWidth: '82rem' }}>
-          {/* Skip permissions all toggle */}
+          {/* Allow all permissions for AI sessions in every project */}
           {isAdmin && projects.length > 0 && (
             <div className="flex items-center justify-end gap-3 mb-3">
               <label className="flex items-center gap-1.5 cursor-pointer select-none">
@@ -1539,7 +1539,7 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                   className="w-3 h-3 rounded accent-orange-500"
                 />
                 <span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>
-                  Skip permissions (all projects)
+                  Allow all permissions (all projects)
                 </span>
               </label>
             </div>
@@ -1641,11 +1641,11 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                       <GitInfoBadge projectPath={project.path} />
                     </div>
 
-                    {/* Skip permissions toggle */}
+                    {/* Full-access AI session toggle */}
                     {isAdmin && <label
                       className="flex items-center gap-1.5 cursor-pointer select-none"
                       onClick={(e) => e.stopPropagation()}
-                      title="Launch Claude sessions with --dangerously-skip-permissions (auto-approve all tool calls)"
+                      title="Launch and restore Claude/Codex sessions with full access and no approval prompts"
                     >
                       <input
                         type="checkbox"
@@ -1659,7 +1659,7 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                         className="w-3 h-3 rounded accent-orange-500"
                       />
                       <span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>
-                        Skip permissions
+                        Allow all permissions
                       </span>
                     </label>}
 

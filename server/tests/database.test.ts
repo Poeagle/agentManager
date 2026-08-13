@@ -25,7 +25,11 @@ describe('database schema and durable session identity', () => {
 
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
     expect(tables.map((table) => table.name)).toContain('user_ui_state');
-    expect(db.pragma('user_version', { simple: true })).toBe(2);
+    expect(tables.map((table) => table.name)).toEqual(expect.arrayContaining([
+      'scheduled_tasks',
+      'scheduled_task_runs',
+    ]));
+    expect(db.pragma('user_version', { simple: true })).toBe(4);
   });
 
   it('preserves legacy project prompt data while migrating', () => {
@@ -52,7 +56,7 @@ describe('database schema and durable session identity', () => {
     initDb();
     const migrated = getDb().prepare('SELECT session_prompt FROM projects WHERE id = ?').get('legacy') as { session_prompt: string };
     expect(migrated.session_prompt).toBe('keep this prompt');
-    expect(getDb().pragma('user_version', { simple: true })).toBe(2);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(4);
 
     cleanup = () => {
       closeDb();
@@ -76,5 +80,39 @@ describe('database schema and durable session identity', () => {
       cli_type: 'codex',
       codex_session_id: '019f7f9d-6ad7-7110-8615-8410399fd932',
     });
+  });
+
+  it('claims only legacy ownerless sessions belonging to an owned project', () => {
+    const database = createTestDatabase();
+    cleanup = database.cleanup;
+    const db = getDb();
+    db.prepare(`
+      INSERT INTO users (id, username, password_hash, display_name, role)
+      VALUES ('owner', 'owner', 'hash', 'Owner', 'admin'),
+             ('creator', 'creator', 'hash', 'Creator', 'member')
+    `).run();
+    db.prepare("INSERT INTO projects (id, name, path, owner_id) VALUES ('owned', 'Owned', '/tmp/owned', 'owner')").run();
+    db.prepare("INSERT INTO projects (id, name, path, owner_id) VALUES ('orphan', 'Orphan', '/tmp/orphan', NULL)").run();
+    db.prepare(`
+      INSERT INTO sessions (id, project_id, task, created_by_user_id)
+      VALUES ('legacy-owned', 'owned', 'Terminal', NULL),
+             ('explicit-creator', 'owned', 'Terminal', 'creator'),
+             ('legacy-orphan-project', 'orphan', 'Terminal', NULL),
+             ('legacy-no-project', NULL, 'Terminal', NULL)
+    `).run();
+    db.pragma('user_version = 2');
+    closeDb();
+
+    initDb();
+    const owners = Object.fromEntries((getDb().prepare(`
+      SELECT id, created_by_user_id FROM sessions ORDER BY id
+    `).all() as Array<{ id: string; created_by_user_id: string | null }>).map((row) => [row.id, row.created_by_user_id]));
+    expect(owners).toEqual({
+      'explicit-creator': 'creator',
+      'legacy-no-project': null,
+      'legacy-orphan-project': null,
+      'legacy-owned': 'owner',
+    });
+    expect(getDb().pragma('user_version', { simple: true })).toBe(4);
   });
 });

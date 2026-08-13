@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   cliTypeFromArgv,
+  codexRolloutCandidateFromPrefix,
   codexSessionIdFromOpenTargets,
   explicitClaudeSessionId,
   nativeConversationId,
+  selectCodexRolloutCandidate,
   selectClaudeSessionCandidate,
 } from '../src/services/session-identity.js';
 
@@ -43,6 +45,42 @@ describe('Codex rollout identity', () => {
       `/tmp/rollout-x-${CODEX_ID}.jsonl`,
       `/tmp/rollout-y-${other}.jsonl`,
     ])).toBeNull();
+  });
+
+  it('uses the session launch timestamp instead of a delayed outer event timestamp', () => {
+    const prefix = [
+      JSON.stringify({
+        timestamp: '2026-08-03T08:41:28.017Z',
+        type: 'session_meta',
+        payload: {
+          session_id: CODEX_ID,
+          timestamp: '2026-08-03T08:35:43.220Z',
+          cwd: '/workspace/project',
+        },
+      }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'Fix OPS-397' } }),
+    ].join('\n');
+    expect(codexRolloutCandidateFromPrefix(prefix, CODEX_ID)).toEqual({
+      id: CODEX_ID,
+      cwd: '/workspace/project',
+      startedAt: Date.parse('2026-08-03T08:35:43.220Z'),
+      firstPrompt: 'Fix OPS-397',
+    });
+  });
+
+  it('selects one unused rollout by project and launch time and refuses ambiguity', () => {
+    const startedAt = Date.parse('2026-08-03T08:35:39.000Z');
+    const other = '123e4567-e89b-12d3-a456-426614174000';
+    const candidates = [
+      { id: CODEX_ID, cwd: '/workspace/project', startedAt: startedAt + 4_000, firstPrompt: 'Fix OPS-397' },
+      { id: other, cwd: '/workspace/other', startedAt: startedAt + 2_000, firstPrompt: 'Other task' },
+    ];
+    expect(selectCodexRolloutCandidate(startedAt, '/workspace/project', candidates)).toBe(CODEX_ID);
+    expect(selectCodexRolloutCandidate(startedAt, '/workspace/project', [
+      ...candidates,
+      { id: other, cwd: '/workspace/project', startedAt: startedAt + 5_000, firstPrompt: 'Other task' },
+    ])).toBeNull();
+    expect(selectCodexRolloutCandidate(startedAt, '/workspace/project', candidates, new Set([CODEX_ID]))).toBeNull();
   });
 });
 

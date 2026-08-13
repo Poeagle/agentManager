@@ -66,7 +66,7 @@ export class PendingTerminalInputQueue {
 export type TerminalClientMessage =
   | { type: 'input'; data: string; paste: boolean }
   | { type: 'resize'; cols: number; rows: number }
-  | { type: 'refresh' }
+  | { type: 'refresh'; history: boolean }
   | { type: 'ping' };
 
 export type TerminalMessageParseResult =
@@ -93,7 +93,12 @@ export function parseTerminalClientMessage(raw: Buffer | string): TerminalMessag
 
   const msg = value as Record<string, unknown>;
   if (msg.type === 'ping') return { ok: true, message: { type: 'ping' } };
-  if (msg.type === 'refresh') return { ok: true, message: { type: 'refresh' } };
+  if (msg.type === 'refresh') {
+    if (msg.history !== undefined && typeof msg.history !== 'boolean') {
+      return { ok: false, error: 'Invalid refresh history flag' };
+    }
+    return { ok: true, message: { type: 'refresh', history: msg.history === true } };
+  }
   if (msg.type === 'resize') {
     if (!isValidTerminalDimensions(msg.cols, msg.rows)) {
       return { ok: false, error: 'Invalid terminal dimensions' };
@@ -359,7 +364,10 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
       if (!attached) {
         protocolError(socket, 'Initial terminal resize is required');
       } else if (msg.type === 'refresh') {
-        sendReplay(sessionId, socket, true);
+        // Routine tab/display refreshes repaint only the viewport so the
+        // browser's existing scrollback survives. Full history replacement is
+        // reserved for explicit recovery after a local reset or dropped data.
+        sendReplay(sessionId, socket, true, msg.history ? 'history' : 'screen');
       }
     });
 

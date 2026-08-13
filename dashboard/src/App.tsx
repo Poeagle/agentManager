@@ -11,6 +11,7 @@ import { CloseTabModal } from './components/CloseTabModal';
 import { installShortcutDispatcher, useShortcut, useShortcutStore, markKeyboardNav } from './lib/shortcuts';
 import { applyTheme } from './lib/themes';
 import { ProjectRollupDot } from './lib/session-signal';
+import { ProjectActivityAge } from './lib/session-activity';
 import { ExportTransferOverlay } from './components/ExportTransferOverlay';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -541,6 +542,8 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         {projectTabs.map((tab) => {
           const tabId = `project-${tab.projectId}`;
           const isActive = activeTab === tabId;
+          const tabSessions = sessions.filter((session) => session.project_id === tab.projectId);
+          const project = projects.find((candidate) => candidate.id === tab.projectId);
 
           return (
             <div
@@ -549,7 +552,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
               style={{ background: isActive ? 'var(--bg-tertiary)' : 'transparent' }}
             >
               <ProjectRollupDot
-                sessions={sessions.filter((s) => s.project_id === tab.projectId)}
+                sessions={tabSessions}
                 active={isActive}
                 size={6}
               />
@@ -583,6 +586,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                 >
                   <FolderOpen className="w-3 h-3 shrink-0" style={{ color: 'var(--accent)' }} />
                   <span className="truncate">{tab.customName?.trim() || tab.projectName}</span>
+                  <ProjectActivityAge sessions={tabSessions} fallbackAt={project?.updated_at ?? project?.created_at} />
                 </button>
               )}
               <button
