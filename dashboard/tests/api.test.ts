@@ -42,4 +42,15 @@ describe('dashboard API client', () => {
     })));
     await expect(api.sessions.resume('missing')).rejects.toThrow('No native conversation');
   });
+
+  it('reads the global Codex quota without tying it to a project or tab type', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      quota: { remainingPercent: 65 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.codexQuota.read();
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/codex-quota', expect.objectContaining({ headers: {} }));
+  });
 });

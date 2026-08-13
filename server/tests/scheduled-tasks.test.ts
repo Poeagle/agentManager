@@ -112,6 +112,12 @@ describe('scheduled task API', () => {
   });
 
   it('returns the live Codex weekly quota and rejects quota guards for Claude targets', async () => {
+    const globalResponse = await app.inject({
+      method: 'GET', url: '/api/codex-quota', headers: { cookie },
+    });
+    expect(globalResponse.statusCode).toBe(200);
+    expect(globalResponse.json().quota).toMatchObject({ remainingPercent: 65, windowDurationMins: 10_080 });
+
     const response = await app.inject({
       method: 'GET', url: '/api/scheduled-tasks/codex-quota?project_id=project-1', headers: { cookie },
     });

@@ -188,6 +188,9 @@ export const api = {
     codexQuota: (projectId: string) =>
       fetchJSON<{ quota: CodexWeeklyQuota }>(`/scheduled-tasks/codex-quota?project_id=${encodeURIComponent(projectId)}`),
   },
+  codexQuota: {
+    read: () => fetchJSON<{ quota: CodexWeeklyQuota }>('/codex-quota'),
+  },
   projects: {
     list: () => fetchJSON<{ projects: Project[] }>('/projects'),
     create: (data: { name: string; path: string; description?: string; session_prompt?: string; openclaw_prompt?: string; default_web_url?: string; color?: string }) =>

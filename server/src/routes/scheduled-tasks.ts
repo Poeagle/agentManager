@@ -164,6 +164,14 @@ function validateInput(userId: string, input: ScheduledTaskInput): string | null
 }
 
 export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
+  app.get('/codex-quota', async (_req, reply) => {
+    try {
+      return { quota: await readCodexWeeklyQuota() };
+    } catch (error) {
+      return reply.status(503).send({ error: error instanceof Error ? error.message : 'Codex 周额度不可用' });
+    }
+  });
+
   app.get<{ Querystring: { project_id?: string } }>('/scheduled-tasks/codex-quota', async (req, reply) => {
     const projectId = req.query.project_id;
     if (!projectId || !userOwnsProject(req.user!.id, projectId)) {

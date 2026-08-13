@@ -14,6 +14,7 @@ import { ProjectRollupDot } from './lib/session-signal';
 import { ProjectActivityAge } from './lib/session-activity';
 import { ExportTransferOverlay } from './components/ExportTransferOverlay';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { CodexQuotaIndicator } from './components/CodexQuotaIndicator';
 
 const AccountModal = lazy(() => import('./components/AccountModal').then((module) => ({ default: module.AccountModal })));
 const ProjectView = lazy(() => import('./components/ProjectView').then((module) => ({ default: module.ProjectView })));
@@ -412,6 +413,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           </h1>
         </div>
         <div className="flex items-center gap-3">
+          <CodexQuotaIndicator />
           {authUser.role === 'admin' && (
             <button
               onClick={() => {

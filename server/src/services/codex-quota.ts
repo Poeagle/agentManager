@@ -22,7 +22,9 @@ export interface CodexWeeklyQuota {
   checkedAt: string;
 }
 
-const CACHE_MS = 30_000;
+// The global header polls every five seconds. Keep one shared snapshot for that
+// interval so multiple open browsers do not each spawn a Codex app-server.
+const CACHE_MS = 5_000;
 const REQUEST_TIMEOUT_MS = 10_000;
 let cached: { value: CodexWeeklyQuota; expiresAt: number } | null = null;
 let pending: Promise<CodexWeeklyQuota> | null = null;
