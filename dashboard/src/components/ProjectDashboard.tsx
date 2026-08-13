@@ -33,12 +33,9 @@ import {
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { ConfirmModal } from './ConfirmModal';
 import { StatuslinePromptModal } from './StatuslinePromptModal';
-import { useShortcut } from '../lib/shortcuts';
 
 interface ProjectDashboardProps {
   onOpenProject: (projectId: string, projectName: string, quickLaunch?: 'session' | 'agent' | 'terminal', cliType?: 'claude' | 'codex') => void;
-  active?: boolean;
-  onSelectedProjectChange?: (projectId: string | null) => void;
 }
 
 type ViewState = { mode: 'list' } | { mode: 'add' } | { mode: 'edit'; project: Project };
@@ -1244,11 +1241,9 @@ function CreateRepoModal({ projectPath, onClose, onCreated }: {
   );
 }
 
-export function ProjectDashboard({ onOpenProject, active = true, onSelectedProjectChange }: ProjectDashboardProps) {
+export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
   const [view, setView] = useState<ViewState>({ mode: 'list' });
   const queryClient = useQueryClient();
-  const [selectedCardIndexState, setSelectedCardIndex] = useState<number | null>(null);
-  const selectedCardRef = useRef<HTMLDivElement | null>(null);
   const { data: authStatus } = useQuery({ queryKey: ['auth-status'], queryFn: () => api.auth.status(), staleTime: 60_000 });
   const isAdmin = authStatus?.user?.role === 'admin';
 
@@ -1287,79 +1282,6 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
         (p.description && p.description.toLowerCase().includes(q))
     );
   }, [allProjects, searchQuery]);
-  const selectedCardIndex = selectedCardIndexState === null || projects.length === 0
-    ? null
-    : Math.min(selectedCardIndexState, projects.length - 1);
-
-  // Keyboard card navigation — only active when this page is visible and not
-  // in add/edit view. Arrow keys move selection; Enter opens the selected
-  // card. Selection is null initially; first arrow press picks card 0.
-  const cardsActive = active && view.mode === 'list';
-  useShortcut('home.nextCard', () => {
-    if (projects.length === 0) return;
-    setSelectedCardIndex((prev) => {
-      if (prev === null) return 0;
-      return (prev + 1) % projects.length;
-    });
-  }, cardsActive);
-  useShortcut('home.prevCard', () => {
-    if (projects.length === 0) return;
-    setSelectedCardIndex((prev) => {
-      if (prev === null) return projects.length - 1;
-      return (prev - 1 + projects.length) % projects.length;
-    });
-  }, cardsActive);
-  useShortcut('home.openSelectedCard', () => {
-    if (selectedCardIndex === null) return;
-    const p = projects[selectedCardIndex];
-    if (p) onOpenProject(p.id, p.name);
-  }, cardsActive);
-
-  // Row navigation — measure the grid's column count at runtime (responsive
-  // breakpoints: 1 / 2 / 3 / 4 cols) and jump by that many cards.
-  const getColumnCount = useCallback((): number => {
-    const cards = Array.from(document.querySelectorAll<HTMLElement>('[data-project-card]'));
-    if (cards.length <= 1) return 1;
-    const firstTop = cards[0].offsetTop;
-    let count = 0;
-    for (const c of cards) {
-      if (c.offsetTop !== firstTop) break;
-      count++;
-    }
-    return Math.max(1, count);
-  }, []);
-  useShortcut('home.nextRowCard', () => {
-    if (projects.length === 0) return;
-    const cols = getColumnCount();
-    setSelectedCardIndex((prev) => {
-      const cur = prev ?? -cols;
-      return Math.min(cur + cols, projects.length - 1);
-    });
-  }, cardsActive);
-  useShortcut('home.prevRowCard', () => {
-    if (projects.length === 0) return;
-    const cols = getColumnCount();
-    setSelectedCardIndex((prev) => {
-      const cur = prev ?? projects.length;
-      return Math.max(cur - cols, 0);
-    });
-  }, cardsActive);
-
-  // Scroll the selected card into view when it changes via keyboard.
-  useEffect(() => {
-    if (selectedCardRef.current) {
-      selectedCardRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }
-  }, [selectedCardIndex]);
-
-  // Expose the currently-selected project to the parent so launch shortcuts
-  // (Alt+Shift+K / X, Ctrl+Shift+T) can target it when we're on the home page.
-  useEffect(() => {
-    if (!onSelectedProjectChange) return;
-    const id = selectedCardIndex !== null ? projects[selectedCardIndex]?.id ?? null : null;
-    onSelectedProjectChange(id);
-  }, [selectedCardIndex, projects, onSelectedProjectChange]);
-
   // Statusline prompt — ask once if user wants to install custom status bar
   const { data: settingsData } = useQuery({
     queryKey: ['settings'],
@@ -1523,27 +1445,6 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
         {/* Project cards grid */}
         <div className="pb-6">
         <div className="mx-auto px-6" style={{ maxWidth: '82rem' }}>
-          {/* Allow all permissions for AI sessions in every project */}
-          {isAdmin && projects.length > 0 && (
-            <div className="flex items-center justify-end gap-3 mb-3">
-              <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={projects.length > 0 && projects.every(p => !!p.skip_permissions)}
-                  onChange={async (e) => {
-                    try {
-                      await api.projects.setSkipPermissionsAll(e.target.checked);
-                      queryClient.invalidateQueries({ queryKey: ['projects'] });
-                    } catch { /* ignore */ }
-                  }}
-                  className="w-3 h-3 rounded accent-orange-500"
-                />
-                <span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>
-                  Allow all permissions (all projects)
-                </span>
-              </label>
-            </div>
-          )}
         </div>
         <div className="mx-auto px-6" style={{ maxWidth: '82rem' }}>
         {loadingProjects ? (
@@ -1580,20 +1481,16 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                     <div className="flex-1 h-px ml-2" style={{ background: 'var(--border)' }} />
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                    {projects.map((project, idx) => {
-              const isSelected = selectedCardIndex === idx;
+                    {projects.map((project) => {
               const access = project.tool_access || { can_session: true, can_agent: true, can_terminal: true, can_claude: true, can_codex: true };
 
               return (
                 <div
                   key={project.id}
-                  ref={isSelected ? selectedCardRef : undefined}
-                  data-project-card={idx}
                   className="rounded-xl border flex flex-col group hover:border-[var(--accent)] transition-colors overflow-hidden cursor-pointer"
                   style={{
                     background: 'var(--bg-secondary)',
-                    borderColor: isSelected ? 'var(--accent)' : 'var(--border)',
-                    boxShadow: isSelected ? '0 0 0 2px var(--accent)' : undefined,
+                    borderColor: 'var(--border)',
                   }}
                   onClick={() => onOpenProject(project.id, project.name)}
                 >
@@ -1640,28 +1537,6 @@ export function ProjectDashboard({ onOpenProject, active = true, onSelectedProje
                     <div onClick={(e) => e.stopPropagation()}>
                       <GitInfoBadge projectPath={project.path} />
                     </div>
-
-                    {/* Full-access AI session toggle */}
-                    {isAdmin && <label
-                      className="flex items-center gap-1.5 cursor-pointer select-none"
-                      onClick={(e) => e.stopPropagation()}
-                      title="Launch and restore Claude/Codex sessions with full access and no approval prompts"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={!!project.skip_permissions}
-                        onChange={async (e) => {
-                          try {
-                            await api.projects.update(project.id, { skip_permissions: e.target.checked ? 1 : 0 });
-                            queryClient.invalidateQueries({ queryKey: ['projects'] });
-                          } catch { /* ignore */ }
-                        }}
-                        className="w-3 h-3 rounded accent-orange-500"
-                      />
-                      <span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>
-                        Allow all permissions
-                      </span>
-                    </label>}
 
                     {/* Row 1: Launch buttons — dual icons, type-colored, stretched */}
                     <div className="grid grid-cols-5 gap-1 mt-auto pt-1" onClick={(e) => e.stopPropagation()}>

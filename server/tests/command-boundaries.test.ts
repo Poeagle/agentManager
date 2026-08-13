@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { execFileSync } from 'child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { authHook, createSession, createUser, userOwnsFilesystemPath } from '../src/auth.js';
@@ -15,8 +15,6 @@ let ownerCookie: string;
 let memberCookie: string;
 let projectPath: string;
 let markerPath: string;
-let originalPath: string | undefined;
-let originalCodeLog: string | undefined;
 
 beforeEach(async () => {
   const database = createTestDatabase();
@@ -35,8 +33,6 @@ beforeEach(async () => {
 
   markerPath = join(process.cwd(), `agentmanager-command-injection-${process.pid}`);
   rmSync(markerPath, { force: true });
-  originalPath = process.env.PATH;
-  originalCodeLog = process.env.AGENTMANAGER_TEST_CODE_LOG;
   app = Fastify({ logger: false });
   app.addHook('onRequest', authHook);
   await app.register(fileRoutes, { prefix: '/api' });
@@ -44,9 +40,6 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  process.env.PATH = originalPath;
-  if (originalCodeLog === undefined) delete process.env.AGENTMANAGER_TEST_CODE_LOG;
-  else process.env.AGENTMANAGER_TEST_CODE_LOG = originalCodeLog;
   rmSync(markerPath, { force: true });
   await app.close();
   cleanup();
@@ -64,7 +57,7 @@ describe('command execution boundaries', () => {
     expect(userOwnsFilesystemPath(member.id, join(nested, 'secret.txt'))).toBe(false);
   });
 
-  it('passes malicious filenames to diff and VS Code as literal argv values', async () => {
+  it('passes malicious filenames to diff as literal argv values', async () => {
     const markerName = markerPath.split('/').pop()!;
     const maliciousPath = join(projectPath, `probe-$(touch ${markerName}).txt`);
     writeFileSync(maliciousPath, 'changed\n');
@@ -82,21 +75,6 @@ describe('command execution boundaries', () => {
     });
     expect(deniedCreate.statusCode).toBe(403);
 
-    const fakeBin = join(projectPath, 'fake-bin');
-    const codeLog = join(projectPath, 'code-argv.txt');
-    mkdirSync(fakeBin);
-    writeFileSync(join(fakeBin, 'code'), '#!/bin/sh\nprintf %s "$1" > "$AGENTMANAGER_TEST_CODE_LOG"\n');
-    chmodSync(join(fakeBin, 'code'), 0o755);
-    process.env.PATH = `${fakeBin}:${originalPath || ''}`;
-    process.env.AGENTMANAGER_TEST_CODE_LOG = codeLog;
-
-    const opened = await app.inject({
-      method: 'POST', url: '/api/open-vscode', headers: { cookie: ownerCookie },
-      payload: { path: maliciousPath },
-    });
-    expect(opened.statusCode).toBe(200);
-    expect(readFileSync(codeLog, 'utf8')).toBe(maliciousPath);
-    expect(existsSync(markerPath)).toBe(false);
   });
 
   it('disables repository hooks for server-side git commits', async () => {

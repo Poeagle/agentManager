@@ -39,7 +39,6 @@ function createCurrentSchema(): void {
       default_web_url TEXT,
       color TEXT DEFAULT '',
       owner_id TEXT REFERENCES users(id),
-      skip_permissions INTEGER DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -228,7 +227,6 @@ function migrateLegacySchema(): void {
   addColumn('projects', 'default_web_url', 'TEXT');
   addColumn('projects', 'color', "TEXT DEFAULT ''");
   addColumn('projects', 'owner_id', 'TEXT REFERENCES users(id)');
-  addColumn('projects', 'skip_permissions', 'INTEGER DEFAULT 0');
   addColumn('events', 'project_id', 'TEXT REFERENCES projects(id)');
 
   // Copy legacy prompt values instead of renaming columns in an order that can

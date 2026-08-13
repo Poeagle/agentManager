@@ -18,7 +18,6 @@ export interface Project {
   session_prompt: string | null;
   openclaw_prompt: string | null;
   default_web_url: string | null;
-  skip_permissions: number;
   color: string;
   owner_id: string | null;
   created_at: string;
@@ -265,7 +264,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
   // Update project
   app.patch<{
     Params: { id: string };
-    Body: { name?: string; description?: string; session_prompt?: string | null; openclaw_prompt?: string | null; default_web_url?: string | null; skip_permissions?: number; color?: string };
+    Body: { name?: string; description?: string; session_prompt?: string | null; openclaw_prompt?: string | null; default_web_url?: string | null; color?: string };
   }>('/projects/:id', async (req, reply) => {
     const db = getDb();
     const existing = findProjectById(db, req.params.id);
@@ -281,7 +280,6 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     if (req.body.session_prompt !== undefined) { updates.push('session_prompt = ?'); params.push(req.body.session_prompt); }
     if (req.body.openclaw_prompt !== undefined) { updates.push('openclaw_prompt = ?'); params.push(req.body.openclaw_prompt); }
     if (req.body.default_web_url !== undefined) { updates.push('default_web_url = ?'); params.push(req.body.default_web_url); }
-    if (req.body.skip_permissions !== undefined) { updates.push('skip_permissions = ?'); params.push(req.body.skip_permissions ? 1 : 0); }
     if (req.body.color !== undefined) { updates.push('color = ?'); params.push(req.body.color); }
 
     if (updates.length === 0) return reply.status(400).send({ error: 'Nothing to update' });
@@ -328,17 +326,6 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
 
     await exportToConfig();
     return { ok: true };
-  });
-
-  // Set skip_permissions for all projects at once
-  app.put<{
-    Body: { skip_permissions: boolean };
-  }>('/projects/skip-permissions-all', async (req, reply) => {
-    const db = getDb();
-    if (!isAdminUser(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
-    const val = req.body.skip_permissions ? 1 : 0;
-    const result = db.prepare('UPDATE projects SET skip_permissions = ?, updated_at = datetime(\'now\')').run(val);
-    return { ok: true, updated: result.changes };
   });
 
   // List available agent types for a project (reads .claude/agents/*.md from project + global)

@@ -26,7 +26,6 @@ const project: Project = {
   session_prompt: null,
   openclaw_prompt: null,
   default_web_url: null,
-  skip_permissions: 0,
   color: '#3b82f6',
   created_at: '2026-07-31T00:00:00Z',
   tool_access: {

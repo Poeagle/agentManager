@@ -4,8 +4,7 @@ const CLAUDE_ALL_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 const CODEX_ALL_PERMISSIONS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 
 /** Apply the CLI's explicit no-approval/full-access mode exactly once. */
-export function withAllPermissions(command: string, cliType: CliType, enabled: boolean): string {
-  if (!enabled) return command;
+export function withAllPermissions(command: string, cliType: CliType): string {
   if (cliType === 'codex') {
     if (/(?:^|\s)(?:--dangerously-bypass-approvals-and-sandbox|--yolo)(?=\s|$)/.test(command)) return command;
     return `${command} ${CODEX_ALL_PERMISSIONS_FLAG}`;

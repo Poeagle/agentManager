@@ -3,7 +3,7 @@ import { readdir, stat, lstat, readFile, writeFile, rm, rename, cp } from 'fs/pr
 import { createReadStream } from 'fs';
 import { join, resolve, extname, dirname, basename } from 'path';
 import { execFile } from 'child_process';
-import { isAdmin, userOwnsFilesystemPath } from '../auth.js';
+import { userOwnsFilesystemPath } from '../auth.js';
 import { createDirectoryExport } from '../services/file-export-process.js';
 
 interface FileEntry {
@@ -397,25 +397,4 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  // Open VS Code at a given path
-  app.post<{
-    Body: { path: string };
-  }>('/open-vscode', async (req, reply) => {
-    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
-    const { path } = req.body;
-    if (!path) return reply.status(400).send({ error: 'path is required' });
-
-    const resolved = resolve(path);
-
-    return new Promise((resolvePromise) => {
-      execFile('code', [resolved], (err) => {
-        if (err) {
-          reply.status(500).send({ error: 'Failed to open VS Code', details: err.message });
-        } else {
-          reply.send({ ok: true, path: resolved });
-        }
-        resolvePromise(undefined);
-      });
-    });
-  });
 };

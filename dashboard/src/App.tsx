@@ -8,7 +8,6 @@ import { confirmDiscardProject } from './lib/unsaved-files';
 import { X, LayoutGrid, FolderOpen, Activity, Settings, ArrowUpCircle, LogOut, Users, Plus } from 'lucide-react';
 import { AgentGuideButton } from './components/AgentGuide';
 import { CloseTabModal } from './components/CloseTabModal';
-import { installShortcutDispatcher, useShortcut, useShortcutStore, markKeyboardNav } from './lib/shortcuts';
 import { applyTheme } from './lib/themes';
 import { ProjectRollupDot } from './lib/session-signal';
 import { ProjectActivityAge } from './lib/session-activity';
@@ -111,18 +110,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     }
     // Apply the saved UI theme (falls back to the default for unknown/empty)
     applyTheme(appSettings?.settings?.app_theme);
-    // Hydrate shortcut bindings as soon as settings arrive
-    const bindingsRaw = appSettings?.settings?.shortcut_bindings;
-    if (bindingsRaw !== undefined) {
-      useShortcutStore.getState().hydrate(bindingsRaw);
-    }
   }, [appSettings]);
-
-  // Install the global keydown dispatcher once
-  useEffect(() => {
-    const uninstall = installShortcutDispatcher();
-    return () => uninstall();
-  }, []);
 
   const queryClient = useQueryClient();
 
@@ -245,36 +233,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     return () => clearTimeout(h);
   }, [serverHydrated, projectTabs, activeTab]);
 
-  // Tab navigation shortcuts — cycle across 'home' + open project tabs.
-  // markKeyboardNav() raises a short-lived flag so the newly visible
-  // terminal doesn't auto-focus (which would trap the user). Click-to-switch
-  // doesn't set the flag, so clicks keep the current focus-terminal behavior.
-  const cycleTab = useCallback((delta: number) => {
-    const order: string[] = ['home', ...projectTabs.map((t) => `project-${t.projectId}`)];
-    if (order.length <= 1) return;
-    const idx = order.indexOf(activeTab);
-    const next = order[((idx === -1 ? 0 : idx) + delta + order.length) % order.length];
-    markKeyboardNav();
-    // Blur whatever has focus (usually the terminal helper textarea) so focus
-    // doesn't stay "inside" the previous tab after we switch.
-    (document.activeElement as HTMLElement | null)?.blur?.();
-    setActiveTab(next);
-  }, [activeTab, projectTabs]);
-
-  useShortcut('nav.nextTab', () => cycleTab(1));
-  useShortcut('nav.prevTab', () => cycleTab(-1));
-  useShortcut('nav.goHome', () => setActiveTab('home'));
-
-  // Launch shortcuts — resolve "current project" as (a) the active project
-  // tab, or (b) the selected card on the home page. ProjectDashboard reports
-  // its current selection via onSelectedProjectChange into the ref.
-  const homeSelectedProjectIdRef = useRef<string | null>(null);
-  const resolveCurrentProjectId = useCallback((): string | null => {
-    if (activeTab.startsWith('project-')) return activeTab.slice('project-'.length);
-    if (activeTab === 'home') return homeSelectedProjectIdRef.current;
-    return null;
-  }, [activeTab]);
-
   const handleOpenProject = useCallback((
     projectId: string,
     projectName: string,
@@ -297,24 +255,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       setFocusSessionId(`__voice_create_${quickLaunch}${suffix}`);
     }
   }, [projects]);
-
-  const launchForCurrent = useCallback((quickLaunch: 'session' | 'terminal', cliType?: 'claude' | 'codex') => {
-    const pid = resolveCurrentProjectId();
-    if (!pid) return;
-    const project = projects.find((p) => p.id === pid);
-    if (!project) return;
-    handleOpenProject(pid, project.name, quickLaunch, cliType);
-  }, [handleOpenProject, projects, resolveCurrentProjectId]);
-  useShortcut('session.launchClaude', () => launchForCurrent('session', 'claude'));
-  useShortcut('session.launchCodex', () => launchForCurrent('session', 'codex'));
-  useShortcut('session.launchTerminal', () => launchForCurrent('terminal'));
-
-  // Release focus from any input/terminal — gives users a way to "escape" the
-  // terminal input back to a no-focus state. Unbound by default.
-  useShortcut('nav.blurInput', () => {
-    const el = document.activeElement as HTMLElement | null;
-    if (el && typeof el.blur === 'function') el.blur();
-  });
 
   const [confirmClose, setConfirmClose] = useState<{ projectId: string; count: number } | null>(null);
 
@@ -643,8 +583,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
             <Suspense fallback={<div className="h-full" style={{ background: 'var(--bg-primary)' }} />}>
               <ProjectDashboard
                 onOpenProject={handleOpenProject}
-                active={activeTab === 'home' && !showAdminMonitor}
-                onSelectedProjectChange={(id) => { homeSelectedProjectIdRef.current = id; }}
               />
             </Suspense>
           </ErrorBoundary>

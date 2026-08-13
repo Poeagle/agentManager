@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Monitor, FolderTree, Code2, GitBranch, Home, Plus, X, Download, LayoutGrid, Maximize2, Minimize2, ExternalLink, Globe, Zap, Bot, TerminalSquare, Columns3, Rows3, ChevronDown, History, Sparkles, CalendarClock } from 'lucide-react';
+import { Monitor, FolderTree, GitBranch, Home, Plus, X, Download, Globe, Zap, Bot, TerminalSquare, History, Sparkles, CalendarClock } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { Terminal } from './Terminal';
 import { FileExplorer, type FileRefreshRequest } from './FileExplorer';
@@ -14,7 +14,6 @@ import { SessionHistoryPanel } from './SessionHistoryPanel';
 import { HistoryViewer } from './HistoryViewer';
 import { ProjectSkillsPanel } from './ProjectSkillsPanel';
 import { ScheduledTasksPanel } from './ScheduledTasksPanel';
-import { useShortcut, markKeyboardNav } from '../lib/shortcuts';
 import { LiveSessionSignalDot } from '../lib/session-signal';
 import { SessionActivityAge } from '../lib/session-activity';
 import {
@@ -36,7 +35,6 @@ interface ProjectViewProps {
   focusSessionId?: string | null;
   onFocusSessionHandled?: () => void;
 }
-
 interface ExplorerInstance {
   id: string;
   label: string;
@@ -191,20 +189,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     initialized?.activeMode ?? 'terminal'
   );
 
-  // Sidebar navigation shortcuts — only the active (visible) project view
-  // registers these, so shortcuts switch the sidebar of the project the user
-  // is looking at, not a background tab's.
-  const cycleSidebar = useCallback((delta: number) => {
-    const order = sidebarButtons.map((b) => b.id);
-    const idx = order.indexOf(activeMode as typeof order[number]);
-    const next = order[((idx === -1 ? 0 : idx) + delta + order.length) % order.length];
-    markKeyboardNav();
-    (document.activeElement as HTMLElement | null)?.blur?.();
-    setActiveMode(next);
-  }, [activeMode]);
-  useShortcut('nav.nextSidebar', () => cycleSidebar(1), active);
-  useShortcut('nav.prevSidebar', () => cycleSidebar(-1), active);
-
   // Discover external sessions available for adoption (on-demand only, no polling)
   const { data: discoverableData, refetch: refetchDiscoverable } = useQuery({
     queryKey: ['discoverable-sessions', projectPath],
@@ -296,77 +280,9 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     return () => document.removeEventListener('mousedown', onDocPointerDown, true);
   }, [editingTerminalId, commitTerminalRename]);
 
-  // Terminal-tab cycling shortcut — match the click-on-tab code path exactly
-  // so perf is identical to clicking. No markKeyboardNav (that skips focus
-  // which was causing xterm render issues on terminal tab switch). Debounced
-  // so rapid keystrokes only trigger one switch instead of N reconnects.
-  const pendingTabDeltaRef = useRef(0);
-  const tabDebounceTimerRef = useRef<number | null>(null);
-  const cycleTerminalTab = useCallback((delta: number) => {
-    if (terminalInstances.length === 0) return;
-    pendingTabDeltaRef.current += delta;
-    if (tabDebounceTimerRef.current !== null) {
-      window.clearTimeout(tabDebounceTimerRef.current);
-    }
-    tabDebounceTimerRef.current = window.setTimeout(() => {
-      const d = pendingTabDeltaRef.current;
-      pendingTabDeltaRef.current = 0;
-      tabDebounceTimerRef.current = null;
-      if (terminalInstances.length === 0) return;
-      const ids = terminalInstances.map((t) => t.id);
-      const current = activeTerminalId ?? ids[0];
-      const idx = ids.indexOf(current);
-      const next = ids[((idx === -1 ? 0 : idx) + d + ids.length * 100) % ids.length];
-      // Mirror the onClick handler on the terminal tab button exactly.
-      setActiveTerminalId(next);
-      setActiveWebPageId(null);
-      setShowLauncher(false);
-      setShowAllTerminals(false);
-      setActiveMode('terminal');
-      focusTerminalById(next);
-    }, 180);
-  }, [terminalInstances, activeTerminalId]);
-  useShortcut('terminal.nextTab', () => cycleTerminalTab(1), active);
-  useShortcut('terminal.prevTab', () => cycleTerminalTab(-1), active);
-
-  // Close active terminal/agent tab — opens the confirm modal with the same
-  // args as the X button on the tab pill. CloseTabModal auto-focuses "Close
-  // & Kill" so Enter confirms kill.
-  useShortcut('terminal.closeTab', () => {
-    if (!activeTerminalId) return;
-    const inst = terminalInstances.find((t) => t.id === activeTerminalId);
-    if (!inst) return;
-    const type = inst.label.startsWith('Terminal')
-      ? 'terminal'
-      : inst.label.startsWith('Agent')
-      ? 'agent'
-      : 'session';
-    setCloseConfirm({ id: inst.id, label: inst.label, type });
-  }, active);
-
   const [showLauncher, setShowLauncher] = useState(
     initialized?.showLauncher ?? true
   );
-  const [showAllTerminals, setShowAllTerminals] = useState(false);
-  const [expandedTerminalId, setExpandedTerminalId] = useState<string | null>(null);
-  const [gridFocusedId, setGridFocusedId] = useState<string | null>(null);
-  const [gridColumns, setGridColumns] = useState(() => {
-    const saved = localStorage.getItem(`agentmanager-project-grid-cols-${currentUserId}-${projectId}`);
-    return saved ? Math.min(10, Math.max(1, parseInt(saved, 10) || 3)) : 3;
-  });
-  const [gridRows, setGridRows] = useState<number | 'auto'>(() => {
-    const saved = localStorage.getItem(`agentmanager-project-grid-rows-${currentUserId}-${projectId}`);
-    if (!saved || saved === 'auto') return 'auto';
-    return Math.min(6, Math.max(1, parseInt(saved, 10) || 2));
-  });
-  const [gridColsOpen, setGridColsOpen] = useState(false);
-  const [gridRowsOpen, setGridRowsOpen] = useState(false);
-  const [gridCardHeight, setGridCardHeight] = useState(420);
-  const [gridShowAll, setGridShowAll] = useState(false);
-  const gridContainerRef = useRef<HTMLDivElement>(null);
-  const gridInnerRef = useRef<HTMLDivElement>(null);
-  const [gridMounted, setGridMounted] = useState(false);
-
   // Lazy-mount: only create xterm instances for terminals the user has actually viewed.
   // Prevents 8+ xterm instances from initializing simultaneously on page refresh.
   const mountedTerminals = useRef(new Set<string>());
@@ -390,15 +306,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     label: string;
     type: 'session' | 'terminal' | 'agent';
   } | null>(null);
-
-  // Dismiss grid view and expanded modal when the project tab loses focus
-  // so grid terminals don't interfere with other projects' terminal focus
-  useEffect(() => {
-    if (!active) {
-      setShowAllTerminals(false);
-      setExpandedTerminalId(null);
-    }
-  }, [active]);
 
   // Track sessions the user explicitly closed so the sync effect doesn't re-add them
   const closedSessionIds = useRef(new Set<string>(initialized?.hiddenSessionIds ?? []));
@@ -597,7 +504,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         setActiveTerminalId(focusSessionId);
         setActiveWebPageId(null);
         setShowLauncher(false);
-        setShowAllTerminals(false);
         setActiveMode('terminal');
         return;
       }
@@ -606,7 +512,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       setActiveTerminalId(focusSessionId);
       setActiveWebPageId(null);
       setShowLauncher(false);
-      setShowAllTerminals(false);
       setActiveMode('terminal');
       onFocusSessionHandled?.();
       focusTerminalById(focusSessionId);
@@ -795,12 +700,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     }
   }, [projHydrated, projectId, sessionsData, terminalInstances, queryClient]);
 
-  function handleOpenVSCode() {
-    api.files.openVSCode(projectPath).catch((err) => {
-      console.error('Failed to open VS Code:', err);
-    });
-  }
-
   function handleSessionCreated(sessionId: string, _projectName?: string, mode?: 'session' | 'terminal') {
     locallyCreatedSessionIds.current.add(sessionId);
     canonicalOpenSessionIdsRef.current?.add(sessionId);
@@ -824,7 +723,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       if (terminalInstances.some((t) => t.id === id)) {
         setActiveTerminalId(id);
         setShowLauncher(false);
-        setShowAllTerminals(false);
         setActiveWebPageId(null);
         setActiveMode('terminal');
         focusTerminalById(id);
@@ -917,7 +815,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       });
       setActiveTerminalId(id);
       setShowLauncher(false);
-      setShowAllTerminals(false);
     }
 
     queryClient.invalidateQueries({ queryKey: ['sessions'] });
@@ -1153,7 +1050,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     setWebPageInstances((prev) => [...prev, { id, label, url }]);
     setActiveWebPageId(id);
     setShowLauncher(false);
-    setShowAllTerminals(false);
   }
 
   function closeWebPage(id: string) {
@@ -1217,74 +1113,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   // Sub-tab bar for terminal and explorer modes
   const showSubTabs = activeMode === 'terminal' || activeMode === 'explorer';
 
-  const gridMode = showAllTerminals && !showLauncher && (terminalInstances.length + hiddenSessions.length) >= 2;
-
-  // Persist grid preferences
-  useEffect(() => {
-    localStorage.setItem(`agentmanager-project-grid-cols-${currentUserId}-${projectId}`, String(gridColumns));
-  }, [gridColumns, currentUserId, projectId]);
-  useEffect(() => {
-    localStorage.setItem(`agentmanager-project-grid-rows-${currentUserId}-${projectId}`, String(gridRows));
-  }, [gridRows, currentUserId, projectId]);
-
-  // Calculate grid card height
-  useEffect(() => {
-    if (!gridMode) return;
-    function updateHeight() {
-      if (gridRows !== 'auto') {
-        if (!gridContainerRef.current) return;
-        const containerHeight = gridContainerRef.current.clientHeight;
-        const gap = 16;
-        const padding = 32;
-        const height = Math.round((containerHeight - padding - gap * (gridRows - 1)) / gridRows);
-        setGridCardHeight(Math.max(150, height));
-      } else {
-        if (!gridInnerRef.current) return;
-        const gridWidth = gridInnerRef.current.clientWidth;
-        const gap = 16;
-        const cardWidth = (gridWidth - gap * (gridColumns - 1)) / gridColumns;
-        const height = Math.round(cardWidth * (9 / 16)) + 40;
-        setGridCardHeight(Math.max(200, height));
-      }
-    }
-    updateHeight();
-    window.addEventListener('resize', updateHeight);
-    return () => window.removeEventListener('resize', updateHeight);
-  }, [gridColumns, gridRows, gridMode]);
-
-  // Force terminal refit on grid mount — terminals were fitted to single-view
-  // full width and need to refit to the narrower grid card width.
-  // Dispatch refresh-terminal event for each terminal after layout settles.
-  useEffect(() => {
-    if (!gridMode) { setGridMounted(false); setGridShowAll(false); return; }
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    timers.push(setTimeout(() => setGridMounted(true), 100));
-    timers.push(setTimeout(() => setGridMounted(false), 250));
-    // Trigger refresh after layout settles — same as clicking the refresh button.
-    // Stagger per-terminal so many cards don't reset+repaint in one frame, which
-    // spikes CPU and makes the width reflow race worse.
-    terminalInstances.forEach((term, i) => {
-      timers.push(setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('agentmanager:refresh-terminal', {
-          detail: { sessionId: term.id },
-        }));
-      }, 500 + i * 70));
-    });
-    return () => { for (const t of timers) clearTimeout(t); };
-  }, [gridMode, terminalInstances]);
-
-  // Shown vs hidden sessions in grid — hiddenSessions are sessions with closed tabs
-  // that are still running but not in terminalInstances
-  const hiddenAsInstances: TerminalInstance[] = hiddenSessions.map((s) => {
-    const isTerminal = s.task === 'Terminal';
-    const isAgent = s.task?.startsWith('Agent (');
-    const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
-    return { id: s.id, label: `${prefix} (hidden)`, customLabel: terminalLabelsRef.current[s.id] };
-  });
-  const allGridInstances = [...terminalInstances, ...hiddenAsInstances];
-  const gridVisibleInstances = gridShowAll ? allGridInstances : terminalInstances;
-  const gridHiddenCount = hiddenSessions.length;
-
   return (
     <div className="h-full flex">
       {/* Icon sidebar */}
@@ -1316,20 +1144,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           );
         })}
 
-        {/* VS Code button */}
-        <button
-          onClick={handleOpenVSCode}
-          title="Open in VS Code"
-          className="flex items-center justify-center rounded-md transition-colors"
-          style={{
-            width: 36,
-            height: 36,
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-          }}
-        >
-          <Code2 className="w-5 h-5" />
-        </button>
       </div>
 
       {/* Main content area */}
@@ -1348,7 +1162,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
               <>
                 {/* Home tab — always first */}
                 <button
-                  onClick={() => { setShowLauncher(true); setShowAllTerminals(false); setActiveWebPageId(null); }}
+                  onClick={() => { setShowLauncher(true); setActiveWebPageId(null); }}
                   className="flex items-center gap-1.5 px-3 py-1 rounded-md shrink-0 transition-colors text-xs font-medium"
                   style={{
                     color: showLauncher ? 'var(--accent)' : 'var(--text-secondary)',
@@ -1361,7 +1175,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
 
                 {/* Terminal session sub-tabs */}
                 {terminalInstances.map((inst) => {
-                  const isActive = !showLauncher && !showAllTerminals && !activeWebPageId && inst.id === activeTerminalId;
+                  const isActive = !showLauncher && !activeWebPageId && inst.id === activeTerminalId;
                   const session = sessionLookup.get(inst.id);
                   // Status signal light — a leaf component subscribes to just this
                   // session's live state, so a state tick doesn't re-render the view.
@@ -1425,8 +1239,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                             setActiveTerminalId(inst.id);
                             setActiveWebPageId(null);
                             setShowLauncher(false);
-                            setShowAllTerminals(false);
-                            // Focus the terminal after switching from grid to single view
+                            // Focus the terminal after switching tabs.
                             focusTerminalById(inst.id);
                           }}
                           onDoubleClick={() => beginTerminalRename(inst)}
@@ -1459,35 +1272,13 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
 
                 {/* New session/agent/terminal — opens the existing launcher panel */}
                 <button
-                  onClick={() => { setShowLauncher(true); setShowAllTerminals(false); setActiveWebPageId(null); setActiveTerminalId(null); }}
+                  onClick={() => { setShowLauncher(true); setActiveWebPageId(null); setActiveTerminalId(null); }}
                   className="flex items-center justify-center rounded-md shrink-0 transition-colors"
                   style={{ width: 28, height: 28, color: 'var(--text-secondary)', background: 'transparent' }}
                   title="新建 Session / Agent / Terminal"
                 >
                   <Plus className="w-4 h-4" />
                 </button>
-
-                {/* All Terminals grid view button — shown when 2+ total sessions (visible + hidden) */}
-                {(terminalInstances.length + hiddenSessions.length) >= 2 && (
-                  <button
-                    onClick={() => {
-                      setShowAllTerminals(!showAllTerminals);
-                      setShowLauncher(false);
-                      setActiveWebPageId(null);
-                      if (showAllTerminals) { setGridShowAll(false); setGridFocusedId(null); }
-                    }}
-                    className="flex items-center gap-1 px-2 rounded-md shrink-0 transition-colors text-xs"
-                    title="View all terminals"
-                    style={{
-                      height: 28,
-                      color: showAllTerminals ? 'var(--accent)' : 'var(--text-secondary)',
-                      background: showAllTerminals ? 'var(--bg-tertiary)' : 'transparent',
-                    }}
-                  >
-                    <LayoutGrid className="w-3 h-3" />
-                    <span>All</span>
-                  </button>
-                )}
 
                 {/* Adopt external session button — on-demand scan */}
                 <div ref={adoptMenuRef}>
@@ -1697,7 +1488,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                   />
                 )}
                 {webPageInstances.map((inst) => {
-                  const isActive = !showLauncher && !showAllTerminals && activeWebPageId === inst.id && !activeTerminalId;
+                  const isActive = !showLauncher && activeWebPageId === inst.id && !activeTerminalId;
                   return (
                     <div
                       key={inst.id}
@@ -1709,7 +1500,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                           setActiveWebPageId(inst.id);
                           setActiveTerminalId(null);
                           setShowLauncher(false);
-                          setShowAllTerminals(false);
                         }}
                         className="flex items-center gap-1.5 pl-3 pr-1 py-1 text-xs font-medium transition-colors"
                         style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
@@ -1798,331 +1588,66 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                 </div>
               )}
 
-              {/* Terminal instances — always mounted, layout switches via CSS
-                  between single-view (absolute positioned) and grid view.
-                  This avoids duplicate WebSocket connections and 5000-chunk replays. */}
-              <div
-                className={gridMode
-                  ? "h-full absolute inset-0 z-10 flex flex-col"
-                  : "h-full absolute inset-0"
-                }
-                style={gridMode
-                  ? { background: 'var(--bg-primary)' }
-                  : { pointerEvents: 'none' }
-                }
-              >
-                {/* Grid header bar with controls */}
-                {gridMode && (
-                  <div
-                    className="flex items-center gap-2 px-4 py-2 shrink-0 border-b"
-                    style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}
-                  >
-                    <Monitor className="w-3.5 h-3.5" style={{ color: 'var(--accent)' }} />
-                    <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
-                      All Sessions
-                    </span>
-                    <span
-                      className="text-[10px] px-1.5 py-0.5 rounded-full"
-                      style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
+              {/* Terminal instances stay mounted so tab switches preserve terminal state. */}
+              <div className="h-full absolute inset-0" style={{ pointerEvents: 'none' }}>
+                {terminalInstances.map((term) => {
+                  const isSingleActive = !showLauncher && !activeWebPageId && activeTerminalId === term.id;
+                  const termVisible = isSingleActive && active;
+
+                  if (termVisible) mountedTerminals.current.add(term.id);
+                  const shouldMount = mountedTerminals.current.has(term.id);
+
+                  const endedSession = allSessionLookup.get(term.id);
+                  const isEnded = !!endedSession && (
+                    endedSession.status === 'completed'
+                    || endedSession.status === 'failed'
+                    || endedSession.status === 'cancelled'
+                  );
+                  const canResume = isEnded && (endedSession!.cli_type === 'codex'
+                    ? !!endedSession!.codex_session_id
+                    : !!endedSession!.claude_session_id);
+
+                  return (
+                    <div
+                      key={term.id}
+                      className="h-full absolute inset-0"
+                      style={{
+                        visibility: isSingleActive ? 'visible' : 'hidden',
+                        pointerEvents: isSingleActive ? 'auto' : 'none',
+                        zIndex: isSingleActive ? 1 : 0,
+                      }}
                     >
-                      {allGridInstances.length}
-                    </span>
-                    {gridHiddenCount > 0 && !gridShowAll && (
-                      <>
-                        <span className="text-[10px]" style={{ color: 'var(--text-secondary)', opacity: 0.7 }}>
-                          ({gridVisibleInstances.length} shown, {gridHiddenCount} hidden)
-                        </span>
-                        <button
-                          onClick={() => setGridShowAll(true)}
-                          className="text-[10px] font-medium hover:underline"
-                          style={{ color: 'var(--accent)' }}
-                        >
-                          Show All
-                        </button>
-                      </>
-                    )}
-
-                    {/* Columns dropdown */}
-                    <div className="relative ml-auto">
-                      <button
-                        onClick={() => setGridColsOpen(!gridColsOpen)}
-                        className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-colors"
-                        style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
-                      >
-                        <Columns3 className="w-3.5 h-3.5" />
-                        {gridColumns} col{gridColumns !== 1 ? 's' : ''}
-                        <ChevronDown className={`w-3 h-3 transition-transform ${gridColsOpen ? 'rotate-180' : ''}`} />
-                      </button>
-                      {gridColsOpen && (
-                        <>
-                          <div className="fixed inset-0 z-40" onClick={() => setGridColsOpen(false)} />
-                          <div
-                            className="absolute right-0 top-full mt-1 z-50 rounded-lg border shadow-xl overflow-hidden"
-                            style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)', width: '120px' }}
-                          >
-                            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-                              <button
-                                key={n}
-                                onClick={() => { setGridColumns(n); setGridColsOpen(false); }}
-                                className="flex items-center gap-2 w-full px-3 py-1.5 text-xs transition-colors hover:bg-white/5"
-                                style={{
-                                  color: n === gridColumns ? 'var(--accent)' : 'var(--text-secondary)',
-                                  fontWeight: n === gridColumns ? 600 : 400,
-                                  borderBottom: '1px solid var(--border)',
-                                }}
-                              >
-                                {n} column{n !== 1 ? 's' : ''}
-                              </button>
-                            ))}
-                          </div>
-                        </>
-                      )}
-                    </div>
-
-                    {/* Rows dropdown */}
-                    <div className="relative">
-                      <button
-                        onClick={() => setGridRowsOpen(!gridRowsOpen)}
-                        className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-colors"
-                        style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
-                      >
-                        <Rows3 className="w-3.5 h-3.5" />
-                        {gridRows === 'auto' ? 'Auto' : `${gridRows} row${gridRows !== 1 ? 's' : ''}`}
-                        <ChevronDown className={`w-3 h-3 transition-transform ${gridRowsOpen ? 'rotate-180' : ''}`} />
-                      </button>
-                      {gridRowsOpen && (
-                        <>
-                          <div className="fixed inset-0 z-40" onClick={() => setGridRowsOpen(false)} />
-                          <div
-                            className="absolute right-0 top-full mt-1 z-50 rounded-lg border shadow-xl overflow-hidden"
-                            style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)', width: '120px' }}
-                          >
-                            <button
-                              onClick={() => { setGridRows('auto'); setGridRowsOpen(false); }}
-                              className="flex items-center gap-2 w-full px-3 py-1.5 text-xs transition-colors hover:bg-white/5"
-                              style={{
-                                color: gridRows === 'auto' ? 'var(--accent)' : 'var(--text-secondary)',
-                                fontWeight: gridRows === 'auto' ? 600 : 400,
-                                borderBottom: '1px solid var(--border)',
-                              }}
-                            >
-                              Auto (16:9)
-                            </button>
-                            {[1, 2, 3, 4, 5, 6].map((n) => (
-                              <button
-                                key={n}
-                                onClick={() => { setGridRows(n); setGridRowsOpen(false); }}
-                                className="flex items-center gap-2 w-full px-3 py-1.5 text-xs transition-colors hover:bg-white/5"
-                                style={{
-                                  color: n === gridRows ? 'var(--accent)' : 'var(--text-secondary)',
-                                  fontWeight: n === gridRows ? 600 : 400,
-                                  borderBottom: '1px solid var(--border)',
-                                }}
-                              >
-                                {n} row{n !== 1 ? 's' : ''}
-                              </button>
-                            ))}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Grid scroll area */}
-                <div ref={gridContainerRef} className={gridMode ? "flex-1 overflow-y-auto p-4" : ""}>
-                {/* Backdrop inside grid wrapper so it shares the same stacking
-                    context as the expanded card (z-10 on wrapper creates a context) */}
-                {gridMode && expandedTerminalId && (
-                  <div
-                    className="fixed inset-0 z-40"
-                    style={{ background: 'rgba(0,0,0,0.7)' }}
-                    onClick={() => setExpandedTerminalId(null)}
-                  />
-                )}
-                <div
-                  ref={gridInnerRef}
-                  className={gridMode ? "grid gap-4" : "contents"}
-                  style={gridMode ? { gridTemplateColumns: `repeat(${gridColumns}, 1fr)` } : undefined}
-                >
-                  {(gridMode ? gridVisibleInstances : terminalInstances).map((term) => {
-                    const isSingleActive = !showLauncher && !showAllTerminals && !activeWebPageId && activeTerminalId === term.id;
-                    const isExpanded = gridMode && expandedTerminalId === term.id;
-                    const isFocused = gridMode && gridFocusedId === term.id;
-                    const termVisible = gridMode
-                      ? (active && (expandedTerminalId ? isExpanded : true))
-                      : (isSingleActive && active);
-
-                    // Lazy-mount: in single-view, only mount terminals user has viewed
-                    if (termVisible || gridMode) mountedTerminals.current.add(term.id);
-                    const shouldMount = gridMode || mountedTerminals.current.has(term.id);
-
-                    // Ended sessions render a read-only "last screen" view (restored
-                    // from the final-screen snapshot) with a Resume action, instead
-                    // of a live Terminal that couldn't attach.
-                    const endedSession = allSessionLookup.get(term.id);
-                    const isEnded = !!endedSession && (endedSession.status === 'completed' || endedSession.status === 'failed' || endedSession.status === 'cancelled');
-                    const canResume = isEnded && (endedSession!.cli_type === 'codex'
-                      ? !!endedSession!.codex_session_id
-                      : !!endedSession!.claude_session_id);
-
-                    return (
-                      <div
-                        key={term.id}
-                        className={gridMode
-                          ? `rounded-lg border flex flex-col overflow-hidden ${isExpanded ? 'fixed z-50 shadow-2xl' : ''}`
-                          : ""
-                        }
-                        style={gridMode
-                          ? (isExpanded ? {
-                              borderColor: 'var(--border)',
-                              background: '#0f1117',
-                              width: 'calc(100vw - 48px)',
-                              height: 'calc(100vh - 48px)',
-                              top: '24px',
-                              left: '24px',
-                            } : {
-                              borderColor: isFocused ? '#22c55e' : 'var(--border)',
-                              background: 'var(--bg-secondary)',
-                              height: `${gridCardHeight + (gridMounted ? 1 : 0)}px`,
-                            })
-                          : {
-                              visibility: isSingleActive ? 'visible' : 'hidden',
-                              pointerEvents: isSingleActive ? 'auto' : 'none',
-                              zIndex: isSingleActive ? 1 : 0,
-                              position: 'absolute' as const,
-                              inset: 0,
-                              height: '100%',
-                            }
-                        }
-                        onClick={isExpanded ? (e) => e.stopPropagation() : undefined}
-                        onMouseDown={gridMode && !isExpanded ? () => setGridFocusedId(term.id) : undefined}
-                      >
-                        {/* Card header — always in DOM for stable React tree, hidden in single view */}
-                        <div
-                          className="items-center gap-2 px-3 py-2 border-b shrink-0 rounded-t-lg transition-colors duration-200"
-                          style={{
-                            borderColor: isFocused && gridMode ? '#22c55e' : 'var(--border)',
-                            background: isFocused && gridMode ? '#22c55e30' : 'var(--bg-tertiary)',
-                            display: gridMode ? 'flex' : 'none',
-                          }}
-                        >
-                          {(() => {
-                            const s = sessionLookup.get(term.id);
-                            const isTerminal = term.label.startsWith('Terminal');
-                            const isAgent = term.label.startsWith('Agent');
-                            const isCodex = s?.cli_type === 'codex';
-                            if (isTerminal) {
-                              return <TerminalSquare className="w-3.5 h-3.5 shrink-0" style={{ color: '#f59e0b' }} />;
-                            }
-                            return (
-                              <>
-                                {isCodex ? (
-                                  <CodexIcon className="w-3.5 h-3.5 shrink-0" style={{ color: '#7A9DFF' }} />
-                                ) : (
-                                  <ClaudeIcon className="w-3.5 h-3.5 shrink-0" style={{ color: '#D97757' }} />
-                                )}
-                                {isAgent ? (
-                                  <Bot className="w-3 h-3 shrink-0" style={{ color: '#ef4444' }} />
-                                ) : (
-                                  <Zap className="w-3 h-3 shrink-0" style={{ color: '#60a5fa' }} />
-                                )}
-                              </>
-                            );
-                          })()}
-                          <span className={`font-medium shrink-0 ${isExpanded ? 'text-sm' : 'text-xs'}`} style={{ color: 'var(--text-primary)' }}>
-                            {term.customLabel?.trim() || term.label}
-                          </span>
-                          <span className={`truncate min-w-0 ml-auto ${isExpanded ? 'text-xs ml-2' : 'text-[10px]'}`} style={{ color: 'var(--text-secondary)' }}>
-                            {projectSessions.find((s) => s.id === term.id)?.task || 'Terminal'}
-                          </span>
-                          {isExpanded ? (
-                            <div className="flex items-center gap-2 ml-auto">
-                              <button
-                                onClick={() => {
-                                  setActiveTerminalId(term.id);
-                                  setShowAllTerminals(false);
-                                  setExpandedTerminalId(null);
-                                  focusTerminalById(term.id);
-                                }}
-                                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors"
-                                style={{ background: 'var(--accent)', color: 'white' }}
-                                title="Focus this terminal"
-                              >
-                                <ExternalLink className="w-3 h-3" />
-                                <span>Focus</span>
-                              </button>
-                              <button
-                                onClick={() => setExpandedTerminalId(null)}
-                                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors"
-                                style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
-                                title="Minimize back to grid"
-                              >
-                                <Minimize2 className="w-3 h-3" />
-                                <span>Minimize</span>
-                              </button>
-                            </div>
-                          ) : (
-                            <>
-                              <button
-                                onClick={() => setExpandedTerminalId(term.id)}
-                                className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors hover:opacity-100 opacity-70"
-                                style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
-                                title="Expand terminal"
-                              >
-                                <Maximize2 className="w-2.5 h-2.5" />
-                              </button>
-                              <button
-                                onClick={() => {
-                                  setActiveTerminalId(term.id);
-                                  setShowAllTerminals(false);
-                                  focusTerminalById(term.id);
-                                }}
-                                className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors hover:opacity-100 opacity-70"
-                                style={{ background: 'var(--accent)', color: 'white' }}
-                                title="Focus this terminal"
-                              >
-                                <ExternalLink className="w-2.5 h-2.5" />
-                              </button>
-                            </>
-                          )}
+                      {shouldMount && (isEnded ? (
+                        <div className="relative h-full w-full">
+                          <HistoryViewer
+                            sessionId={term.id}
+                            title="Session ended — last screen"
+                            closeTitle="Close tab"
+                            onResume={canResume ? () => reconnectTerminal(term.id) : undefined}
+                            onClose={() => closeTerminalTab(term.id)}
+                          />
                         </div>
-                        <div className={gridMode ? "flex-1 min-h-0" : "h-full"}>
-                          {shouldMount && (isEnded ? (
-                            <div className="relative h-full w-full">
-                              <HistoryViewer
-                                sessionId={term.id}
-                                title="Session ended — last screen"
-                                closeTitle="Close tab"
-                                onResume={canResume ? () => reconnectTerminal(term.id) : undefined}
-                                onClose={() => closeTerminalTab(term.id)}
-                              />
-                            </div>
-                          ) : (
-                            <Terminal
-                              sessionId={term.id}
-                              visible={termVisible}
-                              suspended={terminalsSuspended || !termVisible}
-                              passiveResize={gridMode && !isExpanded && projectSessions.find((s) => s.id === term.id)?.task === 'Terminal'}
-                              hideCursor={projectSessions.find((s) => s.id === term.id)?.task !== 'Terminal' && projectSessions.some((s) => s.id === term.id)}
-                              cliType={sessionLookup.get(term.id)?.cli_type as 'claude' | 'codex' | undefined}
-                              onReconnect={() => reconnectTerminal(term.id)}
-                              onPopOut={() => closeTerminalTab(term.id)}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                </div>{/* close gridContainerRef */}
+                      ) : (
+                        <Terminal
+                          sessionId={term.id}
+                          visible={termVisible}
+                          suspended={terminalsSuspended || !termVisible}
+                          hideCursor={projectSessions.find((session) => session.id === term.id)?.task !== 'Terminal' && projectSessions.some((session) => session.id === term.id)}
+                          cliType={sessionLookup.get(term.id)?.cli_type as 'claude' | 'codex' | undefined}
+                          onReconnect={() => reconnectTerminal(term.id)}
+                          onPopOut={() => closeTerminalTab(term.id)}
+                        />
+                      ))}
+                    </div>
+                  );
+                })}
               </div>
             </>
           )}
 
           {/* Web page instances */}
           {activeMode === 'terminal' && webPageInstances.map((wp) => {
-            const isActiveWP = activeWebPageId === wp.id && !showLauncher && !showAllTerminals;
+            const isActiveWP = activeWebPageId === wp.id && !showLauncher;
             return (
               <div
                 key={wp.id}

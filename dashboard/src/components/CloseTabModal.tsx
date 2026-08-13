@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 import { AlertTriangle, EyeOff, Trash2 } from 'lucide-react';
-import { pushSuspend } from '../lib/shortcuts';
 
 interface CloseTabModalProps {
   /** e.g. "Session 1", "Terminal 2" */
@@ -35,12 +34,8 @@ export function CloseTabModal({
       if (e.key === 'Escape') onCancel();
     };
     window.addEventListener('keydown', handleKey);
-    // Suspend global shortcuts while the confirm is open so the same key
-    // that opened this modal (e.g. Ctrl+Shift+X) can't re-trigger it.
-    const release = pushSuspend();
     return () => {
       window.removeEventListener('keydown', handleKey);
-      release();
     };
   }, [onCancel]);
 

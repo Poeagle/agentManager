@@ -198,7 +198,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    update: (id: string, data: { name?: string; description?: string; session_prompt?: string | null; openclaw_prompt?: string | null; default_web_url?: string | null; skip_permissions?: number; color?: string }) =>
+    update: (id: string, data: { name?: string; description?: string; session_prompt?: string | null; openclaw_prompt?: string | null; default_web_url?: string | null; color?: string }) =>
       fetchJSON<{ ok: boolean; project: Project }>(`/projects/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(data),
@@ -209,11 +209,6 @@ export const api = {
       fetchJSON<BrowseResult>(`/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`),
     projectAgents: (id: string) =>
       fetchJSON<{ agents: ProjectAgent[] }>(`/projects/${id}/agents`),
-    setSkipPermissionsAll: (skipPermissions: boolean) =>
-      fetchJSON<{ ok: boolean; updated: number }>('/projects/skip-permissions-all', {
-        method: 'PUT',
-        body: JSON.stringify({ skip_permissions: skipPermissions }),
-      }),
     access: (id: string) =>
       fetchJSON<{ access: ProjectUserAccess[] }>(`/projects/${id}/access`),
     setAccess: (id: string, userId: string, access: ProjectToolPermissions) =>
@@ -276,11 +271,6 @@ export const api = {
       fetchJSON<{ ok: boolean; size: number }>('/files/write', {
         method: 'PUT',
         body: JSON.stringify({ path, content, expectedContent }),
-      }),
-    openVSCode: (path: string) =>
-      fetchJSON<{ ok: boolean }>('/open-vscode', {
-        method: 'POST',
-        body: JSON.stringify({ path }),
       }),
     diff: (pathA: string, pathB: string) =>
       fetchJSON<{ diff: string }>('/files/diff', {
@@ -629,7 +619,6 @@ export interface Project {
   session_prompt: string | null;
   openclaw_prompt: string | null;
   default_web_url: string | null;
-  skip_permissions: number;
   color: string;
   created_at: string;
   updated_at?: string;

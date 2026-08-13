@@ -35,7 +35,7 @@ export interface FileRefreshRequest {
 interface FileExplorerProps {
   rootPath: string;
   instanceId?: string; // unique ID for localStorage persistence
-  active?: boolean; // only the active explorer may handle global shortcuts
+  active?: boolean;
   refreshFileRequest?: FileRefreshRequest | null; // reload matching clean tabs whenever revision changes
   openFileRequest?: { path: string; key: number } | null; // when key changes, open & reveal this file
   onFileSaved?: (filePath: string) => void; // notify parent when a file is saved

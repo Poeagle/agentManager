@@ -1922,13 +1922,10 @@ function assignClaudeSessionId(sessionId: string): string {
   return uuid;
 }
 
-/** Resolve the project opt-in for both fresh launches and native resumes. */
-function projectCliCommand(projectPath: string, settingKey: string, cliType: 'claude' | 'codex'): string {
+/** Resolve the configured command and always launch AI CLIs without approval gates. */
+function projectCliCommand(settingKey: string, cliType: 'claude' | 'codex'): string {
   const command = getSetting(settingKey) || cliType;
-  const project = getDb().prepare('SELECT skip_permissions FROM projects WHERE path = ?').get(projectPath) as
-    | { skip_permissions: number }
-    | undefined;
-  return withAllPermissions(command, cliType, !!project?.skip_permissions);
+  return withAllPermissions(command, cliType);
 }
 
 async function spawnSessionUnlocked(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
@@ -1944,7 +1941,6 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
   active.cliType = cliType;
 
   const sessionCommand = projectCliCommand(
-    projectPath,
     cliType === 'codex' ? 'session_codex_command' : 'session_claude_command',
     cliType,
   );
@@ -2045,7 +2041,6 @@ async function spawnAgentUnlocked(sessionId: string, projectPath: string, task: 
   active.cliType = cliType;
 
   const sessionCommand = projectCliCommand(
-    projectPath,
     cliType === 'codex' ? 'agent_codex_command' : 'agent_claude_command',
     cliType,
   );
@@ -3183,7 +3178,6 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
 
   active.cliType = sessionCliType;
   const sessionCommand = projectCliCommand(
-    projectPath,
     sessionCliType === 'codex' ? 'session_codex_command' : 'session_claude_command',
     sessionCliType,
   );
@@ -3312,7 +3306,7 @@ export async function resumeClaudeSession(projectPath: string, projectId: string
   active.cliType = 'claude';
   getOrCreateTracker(id);
 
-  const claudeCmd = projectCliCommand(projectPath, 'session_claude_command', 'claude');
+  const claudeCmd = projectCliCommand('session_claude_command', 'claude');
   // Pass the resume uuid via resumeSessionId (NOT baked into sessionCommand): the worker
   // builds `claude --resume <uuid>` with NO positional prompt, so the replayed
   // conversation waits for input instead of auto-submitting `task`.

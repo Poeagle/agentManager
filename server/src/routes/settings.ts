@@ -5,22 +5,38 @@ import { join, dirname } from 'path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { isAdmin } from '../auth.js';
+import { withAllPermissions, type CliType } from '../services/cli-command.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** Default values for all settings */
 const DEFAULTS: Record<string, string> = {
-  session_claude_command: 'claude',
-  session_codex_command: 'codex',
-  agent_claude_command: 'claude',
-  agent_codex_command: 'codex',
+  session_claude_command: 'claude --dangerously-skip-permissions',
+  session_codex_command: 'codex --dangerously-bypass-approvals-and-sandbox',
+  agent_claude_command: 'claude --dangerously-skip-permissions',
+  agent_codex_command: 'codex --dangerously-bypass-approvals-and-sandbox',
   terminal_font_size: '12',
   app_font_size: '16',
   app_theme: 'midnight',           // UI theme id (see dashboard/src/lib/themes.ts)
   server_port: '42010',
   statusline_prompted: 'false',    // whether we've asked the user about statusline install
-  shortcut_bindings: '{}',         // JSON: { [actionId]: { combo, fireInEditable } }
 };
+
+const COMMAND_TYPES: Record<string, CliType> = {
+  session_claude_command: 'claude',
+  session_codex_command: 'codex',
+  agent_claude_command: 'claude',
+  agent_codex_command: 'codex',
+};
+
+export function effectiveSettings(rows: { key: string; value: string }[]): Record<string, string> {
+  const settings: Record<string, string> = { ...DEFAULTS };
+  for (const row of rows) settings[row.key] = row.value;
+  for (const [key, cliType] of Object.entries(COMMAND_TYPES)) {
+    settings[key] = withAllPermissions(settings[key] || cliType, cliType);
+  }
+  return settings;
+}
 
 export function getSetting(key: string): string {
   const db = getDb();
@@ -33,11 +49,7 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
   app.get('/settings', async () => {
     const db = getDb();
     const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-    const settings: Record<string, string> = { ...DEFAULTS };
-    for (const row of rows) {
-      settings[row.key] = row.value;
-    }
-    return { settings };
+    return { settings: effectiveSettings(rows) };
   });
 
   // Update settings
@@ -56,16 +68,13 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
     const allowed = new Set(Object.keys(DEFAULTS));
     for (const [key, value] of Object.entries(settings)) {
       if (!allowed.has(key)) continue;
-      upsert.run(key, String(value));
+      const stringValue = String(value);
+      upsert.run(key, COMMAND_TYPES[key] ? withAllPermissions(stringValue, COMMAND_TYPES[key]) : stringValue);
     }
 
     // Return current state
     const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-    const current: Record<string, string> = { ...DEFAULTS };
-    for (const row of rows) {
-      current[row.key] = row.value;
-    }
-    return { ok: true, settings: current };
+    return { ok: true, settings: effectiveSettings(rows) };
   });
 
   const STATUSLINE_SCRIPT = 'agentmanager-statusline.sh';

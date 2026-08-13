@@ -46,9 +46,8 @@ describe('CLI command construction', () => {
   });
 
   it('applies explicit all-permissions mode to Claude and Codex exactly once', () => {
-    expect(withAllPermissions('claude', 'claude', true)).toBe('claude --dangerously-skip-permissions');
-    expect(withAllPermissions('codex', 'codex', true)).toBe('codex --dangerously-bypass-approvals-and-sandbox');
-    expect(withAllPermissions('codex --yolo', 'codex', true)).toBe('codex --yolo');
-    expect(withAllPermissions('claude', 'claude', false)).toBe('claude');
+    expect(withAllPermissions('claude', 'claude')).toBe('claude --dangerously-skip-permissions');
+    expect(withAllPermissions('codex', 'codex')).toBe('codex --dangerously-bypass-approvals-and-sandbox');
+    expect(withAllPermissions('codex --yolo', 'codex')).toBe('codex --yolo');
   });
 });
