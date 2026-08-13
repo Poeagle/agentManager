@@ -6,6 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { RotateCcw, ExternalLink, ZoomIn, ZoomOut, Loader2, Check, AlertCircle, Paperclip } from 'lucide-react';
 import { api } from '../lib/api';
+import { TerminalInputBuffer } from '../lib/terminal-input-buffer';
 import { HistoryViewer } from './HistoryViewer';
 import '@xterm/xterm/css/xterm.css';
 
@@ -22,15 +23,16 @@ function notifyServerAlive() {
 // it's undefined, so writeText() would throw and copy silently fails. Fall back
 // to a hidden <textarea> + execCommand('copy'), which works without a secure context.
 function writeClipboard(text: string) {
+  const focusTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   if (navigator.clipboard?.writeText && window.isSecureContext) {
-    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text, focusTarget));
     return;
   }
-  fallbackCopy(text);
+  fallbackCopy(text, focusTarget);
 }
-function fallbackCopy(text: string) {
+function fallbackCopy(text: string, focusTarget: HTMLElement | null) {
+  const ta = document.createElement('textarea');
   try {
-    const ta = document.createElement('textarea');
     ta.value = text;
     ta.style.position = 'fixed';
     ta.style.top = '-9999px';
@@ -38,8 +40,11 @@ function fallbackCopy(text: string) {
     document.body.appendChild(ta);
     ta.select();
     document.execCommand('copy');
-    document.body.removeChild(ta);
   } catch { /* nothing more we can do */ }
+  finally {
+    ta.remove();
+    focusTarget?.focus({ preventScroll: true });
+  }
 }
 
 function openTerminalLink(url: string) {
@@ -294,9 +299,31 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       fitAddon.fit();
     });
 
-    // Incremented whenever the browser emits a real paste event. Ctrl+Shift+V
-    // uses it to decide whether its text-only compatibility fallback is needed.
-    let pasteEventSequence = 0;
+    // Input can arrive immediately after selecting a cold tab, before its
+    // reconnect/resize/replay handshake reaches `ready`. Keep it locally and
+    // flush exactly once when the socket becomes writable.
+    let protocolReady = false;
+    const pendingTerminalInput = new TerminalInputBuffer();
+
+    const sendTerminalInput = (data: string, paste = false): boolean => {
+      if (!data) return true;
+      const w = wsRef.current;
+      if (w?.readyState === WebSocket.OPEN) {
+        try {
+          // The server has its own bounded pre-ready queue, so an OPEN socket
+          // can safely accept input while resize/recovery is completing.
+          w.send(JSON.stringify({ type: 'input', data, ...(paste ? { paste: true } : {}) }));
+          return true;
+        } catch {
+          // Preserve the input locally if the socket closed between the state
+          // check and send(). It will flush after the next ready message.
+        }
+      }
+      // A hidden terminal must never receive a paste left over from stale DOM
+      // focus. The newly visible terminal will own the next browser event.
+      if (!visibleRef.current) return false;
+      return pendingTerminalInput.enqueue({ data, paste });
+    };
 
     // Intercept Ctrl+Shift+C to copy selection
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
@@ -304,29 +331,15 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         const sel = term.getSelection();
         if (sel) writeClipboard(sel);
         e.preventDefault();
+        queueMicrotask(() => term.focus());
         return false;
       }
-      // Let the browser perform both its regular paste (Ctrl+V) and terminal-
-      // style paste (Ctrl+Shift+V). Chromium treats the latter as plain-text
-      // paste, so pasteHandler also recovers images from the Clipboard API when
-      // that event arrives without clipboard data.
+      // Text has exactly one delivery path: the browser's native `paste`
+      // event below. Reading navigator.clipboard from a zero-delay fallback as
+      // well can race Chromium's paste event and submit the same text twice.
       if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'v' && e.type === 'keydown') {
-        const sequenceBeforeKey = pasteEventSequence;
-        setTimeout(() => {
-          if (pasteEventSequence !== sequenceBeforeKey) return;
-          if (navigator.clipboard?.readText && window.isSecureContext) {
-            navigator.clipboard.readText().then(text => {
-              if (text) {
-                const w = wsRef.current;
-                if (w && w.readyState === WebSocket.OPEN) {
-                  w.send(JSON.stringify({ type: 'input', data: text, paste: true }));
-                }
-              }
-            }).catch(() => {});
-          }
-        }, 0);
-        // Keep xterm from consuming the keydown. The browser can then perform
-        // its default paste action and expose image/file ClipboardItems.
+        // Returning false keeps xterm from interpreting the key while leaving
+        // the browser default intact, so text and files reach pasteHandler.
         return false;
       }
       return true;
@@ -341,11 +354,10 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     // pasted or dropped file is uploaded, saved into the project, and its path
     // injected into the terminal so the active Claude or Codex CLI can inspect it.
     const injectPath = (p?: string) => {
-      const ww = wsRef.current;
-      if (!p || !ww || ww.readyState !== WebSocket.OPEN) return;
+      if (!p) return;
       const needsQuote = /[\s"\\]/.test(p);
       const q = needsQuote ? `"${p.replace(/(["\\])/g, '\\$1')}"` : p;
-      ww.send(JSON.stringify({ type: 'input', data: `${q} `, paste: true }));
+      sendTerminalInput(`${q} `, true);
     };
     const uploadFile = (file: File) => {
       const uid = ++uploadSeqRef.current;
@@ -389,8 +401,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
 
     const pasteHandler = (ev: Event) => {
       const ce = ev as ClipboardEvent;
-      const w = wsRef.current;
-      pasteEventSequence++;
+      if (!visibleRef.current) return;
 
       // A pasted file (image or any document) takes precedence over text.
       const files = Array.from(ce.clipboardData?.files || []);
@@ -410,9 +421,9 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         return;
       }
 
-      const text = ce.clipboardData?.getData('text');
-      if (text && w && w.readyState === WebSocket.OPEN) {
-        w.send(JSON.stringify({ type: 'input', data: text, paste: true }));
+      const text = ce.clipboardData?.getData('text/plain') || ce.clipboardData?.getData('text');
+      if (text) {
+        sendTerminalInput(text, true);
         ce.preventDefault();
         ce.stopImmediatePropagation();
         return;
@@ -521,17 +532,11 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     // These get sent when terminal gains/loses focus and Claude Code's TUI interprets them as input
     term.onData((data: string) => {
       if (data === '\x1b[I' || data === '\x1b[O') return;
-      const w = wsRef.current;
-      if (w && w.readyState === WebSocket.OPEN) {
-        w.send(JSON.stringify({ type: 'input', data }));
-      }
+      sendTerminalInput(data);
     });
 
     term.onBinary((data: string) => {
-      const w = wsRef.current;
-      if (w && w.readyState === WebSocket.OPEN) {
-        w.send(JSON.stringify({ type: 'input', data }));
-      }
+      sendTerminalInput(data);
     });
 
     // WebSocket connection with auto-reconnect
@@ -540,7 +545,6 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     let intentionalClose = false;
     let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
     let heartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
-    let protocolReady = false;
     const quietCloseSockets = new WeakSet<WebSocket>();
 
     function stopHeartbeat() {
@@ -607,6 +611,24 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         fitAddon.fit();
         sendCurrentSize();
         if (visibleRef.current) term.focus();
+        const bufferedInput = pendingTerminalInput.drain();
+        for (let index = 0; index < bufferedInput.length; index++) {
+          const input = bufferedInput[index];
+          if (ws.readyState !== WebSocket.OPEN) {
+            for (const remaining of bufferedInput.slice(index)) pendingTerminalInput.enqueue(remaining);
+            break;
+          }
+          try {
+            ws.send(JSON.stringify({
+              type: 'input',
+              data: input.data,
+              ...(input.paste ? { paste: true } : {}),
+            }));
+          } catch {
+            for (const remaining of bufferedInput.slice(index)) pendingTerminalInput.enqueue(remaining);
+            break;
+          }
+        }
         notifyServerAlive();
 
         // A project switch reconnects the socket after the visible effect has
@@ -794,6 +816,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       if (resizeTimer) clearTimeout(resizeTimer);
       stopHeartbeat();
       resizeObserver.disconnect();
+      pendingTerminalInput.clear();
       pasteTarget.removeEventListener('paste', pasteHandler, { capture: true } as EventListenerOptions);
       if (uploadFileRef.current === uploadFile) uploadFileRef.current = () => {};
       dropEl.removeEventListener('dragover', dragOverHandler);

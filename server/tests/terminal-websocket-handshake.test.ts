@@ -201,6 +201,8 @@ describe('terminal websocket handshake', () => {
     expect(await client.next('ready')).toMatchObject({ recovery: 'incremental' });
     expect(manager.sendIncrementalReplay).toHaveBeenCalledWith('session-1', expect.anything(), 42, 120, 40);
     expect(manager.sendReplay).not.toHaveBeenCalled();
+    expect(manager.sendIncrementalReplay.mock.invocationCallOrder[0])
+      .toBeLessThan(manager.attachTerminal.mock.invocationCallOrder[0]);
     client.socket.close();
   });
 

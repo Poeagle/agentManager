@@ -308,18 +308,26 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
         // so their resize redraw cannot race ahead of the initial replay.
         const geometryUnchanged = terminalGeometryMatches(sessionId, cols, rows);
         if (!resizeSession(sessionId, cols, rows)) throw new Error('Failed to resize terminal');
-        // Reattaching after a hidden page must start from a complete rendered
-        // pane, not the tail of the raw output journal. This applies equally to
-        // explicit sessions and to Claude/Codex launched inside Terminal tabs.
-        attached = attachTerminal(sessionId, socket, { skipReplay: true });
-        if (!attached) throw new Error('Failed to attach terminal');
+        // Send the synchronous incremental gap before subscribing to live
+        // output. Node cannot interleave a worker message inside this call
+        // stack, so the browser always sees old missing output before newer
+        // live output instead of occasionally applying them in reverse order.
         const resumedIncrementally = requestedCursor !== null
           && geometryUnchanged
           && sendIncrementalReplay(sessionId, socket, requestedCursor, cols, rows);
-        if (!resumedIncrementally) {
+        if (resumedIncrementally) {
+          // The incremental replay is synchronous, so subscribing now cannot
+          // leave a gap or place newer live output ahead of the catch-up.
+          attached = attachTerminal(sessionId, socket, { skipReplay: true });
+        } else {
+          // Keep the existing full-capture behavior: subscribe while the async
+          // tmux snapshot is collected so a busy terminal cannot lose output.
+          attached = attachTerminal(sessionId, socket, { skipReplay: true });
+          if (!attached) throw new Error('Failed to attach terminal');
           sendJson(socket, { type: 'recovery', mode: 'full' });
           await sendReplay(sessionId, socket, true, 'history');
         }
+        if (!attached) throw new Error('Failed to attach terminal');
 
         // This ack is the only point at which the browser may enable keyboard
         // input. Inputs that raced with async spawn/attach are flushed in order.
