@@ -34,8 +34,10 @@ const task: ScheduledTask = {
   new_cli_type: null,
   new_agent_type: null,
   inactive_policy: 'resume',
+  daily_stop_time: null,
   enabled: 1,
   next_run_at: '2026-08-14T01:30:00.000Z',
+  daily_stop_at: null,
   successful_runs: 0,
   consecutive_failures: 0,
   last_quota_remaining: null,
@@ -132,16 +134,30 @@ describe('ScheduledTasksPanel', () => {
     expect(screen.queryByRole('option', { name: /Old terminal/ })).not.toBeInTheDocument();
   });
 
-  it('configures stop guards and shows the live Codex weekly quota', async () => {
+  it('adds typed stop conditions, including a daily stop time, and shows Codex quota', async () => {
     const user = userEvent.setup();
     renderPanel();
     await screen.findByText('每日代码巡检');
 
     await user.click(screen.getByRole('button', { name: 'Codex' }));
-    expect(await screen.findByText('剩余 65%')).toBeInTheDocument();
-    await user.type(screen.getByRole('spinbutton', { name: /成功执行后停止/ }), '2');
-    await user.type(screen.getByRole('spinbutton', { name: /连续失败后停止/ }), '3');
-    await user.type(screen.getByRole('spinbutton', { name: /Codex 周额度低于/ }), '20');
+    const addCondition = screen.getByRole('button', { name: '添加停止条件' });
+    await user.click(addCondition);
+    await user.selectOptions(screen.getByLabelText('停止条件 1'), 'success_count');
+    await user.clear(screen.getByLabelText('成功执行次数'));
+    await user.type(screen.getByLabelText('成功执行次数'), '2');
+    await user.click(addCondition);
+    await user.selectOptions(screen.getByLabelText('停止条件 2'), 'failure_count');
+    await user.clear(screen.getByLabelText('连续失败次数'));
+    await user.type(screen.getByLabelText('连续失败次数'), '3');
+    await user.click(addCondition);
+    await user.selectOptions(screen.getByLabelText('停止条件 3'), 'quota_floor');
+    expect(await screen.findByText('65%')).toBeInTheDocument();
+    await user.clear(screen.getByLabelText('Codex 周额度下限'));
+    await user.type(screen.getByLabelText('Codex 周额度下限'), '20');
+    await user.click(addCondition);
+    await user.selectOptions(screen.getByLabelText('停止条件 4'), 'daily_time');
+    await user.clear(screen.getByLabelText('每日停止时间'));
+    await user.type(screen.getByLabelText('每日停止时间'), '18:30');
     await user.type(screen.getByPlaceholderText('例如：每日代码巡检'), '受保护任务');
     await user.type(screen.getByPlaceholderText('到时间后发送给标签页的完整指令…'), '继续工作');
     await user.click(screen.getByRole('button', { name: '创建任务' }));
@@ -151,6 +167,7 @@ describe('ScheduledTasksPanel', () => {
       max_successful_runs: 2,
       max_consecutive_failures: 3,
       quota_remaining_below: 20,
+      daily_stop_time: '18:30',
     })));
   });
 });

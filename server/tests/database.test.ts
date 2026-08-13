@@ -32,6 +32,8 @@ describe('database schema and durable session identity', () => {
     const scheduledTaskColumns = db.prepare('PRAGMA table_info(scheduled_tasks)').all() as Array<{ name: string }>;
     expect(scheduledTaskColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
       'stop_at',
+      'daily_stop_time',
+      'daily_stop_at',
       'max_successful_runs',
       'quota_remaining_below',
       'max_consecutive_failures',
@@ -41,7 +43,7 @@ describe('database schema and durable session identity', () => {
       'stopped_at',
       'stop_reason',
     ]));
-    expect(db.pragma('user_version', { simple: true })).toBe(5);
+    expect(db.pragma('user_version', { simple: true })).toBe(6);
   });
 
   it('preserves legacy project prompt data while migrating', () => {
@@ -68,7 +70,7 @@ describe('database schema and durable session identity', () => {
     initDb();
     const migrated = getDb().prepare('SELECT session_prompt FROM projects WHERE id = ?').get('legacy') as { session_prompt: string };
     expect(migrated.session_prompt).toBe('keep this prompt');
-    expect(getDb().pragma('user_version', { simple: true })).toBe(5);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(6);
 
     cleanup = () => {
       closeDb();
@@ -125,6 +127,6 @@ describe('database schema and durable session identity', () => {
       'legacy-orphan-project': null,
       'legacy-owned': 'owner',
     });
-    expect(getDb().pragma('user_version', { simple: true })).toBe(5);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(6);
   });
 });

@@ -27,6 +27,8 @@ export interface ScheduledTaskRow {
   enabled: number;
   next_run_at: string | null;
   stop_at: string | null;
+  daily_stop_time: string | null;
+  daily_stop_at: string | null;
   max_successful_runs: number | null;
   quota_remaining_below: number | null;
   max_consecutive_failures: number | null;
@@ -78,6 +80,9 @@ async function stopReasonBeforeRun(task: ScheduledTaskRow, now = Date.now()): Pr
   if (task.stop_at && Date.parse(task.stop_at) <= now) {
     return `已到截止时间（${task.stop_at}）`;
   }
+  if (task.daily_stop_at && Date.parse(task.daily_stop_at) <= now) {
+    return `已到每日停止时间（${task.daily_stop_time}，${task.timezone}）`;
+  }
   if (task.max_successful_runs != null && task.successful_runs >= task.max_successful_runs) {
     return `已完成 ${task.successful_runs} 次成功执行`;
   }
@@ -98,6 +103,9 @@ async function stopReasonBeforeRun(task: ScheduledTaskRow, now = Date.now()): Pr
   // preflight rather than sending just after the configured stop time.
   if (task.stop_at && Date.parse(task.stop_at) <= Date.now()) {
     return `已到截止时间（${task.stop_at}）`;
+  }
+  if (task.daily_stop_at && Date.parse(task.daily_stop_at) <= Date.now()) {
+    return `已到每日停止时间（${task.daily_stop_time}，${task.timezone}）`;
   }
   return null;
 }
@@ -299,6 +307,13 @@ export async function tickScheduledTasks(now = Date.now()): Promise<void> {
     WHERE enabled = 1 AND stop_at IS NOT NULL AND stop_at <= ?
   `).all(nowIso) as Array<{ id: string; stop_at: string }>;
   for (const task of expired) stopTask(task.id, `已到截止时间（${task.stop_at}）`, nowIso);
+  const dailyExpired = getDb().prepare(`
+    SELECT id, daily_stop_time, daily_stop_at, timezone FROM scheduled_tasks
+    WHERE enabled = 1 AND daily_stop_at IS NOT NULL AND daily_stop_at <= ?
+  `).all(nowIso) as Array<{ id: string; daily_stop_time: string; daily_stop_at: string; timezone: string }>;
+  for (const task of dailyExpired) {
+    stopTask(task.id, `已到每日停止时间（${task.daily_stop_time}，${task.timezone}）`, nowIso);
+  }
 
   const due = getDb().prepare(`
     SELECT * FROM scheduled_tasks

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { config } from '../config.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -159,6 +159,8 @@ function createCurrentSchema(): void {
       enabled INTEGER NOT NULL DEFAULT 1,
       next_run_at TEXT,
       stop_at TEXT,
+      daily_stop_time TEXT,
+      daily_stop_at TEXT,
       max_successful_runs INTEGER,
       quota_remaining_below INTEGER,
       max_consecutive_failures INTEGER,
@@ -306,6 +308,11 @@ function migrateScheduledTaskStopConditions(): void {
   addColumn('scheduled_tasks', 'stop_reason', 'TEXT');
 }
 
+function migrateScheduledTaskDailyStop(): void {
+  addColumn('scheduled_tasks', 'daily_stop_time', 'TEXT');
+  addColumn('scheduled_tasks', 'daily_stop_at', 'TEXT');
+}
+
 function runMigrations(): void {
   const current = db.pragma('user_version', { simple: true }) as number;
   if (current > SCHEMA_VERSION) {
@@ -318,6 +325,7 @@ function runMigrations(): void {
     if (current < 2) migrateTerminalDimensionsAndOutputKeys();
     if (current < 3) migrateLegacySessionOwnership();
     if (current < 5) migrateScheduledTaskStopConditions();
+    if (current < 6) migrateScheduledTaskDailyStop();
     createCurrentIndexes();
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
   });

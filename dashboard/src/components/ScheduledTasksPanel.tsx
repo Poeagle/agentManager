@@ -12,7 +12,6 @@ import {
   Pencil,
   Play,
   Plus,
-  ShieldCheck,
   TerminalSquare,
   Trash2,
   XCircle,
@@ -39,6 +38,38 @@ const DAYS = [
   { value: 0, label: '日' },
 ];
 
+type StopConditionType = 'absolute_time' | 'daily_time' | 'success_count' | 'quota_floor' | 'failure_count' | 'target_unavailable';
+
+interface StopCondition {
+  id: string;
+  type: StopConditionType;
+  value: string;
+}
+
+const STOP_CONDITION_OPTIONS: Array<{ value: StopConditionType; label: string }> = [
+  { value: 'absolute_time', label: '到指定日期时间' },
+  { value: 'daily_time', label: '每天到指定时间' },
+  { value: 'success_count', label: '成功执行达到' },
+  { value: 'failure_count', label: '连续失败达到' },
+  { value: 'quota_floor', label: 'Codex 周额度低于' },
+  { value: 'target_unavailable', label: '目标标签页不可用' },
+];
+
+let stopConditionSequence = 0;
+
+function newStopCondition(type: StopConditionType): StopCondition {
+  const defaults: Record<StopConditionType, string> = {
+    absolute_time: '',
+    daily_time: '18:00',
+    success_count: '1',
+    failure_count: '3',
+    quota_floor: '20',
+    target_unavailable: 'stop',
+  };
+  stopConditionSequence += 1;
+  return { id: `stop-condition-${stopConditionSequence}`, type, value: defaults[type] };
+}
+
 interface EditorState {
   id: string | null;
   name: string;
@@ -54,11 +85,7 @@ interface EditorState {
   newCliType: 'claude' | 'codex';
   newAgentType: string;
   inactivePolicy: 'resume' | 'fail';
-  stopAtLocal: string;
-  maxSuccessfulRuns: string;
-  quotaRemainingBelow: string;
-  maxConsecutiveFailures: string;
-  stopOnTargetUnavailable: boolean;
+  stopConditions: StopCondition[];
   enabled: boolean;
 }
 
@@ -82,11 +109,7 @@ function emptyEditor(): EditorState {
     newCliType: 'claude',
     newAgentType: 'coder',
     inactivePolicy: 'resume',
-    stopAtLocal: '',
-    maxSuccessfulRuns: '',
-    quotaRemainingBelow: '',
-    maxConsecutiveFailures: '',
-    stopOnTargetUnavailable: false,
+    stopConditions: [],
     enabled: true,
   };
 }
@@ -102,6 +125,13 @@ function editorFromTask(task: ScheduledTask): EditorState {
   const weekly = task.schedule_kind === 'weekly'
     ? /^([0-6](?:,[0-6])*)@(\d{2}:\d{2})$/.exec(task.schedule_value)
     : null;
+  const stopConditions: StopCondition[] = [];
+  if (task.stop_at) stopConditions.push({ ...newStopCondition('absolute_time'), value: isoToLocalInput(task.stop_at) });
+  if (task.daily_stop_time) stopConditions.push({ ...newStopCondition('daily_time'), value: task.daily_stop_time });
+  if (task.max_successful_runs) stopConditions.push({ ...newStopCondition('success_count'), value: task.max_successful_runs.toString() });
+  if (task.max_consecutive_failures) stopConditions.push({ ...newStopCondition('failure_count'), value: task.max_consecutive_failures.toString() });
+  if (task.quota_remaining_below) stopConditions.push({ ...newStopCondition('quota_floor'), value: task.quota_remaining_below.toString() });
+  if (task.stop_on_target_unavailable) stopConditions.push(newStopCondition('target_unavailable'));
   return {
     id: task.id,
     name: task.name,
@@ -117,11 +147,7 @@ function editorFromTask(task: ScheduledTask): EditorState {
     newCliType: task.new_cli_type ?? 'claude',
     newAgentType: task.new_agent_type ?? 'coder',
     inactivePolicy: task.inactive_policy ?? 'resume',
-    stopAtLocal: isoToLocalInput(task.stop_at),
-    maxSuccessfulRuns: task.max_successful_runs?.toString() ?? '',
-    quotaRemainingBelow: task.quota_remaining_below?.toString() ?? '',
-    maxConsecutiveFailures: task.max_consecutive_failures?.toString() ?? '',
-    stopOnTargetUnavailable: !!task.stop_on_target_unavailable,
+    stopConditions,
     enabled: !!task.enabled,
   };
 }
@@ -260,22 +286,34 @@ export function ScheduledTasksPanel({
       if (editor.targetType === 'existing' && !editor.targetSessionId) throw new Error('请选择目标标签页');
       if (editor.scheduleKind === 'weekly' && editor.weeklyDays.length === 0) throw new Error('请至少选择一天');
       const parseOptionalInteger = (value: string, label: string, max: number) => {
-        if (!value.trim()) return null;
+        if (!value.trim()) throw new Error(`请输入${label}`);
         const parsed = Number(value);
         if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) throw new Error(`${label}必须为 1–${max} 的整数`);
         return parsed;
       };
-      const maxSuccessfulRuns = parseOptionalInteger(editor.maxSuccessfulRuns, '成功执行次数', 1_000_000);
-      const maxConsecutiveFailures = parseOptionalInteger(editor.maxConsecutiveFailures, '连续失败次数', 1_000_000);
-      const quotaRemainingBelow = usesCodexQuota
-        ? parseOptionalInteger(editor.quotaRemainingBelow, 'Codex 周额度下限', 100)
+      const conditions = new Map(editor.stopConditions.map((condition) => [condition.type, condition.value]));
+      if (conditions.size !== editor.stopConditions.length) throw new Error('同一种停止条件只能添加一次');
+      const maxSuccessfulRuns = conditions.has('success_count')
+        ? parseOptionalInteger(conditions.get('success_count')!, '成功执行次数', 1_000_000)
         : null;
+      const maxConsecutiveFailures = conditions.has('failure_count')
+        ? parseOptionalInteger(conditions.get('failure_count')!, '连续失败次数', 1_000_000)
+        : null;
+      let quotaRemainingBelow: number | null = null;
+      if (conditions.has('quota_floor')) {
+        if (!usesCodexQuota) throw new Error('Codex 周额度条件只能用于 Codex Session 或 Agent');
+        quotaRemainingBelow = parseOptionalInteger(conditions.get('quota_floor')!, 'Codex 周额度下限', 100);
+      }
       let stopAt: string | null = null;
-      if (editor.stopAtLocal) {
-        const date = new Date(editor.stopAtLocal);
+      if (conditions.has('absolute_time')) {
+        const date = new Date(conditions.get('absolute_time')!);
         if (Number.isNaN(date.getTime())) throw new Error('截止时间无效');
         stopAt = date.toISOString();
       }
+      const dailyStopTime = conditions.get('daily_time') ?? null;
+      if (dailyStopTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(dailyStopTime)) throw new Error('每日停止时间无效');
+      const stopOnTargetUnavailable = conditions.has('target_unavailable');
+      if (stopOnTargetUnavailable && editor.targetType !== 'existing') throw new Error('目标不可用条件只能用于现有标签页');
       const scheduleValue = editor.scheduleKind === 'weekly'
         ? `${[...editor.weeklyDays].sort((a, b) => a - b).join(',')}@${editor.weeklyTime}`
         : editor.scheduleValue;
@@ -293,10 +331,11 @@ export function ScheduledTasksPanel({
         new_agent_type: editor.targetType === 'new' && editor.newMode === 'agent' ? editor.newAgentType : null,
         inactive_policy: editor.inactivePolicy,
         stop_at: stopAt,
+        daily_stop_time: dailyStopTime,
         max_successful_runs: maxSuccessfulRuns,
         quota_remaining_below: quotaRemainingBelow,
         max_consecutive_failures: maxConsecutiveFailures,
-        stop_on_target_unavailable: editor.targetType === 'existing' && editor.stopOnTargetUnavailable,
+        stop_on_target_unavailable: stopOnTargetUnavailable,
         enabled: editor.enabled,
       };
       return editor.id
@@ -343,6 +382,33 @@ export function ScheduledTasksPanel({
     } catch (error) {
       setFormError(error instanceof Error ? error.message : '删除失败');
     }
+  };
+
+  const addStopCondition = () => {
+    const used = new Set(editor.stopConditions.map((condition) => condition.type));
+    const available = STOP_CONDITION_OPTIONS.find((option) => !used.has(option.value)
+      && (option.value !== 'quota_floor' || usesCodexQuota)
+      && (option.value !== 'target_unavailable' || editor.targetType === 'existing'));
+    if (!available) return;
+    setEditor((current) => ({ ...current, stopConditions: [...current.stopConditions, newStopCondition(available.value)] }));
+  };
+
+  const updateStopCondition = (id: string, update: Partial<Pick<StopCondition, 'type' | 'value'>>) => {
+    setEditor((current) => ({
+      ...current,
+      stopConditions: current.stopConditions.map((condition) => {
+        if (condition.id !== id) return condition;
+        if (update.type && update.type !== condition.type) return newStopCondition(update.type);
+        return { ...condition, ...update };
+      }),
+    }));
+  };
+
+  const removeStopCondition = (id: string) => {
+    setEditor((current) => ({
+      ...current,
+      stopConditions: current.stopConditions.filter((condition) => condition.id !== id),
+    }));
   };
 
   return (
@@ -526,63 +592,56 @@ export function ScheduledTasksPanel({
                 <textarea value={editor.prompt} onChange={(event) => setEditor({ ...editor, prompt: event.target.value })} rows={7} maxLength={100000} placeholder="到时间后发送给标签页的完整指令…" className={`${fieldClass} resize-y leading-relaxed`} style={fieldStyle} />
               </label>
 
-              <section className="overflow-hidden rounded-xl border" style={{ borderColor: 'var(--border)', background: 'var(--bg-primary)' }}>
-                <div className="flex items-start gap-3 border-b px-3 py-3" style={{ borderColor: 'var(--border)' }}>
-                  <div className="mt-0.5 rounded-lg p-2" style={{ background: 'color-mix(in srgb, #f59e0b 11%, transparent)', color: '#f59e0b' }}>
-                    <ShieldCheck className="h-4 w-4" />
-                  </div>
+              <section className="rounded-xl border px-3 py-3" style={{ borderColor: 'var(--border)', background: 'color-mix(in srgb, var(--bg-tertiary) 44%, transparent)' }}>
+                <div className="mb-3 flex items-center justify-between gap-3">
                   <div>
-                    <h3 className="text-xs font-semibold">停止护栏</h3>
-                    <p className="mt-0.5 text-[10px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>满足任一条件就停止后续调度，不会关闭或 kill 当前标签页。</p>
+                    <h3 className="text-xs font-semibold">停止条件</h3>
+                    <p className="mt-0.5 text-[10px]" style={{ color: 'var(--text-muted)' }}>满足任意一条即永久停止任务，不会关闭标签页。</p>
                   </div>
-                </div>
-                <div className="grid gap-3 p-3 sm:grid-cols-2">
-                  <label className="space-y-1.5 text-xs">
-                    <span style={{ color: 'var(--text-secondary)' }}>截止时间</span>
-                    <input type="datetime-local" value={editor.stopAtLocal} onChange={(event) => setEditor({ ...editor, stopAtLocal: event.target.value })} className={fieldClass} style={fieldStyle} />
-                    <small className="block" style={{ color: 'var(--text-muted)' }}>按当前浏览器本地时间</small>
-                  </label>
-                  <label className="space-y-1.5 text-xs">
-                    <span style={{ color: 'var(--text-secondary)' }}>成功执行后停止</span>
-                    <div className="flex items-center gap-2"><input type="number" min={1} max={1000000} value={editor.maxSuccessfulRuns} onChange={(event) => setEditor({ ...editor, maxSuccessfulRuns: event.target.value })} placeholder="不限" className={fieldClass} style={fieldStyle} /><span className="shrink-0" style={{ color: 'var(--text-muted)' }}>次</span></div>
-                  </label>
-                  <label className="space-y-1.5 text-xs">
-                    <span style={{ color: 'var(--text-secondary)' }}>连续失败后停止</span>
-                    <div className="flex items-center gap-2"><input type="number" min={1} max={1000000} value={editor.maxConsecutiveFailures} onChange={(event) => setEditor({ ...editor, maxConsecutiveFailures: event.target.value })} placeholder="不限" className={fieldClass} style={fieldStyle} /><span className="shrink-0" style={{ color: 'var(--text-muted)' }}>次</span></div>
-                  </label>
-                  <label className="space-y-1.5 text-xs">
-                    <span className="flex items-center gap-1.5" style={{ color: usesCodexQuota ? 'var(--text-secondary)' : 'var(--text-muted)' }}><Gauge className="h-3.5 w-3.5" />Codex 周额度低于</span>
-                    <div className="flex items-center gap-2"><input type="number" min={1} max={100} disabled={!usesCodexQuota} value={usesCodexQuota ? editor.quotaRemainingBelow : ''} onChange={(event) => setEditor({ ...editor, quotaRemainingBelow: event.target.value })} placeholder={usesCodexQuota ? '不限' : '选择 Codex 标签页'} className={`${fieldClass} disabled:cursor-not-allowed disabled:opacity-45`} style={fieldStyle} /><span className="shrink-0" style={{ color: 'var(--text-muted)' }}>%</span></div>
-                  </label>
+                  <button type="button" onClick={addStopCondition} disabled={editor.stopConditions.length >= STOP_CONDITION_OPTIONS.length} className="flex shrink-0 items-center gap-1 rounded-md border px-2.5 py-1.5 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-40" style={{ borderColor: 'color-mix(in srgb, var(--accent) 45%, var(--border))', color: 'var(--accent)', background: 'color-mix(in srgb, var(--accent) 7%, transparent)' }}>
+                    <Plus className="h-3.5 w-3.5" />添加停止条件
+                  </button>
                 </div>
 
-                {usesCodexQuota && (
-                  <div className="mx-3 mb-3 rounded-lg border px-3 py-2.5" style={{ borderColor: 'color-mix(in srgb, var(--accent) 22%, var(--border))', background: 'color-mix(in srgb, var(--accent) 5%, transparent)' }}>
-                    {quotaQuery.isLoading ? (
-                      <div className="flex items-center gap-2 text-[10px]" style={{ color: 'var(--text-muted)' }}><Loader2 className="h-3 w-3 animate-spin" />正在读取 Codex 周额度…</div>
-                    ) : quotaQuery.data?.quota ? (
-                      <>
-                        <div className="flex items-center justify-between gap-3 text-[10px]"><span style={{ color: 'var(--text-secondary)' }}>当前周额度</span><strong className="font-mono text-xs tabular-nums" style={{ color: quotaQuery.data.quota.remainingPercent < 20 ? 'var(--error)' : 'var(--accent)' }}>剩余 {quotaQuery.data.quota.remainingPercent}%</strong></div>
-                        <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ background: 'var(--bg-tertiary)' }}><div className="h-full rounded-full transition-[width]" style={{ width: `${quotaQuery.data.quota.remainingPercent}%`, background: quotaQuery.data.quota.remainingPercent < 20 ? 'var(--error)' : 'var(--accent)' }} /></div>
-                        <div className="mt-1.5 flex justify-between text-[9px]" style={{ color: 'var(--text-muted)' }}><span>{quotaQuery.data.quota.planType?.toUpperCase() ?? 'Codex'} · 已用 {quotaQuery.data.quota.usedPercent}%</span><span>重置 {formatEpochSeconds(quotaQuery.data.quota.resetsAt)}</span></div>
-                      </>
-                    ) : (
-                      <p className="text-[10px]" style={{ color: 'var(--error)' }}>{quotaQuery.error instanceof Error ? quotaQuery.error.message : '无法读取 Codex 周额度'}</p>
-                    )}
+                {editor.stopConditions.length === 0 ? (
+                  <button type="button" onClick={addStopCondition} className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed py-3 text-[11px] transition-colors hover:border-orange-500/50" style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
+                    <Plus className="h-3.5 w-3.5" />未设置停止条件
+                  </button>
+                ) : (
+                  <div className="space-y-2">
+                    {editor.stopConditions.map((condition, index) => {
+                      const usedTypes = new Set(editor.stopConditions.filter((item) => item.id !== condition.id).map((item) => item.type));
+                      const numeric = condition.type === 'success_count' || condition.type === 'failure_count' || condition.type === 'quota_floor';
+                      return (
+                        <div key={condition.id} className="grid grid-cols-[minmax(138px,0.9fr)_minmax(150px,1.1fr)_32px] items-center gap-2 rounded-lg border p-2" style={{ borderColor: 'var(--border)', background: 'var(--bg-primary)' }}>
+                          <select aria-label={`停止条件 ${index + 1}`} value={condition.type} onChange={(event) => updateStopCondition(condition.id, { type: event.target.value as StopConditionType })} className={fieldClass} style={fieldStyle}>
+                            {STOP_CONDITION_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value} disabled={usedTypes.has(option.value) || (option.value === 'quota_floor' && !usesCodexQuota) || (option.value === 'target_unavailable' && editor.targetType !== 'existing')}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+
+                          {condition.type === 'absolute_time' && <input aria-label="指定停止日期时间" type="datetime-local" value={condition.value} onChange={(event) => updateStopCondition(condition.id, { value: event.target.value })} className={fieldClass} style={fieldStyle} />}
+                          {condition.type === 'daily_time' && <div className="flex items-center gap-2"><input aria-label="每日停止时间" type="time" value={condition.value} onChange={(event) => updateStopCondition(condition.id, { value: event.target.value })} className={fieldClass} style={fieldStyle} /><span className="shrink-0 text-[10px]" style={{ color: 'var(--text-muted)' }}>{editor.timezone}</span></div>}
+                          {numeric && <div className="flex items-center gap-2"><input aria-label={condition.type === 'quota_floor' ? 'Codex 周额度下限' : condition.type === 'success_count' ? '成功执行次数' : '连续失败次数'} type="number" min={1} max={condition.type === 'quota_floor' ? 100 : 1000000} value={condition.value} onChange={(event) => updateStopCondition(condition.id, { value: event.target.value })} className={fieldClass} style={fieldStyle} /><span className="w-5 shrink-0 text-[11px]" style={{ color: 'var(--text-muted)' }}>{condition.type === 'quota_floor' ? '%' : '次'}</span></div>}
+                          {condition.type === 'target_unavailable' && <div className="rounded-lg border px-3 py-2 text-xs" style={{ borderColor: 'var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>立即停止任务</div>}
+
+                          <button type="button" aria-label={`删除停止条件 ${index + 1}`} onClick={() => removeStopCondition(condition.id)} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-red-500/10" style={{ color: 'var(--text-muted)' }}><XCircle className="h-4 w-4" /></button>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
 
-                <div className="border-t px-3 py-2.5" style={{ borderColor: 'var(--border)' }}>
-                  {editor.targetType === 'existing' && (
-                    <label className="flex items-start gap-2 text-xs">
-                      <input type="checkbox" checked={editor.stopOnTargetUnavailable} onChange={(event) => setEditor({ ...editor, stopOnTargetUnavailable: event.target.checked })} className="mt-0.5 accent-orange-500" />
-                      <span><strong className="block text-[11px] font-medium">目标标签页无法恢复时停止</strong><small style={{ color: 'var(--text-muted)' }}>避免标签页已删除后继续产生失败记录</small></span>
-                    </label>
-                  )}
-                  {selectedTask && (selectedTask.successful_runs > 0 || selectedTask.consecutive_failures > 0) && (
-                    <p className="mt-2 font-mono text-[9px] tabular-nums" style={{ color: 'var(--text-muted)' }}>累计成功 {selectedTask.successful_runs} 次 · 当前连续失败 {selectedTask.consecutive_failures} 次</p>
-                  )}
-                </div>
+                {editor.stopConditions.some((condition) => condition.type === 'quota_floor') && usesCodexQuota && (
+                  <div className="mt-2 flex items-center gap-3 rounded-lg border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--accent) 25%, var(--border))', background: 'color-mix(in srgb, var(--accent) 5%, transparent)' }}>
+                    <Gauge className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--accent)' }} />
+                    {quotaQuery.isLoading ? <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>正在读取 Codex 周额度…</span> : quotaQuery.data?.quota ? <><span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>当前剩余</span><strong className="font-mono text-xs tabular-nums" style={{ color: quotaQuery.data.quota.remainingPercent < 20 ? 'var(--error)' : 'var(--accent)' }}>{quotaQuery.data.quota.remainingPercent}%</strong><span className="ml-auto text-[9px]" style={{ color: 'var(--text-muted)' }}>重置 {formatEpochSeconds(quotaQuery.data.quota.resetsAt)}</span></> : <span className="text-[10px]" style={{ color: 'var(--error)' }}>{quotaQuery.error instanceof Error ? quotaQuery.error.message : '无法读取额度'}</span>}
+                  </div>
+                )}
+
+                {selectedTask && (selectedTask.successful_runs > 0 || selectedTask.consecutive_failures > 0) && <p className="mt-2 font-mono text-[9px] tabular-nums" style={{ color: 'var(--text-muted)' }}>累计成功 {selectedTask.successful_runs} 次 · 当前连续失败 {selectedTask.consecutive_failures} 次</p>}
               </section>
 
               <div className="flex items-center justify-between gap-3 border-t pt-4" style={{ borderColor: 'var(--border)' }}>

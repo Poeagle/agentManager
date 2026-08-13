@@ -468,6 +468,7 @@ export interface ScheduledTaskInput {
   new_agent_type?: string | null;
   inactive_policy?: 'resume' | 'fail';
   stop_at?: string | null;
+  daily_stop_time?: string | null;
   max_successful_runs?: number | null;
   quota_remaining_below?: number | null;
   max_consecutive_failures?: number | null;
@@ -480,6 +481,7 @@ export interface ScheduledTask extends Omit<ScheduledTaskInput, 'enabled'> {
   user_id: string;
   enabled: number;
   next_run_at: string | null;
+  daily_stop_at: string | null;
   successful_runs: number;
   consecutive_failures: number;
   last_quota_remaining: number | null;

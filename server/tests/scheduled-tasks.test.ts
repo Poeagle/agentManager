@@ -77,7 +77,7 @@ describe('scheduled task API', () => {
         schedule_kind: 'daily', schedule_value: '09:30', timezone: 'Asia/Taipei',
         target_type: 'new', new_mode: 'session', new_cli_type: 'codex', enabled: true,
         max_successful_runs: 10, quota_remaining_below: 20,
-        max_consecutive_failures: 3, stop_at: '2099-08-20T03:00:00.000Z',
+        max_consecutive_failures: 3, stop_at: '2099-08-20T03:00:00.000Z', daily_stop_time: '18:30',
       },
     });
     expect(created.statusCode).toBe(200);
@@ -90,8 +90,10 @@ describe('scheduled task API', () => {
       max_successful_runs: 10,
       quota_remaining_below: 20,
       max_consecutive_failures: 3,
+      daily_stop_time: '18:30',
     });
     expect(created.json().task.next_run_at).toEqual(expect.any(String));
+    expect(created.json().task.daily_stop_at).toEqual(expect.any(String));
 
     const paused = await app.inject({
       method: 'PATCH', url: `/api/scheduled-tasks/${taskId}`, headers: { cookie }, payload: { enabled: false },
@@ -287,6 +289,28 @@ describe('scheduled task API', () => {
     const row = getDb().prepare('SELECT enabled, next_run_at, stopped_at, stop_reason FROM scheduled_tasks WHERE id = ?').get(taskId) as any;
     expect(row).toMatchObject({ enabled: 0, next_run_at: null, stopped_at: '2026-08-13T00:01:00.000Z' });
     expect(row.stop_reason).toMatch(/截止时间/);
+    expect(manager.createSession).not.toHaveBeenCalled();
+  });
+
+  it('stops an enabled task at its next daily stop time without sending', async () => {
+    const created = await app.inject({
+      method: 'POST', url: '/api/scheduled-tasks', headers: { cookie },
+      payload: {
+        project_id: 'project-1', name: 'Daily cutoff', prompt: 'continue', schedule_kind: 'interval',
+        schedule_value: '10', timezone: 'Asia/Taipei', target_type: 'new', new_mode: 'session',
+        new_cli_type: 'claude', daily_stop_time: '18:30',
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    const taskId = created.json().task.id as string;
+    expect(created.json().task.daily_stop_at).toEqual(expect.any(String));
+    getDb().prepare('UPDATE scheduled_tasks SET daily_stop_at = ? WHERE id = ?')
+      .run('2026-08-13T00:00:00.000Z', taskId);
+
+    await tickScheduledTasks(Date.parse('2026-08-13T00:01:00.000Z'));
+    const row = getDb().prepare('SELECT enabled, next_run_at, stopped_at, stop_reason FROM scheduled_tasks WHERE id = ?').get(taskId) as any;
+    expect(row).toMatchObject({ enabled: 0, next_run_at: null, stopped_at: '2026-08-13T00:01:00.000Z' });
+    expect(row.stop_reason).toMatch(/每日停止时间（18:30，Asia\/Taipei）/);
     expect(manager.createSession).not.toHaveBeenCalled();
   });
 

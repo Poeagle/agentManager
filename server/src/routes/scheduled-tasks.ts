@@ -26,6 +26,7 @@ interface ScheduledTaskInput {
   new_agent_type?: string | null;
   inactive_policy?: ScheduledInactivePolicy;
   stop_at?: string | null;
+  daily_stop_time?: string | null;
   max_successful_runs?: number | null;
   quota_remaining_below?: number | null;
   max_consecutive_failures?: number | null;
@@ -44,7 +45,7 @@ function validateRawInput(raw: unknown): string | null {
   for (const key of ['project_id', 'name', 'prompt', 'schedule_kind', 'schedule_value', 'timezone', 'target_type', 'inactive_policy']) {
     if (value[key] !== undefined && typeof value[key] !== 'string') return `${key} 必须是字符串`;
   }
-  for (const key of ['target_session_id', 'new_mode', 'new_cli_type', 'new_agent_type', 'stop_at']) {
+  for (const key of ['target_session_id', 'new_mode', 'new_cli_type', 'new_agent_type', 'stop_at', 'daily_stop_time']) {
     if (value[key] !== undefined && value[key] !== null && typeof value[key] !== 'string') return `${key} 必须是字符串或 null`;
   }
   for (const key of ['max_successful_runs', 'quota_remaining_below', 'max_consecutive_failures']) {
@@ -109,6 +110,7 @@ function normalizeInput(raw: Partial<ScheduledTaskInput>, base?: ScheduledTaskRo
     new_agent_type: raw.new_agent_type !== undefined ? raw.new_agent_type : base?.new_agent_type,
     inactive_policy: raw.inactive_policy ?? base?.inactive_policy ?? 'resume',
     stop_at: raw.stop_at !== undefined ? raw.stop_at : base?.stop_at,
+    daily_stop_time: raw.daily_stop_time !== undefined ? raw.daily_stop_time : base?.daily_stop_time,
     max_successful_runs: raw.max_successful_runs !== undefined ? raw.max_successful_runs : base?.max_successful_runs,
     quota_remaining_below: raw.quota_remaining_below !== undefined ? raw.quota_remaining_below : base?.quota_remaining_below,
     max_consecutive_failures: raw.max_consecutive_failures !== undefined ? raw.max_consecutive_failures : base?.max_consecutive_failures,
@@ -135,6 +137,13 @@ function validateInput(userId: string, input: ScheduledTaskInput): string | null
     const stopAt = Date.parse(input.stop_at);
     if (!Number.isFinite(stopAt)) return '截止时间无效';
     if (input.enabled && stopAt <= Date.now()) return '启用任务时，截止时间必须晚于当前时间';
+  }
+  if (input.daily_stop_time != null) {
+    try {
+      validateSchedule('daily', input.daily_stop_time, input.timezone);
+    } catch {
+      return '每日停止时间必须是有效的 HH:mm 时间';
+    }
   }
   for (const [value, label] of [
     [input.max_successful_runs, '成功执行次数'],
@@ -207,13 +216,16 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
     const nextRun = input.enabled
       ? nextScheduledAt(input.schedule_kind, input.schedule_value, input.timezone)
       : null;
+    const dailyStopAt = input.enabled && input.daily_stop_time
+      ? nextScheduledAt('daily', input.daily_stop_time, input.timezone)
+      : null;
     getDb().prepare(`
       INSERT INTO scheduled_tasks (
         id, user_id, project_id, name, prompt, schedule_kind, schedule_value, timezone,
         target_type, target_session_id, new_mode, new_cli_type, new_agent_type,
-        inactive_policy, stop_at, max_successful_runs, quota_remaining_below,
+        inactive_policy, stop_at, daily_stop_time, daily_stop_at, max_successful_runs, quota_remaining_below,
         max_consecutive_failures, stop_on_target_unavailable, enabled, next_run_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       req.user!.id,
@@ -230,6 +242,8 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       input.target_type === 'new' && input.new_mode === 'agent' ? input.new_agent_type?.trim() : null,
       input.inactive_policy ?? 'resume',
       input.stop_at ?? null,
+      input.daily_stop_time ?? null,
+      dailyStopAt,
       input.max_successful_runs ?? null,
       input.quota_remaining_below ?? null,
       input.max_consecutive_failures ?? null,
@@ -257,12 +271,21 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       : scheduleChanged || !current.next_run_at
         ? nextScheduledAt(input.schedule_kind, input.schedule_value, input.timezone)
         : current.next_run_at;
+    const dailyStopChanged = input.daily_stop_time !== current.daily_stop_time
+      || input.timezone !== current.timezone
+      || (!!input.enabled !== !!current.enabled);
+    const dailyStopAt = !input.enabled || !input.daily_stop_time
+      ? null
+      : dailyStopChanged || !current.daily_stop_at
+        ? nextScheduledAt('daily', input.daily_stop_time, input.timezone)
+        : current.daily_stop_at;
     const restartingStoppedTask = !!input.enabled && !current.enabled && !!current.stopped_at;
     getDb().prepare(`
       UPDATE scheduled_tasks SET
         project_id = ?, name = ?, prompt = ?, schedule_kind = ?, schedule_value = ?, timezone = ?,
         target_type = ?, target_session_id = ?, new_mode = ?, new_cli_type = ?, new_agent_type = ?,
-        inactive_policy = ?, stop_at = ?, max_successful_runs = ?, quota_remaining_below = ?,
+        inactive_policy = ?, stop_at = ?, daily_stop_time = ?, daily_stop_at = ?,
+        max_successful_runs = ?, quota_remaining_below = ?,
         max_consecutive_failures = ?, stop_on_target_unavailable = ?, enabled = ?, next_run_at = ?,
         successful_runs = ?, consecutive_failures = ?, stopped_at = ?, stop_reason = ?,
         updated_at = datetime('now')
@@ -281,6 +304,8 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       input.target_type === 'new' && input.new_mode === 'agent' ? input.new_agent_type?.trim() : null,
       input.inactive_policy ?? 'resume',
       input.stop_at ?? null,
+      input.daily_stop_time ?? null,
+      dailyStopAt,
       input.max_successful_runs ?? null,
       input.quota_remaining_below ?? null,
       input.max_consecutive_failures ?? null,
