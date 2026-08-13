@@ -2205,7 +2205,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
             className="h-full absolute inset-0"
             style={{ display: activeMode === 'scheduled' ? 'block' : 'none' }}
           >
-            {activeMode === 'scheduled' && <ScheduledTasksPanel projectId={projectId} />}
+            {activeMode === 'scheduled' && <ScheduledTasksPanel projectId={projectId} sessionTabs={terminalInstances} />}
           </div>
         </div>
       </div>

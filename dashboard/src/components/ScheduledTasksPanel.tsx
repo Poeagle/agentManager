@@ -24,6 +24,7 @@ import {
   type ScheduledTaskInput,
   type Session,
 } from '../lib/api';
+import type { TerminalInstance } from '../lib/project-session-state';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 
 const DAYS = [
@@ -128,15 +129,38 @@ function formatDate(value: string | null, timezone: string): string {
   }).format(date);
 }
 
-function sessionLabel(session: Session): string {
+function sessionDateLabel(value: string | null | undefined): string {
+  if (!value) return '未知时间';
+  const normalized = /Z$|[+-]\d\d:\d\d$/.test(value) ? value : `${value.replace(' ', 'T')}Z`;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return '未知时间';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
+}
+
+function sessionLabel(session: Session, tabName?: string): string {
   const kind = session.mode === 'agent' ? 'Agent' : session.mode === 'terminal' || session.task === 'Terminal' ? 'Terminal' : 'Session';
-  return `${kind} · ${session.task} · ${session.status}`;
+  const name = tabName?.trim();
+  if (name) return `${name} · ${kind} · ${session.status}`;
+  const description = session.task && session.task !== 'Terminal' ? session.task : kind;
+  return `${description} · ${sessionDateLabel(session.created_at)} · #${session.id.slice(-6)} · ${session.status}`;
 }
 
 const fieldClass = 'w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-1';
 const fieldStyle = { background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: 'var(--text-primary)' };
 
-export function ScheduledTasksPanel({ projectId }: { projectId: string }) {
+export function ScheduledTasksPanel({
+  projectId,
+  sessionTabs = [],
+}: {
+  projectId: string;
+  sessionTabs?: readonly TerminalInstance[];
+}) {
   const queryClient = useQueryClient();
   const [editor, setEditor] = useState<EditorState>(() => emptyEditor());
   const [formError, setFormError] = useState('');
@@ -152,9 +176,19 @@ export function ScheduledTasksPanel({ projectId }: { projectId: string }) {
     queryFn: () => api.sessions.list(),
   });
   const tasks = tasksQuery.data?.tasks ?? [];
+  const tabNames = useMemo(() => new Map(
+    sessionTabs.map((tab) => [tab.id, tab.customLabel?.trim() || tab.label]),
+  ), [sessionTabs]);
   const projectSessions = useMemo(() => (
-    (sessionsQuery.data?.sessions ?? []).filter((session) => session.project_id === projectId)
-  ), [projectId, sessionsQuery.data?.sessions]);
+    (sessionsQuery.data?.sessions ?? [])
+      .filter((session) => session.project_id === projectId)
+      .sort((a, b) => {
+        const aOpen = tabNames.has(a.id) ? 1 : 0;
+        const bOpen = tabNames.has(b.id) ? 1 : 0;
+        if (aOpen !== bOpen) return bOpen - aOpen;
+        return (b.created_at || '').localeCompare(a.created_at || '');
+      })
+  ), [projectId, sessionsQuery.data?.sessions, tabNames]);
   const selectedTask = editor.id ? tasks.find((task) => task.id === editor.id) : undefined;
   const runsQuery = useQuery({
     queryKey: ['scheduled-task-runs', editor.id],
@@ -404,7 +438,7 @@ export function ScheduledTasksPanel({ projectId }: { projectId: string }) {
 
                 {editor.targetType === 'existing' ? (
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <label className="space-y-1.5 text-xs"><span style={{ color: 'var(--text-secondary)' }}>目标标签页</span><select value={editor.targetSessionId} onChange={(event) => setEditor({ ...editor, targetSessionId: event.target.value })} className={fieldClass} style={fieldStyle}><option value="">选择标签页</option>{projectSessions.map((session) => <option key={session.id} value={session.id}>{sessionLabel(session)}</option>)}</select></label>
+                    <label className="space-y-1.5 text-xs"><span style={{ color: 'var(--text-secondary)' }}>目标标签页</span><select value={editor.targetSessionId} onChange={(event) => setEditor({ ...editor, targetSessionId: event.target.value })} className={fieldClass} style={fieldStyle}><option value="">选择标签页</option>{projectSessions.map((session) => <option key={session.id} value={session.id}>{sessionLabel(session, tabNames.get(session.id))}</option>)}</select></label>
                     <label className="space-y-1.5 text-xs"><span style={{ color: 'var(--text-secondary)' }}>标签页未运行时</span><select value={editor.inactivePolicy} onChange={(event) => setEditor({ ...editor, inactivePolicy: event.target.value as 'resume' | 'fail' })} className={fieldClass} style={fieldStyle}><option value="resume">自动恢复后发送</option><option value="fail">本次执行失败</option></select></label>
                   </div>
                 ) : (

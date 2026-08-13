@@ -48,9 +48,9 @@ const session: Session = {
   pid: null, started_at: null, completed_at: null, exit_code: null, created_at: '2026-08-13T00:00:00Z',
 };
 
-function renderPanel() {
+function renderPanel(sessionTabs: Array<{ id: string; label: string; customLabel?: string }> = []) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={client}><ScheduledTasksPanel projectId="project-1" /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><ScheduledTasksPanel projectId="project-1" sessionTabs={sessionTabs} /></QueryClientProvider>);
 }
 
 beforeEach(() => {
@@ -101,5 +101,14 @@ describe('ScheduledTasksPanel', () => {
       schedule_kind: 'daily',
       schedule_value: '09:00',
     })));
+  });
+
+  it('uses the visible tab name when selecting an existing target', async () => {
+    const user = userEvent.setup();
+    renderPanel([{ id: session.id, label: 'Session 1', customLabel: '代码巡检主会话' }]);
+
+    await screen.findByText('每日代码巡检');
+    await user.click(screen.getByRole('button', { name: /现有标签页/ }));
+    expect(screen.getByRole('option', { name: '代码巡检主会话 · Session · running' })).toBeInTheDocument();
   });
 });
