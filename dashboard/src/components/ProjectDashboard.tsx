@@ -29,13 +29,17 @@ import {
   Bot,
   TerminalSquare,
   Search,
+  GripVertical,
 } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { ConfirmModal } from './ConfirmModal';
 import { StatuslinePromptModal } from './StatuslinePromptModal';
+import { moveItemByKey, orderItemsByKeys } from '../lib/reorder';
 
 interface ProjectDashboardProps {
   onOpenProject: (projectId: string, projectName: string, quickLaunch?: 'session' | 'agent' | 'terminal', cliType?: 'claude' | 'codex') => void;
+  projectOrder: string[];
+  onProjectOrderChange: (order: string[]) => void;
 }
 
 type ViewState = { mode: 'list' } | { mode: 'add' } | { mode: 'edit'; project: Project };
@@ -1241,7 +1245,7 @@ function CreateRepoModal({ projectPath, onClose, onCreated }: {
   );
 }
 
-export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
+export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderChange }: ProjectDashboardProps) {
   const [view, setView] = useState<ViewState>({ mode: 'list' });
   const queryClient = useQueryClient();
   const { data: authStatus } = useQuery({ queryKey: ['auth-status'], queryFn: () => api.auth.status(), staleTime: 60_000 });
@@ -1271,17 +1275,24 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
 
   const allProjects = useMemo(() => projectsData?.projects ?? [], [projectsData?.projects]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
+  const [projectDropTargetId, setProjectDropTargetId] = useState<string | null>(null);
+  const orderedProjects = useMemo(
+    () => orderItemsByKeys(allProjects, projectOrder, (project) => project.id),
+    [allProjects, projectOrder],
+  );
+  const canReorderProjects = !searchQuery.trim();
 
   const projects = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return allProjects;
-    return allProjects.filter(
+    if (!q) return orderedProjects;
+    return orderedProjects.filter(
       (p) =>
         p.name.toLowerCase().includes(q) ||
         p.path.toLowerCase().includes(q) ||
         (p.description && p.description.toLowerCase().includes(q))
     );
-  }, [allProjects, searchQuery]);
+  }, [orderedProjects, searchQuery]);
   // Statusline prompt — ask once if user wants to install custom status bar
   const { data: settingsData } = useQuery({
     queryKey: ['settings'],
@@ -1490,7 +1501,27 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
                   className="rounded-xl border flex flex-col group hover:border-[var(--accent)] transition-colors overflow-hidden cursor-pointer"
                   style={{
                     background: 'var(--bg-secondary)',
-                    borderColor: 'var(--border)',
+                    borderColor: projectDropTargetId === project.id ? 'var(--accent)' : 'var(--border)',
+                    opacity: draggingProjectId === project.id ? 0.65 : 1,
+                  }}
+                  onDragOver={(event) => {
+                    if (!canReorderProjects || !draggingProjectId || draggingProjectId === project.id) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'move';
+                    setProjectDropTargetId(project.id);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    if (canReorderProjects && draggingProjectId && draggingProjectId !== project.id) {
+                      onProjectOrderChange(moveItemByKey(
+                        orderedProjects,
+                        draggingProjectId,
+                        project.id,
+                        (item) => item.id,
+                      ).map((item) => item.id));
+                    }
+                    setDraggingProjectId(null);
+                    setProjectDropTargetId(null);
                   }}
                   onClick={() => onOpenProject(project.id, project.name)}
                 >
@@ -1505,13 +1536,34 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
                         className="flex items-center justify-between px-4 py-2.5"
                         style={{ background: `${color}15`, borderBottom: `1px solid ${color}30` }}
                       >
-                        <div className="min-w-0 flex-1">
+                        <div className="min-w-0 flex flex-1 items-start">
+                          <span
+                            draggable={canReorderProjects}
+                            onClick={(event) => event.stopPropagation()}
+                            onDragStart={(event) => {
+                              if (!canReorderProjects) return;
+                              event.dataTransfer.effectAllowed = 'move';
+                              event.dataTransfer.setData('text/plain', project.id);
+                              setDraggingProjectId(project.id);
+                            }}
+                            onDragEnd={() => {
+                              setDraggingProjectId(null);
+                              setProjectDropTargetId(null);
+                            }}
+                            className={`mr-1 mt-0.5 flex touch-none ${canReorderProjects ? 'cursor-grab opacity-35 transition-opacity group-hover:opacity-80 active:cursor-grabbing' : 'cursor-default opacity-20'}`}
+                            title={canReorderProjects ? '拖动排序' : '清除筛选后可排序'}
+                            aria-label={`拖动 ${project.name} 排序`}
+                          >
+                            <GripVertical className="w-3.5 h-3.5" />
+                          </span>
+                          <div className="min-w-0 flex-1">
                           <h3 className="text-sm font-semibold truncate" style={{ color }}>
                             {project.name}
                           </h3>
                           <p className="text-[10px] font-mono truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
                             {project.path}
                           </p>
+                          </div>
                         </div>
                         {counts && counts.total > 0 && (
                           <span

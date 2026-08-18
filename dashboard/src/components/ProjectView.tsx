@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Monitor, FolderTree, GitBranch, Home, Plus, X, Download, Globe, Zap, Bot, TerminalSquare, History, Sparkles, CalendarClock } from 'lucide-react';
+import { Monitor, FolderTree, GitBranch, Home, Plus, X, Download, Globe, Zap, Bot, TerminalSquare, History, Sparkles, CalendarClock, GripVertical } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { Terminal } from './Terminal';
 import { FileExplorer, type FileRefreshRequest } from './FileExplorer';
@@ -23,6 +23,7 @@ import {
   type TerminalInstance,
 } from '../lib/project-session-state';
 import { confirmDiscardExplorer } from '../lib/unsaved-files';
+import { moveItemByKey } from '../lib/reorder';
 
 interface ProjectViewProps {
   currentUserId: string;
@@ -247,6 +248,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   // cancel = Escape.
   const [editingTerminalId, setEditingTerminalId] = useState<string | null>(null);
   const [editingTerminalValue, setEditingTerminalValue] = useState('');
+  const [draggingTerminalId, setDraggingTerminalId] = useState<string | null>(null);
+  const [terminalDropTargetId, setTerminalDropTargetId] = useState<string | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const beginTerminalRename = useCallback((inst: TerminalInstance) => {
     setEditingTerminalId(inst.id);
@@ -269,6 +272,10 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     setEditingTerminalId(null);
     setEditingTerminalValue('');
   }, []);
+  const reorderTerminalTabs = useCallback((targetId: string) => {
+    if (!draggingTerminalId || draggingTerminalId === targetId) return;
+    setTerminalInstances((current) => moveItemByKey(current, draggingTerminalId, targetId, (tab) => tab.id));
+  }, [draggingTerminalId]);
   // Commit when the user mousedowns anywhere outside the rename input.
   useEffect(() => {
     if (editingTerminalId === null) return;
@@ -294,12 +301,18 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       ownsWebPageTab(currentUserId, projectId, tab.id),
     ),
   );
+  const [draggingWebPageId, setDraggingWebPageId] = useState<string | null>(null);
+  const [webPageDropTargetId, setWebPageDropTargetId] = useState<string | null>(null);
   const [activeWebPageId, setActiveWebPageId] = useState<string | null>(
     initialized?.activeWebPageId
       && ownsWebPageTab(currentUserId, projectId, initialized.activeWebPageId)
       ? initialized.activeWebPageId
       : null,
   );
+  const reorderWebPageTabs = useCallback((targetId: string) => {
+    if (!draggingWebPageId || draggingWebPageId === targetId) return;
+    setWebPageInstances((current) => moveItemByKey(current, draggingWebPageId, targetId, (tab) => tab.id));
+  }, [draggingWebPageId]);
 
   // Keep the three most recently used terminals hot. Older terminals retain
   // their painted xterm buffer for a grace period, then disconnect and resume
@@ -625,6 +638,12 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       ? initialized.activeExplorerId
       : explorerInstances[0].id,
   );
+  const [draggingExplorerId, setDraggingExplorerId] = useState<string | null>(null);
+  const [explorerDropTargetId, setExplorerDropTargetId] = useState<string | null>(null);
+  const reorderExplorerTabs = useCallback((targetId: string) => {
+    if (!draggingExplorerId || draggingExplorerId === targetId) return;
+    setExplorerInstances((current) => moveItemByKey(current, draggingExplorerId, targetId, (tab) => tab.id));
+  }, [draggingExplorerId]);
 
   // Persist state to localStorage (instant-paint cache + offline fallback).
   useEffect(() => {
@@ -1294,8 +1313,42 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                     <div
                       key={inst.id}
                       className="flex items-center gap-0.5 rounded-md shrink-0 group"
-                      style={{ background: isActive ? 'var(--bg-tertiary)' : 'transparent' }}
+                      onDragOver={(event) => {
+                        if (!draggingTerminalId || draggingTerminalId === inst.id) return;
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = 'move';
+                        setTerminalDropTargetId(inst.id);
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        reorderTerminalTabs(inst.id);
+                        setDraggingTerminalId(null);
+                        setTerminalDropTargetId(null);
+                      }}
+                      style={{
+                        background: isActive ? 'var(--bg-tertiary)' : 'transparent',
+                        outline: terminalDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
+                      }}
                     >
+                      {!editingTerminalId && (
+                        <span
+                          draggable
+                          onDragStart={(event) => {
+                            event.dataTransfer.effectAllowed = 'move';
+                            event.dataTransfer.setData('text/plain', inst.id);
+                            setDraggingTerminalId(inst.id);
+                          }}
+                          onDragEnd={() => {
+                            setDraggingTerminalId(null);
+                            setTerminalDropTargetId(null);
+                          }}
+                          className="flex cursor-grab touch-none pl-1 opacity-35 transition-opacity group-hover:opacity-80 active:cursor-grabbing"
+                          title="拖动排序"
+                          aria-label={`拖动 ${inst.customLabel?.trim() || inst.label} 排序`}
+                        >
+                          <GripVertical className="w-3 h-3" />
+                        </span>
+                      )}
                       {sigSession && (
                         <span className="pl-2 flex items-center">
                           <LiveSessionSignalDot session={sigSession} active={isActive} />
@@ -1584,8 +1637,40 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                     <div
                       key={inst.id}
                       className="flex items-center gap-0.5 rounded-md shrink-0 group"
-                      style={{ background: isActive ? 'var(--bg-tertiary)' : 'transparent' }}
+                      onDragOver={(event) => {
+                        if (!draggingWebPageId || draggingWebPageId === inst.id) return;
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = 'move';
+                        setWebPageDropTargetId(inst.id);
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        reorderWebPageTabs(inst.id);
+                        setDraggingWebPageId(null);
+                        setWebPageDropTargetId(null);
+                      }}
+                      style={{
+                        background: isActive ? 'var(--bg-tertiary)' : 'transparent',
+                        outline: webPageDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
+                      }}
                     >
+                      <span
+                        draggable
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = 'move';
+                          event.dataTransfer.setData('text/plain', inst.id);
+                          setDraggingWebPageId(inst.id);
+                        }}
+                        onDragEnd={() => {
+                          setDraggingWebPageId(null);
+                          setWebPageDropTargetId(null);
+                        }}
+                        className="flex cursor-grab touch-none pl-1 opacity-35 transition-opacity group-hover:opacity-80 active:cursor-grabbing"
+                        title="拖动排序"
+                        aria-label={`拖动 ${inst.label} 排序`}
+                      >
+                        <GripVertical className="w-3 h-3" />
+                      </span>
                       <button
                         onClick={() => {
                           setActiveWebPageId(inst.id);
@@ -1624,8 +1709,40 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                     <div
                       key={inst.id}
                       className="flex items-center gap-0.5 rounded-md shrink-0 group"
-                      style={{ background: isActive ? 'var(--bg-tertiary)' : 'transparent' }}
+                      onDragOver={(event) => {
+                        if (!draggingExplorerId || draggingExplorerId === inst.id) return;
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = 'move';
+                        setExplorerDropTargetId(inst.id);
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        reorderExplorerTabs(inst.id);
+                        setDraggingExplorerId(null);
+                        setExplorerDropTargetId(null);
+                      }}
+                      style={{
+                        background: isActive ? 'var(--bg-tertiary)' : 'transparent',
+                        outline: explorerDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
+                      }}
                     >
+                      <span
+                        draggable
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = 'move';
+                          event.dataTransfer.setData('text/plain', inst.id);
+                          setDraggingExplorerId(inst.id);
+                        }}
+                        onDragEnd={() => {
+                          setDraggingExplorerId(null);
+                          setExplorerDropTargetId(null);
+                        }}
+                        className="flex cursor-grab touch-none pl-1 opacity-35 transition-opacity group-hover:opacity-80 active:cursor-grabbing"
+                        title="拖动排序"
+                        aria-label={`拖动 ${inst.label} 排序`}
+                      >
+                        <GripVertical className="w-3 h-3" />
+                      </span>
                       <button
                         onClick={() => setActiveExplorerId(inst.id)}
                         className="flex items-center gap-1.5 pl-3 pr-1 py-1 text-xs font-medium transition-colors"

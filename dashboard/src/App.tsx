@@ -5,7 +5,7 @@ import { api, type AuthUser } from './lib/api';
 import { AuthGate } from './components/AuthGate';
 import { cleanupProjectStorage } from './lib/project-view-storage';
 import { confirmDiscardProject } from './lib/unsaved-files';
-import { X, LayoutGrid, FolderOpen, Activity, Settings, ArrowUpCircle, LogOut, Users, Plus } from 'lucide-react';
+import { X, LayoutGrid, FolderOpen, Activity, Settings, ArrowUpCircle, LogOut, Users, Plus, GripVertical } from 'lucide-react';
 import { AgentGuideButton } from './components/AgentGuide';
 import { CloseTabModal } from './components/CloseTabModal';
 import { applyTheme } from './lib/themes';
@@ -14,6 +14,7 @@ import { ProjectActivityAge } from './lib/session-activity';
 import { ExportTransferOverlay } from './components/ExportTransferOverlay';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { CodexQuotaIndicator } from './components/CodexQuotaIndicator';
+import { moveItemByKey } from './lib/reorder';
 
 const AccountModal = lazy(() => import('./components/AccountModal').then((module) => ({ default: module.AccountModal })));
 const ProjectView = lazy(() => import('./components/ProjectView').then((module) => ({ default: module.ProjectView })));
@@ -48,7 +49,17 @@ function isActiveSessionStatus(status: string): boolean {
 const APP_STATE_KEY_PREFIX = 'agentmanager-app-state-v2';
 const appStateKey = (userId: string) => `${APP_STATE_KEY_PREFIX}:${userId}`;
 
-function loadAppState(userId: string): { activeTab: string; projectTabs: ProjectTab[] } | null {
+function normalizeOrder(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.filter((id): id is string => {
+    if (typeof id !== 'string' || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+function loadAppState(userId: string): { activeTab: string; projectTabs: ProjectTab[]; projectOrder?: string[] } | null {
   try {
     const raw = localStorage.getItem(appStateKey(userId));
     if (!raw) return null;
@@ -60,9 +71,9 @@ function loadAppState(userId: string): { activeTab: string; projectTabs: Project
   return null;
 }
 
-function saveAppState(userId: string, activeTab: string, projectTabs: ProjectTab[]) {
+function saveAppState(userId: string, activeTab: string, projectTabs: ProjectTab[], projectOrder: string[]) {
   try {
-    localStorage.setItem(appStateKey(userId), JSON.stringify({ activeTab, projectTabs }));
+    localStorage.setItem(appStateKey(userId), JSON.stringify({ activeTab, projectTabs, projectOrder }));
   } catch { /* storage quota or privacy mode */ }
 }
 
@@ -95,7 +106,10 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       return true;
     });
   });
-  const initialAppStateRef = useRef({ activeTab: activeTabState, projectTabs: projectTabsState });
+  const [projectOrder, setProjectOrder] = useState<string[]>(() => normalizeOrder(savedState?.projectOrder));
+  const initialAppStateRef = useRef({ activeTab: activeTabState, projectTabs: projectTabsState, projectOrder });
+  const [draggingProjectTabId, setDraggingProjectTabId] = useState<string | null>(null);
+  const [projectTabDropTargetId, setProjectTabDropTargetId] = useState<string | null>(null);
 
   // Apply saved app font size on load
   const { data: appSettings } = useQuery({
@@ -181,8 +195,8 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
 
   // Persist app state to localStorage (instant-paint cache + offline fallback).
   useEffect(() => {
-    saveAppState(authUser.id, activeTab, projectTabs);
-  }, [authUser.id, activeTab, projectTabs]);
+    saveAppState(authUser.id, activeTab, projectTabs, projectOrder);
+  }, [authUser.id, activeTab, projectTabs, projectOrder]);
 
   // ── Cross-device sync: pull the open project tabs and active project. This
   // server-side copy is the durable fallback when browser storage is lost.
@@ -191,7 +205,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     api.userState.getAll()
       .then(({ state }) => {
         if (cancelled) return;
-        const serverApp = state?.app as { projectTabs?: ProjectTab[]; activeTab?: string } | undefined;
+        const serverApp = state?.app as { projectTabs?: ProjectTab[]; activeTab?: string; projectOrder?: string[] } | undefined;
         const tabs = serverApp?.projectTabs;
         if (Array.isArray(tabs)) {
           const seen = new Set<string>();
@@ -201,6 +215,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
             return true;
           });
           setProjectTabs(deduped);
+          setProjectOrder(normalizeOrder(serverApp?.projectOrder));
           const serverActive = serverApp?.activeTab;
           if (
             serverActive === 'home'
@@ -228,10 +243,20 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   useEffect(() => {
     if (!serverHydrated) return;
     const h = setTimeout(() => {
-      api.userState.set('app', { projectTabs, activeTab }).catch(() => {});
+      api.userState.set('app', { projectTabs, activeTab, projectOrder }).catch(() => {});
     }, 500);
     return () => clearTimeout(h);
-  }, [serverHydrated, projectTabs, activeTab]);
+  }, [serverHydrated, projectTabs, activeTab, projectOrder]);
+
+  const reorderProjectTabs = useCallback((targetProjectId: string) => {
+    if (!draggingProjectTabId || draggingProjectTabId === targetProjectId) return;
+    setProjectTabs((current) => moveItemByKey(
+      current,
+      draggingProjectTabId,
+      targetProjectId,
+      (tab) => tab.projectId,
+    ));
+  }, [draggingProjectTabId]);
 
   const handleOpenProject = useCallback((
     projectId: string,
@@ -491,8 +516,42 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
             <div
               key={tab.projectId}
               className="flex items-center gap-1 rounded-md shrink-0 group"
-              style={{ background: isActive ? 'var(--bg-tertiary)' : 'transparent' }}
+              onDragOver={(event) => {
+                if (!draggingProjectTabId || draggingProjectTabId === tab.projectId) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                setProjectTabDropTargetId(tab.projectId);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                reorderProjectTabs(tab.projectId);
+                setDraggingProjectTabId(null);
+                setProjectTabDropTargetId(null);
+              }}
+              style={{
+                background: isActive ? 'var(--bg-tertiary)' : 'transparent',
+                outline: projectTabDropTargetId === tab.projectId ? '1px solid var(--accent)' : '1px solid transparent',
+              }}
             >
+              {!editingTabId && (
+                <span
+                  draggable
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', tab.projectId);
+                    setDraggingProjectTabId(tab.projectId);
+                  }}
+                  onDragEnd={() => {
+                    setDraggingProjectTabId(null);
+                    setProjectTabDropTargetId(null);
+                  }}
+                  className="flex cursor-grab touch-none pl-1 opacity-35 transition-opacity group-hover:opacity-80 active:cursor-grabbing"
+                  title="拖动排序"
+                  aria-label={`拖动 ${tab.customName?.trim() || tab.projectName} 排序`}
+                >
+                  <GripVertical className="w-3 h-3" />
+                </span>
+              )}
               <ProjectRollupDot
                 sessions={tabSessions}
                 active={isActive}
@@ -583,6 +642,8 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
             <Suspense fallback={<div className="h-full" style={{ background: 'var(--bg-primary)' }} />}>
               <ProjectDashboard
                 onOpenProject={handleOpenProject}
+                projectOrder={projectOrder}
+                onProjectOrderChange={setProjectOrder}
               />
             </Suspense>
           </ErrorBoundary>
