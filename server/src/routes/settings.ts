@@ -31,7 +31,11 @@ const COMMAND_TYPES: Record<string, CliType> = {
 
 export function effectiveSettings(rows: { key: string; value: string }[]): Record<string, string> {
   const settings: Record<string, string> = { ...DEFAULTS };
-  for (const row of rows) settings[row.key] = row.value;
+  // This endpoint is readable by every authenticated user. Keep private
+  // server-only settings (for example an LLM API key) out of this response.
+  for (const row of rows) {
+    if (Object.prototype.hasOwnProperty.call(DEFAULTS, row.key)) settings[row.key] = row.value;
+  }
   for (const [key, cliType] of Object.entries(COMMAND_TYPES)) {
     settings[key] = withAllPermissions(settings[key] || cliType, cliType);
   }

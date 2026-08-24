@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, type Project, type ProjectAgent, type ProjectToolPermissions } from '../lib/api';
+import { api, type Project, type ProjectAgent, type ProjectToolPermissions, type Session } from '../lib/api';
 import { Play, Loader2, Bot, TerminalSquare, Globe, Users, X, FolderOpen, GitBranch, Cpu, Activity, FileText, Zap, ArrowRight, Check } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 
 interface SessionLauncherProps {
   project: Project;
-  onSessionCreated: (sessionId: string, projectName?: string, mode?: 'session' | 'terminal') => void;
+  onSessionCreated: (session: Session) => void;
   onWebPageCreated?: (url: string) => void;
 }
 
@@ -346,9 +346,7 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setLaunchIntent(null);
-      if (data.session?.id) {
-        onSessionCreated(data.session.id, undefined, 'session');
-      }
+      if (data.session) onSessionCreated(data.session);
     },
   });
 
@@ -358,9 +356,7 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      if (data.session?.id) {
-        onSessionCreated(data.session.id, undefined, 'terminal');
-      }
+      if (data.session) onSessionCreated(data.session);
     },
   });
 

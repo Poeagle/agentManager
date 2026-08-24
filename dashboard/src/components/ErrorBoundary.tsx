@@ -9,6 +9,15 @@ interface ErrorBoundaryState {
   error: Error | null;
 }
 
+// React.lazy caches a rejected import promise. Clearing an error boundary is
+// therefore not enough to retry a module that Vite briefly could not compile
+// (or a production chunk that changed during a deployment); the page must be
+// reloaded so React creates the lazy component again.
+export function isDynamicModuleLoadError(error: Error): boolean {
+  return /(?:failed to fetch dynamically imported module|error loading dynamically imported module|loading chunk \S+ failed|chunkloaderror)/i
+    .test(`${error.name} ${error.message}`);
+}
+
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { error: null };
 
@@ -22,6 +31,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   render(): ReactNode {
     if (!this.state.error) return this.props.children;
+    const reloadRequired = isDynamicModuleLoadError(this.state.error);
 
     return (
       <div className="h-full min-h-48 flex items-center justify-center p-6" style={{ background: 'var(--bg-primary)' }}>
@@ -37,18 +47,26 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               type="button"
               className="rounded px-3 py-1.5 text-xs font-medium"
               style={{ background: 'var(--accent)', color: 'white' }}
-              onClick={() => this.setState({ error: null })}
+              onClick={() => {
+                if (reloadRequired) {
+                  window.location.reload();
+                  return;
+                }
+                this.setState({ error: null });
+              }}
             >
-              Retry view
+              {reloadRequired ? 'Reload to retry' : 'Retry view'}
             </button>
-            <button
-              type="button"
-              className="rounded px-3 py-1.5 text-xs"
-              style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
-              onClick={() => window.location.reload()}
-            >
-              Reload app
-            </button>
+            {!reloadRequired && (
+              <button
+                type="button"
+                className="rounded px-3 py-1.5 text-xs"
+                style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
+                onClick={() => window.location.reload()}
+              >
+                Reload app
+              </button>
+            )}
           </div>
         </div>
       </div>

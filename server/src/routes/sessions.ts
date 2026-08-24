@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { prunePastesDir } from '../services/paste-cleanup.js';
 import { listClaudeSessions, deleteClaudeSession } from '../services/claude-history.js';
+import { strip } from '../lib/ansi.js';
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' | 'agent' {
   if (mode === 'terminal' || mode === 'agent') return mode;
@@ -47,26 +48,48 @@ function sqliteUtcToIso(value: string | null | undefined): string | null {
   return `${value.replace(' ', 'T')}Z`;
 }
 
+function summarizeSessionContent(task: string | null | undefined, output: string | null | undefined): string {
+  const normalizedTask = (task || '').replace(/\s+/g, ' ').trim();
+  if (normalizedTask && normalizedTask !== 'Terminal') return normalizedTask.slice(0, 180);
+
+  const text = strip(output || '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-4)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.slice(0, 180) || normalizedTask || '暂无会话内容';
+}
+
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
   // List sessions
   app.get<{
-    Querystring: { status?: string };
+    Querystring: { status?: string; project_id?: string };
   }>('/sessions', async (req) => {
-    const all = sessionManager.listSessionsForUser(req.user!.id, req.query.status);
+    const all = sessionManager.listSessionsForUser(req.user!.id, req.query.status, req.query.project_id);
     const owned = userProjectIds(req.user!.id);
     const visible = all
       .filter((s: any) => !s.project_id || owned.has(s.project_id))
       .filter((s: any) => canAccessSessionByRow(req.user!.id, s));
-    const outputActivity = new Map<string, string>();
+    const outputActivity = new Map<string, { createdAt: string; data: string }>();
     if (visible.length > 0) {
       const placeholders = visible.map(() => '?').join(',');
       const rows = getDb().prepare(`
-        SELECT session_id, MAX(created_at) AS last_activity_at
-        FROM pty_output
-        WHERE session_id IN (${placeholders})
-        GROUP BY session_id
-      `).all(...visible.map((session: any) => session.id)) as Array<{ session_id: string; last_activity_at: string }>;
-      for (const row of rows) outputActivity.set(row.session_id, row.last_activity_at);
+        SELECT p.session_id, p.created_at, p.data
+        FROM pty_output p
+        INNER JOIN (
+          SELECT session_id, MAX(seq) AS latest_seq
+          FROM pty_output
+          WHERE session_id IN (${placeholders})
+          GROUP BY session_id
+        ) latest ON latest.session_id = p.session_id AND latest.latest_seq = p.seq
+      `).all(...visible.map((session: any) => session.id)) as Array<{ session_id: string; created_at: string; data: string }>;
+      for (const row of rows) {
+        outputActivity.set(row.session_id, { createdAt: row.created_at, data: row.data });
+      }
     }
     const sessions = visible
       // Enrich with live process-state (busy/idle/waiting_for_input) so tab signal
@@ -75,10 +98,11 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         const st = getTracker(s.id)?.state;
         const lastActivityAt = st?.lastActivity
           ? new Date(st.lastActivity).toISOString()
-          : sqliteUtcToIso(outputActivity.get(s.id) ?? s.updated_at ?? s.completed_at ?? s.started_at ?? s.created_at);
+          : sqliteUtcToIso(outputActivity.get(s.id)?.createdAt ?? s.updated_at ?? s.completed_at ?? s.started_at ?? s.created_at);
         return {
           ...s,
           last_activity_at: lastActivityAt,
+          content_summary: summarizeSessionContent(s.task, outputActivity.get(s.id)?.data),
           ...(st ? { processState: st.processState, promptType: st.promptType, isPermission: st.isPermission } : {}),
         };
       });
@@ -245,6 +269,31 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const result = sessionManager.purgeSessionRecord(id);
     if (!result.ok) return reply.status(409).send({ error: result.error });
     return { ok: true };
+  });
+
+  // Bulk-delete this account's ended records for one project. The query is
+  // deliberately ownership-scoped even for administrators: the regular project
+  // UI is personal, while cross-account management belongs to /admin/monitor.
+  app.delete<{ Querystring: { project_id?: string } }>('/sessions/records/ended', async (req, reply) => {
+    const projectId = req.query.project_id;
+    if (!projectId) return reply.status(400).send({ error: 'project_id is required' });
+    if (!userOwnsProject(req.user!.id, projectId)) return reply.status(404).send({ error: 'Project not found' });
+
+    const candidates = getDb().prepare(`
+      SELECT id FROM sessions
+      WHERE project_id = ? AND created_by_user_id = ?
+        AND status IN ('completed', 'failed', 'cancelled')
+      ORDER BY COALESCE(completed_at, created_at) DESC
+    `).all(projectId, req.user!.id) as Array<{ id: string }>;
+
+    let deleted = 0;
+    let failed = 0;
+    for (const { id } of candidates) {
+      const result = sessionManager.purgeSessionRecord(id);
+      if (result.ok) deleted++;
+      else failed++;
+    }
+    return { ok: failed === 0, deleted, failed };
   });
 
   /* ---- Claude on-disk conversation history (keyed by project path) ---- */

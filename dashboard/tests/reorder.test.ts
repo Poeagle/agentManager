@@ -20,4 +20,10 @@ describe('reorder helpers', () => {
     expect(orderItemsByKeys(projects, ['c', 'a', 'missing'], (project) => project.id).map((project) => project.id))
       .toEqual(['c', 'a', 'b']);
   });
+
+  it('can preserve mount order after the visible tab order changes', () => {
+    const tabs = [{ id: 'c' }, { id: 'a' }, { id: 'b' }];
+    expect(orderItemsByKeys(tabs, ['a', 'b', 'c'], (tab) => tab.id).map((tab) => tab.id))
+      .toEqual(['a', 'b', 'c']);
+  });
 });

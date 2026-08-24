@@ -53,4 +53,46 @@ describe('dashboard API client', () => {
 
     expect(fetchMock).toHaveBeenCalledWith('/api/codex-quota', expect.objectContaining({ headers: {} }));
   });
+
+  it('requests project session history without filtering by runtime', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.sessions.list(undefined, 'project-1');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions?project_id=project-1', expect.objectContaining({ headers: {} }));
+  });
+
+  it('sends enhancement requests through the server with the active tab id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ prompt: 'Improved prompt' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.promptEnhancer.enhance({ session_id: 'tab-1', prompt: 'fix it', mode: 'standard' });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/prompt-enhancer/enhance', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ session_id: 'tab-1', prompt: 'fix it', mode: 'standard' }),
+    }));
+  });
+
+  it('detects models through the server-side LLM proxy', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ models: ['gpt-4.1-mini'] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.promptEnhancer.models({ endpoint: 'https://llm.example/v1' });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/prompt-enhancer/models', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ endpoint: 'https://llm.example/v1' }),
+    }));
+  });
 });

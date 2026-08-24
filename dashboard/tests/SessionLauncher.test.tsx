@@ -96,7 +96,10 @@ describe('SessionLauncher runtime selection', () => {
       cli_type: 'codex',
       task: 'Investigate query latency',
     })));
-    await waitFor(() => expect(onSessionCreated).toHaveBeenCalledWith('new-session', undefined, 'session'));
+    await waitFor(() => expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'new-session',
+      task: 'Test task',
+    })));
   });
 
   it('lets an Agent use Codex and sends both choices to session creation', async () => {

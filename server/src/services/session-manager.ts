@@ -2814,8 +2814,14 @@ export function listSessions(status?: string): Session[] {
 /** Same list semantics as listSessions, but always applies account ownership
  * before the inactive-history limit. The regular project UI is user-scoped
  * even for administrators; global visibility belongs to /admin/monitor. */
-export function listSessionsForUser(userId: string, status?: string): Session[] {
+export function listSessionsForUser(userId: string, status?: string, projectId?: string): Session[] {
   const db = getDb();
+  if (projectId) {
+    if (status) {
+      return db.prepare('SELECT * FROM sessions WHERE created_by_user_id = ? AND project_id = ? AND status = ? ORDER BY created_at DESC').all(userId, projectId, status) as Session[];
+    }
+    return db.prepare('SELECT * FROM sessions WHERE created_by_user_id = ? AND project_id = ? ORDER BY created_at DESC').all(userId, projectId) as Session[];
+  }
   if (status) {
     return db.prepare('SELECT * FROM sessions WHERE created_by_user_id = ? AND status = ? ORDER BY created_at DESC').all(userId, status) as Session[];
   }

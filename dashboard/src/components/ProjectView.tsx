@@ -1,15 +1,16 @@
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Monitor, FolderTree, GitBranch, Home, Plus, X, Download, Globe, Zap, Bot, TerminalSquare, History, Sparkles, CalendarClock, GripVertical } from 'lucide-react';
+import { Monitor, FolderTree, GitBranch, Home, Plus, X, Download, Globe, Zap, Bot, TerminalSquare, History, Sparkles, CalendarClock, Trash2 } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { Terminal } from './Terminal';
 import { FileExplorer, type FileRefreshRequest } from './FileExplorer';
 import { GitPanel } from './GitPanel';
 import { SessionLauncher } from './SessionLauncher';
 import { WebPageView } from './WebPageView';
-import { api, type ClaudeHistoryItem } from '../lib/api';
+import { api, type Session } from '../lib/api';
 import { CloseTabModal } from './CloseTabModal';
+import { ConfirmModal } from './ConfirmModal';
 import { SessionHistoryPanel } from './SessionHistoryPanel';
 import { HistoryViewer } from './HistoryViewer';
 import { ProjectSkillsPanel } from './ProjectSkillsPanel';
@@ -23,7 +24,7 @@ import {
   type TerminalInstance,
 } from '../lib/project-session-state';
 import { confirmDiscardExplorer } from '../lib/unsaved-files';
-import { moveItemByKey } from '../lib/reorder';
+import { moveItemByKey, orderItemsByKeys } from '../lib/reorder';
 
 interface ProjectViewProps {
   currentUserId: string;
@@ -76,6 +77,18 @@ function ownsExplorerTab(userId: string, projectId: string, id: string) {
 
 function ownsWebPageTab(userId: string, projectId: string, id: string) {
   return id.startsWith(`${userId}-${projectId}-webpage-`);
+}
+
+function sessionTabKind(session: Session): 'session' | 'agent' | 'terminal' {
+  if (session.mode === 'terminal' || session.task === 'Terminal') return 'terminal';
+  if (session.mode === 'agent' || session.task?.startsWith('Agent (')) return 'agent';
+  return 'session';
+}
+
+function nextSessionTabLabel(session: Session, tabs: TerminalInstance[]): string {
+  const kind = sessionTabKind(session);
+  const prefix = kind === 'terminal' ? 'Terminal' : kind === 'agent' ? 'Agent' : 'Session';
+  return `${prefix} ${tabs.filter((tab) => tab.label.startsWith(prefix)).length + 1}`;
 }
 
 function loadPersistedState(userId: string, projectId: string): PersistedState | null {
@@ -138,6 +151,12 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     queryKey: ['sessions'],
     queryFn: () => api.sessions.list(),
   });
+  // Keep the complete project record set available for the project sessions
+  // view and for naming/restoring older tabs beyond the global history window.
+  const { data: projectHistoryData } = useQuery({
+    queryKey: ['project-sessions', projectId],
+    queryFn: () => api.sessions.list(undefined, projectId),
+  });
   const projectSessions = useMemo(
     () => (sessionsData?.sessions || []).filter(
       (s) => s.project_id === projectId && (s.status === 'running' || s.status === 'detached' || s.status === 'pending')
@@ -154,11 +173,15 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   // All sessions (any status) keyed by id — for tab signal lights, which must
   // also reflect completed/failed sessions that `projectSessions` filters out.
   const allSessionLookup = useMemo(
-    () => new Map((sessionsData?.sessions || []).map((s) => [s.id, s])),
-    [sessionsData]
+    () => new Map([
+      ...(sessionsData?.sessions || []),
+      ...(projectHistoryData?.sessions || []),
+    ].map((s) => [s.id, s])),
+    [sessionsData, projectHistoryData]
   );
-  // Which Claude history conversation (uuid) is currently being resumed.
-  const [resumingUuid, setResumingUuid] = useState<string | null>(null);
+  const [confirmBulkDeleteEnded, setConfirmBulkDeleteEnded] = useState(false);
+  const [bulkDeletingEnded, setBulkDeletingEnded] = useState(false);
+  const [bulkDeleteEndedError, setBulkDeleteEndedError] = useState<string | null>(null);
 
   // Initialize from persisted state or defaults
   const [initialized] = useState(() => {
@@ -203,6 +226,32 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const [terminalInstances, setTerminalInstances] = useState<TerminalInstance[]>(
     initialized?.terminalInstances ?? []
   );
+  // Reordering the tab strip must not reorder the mounted xterm DOM nodes.
+  // Moving a live WebGL canvas through the DOM can invalidate its painted
+  // surface, leaving only the terminal background visible.
+  const [terminalMountOrder, setTerminalMountOrder] = useState(() =>
+    (initialized?.terminalInstances ?? []).map((terminal) => terminal.id),
+  );
+  useEffect(() => {
+    setTerminalMountOrder((current) => {
+      const next = orderItemsByKeys(terminalInstances, current, (terminal) => terminal.id)
+        .map((terminal) => terminal.id);
+      return next.length === current.length && next.every((id, index) => id === current[index])
+        ? current
+        : next;
+    });
+  }, [terminalInstances]);
+  const mountedTerminalInstances = useMemo(
+    () => orderItemsByKeys(terminalInstances, terminalMountOrder, (terminal) => terminal.id),
+    [terminalInstances, terminalMountOrder],
+  );
+  const sessionDisplayNames = useMemo(() => {
+    const labels = { ...terminalLabelsRef.current };
+    for (const terminal of terminalInstances) {
+      labels[terminal.id] = terminal.customLabel?.trim() || terminal.label;
+    }
+    return labels;
+  }, [terminalInstances]);
   const locallyCreatedSessionIds = useRef(new Set<string>());
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(
     initialized?.activeTerminalId ?? null
@@ -300,6 +349,24 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     (initialized?.webPageInstances ?? []).filter((tab) =>
       ownsWebPageTab(currentUserId, projectId, tab.id),
     ),
+  );
+  const [webPageMountOrder, setWebPageMountOrder] = useState(() =>
+    (initialized?.webPageInstances ?? [])
+      .filter((tab) => ownsWebPageTab(currentUserId, projectId, tab.id))
+      .map((tab) => tab.id),
+  );
+  useEffect(() => {
+    setWebPageMountOrder((current) => {
+      const next = orderItemsByKeys(webPageInstances, current, (page) => page.id)
+        .map((page) => page.id);
+      return next.length === current.length && next.every((id, index) => id === current[index])
+        ? current
+        : next;
+    });
+  }, [webPageInstances]);
+  const mountedWebPageInstances = useMemo(
+    () => orderItemsByKeys(webPageInstances, webPageMountOrder, (page) => page.id),
+    [webPageInstances, webPageMountOrder],
   );
   const [draggingWebPageId, setDraggingWebPageId] = useState<string | null>(null);
   const [webPageDropTargetId, setWebPageDropTargetId] = useState<string | null>(null);
@@ -475,18 +542,19 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     }
     if (pruned) setClosedIdsVersion((v) => v + 1);
 
-    // Build a lookup of session type by ID
-    const sessionById = new Map(projectSessions.map((s) => [s.id, s]));
-
     setTerminalInstances((prev) => {
       const existingIds = new Set(prev.map((t) => t.id));
       const aliveIds = new Set(projectSessions.map((s) => s.id));
       // Build set of all session IDs the server knows about (any status)
-      const allServerIds = new Set((sessionsData?.sessions || []).map((session) => session.id));
+      const knownSessions = [
+        ...(sessionsData?.sessions || []),
+        ...(projectHistoryData?.sessions || []),
+      ];
+      const allServerIds = new Set(knownSessions.map((session) => session.id));
       // Sessions the server reports as ended — kept as tabs (in an ended state)
       // so the user can view the last screen / resume, instead of being evicted.
       const endedIds = new Set(
-        (sessionsData?.sessions || [])
+        knownSessions
           .filter((session) => session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled')
           .map((session) => session.id)
       );
@@ -495,52 +563,31 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       // seen by the server (just created locally, not in the poll response yet).
       const filtered = prev.filter((t) => aliveIds.has(t.id) || endedIds.has(t.id) || (!sessionsLoaded && !allServerIds.has(t.id)));
 
-      // Relabel existing instances based on actual session data.
-      // This fixes tabs restored from localStorage with stale labels.
-      let sessionCount = 0;
-      let terminalCount = 0;
-      let agentCount = 0;
+      // The label belongs to the user's tab state. Session metadata must not
+      // overwrite an unrenamed tab's existing display name.
       const relabeled = filtered.map((t) => {
         // Restore a synced custom name if one arrived from the server after this
         // instance was first created locally.
         const synced = terminalLabelsRef.current[t.id];
         const withCustom = synced && synced !== t.customLabel ? { ...t, customLabel: synced } : t;
-        const session = sessionById.get(t.id);
-        if (!session) return withCustom; // not yet known — keep as-is
-        const isTerminal = session.task === 'Terminal';
-        const isAgent = session.task.startsWith('Agent (');
-        const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
-        const num = isTerminal ? ++terminalCount : isAgent ? ++agentCount : ++sessionCount;
-        const newLabel = `${prefix} ${num}`;
-        return newLabel !== withCustom.label ? { ...withCustom, label: newLabel } : withCustom;
+        return withCustom;
       });
 
       // Add new sessions not yet tracked (skip user-closed sessions)
       const newTerminals: TerminalInstance[] = [];
       for (const s of projectSessions) {
         if (!existingIds.has(s.id) && !closedSessionIds.current.has(s.id)) {
-          const isTerminal = s.task === 'Terminal';
-          const isAgent = s.task.startsWith('Agent (');
-          const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
-          const num = isTerminal ? ++terminalCount : isAgent ? ++agentCount : ++sessionCount;
-          newTerminals.push({ id: s.id, label: `${prefix} ${num}`, customLabel: terminalLabelsRef.current[s.id] });
+          newTerminals.push({ id: s.id, label: nextSessionTabLabel(s, [...relabeled, ...newTerminals]), customLabel: terminalLabelsRef.current[s.id] });
         }
       }
 
       const result = [...relabeled, ...newTerminals];
-      // Sort: session first, then agent, then terminal
-      const sortOrder = (label: string) => label.startsWith('Session') ? 0 : label.startsWith('Agent') ? 1 : 2;
-      result.sort((a, b) => {
-        const diff = sortOrder(a.label) - sortOrder(b.label);
-        if (diff !== 0) return diff;
-        return 0; // preserve relative order within each group
-      });
       // Check if anything actually changed
       if (result.length === prev.length && newTerminals.length === 0 && result.every((t, i) => t.id === prev[i]?.id && t.label === prev[i]?.label && t.customLabel === prev[i]?.customLabel)) return prev;
 
       return result;
     });
-  }, [projectSessions, sessionsLoaded, sessionsData]);
+  }, [projectSessions, sessionsLoaded, sessionsData, projectHistoryData, allSessionLookup]);
 
   // If terminals appeared and launcher was showing, switch to terminal
   // (but not if the user explicitly navigated to the Home/launcher tab)
@@ -564,7 +611,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         api.sessions.create({ project_path: projectPath, mode: 'terminal', project_id: projectId })
           .then((data) => {
             if (data.session?.id) {
-              handleSessionCreated(data.session.id, undefined, 'terminal');
+              handleSessionCreated(data.session);
               queryClient.invalidateQueries({ queryKey: ['sessions'] });
             }
           })
@@ -585,7 +632,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         })
           .then((data) => {
             if (data.session?.id) {
-              handleSessionCreated(data.session.id, undefined, 'session');
+              handleSessionCreated(data.session);
               queryClient.invalidateQueries({ queryKey: ['sessions'] });
             }
           })
@@ -602,9 +649,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         closedSessionIds.current.delete(focusSessionId);
         canonicalOpenSessionIdsRef.current?.add(focusSessionId);
         setClosedIdsVersion((value) => value + 1);
-        const prefix = target.task === 'Terminal' ? 'Terminal' : target.task?.startsWith('Agent (') ? 'Agent' : 'Session';
-        const count = terminalInstances.filter((tab) => tab.label.startsWith(prefix)).length + 1;
-        setTerminalInstances((prev) => [...prev, { id: focusSessionId, label: `${prefix} ${count}` }]);
+        setTerminalInstances((prev) => [...prev, { id: focusSessionId, label: nextSessionTabLabel(target, prev), customLabel: terminalLabelsRef.current[focusSessionId] }]);
         setActiveTerminalId(focusSessionId);
         setActiveWebPageId(null);
         setShowLauncher(false);
@@ -631,6 +676,22 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     const id = `${currentUserId}-${projectId}-explorer-${nextExplorerSeq++}`;
     return [{ id, label: 'Explorer 1' }];
   });
+  const [explorerMountOrder, setExplorerMountOrder] = useState(() =>
+    explorerInstances.map((explorer) => explorer.id),
+  );
+  useEffect(() => {
+    setExplorerMountOrder((current) => {
+      const next = orderItemsByKeys(explorerInstances, current, (explorer) => explorer.id)
+        .map((explorer) => explorer.id);
+      return next.length === current.length && next.every((id, index) => id === current[index])
+        ? current
+        : next;
+    });
+  }, [explorerInstances]);
+  const mountedExplorerInstances = useMemo(
+    () => orderItemsByKeys(explorerInstances, explorerMountOrder, (explorer) => explorer.id),
+    [explorerInstances, explorerMountOrder],
+  );
 
   const [activeExplorerId, setActiveExplorerId] = useState(() =>
     initialized?.activeExplorerId
@@ -810,65 +871,24 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     }
   }, [projHydrated, projectId, sessionsData, terminalInstances, queryClient]);
 
-  function handleSessionCreated(sessionId: string, _projectName?: string, mode?: 'session' | 'terminal') {
-    locallyCreatedSessionIds.current.add(sessionId);
-    canonicalOpenSessionIdsRef.current?.add(sessionId);
-    const isTerminal = mode === 'terminal';
+  function handleSessionCreated(session: Session) {
+    locallyCreatedSessionIds.current.add(session.id);
+    canonicalOpenSessionIdsRef.current?.add(session.id);
     setTerminalInstances((prev) => {
-      if (prev.some((t) => t.id === sessionId)) return prev;
-      const prefix = isTerminal ? 'Terminal' : 'Session';
-      const count = prev.filter(t => t.label.startsWith(prefix)).length + 1;
-      return [...prev, { id: sessionId, label: `${prefix} ${count}` }];
+      if (prev.some((t) => t.id === session.id)) return prev;
+      return [...prev, { id: session.id, label: nextSessionTabLabel(session, prev), customLabel: terminalLabelsRef.current[session.id] }];
     });
-    setActiveTerminalId(sessionId);
+    setActiveTerminalId(session.id);
     setActiveWebPageId(null);
     setShowLauncher(false);
   }
 
-  // Open a Claude history conversation: jump to / open its live session if one
-  // is currently running, otherwise resume from the conversation log.
-  async function handleOpenHistorySession(item: ClaudeHistoryItem) {
-    if (item.liveSessionId && ['running', 'detached', 'pending'].includes(item.liveStatus || '')) {
-      const id = item.liveSessionId;
-      if (terminalInstances.some((t) => t.id === id)) {
-        setActiveTerminalId(id);
-        setShowLauncher(false);
-        setActiveWebPageId(null);
-        setActiveMode('terminal');
-        focusTerminalById(id);
-      } else {
-        unhideSession(id);
-        setActiveMode('terminal');
-      }
-      return;
-    }
-    // Resume from the on-disk conversation log → fresh live session.
-    try {
-      setResumingUuid(item.uuid);
-      const res = await api.sessions.resumeClaude({ project_id: projectId, claude_session_id: item.uuid, title: item.title });
-      const newId = res.session?.id;
-      await queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      await queryClient.invalidateQueries({ queryKey: ['claude-history', projectId] });
-      if (newId) {
-        handleSessionCreated(newId, undefined, 'session');
-        setActiveMode('terminal');
-      }
-    } catch (err) {
-      console.error('Failed to resume Claude session:', err);
-      alert(`续上失败: ${(err as Error).message}`);
-    } finally {
-      setResumingUuid(null);
-    }
-  }
-
-  async function handleDeleteHistorySession(item: ClaudeHistoryItem) {
-    try {
-      await api.sessions.deleteClaudeHistory(item.uuid, projectId);
-      queryClient.invalidateQueries({ queryKey: ['claude-history', projectId] });
-    } catch (err) {
-      console.error('Failed to delete Claude history:', err);
-      alert(`删除失败: ${(err as Error).message}`);
-    }
+  function handleOpenProjectSession(session: Session) {
+    queryClient.setQueryData<{ sessions: Session[] }>(['sessions'], (current) => ({
+      sessions: [session, ...(current?.sessions || []).filter((item) => item.id !== session.id)],
+    }));
+    unhideSession(session.id, session);
+    setActiveMode('terminal');
   }
 
   // Track when an adopt is in flight to suppress the hidden list during the race
@@ -904,24 +924,17 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       .slice(0, 12);
   }, [sessionsData, projectId, terminalInstances]);
 
-  function unhideSession(id: string) {
+  function unhideSession(id: string, knownSession?: Session) {
     closedSessionIds.current.delete(id);
     setClosedIdsVersion((v) => v + 1);
 
     // Find the session data to determine its type and re-add the tab
     const allSessions = sessionsData?.sessions || [];
-    const session = allSessions.find((candidate) => candidate.id === id);
+    const session = knownSession || allSessions.find((candidate) => candidate.id === id);
     if (session) {
       setTerminalInstances((prev) => {
         if (prev.some((t) => t.id === id)) return prev;
-        const isTerminal = session.task === 'Terminal';
-        const isAgent = session.task?.startsWith('Agent (');
-        const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
-        const count = prev.filter((t) => t.label.startsWith(prefix)).length + 1;
-        const result = [...prev, { id, label: `${prefix} ${count}` }];
-        const order = (l: string) => l.startsWith('Session') ? 0 : l.startsWith('Agent') ? 1 : 2;
-        result.sort((a, b) => order(a.label) - order(b.label));
-        return result;
+        return [...prev, { id, label: nextSessionTabLabel(session, prev), customLabel: terminalLabelsRef.current[id] }];
       });
       setActiveTerminalId(id);
       setShowLauncher(false);
@@ -943,14 +956,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         if (updated.some((t) => t.id === id)) continue;
         const session = allSessions.find((candidate) => candidate.id === id && (candidate.status === 'running' || candidate.status === 'detached'));
         if (!session) continue;
-        const isTerminal = session.task === 'Terminal';
-        const isAgent = session.task?.startsWith('Agent (');
-        const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
-        const count = updated.filter((t) => t.label.startsWith(prefix)).length + 1;
-        updated.push({ id, label: `${prefix} ${count}` });
+        updated.push({ id, label: nextSessionTabLabel(session, updated), customLabel: terminalLabelsRef.current[id] });
       }
-      const order = (l: string) => l.startsWith('Session') ? 0 : l.startsWith('Agent') ? 1 : 2;
-      updated.sort((a, b) => order(a.label) - order(b.label));
       return updated;
     });
 
@@ -967,6 +974,23 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       console.error('Failed to delete session record:', err);
     }
     queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  }
+
+  async function deleteAllEndedSessions() {
+    if (bulkDeletingEnded) return;
+    setBulkDeletingEnded(true);
+    setBulkDeleteEndedError(null);
+    try {
+      const result = await api.sessions.deleteEndedRecords(projectId);
+      if (result.failed > 0) throw new Error(`${result.failed} record(s) could not be deleted`);
+      setConfirmBulkDeleteEnded(false);
+      await queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    } catch (err) {
+      console.error('Failed to delete ended session records:', err);
+      setBulkDeleteEndedError((err as Error).message || 'Delete failed');
+    } finally {
+      setBulkDeletingEnded(false);
+    }
   }
 
   const [showAdoptMenu, setShowAdoptMenu] = useState(false);
@@ -1016,7 +1040,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           setActiveTerminalId(sid);
         }, 100);
       } else {
-        handleSessionCreated(sid, undefined, 'session');
+        handleSessionCreated(result.session);
       }
     } catch (err) {
       console.error('Failed to adopt session:', err);
@@ -1254,6 +1278,26 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           );
         })}
 
+        {activeMode === 'terminal' && activeTerminalId && !showLauncher && !activeWebPageId && (
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent('agentmanager:enhance-native-prompt', {
+              detail: { sessionId: activeTerminalId },
+            }))}
+            title="优化当前 Terminal 输入"
+            aria-label="优化当前 Terminal 输入"
+            className="mt-auto mb-1 flex items-center justify-center rounded-md transition-colors"
+            style={{
+              width: 36,
+              height: 36,
+              color: '#c4b5fd',
+              background: 'rgba(139, 92, 246, 0.10)',
+              border: '1px solid rgba(167, 139, 250, 0.24)',
+            }}
+          >
+            <Sparkles className="w-4 h-4" />
+          </button>
+        )}
+
       </div>
 
       {/* Main content area */}
@@ -1286,12 +1330,13 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                 {/* Terminal session sub-tabs */}
                 {terminalInstances.map((inst) => {
                   const isActive = !showLauncher && !activeWebPageId && inst.id === activeTerminalId;
-                  const session = sessionLookup.get(inst.id);
+                  const session = sessionLookup.get(inst.id) || allSessionLookup.get(inst.id);
                   // Status signal light — a leaf component subscribes to just this
                   // session's live state, so a state tick doesn't re-render the view.
                   const sigSession = allSessionLookup.get(inst.id);
-                  const isTerminal = inst.label.startsWith('Terminal');
-                  const isAgent = inst.label.startsWith('Agent');
+                  const tabKind = session ? sessionTabKind(session) : 'session';
+                  const isTerminal = tabKind === 'terminal';
+                  const isAgent = tabKind === 'agent';
                   const isCodex = session?.cli_type === 'codex';
                   const tabIcon = isTerminal ? (
                     <TerminalSquare className="w-3 h-3 shrink-0" style={{ color: '#f59e0b' }} />
@@ -1312,7 +1357,17 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                   return (
                     <div
                       key={inst.id}
-                      className="flex items-center gap-0.5 rounded-md shrink-0 group"
+                      draggable={editingTerminalId !== inst.id}
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = 'move';
+                        event.dataTransfer.setData('text/plain', inst.id);
+                        setDraggingTerminalId(inst.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggingTerminalId(null);
+                        setTerminalDropTargetId(null);
+                      }}
+                      className="flex items-center gap-0.5 rounded-md shrink-0 group touch-none"
                       onDragOver={(event) => {
                         if (!draggingTerminalId || draggingTerminalId === inst.id) return;
                         event.preventDefault();
@@ -1330,25 +1385,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         outline: terminalDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
                       }}
                     >
-                      {!editingTerminalId && (
-                        <span
-                          draggable
-                          onDragStart={(event) => {
-                            event.dataTransfer.effectAllowed = 'move';
-                            event.dataTransfer.setData('text/plain', inst.id);
-                            setDraggingTerminalId(inst.id);
-                          }}
-                          onDragEnd={() => {
-                            setDraggingTerminalId(null);
-                            setTerminalDropTargetId(null);
-                          }}
-                          className="flex cursor-grab touch-none pl-1 opacity-35 transition-opacity group-hover:opacity-80 active:cursor-grabbing"
-                          title="拖动排序"
-                          aria-label={`拖动 ${inst.customLabel?.trim() || inst.label} 排序`}
-                        >
-                          <GripVertical className="w-3 h-3" />
-                        </span>
-                      )}
                       {sigSession && (
                         <span className="pl-2 flex items-center">
                           <LiveSessionSignalDot session={sigSession} active={isActive} />
@@ -1399,10 +1435,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          const type = inst.label.startsWith('Terminal') ? 'terminal'
-                            : inst.label.startsWith('Agent') ? 'agent'
-                            : 'session';
-                          setCloseConfirm({ id: inst.id, label: inst.label, type });
+                          const type = session ? sessionTabKind(session) : 'session';
+                          setCloseConfirm({ id: inst.id, label: inst.customLabel?.trim() || inst.label, type });
                         }}
                         className="p-0.5 rounded opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity mr-1"
                         style={{ color: 'var(--text-secondary)' }}
@@ -1572,10 +1606,25 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         <>
                           <div className="mx-3 my-1" style={{ height: 1, background: 'var(--border)' }} />
                           <div
-                            className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
+                            className="flex items-center justify-between gap-3 px-3 py-1.5"
                             style={{ color: 'var(--text-secondary)' }}
                           >
-                            Ended / Recent
+                            <span className="text-[10px] font-semibold uppercase tracking-wider">Ended / Recent</span>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setBulkDeleteEndedError(null);
+                                setConfirmBulkDeleteEnded(true);
+                                setShowAdoptMenu(false);
+                              }}
+                              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors hover:bg-red-500/10"
+                              style={{ color: 'var(--error)' }}
+                              title="Delete all ended session records for this project"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                              Delete all
+                            </button>
                           </div>
                           {endedSessions.map((s) => {
                             const isTerminal = s.task === 'Terminal';
@@ -1636,7 +1685,17 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                   return (
                     <div
                       key={inst.id}
-                      className="flex items-center gap-0.5 rounded-md shrink-0 group"
+                      draggable
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = 'move';
+                        event.dataTransfer.setData('text/plain', inst.id);
+                        setDraggingWebPageId(inst.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggingWebPageId(null);
+                        setWebPageDropTargetId(null);
+                      }}
+                      className="flex items-center gap-0.5 rounded-md shrink-0 group touch-none"
                       onDragOver={(event) => {
                         if (!draggingWebPageId || draggingWebPageId === inst.id) return;
                         event.preventDefault();
@@ -1654,23 +1713,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         outline: webPageDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
                       }}
                     >
-                      <span
-                        draggable
-                        onDragStart={(event) => {
-                          event.dataTransfer.effectAllowed = 'move';
-                          event.dataTransfer.setData('text/plain', inst.id);
-                          setDraggingWebPageId(inst.id);
-                        }}
-                        onDragEnd={() => {
-                          setDraggingWebPageId(null);
-                          setWebPageDropTargetId(null);
-                        }}
-                        className="flex cursor-grab touch-none pl-1 opacity-35 transition-opacity group-hover:opacity-80 active:cursor-grabbing"
-                        title="拖动排序"
-                        aria-label={`拖动 ${inst.label} 排序`}
-                      >
-                        <GripVertical className="w-3 h-3" />
-                      </span>
                       <button
                         onClick={() => {
                           setActiveWebPageId(inst.id);
@@ -1708,7 +1750,17 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                   return (
                     <div
                       key={inst.id}
-                      className="flex items-center gap-0.5 rounded-md shrink-0 group"
+                      draggable
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = 'move';
+                        event.dataTransfer.setData('text/plain', inst.id);
+                        setDraggingExplorerId(inst.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggingExplorerId(null);
+                        setExplorerDropTargetId(null);
+                      }}
+                      className="flex items-center gap-0.5 rounded-md shrink-0 group touch-none"
                       onDragOver={(event) => {
                         if (!draggingExplorerId || draggingExplorerId === inst.id) return;
                         event.preventDefault();
@@ -1726,23 +1778,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         outline: explorerDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
                       }}
                     >
-                      <span
-                        draggable
-                        onDragStart={(event) => {
-                          event.dataTransfer.effectAllowed = 'move';
-                          event.dataTransfer.setData('text/plain', inst.id);
-                          setDraggingExplorerId(inst.id);
-                        }}
-                        onDragEnd={() => {
-                          setDraggingExplorerId(null);
-                          setExplorerDropTargetId(null);
-                        }}
-                        className="flex cursor-grab touch-none pl-1 opacity-35 transition-opacity group-hover:opacity-80 active:cursor-grabbing"
-                        title="拖动排序"
-                        aria-label={`拖动 ${inst.label} 排序`}
-                      >
-                        <GripVertical className="w-3 h-3" />
-                      </span>
                       <button
                         onClick={() => setActiveExplorerId(inst.id)}
                         className="flex items-center gap-1.5 pl-3 pr-1 py-1 text-xs font-medium transition-colors"
@@ -1798,7 +1833,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
 
               {/* Terminal instances stay mounted so tab switches preserve terminal state. */}
               <div className="h-full absolute inset-0" style={{ pointerEvents: 'none' }}>
-                {terminalInstances.map((term) => {
+                {mountedTerminalInstances.map((term) => {
                   const isSingleActive = !showLauncher && !activeWebPageId && activeTerminalId === term.id;
                   const termVisible = isSingleActive && active;
 
@@ -1854,7 +1889,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           )}
 
           {/* Web page instances */}
-          {activeMode === 'terminal' && webPageInstances.map((wp) => {
+          {activeMode === 'terminal' && mountedWebPageInstances.map((wp) => {
             const isActiveWP = activeWebPageId === wp.id && !showLauncher;
             return (
               <div
@@ -1880,7 +1915,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           })}
 
           {/* Explorer instances */}
-          {explorerInstances.map((expl) => (
+          {mountedExplorerInstances.map((expl) => (
             <div
               key={expl.id}
               className="h-full absolute inset-0"
@@ -1917,9 +1952,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
               <SessionHistoryPanel
                 projectId={projectId}
                 openTabIds={new Set(terminalInstances.map((t) => t.id))}
-                busyUuid={resumingUuid}
-                onOpen={handleOpenHistorySession}
-                onDelete={handleDeleteHistorySession}
+                displayNames={sessionDisplayNames}
+                onOpen={handleOpenProjectSession}
               />
             )}
           </div>
@@ -1958,6 +1992,26 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           }}
           onCancel={() => setCloseConfirm(null)}
         />
+      )}
+
+      {confirmBulkDeleteEnded && (
+        <ConfirmModal
+          title="Delete all ended sessions?"
+          message="This permanently deletes all completed, cancelled, and failed session records owned by your account in this project. Running sessions are not affected. Saved screens and associated recoverable history may also be removed."
+          confirmLabel={bulkDeletingEnded ? 'Deleting…' : 'Delete all'}
+          onConfirm={() => { void deleteAllEndedSessions(); }}
+          onCancel={() => {
+            if (bulkDeletingEnded) return;
+            setConfirmBulkDeleteEnded(false);
+            setBulkDeleteEndedError(null);
+          }}
+        >
+          {bulkDeleteEndedError && (
+            <p className="mt-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+              {bulkDeleteEndedError}
+            </p>
+          )}
+        </ConfirmModal>
       )}
     </div>
   );

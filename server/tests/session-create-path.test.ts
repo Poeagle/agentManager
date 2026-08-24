@@ -103,7 +103,36 @@ describe('session creation project identity', () => {
       expect.objectContaining({
         id: 'own-session',
         last_activity_at: '2026-08-05T06:30:00Z',
+        content_summary: 'Own work',
       }),
     ]);
+  });
+
+  it('lists every runtime for the requested project without mixing in other projects', async () => {
+    const insert = getDb().prepare(`
+      INSERT INTO sessions (id, project_id, task, status, mode, cli_type, agent_type, created_by_user_id)
+      VALUES (?, ?, ?, 'completed', ?, ?, ?, ?)
+    `);
+    insert.run('claude-session', 'project-1', 'Review API', 'session', 'claude', null, adminId);
+    insert.run('codex-session', 'project-1', 'Implement tabs', 'session', 'codex', null, adminId);
+    insert.run('future-agent', 'project-1', 'Run migration', 'agent', 'codex', 'migrator', adminId);
+    getDb().prepare('INSERT INTO projects (id, name, path, owner_id) VALUES (?, ?, ?, ?)')
+      .run('project-2', 'Other project', join(projectPath, 'other'), adminId);
+    insert.run('other-project-session', 'project-2', 'Do not show', 'session', 'claude', null, adminId);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/sessions?project_id=project-1',
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const ids = response.json().sessions.map((session: { id: string }) => session.id);
+    expect(ids).toHaveLength(3);
+    expect(ids).toEqual(expect.arrayContaining([
+      'future-agent',
+      'codex-session',
+      'claude-session',
+    ]));
   });
 });

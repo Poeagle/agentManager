@@ -5,7 +5,7 @@ import { api, type AuthUser } from './lib/api';
 import { AuthGate } from './components/AuthGate';
 import { cleanupProjectStorage } from './lib/project-view-storage';
 import { confirmDiscardProject } from './lib/unsaved-files';
-import { X, LayoutGrid, FolderOpen, Activity, Settings, ArrowUpCircle, LogOut, Users, Plus, GripVertical } from 'lucide-react';
+import { X, LayoutGrid, FolderOpen, Activity, Settings, ArrowUpCircle, LogOut, Users, Plus } from 'lucide-react';
 import { AgentGuideButton } from './components/AgentGuide';
 import { CloseTabModal } from './components/CloseTabModal';
 import { applyTheme } from './lib/themes';
@@ -14,7 +14,7 @@ import { ProjectActivityAge } from './lib/session-activity';
 import { ExportTransferOverlay } from './components/ExportTransferOverlay';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { CodexQuotaIndicator } from './components/CodexQuotaIndicator';
-import { moveItemByKey } from './lib/reorder';
+import { moveItemByKey, orderItemsByKeys } from './lib/reorder';
 
 const AccountModal = lazy(() => import('./components/AccountModal').then((module) => ({ default: module.AccountModal })));
 const ProjectView = lazy(() => import('./components/ProjectView').then((module) => ({ default: module.ProjectView })));
@@ -159,6 +159,25 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   const projectTabs = useMemo(
     () => projectsLoaded ? projectTabsState.filter((tab) => allowedProjectIds.has(tab.projectId)) : projectTabsState,
     [allowedProjectIds, projectTabsState, projectsLoaded],
+  );
+  // Tab order is user-controlled, but mounted project views may contain live
+  // WebGL terminal canvases. Keep their DOM order stable so reordering a tab
+  // never detaches and reinserts the underlying terminal page.
+  const [projectMountOrder, setProjectMountOrder] = useState(() =>
+    projectTabsState.map((tab) => tab.projectId),
+  );
+  useEffect(() => {
+    setProjectMountOrder((current) => {
+      const next = orderItemsByKeys(projectTabs, current, (tab) => tab.projectId)
+        .map((tab) => tab.projectId);
+      return next.length === current.length && next.every((id, index) => id === current[index])
+        ? current
+        : next;
+    });
+  }, [projectTabs]);
+  const mountedProjectTabs = useMemo(
+    () => orderItemsByKeys(projectTabs, projectMountOrder, (tab) => tab.projectId),
+    [projectMountOrder, projectTabs],
   );
   const activeTab = !projectsLoaded
     || activeTabState === 'home'
@@ -515,7 +534,17 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           return (
             <div
               key={tab.projectId}
-              className="flex items-center gap-1 rounded-md shrink-0 group"
+              draggable={editingTabId !== tab.projectId}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', tab.projectId);
+                setDraggingProjectTabId(tab.projectId);
+              }}
+              onDragEnd={() => {
+                setDraggingProjectTabId(null);
+                setProjectTabDropTargetId(null);
+              }}
+              className="flex items-center gap-1 rounded-md shrink-0 group touch-none"
               onDragOver={(event) => {
                 if (!draggingProjectTabId || draggingProjectTabId === tab.projectId) return;
                 event.preventDefault();
@@ -533,25 +562,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                 outline: projectTabDropTargetId === tab.projectId ? '1px solid var(--accent)' : '1px solid transparent',
               }}
             >
-              {!editingTabId && (
-                <span
-                  draggable
-                  onDragStart={(event) => {
-                    event.dataTransfer.effectAllowed = 'move';
-                    event.dataTransfer.setData('text/plain', tab.projectId);
-                    setDraggingProjectTabId(tab.projectId);
-                  }}
-                  onDragEnd={() => {
-                    setDraggingProjectTabId(null);
-                    setProjectTabDropTargetId(null);
-                  }}
-                  className="flex cursor-grab touch-none pl-1 opacity-35 transition-opacity group-hover:opacity-80 active:cursor-grabbing"
-                  title="拖动排序"
-                  aria-label={`拖动 ${tab.customName?.trim() || tab.projectName} 排序`}
-                >
-                  <GripVertical className="w-3 h-3" />
-                </span>
-              )}
               <ProjectRollupDot
                 sessions={tabSessions}
                 active={isActive}
@@ -648,7 +658,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
             </Suspense>
           </ErrorBoundary>
         </div>
-        {projectTabs.map((tab) => {
+        {mountedProjectTabs.map((tab) => {
           const tabId = `project-${tab.projectId}`;
           const isActive = activeTab === tabId;
           const project = projects.find((p) => p.id === tab.projectId);

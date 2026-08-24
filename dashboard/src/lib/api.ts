@@ -46,6 +46,15 @@ function uploadWithProgress<T>(url: string, body: unknown, onProgress?: (fractio
 export interface AuthUser { id: string; username: string; display_name: string; role: 'admin' | 'member'; disabled?: number; max_tabs?: number; created_at?: string; }
 export interface AuthStatus { needsSetup: boolean; authenticated: boolean; user: AuthUser | null; }
 export interface AuthCredentials { username: string; password: string; display_name?: string; }
+export type PromptEnhancerMode = 'base' | 'lite' | 'standard' | 'expert' | 'publish';
+export interface PromptEnhancerConfig {
+  enabled: boolean;
+  endpoint: string;
+  model: string;
+  mode: PromptEnhancerMode;
+  timeout_ms: number;
+  api_key_configured: boolean;
+}
 
 export interface AgentApiEndpoint {
   category: string;
@@ -122,8 +131,13 @@ export const api = {
       ),
   },
   sessions: {
-    list: (status?: string) =>
-      fetchJSON<{ sessions: Session[] }>(`/sessions${status ? `?status=${status}` : ''}`),
+    list: (status?: string, projectId?: string) => {
+      const query = new URLSearchParams();
+      if (status) query.set('status', status);
+      if (projectId) query.set('project_id', projectId);
+      const suffix = query.size ? `?${query.toString()}` : '';
+      return fetchJSON<{ sessions: Session[] }>(`/sessions${suffix}`);
+    },
     get: (id: string) => fetchJSON<{ session: Session }>(`/sessions/${id}`),
     create: (data: { project_path: string; task?: string; mode?: 'session' | 'terminal' | 'agent'; agent_type?: string; project_id?: string; cli_type?: 'claude' | 'codex' }) =>
       fetchJSON<{ ok: boolean; session: Session }>('/sessions', {
@@ -172,6 +186,11 @@ export const api = {
     // Permanently delete an ended session from history (record + events + JSONL).
     deleteRecord: (id: string) =>
       fetchJSON<{ ok: boolean }>(`/sessions/${id}/record`, { method: 'DELETE' }),
+    // Permanently delete this account's ended records for one project.
+    deleteEndedRecords: (projectId: string) =>
+      fetchJSON<{ ok: boolean; deleted: number; failed: number }>(`/sessions/records/ended?project_id=${encodeURIComponent(projectId)}`, {
+        method: 'DELETE',
+      }),
     // Claude on-disk conversation history for a project (the real, complete history).
     claudeHistory: (projectId: string) =>
       fetchJSON<{ projectId: string | null; sessions: ClaudeHistoryItem[] }>(`/sessions/claude-history?project_id=${encodeURIComponent(projectId)}`),
@@ -442,6 +461,35 @@ export const api = {
       uninstall: () => fetchJSON<{ ok: boolean; removed: string[] }>('/settings/statusline/uninstall', { method: 'POST' }),
     },
   },
+  promptEnhancer: {
+    config: () => fetchJSON<{ config: PromptEnhancerConfig }>('/prompt-enhancer/config'),
+    updateConfig: (config: {
+      enabled?: boolean;
+      endpoint?: string;
+      model?: string;
+      mode?: PromptEnhancerMode;
+      timeout_ms?: number;
+      api_key?: string;
+      clear_api_key?: boolean;
+    }) => fetchJSON<{ ok: boolean; config: PromptEnhancerConfig }>('/prompt-enhancer/config', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    }),
+    test: () => fetchJSON<{ ok: boolean }>('/prompt-enhancer/test', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+    models: (config: { endpoint?: string; api_key?: string }) => fetchJSON<{ models: string[] }>('/prompt-enhancer/models', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    }),
+    enhance: (data: { session_id: string; prompt: string; mode?: PromptEnhancerMode }, signal?: AbortSignal) =>
+      fetchJSON<{ prompt: string }>('/prompt-enhancer/enhance', {
+        method: 'POST',
+        body: JSON.stringify(data),
+        signal,
+      }),
+  },
   // Per-user UI view state — cross-device sync of open tabs + custom names.
   userState: {
     getAll: () => fetchJSON<{ state: Record<string, unknown> }>('/user-state'),
@@ -475,6 +523,7 @@ export interface Session {
   created_at: string;
   updated_at?: string;
   last_activity_at?: string | null;
+  content_summary?: string | null;
   cli_type?: 'claude' | 'codex';
   mode?: 'session' | 'terminal' | 'agent';
   agent_type?: string | null;

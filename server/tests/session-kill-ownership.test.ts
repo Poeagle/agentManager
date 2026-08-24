@@ -85,4 +85,36 @@ describe('session kill ownership', () => {
     expect(kill).toHaveBeenCalledOnce();
     expect(kill).toHaveBeenCalledWith('own-session');
   });
+
+  it('bulk-deletes only the current user\'s ended records in the selected project', async () => {
+    const insert = getDb().prepare(`
+      INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
+      VALUES (?, 'project-1', ?, ?, 'session', 'claude', ?)
+    `);
+    insert.run('owner-ended', 'Finished owner work', 'completed', ownerId);
+    insert.run('owner-running', 'Active owner work', 'running', ownerId);
+    const viewer = getDb().prepare('SELECT id FROM users WHERE username = ?').get('kill-viewer') as { id: string };
+    insert.run('viewer-ended', 'Finished viewer work', 'cancelled', viewer.id);
+    getDb().prepare(`
+      INSERT INTO session_snapshots (session_id, rendered) VALUES ('owner-ended', 'saved screen')
+    `).run();
+    getDb().prepare(`
+      INSERT INTO events (session_id, type) VALUES ('owner-ended', 'session_end')
+    `).run();
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: '/api/sessions/records/ended?project_id=project-1',
+      headers: { cookie: ownerCookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, deleted: 1, failed: 0 });
+    expect(getDb().prepare('SELECT id FROM sessions ORDER BY id').all()).toEqual([
+      { id: 'owner-running' },
+      { id: 'viewer-ended' },
+    ]);
+    expect(getDb().prepare('SELECT COUNT(*) AS count FROM session_snapshots').get()).toEqual({ count: 0 });
+    expect(getDb().prepare('SELECT COUNT(*) AS count FROM events').get()).toEqual({ count: 0 });
+  });
 });

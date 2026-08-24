@@ -7,6 +7,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { RotateCcw, ExternalLink, ZoomIn, ZoomOut, Loader2, Check, AlertCircle, Paperclip } from 'lucide-react';
 import { api } from '../lib/api';
 import { TerminalInputBuffer } from '../lib/terminal-input-buffer';
+import { extractComposerDraft, NativePromptBridge } from '../lib/native-prompt-bridge';
 import { HistoryViewer } from './HistoryViewer';
 import '@xterm/xterm/css/xterm.css';
 
@@ -94,6 +95,19 @@ interface UploadItem {
   error?: string;
 }
 
+type PromptEnhancementPhase = 'preparing' | 'requesting' | 'applying' | 'complete' | 'error';
+
+interface PromptEnhancementProgress {
+  phase: PromptEnhancementPhase;
+  message: string;
+}
+
+const PROMPT_ENHANCEMENT_STEPS: Array<{ phase: Exclude<PromptEnhancementPhase, 'complete' | 'error'>; label: string }> = [
+  { phase: 'preparing', label: '读取当前输入' },
+  { phase: 'requesting', label: '请求优化模型' },
+  { phase: 'applying', label: '替换终端输入' },
+];
+
 interface TerminalProps {
   sessionId: string;
   visible?: boolean;
@@ -124,6 +138,9 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   const uploadSeqRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadFileRef = useRef<(file: File) => void>(() => {});
+  const nativePromptRef = useRef(new NativePromptBridge());
+  const enhanceNativePromptRef = useRef<(() => void) | null>(null);
+  const [promptEnhancementProgress, setPromptEnhancementProgress] = useState<PromptEnhancementProgress | null>(null);
 
   // Read terminal font size from settings
   const { data: settingsData } = useQuery({
@@ -324,6 +341,81 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       if (!visibleRef.current) return false;
       return pendingTerminalInput.enqueue({ data, paste });
     };
+    const sendTrackedTerminalInput = (data: string, paste = false): boolean => {
+      const sent = sendTerminalInput(data, paste);
+      if (sent) {
+        nativePromptRef.current.record(data, paste);
+      } else {
+        nativePromptRef.current.invalidate();
+      }
+      return sent;
+    };
+
+    let enhancementAbort: AbortController | null = null;
+    const enhanceNativePrompt = async () => {
+      if (!visibleRef.current || isSuspendedRef.current) return;
+      setPromptEnhancementProgress({ phase: 'preparing', message: '正在读取当前终端输入…' });
+      let snapshot = nativePromptRef.current.snapshot();
+      if (!snapshot && (cliTypeRef.current === 'codex' || cliTypeRef.current === 'claude')) {
+        const buffer = (term as any).buffer?.active;
+        const currentRow = buffer && Number.isInteger(buffer.baseY) && Number.isInteger(buffer.cursorY)
+          ? buffer.baseY + buffer.cursorY
+          : null;
+        if (currentRow !== null) {
+          let firstRow = currentRow;
+          while (firstRow > 0 && buffer.getLine(firstRow)?.isWrapped) firstRow--;
+          const rows: string[] = [];
+          for (let row = firstRow; row <= currentRow; row++) {
+            const line = buffer.getLine(row);
+            if (!line) break;
+            rows.push(line.translateToString(true));
+          }
+          const recovered = extractComposerDraft(rows);
+          if (recovered) {
+            nativePromptRef.current.replace(recovered);
+            snapshot = nativePromptRef.current.snapshot();
+          }
+        }
+      }
+      if (!snapshot) {
+        setPromptEnhancementProgress({ phase: 'error', message: '无法确认当前输入；请先重新输入要优化的内容。' });
+        return;
+      }
+      const controller = new AbortController();
+      enhancementAbort?.abort();
+      enhancementAbort = controller;
+      setPromptEnhancementProgress({ phase: 'requesting', message: '正在请求优化模型…' });
+      try {
+        const result = await api.promptEnhancer.enhance({ session_id: sessionId, prompt: snapshot.text }, controller.signal);
+        const current = nativePromptRef.current.snapshot();
+        if (!current || current.version !== snapshot.version) {
+          setPromptEnhancementProgress({ phase: 'error', message: '输入已变化，未替换结果。' });
+          return;
+        }
+        // Codex/Claude compose boxes understand the standard readline-style
+        // beginning-of-input + kill-to-end pair. A plain shell is safer with
+        // end-of-line + kill-to-beginning.
+        const clearInput = cliTypeRef.current === 'codex' || cliTypeRef.current === 'claude'
+          ? '\x01\x0b'
+          : '\x05\x15';
+        setPromptEnhancementProgress({ phase: 'applying', message: '正在替换终端输入…' });
+        if (!sendTerminalInput(clearInput) || !sendTerminalInput(result.prompt, true)) {
+          nativePromptRef.current.invalidate();
+          setPromptEnhancementProgress({ phase: 'error', message: '终端尚未连接，未替换输入。' });
+          return;
+        }
+        nativePromptRef.current.replace(result.prompt);
+        setPromptEnhancementProgress({ phase: 'complete', message: '已替换当前终端输入。' });
+        term.focus();
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) {
+          setPromptEnhancementProgress({ phase: 'error', message: error instanceof Error ? error.message : '提示词优化失败' });
+        }
+      } finally {
+        if (enhancementAbort === controller) enhancementAbort = null;
+      }
+    };
+    enhanceNativePromptRef.current = () => { void enhanceNativePrompt(); };
 
     // Intercept Ctrl+Shift+C to copy selection
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
@@ -352,12 +444,12 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
 
     // The server-side CLI can't see the browser clipboard / OS drag, so any
     // pasted or dropped file is uploaded, saved into the project, and its path
-    // injected into the terminal so the active Claude or Codex CLI can inspect it.
+    // becomes part of the tracked native input so the active CLI can inspect it.
     const injectPath = (p?: string) => {
       if (!p) return;
       const needsQuote = /[\s"\\]/.test(p);
       const q = needsQuote ? `"${p.replace(/(["\\])/g, '\\$1')}"` : p;
-      sendTerminalInput(`${q} `, true);
+      sendTrackedTerminalInput(`${q} `, true);
     };
     const uploadFile = (file: File) => {
       const uid = ++uploadSeqRef.current;
@@ -417,13 +509,13 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       if (files.length) {
         ce.preventDefault();
         ce.stopImmediatePropagation();
-        files.forEach(uploadFile);
+        files.forEach((file) => uploadFile(file));
         return;
       }
 
       const text = ce.clipboardData?.getData('text/plain') || ce.clipboardData?.getData('text');
       if (text) {
-        sendTerminalInput(text, true);
+        sendTrackedTerminalInput(text, true);
         ce.preventDefault();
         ce.stopImmediatePropagation();
         return;
@@ -459,7 +551,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       if (files && files.length) {
         ev.preventDefault();
         ev.stopPropagation();
-        Array.from(files).forEach(uploadFile);
+        Array.from(files).forEach((file) => uploadFile(file));
       }
     };
     dropEl.addEventListener('dragover', dragOverHandler);
@@ -532,10 +624,11 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     // These get sent when terminal gains/loses focus and Claude Code's TUI interprets them as input
     term.onData((data: string) => {
       if (data === '\x1b[I' || data === '\x1b[O') return;
-      sendTerminalInput(data);
+      sendTrackedTerminalInput(data);
     });
 
     term.onBinary((data: string) => {
+      nativePromptRef.current.invalidate();
       sendTerminalInput(data);
     });
 
@@ -817,6 +910,8 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       stopHeartbeat();
       resizeObserver.disconnect();
       pendingTerminalInput.clear();
+      enhancementAbort?.abort();
+      enhanceNativePromptRef.current = null;
       pasteTarget.removeEventListener('paste', pasteHandler, { capture: true } as EventListenerOptions);
       if (uploadFileRef.current === uploadFile) uploadFileRef.current = () => {};
       dropEl.removeEventListener('dragover', dragOverHandler);
@@ -959,6 +1054,23 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     return () => window.removeEventListener('agentmanager:refresh-terminal', handler);
   }, [sessionId, hardRefresh]);
 
+  // The project rail owns the visible ✨ action; this terminal owns the
+  // session-specific draft bridge and the safe native replacement.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId !== sessionId) return;
+      enhanceNativePromptRef.current?.();
+    };
+    window.addEventListener('agentmanager:enhance-native-prompt', handler);
+    return () => window.removeEventListener('agentmanager:enhance-native-prompt', handler);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!promptEnhancementProgress || (promptEnhancementProgress.phase !== 'complete' && promptEnhancementProgress.phase !== 'error')) return;
+    const timeout = setTimeout(() => setPromptEnhancementProgress(null), 4_000);
+    return () => clearTimeout(timeout);
+  }, [promptEnhancementProgress]);
+
   // Focus terminal on demand (e.g. switching from grid to single view)
   useEffect(() => {
     const handler = (e: Event) => {
@@ -1083,6 +1195,34 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           background: '#0f1117',
         }}
       />
+      {promptEnhancementProgress && visible && (() => {
+        const activeStep = PROMPT_ENHANCEMENT_STEPS.findIndex((step) => step.phase === promptEnhancementProgress.phase);
+        const isFinal = promptEnhancementProgress.phase === 'complete' || promptEnhancementProgress.phase === 'error';
+        const tone = promptEnhancementProgress.phase === 'complete'
+          ? 'var(--success)'
+          : promptEnhancementProgress.phase === 'error'
+            ? 'var(--error)'
+            : '#c4b5fd';
+        const content = <>
+          <div className="flex items-center gap-2">
+            {promptEnhancementProgress.phase === 'complete' ? <Check className="h-3.5 w-3.5 shrink-0" />
+              : promptEnhancementProgress.phase === 'error' ? <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                : <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
+            <span className="font-medium">提示词优化</span>
+            <span className="opacity-80">{promptEnhancementProgress.message}</span>
+          </div>
+          {!isFinal && <div className="mt-2 flex items-center gap-1">
+            {PROMPT_ENHANCEMENT_STEPS.map((step, index) => <div key={step.phase} className="flex min-w-0 flex-1 items-center gap-1">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: index <= activeStep ? tone : 'var(--border)' }} />
+              <span className="truncate text-[10px]" style={{ color: index <= activeStep ? tone : 'var(--text-secondary)' }}>{step.label}</span>
+            </div>)}
+          </div>}
+        </>;
+        const sharedClassName = "absolute bottom-3 left-3 z-20 max-w-[min(560px,calc(100%-24px))] rounded-md px-3 py-2 text-xs shadow-lg";
+        const sharedStyle = { background: 'var(--bg-tertiary)', color: tone, border: '1px solid var(--border)' };
+        return isFinal ? <button type="button" onClick={() => setPromptEnhancementProgress(null)} title="点击关闭提示" className={sharedClassName} style={sharedStyle}>{content}</button>
+          : <div className={sharedClassName} style={sharedStyle}>{content}</div>;
+      })()}
       {uploads.length > 0 && (
         <div className="absolute bottom-3 right-3 z-20 flex flex-col gap-2 pointer-events-none" style={{ maxWidth: '260px' }}>
           {uploads.map(u => (

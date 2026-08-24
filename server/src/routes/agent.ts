@@ -79,10 +79,10 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version: '2.0.0',
-    updatedAt: '2026-08-13',
-    scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, and Codex quota reads. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
-    description: 'Authenticated automation API for permitted AgentManager projects, sessions, and scheduled tasks. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
+    version: '2.1.0',
+    updatedAt: '2026-08-24',
+    scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, Codex quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
+    description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
       type: 'HttpOnly session cookie',
       cookieName: 'agentmanager_session',
@@ -97,6 +97,7 @@ export function getAgentApiContract() {
       projects: 'GET /api/projects returns only visible projects plus tool_access flags for the authenticated user.',
       sessions: 'Members can create only permitted mode/CLI combinations and can control only their own sessions. Administrators can monitor and interact with permitted sessions, but DELETE /api/sessions/:id may kill only a session created by the logged-in user.',
       scheduledTasks: 'Scheduled tasks, their run history, and existing-session targets are always restricted to the logged-in user.',
+      promptEnhancer: 'Prompt enhancement can target only a tab created by the logged-in user. Its LLM configuration and API key are administrator-managed and are never exposed by this API.',
       createSession: 'The project must already be registered. Supply project_id and its matching project_path; project_path alone is resolved only when it exactly matches a registered project.',
     },
     critical: [
@@ -109,6 +110,7 @@ export function getAgentApiContract() {
       'The state "choices" array gives you exact option text for choice prompts — use it.',
       'DELETE /api/sessions/:id can kill only a session created by the logged-in user, including for administrators.',
       'Scheduled tasks can target only the logged-in user\'s open tabs or create a permitted new tab.',
+      'Prompt enhancement operates only on a supplied draft and never reads native terminal input or another user\'s tab.',
     ],
     quickstart: [
       '1. POST /api/auth/login — authenticate once and persist the returned cookie securely',
@@ -345,6 +347,19 @@ export function getAgentApiContract() {
           { type: 'execute_result', fields: { requestId: 'string', status: 'string', output: 'string', durationMs: 'number', state: 'SessionState' }, description: 'Result of an execute request.' },
           { type: 'state', fields: { requestId: 'string', '...': 'SessionState fields' }, description: 'Response to get_state.' },
         ],
+      },
+      {
+        category: 'Prompt enhancement',
+        method: 'POST',
+        path: '/api/prompt-enhancer/enhance',
+        description: 'Enhance one supplied draft with the administrator-configured OpenAI-compatible LLM. The session_id must belong to the logged-in user; this endpoint never reads terminal input and does not expose the model API key.',
+        request: {
+          session_id: { type: 'string', required: true, description: 'A session created by the logged-in user.' },
+          prompt: { type: 'string', required: true, description: 'Draft text to enhance. Maximum 24,000 characters.' },
+          mode: { type: 'base | lite | standard | expert | publish', required: false, description: 'Optional one-call mode override; otherwise the configured default is used.' },
+        },
+        response: { prompt: 'string — enhanced draft text; review it before sending to the terminal.' },
+        errors: { 400: 'Invalid draft/mode, unconfigured enhancer, or model request failure', 403: 'Session does not belong to the logged-in user' },
       },
       {
         category: 'Scheduled tasks',
