@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildPromptReplacement,
   MAX_PENDING_TERMINAL_INPUT_BYTES,
   PendingTerminalInputQueue,
   parseTerminalClientMessage,
@@ -46,6 +47,45 @@ describe('terminal websocket protocol', () => {
       ok: false,
       closeCode: 1009,
     });
+  });
+
+  it('validates prompt replacement messages and builds one atomic PTY write', () => {
+    expect(parseTerminalClientMessage(JSON.stringify({
+      type: 'replace-input',
+      requestId: 'prompt_123-abc',
+      data: 'improved\nprompt',
+      clearMode: 'composer',
+    }))).toEqual({
+      ok: true,
+      message: {
+        type: 'replace-input',
+        requestId: 'prompt_123-abc',
+        data: 'improved\nprompt',
+        clearMode: 'composer',
+      },
+    });
+    expect(buildPromptReplacement('improved\nprompt', 'composer'))
+      .toBe('\x01\x0b\x1b[200~improved\nprompt\x1b[201~');
+    expect(buildPromptReplacement('plain shell', 'shell'))
+      .toBe('\x05\x15\x1b[200~plain shell\x1b[201~');
+
+    expect(parseTerminalClientMessage(JSON.stringify({
+      type: 'replace-input', requestId: '', data: 'text', clearMode: 'composer',
+    })).ok).toBe(false);
+    expect(parseTerminalClientMessage(JSON.stringify({
+      type: 'replace-input', requestId: 'valid', data: 'text', clearMode: 'unknown',
+    })).ok).toBe(false);
+    expect(parseTerminalClientMessage(JSON.stringify({
+      type: 'replace-input', requestId: 'valid', data: 'unsafe\u001b[201~', clearMode: 'composer',
+    })).ok).toBe(false);
+
+    const oversized = JSON.stringify({
+      type: 'replace-input',
+      requestId: 'valid',
+      data: 'x'.repeat(256 * 1024 + 1),
+      clearMode: 'composer',
+    });
+    expect(parseTerminalClientMessage(oversized)).toMatchObject({ ok: false, closeCode: 1009 });
   });
 
   it('bounds and drains handshake input in FIFO order', () => {

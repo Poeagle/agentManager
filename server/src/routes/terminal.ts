@@ -25,6 +25,8 @@ import { readSessionCookie, userCanUseSessionTool } from '../auth.js';
 import { registerUserConnection } from '../services/user-connections.js';
 
 const MAX_TERMINAL_INPUT_BYTES = 256 * 1024;
+const PROMPT_REPLACEMENT_WRAPPER_BYTES = 14;
+const MAX_PROMPT_REPLACEMENT_BYTES = MAX_TERMINAL_INPUT_BYTES - PROMPT_REPLACEMENT_WRAPPER_BYTES;
 const MAX_TERMINAL_MESSAGE_BYTES = MAX_TERMINAL_INPUT_BYTES + 4096;
 export const MAX_PENDING_TERMINAL_INPUT_BYTES = 64 * 1024;
 
@@ -67,9 +69,25 @@ export class PendingTerminalInputQueue {
 
 export type TerminalClientMessage =
   | { type: 'input'; data: string; paste: boolean }
+  | { type: 'replace-input'; requestId: string; data: string; clearMode: PromptClearMode }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'refresh'; history: boolean }
   | { type: 'ping' };
+
+export type PromptClearMode = 'composer' | 'shell';
+
+const PROMPT_REPLACEMENT_REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
+const UNSAFE_PROMPT_CONTROL_CHARACTER_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+
+/**
+ * Build one PTY write for prompt replacement. Keeping clear + bracketed paste
+ * in a single worker message prevents a disconnect from deleting the old
+ * draft without delivering its replacement.
+ */
+export function buildPromptReplacement(data: string, clearMode: PromptClearMode): string {
+  const clearInput = clearMode === 'composer' ? '\x01\x0b' : '\x05\x15';
+  return `${clearInput}\x1b[200~${data}\x1b[201~`;
+}
 
 export type TerminalMessageParseResult =
   | { ok: true; message: TerminalClientMessage }
@@ -116,6 +134,27 @@ export function parseTerminalClientMessage(raw: Buffer | string): TerminalMessag
       return { ok: false, error: 'Invalid paste flag' };
     }
     return { ok: true, message: { type: 'input', data: msg.data, paste: msg.paste === true } };
+  }
+  if (msg.type === 'replace-input') {
+    if (typeof msg.requestId !== 'string' || !PROMPT_REPLACEMENT_REQUEST_ID_RE.test(msg.requestId)) {
+      return { ok: false, error: 'Invalid prompt replacement request ID' };
+    }
+    if (typeof msg.data !== 'string') {
+      return { ok: false, error: 'Prompt replacement must be a string' };
+    }
+    if (Buffer.byteLength(msg.data) > MAX_PROMPT_REPLACEMENT_BYTES) {
+      return { ok: false, error: 'Prompt replacement is too large', closeCode: 1009 };
+    }
+    if (UNSAFE_PROMPT_CONTROL_CHARACTER_RE.test(msg.data)) {
+      return { ok: false, error: 'Prompt replacement contains unsafe control characters' };
+    }
+    if (msg.clearMode !== 'composer' && msg.clearMode !== 'shell') {
+      return { ok: false, error: 'Invalid prompt replacement clear mode' };
+    }
+    return {
+      ok: true,
+      message: { type: 'replace-input', requestId: msg.requestId, data: msg.data, clearMode: msg.clearMode },
+    };
   }
   return { ok: false, error: 'Unsupported terminal message type' };
 }
@@ -224,7 +263,9 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
           sendJson(socket, { type: 'pong' });
         } else if (parsed.message.type === 'refresh' && attached) {
           sendReplay(sessionId, socket, true);
-        } else if (parsed.message.type === 'input' || parsed.message.type === 'resize') {
+        } else if (parsed.message.type === 'input'
+          || parsed.message.type === 'replace-input'
+          || parsed.message.type === 'resize') {
           protocolError(socket, 'Passive terminal is read-only');
         }
       });
@@ -378,6 +419,22 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
           pendingInputs.clear();
           protocolError(socket, 'Pending terminal input is too large', 1009);
         }
+        return;
+      }
+
+      if (msg.type === 'replace-input') {
+        if (!attached) {
+          sendJson(socket, {
+            type: 'input-replace-error',
+            requestId: msg.requestId,
+            message: 'Terminal is not ready',
+          });
+          return;
+        }
+        const replaced = writeToSession(sessionId, buildPromptReplacement(msg.data, msg.clearMode), false);
+        sendJson(socket, replaced
+          ? { type: 'input-replaced', requestId: msg.requestId }
+          : { type: 'input-replace-error', requestId: msg.requestId, message: 'Failed to replace terminal input' });
         return;
       }
 

@@ -4,7 +4,20 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { RotateCcw, ExternalLink, ZoomIn, ZoomOut, Loader2, Check, AlertCircle, Paperclip } from 'lucide-react';
+import {
+  RotateCcw,
+  ExternalLink,
+  ZoomIn,
+  ZoomOut,
+  Loader2,
+  Check,
+  AlertCircle,
+  Paperclip,
+  Copy,
+  ShieldCheck,
+  Undo2,
+  X,
+} from 'lucide-react';
 import { api } from '../lib/api';
 import { TerminalInputBuffer } from '../lib/terminal-input-buffer';
 import { extractComposerDraft, NativePromptBridge } from '../lib/native-prompt-bridge';
@@ -102,6 +115,34 @@ interface PromptEnhancementProgress {
   message: string;
 }
 
+interface PromptEnhancementPreview {
+  original: string;
+  generated: string;
+  enhanced: string;
+  sourceVersion: number;
+  applying: boolean;
+  error?: string;
+}
+
+interface PromptReplacementBackup {
+  original: string;
+  appliedVersion: number;
+  restoring: boolean;
+  error?: string;
+}
+
+interface PromptReplacementResult {
+  ok: boolean;
+  message?: string;
+}
+
+interface PromptInputSelection {
+  text: string;
+  version: number;
+  applying: boolean;
+  error?: string;
+}
+
 const PROMPT_ENHANCEMENT_STEPS: Array<{ phase: Exclude<PromptEnhancementPhase, 'complete' | 'error'>; label: string }> = [
   { phase: 'preparing', label: '读取当前输入' },
   { phase: 'requesting', label: '请求优化模型' },
@@ -140,7 +181,24 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   const uploadFileRef = useRef<(file: File) => void>(() => {});
   const nativePromptRef = useRef(new NativePromptBridge());
   const enhanceNativePromptRef = useRef<(() => void) | null>(null);
+  const replacePromptInputRef = useRef<(data: string) => Promise<PromptReplacementResult>>(
+    async () => ({ ok: false, message: '终端尚未连接' }),
+  );
+  const previewCancelButtonRef = useRef<HTMLButtonElement>(null);
+  const previewEditorRef = useRef<HTMLTextAreaElement>(null);
   const [promptEnhancementProgress, setPromptEnhancementProgress] = useState<PromptEnhancementProgress | null>(null);
+  const [promptEnhancementPreview, setPromptEnhancementPreview] = useState<PromptEnhancementPreview | null>(null);
+  const [promptReplacementBackup, setPromptReplacementBackup] = useState<PromptReplacementBackup | null>(null);
+  const [promptInputSelection, setPromptInputSelection] = useState<PromptInputSelection | null>(null);
+  const promptInputSelectionRef = useRef<PromptInputSelection | null>(null);
+  const promptEnhancementPreviewOpen = promptEnhancementPreview !== null;
+  const promptPreviewOpenRef = useRef(false);
+  promptPreviewOpenRef.current = promptEnhancementPreviewOpen;
+
+  const updatePromptInputSelection = useCallback((selection: PromptInputSelection | null) => {
+    promptInputSelectionRef.current = selection;
+    setPromptInputSelection(selection);
+  }, []);
 
   // Read terminal font size from settings
   const { data: settingsData } = useQuery({
@@ -239,6 +297,73 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     setTimeout(() => connectFnRef.current?.(), 50);
   }, [sendCurrentSize]);
 
+  const closePromptEnhancementPreview = useCallback(() => {
+    setPromptEnhancementPreview((preview) => preview?.applying ? preview : null);
+    requestAnimationFrame(() => termRef.current?.focus());
+  }, []);
+
+  const applyPromptEnhancement = useCallback(async () => {
+    const preview = promptEnhancementPreview;
+    if (!preview || preview.applying) return;
+    if (!preview.enhanced.trim()) {
+      setPromptEnhancementPreview({ ...preview, error: '优化结果不能为空，请编辑后再确认替换。' });
+      return;
+    }
+    const current = nativePromptRef.current.snapshot();
+    if (!current || current.version !== preview.sourceVersion) {
+      setPromptEnhancementPreview({ ...preview, error: '原输入已发生变化，请关闭预览后重新优化。' });
+      return;
+    }
+
+    setPromptEnhancementPreview({ ...preview, applying: true, error: undefined });
+    const result = await replacePromptInputRef.current(preview.enhanced);
+    if (!result.ok) {
+      setPromptEnhancementPreview((latest) => latest ? {
+        ...latest,
+        applying: false,
+        error: result.message || '替换失败，原输入仍保留。',
+      } : latest);
+      return;
+    }
+
+    nativePromptRef.current.replace(preview.enhanced);
+    const applied = nativePromptRef.current.snapshot();
+    setPromptReplacementBackup(applied ? {
+      original: preview.original,
+      appliedVersion: applied.version,
+      restoring: false,
+    } : null);
+    setPromptEnhancementPreview(null);
+    setPromptEnhancementProgress(null);
+    requestAnimationFrame(() => termRef.current?.focus());
+  }, [promptEnhancementPreview]);
+
+  const restoreOriginalPrompt = useCallback(async () => {
+    const backup = promptReplacementBackup;
+    if (!backup || backup.restoring) return;
+    const current = nativePromptRef.current.snapshot();
+    if (!current || current.version !== backup.appliedVersion) {
+      setPromptReplacementBackup({ ...backup, error: '输入已被继续编辑，无法安全地自动恢复。' });
+      return;
+    }
+
+    setPromptReplacementBackup({ ...backup, restoring: true, error: undefined });
+    const result = await replacePromptInputRef.current(backup.original);
+    if (!result.ok) {
+      setPromptReplacementBackup((latest) => latest ? {
+        ...latest,
+        restoring: false,
+        error: result.message || '恢复失败，当前输入未改变。',
+      } : latest);
+      return;
+    }
+
+    nativePromptRef.current.replace(backup.original);
+    setPromptReplacementBackup(null);
+    setPromptEnhancementProgress({ phase: 'complete', message: '原输入已恢复。' });
+    requestAnimationFrame(() => termRef.current?.focus());
+  }, [promptReplacementBackup]);
+
   useEffect(() => {
     if (!containerRef.current) return;
     // Create terminal
@@ -321,6 +446,50 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     // flush exactly once when the socket becomes writable.
     let protocolReady = false;
     const pendingTerminalInput = new TerminalInputBuffer();
+    let pendingPromptReplacement: {
+      requestId: string;
+      timeout: ReturnType<typeof setTimeout>;
+      resolve: (result: PromptReplacementResult) => void;
+    } | null = null;
+
+    const finishPromptReplacement = (result: PromptReplacementResult, requestId?: string) => {
+      if (!pendingPromptReplacement || (requestId && pendingPromptReplacement.requestId !== requestId)) return;
+      clearTimeout(pendingPromptReplacement.timeout);
+      const { resolve } = pendingPromptReplacement;
+      pendingPromptReplacement = null;
+      resolve(result);
+    };
+
+    replacePromptInputRef.current = (data: string) => new Promise((resolve) => {
+      const socket = wsRef.current;
+      if (!visibleRef.current || isSuspendedRef.current || !protocolReady
+        || !socket || socket.readyState !== WebSocket.OPEN) {
+        resolve({ ok: false, message: '终端尚未就绪，原输入未改变。' });
+        return;
+      }
+      if (pendingPromptReplacement) {
+        resolve({ ok: false, message: '已有输入替换正在进行，请稍候。' });
+        return;
+      }
+
+      const requestId = typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `prompt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const timeout = setTimeout(() => {
+        finishPromptReplacement({ ok: false, message: '终端未确认替换，原输入状态未知，请勿直接提交。' }, requestId);
+      }, 8_000);
+      pendingPromptReplacement = { requestId, timeout, resolve };
+      try {
+        socket.send(JSON.stringify({
+          type: 'replace-input',
+          requestId,
+          data,
+          clearMode: cliTypeRef.current === 'codex' || cliTypeRef.current === 'claude' ? 'composer' : 'shell',
+        }));
+      } catch {
+        finishPromptReplacement({ ok: false, message: '终端连接已断开，原输入状态未知，请检查输入框。' }, requestId);
+      }
+    });
 
     const sendTerminalInput = (data: string, paste = false): boolean => {
       if (!data) return true;
@@ -351,32 +520,88 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       return sent;
     };
 
+    const captureNativePrompt = () => {
+      const snapshot = nativePromptRef.current.snapshot();
+      if (snapshot || (cliTypeRef.current !== 'codex' && cliTypeRef.current !== 'claude')) return snapshot;
+
+      const buffer = term.buffer?.active;
+      const currentRow = buffer && Number.isInteger(buffer.baseY) && Number.isInteger(buffer.cursorY)
+        ? buffer.baseY + buffer.cursorY
+        : null;
+      if (currentRow === null) return null;
+
+      let firstRow = currentRow;
+      while (firstRow > 0 && buffer.getLine(firstRow)?.isWrapped) firstRow--;
+      const rows: string[] = [];
+      for (let row = firstRow; row <= currentRow; row++) {
+        const line = buffer.getLine(row);
+        if (!line) break;
+        rows.push(line.translateToString(true));
+      }
+      const recovered = extractComposerDraft(rows);
+      if (!recovered) return null;
+      nativePromptRef.current.replace(recovered);
+      return nativePromptRef.current.snapshot();
+    };
+
+    let queuedInputAfterPromptReplacement: Array<{ data: string; paste: boolean }> = [];
+
+    const selectAllNativePrompt = (): boolean => {
+      if (promptInputSelectionRef.current?.applying) return true;
+      const snapshot = captureNativePrompt();
+      if (!snapshot) return false;
+      queuedInputAfterPromptReplacement = [];
+      updatePromptInputSelection({
+        text: snapshot.text,
+        version: snapshot.version,
+        applying: false,
+      });
+      term.clearSelection();
+      return true;
+    };
+
+    const replaceSelectedNativePrompt = (replacement: string, paste = false): boolean => {
+      const selection = promptInputSelectionRef.current;
+      if (!selection) return false;
+      if (selection.applying) {
+        if (replacement) queuedInputAfterPromptReplacement.push({ data: replacement, paste });
+        return true;
+      }
+
+      const current = nativePromptRef.current.snapshot();
+      if (!current || current.version !== selection.version) {
+        updatePromptInputSelection(null);
+        return false;
+      }
+
+      updatePromptInputSelection({ ...selection, applying: true, error: undefined });
+      void replacePromptInputRef.current(replacement).then((result) => {
+        if (!result.ok) {
+          queuedInputAfterPromptReplacement = [];
+          updatePromptInputSelection({
+            ...selection,
+            applying: false,
+            error: result.message || '操作失败，请检查当前输入。',
+          });
+          return;
+        }
+        nativePromptRef.current.replace(replacement);
+        updatePromptInputSelection(null);
+        const queuedInput = queuedInputAfterPromptReplacement;
+        queuedInputAfterPromptReplacement = [];
+        for (const input of queuedInput) sendTrackedTerminalInput(input.data, input.paste);
+        requestAnimationFrame(() => term.focus());
+      });
+      return true;
+    };
+
     let enhancementAbort: AbortController | null = null;
     const enhanceNativePrompt = async () => {
       if (!visibleRef.current || isSuspendedRef.current) return;
+      if (promptInputSelectionRef.current?.applying) return;
+      updatePromptInputSelection(null);
       setPromptEnhancementProgress({ phase: 'preparing', message: '正在读取当前终端输入…' });
-      let snapshot = nativePromptRef.current.snapshot();
-      if (!snapshot && (cliTypeRef.current === 'codex' || cliTypeRef.current === 'claude')) {
-        const buffer = (term as any).buffer?.active;
-        const currentRow = buffer && Number.isInteger(buffer.baseY) && Number.isInteger(buffer.cursorY)
-          ? buffer.baseY + buffer.cursorY
-          : null;
-        if (currentRow !== null) {
-          let firstRow = currentRow;
-          while (firstRow > 0 && buffer.getLine(firstRow)?.isWrapped) firstRow--;
-          const rows: string[] = [];
-          for (let row = firstRow; row <= currentRow; row++) {
-            const line = buffer.getLine(row);
-            if (!line) break;
-            rows.push(line.translateToString(true));
-          }
-          const recovered = extractComposerDraft(rows);
-          if (recovered) {
-            nativePromptRef.current.replace(recovered);
-            snapshot = nativePromptRef.current.snapshot();
-          }
-        }
-      }
+      const snapshot = captureNativePrompt();
       if (!snapshot) {
         setPromptEnhancementProgress({ phase: 'error', message: '无法确认当前输入；请先重新输入要优化的内容。' });
         return;
@@ -392,21 +617,19 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           setPromptEnhancementProgress({ phase: 'error', message: '输入已变化，未替换结果。' });
           return;
         }
-        // Codex/Claude compose boxes understand the standard readline-style
-        // beginning-of-input + kill-to-end pair. A plain shell is safer with
-        // end-of-line + kill-to-beginning.
-        const clearInput = cliTypeRef.current === 'codex' || cliTypeRef.current === 'claude'
-          ? '\x01\x0b'
-          : '\x05\x15';
-        setPromptEnhancementProgress({ phase: 'applying', message: '正在替换终端输入…' });
-        if (!sendTerminalInput(clearInput) || !sendTerminalInput(result.prompt, true)) {
-          nativePromptRef.current.invalidate();
-          setPromptEnhancementProgress({ phase: 'error', message: '终端尚未连接，未替换输入。' });
+        if (!result.prompt.trim()) {
+          setPromptEnhancementProgress({ phase: 'error', message: '优化模型返回了空内容，原输入未改变。' });
           return;
         }
-        nativePromptRef.current.replace(result.prompt);
-        setPromptEnhancementProgress({ phase: 'complete', message: '已替换当前终端输入。' });
-        term.focus();
+        setPromptEnhancementProgress(null);
+        setPromptEnhancementPreview({
+          original: snapshot.text,
+          generated: result.prompt,
+          enhanced: result.prompt,
+          sourceVersion: snapshot.version,
+          applying: false,
+        });
+        term.blur();
       } catch (error) {
         if (!(error instanceof DOMException && error.name === 'AbortError')) {
           setPromptEnhancementProgress({ phase: 'error', message: error instanceof Error ? error.message : '提示词优化失败' });
@@ -417,11 +640,48 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     };
     enhanceNativePromptRef.current = () => { void enhanceNativePrompt(); };
 
-    // Intercept Ctrl+Shift+C to copy selection
+    // Give Ctrl+A browser-style semantics for the current CLI composer. The
+    // PTY itself only understands Ctrl+A as "move to start", so the browser
+    // keeps a short-lived full-draft selection and applies the next edit as one
+    // atomic replacement.
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'C' && e.type === 'keydown') {
-        const sel = term.getSelection();
-        if (sel) writeClipboard(sel);
+      const modifier = (e.ctrlKey || e.metaKey) && !e.altKey;
+      const key = e.key.toLowerCase();
+      if (e.type !== 'keydown') return true;
+
+      if (modifier && !e.shiftKey && key === 'a' && selectAllNativePrompt()) {
+        e.preventDefault();
+        return false;
+      }
+
+      const promptSelection = promptInputSelectionRef.current;
+      if (promptSelection && modifier && key === 'c') {
+        writeClipboard(promptSelection.text);
+        e.preventDefault();
+        return false;
+      }
+      if (promptSelection && (e.key === 'Backspace' || e.key === 'Delete')) {
+        e.preventDefault();
+        if (promptSelection.applying) {
+          queuedInputAfterPromptReplacement.push({ data: '\x7f', paste: false });
+        } else {
+          replaceSelectedNativePrompt('');
+        }
+        return false;
+      }
+      if (promptSelection && e.key === 'Escape') {
+        if (promptSelection.applying) {
+          queuedInputAfterPromptReplacement.push({ data: '\x1b', paste: false });
+          e.preventDefault();
+          return false;
+        }
+        updatePromptInputSelection(null);
+      }
+
+      // Intercept Ctrl+Shift+C to copy xterm's ordinary mouse selection.
+      if (e.ctrlKey && e.shiftKey && key === 'c') {
+        const terminalSelection = term.getSelection();
+        if (terminalSelection) writeClipboard(terminalSelection);
         e.preventDefault();
         queueMicrotask(() => term.focus());
         return false;
@@ -429,7 +689,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       // Text has exactly one delivery path: the browser's native `paste`
       // event below. Reading navigator.clipboard from a zero-delay fallback as
       // well can race Chromium's paste event and submit the same text twice.
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'v' && e.type === 'keydown') {
+      if (modifier && key === 'v') {
         // Returning false keeps xterm from interpreting the key while leaving
         // the browser default intact, so text and files reach pasteHandler.
         return false;
@@ -449,7 +709,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       if (!p) return;
       const needsQuote = /[\s"\\]/.test(p);
       const q = needsQuote ? `"${p.replace(/(["\\])/g, '\\$1')}"` : p;
-      sendTrackedTerminalInput(`${q} `, true);
+      if (!replaceSelectedNativePrompt(`${q} `, true)) sendTrackedTerminalInput(`${q} `, true);
     };
     const uploadFile = (file: File) => {
       const uid = ++uploadSeqRef.current;
@@ -515,7 +775,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
 
       const text = ce.clipboardData?.getData('text/plain') || ce.clipboardData?.getData('text');
       if (text) {
-        sendTrackedTerminalInput(text, true);
+        if (!replaceSelectedNativePrompt(text, true)) sendTrackedTerminalInput(text, true);
         ce.preventDefault();
         ce.stopImmediatePropagation();
         return;
@@ -624,6 +884,25 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     // These get sent when terminal gains/loses focus and Claude Code's TUI interprets them as input
     term.onData((data: string) => {
       if (data === '\x1b[I' || data === '\x1b[O') return;
+      const promptSelection = promptInputSelectionRef.current;
+      if (promptSelection?.applying) {
+        if (data) queuedInputAfterPromptReplacement.push({ data, paste: false });
+        return;
+      }
+      if (promptSelection) {
+        // Printable input replaces the full selection, matching a regular text
+        // box. Navigation/terminal control sequences cancel the virtual
+        // selection and retain their native behavior.
+        const hasControlCharacter = Array.from(data).some((character) => {
+          const codePoint = character.codePointAt(0);
+          return codePoint !== undefined && (codePoint < 0x20 || codePoint === 0x7f);
+        });
+        if (!hasControlCharacter) {
+          replaceSelectedNativePrompt(data);
+          return;
+        }
+        updatePromptInputSelection(null);
+      }
       sendTrackedTerminalInput(data);
     });
 
@@ -703,7 +982,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         setConnected(true);
         fitAddon.fit();
         sendCurrentSize();
-        if (visibleRef.current) term.focus();
+        if (visibleRef.current && !promptPreviewOpenRef.current) term.focus();
         const bufferedInput = pendingTerminalInput.drain();
         for (let index = 0; index < bufferedInput.length; index++) {
           const input = bufferedInput[index];
@@ -748,6 +1027,12 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
             case 'ready':
               markProtocolReady();
               break;
+            case 'input-replaced':
+              finishPromptReplacement({ ok: true }, msg.requestId);
+              break;
+            case 'input-replace-error':
+              finishPromptReplacement({ ok: false, message: msg.message || '终端拒绝了输入替换。' }, msg.requestId);
+              break;
             case 'output':
               enqueueOutput(msg.data, Number.isSafeInteger(msg.cursor) ? msg.cursor : undefined);
               break;
@@ -769,6 +1054,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
               onExitRef.current?.(msg.exitCode);
               break;
             case 'error':
+              finishPromptReplacement({ ok: false, message: msg.message || '终端输入替换失败。' });
               enqueueOutput(`\r\n\x1b[31m[Error: ${msg.message}]\x1b[0m\r\n`);
               protocolReady = false;
               setConnected(false);
@@ -783,6 +1069,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       ws.onclose = () => {
         const isCurrentSocket = wsRef.current === ws;
         if (isCurrentSocket) {
+          finishPromptReplacement({ ok: false, message: '终端连接已断开，请检查输入框内容。' });
           wsRef.current = null;
           stopHeartbeat();
           protocolReady = false;
@@ -817,6 +1104,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         reconnectTimer = null;
       }
       writeQueue.length = 0;
+      finishPromptReplacement({ ok: false, message: '终端连接已断开，请检查输入框内容。' });
       queuedOutputSize = 0;
       outputWasDropped = false;
       if (writeFrame !== null) {
@@ -912,6 +1200,8 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       pendingTerminalInput.clear();
       enhancementAbort?.abort();
       enhanceNativePromptRef.current = null;
+      replacePromptInputRef.current = async () => ({ ok: false, message: '终端尚未连接' });
+      finishPromptReplacement({ ok: false, message: '终端已关闭，请检查输入框内容。' });
       pasteTarget.removeEventListener('paste', pasteHandler, { capture: true } as EventListenerOptions);
       if (uploadFileRef.current === uploadFile) uploadFileRef.current = () => {};
       dropEl.removeEventListener('dragover', dragOverHandler);
@@ -924,7 +1214,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       wsRef.current = null;
       term.dispose();
     };
-  }, [sendCurrentSize, sessionId]);
+  }, [sendCurrentSize, sessionId, updatePromptInputSelection]);
 
   // Suspension effect: cold terminals disconnect their transport but retain
   // the painted xterm buffer. Reconnect supplies only the missing display
@@ -977,7 +1267,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   useEffect(() => {
     if (visible && !suspended && termRef.current) {
       termRef.current.scrollToBottom();
-      termRef.current.focus();
+      if (!promptPreviewOpenRef.current) termRef.current.focus();
       let cancelled = false;
       requestAnimationFrame(() => {
         if (cancelled) return;
@@ -1009,7 +1299,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
             }
           }
           term.scrollToBottom();
-          term.focus();
+          if (!promptPreviewOpenRef.current) term.focus();
         }
       });
       return () => {
@@ -1027,13 +1317,13 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     function handleVisibilityChange() {
       if (document.visibilityState === 'visible' && visible && !suspended && termRef.current) {
         const term = termRef.current;
-        term.focus();
+        if (!promptPreviewOpenRef.current) term.focus();
         requestAnimationFrame(() => {
           fitRef.current?.fit();
           sendCurrentSize();
           term.refresh(0, term.rows - 1);
           term.scrollToBottom();
-          term.focus();
+          if (!promptPreviewOpenRef.current) term.focus();
         });
       }
     }
@@ -1071,6 +1361,21 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     return () => clearTimeout(timeout);
   }, [promptEnhancementProgress]);
 
+  useEffect(() => {
+    if (!promptEnhancementPreviewOpen) return;
+    termRef.current?.blur();
+    const frame = requestAnimationFrame(() => {
+      const editor = previewEditorRef.current;
+      if (editor) {
+        editor.focus();
+        editor.setSelectionRange(editor.value.length, editor.value.length);
+      } else {
+        previewCancelButtonRef.current?.focus();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [promptEnhancementPreviewOpen]);
+
   // Focus terminal on demand (e.g. switching from grid to single view)
   useEffect(() => {
     const handler = (e: Event) => {
@@ -1079,7 +1384,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       const term = termRef.current;
       if (term) {
         term.scrollToBottom();
-        term.focus();
+        if (!promptPreviewOpenRef.current) term.focus();
       }
     };
     window.addEventListener('agentmanager:focus-terminal', handler);
@@ -1087,7 +1392,12 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   }, [sessionId]);
 
   return (
-    <div className="h-full relative group/terminal" onClick={() => termRef.current?.focus()}>
+    <div className="h-full relative group/terminal" onClick={() => {
+      if (promptInputSelectionRef.current && !promptInputSelectionRef.current.applying) {
+        updatePromptInputSelection(null);
+      }
+      if (!promptPreviewOpenRef.current) termRef.current?.focus();
+    }}>
       <div className="absolute top-2 right-5 z-10 flex items-center gap-2">
         {connected && !suspended && (
           <>
@@ -1195,6 +1505,262 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           background: '#0f1117',
         }}
       />
+      {promptInputSelection && visible && !promptEnhancementPreview && (
+        <div
+          className="absolute left-3 top-3 z-20 max-w-[min(520px,calc(100%-96px))] rounded-md px-3 py-2 text-xs shadow-lg"
+          style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid rgba(167, 139, 250, 0.5)' }}
+          onClick={(event) => event.stopPropagation()}
+          role="status"
+        >
+          <div className="flex items-center gap-2">
+            {promptInputSelection.applying
+              ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" style={{ color: '#c4b5fd' }} />
+              : promptInputSelection.error
+                ? <AlertCircle className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--error)' }} />
+                : <Check className="h-3.5 w-3.5 shrink-0" style={{ color: '#c4b5fd' }} />}
+            <span className="font-medium">
+              {promptInputSelection.applying ? '正在更新输入…' : `已全选当前输入（${promptInputSelection.text.length} 字符）`}
+            </span>
+            {!promptInputSelection.applying && (
+              <span className="hidden opacity-70 sm:inline">输入可覆盖，Backspace / Delete 可清空</span>
+            )}
+            <button
+              type="button"
+              onClick={() => updatePromptInputSelection(null)}
+              disabled={promptInputSelection.applying}
+              className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded opacity-60 hover:opacity-100 disabled:opacity-30"
+              aria-label="取消全选"
+              title="取消全选（Esc）"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+          {promptInputSelection.error && (
+            <div className="mt-1.5" style={{ color: 'var(--error)' }} role="alert">{promptInputSelection.error}</div>
+          )}
+        </div>
+      )}
+      {promptEnhancementPreview && visible && (
+        <div
+          className="absolute inset-0 z-30 flex items-center justify-center p-4 sm:p-6"
+          style={{ background: 'rgba(8, 10, 15, 0.86)', backdropFilter: 'blur(3px)' }}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape' && !promptEnhancementPreview.applying) {
+              event.preventDefault();
+              closePromptEnhancementPreview();
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="prompt-enhancement-preview-title"
+            className="flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-xl shadow-2xl"
+            style={{ background: 'var(--bg-secondary)', border: '1px solid #7c3aed' }}
+          >
+            <header className="flex items-start justify-between gap-4 px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 id="prompt-enhancement-preview-title" className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    提示词优化预览
+                  </h2>
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
+                    style={{ color: '#c4b5fd', background: 'rgba(124, 58, 237, 0.16)', border: '1px solid rgba(167, 139, 250, 0.35)' }}
+                  >
+                    <ShieldCheck className="h-3 w-3" /> 原输入尚未修改
+                  </span>
+                </div>
+                <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  请先比较内容，确认后才会替换终端输入框。
+                </p>
+              </div>
+              <button
+                ref={previewCancelButtonRef}
+                type="button"
+                onClick={closePromptEnhancementPreview}
+                disabled={promptEnhancementPreview.applying}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                style={{ color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+                title="关闭预览（Esc）"
+                aria-label="关闭提示词优化预览"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </header>
+
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-px overflow-auto md:grid-cols-2" style={{ background: 'var(--border)' }}>
+              <div className="flex min-h-[180px] flex-col p-4" style={{ background: 'var(--bg-secondary)' }}>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>原输入</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-secondary)' }}>{promptEnhancementPreview.original.length} 字符</span>
+                    <button
+                      type="button"
+                      onClick={() => writeClipboard(promptEnhancementPreview.original)}
+                      className="inline-flex items-center gap-1 text-[10px] opacity-70 hover:opacity-100"
+                      style={{ color: 'var(--text-secondary)' }}
+                      title="复制原输入"
+                    >
+                      <Copy className="h-3 w-3" /> 复制
+                    </button>
+                  </div>
+                </div>
+                <pre
+                  className="min-h-0 flex-1 whitespace-pre-wrap break-words rounded-lg p-3 text-xs leading-5"
+                  style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)', fontFamily: 'inherit' }}
+                >{promptEnhancementPreview.original}</pre>
+              </div>
+              <div className="flex min-h-[180px] flex-col p-4" style={{ background: 'var(--bg-secondary)' }}>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: '#c4b5fd' }}>优化结果</span>
+                    <span
+                      className="rounded px-1.5 py-0.5 text-[9px] font-medium"
+                      style={{ color: '#c4b5fd', background: 'rgba(124, 58, 237, 0.14)', border: '1px solid rgba(167, 139, 250, 0.3)' }}
+                    >
+                      可编辑
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {promptEnhancementPreview.enhanced !== promptEnhancementPreview.generated && (
+                      <button
+                        type="button"
+                        onClick={() => setPromptEnhancementPreview((preview) => preview ? {
+                          ...preview,
+                          enhanced: preview.generated,
+                          error: undefined,
+                        } : preview)}
+                        disabled={promptEnhancementPreview.applying}
+                        className="inline-flex items-center gap-1 text-[10px] opacity-70 hover:opacity-100 disabled:opacity-40"
+                        style={{ color: '#c4b5fd' }}
+                        title="撤销手动编辑，恢复模型生成的内容"
+                      >
+                        <Undo2 className="h-3 w-3" /> 恢复模型结果
+                      </button>
+                    )}
+                    <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-secondary)' }}>{promptEnhancementPreview.enhanced.length} 字符</span>
+                  </div>
+                </div>
+                <textarea
+                  ref={previewEditorRef}
+                  value={promptEnhancementPreview.enhanced}
+                  onChange={(event) => setPromptEnhancementPreview((preview) => preview ? {
+                    ...preview,
+                    enhanced: event.target.value,
+                    error: undefined,
+                  } : preview)}
+                  onKeyDown={(event) => {
+                    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                      event.preventDefault();
+                      void applyPromptEnhancement();
+                    }
+                  }}
+                  disabled={promptEnhancementPreview.applying}
+                  spellCheck={false}
+                  aria-label="编辑优化后的提示词"
+                  className="min-h-[180px] flex-1 resize-none whitespace-pre-wrap break-words rounded-lg p-3 text-xs leading-5 outline-none transition-shadow focus:ring-1 focus:ring-violet-500 disabled:cursor-wait disabled:opacity-70"
+                  style={{
+                    background: 'rgba(124, 58, 237, 0.08)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid rgba(167, 139, 250, 0.45)',
+                    fontFamily: 'inherit',
+                    caretColor: '#c4b5fd',
+                  }}
+                />
+                <div className="mt-2 text-[10px]" style={{ color: 'var(--text-secondary)' }}>
+                  可在此补充或删改内容 · Ctrl / ⌘ + Enter 确认替换
+                </div>
+              </div>
+            </div>
+
+            <footer className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between" style={{ borderTop: '1px solid var(--border)' }}>
+              <div className="min-h-4 text-xs" style={{ color: 'var(--error)' }} role="alert">
+                {promptEnhancementPreview.error || ''}
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => writeClipboard(promptEnhancementPreview.enhanced)}
+                  disabled={promptEnhancementPreview.applying}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ color: 'var(--text-primary)', border: '1px solid var(--border)', background: 'var(--bg-tertiary)' }}
+                >
+                  <Copy className="h-3.5 w-3.5" /> 复制结果
+                </button>
+                <button
+                  type="button"
+                  onClick={closePromptEnhancementPreview}
+                  disabled={promptEnhancementPreview.applying}
+                  className="h-8 rounded-md px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+                >
+                  保留原输入
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { void applyPromptEnhancement(); }}
+                  disabled={promptEnhancementPreview.applying}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-semibold text-white transition-colors disabled:cursor-wait disabled:opacity-70"
+                  style={{ background: '#7c3aed', border: '1px solid #8b5cf6' }}
+                >
+                  {promptEnhancementPreview.applying
+                    ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> 正在替换…</>
+                    : <><Check className="h-3.5 w-3.5" /> 确认替换</>}
+                </button>
+              </div>
+            </footer>
+          </section>
+        </div>
+      )}
+      {promptReplacementBackup && visible && (
+        <div
+          className="absolute bottom-3 left-3 z-20 max-w-[min(560px,calc(100%-24px))] rounded-md px-3 py-2 text-xs shadow-lg"
+          style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid rgba(167, 139, 250, 0.45)' }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Check className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--success)' }} />
+            <span className="font-medium">优化结果已替换</span>
+            <button
+              type="button"
+              onClick={() => { void restoreOriginalPrompt(); }}
+              disabled={promptReplacementBackup.restoring}
+              className="ml-1 inline-flex items-center gap-1 rounded px-2 py-1 font-medium disabled:cursor-wait disabled:opacity-60"
+              style={{ color: '#c4b5fd', border: '1px solid rgba(167, 139, 250, 0.4)' }}
+            >
+              {promptReplacementBackup.restoring
+                ? <Loader2 className="h-3 w-3 animate-spin" />
+                : <Undo2 className="h-3 w-3" />}
+              恢复原文
+            </button>
+            <button
+              type="button"
+              onClick={() => writeClipboard(promptReplacementBackup.original)}
+              disabled={promptReplacementBackup.restoring}
+              className="inline-flex items-center gap-1 rounded px-2 py-1 font-medium opacity-75 hover:opacity-100 disabled:opacity-30"
+              style={{ color: 'var(--text-secondary)' }}
+              title="复制原文"
+            >
+              <Copy className="h-3 w-3" /> 复制原文
+            </button>
+            <button
+              type="button"
+              onClick={() => setPromptReplacementBackup(null)}
+              disabled={promptReplacementBackup.restoring}
+              className="ml-auto flex h-5 w-5 items-center justify-center rounded opacity-60 hover:opacity-100 disabled:opacity-30"
+              aria-label="关闭恢复提示"
+              title="关闭"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+          {promptReplacementBackup.error && (
+            <div className="mt-1.5" style={{ color: 'var(--error)' }} role="alert">{promptReplacementBackup.error}</div>
+          )}
+        </div>
+      )}
       {promptEnhancementProgress && visible && (() => {
         const activeStep = PROMPT_ENHANCEMENT_STEPS.findIndex((step) => step.phase === promptEnhancementProgress.phase);
         const isFinal = promptEnhancementProgress.phase === 'complete' || promptEnhancementProgress.phase === 'error';
