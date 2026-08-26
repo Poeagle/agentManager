@@ -108,7 +108,7 @@ interface UploadItem {
   error?: string;
 }
 
-type PromptEnhancementPhase = 'preparing' | 'requesting' | 'applying' | 'complete' | 'error';
+type PromptEnhancementPhase = 'preparing' | 'requesting' | 'error';
 
 interface PromptEnhancementProgress {
   phase: PromptEnhancementPhase;
@@ -119,16 +119,6 @@ interface PromptEnhancementPreview {
   original: string;
   generated: string;
   enhanced: string;
-  sourceVersion: number;
-  applying: boolean;
-  error?: string;
-}
-
-interface PromptReplacementBackup {
-  original: string;
-  appliedVersion: number;
-  restoring: boolean;
-  error?: string;
 }
 
 interface PromptReplacementResult {
@@ -143,10 +133,9 @@ interface PromptInputSelection {
   error?: string;
 }
 
-const PROMPT_ENHANCEMENT_STEPS: Array<{ phase: Exclude<PromptEnhancementPhase, 'complete' | 'error'>; label: string }> = [
+const PROMPT_ENHANCEMENT_STEPS: Array<{ phase: Exclude<PromptEnhancementPhase, 'error'>; label: string }> = [
   { phase: 'preparing', label: '读取当前输入' },
   { phase: 'requesting', label: '请求优化模型' },
-  { phase: 'applying', label: '替换终端输入' },
 ];
 
 interface TerminalProps {
@@ -188,7 +177,6 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   const previewEditorRef = useRef<HTMLTextAreaElement>(null);
   const [promptEnhancementProgress, setPromptEnhancementProgress] = useState<PromptEnhancementProgress | null>(null);
   const [promptEnhancementPreview, setPromptEnhancementPreview] = useState<PromptEnhancementPreview | null>(null);
-  const [promptReplacementBackup, setPromptReplacementBackup] = useState<PromptReplacementBackup | null>(null);
   const [promptInputSelection, setPromptInputSelection] = useState<PromptInputSelection | null>(null);
   const promptInputSelectionRef = useRef<PromptInputSelection | null>(null);
   const promptEnhancementPreviewOpen = promptEnhancementPreview !== null;
@@ -298,71 +286,9 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   }, [sendCurrentSize]);
 
   const closePromptEnhancementPreview = useCallback(() => {
-    setPromptEnhancementPreview((preview) => preview?.applying ? preview : null);
+    setPromptEnhancementPreview(null);
     requestAnimationFrame(() => termRef.current?.focus());
   }, []);
-
-  const applyPromptEnhancement = useCallback(async () => {
-    const preview = promptEnhancementPreview;
-    if (!preview || preview.applying) return;
-    if (!preview.enhanced.trim()) {
-      setPromptEnhancementPreview({ ...preview, error: '优化结果不能为空，请编辑后再确认替换。' });
-      return;
-    }
-    const current = nativePromptRef.current.snapshot();
-    if (!current || current.version !== preview.sourceVersion) {
-      setPromptEnhancementPreview({ ...preview, error: '原输入已发生变化，请关闭预览后重新优化。' });
-      return;
-    }
-
-    setPromptEnhancementPreview({ ...preview, applying: true, error: undefined });
-    const result = await replacePromptInputRef.current(preview.enhanced);
-    if (!result.ok) {
-      setPromptEnhancementPreview((latest) => latest ? {
-        ...latest,
-        applying: false,
-        error: result.message || '替换失败，原输入仍保留。',
-      } : latest);
-      return;
-    }
-
-    nativePromptRef.current.replace(preview.enhanced);
-    const applied = nativePromptRef.current.snapshot();
-    setPromptReplacementBackup(applied ? {
-      original: preview.original,
-      appliedVersion: applied.version,
-      restoring: false,
-    } : null);
-    setPromptEnhancementPreview(null);
-    setPromptEnhancementProgress(null);
-    requestAnimationFrame(() => termRef.current?.focus());
-  }, [promptEnhancementPreview]);
-
-  const restoreOriginalPrompt = useCallback(async () => {
-    const backup = promptReplacementBackup;
-    if (!backup || backup.restoring) return;
-    const current = nativePromptRef.current.snapshot();
-    if (!current || current.version !== backup.appliedVersion) {
-      setPromptReplacementBackup({ ...backup, error: '输入已被继续编辑，无法安全地自动恢复。' });
-      return;
-    }
-
-    setPromptReplacementBackup({ ...backup, restoring: true, error: undefined });
-    const result = await replacePromptInputRef.current(backup.original);
-    if (!result.ok) {
-      setPromptReplacementBackup((latest) => latest ? {
-        ...latest,
-        restoring: false,
-        error: result.message || '恢复失败，当前输入未改变。',
-      } : latest);
-      return;
-    }
-
-    nativePromptRef.current.replace(backup.original);
-    setPromptReplacementBackup(null);
-    setPromptEnhancementProgress({ phase: 'complete', message: '原输入已恢复。' });
-    requestAnimationFrame(() => termRef.current?.focus());
-  }, [promptReplacementBackup]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -626,8 +552,6 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           original: snapshot.text,
           generated: result.prompt,
           enhanced: result.prompt,
-          sourceVersion: snapshot.version,
-          applying: false,
         });
         term.blur();
       } catch (error) {
@@ -1344,8 +1268,8 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     return () => window.removeEventListener('agentmanager:refresh-terminal', handler);
   }, [sessionId, hardRefresh]);
 
-  // The project rail owns the visible ✨ action; this terminal owns the
-  // session-specific draft bridge and the safe native replacement.
+  // The project rail owns the visible ✨ action; this terminal captures the
+  // session-specific draft and opens a copy-only enhancement preview.
   useEffect(() => {
     const handler = (event: Event) => {
       if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId !== sessionId) return;
@@ -1356,7 +1280,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   }, [sessionId]);
 
   useEffect(() => {
-    if (!promptEnhancementProgress || (promptEnhancementProgress.phase !== 'complete' && promptEnhancementProgress.phase !== 'error')) return;
+    if (promptEnhancementProgress?.phase !== 'error') return;
     const timeout = setTimeout(() => setPromptEnhancementProgress(null), 4_000);
     return () => clearTimeout(timeout);
   }, [promptEnhancementProgress]);
@@ -1546,7 +1470,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           style={{ background: 'rgba(8, 10, 15, 0.86)', backdropFilter: 'blur(3px)' }}
           onClick={(event) => event.stopPropagation()}
           onKeyDown={(event) => {
-            if (event.key === 'Escape' && !promptEnhancementPreview.applying) {
+            if (event.key === 'Escape') {
               event.preventDefault();
               closePromptEnhancementPreview();
             }
@@ -1573,15 +1497,14 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
                   </span>
                 </div>
                 <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  请先比较内容，确认后才会替换终端输入框。
+                  编辑满意后复制结果，再手动粘贴到终端输入框；此页面不会修改当前输入。
                 </p>
               </div>
               <button
                 ref={previewCancelButtonRef}
                 type="button"
                 onClick={closePromptEnhancementPreview}
-                disabled={promptEnhancementPreview.applying}
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors"
                 style={{ color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
                 title="关闭预览（Esc）"
                 aria-label="关闭提示词优化预览"
@@ -1630,10 +1553,8 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
                         onClick={() => setPromptEnhancementPreview((preview) => preview ? {
                           ...preview,
                           enhanced: preview.generated,
-                          error: undefined,
                         } : preview)}
-                        disabled={promptEnhancementPreview.applying}
-                        className="inline-flex items-center gap-1 text-[10px] opacity-70 hover:opacity-100 disabled:opacity-40"
+                        className="inline-flex items-center gap-1 text-[10px] opacity-70 hover:opacity-100"
                         style={{ color: '#c4b5fd' }}
                         title="撤销手动编辑，恢复模型生成的内容"
                       >
@@ -1649,18 +1570,10 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
                   onChange={(event) => setPromptEnhancementPreview((preview) => preview ? {
                     ...preview,
                     enhanced: event.target.value,
-                    error: undefined,
                   } : preview)}
-                  onKeyDown={(event) => {
-                    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-                      event.preventDefault();
-                      void applyPromptEnhancement();
-                    }
-                  }}
-                  disabled={promptEnhancementPreview.applying}
                   spellCheck={false}
                   aria-label="编辑优化后的提示词"
-                  className="min-h-[180px] flex-1 resize-none whitespace-pre-wrap break-words rounded-lg p-3 text-xs leading-5 outline-none transition-shadow focus:ring-1 focus:ring-violet-500 disabled:cursor-wait disabled:opacity-70"
+                  className="min-h-[180px] flex-1 resize-none whitespace-pre-wrap break-words rounded-lg p-3 text-xs leading-5 outline-none transition-shadow focus:ring-1 focus:ring-violet-500"
                   style={{
                     background: 'rgba(124, 58, 237, 0.08)',
                     color: 'var(--text-primary)',
@@ -1670,110 +1583,47 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
                   }}
                 />
                 <div className="mt-2 text-[10px]" style={{ color: 'var(--text-secondary)' }}>
-                  可在此补充或删改内容 · Ctrl / ⌘ + Enter 确认替换
+                  可在此补充或删改内容；复制后回到终端手动粘贴
                 </div>
               </div>
             </div>
 
             <footer className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between" style={{ borderTop: '1px solid var(--border)' }}>
-              <div className="min-h-4 text-xs" style={{ color: 'var(--error)' }} role="alert">
-                {promptEnhancementPreview.error || ''}
+              <div className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                <ShieldCheck className="h-3.5 w-3.5" style={{ color: '#c4b5fd' }} />
+                只复制到剪贴板，不会自动清空或写入终端
               </div>
               <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => writeClipboard(promptEnhancementPreview.enhanced)}
-                  disabled={promptEnhancementPreview.applying}
-                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                  style={{ color: 'var(--text-primary)', border: '1px solid var(--border)', background: 'var(--bg-tertiary)' }}
-                >
-                  <Copy className="h-3.5 w-3.5" /> 复制结果
-                </button>
-                <button
-                  type="button"
                   onClick={closePromptEnhancementPreview}
-                  disabled={promptEnhancementPreview.applying}
-                  className="h-8 rounded-md px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                  className="h-8 rounded-md px-3 text-xs font-medium transition-colors"
                   style={{ color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
                 >
                   保留原输入
                 </button>
                 <button
                   type="button"
-                  onClick={() => { void applyPromptEnhancement(); }}
-                  disabled={promptEnhancementPreview.applying}
-                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-semibold text-white transition-colors disabled:cursor-wait disabled:opacity-70"
+                  onClick={() => writeClipboard(promptEnhancementPreview.enhanced)}
+                  disabled={!promptEnhancementPreview.enhanced.trim()}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                   style={{ background: '#7c3aed', border: '1px solid #8b5cf6' }}
                 >
-                  {promptEnhancementPreview.applying
-                    ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> 正在替换…</>
-                    : <><Check className="h-3.5 w-3.5" /> 确认替换</>}
+                  <Copy className="h-3.5 w-3.5" /> 复制优化结果
                 </button>
               </div>
             </footer>
           </section>
         </div>
       )}
-      {promptReplacementBackup && visible && (
-        <div
-          className="absolute bottom-3 left-3 z-20 max-w-[min(560px,calc(100%-24px))] rounded-md px-3 py-2 text-xs shadow-lg"
-          style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid rgba(167, 139, 250, 0.45)' }}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            <Check className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--success)' }} />
-            <span className="font-medium">优化结果已替换</span>
-            <button
-              type="button"
-              onClick={() => { void restoreOriginalPrompt(); }}
-              disabled={promptReplacementBackup.restoring}
-              className="ml-1 inline-flex items-center gap-1 rounded px-2 py-1 font-medium disabled:cursor-wait disabled:opacity-60"
-              style={{ color: '#c4b5fd', border: '1px solid rgba(167, 139, 250, 0.4)' }}
-            >
-              {promptReplacementBackup.restoring
-                ? <Loader2 className="h-3 w-3 animate-spin" />
-                : <Undo2 className="h-3 w-3" />}
-              恢复原文
-            </button>
-            <button
-              type="button"
-              onClick={() => writeClipboard(promptReplacementBackup.original)}
-              disabled={promptReplacementBackup.restoring}
-              className="inline-flex items-center gap-1 rounded px-2 py-1 font-medium opacity-75 hover:opacity-100 disabled:opacity-30"
-              style={{ color: 'var(--text-secondary)' }}
-              title="复制原文"
-            >
-              <Copy className="h-3 w-3" /> 复制原文
-            </button>
-            <button
-              type="button"
-              onClick={() => setPromptReplacementBackup(null)}
-              disabled={promptReplacementBackup.restoring}
-              className="ml-auto flex h-5 w-5 items-center justify-center rounded opacity-60 hover:opacity-100 disabled:opacity-30"
-              aria-label="关闭恢复提示"
-              title="关闭"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          </div>
-          {promptReplacementBackup.error && (
-            <div className="mt-1.5" style={{ color: 'var(--error)' }} role="alert">{promptReplacementBackup.error}</div>
-          )}
-        </div>
-      )}
       {promptEnhancementProgress && visible && (() => {
         const activeStep = PROMPT_ENHANCEMENT_STEPS.findIndex((step) => step.phase === promptEnhancementProgress.phase);
-        const isFinal = promptEnhancementProgress.phase === 'complete' || promptEnhancementProgress.phase === 'error';
-        const tone = promptEnhancementProgress.phase === 'complete'
-          ? 'var(--success)'
-          : promptEnhancementProgress.phase === 'error'
-            ? 'var(--error)'
-            : '#c4b5fd';
+        const isFinal = promptEnhancementProgress.phase === 'error';
+        const tone = isFinal ? 'var(--error)' : '#c4b5fd';
         const content = <>
           <div className="flex items-center gap-2">
-            {promptEnhancementProgress.phase === 'complete' ? <Check className="h-3.5 w-3.5 shrink-0" />
-              : promptEnhancementProgress.phase === 'error' ? <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                : <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
+            {isFinal ? <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              : <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
             <span className="font-medium">提示词优化</span>
             <span className="opacity-80">{promptEnhancementProgress.message}</span>
           </div>
