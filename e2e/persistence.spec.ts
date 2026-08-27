@@ -10,7 +10,7 @@ test('restores project and terminal tabs from server state after browser storage
   await page.getByRole('button', { name: '创建并进入' }).click();
   await expect(page.getByText('Projects', { exact: true }).first()).toBeVisible();
 
-  const projectPath = join(process.cwd(), '.test-data', 'e2e', 'project');
+  const projectPath = join(process.cwd(), '.test-data', 'e2e', 'persistence-project');
   const projectResponse = await page.request.post('/api/projects', {
     data: { name: 'Persistence Project', path: projectPath },
   });
@@ -22,6 +22,10 @@ test('restores project and terminal tabs from server state after browser storage
   });
   expect(sessionResponse.ok()).toBeTruthy();
   const { session } = await sessionResponse.json();
+
+  // Stop the mounted empty dashboard from racing these authoritative server
+  // state writes with its own initial persistence effect.
+  await page.goto('about:blank');
 
   expect((await page.request.put('/api/user-state/app', {
     data: {
@@ -44,6 +48,12 @@ test('restores project and terminal tabs from server state after browser storage
     },
   })).ok()).toBeTruthy();
 
+  await page.goto('/');
+  const dismissStatusline = page.getByRole('button', { name: 'No thanks' });
+  if (await dismissStatusline.isVisible().catch(() => false)) {
+    await dismissStatusline.click();
+    await expect(dismissStatusline).toBeHidden();
+  }
   await page.evaluate(() => localStorage.clear());
   await page.reload();
 

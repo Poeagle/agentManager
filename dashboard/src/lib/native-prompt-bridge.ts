@@ -3,6 +3,41 @@ export interface NativePromptSnapshot {
   version: number;
 }
 
+export interface ComposerBufferLine {
+  text: string;
+  /** xterm marks a visual row as wrapped when it continues the prior row. */
+  isWrapped: boolean;
+}
+
+const COMPOSER_MARKER = /^\s*[›❯>]\s?/;
+
+/**
+ * Reconstruct the active Codex/Claude composer from terminal rows. Unlike a
+ * plain current-line snapshot this keeps every row after the latest composer
+ * marker. Wrapped rows are joined, while explicit editor newlines remain
+ * newlines.
+ */
+export function extractComposerDraftFromBuffer(lines: ComposerBufferLine[]): string | null {
+  let start = -1;
+  for (let index = lines.length - 1; index >= 0; index--) {
+    if (COMPOSER_MARKER.test(lines[index].text.replace(/\u00a0/g, ' '))) {
+      start = index;
+      break;
+    }
+  }
+  if (start < 0) return null;
+
+  let draft = '';
+  for (let index = start; index < lines.length; index++) {
+    const line = lines[index];
+    const text = line.text.replace(/\u00a0/g, ' ').replace(/\s+$/, '');
+    const part = index === start ? text.replace(COMPOSER_MARKER, '') : text;
+    if (index > start && !line.isWrapped) draft += '\n';
+    draft += part;
+  }
+  return draft.trim() || null;
+}
+
 /**
  * Extracts the editable tail from a CLI composer line captured by xterm. This
  * is intentionally narrow: callers use it only for Codex/Claude recovery when

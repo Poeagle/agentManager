@@ -69,7 +69,7 @@ export class PendingTerminalInputQueue {
 
 export type TerminalClientMessage =
   | { type: 'input'; data: string; paste: boolean }
-  | { type: 'replace-input'; requestId: string; data: string; clearMode: PromptClearMode }
+  | { type: 'replace-input'; requestId: string; data: string; clearMode: PromptClearMode; composerLineCount?: number }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'refresh'; history: boolean }
   | { type: 'ping' };
@@ -78,14 +78,20 @@ export type PromptClearMode = 'composer' | 'shell';
 
 const PROMPT_REPLACEMENT_REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 const UNSAFE_PROMPT_CONTROL_CHARACTER_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+const MAX_COMPOSER_CLEAR_LINES = 4_096;
 
 /**
  * Build one PTY write for prompt replacement. Keeping clear + bracketed paste
  * in a single worker message prevents a disconnect from deleting the old
  * draft without delivering its replacement.
  */
-export function buildPromptReplacement(data: string, clearMode: PromptClearMode): string {
-  const clearInput = clearMode === 'composer' ? '\x01\x0b' : '\x05\x15';
+export function buildPromptReplacement(data: string, clearMode: PromptClearMode, composerLineCount = 1): string {
+  // Ctrl+A/Ctrl+K only clears the current composer line. For a multi-line
+  // draft, backspace from that empty line joins the preceding line; repeat
+  // the same operation until the whole current draft is empty.
+  const clearInput = clearMode === 'composer'
+    ? Array.from({ length: Math.max(1, composerLineCount) }, (_, index) => `${index ? '\x7f' : ''}\x01\x0b`).join('')
+    : '\x05\x15';
   return `${clearInput}\x1b[200~${data}\x1b[201~`;
 }
 
@@ -151,9 +157,20 @@ export function parseTerminalClientMessage(raw: Buffer | string): TerminalMessag
     if (msg.clearMode !== 'composer' && msg.clearMode !== 'shell') {
       return { ok: false, error: 'Invalid prompt replacement clear mode' };
     }
+    const composerLineCount = msg.composerLineCount;
+    if (composerLineCount !== undefined
+      && (typeof composerLineCount !== 'number' || !Number.isInteger(composerLineCount) || composerLineCount < 1 || composerLineCount > MAX_COMPOSER_CLEAR_LINES)) {
+      return { ok: false, error: 'Invalid composer line count' };
+    }
     return {
       ok: true,
-      message: { type: 'replace-input', requestId: msg.requestId, data: msg.data, clearMode: msg.clearMode },
+      message: {
+        type: 'replace-input',
+        requestId: msg.requestId,
+        data: msg.data,
+        clearMode: msg.clearMode,
+        ...(typeof composerLineCount === 'number' ? { composerLineCount } : {}),
+      },
     };
   }
   return { ok: false, error: 'Unsupported terminal message type' };
@@ -431,7 +448,7 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
           });
           return;
         }
-        const replaced = writeToSession(sessionId, buildPromptReplacement(msg.data, msg.clearMode), false);
+        const replaced = writeToSession(sessionId, buildPromptReplacement(msg.data, msg.clearMode, msg.composerLineCount), false);
         sendJson(socket, replaced
           ? { type: 'input-replaced', requestId: msg.requestId }
           : { type: 'input-replace-error', requestId: msg.requestId, message: 'Failed to replace terminal input' });

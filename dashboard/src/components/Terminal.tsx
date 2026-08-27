@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { TerminalInputBuffer } from '../lib/terminal-input-buffer';
-import { extractComposerDraft, NativePromptBridge } from '../lib/native-prompt-bridge';
+import { extractComposerDraft, extractComposerDraftFromBuffer, NativePromptBridge } from '../lib/native-prompt-bridge';
 import { HistoryViewer } from './HistoryViewer';
 import '@xterm/xterm/css/xterm.css';
 
@@ -36,16 +36,18 @@ function notifyServerAlive() {
 // dashboard is opened via a LAN IP over plain HTTP (e.g. http://192.168.x.x:port)
 // it's undefined, so writeText() would throw and copy silently fails. Fall back
 // to a hidden <textarea> + execCommand('copy'), which works without a secure context.
-function writeClipboard(text: string) {
+function writeClipboard(text: string): Promise<boolean> {
   const focusTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   if (navigator.clipboard?.writeText && window.isSecureContext) {
-    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text, focusTarget));
-    return;
+    return navigator.clipboard.writeText(text)
+      .then(() => true)
+      .catch(() => fallbackCopy(text, focusTarget));
   }
-  fallbackCopy(text, focusTarget);
+  return Promise.resolve(fallbackCopy(text, focusTarget));
 }
-function fallbackCopy(text: string, focusTarget: HTMLElement | null) {
+function fallbackCopy(text: string, focusTarget: HTMLElement | null): boolean {
   const ta = document.createElement('textarea');
+  let copied = false;
   try {
     ta.value = text;
     ta.style.position = 'fixed';
@@ -53,12 +55,13 @@ function fallbackCopy(text: string, focusTarget: HTMLElement | null) {
     ta.setAttribute('readonly', '');
     document.body.appendChild(ta);
     ta.select();
-    document.execCommand('copy');
+    copied = document.execCommand('copy');
   } catch { /* nothing more we can do */ }
   finally {
     ta.remove();
     focusTarget?.focus({ preventScroll: true });
   }
+  return copied;
 }
 
 function openTerminalLink(url: string) {
@@ -119,6 +122,7 @@ interface PromptEnhancementPreview {
   original: string;
   generated: string;
   enhanced: string;
+  context?: { requestedRounds: number; includedRounds: number };
 }
 
 interface PromptReplacementResult {
@@ -170,13 +174,14 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   const uploadFileRef = useRef<(file: File) => void>(() => {});
   const nativePromptRef = useRef(new NativePromptBridge());
   const enhanceNativePromptRef = useRef<(() => void) | null>(null);
-  const replacePromptInputRef = useRef<(data: string) => Promise<PromptReplacementResult>>(
+  const replacePromptInputRef = useRef<(data: string, composerLineCount?: number) => Promise<PromptReplacementResult>>(
     async () => ({ ok: false, message: '终端尚未连接' }),
   );
   const previewCancelButtonRef = useRef<HTMLButtonElement>(null);
   const previewEditorRef = useRef<HTMLTextAreaElement>(null);
   const [promptEnhancementProgress, setPromptEnhancementProgress] = useState<PromptEnhancementProgress | null>(null);
   const [promptEnhancementPreview, setPromptEnhancementPreview] = useState<PromptEnhancementPreview | null>(null);
+  const [promptEnhancementCopyStatus, setPromptEnhancementCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle');
   const [promptInputSelection, setPromptInputSelection] = useState<PromptInputSelection | null>(null);
   const promptInputSelectionRef = useRef<PromptInputSelection | null>(null);
   const promptEnhancementPreviewOpen = promptEnhancementPreview !== null;
@@ -287,8 +292,20 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
 
   const closePromptEnhancementPreview = useCallback(() => {
     setPromptEnhancementPreview(null);
-    requestAnimationFrame(() => termRef.current?.focus());
+    setPromptEnhancementCopyStatus('idle');
+    requestAnimationFrame(() => {
+      const term = termRef.current;
+      if (term) term.refresh(0, term.rows - 1);
+    });
   }, []);
+
+  const copyPromptEnhancement = useCallback(async () => {
+    const preview = promptEnhancementPreview;
+    if (!preview?.enhanced.trim()) return;
+    const copied = await writeClipboard(preview.enhanced);
+    setPromptEnhancementCopyStatus(copied ? 'copied' : 'error');
+    requestAnimationFrame(() => previewEditorRef.current?.focus({ preventScroll: true }));
+  }, [promptEnhancementPreview]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -386,7 +403,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       resolve(result);
     };
 
-    replacePromptInputRef.current = (data: string) => new Promise((resolve) => {
+    replacePromptInputRef.current = (data: string, composerLineCount?: number) => new Promise((resolve) => {
       const socket = wsRef.current;
       if (!visibleRef.current || isSuspendedRef.current || !protocolReady
         || !socket || socket.readyState !== WebSocket.OPEN) {
@@ -411,6 +428,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           requestId,
           data,
           clearMode: cliTypeRef.current === 'codex' || cliTypeRef.current === 'claude' ? 'composer' : 'shell',
+          ...(composerLineCount === undefined ? {} : { composerLineCount }),
         }));
       } catch {
         finishPromptReplacement({ ok: false, message: '终端连接已断开，原输入状态未知，请检查输入框。' }, requestId);
@@ -419,6 +437,9 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
 
     const sendTerminalInput = (data: string, paste = false): boolean => {
       if (!data) return true;
+      // The enhancement preview is a strict input boundary. Clipboard and
+      // focus transitions from the dialog must never reach the live PTY.
+      if (promptPreviewOpenRef.current) return false;
       const w = wsRef.current;
       if (w?.readyState === WebSocket.OPEN) {
         try {
@@ -437,6 +458,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       return pendingTerminalInput.enqueue({ data, paste });
     };
     const sendTrackedTerminalInput = (data: string, paste = false): boolean => {
+      if (promptPreviewOpenRef.current) return false;
       const sent = sendTerminalInput(data, paste);
       if (sent) {
         nativePromptRef.current.record(data, paste);
@@ -448,23 +470,41 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
 
     const captureNativePrompt = () => {
       const snapshot = nativePromptRef.current.snapshot();
-      if (snapshot || (cliTypeRef.current !== 'codex' && cliTypeRef.current !== 'claude')) return snapshot;
+      if (cliTypeRef.current !== 'codex' && cliTypeRef.current !== 'claude') return snapshot;
 
       const buffer = term.buffer?.active;
       const currentRow = buffer && Number.isInteger(buffer.baseY) && Number.isInteger(buffer.cursorY)
         ? buffer.baseY + buffer.cursorY
         : null;
-      if (currentRow === null) return null;
+      if (currentRow === null) return snapshot;
 
+      // The key recorder can become partial after a multi-line composer edit:
+      // it cannot reliably distinguish an editor newline from a submitted
+      // command. Prefer the actual visible composer range whenever its marker
+      // is present, so only the final line can never replace the full draft.
+      const firstSearchRow = Math.max(0, currentRow - 4_096);
+      const composerRows = [];
+      for (let row = firstSearchRow; row <= currentRow; row++) {
+        const line = buffer.getLine(row);
+        if (!line) continue;
+        composerRows.push({ text: line.translateToString(true), isWrapped: line.isWrapped });
+      }
+      const fromComposer = extractComposerDraftFromBuffer(composerRows);
+      if (fromComposer) {
+        nativePromptRef.current.replace(fromComposer);
+        return nativePromptRef.current.snapshot();
+      }
+
+      if (snapshot) return snapshot;
       let firstRow = currentRow;
       while (firstRow > 0 && buffer.getLine(firstRow)?.isWrapped) firstRow--;
-      const rows: string[] = [];
+      const currentLogicalRows: string[] = [];
       for (let row = firstRow; row <= currentRow; row++) {
         const line = buffer.getLine(row);
         if (!line) break;
-        rows.push(line.translateToString(true));
+        currentLogicalRows.push(line.translateToString(true));
       }
-      const recovered = extractComposerDraft(rows);
+      const recovered = extractComposerDraft(currentLogicalRows);
       if (!recovered) return null;
       nativePromptRef.current.replace(recovered);
       return nativePromptRef.current.snapshot();
@@ -501,7 +541,13 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       }
 
       updatePromptInputSelection({ ...selection, applying: true, error: undefined });
-      void replacePromptInputRef.current(replacement).then((result) => {
+      // The terminal composer only clears one logical line per Ctrl+A/Ctrl+K.
+      // Carry the complete draft's line count so a full selection is also a
+      // full deletion before the user types or pastes a replacement.
+      const composerLineCount = cliTypeRef.current === 'codex' || cliTypeRef.current === 'claude'
+        ? Math.max(1, selection.text.split('\n').length)
+        : undefined;
+      void replacePromptInputRef.current(replacement, composerLineCount).then((result) => {
         if (!result.ok) {
           queuedInputAfterPromptReplacement = [];
           updatePromptInputSelection({
@@ -548,12 +594,16 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           return;
         }
         setPromptEnhancementProgress(null);
+        setPromptEnhancementCopyStatus('idle');
         setPromptEnhancementPreview({
           original: snapshot.text,
           generated: result.prompt,
           enhanced: result.prompt,
+          context: result.context ? {
+            requestedRounds: result.context.requested_rounds,
+            includedRounds: result.context.included_rounds,
+          } : undefined,
         });
-        term.blur();
       } catch (error) {
         if (!(error instanceof DOMException && error.name === 'AbortError')) {
           setPromptEnhancementProgress({ phase: 'error', message: error instanceof Error ? error.message : '提示词优化失败' });
@@ -569,6 +619,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     // keeps a short-lived full-draft selection and applies the next edit as one
     // atomic replacement.
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if (promptPreviewOpenRef.current) return false;
       const modifier = (e.ctrlKey || e.metaKey) && !e.altKey;
       const key = e.key.toLowerCase();
       if (e.type !== 'keydown') return true;
@@ -807,6 +858,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     // Filter out xterm.js focus reporting sequences (\x1b[I = focus in, \x1b[O = focus out)
     // These get sent when terminal gains/loses focus and Claude Code's TUI interprets them as input
     term.onData((data: string) => {
+      if (promptPreviewOpenRef.current) return;
       if (data === '\x1b[I' || data === '\x1b[O') return;
       const promptSelection = promptInputSelectionRef.current;
       if (promptSelection?.applying) {
@@ -831,6 +883,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     });
 
     term.onBinary((data: string) => {
+      if (promptPreviewOpenRef.current) return;
       nativePromptRef.current.invalidate();
       sendTerminalInput(data);
     });
@@ -1287,7 +1340,6 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
 
   useEffect(() => {
     if (!promptEnhancementPreviewOpen) return;
-    termRef.current?.blur();
     const frame = requestAnimationFrame(() => {
       const editor = previewEditorRef.current;
       if (editor) {
@@ -1495,6 +1547,18 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
                   >
                     <ShieldCheck className="h-3 w-3" /> 原输入尚未修改
                   </span>
+                  {promptEnhancementPreview.context && (
+                    <span
+                      className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+                      style={promptEnhancementPreview.context.includedRounds > 0
+                        ? { color: 'var(--success)', background: 'color-mix(in srgb, var(--success) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--success) 35%, transparent)' }
+                        : { color: 'var(--text-secondary)', background: 'var(--bg-tertiary)', border: '1px solid var(--border)' }}
+                    >
+                      {promptEnhancementPreview.context.includedRounds > 0
+                        ? `已参考最近 ${promptEnhancementPreview.context.includedRounds} 轮`
+                        : '本次未引用历史上下文'}
+                    </span>
+                  )}
                 </div>
                 <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
                   编辑满意后复制结果，再手动粘贴到终端输入框；此页面不会修改当前输入。
@@ -1550,10 +1614,13 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
                     {promptEnhancementPreview.enhanced !== promptEnhancementPreview.generated && (
                       <button
                         type="button"
-                        onClick={() => setPromptEnhancementPreview((preview) => preview ? {
-                          ...preview,
-                          enhanced: preview.generated,
-                        } : preview)}
+                        onClick={() => {
+                          setPromptEnhancementCopyStatus('idle');
+                          setPromptEnhancementPreview((preview) => preview ? {
+                            ...preview,
+                            enhanced: preview.generated,
+                          } : preview);
+                        }}
                         className="inline-flex items-center gap-1 text-[10px] opacity-70 hover:opacity-100"
                         style={{ color: '#c4b5fd' }}
                         title="撤销手动编辑，恢复模型生成的内容"
@@ -1567,10 +1634,11 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
                 <textarea
                   ref={previewEditorRef}
                   value={promptEnhancementPreview.enhanced}
-                  onChange={(event) => setPromptEnhancementPreview((preview) => preview ? {
-                    ...preview,
-                    enhanced: event.target.value,
-                  } : preview)}
+                  onChange={(event) => {
+                    const enhanced = event.target.value;
+                    setPromptEnhancementCopyStatus('idle');
+                    setPromptEnhancementPreview((preview) => preview ? { ...preview, enhanced } : preview);
+                  }}
                   spellCheck={false}
                   aria-label="编辑优化后的提示词"
                   className="min-h-[180px] flex-1 resize-none whitespace-pre-wrap break-words rounded-lg p-3 text-xs leading-5 outline-none transition-shadow focus:ring-1 focus:ring-violet-500"
@@ -1589,9 +1657,23 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
             </div>
 
             <footer className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between" style={{ borderTop: '1px solid var(--border)' }}>
-              <div className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-                <ShieldCheck className="h-3.5 w-3.5" style={{ color: '#c4b5fd' }} />
-                只复制到剪贴板，不会自动清空或写入终端
+              <div
+                className="flex items-center gap-1.5 text-[11px]"
+                style={{ color: promptEnhancementCopyStatus === 'copied'
+                  ? 'var(--success)'
+                  : promptEnhancementCopyStatus === 'error' ? 'var(--error)' : 'var(--text-secondary)' }}
+                role="status"
+              >
+                {promptEnhancementCopyStatus === 'copied'
+                  ? <Check className="h-3.5 w-3.5" />
+                  : promptEnhancementCopyStatus === 'error'
+                    ? <AlertCircle className="h-3.5 w-3.5" />
+                    : <ShieldCheck className="h-3.5 w-3.5" style={{ color: '#c4b5fd' }} />}
+                {promptEnhancementCopyStatus === 'copied'
+                  ? '已复制；预览保持打开，终端原输入未修改'
+                  : promptEnhancementCopyStatus === 'error'
+                    ? '复制失败，请选中文本后手动复制'
+                    : '只复制到剪贴板，不会自动清空或写入终端'}
               </div>
               <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                 <button
@@ -1604,12 +1686,20 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
                 </button>
                 <button
                   type="button"
-                  onClick={() => writeClipboard(promptEnhancementPreview.enhanced)}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void copyPromptEnhancement();
+                  }}
                   disabled={!promptEnhancementPreview.enhanced.trim()}
                   className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                   style={{ background: '#7c3aed', border: '1px solid #8b5cf6' }}
                 >
-                  <Copy className="h-3.5 w-3.5" /> 复制优化结果
+                  {promptEnhancementCopyStatus === 'copied'
+                    ? <Check className="h-3.5 w-3.5" />
+                    : <Copy className="h-3.5 w-3.5" />}
+                  {promptEnhancementCopyStatus === 'copied' ? '已复制' : '复制优化结果'}
                 </button>
               </div>
             </footer>

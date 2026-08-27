@@ -52,6 +52,7 @@ export interface PromptEnhancerConfig {
   endpoint: string;
   model: string;
   mode: PromptEnhancerMode;
+  context_rounds: number;
   timeout_ms: number;
   api_key_configured: boolean;
 }
@@ -468,6 +469,7 @@ export const api = {
       endpoint?: string;
       model?: string;
       mode?: PromptEnhancerMode;
+      context_rounds?: number;
       timeout_ms?: number;
       api_key?: string;
       clear_api_key?: boolean;
@@ -484,7 +486,10 @@ export const api = {
       body: JSON.stringify(config),
     }),
     enhance: (data: { session_id: string; prompt: string; mode?: PromptEnhancerMode }, signal?: AbortSignal) =>
-      fetchJSON<{ prompt: string }>('/prompt-enhancer/enhance', {
+      fetchJSON<{
+        prompt: string;
+        context?: { requested_rounds: number; included_rounds: number };
+      }>('/prompt-enhancer/enhance', {
         method: 'POST',
         body: JSON.stringify(data),
         signal,

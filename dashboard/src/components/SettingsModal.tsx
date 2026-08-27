@@ -521,6 +521,7 @@ function PromptEnhancerSettings() {
   const [endpoint, setEndpoint] = useState('');
   const [model, setModel] = useState('');
   const [mode, setMode] = useState<PromptEnhancerMode>('standard');
+  const [contextRounds, setContextRounds] = useState('3');
   const [timeoutMs, setTimeoutMs] = useState('30000');
   const [apiKey, setApiKey] = useState('');
   const [saved, setSaved] = useState(false);
@@ -537,6 +538,7 @@ function PromptEnhancerSettings() {
     setEndpoint(config.endpoint);
     setModel(config.model);
     setMode(config.mode);
+    setContextRounds(String(config.context_rounds));
     setTimeoutMs(String(config.timeout_ms));
   }, [data]);
 
@@ -546,6 +548,7 @@ function PromptEnhancerSettings() {
       endpoint,
       model,
       mode,
+      context_rounds: Number(contextRounds),
       timeout_ms: Number(timeoutMs),
       ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
     }),
@@ -634,6 +637,11 @@ function PromptEnhancerSettings() {
                 {ENHANCER_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
               <span className="block text-[10px] font-normal" style={{ color: 'var(--text-secondary)' }}>{modeDescription}</span>
+            </label>
+            <label className="space-y-1.5 text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
+              <span>最近上下文轮数</span>
+              <input type="number" min="0" max="10" step="1" value={contextRounds} onChange={(event) => setContextRounds(event.target.value)} className="h-9 w-full rounded-md px-3 text-xs" style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)', outline: 'none' }} />
+              <span className="block text-[10px] font-normal" style={{ color: 'var(--text-secondary)' }}>0 表示关闭；仅传入用户输入和模型最终回答</span>
             </label>
             <label className="space-y-1.5 text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
               <span>超时（毫秒）</span>

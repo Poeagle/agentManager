@@ -1,16 +1,22 @@
-import { mkdirSync, rmSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const testRoot = join(repoRoot, '.test-data', 'e2e');
 const fakeHome = join(testRoot, 'home');
-const projectPath = join(testRoot, 'project');
+const projectPaths = [
+  join(testRoot, 'persistence-project'),
+  join(testRoot, 'prompt-copy-project'),
+];
 
 // The target is a fixed repository-local test directory, never a user path.
 rmSync(testRoot, { recursive: true, force: true });
 mkdirSync(fakeHome, { recursive: true });
-mkdirSync(projectPath, { recursive: true });
+for (const projectPath of projectPaths) mkdirSync(projectPath, { recursive: true });
+// Prevent zsh's first-run wizard from consuming the first terminal keystroke
+// in browser tests that exercise draft input.
+writeFileSync(join(fakeHome, '.zshrc'), '');
 const cleanup = () => rmSync(testRoot, { recursive: true, force: true });
 // Playwright terminates web servers with a signal; register before index.ts so
 // cleanup runs before the application's shutdown handler calls process.exit().

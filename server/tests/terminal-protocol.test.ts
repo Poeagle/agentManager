@@ -66,14 +66,26 @@ describe('terminal websocket protocol', () => {
     });
     expect(buildPromptReplacement('improved\nprompt', 'composer'))
       .toBe('\x01\x0b\x1b[200~improved\nprompt\x1b[201~');
+    expect(buildPromptReplacement('', 'composer', 3))
+      .toBe('\x01\x0b\x7f\x01\x0b\x7f\x01\x0b\x1b[200~\x1b[201~');
     expect(buildPromptReplacement('plain shell', 'shell'))
       .toBe('\x05\x15\x1b[200~plain shell\x1b[201~');
+
+    expect(parseTerminalClientMessage(JSON.stringify({
+      type: 'replace-input', requestId: 'multiline', data: '', clearMode: 'composer', composerLineCount: 3,
+    }))).toEqual({
+      ok: true,
+      message: { type: 'replace-input', requestId: 'multiline', data: '', clearMode: 'composer', composerLineCount: 3 },
+    });
 
     expect(parseTerminalClientMessage(JSON.stringify({
       type: 'replace-input', requestId: '', data: 'text', clearMode: 'composer',
     })).ok).toBe(false);
     expect(parseTerminalClientMessage(JSON.stringify({
       type: 'replace-input', requestId: 'valid', data: 'text', clearMode: 'unknown',
+    })).ok).toBe(false);
+    expect(parseTerminalClientMessage(JSON.stringify({
+      type: 'replace-input', requestId: 'valid', data: 'text', clearMode: 'composer', composerLineCount: 0,
     })).ok).toBe(false);
     expect(parseTerminalClientMessage(JSON.stringify({
       type: 'replace-input', requestId: 'valid', data: 'unsafe\u001b[201~', clearMode: 'composer',
