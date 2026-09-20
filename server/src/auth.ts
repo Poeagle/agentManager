@@ -20,6 +20,7 @@ export interface User {
   role: 'admin' | 'member';
   disabled: number;
   max_tabs: number;
+  can_create_projects: number;
   created_at: string;
 }
 
@@ -132,7 +133,12 @@ export function eventHookSecretMatches(projectPath: string, candidate: string | 
 
 /* ── User DB ops ───────────────────────────────────────────────────── */
 
-const PUBLIC_COLS = 'id, username, display_name, role, disabled, max_tabs, created_at';
+const PUBLIC_COLS = 'id, username, display_name, role, disabled, max_tabs, can_create_projects, created_at';
+
+export function userCanCreateProjects(userId: string): boolean {
+  const user = findUserById(userId);
+  return !!user && !user.disabled && (user.role === 'admin' || user.can_create_projects === 1);
+}
 
 export function getUserCount(): number {
   return (getDb().prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n;
@@ -156,6 +162,7 @@ export function createUser(opts: {
   display_name?: string;
   role?: 'admin' | 'member';
   max_tabs?: number;
+  can_create_projects?: boolean;
 }): User {
   return insertUser(opts, hashPassword(opts.password));
 }
@@ -166,6 +173,7 @@ export async function createUserAsync(opts: {
   display_name?: string;
   role?: 'admin' | 'member';
   max_tabs?: number;
+  can_create_projects?: boolean;
 }): Promise<User> {
   return insertUser(opts, await hashPasswordAsync(opts.password));
 }
@@ -188,15 +196,16 @@ function insertUser(opts: {
   display_name?: string;
   role?: 'admin' | 'member';
   max_tabs?: number;
+  can_create_projects?: boolean;
 }, passwordHash: string): User {
   const id = nanoid(12);
   const username = opts.username.trim();
   getDb()
     .prepare(
-      `INSERT INTO users (id, username, password_hash, display_name, role, max_tabs)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO users (id, username, password_hash, display_name, role, max_tabs, can_create_projects)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, username, passwordHash, opts.display_name?.trim() || username, opts.role || 'member', opts.max_tabs ?? 10);
+    .run(id, username, passwordHash, opts.display_name?.trim() || username, opts.role || 'member', opts.max_tabs ?? 10, opts.can_create_projects ? 1 : 0);
   return findUserById(id)!;
 }
 

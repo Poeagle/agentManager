@@ -23,7 +23,7 @@ describe('CLI command construction', () => {
 
   it('resumes Codex with the exact UUID and durable identity hook', () => {
     const command = buildSessionCommand('old task', true, 'codex --yolo', 'codex', SESSION_ID, undefined, '/tmp/binding.json');
-    expect(command).toContain('codex --yolo resume');
+    expect(command).toContain('codex --yolo --disable plugins resume');
     expect(command).toContain(`--no-alt-screen`);
     expect(command).toContain(SESSION_ID);
     expect(command).toContain('/tmp/binding.json');
@@ -37,7 +37,7 @@ describe('CLI command construction', () => {
     expect(claude).toContain(`'inspect '\\''quoted'\\'' input'`);
 
     const codex = buildAgentCommand('reviewer', '', false, 'codex', 'codex');
-    expect(codex).toBe("codex --no-alt-screen 'You are a reviewer agent. Ask me what I want you to do.'");
+    expect(codex).toBe("codex --disable plugins --no-alt-screen 'You are a reviewer agent. Ask me what I want you to do.'");
   });
 
   it('quotes arbitrary shell values and omits hooks without a binding path', () => {
@@ -50,4 +50,11 @@ describe('CLI command construction', () => {
     expect(withAllPermissions('codex', 'codex')).toBe('codex --dangerously-bypass-approvals-and-sandbox');
     expect(withAllPermissions('codex --yolo', 'codex')).toBe('codex --yolo');
   });
+  it('disables plugins for new Codex sessions and every transport', () => {
+    for (const direct of [true, false]) {
+      expect(buildSessionCommand('hello', direct, 'codex --model example', 'codex')).toContain('--disable plugins');
+      expect(buildSessionCommand('hello', direct, 'codex', 'claude')).not.toContain('--disable plugins');
+    }
+  });
+
 });

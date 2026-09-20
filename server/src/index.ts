@@ -37,6 +37,7 @@ import {
   getReconnectStatus,
   startPendingSessionWatchdog,
 } from './services/session-manager.js';
+import { shutdownCodexQuotaReader } from './services/codex-quota.js';
 import { sweepAllPastes } from './services/paste-cleanup.js';
 import { config } from './config.js';
 import { authHook, isAdmin as isAdminUser, userOwnsFilesystemPath } from './auth.js';
@@ -422,6 +423,7 @@ async function shutdown(exitCode = 0): Promise<void> {
   } catch (error) { recordFailure('PTY flush', error); }
   try { stopScheduledTaskScheduler(); } catch (error) { recordFailure('scheduler stop', error); }
   try { killAllSessions(); } catch (error) { recordFailure('session detach', error); }
+  try { shutdownCodexQuotaReader(); } catch (error) { recordFailure('quota reader stop', error); }
   if (closeServer) await closeServer;
   try { getDb().pragma('wal_checkpoint(TRUNCATE)'); } catch (error) { recordFailure('database checkpoint', error); }
   try { closeDb(); } catch (error) { recordFailure('database close', error); }

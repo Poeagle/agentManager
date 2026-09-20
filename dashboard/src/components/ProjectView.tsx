@@ -20,7 +20,6 @@ import { SessionActivityAge } from '../lib/session-activity';
 import { promoteWarmTerminal, TERMINAL_COLD_DELAY_MS } from '../lib/warm-terminal-pool';
 import {
   reconcileHydratedTerminalInstances,
-  shouldAutoRestoreSession,
   type TerminalInstance,
 } from '../lib/project-session-state';
 import { confirmDiscardExplorer } from '../lib/unsaved-files';
@@ -256,7 +255,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(
     initialized?.activeTerminalId ?? null
   );
-  // Set once server project state has been read. Ended sessions may auto-resume
+  // Set once server project state has been read. Persisted tabs show history
   // only when the authoritative state says their tab was still open.
   const canonicalOpenSessionIdsRef = useRef<Set<string> | null>(null);
   // Hydration runs once, so read the latest live-session set through a ref when
@@ -287,7 +286,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     });
     setActiveTerminalId((prev) => prev && !allowed.has(prev) && !locallyCreatedSessionIds.current.has(prev) ? null : prev);
   }, [sessionsLoaded, sessionsData, projHydrated]);
-  const autoResumeAttemptsRef = useRef(new Set<string>());
 
   // ── Inline session-tab rename ──────────────────────────────────────
   // ProjectView refocuses the active terminal (xterm) on session updates / tab
@@ -851,25 +849,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     }, 600);
     return () => clearTimeout(h);
   }, [projHydrated, projectId, terminalInstances, activeTerminalId, closedIdsVersion, explorerInstances, webPageInstances]);
-
-  // An open tab is a durable promise to the user: if its terminal container
-  // vanished while the dashboard/server was unavailable, reopen the exact
-  // native Claude/Codex conversation as soon as project state is hydrated.
-  // Cancelled sessions are excluded because cancellation is an explicit stop.
-  useEffect(() => {
-    if (!projHydrated || !sessionsData) return;
-    const canonicalOpenIds = canonicalOpenSessionIdsRef.current;
-    if (!canonicalOpenIds) return;
-    const openIds = new Set(terminalInstances.map((terminal) => terminal.id));
-    for (const session of sessionsData.sessions) {
-      if (!shouldAutoRestoreSession(session, projectId, openIds, canonicalOpenIds)) continue;
-      if (autoResumeAttemptsRef.current.has(session.id)) continue;
-      autoResumeAttemptsRef.current.add(session.id);
-      api.sessions.resume(session.id, true)
-        .then(() => queryClient.invalidateQueries({ queryKey: ['sessions'] }))
-        .catch((err) => console.error(`Failed to auto-restore session ${session.id}:`, err));
-    }
-  }, [projHydrated, projectId, sessionsData, terminalInstances, queryClient]);
 
   function handleSessionCreated(session: Session) {
     locallyCreatedSessionIds.current.add(session.id);
@@ -1877,6 +1856,14 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                           suspended={terminalsSuspended || !warmTerminalIds.has(term.id)}
                           hideCursor={projectSessions.find((session) => session.id === term.id)?.task !== 'Terminal' && projectSessions.some((session) => session.id === term.id)}
                           cliType={sessionLookup.get(term.id)?.cli_type as 'claude' | 'codex' | undefined}
+                          onExit={() => {
+                            // The terminal socket reports its exit immediately, while the
+                            // cached session query otherwise still renders the dead xterm.
+                            // Refresh both sources so an ended native conversation switches
+                            // to HistoryViewer and exposes its in-place Resume action.
+                            void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+                            void queryClient.invalidateQueries({ queryKey: ['project-sessions', projectId] });
+                          }}
                           onReconnect={() => reconnectTerminal(term.id)}
                           onPopOut={() => closeTerminalTab(term.id)}
                         />

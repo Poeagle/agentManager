@@ -50,31 +50,3 @@ export function reconcileHydratedTerminalInstances(
 
   return reconciled;
 }
-
-interface RestorableSession {
-  id: string;
-  project_id: string | null;
-  status: string;
-  cli_type?: string | null;
-  claude_session_id?: string | null;
-  codex_session_id?: string | null;
-}
-
-/** Only a durable, still-open server tab may restart an ended native CLI. */
-export function shouldAutoRestoreSession(
-  session: RestorableSession,
-  projectId: string,
-  displayedSessionIds: ReadonlySet<string>,
-  canonicalOpenSessionIds: ReadonlySet<string>,
-) {
-  if (
-    session.project_id !== projectId
-    || !displayedSessionIds.has(session.id)
-    || !canonicalOpenSessionIds.has(session.id)
-    || (session.status !== 'completed' && session.status !== 'failed')
-  ) return false;
-
-  return session.cli_type === 'codex'
-    ? !!session.codex_session_id
-    : !!session.claude_session_id;
-}

@@ -27,6 +27,12 @@ test('restores project and terminal tabs from server state after browser storage
   // state writes with its own initial persistence effect.
   await page.goto('about:blank');
 
+  // The home-page prompt can unmount as saved project tabs hydrate. Seed its
+  // dismissal instead of racing a click against that navigation.
+  expect((await page.request.put('/api/settings', {
+    data: { settings: { statusline_prompted: 'true' } },
+  })).ok()).toBeTruthy();
+
   expect((await page.request.put('/api/user-state/app', {
     data: {
       value: {
@@ -49,11 +55,8 @@ test('restores project and terminal tabs from server state after browser storage
   })).ok()).toBeTruthy();
 
   await page.goto('/');
-  const dismissStatusline = page.getByRole('button', { name: 'No thanks' });
-  if (await dismissStatusline.isVisible().catch(() => false)) {
-    await dismissStatusline.click();
-    await expect(dismissStatusline).toBeHidden();
-  }
+  await expect(page.getByText('Durable Project Tab', { exact: true })).toBeVisible();
+  await expect(page.getByText('persistent-test1', { exact: true }).first()).toBeVisible();
   await page.evaluate(() => localStorage.clear());
   await page.reload();
 

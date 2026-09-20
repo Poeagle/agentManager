@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   reconcileHydratedTerminalInstances,
-  shouldAutoRestoreSession,
 } from '../src/lib/project-session-state';
 
 describe('project terminal state hydration', () => {
@@ -56,30 +55,4 @@ describe('project terminal state hydration', () => {
     ).toEqual([{ id: 'open', label: 'Session 1', customLabel: 'My work' }]);
   });
 
-  it('does not auto-restore a stale local-only Claude tab', () => {
-    const session = {
-      id: 'old-claude',
-      project_id: 'dolphindb',
-      status: 'failed',
-      cli_type: 'claude',
-      claude_session_id: 'native-conversation-id',
-    };
-
-    expect(
-      shouldAutoRestoreSession(
-        session,
-        'dolphindb',
-        new Set([session.id]),
-        new Set(),
-      ),
-    ).toBe(false);
-    expect(
-      shouldAutoRestoreSession(
-        session,
-        'dolphindb',
-        new Set([session.id]),
-        new Set([session.id]),
-      ),
-    ).toBe(true);
-  });
 });

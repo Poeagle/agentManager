@@ -6,7 +6,7 @@ import { dirname, join, resolve, basename } from 'path';
 import { homedir } from 'os';
 import { existsSync } from 'fs';
 import { installDefaultAgents } from '../data/default-agents.js';
-import { getProjectToolAccess, isAdmin as isAdminUser, setProjectToolAccess, removeProjectUserAccess, userOwnsProject, userProjectIds } from '../auth.js';
+import { getProjectToolAccess, isAdmin as isAdminUser, setProjectToolAccess, removeProjectUserAccess, userOwnsProject, userProjectIds, userCanCreateProjects } from '../auth.js';
 import { killSession } from '../services/session-manager.js';
 import { config } from '../config.js';
 
@@ -217,7 +217,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
   app.post<{
     Body: { name: string; path: string; description?: string; session_prompt?: string; openclaw_prompt?: string; default_web_url?: string; color?: string };
   }>('/projects', async (req, reply) => {
-    if (!isAdminUser(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
+    if (!userCanCreateProjects(req.user!.id)) return reply.status(403).send({ error: '没有添加项目权限，请联系管理员' });
     const { name, path, description, session_prompt, openclaw_prompt, default_web_url, color } = req.body ?? {};
     if (typeof name !== 'string' || !name.trim() || name.length > 128 || typeof path !== 'string' || !path.trim()) {
       return reply.status(400).send({ error: 'A valid name and path are required' });
@@ -498,7 +498,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
   app.get<{
     Querystring: { path?: string };
   }>('/browse', async (req, reply) => {
-    if (!isAdminUser(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
+    if (!userCanCreateProjects(req.user!.id)) return reply.status(403).send({ error: '没有添加项目权限，请联系管理员' });
     const dirPath = resolve(req.query.path || homedir());
 
     try {

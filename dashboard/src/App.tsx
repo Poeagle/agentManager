@@ -615,7 +615,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           );
         })}
         {/* New-project "+" — jump home to add a project */}
-        {authUser.role === 'admin' && <button
+        {(authUser.role === 'admin' || authUser.can_create_projects === 1) && <button
           onClick={() => { setActiveTab('home'); setShowAdminMonitor(false); window.dispatchEvent(new CustomEvent('agentmanager:add-project')); }}
           className="flex items-center justify-center rounded-md shrink-0 transition-colors ml-0.5"
           style={{ width: 26, height: 26, color: 'var(--text-secondary)', background: 'transparent' }}

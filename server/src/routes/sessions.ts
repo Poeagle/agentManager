@@ -253,9 +253,10 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const { id } = req.params;
     const session = sessionManager.getSession(id);
     if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
-    // Automatic page restoration keeps the crash-loop breaker enabled. A user
-    // explicitly pressing Resume is allowed to make a fresh attempt.
-    const result = await sessionManager.resumeSessionById(id, req.body?.automatic !== true);
+    if (req.body?.automatic === true) {
+      return reply.status(409).send({ error: 'Automatic resume is disabled; use Resume to restart this session' });
+    }
+    const result = await sessionManager.resumeSessionById(id);
     if (!result.ok) return reply.status(400).send({ error: result.error });
     return { ok: true, session: sessionManager.getSession(id) };
   });

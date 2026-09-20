@@ -86,6 +86,22 @@ interfaces, but remote browsers cannot use the API unless you explicitly set
 `AGENTMANAGER_ALLOW_LAN=true` (and protect the host with a firewall or reverse
 proxy). The isolated command uses the same dashboard port by default.
 
+### Session recovery and quota polling
+
+Server startup reconnects surviving tmux/dtach sessions. Sessions whose processes
+have exited retain their history and native conversation IDs; use **Resume** in
+the dashboard to start them again. Restoring browser tabs does not start AI CLIs.
+
+Codex sessions and agents launched by AgentManager use `--disable plugins`.
+Plugin-provided skills, MCP integrations and hooks are unavailable in these
+sessions. Existing processes keep their original settings until restarted;
+standalone Codex and VS Code are unaffected.
+
+The quota indicator refreshes every five minutes while visible and shares a
+five-minute server cache across browsers. Manual refresh uses the same dedicated
+Codex reader. That reader disables plugins, apps and analytics, and backs off
+on failure while displaying the last successful quota as stale.
+
 ## Testing
 
 The repository includes isolated server and dashboard tests, coverage gates,

@@ -630,7 +630,10 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
   // Create user (admin).
   app.post('/users', async (req, reply) => {
     if (!requireAdmin(req, reply)) return;
-    const { username, password, display_name, role, max_tabs } = (req.body ?? {}) as Record<string, unknown>;
+    const { username, password, display_name, role, max_tabs, can_create_projects } = (req.body ?? {}) as Record<string, unknown>;
+    if (can_create_projects !== undefined && typeof can_create_projects !== 'boolean') {
+      return reply.code(400).send({ error: 'can_create_projects must be a boolean' });
+    }
     if (!username || !password) return reply.code(400).send({ error: 'username and password required' });
     if (typeof username !== 'string' || !username.trim() || username.length > 64) {
       return reply.code(400).send({ error: 'username must be between 1 and 64 characters' });
@@ -649,6 +652,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
         display_name: display_name ? String(display_name) : undefined,
         role: role === 'admin' ? 'admin' : 'member',
         max_tabs: maxTabsValue,
+        can_create_projects,
       });
       return { user };
     } catch (error) {
@@ -665,7 +669,10 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     const { id } = req.params;
     const target = findUserById(id);
     if (!target) return reply.code(404).send({ error: 'User not found' });
-    const { role, disabled, password, max_tabs } = (req.body ?? {}) as Record<string, unknown>;
+    const { role, disabled, password, max_tabs, can_create_projects } = (req.body ?? {}) as Record<string, unknown>;
+    if (can_create_projects !== undefined && typeof can_create_projects !== 'boolean') {
+      return reply.code(400).send({ error: 'can_create_projects must be a boolean' });
+    }
     const db = getDb();
 
     if (role !== undefined && role !== 'admin' && role !== 'member') {
@@ -704,6 +711,9 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     }
     if (maxTabsValue !== undefined) {
       db.prepare('UPDATE users SET max_tabs = ? WHERE id = ?').run(maxTabsValue, id);
+    }
+    if (can_create_projects !== undefined) {
+      db.prepare('UPDATE users SET can_create_projects = ? WHERE id = ?').run(can_create_projects ? 1 : 0, id);
     }
 
     // Credential revocation must also terminate already-upgraded WebSockets and

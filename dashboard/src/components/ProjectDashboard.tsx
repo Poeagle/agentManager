@@ -1250,6 +1250,7 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
   const queryClient = useQueryClient();
   const { data: authStatus } = useQuery({ queryKey: ['auth-status'], queryFn: () => api.auth.status(), staleTime: 60_000 });
   const isAdmin = authStatus?.user?.role === 'admin';
+  const canCreateProjects = isAdmin || authStatus?.user?.can_create_projects === 1;
 
   // Listen for open-project events from the form's create success handler
   useEffect(() => {
@@ -1263,10 +1264,10 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
 
   // Listen for "add project" requests (from the project-tab "+" button)
   useEffect(() => {
-    const handler = () => setView({ mode: 'add' });
+    const handler = () => { if (canCreateProjects) setView({ mode: 'add' }); };
     window.addEventListener('agentmanager:add-project', handler);
     return () => window.removeEventListener('agentmanager:add-project', handler);
-  }, []);
+  }, [canCreateProjects]);
 
   const { data: projectsData, isLoading: loadingProjects } = useQuery({
     queryKey: ['projects'],
@@ -1348,7 +1349,7 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
   });
 
   // Show ProjectForm for add/edit views
-  if (view.mode === 'add') {
+  if (view.mode === 'add' && canCreateProjects) {
     return (
       <ProjectForm
         mode="add"
@@ -1415,7 +1416,7 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
                 </span>
               </button>
             </div>
-            {isAdmin && <button
+            {canCreateProjects && <button
               onClick={() => setView({ mode: 'add' })}
               className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium"
               style={{ background: 'var(--accent)', color: 'white' }}
@@ -1469,9 +1470,9 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
           >
             <Folder className="w-12 h-12 mx-auto mb-4" style={{ color: 'var(--text-secondary)', opacity: 0.5 }} />
             <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
-              {isAdmin ? 'No projects registered yet. Add a project folder to get started.' : '你目前没有被分配任何项目，请联系管理员。'}
+              {canCreateProjects ? 'No projects registered yet. Add a project folder to get started.' : '你目前没有被分配任何项目，请联系管理员。'}
             </p>
-            {isAdmin && <button
+            {canCreateProjects && <button
               onClick={() => setView({ mode: 'add' })}
               className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm mx-auto"
               style={{ background: 'var(--accent)', color: 'white' }}

@@ -1,10 +1,11 @@
 import Database from 'better-sqlite3';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, readdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { config } from '../src/config.js';
 import { closeDb, getDb, initDb } from '../src/db/index.js';
+import { createSession, createUser, getSessionUser } from '../src/auth.js';
 import { createTestDatabase } from './helpers/database.js';
 
 let cleanup: (() => void) | undefined;
@@ -43,7 +44,7 @@ describe('database schema and durable session identity', () => {
       'stopped_at',
       'stop_reason',
     ]));
-    expect(db.pragma('user_version', { simple: true })).toBe(6);
+    expect(db.pragma('user_version', { simple: true })).toBe(7);
   });
 
   it('preserves legacy project prompt data while migrating', () => {
@@ -70,12 +71,40 @@ describe('database schema and durable session identity', () => {
     initDb();
     const migrated = getDb().prepare('SELECT session_prompt FROM projects WHERE id = ?').get('legacy') as { session_prompt: string };
     expect(migrated.session_prompt).toBe('keep this prompt');
-    expect(getDb().pragma('user_version', { simple: true })).toBe(6);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(7);
 
     cleanup = () => {
       closeDb();
       rmSync(dir, { recursive: true, force: true });
     };
+  });
+
+  it('repairs a version 7 database missing project permissions and preserves login sessions', () => {
+    const database = createTestDatabase();
+    cleanup = database.cleanup;
+    const user = createUser({ username: 'existing', password: 'password1' });
+    const token = createSession(user.id);
+    getDb().exec('ALTER TABLE users DROP COLUMN can_create_projects');
+    getDb().pragma('user_version = 7');
+    closeDb();
+
+    initDb();
+    expect(getSessionUser(token)).toMatchObject({ id: user.id, can_create_projects: 0 });
+    const backups = readdirSync(database.dir).filter((file) => file.endsWith('.bak'));
+    expect(backups).toHaveLength(1);
+    const backup = new Database(join(database.dir, backups[0]), { readonly: true });
+    try {
+      const columns = backup.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>;
+      expect(columns.map((column) => column.name)).not.toContain('can_create_projects');
+    } finally {
+      backup.close();
+    }
+
+    getDb().prepare('UPDATE users SET can_create_projects = 1 WHERE id = ?').run(user.id);
+    closeDb();
+    initDb();
+    expect(getSessionUser(token)).toMatchObject({ id: user.id, can_create_projects: 1 });
+    expect(readdirSync(database.dir).filter((file) => file.endsWith('.bak'))).toEqual(backups);
   });
 
   it('persists a stable app session to Codex conversation mapping', () => {
@@ -127,6 +156,6 @@ describe('database schema and durable session identity', () => {
       'legacy-orphan-project': null,
       'legacy-owned': 'owner',
     });
-    expect(getDb().pragma('user_version', { simple: true })).toBe(6);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(7);
   });
 });

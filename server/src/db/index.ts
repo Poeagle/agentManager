@@ -4,7 +4,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { config } from '../config.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -26,6 +26,7 @@ function createCurrentSchema(): void {
       role TEXT NOT NULL DEFAULT 'member',
       disabled INTEGER NOT NULL DEFAULT 0,
       max_tabs INTEGER NOT NULL DEFAULT 10,
+      can_create_projects INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -220,6 +221,7 @@ function migrateLegacySchema(): void {
   addColumn('sessions', 'mode', "TEXT DEFAULT 'session'");
   addColumn('sessions', 'agent_type', 'TEXT');
   addColumn('users', 'max_tabs', 'INTEGER NOT NULL DEFAULT 10');
+  addColumn('users', 'can_create_projects', 'INTEGER NOT NULL DEFAULT 0');
 
   const projectColumns = tableColumns('projects');
   addColumn('projects', 'session_prompt', 'TEXT');
@@ -324,6 +326,9 @@ function runMigrations(): void {
     if (current < 3) migrateLegacySessionOwnership();
     if (current < 5) migrateScheduledTaskStopConditions();
     if (current < 6) migrateScheduledTaskDailyStop();
+    // Some existing databases were stamped v7 before this column was added.
+    // Reconcile the actual schema even when the version already matches.
+    addColumn('users', 'can_create_projects', 'INTEGER NOT NULL DEFAULT 0');
     createCurrentIndexes();
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
   });
@@ -363,7 +368,9 @@ export function initDb(): void {
 
   try {
     const currentVersion = db.pragma('user_version', { simple: true }) as number;
-    if (databaseExisted && currentVersion < SCHEMA_VERSION) {
+    const needsProjectPermissionRepair = currentVersion === SCHEMA_VERSION
+      && !tableColumns('users').has('can_create_projects');
+    if (databaseExisted && (currentVersion < SCHEMA_VERSION || needsProjectPermissionRepair)) {
       const backupPath = backupBeforeMigration();
       console.log(`📦 Database backup created before migration: ${backupPath}`);
     }

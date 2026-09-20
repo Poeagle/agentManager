@@ -47,7 +47,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
    Restart storm detection & session spawn guard
    ================================================================ */
 
-const RESTART_LOG = '/tmp/agentmanager-restart-timestamps.json';
+const restartLogPath = () => join(dirname(config.dbPath), 'restart-timestamps.json');
 /** Max server starts within RESTART_WINDOW_MS before we skip auto-resume */
 const RESTART_STORM_THRESHOLD = 3;
 const RESTART_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
@@ -91,19 +91,19 @@ export function markSessionCancelledIfProcessBearing(sessionId: string): boolean
 function recordServerStart(): void {
   let timestamps: number[] = [];
   try {
-    timestamps = JSON.parse(readFileSync(RESTART_LOG, 'utf-8'));
+    timestamps = JSON.parse(readFileSync(restartLogPath(), 'utf-8'));
   } catch { /* first run or corrupt */ }
   const now = Date.now();
   timestamps.push(now);
   // Keep only timestamps within the window
   timestamps = timestamps.filter(ts => now - ts < RESTART_WINDOW_MS);
-  try { fsWriteFileSync(RESTART_LOG, JSON.stringify(timestamps)); } catch {}
+  try { fsWriteFileSync(restartLogPath(), JSON.stringify(timestamps)); } catch {}
 }
 
 function isRestartStorm(): boolean {
   let timestamps: number[] = [];
   try {
-    timestamps = JSON.parse(readFileSync(RESTART_LOG, 'utf-8'));
+    timestamps = JSON.parse(readFileSync(restartLogPath(), 'utf-8'));
   } catch { return false; }
   const now = Date.now();
   const recent = timestamps.filter(ts => now - ts < RESTART_WINDOW_MS);
@@ -2952,13 +2952,13 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
   // the server died. Ingest those durable files before deciding which stale
   // sessions are resumable.
   ingestAllCodexSessionBindings();
-  const backfilledCodexSessions = backfillLegacyCodexSessionIds();
+  backfillLegacyCodexSessionIds();
 
   if (config.useDtach || config.useTmux) {
     const stale = db.prepare(`
       SELECT s.*, p.path as project_path FROM sessions s
       LEFT JOIN projects p ON s.project_id = p.id
-      WHERE s.status IN ('running', 'pending', 'detached')
+      WHERE s.status IN ('running', 'pending', 'launching', 'detached')
       OR (s.status = 'failed' AND (s.completed_at IS NULL OR s.completed_at > datetime('now', '-1 hour')))
     `).all() as Array<Session & { project_path: string | null }>;
 
@@ -2971,7 +2971,6 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
     let detached = 0;
     let cleaned = 0;
     const cleanedIds: string[] = [];
-    const resumable: Array<{ session: Session; projectPath: string }> = [];
 
     for (const row of stale) {
       const { id } = row;
@@ -2991,16 +2990,6 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
         `).run(id);
         cleaned++;
         cleanedIds.push(id);
-        // Only sessions that were active before startup are crash-recovery
-        // candidates. A normally completed/failed session must stay ended.
-        if (
-          (['running', 'pending', 'detached'].includes(row.status)
-            || (row.status === 'failed' && row.exit_code === -1 && backfilledCodexSessions.has(row.id)))
-          && row.project_path
-          && nativeConversationId(row)
-        ) {
-          resumable.push({ session: row, projectPath: row.project_path });
-        }
       }
     }
 
@@ -3015,77 +3004,25 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
     if (detached > 0) console.log(`  Found ${detached} detached session(s) available for reconnect`);
     if (cleaned > 0) console.log(`  Cleaned up ${cleaned} dead session(s) from previous run`);
 
-    // If tmux/dtach also vanished (host reboot, OOM, manual cleanup), rebuild
-    // the CLI process around the exact persisted Claude/Codex conversation.
-    for (const { session, projectPath } of resumable) {
-      if (isAtSessionLimit()) {
-        console.warn(`  [SESSION CAP] Already ${activeSessions.size} active sessions (max ${MAX_ACTIVE_SESSIONS}) — stopping conversation recovery`);
-        break;
-      }
-      try {
-        // Per-conversation recovery has its own short-window circuit breaker;
-        // an unrelated server restart storm must not suppress valid sessions.
-        await resumeCrashedSession(session, projectPath);
-      } catch (err) {
-        console.error(`  Failed to recover session ${session.id}:`, err);
-      }
-    }
+    // Preserve ended rows and their native conversation IDs for explicit resume.
+    // A server restart must never create new AI CLI processes.
   } else {
     const stale = db.prepare(`
-      SELECT * FROM sessions WHERE status IN ('running', 'pending') AND pid IS NOT NULL
+      SELECT * FROM sessions WHERE status IN ('running', 'pending', 'launching', 'detached')
     `).all() as Session[];
 
     for (const { id, pid } of stale) {
-      killOrphanedProcess(pid!, id);
+      if (pid) killOrphanedProcess(pid, id);
     }
 
-    const resumable = stale.filter(s => nativeConversationId(s) && s.project_id);
-    const nonResumable = stale.length - resumable.length;
-
-    if (nonResumable > 0) {
-      const updated = db.prepare(`
-        UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
-        WHERE status IN ('running', 'pending') AND (
-          project_id IS NULL
-          OR (cli_type = 'codex' AND codex_session_id IS NULL)
-          OR (COALESCE(cli_type, 'claude') != 'codex' AND claude_session_id IS NULL)
-        )
-      `).run();
-      if (updated.changes > 0) {
-        console.log(`  Cleaned up ${updated.changes} stale session(s) from previous crash`);
-      }
+    for (const session of stale) {
+      await captureFinalSnapshot(session.id);
+      db.prepare(`
+        UPDATE sessions SET status = 'failed', exit_code = -1,
+          completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?
+      `).run(session.id);
     }
-
-    for (const session of resumable) {
-      // Session cap: don't resume if we'd exceed the limit
-      if (isAtSessionLimit()) {
-        console.warn(`  [SESSION CAP] Already ${activeSessions.size} active sessions (max ${MAX_ACTIVE_SESSIONS}) — skipping resume of remaining sessions`);
-        const markFailed = db.prepare(`
-          UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
-          WHERE id = ?
-        `);
-        for (const s of resumable.slice(resumable.indexOf(session))) markFailed.run(s.id);
-        break;
-      }
-
-      const project = db.prepare('SELECT path FROM projects WHERE id = ?').get(session.project_id!) as { path: string } | undefined;
-      if (!project) {
-        db.prepare(`
-          UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
-          WHERE id = ?
-        `).run(session.id);
-        continue;
-      }
-      try {
-        await resumeCrashedSession(session, project.path);
-      } catch (err) {
-        console.error(`  Failed to resume session ${session.id}:`, err);
-        db.prepare(`
-          UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
-          WHERE id = ?
-        `).run(session.id);
-      }
-    }
+    if (stale.length > 0) console.log(`  Preserved ${stale.length} ended session(s) for manual resume`);
   }
 
   // NOTE: We no longer run killOrphanedClaudeProcesses() here.
@@ -3352,10 +3289,8 @@ export async function resumeSessionById(sessionId: string, skipCircuitBreaker = 
 }
 
 /**
- * Last-chance recovery used when a browser opens a persisted tab but neither an
- * active worker nor a reconnectable terminal wrapper can be found. This also
- * repairs rows left as `running` when a worker vanished before marking them
- * detached. Concurrent browser connections share one recovery attempt.
+ * Reattach persisted tabs only when their terminal wrapper is still alive.
+ * Never create a new CLI process from an automatic browser connection.
  */
 export function recoverSessionOnAttach(sessionId: string): Promise<boolean> {
   if (isSessionActive(sessionId)) return Promise.resolve(true);
@@ -3384,8 +3319,9 @@ export function recoverSessionOnAttach(sessionId: string): Promise<boolean> {
       return reconnectSession(sessionId);
     }
 
-    await resumeCrashedSession(session, project.path);
-    return isSessionActive(sessionId);
+    // Browser reconnects and restored tabs are not explicit authorization to
+    // start a new CLI. The resume endpoint handles the user's Resume action.
+    return false;
   })().catch((err) => {
     console.error(`[RECOVER] Failed to restore persisted session ${sessionId}:`, err);
     return false;

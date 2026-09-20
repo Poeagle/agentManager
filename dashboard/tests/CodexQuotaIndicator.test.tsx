@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CodexQuotaIndicator } from '../src/components/CodexQuotaIndicator';
 import { api } from '../src/lib/api';
@@ -27,9 +27,9 @@ describe('CodexQuotaIndicator', () => {
     });
   });
 
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 
-  it('shows the global weekly quota and refreshes it every five seconds', async () => {
+  it('shows the global weekly quota and refreshes it every five minutes', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<QueryClientProvider client={client}><CodexQuotaIndicator /></QueryClientProvider>);
 
@@ -39,6 +39,22 @@ describe('CodexQuotaIndicator', () => {
     expect(api.codexQuota.read).toHaveBeenCalledTimes(1);
 
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(api.codexQuota.read).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(295_000); });
     expect(api.codexQuota.read).toHaveBeenCalledTimes(2);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '刷新 Codex 额度' })); });
+    expect(api.codexQuota.read).toHaveBeenLastCalledWith(true);
+    client.clear();
   });
+  it('pauses automatic polling when the page is hidden', async () => {
+    const { focusManager } = await import('@tanstack/react-query');
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><CodexQuotaIndicator /></QueryClientProvider>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    focusManager.setFocused(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(600_000); });
+    expect(api.codexQuota.read).toHaveBeenCalledTimes(1);
+    client.clear(); focusManager.setFocused(undefined);
+  });
+
 });

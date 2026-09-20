@@ -164,9 +164,9 @@ function validateInput(userId: string, input: ScheduledTaskInput): string | null
 }
 
 export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
-  app.get('/codex-quota', async (_req, reply) => {
+  app.get<{ Querystring: { refresh?: string } }>('/codex-quota', async (req, reply) => {
     try {
-      return { quota: await readCodexWeeklyQuota() };
+      return { quota: await readCodexWeeklyQuota({ force: req.query.refresh === 'true' }) };
     } catch (error) {
       return reply.status(503).send({ error: error instanceof Error ? error.message : 'Codex 周额度不可用' });
     }

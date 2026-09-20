@@ -92,6 +92,7 @@ async function stopReasonBeforeRun(task: ScheduledTaskRow, now = Date.now()): Pr
   if (task.quota_remaining_below != null) {
     if (!isCodexTarget(task)) throw new Error('额度停止条件仅适用于 Codex Session 或 Agent');
     const quota = await readCodexWeeklyQuota();
+    if (quota.stale) throw new Error('Codex 额度暂不可用，未使用过期额度执行任务');
     getDb().prepare(`
       UPDATE scheduled_tasks SET last_quota_remaining = ?, updated_at = datetime('now') WHERE id = ?
     `).run(quota.remainingPercent, task.id);
@@ -179,6 +180,15 @@ async function restoreExistingSession(task: ScheduledTaskRow, session: sessionMa
     if (!result.ok) throw new Error(result.error || '目标标签页无法恢复');
   } else {
     restored = await sessionManager.recoverSessionOnAttach(session.id);
+    if (!restored) {
+      // A configured scheduled resume is an explicit action, unlike restoring
+      // a browser tab after page hydration.
+      const usage = getUserTabUsage(task.user_id);
+      if (!usage.allowed) throw new Error(`已达到活动标签页上限（${usage.limit}）`);
+      const result = await sessionManager.resumeSessionById(session.id);
+      restored = result.ok;
+      if (!result.ok) throw new Error(result.error || '目标标签页无法恢复');
+    }
   }
   if (!restored || !sessionManager.isSessionActive(session.id)) throw new Error('目标标签页恢复失败');
 }

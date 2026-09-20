@@ -3,6 +3,10 @@ export type CliType = 'claude' | 'codex';
 const CLAUDE_ALL_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 const CODEX_ALL_PERMISSIONS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 
+function withoutCodexPlugins(command: string): string {
+  return `${command} --disable plugins`;
+}
+
 /** Apply the CLI's explicit no-approval/full-access mode exactly once. */
 export function withAllPermissions(command: string, cliType: CliType): string {
   if (cliType === 'codex') {
@@ -60,13 +64,13 @@ export function buildSessionCommand(
   if (resumeSessionId) {
     const baseCmd = sessionCmd || (cliType === 'codex' ? 'codex' : 'claude');
     const cmd = cliType === 'codex'
-      ? `${baseCmd} resume${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(resumeSessionId)}`
+      ? `${withoutCodexPlugins(baseCmd)} resume${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(resumeSessionId)}`
       : `${baseCmd} --resume ${shellSingleQuote(resumeSessionId)}`;
     return direct ? `command bash -c ${shellSingleQuote(cmd)}` : cmd;
   }
   if (cliType === 'codex') {
     const baseCmd = sessionCmd || 'codex';
-    const cmd = `${baseCmd}${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(task)}`;
+    const cmd = `${withoutCodexPlugins(baseCmd)}${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(task)}`;
     return direct ? `command bash -c ${shellSingleQuote(cmd)}` : cmd;
   }
   const baseCmd = sessionCmd || 'claude';
@@ -90,7 +94,7 @@ export function buildAgentCommand(
     const prompt = task
       ? `You are a ${agentType} agent. ${task}`
       : `You are a ${agentType} agent. Ask me what I want you to do.`;
-    cmd = `${baseCmd}${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(prompt)}`;
+    cmd = `${withoutCodexPlugins(baseCmd)}${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(prompt)}`;
   } else {
     const baseCmd = sessionCmd || 'claude';
     const sid = assignSessionId ? ` --session-id ${assignSessionId}` : '';

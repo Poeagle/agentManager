@@ -225,7 +225,7 @@ function ChangePassword() {
 
 function UserAdmin({ currentUserId }: { currentUserId: string }) {
   const [err, setErr] = useState('');
-  const [nu, setNu] = useState({ username: '', password: '', display_name: '', role: 'member' as 'admin' | 'member', max_tabs: 10 });
+  const [nu, setNu] = useState({ username: '', password: '', display_name: '', role: 'member' as 'admin' | 'member', max_tabs: 10, can_create_projects: false });
 
   const usersQuery = useQuery({
     queryKey: ['users'],
@@ -241,7 +241,7 @@ function UserAdmin({ currentUserId }: { currentUserId: string }) {
 
   const create = (e: React.FormEvent) => {
     e.preventDefault();
-    act(async () => { await api.users.create(nu); setNu({ username: '', password: '', display_name: '', role: 'member', max_tabs: 10 }); });
+    act(async () => { await api.users.create(nu); setNu({ username: '', password: '', display_name: '', role: 'member', max_tabs: 10, can_create_projects: false }); });
   };
 
   const removeUser = (user: AuthUser) => {
@@ -257,7 +257,7 @@ function UserAdmin({ currentUserId }: { currentUserId: string }) {
 
       <div className="flex flex-col gap-1.5">
         {users.map((u) => (
-          <div key={u.id} className="flex items-center gap-2 text-sm rounded-md px-2.5 py-1.5" style={{ background: 'var(--bg-tertiary)' }}>
+          <div key={u.id} className="flex flex-wrap items-center gap-2 text-sm rounded-md px-2.5 py-1.5" style={{ background: 'var(--bg-tertiary)' }}>
             <span className="flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
               {u.display_name || u.username}
               <span className="ml-1 text-xs" style={{ color: 'var(--text-secondary)' }}>@{u.username}</span>
@@ -272,6 +272,12 @@ function UserAdmin({ currentUserId }: { currentUserId: string }) {
               onClick={() => { const p = prompt(`为 ${u.username} 设置新密码(≥6位)`); if (p) act(() => api.users.update(u.id, { password: p })); }}
               className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}
             >重置密码</button>
+            {u.role !== 'admin' && (
+              <label className="flex items-center gap-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                <input type="checkbox" checked={u.can_create_projects === 1} onChange={(e) => act(() => api.users.update(u.id, { can_create_projects: e.target.checked }))} aria-label={`允许 ${u.username} 添加项目`} />
+                允许添加项目
+              </label>
+            )}
             {u.role !== 'admin' && (
               <TabLimitInput key={`${u.id}:${u.max_tabs ?? 10}`} value={u.max_tabs ?? 10} onSave={(max_tabs) => act(() => api.users.update(u.id, { max_tabs }))} />
             )}
@@ -302,6 +308,12 @@ function UserAdmin({ currentUserId }: { currentUserId: string }) {
             <option value="member">member</option>
             <option value="admin">admin</option>
           </select>
+          {nu.role === 'member' && (
+            <label className="flex items-center gap-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+              <input type="checkbox" checked={nu.can_create_projects} onChange={(e) => setNu({ ...nu, can_create_projects: e.target.checked })} />
+              允许添加项目
+            </label>
+          )}
           {nu.role === 'member' && (
             <label className="flex items-center gap-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
               标签上限

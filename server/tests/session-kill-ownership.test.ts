@@ -117,4 +117,22 @@ describe('session kill ownership', () => {
     expect(getDb().prepare('SELECT COUNT(*) AS count FROM session_snapshots').get()).toEqual({ count: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS count FROM events').get()).toEqual({ count: 0 });
   });
+  it('rejects stale browser automatic-resume requests without starting a process', async () => {
+    getDb().prepare(`INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
+      VALUES ('resume-session','project-1','work','failed','session','codex',?)`).run(ownerId);
+    const resume = vi.spyOn(sessionManager, 'resumeSessionById').mockResolvedValue({ ok: true });
+    const response = await app.inject({ method: 'POST', url: '/api/sessions/resume-session/resume',
+      headers: { cookie: ownerCookie }, payload: { automatic: true } });
+    expect(response.statusCode).toBe(409); expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('allows an explicit Resume action through the existing permission checks', async () => {
+    getDb().prepare(`INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
+      VALUES ('resume-session','project-1','work','failed','session','codex',?)`).run(ownerId);
+    const resume = vi.spyOn(sessionManager, 'resumeSessionById').mockResolvedValue({ ok: true });
+    const response = await app.inject({ method: 'POST', url: '/api/sessions/resume-session/resume',
+      headers: { cookie: ownerCookie }, payload: {} });
+    expect(response.statusCode).toBe(200); expect(resume).toHaveBeenCalledWith('resume-session');
+  });
+
 });

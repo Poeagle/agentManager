@@ -43,7 +43,7 @@ function uploadWithProgress<T>(url: string, body: unknown, onProgress?: (fractio
   });
 }
 
-export interface AuthUser { id: string; username: string; display_name: string; role: 'admin' | 'member'; disabled?: number; max_tabs?: number; created_at?: string; }
+export interface AuthUser { id: string; username: string; display_name: string; role: 'admin' | 'member'; disabled?: number; max_tabs?: number; can_create_projects?: number; created_at?: string; }
 export interface AuthStatus { needsSetup: boolean; authenticated: boolean; user: AuthUser | null; }
 export interface AuthCredentials { username: string; password: string; display_name?: string; }
 export type PromptEnhancerMode = 'base' | 'lite' | 'standard' | 'expert' | 'publish';
@@ -111,9 +111,9 @@ export const api = {
   },
   users: {
     list: () => fetchJSON<{ users: AuthUser[] }>('/users'),
-    create: (data: { username: string; password: string; display_name?: string; role?: 'admin' | 'member'; max_tabs?: number }) =>
+    create: (data: { username: string; password: string; display_name?: string; role?: 'admin' | 'member'; max_tabs?: number; can_create_projects?: boolean }) =>
       fetchJSON<{ user: AuthUser }>('/users', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: { role?: 'admin' | 'member'; disabled?: boolean; password?: string; max_tabs?: number }) =>
+    update: (id: string, data: { role?: 'admin' | 'member'; disabled?: boolean; password?: string; max_tabs?: number; can_create_projects?: boolean }) =>
       fetchJSON<{ user: AuthUser }>(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
     delete: (id: string) =>
       fetchJSON<{ ok: boolean; closed_sessions: number }>(`/users/${id}`, { method: 'DELETE' }),
@@ -251,7 +251,7 @@ export const api = {
       fetchJSON<{ quota: CodexWeeklyQuota }>(`/scheduled-tasks/codex-quota?project_id=${encodeURIComponent(projectId)}`),
   },
   codexQuota: {
-    read: () => fetchJSON<{ quota: CodexWeeklyQuota }>('/codex-quota'),
+    read: (force = false) => fetchJSON<{ quota: CodexWeeklyQuota }>(`/codex-quota${force ? '?refresh=true' : ''}`),
   },
   projects: {
     list: () => fetchJSON<{ projects: Project[] }>('/projects'),
@@ -597,6 +597,7 @@ export interface ScheduledTaskRun {
 }
 
 export interface CodexWeeklyQuota {
+  stale?: boolean;
   usedPercent: number;
   remainingPercent: number;
   windowDurationMins: number;
