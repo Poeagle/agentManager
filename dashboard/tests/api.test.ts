@@ -1,9 +1,28 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api } from '../src/lib/api';
+import { api, scopeProjectFiles } from '../src/lib/api';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('dashboard API client', () => {
+  it('carries the selected project on all file read/write/export operations', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const files = scopeProjectFiles(api.files, 'project-1');
+    await files.list('/project');
+    await files.read('/project/a');
+    await files.write('/project/a', 'content');
+    await files.diff('/project/a', '/project/b');
+    await files.rename('/project/a', 'b');
+    await files.delete('/project/a');
+    await files.move('/project/a', '/project/sub');
+    await files.copy('/project/a', '/project/sub');
+    await files.export('/project/a');
+    await files.preview('/project/a');
+    expect(fetchMock).toHaveBeenCalledTimes(10);
+    for (const [url] of fetchMock.mock.calls) {
+      expect(new URL(url, 'http://localhost').searchParams.get('project_id')).toBe('project-1');
+    }
+  });
   it('marks automatic resume requests for server-side circuit breaking', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,

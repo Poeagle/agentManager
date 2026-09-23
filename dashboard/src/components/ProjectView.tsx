@@ -5,6 +5,7 @@ import { Monitor, FolderTree, GitBranch, Home, Plus, X, Download, Globe, Zap, Bo
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { Terminal } from './Terminal';
 import { FileExplorer, type FileRefreshRequest } from './FileExplorer';
+import { droppedFiles, isFileDrag, type FileUploadRequest } from '../lib/file-upload';
 import { GitPanel } from './GitPanel';
 import { SessionLauncher } from './SessionLauncher';
 import { WebPageView } from './WebPageView';
@@ -1199,6 +1200,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   // Cross-tab refresh coordination
   const [gitSavedFile, setGitSavedFile] = useState<FileRefreshRequest | null>(null);
   const [explorerSavedFile, setExplorerSavedFile] = useState<string | null>(null);
+  const [explorerUploadRequest, setExplorerUploadRequest] = useState<(FileUploadRequest & { explorerId: string }) | null>(null);
 
   const handleGitFileSaved = useCallback((filePath: string) => {
     setGitSavedFile((previous) => ({ path: filePath, revision: (previous?.revision ?? 0) + 1 }));
@@ -1243,6 +1245,20 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
             <button
               key={id}
               onClick={() => setActiveMode(id)}
+              onDragOver={id === 'explorer' ? (event) => {
+                if (!isFileDrag(event.dataTransfer)) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'copy';
+                setActiveMode('explorer');
+              } : undefined}
+              onDrop={id === 'explorer' ? (event) => {
+                if (!isFileDrag(event.dataTransfer)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                setActiveMode('explorer');
+                const files = droppedFiles(event.dataTransfer);
+                setExplorerUploadRequest((previous) => ({ ...files, explorerId: activeExplorerId, key: (previous?.key ?? 0) + 1 }));
+              } : undefined}
               title={title}
               className="flex items-center justify-center rounded-md transition-colors"
               style={{
@@ -1912,11 +1928,13 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
             >
               <FileExplorer
                 rootPath={projectPath}
+                projectId={projectId}
                 instanceId={expl.id}
                 active={active && activeMode === 'explorer' && activeExplorerId === expl.id}
                 refreshFileRequest={gitSavedFile}
                 openFileRequest={expl.id === activeExplorerId ? openInExplorerRequest : null}
                 onFileSaved={handleExplorerFileSaved}
+                uploadRequest={explorerUploadRequest?.explorerId === expl.id ? explorerUploadRequest : null}
               />
             </div>
           ))}

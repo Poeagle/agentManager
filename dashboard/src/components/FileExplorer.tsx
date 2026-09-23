@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { Folder, FolderOpen, File, ChevronRight, ChevronDown, ChevronUp, Loader2, Save, Circle, Eye, Pencil, Home, X, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, GitCompareArrows, FolderOpen as FolderOpenIcon, Terminal, Scissors, Copy as CopyIcon, Clipboard, Trash2, Edit3, Download } from 'lucide-react';
-import { api, type FileEntry } from '../lib/api';
+import { api, scopeProjectFiles, type FileEntry, type FilePreviewType } from '../lib/api';
 import { isExportTransferActive, startExportTransfer, useExportTransferStore } from '../lib/export-transfer';
 import { ConfirmModal } from './ConfirmModal';
 import { SplitHalf, OverviewRuler } from './DiffComponents';
@@ -12,7 +12,8 @@ import {
   ROW_H,
   HUNK_HIGHLIGHT,
 } from '../lib/diff-model';
-import CodeMirror from '@uiw/react-codemirror';
+import CodeMirror, { EditorView } from '@uiw/react-codemirror';
+import { DocumentPreview } from './DocumentPreview';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
 import { json } from '@codemirror/lang-json';
@@ -26,6 +27,8 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { setEditorDirty } from '../lib/unsaved-files';
+import { droppedFiles, isFileDrag, MAX_FILE_UPLOAD_BYTES, type FileUploadRequest } from '../lib/file-upload';
+import { isWithinExplorerRoot, normalizeExplorerPath } from '../lib/explorer-path';
 
 export interface FileRefreshRequest {
   path: string;
@@ -34,12 +37,14 @@ export interface FileRefreshRequest {
 
 interface FileExplorerProps {
   rootPath: string;
+  projectId?: string;
   instanceId?: string; // unique ID for localStorage persistence
   active?: boolean;
   refreshFileRequest?: FileRefreshRequest | null; // reload matching clean tabs whenever revision changes
   openFileRequest?: { path: string; key: number } | null; // when key changes, open & reveal this file
   onFileSaved?: (filePath: string) => void; // notify parent when a file is saved
   readOnly?: boolean; // when true, disable all writes (save/rename/delete/paste) — view-only
+  uploadRequest?: FileUploadRequest | null;
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -50,12 +55,13 @@ async function restoreExpandedNodes(
   nodes: TreeNode[],
   expandedPaths: Set<string>,
   showHidden: boolean,
+  filesApi: typeof api.files,
 ): Promise<TreeNode[]> {
   return Promise.all(nodes.map(async (node) => {
     if (node.entry.type !== 'directory' || !expandedPaths.has(node.fullPath)) return node;
 
     try {
-      const data = await api.files.list(node.fullPath, showHidden);
+      const data = await filesApi.list(node.fullPath, showHidden);
       const children: TreeNode[] = data.files.map((file) => ({
         entry: file,
         fullPath: `${node.fullPath}/${file.name}`,
@@ -65,7 +71,7 @@ async function restoreExpandedNodes(
       }));
       return {
         ...node,
-        children: await restoreExpandedNodes(children, expandedPaths, showHidden),
+        children: await restoreExpandedNodes(children, expandedPaths, showHidden, filesApi),
         loaded: true,
         expanded: true,
       };
@@ -83,6 +89,25 @@ interface TreeNode {
   expanded: boolean;
 }
 
+function findNodeInTree(nodes: TreeNode[], path: string): TreeNode | null {
+  for (const node of nodes) {
+    if (node.fullPath === path) return node;
+    if (node.children) {
+      const found = findNodeInTree(node.children, path);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function updateNodeInTree(nodes: TreeNode[], path: string, updates: Partial<TreeNode>): TreeNode[] {
+  return nodes.map((node) => {
+    if (node.fullPath === path) return { ...node, ...updates };
+    if (node.children) return { ...node, children: updateNodeInTree(node.children, path, updates) };
+    return node;
+  });
+}
+
 interface FileTab {
   path: string;
   name: string;
@@ -92,6 +117,7 @@ interface FileTab {
   extension: string;
   size: number;
   viewMode: 'edit' | 'preview';
+  previewType?: FilePreviewType;
 }
 
 interface CompareState {
@@ -192,12 +218,22 @@ function explorerStorageKey(instanceId: string) {
   return `agentmanager-explorer-${instanceId}`;
 }
 
-function loadExplorerState(instanceId: string): PersistedExplorerState | null {
+function loadExplorerState(instanceId: string, rootPath: string): PersistedExplorerState | null {
   try {
     const raw = localStorage.getItem(explorerStorageKey(instanceId));
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (parsed && Array.isArray(parsed.expandedPaths)) return parsed;
+    if (parsed && Array.isArray(parsed.expandedPaths)) {
+      const within = (path: unknown): path is string => typeof path === 'string' && isWithinExplorerRoot(path, rootPath);
+      return {
+        ...parsed,
+        currentPath: within(parsed.currentPath) ? normalizeExplorerPath(parsed.currentPath)! : rootPath,
+        expandedPaths: parsed.expandedPaths.filter(within),
+        selectedFile: within(parsed.selectedFile) ? parsed.selectedFile : null,
+        activeTabPath: within(parsed.activeTabPath) ? parsed.activeTabPath : null,
+        openTabPaths: Array.isArray(parsed.openTabPaths) ? parsed.openTabPaths.filter((tab: { path?: string } | null) => within(tab?.path)) : [],
+      };
+    }
   } catch {
     // Ignore malformed or unavailable persisted explorer state.
   }
@@ -383,6 +419,7 @@ function TreeItem({
         onDoubleClick={handleDoubleClick}
         onContextMenu={(e) => onContextMenu(e, node)}
         data-filepath={node.fullPath}
+        data-filetype={node.entry.type}
         className="flex items-center gap-1 w-full text-left text-xs py-0.5 px-2 hover:bg-[var(--bg-tertiary)] transition-colors"
         style={{
           paddingLeft: `${depth * 16 + 8}px`,
@@ -468,14 +505,20 @@ function TreeItem({
   );
 }
 
-export function FileExplorer({ rootPath, instanceId, active = true, refreshFileRequest, openFileRequest, onFileSaved, readOnly = false }: FileExplorerProps) {
+export function FileExplorer({ rootPath, projectId, instanceId, active = true, refreshFileRequest, openFileRequest, onFileSaved, readOnly = false, uploadRequest }: FileExplorerProps) {
+  const filesApi = useMemo(() => scopeProjectFiles(api.files, projectId), [projectId]);
   // Resolve initial path from persisted state or prop
-  const [initialState] = useState(() => instanceId ? loadExplorerState(instanceId) : null);
+  const [initialState] = useState(() => instanceId ? loadExplorerState(instanceId, rootPath) : null);
   const [currentPath, setCurrentPath] = useState(initialState?.currentPath ?? rootPath);
   const [pathInput, setPathInput] = useState(initialState?.currentPath ?? rootPath);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [rootLoaded, setRootLoaded] = useState(false);
   const [showHidden, setShowHidden] = useState(initialState?.showHidden ?? false);
+  const [uploadTarget, setUploadTarget] = useState<string | null>(null);
+  const uploadBusy = useRef(false);
+  const lastUploadRequest = useRef<FileUploadRequest | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ name: string; index: number; total: number; percent: number; directory: string } | null>(null);
+  const [uploadResult, setUploadResult] = useState<{ error: boolean; text: string } | null>(null);
   const restoringRef = useRef(false);
   const treeScrollRef = useRef<HTMLDivElement>(null);
 
@@ -562,7 +605,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
 
   // Reveal a file in the tree: expand ancestor folders and scroll to it
   async function revealFileInTree(filePath: string) {
-    if (!filePath.startsWith(currentPath)) return;
+    if (!isWithinExplorerRoot(filePath, currentPath)) return;
 
     const relative = filePath.slice(currentPath.length + 1);
     const parts = relative.split('/');
@@ -575,7 +618,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
       const capturedDir = dirPath;
 
       try {
-        const data = await api.files.list(capturedDir, showHidden);
+        const data = await filesApi.list(capturedDir, showHidden);
         setTree(prev => {
           // Use functional updater to see latest state
           const node = findNodeInTree(prev, capturedDir);
@@ -605,18 +648,6 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
     }, 50);
   }
 
-  // Find a node by path in the tree
-  function findNodeInTree(nodes: TreeNode[], path: string): TreeNode | null {
-    for (const node of nodes) {
-      if (node.fullPath === path) return node;
-      if (node.children) {
-        const found = findNodeInTree(node.children, path);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
-
   // Reveal active file in tree when switching tabs
   const revealingRef = useRef(false);
   useEffect(() => {
@@ -631,6 +662,10 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
   // Open a file as a preview (single-click) or pinned (double-click)
   const openFileRequestSequence = useRef(0);
   async function openFile(path: string, pin: boolean) {
+    if (!isWithinExplorerRoot(path, rootPath)) {
+      setActionMessage({ kind: 'error', text: '只能访问当前项目目录及其子目录' });
+      return;
+    }
     const requestSequence = ++openFileRequestSequence.current;
     // If already open, just switch to it (and pin if double-click)
     const existing = tabs.find(t => t.path === path);
@@ -645,7 +680,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
     setFileLoading(true);
     setFileError(null);
     try {
-      const data = await api.files.read(path);
+      const data = await filesApi.read(path);
       if (requestSequence !== openFileRequestSequence.current) return;
       const newTab: FileTab = {
         path: data.path,
@@ -655,6 +690,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
         editedContent: data.content,
         extension: data.extension,
         size: data.size,
+        previewType: data.previewType,
         viewMode: isMarkdownFile(data.extension) ? 'preview' : 'edit',
       };
 
@@ -730,6 +766,10 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
 
   async function selectForCompare(path: string) {
     if (!compareSelecting) return;
+    if ((tabs.find(tab => tab.path === path)?.previewType ?? 'text') !== 'text') {
+      setActionMessage({ kind: 'error', text: '仅支持比较文本文件' });
+      return;
+    }
 
     if (compareSelecting === 'waiting') {
       // First pick
@@ -748,12 +788,12 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
     setCompareSelecting(null);
     setFileLoading(true);
     try {
-      const { diff } = await api.files.diff(leftPath, rightPath);
+      const { diff } = await filesApi.diff(leftPath, rightPath);
       const hunks = parseHunks(diff);
       const leftTab = tabs.find(t => t.path === leftPath);
       const rightTab = tabs.find(t => t.path === rightPath);
-      const leftContent = leftTab?.editedContent ?? (await api.files.read(leftPath)).content;
-      const rightContent = rightTab?.editedContent ?? (await api.files.read(rightPath)).content;
+      const leftContent = leftTab?.editedContent ?? (await filesApi.read(leftPath)).content;
+      const rightContent = rightTab?.editedContent ?? (await filesApi.read(rightPath)).content;
 
       setCompareState({
         leftPath,
@@ -848,7 +888,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
 
       if (leftChanged) {
         const newContent = buildEffectiveContent('left');
-        await api.files.write(compareState.leftPath, newContent, compareState.leftContent);
+        await filesApi.write(compareState.leftPath, newContent, compareState.leftContent);
         const leftTab = tabs.find(t => t.path === compareState.leftPath);
         if (leftTab) updateTab(compareState.leftPath, { content: newContent, editedContent: newContent });
         onFileSaved?.(compareState.leftPath);
@@ -856,7 +896,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
 
       if (rightChanged) {
         const newContent = buildEffectiveContent('right');
-        await api.files.write(compareState.rightPath, newContent, compareState.rightContent);
+        await filesApi.write(compareState.rightPath, newContent, compareState.rightContent);
         const rightTab = tabs.find(t => t.path === compareState.rightPath);
         if (rightTab) updateTab(compareState.rightPath, { content: newContent, editedContent: newContent });
         onFileSaved?.(compareState.rightPath);
@@ -866,10 +906,10 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
       setTimeout(() => setSaveMessage(null), 2000);
 
       // Re-fetch diff after save
-      const { diff } = await api.files.diff(compareState.leftPath, compareState.rightPath);
+      const { diff } = await filesApi.diff(compareState.leftPath, compareState.rightPath);
       const hunks = parseHunks(diff);
-      const leftContent = (await api.files.read(compareState.leftPath)).content;
-      const rightContent = (await api.files.read(compareState.rightPath)).content;
+      const leftContent = (await filesApi.read(compareState.leftPath)).content;
+      const rightContent = (await filesApi.read(compareState.rightPath)).content;
       setCompareState({
         leftPath: compareState.leftPath,
         rightPath: compareState.rightPath,
@@ -897,7 +937,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
     setSaving(true);
     setSaveMessage(null);
     try {
-      const result = await api.files.write(activeTab.path, activeTab.editedContent, activeTab.content);
+      const result = await filesApi.write(activeTab.path, activeTab.editedContent, activeTab.content);
       updateTab(activeTab.path, { content: activeTab.editedContent, size: result.size });
       setSaveMessage('Saved');
       onFileSaved?.(activeTab.path);
@@ -909,7 +949,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
       saveInFlightRef.current = false;
       setSaving(false);
     }
-  }, [activeTab, isDirty, onFileSaved, readOnly, updateTab]);
+  }, [activeTab, isDirty, onFileSaved, readOnly, updateTab, filesApi]);
 
   // Ctrl+S / Cmd+S keyboard shortcut
   useEffect(() => {
@@ -946,7 +986,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
     if (tab && tab.editedContent === tab.content) {
       const expectedContent = tab.content;
       const expectedRevision = refreshFileRequest.revision;
-      api.files.read(refreshFilePath).then((data) => {
+      filesApi.read(refreshFilePath).then((data) => {
         if (lastRefreshRevision.current !== expectedRevision) return;
         setTabs((currentTabs) => currentTabs.map((currentTab) => {
           if (currentTab.path !== refreshFilePath
@@ -961,7 +1001,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
         }));
       }).catch(() => {});
     }
-  }, [refreshFileRequest, tabs]);
+  }, [refreshFileRequest, tabs, filesApi]);
 
   const hasUnsavedTabs = useMemo(
     () => tabs.some((tab) => tab.editedContent !== tab.content),
@@ -997,8 +1037,8 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
 
     const load = async () => {
       try {
-        const data = await api.files.list(currentPath, showHidden);
-        const savedState = instanceId ? loadExplorerState(instanceId) : null;
+        const data = await filesApi.list(currentPath, showHidden);
+        const savedState = instanceId ? loadExplorerState(instanceId, rootPath) : null;
         const expandedPaths = new Set(savedState?.expandedPaths ?? []);
         const rootNodes: TreeNode[] = data.files.map((file) => ({
           entry: file,
@@ -1007,13 +1047,13 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
           loaded: false,
           expanded: false,
         }));
-        const restoredTree = await restoreExpandedNodes(rootNodes, expandedPaths, showHidden);
+        const restoredTree = await restoreExpandedNodes(rootNodes, expandedPaths, showHidden, filesApi);
 
         let restoredTabs: FileTab[] = [];
         if (!tabsRestoredRef.current && savedState?.openTabPaths?.length) {
           const loadedTabs = await Promise.all(savedState.openTabPaths.map(async ({ path, pinned }) => {
             try {
-              const fileData = await api.files.read(path);
+              const fileData = await filesApi.read(path);
               return {
                 path: fileData.path,
                 name: path.split('/').pop() || path,
@@ -1022,16 +1062,17 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
                 editedContent: fileData.content,
                 extension: fileData.extension,
                 size: fileData.size,
+                previewType: fileData.previewType,
                 viewMode: isMarkdownFile(fileData.extension) ? 'preview' as const : 'edit' as const,
               };
             } catch {
               return null;
             }
           }));
-          restoredTabs = loadedTabs.filter((tab): tab is FileTab => tab !== null);
+          restoredTabs = loadedTabs.filter((tab) => tab !== null);
         } else if (!tabsRestoredRef.current && savedState?.selectedFile) {
           try {
-            const fileData = await api.files.read(savedState.selectedFile);
+            const fileData = await filesApi.read(savedState.selectedFile);
             restoredTabs = [{
               path: fileData.path,
               name: savedState.selectedFile.split('/').pop() || savedState.selectedFile,
@@ -1040,6 +1081,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
               editedContent: fileData.content,
               extension: fileData.extension,
               size: fileData.size,
+              previewType: fileData.previewType,
               viewMode: isMarkdownFile(fileData.extension) ? 'preview' : 'edit',
             }];
           } catch {
@@ -1074,10 +1116,16 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
     return () => {
       cancelled = true;
     };
-  }, [currentPath, instanceId, showHidden]);
+  }, [currentPath, instanceId, showHidden, filesApi, rootPath]);
 
   function navigateTo(path: string) {
-    const trimmed = path.trim().replace(/\/+$/, '') || '/';
+    const trimmed = normalizeExplorerPath(path.trim());
+    if (!trimmed || !isWithinExplorerRoot(trimmed, rootPath)) {
+      setPathInput(currentPath);
+      setActionMessage({ kind: 'error', text: '只能访问当前项目目录及其子目录' });
+      return;
+    }
+    if (trimmed === currentPath) return;
     setCurrentPath(trimmed);
     setPathInput(trimmed);
     // Reset tree state so loadRoot fires again
@@ -1087,6 +1135,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
   }
 
   function navigateUp() {
+    if (normalizeExplorerPath(currentPath) === normalizeExplorerPath(rootPath)) return;
     const parent = currentPath.replace(/\/[^/]+$/, '') || '/';
     navigateTo(parent);
   }
@@ -1107,7 +1156,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
           return { ...node, expanded: false };
         }
         if (!node.loaded) {
-          api.files.list(path, showHidden).then((data) => {
+          filesApi.list(path, showHidden).then((data) => {
             setTree((prev) =>
               updateNodeInTree(prev, path, {
                 children: data.files.map((f) => ({
@@ -1133,18 +1182,6 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
     });
   }
 
-  function updateNodeInTree(nodes: TreeNode[], path: string, updates: Partial<TreeNode>): TreeNode[] {
-    return nodes.map((node) => {
-      if (node.fullPath === path) {
-        return { ...node, ...updates };
-      }
-      if (node.children) {
-        return { ...node, children: updateNodeInTree(node.children, path, updates) };
-      }
-      return node;
-    });
-  }
-
   function getParentDir(p: string): string {
     const idx = p.lastIndexOf('/');
     if (idx <= 0) return '/';
@@ -1153,19 +1190,17 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
 
   // Reload one directory in the tree (or the whole root when dir === currentPath).
   // Preserves expanded state of unaffected subtrees by only replacing the children of the target.
-  async function refreshDirectory(dir: string) {
-    if (dir === currentPath) {
-      setTree([]);
-      setRootLoaded(false);
-      return;
-    }
+  const refreshDirectory = useCallback(async (dir: string) => {
+    const sequence = rootLoadSequence.current;
     try {
-      const data = await api.files.list(dir, showHidden);
+      const data = await filesApi.list(dir, showHidden);
+      if (sequence !== rootLoadSequence.current) return;
       setTree(prev => {
         const node = findNodeInTree(prev, dir);
-        if (!node) return prev;
+        const isRoot = dir === currentPath;
+        if (!isRoot && !node) return prev;
         // Map new entries; preserve expanded/loaded/children for matching subdirs so we don't collapse the tree.
-        const existingChildren = node.children ?? [];
+        const existingChildren = isRoot ? prev : node?.children ?? [];
         const newChildren: TreeNode[] = data.files.map(f => {
           const childPath = `${dir}/${f.name}`;
           const existing = existingChildren.find(c => c.fullPath === childPath);
@@ -1180,6 +1215,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
             expanded: false,
           };
         });
+        if (isRoot) return newChildren;
         return updateNodeInTree(prev, dir, {
           children: newChildren,
           loaded: true,
@@ -1189,6 +1225,55 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
     } catch (error) {
       setActionMessage({ kind: 'error', text: getErrorMessage(error, 'Failed to refresh directory') });
     }
+  }, [currentPath, showHidden, filesApi]);
+
+  const uploadFiles = useCallback(async (request: Pick<FileUploadRequest, 'files' | 'containsDirectories'>, directory: string) => {
+    if (uploadBusy.current) return;
+    if (readOnly || request.containsDirectories) {
+      setUploadResult({ error: true, text: readOnly ? '当前为只读模式，不能上传文件' : '暂不支持拖入文件夹，请选择文件上传' });
+      return;
+    }
+    if (!request.files.length) return;
+    uploadBusy.current = true;
+    const sequence = rootLoadSequence.current;
+    setUploadResult(null);
+    let succeeded = 0;
+    const failures: string[] = [];
+    try {
+      for (const [index, file] of request.files.entries()) {
+        setUploadProgress({ name: file.name, index: index + 1, total: request.files.length, percent: 0, directory });
+        try {
+          if (file.size > MAX_FILE_UPLOAD_BYTES) throw new Error('文件超过 50 MB 限制');
+          await filesApi.upload(directory, file, (fraction) => {
+            setUploadProgress({ name: file.name, index: index + 1, total: request.files.length, percent: Math.round(fraction * 100), directory });
+          });
+          succeeded++;
+        } catch (error) {
+          failures.push(`${file.name}：${getErrorMessage(error, '上传失败')}`);
+        }
+      }
+      if (succeeded && sequence === rootLoadSequence.current) await refreshDirectory(directory);
+      setUploadResult({
+        error: failures.length > 0,
+        text: `已上传 ${succeeded}/${request.files.length} 个文件到 ${directory}${failures.length ? `；${failures.join('；')}` : ''}`,
+      });
+    } finally {
+      uploadBusy.current = false;
+      setUploadProgress(null);
+    }
+  }, [readOnly, refreshDirectory, filesApi]);
+
+  // The request identity prevents rerenders and StrictMode from uploading twice.
+  useEffect(() => {
+    if (!uploadRequest || lastUploadRequest.current === uploadRequest) return;
+    lastUploadRequest.current = uploadRequest;
+    void uploadFiles(uploadRequest, currentPath);
+  }, [uploadRequest, currentPath, uploadFiles]);
+
+  function dropDirectory(target: EventTarget) {
+    const row = target instanceof Element ? target.closest<HTMLElement>('[data-filepath]') : null;
+    if (!row?.dataset.filepath) return currentPath;
+    return row.dataset.filetype === 'directory' ? row.dataset.filepath : getParentDir(row.dataset.filepath);
   }
 
   function openContextMenuFor(e: React.MouseEvent, node: TreeNode | null) {
@@ -1273,7 +1358,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
   }
 
   function handleExport(path: string, isDirectory: boolean, name: string) {
-    void startExportTransfer({ path, isDirectory, name });
+    void startExportTransfer({ path, isDirectory, name, ...(projectId ? { projectId } : {}) });
   }
 
   async function handleOpenInFolder(path: string) {
@@ -1296,7 +1381,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
     if (readOnly) { setRenamingPath(null); return; }
     setRenamingPath(null);
     try {
-      const result = await api.files.rename(path, newName);
+      const result = await filesApi.rename(path, newName);
       // If a tab was open for the renamed file, update its path
       setTabs(prev => prev.map(t => t.path === path ? { ...t, path: result.path, name: newName } : t));
       if (activeTabPath === path) setActiveTabPath(result.path);
@@ -1315,7 +1400,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
     const { path, isDir } = pendingDelete;
     setPendingDelete(null);
     try {
-      await api.files.delete(path);
+      await filesApi.delete(path);
       // Close any tab pointing at the deleted file/folder
       setTabs(prev => prev.filter(t => t.path !== path && !t.path.startsWith(path + '/')));
       if (activeTabPath === path || activeTabPath?.startsWith(path + '/')) setActiveTabPath(null);
@@ -1335,7 +1420,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
 
     try {
       if (kind === 'cut') {
-        await api.files.move(src, destDir);
+        await filesApi.move(src, destDir);
         // Update any open tab whose path is being moved
         const newBase = `${destDir}/${src.split('/').pop()}`;
         setTabs(prev => prev.map(t => {
@@ -1347,7 +1432,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
         else if (activeTabPath?.startsWith(src + '/')) setActiveTabPath(newBase + activeTabPath.slice(src.length));
         setClipboard(null);
       } else {
-        await api.files.copy(src, destDir);
+        await filesApi.copy(src, destDir);
       }
       // Refresh both source and destination directory views
       if (sourceParent !== destDir) {
@@ -1361,10 +1446,14 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
   }
 
   const activeExtension = activeTab?.extension;
+  const activePreviewType = activeTab?.previewType ?? 'text';
   const extensions = useMemo(() => {
-    if (!activeExtension) return [];
-    const languageExtension = getLanguageExtension(activeExtension);
-    return languageExtension ? [languageExtension] : [];
+    const languageExtension = activeExtension ? getLanguageExtension(activeExtension) : null;
+    return [EditorView.lineWrapping, EditorView.theme({
+      '&': { fontSize: '14px' },
+      '.cm-content': { lineHeight: '1.7', padding: '12px 0' },
+      '.cm-line': { padding: '0 12px' },
+    }), ...(languageExtension ? [languageExtension] : [])];
   }, [activeExtension]);
 
   const handleEditorChange = useCallback((value: string) => {
@@ -1375,10 +1464,29 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
     <div ref={containerRef} className="h-full flex">
       {/* Tree panel */}
       <div
-        className="h-full flex flex-col shrink-0"
+        className="h-full flex flex-col shrink-0 relative"
+        aria-label="文件上传区域"
+        onDragOver={(event) => {
+          if (!isFileDrag(event.dataTransfer)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = readOnly || uploadBusy.current ? 'none' : 'copy';
+          setUploadTarget(dropDirectory(event.target));
+        }}
+        onDragLeave={(event) => {
+          if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setUploadTarget(null);
+        }}
+        onDrop={(event) => {
+          if (!isFileDrag(event.dataTransfer)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setUploadTarget(null);
+          void uploadFiles(droppedFiles(event.dataTransfer), dropDirectory(event.target));
+        }}
         style={{
           width: treePanelWidth,
           background: 'var(--bg-primary)',
+          boxShadow: uploadTarget ? 'inset 0 0 0 2px var(--accent)' : undefined,
         }}
       >
         {/* Path bar */}
@@ -1390,7 +1498,8 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
           <button
             type="button"
             onClick={navigateUp}
-            className="flex items-center justify-center rounded shrink-0 transition-colors hover:bg-[var(--bg-tertiary)]"
+            disabled={normalizeExplorerPath(currentPath) === normalizeExplorerPath(rootPath)}
+            className="flex items-center justify-center rounded shrink-0 transition-colors hover:bg-[var(--bg-tertiary)] disabled:opacity-30 disabled:cursor-not-allowed"
             style={{ width: 24, height: 24, color: 'var(--text-secondary)' }}
             title="Parent directory"
           >
@@ -1433,6 +1542,24 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
           />
         </form>
 
+        {uploadTarget && (
+          <div className="absolute bottom-0 inset-x-0 z-10 pointer-events-none px-2 py-2 text-xs break-all" style={{ color: 'var(--accent)', background: 'var(--bg-secondary)', borderTop: '1px solid var(--accent)' }}>
+            {readOnly ? '只读模式，不能上传' : uploadProgress ? '正在上传，请稍候' : `松开上传到：${uploadTarget}`}
+          </div>
+        )}
+        {uploadProgress && (
+          <div role="status" className="px-2 py-2 text-xs space-y-1 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+            <div className="truncate" title={uploadProgress.name}>上传 {uploadProgress.index}/{uploadProgress.total}：{uploadProgress.name}</div>
+            <div className="truncate" title={uploadProgress.directory} style={{ color: 'var(--text-secondary)' }}>到 {uploadProgress.directory}</div>
+            <progress aria-label="文件上传进度" className="w-full h-1.5" max={100} value={uploadProgress.percent} />
+            <div>{uploadProgress.percent === 100 ? '服务器正在保存…' : `${uploadProgress.percent}%`}</div>
+          </div>
+        )}
+        {uploadResult && (
+          <div role={uploadResult.error ? 'alert' : 'status'} className="px-2 py-2 text-xs break-words shrink-0 max-h-32 overflow-y-auto" style={{ color: uploadResult.error ? 'var(--error)' : 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
+            {uploadResult.text}
+          </div>
+        )}
         <div
           ref={treeScrollRef}
           className="flex-1 overflow-y-auto"
@@ -1562,7 +1689,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
               );
             })}
             {/* Compare button */}
-            {tabs.length >= 2 && (
+            {tabs.filter(tab => (tab.previewType ?? 'text') === 'text').length >= 2 && (
               <button
                 onClick={startCompare}
                 className="flex items-center gap-1 px-2 py-1 rounded-md shrink-0 text-xs transition-colors ml-1"
@@ -1614,7 +1741,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
                     {saveMessage}
                   </span>
                 )}
-                {readOnly && (
+                {(readOnly || activePreviewType !== 'text') && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>
                     只读
                   </span>
@@ -1634,7 +1761,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
                     {saving ? 'Saving...' : 'Save'}
                   </button>
                 )}
-                {isMarkdown && (
+                {isMarkdown && activePreviewType === 'text' && (
                   <button
                     onClick={() => updateTab(activeTab.path, {
                       viewMode: activeTab.viewMode === 'preview' ? 'edit' : 'preview',
@@ -1657,7 +1784,16 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
               </div>
             </div>
 
-            {isMarkdown && activeTab.viewMode === 'preview' ? (
+            {activePreviewType !== 'text' ? (
+              <DocumentPreview
+                key={activeTab.path}
+                path={activeTab.path}
+                type={activePreviewType}
+                content={activeTab.content}
+                filesApi={filesApi}
+                onDownload={() => void startExportTransfer({ path: activeTab.path, name: activeTab.name, isDirectory: false, ...(projectId ? { projectId } : {}) })}
+              />
+            ) : isMarkdown && activeTab.viewMode === 'preview' ? (
               <div
                 className="flex-1 overflow-auto p-6 prose-invert"
                 style={{ color: 'var(--text-primary)' }}
@@ -1667,7 +1803,7 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
                   return (
                     <>
                       {meta.length > 0 && <FrontmatterPanel meta={meta} />}
-                      <div className="markdown-preview">
+                      <div className="markdown-preview explorer-markdown">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {body}
                         </ReactMarkdown>
@@ -1682,6 +1818,8 @@ export function FileExplorer({ rootPath, instanceId, active = true, refreshFileR
                   key={activeTab.path}
                   value={activeTab.editedContent}
                   onChange={handleEditorChange}
+                  readOnly={readOnly}
+                  editable={!readOnly}
                   extensions={extensions}
                   theme={oneDark}
                   height="100%"

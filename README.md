@@ -57,6 +57,34 @@ AgentManager is a thin orchestration layer over the Claude Code and Codex CLIs:
 - **OpenAI Codex** *(optional)* — `npm install -g @openai/codex`
 - **tmux** — for session persistence: `sudo apt install tmux`
 
+### File and document previews
+
+The project explorer supports PDF, Word (`doc`, `docx`, `odt`, `rtf`),
+spreadsheets (`xls`, `xlsx`, `ods`, `csv`, `tsv`), presentations (`ppt`, `pptx`,
+`odp`), draw.io (`drawio` and diagram XML), common images (PNG, JPEG, GIF,
+WebP, SVG, BMP, ICO, AVIF), Markdown and UTF-8/UTF-16 text.
+Documents are read-only; original files remain available for download.
+Text wraps visually without rewriting file contents. Spreadsheet previews use
+sheet selection, row/column labels and multiline cells; display is limited to
+100 sheets, 1000 rows and 100 columns per sheet.
+
+Office preview on the Linux server requires these optional system components:
+
+```bash
+sudo apt install libreoffice-writer libreoffice-calc libreoffice-impress bubblewrap util-linux fonts-noto-cjk
+```
+
+Conversion uses an isolated temporary profile and filesystem, no network,
+untrusted macros disabled, a 30-second timeout and at most two concurrent
+converters. Unprivileged user namespaces must be available for bubblewrap;
+there is no unsandboxed fallback. Missing components produce a clear message.
+Server fonts determine Office conversion fidelity; install CJK fonts for Chinese
+documents to avoid missing glyphs, and the original fonts when exact layout matters.
+PDF/image preview does not require LibreOffice; PDF rendering uses the browser's
+built-in viewer. The bundled [draw.io viewer](dashboard/src/vendor/drawio/README.md)
+runs offline in a sandboxed iframe; remote images, fonts and math resources are
+not fetched. Limits: 20 MB Office, 50 MB PDF/image and 5 MB text/diagram files.
+
 ## Run from source
 
 ```bash

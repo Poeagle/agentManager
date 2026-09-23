@@ -1,10 +1,24 @@
-import { FastifyPluginAsync } from 'fastify';
-import { readdir, stat, lstat, readFile, writeFile, rm, rename, cp } from 'fs/promises';
+import { FastifyPluginAsync, type FastifyRequest } from 'fastify';
+import { readdir, stat, lstat, readFile, writeFile, rm, rename, cp, open, realpath } from 'fs/promises';
 import { createReadStream } from 'fs';
-import { join, resolve, extname, dirname, basename } from 'path';
+import { join, resolve, extname, dirname, basename, relative, isAbsolute, sep } from 'path';
 import { execFile } from 'child_process';
-import { userOwnsFilesystemPath } from '../auth.js';
+import { userOwnsFilesystemPath, userOwnsProject } from '../auth.js';
+import { getDb } from '../db/index.js';
 import { createDirectoryExport } from '../services/file-export-process.js';
+import { DocumentPreviewError, previewOfficeDocument, OFFICE_EXTENSIONS, SPREADSHEET_EXTENSIONS } from '../services/document-preview.js';
+
+const IMAGE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml', ico: 'image/x-icon', avif: 'image/avif' };
+
+function filePreviewType(extension: string): string {
+  if (extension === 'pdf') return 'pdf';
+  if (IMAGE_TYPES[extension]) return 'image';
+  if (SPREADSHEET_EXTENSIONS.has(extension)) return 'spreadsheet';
+  if (['ppt', 'pptx', 'odp'].includes(extension)) return 'presentation';
+  if (OFFICE_EXTENSIONS.has(extension)) return 'word';
+  if (['csv', 'tsv'].includes(extension)) return 'csv';
+  return 'text';
+}
 
 interface FileEntry {
   name: string;
@@ -19,14 +33,117 @@ function attachmentHeader(fileName: string) {
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }
 
+interface ProjectFileScope { root: string; realRoot: string }
+
+function withinDirectory(path: string, root: string): boolean {
+  const child = relative(root, path);
+  return !isAbsolute(child) && child !== '..' && !child.startsWith('..' + sep);
+}
+
+async function withinProjectScope(path: string, scope: ProjectFileScope): Promise<boolean> {
+  const absolute = resolve(path);
+  if (!withinDirectory(absolute, scope.root)) return false;
+  try {
+    let canonical: string;
+    try {
+      canonical = await realpath(absolute);
+    } catch (error: any) {
+      if (error.code !== 'ENOENT') return false;
+      // A new upload/rename target may not exist, but its directory must.
+      canonical = join(await realpath(dirname(absolute)), basename(absolute));
+    }
+    return withinDirectory(canonical, scope.realRoot);
+  } catch {
+    return false;
+  }
+}
+
 export const fileRoutes: FastifyPluginAsync = async (app) => {
+  const projectScopes = new WeakMap<FastifyRequest, ProjectFileScope>();
+  // Scoped to the file API; upload raw bytes without base64 expansion.
+  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => {
+    done(null, body);
+  });
   app.addHook('preHandler', async (req, reply) => {
     const query = (req.query || {}) as Record<string, unknown>;
     const body = (req.body || {}) as Record<string, unknown>;
     const paths = [query.path, body.path, body.pathA, body.pathB, body.src, body.destDir]
       .filter((value): value is string => typeof value === 'string' && value.length > 0);
+    // Project explorers carry their project id; the server, not the browser,
+    // determines the root. Even administrators cannot escape this view's root.
+    // Unscoped clients (e.g. the existing global skills viewer) keep their own access rules.
+    if (query.project_id !== undefined) {
+      if (typeof query.project_id !== 'string' || !userOwnsProject(req.user!.id, query.project_id)) {
+        return reply.status(403).send({ error: 'Project access denied' });
+      }
+      const project = getDb().prepare('SELECT path FROM projects WHERE id = ?').get(query.project_id) as { path: string } | undefined;
+      if (!project) return reply.status(404).send({ error: 'Project not found' });
+      let scope: ProjectFileScope;
+      try { scope = { root: resolve(project.path), realRoot: await realpath(project.path) }; }
+      catch { return reply.status(404).send({ error: 'Project directory not found' }); }
+      projectScopes.set(req, scope);
+      const checkedPaths = [...paths];
+      if (typeof body.path === 'string' && typeof body.newName === 'string') checkedPaths.push(join(dirname(resolve(body.path)), body.newName));
+      if (typeof body.src === 'string' && typeof body.destDir === 'string') checkedPaths.push(join(body.destDir, basename(body.src)));
+      if (typeof query.path === 'string' && typeof query.filename === 'string') checkedPaths.push(join(query.path, query.filename));
+      for (const path of checkedPaths) {
+        if (!(await withinProjectScope(path, scope))) {
+          return reply.status(403).send({ error: '只能访问当前项目目录及其子目录' });
+        }
+      }
+      const source = typeof body.path === 'string' ? body.path : body.src;
+      if (typeof source === 'string' && resolve(source) === scope.root
+        && ['/files/delete', '/files/rename', '/files/move'].some(route => req.routeOptions.url?.endsWith(route))) {
+        return reply.status(403).send({ error: '不能删除、重命名或移动项目根目录' });
+      }
+    }
     if (paths.some((path) => !userOwnsFilesystemPath(req.user!.id, path))) {
       return reply.status(403).send({ error: 'Path is outside your assigned projects' });
+    }
+  });
+
+  app.post<{
+    Querystring: { path: string; filename: string };
+    Body: Buffer;
+  }>('/files/upload', { bodyLimit: 50 * 1024 * 1024 }, async (req, reply) => {
+    const { path: directory, filename } = req.query;
+    if (typeof directory !== 'string' || !directory) {
+      return reply.status(400).send({ error: 'Upload directory is required' });
+    }
+    if (typeof filename !== 'string' || !filename.trim() || filename === '.' || filename === '..'
+      || /[\\/\x00-\x1f\x7f]/.test(filename)) {
+      return reply.status(400).send({ error: 'Invalid filename' });
+    }
+    if (!Buffer.isBuffer(req.body)) {
+      return reply.status(400).send({ error: 'Expected binary file content' });
+    }
+
+    try {
+      const targetDirectory = await realpath(resolve(directory));
+      if (!(await stat(targetDirectory)).isDirectory()) {
+        return reply.status(400).send({ error: 'Upload path is not a directory' });
+      }
+      const target = join(targetDirectory, filename);
+      if (!userOwnsFilesystemPath(req.user!.id, target)) {
+        return reply.status(403).send({ error: 'Path is outside your assigned projects' });
+      }
+      // Exclusive creation also rejects existing symlinks and concurrent uploads.
+      const handle = await open(target, 'wx', 0o600);
+      try {
+        await handle.writeFile(req.body);
+      } catch (error) {
+        await rm(target).catch(() => {});
+        throw error;
+      } finally {
+        await handle.close();
+      }
+      return { ok: true, path: target, size: req.body.length };
+    } catch (error: any) {
+      if (error.code === 'EEXIST') return reply.status(409).send({ error: '同名文件已存在，未覆盖；请重命名后上传' });
+      if (error.code === 'ENOENT') return reply.status(404).send({ error: 'Upload directory not found' });
+      if (error.code === 'ENOTDIR') return reply.status(400).send({ error: 'Upload path is not a directory' });
+      if (error.code === 'EACCES' || error.code === 'EPERM') return reply.status(403).send({ error: 'Permission denied' });
+      return reply.status(500).send({ error: 'Failed to upload file' });
     }
   });
 
@@ -52,6 +169,8 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 
         try {
           const fullPath = join(resolved, entry.name);
+          const scope = projectScopes.get(req);
+          if (scope && !(await withinProjectScope(fullPath, scope))) continue;
           const stats = await stat(fullPath);
           files.push({
             name: entry.name,
@@ -89,18 +208,65 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const stats = await stat(resolved);
-      // Limit to 1MB files
-      if (stats.size > 1024 * 1024) {
-        return reply.status(413).send({ error: 'File too large (max 1MB)' });
+      if (!stats.isFile()) return reply.status(400).send({ error: 'Path is not a file' });
+      const ext = extname(resolved).slice(1).toLowerCase();
+      const kind = filePreviewType(ext);
+      if (kind !== 'text' && kind !== 'csv') {
+        return { path: resolved, content: '', extension: ext, size: stats.size, previewType: kind };
+      }
+      if (stats.size > 5 * 1024 * 1024) {
+        return reply.status(413).send({ error: 'Text preview too large (max 5MB)' });
       }
 
-      const content = await readFile(resolved, 'utf-8');
-      const ext = extname(resolved).slice(1);
+      const bytes = await readFile(resolved);
+      let content: string;
+      try {
+        const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le'
+          : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8';
+        content = new TextDecoder(encoding, { fatal: true }).decode(bytes);
+      } catch {
+        return reply.status(415).send({ error: '无法按 UTF-8 / UTF-16 文本读取此文件，请下载后查看' });
+      }
+      if (content.includes('\0')) {
+        return reply.status(415).send({ error: '此二进制文件暂不支持预览，请下载后查看' });
+      }
+      const previewType = ext === 'drawio' || /^\s*(?:<\?xml[^>]*>\s*)?<(?:mxfile|mxGraphModel)(?:\s|>)/.test(content) ? 'drawio' : kind;
 
-      return { path: resolved, content, extension: ext, size: stats.size };
+      return { path: resolved, content, extension: ext, size: stats.size, previewType };
     } catch (err: any) {
       if (err.code === 'ENOENT') return reply.status(404).send({ error: 'File not found' });
       return reply.status(500).send({ error: 'Failed to read file' });
+    }
+  });
+
+  // Binary previews use the same project boundary and user authorization hook.
+  app.get<{ Querystring: { path: string } }>('/files/preview', async (req, reply) => {
+    if (!req.query.path) return reply.status(400).send({ error: 'path is required' });
+    const path = resolve(req.query.path);
+    const extension = extname(path).slice(1).toLowerCase();
+    if (extension !== 'pdf' && !OFFICE_EXTENSIONS.has(extension) && !IMAGE_TYPES[extension]) return reply.status(415).send({ error: 'Unsupported document preview' });
+    try {
+      const info = await stat(path);
+      if (!info.isFile()) return reply.status(400).send({ error: 'Path is not a file' });
+      const office = OFFICE_EXTENSIONS.has(extension);
+      if (info.size > (office ? 20 : 50) * 1024 * 1024) {
+        return reply.status(413).send({ error: office ? 'Office 预览最大支持 20 MB' : '预览最大支持 50 MB' });
+      }
+      reply.header('Cache-Control', 'no-store');
+      reply.header('X-Content-Type-Options', 'nosniff');
+      const spreadsheet = SPREADSHEET_EXTENSIONS.has(extension);
+      reply.header('Content-Type', IMAGE_TYPES[extension] || (spreadsheet ? 'text/html; charset=utf-8' : 'application/pdf'));
+      reply.header('Content-Disposition', attachmentHeader(basename(path)));
+      reply.header('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:");
+      if (!office) return reply.send(createReadStream(path));
+      const document = await previewOfficeDocument(await readFile(path), extension);
+      return reply.send(document);
+    } catch (error: any) {
+      reply.removeHeader('Content-Type');
+      reply.removeHeader('Content-Disposition');
+      if (error instanceof DocumentPreviewError) return reply.status(error.statusCode).send({ error: error.message });
+      if (error.code === 'ENOENT') return reply.status(404).send({ error: 'File not found' });
+      return reply.status(500).send({ error: 'Failed to preview document' });
     }
   });
 

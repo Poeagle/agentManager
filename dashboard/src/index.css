@@ -170,6 +170,9 @@ select:hover {
 .markdown-preview h3 { font-size: 1.25em; font-weight: 600; margin: 1em 0 0.5em; }
 .markdown-preview h4 { font-size: 1em; font-weight: 600; margin: 1em 0 0.5em; }
 .markdown-preview p { margin: 0.75em 0; }
+.explorer-markdown { margin-inline: auto; overflow-wrap: anywhere; }
+.explorer-markdown p, .explorer-markdown li { white-space: pre-line; }
+.explorer-markdown pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .markdown-preview a { color: var(--accent); text-decoration: underline; }
 .markdown-preview ul, .markdown-preview ol { padding-left: 2em; margin: 0.5em 0; }
 .markdown-preview li { margin: 0.25em 0; }

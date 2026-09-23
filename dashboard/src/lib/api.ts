@@ -1,5 +1,9 @@
 const API_BASE = '/api';
 
+function fileEndpoint(url: string, projectId?: string): string {
+  return projectId ? `${url}${url.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(projectId)}` : url;
+}
+
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {};
   if (init?.body) headers['Content-Type'] = 'application/json';
@@ -14,14 +18,14 @@ async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-// POST JSON with upload-progress reporting. fetch() can't observe request-body
+// POST JSON (or raw file bytes) with upload-progress reporting. fetch() can't observe request-body
 // upload progress, so pasted/dropped file uploads go through XMLHttpRequest,
 // which fires `upload.onprogress`. `onProgress` receives a 0..1 fraction.
-function uploadWithProgress<T>(url: string, body: unknown, onProgress?: (fraction: number) => void): Promise<T> {
+function uploadWithProgress<T>(url: string, body: unknown, onProgress?: (fraction: number) => void, binary = false): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${API_BASE}${url}`);
-    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.setRequestHeader('Content-Type', binary ? 'application/octet-stream' : 'application/json');
     xhr.responseType = 'json';
     xhr.withCredentials = true;
     if (onProgress) {
@@ -39,7 +43,7 @@ function uploadWithProgress<T>(url: string, body: unknown, onProgress?: (fractio
     };
     xhr.onerror = () => reject(new Error('Network error during upload'));
     xhr.onabort = () => reject(new Error('Upload cancelled'));
-    xhr.send(JSON.stringify(body));
+    xhr.send(binary ? body as Blob : JSON.stringify(body));
   });
 }
 
@@ -315,47 +319,60 @@ export const api = {
       fetchJSON<{ ok: boolean }>(`/skills/${tool}/${scope}/${encodeURIComponent(name)}?project_id=${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
   },
   files: {
-    list: (path: string, showHidden?: boolean) =>
-      fetchJSON<{ path: string; files: FileEntry[] }>(`/files?path=${encodeURIComponent(path)}${showHidden ? '&showHidden=true' : ''}`),
-    read: (path: string) =>
-      fetchJSON<{ path: string; content: string; extension: string; size: number }>(
-        `/files/read?path=${encodeURIComponent(path)}`
+    upload: (path: string, file: File, onProgress?: (fraction: number) => void, projectId?: string) =>
+      uploadWithProgress<{ ok: boolean; path: string; size: number }>(
+        fileEndpoint(`/files/upload?path=${encodeURIComponent(path)}&filename=${encodeURIComponent(file.name)}`, projectId),
+        file, onProgress, true,
       ),
-    export: async (path: string, signal?: AbortSignal) => {
-      const res = await fetch(`${API_BASE}/files/export?path=${encodeURIComponent(path)}`, { signal });
+    list: (path: string, showHidden?: boolean, projectId?: string) =>
+      fetchJSON<{ path: string; files: FileEntry[] }>(fileEndpoint(`/files?path=${encodeURIComponent(path)}${showHidden ? '&showHidden=true' : ''}`, projectId)),
+    read: (path: string, projectId?: string) =>
+      fetchJSON<{ path: string; content: string; extension: string; size: number; previewType?: FilePreviewType }>(
+        fileEndpoint(`/files/read?path=${encodeURIComponent(path)}`, projectId)
+      ),
+    preview: async (path: string, signal?: AbortSignal, projectId?: string) => {
+      const res = await fetch(`${API_BASE}${fileEndpoint(`/files/preview?path=${encodeURIComponent(path)}`, projectId)}`, { signal });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error || `预览失败：${res.status}`);
+      }
+      return res.blob();
+    },
+    export: async (path: string, signal?: AbortSignal, projectId?: string) => {
+      const res = await fetch(`${API_BASE}${fileEndpoint(`/files/export?path=${encodeURIComponent(path)}`, projectId)}`, { signal });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.error || `API error: ${res.status}`);
       }
       return res;
     },
-    write: (path: string, content: string, expectedContent?: string) =>
-      fetchJSON<{ ok: boolean; size: number }>('/files/write', {
+    write: (path: string, content: string, expectedContent?: string, projectId?: string) =>
+      fetchJSON<{ ok: boolean; size: number }>(fileEndpoint('/files/write', projectId), {
         method: 'PUT',
         body: JSON.stringify({ path, content, expectedContent }),
       }),
-    diff: (pathA: string, pathB: string) =>
-      fetchJSON<{ diff: string }>('/files/diff', {
+    diff: (pathA: string, pathB: string, projectId?: string) =>
+      fetchJSON<{ diff: string }>(fileEndpoint('/files/diff', projectId), {
         method: 'POST',
         body: JSON.stringify({ pathA, pathB }),
       }),
-    delete: (path: string) =>
-      fetchJSON<{ ok: boolean }>('/files/delete', {
+    delete: (path: string, projectId?: string) =>
+      fetchJSON<{ ok: boolean }>(fileEndpoint('/files/delete', projectId), {
         method: 'POST',
         body: JSON.stringify({ path }),
       }),
-    rename: (path: string, newName: string) =>
-      fetchJSON<{ ok: boolean; path: string }>('/files/rename', {
+    rename: (path: string, newName: string, projectId?: string) =>
+      fetchJSON<{ ok: boolean; path: string }>(fileEndpoint('/files/rename', projectId), {
         method: 'POST',
         body: JSON.stringify({ path, newName }),
       }),
-    move: (src: string, destDir: string) =>
-      fetchJSON<{ ok: boolean; path: string }>('/files/move', {
+    move: (src: string, destDir: string, projectId?: string) =>
+      fetchJSON<{ ok: boolean; path: string }>(fileEndpoint('/files/move', projectId), {
         method: 'POST',
         body: JSON.stringify({ src, destDir }),
       }),
-    copy: (src: string, destDir: string) =>
-      fetchJSON<{ ok: boolean; path: string }>('/files/copy', {
+    copy: (src: string, destDir: string, projectId?: string) =>
+      fetchJSON<{ ok: boolean; path: string }>(fileEndpoint('/files/copy', projectId), {
         method: 'POST',
         body: JSON.stringify({ src, destDir }),
       }),
@@ -514,6 +531,24 @@ export const api = {
   versionCheck: () =>
     fetchJSON<{ current: string; latest: string; name: string; url: string; prerelease: boolean; channel: string; updateAvailable: boolean; unavailable?: boolean }>('/version-check'),
 };
+
+// Keep the project context on every explorer operation, including writes.
+export function scopeProjectFiles(files: typeof api.files, projectId?: string): typeof api.files {
+  if (!projectId) return files;
+  return {
+    list: (path, hidden) => files.list(path, hidden, projectId),
+    read: (path) => files.read(path, projectId),
+    preview: (path, signal) => files.preview(path, signal, projectId),
+    upload: (path, file, progress) => files.upload(path, file, progress, projectId),
+    export: (path, signal) => files.export(path, signal, projectId),
+    write: (path, content, expected) => files.write(path, content, expected, projectId),
+    diff: (a, b) => files.diff(a, b, projectId),
+    delete: (path) => files.delete(path, projectId),
+    rename: (path, name) => files.rename(path, name, projectId),
+    move: (src, dest) => files.move(src, dest, projectId),
+    copy: (src, dest) => files.copy(src, dest, projectId),
+  };
+}
 
 // Types
 export interface Session {
@@ -741,6 +776,8 @@ export interface ProjectUserAccess extends ProjectToolPermissions {
   created_at?: string;
   updated_at?: string;
 }
+
+export type FilePreviewType = 'text' | 'pdf' | 'word' | 'presentation' | 'spreadsheet' | 'csv' | 'image' | 'drawio';
 
 export interface FileEntry {
   name: string;

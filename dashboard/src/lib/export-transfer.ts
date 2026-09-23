@@ -35,6 +35,7 @@ interface ExportTransferState {
 }
 
 interface StartExportTransferInput {
+  projectId?: string;
   path: string;
   name: string;
   isDirectory: boolean;
@@ -152,7 +153,9 @@ export async function startExportTransfer(input: StartExportTransferInput) {
   try {
     updateTask(id, { phase: 'preparing' });
     const result = await exportBlobToLocalFolder(
-      () => api.files.export(input.path, controller.signal),
+      () => input.projectId
+        ? api.files.export(input.path, controller.signal, input.projectId)
+        : api.files.export(input.path, controller.signal),
       fileName,
       { signal: controller.signal, onProgress: handleProgress },
     );
