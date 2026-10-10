@@ -18,6 +18,20 @@ function formatCheckedTime(value: string): string {
     .join(':');
 }
 
+function formatResetTime(value: number | null | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  // The quota API supplies Unix seconds, not milliseconds.
+  const date = new Date(value * 1000);
+  if (Number.isNaN(date.getTime())) return null;
+  const [month, day, hours, minutes] = [date.getMonth() + 1, date.getDate(), date.getHours(), date.getMinutes()]
+    .map((part) => String(part).padStart(2, '0'));
+  return {
+    label: `${month}/${day} ${hours}:${minutes}`,
+    dateTime: date.toISOString(),
+    title: `周额度重置时间（本地时间）：${date.toLocaleString(undefined, { timeZoneName: 'short' })}`,
+  };
+}
+
 export function CodexQuotaIndicator() {
   const queryClient = useQueryClient();
   const refresh = useMutation({
@@ -34,9 +48,11 @@ export function CodexQuotaIndicator() {
   });
   const quota = quotaQuery.data?.quota;
   const checkedTime = quota ? formatCheckedTime(quota.checkedAt) : '--:--:--';
+  const resetTime = formatResetTime(quota?.resetsAt);
+  const resetTitle = resetTime?.title ?? '周额度重置时间未知';
   const color = quota ? quotaColor(quota.remainingPercent) : 'var(--text-muted)';
   const title = quota
-    ? `Codex 周额度剩余 ${quota.remainingPercent}% · 已用 ${quota.usedPercent}% · 检测时间 ${new Date(quota.checkedAt).toLocaleString()} · 每 5 分钟刷新`
+    ? `Codex 周额度剩余 ${quota.remainingPercent}% · 已用 ${quota.usedPercent}% · ${resetTitle} · 检测时间 ${new Date(quota.checkedAt).toLocaleString()} · 每 5 分钟刷新`
     : quotaQuery.isError
       ? `Codex 周额度读取失败 · 每 5 分钟重试`
       : '正在读取 Codex 周额度';
@@ -57,6 +73,11 @@ export function CodexQuotaIndicator() {
       <strong className="font-mono text-[11px] tabular-nums" style={{ color }}>
         {quota ? `${quota.remainingPercent}%` : quotaQuery.isError ? '不可用' : '读取中'}
       </strong>
+      <span aria-hidden="true" className="text-[9px]" style={{ color: 'var(--border)' }}>·</span>
+      <time aria-label={resetTitle} title={resetTitle} dateTime={resetTime?.dateTime}
+        className="whitespace-nowrap font-mono text-[9px] tabular-nums" style={{ color: 'var(--text-muted)' }}>
+        周重置 {resetTime?.label ?? '未知'}
+      </time>
       <span aria-hidden="true" className="text-[9px]" style={{ color: 'var(--border)' }}>·</span>
       <time className="whitespace-nowrap font-mono text-[9px] tabular-nums" dateTime={quota?.checkedAt} style={{ color: 'var(--text-muted)' }}>
         {quota?.stale ? '上次成功' : '检测'} {checkedTime}
