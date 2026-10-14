@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { QueryClient } from '@tanstack/react-query';
 import type { Event } from './api';
+import { cacheServerResources, SERVER_RESOURCE_QUERY_KEY, type ServerResourceResponse } from './server-resource-cache';
 
 let queryClientRef: QueryClient | null = null;
 
@@ -108,6 +109,7 @@ export function connectStream() {
   ws.onopen = () => {
     lastMessageAt = Date.now();
     useStreamStore.getState().setConnected(true);
+    void queryClientRef?.invalidateQueries({ queryKey: SERVER_RESOURCE_QUERY_KEY });
   };
 
   ws.onmessage = (msg) => {
@@ -117,6 +119,12 @@ export function connectStream() {
 
       // Heartbeat / handshake frames are keepalive only — nothing to render.
       if (event.type === 'ping' || event.type === 'connected') return;
+
+      if (event.type === 'server.resources') {
+        const data = event.data ? JSON.parse(event.data) as ServerResourceResponse : null;
+        if (queryClientRef && data?.server_resources) cacheServerResources(queryClientRef, data);
+        return;
+      }
 
       // Live process-state: update the per-session map directly. This is a
       // high-frequency, ephemeral signal — keep it out of the event feed and
@@ -156,10 +164,18 @@ export function connectStream() {
         return;
       }
 
+      if (event.type === 'rbac.changed') {
+        for (const key of ['rbac-me', 'rbac-roles', 'rbac-assignable-roles', 'auth-status', 'users', 'projects']) {
+          void queryClientRef?.invalidateQueries({ queryKey: [key] });
+        }
+        return;
+      }
+
       useStreamStore.getState().addEvent(event);
       // Invalidate sessions query on session lifecycle events so we don't need aggressive polling
       if (event.type?.startsWith('session.') && queryClientRef) {
         queryClientRef.invalidateQueries({ queryKey: ['sessions'] });
+        queryClientRef.invalidateQueries({ queryKey: ['project-sessions'] });
         queryClientRef.invalidateQueries({ queryKey: ['admin-monitor'] });
       }
     } catch {

@@ -4,6 +4,31 @@ import { join } from 'path';
 import { deflateRawSync } from 'zlib';
 import { docxFixture, odpFixture, xlsxFixture } from '../server/tests/helpers/office-fixtures';
 
+function pdfFixture(): Buffer {
+  const firstPage = 'BT /F1 24 Tf 72 200 Td (PDF preview works) Tj ET';
+  const secondPage = 'BT /F1 24 Tf 72 200 Td (Page two works) Tj ET';
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${Buffer.byteLength(firstPage)} >>\nstream\n${firstPage}\nendstream`,
+    `<< /Length ${Buffer.byteLength(secondPage)} >>\nstream\n${secondPage}\nendstream`,
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  pdf += offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('');
+  pdf += `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf);
+}
+
 test('previews diagrams, tables, images, PDF, and readable wrapped text locally', async ({ page }, testInfo) => {
   const status = await (await page.request.get('/api/auth/status')).json();
   expect((await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
@@ -20,7 +45,7 @@ test('previews diagrams, tables, images, PDF, and readable wrapped text locally'
   writeFileSync(join(root, 'report.docx'), docxFixture());
   writeFileSync(join(root, 'sheet.xlsx'), xlsxFixture());
   writeFileSync(join(root, 'image.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="#dae8fc"/><text x="15" y="50">Image preview</text></svg>');
-  writeFileSync(join(root, 'test.pdf'), '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 400 300]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF');
+  writeFileSync(join(root, 'test.pdf'), pdfFixture());
   const { project } = await (await page.request.post('/api/projects', { data: { name: 'Preview Project', path: root } })).json();
   await page.request.put('/api/settings', { data: { settings: { statusline_prompted: 'true' } } });
   await page.request.put('/api/user-state/app', { data: { value: {
@@ -35,7 +60,7 @@ test('previews diagrams, tables, images, PDF, and readable wrapped text locally'
   await expect(page.getByRole('cell', { name: 'first second' })).toHaveCSS('white-space', 'pre-wrap');
 
   await tree.getByRole('button', { name: 'readme.md', exact: true }).click();
-  await expect(page.locator('.explorer-markdown p')).toHaveCSS('white-space', 'pre-line');
+  await expect(page.getByRole('textbox', { name: 'Markdown 可视编辑区' })).toContainText('第一行');
   await tree.getByRole('button', { name: 'notes.txt', exact: true }).click();
   await expect(page.locator('.cm-lineWrapping')).toBeVisible();
   await expect(page.locator('.cm-content')).toHaveCSS('font-size', '14px');
@@ -46,14 +71,31 @@ test('previews diagrams, tables, images, PDF, and readable wrapped text locally'
   await expect.poll(() => image.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBe(200);
 
   await tree.getByRole('button', { name: 'test.pdf', exact: true }).click();
-  await expect(page.getByTitle('PDF 文档预览')).toHaveAttribute('src', /^blob:/);
+  const pdfPage = page.locator('canvas[aria-label="PDF 第 1 页"]');
+  await expect(pdfPage).toHaveAttribute('data-rendered', 'true');
+  expect(await pdfPage.evaluate(canvas => {
+    const pixels = (canvas as HTMLCanvasElement).getContext('2d')!.getImageData(0, 0, (canvas as HTMLCanvasElement).width, (canvas as HTMLCanvasElement).height).data;
+    for (let index = 0; index < pixels.length; index += 4) {
+      if (pixels[index + 3] > 0 && pixels[index] < 100 && pixels[index + 1] < 100 && pixels[index + 2] < 100) return true;
+    }
+    return false;
+  })).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('pdf-preview.png') });
+  await page.getByRole('button', { name: '下一页' }).click();
+  await expect(page.locator('canvas[aria-label="PDF 第 2 页"]')).toHaveAttribute('data-rendered', 'true');
+  await expect(page.getByLabel('页码')).toHaveText('2 / 2');
+  await page.getByRole('button', { name: '上一页' }).click();
+  await expect(pdfPage).toHaveAttribute('data-rendered', 'true');
+  await page.getByRole('button', { name: '放大 PDF' }).click();
+  await expect(pdfPage).toHaveAttribute('data-rendered', 'true');
+  await expect(page.getByText('125%', { exact: true })).toBeVisible();
   await tree.getByRole('button', { name: 'slides.odp', exact: true }).click();
   if (existsSync('/usr/lib/libreoffice/program/libsdlo.so') && existsSync('/usr/bin/bwrap')) {
-    await expect(page.getByTitle('演示文稿预览')).toHaveAttribute('src', /^blob:/);
+    await expect(page.locator('canvas[aria-label="PDF 第 1 页"]')).toHaveAttribute('data-rendered', 'true');
   } else await expect(page.getByRole('alert')).toContainText('LibreOffice');
   await tree.getByRole('button', { name: 'report.docx', exact: true }).click();
   if (existsSync('/usr/lib/libreoffice/program/libswlo.so') && existsSync('/usr/bin/bwrap')) {
-    await expect(page.getByTitle('Word 文档预览')).toHaveAttribute('src', /^blob:/);
+    await expect(page.locator('canvas[aria-label="PDF 第 1 页"]')).toHaveAttribute('data-rendered', 'true');
   } else await expect(page.getByRole('alert')).toContainText('LibreOffice');
   await tree.getByRole('button', { name: 'sheet.xlsx', exact: true }).click();
   if (existsSync('/usr/lib/libreoffice/program/libsclo.so') && existsSync('/usr/bin/bwrap')) {

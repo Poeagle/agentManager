@@ -18,14 +18,13 @@ async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-// POST JSON (or raw file bytes) with upload-progress reporting. fetch() can't observe request-body
-// upload progress, so pasted/dropped file uploads go through XMLHttpRequest,
-// which fires `upload.onprogress`. `onProgress` receives a 0..1 fraction.
-function uploadWithProgress<T>(url: string, body: unknown, onProgress?: (fraction: number) => void, binary = false): Promise<T> {
+// XMLHttpRequest reports file upload progress; fetch does not expose it.
+// `onProgress` receives a 0..1 fraction.
+function uploadWithProgress<T>(url: string, file: File, onProgress?: (fraction: number) => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${API_BASE}${url}`);
-    xhr.setRequestHeader('Content-Type', binary ? 'application/octet-stream' : 'application/json');
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.responseType = 'json';
     xhr.withCredentials = true;
     if (onProgress) {
@@ -43,11 +42,16 @@ function uploadWithProgress<T>(url: string, body: unknown, onProgress?: (fractio
     };
     xhr.onerror = () => reject(new Error('Network error during upload'));
     xhr.onabort = () => reject(new Error('Upload cancelled'));
-    xhr.send(binary ? body as Blob : JSON.stringify(body));
+    xhr.send(file);
   });
 }
 
-export interface AuthUser { id: string; username: string; display_name: string; role: 'admin' | 'member'; disabled?: number; max_tabs?: number; can_create_projects?: number; created_at?: string; }
+export interface AuthUser { id: string; username: string; display_name: string; role: 'admin' | 'member'; role_ids?: string[]; disabled?: number; max_tabs?: number; can_create_projects?: number; created_at?: string; }
+export type PermissionLevel = 'read' | 'write' | 'delete';
+export type PermissionGrants = Record<string, PermissionLevel>;
+export interface PermissionDefinition { key: string; label: string; levels: PermissionLevel[]; }
+export interface PlatformRole { id: string; name: string; description: string; builtin: number; permissions: PermissionGrants; member_count: number; }
+export interface MyPermissions { permissions: PermissionGrants; roles: Array<{ id: string; name: string }>; catalog: PermissionDefinition[]; }
 export interface AuthStatus { needsSetup: boolean; authenticated: boolean; user: AuthUser | null; }
 export interface AuthCredentials { username: string; password: string; display_name?: string; }
 export type PromptEnhancerMode = 'base' | 'lite' | 'standard' | 'expert' | 'publish';
@@ -122,8 +126,21 @@ export const api = {
     delete: (id: string) =>
       fetchJSON<{ ok: boolean; closed_sessions: number }>(`/users/${id}`, { method: 'DELETE' }),
   },
+  rbac: {
+    me: () => fetchJSON<MyPermissions>('/rbac/me'),
+    roles: () => fetchJSON<{ roles: PlatformRole[]; catalog: PermissionDefinition[] }>('/rbac/roles'),
+    assignableRoles: () => fetchJSON<{ roles: Array<Pick<PlatformRole, 'id' | 'name' | 'builtin'>> }>('/rbac/assignable-roles'),
+    createRole: (data: { name: string; description: string; permissions: PermissionGrants }) =>
+      fetchJSON<{ role: PlatformRole }>('/rbac/roles', { method: 'POST', body: JSON.stringify(data) }),
+    updateRole: (id: string, data: { name: string; description: string; permissions: PermissionGrants }) =>
+      fetchJSON<{ role: PlatformRole }>(`/rbac/roles/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteRole: (id: string) => fetchJSON<{ ok: boolean }>(`/rbac/roles/${id}`, { method: 'DELETE' }),
+    assignRoles: (userId: string, roleIds: string[]) =>
+      fetchJSON<{ ok: boolean }>(`/rbac/users/${userId}/roles`, { method: 'PUT', body: JSON.stringify({ role_ids: roleIds }) }),
+  },
   admin: {
     monitor: () => fetchJSON<AdminMonitorResponse>('/admin/monitor'),
+    serverResources: () => fetchJSON<Pick<AdminMonitorResponse, 'server_resources'>>('/admin/server-resources'),
     renameMonitorTab: (userId: string, projectId: string, sessionId: string, name: string) =>
       fetchJSON<{ ok: boolean; tab: { id: string; name: string } }>(
         `/admin/monitor/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}/tabs/${encodeURIComponent(sessionId)}`,
@@ -144,7 +161,7 @@ export const api = {
       return fetchJSON<{ sessions: Session[] }>(`/sessions${suffix}`);
     },
     get: (id: string) => fetchJSON<{ session: Session }>(`/sessions/${id}`),
-    create: (data: { project_path: string; task?: string; mode?: 'session' | 'terminal' | 'agent'; agent_type?: string; project_id?: string; cli_type?: 'claude' | 'codex' }) =>
+    create: (data: { project_path: string; task?: string; mode?: 'session' | 'terminal'; project_id?: string; cli_type?: 'claude' | 'codex' }) =>
       fetchJSON<{ ok: boolean; session: Session }>('/sessions', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -171,17 +188,14 @@ export const api = {
       if (opts?.limit != null) qs.set('limit', String(opts.limit));
       return fetchJSON<SessionOutput>(`/sessions/${id}/output?${qs}`);
     },
-    popOut: (id: string) =>
-      fetchJSON<{ ok: boolean; terminal?: string; socketPath?: string; error?: string }>(`/sessions/${id}/pop-out`, { method: 'POST' }),
-    // Upload a pasted image; returns the absolute path saved in the project for
-    // either Claude or Codex to inspect.
-    // onProgress (0..1) reports upload progress (via XHR — fetch can't).
-    pasteImage: (id: string, dataUrl: string, onProgress?: (fraction: number) => void) =>
-      uploadWithProgress<{ ok: boolean; path: string }>(`/sessions/${id}/paste-image`, { dataUrl }, onProgress),
-    // Upload a pasted/dropped file (any type); returns the absolute path saved in the project.
-    // onProgress (0..1) reports upload progress (via XHR — fetch can't).
-    pasteFile: (id: string, dataUrl: string, filename: string, onProgress?: (fraction: number) => void) =>
-      uploadWithProgress<{ ok: boolean; path: string }>(`/sessions/${id}/paste-file`, { dataUrl, filename }, onProgress),
+    pasteImage: (id: string, dataUrl: string, signal?: AbortSignal) =>
+      fetchJSON<{ ok: boolean; path: string }>(`/sessions/${encodeURIComponent(id)}/paste-image`, {
+        method: 'POST', body: JSON.stringify({ dataUrl }), signal,
+      }),
+    pasteFile: (id: string, dataUrl: string, filename: string, signal?: AbortSignal) =>
+      fetchJSON<{ ok: boolean; path: string }>(`/sessions/${encodeURIComponent(id)}/paste-file`, {
+        method: 'POST', body: JSON.stringify({ dataUrl, filename }), signal,
+      }),
     // Resume an ended Claude/Codex conversation; reuses the same app session id.
     resume: (id: string, automatic = false) =>
       fetchJSON<{ ok: boolean; session: Session }>(`/sessions/${id}/resume`, {
@@ -203,12 +217,12 @@ export const api = {
       fetchJSON<{ ok: boolean; session: Session }>('/sessions/resume-claude', { method: 'POST', body: JSON.stringify(data) }),
     deleteClaudeHistory: (uuid: string, projectId: string) =>
       fetchJSON<{ ok: boolean }>(`/sessions/claude-history/${encodeURIComponent(uuid)}?project_id=${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
-    renderedOutput: (id: string, cols?: number, rows?: number) => {
+    renderedOutput: (id: string, cols?: number, rows?: number, signal?: AbortSignal) => {
       const qs = new URLSearchParams();
       if (cols) qs.set('cols', String(cols));
       if (rows) qs.set('rows', String(rows));
       const qsStr = qs.toString();
-      return fetchJSON<{ rendered: string }>(`/sessions/${id}/rendered-output${qsStr ? `?${qsStr}` : ''}`);
+      return fetchJSON<{ rendered: string }>(`/sessions/${id}/rendered-output${qsStr ? `?${qsStr}` : ''}`, { signal });
     },
   },
   events: {
@@ -259,12 +273,12 @@ export const api = {
   },
   projects: {
     list: () => fetchJSON<{ projects: Project[] }>('/projects'),
-    create: (data: { name: string; path: string; description?: string; session_prompt?: string; openclaw_prompt?: string; default_web_url?: string; color?: string }) =>
+    create: (data: { name: string; path: string; description?: string; session_prompt?: string; openclaw_prompt?: string; color?: string }) =>
       fetchJSON<{ ok: boolean; project: Project }>('/projects', {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    update: (id: string, data: { name?: string; description?: string; session_prompt?: string | null; openclaw_prompt?: string | null; default_web_url?: string | null; color?: string }) =>
+    update: (id: string, data: { name?: string; description?: string; session_prompt?: string | null; openclaw_prompt?: string | null; color?: string }) =>
       fetchJSON<{ ok: boolean; project: Project }>(`/projects/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(data),
@@ -273,10 +287,8 @@ export const api = {
       fetchJSON<{ ok: boolean }>(`/projects/${id}`, { method: 'DELETE' }),
     browse: (path?: string) =>
       fetchJSON<BrowseResult>(`/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`),
-    projectAgents: (id: string) =>
-      fetchJSON<{ agents: ProjectAgent[] }>(`/projects/${id}/agents`),
     access: (id: string) =>
-      fetchJSON<{ access: ProjectUserAccess[] }>(`/projects/${id}/access`),
+      fetchJSON<{ access: ProjectUserAccess[]; clients: SessionClient[] }>(`/projects/${id}/access`),
     setAccess: (id: string, userId: string, access: ProjectToolPermissions) =>
       fetchJSON<{ ok: boolean; access: ProjectUserAccess }>(`/projects/${id}/access/${userId}`, {
         method: 'PUT',
@@ -322,7 +334,7 @@ export const api = {
     upload: (path: string, file: File, onProgress?: (fraction: number) => void, projectId?: string) =>
       uploadWithProgress<{ ok: boolean; path: string; size: number }>(
         fileEndpoint(`/files/upload?path=${encodeURIComponent(path)}&filename=${encodeURIComponent(file.name)}`, projectId),
-        file, onProgress, true,
+        file, onProgress,
       ),
     list: (path: string, showHidden?: boolean, projectId?: string) =>
       fetchJSON<{ path: string; files: FileEntry[] }>(fileEndpoint(`/files?path=${encodeURIComponent(path)}${showHidden ? '&showHidden=true' : ''}`, projectId)),
@@ -524,10 +536,6 @@ export const api = {
       fetchJSON<{ ok: boolean }>(`/user-state/${encodeURIComponent(key)}`, { method: 'DELETE' }),
   },
   health: () => fetchJSON<{ name: string; version: string; status: string; uptime?: number; reconnecting?: boolean; reconnectTotal?: number; reconnectDone?: number }>('/health'),
-  openFolder: (path: string) =>
-    fetchJSON<{ ok: boolean }>('/open-folder', { method: 'POST', body: JSON.stringify({ path }) }),
-  openTerminal: (path: string) =>
-    fetchJSON<{ ok: boolean }>('/open-terminal', { method: 'POST', body: JSON.stringify({ path }) }),
   versionCheck: () =>
     fetchJSON<{ current: string; latest: string; name: string; url: string; prerelease: boolean; channel: string; updateAvailable: boolean; unavailable?: boolean }>('/version-check'),
 };
@@ -555,7 +563,7 @@ export interface Session {
   id: string;
   project_id: string | null;
   task: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'detached';
+  status: 'pending' | 'launching' | 'running' | 'completed' | 'failed' | 'cancelled' | 'detached' | 'released';
   pid: number | null;
   started_at: string | null;
   completed_at: string | null;
@@ -565,8 +573,7 @@ export interface Session {
   last_activity_at?: string | null;
   content_summary?: string | null;
   cli_type?: 'claude' | 'codex';
-  mode?: 'session' | 'terminal' | 'agent';
-  agent_type?: string | null;
+  mode?: 'session' | 'terminal';
   claude_session_id?: string | null;
   codex_session_id?: string | null;
   // Live process-state (present when the session has an active in-memory tracker).
@@ -577,7 +584,18 @@ export interface Session {
 
 export type ScheduleKind = 'interval' | 'daily' | 'weekly' | 'cron';
 export type ScheduledTargetType = 'existing' | 'new';
-export type ScheduledNewMode = 'session' | 'agent' | 'terminal';
+export type ScheduledNewMode = 'session' | 'terminal';
+
+export type ScheduledTaskCondition =
+  | { type: 'time_after'; value: string }
+  | { type: 'time_range'; value: { start: string; end: string } }
+  | { type: 'weekday'; value: 'workday' | 'weekend' }
+  | { type: 'target_idle'; value: boolean }
+  | { type: 'quota_below' | 'successes_today' | 'failures_today'; value: number };
+export interface ScheduledConditionGroup {
+  operator: 'and' | 'or';
+  conditions: Array<ScheduledTaskCondition | ScheduledConditionGroup>;
+}
 
 export interface ScheduledTaskInput {
   project_id: string;
@@ -590,10 +608,14 @@ export interface ScheduledTaskInput {
   target_session_id?: string | null;
   new_mode?: ScheduledNewMode | null;
   new_cli_type?: 'claude' | 'codex' | null;
-  new_agent_type?: string | null;
   inactive_policy?: 'resume' | 'fail';
   stop_at?: string | null;
   daily_stop_time?: string | null;
+  daily_start_time?: string | null;
+  daily_end_time?: string | null;
+  start_conditions?: ScheduledConditionGroup | null;
+  daily_stop_conditions?: ScheduledConditionGroup | null;
+  condition_unmet_policy?: 'wait' | 'skip';
   max_successful_runs?: number | null;
   quota_remaining_below?: number | null;
   max_consecutive_failures?: number | null;
@@ -607,6 +629,9 @@ export interface ScheduledTask extends Omit<ScheduledTaskInput, 'enabled'> {
   enabled: number;
   next_run_at: string | null;
   daily_stop_at: string | null;
+  daily_paused_until?: string | null;
+  daily_pause_reason?: string | null;
+  waiting_reason?: string | null;
   successful_runs: number;
   consecutive_failures: number;
   last_quota_remaining: number | null;
@@ -624,7 +649,7 @@ export interface ScheduledTaskRun {
   task_id: string;
   trigger: 'scheduled' | 'manual';
   scheduled_for: string;
-  status: 'running' | 'success' | 'failed' | 'stopped';
+  status: 'running' | 'success' | 'failed' | 'stopped' | 'skipped';
   session_id: string | null;
   error: string | null;
   started_at: string;
@@ -646,8 +671,7 @@ export interface AdminMonitorSession {
   project_id: string | null;
   task: string;
   status: string;
-  mode: 'session' | 'terminal' | 'agent' | null;
-  agent_type: string | null;
+  mode: 'session' | 'terminal' | null;
   cli_type: 'claude' | 'codex' | null;
   created_by_user_id: string;
   started_at: string | null;
@@ -696,6 +720,7 @@ export interface AdminMonitorUser extends AuthUser {
 export interface AdminMonitorResponse {
   generated_at: string;
   server_resources: {
+    sampled_at: string;
     hostname: string;
     uptime_seconds: number;
     cpu: {
@@ -745,25 +770,26 @@ export interface Event {
 }
 
 export interface Project {
+  owner_id?: string | null;
+  owner?: { id: string; username: string; display_name: string } | null;
   id: string;
   name: string;
   path: string;
   description: string | null;
   session_prompt: string | null;
   openclaw_prompt: string | null;
-  default_web_url: string | null;
   color: string;
   created_at: string;
   updated_at?: string;
-  tool_access?: ProjectToolPermissions;
+  tool_access?: ProjectToolPermissions | null;
 }
 
+export interface SessionClient { id: string; label: string; }
+
 export interface ProjectToolPermissions {
+  session_clients: string[];
   can_session: boolean;
-  can_agent: boolean;
   can_terminal: boolean;
-  can_claude: boolean;
-  can_codex: boolean;
 }
 
 export interface ProjectUserAccess extends ProjectToolPermissions {
@@ -819,12 +845,7 @@ export interface GitBranch {
   tracking?: string;
 }
 
-export interface ProjectAgent {
-  name: string;
-  type: string;
-  description: string;
-  category: string;
-}
+
 
 export interface SkillSummary {
   name: string;

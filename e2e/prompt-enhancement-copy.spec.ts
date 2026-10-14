@@ -52,7 +52,6 @@ test('copying an enhanced prompt keeps the preview open and never writes to the 
         activeTerminalId: session.id,
         hiddenSessionIds: [],
         explorerInstances: [],
-        webPageInstances: [],
       },
     },
   })).ok()).toBeTruthy();

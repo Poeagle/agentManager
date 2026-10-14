@@ -1,0 +1,277 @@
+/* Dimensions follow dolphindb_manager's SettingsPage and ModelProviderEditor. */
+.settings-panel-shell {
+  font-family: Inter, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.settings-panel-workbench {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: 196px minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.settings-panel-navigation {
+  min-width: 0;
+  padding: 6px;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  background: var(--bg-tertiary);
+}
+
+.settings-panel-navigation button {
+  min-height: 40px;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.settings-panel-content {
+  min-width: 0;
+  min-height: 0;
+  padding: 14px;
+  overflow: auto;
+  background: var(--bg-primary);
+}
+
+.settings-panel-content > fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-panel-readonly {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.settings-panel-section {
+  min-width: 0;
+  color: var(--text-primary);
+}
+
+.settings-panel-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-panel-section-heading h4 {
+  margin: 0 0 3px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.settings-panel-section-heading p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.settings-panel-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 360px));
+  align-items: start;
+  gap: 10px 14px;
+}
+.settings-panel-commands {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 640px));
+  gap: 10px 14px;
+}
+
+.settings-panel-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.settings-panel-field > label {
+  display: block;
+  min-height: 22px;
+}
+
+.settings-panel-field > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.settings-panel-control,
+.settings-panel-section :where(input:not([type=checkbox]):not([type=range]), select) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: 32px;
+  padding: 4px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.settings-panel-control:focus-visible,
+.settings-panel-section input:focus-visible,
+.settings-panel-section select:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
+}
+.settings-panel-section input[type=number] { max-width: 160px; }
+
+.settings-panel-control:disabled,
+.settings-panel-section input:disabled,
+.settings-panel-section select:disabled {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.settings-panel-input-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-panel-input-action .settings-panel-control {
+  flex: 1;
+}
+
+.settings-panel-help {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.settings-panel-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-panel-button {
+  display: inline-flex;
+  height: 32px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 22px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings-panel-button--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.settings-panel-button:disabled {
+  cursor: not-allowed;
+  opacity: .5;
+}
+
+.settings-panel-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-panel-toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.settings-panel-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.settings-panel-footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-primary);
+}
+
+.settings-panel-theme-option {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 82px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  text-align: left;
+}
+
+.settings-panel-theme-option[aria-pressed=true] {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+@media (max-width: 720px) {
+  .settings-panel-workbench { grid-template-columns: 150px minmax(0, 1fr); }
+  .settings-panel-content { padding: 10px; }
+  .settings-panel-form-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 480px) {
+  .settings-panel-workbench { display: flex; flex-direction: column; }
+  .settings-panel-navigation { border-right: 0; border-bottom: 1px solid var(--border); }
+  .settings-panel-navigation nav { display: flex; gap: 4px; }
+  .settings-panel-navigation button { width: auto; flex: none; padding-inline: 10px; font-size: 12px; }
+  .settings-panel-content { flex: 1; }
+}

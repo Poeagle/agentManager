@@ -1,7 +1,6 @@
-import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyPluginAsync } from 'fastify';
 import { execFile } from 'child_process';
 import { readFileSync } from 'fs';
-import { cpus, freemem, hostname, loadavg, platform, totalmem, uptime } from 'os';
 import { promisify } from 'util';
 import { getDb } from '../db/index.js';
 import {
@@ -15,91 +14,10 @@ import { broadcastEphemeral } from '../services/event-store.js';
 import { cleanOutput } from '../lib/ansi.js';
 import { VirtualTerminal } from '../lib/virtual-terminal.js';
 import { revokeUserConnections } from '../services/user-connections.js';
+import { serverResourceSampler } from '../services/server-resources.js';
+import { requirePermission, userHasPermission, userRoleIds } from '../services/rbac.js';
 
 const execFileAsync = promisify(execFile);
-
-interface CpuSnapshot {
-  idle: number;
-  total: number;
-}
-
-let previousCpuSnapshot: CpuSnapshot | null = null;
-
-function cpuSnapshot(): CpuSnapshot {
-  return cpus().reduce((sample, cpu) => {
-    const total = Object.values(cpu.times).reduce((sum, value) => sum + value, 0);
-    return { idle: sample.idle + cpu.times.idle, total: sample.total + total };
-  }, { idle: 0, total: 0 });
-}
-
-async function readCpuUsagePercent(): Promise<number> {
-  let before = previousCpuSnapshot;
-  if (!before) {
-    before = cpuSnapshot();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const after = cpuSnapshot();
-  previousCpuSnapshot = after;
-  const totalDelta = after.total - before.total;
-  const idleDelta = after.idle - before.idle;
-  if (totalDelta <= 0) return 0;
-  return Math.min(100, Math.max(0, ((totalDelta - idleDelta) / totalDelta) * 100));
-}
-
-function availableMemoryBytes(): number {
-  if (platform() === 'linux') {
-    try {
-      const match = readFileSync('/proc/meminfo', 'utf8').match(/^MemAvailable:\s+(\d+)\s+kB$/m);
-      if (match) return Number(match[1]) * 1024;
-    } catch { /* fall back to the portable free-memory value */ }
-  }
-  return freemem();
-}
-
-async function readDiskUsage() {
-  try {
-    const { stdout } = await execFileAsync('df', ['-Pk', process.cwd()], { encoding: 'utf8' });
-    const line = stdout.trim().split('\n').at(-1)?.trim();
-    const columns = line?.split(/\s+/) ?? [];
-    if (columns.length < 6) return null;
-    const totalBytes = Number(columns[1]) * 1024;
-    const usedBytes = Number(columns[2]) * 1024;
-    const availableBytes = Number(columns[3]) * 1024;
-    if (![totalBytes, usedBytes, availableBytes].every(Number.isFinite) || totalBytes <= 0) return null;
-    return {
-      total_bytes: totalBytes,
-      used_bytes: usedBytes,
-      available_bytes: availableBytes,
-      usage_percent: Math.min(100, Math.max(0, (usedBytes / totalBytes) * 100)),
-      mount: columns.slice(5).join(' '),
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function readServerResources() {
-  const [cpuUsagePercent, disk] = await Promise.all([readCpuUsagePercent(), readDiskUsage()]);
-  const memoryTotal = totalmem();
-  const memoryAvailable = Math.min(memoryTotal, Math.max(0, availableMemoryBytes()));
-  const memoryUsed = memoryTotal - memoryAvailable;
-  return {
-    hostname: hostname(),
-    uptime_seconds: Math.floor(uptime()),
-    cpu: {
-      usage_percent: cpuUsagePercent,
-      core_count: cpus().length,
-      load_average_1m: loadavg()[0] ?? 0,
-    },
-    memory: {
-      total_bytes: memoryTotal,
-      used_bytes: memoryUsed,
-      available_bytes: memoryAvailable,
-      usage_percent: memoryTotal > 0 ? (memoryUsed / memoryTotal) * 100 : 0,
-    },
-    disk,
-  };
-}
 
 async function stopActiveUserSessions(userId: string): Promise<number> {
   const sessions = getDb().prepare(`
@@ -258,14 +176,6 @@ function meaningfulOutput(screen: string, waitingForInput: boolean): string | nu
   return lines.slice(-2).join(' · ').slice(0, 320) || null;
 }
 
-function requireAdmin(req: FastifyRequest, reply: FastifyReply): boolean {
-  if (req.user?.role !== 'admin') {
-    reply.code(403).send({ error: 'Admin only' });
-    return false;
-  }
-  return true;
-}
-
 interface StoredMonitorTab {
   id?: unknown;
   label?: unknown;
@@ -300,12 +210,19 @@ function writeStoredProjectTabState(userId: string, projectId: string, state: St
 }
 
 export const userRoutes: FastifyPluginAsync = async (app) => {
+  // Lightweight header telemetry; does not query users, sessions or PTY output.
+  app.get('/admin/server-resources', async (req, reply) => {
+    if (!requirePermission(req, reply, 'monitor')) return;
+    reply.header('Cache-Control', 'no-store');
+    return { server_resources: await serverResourceSampler.read() };
+  });
+
   // Administrator monitoring view: user -> open/active projects -> sessions.
   // Active sessions are never truncated; for ended sessions we keep the most
   // recent 20 per user/project so the page remains useful on long-lived installs.
   app.get('/admin/monitor', async (req, reply) => {
-    if (!requireAdmin(req, reply)) return;
-    const serverResourcesPromise = readServerResources();
+    if (!requirePermission(req, reply, 'monitor')) return;
+    const serverResourcesPromise = serverResourceSampler.read();
     const db = getDb();
     const users = db.prepare(`
       SELECT u.id, u.username, u.display_name, u.role, u.disabled, u.max_tabs,
@@ -419,7 +336,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
         FROM sessions s
         WHERE s.created_by_user_id IS NOT NULL OR s.id IN (${tabSessionPlaceholders})
       )
-      SELECT id, project_id, task, status, mode, agent_type, cli_type, pid, terminal_cols,
+      SELECT id, project_id, task, status, mode, cli_type, pid, terminal_cols,
              created_by_user_id, started_at, completed_at, created_at, updated_at
       FROM ranked
       WHERE status IN ('pending', 'launching', 'running', 'detached', 'released')
@@ -432,7 +349,6 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
       task: string;
       status: string;
       mode: string | null;
-      agent_type: string | null;
       cli_type: string | null;
       pid: number | null;
       terminal_cols: number | null;
@@ -568,7 +484,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     Params: { userId: string; projectId: string; sessionId: string };
     Body: { name?: unknown };
   }>('/admin/monitor/users/:userId/projects/:projectId/tabs/:sessionId', async (req, reply) => {
-    if (!requireAdmin(req, reply)) return;
+    if (!requirePermission(req, reply, 'monitor', 'write')) return;
     const { userId, projectId, sessionId } = req.params;
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
     if (!name || name.length > 120) return reply.code(400).send({ error: '标签名称必须为 1–120 个字符' });
@@ -595,7 +511,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
   app.delete<{
     Params: { userId: string; projectId: string; sessionId: string };
   }>('/admin/monitor/users/:userId/projects/:projectId/tabs/:sessionId', async (req, reply) => {
-    if (!requireAdmin(req, reply)) return;
+    if (!requirePermission(req, reply, 'monitor', 'delete')) return;
     const { userId, projectId, sessionId } = req.params;
     if (!findUserById(userId)) return reply.code(404).send({ error: '用户不存在' });
     const state = readStoredProjectTabState(userId, projectId);
@@ -623,14 +539,15 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
 
   // List users (admin).
   app.get('/users', async (req, reply) => {
-    if (!requireAdmin(req, reply)) return;
-    return { users: listUsers() };
+    if (!userHasPermission(req.user!.id, 'project_access') && !requirePermission(req, reply, 'users')) return;
+    return { users: listUsers().map((user) => ({ ...user, role_ids: userRoleIds(user.id) })) };
   });
 
   // Create user (admin).
   app.post('/users', async (req, reply) => {
-    if (!requireAdmin(req, reply)) return;
+    if (!requirePermission(req, reply, 'users', 'write')) return;
     const { username, password, display_name, role, max_tabs, can_create_projects } = (req.body ?? {}) as Record<string, unknown>;
+    if ((role === 'admin' || can_create_projects === true) && !requirePermission(req, reply, 'roles', 'write')) return;
     if (can_create_projects !== undefined && typeof can_create_projects !== 'boolean') {
       return reply.code(400).send({ error: 'can_create_projects must be a boolean' });
     }
@@ -665,11 +582,15 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
 
   // Update a user: role / disabled / reset password (admin).
   app.patch<{ Params: { id: string } }>('/users/:id', async (req, reply) => {
-    if (!requireAdmin(req, reply)) return;
+    if (!requirePermission(req, reply, 'users', 'write')) return;
     const { id } = req.params;
     const target = findUserById(id);
     if (!target) return reply.code(404).send({ error: 'User not found' });
     const { role, disabled, password, max_tabs, can_create_projects } = (req.body ?? {}) as Record<string, unknown>;
+    // Managing identities must not grant authority to assign roles or take over
+    // accounts with higher privileges through a password reset.
+    if ((target.role === 'admin' || userRoleIds(id).some((roleId) => roleId !== 'member') || role !== undefined || can_create_projects !== undefined)
+      && !requirePermission(req, reply, 'roles', 'write')) return;
     if (can_create_projects !== undefined && typeof can_create_projects !== 'boolean') {
       return reply.code(400).send({ error: 'can_create_projects must be a boolean' });
     }
@@ -702,6 +623,8 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
 
     if (role === 'admin' || role === 'member') {
       db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, id);
+      db.prepare("DELETE FROM rbac_user_roles WHERE user_id = ? AND role_id IN ('admin', 'member')").run(id);
+      db.prepare('INSERT INTO rbac_user_roles (user_id, role_id) VALUES (?, ?)').run(id, role);
     }
     if (disabled !== undefined) {
       db.prepare('UPDATE users SET disabled = ? WHERE id = ?').run(disabled ? 1 : 0, id);
@@ -730,11 +653,12 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
   // Delete an account while preserving completed session records for audit.
   // All active sessions are stopped first so no process survives its owner.
   app.delete<{ Params: { id: string } }>('/users/:id', async (req, reply) => {
-    if (!requireAdmin(req, reply)) return;
+    if (!requirePermission(req, reply, 'users', 'delete')) return;
     const { id } = req.params;
     if (id === req.user!.id) return reply.code(400).send({ error: '不能删除当前登录的管理员账户' });
     const target = findUserById(id);
     if (!target) return reply.code(404).send({ error: 'User not found' });
+    if ((target.role === 'admin' || userRoleIds(id).some((roleId) => roleId !== 'member')) && !requirePermission(req, reply, 'roles', 'write')) return;
     const db = getDb();
     if (target.role === 'admin') {
       const admins = (db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND disabled = 0").get() as { n: number }).n;

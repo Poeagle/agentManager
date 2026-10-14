@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildAgentCommand,
   buildSessionCommand,
   codexIdentityFlags,
   shellSingleQuote,
@@ -29,15 +28,6 @@ describe('CLI command construction', () => {
     expect(command).toContain('/tmp/binding.json');
     expect(command).toContain('--dangerously-bypass-hook-trust');
     expect(command).not.toContain('old task');
-  });
-
-  it('builds Claude and Codex agent commands without shell injection', () => {
-    const claude = buildAgentCommand('reviewer', "inspect 'quoted' input", false, 'claude', 'claude', SESSION_ID);
-    expect(claude).toContain(`--session-id ${SESSION_ID} --agent 'reviewer'`);
-    expect(claude).toContain(`'inspect '\\''quoted'\\'' input'`);
-
-    const codex = buildAgentCommand('reviewer', '', false, 'codex', 'codex');
-    expect(codex).toBe("codex --disable plugins --no-alt-screen 'You are a reviewer agent. Ask me what I want you to do.'");
   });
 
   it('quotes arbitrary shell values and omits hooks without a binding path', () => {

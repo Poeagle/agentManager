@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { Folder, FolderOpen, File, ChevronRight, ChevronDown, ChevronUp, Loader2, Save, Circle, Eye, Pencil, Home, X, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, GitCompareArrows, FolderOpen as FolderOpenIcon, Terminal, Scissors, Copy as CopyIcon, Clipboard, Trash2, Edit3, Download } from 'lucide-react';
+import { useState, useCallback, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
+import { Folder, FolderOpen, File, ChevronRight, ChevronDown, ChevronUp, Loader2, Save, Circle, Eye, EyeOff, Pencil, Home, X, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, GitCompareArrows, Scissors, Copy as CopyIcon, Clipboard, Trash2, Edit3, Download } from 'lucide-react';
 import { api, scopeProjectFiles, type FileEntry, type FilePreviewType } from '../lib/api';
 import { isExportTransferActive, startExportTransfer, useExportTransferStore } from '../lib/export-transfer';
 import { ConfirmModal } from './ConfirmModal';
@@ -9,7 +9,6 @@ import {
   parseHunks,
   parseSplitRows,
   MONO,
-  ROW_H,
   HUNK_HIGHLIGHT,
 } from '../lib/diff-model';
 import CodeMirror, { EditorView } from '@uiw/react-codemirror';
@@ -29,6 +28,8 @@ import remarkGfm from 'remark-gfm';
 import { setEditorDirty } from '../lib/unsaved-files';
 import { droppedFiles, isFileDrag, MAX_FILE_UPLOAD_BYTES, type FileUploadRequest } from '../lib/file-upload';
 import { isWithinExplorerRoot, normalizeExplorerPath } from '../lib/explorer-path';
+
+const MarkdownVisualEditor = lazy(() => import('./MarkdownVisualEditor').then((module) => ({ default: module.MarkdownVisualEditor })));
 
 export interface FileRefreshRequest {
   path: string;
@@ -143,6 +144,45 @@ const MARKDOWN_EXTENSIONS = new Set(['md', 'mdx', 'markdown']);
 
 function isMarkdownFile(ext: string) {
   return MARKDOWN_EXTENSIONS.has(ext);
+}
+
+function markdownLocalPath(source: string | undefined, documentPath: string, rootPath: string): string | null {
+  if (!source || source.startsWith('/') || source.startsWith('#') || source.startsWith('?')
+    || /^[a-z][a-z\d+.-]*:/i.test(source)) return null;
+  try {
+    const decoded = decodeURIComponent(source.split(/[?#]/, 1)[0]);
+    const directory = documentPath.slice(0, documentPath.lastIndexOf('/')) || '/';
+    const path = normalizeExplorerPath(`${directory}/${decoded}`);
+    return path && isWithinExplorerRoot(path, rootPath) ? path : null;
+  } catch {
+    return null;
+  }
+}
+
+function MarkdownImage({ src, alt, documentPath, rootPath, filesApi }: {
+  src?: string;
+  alt?: string;
+  documentPath: string;
+  rootPath: string;
+  filesApi: typeof api.files;
+}) {
+  const localPath = markdownLocalPath(src, documentPath, rootPath);
+  const [preview, setPreview] = useState<{ path: string; url: string } | null>(null);
+  useEffect(() => {
+    if (!localPath) return;
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    void filesApi.preview(localPath, controller.signal).then((blob) => {
+      if (controller.signal.aborted) return;
+      objectUrl = URL.createObjectURL(blob);
+      setPreview({ path: localPath, url: objectUrl });
+    }).catch(() => {});
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [localPath, filesApi]);
+  return <img src={localPath ? (preview?.path === localPath ? preview.url : undefined) : src} alt={alt ?? ''} />;
 }
 
 /**
@@ -513,7 +553,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
   const [pathInput, setPathInput] = useState(initialState?.currentPath ?? rootPath);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [rootLoaded, setRootLoaded] = useState(false);
-  const [showHidden, setShowHidden] = useState(initialState?.showHidden ?? false);
+  const [showHidden, setShowHidden] = useState(initialState?.showHidden ?? true);
   const [uploadTarget, setUploadTarget] = useState<string | null>(null);
   const uploadBusy = useRef(false);
   const lastUploadRequest = useRef<FileUploadRequest | null>(null);
@@ -597,6 +637,8 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
   const activeTab = tabs.find(t => t.path === activeTabPath) ?? null;
   const isDirty = activeTab ? activeTab.editedContent !== activeTab.content : false;
   const isMarkdown = activeTab ? isMarkdownFile(activeTab.extension) : false;
+  const resolveMarkdownLocalPath = useCallback((source: string) =>
+    markdownLocalPath(source, activeTabPath ?? rootPath, rootPath), [activeTabPath, rootPath]);
 
   // Helper to update a specific tab
   const updateTab = useCallback((path: string, updates: Partial<FileTab>) => {
@@ -1283,24 +1325,10 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
     const targetPath = node?.fullPath ?? currentPath;
     const containingDir = node ? (isDir ? node.fullPath : getParentDir(node.fullPath)) : currentPath;
 
-    const items: ContextMenuItem[] = [
-      {
-        kind: 'item',
-        label: 'Open in OS file manager',
-        icon: <FolderOpenIcon className="w-3.5 h-3.5" />,
-        onClick: () => handleOpenInFolder(containingDir),
-      },
-      {
-        kind: 'item',
-        label: 'Open in terminal',
-        icon: <Terminal className="w-3.5 h-3.5" />,
-        onClick: () => handleOpenInTerminal(containingDir),
-      },
-    ];
+    const items: ContextMenuItem[] = [];
 
-    // In read-only mode, only expose non-mutating actions (open/copy).
+    // Read-only users can still export or copy a selected entry.
     if (node) {
-      items.push({ kind: 'separator' });
       items.push({
         kind: 'item',
         label: exportInProgress ? 'Export in progress…' : 'Export to local folder…',
@@ -1354,27 +1382,11 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
       }
     }
 
-    setContextMenu({ x: e.clientX, y: e.clientY, items });
+    setContextMenu(items.length ? { x: e.clientX, y: e.clientY, items } : null);
   }
 
   function handleExport(path: string, isDirectory: boolean, name: string) {
     void startExportTransfer({ path, isDirectory, name, ...(projectId ? { projectId } : {}) });
-  }
-
-  async function handleOpenInFolder(path: string) {
-    try {
-      await api.openFolder(path);
-    } catch (error) {
-      setActionMessage({ kind: 'error', text: getErrorMessage(error, 'Failed to open folder') });
-    }
-  }
-
-  async function handleOpenInTerminal(path: string) {
-    try {
-      await api.openTerminal(path);
-    } catch (error) {
-      setActionMessage({ kind: 'error', text: getErrorMessage(error, 'Failed to open terminal') });
-    }
   }
 
   async function submitRename(path: string, newName: string) {
@@ -1521,11 +1533,14 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
               setRootLoaded(false);
               setShowHidden((value) => !value);
             }}
-            className="flex items-center justify-center rounded shrink-0 transition-colors hover:bg-[var(--bg-tertiary)]"
-            style={{ width: 24, height: 24, color: showHidden ? 'var(--accent)' : 'var(--text-tertiary)' }}
-            title={showHidden ? 'Hide dotfiles' : 'Show dotfiles'}
+            className="flex items-center gap-1 px-1.5 h-6 rounded shrink-0 text-xs transition-colors hover:bg-[var(--bg-tertiary)]"
+            style={{ color: showHidden ? 'var(--accent)' : 'var(--text-tertiary)' }}
+            title={showHidden ? '隐藏点文件' : '显示点文件'}
+            aria-label={showHidden ? '隐藏点文件' : '显示点文件'}
+            aria-pressed={showHidden}
           >
-            <Eye className="w-3.5 h-3.5" />
+            {showHidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+            <span>点文件</span>
           </button>
           <input
             value={pathInput}
@@ -1771,12 +1786,12 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
                       background: 'var(--bg-tertiary)',
                       color: 'var(--text-primary)',
                     }}
-                    title={activeTab.viewMode === 'preview' ? 'Switch to editor' : 'Switch to preview'}
+                    title={activeTab.viewMode === 'preview' ? '编辑 Markdown 源码' : '可视编辑 Markdown'}
                   >
                     {activeTab.viewMode === 'preview' ? (
-                      <><Pencil className="w-3 h-3" /> Edit</>
+                      <><Pencil className="w-3 h-3" /> 源码</>
                     ) : (
-                      <><Eye className="w-3 h-3" /> Preview</>
+                      <><Eye className="w-3 h-3" /> 可视编辑</>
                     )}
                   </button>
                 )}
@@ -1795,19 +1810,36 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
               />
             ) : isMarkdown && activeTab.viewMode === 'preview' ? (
               <div
-                className="flex-1 overflow-auto p-6 prose-invert"
+                className="flex-1 overflow-auto p-4 prose-invert"
                 style={{ color: 'var(--text-primary)' }}
               >
                 {(() => {
                   const { meta, body } = splitFrontmatter(activeTab.editedContent);
+                  const frontmatter = activeTab.editedContent.slice(0, activeTab.editedContent.length - body.length);
                   return (
                     <>
                       {meta.length > 0 && <FrontmatterPanel meta={meta} />}
-                      <div className="markdown-preview explorer-markdown">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {readOnly || activeTab.extension === 'mdx' ? <div className="markdown-preview explorer-markdown">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                          img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} documentPath={activeTab.path} rootPath={rootPath} filesApi={filesApi} />,
+                          a: ({ href, children }) => {
+                            const localPath = markdownLocalPath(href, activeTab.path, rootPath);
+                            return <a href={href} onClick={localPath ? (event) => {
+                              event.preventDefault();
+                              void openFile(localPath, false);
+                            } : undefined}>{children}</a>;
+                          },
+                        }}>
                           {body}
                         </ReactMarkdown>
-                      </div>
+                      </div> : <Suspense fallback={<div role="status">正在加载可视编辑器…</div>}><MarkdownVisualEditor
+                        key={activeTab.path}
+                        value={body}
+                        onChange={(markdown) => updateTab(activeTab.path, { editedContent: frontmatter + markdown })}
+                        filesApi={filesApi}
+                        resolveLocalPath={resolveMarkdownLocalPath}
+                        onOpenFile={(path) => void openFile(path, false)}
+                      /></Suspense>}
                     </>
                   );
                 })()}
@@ -1907,10 +1939,7 @@ function FileCompareView({
   onHunkNav: (delta: number) => void;
 }) {
   const rows = useMemo(() => parseSplitRows(compareState.diff), [compareState.diff]);
-  const leftRef = useRef<HTMLDivElement>(null);
-  const rightRef = useRef<HTMLDivElement>(null);
-  const gutterRef = useRef<HTMLDivElement>(null);
-  const syncing = useRef(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const hunkRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   const leftName = compareState.leftPath.split('/').pop() || 'left';
@@ -1926,32 +1955,12 @@ function FileCompareView({
     return null;
   });
 
-  function syncScroll(source: 'left' | 'right') {
-    if (syncing.current) return;
-    syncing.current = true;
-    const from = source === 'left' ? leftRef.current : rightRef.current;
-    const to = source === 'left' ? rightRef.current : leftRef.current;
-    if (from && to) {
-      to.scrollTop = from.scrollTop;
-      to.scrollLeft = from.scrollLeft;
-    }
-    if (from && gutterRef.current) {
-      gutterRef.current.scrollTop = from.scrollTop;
-    }
-    requestAnimationFrame(() => { syncing.current = false; });
-  }
-
-  // Scroll to current hunk when it changes
+  // Both columns and the apply arrows share each row's height and scroll position.
   useEffect(() => {
-    const el = hunkRefs.current[currentHunk];
-    if (el && leftRef.current) {
-      const containerRect = leftRef.current.getBoundingClientRect();
-      const elRect = el.getBoundingClientRect();
-      const scrollTarget = leftRef.current.scrollTop + (elRect.top - containerRect.top) - containerRect.height / 3;
-      leftRef.current.scrollTop = Math.max(0, scrollTarget);
-      if (rightRef.current) rightRef.current.scrollTop = leftRef.current.scrollTop;
-      if (gutterRef.current) gutterRef.current.scrollTop = leftRef.current.scrollTop;
-    }
+    const element = hunkRefs.current[currentHunk], scroller = scrollRef.current;
+    if (!element || !scroller) return;
+    const container = scroller.getBoundingClientRect();
+    scroller.scrollTop = Math.max(0, scroller.scrollTop + element.getBoundingClientRect().top - container.top - container.height / 3);
   }, [currentHunk]);
 
   const hasChanges = compareState.appliedHunks.size > 0;
@@ -2052,173 +2061,37 @@ function FileCompareView({
         </div>
       </div>
 
-      {/* Split diff: left panel | center gutter | right panel | overview ruler */}
-      <div className="flex-1 min-h-0 flex">
-        {/* Left panel */}
-        <div
-          ref={leftRef}
-          onScroll={() => syncScroll('left')}
-          className="flex-1 min-w-0 overflow-auto"
-          style={{ fontFamily: MONO }}
-        >
-          <div style={{ minWidth: 'fit-content' }}>
-            {(() => { hunkRefIdx = -1; return null; })()}
-            {rows.map((r, i) => {
-              const applied = r.hunkIndex !== null ? compareState.appliedHunks.get(r.hunkIndex) : undefined;
-              const isCurrent = r.hunkIndex === currentHunk;
-              const isHunkHeader = r.leftType === 'header' && r.leftText.startsWith('@@');
-
-              // Track hunk refs for scroll-to-hunk navigation
-              let refCb: ((el: HTMLDivElement | null) => void) | undefined;
-              if (isHunkHeader) {
-                hunkRefIdx++;
-                const idx = hunkRefIdx;
-                refCb = (el) => { hunkRefs.current[idx] = el; };
-              }
-
-              // "Keep left" (applied === 'left'): show both sides as normal (no diff colors)
-              if (applied === 'left' && r.leftType !== 'header' && r.leftType !== 'separator') {
-                return (
-                  <SplitHalf
-                    key={i} ref={refCb}
-                    num={r.leftNum}
-                    text={r.leftText}
-                    type={r.leftType === 'removed' ? 'normal' : r.leftType}
-                    isCurrentHunk={isCurrent}
-                    isEditable={false}
-                  />
-                );
-              }
-
-              return (
-                <SplitHalf
-                  key={i} ref={refCb}
-                  num={r.leftNum}
-                  text={r.leftText}
-                  type={r.leftType}
-                  isCurrentHunk={isCurrent}
-                  isEditable={false}
-                />
-              );
-            })}
-          </div>
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <div ref={scrollRef} role="region" aria-label="文件内容对比" className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ fontFamily: MONO }}>
+          <div className="w-full min-w-0">{rows.map((row, index) => {
+            const applied = row.hunkIndex !== null ? compareState.appliedHunks.get(row.hunkIndex) : undefined;
+            const current = row.hunkIndex === currentHunk;
+            const header = row.leftType === 'header' && row.leftText.startsWith('@@');
+            const keepLeft = applied === 'left' && row.leftType !== 'header' && row.leftType !== 'separator';
+            let refCallback: ((element: HTMLDivElement | null) => void) | undefined;
+            if (header) {
+              const hunkIndex = ++hunkRefIdx;
+              refCallback = (element) => { hunkRefs.current[hunkIndex] = element; };
+            }
+            const hunkStart = row.hunkIndex !== null && hunkFirstRows.get(row.hunkIndex) === index;
+            return <div key={index} ref={refCallback} data-diff-row={index} className="diff-paired-row diff-with-actions">
+              <SplitHalf num={row.leftNum} text={row.leftText} type={keepLeft && row.leftType === 'removed' ? 'normal' : row.leftType}
+                isCurrentHunk={current} isEditable={false} />
+              <div className="diff-apply-cell flex items-start justify-center gap-0.5 pt-0.5" style={{ background: current ? HUNK_HIGHLIGHT : 'var(--bg-secondary)' }}>
+                {hunkStart && row.hunkIndex !== null && <>
+                  <button onClick={() => onApplyHunk(row.hunkIndex!, 'left')} className="flex items-center justify-center rounded" title="Keep left (no change)"
+                    style={{ width: 18, height: 16, background: applied === 'left' ? 'var(--success)' : 'var(--bg-tertiary)', color: applied === 'left' ? '#fff' : 'var(--text-secondary)', border: applied === 'left' ? 'none' : '1px solid var(--border)' }}><ArrowLeft className="h-3 w-3" /></button>
+                  <button onClick={() => onApplyHunk(row.hunkIndex!, 'right')} className="flex items-center justify-center rounded" title="Accept right side"
+                    style={{ width: 18, height: 16, background: applied === 'right' ? 'var(--success)' : 'var(--bg-tertiary)', color: applied === 'right' ? '#fff' : 'var(--text-secondary)', border: applied === 'right' ? 'none' : '1px solid var(--border)' }}><ArrowRight className="h-3 w-3" /></button>
+                </>}
+              </div>
+              <SplitHalf num={keepLeft ? row.leftNum ?? row.rightNum : row.rightNum}
+                text={keepLeft ? row.leftType === 'removed' ? row.leftText : row.rightType === 'added' ? row.leftText : row.rightText : row.rightText}
+                type={keepLeft ? 'normal' : row.rightType} isCurrentHunk={current} isEditable={false} />
+            </div>;
+          })}</div>
         </div>
-
-        {/* Center gutter — scrolls in sync, shows apply arrows on hunk rows */}
-        <div
-          ref={gutterRef}
-          className="shrink-0 overflow-hidden"
-          style={{
-            width: 44,
-            background: 'var(--bg-secondary)',
-            borderLeft: '1px solid var(--border)',
-            borderRight: '1px solid var(--border)',
-          }}
-        >
-          <div style={{ minHeight: 'fit-content' }}>
-            {rows.map((r, i) => {
-              const isHunkStart = r.hunkIndex !== null && hunkFirstRows.get(r.hunkIndex) === i;
-              const applied = r.hunkIndex !== null ? compareState.appliedHunks.get(r.hunkIndex) : undefined;
-              const isCurrent = r.hunkIndex === currentHunk;
-
-              // Show apply buttons on the first row of each hunk
-              if (isHunkStart && r.hunkIndex !== null) {
-                const hIdx = r.hunkIndex;
-                return (
-                  <div
-                    key={i}
-                    className="flex items-center justify-center gap-0.5"
-                    style={{
-                      height: ROW_H,
-                      background: isCurrent ? HUNK_HIGHLIGHT : undefined,
-                    }}
-                  >
-                    <button
-                      onClick={() => onApplyHunk(hIdx, 'left')}
-                      className="flex items-center justify-center rounded transition-all"
-                      style={{
-                        width: 18, height: 16,
-                        background: applied === 'left' ? 'var(--success)' : 'var(--bg-tertiary)',
-                        color: applied === 'left' ? '#fff' : 'var(--text-secondary)',
-                        border: applied === 'left' ? 'none' : '1px solid var(--border)',
-                      }}
-                      title="Keep left (no change)"
-                    >
-                      <ArrowLeft className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={() => onApplyHunk(hIdx, 'right')}
-                      className="flex items-center justify-center rounded transition-all"
-                      style={{
-                        width: 18, height: 16,
-                        background: applied === 'right' ? 'var(--success)' : 'var(--bg-tertiary)',
-                        color: applied === 'right' ? '#fff' : 'var(--text-secondary)',
-                        border: applied === 'right' ? 'none' : '1px solid var(--border)',
-                      }}
-                      title="Accept right side"
-                    >
-                      <ArrowRight className="w-3 h-3" />
-                    </button>
-                  </div>
-                );
-              }
-
-              // Spacer row — match separator height if needed
-              const isSep = r.leftType === 'separator' || r.rightType === 'separator';
-              return <div key={i} style={{ height: isSep ? ROW_H + 8 : ROW_H }} />;
-            })}
-          </div>
-        </div>
-
-        {/* Right panel */}
-        <div
-          ref={rightRef}
-          onScroll={() => syncScroll('right')}
-          className="flex-1 min-w-0 overflow-auto"
-          style={{ fontFamily: MONO }}
-        >
-          <div style={{ minWidth: 'fit-content' }}>
-            {rows.map((r, i) => {
-              const applied = r.hunkIndex !== null ? compareState.appliedHunks.get(r.hunkIndex) : undefined;
-              const isCurrent = r.hunkIndex === currentHunk;
-
-              // "Keep left" (applied === 'left'): right side also shows as normal (the left content)
-              if (applied === 'left' && r.rightType !== 'header' && r.rightType !== 'separator') {
-                // Show left-side text on the right, as normal
-                return (
-                  <SplitHalf
-                    key={i}
-                    num={r.leftNum ?? r.rightNum}
-                    text={r.leftType === 'removed' ? r.leftText : r.rightType === 'added' ? r.leftText : r.rightText}
-                    type="normal"
-                    isCurrentHunk={isCurrent}
-                    isEditable={false}
-                  />
-                );
-              }
-
-              // "Accept right" (applied === 'right'): keep normal diff colors (red/green) — no change needed
-              // Default (no apply): also show normal diff colors
-
-              return (
-                <SplitHalf
-                  key={i}
-                  num={r.rightNum}
-                  text={r.rightText}
-                  type={r.rightType}
-                  isCurrentHunk={isCurrent}
-                  isEditable={false}
-                />
-              );
-            })}
-          </div>
-        </div>
-
-        <OverviewRuler markers={markers} scrollRef={rightRef} onJump={(st) => {
-          if (leftRef.current) leftRef.current.scrollTop = st;
-          if (rightRef.current) rightRef.current.scrollTop = st;
-          if (gutterRef.current) gutterRef.current.scrollTop = st;
-        }} />
+        <OverviewRuler markers={markers} scrollRef={scrollRef} />
       </div>
     </div>
   );

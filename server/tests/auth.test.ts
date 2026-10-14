@@ -118,26 +118,21 @@ describe('users, cookies and ownership', () => {
       projectId: 'p1',
       userId: member.id,
       canSession: true,
-      canAgent: true,
       canTerminal: false,
-      canClaude: false,
-      canCodex: false,
+      sessionClients: ['codex'],
       grantedBy: owner.id,
     });
     expect(userProjectIds(member.id)).toEqual(new Set(['p1']));
     expect(userCanUseToolForProject(member.id, 'p1', 'session', 'claude')).toBe(false);
     expect(userCanUseToolForProject(member.id, 'p1', 'terminal', 'claude')).toBe(false);
-    expect(userCanUseToolForProject(member.id, 'p1', 'agent', 'claude')).toBe(false);
-    expect(userCanUseToolForProject(member.id, 'p1', 'session', 'codex')).toBe(false);
+    expect(userCanUseToolForProject(member.id, 'p1', 'session', 'codex')).toBe(true);
 
     setProjectToolAccess({
       projectId: 'p1',
       userId: member.id,
       canSession: false,
-      canAgent: false,
       canTerminal: true,
-      canClaude: false,
-      canCodex: false,
+      sessionClients: [],
       grantedBy: owner.id,
     });
     expect(userProjectIds(member.id).has('p1')).toBe(true);
@@ -149,10 +144,8 @@ describe('users, cookies and ownership', () => {
       projectId: 'p1',
       userId: member.id,
       canSession: false,
-      canAgent: false,
       canTerminal: false,
-      canClaude: false,
-      canCodex: false,
+      sessionClients: [],
       grantedBy: owner.id,
     });
     expect(userProjectIds(member.id).has('p1')).toBe(false);
@@ -181,8 +174,8 @@ describe('users, cookies and ownership', () => {
     db.prepare('INSERT INTO projects (id, name, path, owner_id) VALUES (?, ?, ?, ?)').run('p1', 'P1', '/tmp/p1', admin.id);
     for (const user of [alice, bob]) {
       setProjectToolAccess({
-        projectId: 'p1', userId: user.id, canSession: true, canAgent: true,
-        canTerminal: true, canClaude: true, canCodex: true, grantedBy: admin.id,
+        projectId: 'p1', userId: user.id, canSession: true,
+        canTerminal: true, sessionClients: ['claude', 'codex'], grantedBy: admin.id,
       });
     }
     db.prepare(`

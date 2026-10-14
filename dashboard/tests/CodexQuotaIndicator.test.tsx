@@ -35,7 +35,8 @@ describe('CodexQuotaIndicator', () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.getByLabelText('Codex 周额度剩余 65%')).toBeInTheDocument();
-    expect(screen.getByText(/检测 \d{2}:\d{2}:\d{2}/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Codex 周额度剩余 65%')).toHaveAttribute('title', expect.stringContaining('检测时间'));
+    expect(screen.queryByText(/检测 \d{2}:\d{2}:\d{2}/)).not.toBeInTheDocument();
     expect(api.codexQuota.read).toHaveBeenCalledTimes(1);
 
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
@@ -57,18 +58,17 @@ describe('CodexQuotaIndicator', () => {
     client.clear(); focusManager.setFocused(undefined);
   });
 
-  it('displays the weekly reset in local time without increasing the card height', async () => {
+  it('keeps the weekly reset and checked time in the hover tooltip while preserving card height', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<QueryClientProvider client={client}><CodexQuotaIndicator /></QueryClientProvider>);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
 
     const date = new Date(1_787_196_804 * 1000);
-    const [month, day, hours, minutes] = [date.getMonth() + 1, date.getDate(), date.getHours(), date.getMinutes()]
-      .map((part) => String(part).padStart(2, '0'));
-    const reset = screen.getByText(`周重置 ${month}/${day} ${hours}:${minutes}`);
-    expect(reset).toHaveAttribute('datetime', date.toISOString());
-    expect(reset).toHaveAttribute('title', `周额度重置时间（本地时间）：${date.toLocaleString(undefined, { timeZoneName: 'short' })}`);
-    expect(screen.getByLabelText('Codex 周额度剩余 65%')).toHaveClass('h-7');
+    const card = screen.getByLabelText('Codex 周额度剩余 65%');
+    expect(card).toHaveAttribute('title', expect.stringContaining(`周额度重置时间（本地时间）：${date.toLocaleString(undefined, { timeZoneName: 'short' })}`));
+    expect(card).toHaveAttribute('title', expect.stringContaining(new Date('2026-08-13T08:00:00.000Z').toLocaleString()));
+    expect(screen.queryByText(/^周重置 /)).not.toBeInTheDocument();
+    expect(card).toHaveClass('h-7');
     client.clear();
   });
 
@@ -80,7 +80,7 @@ describe('CodexQuotaIndicator', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
 
     expect(screen.getByText('65%')).toBeVisible();
-    expect(screen.getByText('周重置 未知')).not.toHaveAttribute('datetime');
+    expect(screen.getByLabelText('Codex 周额度剩余 65%')).toHaveAttribute('title', expect.stringContaining('周额度重置时间未知'));
     client.clear();
   });
 
@@ -97,7 +97,8 @@ describe('CodexQuotaIndicator', () => {
     });
 
     expect(api.codexQuota.read).toHaveBeenLastCalledWith(true);
-    expect(screen.getByText(/^周重置 /)).toHaveAttribute('datetime', new Date(nextReset * 1000).toISOString());
+    expect(screen.getByLabelText('Codex 周额度剩余 65%')).toHaveAttribute('title',
+      expect.stringContaining(new Date(nextReset * 1000).toLocaleString(undefined, { timeZoneName: 'short' })));
     client.clear();
   });
 

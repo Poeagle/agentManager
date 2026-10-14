@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type PromptEnhancerMode } from '../lib/api';
-import { X, Settings, Check, Loader2, Zap, Bot, Type, Globe, RotateCcw, Palette, Sparkles, PlugZap, Search } from 'lucide-react';
+import { X, Settings, Check, Loader2, Zap, Type, Globe, Palette, Sparkles, PlugZap, Search, LockKeyhole } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { THEMES, applyTheme, DEFAULT_THEME } from '../lib/themes';
+import './SettingsPanel.css';
 
 interface SettingsModalProps {
   onClose: () => void;
+  embedded?: boolean;
   readOnly?: boolean;
 }
 
@@ -24,82 +26,64 @@ function CommandInput({
   placeholder: string;
 }) {
   return (
-    <div className="space-y-1.5">
-      <label className="flex items-center gap-1.5 text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
-        {icon}
-        {label}
-      </label>
+    <label className="settings-panel-field">
+      <span className="flex items-center gap-1.5">{icon}{label}</span>
       <input
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="h-9 w-full rounded-md px-3 text-sm transition-colors"
-        style={{
-          background: 'var(--bg-primary)',
-          color: 'var(--text-primary)',
-          border: '1px solid var(--border)',
-          outline: 'none',
-        }}
+        className="settings-panel-control"
         onFocus={(e) => (e.target.style.borderColor = 'var(--accent)')}
         onBlur={(e) => (e.target.style.borderColor = 'var(--border)')}
       />
-    </div>
+    </label>
   );
 }
 
 function SettingsSection({
   title,
   description,
-  icon,
   children,
   className = '',
 }: {
   title: string;
   description: string;
-  icon: React.ReactNode;
   children: React.ReactNode;
   className?: string;
 }) {
   return (
-    <section className={`rounded-lg p-5 ${className}`} style={{ background: 'color-mix(in srgb, var(--bg-tertiary) 52%, transparent)', border: '1px solid var(--border)' }}>
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: 'var(--bg-primary)', color: 'var(--accent)', border: '1px solid var(--border)' }}>
-          {icon}
-        </span>
+    <section className={`settings-panel-section ${className}`}>
+      <div className="settings-panel-section-heading">
         <div>
           <h4 className="text-sm font-semibold tracking-[-0.01em]" style={{ color: 'var(--text-primary)' }}>{title}</h4>
           <p className="mt-1 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>{description}</p>
         </div>
       </div>
-      <div className="mt-5 border-t pt-5" style={{ borderColor: 'var(--border)' }}>
+      <div>
         {children}
       </div>
     </section>
   );
 }
 
-export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps) {
+export function SettingsModal({ onClose, readOnly = false, embedded = false }: SettingsModalProps) {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ['settings'],
     queryFn: () => api.settings.get(),
   });
-  const { data: networkData } = useQuery({
-    queryKey: ['network-info'],
-    queryFn: () => fetch('/api/network-info').then((r) => r.json()) as Promise<{ addresses: string[]; port: number }>,
-  });
 
   const [sessionClaudeCmd, setSessionClaudeCmd] = useState('');
   const [sessionCodexCmd, setSessionCodexCmd] = useState('');
-  const [agentClaudeCmd, setAgentClaudeCmd] = useState('');
-  const [agentCodexCmd, setAgentCodexCmd] = useState('');
   const [fontSize, setFontSize] = useState('12');
   const [appFontSize, setAppFontSize] = useState('16');
   const [theme, setTheme] = useState(DEFAULT_THEME);
-  const [serverPort, setServerPort] = useState('42010');
+  const [memoryCleanupEnabled, setMemoryCleanupEnabled] = useState(false);
+  const [memoryCleanupThreshold, setMemoryCleanupThreshold] = useState('85');
+  const [memoryCleanupIdleMinutes, setMemoryCleanupIdleMinutes] = useState('10');
   const [saved, setSaved] = useState(false);
-  const [activePage, setActivePage] = useState<'session' | 'agent' | 'appearance' | 'enhancer' | 'server'>('session');
+  const [activePage, setActivePage] = useState<'session' | 'appearance' | 'enhancer' | 'server'>('session');
 
   // Theme is previewed live on click; if the modal closes without a save we
   // revert to the persisted theme so an un-saved preview doesn't linger.
@@ -113,13 +97,13 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setSessionClaudeCmd(s.session_claude_command || '');
       setSessionCodexCmd(s.session_codex_command || '');
-      setAgentClaudeCmd(s.agent_claude_command || '');
-      setAgentCodexCmd(s.agent_codex_command || '');
       setFontSize(s.terminal_font_size || '12');
       setAppFontSize(s.app_font_size || '16');
       setTheme(s.app_theme || DEFAULT_THEME);
       persistedThemeRef.current = s.app_theme || DEFAULT_THEME;
-      setServerPort(s.server_port || '42010');
+      setMemoryCleanupEnabled(s.memory_cleanup_enabled === 'true');
+      setMemoryCleanupThreshold(s.memory_cleanup_threshold_percent || '85');
+      setMemoryCleanupIdleMinutes(s.memory_cleanup_idle_minutes || '10');
     }
   }, [data]);
 
@@ -149,25 +133,33 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
     },
   });
 
+  const memoryThreshold = Number(memoryCleanupThreshold);
+  const memoryIdleMinutes = Number(memoryCleanupIdleMinutes);
+  const memoryCleanupError = !Number.isFinite(memoryThreshold) || memoryThreshold < 1 || memoryThreshold > 100
+    ? '内存使用率阈值须在 1% 到 100% 之间。'
+    : !Number.isInteger(memoryIdleMinutes) || memoryIdleMinutes < 1 || memoryIdleMinutes > 10080
+      ? '最短空闲时间须为 1 到 10080 分钟的整数。'
+      : null;
+
   function handleSave() {
+    if (memoryCleanupError) return;
     // The previewed theme is now the persisted one — don't revert it on close.
     themeCommittedRef.current = true;
     persistedThemeRef.current = theme;
     mutation.mutate({
       session_claude_command: sessionClaudeCmd,
       session_codex_command: sessionCodexCmd,
-      agent_claude_command: agentClaudeCmd,
-      agent_codex_command: agentCodexCmd,
       terminal_font_size: fontSize,
       app_font_size: appFontSize,
       app_theme: theme,
-      server_port: serverPort,
+      memory_cleanup_enabled: String(memoryCleanupEnabled),
+      memory_cleanup_threshold_percent: memoryCleanupThreshold,
+      memory_cleanup_idle_minutes: memoryCleanupIdleMinutes,
     });
   }
 
   const navigation = [
     { id: 'session' as const, label: '普通会话', icon: Zap },
-    { id: 'agent' as const, label: 'Agent 会话', icon: Bot },
     { id: 'appearance' as const, label: '外观', icon: Type },
     { id: 'enhancer' as const, label: '提示词增强', icon: Sparkles },
     { id: 'server' as const, label: '服务器', icon: Globe },
@@ -175,23 +167,22 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6"
-      style={{ background: 'rgba(0,0,0,0.58)' }}
-      onClick={onClose}
+      className={embedded ? 'h-full min-h-0 flex' : 'fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6'}
+      style={{ background: embedded ? 'transparent' : 'rgba(0,0,0,0.58)' }}
+      onClick={embedded ? undefined : onClose}
     >
       <div
-        className="flex min-h-[560px] w-full flex-col overflow-hidden rounded-xl shadow-2xl"
+        className={`settings-panel-shell ${embedded ? 'flex min-h-0 w-full flex-col overflow-hidden' : 'flex min-h-[560px] w-full flex-col overflow-hidden rounded-xl shadow-2xl'}`}
         style={{
           width: '100%',
-          maxWidth: '980px',
-          maxHeight: 'calc(100vh - 48px)',
+          maxHeight: embedded ? undefined : 'calc(100vh - 48px)',
           background: 'var(--bg-secondary)',
-          border: '1px solid var(--border)',
+          border: embedded ? undefined : '1px solid var(--border)',
         }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div
+        {!embedded && <div
           className="flex shrink-0 items-center justify-between px-5 py-4 sm:px-6"
           style={{ borderBottom: '1px solid var(--border)' }}
         >
@@ -212,10 +203,10 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
           >
             <X className="w-5 h-5" />
           </button>
-        </div>
+        </div>}
 
-        <div className="flex min-h-0 flex-1">
-          <aside className="w-44 shrink-0 border-r p-3" style={{ background: 'color-mix(in srgb, var(--bg-tertiary) 54%, transparent)', borderColor: 'var(--border)' }} aria-label="设置分类">
+        <div className="settings-panel-workbench">
+          <aside className="settings-panel-navigation" aria-label="设置分类">
             <nav className="space-y-1">
               {navigation.map((item) => {
                 const Icon = item.icon;
@@ -225,6 +216,7 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
                     key={item.id}
                     type="button"
                     onClick={() => setActivePage(item.id)}
+                    aria-current={active ? 'page' : undefined}
                     className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs font-medium transition-colors"
                     style={{
                       color: active ? 'var(--accent)' : 'var(--text-secondary)',
@@ -239,10 +231,11 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
               })}
             </nav>
           </aside>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-7 sm:py-7">
+          <div className="settings-panel-content">
           {readOnly && (
-            <div className="mb-5 rounded-md px-3 py-2 text-xs" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}>
-              当前为只读模式；只有管理员可以修改设置。
+            <div className="settings-panel-readonly">
+              <LockKeyhole className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              当前为只读模式，需要平台设置的修改权限。
             </div>
           )}
           <fieldset disabled={readOnly} className="block">
@@ -251,12 +244,12 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
               <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'var(--text-secondary)' }} />
             </div>
           ) : (
-            <div className="mx-auto max-w-[680px]">
+            <div className="w-full">
               {/* ── LEFT COLUMN ── */}
-              <div className={activePage === 'session' || activePage === 'agent' || activePage === 'server' ? 'space-y-5' : 'hidden'}>
+              <div className={activePage === 'session' || activePage === 'server' ? 'space-y-3' : 'hidden'}>
                 {/* Session Commands */}
-                <SettingsSection title="普通会话" description="启动普通会话时使用的 CLI 命令。" icon={<Zap className="h-4 w-4" />} className={activePage === 'session' ? '' : 'hidden'}>
-                  <div className="space-y-4">
+                <SettingsSection title="普通会话" description="启动普通会话时使用的 CLI 命令。" className={activePage === 'session' ? '' : 'hidden'}>
+                  <div className="settings-panel-commands">
                     <CommandInput
                       label="Claude"
                       icon={<ClaudeIcon className="w-3.5 h-3.5" style={{ color: '#60a5fa' }} />}
@@ -274,84 +267,44 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
                   </div>
                 </SettingsSection>
 
-                {/* Agent Commands */}
-                <SettingsSection title="Agent 会话" description="启动 Agent 会话时使用的 CLI 命令。" icon={<Bot className="h-4 w-4" />} className={activePage === 'agent' ? '' : 'hidden'}>
-                  <div className="space-y-4">
-                    <CommandInput
-                      label="Claude"
-                      icon={<ClaudeIcon className="w-3.5 h-3.5" style={{ color: '#ef4444' }} />}
-                      value={agentClaudeCmd}
-                      onChange={setAgentClaudeCmd}
-                      placeholder="claude --dangerously-skip-permissions"
-                    />
-                    <CommandInput
-                      label="Codex"
-                      icon={<CodexIcon className="w-3.5 h-3.5" style={{ color: '#ef4444' }} />}
-                      value={agentCodexCmd}
-                      onChange={setAgentCodexCmd}
-                      placeholder="codex --dangerously-bypass-approvals-and-sandbox"
-                    />
-                  </div>
-                </SettingsSection>
-
                 {/* Server */}
-                <SettingsSection title="服务器" description="服务端口的修改会在重启服务器后生效。" icon={<Globe className="h-4 w-4" />} className={activePage === 'server' ? '' : 'hidden'}>
+                <SettingsSection title="服务器" description="设置空闲会话的自动资源回收。" className={activePage === 'server' ? '' : 'hidden'}>
                   <div className="space-y-4">
-                    <label className="block space-y-1.5 text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
-                      <span>服务端口</span>
-                    <input
-                      type="number"
-                      min="1024"
-                      max="65535"
-                      value={serverPort}
-                      onChange={(e) => setServerPort(e.target.value)}
-                      className="h-9 w-full rounded-md px-3 text-sm"
-                      style={{
-                        background: 'var(--bg-primary)',
-                        color: 'var(--text-primary)',
-                        border: '1px solid var(--border)',
-                        outline: 'none',
-                      }}
-                      onFocus={(e) => (e.target.style.borderColor = 'var(--accent)')}
-                      onBlur={(e) => (e.target.style.borderColor = 'var(--border)')}
-                    />
-                    </label>
-                    {networkData?.addresses && networkData.addresses.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {networkData.addresses.map((ip) => (
-                          <span
-                            key={ip}
-                            className="rounded-md px-2.5 py-1.5 text-[11px] font-mono"
-                            style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
-                          >
-                            http://{ip}:{serverPort}
-                          </span>
-                        ))}
+                    <div className="space-y-3" style={{ borderColor: 'var(--border)' }}>
+                      <label className="flex items-center gap-2 text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                        <input type="checkbox" checked={memoryCleanupEnabled} onChange={(event) => setMemoryCleanupEnabled(event.target.checked)} />
+                        内存不足时自动关闭空闲会话
+                      </label>
+                      <p className="text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>
+                        每 5 秒检查服务器内存。达到阈值后，按空闲时间从长到短逐个关闭会话，直到内存使用率低于阈值。保存后生效，无需重启。
+                      </p>
+                      <div className="settings-panel-form-grid">
+                        <label className="settings-panel-field">
+                          <span>内存使用率阈值（%）</span>
+                          <input type="number" min="1" max="100" step="any" value={memoryCleanupThreshold}
+                            onChange={(event) => setMemoryCleanupThreshold(event.target.value)}
+                            className="settings-panel-control" />
+                        </label>
+                        <label className="settings-panel-field">
+                          <span>最短空闲时间（分钟）</span>
+                          <input type="number" min="1" max="10080" step="1" value={memoryCleanupIdleMinutes}
+                            onChange={(event) => setMemoryCleanupIdleMinutes(event.target.value)}
+                            className="settings-panel-control" />
+                        </label>
                       </div>
-                    )}
-                    <button
-                      onClick={async () => {
-                        try {
-                          await fetch('/api/restart', { method: 'POST' });
-                        } catch {
-                          // The server may close the connection before the response
-                          // arrives because the restart has already begun.
-                        }
-                      }}
-                      className="mt-1 flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-opacity hover:opacity-85"
-                      style={{ background: 'var(--warning)', color: '#000' }}
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" />
-                      重启服务器
-                    </button>
+                      <p className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
+                        空闲指没有输入和输出，且会话处于空闲或等待输入状态。正在执行指令、启动中或无法确认活动状态的会话会跳过。关闭后保留会话记录，可手动恢复。
+                      </p>
+                      {memoryCleanupError && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{memoryCleanupError}</p>}
+                    </div>
                   </div>
                 </SettingsSection>
               </div>
 
               {/* ── RIGHT COLUMN ── */}
-              <div className={activePage === 'appearance' || activePage === 'enhancer' ? 'space-y-5' : 'hidden'}>
+              <div className={activePage === 'appearance' || activePage === 'enhancer' ? 'space-y-3' : 'hidden'}>
                 {/* Appearance */}
-                <SettingsSection title="外观" description="主题会即时预览；保存设置后才会长期生效。" icon={<Type className="h-4 w-4" />} className={activePage === 'appearance' ? '' : 'hidden'}>
+                <SettingsSection title="外观" description="主题会即时预览；保存设置后才会长期生效。" className={activePage === 'appearance' ? '' : 'hidden'}>
                   <div className="space-y-6">
                     {/* Theme */}
                     <div className="space-y-2">
@@ -359,40 +312,9 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
                         <Palette className="w-3.5 h-3.5" style={{ color: '#a855f7' }} />
                         主题
                       </label>
-                      <div className="grid grid-cols-3 gap-2">
-                        {THEMES.map((t) => {
-                          const active = theme === t.id;
-                          return (
-                            <button
-                              key={t.id}
-                              type="button"
-                              onClick={() => { setTheme(t.id); applyTheme(t.id); }}
-                              className="overflow-hidden rounded-md text-left transition-all"
-                              style={{
-                                border: active ? '2px solid var(--accent)' : '1px solid var(--border)',
-                                padding: 0,
-                              }}
-                              title={t.label}
-                            >
-                              {/* mini window preview painted in the theme's own colors */}
-                              <div style={{ background: t.bg, padding: '9px 9px 7px' }}>
-                                <div className="flex items-center gap-1" style={{ marginBottom: 6 }}>
-                                  <span style={{ width: 7, height: 7, borderRadius: 999, background: t.accent, display: 'inline-block', flexShrink: 0 }} />
-                                  <span style={{ height: 5, width: '55%', borderRadius: 999, background: t.panel, display: 'inline-block' }} />
-                                </div>
-                                <div style={{ height: 5, width: '85%', borderRadius: 999, background: t.panel, marginBottom: 4 }} />
-                                <div style={{ height: 5, width: '45%', borderRadius: 999, background: t.text, opacity: 0.45 }} />
-                              </div>
-                              <div className="flex items-center justify-between px-2.5 py-2" style={{ background: 'var(--bg-primary)' }}>
-                                <span className="text-[11px] font-medium truncate" style={{ color: active ? 'var(--accent)' : 'var(--text-secondary)' }}>
-                                  {t.label}
-                                </span>
-                                {active && <Check className="w-3 h-3 shrink-0" style={{ color: 'var(--accent)' }} />}
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
+                      <select aria-label="界面主题" value={theme} onChange={(event) => { setTheme(event.target.value); applyTheme(event.target.value); }} className="settings-panel-control">
+                        {THEMES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                      </select>
                     </div>
 
                     {/* App Font Size */}
@@ -455,7 +377,7 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
                 </SettingsSection>
 
                 {/* Prompt enhancement */}
-                <div className={activePage === 'enhancer' ? '' : 'hidden'}><PromptEnhancerSettings /></div>
+                <div className={activePage === 'enhancer' ? '' : 'hidden'}><PromptEnhancerSettings readOnly={readOnly} /></div>
               </div>
             </div>
           )}
@@ -465,13 +387,11 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
         </div>
 
         {/* Footer */}
-        <div
-          className="flex shrink-0 items-center justify-end gap-2 px-5 py-4 sm:px-6"
-          style={{ borderTop: '1px solid var(--border)' }}
-        >
-          <button
+        {activePage !== 'enhancer' && (!embedded || !readOnly) && <div className="settings-panel-footer">
+          {mutation.isError && <p role="alert" className="mr-auto text-xs" style={{ color: 'var(--error)' }}>{mutation.error.message}</p>}
+          {!embedded && <button
             onClick={onClose}
-            className="rounded-md px-4 py-2 text-xs font-medium transition-colors hover:opacity-80"
+            className="settings-panel-button"
             style={{
               background: 'var(--bg-tertiary)',
               color: 'var(--text-secondary)',
@@ -479,11 +399,11 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
             }}
           >
             取消
-          </button>
+          </button>}
           {!readOnly && <button
             onClick={handleSave}
-            disabled={mutation.isPending}
-            className="flex items-center gap-1.5 rounded-md px-4 py-2 text-xs font-medium transition-opacity hover:opacity-90"
+            disabled={mutation.isPending || !!memoryCleanupError}
+            className="settings-panel-button settings-panel-button--primary"
             style={{
               background: saved ? 'var(--success, #22c55e)' : 'var(--accent)',
               color: '#fff',
@@ -497,7 +417,7 @@ export function SettingsModal({ onClose, readOnly = false }: SettingsModalProps)
             ) : null}
             {saved ? '已保存' : '保存设置'}
           </button>}
-        </div>
+        </div>}
       </div>
     </div>
   );
@@ -511,7 +431,7 @@ const ENHANCER_MODE_OPTIONS: Array<{ value: PromptEnhancerMode; label: string; d
   { value: 'publish', label: '发布', description: '生成完整开发规格' },
 ];
 
-function PromptEnhancerSettings() {
+function PromptEnhancerSettings({ readOnly }: { readOnly: boolean }) {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ['prompt-enhancer-config'],
@@ -584,19 +504,14 @@ function PromptEnhancerSettings() {
   const modeDescription = ENHANCER_MODE_OPTIONS.find((option) => option.value === mode)?.description;
 
   return (
-    <section className="space-y-5 rounded-lg p-5" style={{ background: 'color-mix(in srgb, var(--bg-tertiary) 52%, transparent)', border: '1px solid var(--border)' }}>
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-2">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ color: '#c4b5fd', background: 'rgba(139, 92, 246, 0.14)', border: '1px solid rgba(139, 92, 246, 0.18)' }}>
-            <Sparkles className="h-4 w-4" />
-          </span>
-          <div>
-            <h4 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>提示词增强</h4>
-            <p className="mt-1 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>通过服务端调用兼容 OpenAI 的模型，密钥不会返回浏览器。</p>
-          </div>
+    <section className="settings-panel-section">
+      <div className="settings-panel-section-heading">
+        <div>
+          <h4>提示词增强</h4>
+          <p>配置用于优化提示词的模型。API Key 保存在服务器，不会返回浏览器。</p>
         </div>
-        <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs font-medium" style={{ color: enabled ? '#c4b5fd' : 'var(--text-secondary)' }}>
-          <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="accent-violet-500" />
+        <label className="settings-panel-toggle">
+          <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
           启用
         </label>
       </div>
@@ -605,64 +520,71 @@ function PromptEnhancerSettings() {
         <div className="flex items-center gap-2 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}><Loader2 className="h-3.5 w-3.5 animate-spin" />加载配置…</div>
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <label className="space-y-1.5 text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
-              <span>LLM URL</span>
-              <input value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="https://api.openai.com/v1" className="h-9 w-full rounded-md px-3 text-xs" style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)', outline: 'none' }} />
-            </label>
-            <label className="space-y-1.5 text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
-              <span className="flex items-center justify-between gap-2">
-                模型
-                <button
-                  type="button"
-                  onClick={(event) => { event.preventDefault(); setModelsResult(null); detectModelsMutation.mutate(); }}
+          <div className="settings-panel-form-grid">
+            <div className="settings-panel-field">
+              <label htmlFor="enhancer-endpoint">LLM URL</label>
+              <input id="enhancer-endpoint" value={endpoint} onChange={(event) => setEndpoint(event.target.value)}
+                placeholder="https://api.openai.com/v1" className="settings-panel-control" />
+            </div>
+            <div className="settings-panel-field">
+              <label htmlFor="enhancer-key">API Key {keyConfigured && <span className="text-xs" style={{ color: 'var(--success)' }}>已配置</span>}</label>
+              <input id="enhancer-key" type="password" autoComplete="new-password" value={apiKey}
+                onChange={(event) => setApiKey(event.target.value)} placeholder={keyConfigured ? '留空保留已保存的密钥' : '输入 API Key'}
+                className="settings-panel-control" />
+            </div>
+            <div className="settings-panel-field">
+              <label htmlFor="enhancer-model">模型</label>
+              <div className="settings-panel-input-action">
+                <input id="enhancer-model" list="prompt-enhancer-models" value={model} onChange={(event) => setModel(event.target.value)}
+                  placeholder="gpt-4.1-mini" className="settings-panel-control" />
+                {!readOnly && <button type="button"
+                  onClick={() => { setModelsResult(null); detectModelsMutation.mutate(); }}
                   disabled={detectModelsMutation.isPending || !endpoint.trim()}
-                  className="flex items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium disabled:opacity-45"
-                  style={{ color: '#c4b5fd', background: 'rgba(139, 92, 246, 0.10)' }}
-                  title="从当前 LLM URL 探测可用模型"
-                >
-                  {detectModelsMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
+                  className="settings-panel-button" title="从当前 LLM URL 探测可用模型">
+                  {detectModelsMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
                   探测模型
-                </button>
-              </span>
-              <input list="prompt-enhancer-models" value={model} onChange={(event) => setModel(event.target.value)} placeholder="gpt-4.1-mini" className="h-9 w-full rounded-md px-3 text-xs" style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)', outline: 'none' }} />
+                </button>}
+              </div>
               <datalist id="prompt-enhancer-models">
                 {models.map((item) => <option key={item} value={item} />)}
               </datalist>
-              {modelsResult && <span className="block text-[10px] font-normal" style={{ color: modelsResult.startsWith('已发现') ? 'var(--success)' : 'var(--error)' }}>{modelsResult}</span>}
-            </label>
-            <label className="space-y-1.5 text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
-              <span>优化模式</span>
-              <select value={mode} onChange={(event) => setMode(event.target.value as PromptEnhancerMode)} className="h-9 w-full rounded-md px-3 text-xs" style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)', outline: 'none' }}>
+              {modelsResult && <span role="status" className="settings-panel-help" style={{ color: modelsResult.startsWith('已发现') ? 'var(--success)' : 'var(--error)' }}>{modelsResult}</span>}
+            </div>
+            <div className="settings-panel-field">
+              <label htmlFor="enhancer-mode">优化模式</label>
+              <select id="enhancer-mode" value={mode} onChange={(event) => setMode(event.target.value as PromptEnhancerMode)} className="settings-panel-control">
                 {ENHANCER_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
-              <span className="block text-[10px] font-normal" style={{ color: 'var(--text-secondary)' }}>{modeDescription}</span>
-            </label>
-            <label className="space-y-1.5 text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
-              <span>最近上下文轮数</span>
-              <input type="number" min="0" max="10" step="1" value={contextRounds} onChange={(event) => setContextRounds(event.target.value)} className="h-9 w-full rounded-md px-3 text-xs" style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)', outline: 'none' }} />
-              <span className="block text-[10px] font-normal" style={{ color: 'var(--text-secondary)' }}>0 表示关闭；仅传入用户输入和模型最终回答</span>
-            </label>
-            <label className="space-y-1.5 text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
-              <span>超时（毫秒）</span>
-              <input type="number" min="1000" max="120000" step="1000" value={timeoutMs} onChange={(event) => setTimeoutMs(event.target.value)} className="h-9 w-full rounded-md px-3 text-xs" style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)', outline: 'none' }} />
-            </label>
+              <span className="settings-panel-help">{modeDescription}</span>
+            </div>
+            <div className="settings-panel-field">
+              <label htmlFor="enhancer-context">最近上下文轮数</label>
+              <input id="enhancer-context" type="number" min="0" max="10" step="1" value={contextRounds}
+                onChange={(event) => setContextRounds(event.target.value)} className="settings-panel-control" />
+              <span className="settings-panel-help">0 表示关闭；仅传入用户输入和模型最终回答。</span>
+            </div>
+            <div className="settings-panel-field">
+              <label htmlFor="enhancer-timeout">超时（毫秒）</label>
+              <input id="enhancer-timeout" type="number" min="1000" max="120000" step="1000" value={timeoutMs}
+                onChange={(event) => setTimeoutMs(event.target.value)} className="settings-panel-control" />
+            </div>
           </div>
-          <label className="block space-y-1.5 border-t pt-4 text-xs font-medium" style={{ color: 'var(--text-primary)', borderColor: 'var(--border)' }}>
-            <span>API Key {keyConfigured && <span className="font-normal" style={{ color: 'var(--success)' }}>· 已配置</span>}</span>
-            <input type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={keyConfigured ? '已保存；留空不会覆盖' : '输入 API Key'} className="h-9 w-full rounded-md px-3 text-xs" style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)', outline: 'none' }} />
-          </label>
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <button type="button" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} className="flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium disabled:opacity-60" style={{ background: saved ? 'var(--success, #22c55e)' : '#7c3aed', color: '#fff' }}>
-              {saveMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : saved ? <Check className="w-3 h-3" /> : <Sparkles className="w-3 h-3" />}
+          {!readOnly && <div className="settings-panel-actions">
+            <button type="button" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}
+              className="settings-panel-button settings-panel-button--primary">
+              {saveMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : saved ? <Check className="h-3.5 w-3.5" /> : null}
               {saved ? '已保存' : '保存增强设置'}
             </button>
-            <button type="button" onClick={() => { setTestResult(null); testMutation.mutate(); }} disabled={testMutation.isPending || !enabled} className="flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium disabled:opacity-45" style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}>
-              {testMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <PlugZap className="w-3 h-3" />}
+            <button type="button" onClick={() => { setTestResult(null); testMutation.mutate(); }}
+              disabled={testMutation.isPending || !enabled} className="settings-panel-button">
+              {testMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlugZap className="h-3.5 w-3.5" />}
               测试连接
             </button>
-            {(saveMutation.error || testResult) && <span className="text-[11px]" style={{ color: saveMutation.error || (testResult && !testResult.includes('成功')) ? 'var(--error)' : 'var(--success)' }}>{saveMutation.error instanceof Error ? saveMutation.error.message : testResult}</span>}
-          </div>
+            {(saveMutation.error || testResult) && <span role="status" className="settings-panel-help"
+              style={{ color: saveMutation.error || (testResult && !testResult.includes('成功')) ? 'var(--error)' : 'var(--success)' }}>
+              {saveMutation.error instanceof Error ? saveMutation.error.message : testResult}
+            </span>}
+          </div>}
         </>
       )}
     </section>

@@ -2,8 +2,9 @@ import { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { getDb } from '../db/index.js';
 import { userCanUseToolForProject, userOwnsProject } from '../auth.js';
-import { nextScheduledAt, validateSchedule, type ScheduleKind } from '../services/schedule.js';
+import { nextScheduledAt, validateSchedule, validateDailyWindow, type ScheduleKind } from '../services/schedule.js';
 import { readCodexWeeklyQuota } from '../services/codex-quota.js';
+import { flattenTaskConditions, parseTaskConditions, validateTaskConditions, type TaskConditionGroup } from '../services/scheduled-task-conditions.js';
 import {
   runScheduledTask,
   type ScheduledInactivePolicy,
@@ -23,10 +24,14 @@ interface ScheduledTaskInput {
   target_session_id?: string | null;
   new_mode?: ScheduledNewMode | null;
   new_cli_type?: 'claude' | 'codex' | null;
-  new_agent_type?: string | null;
   inactive_policy?: ScheduledInactivePolicy;
   stop_at?: string | null;
   daily_stop_time?: string | null;
+  daily_start_time?: string | null;
+  daily_end_time?: string | null;
+  start_conditions?: TaskConditionGroup | null;
+  daily_stop_conditions?: TaskConditionGroup | null;
+  condition_unmet_policy?: 'wait' | 'skip';
   max_successful_runs?: number | null;
   quota_remaining_below?: number | null;
   max_consecutive_failures?: number | null;
@@ -36,16 +41,16 @@ interface ScheduledTaskInput {
 
 const scheduleKinds = new Set(['interval', 'daily', 'weekly', 'cron']);
 const targetTypes = new Set(['existing', 'new']);
-const newModes = new Set(['session', 'agent', 'terminal']);
+const newModes = new Set(['session', 'terminal']);
 const cliTypes = new Set(['claude', 'codex']);
 
 function validateRawInput(raw: unknown): string | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return '请求内容必须是对象';
   const value = raw as Record<string, unknown>;
-  for (const key of ['project_id', 'name', 'prompt', 'schedule_kind', 'schedule_value', 'timezone', 'target_type', 'inactive_policy']) {
+  for (const key of ['project_id', 'name', 'prompt', 'schedule_kind', 'schedule_value', 'timezone', 'target_type', 'inactive_policy', 'condition_unmet_policy']) {
     if (value[key] !== undefined && typeof value[key] !== 'string') return `${key} 必须是字符串`;
   }
-  for (const key of ['target_session_id', 'new_mode', 'new_cli_type', 'new_agent_type', 'stop_at', 'daily_stop_time']) {
+  for (const key of ['target_session_id', 'new_mode', 'new_cli_type', 'stop_at', 'daily_stop_time', 'daily_start_time', 'daily_end_time']) {
     if (value[key] !== undefined && value[key] !== null && typeof value[key] !== 'string') return `${key} 必须是字符串或 null`;
   }
   for (const key of ['max_successful_runs', 'quota_remaining_below', 'max_consecutive_failures']) {
@@ -59,6 +64,10 @@ function validateRawInput(raw: unknown): string | null {
 
 function taskForUser(id: string, userId: string): ScheduledTaskRow | undefined {
   return getDb().prepare('SELECT * FROM scheduled_tasks WHERE id = ? AND user_id = ?').get(id, userId) as ScheduledTaskRow | undefined;
+}
+
+function taskResponse(task: ScheduledTaskRow | undefined) {
+  return task && { ...task, start_conditions: parseTaskConditions(task.start_conditions), daily_stop_conditions: parseTaskConditions(task.daily_stop_conditions) };
 }
 
 function validateTarget(userId: string, input: ScheduledTaskInput): string | null {
@@ -80,7 +89,6 @@ function validateTarget(userId: string, input: ScheduledTaskInput): string | nul
   const cliType = input.new_cli_type === 'codex' ? 'codex' : 'claude';
   if (!newModes.has(mode)) return '新标签页类型无效';
   if (input.new_cli_type && !cliTypes.has(input.new_cli_type)) return 'CLI 类型无效';
-  if (mode === 'agent' && !input.new_agent_type?.trim()) return 'Agent 类型不能为空';
   if (!userCanUseToolForProject(userId, input.project_id, mode, mode === 'terminal' ? 'claude' : cliType)) {
     return '无权在该项目创建此类标签页';
   }
@@ -107,10 +115,14 @@ function normalizeInput(raw: Partial<ScheduledTaskInput>, base?: ScheduledTaskRo
     target_session_id: raw.target_session_id !== undefined ? raw.target_session_id : base?.target_session_id,
     new_mode: raw.new_mode !== undefined ? raw.new_mode : base?.new_mode,
     new_cli_type: raw.new_cli_type !== undefined ? raw.new_cli_type : base?.new_cli_type,
-    new_agent_type: raw.new_agent_type !== undefined ? raw.new_agent_type : base?.new_agent_type,
     inactive_policy: raw.inactive_policy ?? base?.inactive_policy ?? 'resume',
     stop_at: raw.stop_at !== undefined ? raw.stop_at : base?.stop_at,
     daily_stop_time: raw.daily_stop_time !== undefined ? raw.daily_stop_time : base?.daily_stop_time,
+    daily_start_time: raw.daily_start_time !== undefined ? raw.daily_start_time : base?.daily_start_time,
+    daily_end_time: raw.daily_end_time !== undefined ? raw.daily_end_time : base?.daily_end_time,
+    start_conditions: raw.start_conditions !== undefined ? raw.start_conditions : parseTaskConditions(base?.start_conditions),
+    daily_stop_conditions: raw.daily_stop_conditions !== undefined ? raw.daily_stop_conditions : parseTaskConditions(base?.daily_stop_conditions),
+    condition_unmet_policy: raw.condition_unmet_policy ?? base?.condition_unmet_policy ?? 'skip',
     max_successful_runs: raw.max_successful_runs !== undefined ? raw.max_successful_runs : base?.max_successful_runs,
     quota_remaining_below: raw.quota_remaining_below !== undefined ? raw.quota_remaining_below : base?.quota_remaining_below,
     max_consecutive_failures: raw.max_consecutive_failures !== undefined ? raw.max_consecutive_failures : base?.max_consecutive_failures,
@@ -128,11 +140,16 @@ function validateInput(userId: string, input: ScheduledTaskInput): string | null
   if (input.inactive_policy !== 'resume' && input.inactive_policy !== 'fail') return '标签失效策略无效';
   try {
     validateSchedule(input.schedule_kind, input.schedule_value, input.timezone);
+    validateDailyWindow(input.schedule_kind, input);
+    validateTaskConditions(input.start_conditions, input.timezone, 'start', input.target_type === 'existing');
+    validateTaskConditions(input.daily_stop_conditions, input.timezone, 'stop', input.target_type === 'existing');
+    if (!['wait', 'skip'].includes(input.condition_unmet_policy ?? 'wait')) throw new Error('请选择等待条件满足或跳过本次执行');
   } catch (error) {
     return error instanceof Error ? error.message : '周期设置无效';
   }
   const targetError = validateTarget(userId, input);
   if (targetError) return targetError;
+  if (flattenTaskConditions(input.daily_stop_conditions ?? null).some((condition) => condition.type === 'quota_below') && !targetUsesCodex(input)) return 'Codex 额度条件仅适用于 Codex Session 或 Agent';
   if (input.stop_at != null) {
     const stopAt = Date.parse(input.stop_at);
     if (!Number.isFinite(stopAt)) return '截止时间无效';
@@ -177,8 +194,7 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
     if (!projectId || !userOwnsProject(req.user!.id, projectId)) {
       return reply.status(404).send({ error: '项目不存在或无权访问' });
     }
-    const canUseCodex = userCanUseToolForProject(req.user!.id, projectId, 'session', 'codex')
-      || userCanUseToolForProject(req.user!.id, projectId, 'agent', 'codex');
+    const canUseCodex = userCanUseToolForProject(req.user!.id, projectId, 'session', 'codex');
     if (!canUseCodex) return reply.status(403).send({ error: '当前项目未授权使用 Codex' });
     try {
       return { quota: await readCodexWeeklyQuota() };
@@ -201,8 +217,8 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       SELECT * FROM scheduled_tasks
       WHERE user_id = ?${projectFilter}
       ORDER BY enabled DESC, next_run_at ASC, created_at DESC
-    `).all(...params);
-    return { tasks };
+    `).all(...params) as ScheduledTaskRow[];
+    return { tasks: tasks.map(taskResponse) };
   });
 
   app.get<{ Params: { id: string } }>('/scheduled-tasks/:id/runs', async (req, reply) => {
@@ -222,7 +238,7 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
     if (error) return reply.status(400).send({ error });
     const id = nanoid(12);
     const nextRun = input.enabled
-      ? nextScheduledAt(input.schedule_kind, input.schedule_value, input.timezone)
+      ? nextScheduledAt(input.schedule_kind, input.schedule_value, input.timezone, Date.now(), input)
       : null;
     const dailyStopAt = input.enabled && input.daily_stop_time
       ? nextScheduledAt('daily', input.daily_stop_time, input.timezone)
@@ -230,10 +246,10 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
     getDb().prepare(`
       INSERT INTO scheduled_tasks (
         id, user_id, project_id, name, prompt, schedule_kind, schedule_value, timezone,
-        target_type, target_session_id, new_mode, new_cli_type, new_agent_type,
-        inactive_policy, stop_at, daily_stop_time, daily_stop_at, max_successful_runs, quota_remaining_below,
+        target_type, target_session_id, new_mode, new_cli_type,
+        inactive_policy, stop_at, daily_stop_time, daily_stop_at, daily_start_time, daily_end_time, start_conditions, daily_stop_conditions, condition_unmet_policy, max_successful_runs, quota_remaining_below,
         max_consecutive_failures, stop_on_target_unavailable, enabled, next_run_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       req.user!.id,
@@ -247,11 +263,15 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       input.target_type === 'existing' ? input.target_session_id : null,
       input.target_type === 'new' ? (input.new_mode ?? 'session') : null,
       input.target_type === 'new' ? (input.new_cli_type ?? 'claude') : null,
-      input.target_type === 'new' && input.new_mode === 'agent' ? input.new_agent_type?.trim() : null,
       input.inactive_policy ?? 'resume',
       input.stop_at ?? null,
       input.daily_stop_time ?? null,
       dailyStopAt,
+      input.daily_start_time ?? null,
+      input.daily_end_time ?? null,
+      input.start_conditions ? JSON.stringify(input.start_conditions) : null,
+      input.daily_stop_conditions ? JSON.stringify(input.daily_stop_conditions) : null,
+      input.condition_unmet_policy ?? 'skip',
       input.max_successful_runs ?? null,
       input.quota_remaining_below ?? null,
       input.max_consecutive_failures ?? null,
@@ -259,7 +279,7 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       input.enabled ? 1 : 0,
       nextRun,
     );
-    return { ok: true, task: taskForUser(id, req.user!.id) };
+    return { ok: true, task: taskResponse(taskForUser(id, req.user!.id)) };
   });
 
   app.patch<{ Params: { id: string }; Body: Partial<ScheduledTaskInput> }>('/scheduled-tasks/:id', async (req, reply) => {
@@ -273,11 +293,16 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
     const scheduleChanged = input.schedule_kind !== current.schedule_kind
       || input.schedule_value !== current.schedule_value
       || input.timezone !== current.timezone
+      || (input.daily_start_time ?? null) !== current.daily_start_time
+      || (input.daily_end_time ?? null) !== current.daily_end_time
+      || JSON.stringify(input.start_conditions ?? null) !== (current.start_conditions ?? 'null')
+      || JSON.stringify(input.daily_stop_conditions ?? null) !== (current.daily_stop_conditions ?? 'null')
+      || input.condition_unmet_policy !== current.condition_unmet_policy
       || (!!input.enabled !== !!current.enabled);
     const nextRun = !input.enabled
       ? null
       : scheduleChanged || !current.next_run_at
-        ? nextScheduledAt(input.schedule_kind, input.schedule_value, input.timezone)
+        ? nextScheduledAt(input.schedule_kind, input.schedule_value, input.timezone, Date.now(), input)
         : current.next_run_at;
     const dailyStopChanged = input.daily_stop_time !== current.daily_stop_time
       || input.timezone !== current.timezone
@@ -291,11 +316,13 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
     getDb().prepare(`
       UPDATE scheduled_tasks SET
         project_id = ?, name = ?, prompt = ?, schedule_kind = ?, schedule_value = ?, timezone = ?,
-        target_type = ?, target_session_id = ?, new_mode = ?, new_cli_type = ?, new_agent_type = ?,
-        inactive_policy = ?, stop_at = ?, daily_stop_time = ?, daily_stop_at = ?,
+        target_type = ?, target_session_id = ?, new_mode = ?, new_cli_type = ?,
+        inactive_policy = ?, stop_at = ?, daily_stop_time = ?, daily_stop_at = ?, daily_start_time = ?, daily_end_time = ?,
+        start_conditions = ?, daily_stop_conditions = ?, condition_unmet_policy = ?,
         max_successful_runs = ?, quota_remaining_below = ?,
         max_consecutive_failures = ?, stop_on_target_unavailable = ?, enabled = ?, next_run_at = ?,
         successful_runs = ?, consecutive_failures = ?, stopped_at = ?, stop_reason = ?,
+        daily_paused_until = ?, daily_pause_reason = ?, waiting_reason = ?,
         updated_at = datetime('now')
       WHERE id = ? AND user_id = ?
     `).run(
@@ -309,11 +336,15 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       input.target_type === 'existing' ? input.target_session_id : null,
       input.target_type === 'new' ? (input.new_mode ?? 'session') : null,
       input.target_type === 'new' ? (input.new_cli_type ?? 'claude') : null,
-      input.target_type === 'new' && input.new_mode === 'agent' ? input.new_agent_type?.trim() : null,
       input.inactive_policy ?? 'resume',
       input.stop_at ?? null,
       input.daily_stop_time ?? null,
       dailyStopAt,
+      input.daily_start_time ?? null,
+      input.daily_end_time ?? null,
+      input.start_conditions ? JSON.stringify(input.start_conditions) : null,
+      input.daily_stop_conditions ? JSON.stringify(input.daily_stop_conditions) : null,
+      input.condition_unmet_policy ?? 'skip',
       input.max_successful_runs ?? null,
       input.quota_remaining_below ?? null,
       input.max_consecutive_failures ?? null,
@@ -324,10 +355,13 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       restartingStoppedTask ? 0 : current.consecutive_failures,
       input.enabled ? null : current.stopped_at,
       input.enabled ? null : current.stop_reason,
+      scheduleChanged ? null : current.daily_paused_until,
+      scheduleChanged ? null : current.daily_pause_reason,
+      scheduleChanged ? null : current.waiting_reason,
       req.params.id,
       req.user!.id,
     );
-    return { ok: true, task: taskForUser(req.params.id, req.user!.id) };
+    return { ok: true, task: taskResponse(taskForUser(req.params.id, req.user!.id)) };
   });
 
   app.delete<{ Params: { id: string } }>('/scheduled-tasks/:id', async (req, reply) => {

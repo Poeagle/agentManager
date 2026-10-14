@@ -339,7 +339,7 @@ function MarketplaceBrowser({
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
-      <div className="w-full max-w-5xl mx-auto px-5 py-5">
+      <div className="page-content py-4 sm:py-6">
         <div className="flex flex-col gap-4 mb-5">
           <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
             <div>

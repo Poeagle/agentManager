@@ -52,8 +52,8 @@ function consumeEventRateLimit(address: string, now = Date.now()): boolean {
   return window.count <= config.eventRateLimitPerMinute;
 }
 
-function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' | 'agent' {
-  if (mode === 'terminal' || mode === 'agent') return mode;
+function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
+  if (mode === 'terminal') return mode;
   return 'session';
 }
 

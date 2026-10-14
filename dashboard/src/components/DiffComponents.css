@@ -1,0 +1,14 @@
+.diff-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  tab-size: 4;
+}
+.diff-paired-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.diff-paired-row > .diff-half:first-child { border-right: 1px solid var(--border); }
+.diff-paired-row.diff-with-actions { grid-template-columns: minmax(0, 1fr) 44px minmax(0, 1fr); }
+.diff-with-actions > .diff-half:first-child { border-right: 0; }
+.diff-apply-cell { border-inline: 1px solid var(--border); }

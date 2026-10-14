@@ -12,7 +12,7 @@ import { config } from '../config.js';
 import { getSetting } from '../routes/settings.js';
 import { nanoid } from 'nanoid';
 import type { WebSocket } from 'ws';
-import { getOrCreateTracker, removeTracker, recoverFromBuffer } from './session-state.js';
+import { getOrCreateTracker, getTracker, removeTracker, recoverFromBuffer } from './session-state.js';
 import { encodeDir } from './claude-history.js';
 import { inaccessibleProjectPaths, isAdmin } from '../auth.js';
 import { tmuxCursorRestoreSequence } from '../lib/terminal-cursor.js';
@@ -148,8 +148,7 @@ export interface Session {
   task: string;
   status: string;
   pid: number | null;
-  mode: 'session' | 'terminal' | 'agent' | null;
-  agent_type: string | null;
+  mode: 'session' | 'terminal' | null;
   created_by_user_id: string | null;
   claude_session_id: string | null;
   codex_session_id: string | null;
@@ -353,8 +352,7 @@ export async function waitForSessionLifecycle(sessionId: string): Promise<boolea
 interface PendingSpawn {
   projectPath: string;
   task: string;
-  mode: 'session' | 'terminal' | 'adopt' | 'agent';
-  agentType?: string;
+  mode: 'session' | 'terminal' | 'adopt';
   projectId?: string;
   socketPath?: string;  // for adopt mode
   cliType?: 'claude' | 'codex';
@@ -1933,16 +1931,15 @@ export function createSession(
   projectId?: string,
   cliType: 'claude' | 'codex' = 'claude',
   createdByUserId?: string,
-  mode: 'session' | 'terminal' | 'agent' = 'session',
-  agentType?: string,
+  mode: 'session' | 'terminal' = 'session',
 ): Session {
   const db = getDb();
   const id = nanoid(12);
 
   db.prepare(`
-    INSERT INTO sessions (id, project_id, task, status, cli_type, created_by_user_id, mode, agent_type)
-    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
-  `).run(id, projectId || null, task, cliType || 'claude', createdByUserId || null, mode || 'session', agentType || null);
+    INSERT INTO sessions (id, project_id, task, status, cli_type, created_by_user_id, mode)
+    VALUES (?, ?, ?, 'pending', ?, ?, ?)
+  `).run(id, projectId || null, task, cliType || 'claude', createdByUserId || null, mode || 'session');
 
   return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
 }
@@ -2068,64 +2065,7 @@ export function spawnTerminal(sessionId: string, projectPath: string, cols = 180
   );
 }
 
-async function spawnAgentUnlocked(sessionId: string, projectPath: string, task: string, agentType: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
-  if (activeSessions.has(sessionId)) return;
-  const preSpawnFiles = cliType === 'claude' ? snapshotClaudeSessionFiles(projectPath) : undefined;
 
-  const worker = await forkWorker();
-  rejectCancelledLifecycle(sessionId, worker);
-  const active = wireWorker(sessionId, worker, projectPath, preSpawnFiles);
-  active.cols = cols;
-  active.rows = rows;
-  active.task = `Agent (${agentType}): ${task}`;
-  active.cliType = cliType;
-
-  const sessionCommand = projectCliCommand(
-    cliType === 'codex' ? 'agent_codex_command' : 'agent_claude_command',
-    cliType,
-  );
-
-  const assignSessionId = cliType === 'claude' ? assignClaudeSessionId(sessionId) : undefined;
-  const bindingPath = cliType === 'codex' ? codexBindingPath(sessionId) : undefined;
-  const creator = getDb().prepare('SELECT created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as { created_by_user_id: string | null } | undefined;
-
-  worker.send({
-    type: 'spawn',
-    sessionId,
-    projectPath,
-    task,
-    mode: 'agent',
-    agentType,
-    cols,
-    rows,
-    useTmux: config.useTmux,
-    useDtach: config.useDtach,
-    sessionCommand,
-    cliType,
-    assignSessionId,
-    codexBindingPath: bindingPath,
-    ...workerSandboxPolicy(creator?.created_by_user_id),
-  });
-  await active.lifecycleReady;
-
-  if (cliType === 'codex') watchCodexSessionBinding(sessionId);
-
-  insertEvent({
-    session_id: sessionId,
-    type: 'session_start',
-    data: { task, projectPath, tmux: config.useTmux, mode: 'agent', agentType },
-  });
-
-  pushSystemEvent(`[AgentManager] Agent ${agentType} session ${sessionId} started: ${task.slice(0, 60)}`);
-}
-
-export function spawnAgent(sessionId: string, projectPath: string, task: string, agentType: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
-  return runSessionLifecycle(
-    sessionId,
-    () => spawnAgentUnlocked(sessionId, projectPath, task, agentType, cols, rows, cliType),
-    () => undefined,
-  );
-}
 
 /**
  * Reconnect to a detached session (tmux or dtach) after a server restart.
@@ -2544,6 +2484,7 @@ export function writeToSession(sessionId: string, data: string, bracketedPaste?:
   if (!active || typeof data !== 'string') return false;
   // Send input to the worker process via IPC
   active.worker.send({ type: 'input', data, bracketedPaste });
+  if (data.length > 0) getTracker(sessionId)?.recordInput();
   return true;
 }
 
@@ -2650,6 +2591,8 @@ function killPidTree(pid: number): void {
 }
 
 export async function killSession(sessionId: string): Promise<boolean> {
+  const session = getSession(sessionId);
+  if (!session) return false;
   const active = activeSessions.get(sessionId);
   console.log(`[KILL] Killing session ${sessionId} (active=${!!active})`);
   // A pending REST-created session may not have connected its first websocket
@@ -2664,8 +2607,14 @@ export async function killSession(sessionId: string): Promise<boolean> {
   for (const ws of active?.subscribers ?? []) {
     try {
       ws.send(JSON.stringify({ type: 'exit', exitCode: -1 }));
+      ws.close(1000, 'Session closed');
     } catch { /* ignore */ }
   }
+  active?.subscribers.clear();
+  stopTerminalCliMonitor(sessionId);
+  removeTracker(sessionId);
+  captureCache.delete(captureCacheKey(sessionId, 'screen'));
+  captureCache.delete(captureCacheKey(sessionId, 'history'));
 
   // 2. Discard any not-yet-flushed batch before deleting durable replay so the
   // scheduled flush cannot resurrect output for a cancelled session.
@@ -2689,8 +2638,10 @@ export async function killSession(sessionId: string): Promise<boolean> {
 
     activeSessions.delete(sessionId);
     clearWebSocketOutput(active);
-    stopTerminalCliMonitor(sessionId);
-    removeTracker(sessionId);
+    active.replayBuffer.length = 0;
+    active.replayBytes = 0;
+    active.displayReplay.length = 0;
+    active.displayReplayBytes = 0;
   }
 
   // 4. Kill dtach/adopted external processes, including released sessions
@@ -2720,8 +2671,9 @@ export async function killSession(sessionId: string): Promise<boolean> {
       await execFileAsync('tmux', [...tmuxArgsForSession(sessionId), 'kill-session', '-t', name]).catch(() => {});
     }
     try {
-      const session = getDb().prepare('SELECT pid FROM sessions WHERE id = ?').get(sessionId) as { pid: number | null } | undefined;
-      if (session?.pid && pidAlive(session.pid)) {
+      // Ended rows retain historical PIDs which may now belong to unrelated
+      // processes. Only process-bearing states can own an orphaned PID.
+      if (sessionStatusMayHaveProcess(session.status) && session.pid && pidAlive(session.pid)) {
         console.log(`  Killing orphaned PID ${session.pid} for session ${sessionId}`);
         killPidTree(session.pid);
       }
@@ -2731,61 +2683,13 @@ export async function killSession(sessionId: string): Promise<boolean> {
   // 8. Update DB immediately
   const db = getDb();
   const result = db.prepare(`
-    UPDATE sessions SET status = 'cancelled', completed_at = datetime('now'), updated_at = datetime('now')
+    UPDATE sessions SET status = 'cancelled', pid = NULL, completed_at = datetime('now'), updated_at = datetime('now')
     WHERE id = ? AND status IN ('running', 'pending', 'launching', 'detached', 'released')
   `).run(sessionId);
+  db.prepare('UPDATE sessions SET pid = NULL WHERE id = ?').run(sessionId);
 
   console.log(`[KILL] Session ${sessionId} killed (db_updated=${result.changes > 0})`);
-  return !!active || result.changes > 0;
-}
-
-/**
- * Release an AgentManager session back to its dtach socket without killing the process.
- * Used by pop-out: tears down the AgentManager worker/tmux wrapper but leaves the
- * dtach master alive so a real terminal (or re-adopt) can connect to it.
- */
-export function releaseSession(sessionId: string): boolean {
-  const active = activeSessions.get(sessionId);
-  if (!active) return false;
-
-  console.log(`[RELEASE] Releasing session ${sessionId} to external terminal`);
-
-  // Notify subscribers so the frontend closes the tab
-  for (const ws of active.subscribers) {
-    try {
-      ws.send(JSON.stringify({ type: 'exit', sessionId, exitCode: 0, reason: 'popped-out' }));
-    } catch { /* ignore */ }
-  }
-
-  // Release the worker (detach from the tmux/dtach session without killing it)
-  // so the external terminal can attach to the still-running session.
-  try {
-    if (active.worker.connected) {
-      active.worker.send({ type: 'release' });
-    }
-  } catch { /* worker may be dead */ }
-  setTimeout(() => {
-    try { active.worker.kill('SIGKILL'); } catch { /* dead */ }
-  }, 2000);
-
-  // Remove from adopted tracking so it becomes discoverable again
-  const extSocket = active.externalSocket || getSessionSocketPath(sessionId);
-  if (extSocket) {
-    adoptedSockets.delete(extSocket);
-  }
-
-  activeSessions.delete(sessionId);
-  clearWebSocketOutput(active);
-  stopTerminalCliMonitor(sessionId);
-  removeTracker(sessionId);
-
-  // Mark as released (still running externally, available for re-adoption)
-  const db = getDb();
-  db.prepare(`
-    UPDATE sessions SET status = 'released', updated_at = datetime('now')
-    WHERE id = ? AND status IN ('running', 'pending', 'detached')
-  `).run(sessionId);
-
+  // Closing an already-ended session is a successful, idempotent cleanup.
   return true;
 }
 
@@ -2864,34 +2768,6 @@ export function getSessionSocketPath(sessionId: string): string | null {
     }
   } catch { /* ignore */ }
   return null;
-}
-
-/**
- * Get the tmux session name for a session (if it has an active tmux session).
- */
-export function getSessionTmuxName(sessionId: string): string | null {
-  const active = activeSessions.get(sessionId);
-  if (!active) return null;
-  const name = tmuxSessionName(sessionId);
-  for (const server of [TMUX_SERVER]) {
-    try {
-      execFileSync('tmux', ['-L', server, 'has-session', '-t', name], { stdio: 'ignore' });
-      return name;
-    } catch { /* try next */ }
-  }
-  return null;
-}
-
-/** Get the tmux server name that hosts a session */
-export function getSessionTmuxServer(sessionId: string): string {
-  const name = tmuxSessionName(sessionId);
-  for (const server of [TMUX_SERVER]) {
-    try {
-      execFileSync('tmux', ['-L', server, 'has-session', '-t', name], { stdio: 'ignore' });
-      return server;
-    } catch { /* try next */ }
-  }
-  return TMUX_SERVER;
 }
 
 /**
@@ -3651,14 +3527,14 @@ async function readoptReleasedSession(tmuxName: string, _projectId?: string): Pr
   try {
     await execFileAsync('tmux', [...serverArgs, 'resize-window', '-t', tmuxName, '-x', String(dashboardCols)]);
     // Unset window-size=manual that resize-window implicitly sets.
-    // Without this, future clients (e.g. Tilix on next pop-out) can't resize the window.
+    // Allow other attached tmux clients to resize the window.
     await execFileAsync('tmux', [...serverArgs, 'set-option', '-t', tmuxName, '-u', 'window-size']);
   } catch { /* ignore */ }
 
   // Mark as detached so reconnectSession() can pick it up
   db.prepare(`UPDATE sessions SET status = 'detached', updated_at = datetime('now') WHERE id = ?`).run(sessionId);
 
-  // Skip pipe-pane replay: the stored data is stale (from before pop-out).
+  // Skip pipe-pane replay: stored data predates the external activity.
   // Commands run in the external terminal aren't captured by pipe-pane (worker was dead).
   // Use capture-pane instead to get the current tmux screen state.
   const ok = await reconnectSession(sessionId, { skipPipePaneReplay: true });

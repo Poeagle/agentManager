@@ -3,21 +3,64 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as { Terminal: any };
 const { SerializeAddon } = require('@xterm/addon-serialize') as { SerializeAddon: any };
-import { spawn } from 'child_process';
-import { platform } from 'os';
 import * as sessionManager from '../services/session-manager.js';
-import { RESIZE_MARKER, registerPendingSpawn, getSessionTmuxServer } from '../services/session-manager.js';
+import { RESIZE_MARKER, registerPendingSpawn } from '../services/session-manager.js';
 import { getTracker } from '../services/session-state.js';
 import { getDb } from '../db/index.js';
 import { getUserTabUsage, isAdmin, userCanUseSessionTool, userCanUseToolForProject, userOwnsProject, userOwnsProjectPath, userProjectIds } from '../auth.js';
-import { mkdirSync, writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
-import { prunePastesDir } from '../services/paste-cleanup.js';
 import { listClaudeSessions, deleteClaudeSession } from '../services/claude-history.js';
 import { strip } from '../lib/ansi.js';
+import { randomUUID } from 'crypto';
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'fs';
+import { isAbsolute, join, relative, sep } from 'path';
+import { prunePastesDir } from '../services/paste-cleanup.js';
 
-function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' | 'agent' {
-  if (mode === 'terminal' || mode === 'agent') return mode;
+const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_PASTED_FILE_BYTES = 35 * 1024 * 1024;
+
+function decodePastedDataUrl(dataUrl: unknown): { mime: string; bytes: Buffer } | null {
+  if (typeof dataUrl !== 'string') return null;
+  const match = /^data:([^;,]*);base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
+  if (!match || match[2].length % 4 !== 0) return null;
+  const bytes = Buffer.from(match[2], 'base64');
+  if (bytes.toString('base64') !== match[2]) return null;
+  return { mime: match[1].toLowerCase(), bytes };
+}
+
+function imageExtension(mime: string, bytes: Buffer): string | null {
+  if (mime === 'image/png' && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'png';
+  if (mime === 'image/jpeg' && bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9) return 'jpg';
+  if (mime === 'image/gif' && (bytes.subarray(0, 6).toString() === 'GIF87a' || bytes.subarray(0, 6).toString() === 'GIF89a')) return 'gif';
+  if (mime === 'image/webp' && bytes.subarray(0, 4).toString() === 'RIFF' && bytes.subarray(8, 12).toString() === 'WEBP') return 'webp';
+  return null;
+}
+
+function sessionPastesDir(projectPath: string): string {
+  const projectRoot = realpathSync(projectPath);
+  const managerDir = join(projectRoot, '.agentmanager');
+  mkdirSync(managerDir, { recursive: true });
+  const realManagerDir = realpathSync(managerDir);
+  const managerChild = relative(projectRoot, realManagerDir);
+  if (!managerChild || isAbsolute(managerChild) || managerChild === '..' || managerChild.startsWith(`..${sep}`)) {
+    throw new Error('Paste directory is outside the project');
+  }
+  const dir = join(realManagerDir, 'pastes');
+  mkdirSync(dir, { recursive: true });
+  const realDir = realpathSync(dir);
+  const child = relative(projectRoot, realDir);
+  if (!child || isAbsolute(child) || child === '..' || child.startsWith(`..${sep}`)) {
+    throw new Error('Paste directory is outside the project');
+  }
+  const ignore = join(realManagerDir, '.gitignore');
+  if (!existsSync(ignore)) {
+    try { writeFileSync(ignore, '*\n', { flag: 'wx' }); }
+    catch (error: any) { if (error?.code !== 'EEXIST') throw error; }
+  }
+  return realDir;
+}
+
+function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
+  if (mode === 'terminal') return mode;
   return 'session';
 }
 
@@ -38,7 +81,7 @@ function canAccessSessionByRow(userId: string, row: {
   return userCanUseToolForProject(userId, row.project_id, normalizeMode(row.mode), normalizeCliType(row.cli_type));
 }
 
-function canAccessSessionById(userId: string, sessionId: string, mode: 'session' | 'terminal' | 'agent', cliType: 'claude' | 'codex'): boolean {
+function canAccessSessionById(userId: string, sessionId: string, mode: 'session' | 'terminal', cliType: 'claude' | 'codex'): boolean {
   return userCanUseSessionTool(userId, sessionId, cliType, mode);
 }
 
@@ -155,97 +198,61 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return { session };
   });
 
-  // Save a pasted image into the session's project and return its absolute path.
-  // The dashboard injects that path into the terminal so the active CLI can
-  // read the file — the server-side process can't see the browser's clipboard,
-  // so we upload + reference by path instead of forwarding the paste.
-  app.post<{
-    Params: { id: string };
-    Body: { dataUrl?: string };
-  }>('/sessions/:id/paste-image', { bodyLimit: 15 * 1024 * 1024 }, async (req, reply) => {
-    const { id } = req.params;
-    const session = sessionManager.getSession(id);
-    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
-    const projectId = (session as any)?.project_id;
-    const proj = projectId
-      ? (getDb().prepare('SELECT path FROM projects WHERE id = ?').get(projectId) as { path: string } | undefined)
-      : undefined;
-    if (!proj?.path) return reply.status(400).send({ error: 'Session has no associated project path' });
+  // Clipboard data is stored inside the session's project; the terminal only
+  // receives the resulting path after the upload succeeds.
+  app.post<{ Params: { id: string }; Body: { dataUrl?: string } }>(
+    '/sessions/:id/paste-image', { bodyLimit: 15 * 1024 * 1024 }, async (req, reply) => {
+      const session = sessionManager.getSession(req.params.id);
+      if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
+      const project = session.project_id
+        ? getDb().prepare('SELECT path FROM projects WHERE id = ?').get(session.project_id) as { path: string } | undefined
+        : undefined;
+      if (!project?.path) return reply.status(400).send({ error: 'Session has no associated project path' });
 
-    const dataUrl = req.body?.dataUrl || '';
-    const m = dataUrl.match(/^data:(image\/(?:png|jpeg|jpg|gif|webp));base64,([A-Za-z0-9+/=]+)$/);
-    if (!m) return reply.status(400).send({ error: 'Expected a base64 image data URL (png/jpeg/gif/webp)' });
-    const mime = m[1];
-    const ext = mime === 'image/jpeg' || mime === 'image/jpg' ? 'jpg' : mime.split('/')[1];
-    const b64 = m[2];
-    if (b64.length > 14_000_000) return reply.status(413).send({ error: 'Image too large (max ~10MB)' });
+      const data = decodePastedDataUrl(req.body?.dataUrl);
+      if (!data) return reply.status(400).send({ error: 'Expected a base64 image data URL' });
+      if (data.bytes.length > MAX_PASTED_IMAGE_BYTES) return reply.status(413).send({ error: 'Image too large (max 10 MB)' });
+      const ext = imageExtension(data.mime, data.bytes);
+      if (!ext) return reply.status(400).send({ error: 'Unsupported or invalid image (png/jpeg/gif/webp)' });
 
-    let buf: Buffer;
-    try { buf = Buffer.from(b64, 'base64'); } catch { return reply.status(400).send({ error: 'Invalid base64 data' }); }
+      try {
+        const dir = sessionPastesDir(project.path);
+        const path = join(dir, `paste-${randomUUID()}.${ext}`);
+        writeFileSync(path, data.bytes, { flag: 'wx' });
+        prunePastesDir(dir);
+        return { ok: true, path };
+      } catch (error: any) {
+        return reply.status(500).send({ error: `Failed to save image: ${error?.message || 'unknown error'}` });
+      }
+    },
+  );
 
-    try {
-      const dir = join(proj.path, '.agentmanager', 'pastes');
-      mkdirSync(dir, { recursive: true });
-      // Self-contained ignore so pasted images are never committed — leaves the
-      // project's own .gitignore untouched.
-      const gi = join(proj.path, '.agentmanager', '.gitignore');
-      if (!existsSync(gi)) writeFileSync(gi, '*\n', 'utf-8');
-      const filePath = join(dir, `paste-${Date.now()}.${ext}`);
-      writeFileSync(filePath, buf);
-      prunePastesDir(dir); // bound the directory: drop old / excess pastes
-      return { ok: true, path: filePath };
-    } catch (err: any) {
-      return reply.status(500).send({ error: `Failed to save image: ${err?.message || 'unknown error'}` });
-    }
-  });
+  app.post<{ Params: { id: string }; Body: { dataUrl?: string; filename?: string } }>(
+    '/sessions/:id/paste-file', { bodyLimit: 50 * 1024 * 1024 }, async (req, reply) => {
+      const session = sessionManager.getSession(req.params.id);
+      if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
+      const project = session.project_id
+        ? getDb().prepare('SELECT path FROM projects WHERE id = ?').get(session.project_id) as { path: string } | undefined
+        : undefined;
+      if (!project?.path) return reply.status(400).send({ error: 'Session has no associated project path' });
 
-  // Save an arbitrary pasted/dropped file into the session's project and return
-  // its absolute path — the paste-image model generalized to any file so the
-  // user can drop a document and ask Claude or Codex about it. The original filename is
-  // preserved (sanitized) for readability; the `paste-` prefix keeps it under
-  // the same retention sweep as pasted images.
-  app.post<{
-    Params: { id: string };
-    Body: { dataUrl?: string; filename?: string };
-  }>('/sessions/:id/paste-file', { bodyLimit: 50 * 1024 * 1024 }, async (req, reply) => {
-    const { id } = req.params;
-    const session = sessionManager.getSession(id);
-    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
+      const data = decodePastedDataUrl(req.body?.dataUrl);
+      if (!data) return reply.status(400).send({ error: 'Expected a base64 file data URL' });
+      if (data.bytes.length > MAX_PASTED_FILE_BYTES) return reply.status(413).send({ error: 'File too large (max 35 MB)' });
+      const base = (typeof req.body?.filename === 'string' ? req.body.filename : '').split(/[\\/]/).pop() || '';
+      const safeName = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(0, 100) || 'file';
 
-    const projectId = (session as any)?.project_id;
-    const proj = projectId
-      ? (getDb().prepare('SELECT path FROM projects WHERE id = ?').get(projectId) as { path: string } | undefined)
-      : undefined;
-    if (!proj?.path) return reply.status(400).send({ error: 'Session has no associated project path' });
-
-    const dataUrl = req.body?.dataUrl || '';
-    const m = dataUrl.match(/^data:[^;,]*;base64,([A-Za-z0-9+/=]+)$/);
-    if (!m) return reply.status(400).send({ error: 'Expected a base64 data URL' });
-    const b64 = m[1];
-    if (b64.length > 50_000_000) return reply.status(413).send({ error: 'File too large (max ~35MB)' });
-
-    let buf: Buffer;
-    try { buf = Buffer.from(b64, 'base64'); } catch { return reply.status(400).send({ error: 'Invalid base64 data' }); }
-
-    // Reduce to a safe basename: strip any path, drop leading dots (no hidden
-    // files / traversal), allow only a conservative character set.
-    const rawName = (req.body?.filename || '').toString();
-    const base = (rawName.split(/[\\/]/).pop() || '').trim();
-    const safe = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(0, 100) || 'file';
-
-    try {
-      const dir = join(proj.path, '.agentmanager', 'pastes');
-      mkdirSync(dir, { recursive: true });
-      const gi = join(proj.path, '.agentmanager', '.gitignore');
-      if (!existsSync(gi)) writeFileSync(gi, '*\n', 'utf-8');
-      const filePath = join(dir, `paste-${Date.now()}-${safe}`);
-      writeFileSync(filePath, buf);
-      prunePastesDir(dir); // bound the directory: drop old / excess pastes
-      return { ok: true, path: filePath };
-    } catch (err: any) {
-      return reply.status(500).send({ error: `Failed to save file: ${err?.message || 'unknown error'}` });
-    }
-  });
+      try {
+        const dir = sessionPastesDir(project.path);
+        const path = join(dir, `paste-${randomUUID()}-${safeName}`);
+        writeFileSync(path, data.bytes, { flag: 'wx' });
+        prunePastesDir(dir);
+        return { ok: true, path };
+      } catch (error: any) {
+        return reply.status(500).send({ error: `Failed to save file: ${error?.message || 'unknown error'}` });
+      }
+    },
+  );
 
   // Resume an ended Claude or Codex conversation in place. The AgentManager
   // session id (and therefore the project tab mapping) remains unchanged.
@@ -266,7 +273,11 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.delete<{ Params: { id: string } }>('/sessions/:id/record', async (req, reply) => {
     const { id } = req.params;
     const session = sessionManager.getSession(id);
-    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
+    // Match the personal session list and close endpoint: monitoring access
+    // does not grant permission to delete another user's conversation.
+    if (!session || session.created_by_user_id !== req.user!.id || !canAccessSessionByRow(req.user!.id, session)) {
+      return reply.status(404).send({ error: 'Session not found' });
+    }
     const result = sessionManager.purgeSessionRecord(id);
     if (!result.ok) return reply.status(409).send({ error: result.error });
     return { ok: true };
@@ -398,14 +409,14 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       project_path: string;
       task: string;
       project_id?: string;
-      mode?: 'session' | 'terminal' | 'agent';
-      agent_type?: string;
+      mode?: 'session' | 'terminal';
       cli_type?: 'claude' | 'codex';
     };
   }>('/sessions', async (req, reply) => {
-    const { project_path, task, project_id, mode, agent_type, cli_type } = req.body as any;
+    const { project_path, task, project_id, mode, cli_type } = req.body as any;
     const cliType = cli_type === 'codex' ? 'codex' : 'claude';
-    const requestedMode = mode === 'terminal' ? 'terminal' : mode === 'agent' ? 'agent' : 'session';
+    if (mode !== undefined && mode !== 'session' && mode !== 'terminal') return reply.status(400).send({ error: 'mode must be session or terminal' });
+    const requestedMode = mode === 'terminal' ? 'terminal' : 'session';
     const usage = getUserTabUsage(req.user!.id);
     if (!usage.allowed) return reply.status(429).send({ error: `已达到活动标签页上限（${usage.limit}）` });
 
@@ -439,15 +450,6 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
 
     if (!project_path || !task) {
       return reply.status(400).send({ error: 'project_path and task are required' });
-    }
-
-    if (mode === 'agent') {
-      if (!agent_type) {
-        return reply.status(400).send({ error: 'agent_type is required for agent mode' });
-      }
-      const session = sessionManager.createSession(canonicalProjectPath, `Agent (${agent_type}): ${task}`, resolvedProjectId, cliType, req.user!.id, 'agent', agent_type);
-      registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task, mode: 'agent', agentType: agent_type, projectId: resolvedProjectId, cliType });
-      return { ok: true, session };
     }
 
     const session = sessionManager.createSession(canonicalProjectPath, task, resolvedProjectId, cliType, req.user!.id, 'session');
@@ -655,83 +657,5 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return { rendered };
   });
 
-  // Pop out a session into an external terminal emulator
-  app.post<{
-    Params: { id: string };
-  }>('/sessions/:id/pop-out', async (req, reply) => {
-    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
-    const session = sessionManager.getSession(req.params.id);
-    if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
 
-    const sessionId = req.params.id;
-    const socketPath = sessionManager.getSessionSocketPath(sessionId);
-    const tmuxSession = sessionManager.getSessionTmuxName(sessionId);
-
-    // Build the attach command — prefer dtach socket, fall back to tmux session
-    let attachCmd: string;
-    if (socketPath) {
-      attachCmd = `dtach -a ${socketPath} -Ez`;
-    } else if (tmuxSession) {
-      const tmuxServer = getSessionTmuxServer(req.params.id);
-      attachCmd = `tmux -L ${tmuxServer} attach-session -t ${tmuxSession}`;
-    } else {
-      return reply.status(400).send({ error: 'No dtach socket or tmux session found' });
-    }
-
-    // Platform-specific terminal emulator lists
-    const terminals = platform() === 'darwin'
-      ? [
-          // macOS: use osascript to open Terminal.app or iTerm2
-          { cmd: 'osascript', args: ['-e', `tell application "iTerm2" to create window with default profile command "${attachCmd}"`] },
-          { cmd: 'osascript', args: ['-e', `tell application "Terminal" to do script "${attachCmd}"`] },
-        ]
-      : [
-          // Linux: try common terminal emulators
-          { cmd: 'tilix', args: ['-e', attachCmd] },
-          { cmd: 'gnome-terminal', args: ['--', 'bash', '-c', attachCmd] },
-          { cmd: 'konsole', args: ['-e', attachCmd] },
-          { cmd: 'xfce4-terminal', args: ['-e', attachCmd] },
-          { cmd: 'alacritty', args: ['-e', 'bash', '-c', attachCmd] },
-          { cmd: 'xterm', args: ['-e', attachCmd] },
-        ];
-
-    // Try each terminal until one launches successfully
-    return new Promise((resolve) => {
-      let resolved = false;
-      let idx = 0;
-      function tryNext(): void {
-        if (idx >= terminals.length) {
-          resolved = true;
-          resolve({ ok: false, error: 'No terminal emulator found' });
-          return;
-        }
-        const t = terminals[idx++];
-        const child = spawn(t.cmd, t.args, {
-          detached: true,
-          stdio: 'ignore',
-        });
-        child.unref();
-
-        let failed = false;
-        child.on('error', (err: NodeJS.ErrnoException) => {
-          failed = true;
-          if (err.code === 'ENOENT') {
-            tryNext(); // not installed, try next
-          } else if (!resolved) {
-            resolved = true;
-            resolve({ ok: false, error: err.message });
-          }
-        });
-
-        // If no error within 300ms, assume it launched — release AgentManager's hold
-        setTimeout(() => {
-          if (failed || resolved) return;
-          resolved = true;
-          sessionManager.releaseSession(sessionId);
-          resolve({ ok: true, terminal: t.cmd, socketPath: socketPath || tmuxSession });
-        }, 300);
-      }
-      tryNext();
-    });
-  });
 };

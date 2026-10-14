@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { getDb } from '../db/index.js';
-import { isAdmin } from '../auth.js';
+import { requirePermission } from '../services/rbac.js';
 import {
   loadRecentPromptContext,
   MAX_PROMPT_CONTEXT_ROUNDS,
@@ -307,7 +307,7 @@ export const promptEnhancerRoutes: FastifyPluginAsync = async (app) => {
   app.get('/prompt-enhancer/config', async () => ({ config: safeConfig(readConfig()) }));
 
   app.put<{ Body: Record<string, unknown> }>('/prompt-enhancer/config', async (req, reply) => {
-    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
+    if (!requirePermission(req, reply, 'settings', 'write')) return;
     if (!isRecord(req.body)) return reply.status(400).send({ error: 'configuration object is required' });
     try {
       return { ok: true, config: safeConfig(updateConfig(req.body)) };
@@ -317,7 +317,7 @@ export const promptEnhancerRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post('/prompt-enhancer/test', async (req, reply) => {
-    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
+    if (!requirePermission(req, reply, 'settings', 'write')) return;
     try {
       const config = requireReadyConfig();
       await callModel(config, 'Reply with the single word: ready', 'base');
@@ -328,7 +328,7 @@ export const promptEnhancerRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post<{ Body: { endpoint?: unknown; api_key?: unknown } }>('/prompt-enhancer/models', async (req, reply) => {
-    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
+    if (!requirePermission(req, reply, 'settings', 'write')) return;
     const body = req.body || {};
     if (body.endpoint !== undefined && typeof body.endpoint !== 'string') return reply.status(400).send({ error: 'endpoint must be a string' });
     if (body.api_key !== undefined && (typeof body.api_key !== 'string' || body.api_key.length > 2_000)) {

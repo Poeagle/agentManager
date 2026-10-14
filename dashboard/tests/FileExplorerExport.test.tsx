@@ -44,6 +44,8 @@ describe('FileExplorer export menu', () => {
 
     const file = await screen.findByText('notes.txt');
     fireEvent.contextMenu(file);
+    expect(screen.queryByRole('button', { name: 'Open in OS file manager' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open in terminal' })).not.toBeInTheDocument();
     const exportAction = screen.getByRole('button', { name: 'Export to local folder…' });
     expect(exportAction).toBeEnabled();
     await user.click(exportAction);

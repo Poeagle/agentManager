@@ -5,8 +5,9 @@ import { readdir, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 
 import { dirname, join, resolve, basename } from 'path';
 import { homedir } from 'os';
 import { existsSync } from 'fs';
-import { installDefaultAgents } from '../data/default-agents.js';
 import { getProjectToolAccess, isAdmin as isAdminUser, setProjectToolAccess, removeProjectUserAccess, userOwnsProject, userProjectIds, userCanCreateProjects } from '../auth.js';
+import { userHasPermission } from '../services/rbac.js';
+import { SESSION_CLIENTS, parseSessionClients } from '../services/session-clients.js';
 import { killSession } from '../services/session-manager.js';
 import { config } from '../config.js';
 
@@ -17,7 +18,6 @@ export interface Project {
   description: string | null;
   session_prompt: string | null;
   openclaw_prompt: string | null;
-  default_web_url: string | null;
   color: string;
   owner_id: string | null;
   created_at: string;
@@ -27,10 +27,8 @@ export interface Project {
 interface ProjectAccessRow {
   user_id: string;
   can_session: number;
-  can_agent: number;
   can_terminal: number;
-  can_claude: number;
-  can_codex: number;
+  session_clients: string;
   granted_by: string | null;
   created_at: string;
   updated_at: string;
@@ -59,7 +57,7 @@ async function canonicalProjectDirectory(input: string): Promise<string> {
 /** Export current DB projects to the config file (for portability across DB resets) */
 async function exportToConfig(): Promise<void> {
   const db = getDb();
-  const rows = db.prepare('SELECT name, path, description, session_prompt, openclaw_prompt, default_web_url FROM projects ORDER BY name COLLATE NOCASE').all();
+  const rows = db.prepare('SELECT name, path, description, session_prompt, openclaw_prompt FROM projects ORDER BY name COLLATE NOCASE').all();
   const destination = projectsFile();
   await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
   const temporary = `${destination}.${process.pid}.tmp`;
@@ -88,10 +86,8 @@ function parseAccessRow(row: ProjectAccessRow | undefined) {
   if (!row) return null;
   return {
     can_session: toBool(row.can_session),
-    can_agent: toBool(row.can_agent),
     can_terminal: toBool(row.can_terminal),
-    can_claude: toBool(row.can_claude),
-    can_codex: toBool(row.can_codex),
+    session_clients: toBool(row.can_session) ? parseSessionClients(row.session_clients) : [],
     granted_by: row.granted_by,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -151,8 +147,8 @@ export async function initProjects(): Promise<void> {
     }
     const insert = db.prepare(`
       INSERT OR IGNORE INTO projects
-        (id, name, path, description, session_prompt, openclaw_prompt, default_web_url)
-      VALUES (@id, @name, @path, @description, @session_prompt, @openclaw_prompt, @default_web_url)
+        (id, name, path, description, session_prompt, openclaw_prompt)
+      VALUES (@id, @name, @path, @description, @session_prompt, @openclaw_prompt)
     `);
     const imported = db.transaction((rows: Array<Record<string, unknown>>) => {
       let changes = 0;
@@ -164,7 +160,6 @@ export async function initProjects(): Promise<void> {
           description: row.description || null,
           session_prompt: row.session_prompt || null,
           openclaw_prompt: row.openclaw_prompt || null,
-          default_web_url: row.default_web_url || null,
         }).changes;
       }
       return changes;
@@ -181,7 +176,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
   // List projects
   app.get('/projects', async (req) => {
     const db = getDb();
-    const isAdmin = isAdminUser(req.user!.id);
+    const isAdmin = isAdminUser(req.user!.id) || userHasPermission(req.user!.id, 'project_access');
     const allowedProjectIds = [...userProjectIds(req.user!.id)];
     if (!isAdmin && allowedProjectIds.length === 0) return { projects: [] };
 
@@ -193,12 +188,11 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
         const access = getProjectToolAccess(req.user!.id, project.id);
         return {
           ...project,
+          owner: project.owner_id ? db.prepare('SELECT id, username, display_name FROM users WHERE id = ?').get(project.owner_id) ?? null : null,
           tool_access: access ? {
             can_session: access.canSession,
-            can_agent: access.canAgent,
             can_terminal: access.canTerminal,
-            can_claude: access.canClaude,
-            can_codex: access.canCodex,
+            session_clients: access.sessionClients,
           } : null,
         };
       }),
@@ -215,10 +209,10 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
 
   // Create project
   app.post<{
-    Body: { name: string; path: string; description?: string; session_prompt?: string; openclaw_prompt?: string; default_web_url?: string; color?: string };
+    Body: { name: string; path: string; description?: string; session_prompt?: string; openclaw_prompt?: string; color?: string };
   }>('/projects', async (req, reply) => {
     if (!userCanCreateProjects(req.user!.id)) return reply.status(403).send({ error: '没有添加项目权限，请联系管理员' });
-    const { name, path, description, session_prompt, openclaw_prompt, default_web_url, color } = req.body ?? {};
+    const { name, path, description, session_prompt, openclaw_prompt, color } = req.body ?? {};
     if (typeof name !== 'string' || !name.trim() || name.length > 128 || typeof path !== 'string' || !path.trim()) {
       return reply.status(400).send({ error: 'A valid name and path are required' });
     }
@@ -235,17 +229,15 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     const existing = db.prepare('SELECT id FROM projects WHERE path = ?').get(canonicalPath);
     if (existing) return reply.status(409).send({ error: 'Project with this path already exists' });
 
-    db.prepare('INSERT INTO projects (id, name, path, description, session_prompt, openclaw_prompt, default_web_url, color, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, name.trim(), canonicalPath, description || null, session_prompt || null, openclaw_prompt || null, default_web_url || null, color || '', req.user!.id);
+    db.prepare('INSERT INTO projects (id, name, path, description, session_prompt, openclaw_prompt, color, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, name.trim(), canonicalPath, description || null, session_prompt || null, openclaw_prompt || null, color || '', req.user!.id);
 
     setProjectToolAccess({
       projectId: id,
       userId: req.user!.id,
       canSession: true,
-      canAgent: true,
       canTerminal: true,
-      canClaude: true,
-      canCodex: true,
+      sessionClients: SESSION_CLIENTS.map((client) => client.id),
       grantedBy: req.user!.id,
     });
     // A new registered project must immediately become invisible inside every
@@ -255,16 +247,13 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
     await exportToConfig();
 
-    // Ensure default agents are installed (no-op if marker exists)
-    try { installDefaultAgents(); } catch { /* non-fatal */ }
-
     return { ok: true, project };
   });
 
   // Update project
   app.patch<{
     Params: { id: string };
-    Body: { name?: string; description?: string; session_prompt?: string | null; openclaw_prompt?: string | null; default_web_url?: string | null; color?: string };
+    Body: { name?: string; description?: string; session_prompt?: string | null; openclaw_prompt?: string | null; color?: string };
   }>('/projects/:id', async (req, reply) => {
     const db = getDb();
     const existing = findProjectById(db, req.params.id);
@@ -279,7 +268,6 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     if (req.body.description !== undefined) { updates.push('description = ?'); params.push(req.body.description); }
     if (req.body.session_prompt !== undefined) { updates.push('session_prompt = ?'); params.push(req.body.session_prompt); }
     if (req.body.openclaw_prompt !== undefined) { updates.push('openclaw_prompt = ?'); params.push(req.body.openclaw_prompt); }
-    if (req.body.default_web_url !== undefined) { updates.push('default_web_url = ?'); params.push(req.body.default_web_url); }
     if (req.body.color !== undefined) { updates.push('color = ?'); params.push(req.body.color); }
 
     if (updates.length === 0) return reply.status(400).send({ error: 'Nothing to update' });
@@ -328,66 +316,13 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     return { ok: true };
   });
 
-  // List available agent types for a project (reads .claude/agents/*.md from project + global)
-  app.get<{
-    Params: { id: string };
-  }>('/projects/:id/agents', async (req, reply) => {
-    const db = getDb();
-    const project = findProjectById(db, req.params.id);
-    if (!project || !canReadProject(req.user!.id, req.params.id)) return reply.status(404).send({ error: 'Project not found' });
-
-    const agents: { name: string; type: string; description: string; category: string }[] = [];
-
-    const walkDir = async (dir: string, category: string) => {
-      if (!existsSync(dir)) return;
-      try {
-        const entries = await readdir(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = join(dir, entry.name);
-          if (entry.isDirectory()) {
-            await walkDir(fullPath, entry.name);
-          } else if (entry.name.endsWith('.md')) {
-            try {
-              const content = await readFile(fullPath, 'utf-8');
-              const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
-              if (frontmatterMatch) {
-                const fm = frontmatterMatch[1];
-                const name = fm.match(/^name:\s*(.+)$/m)?.[1]?.trim()?.replace(/^["']|["']$/g, '');
-                const type = fm.match(/^type:\s*(.+)$/m)?.[1]?.trim()?.replace(/^["']|["']$/g, '') || '';
-                const desc = fm.match(/^description:\s*(.+)$/m)?.[1]?.trim()?.replace(/^["']|["']$/g, '') || '';
-                if (name) {
-                  agents.push({ name, type, description: desc, category });
-                }
-              }
-            } catch {}
-          }
-        }
-      } catch {}
-    };
-
-    // Scan both global and project-level agent directories
-    await walkDir(join(homedir(), '.claude', 'agents'), 'global');
-    await walkDir(join(project.path, '.claude', 'agents'), 'project');
-
-    // Deduplicate by name (project-level overrides global)
-    const seen = new Set<string>();
-    const unique = agents.filter(a => {
-      if (seen.has(a.name)) return false;
-      seen.add(a.name);
-      return true;
-    });
-    unique.sort((a, b) => a.name.localeCompare(b.name));
-
-    return { agents: unique };
-  });
-
   // Read project-level tool access grants
   app.get<{
     Params: { id: string };
   }>('/projects/:id/access', async (req, reply) => {
     const db = getDb();
     const project = findProjectById(db, req.params.id);
-    if (!project || !canWriteProject(req.user!.id, project)) {
+    if (!project || (!userHasPermission(req.user!.id, 'project_access', 'read') && !canWriteProject(req.user!.id, project))) {
       return reply.status(404).send({ error: 'Project not found' });
     }
 
@@ -395,10 +330,8 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
       SELECT
         a.user_id,
         a.can_session,
-        a.can_agent,
         a.can_terminal,
-        a.can_claude,
-        a.can_codex,
+        a.session_clients,
         a.granted_by,
         a.updated_at,
         a.created_at,
@@ -420,7 +353,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
       owner_id: project.owner_id,
     }));
 
-    return { access };
+    return { access, clients: SESSION_CLIENTS };
   });
 
   // Update/create a project's user grant
@@ -428,15 +361,13 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     Params: { id: string; userId: string };
     Body: {
       can_session: boolean;
-      can_agent: boolean;
       can_terminal: boolean;
-      can_claude: boolean;
-      can_codex: boolean;
+      session_clients: string[];
     };
   }>('/projects/:id/access/:userId', async (req, reply) => {
     const db = getDb();
     const project = findProjectById(db, req.params.id);
-    if (!project || !canWriteProject(req.user!.id, project)) {
+    if (!project || (!userHasPermission(req.user!.id, 'project_access', 'write') && !canWriteProject(req.user!.id, project))) {
       return reply.status(404).send({ error: 'Project not found' });
     }
 
@@ -444,21 +375,23 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     if (!target) return reply.status(404).send({ error: 'User not found' });
 
     const body = req.body || {};
-    const keys: Array<keyof typeof body> = ['can_session', 'can_agent', 'can_terminal', 'can_claude', 'can_codex'];
+    const keys: Array<keyof typeof body> = ['can_session', 'can_terminal'];
     for (const key of keys) {
       if (typeof body[key] !== 'boolean') {
         return reply.status(400).send({ error: `Field ${key} is required` });
       }
     }
 
+    if (!Array.isArray(body.session_clients) || !body.session_clients.every((id) => SESSION_CLIENTS.some((client) => client.id === id))
+      || (body.can_session && body.session_clients.length === 0)) {
+      return reply.status(400).send({ error: 'Session 必须选择至少一个有效客户端' });
+    }
     setProjectToolAccess({
       projectId: req.params.id,
       userId: req.params.userId,
       canSession: body.can_session,
-      canAgent: body.can_agent,
       canTerminal: body.can_terminal,
-      canClaude: body.can_claude,
-      canCodex: body.can_codex,
+      sessionClients: body.session_clients,
       grantedBy: req.user!.id,
     });
     // The hidden-path list is fixed when a process starts, so grant changes
@@ -470,10 +403,8 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
       access: {
         user_id: req.params.userId,
         can_session: body.can_session,
-        can_agent: body.can_agent,
         can_terminal: body.can_terminal,
-        can_claude: body.can_claude,
-        can_codex: body.can_codex,
+        session_clients: body.can_session ? [...new Set(body.session_clients)] : [],
       },
     };
   });
@@ -484,7 +415,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
   }>('/projects/:id/access/:userId', async (req, reply) => {
     const db = getDb();
     const project = findProjectById(db, req.params.id);
-    if (!project || !canWriteProject(req.user!.id, project)) {
+    if (!project || (!userHasPermission(req.user!.id, 'project_access', 'write') && !canWriteProject(req.user!.id, project))) {
       return reply.status(404).send({ error: 'Project not found' });
     }
 

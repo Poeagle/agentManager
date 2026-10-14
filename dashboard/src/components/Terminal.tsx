@@ -6,13 +6,11 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import {
   RotateCcw,
-  ExternalLink,
   ZoomIn,
   ZoomOut,
   Loader2,
   Check,
   AlertCircle,
-  Paperclip,
   Copy,
   ShieldCheck,
   Undo2,
@@ -78,8 +76,7 @@ function openTerminalLink(url: string) {
   );
   if (!confirmed) return;
 
-  // In a regular browser this opens a real tab. The Tauri-only interceptor in
-  // main.tsx routes it through the host when running inside the desktop webview.
+  // Open the link on the device viewing the dashboard.
   window.open(parsed.href, '_blank', 'noopener,noreferrer');
 }
 
@@ -101,13 +98,25 @@ function sanitizeTerminalOutput(data: string) {
     .split('\u001b[?1004l').join('');
 }
 
-// Live progress for a pasted/dropped file being shared with the session.
-interface UploadItem {
+function readFileAsDataUrl(file: File, signal: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new DOMException('Upload cancelled', 'AbortError'));
+    const reader = new FileReader();
+    const cleanup = () => signal.removeEventListener('abort', abort);
+    const abort = () => reader.abort();
+    signal.addEventListener('abort', abort, { once: true });
+    reader.onload = () => { cleanup(); resolve(reader.result as string); };
+    reader.onerror = () => { cleanup(); reject(reader.error || new Error('Failed to read file')); };
+    reader.onabort = () => { cleanup(); reject(new DOMException('Upload cancelled', 'AbortError')); };
+    reader.readAsDataURL(file);
+  });
+}
+
+interface PasteUpload {
   id: number;
+  sessionId: string;
   name: string;
-  phase: 'reading' | 'uploading' | 'done' | 'error';
-  percent: number;      // 0..100, meaningful when `determinate`
-  determinate: boolean; // false → render an indeterminate (animated) bar
+  phase: 'reading' | 'uploading' | 'error';
   error?: string;
 }
 
@@ -157,21 +166,23 @@ interface TerminalProps {
   /** CLI type — Codex sessions need capture-pane refresh on tab switch/resize */
   cliType?: 'claude' | 'codex';
   onExit?: (exitCode: number) => void;
+  /** Fires after the terminal protocol handshake, rather than socket open. */
+  onReady?: (sessionId: string) => void;
+  onConnectionError?: (sessionId: string, message: string) => void;
   onReconnect?: () => void;
-  onPopOut?: () => void;
 }
 
-export function Terminal({ sessionId, visible = true, suspended = false, passiveResize = false, hideCursor = false, cliType, onExit, onReconnect, onPopOut }: TerminalProps) {
+export function Terminal({ sessionId, visible = true, suspended = false, passiveResize = false, hideCursor = false, cliType, onExit, onReady, onConnectionError, onReconnect }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const [connected, setConnected] = useState(false);
-  // Progress of in-flight pasted/dropped file uploads (rendered as an overlay).
-  const [uploads, setUploads] = useState<UploadItem[]>([]);
-  const uploadSeqRef = useRef(0);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const uploadFileRef = useRef<(file: File) => void>(() => {});
+  const [pasteUploads, setPasteUploads] = useState<PasteUpload[]>([]);
+  const pasteUploadSeqRef = useRef(0);
+  const activePasteUploadsRef = useRef(new Set<AbortController>());
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   const nativePromptRef = useRef(new NativePromptBridge());
   const enhanceNativePromptRef = useRef<(() => void) | null>(null);
   const replacePromptInputRef = useRef<(data: string, composerLineCount?: number) => Promise<PromptReplacementResult>>(
@@ -217,6 +228,10 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   cliTypeRef.current = cliType;
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  const onConnectionErrorRef = useRef(onConnectionError);
+  onConnectionErrorRef.current = onConnectionError;
   const lastSentSizeRef = useRef<{ socket: WebSocket; cols: number; rows: number } | null>(null);
   const appliedCursorRef = useRef<number | null>(null);
   const lastVisibleSizeRef = useRef<{ cols: number; rows: number } | null>(null);
@@ -359,9 +374,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     term.loadAddon(fitAddon);
     term.open(containerRef.current);
 
-    // WebGL renderer — faster glyph rendering via GPU. Causes ~10% idle CPU
-    // in Tauri/WebKitGTK (compositor polls GL surfaces at vsync), but
-    // Chromium (Electron/browser) handles idle GL contexts properly.
+    // WebGL renders terminal glyphs through the browser's GPU.
     try {
       const webglAddon = new WebglAddon();
       webglAddon.onContextLoss(() => {
@@ -666,7 +679,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       // well can race Chromium's paste event and submit the same text twice.
       if (modifier && key === 'v') {
         // Returning false keeps xterm from interpreting the key while leaving
-        // the browser default intact, so text and files reach pasteHandler.
+        // the browser default intact, so text reaches pasteHandler.
         return false;
       }
       return true;
@@ -675,122 +688,83 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     // Capture on the stable terminal container, before xterm's hidden textarea
     // handles the event. The textarea can be recreated as xterm changes state.
     const pasteTarget = containerRef.current;
-    const dropEl = containerRef.current;
+    const activePasteUploads = activePasteUploadsRef.current;
+    let disposed = false;
 
-    // The server-side CLI can't see the browser clipboard / OS drag, so any
-    // pasted or dropped file is uploaded, saved into the project, and its path
-    // becomes part of the tracked native input so the active CLI can inspect it.
-    const injectPath = (p?: string) => {
-      if (!p) return;
-      const needsQuote = /[\s"\\]/.test(p);
-      const q = needsQuote ? `"${p.replace(/(["\\])/g, '\\$1')}"` : p;
-      if (!replaceSelectedNativePrompt(`${q} `, true)) sendTrackedTerminalInput(`${q} `, true);
-    };
-    const uploadFile = (file: File) => {
-      const uid = ++uploadSeqRef.current;
-      const isImage = file.type.startsWith('image/');
-      const name = file.name || (isImage ? 'pasted image' : 'file');
-      setUploads(prev => [...prev, { id: uid, name, phase: 'reading', percent: 0, determinate: false }]);
-      const patch = (u: Partial<UploadItem>) =>
-        setUploads(prev => prev.map(it => (it.id === uid ? { ...it, ...u } : it)));
-      const dismissAfter = (ms: number) =>
-        setTimeout(() => setUploads(prev => prev.filter(it => it.id !== uid)), ms);
+    const uploadFile = async (file: File) => {
+      const id = ++pasteUploadSeqRef.current;
+      const image = /^(image\/(png|jpeg|gif|webp))$/i.test(file.type);
+      const maxBytes = image ? 10 * 1024 * 1024 : 35 * 1024 * 1024;
+      const name = file.name || (image ? '截图' : '文件');
+      const patch = (change: Partial<PasteUpload>) => {
+        if (!disposed) setPasteUploads(previous => previous.map(item => item.id === id ? { ...item, ...change } : item));
+      };
+      setPasteUploads(previous => [...previous.filter(item => item.sessionId === sessionId && item.phase !== 'error'), { id, sessionId, name, phase: 'reading' }]);
+      if (file.size > maxBytes) {
+        patch({ phase: 'error', error: `文件过大，最大允许 ${image ? 10 : 35} MB` });
+        return;
+      }
 
-      const reader = new FileReader();
-      reader.onload = async () => {
-        try {
-          const dataUrl = reader.result as string;
-          patch({ phase: 'uploading', percent: 0, determinate: false });
-          const onProgress = (f: number) =>
-            patch({ phase: 'uploading', percent: Math.round(f * 100), determinate: true });
-          // The image endpoint validates formats that Codex/Claude can inspect
-          // directly. Other image formats still use the generic file endpoint.
-          const usesImageEndpoint = /^(image\/(png|jpeg|jpg|gif|webp))$/i.test(file.type);
-          const res = usesImageEndpoint
-            ? await api.sessions.pasteImage(sessionId, dataUrl, onProgress)
-            : await api.sessions.pasteFile(sessionId, dataUrl, file.name, onProgress);
-          injectPath(res?.path);
-          patch({ phase: 'done', percent: 100, determinate: true });
-          dismissAfter(1800);
-        } catch (err) {
-          console.error('[paste-file] upload failed:', err);
-          patch({ phase: 'error', error: err instanceof Error ? err.message : 'Upload failed' });
-          dismissAfter(6000);
-        }
-      };
-      reader.onerror = () => {
-        patch({ phase: 'error', error: 'Failed to read file' });
-        dismissAfter(6000);
-      };
-      reader.readAsDataURL(file);
+      const controller = new AbortController();
+      activePasteUploads.add(controller);
+      try {
+        const dataUrl = await readFileAsDataUrl(file, controller.signal);
+        if (controller.signal.aborted) return;
+        patch({ phase: 'uploading' });
+        const result = image
+          ? await api.sessions.pasteImage(sessionId, dataUrl, controller.signal)
+          : await api.sessions.pasteFile(sessionId, dataUrl, file.name, controller.signal);
+        if (disposed || controller.signal.aborted || sessionIdRef.current !== sessionId
+          || !visibleRef.current || isSuspendedRef.current) return;
+        const path = result.path;
+        const quoted = /[\s"\\]/.test(path) ? `"${path.replace(/(["\\])/g, '\\$1')}"` : path;
+        if (!replaceSelectedNativePrompt(`${quoted} `, true)) sendTrackedTerminalInput(`${quoted} `, true);
+        setPasteUploads(previous => previous.filter(item => item.id !== id));
+      } catch (error) {
+        if (controller.signal.aborted || disposed || sessionIdRef.current !== sessionId) return;
+        patch({ phase: 'error', error: error instanceof Error ? error.message : '上传失败' });
+      } finally {
+        activePasteUploads.delete(controller);
+        if (controller.signal.aborted && !disposed) setPasteUploads(previous => previous.filter(item => item.id !== id));
+      }
     };
-    uploadFileRef.current = uploadFile;
 
     const pasteHandler = (ev: Event) => {
       const ce = ev as ClipboardEvent;
-      if (!visibleRef.current) return;
-
-      // A pasted file (image or any document) takes precedence over text.
+      if (!visibleRef.current || isSuspendedRef.current) return;
       const files = Array.from(ce.clipboardData?.files || []);
-      const items = ce.clipboardData?.items;
-      if (!files.length && items) {
-        for (let i = 0; i < items.length; i++) {
-          if (items[i].kind === 'file') {
-            const f = items[i].getAsFile();
-            if (f) files.push(f);
-          }
+      if (files.length === 0) {
+        for (const item of Array.from(ce.clipboardData?.items || [])) {
+          if (item.kind !== 'file') continue;
+          const file = item.getAsFile();
+          if (file) files.push(file);
         }
       }
       if (files.length) {
         ce.preventDefault();
         ce.stopImmediatePropagation();
-        files.forEach((file) => uploadFile(file));
+        files.forEach(file => { void uploadFile(file); });
         return;
       }
-
       const text = ce.clipboardData?.getData('text/plain') || ce.clipboardData?.getData('text');
       if (text) {
         if (!replaceSelectedNativePrompt(text, true)) sendTrackedTerminalInput(text, true);
         ce.preventDefault();
         ce.stopImmediatePropagation();
-        return;
-      }
-
-      // Chromium exposes an image as an empty ClipboardEvent for
-      // Ctrl+Shift+V ("paste as plain text"). Recover it explicitly in secure
-      // contexts. On plain LAN HTTP the attachment button remains available.
-      if (navigator.clipboard?.read && window.isSecureContext) {
-        ce.preventDefault();
-        ce.stopImmediatePropagation();
-        navigator.clipboard.read().then(items => {
-          for (const item of items) {
-            const imageType = item.types.find(type => type.startsWith('image/'));
-            if (!imageType) continue;
-            item.getType(imageType).then(blob => {
-              const subtype = imageType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
-              uploadFile(new File([blob], `clipboard.${subtype}`, { type: imageType }));
-            }).catch(() => {});
-          }
-        }).catch(() => {});
       }
     };
     pasteTarget.addEventListener('paste', pasteHandler, { capture: true });
-
-    // Drag-and-drop onto the terminal — the reliable path for non-image files,
-    // since browsers don't always expose pasted file bytes but drop always does.
-    const dragOverHandler = (ev: DragEvent) => {
-      if (ev.dataTransfer?.types?.includes('Files')) ev.preventDefault();
+    const dragOverHandler = (event: DragEvent) => {
+      if (event.dataTransfer?.types.includes('Files')) event.preventDefault();
     };
-    const dropHandler = (ev: DragEvent) => {
-      const files = ev.dataTransfer?.files;
-      if (files && files.length) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        Array.from(files).forEach((file) => uploadFile(file));
-      }
+    const dropHandler = (event: DragEvent) => {
+      if (!visibleRef.current || isSuspendedRef.current || !event.dataTransfer?.files.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      Array.from(event.dataTransfer.files).forEach(file => { void uploadFile(file); });
     };
-    dropEl.addEventListener('dragover', dragOverHandler);
-    dropEl.addEventListener('drop', dropHandler);
+    pasteTarget.addEventListener('dragover', dragOverHandler);
+    pasteTarget.addEventListener('drop', dropHandler);
 
     termRef.current = term;
     fitRef.current = fitAddon;
@@ -803,7 +777,6 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     let writeInProgress = false;
     let writeFrame: number | null = null;
     let outputWasDropped = false;
-    let disposed = false;
 
     function scheduleNextWrite() {
       if (disposed || writeInProgress || writeFrame !== null) return;
@@ -957,6 +930,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         protocolReady = true;
         reconnectAttempts = 0;
         setConnected(true);
+        onReadyRef.current?.(sessionId);
         fitAddon.fit();
         sendCurrentSize();
         if (visibleRef.current && !promptPreviewOpenRef.current) term.focus();
@@ -1022,15 +996,12 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
               }
               break;
             case 'exit':
-              if (msg.reason === 'popped-out') {
-                enqueueOutput(`\r\n\x1b[36m[Popped out to system terminal]\x1b[0m\r\n`);
-              } else {
-                enqueueOutput(`\r\n\x1b[33m[Process exited with code ${msg.exitCode}]\x1b[0m\r\n`);
-              }
+              enqueueOutput(`\r\n\x1b[33m[Process exited with code ${msg.exitCode}]\x1b[0m\r\n`);
               intentionalClose = true;
               onExitRef.current?.(msg.exitCode);
               break;
             case 'error':
+              onConnectionErrorRef.current?.(sessionId, msg.message || 'Unable to connect to the restored session.');
               finishPromptReplacement({ ok: false, message: msg.message || '终端输入替换失败。' });
               enqueueOutput(`\r\n\x1b[31m[Error: ${msg.message}]\x1b[0m\r\n`);
               protocolReady = false;
@@ -1071,6 +1042,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           }, delay);
         } else {
           enqueueOutput('\r\n\x1b[31m[Connection lost — max reconnect attempts reached]\x1b[0m\r\n');
+          onConnectionErrorRef.current?.(sessionId, 'Unable to connect to the restored session. Use Reconnect to try again.');
         }
       };
     }
@@ -1180,9 +1152,10 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       replacePromptInputRef.current = async () => ({ ok: false, message: '终端尚未连接' });
       finishPromptReplacement({ ok: false, message: '终端已关闭，请检查输入框内容。' });
       pasteTarget.removeEventListener('paste', pasteHandler, { capture: true } as EventListenerOptions);
-      if (uploadFileRef.current === uploadFile) uploadFileRef.current = () => {};
-      dropEl.removeEventListener('dragover', dragOverHandler);
-      dropEl.removeEventListener('drop', dropHandler);
+      pasteTarget.removeEventListener('dragover', dragOverHandler);
+      pasteTarget.removeEventListener('drop', dropHandler);
+      for (const controller of activePasteUploads) controller.abort();
+      activePasteUploads.clear();
       const socket = wsRef.current;
       if (socket) {
         quietCloseSockets.add(socket);
@@ -1192,6 +1165,18 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       term.dispose();
     };
   }, [sendCurrentSize, sessionId, updatePromptInputSelection]);
+
+  useEffect(() => {
+    const activePasteUploads = activePasteUploadsRef.current;
+    if (!visible || suspended) {
+      for (const controller of activePasteUploads) controller.abort();
+      activePasteUploads.clear();
+    }
+    return () => {
+      for (const controller of activePasteUploads) controller.abort();
+      activePasteUploads.clear();
+    };
+  }, [sessionId, visible, suspended]);
 
   // Suspension effect: cold terminals disconnect their transport but retain
   // the painted xterm buffer. Reconnect supplies only the missing display
@@ -1377,28 +1362,6 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       <div className="absolute top-2 right-5 z-10 flex items-center gap-2">
         {connected && !suspended && (
           <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                Array.from(e.currentTarget.files || []).forEach(file => uploadFileRef.current(file));
-                e.currentTarget.value = '';
-              }}
-            />
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                fileInputRef.current?.click();
-              }}
-              className="flex h-6 w-6 items-center justify-center rounded text-xs transition-all opacity-70 hover:!opacity-100"
-              style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
-              title="Attach images or files"
-              aria-label="Attach images or files"
-            >
-              <Paperclip className="w-3 h-3" />
-            </button>
             <button
               onClick={() => {
                 const term = termRef.current;
@@ -1436,19 +1399,6 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
               <ZoomIn className="w-3 h-3" />
             </button>
             <button
-              onClick={async () => {
-                try {
-                  const result = await api.sessions.popOut(sessionId);
-                  if (result.ok) onPopOut?.();
-                } catch { /* ignore */ }
-              }}
-              className="flex items-center gap-1 px-1.5 py-1 rounded text-xs transition-all opacity-70 hover:!opacity-100"
-              style={{ background: 'var(--accent)', color: 'white' }}
-              title="Pop out to system terminal"
-            >
-              <ExternalLink className="w-3 h-3" />
-            </button>
-            <button
               onClick={hardRefresh}
               className="flex items-center gap-1 px-1.5 py-1 rounded text-xs transition-all opacity-70 hover:!opacity-100"
               style={{ background: 'var(--accent)', color: 'white' }}
@@ -1481,6 +1431,22 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           background: '#0f1117',
         }}
       />
+      {visible && !suspended && pasteUploads.filter(item => item.sessionId === sessionId).length > 0 && (
+        <div className="absolute bottom-3 right-3 z-20 flex max-w-[min(320px,calc(100%-24px))] flex-col gap-2">
+          {pasteUploads.filter(item => item.sessionId === sessionId).map(item => (
+            <div key={item.id} className="rounded-md px-3 py-2 text-xs shadow-lg"
+              style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+              role={item.phase === 'error' ? 'alert' : 'status'}>
+              <div className="flex items-center gap-2">
+                {item.phase === 'error' ? <AlertCircle className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--error)' }} />
+                  : <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
+                <span className="truncate">{item.name}: {item.phase === 'reading' ? '正在读取…' : item.phase === 'uploading' ? '正在上传…' : item.error}</span>
+                {item.phase === 'error' && <button type="button" aria-label="关闭上传错误" onClick={() => setPasteUploads(previous => previous.filter(upload => upload.id !== item.id))}><X className="h-3 w-3" /></button>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       {promptInputSelection && visible && !promptEnhancementPreview && (
         <div
           className="absolute left-3 top-3 z-20 max-w-[min(520px,calc(100%-96px))] rounded-md px-3 py-2 text-xs shadow-lg"
@@ -1729,50 +1695,6 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         return isFinal ? <button type="button" onClick={() => setPromptEnhancementProgress(null)} title="点击关闭提示" className={sharedClassName} style={sharedStyle}>{content}</button>
           : <div className={sharedClassName} style={sharedStyle}>{content}</div>;
       })()}
-      {uploads.length > 0 && (
-        <div className="absolute bottom-3 right-3 z-20 flex flex-col gap-2 pointer-events-none" style={{ maxWidth: '260px' }}>
-          {uploads.map(u => (
-            <div
-              key={u.id}
-              className="rounded-md px-3 py-2 shadow-lg text-xs"
-              style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-            >
-              <div className="flex items-center gap-2">
-                {u.phase === 'done' ? (
-                  <Check className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--success)' }} />
-                ) : u.phase === 'error' ? (
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--error)' }} />
-                ) : (
-                  <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" style={{ color: 'var(--accent)' }} />
-                )}
-                <span className="truncate flex-1" title={u.name}>{u.name}</span>
-                {u.phase === 'uploading' && u.determinate && (
-                  <span className="tabular-nums opacity-70">{u.percent}%</span>
-                )}
-              </div>
-              {u.phase === 'error' ? (
-                <div className="mt-1 text-[11px]" style={{ color: 'var(--error)' }}>{u.error || 'Upload failed'}</div>
-              ) : (
-                <>
-                  <div className="mt-1.5 h-1 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
-                    <div
-                      className={`h-full rounded-full${!u.determinate && u.phase !== 'done' ? ' upload-indeterminate' : ''}`}
-                      style={{
-                        width: u.phase === 'done' ? '100%' : u.determinate ? `${u.percent}%` : '40%',
-                        background: u.phase === 'done' ? 'var(--success)' : 'var(--accent)',
-                        transition: 'width 0.15s ease-out',
-                      }}
-                    />
-                  </div>
-                  <div className="mt-1 text-[11px] opacity-60">
-                    {u.phase === 'reading' ? 'Preparing…' : u.phase === 'uploading' ? 'Uploading…' : 'Shared with the session'}
-                  </div>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
       {showHistory && (
         <HistoryViewer sessionId={sessionId} onClose={() => setShowHistory(false)} />
       )}

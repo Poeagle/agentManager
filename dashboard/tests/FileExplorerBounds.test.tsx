@@ -22,7 +22,7 @@ describe('project explorer boundaries', () => {
     expect(screen.getByTitle('Parent directory')).toBeDisabled();
     fireEvent.click(screen.getByTitle('Parent directory'));
     expect(api.files.list).toHaveBeenCalledTimes(1);
-    expect(api.files.list).toHaveBeenCalledWith('/project', false, 'project-1');
+    expect(api.files.list).toHaveBeenCalledWith('/project', true, 'project-1');
   });
 
   it.each(['/home', '/project-other', '/project/../home', '../project', '/'])('refuses manual navigation to %s', async path => {
@@ -42,7 +42,7 @@ describe('project explorer boundaries', () => {
     const input = screen.getByDisplayValue('/project');
     fireEvent.change(input, { target: { value: '/project/reports/./' } });
     fireEvent.submit(input.closest('form')!);
-    await waitFor(() => expect(api.files.list).toHaveBeenCalledWith('/project/reports', false));
+    await waitFor(() => expect(api.files.list).toHaveBeenCalledWith('/project/reports', true));
     expect(screen.getByTitle('Parent directory')).toBeEnabled();
     fireEvent.click(screen.getByTitle('Parent directory'));
     await waitFor(() => expect(input).toHaveValue('/project'));
@@ -67,7 +67,7 @@ describe('project explorer boundaries', () => {
     localStorage.setItem('agentmanager-explorer-valid', JSON.stringify({ currentPath: '/project/reports', expandedPaths: [] }));
     render(<FileExplorer rootPath="/project" instanceId="valid" />);
     await screen.findByText('No files found');
-    expect(api.files.list).toHaveBeenCalledWith('/project/reports', false);
+    expect(api.files.list).toHaveBeenCalledWith('/project/reports', true);
   });
 
   it('ignores external file-open requests', async () => {

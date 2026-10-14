@@ -1,14 +1,14 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import { mkdirSync } from 'fs';
-import { join } from 'path';
+import { mkdirSync, readFileSync } from 'fs';
+import { dirname, join } from 'path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { authHook, createSession, createUser, findUserById, type User } from '../src/auth.js';
 import { closeDb, getDb, initDb } from '../src/db/index.js';
 import { projectRoutes } from '../src/routes/projects.js';
 import { userRoutes } from '../src/routes/users.js';
 import { createTestDatabase } from './helpers/database.js';
+import { config } from '../src/config.js';
 
-vi.mock('../src/data/default-agents.js', () => ({ installDefaultAgents: vi.fn() }));
 
 let app: FastifyInstance;
 let cleanup: () => void;
@@ -71,6 +71,22 @@ it('allows an administrator to grant creation and browsing without changing the 
 it('keeps administrators allowed and validates the permission value', async () => {
   for (const value of ['true', 1, null]) expect((await grant(value)).statusCode).toBe(400);
   expect((await createProject(adminCookie)).statusCode).toBe(200);
+});
+
+it('does not persist, return or export the removed browser configuration', async () => {
+  const response = await app.inject({ method: 'POST', url: '/api/projects', headers: { cookie: adminCookie },
+    payload: { name: 'Project without browser', path: projectPath, default_web_url: 'https://example.com', description: 'Keep description' } });
+  expect(response.statusCode).toBe(200);
+  const project = response.json().project;
+  expect(project).not.toHaveProperty('default_web_url');
+  expect(project.description).toBe('Keep description');
+  const edited = await app.inject({ method: 'PATCH', url: `/api/projects/${project.id}`, headers: { cookie: adminCookie },
+    payload: { name: 'Renamed project', default_web_url: 'https://other.example.com' } });
+  expect(edited.statusCode).toBe(200);
+  expect(edited.json().project).not.toHaveProperty('default_web_url');
+  const exported = JSON.parse(readFileSync(join(dirname(config.dbPath), 'projects.json'), 'utf8'));
+  expect(exported.projects[0]).toMatchObject({ name: 'Renamed project', description: 'Keep description' });
+  expect(exported.projects[0]).not.toHaveProperty('default_web_url');
 });
 
 it('accepts the permission when creating a user and exposes it in the user list', async () => {

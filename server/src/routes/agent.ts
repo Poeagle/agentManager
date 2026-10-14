@@ -9,9 +9,10 @@ import { getTracker, getOrCreateTracker } from '../services/session-state.js';
 import type { SessionState } from '../services/session-state.js';
 import { readSessionCookie, userCanUseSessionTool } from '../auth.js';
 import { registerUserConnection } from '../services/user-connections.js';
+import { requirePermission } from '../services/rbac.js';
 
-function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' | 'agent' {
-  if (mode === 'terminal' || mode === 'agent') return mode;
+function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
+  if (mode === 'terminal') return mode;
   return 'session';
 }
 
@@ -79,8 +80,8 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version: '2.1.0',
-    updatedAt: '2026-08-24',
+    version: '2.3.0',
+    updatedAt: '2026-10-13',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, Codex quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
@@ -94,10 +95,11 @@ export function getAgentApiContract() {
       security: 'Never put credentials or cookie values in an agent prompt, logs, or source control.',
     },
     authorization: {
+      platform: 'Platform functions use RBAC role grants. Agent API inspection requires agent_api read; execute/cancel and agent WebSocket connections require agent_api write. Project/tool permissions and session ownership are checked separately.',
       projects: 'GET /api/projects returns only visible projects plus tool_access flags for the authenticated user.',
       sessions: 'Members can create only permitted mode/CLI combinations and can control only their own sessions. Administrators can monitor and interact with permitted sessions, but DELETE /api/sessions/:id may kill only a session created by the logged-in user.',
       scheduledTasks: 'Scheduled tasks, their run history, and existing-session targets are always restricted to the logged-in user.',
-      promptEnhancer: 'Prompt enhancement can target only a tab created by the logged-in user. Its LLM configuration and API key are administrator-managed and are never exposed by this API.',
+      promptEnhancer: 'Prompt enhancement can target only a tab created by the logged-in user. Its LLM configuration and API key require platform settings write permission and are never exposed by this API.',
       createSession: 'The project must already be registered. Supply project_id and its matching project_path; project_path alone is resolved only when it exactly matches a registered project.',
     },
     critical: [
@@ -164,7 +166,7 @@ export function getAgentApiContract() {
         category: 'Projects',
         method: 'GET',
         path: '/api/projects',
-        description: 'List projects visible to the authenticated user. Each project includes tool_access flags: can_session, can_agent, can_terminal, can_claude, and can_codex.',
+        description: 'List projects visible to the authenticated user. Each project includes tool_access flags: can_session, can_terminal, and session_clients.',
         response: { projects: 'Project[] with tool_access' },
       },
       {
@@ -177,16 +179,9 @@ export function getAgentApiContract() {
       },
       {
         category: 'Projects',
-        method: 'GET',
-        path: '/api/projects/:id/agents',
-        description: 'List Claude agent definitions available for agent-mode session creation in a visible project.',
-        response: { agents: 'Array of { name, type, description, category }' },
-      },
-      {
-        category: 'Projects',
         method: 'POST',
         path: '/api/projects',
-        description: 'Register an existing project directory. Administrator only.',
+        description: 'Register an existing project directory. Requires the projects_create write role grant.',
         request: {
           name: { type: 'string', required: true },
           path: { type: 'string', required: true, description: 'Existing directory path.' },
@@ -229,10 +224,9 @@ export function getAgentApiContract() {
         request: {
           project_id: { type: 'string', required: false, recommended: true, description: 'ID returned by GET /api/projects.' },
           project_path: { type: 'string', required: true, description: 'Must match the registered project path.' },
-          task: { type: 'string', required: false, description: 'Required for session and agent modes; ignored for terminal mode.' },
-          mode: { type: 'session | agent | terminal', required: false, default: 'session' },
-          cli_type: { type: 'claude | codex', required: false, default: 'claude', description: 'Used by session and agent modes.' },
-          agent_type: { type: 'string', required: false, description: 'Required when mode is agent.' },
+          task: { type: 'string', required: false, description: 'Required for Session mode; ignored for terminal mode.' },
+          mode: { type: 'session | terminal', required: false, default: 'session' },
+          cli_type: { type: 'claude | codex', required: false, default: 'claude', description: 'Used by Session mode.' },
         },
         response: { ok: 'true', session: 'Created session; use session.id for control endpoints.' },
         errors: { 400: 'Missing required fields', 401: 'Not authenticated', 403: 'Project or requested tool combination is not permitted', 429: 'Active tab/session limit reached' },
@@ -387,12 +381,16 @@ export function getAgentApiContract() {
           timezone: { type: 'IANA timezone string', required: true },
           target_type: { type: 'existing | new', required: true },
           target_session_id: { type: 'string | null', required: false, description: 'Required for an existing target and must be the user\'s open tab.' },
-          new_mode: { type: 'session | agent | terminal', required: false },
+          new_mode: { type: 'session | terminal', required: false },
           new_cli_type: { type: 'claude | codex', required: false },
-          new_agent_type: { type: 'string | null', required: false, description: 'Required when a new target uses agent mode.' },
           inactive_policy: { type: 'resume | fail', required: false, default: 'resume' },
           stop_at: { type: 'ISO timestamp | null', required: false },
           daily_stop_time: { type: 'HH:mm | null', required: false },
+          daily_start_time: { type: 'HH:mm | null', required: false, description: 'Interval schedules only; set together with daily_end_time. The start is included and anchors each daily interval.' },
+          daily_end_time: { type: 'HH:mm | null', required: false, description: 'Daily execution window end (exclusive); an earlier clock time means next day. Outside the window, sending pauses and automatically continues next window.' },
+          start_conditions: { type: 'ConditionGroup | null', required: false, description: 'Recursive { operator: and|or, conditions: [Condition|ConditionGroup] }. Start leaves: time_after (HH:mm), time_range ({start,end}, end exclusive, overnight supported), weekday (workday=Mon–Fri or weekend=Sat/Sun), target_idle (boolean, existing target only). Up to 4 levels, 20 children/group, 50 total nodes.' },
+          daily_stop_conditions: { type: 'ConditionGroup | null', required: false, description: 'Same recursive groups; also supports quota_below (Codex remaining percent), successes_today and failures_today (counts). Once true, pause sending until the next local day, then re-evaluate. Unknown state prevents dispatch; the session is not killed.' },
+          condition_unmet_policy: { type: 'skip | wait', required: false, default: 'skip', description: 'skip: do not backfill when idle; check next fixed occurrence. wait is retained for API compatibility. Manual dispatch also obeys guards.' },
           max_successful_runs: { type: 'integer | null', required: false },
           quota_remaining_below: { type: 'integer 1..100 | null', required: false, description: 'Codex Session/Agent only.' },
           max_consecutive_failures: { type: 'integer | null', required: false },
@@ -466,6 +464,9 @@ export function getAgentApiContract() {
 }
 
 export const agentRoutes: FastifyPluginAsync = async (app) => {
+  app.addHook('preHandler', async (req, reply) => {
+    requirePermission(req, reply, 'agent_api', req.method === 'GET' && !req.routeOptions.url?.endsWith('/agent') ? 'read' : 'write');
+  });
   app.get('/agent/capabilities', async () => getAgentApiContract());
 
   /* ----------------------------------------------------------------

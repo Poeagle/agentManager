@@ -2,6 +2,7 @@ import { FastifyPluginAsync } from 'fastify';
 import { subscribe } from '../services/event-store.js';
 import { isAdmin, readSessionCookie, userOwnsProject, userOwnsSession } from '../auth.js';
 import { registerUserConnection } from '../services/user-connections.js';
+import { userHasPermission } from '../services/rbac.js';
 
 /**
  * WebSocket stream for real-time events to the dashboard.
@@ -13,6 +14,8 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
     if (!userId || !registerUserConnection(userId, readSessionCookie(req), socket)) return;
     // Subscribe to events
     const unsubscribe = subscribe((event: any) => {
+      // Host telemetry has the same read permission as its REST endpoint.
+      if (event.type === 'server.resources' && !userHasPermission(userId, 'monitor')) return;
       // Administrator tab-management events are private to the affected user
       // (administrators also receive them so their monitor refreshes).
       if (event.type === 'user.tab_state') {

@@ -5,8 +5,9 @@ import { api, type AuthUser } from './lib/api';
 import { AuthGate } from './components/AuthGate';
 import { cleanupProjectStorage } from './lib/project-view-storage';
 import { confirmDiscardProject } from './lib/unsaved-files';
-import { X, LayoutGrid, FolderOpen, Activity, Settings, ArrowUpCircle, LogOut, Users, Plus } from 'lucide-react';
-import { AgentGuideButton } from './components/AgentGuide';
+import { X, LayoutGrid, FolderOpen, Settings, ArrowUpCircle, LogOut, KeyRound, Plus } from 'lucide-react';
+import { hasPermission, usePermissions } from './lib/permissions';
+import type { PlatformSection } from './components/PlatformCenter';
 import { CloseTabModal } from './components/CloseTabModal';
 import { applyTheme } from './lib/themes';
 import { ProjectRollupDot } from './lib/session-signal';
@@ -14,13 +15,12 @@ import { ProjectActivityAge } from './lib/session-activity';
 import { ExportTransferOverlay } from './components/ExportTransferOverlay';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { CodexQuotaIndicator } from './components/CodexQuotaIndicator';
+import { ServerResourceIndicator } from './components/ServerResourceIndicator';
 import { moveItemByKey, orderItemsByKeys } from './lib/reorder';
 
-const AccountModal = lazy(() => import('./components/AccountModal').then((module) => ({ default: module.AccountModal })));
+const PlatformCenter = lazy(() => import('./components/PlatformCenter').then((module) => ({ default: module.PlatformCenter })));
 const ProjectView = lazy(() => import('./components/ProjectView').then((module) => ({ default: module.ProjectView })));
 const ProjectDashboard = lazy(() => import('./components/ProjectDashboard').then((module) => ({ default: module.ProjectDashboard })));
-const SettingsModal = lazy(() => import('./components/SettingsModal').then((module) => ({ default: module.SettingsModal })));
-const AdminMonitorPage = lazy(() => import('./components/AdminMonitorPage').then((module) => ({ default: module.AdminMonitorPage })));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -167,6 +167,8 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     projectTabsState.map((tab) => tab.projectId),
   );
   useEffect(() => {
+    // Project tabs can hydrate or close outside the drag handlers; preserve mounted terminal DOM order.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setProjectMountOrder((current) => {
       const next = orderItemsByKeys(projectTabs, current, (tab) => tab.projectId)
         .map((tab) => tab.projectId);
@@ -199,11 +201,11 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     }
   }, []);
 
-  const [showAdminMonitor, setShowAdminMonitor] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [showAccount, setShowAccount] = useState(false);
-  const dismissAdminMonitor = useCallback(() => {
-    setShowAdminMonitor(false);
+  const [platformSection, setPlatformSection] = useState<PlatformSection | null>(null);
+  const permissionsQuery = usePermissions();
+  const showPlatformCenter = platformSection !== null;
+  const closePlatformCenter = useCallback(() => {
+    setPlatformSection(null);
     requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
   }, []);
 
@@ -280,14 +282,14 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   const handleOpenProject = useCallback((
     projectId: string,
     projectName: string,
-    quickLaunch?: 'session' | 'agent' | 'terminal',
+    quickLaunch?: 'session' | 'terminal',
     cliType?: 'claude' | 'codex',
   ) => {
-    setShowAdminMonitor(false);
+    setPlatformSection(null);
     if (quickLaunch) {
       const access = projects.find((project) => project.id === projectId)?.tool_access;
-      const modeAllowed = !access || (quickLaunch === 'terminal' ? access.can_terminal : quickLaunch === 'agent' ? access.can_agent : access.can_session);
-      const cliAllowed = quickLaunch === 'terminal' || !access || (cliType === 'codex' ? access.can_codex : access.can_claude);
+      const modeAllowed = !access || (quickLaunch === 'terminal' ? access.can_terminal : access.can_session);
+      const cliAllowed = quickLaunch === 'terminal' || !access || access.session_clients.includes(cliType ?? 'claude');
       if (!modeAllowed || !cliAllowed) return;
     }
     setProjectTabs((prev) => prev.some((tab) => tab.projectId === projectId)
@@ -391,38 +393,22 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         className="flex items-center justify-between px-4 py-2 border-b shrink-0"
         style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <h1 className="text-base font-bold">
             <span style={{ color: '#ef4444' }}>Agent</span><span style={{ color: 'var(--text-primary)' }}>Manager</span>
           </h1>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="ml-3 flex min-w-0 items-center gap-3 overflow-x-auto [scrollbar-width:none] [&>*]:shrink-0">
           <CodexQuotaIndicator />
-          {authUser.role === 'admin' && (
-            <button
-              onClick={() => {
-                setShowAdminMonitor(true);
-              }}
-              className="flex h-7 items-center gap-1.5 px-2.5 rounded-md text-xs font-medium transition-colors"
-              style={{
-                background: showAdminMonitor ? 'color-mix(in srgb, var(--accent) 16%, var(--bg-tertiary))' : 'var(--bg-tertiary)',
-                color: showAdminMonitor ? 'var(--accent)' : 'var(--text-secondary)',
-                border: '1px solid var(--border)',
-              }}
-              title="查看所有用户的会话与资源占用"
-            >
-              <Activity className={`w-3.5 h-3.5 motion-reduce:animate-none ${showAdminMonitor ? 'animate-pulse' : ''}`} />
-              <span className="hidden sm:inline">用户监控</span>
-            </button>
-          )}
-          <AgentGuideButton />
+          {hasPermission(permissionsQuery.data, 'monitor') && <ServerResourceIndicator />}
           <button
-            onClick={() => setShowSettings(true)}
-            className="p-1.5 rounded-md transition-colors hover:opacity-80"
-            style={{ color: 'var(--text-secondary)', background: 'transparent' }}
-            title="Settings"
+            onClick={() => setPlatformSection(hasPermission(permissionsQuery.data, 'monitor') ? 'monitor' : 'account')}
+            className="flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium hover:opacity-80"
+            style={{ borderColor: 'var(--border)', color: showPlatformCenter ? 'var(--accent)' : 'var(--text-secondary)', background: 'var(--bg-tertiary)' }}
+            title="平台管理"
           >
-            <Settings className="w-4 h-4" />
+            <Settings className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">平台管理</span>
           </button>
           <div className="flex items-center gap-2">
             <div
@@ -435,12 +421,12 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           </div>
           <div className="flex items-center gap-1.5 pl-2 ml-0.5" style={{ borderLeft: '1px solid var(--border)' }}>
             <button
-              onClick={() => setShowAccount(true)}
+              onClick={() => setPlatformSection('account')}
               className="flex items-center gap-1 text-xs font-medium transition-colors hover:opacity-80"
               style={{ color: 'var(--text-secondary)' }}
-              title={`账户设置${authUser.role === 'admin' ? ' · 用户管理' : ''}`}
+              title="我的账户"
             >
-              {authUser.role === 'admin' && <Users className="w-3.5 h-3.5" />}
+              <KeyRound className="w-3.5 h-3.5" />
               {authUser.display_name || authUser.username}
             </button>
             <button
@@ -505,7 +491,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       >
         {/* Home tab */}
         <button
-          onClick={() => { setActiveTab('home'); setShowAdminMonitor(false); }}
+          onClick={() => { setActiveTab('home'); setPlatformSection(null); }}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors shrink-0"
           style={{
             background: activeTab === 'home' ? 'var(--bg-tertiary)' : 'transparent',
@@ -589,7 +575,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                 </div>
               ) : (
                 <button
-                  onClick={() => { setActiveTab(tabId); setShowAdminMonitor(false); }}
+                  onClick={() => { setActiveTab(tabId); setPlatformSection(null); }}
                   onDoubleClick={() => beginTabRename(tab)}
                   className="flex items-center gap-1.5 pl-3 pr-1 py-1.5 text-xs font-medium transition-colors max-w-[180px]"
                   style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
@@ -615,8 +601,8 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           );
         })}
         {/* New-project "+" — jump home to add a project */}
-        {(authUser.role === 'admin' || authUser.can_create_projects === 1) && <button
-          onClick={() => { setActiveTab('home'); setShowAdminMonitor(false); window.dispatchEvent(new CustomEvent('agentmanager:add-project')); }}
+        {hasPermission(permissionsQuery.data, 'projects_create', 'write') && <button
+          onClick={() => { setActiveTab('home'); setPlatformSection(null); window.dispatchEvent(new CustomEvent('agentmanager:add-project')); }}
           className="flex items-center justify-center rounded-md shrink-0 transition-colors ml-0.5"
           style={{ width: 26, height: 26, color: 'var(--text-secondary)', background: 'transparent' }}
           title="添加项目"
@@ -626,24 +612,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       </nav>
 
       {/* Content — all project tabs stay mounted to preserve terminal state */}
-      <main className="flex-1 min-h-0 overflow-hidden relative">
-        {showAdminMonitor && authUser.role === 'admin' && (
-          <div className="absolute inset-0 z-30">
-            <ErrorBoundary label="Admin monitor">
-              <Suspense fallback={<div className="h-full" style={{ background: 'var(--bg-primary)' }} />}>
-                <AdminMonitorPage
-                  onBack={dismissAdminMonitor}
-                  onOpenSession={(projectId, sessionId) => {
-                    const project = projects.find((value) => value.id === projectId);
-                    if (!project) return;
-                    handleOpenProject(projectId, project.name);
-                    setFocusSessionId(sessionId);
-                  }}
-                />
-              </Suspense>
-            </ErrorBoundary>
-          </div>
-        )}
+      <main className="flex-1 min-h-0 overflow-hidden relative isolate">
         <div
           className="h-full"
           style={{ display: activeTab === 'home' ? 'block' : 'none' }}
@@ -652,6 +621,12 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
             <Suspense fallback={<div className="h-full" style={{ background: 'var(--bg-primary)' }} />}>
               <ProjectDashboard
                 onOpenProject={handleOpenProject}
+                onOpenSession={(projectId, sessionId) => {
+                  const project = projects.find((item) => item.id === projectId);
+                  if (!project) return;
+                  handleOpenProject(projectId, project.name);
+                  setFocusSessionId(sessionId);
+                }}
                 projectOrder={projectOrder}
                 onProjectOrderChange={setProjectOrder}
               />
@@ -685,8 +660,8 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                       projectId={tab.projectId}
                       projectPath={projectPath}
                       projectName={projectName}
-                      active={isActive && !showAdminMonitor}
-                      terminalsSuspended={showAdminMonitor}
+                      active={isActive && !showPlatformCenter}
+                      terminalsSuspended={showPlatformCenter}
                       focusSessionId={isActive ? focusSessionId : null}
                       onFocusSessionHandled={handleFocusSessionHandled}
                     />
@@ -721,8 +696,13 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       )}
 
       <Suspense fallback={null}>
-        {showSettings && <SettingsModal readOnly={authUser.role !== 'admin'} onClose={() => setShowSettings(false)} />}
-        {showAccount && <AccountModal currentUser={authUser} onClose={() => setShowAccount(false)} />}
+        {platformSection && <PlatformCenter currentUser={authUser} initialSection={platformSection} onClose={closePlatformCenter} onOpenSession={(projectId, sessionId) => {
+          const project = projects.find((value) => value.id === projectId);
+          if (!project) return;
+          handleOpenProject(projectId, project.name);
+          setFocusSessionId(sessionId);
+          closePlatformCenter();
+        }} /> }
       </Suspense>
       <ExportTransferOverlay />
     </div>

@@ -41,7 +41,6 @@ describe('PTY worker startup controls', () => {
     const controls = new PendingWorkerControls(32);
     controls.enqueueInput('do-not-run');
     controls.setResize(90, 20);
-    controls.requestClose('release');
     controls.requestClose('kill');
 
     expect(controls.requestedClose).toBe('kill');

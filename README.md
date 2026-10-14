@@ -1,7 +1,7 @@
 # AgentManager
 
 A self-hosted web dashboard for running and managing AI coding sessions with
-**Claude Code** and **OpenAI Codex**. Launch agent sessions and interactive
+**Claude Code** and **OpenAI Codex**. Launch AI sessions and interactive
 terminals, watch their output stream live, and review and commit the changes
 with built-in git — all from one place, with sessions that survive restarts.
 
@@ -14,19 +14,15 @@ access around them.
 
 Key features:
 
-- **AI coding sessions** — Launch Claude Code or Codex sessions per project, or
-  pick a built-in specialist agent (code review, debugging, security, testing,
-  infra, and more) defined in `.claude/agents/*.md`.
-- **Persistent terminals** — Full terminals backed by tmux. Pop a session out to
-  your own terminal (`tmux attach`), work, then adopt it back. Sessions survive
-  server restarts and reboots with full scrollback.
+- **AI coding sessions** — Launch Claude or Codex Sessions per project.
+- **Persistent terminals** — Full terminals backed by tmux, managed directly
+  in the browser. Sessions survive server restarts and reboots with full scrollback.
 - **Git & files** — Side-by-side diffs, staged/unstaged changes, commit history,
   and a file explorer to review and commit what the agents changed.
 - **Multi-user** — Username/password login with project/session access controls;
   each user sees only assigned projects and sessions.
 - **Skills** — Browse and edit `SKILL.md`-format skills for Claude Code and Codex
   from a built-in Skills page.
-- **In-app browser** — Open and test web pages alongside your sessions.
 - **Dual CLI** — Use Claude Code or Codex per session, each with its own command,
   icon, and settings.
 
@@ -64,9 +60,15 @@ spreadsheets (`xls`, `xlsx`, `ods`, `csv`, `tsv`), presentations (`ppt`, `pptx`,
 `odp`), draw.io (`drawio` and diagram XML), common images (PNG, JPEG, GIF,
 WebP, SVG, BMP, ICO, AVIF), Markdown and UTF-8/UTF-16 text.
 Documents are read-only; original files remain available for download.
+Image previews offer zoom buttons, 100% original size and fit-to-window.
+Use Ctrl/Command + mouse wheel to zoom around the pointer, double-click to
+toggle original size and fit, and scroll to inspect enlarged details.
 Text wraps visually without rewriting file contents. Spreadsheet previews use
 sheet selection, row/column labels and multiline cells; display is limited to
 100 sheets, 1000 rows and 100 columns per sheet.
+Git diffs and file comparisons wrap long lines automatically. Paired rows
+share their height and vertical scroll position, including the merge controls;
+line numbers still refer to the original file lines.
 
 Office preview on the Linux server requires these optional system components:
 
@@ -84,6 +86,24 @@ PDF/image preview does not require LibreOffice; PDF rendering uses the browser's
 built-in viewer. The bundled [draw.io viewer](dashboard/src/vendor/drawio/README.md)
 runs offline in a sandboxed iframe; remote images, fonts and math resources are
 not fetched. Limits: 20 MB Office, 50 MB PDF/image and 5 MB text/diagram files.
+
+### Scheduled task conditions
+
+Scheduled tasks use a compact project-level table. Select a task name to open
+its settings, complete prompt, runtime status and recent execution records.
+The editor is ordered as configuration, prompt, then an execution-record table.
+Start and daily-stop conditions support nested AND/OR groups, including time
+ranges, weekday/weekend (Mon–Fri/Sat–Sun, not a holiday calendar), and existing
+target idle state. Daily-stop groups also support Codex quota and daily send
+counts. A matched daily-stop group pauses sending for the rest of that local
+day; the task stays enabled and conditions are checked again the next day.
+At a scheduled occurrence, unmet or unknown conditions skip that occurrence;
+becoming idle later does not backfill it. Fixed intervals remain anchored to
+planned occurrences rather than scheduler tick latency. The record table
+distinguishes successful prompt dispatch, failure and skipped checks; success
+means the prompt was sent, not that the Agent's work completed.
+Existing legacy daily windows remain compatible. Optional permanent cutoff
+limits are kept separate from daily pauses.
 
 ## Run from source
 
@@ -120,7 +140,7 @@ Server startup reconnects surviving tmux/dtach sessions. Sessions whose processe
 have exited retain their history and native conversation IDs; use **Resume** in
 the dashboard to start them again. Restoring browser tabs does not start AI CLIs.
 
-Codex sessions and agents launched by AgentManager use `--disable plugins`.
+Codex sessions launched by AgentManager use `--disable plugins`.
 Plugin-provided skills, MCP integrations and hooks are unavailable in these
 sessions. Existing processes keep their original settings until restarted;
 standalone Codex and VS Code are unaffected.
@@ -164,6 +184,60 @@ Optional — copy `server/.env.example` to `server/.env`:
 
 Changing project access or registering a new project stops existing member
 sessions so the operating-system sandbox can be rebuilt with the new policy.
+
+Users with platform settings write permission can enable **automatic idle-session cleanup** in **平台管理 → 平台设置 →
+Server**. It is disabled by default; the initial memory threshold is **85%** and
+the minimum idle time is **10 minutes**. Saved changes take effect without a
+restart. A single server sampler collects CPU, memory and disk every five
+seconds. The header, monitoring page and idle-session cleanup all consume the
+same timestamped snapshot. Samples are pushed to the dashboard over WebSocket;
+REST reads return the cached snapshot without triggering another collection.
+Memory uses available memory, including reclaimable Linux caches.
+At or above the threshold it closes the longest-idle eligible session, then
+samples again on the next check before closing another. Input and output reset
+the idle time. Busy sessions, pending API executions, starting sessions and
+processes without live activity tracking are skipped. Final-screen snapshots
+and session records are retained for history and manual Resume.
+
+### Platform management and roles
+
+Project lists show **所属用户** alongside the project name, path, Git status and
+launch actions. User, role and monitoring lists use compact tables; monitoring
+expands with **+** from users to projects and sessions.
+
+Open **平台管理** in the header. Its navigation groups personal account settings,
+users, roles, project authorization, monitoring, platform settings, and the
+Agent API guide. Entries and actions follow the current user's role permissions;
+the server checks the same permissions for every management request.
+
+| Built-in role | Platform permissions |
+|---------------|----------------------|
+| 平台管理员 | All platform features and authorization management |
+| 普通成员 | Read platform settings; inspect and use Agent API |
+
+Only administrator and member roles are initialized. Create custom roles as needed.
+In **角色与权限**, click the row’s **+** to inspect its permissions, or create a custom role and select each feature's access level:
+none, read, write, or delete where supported. Write includes read; delete includes
+write and read. In **用户管理**, select an account, check its roles, and save the
+assignment. Multiple roles combine at the highest granted level. Changes take
+effect on subsequent API requests and refresh connected dashboards. Built-in
+roles are fixed, roles with members cannot be deleted, and the last active
+administrator cannot be removed or disabled.
+
+Platform roles control management features. **项目授权** separately controls which
+projects an account may access. Each project has two authorization columns:
+**Session**, with a multi-select of available clients (currently Claude and Codex),
+and **Terminal**, with independent shell access.
+Delegated monitoring access does not grant an interactive terminal on another
+user's session. Existing administrator/member accounts and project creation
+permissions migrate automatically. Legacy Agent sessions and scheduled targets
+become Sessions, while native conversation identities and history are retained.
+Previously assigned extra default roles become custom roles; unused ones are removed.
+
+Ended session tabs show **恢复会话** and **关闭会话** in the center of the terminal.
+Close releases session resources and removes the saved tab; a cleanup failure
+keeps the tab open with a retryable error. Conversation history remains available
+through the existing history views.
 
 ### Security model
 

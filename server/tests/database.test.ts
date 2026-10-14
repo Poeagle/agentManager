@@ -12,6 +12,56 @@ let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
 
 describe('database schema and durable session identity', () => {
+  it('removes retired browser configuration from v11 without losing projects, sessions, login or other tab state', () => {
+    const database = createTestDatabase();
+    cleanup = database.cleanup;
+    const user = createUser({ username: 'browser-owner', password: 'password1' });
+    const token = createSession(user.id);
+    const db = getDb();
+    db.exec('ALTER TABLE projects ADD COLUMN default_web_url TEXT');
+    db.prepare(`INSERT INTO projects (id,name,path,session_prompt,color,default_web_url) VALUES ('p','Project','/tmp/browser-project','keep prompt','#123456','https://example.com')`).run();
+    db.prepare(`INSERT INTO sessions (id,project_id,task,status,mode,created_by_user_id) VALUES ('s','p','keep session','running','terminal',?)`).run(user.id);
+    const tabs = {
+      terminalInstances: [{ id: 's', label: 'Terminal 1', customLabel: 'Investigation' }], activeTerminalId: null,
+      terminalLabels: { s: 'Investigation' }, hiddenSessionIds: ['hidden'], explorerInstances: [{ id: 'files', label: 'Files' }],
+      webPageInstances: [{ id: 'web', label: 'Preview', url: 'https://example.com' }], activeWebPageId: 'web',
+    };
+    db.prepare(`INSERT INTO user_ui_state (user_id,key,value) VALUES (?,'project:p',?)`).run(user.id, JSON.stringify(tabs));
+    db.prepare(`INSERT INTO user_ui_state (user_id,key,value) VALUES (?,'project:corrupt','not-json')`).run(user.id);
+    db.pragma('user_version = 11');
+    closeDb();
+    initDb();
+    expect(getSessionUser(token)?.id).toBe(user.id);
+    expect(getDb().prepare('SELECT name,session_prompt,color FROM projects WHERE id = ?').get('p')).toEqual({ name: 'Project', session_prompt: 'keep prompt', color: '#123456' });
+    expect(getDb().prepare('SELECT task,status FROM sessions WHERE id = ?').get('s')).toEqual({ task: 'keep session', status: 'running' });
+    expect((getDb().prepare('PRAGMA table_info(projects)').all() as Array<{ name: string }>).map((item) => item.name)).not.toContain('default_web_url');
+    const state = getDb().prepare(`SELECT value FROM user_ui_state WHERE user_id = ? AND key = 'project:p'`).get(user.id) as { value: string };
+    const { webPageInstances: _web, activeWebPageId: _active, ...retained } = tabs;
+    expect(JSON.parse(state.value)).toEqual(retained);
+    expect(getDb().prepare(`SELECT value FROM user_ui_state WHERE key = 'project:corrupt'`).get()).toEqual({ value: 'not-json' });
+    const backup = readdirSync(database.dir).find((file) => file.includes('.pre-v12-') && file.endsWith('.bak'));
+    expect(backup).toBeDefined();
+    const original = new Database(join(database.dir, backup!), { readonly: true });
+    try { expect(original.prepare('SELECT default_web_url FROM projects WHERE id = ?').get('p')).toEqual({ default_web_url: 'https://example.com' }); }
+    finally { original.close(); }
+  });
+  it('adds daily execution windows to v7 while preserving existing schedules and login sessions', () => {
+    const database = createTestDatabase();
+    cleanup = database.cleanup;
+    const user = createUser({ username: 'schedule-owner', password: 'password1' });
+    const token = createSession(user.id);
+    getDb().prepare("INSERT INTO projects (id,name,path) VALUES ('p','Project','/tmp/migration-project')").run();
+    getDb().prepare(`INSERT INTO scheduled_tasks (id,user_id,project_id,name,prompt,schedule_kind,schedule_value,next_run_at,target_type) VALUES ('legacy',?,'p','Existing','keep','interval','30','2099-01-01T09:00:00.000Z','new')`).run(user.id);
+    getDb().exec('ALTER TABLE scheduled_tasks DROP COLUMN daily_start_time; ALTER TABLE scheduled_tasks DROP COLUMN daily_end_time;');
+    getDb().pragma('user_version = 7');
+    closeDb();
+    initDb();
+    expect(getSessionUser(token)?.id).toBe(user.id);
+    expect(getDb().prepare('SELECT enabled,next_run_at,daily_start_time,daily_end_time FROM scheduled_tasks WHERE id = ?').get('legacy')).toEqual({
+      enabled: 1, next_run_at: '2099-01-01T09:00:00.000Z', daily_start_time: null, daily_end_time: null,
+    });
+    expect(readdirSync(database.dir).filter((file) => file.endsWith('.bak'))).toHaveLength(1);
+  });
   it('creates native identity and per-user UI state columns', () => {
     ({ cleanup } = createTestDatabase());
     const db = getDb();
@@ -35,6 +85,13 @@ describe('database schema and durable session identity', () => {
       'stop_at',
       'daily_stop_time',
       'daily_stop_at',
+      'daily_start_time',
+      'daily_end_time',
+      'start_conditions',
+      'daily_stop_conditions',
+      'condition_unmet_policy',
+      'daily_paused_until',
+      'waiting_reason',
       'max_successful_runs',
       'quota_remaining_below',
       'max_consecutive_failures',
@@ -44,7 +101,7 @@ describe('database schema and durable session identity', () => {
       'stopped_at',
       'stop_reason',
     ]));
-    expect(db.pragma('user_version', { simple: true })).toBe(7);
+    expect(db.pragma('user_version', { simple: true })).toBe(12);
   });
 
   it('preserves legacy project prompt data while migrating', () => {
@@ -71,7 +128,7 @@ describe('database schema and durable session identity', () => {
     initDb();
     const migrated = getDb().prepare('SELECT session_prompt FROM projects WHERE id = ?').get('legacy') as { session_prompt: string };
     expect(migrated.session_prompt).toBe('keep this prompt');
-    expect(getDb().pragma('user_version', { simple: true })).toBe(7);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(12);
 
     cleanup = () => {
       closeDb();
@@ -156,6 +213,6 @@ describe('database schema and durable session identity', () => {
       'legacy-orphan-project': null,
       'legacy-owned': 'owner',
     });
-    expect(getDb().pragma('user_version', { simple: true })).toBe(7);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(12);
   });
 });

@@ -9,7 +9,6 @@ import {
   spawnSession,
   spawnTerminal,
   spawnAdopt,
-  spawnAgent,
   sendReplay,
   sendIncrementalReplay,
   terminalGeometryMatches,
@@ -176,8 +175,8 @@ export function parseTerminalClientMessage(raw: Buffer | string): TerminalMessag
   return { ok: false, error: 'Unsupported terminal message type' };
 }
 
-function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' | 'agent' {
-  if (mode === 'terminal' || mode === 'agent') return mode;
+function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
+  if (mode === 'terminal') return mode;
   return 'session';
 }
 
@@ -345,8 +344,6 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
             await spawnAdopt(sessionId, info.socketPath, info.projectPath, info.task, cols, rows);
           } else if (info.mode === 'terminal') {
             await spawnTerminal(sessionId, info.projectPath, cols, rows);
-          } else if (info.mode === 'agent' && info.agentType) {
-            await spawnAgent(sessionId, info.projectPath, info.task, info.agentType, cols, rows, info.cliType);
           } else {
             await spawnSession(sessionId, info.projectPath, info.task, cols, rows, info.cliType);
           }

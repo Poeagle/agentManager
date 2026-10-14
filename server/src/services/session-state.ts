@@ -273,6 +273,11 @@ export class SessionStateTracker {
 
   /* ---- PTY data handler (called from session-manager) ---- */
 
+  /** Input is activity even when the process does not echo or produce output. */
+  recordInput(): void {
+    this._lastActivity = Date.now();
+  }
+
   onData(data: string): void {
     this._lastActivity = Date.now();
     const cleaned = strip(data);

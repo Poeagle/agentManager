@@ -110,15 +110,15 @@ describe('session creation project identity', () => {
 
   it('lists every runtime for the requested project without mixing in other projects', async () => {
     const insert = getDb().prepare(`
-      INSERT INTO sessions (id, project_id, task, status, mode, cli_type, agent_type, created_by_user_id)
-      VALUES (?, ?, ?, 'completed', ?, ?, ?, ?)
+      INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
+      VALUES (?, ?, ?, 'completed', ?, ?, ?)
     `);
-    insert.run('claude-session', 'project-1', 'Review API', 'session', 'claude', null, adminId);
-    insert.run('codex-session', 'project-1', 'Implement tabs', 'session', 'codex', null, adminId);
-    insert.run('future-agent', 'project-1', 'Run migration', 'agent', 'codex', 'migrator', adminId);
+    insert.run('claude-session', 'project-1', 'Review API', 'session', 'claude', adminId);
+    insert.run('codex-session', 'project-1', 'Implement tabs', 'session', 'codex', adminId);
+    insert.run('future-session', 'project-1', 'Run migration', 'session', 'codex', adminId);
     getDb().prepare('INSERT INTO projects (id, name, path, owner_id) VALUES (?, ?, ?, ?)')
       .run('project-2', 'Other project', join(projectPath, 'other'), adminId);
-    insert.run('other-project-session', 'project-2', 'Do not show', 'session', 'claude', null, adminId);
+    insert.run('other-project-session', 'project-2', 'Do not show', 'session', 'claude', adminId);
 
     const response = await app.inject({
       method: 'GET',
@@ -130,7 +130,7 @@ describe('session creation project identity', () => {
     const ids = response.json().sessions.map((session: { id: string }) => session.id);
     expect(ids).toHaveLength(3);
     expect(ids).toEqual(expect.arrayContaining([
-      'future-agent',
+      'future-session',
       'codex-session',
       'claude-session',
     ]));

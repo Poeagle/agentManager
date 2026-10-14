@@ -12,6 +12,8 @@ import { nanoid } from 'nanoid';
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { getDb } from './db/index.js';
 import { config } from './config.js';
+import { userHasPermission } from './services/rbac.js';
+import { SESSION_CLIENTS, parseSessionClients } from './services/session-clients.js';
 
 export interface User {
   id: string;
@@ -137,7 +139,7 @@ const PUBLIC_COLS = 'id, username, display_name, role, disabled, max_tabs, can_c
 
 export function userCanCreateProjects(userId: string): boolean {
   const user = findUserById(userId);
-  return !!user && !user.disabled && (user.role === 'admin' || user.can_create_projects === 1);
+  return !!user && !user.disabled && userHasPermission(userId, 'projects_create', 'write');
 }
 
 export function getUserCount(): number {
@@ -206,6 +208,7 @@ function insertUser(opts: {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(id, username, passwordHash, opts.display_name?.trim() || username, opts.role || 'member', opts.max_tabs ?? 10, opts.can_create_projects ? 1 : 0);
+  getDb().prepare('INSERT INTO rbac_user_roles (user_id, role_id) VALUES (?, ?)').run(id, opts.role || 'member');
   return findUserById(id)!;
 }
 
@@ -325,18 +328,14 @@ export async function authHook(req: FastifyRequest, reply: FastifyReply) {
 export interface ProjectToolAccess {
   project_id: string;
   canSession: boolean;
-  canAgent: boolean;
   canTerminal: boolean;
-  canClaude: boolean;
-  canCodex: boolean;
+  sessionClients: string[];
 }
 
 type RawProjectAccess = {
   can_session: number;
-  can_agent: number;
   can_terminal: number;
-  can_claude: number;
-  can_codex: number;
+  session_clients: string;
 };
 
 function bool(v: unknown): boolean {
@@ -365,12 +364,10 @@ function mapProjectToolAccess(projectId: string, row: RawProjectAccess | undefin
   const access: ProjectToolAccess = {
     project_id: projectId,
     canSession: bool(row.can_session),
-    canAgent: bool(row.can_agent),
     canTerminal: bool(row.can_terminal),
-    canClaude: bool(row.can_claude),
-    canCodex: bool(row.can_codex),
+    sessionClients: bool(row.can_session) ? parseSessionClients(row.session_clients) : [],
   };
-  if (!access.canSession && !access.canAgent && !access.canTerminal && !access.canClaude && !access.canCodex) return null;
+  if (!access.canSession && !access.canTerminal) return null;
   return access;
 }
 
@@ -380,15 +377,13 @@ export function getProjectToolAccess(userId: string, projectId: string | null | 
     return {
       project_id: projectId,
       canSession: true,
-      canAgent: true,
       canTerminal: true,
-      canClaude: true,
-      canCodex: true,
+      sessionClients: SESSION_CLIENTS.map((client) => client.id),
     };
   }
 
   const explicit = getDb()
-    .prepare('SELECT can_session, can_agent, can_terminal, can_claude, can_codex FROM project_user_access WHERE project_id = ? AND user_id = ?')
+    .prepare('SELECT can_session, can_terminal, session_clients FROM project_user_access WHERE project_id = ? AND user_id = ?')
     .get(projectId, userId) as RawProjectAccess | undefined;
   if (explicit) return mapProjectToolAccess(projectId, explicit);
 
@@ -398,10 +393,8 @@ export function getProjectToolAccess(userId: string, projectId: string | null | 
     return {
       project_id: projectId,
       canSession: true,
-      canAgent: true,
       canTerminal: true,
-      canClaude: true,
-      canCodex: true,
+      sessionClients: SESSION_CLIENTS.map((client) => client.id),
     };
   }
 
@@ -417,7 +410,7 @@ export function userProjectIds(userId: string): Set<string> {
     SELECT project_id AS id
     FROM project_user_access
     WHERE user_id = ?
-      AND (can_session = 1 OR can_agent = 1 OR can_terminal = 1 OR can_claude = 1 OR can_codex = 1)
+      AND (can_session = 1 OR can_terminal = 1)
   `).all(userId) as { id: string }[];
   const ownerRows = getDb().prepare(`
     SELECT p.id
@@ -499,22 +492,15 @@ export function userOwnsSession(userId: string, sessionId: string | null | undef
 export function userCanUseToolForProject(
   userId: string,
   projectId: string | null | undefined,
-  toolMode: 'session' | 'terminal' | 'agent',
+  toolMode: 'session' | 'terminal',
   cliType: 'claude' | 'codex' = 'claude',
 ): boolean {
   const access = getProjectToolAccess(userId, projectId);
   if (!access) return false;
-  const modeAllowed = toolMode === 'terminal'
-    ? access.canTerminal
-    : toolMode === 'agent'
-      ? access.canAgent
-      : access.canSession;
-  if (toolMode === 'terminal') return modeAllowed;
-  const cliAllowed = cliType === 'codex' ? access.canCodex : access.canClaude;
-  return modeAllowed && cliAllowed;
+  return toolMode === 'terminal' ? access.canTerminal : access.canSession && access.sessionClients.includes(cliType);
 }
 
-export function userCanUseSessionTool(userId: string, sessionId: string, cliType: 'claude' | 'codex', toolMode: 'session' | 'terminal' | 'agent'): boolean {
+export function userCanUseSessionTool(userId: string, sessionId: string, cliType: 'claude' | 'codex', toolMode: 'session' | 'terminal'): boolean {
   const row = getDb().prepare('SELECT project_id, mode, created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as
     | { project_id: string | null; mode: string | null; created_by_user_id: string | null }
     | undefined;
@@ -524,44 +510,26 @@ export function userCanUseSessionTool(userId: string, sessionId: string, cliType
   // to inspect or control another user's session in the same project.
   if (row.created_by_user_id !== userId) return false;
   if (!row.project_id) return true;
-  if (row.mode === 'agent' && toolMode !== 'agent') return false;
-  const resolvedMode = row.mode === 'agent' ? 'agent' : (row.mode === 'terminal' ? 'terminal' : 'session');
-  return userCanUseToolForProject(userId, row.project_id, resolvedMode as 'session' | 'terminal' | 'agent', cliType);
+  const resolvedMode = row.mode === 'terminal' ? 'terminal' : 'session';
+  return userCanUseToolForProject(userId, row.project_id, resolvedMode as 'session' | 'terminal', cliType);
 }
 
 export function setProjectToolAccess(params: {
   projectId: string;
   userId: string;
   canSession: boolean;
-  canAgent: boolean;
   canTerminal: boolean;
-  canClaude: boolean;
-  canCodex: boolean;
+  sessionClients: string[];
   grantedBy: string;
 }): void {
-  getDb()
-    .prepare(`
-      INSERT INTO project_user_access (project_id, user_id, can_session, can_agent, can_terminal, can_claude, can_codex, granted_by, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-      ON CONFLICT(project_id, user_id) DO UPDATE SET
-        can_session = excluded.can_session,
-        can_agent = excluded.can_agent,
-        can_terminal = excluded.can_terminal,
-        can_claude = excluded.can_claude,
-        can_codex = excluded.can_codex,
-        granted_by = excluded.granted_by,
-        updated_at = datetime('now')
-    `)
-    .run(
-      params.projectId,
-      params.userId,
-      params.canSession ? 1 : 0,
-      params.canAgent ? 1 : 0,
-      params.canTerminal ? 1 : 0,
-      params.canClaude ? 1 : 0,
-      params.canCodex ? 1 : 0,
-      params.grantedBy,
-    );
+  getDb().prepare(`
+    INSERT INTO project_user_access (project_id, user_id, can_session, can_terminal, session_clients, granted_by, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(project_id, user_id) DO UPDATE SET
+      can_session = excluded.can_session, can_terminal = excluded.can_terminal,
+      session_clients = excluded.session_clients, granted_by = excluded.granted_by, updated_at = datetime('now')
+  `).run(params.projectId, params.userId, params.canSession ? 1 : 0, params.canTerminal ? 1 : 0,
+    JSON.stringify(params.canSession ? [...new Set(params.sessionClients)] : []), params.grantedBy);
 }
 
 export function removeProjectUserAccess(projectId: string, userId: string): number {

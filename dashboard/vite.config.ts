@@ -10,6 +10,7 @@ export default defineConfig({
         manualChunks(id) {
           if (!id.includes('/node_modules/')) return undefined;
           if (id.includes('/@xterm/')) return 'terminal-vendor';
+          if (id.includes('/@tiptap/') || id.includes('/prosemirror-')) return 'markdown-editor';
           if (/\/@codemirror\/lang-(css|html|javascript|json|markdown)\//.test(id)
             || /\/@lezer\/(css|html|javascript|json|markdown)\//.test(id)) return 'editor-web-languages';
           if (/\/@codemirror\/lang-(cpp|java|python|rust)\//.test(id)

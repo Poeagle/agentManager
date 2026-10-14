@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useTableModel } from './table/use-table-model';
+import { DataTable, TableStateRow, TableExpandButton, TableDetailRow } from './table/DataTable';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertCircle, Bot, Check, Copy, Loader2, Play, RefreshCw, X } from 'lucide-react';
 import { api, type AgentApiContract, type AgentApiEndpoint } from '../lib/api';
@@ -24,6 +26,7 @@ export function AgentGuideButton() {
 
 interface AgentGuideModalProps {
   onClose: () => void;
+  embedded?: boolean;
   projectId?: string;
   projectName?: string;
   projectPath?: string;
@@ -41,6 +44,7 @@ interface GuideContext {
 
 export function AgentGuideModal({
   onClose,
+  embedded = false,
   projectId,
   projectName,
   projectPath,
@@ -86,12 +90,12 @@ export function AgentGuideModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.6)' }}
-      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      className={embedded ? 'h-full min-h-0 flex' : 'fixed inset-0 z-50 flex items-center justify-center p-4'}
+      style={{ background: embedded ? 'transparent' : 'rgba(0,0,0,0.6)' }}
+      onClick={(event) => { if (!embedded && event.target === event.currentTarget) onClose(); }}
     >
       <div
-        className="relative rounded-xl border shadow-2xl w-full max-w-5xl max-h-[85vh] flex flex-col"
+        className={embedded ? 'w-full min-h-0 flex flex-col' : 'relative rounded-xl border shadow-2xl w-full max-w-5xl max-h-[85vh] flex flex-col'}
         style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}
       >
         <div
@@ -126,17 +130,17 @@ export function AgentGuideModal({
               {copiedAll ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
               {copiedAll ? 'Copied!' : 'Copy All'}
             </button>
-            <button onClick={onClose} className="p-1 rounded hover:bg-white/10" style={{ color: 'var(--text-secondary)' }}>
+            {!embedded && <button onClick={onClose} className="p-1 rounded hover:bg-white/10" style={{ color: 'var(--text-secondary)' }}>
               <X className="w-5 h-5" />
-            </button>
+            </button>}
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 py-5">
+        <div className="page-content flex-1 overflow-y-auto py-4 sm:py-6">
           {isLoading && <LoadingState />}
           {error && !contract && <ErrorState message={error instanceof Error ? error.message : 'Failed to load Agent API contract'} retry={() => refetch()} loading={isFetching} />}
           {contract && (
-            <div className="space-y-7">
+            <div className="space-y-4">
               {context && <ProjectContextBanner context={context} />}
 
               <Section title="Live contract">
@@ -181,21 +185,19 @@ export function AgentGuideModal({
               </Section>
 
               <Section title={`Integration endpoints (${contract.endpoints.length})`}>
-                <div className="space-y-5">
+                <div className="space-y-3">
                   {endpointGroups.map(([category, endpoints]) => (
                     <div key={category}>
                       <h4 className="text-xs uppercase tracking-wider font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
                         {category}
                       </h4>
-                      <div className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
-                        {endpoints.map((endpoint) => <EndpointDetails key={`${endpoint.method}-${endpoint.path}`} endpoint={endpoint} />)}
-                      </div>
+                      <EndpointTable category={category} endpoints={endpoints} />
                     </div>
                   ))}
                 </div>
               </Section>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                 <Section title="Session states">
                   <DefinitionList values={contract.stateMachine.states} />
                   <div className="mt-3 space-y-1.5">
@@ -282,36 +284,29 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   return (
     <section>
       <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>{title}</h3>
-      <div className="text-sm leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{children}</div>
+      <div className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{children}</div>
     </section>
   );
 }
 
+function EndpointTable({ category, endpoints }: { category: string; endpoints: AgentApiEndpoint[] }) {
+  const table = useTableModel(endpoints, [
+    { key: 'method', title: '方法', value: (endpoint) => endpoint.method },
+    { key: 'path', title: '接口路径', value: (endpoint) => endpoint.path },
+    { key: 'description', title: '说明', value: (endpoint) => endpoint.description },
+  ]);
+  return <DataTable label={`${category}接口`} model={table} minWidth={640} expandable>
+    {table.rows.map((endpoint) => <EndpointDetails key={`${endpoint.method}-${endpoint.path}`} endpoint={endpoint} />)}
+    {table.rows.length === 0 && <TableStateRow columnCount={4}>没有匹配的接口</TableStateRow>}
+  </DataTable>;
+}
+
 function EndpointDetails({ endpoint }: { endpoint: AgentApiEndpoint }) {
+  const [expanded, setExpanded] = useState(false);
   const hasDetails = endpoint.request || endpoint.response || endpoint.errors || endpoint.incomingMessages || endpoint.outgoingMessages;
-  return (
-    <details className="group" style={{ borderBottom: '1px solid var(--border)' }}>
-      <summary className={`px-3 py-2.5 list-none ${hasDetails ? 'cursor-pointer' : 'cursor-default'}`}>
-        <div className="flex items-start gap-3">
-          <MethodBadge method={endpoint.method} />
-          <div className="min-w-0 flex-1">
-            <code className="text-xs break-all" style={{ color: 'var(--text-primary)' }}>{endpoint.path}</code>
-            <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>{endpoint.description}</p>
-          </div>
-          {endpoint.public && <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--success)' }}>Public</span>}
-        </div>
-      </summary>
-      {hasDetails && (
-        <div className="px-3 pb-3 pl-[5.75rem] space-y-2">
-          {endpoint.request && <JsonDetails title="Request" value={endpoint.request} />}
-          {endpoint.response && <JsonDetails title="Response" value={endpoint.response} />}
-          {endpoint.errors && <JsonDetails title="Errors" value={endpoint.errors} />}
-          {endpoint.incomingMessages && <JsonDetails title="WebSocket input" value={endpoint.incomingMessages} />}
-          {endpoint.outgoingMessages && <JsonDetails title="WebSocket output" value={endpoint.outgoingMessages} />}
-        </div>
-      )}
-    </details>
-  );
+  return <Fragment><tr><td>{hasDetails && <TableExpandButton expanded={expanded} label={`接口 ${endpoint.method} ${endpoint.path}`} onClick={() => setExpanded(!expanded)} />}</td><td><MethodBadge method={endpoint.method} /></td><td><code className="text-xs whitespace-nowrap">{endpoint.path}</code></td><td>{endpoint.description}{endpoint.public && <span className="ml-2 text-[10px]" style={{ color: 'var(--success)' }}>Public</span>}</td></tr>
+    {expanded && <TableDetailRow columnCount={4}><div className="space-y-2">{endpoint.request && <JsonDetails title="Request" value={endpoint.request} />}{endpoint.response && <JsonDetails title="Response" value={endpoint.response} />}{endpoint.errors && <JsonDetails title="Errors" value={endpoint.errors} />}{endpoint.incomingMessages && <JsonDetails title="Incoming messages" value={endpoint.incomingMessages} />}{endpoint.outgoingMessages && <JsonDetails title="Outgoing messages" value={endpoint.outgoingMessages} />}</div></TableDetailRow>}
+  </Fragment>;
 }
 
 function MethodBadge({ method }: { method: AgentApiEndpoint['method'] }) {
@@ -413,6 +408,7 @@ function contextSessionCurl(baseUrl: string, context: GuideContext): string {
   ${baseUrl}/api/sessions`;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- Preserve the public guide formatter used by contract consumers.
 export function generateGuide(contract: AgentApiContract, baseUrl: string, context?: GuideContext): string {
   const lines = [
     `# ${contract.name}`,

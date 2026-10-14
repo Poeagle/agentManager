@@ -4,7 +4,7 @@ import { api, scopeProjectFiles } from '../src/lib/api';
 function mockRequest() {
   const request = {
     open: vi.fn(), setRequestHeader: vi.fn(), send: vi.fn(),
-    upload: { onprogress: (_event: { lengthComputable: boolean; loaded: number; total: number }) => {} },
+    upload: { onprogress: vi.fn<(_event: { lengthComputable: boolean; loaded: number; total: number }) => void>() },
     responseType: '', withCredentials: false, status: 200,
     response: { ok: true } as unknown,
     onload: () => {}, onerror: () => {}, onabort: () => {},
@@ -36,15 +36,6 @@ describe('file upload API client', () => {
     expect(progress).toHaveBeenCalledWith(0.5);
     xhr.onload();
     await expect(result).resolves.toEqual({ ok: true });
-  });
-
-  it('preserves JSON transport for existing terminal attachments', async () => {
-    const xhr = mockRequest();
-    const result = api.sessions.pasteFile('session-1', 'data:text/plain;base64,YQ==', 'a.txt');
-    expect(xhr.setRequestHeader).toHaveBeenCalledWith('Content-Type', 'application/json');
-    expect(xhr.send).toHaveBeenCalledWith(JSON.stringify({ dataUrl: 'data:text/plain;base64,YQ==', filename: 'a.txt' }));
-    xhr.onload();
-    await result;
   });
 
   it('surfaces server errors without reporting a successful upload', async () => {

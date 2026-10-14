@@ -20,7 +20,6 @@ const manager = vi.hoisted(() => ({
   spawnSession: vi.fn(async () => {}),
   spawnTerminal: vi.fn(async () => {}),
   spawnAdopt: vi.fn(async () => {}),
-  spawnAgent: vi.fn(async () => {}),
   sendReplay: vi.fn(),
   sendIncrementalReplay: vi.fn(() => true),
   terminalGeometryMatches: vi.fn(() => true),

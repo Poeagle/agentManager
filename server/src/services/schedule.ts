@@ -1,5 +1,10 @@
 export type ScheduleKind = 'interval' | 'daily' | 'weekly' | 'cron';
 
+export interface DailyExecutionWindow {
+  daily_start_time?: string | null;
+  daily_end_time?: string | null;
+}
+
 interface ParsedField {
   values: Set<number>;
   wildcard: boolean;
@@ -163,8 +168,49 @@ export function validateSchedule(kind: ScheduleKind, value: string, timezone: st
   throw new Error('不支持的周期类型');
 }
 
-export function nextScheduledAt(kind: ScheduleKind, value: string, timezone: string, fromMs = Date.now()): string {
+export function validateDailyWindow(kind: ScheduleKind, window: DailyExecutionWindow): void {
+  const start = window.daily_start_time;
+  const end = window.daily_end_time;
+  if (start == null && end == null) return;
+  if (!start || !end) throw new Error('每日执行时段必须同时设置开始和结束时间');
+  if (kind !== 'interval') throw new Error('每日执行时段仅适用于按间隔执行');
+  parseClock(start);
+  parseClock(end);
+  if (start === end) throw new Error('每日开始和结束时间不能相同；全天执行请关闭时段限制');
+}
+
+function windowPosition(at: number, timezone: string, window: DailyExecutionWindow) {
+  const start = parseClock(window.daily_start_time!);
+  const end = parseClock(window.daily_end_time!);
+  const parts = localParts(at, timezone);
+  const startMinute = start.hour * 60 + start.minute;
+  const endMinute = end.hour * 60 + end.minute;
+  return {
+    offset: (parts.hour * 60 + parts.minute - startMinute + 1440) % 1440,
+    length: (endMinute - startMinute + 1440) % 1440,
+  };
+}
+
+export function isWithinDailyWindow(window: DailyExecutionWindow, timezone: string, at = Date.now()): boolean {
+  if (window.daily_start_time == null && window.daily_end_time == null) return true;
+  validateDailyWindow('interval', window);
+  const { offset, length } = windowPosition(at, timezone, window);
+  return offset < length;
+}
+
+export function nextScheduledAt(kind: ScheduleKind, value: string, timezone: string, fromMs = Date.now(), window: DailyExecutionWindow = {}): string {
   validateSchedule(kind, value, timezone);
+  validateDailyWindow(kind, window);
+  if (kind === 'interval' && window.daily_start_time && window.daily_end_time) {
+    const start = parseClock(window.daily_start_time);
+    const end = parseClock(window.daily_end_time);
+    const startMinute = start.hour * 60 + start.minute;
+    const length = (end.hour * 60 + end.minute - startMinute + 1440) % 1440;
+    return findNextMinute(timezone, fromMs, (parts) => {
+      const offset = (parts.hour * 60 + parts.minute - startMinute + 1440) % 1440;
+      return offset < length && offset % Number(value) === 0;
+    });
+  }
   if (kind === 'interval') return new Date(fromMs + Number(value) * 60_000).toISOString();
 
   if (kind === 'daily') {

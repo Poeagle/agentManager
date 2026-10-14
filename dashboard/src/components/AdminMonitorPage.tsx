@@ -1,30 +1,23 @@
-import { useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { TableActionButton, TableActions } from './table/TableActions';
+import { RowActionsMenu } from './table/RowActionsMenu';
+import { useTableModel } from './table/use-table-model';
+import { DataTable, TableExpandButton, TableDetailRow, TableStateRow } from './table/DataTable';
+import { Children, isValidElement, type ReactElement, Fragment, createContext, useContext, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
-  Activity,
   AlertTriangle,
   ArrowLeft,
-  Bot,
   Check,
-  ChevronDown,
-  ChevronRight,
   ChevronsUpDown,
   CircleHelp,
-  Cpu,
   FolderOpen,
-  HardDrive,
   ExternalLink,
-  Loader2,
-  MemoryStick,
   Pencil,
   RefreshCw,
   Search,
-  Server,
-  ShieldCheck,
   TerminalSquare,
   Trash2,
-  Users,
   X,
 } from 'lucide-react';
 import {
@@ -35,6 +28,7 @@ import {
   type AdminMonitorTab,
   type AdminMonitorUser,
 } from '../lib/api';
+import { useServerResources } from '../lib/use-server-resources';
 
 const ACTIVE_STATUSES = new Set(['pending', 'launching', 'running', 'detached', 'released']);
 
@@ -101,12 +95,10 @@ function statusMeta(status: string) {
 
 function sessionType(session: AdminMonitorSession): string {
   if (session.mode === 'terminal') return '终端';
-  if (session.mode === 'agent') return session.agent_type ? `Agent · ${session.agent_type}` : 'Agent';
   return session.cli_type === 'codex' ? 'Codex 会话' : 'Claude 会话';
 }
 
-function tabIcon(session: AdminMonitorSession | undefined) {
-  if (session?.mode === 'agent') return <Bot className="h-4 w-4" />;
+function tabIcon() {
   return <TerminalSquare className="h-4 w-4" />;
 }
 
@@ -119,15 +111,21 @@ function toggleSet(setter: Dispatch<SetStateAction<Set<string>>>, key: string) {
   });
 }
 
-export function AdminMonitorPage({ onBack, onOpenSession }: {
+const MonitorPermissions = createContext({ canWrite: true, canDelete: true, canOpenSessions: true });
+
+export function AdminMonitorPage({ onBack, onOpenSession, canWrite = true, canDelete = true, canOpenSessions = true }: {
   onBack: () => void;
   onOpenSession: (projectId: string, sessionId: string) => void;
+  canWrite?: boolean;
+  canDelete?: boolean;
+  canOpenSessions?: boolean;
 }) {
   const [search, setSearch] = useState('');
   const [showHistory, setShowHistory] = useState(false);
   const [showStatusHelp, setShowStatusHelp] = useState(false);
-  const [collapsedUsers, setCollapsedUsers] = useState<Set<string>>(new Set());
-  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
+  const [expandedUsers, setExpandedUsers] = useState<Set<string>>(new Set());
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const resourceQuery = useServerResources();
   const { data, error, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['admin-monitor'],
     queryFn: () => api.admin.monitor(),
@@ -161,6 +159,15 @@ export function AdminMonitorPage({ onBack, onOpenSession }: {
     .sort((a, b) => b.user.active_sessions - a.user.active_sessions || Number(b.user.online) - Number(a.user.online)),
   [data, query, showHistory]);
 
+  const usersTable = useTableModel(users, [
+    { key: 'user', title: '用户', value: ({ user }) => `${user.display_name || user.username} @${user.username}` },
+    { key: 'status', title: '状态', value: ({ user }) => user.disabled ? '已禁用' : user.online ? '在线' : '离线' },
+    { key: 'projects', title: '打开项目', value: ({ user }) => user.open_projects },
+    { key: 'tabs', title: '会话标签', value: ({ projects }) => projects.filter(({ project }) => project.is_open).reduce((sum, { project }) => sum + project.tabs.length, 0) },
+    { key: 'sessions', title: '活动会话', value: ({ user }) => user.active_sessions },
+    { key: 'memory', title: '内存', value: ({ user }) => user.memory_bytes, format: (value) => formatBytes(typeof value === 'number' ? value : null) },
+    { key: 'login', title: '登录活动', value: ({ user }) => user.last_seen_at, kind: 'date', format: (value) => absoluteTime(value == null ? null : String(value)) },
+  ]);
   const referenceTime = parseServerTime(data?.generated_at ?? null) ?? 0;
   const onlineUsers = data?.users.filter((user) => user.online).length ?? 0;
   const openProjects = data?.users.reduce((total, user) => total + user.open_projects, 0) ?? 0;
@@ -168,67 +175,41 @@ export function AdminMonitorPage({ onBack, onOpenSession }: {
     (total, user) => total + user.projects.filter((project) => project.is_open).reduce((sum, project) => sum + project.tabs.length, 0),
     0,
   ) ?? 0;
-  const allCollapsed = users.length > 0 && users.every(({ user }) => collapsedUsers.has(user.id));
+  const allCollapsed = users.length > 0 && users.every(({ user }) => !expandedUsers.has(user.id));
 
   return (
+    <MonitorPermissions.Provider value={{ canWrite, canDelete, canOpenSessions }}>
     <div className="h-full overflow-y-auto" style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
-      <div className="mx-auto flex min-h-full w-full max-w-[1540px] flex-col px-4 py-4 sm:px-6 lg:px-8">
-        <header className="flex flex-col gap-4 border-b pb-4 sm:flex-row sm:items-end sm:justify-between" style={{ borderColor: 'var(--border)' }}>
-          <div className="flex items-start gap-3">
-            <button onClick={onBack} className="mt-0.5 rounded-md p-1.5 transition-colors hover:bg-white/5 focus-visible:outline-none focus-visible:ring-2" style={{ color: 'var(--text-secondary)' }} title="返回">
-              <ArrowLeft className="h-4 w-4" />
-            </button>
-            <div>
-              <div className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.18em]" style={{ color: 'var(--accent)' }}>
-                <Activity className={`h-3.5 w-3.5 motion-reduce:animate-none ${isFetching ? 'animate-pulse' : ''}`} />
-                Live operations
-                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 normal-case tracking-normal" style={{ background: 'color-mix(in srgb, var(--accent) 12%, transparent)' }}>
-                  <ShieldCheck className="h-3 w-3" />仅管理员
-                </span>
-              </div>
-              <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">用户与会话监控</h1>
-              <p className="mt-1 text-xs sm:text-sm" style={{ color: 'var(--text-secondary)' }}>
-                按用户、项目和会话标签逐层查看正在使用的工作区与资源。
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 self-end text-xs" style={{ color: 'var(--text-secondary)' }}>
-            <span>{data ? `采样于 ${absoluteTime(data.generated_at)}` : '正在连接监控数据'}</span>
-            <button onClick={() => refetch()} disabled={isFetching} className="rounded-md p-1.5 transition-colors hover:bg-white/5 disabled:opacity-50" title="立即刷新">
-              <RefreshCw className={`h-3.5 w-3.5 motion-reduce:animate-none ${isFetching ? 'animate-spin' : ''}`} />
-            </button>
-          </div>
+      <div className="page-content flex min-h-full flex-col py-3">
+        <header className="mb-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2"><TableActionButton onClick={onBack} title="返回" ><ArrowLeft className="h-3.5 w-3.5" /></TableActionButton><h1 className="text-base font-semibold">用户与会话监控</h1></div>
+          <div className="flex items-center gap-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{data ? `采样于 ${absoluteTime(data.generated_at)}` : '读取中'}<TableActionButton onClick={() => { void refetch(); }} disabled={isFetching}  title="立即刷新"><RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} /></TableActionButton></div>
         </header>
 
-        <ServerResourceOverview resources={data?.server_resources} loading={isLoading} />
+        <ServerResourceOverview resources={resourceQuery.data?.server_resources} loading={resourceQuery.isLoading} />
 
-        <section className="grid grid-cols-2 border-b sm:grid-cols-4" style={{ borderColor: 'var(--border)' }}>
-          <Telemetry label="运行用户" value={`${data?.active_users ?? 0}`} detail={`${onlineUsers} 人在线`} icon={<Users className="h-4 w-4" />} />
-          <Telemetry label="活动会话" value={`${data?.active_sessions ?? 0}`} detail="含后台与分离会话" icon={<TerminalSquare className="h-4 w-4" />} />
-          <Telemetry label="会话内存" value={formatBytes(data?.total_memory_bytes ?? 0)} detail="进程树 / 隔离组采样" icon={<MemoryStick className="h-4 w-4" />} />
-          <Telemetry label="打开项目 / 会话标签" value={`${openProjects} / ${openTabs}`} detail="用户当前保存的会话标签" icon={<FolderOpen className="h-4 w-4" />} />
-        </section>
+        <div className="my-2 flex flex-wrap gap-x-5 gap-y-1 text-xs" style={{ color: 'var(--text-secondary)' }}><span>运行用户 {data?.active_users ?? 0} · 在线 {onlineUsers}</span><span>活动会话 {data?.active_sessions ?? 0}</span><span>会话内存 {formatBytes(data?.total_memory_bytes ?? 0)}</span><span>打开项目 / 标签 {openProjects} / {openTabs}</span></div>
 
-        <div className="flex flex-col gap-3 py-4 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex flex-col gap-2 py-2 xl:flex-row xl:items-center xl:justify-between">
           <label className="relative block w-full xl:max-w-md">
             <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索用户、项目、会话标签、任务或会话 ID" className="w-full rounded-md py-2 pl-9 pr-3 text-sm outline-none transition-colors focus:ring-1" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索用户、项目、会话标签、任务或会话 ID" className="w-full rounded-md py-1.5 pl-9 pr-3 text-sm outline-none transition-colors focus:ring-1" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
           </label>
           <div className="flex flex-wrap items-center gap-2">
-            <button onClick={() => setShowStatusHelp((value) => !value)} aria-expanded={showStatusHelp} className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-2 text-xs transition-colors hover:bg-white/5" style={{ color: showStatusHelp ? 'var(--accent)' : 'var(--text-secondary)', border: '1px solid var(--border)' }}>
+            <button onClick={() => setShowStatusHelp((value) => !value)} aria-expanded={showStatusHelp} className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors hover:bg-white/5" style={{ color: showStatusHelp ? 'var(--accent)' : 'var(--text-secondary)', border: '1px solid var(--border)' }}>
               <CircleHelp className="h-3.5 w-3.5" />状态说明
             </button>
             <button
               onClick={() => {
-                if (allCollapsed) setCollapsedUsers(new Set());
-                else setCollapsedUsers(new Set(users.map(({ user }) => user.id)));
+                if (allCollapsed) setExpandedUsers(new Set(users.map(({ user }) => user.id)));
+                else setExpandedUsers(new Set());
               }}
-              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-2 text-xs transition-colors hover:bg-white/5"
+              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors hover:bg-white/5"
               style={{ color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
             >
               <ChevronsUpDown className="h-3.5 w-3.5" />{allCollapsed ? '展开全部用户' : '收起全部用户'}
             </button>
-            <label className="flex cursor-pointer select-none items-center gap-2 rounded-md px-2.5 py-2 text-xs" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border)' }}>
+            <label className="flex cursor-pointer select-none items-center gap-2 rounded-md px-2.5 py-1 text-xs" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border)' }}>
               <button type="button" role="switch" aria-label="显示最近已结束会话" aria-checked={showHistory} onClick={() => setShowHistory((value) => !value)} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: showHistory ? 'var(--accent)' : 'var(--bg-tertiary)', border: '1px solid var(--border)' }}>
                 <span className="absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform" style={{ left: 2, transform: showHistory ? 'translateX(16px)' : 'translateX(0)' }} />
               </button>
@@ -239,29 +220,20 @@ export function AdminMonitorPage({ onBack, onOpenSession }: {
 
         {showStatusHelp && <StatusGuide />}
 
-        {isLoading ? (
-          <div className="flex flex-1 items-center justify-center py-24"><Loader2 className="h-6 w-6 animate-spin" style={{ color: 'var(--accent)' }} /></div>
-        ) : error ? (
-          <div className="rounded-lg p-4 text-sm" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--error)' }}>{error instanceof Error ? error.message : '监控数据加载失败'}</div>
-        ) : users.length === 0 ? (
-          <div className="flex flex-1 flex-col items-center justify-center py-24 text-center">
-            <Search className="mb-3 h-6 w-6" style={{ color: 'var(--text-muted)' }} />
-            <p className="text-sm">没有匹配的用户、项目或会话标签</p>
-            <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>清除搜索条件后可查看全部用户。</p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3 pb-8">
-            {users.map(({ user, projects }) => {
-              const collapsed = collapsedUsers.has(user.id);
+          <DataTable label="用户监控" model={usersTable} minWidth={700} expandable className="mb-3"
+            loading={isLoading} error={error ? error instanceof Error ? error.message : '监控数据加载失败' : undefined}
+            onRetry={() => { void refetch(); }} empty={usersTable.rows.length === 0} emptyMessage="没有匹配的用户、项目或会话标签">
+            {usersTable.rows.map(({ user, projects }) => {
+              const collapsed = !query && !expandedUsers.has(user.id);
               return (
                 <UserTree
                   key={user.id}
                   user={user}
                   projects={projects}
                   collapsed={collapsed}
-                  onToggle={() => toggleSet(setCollapsedUsers, user.id)}
-                  collapsedProjects={collapsedProjects}
-                  onToggleProject={(key) => toggleSet(setCollapsedProjects, key)}
+                  onToggle={() => toggleSet(setExpandedUsers, user.id)}
+                  expandedProjects={query ? new Set(projects.map(({ project }, index) => `${user.id}:${project.id ?? `unassigned-${index}`}`)) : expandedProjects}
+                  onToggleProject={(key) => toggleSet(setExpandedProjects, key)}
                   referenceTime={referenceTime}
                   showHistory={showHistory}
                   onOpenSession={onOpenSession}
@@ -269,10 +241,10 @@ export function AdminMonitorPage({ onBack, onOpenSession }: {
                 />
               );
             })}
-          </div>
-        )}
+          </DataTable>
       </div>
     </div>
+    </MonitorPermissions.Provider>
   );
 }
 
@@ -307,165 +279,68 @@ function GuideGroup({ title, items }: { title: string; items: Record<string, { l
   );
 }
 
-function UserTree({ user, projects, collapsed, onToggle, collapsedProjects, onToggleProject, referenceTime, showHistory, onOpenSession, onChanged }: {
-  user: AdminMonitorUser;
-  projects: Array<{ project: AdminMonitorProject; sessions: AdminMonitorSession[] }>;
-  collapsed: boolean;
-  onToggle: () => void;
-  collapsedProjects: Set<string>;
-  onToggleProject: (key: string) => void;
-  referenceTime: number;
-  showHistory: boolean;
-  onOpenSession: (projectId: string, sessionId: string) => void;
-  onChanged: () => Promise<unknown>;
+function UserTree({ user, projects, collapsed, onToggle, expandedProjects, onToggleProject, referenceTime, showHistory, onOpenSession, onChanged }: {
+  user: AdminMonitorUser; projects: Array<{ project: AdminMonitorProject; sessions: AdminMonitorSession[] }>;
+  collapsed: boolean; onToggle: () => void; expandedProjects: Set<string>; onToggleProject: (key: string) => void;
+  referenceTime: number; showHistory: boolean; onOpenSession: (projectId: string, sessionId: string) => void; onChanged: () => Promise<unknown>;
 }) {
-  const tabCount = projects.filter(({ project }) => project.is_open).reduce((total, { project }) => total + project.tabs.length, 0);
-  return (
-    <section className="overflow-hidden rounded-xl" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
-      <button onClick={onToggle} aria-expanded={!collapsed} className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.025] sm:px-5">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>
-          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-        </span>
-        <span className={`h-2.5 w-2.5 shrink-0 rounded-full motion-reduce:animate-none ${user.online ? 'animate-pulse' : ''}`} style={{ background: user.online ? 'var(--success)' : 'var(--text-muted)' }} />
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="truncate text-sm font-semibold">{user.display_name || user.username}</span>
-            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>@{user.username}</span>
-            {user.disabled ? <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ color: 'var(--error)', background: 'color-mix(in srgb, var(--error) 10%, transparent)' }}>已禁用</span> : null}
-          </span>
-          <span className="mt-1 block text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-            {user.online ? '在线' : '离线'} · 登录活动 {relativeTime(user.last_seen_at, referenceTime)}
-          </span>
-        </span>
-        <span className="hidden items-center gap-5 text-right sm:flex">
-          <Metric label="打开项目" value={`${user.open_projects}`} />
-          <Metric label="会话标签" value={`${tabCount}`} />
-          <Metric label="活动会话" value={user.role === 'member' ? `${user.active_sessions}/${user.max_tabs ?? 10}` : `${user.active_sessions}`} />
-          <Metric label="内存" value={formatBytes(user.memory_bytes)} />
-        </span>
-      </button>
-
-      {!collapsed && (
-        <div className="border-t px-3 py-3 sm:px-5" style={{ borderColor: 'var(--border)' }}>
-          {projects.length === 0 ? (
-            <div className="py-5 pl-10 text-xs" style={{ color: 'var(--text-secondary)' }}>{showHistory ? '该用户暂无项目或会话记录。' : '该用户当前没有打开的项目。'}</div>
-          ) : (
-            <div className="relative ml-3 space-y-2 border-l pl-5" style={{ borderColor: 'var(--border)' }}>
-              {projects.map(({ project, sessions }, index) => {
-                const key = `${user.id}:${project.id ?? `unassigned-${index}`}`;
-                return (
-                  <ProjectTree key={key} userId={user.id} project={project} sessions={sessions} collapsed={collapsedProjects.has(key)} onToggle={() => onToggleProject(key)} referenceTime={referenceTime} showHistory={showHistory} onOpenSession={onOpenSession} onChanged={onChanged} />
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-    </section>
-  );
+  const projectsTable = useTableModel(projects, [
+    { key: 'project', title: '项目', value: ({ project }) => project.custom_name || project.name },
+    { key: 'path', title: '路径', value: ({ project }) => project.path },
+    { key: 'state', title: '状态', value: ({ project }) => project.is_active ? '当前项目' : project.is_open ? '已打开' : '历史' },
+    { key: 'tabs', title: '会话标签', value: ({ project }) => project.tabs.length },
+    { key: 'sessions', title: '活动会话', value: ({ sessions }) => sessions.filter((session) => ACTIVE_STATUSES.has(session.status)).length },
+    { key: 'memory', title: '内存', value: ({ sessions }) => sessions.reduce((sum, session) => sum + (session.memory_bytes ?? 0), 0), format: (value) => formatBytes(typeof value === 'number' ? value : null) },
+  ]);
+  const tabCount = projects.filter(({ project }) => project.is_open).reduce((sum, { project }) => sum + project.tabs.length, 0);
+  return <Fragment>
+    <tr>
+      <td><TableExpandButton expanded={!collapsed} label={`用户 ${user.username}`} onClick={onToggle} /></td>
+      <td className="whitespace-nowrap"><span className="font-medium">{user.display_name || user.username}</span><span className="ml-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>@{user.username}</span></td>
+      <td><span className="inline-flex items-center gap-1.5 whitespace-nowrap"><span className="h-1.5 w-1.5 rounded-full" style={{ background: user.disabled ? 'var(--error)' : user.online ? 'var(--success)' : 'var(--text-muted)' }} />{user.disabled ? '已禁用' : user.online ? '在线' : '离线'}</span></td>
+      <td>{user.open_projects}</td><td>{tabCount}</td><td>{user.active_sessions}{user.role === 'member' ? ` / ${user.max_tabs ?? 10}` : ''}</td><td className="whitespace-nowrap">{formatBytes(user.memory_bytes)}</td><td className="whitespace-nowrap" title={absoluteTime(user.last_seen_at)}>{relativeTime(user.last_seen_at, referenceTime)}</td>
+    </tr>
+    {!collapsed && <TableDetailRow columnCount={8}>
+      <DataTable label={`${user.username} 的项目`} model={projectsTable} minWidth={850} expandable columnWidths={['w-48', '', 'w-24', 'w-32', 'w-32', 'w-28']}
+        empty={projectsTable.rows.length === 0} emptyMessage={showHistory ? '暂无项目或会话记录。' : '当前没有打开的项目。'}>{projectsTable.rows.map((entry) => {
+        const { project, sessions } = entry;
+        const index = projects.indexOf(entry);
+        const key = `${user.id}:${project.id ?? `unassigned-${index}`}`;
+        return <ProjectTree key={key} userId={user.id} project={project} sessions={sessions} collapsed={!expandedProjects.has(key)} onToggle={() => onToggleProject(key)} referenceTime={referenceTime} showHistory={showHistory} onOpenSession={onOpenSession} onChanged={onChanged} />;
+      })}</DataTable>
+    </TableDetailRow>}
+  </Fragment>;
 }
 
 function ProjectTree({ userId, project, sessions, collapsed, onToggle, referenceTime, showHistory, onOpenSession, onChanged }: {
-  userId: string;
-  project: AdminMonitorProject;
-  sessions: AdminMonitorSession[];
-  collapsed: boolean;
-  onToggle: () => void;
-  referenceTime: number;
-  showHistory: boolean;
-  onOpenSession: (projectId: string, sessionId: string) => void;
-  onChanged: () => Promise<unknown>;
+  userId: string; project: AdminMonitorProject; sessions: AdminMonitorSession[]; collapsed: boolean; onToggle: () => void;
+  referenceTime: number; showHistory: boolean; onOpenSession: (projectId: string, sessionId: string) => void; onChanged: () => Promise<unknown>;
 }) {
   const sessionById = new Map(sessions.map((session) => [session.id, session]));
-  const tabSessionIds = new Set(project.tabs.filter((tab) => tab.kind === 'session').map((tab) => tab.id));
-  const backgroundSessions = sessions.filter((session) => !tabSessionIds.has(session.id));
-  const activeSessions = sessions.filter((session) => ACTIVE_STATUSES.has(session.status));
-  const memory = sessions.reduce((total, session) => total + (session.memory_bytes ?? 0), 0);
-  return (
-    <article className="relative overflow-hidden rounded-lg" style={{ background: 'color-mix(in srgb, var(--bg-tertiary) 48%, var(--bg-secondary))', border: '1px solid var(--border)' }}>
-      <span className="absolute -left-[22px] top-7 h-px w-5" style={{ background: 'var(--border)' }} />
-      <button onClick={onToggle} aria-expanded={!collapsed} className="flex w-full items-center gap-3 px-3 py-3 text-left transition-colors hover:bg-white/[0.025] sm:px-4">
-        <span style={{ color: project.is_open ? 'var(--accent)' : 'var(--text-muted)' }}>{collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</span>
-        <FolderOpen className="h-4 w-4 shrink-0" style={{ color: project.is_open ? 'var(--accent)' : 'var(--text-muted)' }} />
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-center gap-2">
-            <span className="truncate text-sm font-medium">{project.custom_name || project.name}</span>
-            {project.is_active && <span className="rounded-full px-1.5 py-0.5 text-[9px] font-medium" style={{ color: 'var(--accent)', background: 'color-mix(in srgb, var(--accent) 12%, transparent)' }}>当前项目</span>}
-            {!project.is_open && <span className="rounded-full px-1.5 py-0.5 text-[9px]" style={{ color: 'var(--text-muted)', border: '1px solid var(--border)' }}>历史项目</span>}
-          </span>
-          <span className="mt-0.5 block truncate text-[10px]" title={project.path ?? undefined} style={{ color: 'var(--text-muted)' }}>{project.path || '未关联项目路径'}</span>
-        </span>
-        <span className="hidden items-center gap-4 sm:flex">
-          <Metric label="会话标签" value={`${project.tabs.length}`} />
-          <Metric label="活动会话" value={`${activeSessions.length}`} />
-          <Metric label="内存" value={formatBytes(memory)} />
-        </span>
-      </button>
-
-      {!collapsed && (
-        <div className="border-t px-3 py-3 sm:px-4" style={{ borderColor: 'var(--border)', background: 'color-mix(in srgb, var(--bg-primary) 32%, transparent)' }}>
-          <div className="mb-2 flex items-center justify-between">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--text-secondary)' }}>打开的会话标签 · {project.tabs.length}</div>
-            {project.state_updated_at && <div className="text-[10px]" title={absoluteTime(project.state_updated_at)} style={{ color: 'var(--text-muted)' }}>结构更新于 {relativeTime(project.state_updated_at, referenceTime)}</div>}
-          </div>
-          {project.tabs.length === 0 ? (
-            <div className="rounded-md px-3 py-4 text-xs" style={{ color: 'var(--text-muted)', border: '1px dashed var(--border)' }}>这个项目当前没有打开的会话标签。</div>
-          ) : (
-            <SessionTable>
-              {project.tabs.map((tab) => (
-                <TabRow
-                  key={`${tab.kind}:${tab.id}`}
-                  userId={userId}
-                  projectId={project.id!}
-                  tab={tab}
-                  session={sessionById.get(tab.id)}
-                  referenceTime={referenceTime}
-                  onOpen={() => onOpenSession(project.id!, tab.id)}
-                  onChanged={onChanged}
-                />
-              ))}
-            </SessionTable>
-          )}
-
-          {backgroundSessions.length > 0 && (
-            <div className="mt-4">
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--text-secondary)' }}>后台 / 未打开为标签的会话 · {backgroundSessions.length}</div>
-              <SessionTable>
-                {backgroundSessions.map((session) => (
-                  <BackgroundSessionRow
-                    key={session.id}
-                    session={session}
-                    referenceTime={referenceTime}
-                    onOpen={() => project.id && onOpenSession(project.id, session.id)}
-                  />
-                ))}
-              </SessionTable>
-            </div>
-          )}
-          {!showHistory && project.tabs.length > 0 && sessions.length === 0 && <div className="mt-3 text-[10px]" style={{ color: 'var(--text-muted)' }}>这些标签当前没有活动会话；打开“显示历史”可查看最近结束状态。</div>}
-        </div>
-      )}
-    </article>
-  );
+  const tabIds = new Set(project.tabs.filter((tab) => tab.kind === 'session').map((tab) => tab.id));
+  const background = sessions.filter((session) => !tabIds.has(session.id));
+  return <Fragment>
+    <tr><td><TableExpandButton expanded={!collapsed} label={`项目 ${project.name}`} onClick={onToggle} /></td><td><span className="flex items-center gap-2"><FolderOpen className="h-3.5 w-3.5" style={{ color: 'var(--accent)' }} />{project.custom_name || project.name}</span></td><td><div className="max-w-96 truncate" title={project.path ?? undefined}>{project.path || '未关联'}</div></td><td>{project.is_active ? '当前项目' : project.is_open ? '已打开' : '历史'}</td><td>{project.tabs.length}</td><td>{sessions.filter((session) => ACTIVE_STATUSES.has(session.status)).length}</td><td className="whitespace-nowrap">{formatBytes(sessions.reduce((sum, session) => sum + (session.memory_bytes ?? 0), 0))}</td></tr>
+    {!collapsed && <TableDetailRow columnCount={7}><SessionTable>
+      {project.tabs.map((tab) => <TabRow key={`${tab.kind}:${tab.id}`} userId={userId} projectId={project.id!} tab={tab} session={sessionById.get(tab.id)} referenceTime={referenceTime} onOpen={() => project.id && onOpenSession(project.id, tab.id)} onChanged={onChanged} />)}
+      {background.map((session) => <BackgroundSessionRow key={session.id} session={session} referenceTime={referenceTime} onOpen={() => project.id && onOpenSession(project.id, session.id)} />)}
+      {project.tabs.length === 0 && background.length === 0 && <TableStateRow columnCount={6}>{showHistory ? '暂无会话记录' : '暂无活动会话，可打开“显示历史”查看已结束会话'}</TableStateRow>}
+    </SessionTable></TableDetailRow>}
+  </Fragment>;
 }
 
 function SessionTable({ children }: { children: ReactNode }) {
+  const elements = Children.toArray(children).filter(isValidElement) as Array<ReactElement<{ tab?: AdminMonitorTab; session?: AdminMonitorSession }>>;
+  const records = elements.filter((element) => element.props.tab || element.props.session);
+  const table = useTableModel(records, [
+    { key: 'name', title: '会话标签', value: ({ props }) => props.tab?.name ?? props.session?.task },
+    { key: 'state', title: '实时状态', value: ({ props }) => props.session ? props.session.process_state ? PROCESS_META[props.session.process_state].label : statusMeta(props.session.status).label : '未运行' },
+    { key: 'content', title: '待处理信息 / 最新结果', value: ({ props }) => props.session?.last_output },
+    { key: 'memory', title: '内存 / 进程', value: ({ props }) => props.session?.memory_bytes, format: (value) => formatBytes(typeof value === 'number' ? value : null) },
+    { key: 'activity', title: '最后活动', value: ({ props }) => props.session?.last_activity_at, kind: 'date', format: (value) => absoluteTime(value == null ? null : String(value)) },
+  ]);
   return (
-    <div className="overflow-x-auto rounded-md" style={{ border: '1px solid var(--border)' }}>
-      <table className="w-full min-w-[1060px] table-fixed text-xs">
-        <thead style={{ color: 'var(--text-secondary)', background: 'var(--bg-secondary)' }}>
-          <tr>
-            <th className="w-[230px] px-3 py-2 text-left font-medium">会话标签</th>
-            <th className="w-[155px] px-3 py-2 text-left font-medium">实时状态</th>
-            <th className="px-3 py-2 text-left font-medium">待处理信息 / 最新结果</th>
-            <th className="w-[125px] px-3 py-2 text-right font-medium">内存 / 进程</th>
-            <th className="w-[125px] px-3 py-2 text-right font-medium">最后活动</th>
-            <th className="w-[92px] px-3 py-2 text-right font-medium">操作</th>
-          </tr>
-        </thead>
-        <tbody>{children}</tbody>
-      </table>
-    </div>
+    <DataTable label="会话监控" model={table} minWidth={850} actions columnWidths={['w-[180px]', 'w-[125px]', '', 'w-[125px]', 'w-[125px]']}>{records.length ? table.rows.length ? table.rows : <TableStateRow columnCount={6}>没有匹配的会话</TableStateRow> : children}</DataTable>
   );
 }
 
@@ -478,6 +353,7 @@ function TabRow({ userId, projectId, tab, session, referenceTime, onOpen, onChan
   onOpen: () => void;
   onChanged: () => Promise<unknown>;
 }) {
+  const { canWrite, canDelete, canOpenSessions } = useContext(MonitorPermissions);
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(tab.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -517,10 +393,10 @@ function TabRow({ userId, projectId, tab, session, referenceTime, onOpen, onChan
   };
 
   return (
-    <tr className="group transition-colors hover:bg-white/[0.025]" style={{ borderTop: '1px solid var(--border)' }}>
-      <td className="px-3 py-2.5 align-middle">
+    <tr className="group" style={{ borderTop: '1px solid var(--border)' }}>
+      <td >
         <div className="flex items-center gap-2.5">
-          <span className="shrink-0" style={{ color: tab.is_active ? 'var(--accent)' : 'var(--text-secondary)' }}>{tabIcon(session)}</span>
+          <span className="shrink-0" style={{ color: tab.is_active ? 'var(--accent)' : 'var(--text-secondary)' }}>{tabIcon()}</span>
         {editing ? (
           <div className="min-w-0 flex-1">
             <label className="sr-only" htmlFor={`monitor-tab-name-${tab.id}`}>会话标签名称</label>
@@ -539,7 +415,7 @@ function TabRow({ userId, projectId, tab, session, referenceTime, onOpen, onChan
             />
           </div>
         ) : (
-          <button onClick={onOpen} disabled={!session} className="min-w-0 flex-1 text-left disabled:cursor-default" title={session ? `打开 ${tab.name}` : '暂无可打开的会话'}>
+          <button onClick={onOpen} disabled={!session || !canOpenSessions} className="min-w-0 flex-1 text-left disabled:cursor-default" title={session && canOpenSessions ? `打开 ${tab.name}` : '查看会话监控信息'}>
             <span className="flex items-center gap-2">
               <span className="truncate font-semibold">{tab.name}</span>
               {tab.is_active && <span className="shrink-0 rounded px-1 py-0.5 text-[9px]" style={{ color: 'var(--accent)', background: 'color-mix(in srgb, var(--accent) 12%, transparent)' }}>当前</span>}
@@ -553,33 +429,35 @@ function TabRow({ userId, projectId, tab, session, referenceTime, onOpen, onChan
         </div>
         {actionError && <div className="mt-1 text-[10px]" style={{ color: 'var(--error)' }}>{actionError}</div>}
       </td>
-      <td className="px-3 py-2.5 align-middle">{session ? <ExecutionState session={session} /> : <span style={{ color: 'var(--text-muted)' }}>无采样</span>}</td>
-      <td className="px-3 py-2.5 align-middle">
+      <td >{session ? <ExecutionState session={session} /> : <span style={{ color: 'var(--text-muted)' }}>无采样</span>}</td>
+      <td >
         {session ? <OutputInsight session={session} /> : <span style={{ color: 'var(--text-muted)' }}>暂无可判断信息</span>}
       </td>
-      <td className="px-3 py-2.5 text-right align-middle font-mono tabular-nums">
+      <td className="text-right font-mono tabular-nums">
         <div>{formatBytes(session?.memory_bytes ?? null)}</div>
         <div className="mt-0.5 text-[10px]" style={{ color: 'var(--text-muted)' }}>{session ? `${session.process_count} 个进程` : '—'}</div>
       </td>
-      <td className="px-3 py-2.5 text-right align-middle">
+      <td className="text-right">
         <div title={absoluteTime(session?.last_activity_at ?? null)}>{relativeTime(session?.last_activity_at ?? null, referenceTime)}</div>
         <div className="mt-0.5 font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{session?.id.slice(0, 8) ?? '—'}</div>
       </td>
-      <td className="px-3 py-2.5 text-right align-middle">
-        <div className="flex items-center justify-end gap-0.5">
+      <td className="text-right">
+        <TableActions>
           {editing ? (
             <>
-              <button onClick={() => void saveName()} disabled={busy} className="rounded p-1 transition-colors hover:bg-white/5 disabled:opacity-40" style={{ color: 'var(--success)' }} title="保存名称"><Check className="h-3.5 w-3.5" /></button>
-              <button onClick={() => { setName(tab.name); setEditing(false); setActionError(''); }} disabled={busy} className="rounded p-1 transition-colors hover:bg-white/5 disabled:opacity-40" style={{ color: 'var(--text-secondary)' }} title="取消改名"><X className="h-3.5 w-3.5" /></button>
+              <TableActionButton onClick={() => void saveName()} disabled={busy} style={{ color: 'var(--success)' }} title="保存名称"><Check className="h-3.5 w-3.5" /></TableActionButton>
+              <TableActionButton onClick={() => { setName(tab.name); setEditing(false); setActionError(''); }} disabled={busy} title="取消改名"><X className="h-3.5 w-3.5" /></TableActionButton>
             </>
           ) : (
             <>
-              <button onClick={onOpen} disabled={!session} className="rounded p-1 opacity-55 transition-all hover:bg-white/5 hover:opacity-100 disabled:opacity-20" style={{ color: 'var(--accent)' }} aria-label={`打开会话标签 ${tab.name}`}><ExternalLink className="h-3.5 w-3.5" /></button>
-              <button onClick={() => { setName(tab.name); setEditing(true); setActionError(''); }} className="rounded p-1 opacity-55 transition-all hover:bg-white/5 hover:opacity-100" style={{ color: 'var(--text-secondary)' }} aria-label={`重命名会话标签 ${tab.name}`}><Pencil className="h-3.5 w-3.5" /></button>
-              <button onClick={() => setConfirmDelete(true)} className="rounded p-1 opacity-55 transition-all hover:bg-white/5 hover:opacity-100" style={{ color: 'var(--error)' }} aria-label={`删除会话标签 ${tab.name}`}><Trash2 className="h-3.5 w-3.5" /></button>
+              {canOpenSessions && <TableActionButton onClick={onOpen} disabled={!session} style={{ color: 'var(--accent)' }} aria-label={`打开会话标签 ${tab.name}`}><ExternalLink className="h-3.5 w-3.5" /></TableActionButton>}
+              <RowActionsMenu label={`${tab.name} 的更多操作`} actions={[
+                ...(canWrite ? [{ label: '重命名', icon: <Pencil className="h-3.5 w-3.5" />, onClick: () => { setName(tab.name); setEditing(true); setActionError(''); } }] : []),
+                ...(canDelete ? [{ label: '删除标签', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, onClick: () => setConfirmDelete(true) }] : []),
+              ]} />
             </>
           )}
-        </div>
+        </TableActions>
         {confirmDelete && createPortal(
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => !busy && setConfirmDelete(false)}>
           <div className="w-full max-w-sm rounded-xl p-5 shadow-2xl" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
@@ -601,14 +479,15 @@ function TabRow({ userId, projectId, tab, session, referenceTime, onOpen, onChan
 }
 
 function BackgroundSessionRow({ session, referenceTime, onOpen }: { session: AdminMonitorSession; referenceTime: number; onOpen: () => void }) {
+  const { canOpenSessions } = useContext(MonitorPermissions);
   return (
-    <tr className="transition-colors hover:bg-white/[0.025]" style={{ borderTop: '1px solid var(--border)' }}>
-      <td className="px-3 py-2.5"><button onClick={onOpen} className="flex min-w-0 items-center gap-2 text-left"><TerminalSquare className="h-4 w-4 shrink-0" style={{ color: 'var(--text-muted)' }} /><span className="min-w-0"><span className="block truncate font-semibold" title={session.task}>{session.task}</span><span className="mt-0.5 block text-[10px]" style={{ color: 'var(--text-muted)' }}>{sessionType(session)} · 后台会话</span></span></button></td>
-      <td className="px-3 py-2.5"><ExecutionState session={session} /></td>
-      <td className="px-3 py-2.5"><OutputInsight session={session} /></td>
-      <td className="px-3 py-2.5 text-right font-mono tabular-nums"><div>{formatBytes(session.memory_bytes)}</div><div className="mt-0.5 text-[10px]" style={{ color: 'var(--text-muted)' }}>{session.process_count} 个进程</div></td>
-      <td className="px-3 py-2.5 text-right"><div title={absoluteTime(session.last_activity_at)}>{relativeTime(session.last_activity_at, referenceTime)}</div><div className="mt-0.5 font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{session.id.slice(0, 8)}</div></td>
-      <td className="px-3 py-2.5 text-right"><button onClick={onOpen} className="rounded p-1" style={{ color: 'var(--accent)' }} aria-label={`打开后台会话 ${session.task}`}><ExternalLink className="h-3.5 w-3.5" /></button></td>
+    <tr  style={{ borderTop: '1px solid var(--border)' }}>
+      <td ><button onClick={onOpen} disabled={!canOpenSessions} className="flex min-w-0 items-center gap-2 text-left"><TerminalSquare className="h-4 w-4 shrink-0" style={{ color: 'var(--text-muted)' }} /><span className="min-w-0"><span className="block truncate font-semibold" title={session.task}>{session.task}</span><span className="mt-0.5 block text-[10px]" style={{ color: 'var(--text-muted)' }}>{sessionType(session)} · 后台会话</span></span></button></td>
+      <td ><ExecutionState session={session} /></td>
+      <td ><OutputInsight session={session} /></td>
+      <td className="text-right font-mono tabular-nums"><div>{formatBytes(session.memory_bytes)}</div><div className="mt-0.5 text-[10px]" style={{ color: 'var(--text-muted)' }}>{session.process_count} 个进程</div></td>
+      <td className="text-right"><div title={absoluteTime(session.last_activity_at)}>{relativeTime(session.last_activity_at, referenceTime)}</div><div className="mt-0.5 font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{session.id.slice(0, 8)}</div></td>
+      <td><TableActions><TableActionButton onClick={onOpen} disabled={!canOpenSessions} style={{ color: 'var(--accent)' }} aria-label={`打开后台会话 ${session.task}`}><ExternalLink className="h-3.5 w-3.5" /></TableActionButton></TableActions></td>
     </tr>
   );
 }
@@ -620,7 +499,7 @@ function ExecutionState({ session }: { session: AdminMonitorSession }) {
     : session.process_state === 'waiting_for_input'
       ? '等待用户输入'
       : session.process_state === 'busy'
-        ? session.mode === 'terminal' ? '终端正在输出' : 'Agent 正在执行'
+        ? session.mode === 'terminal' ? '终端正在输出' : '会话正在执行'
         : session.process_state === 'idle'
           ? session.mode === 'terminal' ? '终端空闲' : '本轮任务已完成'
           : null;
@@ -645,12 +524,12 @@ function OutputInsight({ session }: { session: AdminMonitorSession }) {
   const fallback = needsAction
     ? '检测到会话正在等待你处理，点击进入查看完整提示。'
     : session.process_state === 'busy'
-      ? 'Agent 正在执行，尚未产生可汇总的结果。'
-      : '尚未获取到有意义的 Agent 回复。';
+      ? '会话正在执行，尚未产生可汇总的结果。'
+      : '尚未获取到有意义的 会话输出。';
   return (
-    <div className="leading-relaxed">
+    <div className="leading-tight">
       <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-wider" style={{ color: needsAction ? '#f59e0b' : 'var(--text-muted)' }}>{label}</div>
-      <div className="line-clamp-2" title={session.last_output ?? undefined} style={{ color: session.last_output ? 'var(--text-primary)' : 'var(--text-muted)' }}>{session.last_output || fallback}</div>
+      <div className="truncate" title={session.last_output ?? undefined} style={{ color: session.last_output ? 'var(--text-primary)' : 'var(--text-muted)' }}>{session.last_output || fallback}</div>
       {session.choices && session.choices.length > 0 && (
         <div className="mt-1 truncate text-[10px]" style={{ color: '#f59e0b' }}>可选：{session.choices.slice(0, 4).join(' / ')}</div>
       )}
@@ -663,100 +542,19 @@ function StatusBadge({ status }: { status: string }) {
   return <span title={meta.description} className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium" style={{ color: meta.color, background: `color-mix(in srgb, ${meta.color} 11%, transparent)` }}>{meta.label}</span>;
 }
 
-function Telemetry({ label, value, detail, icon }: { label: string; value: string; detail: string; icon: ReactNode }) {
-  return (
-    <div className="flex min-h-20 items-center gap-3 border-r px-3 py-3 last:border-r-0 sm:px-5" style={{ borderColor: 'var(--border)' }}>
-      <span className="hidden sm:block" style={{ color: 'var(--accent)' }}>{icon}</span>
-      <div className="min-w-0"><div className="font-mono text-lg font-semibold tabular-nums sm:text-xl">{value}</div><div className="text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>{label}</div><div className="hidden truncate text-[10px] lg:block" style={{ color: 'var(--text-muted)' }}>{detail}</div></div>
-    </div>
-  );
-}
-
 type ServerResources = NonNullable<AdminMonitorResponse['server_resources']>;
 
 function ServerResourceOverview({ resources, loading }: { resources: ServerResources | undefined; loading: boolean }) {
-  const highestUsage = resources
-    ? Math.max(resources.cpu.usage_percent, resources.memory.usage_percent, resources.disk?.usage_percent ?? 0)
-    : 0;
-  const health = highestUsage >= 90
-    ? { label: '资源告警', color: 'var(--error)' }
-    : highestUsage >= 75
-      ? { label: '负载偏高', color: '#f59e0b' }
-      : { label: '运行平稳', color: 'var(--success)' };
-
-  return (
-    <section aria-label="服务器资源" className="border-b py-4 sm:py-5" style={{ borderColor: 'var(--border)' }}>
-      <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: 'var(--text-secondary)' }}>
-            <Server className="h-3.5 w-3.5" />服务器资源
-          </div>
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            <span className="font-mono">{resources?.hostname ?? (loading ? '读取服务器信息…' : '未知主机')}</span>
-            {resources && <><span>持续运行 {formatUptime(resources.uptime_seconds)}</span><span>5 秒自动刷新</span></>}
-          </div>
-        </div>
-        <div className="flex items-center gap-1.5 text-[11px] font-medium" style={{ color: health.color }}>
-          <span className={`h-1.5 w-1.5 rounded-full ${loading ? 'animate-pulse motion-reduce:animate-none' : ''}`} style={{ background: health.color }} />
-          {loading && !resources ? '采样中' : health.label}
-        </div>
-      </div>
-
-      <div className="grid gap-2 lg:grid-cols-3">
-        <ResourceGauge
-          label="CPU"
-          value={resources?.cpu.usage_percent}
-          detail={resources ? `${resources.cpu.core_count} 核 · 1 分钟负载 ${resources.cpu.load_average_1m.toFixed(2)}` : '正在采集处理器负载'}
-          icon={<Cpu className="h-4 w-4" />}
-        />
-        <ResourceGauge
-          label="物理内存"
-          value={resources?.memory.usage_percent}
-          detail={resources ? `${formatBytes(resources.memory.used_bytes)} / ${formatBytes(resources.memory.total_bytes)}` : '正在读取可用内存'}
-          icon={<MemoryStick className="h-4 w-4" />}
-        />
-        <ResourceGauge
-          label="磁盘"
-          value={resources?.disk?.usage_percent}
-          detail={resources?.disk ? `${formatBytes(resources.disk.used_bytes)} / ${formatBytes(resources.disk.total_bytes)} · ${resources.disk.mount}` : '当前平台无法读取磁盘用量'}
-          icon={<HardDrive className="h-4 w-4" />}
-        />
-      </div>
-    </section>
-  );
-}
-
-function ResourceGauge({ label, value, detail, icon }: {
-  label: string;
-  value: number | undefined;
-  detail: string;
-  icon: ReactNode;
-}) {
-  const normalized = value === undefined ? 0 : Math.min(100, Math.max(0, value));
-  const color = normalized >= 90 ? 'var(--error)' : normalized >= 75 ? '#f59e0b' : 'var(--accent)';
-  return (
-    <article className="relative overflow-hidden rounded-lg px-3.5 py-3.5 sm:px-4" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-2 text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-          <span style={{ color }}>{icon}</span>{label}
-        </div>
-        <span className="font-mono text-xl font-semibold leading-none tabular-nums" style={{ color: value === undefined ? 'var(--text-muted)' : 'var(--text-primary)' }}>
-          {value === undefined ? '—' : `${Math.round(value)}%`}
-        </span>
-      </div>
-      <div className="relative mt-3 h-1.5 overflow-hidden rounded-full" style={{ background: 'var(--bg-tertiary)' }}>
-        <div className="h-full rounded-full transition-[width,background-color] duration-500 motion-reduce:transition-none" style={{ width: `${normalized}%`, background: color }} />
-        <span className="absolute inset-y-0 left-3/4 w-px bg-white/30" />
-        <span className="absolute inset-y-0 left-[90%] w-px bg-white/45" />
-      </div>
-      <div className="mt-2 flex items-center justify-between gap-3 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-        <span className="truncate" title={detail}>{detail}</span>
-        <span className="shrink-0 font-mono">75 / 90</span>
-      </div>
-    </article>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return <span className="min-w-[52px]"><span className="block font-mono text-xs font-semibold tabular-nums">{value}</span><span className="mt-0.5 block text-[9px]" style={{ color: 'var(--text-muted)' }}>{label}</span></span>;
+  const table = useTableModel([resources], [
+    { key: 'host', title: '服务器', value: (resource) => resource?.hostname },
+    { key: 'cpu', title: 'CPU', value: (resource) => resource?.cpu.usage_percent, format: (value) => typeof value === 'number' ? `${Math.round(value)}%` : '—' },
+    { key: 'memory', title: '内存', value: (resource) => resource?.memory.used_bytes, format: (value) => formatBytes(typeof value === 'number' ? value : null) },
+    { key: 'disk', title: '磁盘', value: (resource) => resource?.disk?.used_bytes, format: (value) => formatBytes(typeof value === 'number' ? value : null) },
+  ]);
+  return <section aria-label="服务器资源"><DataTable label="服务器资源概览" model={table} minWidth={640}>{table.rows.length > 0 && <tr>
+    <td>{resources?.hostname ?? (loading ? '采样中…' : '—')}<span className="ml-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{resources ? `运行 ${formatUptime(resources.uptime_seconds)}` : ''}</span></td>
+    <td><span>{resources ? `${Math.round(resources.cpu.usage_percent)}%` : '—'}</span>{resources && <span className="ml-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{resources.cpu.core_count} 核</span>}</td>
+    <td>{resources ? `${Math.round(resources.memory.usage_percent)}% · ${formatBytes(resources.memory.used_bytes)} / ${formatBytes(resources.memory.total_bytes)}` : '—'}</td>
+    <td>{resources?.disk ? `${Math.round(resources.disk.usage_percent)}% · ${formatBytes(resources.disk.used_bytes)} / ${formatBytes(resources.disk.total_bytes)}` : '—'}</td>
+  </tr>}</DataTable></section>;
 }

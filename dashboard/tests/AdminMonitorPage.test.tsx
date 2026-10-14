@@ -12,6 +12,7 @@ vi.mock('../src/lib/api', async () => {
     api: {
       ...actual.api,
       admin: {
+        serverResources: vi.fn(),
         monitor: vi.fn(),
         renameMonitorTab: vi.fn(),
         deleteMonitorTab: vi.fn(),
@@ -27,7 +28,6 @@ function session(overrides: Partial<AdminMonitorSession> = {}): AdminMonitorSess
     task: 'Investigate query latency',
     status: 'running',
     mode: 'session',
-    agent_type: null,
     cli_type: 'codex',
     created_by_user_id: 'user-1',
     started_at: '2026-07-31T11:55:00.000Z',
@@ -50,6 +50,7 @@ function session(overrides: Partial<AdminMonitorSession> = {}): AdminMonitorSess
 const response: AdminMonitorResponse = {
   generated_at: '2026-07-31T12:00:00.000Z',
   server_resources: {
+    sampled_at: '2026-07-31T12:00:00.000Z',
     hostname: 'agent-host-01',
     uptime_seconds: 183845,
     cpu: { usage_percent: 37.4, core_count: 8, load_average_1m: 2.14 },
@@ -104,6 +105,7 @@ const response: AdminMonitorResponse = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.admin.monitor).mockResolvedValue(response);
+  vi.mocked(api.admin.serverResources).mockResolvedValue({ server_resources: response.server_resources });
   vi.mocked(api.admin.renameMonitorTab).mockResolvedValue({ ok: true, tab: { id: 'session-live-1234', name: '新标签名' } });
   vi.mocked(api.admin.deleteMonitorTab).mockResolvedValue({ ok: true, session_continues: true });
 });
@@ -123,24 +125,29 @@ describe('administrator monitor page', () => {
     expect(screen.getByRole('region', { name: '服务器资源' })).toBeInTheDocument();
     expect(await screen.findByText('agent-host-01')).toBeInTheDocument();
     expect(screen.getByText('37%')).toBeInTheDocument();
+    expect(screen.queryByText('DolphinDB Manager')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '展开用户 operator' }));
+    await user.click(screen.getByRole('button', { name: '展开项目 DolphinDB Manager' }));
     expect(await screen.findByText(/Investigate query latency/)).toBeInTheDocument();
     expect(screen.getAllByText('128 MiB').length).toBeGreaterThan(0);
     expect(screen.getByText('DolphinDB Manager')).toBeInTheDocument();
     expect(screen.getByText('性能排查')).toBeInTheDocument();
-    expect(screen.getByText('Agent 正在执行')).toBeInTheDocument();
+    expect(screen.getByText('会话正在执行')).toBeInTheDocument();
     expect(screen.getByText('正在分析慢查询日志…')).toBeInTheDocument();
     expect(screen.queryByText('Old completed task')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '打开会话标签 性能排查' }));
     expect(onOpenSession).toHaveBeenCalledWith('project-1', 'session-live-1234');
 
-    await user.click(screen.getByRole('button', { name: '重命名会话标签 性能排查' }));
+    await user.click(screen.getByRole('button', { name: '性能排查 的更多操作' }));
+    await user.click(screen.getByRole('menuitem', { name: '重命名' }));
     const nameInput = screen.getByLabelText('会话标签名称');
     await user.clear(nameInput);
     await user.type(nameInput, '新标签名{Enter}');
     expect(api.admin.renameMonitorTab).toHaveBeenCalledWith('user-1', 'project-1', 'session-live-1234', '新标签名');
 
-    await user.click(await screen.findByRole('button', { name: '删除会话标签 性能排查' }));
+    await user.click(await screen.findByRole('button', { name: '性能排查 的更多操作' }));
+    await user.click(screen.getByRole('menuitem', { name: '删除标签' }));
     expect(screen.getByText('删除会话标签？')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '仅删除标签' }));
     expect(api.admin.deleteMonitorTab).toHaveBeenCalledWith('user-1', 'project-1', 'session-live-1234');

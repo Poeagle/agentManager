@@ -78,29 +78,3 @@ export function buildSessionCommand(
   const cmd = `${baseCmd}${sid} ${shellSingleQuote(task)}`;
   return direct ? `command ${cmd}` : cmd;
 }
-
-export function buildAgentCommand(
-  agentType: string,
-  task: string,
-  direct = false,
-  sessionCmd = '',
-  cliType: CliType = 'claude',
-  assignSessionId?: string,
-  codexBindingPath?: string,
-): string {
-  let cmd: string;
-  if (cliType === 'codex') {
-    const baseCmd = sessionCmd || 'codex';
-    const prompt = task
-      ? `You are a ${agentType} agent. ${task}`
-      : `You are a ${agentType} agent. Ask me what I want you to do.`;
-    cmd = `${withoutCodexPlugins(baseCmd)}${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(prompt)}`;
-  } else {
-    const baseCmd = sessionCmd || 'claude';
-    const sid = assignSessionId ? ` --session-id ${assignSessionId}` : '';
-    cmd = task
-      ? `${baseCmd}${sid} --agent ${shellSingleQuote(agentType)} ${shellSingleQuote(task)}`
-      : `${baseCmd}${sid} --agent ${shellSingleQuote(agentType)}`;
-  }
-  return direct ? `command bash -c ${shellSingleQuote(cmd)}` : cmd;
-}

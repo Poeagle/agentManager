@@ -1,7 +1,9 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { TableActionButton, TableActions } from './table/TableActions';
+import { Fragment, useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type Project } from '../lib/api';
+import { hasPermission, usePermissions } from '../lib/permissions';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -16,7 +18,6 @@ import {
   Save,
   Loader2,
   Folder,
-  ChevronLeft,
   Eye,
   RefreshCw,
   GitBranch,
@@ -24,10 +25,6 @@ import {
   Lock,
   Globe,
   Github,
-  Terminal,
-  Zap,
-  Bot,
-  TerminalSquare,
   Search,
   GripVertical,
 } from 'lucide-react';
@@ -35,9 +32,17 @@ import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { ConfirmModal } from './ConfirmModal';
 import { StatuslinePromptModal } from './StatuslinePromptModal';
 import { moveItemByKey, orderItemsByKeys } from '../lib/reorder';
+import { useTableModel } from './table/use-table-model';
+import { DataTable, TableExpandButton, TableDetailRow } from './table/DataTable';
+import { RowActionsMenu } from './table/RowActionsMenu';
+import { ProjectSessionCreateDialog } from './ProjectSessionCreateDialog';
+import { projectOpenModes } from './project-open-modes';
+import { ProjectSessionTable } from './ProjectSessionTable';
+import { Dialog } from './Dialog';
 
 interface ProjectDashboardProps {
-  onOpenProject: (projectId: string, projectName: string, quickLaunch?: 'session' | 'agent' | 'terminal', cliType?: 'claude' | 'codex') => void;
+  onOpenProject: (projectId: string, projectName: string, quickLaunch?: 'session' | 'terminal', cliType?: 'claude' | 'codex') => void;
+  onOpenSession?: (projectId: string, sessionId: string) => void;
   projectOrder: string[];
   onProjectOrderChange: (order: string[]) => void;
 }
@@ -127,7 +132,7 @@ const inputStyle = {
   color: 'var(--text-primary)',
 };
 
-const inputClass = 'w-full px-4 py-2.5 rounded-lg border text-sm outline-none';
+const inputClass = 'w-full px-2.5 py-1.5 rounded-md border text-[13px] outline-none';
 
 function ProjectForm({
   mode,
@@ -146,7 +151,6 @@ function ProjectForm({
   const [path, setPath] = useState(project?.path || '');
   const [description, setDescription] = useState(project?.description || '');
   const [projectColor, setProjectColor] = useState(project?.color || '');
-  const [defaultWebUrl, setDefaultWebUrl] = useState(project?.default_web_url || '');
   const [sessionPrompt, setSessionPrompt] = useState(project?.session_prompt || '');
   const [openclawPrompt, setOpenclawPrompt] = useState(project?.openclaw_prompt || '');
   const [claudeMd, setClaudeMd] = useState('');
@@ -221,7 +225,7 @@ function ProjectForm({
 
   const createMutation = useMutation({
     mutationFn: () =>
-      api.projects.create({ name, path, description, default_web_url: defaultWebUrl || undefined, color: projectColor || undefined }),
+      api.projects.create({ name, path, description, color: projectColor || undefined }),
     onSuccess: async (data) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       onSubmit();
@@ -242,7 +246,6 @@ function ProjectForm({
       const fields: Parameters<typeof api.projects.update>[1] = {};
       if (name !== project!.name) fields.name = name;
       if (description !== (project!.description || '')) fields.description = description;
-      if (defaultWebUrl !== (project!.default_web_url || '')) fields.default_web_url = defaultWebUrl || null;
       if (sessionPrompt !== (project!.session_prompt || ''))
         fields.session_prompt = sessionPrompt || null;
       if (openclawPrompt !== (project!.openclaw_prompt || ''))
@@ -321,25 +324,11 @@ function ProjectForm({
   const hasRemote = hasGitRepo && !!gitStatusData?.remoteUrl;
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto" style={{ maxWidth: '1100px' }}>
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-6">
-          <button
-            onClick={onCancel}
-            className="p-1.5 rounded-lg hover:bg-white/10"
-            style={{ color: 'var(--text-secondary)' }}
-            title="Back to projects"
-          >
-            <ChevronLeft className="w-5 h-5" />
-          </button>
-          <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
-            {mode === 'add' ? 'Add Project' : `Edit — ${project!.name}`}
-          </h2>
-        </div>
-
+    <Dialog title={mode === 'add' ? '新增项目' : `编辑项目 · ${project!.name}`} onClose={onCancel} busy={isPending || repoCreating} size="lg">
+    <div className="compact-form">
+      <div className="w-full">
         <div
-          className="rounded-xl border p-6"
+          className="rounded-lg border p-3"
           style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}
         >
           <div className="flex flex-col gap-4">
@@ -349,6 +338,7 @@ function ProjectForm({
                 <label className="block text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Folder Path</label>
                 <div className="flex gap-2">
                   <input
+                    aria-label="项目路径"
                     value={path}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -397,10 +387,11 @@ function ProjectForm({
             )}
 
             {/* Row: Name + Description side by side */}
-            <div className="grid grid-cols-2 gap-x-6">
+            <div className="field-grid">
               <div>
                 <label className="block text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Project Name</label>
                 <input
+                  aria-label="项目名称"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="My Project"
@@ -442,18 +433,6 @@ function ProjectForm({
                   );
                 })}
               </div>
-            </div>
-
-            {/* Default Web URL */}
-            <div>
-              <label className="block text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Default Web Page URL</label>
-              <input
-                value={defaultWebUrl}
-                onChange={(e) => setDefaultWebUrl(e.target.value)}
-                placeholder="http://localhost:3000 (default for Vite projects)"
-                className={inputClass}
-                style={inputStyle}
-              />
             </div>
 
             {/* GitHub Repository */}
@@ -797,7 +776,7 @@ function ProjectForm({
 
             {/* Error */}
             {error && (
-              <p className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>
+              <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>
             )}
 
             {/* Actions */}
@@ -809,14 +788,15 @@ function ProjectForm({
                 style={{ background: 'var(--accent)', color: 'white' }}
               >
                 <Save className="w-4 h-4" />
-                {isPending ? 'Saving...' : mode === 'add' ? 'Add Project' : 'Save Changes'}
+                {isPending ? '保存中…' : mode === 'add' ? '新增项目' : '保存更改'}
               </button>
               <button
                 onClick={onCancel}
+                disabled={isPending || repoCreating}
                 className="px-6 py-2.5 rounded-lg border text-sm font-medium"
                 style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
               >
-                Cancel
+                取消
               </button>
             </div>
 
@@ -824,6 +804,7 @@ function ProjectForm({
         </div>
       </div>
     </div>
+    </Dialog>
   );
 }
 
@@ -865,6 +846,7 @@ function GitInfoBadge({ projectPath }: { projectPath: string }) {
   const { data: gitStatus } = useQuery({
     queryKey: ['git-status', projectPath],
     queryFn: () => api.git.status(projectPath).catch(() => null),
+    staleTime: 30_000,
     retry: false,
   });
 
@@ -916,34 +898,10 @@ function GitInfoBadge({ projectPath }: { projectPath: string }) {
 
   return (
     <>
-      <button
-        ref={buttonRef}
-        onClick={() => setDropdownOpen(!dropdownOpen)}
-        className="flex flex-col gap-0.5 px-2 py-1.5 rounded text-[10px] w-full text-left"
-        style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border)' }}
-      >
-        {/* Line 1: Owner / account */}
-        <div className="flex items-center gap-1 w-full">
-          <Github className="w-3 h-3 shrink-0" style={{ color: 'var(--text-secondary)', opacity: 0.6 }} />
-          <span className="truncate" style={{ color: 'var(--text-secondary)' }}>
-            {owner || (remoteUrl ? 'unknown' : 'local only')}
-          </span>
-          <ChevronDown className="w-3 h-3 ml-auto shrink-0" style={{ color: 'var(--text-secondary)', opacity: 0.5 }} />
-        </div>
-        {/* Line 2: Repo - Branch */}
-        <div className="flex items-center gap-1 w-full">
-          <GitBranch className="w-3 h-3 shrink-0" style={{ color: '#22c55e' }} />
-          {repo ? (
-            <span className="truncate">
-              <span style={{ color: 'var(--text-secondary)' }}>{repo}</span>
-              <span style={{ color: 'var(--text-secondary)', opacity: 0.4 }}> / </span>
-              <span className="font-medium" style={{ color: 'var(--text-primary)' }}>{gitStatus.branch}</span>
-            </span>
-          ) : (
-            <span className="truncate font-medium" style={{ color: 'var(--text-primary)' }}>{gitStatus.branch}</span>
-          )}
-        </div>
-      </button>
+      <TableActionButton ref={buttonRef} onClick={() => setDropdownOpen(!dropdownOpen)}  title={`${owner ? `${owner}/${repo} · ` : ''}${gitStatus.branch}`}>
+        <GitBranch className="h-3 w-3 shrink-0" style={{ color: 'var(--success)' }} />
+        <span className="truncate">{gitStatus.branch}</span><ChevronDown className="ml-auto h-3 w-3 shrink-0" />
+      </TableActionButton>
 
       {/* Portal dropdown for branch switching */}
       {dropdownOpen && createPortal(
@@ -1245,12 +1203,13 @@ function CreateRepoModal({ projectPath, onClose, onCreated }: {
   );
 }
 
-export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderChange }: ProjectDashboardProps) {
+export function ProjectDashboard({ onOpenProject, onOpenSession, projectOrder, onProjectOrderChange }: ProjectDashboardProps) {
   const [view, setView] = useState<ViewState>({ mode: 'list' });
   const queryClient = useQueryClient();
   const { data: authStatus } = useQuery({ queryKey: ['auth-status'], queryFn: () => api.auth.status(), staleTime: 60_000 });
   const isAdmin = authStatus?.user?.role === 'admin';
-  const canCreateProjects = isAdmin || authStatus?.user?.can_create_projects === 1;
+  const permissionsQuery = usePermissions();
+  const canCreateProjects = hasPermission(permissionsQuery.data, 'projects_create', 'write');
 
   // Listen for open-project events from the form's create success handler
   useEffect(() => {
@@ -1269,7 +1228,7 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
     return () => window.removeEventListener('agentmanager:add-project', handler);
   }, [canCreateProjects]);
 
-  const { data: projectsData, isLoading: loadingProjects } = useQuery({
+  const { data: projectsData, isLoading: loadingProjects, error: projectsError } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.projects.list(),
   });
@@ -1282,7 +1241,7 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
     () => orderItemsByKeys(allProjects, projectOrder, (project) => project.id),
     [allProjects, projectOrder],
   );
-  const canReorderProjects = !searchQuery.trim();
+
 
   const projects = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -1291,7 +1250,8 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
       (p) =>
         p.name.toLowerCase().includes(q) ||
         p.path.toLowerCase().includes(q) ||
-        (p.description && p.description.toLowerCase().includes(q))
+        (p.description && p.description.toLowerCase().includes(q)) ||
+        (p.owner && `${p.owner.username} ${p.owner.display_name}`.toLowerCase().includes(q))
     );
   }, [orderedProjects, searchQuery]);
   // Statusline prompt — ask once if user wants to install custom status bar
@@ -1312,31 +1272,40 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
   });
 
   const activeSessionsByProject = useMemo(() => {
-    const map: Record<string, { session: number; terminal: number; agent: number; total: number }> = {};
+    const map: Record<string, { session: number; terminal: number; total: number }> = {};
     for (const s of sessionsData?.sessions || []) {
-      if (s.project_id && (s.status === 'running' || s.status === 'detached' || s.status === 'pending')) {
-        if (!map[s.project_id]) map[s.project_id] = { session: 0, terminal: 0, agent: 0, total: 0 };
+      if (s.project_id && ['running', 'detached', 'pending', 'launching', 'released'].includes(s.status)) {
+        if (!map[s.project_id]) map[s.project_id] = { session: 0, terminal: 0, total: 0 };
         const entry = map[s.project_id];
         entry.total++;
         if (s.task === 'Terminal') entry.terminal++;
-        else if (s.task.startsWith('Agent (')) entry.agent++;
         else entry.session++;
       }
     }
     return map;
   }, [sessionsData]);
 
+  const gitQueries = useQueries({ queries: allProjects.map((project) => ({
+    queryKey: ['git-status', project.path], queryFn: () => api.git.status(project.path).catch(() => null),
+    enabled: projectOpenModes(project).length > 0, staleTime: 30_000, retry: false,
+  })) });
+  const gitById = new Map(allProjects.map((project, index) => [project.id, gitQueries[index]?.data]));
+  const projectTable = useTableModel(projects, [
+    { key: 'name', title: '项目', value: (project) => `${project.name} ${project.description ?? ''}`.trim() },
+    { key: 'owner', title: '所属用户', value: (project) => project.owner ? `${project.owner.display_name || project.owner.username} @${project.owner.username}` : '未分配' },
+    { key: 'path', title: '路径', value: (project) => project.path },
+    { key: 'git', title: 'Git', value: (project) => projectOpenModes(project).length === 0 ? '未授权'
+      : gitById.get(project.id) === null ? '无 Git 仓库' : gitById.get(project.id) ? `${gitById.get(project.id)?.branch ?? ''} ${gitById.get(project.id)?.remoteUrl ?? 'local only'}` : null },
+    { key: 'sessions', title: '活动会话', value: (project) => activeSessionsByProject[project.id]?.total ?? 0 },
+  ]);
+  const canReorderProjects = !searchQuery.trim() && !projectTable.active;
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set());
+  const [openProject, setOpenProject] = useState<Project | null>(null);
+  const closeOpenProject = useCallback(() => setOpenProject(null), []);
+
   const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
   const [refreshing, setRefreshing] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [splashDone, setSplashDone] = useState(false);
-  const [splashFading, setSplashFading] = useState(false);
-
-  useEffect(() => {
-    const t1 = setTimeout(() => setSplashFading(true), 2500);
-    const t2 = setTimeout(() => setSplashDone(true), 3200);
-    return () => { clearTimeout(t1); clearTimeout(t2); };
-  }, []);
   const deleteProjectMutation = useMutation({
     mutationFn: (id: string) => api.projects.delete(id),
     onSuccess: () => {
@@ -1348,51 +1317,15 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
     },
   });
 
-  // Show ProjectForm for add/edit views
-  if (view.mode === 'add' && canCreateProjects) {
-    return (
-      <ProjectForm
-        mode="add"
-        onSubmit={() => setView({ mode: 'list' })}
-        onCancel={() => setView({ mode: 'list' })}
-      />
-    );
-  }
-
-  if (view.mode === 'edit') {
-    return (
-      <ProjectForm
-        mode="edit"
-        project={view.project}
-        onSubmit={() => setView({ mode: 'list' })}
-        onCancel={() => setView({ mode: 'list' })}
-      />
-    );
-  }
-
   return (
     <div className="h-full flex flex-col">
-      {/* Splash screen */}
-      {!splashDone && (
-        <div
-          className="absolute inset-0 z-50 flex flex-col items-center justify-center transition-opacity duration-600"
-          style={{
-            background: 'var(--bg-primary)',
-            opacity: splashFading ? 0 : 1,
-            pointerEvents: splashFading ? 'none' : 'auto',
-          }}
-        >
-          <p className="text-2xl font-semibold" style={{ color: 'var(--text-secondary)' }}>Loading...</p>
-        </div>
-      )}
-
       <div className="w-full flex-1 overflow-y-auto" style={{ scrollbarGutter: 'stable' }}>
         {/* Sticky Header */}
-        <div className="sticky top-0 z-10 px-6 pt-6 pb-4 mx-auto w-full" style={{ background: 'var(--bg-primary)', maxWidth: '82rem' }}>
+        <div className="page-content sticky top-0 z-10 py-3" style={{ background: 'var(--bg-primary)' }}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
-                Projects
+              <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
+                项目
               </h2>
               <button
                 onClick={() => {
@@ -1400,6 +1333,7 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
                   Promise.all([
                     queryClient.invalidateQueries({ queryKey: ['projects'] }),
                     queryClient.invalidateQueries({ queryKey: ['sessions'] }),
+                    queryClient.invalidateQueries({ queryKey: ['project-sessions'] }),
                     queryClient.invalidateQueries({ queryKey: ['git-status'] }),
                   ]).finally(() => {
                     setLastRefreshed(new Date());
@@ -1422,7 +1356,7 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
               style={{ background: 'var(--accent)', color: 'white' }}
             >
               <Plus className="w-4 h-4" />
-              Add Project
+              新增项目
             </button>}
           </div>
           {/* Search / filter bar */}
@@ -1432,7 +1366,7 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Filter projects..."
+              placeholder="筛选项目..."
               className="w-full pl-9 pr-3 py-2 rounded-lg text-sm outline-none"
               style={{
                 background: 'var(--bg-secondary)',
@@ -1454,243 +1388,61 @@ export function ProjectDashboard({ onOpenProject, projectOrder, onProjectOrderCh
           </div>
         </div>
 
-        {/* Project cards grid */}
+        {/* Project table */}
         <div className="pb-6">
-        <div className="mx-auto px-6" style={{ maxWidth: '82rem' }}>
-        </div>
-        <div className="mx-auto px-6" style={{ maxWidth: '82rem' }}>
-        {loadingProjects ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="w-6 h-6 animate-spin" style={{ color: 'var(--accent)' }} />
+        <div className="page-content">
+          <div className="space-y-2">
+            {projectTable.active && <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
+              <span>{projectTable.rows.length} / {projects.length} 个项目</span><TableActionButton  onClick={projectTable.reset}>清除排序和筛选</TableActionButton>
+            </div>}
+            <DataTable label="项目列表" model={projectTable} minWidth={1100} expandable actions columnWidths={['w-56', 'w-40', '', 'w-56', 'w-32']}
+              loading={loadingProjects} error={projectsError?.message} onRetry={() => { void queryClient.invalidateQueries({ queryKey: ['projects'] }); }}
+              empty={projectTable.rows.length === 0} emptyMessage={searchQuery || projectTable.active ? '没有匹配的项目' : canCreateProjects ? '暂无项目，添加项目目录后即可开始。' : '你目前没有被分配任何项目，请联系管理员。'}>{projectTable.rows.map((project) => {
+                  const expanded = expandedProjects.has(project.id);
+                  return <Fragment key={project.id}><tr data-project-id={project.id}
+                    style={{ opacity: draggingProjectId === project.id ? .65 : 1, outline: projectDropTargetId === project.id ? '1px solid var(--accent)' : undefined }}
+                    onDragOver={(event) => { if (canReorderProjects && draggingProjectId && draggingProjectId !== project.id) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setProjectDropTargetId(project.id); } }}
+                    onDrop={(event) => { event.preventDefault(); if (canReorderProjects && draggingProjectId && draggingProjectId !== project.id) onProjectOrderChange(moveItemByKey(orderedProjects, draggingProjectId, project.id, (item) => item.id).map((item) => item.id)); setDraggingProjectId(null); setProjectDropTargetId(null); }}>
+                    <td><TableExpandButton expanded={expanded} label={`项目 ${project.name} 的会话`} onClick={() => setExpandedProjects((current) => { const next = new Set(current); if (next.has(project.id)) next.delete(project.id); else next.add(project.id); return next; })} /></td>
+                    <td><div className="flex items-center gap-2">
+                      {canReorderProjects && <span draggable title="拖动调整项目顺序" aria-label={`拖动 ${project.name} 排序`} className="cursor-grab"
+                        onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', project.id); setDraggingProjectId(project.id); }}
+                        onDragEnd={() => { setDraggingProjectId(null); setProjectDropTargetId(null); }}><GripVertical className="h-3 w-3" /></span>}
+                      <button className="flex max-w-52 items-center gap-2 text-left font-medium" onClick={() => onOpenProject(project.id, project.name)}><Folder className="h-3.5 w-3.5 shrink-0" style={{ color: project.color || 'var(--accent)' }} /><span className="truncate">{project.name}</span></button>
+                    </div>{project.description && <div className="mt-1 max-w-56 truncate text-[11px]" style={{ color: 'var(--text-secondary)' }} title={project.description}>{project.description}</div>}</td>
+                    <td className="whitespace-nowrap">{project.owner ? <><span>{project.owner.display_name || project.owner.username}</span><span className="ml-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>@{project.owner.username}</span></> : '未分配'}</td>
+                    <td><div className="max-w-96 truncate" title={project.path}>{project.path}</div></td>
+                    <td className="w-56">{projectOpenModes(project).length ? <GitInfoBadge projectPath={project.path} /> : '未授权'}</td>
+                    <td>{activeSessionsByProject[project.id]?.total ?? 0}</td>
+                    <td><TableActions>
+                      <TableActionButton  aria-label={`打开项目 ${project.name}`} disabled={projectOpenModes(project).length === 0} onClick={() => { setOpenProject(project); }}>打开</TableActionButton>
+                      <RowActionsMenu label={`${project.name} 的更多操作`} actions={[
+                        ...((isAdmin || (!!authStatus?.user?.id && project.owner_id === authStatus.user.id)) ? [
+                          { label: '编辑项目', icon: <Pencil className="h-3.5 w-3.5" />, onClick: () => setView({ mode: 'edit', project }) },
+                          { label: '移除项目', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, onClick: () => setConfirmDeleteId(project.id) },
+                        ] : []),
+                      ]} />
+                    </TableActions></td>
+                  </tr>{expanded && <TableDetailRow columnCount={7}><ProjectSessionTable projectId={project.id}
+                    onOpen={(sessionId) => { if (onOpenSession) onOpenSession(project.id, sessionId); else onOpenProject(project.id, project.name); }} /></TableDetailRow>}</Fragment>;
+                })}
+                </DataTable>
           </div>
-        ) : projects.length === 0 ? (
-          <div
-            className="rounded-xl border p-12 text-center"
-            style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}
-          >
-            <Folder className="w-12 h-12 mx-auto mb-4" style={{ color: 'var(--text-secondary)', opacity: 0.5 }} />
-            <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
-              {canCreateProjects ? 'No projects registered yet. Add a project folder to get started.' : '你目前没有被分配任何项目，请联系管理员。'}
-            </p>
-            {canCreateProjects && <button
-              onClick={() => setView({ mode: 'add' })}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm mx-auto"
-              style={{ background: 'var(--accent)', color: 'white' }}
-            >
-              <Plus className="w-4 h-4" />
-              Add Project
-            </button>}
-          </div>
-        ) : (
-          <div className="flex flex-col gap-6">
-            {(() => {
-              return (
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Folder className="w-4 h-4" style={{ color: 'var(--text-secondary)' }} />
-                    <h3 className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>Projects</h3>
-                    <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>({projects.length})</span>
-                    <div className="flex-1 h-px ml-2" style={{ background: 'var(--border)' }} />
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                    {projects.map((project) => {
-              const access = project.tool_access || { can_session: true, can_agent: true, can_terminal: true, can_claude: true, can_codex: true };
 
-              return (
-                <div
-                  key={project.id}
-                  className="rounded-xl border flex flex-col group hover:border-[var(--accent)] transition-colors overflow-hidden cursor-pointer"
-                  style={{
-                    background: 'var(--bg-secondary)',
-                    borderColor: projectDropTargetId === project.id ? 'var(--accent)' : 'var(--border)',
-                    opacity: draggingProjectId === project.id ? 0.65 : 1,
-                  }}
-                  onDragOver={(event) => {
-                    if (!canReorderProjects || !draggingProjectId || draggingProjectId === project.id) return;
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = 'move';
-                    setProjectDropTargetId(project.id);
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    if (canReorderProjects && draggingProjectId && draggingProjectId !== project.id) {
-                      onProjectOrderChange(moveItemByKey(
-                        orderedProjects,
-                        draggingProjectId,
-                        project.id,
-                        (item) => item.id,
-                      ).map((item) => item.id));
-                    }
-                    setDraggingProjectId(null);
-                    setProjectDropTargetId(null);
-                  }}
-                  onClick={() => onOpenProject(project.id, project.name)}
-                >
-                  {/* Title bar */}
-                  {(() => {
-                    const defaultColors = ['#3b82f6', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#6366f1'];
-                    const hash = project.name.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-                    const color = project.color || defaultColors[hash % defaultColors.length];
-                    const counts = activeSessionsByProject[project.id];
-                    return (
-                      <div
-                        className="flex items-center justify-between px-4 py-2.5"
-                        style={{ background: `${color}15`, borderBottom: `1px solid ${color}30` }}
-                      >
-                        <div className="min-w-0 flex flex-1 items-start">
-                          <span
-                            draggable={canReorderProjects}
-                            onClick={(event) => event.stopPropagation()}
-                            onDragStart={(event) => {
-                              if (!canReorderProjects) return;
-                              event.dataTransfer.effectAllowed = 'move';
-                              event.dataTransfer.setData('text/plain', project.id);
-                              setDraggingProjectId(project.id);
-                            }}
-                            onDragEnd={() => {
-                              setDraggingProjectId(null);
-                              setProjectDropTargetId(null);
-                            }}
-                            className={`mr-1 mt-0.5 flex touch-none ${canReorderProjects ? 'cursor-grab opacity-35 transition-opacity group-hover:opacity-80 active:cursor-grabbing' : 'cursor-default opacity-20'}`}
-                            title={canReorderProjects ? '拖动排序' : '清除筛选后可排序'}
-                            aria-label={`拖动 ${project.name} 排序`}
-                          >
-                            <GripVertical className="w-3.5 h-3.5" />
-                          </span>
-                          <div className="min-w-0 flex-1">
-                          <h3 className="text-sm font-semibold truncate" style={{ color }}>
-                            {project.name}
-                          </h3>
-                          <p className="text-[10px] font-mono truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                            {project.path}
-                          </p>
-                          </div>
-                        </div>
-                        {counts && counts.total > 0 && (
-                          <span
-                            className="shrink-0 ml-2 px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap"
-                            style={{ background: `${color}20`, color }}
-                          >
-                            {counts.total} active
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })()}
-
-                  <div className="p-5 pt-3 flex flex-col gap-3 flex-1">
-
-                    {project.description && (
-                      <p className="text-xs line-clamp-2" style={{ color: 'var(--text-secondary)' }}>
-                        {project.description}
-                      </p>
-                    )}
-
-                    {/* Git repo / branch info */}
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <GitInfoBadge projectPath={project.path} />
-                    </div>
-
-                    {/* Row 1: Launch buttons — dual icons, type-colored, stretched */}
-                    <div className="grid grid-cols-5 gap-1 mt-auto pt-1" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => onOpenProject(project.id, project.name, 'session', 'claude')}
-                        disabled={!access.can_session || !access.can_claude}
-                        className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs disabled:opacity-25 disabled:cursor-not-allowed"
-                        style={{ background: '#3b82f610', borderColor: '#3b82f630', color: '#60a5fa' }}
-                        title="Claude Session"
-                      >
-                        <ClaudeIcon className="w-3 h-3" />
-                        <Zap className="w-3 h-3" />
-                      </button>
-                      <button
-                        onClick={() => onOpenProject(project.id, project.name, 'agent', 'claude')}
-                        disabled={!access.can_agent || !access.can_claude}
-                        className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs disabled:opacity-25 disabled:cursor-not-allowed"
-                        style={{ background: '#ef444410', borderColor: '#ef444430', color: '#ef4444' }}
-                        title="Claude Agent"
-                      >
-                        <ClaudeIcon className="w-3 h-3" />
-                        <Bot className="w-3 h-3" />
-                      </button>
-                      <button
-                        onClick={() => onOpenProject(project.id, project.name, 'session', 'codex')}
-                        disabled={!access.can_session || !access.can_codex}
-                        className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs disabled:opacity-25 disabled:cursor-not-allowed"
-                        style={{ background: '#3b82f610', borderColor: '#3b82f630', color: '#60a5fa' }}
-                        title="Codex Session"
-                      >
-                        <CodexIcon className="w-3 h-3" />
-                        <Zap className="w-3 h-3" />
-                      </button>
-                      <button
-                        onClick={() => onOpenProject(project.id, project.name, 'agent', 'codex')}
-                        disabled={!access.can_agent || !access.can_codex}
-                        className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs disabled:opacity-25 disabled:cursor-not-allowed"
-                        style={{ background: '#ef444410', borderColor: '#ef444430', color: '#ef4444' }}
-                        title="Codex Agent"
-                      >
-                        <CodexIcon className="w-3 h-3" />
-                        <Bot className="w-3 h-3" />
-                      </button>
-                      <button
-                        onClick={() => onOpenProject(project.id, project.name, 'terminal')}
-                        disabled={!access.can_terminal}
-                        className="flex items-center justify-center p-1.5 rounded-lg border text-xs disabled:opacity-25 disabled:cursor-not-allowed"
-                        style={{ background: '#f59e0b10', borderColor: '#f59e0b30', color: '#f59e0b' }}
-                        title="Terminal"
-                      >
-                        <TerminalSquare className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                    {/* Row 2: Utility buttons */}
-                    {isAdmin && <div className="grid grid-cols-4 gap-1" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => api.openFolder(project.path)}
-                        className="flex items-center justify-center p-1.5 rounded-lg border text-xs"
-                        style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
-                        title="Open in file manager"
-                      >
-                        <FolderOpen className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => api.openTerminal(project.path)}
-                        className="flex items-center justify-center p-1.5 rounded-lg border text-xs"
-                        style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
-                        title="Open in terminal"
-                      >
-                        <Terminal className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => setView({ mode: 'edit', project })}
-                        className="flex items-center justify-center p-1.5 rounded-lg border text-xs"
-                        style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
-                        title="Edit project"
-                      >
-                        <Pencil className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => setConfirmDeleteId(project.id)}
-                        className="flex items-center justify-center p-1.5 rounded-lg border text-xs"
-                        style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
-                        title="Remove project"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>}
-                  </div>
-                </div>
-              );
-                    })}
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-        )}
         </div>
         </div>
       </div>
+
+      {(view.mode === 'edit' || (view.mode === 'add' && canCreateProjects)) && <ProjectForm
+        key={view.mode === 'edit' ? view.project.id : 'add'} mode={view.mode}
+        project={view.mode === 'edit' ? view.project : undefined}
+        onSubmit={() => setView({ mode: 'list' })} onCancel={() => setView({ mode: 'list' })} />}
+
+      {openProject && <ProjectSessionCreateDialog key={openProject.id} project={allProjects.find((project) => project.id === openProject.id) ?? openProject}
+        onClose={closeOpenProject} onSessionCreated={(session) => {
+          if (onOpenSession) onOpenSession(openProject.id, session.id);
+          else onOpenProject(openProject.id, openProject.name);
+        }} />}
 
       {confirmDeleteId && (
         <ConfirmModal

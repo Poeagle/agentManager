@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const manager = vi.hoisted(() => ({
   createSession: vi.fn(),
   spawnSession: vi.fn(),
-  spawnAgent: vi.fn(),
   spawnTerminal: vi.fn(),
   getSession: vi.fn(),
   isSessionActive: vi.fn(() => true),
@@ -16,9 +15,11 @@ const manager = vi.hoisted(() => ({
 const quota = vi.hoisted(() => ({
   readCodexWeeklyQuota: vi.fn(),
 }));
+const tracker = vi.hoisted(() => ({ getTracker: vi.fn() }));
 
 vi.mock('../src/services/session-manager.js', () => manager);
 vi.mock('../src/services/codex-quota.js', () => quota);
+vi.mock('../src/services/session-state.js', () => tracker);
 
 import { authHook, createSession as createAuthSession, createUser, setProjectToolAccess } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
@@ -37,6 +38,7 @@ describe('scheduled task API', () => {
     vi.clearAllMocks();
     manager.isSessionActive.mockReturnValue(true);
     manager.writeToSession.mockReturnValue(true);
+    tracker.getTracker.mockReturnValue({ state: { processState: 'idle', promptType: null, isPermission: false }, hasPendingExecute: false });
     quota.readCodexWeeklyQuota.mockResolvedValue({
       usedPercent: 35, remainingPercent: 65, windowDurationMins: 10_080,
       resetsAt: 1_787_196_804, planType: 'pro', checkedAt: '2026-08-13T08:00:00.000Z',
@@ -52,12 +54,12 @@ describe('scheduled task API', () => {
     getDb().prepare('INSERT INTO projects (id, name, path, owner_id) VALUES (?, ?, ?, ?)')
       .run('project-1', 'Project', database.dir, admin.id);
     setProjectToolAccess({
-      projectId: 'project-1', userId: owner.id, canSession: true, canAgent: true,
-      canTerminal: true, canClaude: true, canCodex: true, grantedBy: admin.id,
+      projectId: 'project-1', userId: owner.id, canSession: true,
+      canTerminal: true, sessionClients: ['claude', 'codex'], grantedBy: admin.id,
     });
     setProjectToolAccess({
-      projectId: 'project-1', userId: other.id, canSession: true, canAgent: true,
-      canTerminal: true, canClaude: true, canCodex: true, grantedBy: admin.id,
+      projectId: 'project-1', userId: other.id, canSession: true,
+      canTerminal: true, sessionClients: ['claude', 'codex'], grantedBy: admin.id,
     });
     app = Fastify({ logger: false });
     app.addHook('onRequest', authHook);
@@ -67,6 +69,210 @@ describe('scheduled task API', () => {
   afterEach(async () => {
     await app.close();
     cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('round trips mixed groups and rejects invalid nested conditions', async () => {
+    const payload = {
+      project_id: 'project-1', name: 'Grouped', prompt: 'inspect', schedule_kind: 'interval', schedule_value: '30',
+      timezone: 'Asia/Shanghai', target_type: 'new', new_mode: 'session', new_cli_type: 'claude', enabled: false,
+      start_conditions: { operator: 'and', conditions: [{ type: 'time_after', value: '09:00' },
+        { operator: 'or', conditions: [{ type: 'weekday', value: 'workday' }, { type: 'time_range', value: { start: '10:00', end: '12:00' } }] },
+      ] },
+      daily_stop_conditions: { operator: 'or', conditions: [{ type: 'time_after', value: '18:00' }] },
+    };
+    const created = await app.inject({ method: 'POST', url: '/api/scheduled-tasks', headers: { cookie }, payload });
+    expect(created.statusCode).toBe(200);
+    expect(created.json().task).toMatchObject({ start_conditions: payload.start_conditions, condition_unmet_policy: 'skip' });
+    const listed = await app.inject({ method: 'GET', url: '/api/scheduled-tasks?project_id=project-1', headers: { cookie } });
+    expect(listed.json().tasks[0].daily_stop_conditions).toEqual(payload.daily_stop_conditions);
+    for (const daily_stop_conditions of [
+      { operator: 'and', conditions: [{ operator: 'or', conditions: [] }] },
+      { operator: 'and', conditions: [{ operator: 'or', conditions: [{ type: 'quota_below', value: 20 }] }] },
+    ]) expect((await app.inject({ method: 'PATCH', url: `/api/scheduled-tasks/${created.json().task.id}`, headers: { cookie }, payload: { daily_stop_conditions } })).statusCode).toBe(400);
+  });
+
+  it('skips a busy target once, keeps the fixed interval, and never backfills on idle', async () => {
+    const now = Date.parse('2026-10-13T10:00:05Z');
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('busy-tab','project-1','Work','running','session','claude',?)`).run(ownerId);
+    manager.getSession.mockReturnValue({ id: 'busy-tab', project_id: 'project-1', created_by_user_id: ownerId, status: 'running', mode: 'session', cli_type: 'claude' });
+    tracker.getTracker.mockReturnValue({ state: { processState: 'busy' }, hasPendingExecute: false });
+    const created = await app.inject({ method: 'POST', url: '/api/scheduled-tasks', headers: { cookie }, payload: {
+      project_id: 'project-1', name: 'Busy target', prompt: 'inspect', schedule_kind: 'interval', schedule_value: '30', timezone: 'UTC',
+      target_type: 'existing', target_session_id: 'busy-tab', start_conditions: { operator: 'and', conditions: [{ type: 'target_idle', value: true }] },
+    } });
+    expect(created.statusCode).toBe(200);
+    const id = created.json().task.id;
+    getDb().prepare('UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ?').run('2026-10-13T10:00:00.000Z', id);
+    await tickScheduledTasks(now);
+    expect(manager.writeToSession).not.toHaveBeenCalled();
+    expect(getDb().prepare('SELECT next_run_at, enabled, consecutive_failures, last_status FROM scheduled_tasks WHERE id = ?').get(id))
+      .toEqual({ next_run_at: '2026-10-13T10:30:00.000Z', enabled: 1, consecutive_failures: 0, last_status: 'skipped' });
+    expect(getDb().prepare('SELECT status,scheduled_for FROM scheduled_task_runs WHERE task_id = ?').all(id)).toEqual([{ status: 'skipped', scheduled_for: '2026-10-13T10:00:00.000Z' }]);
+    tracker.getTracker.mockReturnValue({ state: { processState: 'idle' }, hasPendingExecute: false });
+    await tickScheduledTasks(now + 15_000);
+    expect(manager.writeToSession).not.toHaveBeenCalled();
+    vi.mocked(Date.now).mockReturnValue(Date.parse('2026-10-13T10:30:00Z'));
+    await tickScheduledTasks(Date.now());
+    await vi.waitFor(() => expect(manager.writeToSession).toHaveBeenCalledWith('busy-tab', 'inspect', true));
+    await vi.waitFor(() => expect(getDb().prepare('SELECT last_status FROM scheduled_tasks WHERE id = ?').get(id)).toEqual({ last_status: 'success' }));
+  });
+
+  it('pauses only the current day and resumes the next day without re-enabling', async () => {
+    const now = Date.parse('2026-10-13T10:00:00Z'); // 18:00 Shanghai
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const created = await app.inject({ method: 'POST', url: '/api/scheduled-tasks', headers: { cookie }, payload: {
+      project_id: 'project-1', name: 'Daily pause', prompt: 'inspect', schedule_kind: 'interval', schedule_value: '30', timezone: 'Asia/Shanghai',
+      target_type: 'new', new_mode: 'session', new_cli_type: 'claude',
+      start_conditions: { operator: 'and', conditions: [{ type: 'time_after', value: '09:00' }] },
+      daily_stop_conditions: { operator: 'or', conditions: [{ type: 'time_after', value: '18:00' }] },
+    } });
+    const id = created.json().task.id;
+    await tickScheduledTasks(now);
+    expect(getDb().prepare('SELECT enabled, daily_paused_until FROM scheduled_tasks WHERE id = ?').get(id))
+      .toEqual({ enabled: 1, daily_paused_until: '2026-10-13T16:00:00.000Z' });
+    expect(manager.createSession).not.toHaveBeenCalled();
+    const morning = Date.parse('2026-10-14T01:00:00Z');
+    vi.mocked(Date.now).mockReturnValue(morning);
+    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('daily-new','project-1','Work','running','session','claude',?)`).run(ownerId);
+    manager.createSession.mockReturnValue({ id: 'daily-new' });
+    await tickScheduledTasks(morning);
+    await vi.waitFor(() => expect(manager.spawnSession).toHaveBeenCalled());
+    await vi.waitFor(() => expect(getDb().prepare('SELECT last_status,enabled,daily_paused_until FROM scheduled_tasks WHERE id = ?').get(id))
+      .toEqual({ last_status: 'success', enabled: 1, daily_paused_until: null }));
+  });
+
+  it('does not send on manual run when target state is unknown or quota is stale', async () => {
+    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('unknown-tab','project-1','Work','running','session','codex',?)`).run(ownerId);
+    manager.getSession.mockReturnValue({ id: 'unknown-tab', project_id: 'project-1', created_by_user_id: ownerId, status: 'running', mode: 'session', cli_type: 'codex' });
+    tracker.getTracker.mockReturnValue(undefined);
+    const created = await app.inject({ method: 'POST', url: '/api/scheduled-tasks', headers: { cookie }, payload: {
+      project_id: 'project-1', name: 'Unknown target', prompt: 'inspect', schedule_kind: 'interval', schedule_value: '30', timezone: 'UTC',
+      target_type: 'existing', target_session_id: 'unknown-tab', start_conditions: { operator: 'and', conditions: [{ type: 'target_idle', value: true }] },
+      daily_stop_conditions: { operator: 'and', conditions: [{ operator: 'or', conditions: [{ type: 'quota_below', value: 20 }] }] },
+    } });
+    const id = created.json().task.id;
+    let result = await app.inject({ method: 'POST', url: `/api/scheduled-tasks/${id}/run`, headers: { cookie } });
+    expect(result.json().run.status).toBe('skipped');
+    tracker.getTracker.mockReturnValue({ state: { processState: 'idle' }, hasPendingExecute: false });
+    quota.readCodexWeeklyQuota.mockResolvedValue({ remainingPercent: 65, stale: true });
+    result = await app.inject({ method: 'POST', url: `/api/scheduled-tasks/${id}/run`, headers: { cookie } });
+    expect(result.json().run.status).toBe('skipped');
+    expect(manager.writeToSession).not.toHaveBeenCalled();
+    expect(getDb().prepare('SELECT enabled, consecutive_failures FROM scheduled_tasks WHERE id = ?').get(id)).toEqual({ enabled: 1, consecutive_failures: 0 });
+  });
+
+  it('counts daily successes by the task timezone and resets the guard the next day', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-13T15:30:00Z'));
+    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('count-tab','project-1','Work','running','session','claude',?)`).run(ownerId);
+    manager.getSession.mockReturnValue({ id: 'count-tab', project_id: 'project-1', created_by_user_id: ownerId, status: 'running', mode: 'session', cli_type: 'claude' });
+    const created = await app.inject({ method: 'POST', url: '/api/scheduled-tasks', headers: { cookie }, payload: {
+      project_id: 'project-1', name: 'Daily sends', prompt: 'inspect', schedule_kind: 'interval', schedule_value: '30', timezone: 'Asia/Shanghai',
+      target_type: 'existing', target_session_id: 'count-tab',
+      daily_stop_conditions: { operator: 'or', conditions: [{ type: 'successes_today', value: 2 }] },
+    } });
+    const id = created.json().task.id;
+    const insert = getDb().prepare(`INSERT INTO scheduled_task_runs (id,task_id,trigger,scheduled_for,status,started_at) VALUES (?,?,'scheduled',?,'success',?)`);
+    for (const [runId, at] of [['yesterday', '2026-10-12T15:59:00Z'], ['today-1', '2026-10-12T16:00:00Z'], ['today-2', '2026-10-13T10:00:00Z']]) insert.run(runId, id, at, at);
+    await tickScheduledTasks(Date.now());
+    expect(getDb().prepare('SELECT daily_paused_until,enabled FROM scheduled_tasks WHERE id = ?').get(id)).toEqual({ daily_paused_until: '2026-10-13T16:00:00.000Z', enabled: 1 });
+    expect(manager.writeToSession).not.toHaveBeenCalled();
+    vi.mocked(Date.now).mockReturnValue(Date.parse('2026-10-14T01:00:00Z'));
+    const result = await app.inject({ method: 'POST', url: `/api/scheduled-tasks/${id}/run`, headers: { cookie } });
+    expect(result.statusCode).toBe(200);
+    expect(result.json().run.status).toBe('success');
+    expect(getDb().prepare('SELECT daily_paused_until FROM scheduled_tasks WHERE id = ?').get(id)).toEqual({ daily_paused_until: null });
+  });
+
+  it('rechecks a daily cutoff crossed while reading fresh quota before dispatch', async () => {
+    let now = Date.parse('2026-10-13T09:59:59Z');
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const created = await app.inject({ method: 'POST', url: '/api/scheduled-tasks', headers: { cookie }, payload: {
+      project_id: 'project-1', name: 'Cutoff race', prompt: 'inspect', schedule_kind: 'interval', schedule_value: '30', timezone: 'Asia/Shanghai',
+      target_type: 'new', new_mode: 'session', new_cli_type: 'codex',
+      daily_stop_conditions: { operator: 'or', conditions: [{ type: 'quota_below', value: 20 }, { type: 'time_after', value: '18:00' }] },
+    } });
+    expect(created.statusCode).toBe(200);
+    quota.readCodexWeeklyQuota.mockImplementation(async () => { now += 2_000; return { remainingPercent: 65 }; });
+    const result = await app.inject({ method: 'POST', url: `/api/scheduled-tasks/${created.json().task.id}/run`, headers: { cookie } });
+    expect(result.json().run.status).toBe('skipped');
+    expect(manager.createSession).not.toHaveBeenCalled();
+    expect(getDb().prepare('SELECT enabled,consecutive_failures,daily_paused_until FROM scheduled_tasks WHERE id = ?').get(created.json().task.id))
+      .toEqual({ enabled: 1, consecutive_failures: 0, daily_paused_until: '2026-10-13T16:00:00.000Z' });
+  });
+
+  it('persists daily windows, validates them and recalculates the next run when edited', async () => {
+    const created = await app.inject({ method: 'POST', url: '/api/scheduled-tasks', headers: { cookie }, payload: {
+      project_id: 'project-1', name: 'Windowed', prompt: 'inspect', schedule_kind: 'interval', schedule_value: '30',
+      timezone: 'UTC', target_type: 'new', new_mode: 'session', new_cli_type: 'claude',
+      daily_start_time: '09:00', daily_end_time: '18:00',
+    } });
+    expect(created.statusCode).toBe(200);
+    const task = created.json().task;
+    expect(task).toMatchObject({ daily_start_time: '09:00', daily_end_time: '18:00', daily_stop_at: null });
+    const next = new Date(task.next_run_at);
+    expect(next.getUTCHours()).toBeGreaterThanOrEqual(9);
+    expect(next.getUTCHours()).toBeLessThan(18);
+    expect(next.getUTCMinutes() % 30).toBe(0);
+
+    const changed = await app.inject({ method: 'PATCH', url: `/api/scheduled-tasks/${task.id}`, headers: { cookie }, payload: {
+      daily_start_time: '20:00', daily_end_time: '22:00',
+    } });
+    expect(changed.statusCode).toBe(200);
+    expect(new Date(changed.json().task.next_run_at).getUTCHours()).toBeGreaterThanOrEqual(20);
+    expect(new Date(changed.json().task.next_run_at).getUTCHours()).toBeLessThan(22);
+
+    for (const payload of [{ daily_end_time: null }, { daily_end_time: '20:00' }, { schedule_kind: 'daily', schedule_value: '09:00' }]) {
+      expect((await app.inject({ method: 'PATCH', url: `/api/scheduled-tasks/${task.id}`, headers: { cookie }, payload })).statusCode).toBe(400);
+    }
+  });
+
+  it('skips a missed run outside the window and resumes next day without disabling or counting failures', async () => {
+    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,created_by_user_id) VALUES ('window-tab','project-1','Work','running','session',?)`).run(ownerId);
+    const created = await app.inject({ method: 'POST', url: '/api/scheduled-tasks', headers: { cookie }, payload: {
+      project_id: 'project-1', name: 'Windowed', prompt: 'inspect', schedule_kind: 'interval', schedule_value: '30',
+      timezone: 'UTC', target_type: 'existing', target_session_id: 'window-tab',
+      daily_start_time: '09:00', daily_end_time: '18:00', max_consecutive_failures: 1,
+    } });
+    const id = created.json().task.id;
+    const day = new Date().toISOString().slice(0, 10);
+    const afterEnd = Date.parse(`${day}T18:01:00Z`);
+    const tomorrow = new Date(afterEnd + 24 * 60 * 60_000).toISOString().slice(0, 10);
+    const nextMorning = `${tomorrow}T09:00:00.000Z`;
+    getDb().prepare('UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ?').run(`${day}T17:30:00.000Z`, id);
+    vi.spyOn(Date, 'now').mockReturnValue(afterEnd);
+    await tickScheduledTasks(afterEnd);
+    expect(manager.writeToSession).not.toHaveBeenCalled();
+    expect(getDb().prepare('SELECT enabled,next_run_at,consecutive_failures FROM scheduled_tasks WHERE id = ?').get(id)).toEqual({ enabled: 1, next_run_at: nextMorning, consecutive_failures: 0 });
+
+    manager.getSession.mockReturnValue({ id: 'window-tab', project_id: 'project-1', created_by_user_id: ownerId, status: 'running', mode: 'session', cli_type: 'claude' });
+    vi.mocked(Date.now).mockReturnValue(Date.parse(nextMorning) + 15000);
+    await tickScheduledTasks(Date.now());
+    await vi.waitFor(() => expect(manager.writeToSession).toHaveBeenCalledWith('window-tab', 'inspect', true));
+    await vi.waitFor(() => expect(getDb().prepare('SELECT last_status FROM scheduled_tasks WHERE id = ?').get(id)).toEqual({ last_status: 'success' }));
+    expect(getDb().prepare('SELECT enabled,next_run_at FROM scheduled_tasks WHERE id = ?').get(id)).toEqual({ enabled: 1, next_run_at: `${tomorrow}T09:30:00.000Z` });
+  });
+
+  it('does not dispatch or count a failure when quota preflight crosses the daily end', async () => {
+    const day = new Date().toISOString().slice(0, 10);
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse(`${day}T17:59:55Z`));
+    const created = await app.inject({ method: 'POST', url: '/api/scheduled-tasks', headers: { cookie }, payload: {
+      project_id: 'project-1', name: 'Window guard', prompt: 'work', schedule_kind: 'interval', schedule_value: '30',
+      timezone: 'UTC', target_type: 'new', new_mode: 'session', new_cli_type: 'codex',
+      daily_start_time: '09:00', daily_end_time: '18:00', quota_remaining_below: 20, max_consecutive_failures: 1,
+    } });
+    expect(created.statusCode).toBe(200);
+    quota.readCodexWeeklyQuota.mockImplementationOnce(async () => {
+      vi.mocked(Date.now).mockReturnValue(Date.parse(`${day}T18:00:00Z`));
+      return { remainingPercent: 65 };
+    });
+    const id = created.json().task.id;
+    const result = await app.inject({ method: 'POST', url: `/api/scheduled-tasks/${id}/run`, headers: { cookie } });
+    expect(result.statusCode).toBe(409);
+    expect(result.json().run.status).toBe('skipped');
+    expect(manager.createSession).not.toHaveBeenCalled();
+    expect(getDb().prepare('SELECT enabled,consecutive_failures FROM scheduled_tasks WHERE id = ?').get(id)).toEqual({ enabled: 1, consecutive_failures: 0 });
   });
 
   it('creates, pauses, lists, and deletes a project schedule', async () => {
@@ -209,7 +415,7 @@ describe('scheduled task API', () => {
     ).toBe('success'));
 
     const row = getDb().prepare('SELECT next_run_at, last_status FROM scheduled_tasks WHERE id = ?').get(taskId) as any;
-    expect(row.next_run_at).toBe('2026-08-13T00:11:00.000Z');
+    expect(row.next_run_at).toBe('2026-08-13T00:10:00.000Z');
     expect(row.last_status).toBe('success');
     expect((getDb().prepare('SELECT COUNT(*) AS count FROM scheduled_task_runs WHERE task_id = ?').get(taskId) as any).count).toBe(1);
   });

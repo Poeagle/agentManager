@@ -2,12 +2,12 @@ import { expect, test } from '@playwright/test';
 import { join } from 'path';
 
 test('restores project and terminal tabs from server state after browser storage is lost', async ({ page }) => {
+  const status = await (await page.request.get('/api/auth/status')).json();
+  const auth = await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
+    data: { username: 'e2e-admin', display_name: 'E2E Admin', password: 'test-password' },
+  });
+  expect(auth.ok()).toBeTruthy();
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: '创建管理员账户' })).toBeVisible();
-  await page.getByLabel('用户名').fill('e2e-admin');
-  await page.getByLabel('显示名(可选)').fill('E2E Admin');
-  await page.getByLabel('密码').fill('test-password');
-  await page.getByRole('button', { name: '创建并进入' }).click();
   await expect(page.getByText('Projects', { exact: true }).first()).toBeVisible();
 
   const projectPath = join(process.cwd(), '.test-data', 'e2e', 'persistence-project');
@@ -49,7 +49,6 @@ test('restores project and terminal tabs from server state after browser storage
         activeTerminalId: session.id,
         hiddenSessionIds: [],
         explorerInstances: [],
-        webPageInstances: [],
       },
     },
   })).ok()).toBeTruthy();

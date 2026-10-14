@@ -29,10 +29,8 @@ describe('session kill ownership', () => {
       projectId: 'project-1',
       userId: owner.id,
       canSession: true,
-      canAgent: true,
       canTerminal: true,
-      canClaude: true,
-      canCodex: true,
+      sessionClients: ['claude', 'codex'],
       grantedBy: viewer.id,
     });
 
@@ -86,6 +84,46 @@ describe('session kill ownership', () => {
     expect(kill).toHaveBeenCalledWith('own-session');
   });
 
+  it('does not expose the retired desktop-terminal pop-out action', async () => {
+    getDb().prepare(`
+      INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
+      VALUES ('own-session', 'project-1', 'Own work', 'running', 'session', 'claude', ?)
+    `).run(ownerId);
+    const response = await app.inject({ method: 'POST', url: '/api/sessions/own-session/pop-out', headers: { cookie: ownerCookie } });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().message).toContain('not found');
+    expect(getDb().prepare('SELECT status FROM sessions WHERE id = ?').get('own-session')).toEqual({ status: 'running' });
+  });
+
+  it.each(['completed', 'failed', 'cancelled'])('deletes an owned %s session and its saved history', async (status) => {
+    getDb().prepare(`INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
+      VALUES ('delete-record', 'project-1', 'Ended work', ?, 'session', 'codex', ?)`).run(status, ownerId);
+    getDb().prepare("INSERT INTO pty_output (session_id, seq, data) VALUES ('delete-record', 1, 'saved output')").run();
+    getDb().prepare("INSERT INTO session_snapshots (session_id, rendered) VALUES ('delete-record', 'saved screen')").run();
+    getDb().prepare("INSERT INTO events (session_id, type) VALUES ('delete-record', 'session_end')").run();
+    const response = await app.inject({ method: 'DELETE', url: '/api/sessions/delete-record/record', headers: { cookie: ownerCookie } });
+    expect(response.statusCode).toBe(200);
+    for (const table of ['sessions', 'pty_output', 'session_snapshots', 'events']) {
+      expect(getDb().prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
+    }
+  });
+
+  it.each(['running', 'pending', 'launching', 'detached', 'released'])('preserves %s sessions when record deletion is requested', async (status) => {
+    getDb().prepare(`INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
+      VALUES ('active-record', 'project-1', 'Active work', ?, 'session', 'codex', ?)`).run(status, ownerId);
+    const response = await app.inject({ method: 'DELETE', url: '/api/sessions/active-record/record', headers: { cookie: ownerCookie } });
+    expect(response.statusCode).toBe(409);
+    expect(getDb().prepare("SELECT status FROM sessions WHERE id = 'active-record'").get()).toEqual({ status });
+  });
+
+  it('does not let an administrator delete another user\'s session through the personal history API', async () => {
+    getDb().prepare(`INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
+      VALUES ('other-record', 'project-1', 'Ended work', 'cancelled', 'session', 'codex', ?)`).run(ownerId);
+    const response = await app.inject({ method: 'DELETE', url: '/api/sessions/other-record/record', headers: { cookie: viewerCookie } });
+    expect(response.statusCode).toBe(404);
+    expect(getDb().prepare("SELECT id FROM sessions WHERE id = 'other-record'").get()).toEqual({ id: 'other-record' });
+  });
+
   it('bulk-deletes only the current user\'s ended records in the selected project', async () => {
     const insert = getDb().prepare(`
       INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
@@ -116,6 +154,22 @@ describe('session kill ownership', () => {
     ]);
     expect(getDb().prepare('SELECT COUNT(*) AS count FROM session_snapshots').get()).toEqual({ count: 0 });
     expect(getDb().prepare('SELECT COUNT(*) AS count FROM events').get()).toEqual({ count: 0 });
+  });
+
+  it.each(['completed', 'failed', 'cancelled'])('closes an ended %s session idempotently without signalling its historical PID', async (status) => {
+    getDb().prepare(`
+      INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id, pid)
+      VALUES ('ended-session', 'project-1', 'Finished work', ?, 'session', 'codex', ?, ?)
+    `).run(status, ownerId, process.pid);
+    getDb().prepare("INSERT INTO pty_output (session_id, seq, data) VALUES ('ended-session', 1, 'buffer')").run();
+    const signal = vi.spyOn(process, 'kill');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await app.inject({ method: 'DELETE', url: '/api/sessions/ended-session', headers: { cookie: ownerCookie } });
+      expect(response.statusCode).toBe(200);
+    }
+    expect(signal).not.toHaveBeenCalled();
+    expect(getDb().prepare("SELECT pid, status FROM sessions WHERE id = 'ended-session'").get()).toEqual({ pid: null, status });
+    expect(getDb().prepare("SELECT COUNT(*) AS count FROM pty_output WHERE session_id = 'ended-session'").get()).toEqual({ count: 0 });
   });
   it('rejects stale browser automatic-resume requests without starting a process', async () => {
     getDb().prepare(`INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)

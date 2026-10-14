@@ -2,9 +2,10 @@ import Database from 'better-sqlite3';
 import { dirname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { config } from '../config.js';
+import { migrateRbac } from '../services/rbac.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 12;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -37,7 +38,6 @@ function createCurrentSchema(): void {
       description TEXT,
       session_prompt TEXT,
       openclaw_prompt TEXT,
-      default_web_url TEXT,
       color TEXT DEFAULT '',
       owner_id TEXT REFERENCES users(id),
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -50,7 +50,6 @@ function createCurrentSchema(): void {
       task TEXT NOT NULL,
       created_by_user_id TEXT REFERENCES users(id),
       mode TEXT NOT NULL DEFAULT 'session',
-      agent_type TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       pid INTEGER,
       started_at TEXT,
@@ -131,10 +130,8 @@ function createCurrentSchema(): void {
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       can_session INTEGER NOT NULL DEFAULT 1,
-      can_agent INTEGER NOT NULL DEFAULT 1,
       can_terminal INTEGER NOT NULL DEFAULT 1,
-      can_claude INTEGER NOT NULL DEFAULT 1,
-      can_codex INTEGER NOT NULL DEFAULT 1,
+      session_clients TEXT NOT NULL DEFAULT '["claude","codex"]',
       granted_by TEXT REFERENCES users(id),
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -154,13 +151,20 @@ function createCurrentSchema(): void {
       target_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
       new_mode TEXT,
       new_cli_type TEXT,
-      new_agent_type TEXT,
       inactive_policy TEXT NOT NULL DEFAULT 'resume',
       enabled INTEGER NOT NULL DEFAULT 1,
       next_run_at TEXT,
       stop_at TEXT,
       daily_stop_time TEXT,
       daily_stop_at TEXT,
+      daily_start_time TEXT,
+      daily_end_time TEXT,
+      start_conditions TEXT,
+      daily_stop_conditions TEXT,
+      condition_unmet_policy TEXT NOT NULL DEFAULT 'skip',
+      daily_paused_until TEXT,
+      daily_pause_reason TEXT,
+      waiting_reason TEXT,
       max_successful_runs INTEGER,
       quota_remaining_below INTEGER,
       max_consecutive_failures INTEGER,
@@ -219,14 +223,12 @@ function migrateLegacySchema(): void {
   addColumn('sessions', 'codex_session_id', 'TEXT');
   addColumn('sessions', 'created_by_user_id', 'TEXT REFERENCES users(id)');
   addColumn('sessions', 'mode', "TEXT DEFAULT 'session'");
-  addColumn('sessions', 'agent_type', 'TEXT');
   addColumn('users', 'max_tabs', 'INTEGER NOT NULL DEFAULT 10');
   addColumn('users', 'can_create_projects', 'INTEGER NOT NULL DEFAULT 0');
 
   const projectColumns = tableColumns('projects');
   addColumn('projects', 'session_prompt', 'TEXT');
   addColumn('projects', 'openclaw_prompt', 'TEXT');
-  addColumn('projects', 'default_web_url', 'TEXT');
   addColumn('projects', 'color', "TEXT DEFAULT ''");
   addColumn('projects', 'owner_id', 'TEXT REFERENCES users(id)');
   addColumn('events', 'project_id', 'TEXT REFERENCES projects(id)');
@@ -247,8 +249,8 @@ function migrateLegacySchema(): void {
   const ownerRows = db.prepare('SELECT id, owner_id FROM projects WHERE owner_id IS NOT NULL').all() as Array<{ id: string; owner_id: string }>;
   const grant = db.prepare(`
     INSERT OR IGNORE INTO project_user_access
-      (project_id, user_id, can_session, can_agent, can_terminal, can_claude, can_codex)
-    VALUES (?, ?, 1, 1, 1, 1, 1)
+      (project_id, user_id, can_session, can_terminal, session_clients)
+    VALUES (?, ?, 1, 1, '["claude","codex"]')
   `);
   for (const row of ownerRows) grant.run(row.id, row.owner_id);
 }
@@ -313,6 +315,35 @@ function migrateScheduledTaskDailyStop(): void {
   addColumn('scheduled_tasks', 'daily_stop_at', 'TEXT');
 }
 
+/** Collapse Agent into Session and move client grants under Session. */
+function migrateWorkspacePermissions(): void {
+  addColumn('sessions', 'mode', "TEXT NOT NULL DEFAULT 'session'");
+  const columns = tableColumns('project_user_access');
+  addColumn('project_user_access', 'session_clients', "TEXT NOT NULL DEFAULT '[]'");
+  if (columns.has('can_claude') && columns.has('can_codex')) {
+    db.exec(`UPDATE project_user_access SET
+      session_clients = CASE
+        WHEN can_claude = 1 AND can_codex = 1 THEN '["claude","codex"]'
+        WHEN can_claude = 1 THEN '["claude"]'
+        WHEN can_codex = 1 THEN '["codex"]' ELSE '[]' END`);
+    if (columns.has('can_agent')) db.exec('UPDATE project_user_access SET can_session = MAX(can_session, can_agent)');
+    db.exec("UPDATE project_user_access SET can_session = 0, session_clients = '[]' WHERE can_session = 0 OR session_clients = '[]'");
+  }
+  for (const column of ['can_agent', 'can_claude', 'can_codex']) {
+    if (tableColumns('project_user_access').has(column)) db.exec(`ALTER TABLE project_user_access DROP COLUMN ${column}`);
+  }
+  db.exec("UPDATE sessions SET mode = 'session' WHERE mode = 'agent'; UPDATE scheduled_tasks SET new_mode = 'session' WHERE new_mode = 'agent';");
+  for (const [table, column] of [['sessions', 'agent_type'], ['scheduled_tasks', 'new_agent_type']]) {
+    if (tableColumns(table).has(column)) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+  }
+  db.exec("DELETE FROM settings WHERE key IN ('agent_claude_command', 'agent_codex_command')");
+  if (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'rbac_roles'").get()) {
+    db.exec(`DELETE FROM rbac_roles WHERE builtin = 1 AND id IN ('observer','operator','project_creator')
+      AND id NOT IN (SELECT role_id FROM rbac_user_roles);
+      UPDATE rbac_roles SET builtin = 0 WHERE builtin = 1 AND id IN ('observer','operator','project_creator');`);
+  }
+}
+
 function runMigrations(): void {
   const current = db.pragma('user_version', { simple: true }) as number;
   if (current > SCHEMA_VERSION) {
@@ -321,14 +352,38 @@ function runMigrations(): void {
 
   const migrate = db.transaction(() => {
     createCurrentSchema();
+    if (current < 11) migrateWorkspacePermissions();
     if (current < 1) migrateLegacySchema();
     if (current < 2) migrateTerminalDimensionsAndOutputKeys();
     if (current < 3) migrateLegacySessionOwnership();
     if (current < 5) migrateScheduledTaskStopConditions();
     if (current < 6) migrateScheduledTaskDailyStop();
+    if (current < 8) {
+      addColumn('scheduled_tasks', 'daily_start_time', 'TEXT');
+      addColumn('scheduled_tasks', 'daily_end_time', 'TEXT');
+    }
+    if (current < 11) {
+      addColumn('scheduled_tasks', 'start_conditions', 'TEXT');
+      addColumn('scheduled_tasks', 'daily_stop_conditions', 'TEXT');
+      addColumn('scheduled_tasks', 'condition_unmet_policy', "TEXT NOT NULL DEFAULT 'skip'");
+      addColumn('scheduled_tasks', 'daily_paused_until', 'TEXT');
+      addColumn('scheduled_tasks', 'daily_pause_reason', 'TEXT');
+      addColumn('scheduled_tasks', 'waiting_reason', 'TEXT');
+    }
     // Some existing databases were stamped v7 before this column was added.
     // Reconcile the actual schema even when the version already matches.
     addColumn('users', 'can_create_projects', 'INTEGER NOT NULL DEFAULT 0');
+    migrateRbac(db, current < 9);
+    if (current < 12) {
+      // Remove the retired browser configuration without touching projects,
+      // sessions or other workspace state. initDb backs up before migration.
+      if (tableColumns('projects').has('default_web_url')) {
+        db.exec('ALTER TABLE projects DROP COLUMN default_web_url');
+      }
+      db.exec(`UPDATE user_ui_state
+        SET value = json_remove(value, '$.webPageInstances', '$.activeWebPageId')
+        WHERE key LIKE 'project:%' AND json_valid(value)`);
+    }
     createCurrentIndexes();
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
   });
@@ -405,12 +460,12 @@ function migrateProjectsFromDevSwarm(): void {
     let projects: Array<Record<string, unknown>>;
     try {
       projects = src.prepare(
-        'SELECT id, name, path, description, created_at, updated_at, session_prompt, openclaw_prompt, default_web_url FROM projects'
+        'SELECT id, name, path, description, created_at, updated_at, session_prompt, openclaw_prompt FROM projects'
       ).all() as Array<Record<string, unknown>>;
     } catch {
       // Fallback: old schema with ruflo_prompt
       projects = src.prepare(
-        'SELECT id, name, path, description, created_at, updated_at, ruflo_prompt AS session_prompt, openclaw_prompt, default_web_url FROM projects'
+        'SELECT id, name, path, description, created_at, updated_at, ruflo_prompt AS session_prompt, openclaw_prompt FROM projects'
       ).all() as Array<Record<string, unknown>>;
     }
 
@@ -430,8 +485,8 @@ function migrateProjectsFromDevSwarm(): void {
     if (projects.length === 0) return;
 
     const insertProject = db.prepare(
-      `INSERT OR IGNORE INTO projects (id, name, path, description, created_at, updated_at, session_prompt, openclaw_prompt, default_web_url)
-       VALUES (@id, @name, @path, @description, @created_at, @updated_at, @session_prompt, @openclaw_prompt, @default_web_url)`
+      `INSERT OR IGNORE INTO projects (id, name, path, description, created_at, updated_at, session_prompt, openclaw_prompt)
+       VALUES (@id, @name, @path, @description, @created_at, @updated_at, @session_prompt, @openclaw_prompt)`
     );
     const insertSession = db.prepare(
       `INSERT OR IGNORE INTO sessions (id, project_id, task, status, pid, started_at, completed_at, exit_code,

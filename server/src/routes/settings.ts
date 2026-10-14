@@ -4,29 +4,26 @@ import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { isAdmin } from '../auth.js';
+import { requirePermission } from '../services/rbac.js';
 import { withAllPermissions, type CliType } from '../services/cli-command.js';
+import { MEMORY_REAPER_DEFAULTS, memoryCleanupSettingError } from '../services/memory-session-reaper-config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** Default values for all settings */
 const DEFAULTS: Record<string, string> = {
+  ...MEMORY_REAPER_DEFAULTS,
   session_claude_command: 'claude --dangerously-skip-permissions',
   session_codex_command: 'codex --dangerously-bypass-approvals-and-sandbox',
-  agent_claude_command: 'claude --dangerously-skip-permissions',
-  agent_codex_command: 'codex --dangerously-bypass-approvals-and-sandbox',
   terminal_font_size: '12',
   app_font_size: '16',
   app_theme: 'midnight',           // UI theme id (see dashboard/src/lib/themes.ts)
-  server_port: '42010',
   statusline_prompted: 'false',    // whether we've asked the user about statusline install
 };
 
 const COMMAND_TYPES: Record<string, CliType> = {
   session_claude_command: 'claude',
   session_codex_command: 'codex',
-  agent_claude_command: 'claude',
-  agent_codex_command: 'codex',
 };
 
 export function effectiveSettings(rows: { key: string; value: string }[]): Record<string, string> {
@@ -60,11 +57,13 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
   app.put<{
     Body: { settings: Record<string, string> };
   }>('/settings', async (req, reply) => {
-    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Settings are read-only for members' });
+    if (!requirePermission(req, reply, 'settings', 'write')) return;
     const { settings } = req.body;
-    if (!settings || typeof settings !== 'object') {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
       return reply.status(400).send({ error: 'settings object is required' });
     }
+    const cleanupError = memoryCleanupSettingError(settings);
+    if (cleanupError) return reply.status(400).send({ error: cleanupError });
 
     const db = getDb();
     const upsert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
@@ -117,7 +116,7 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
 
   // Install AgentManager statusline to global ~/.claude/settings.json
   app.post('/settings/statusline/install', async (req, reply) => {
-    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
+    if (!requirePermission(req, reply, 'settings', 'write')) return;
     const scriptDest = getStatuslineScriptPath();
     const scriptSrc = join(__dirname, '..', 'data', 'statusline.sh');
 
@@ -139,7 +138,7 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
 
   // Uninstall AgentManager statusline from global ~/.claude/settings.json
   app.post('/settings/statusline/uninstall', async (req, reply) => {
-    if (!isAdmin(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
+    if (!requirePermission(req, reply, 'settings', 'write')) return;
     const scriptPath = getStatuslineScriptPath();
     const removed: string[] = [];
 

@@ -1,14 +1,36 @@
 @import "tailwindcss";
 
-/* Indeterminate progress bar — used by the terminal file-upload overlay while
-   file size / upload total isn't yet known (reading, or a non-computable POST). */
-@keyframes upload-indeterminate {
-  0%   { transform: translateX(-100%); }
-  100% { transform: translateX(350%); }
+/* Shared page width and gutters for workspace and management content. */
+:root { --page-gutter: 16px; }
+@media (min-width: 640px) {
+  :root { --page-gutter: 24px; }
 }
-.upload-indeterminate {
-  animation: upload-indeterminate 1.1s ease-in-out infinite;
+.page-content {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding-inline: var(--page-gutter);
 }
+
+/* Form density is scoped: terminal/editor/preview surfaces keep their space. */
+.compact-form .field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 360px));
+  gap: 10px 14px;
+  align-items: start;
+}
+.compact-form .condition-workspace {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 680px));
+  gap: 10px;
+  align-items: start;
+}
+.compact-form :where(input:not([type=checkbox]):not([type=radio]):not([type=range]), select) {
+  min-height: 30px;
+  font-size: 12px;
+}
+.compact-form > fieldset > label { display: block; max-width: 420px; }
+.compact-form input[type=password] { max-width: 420px; }
 
 /* Global export console: a moving byte rail, not a generic loading bar. */
 @keyframes export-transfer-scan {
@@ -170,11 +192,14 @@ select:hover {
 .markdown-preview h3 { font-size: 1.25em; font-weight: 600; margin: 1em 0 0.5em; }
 .markdown-preview h4 { font-size: 1em; font-weight: 600; margin: 1em 0 0.5em; }
 .markdown-preview p { margin: 0.75em 0; }
-.explorer-markdown { margin-inline: auto; overflow-wrap: anywhere; }
-.explorer-markdown p, .explorer-markdown li { white-space: pre-line; }
+.explorer-markdown { width: 100%; max-width: none; overflow-wrap: anywhere; }
 .explorer-markdown pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .markdown-preview a { color: var(--accent); text-decoration: underline; }
 .markdown-preview ul, .markdown-preview ol { padding-left: 2em; margin: 0.5em 0; }
+.markdown-preview ul { list-style: disc outside; }
+.markdown-preview ol { list-style: decimal outside; }
+.markdown-preview ul ul { list-style-type: circle; }
+.markdown-preview ul ul ul { list-style-type: square; }
 .markdown-preview li { margin: 0.25em 0; }
 .markdown-preview code {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
@@ -228,3 +253,60 @@ select:hover {
 .markdown-preview input[type="checkbox"] {
   margin-right: 0.5em;
 }
+.markdown-visual-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 5px 0 9px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+.markdown-visual-toolbar button {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.markdown-visual-toolbar button:hover,
+.markdown-visual-toolbar button:focus-visible {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  outline: none;
+}
+.markdown-visual-editor .ProseMirror { min-height: 60vh; outline: none; }
+.markdown-visual-editor .ProseMirror:focus-visible { outline: none; }
+.markdown-visual-editor .ProseMirror p:first-child { margin-top: 0; }
+.markdown-preview ul[data-type="taskList"] { list-style: none; padding-left: 1.4em; }
+.markdown-preview ul[data-type="taskList"] li { display: flex; align-items: baseline; gap: 0.25em; }
+.markdown-preview ul[data-type="taskList"] li > label { flex: none; }
+.markdown-preview ul[data-type="taskList"] li > div { min-width: 0; flex: 1; }
+.markdown-visual-image { display: inline-block; max-width: 100%; }
+.markdown-visual-image img { max-width: 100%; }
+.markdown-visual-image img:not([src]) { display: none; }
+
+/* Shared compact tables for platform lists and expandable detail rows. */
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; }
+.data-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; color: var(--text-primary); }
+.data-table > thead > tr > th { position: sticky; top: 0; z-index: 1; background: var(--bg-tertiary); color: var(--text-secondary); font-weight: 500; text-align: left; white-space: nowrap; }
+.data-table > thead > tr > th,
+.data-table > tbody > tr > td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.data-table > tbody > tr:last-child > td { border-bottom: 0; }
+.data-table > tbody > tr:not(.table-detail-row):hover > td { background: color-mix(in srgb, var(--accent) 3%, var(--bg-secondary)); }
+.data-table > tbody > .table-detail-row > .detail-cell { padding: 8px 12px; background: var(--bg-primary); }
+.table-expand-column { width: 32px; }
+.table-actions-column { width: 140px; }
+.table-state { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 20px; color: var(--text-secondary); }
+.row-expand { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 3px; color: var(--text-secondary); background: var(--bg-primary); }
+.row-expand:hover { border-color: var(--accent); color: var(--accent); }
+.table-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; font-size: 12px; white-space: nowrap; color: var(--text-primary); }
+.table-button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.table-button:disabled { opacity: .4; cursor: not-allowed; }
+.table-actions { display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-start; gap: 5px; }
+.row-expand:focus-visible, .table-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

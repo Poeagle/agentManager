@@ -164,8 +164,9 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
       for (const entry of entries) {
         // Skip hidden files/dirs starting with . (unless showHidden)
         if (!showHidden && entry.name.startsWith('.')) continue;
-        // Always skip .git internals and node_modules
-        if (entry.name === 'node_modules' || entry.name === '.git') continue;
+        // Keep dependency trees out of the explorer; dotfiles, including .git,
+        // follow the caller's showHidden preference above.
+        if (entry.name === 'node_modules') continue;
 
         try {
           const fullPath = join(resolved, entry.name);

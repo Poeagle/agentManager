@@ -4,9 +4,10 @@ import { createUser } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
 import { userRoutes } from '../src/routes/users.js';
 import { createTestDatabase } from './helpers/database.js';
+import { serverResourceSampler } from '../src/services/server-resources.js';
 
 let cleanup: (() => void) | undefined;
-afterEach(() => cleanup?.());
+afterEach(async () => { await serverResourceSampler.stop(); cleanup?.(); });
 
 describe('administrator monitoring', () => {
   it('rejects members and groups each users open projects and sessions for admins', async () => {
@@ -33,7 +34,6 @@ describe('administrator monitoring', () => {
       ],
       activeTerminalId: 's1',
       explorerInstances: [{ id: 'explorer-1', label: 'Server files' }],
-      webPageInstances: [{ id: 'web-1', label: 'Preview', url: 'https://example.com' }],
     }));
     db.prepare(`
       INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)

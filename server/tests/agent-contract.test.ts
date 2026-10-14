@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('2.1.0');
+    expect(contract.version).toBe('2.3.0');
     expect(contract.scope).toContain('scheduled tasks');
 
     expect(keys).toEqual(expect.arrayContaining([
@@ -40,6 +40,11 @@ describe('Agent API contract', () => {
     expect(contract.authorization.sessions).toContain('may kill only a session created by the logged-in user');
     expect(scheduledCreate?.description).toContain("user's open tabs");
     expect(scheduledCreate?.request).toHaveProperty('daily_stop_time');
+    expect(scheduledCreate?.request).toHaveProperty('daily_start_time');
+    expect(scheduledCreate?.request).toHaveProperty('daily_end_time');
     expect(scheduledCreate?.request).toHaveProperty('quota_remaining_below');
+    expect(scheduledCreate?.request).toHaveProperty('start_conditions');
+    expect(scheduledCreate?.request).toHaveProperty('daily_stop_conditions');
+    expect(scheduledCreate?.request?.condition_unmet_policy.default).toBe('skip');
   });
 });

@@ -29,6 +29,9 @@ import { skillsRoutes } from './routes/skills.js';
 import { userStateRoutes } from './routes/user-state.js';
 import { scheduledTaskRoutes } from './routes/scheduled-tasks.js';
 import { startScheduledTaskScheduler, stopScheduledTaskScheduler } from './services/scheduled-task-runner.js';
+import { memorySessionReaper } from './services/memory-session-reaper.js';
+import { serverResourceSampler } from './services/server-resources.js';
+import { sweepAllPastes } from './services/paste-cleanup.js';
 import {
   killAllSessions,
   cleanupStaleRunningSessions,
@@ -38,13 +41,12 @@ import {
   startPendingSessionWatchdog,
 } from './services/session-manager.js';
 import { shutdownCodexQuotaReader } from './services/codex-quota.js';
-import { sweepAllPastes } from './services/paste-cleanup.js';
 import { config } from './config.js';
-import { authHook, isAdmin as isAdminUser, userOwnsFilesystemPath } from './auth.js';
+import { authHook, isAdmin as isAdminUser } from './auth.js';
 import { authRoutes } from './routes/auth.js';
 import { userRoutes } from './routes/users.js';
+import { rbacRoutes } from './routes/rbac.js';
 import { appendFile, writeFile } from 'fs/promises';
-import { installDefaultAgents } from './data/default-agents.js';
 const timingLogPath = process.env.AGENTMANAGER_TIMING_LOG;
 const tlog = (message: string) => {
   if (!timingLogPath) return;
@@ -80,12 +82,6 @@ async function start() {
 
   if (timingLogPath) await writeFile(timingLogPath, '').catch(() => {});
 
-  // Install default agents to ~/.claude/agents/ if not present
-  try {
-    const { installed } = installDefaultAgents();
-    if (installed.length > 0) console.log(`  Installed ${installed.length} default agent(s) to ~/.claude/agents/`);
-  } catch { /* non-fatal */ }
-
   // Initialize database, load projects from user config, and clean up orphaned sessions
   let t = Date.now();
   initDb();
@@ -108,10 +104,8 @@ async function start() {
   t = Date.now();
   await cleanupStaleRunningSessions();
   tlog(`[STARTUP] cleanupStale: ${Date.now() - t}ms`);
-  // Pasted-image retention: sweep now, then every 12h (unref'd so it never holds
-  // the process open). Per-paste pruning bounds active use; this catches the rest.
   sweepAllPastes();
-  setInterval(() => sweepAllPastes(), 12 * 60 * 60 * 1000).unref();
+  setInterval(sweepAllPastes, 12 * 60 * 60 * 1000).unref();
   // Auto-reconnect detached sessions in background — don't block server startup.
   // Sessions become available as their workers connect.
   autoReconnectDetachedSessions().catch((err) => {
@@ -121,6 +115,8 @@ async function start() {
   // before WebSocket connected, or spawn command hangs on registry check/npm install)
   startPendingSessionWatchdog();
   startScheduledTaskScheduler();
+  serverResourceSampler.start();
+  memorySessionReaper.start();
 
   // Plugins
   await app.register(cors, {
@@ -132,6 +128,7 @@ async function start() {
   app.addHook('onRequest', authHook);
   await app.register(authRoutes, { prefix: '/api' });
   await app.register(userRoutes, { prefix: '/api' });
+  await app.register(rbacRoutes, { prefix: '/api' });
 
   // REST API routes
   await app.register(eventRoutes, { prefix: '/api' });
@@ -148,74 +145,6 @@ async function start() {
   await app.register(skillsRoutes, { prefix: '/api' });
   await app.register(userStateRoutes, { prefix: '/api' });
   await app.register(scheduledTaskRoutes, { prefix: '/api' });
-
-  // Open URL in the system browser (used by the dashboard's external-link handler)
-  app.post('/api/open-url', async (req, reply) => {
-    if (!isAdminUser(req.user!.id)) return reply.status(403).send({ error: 'Admin only' });
-    const { url } = req.body as { url?: string };
-    if (!url || typeof url !== 'string' || !(url.startsWith('http://') || url.startsWith('https://'))) {
-      return reply.status(400).send({ error: 'Invalid URL' });
-    }
-    const { execFile } = await import('child_process');
-    execFile('xdg-open', [url], (err) => {
-      if (err) execFile('open', [url]); // macOS fallback
-    });
-    return { ok: true };
-  });
-
-  // Open file manager at a directory path
-  app.post('/api/open-folder', async (req, reply) => {
-    const { path } = req.body as { path?: string };
-    if (!path || typeof path !== 'string') {
-      return reply.status(400).send({ error: 'Invalid path' });
-    }
-    if (!isAdminUser(req.user!.id) || !userOwnsFilesystemPath(req.user!.id, path)) {
-      return reply.status(403).send({ error: 'Admin only' });
-    }
-    const { spawn } = await import('child_process');
-    const isMac = process.platform === 'darwin';
-    // macOS: 'open' opens Finder; Linux: 'xdg-open' opens default file manager
-    const cmd = isMac ? 'open' : 'xdg-open';
-    spawn(cmd, [path], { detached: true, stdio: 'ignore' }).unref();
-    return { ok: true };
-  });
-
-  // Open terminal at a directory path
-  app.post('/api/open-terminal', async (req, reply) => {
-    const { path } = req.body as { path?: string };
-    if (!path || typeof path !== 'string') {
-      return reply.status(400).send({ error: 'Invalid path' });
-    }
-    if (!isAdminUser(req.user!.id) || !userOwnsFilesystemPath(req.user!.id, path)) {
-      return reply.status(403).send({ error: 'Admin only' });
-    }
-    const { spawn, exec } = await import('child_process');
-    const isMac = process.platform === 'darwin';
-
-    if (isMac) {
-      // macOS: open Terminal.app at the given path
-      spawn('open', ['-a', 'Terminal', path], { detached: true, stdio: 'ignore' }).unref();
-    } else {
-      // Linux: find and launch the first available terminal emulator
-      exec('which gnome-terminal xfce4-terminal konsole alacritty kitty wezterm xterm', { timeout: 3000 }, (_err, stdout) => {
-        const terminals = (stdout || '').trim().split('\n').filter(Boolean);
-        if (terminals.length === 0) {
-          spawn('xdg-open', [path], { detached: true, stdio: 'ignore' }).unref();
-          return;
-        }
-        const term = terminals[0];
-        const basename = term.split('/').pop() || '';
-        let args: string[] = [];
-        if (basename === 'gnome-terminal' || basename === 'xfce4-terminal') {
-          args = ['--working-directory', path];
-        } else if (basename === 'konsole') {
-          args = ['--workdir', path];
-        }
-        spawn(term, args, { cwd: path, detached: true, stdio: 'ignore' }).unref();
-      });
-    }
-    return { ok: true };
-  });
 
   // Version check via GitHub releases — used by dashboard and desktop app
   // Supports ?channel=stable|beta|alpha query param (default: stable)
@@ -416,6 +345,8 @@ async function shutdown(exitCode = 0): Promise<void> {
   // Start closing listeners first, then tear down the long-lived terminal
   // workers that may otherwise keep WebSocket requests open.
   const closeServer = server?.close().catch((error) => recordFailure('server close', error));
+  try { await memorySessionReaper.stop(); } catch (error) { recordFailure('memory cleanup stop', error); }
+  try { await serverResourceSampler.stop(); } catch (error) { recordFailure('resource sampler stop', error); }
   try {
     if (!(await flushPendingPtyOutputWithRetry())) {
       recordFailure('PTY flush', new Error('queued terminal output could not be persisted after retries'));

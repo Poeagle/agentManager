@@ -128,7 +128,7 @@ describe('FileExplorer drag-and-drop upload', () => {
     const input = screen.getByDisplayValue('/project');
     fireEvent.change(input, { target: { value: '/project/reports' } });
     fireEvent.submit(input.closest('form')!);
-    await waitFor(() => expect(api.files.list).toHaveBeenCalledWith('/project/reports', false));
+    await waitFor(() => expect(api.files.list).toHaveBeenCalledWith('/project/reports', true));
     await act(async () => { finish({ ok: true, path: '/project/new.txt', size: 1 }); });
     expect(screen.getByDisplayValue('/project/reports')).toBeVisible();
     expect(api.files.list).toHaveBeenCalledTimes(2);

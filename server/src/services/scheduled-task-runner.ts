@@ -2,11 +2,13 @@ import { nanoid } from 'nanoid';
 import { getDb } from '../db/index.js';
 import { getUserTabUsage, userCanUseToolForProject } from '../auth.js';
 import * as sessionManager from './session-manager.js';
-import { nextScheduledAt, type ScheduleKind } from './schedule.js';
+import { isWithinDailyWindow, nextScheduledAt, type ScheduleKind } from './schedule.js';
 import { readCodexWeeklyQuota } from './codex-quota.js';
+import { getTracker } from './session-state.js';
+import { evaluateTaskConditions, flattenTaskConditions, localDateKey, nextConditionDay, parseTaskConditions, type ConditionContext } from './scheduled-task-conditions.js';
 
 export type ScheduledTargetType = 'existing' | 'new';
-export type ScheduledNewMode = 'session' | 'agent' | 'terminal';
+export type ScheduledNewMode = 'session' | 'terminal';
 export type ScheduledInactivePolicy = 'resume' | 'fail';
 
 export interface ScheduledTaskRow {
@@ -22,13 +24,20 @@ export interface ScheduledTaskRow {
   target_session_id: string | null;
   new_mode: ScheduledNewMode | null;
   new_cli_type: 'claude' | 'codex' | null;
-  new_agent_type: string | null;
   inactive_policy: ScheduledInactivePolicy;
   enabled: number;
   next_run_at: string | null;
   stop_at: string | null;
   daily_stop_time: string | null;
   daily_stop_at: string | null;
+  daily_start_time: string | null;
+  daily_end_time: string | null;
+  start_conditions: string | null;
+  daily_stop_conditions: string | null;
+  condition_unmet_policy: 'wait' | 'skip';
+  daily_paused_until: string | null;
+  daily_pause_reason: string | null;
+  waiting_reason: string | null;
   max_successful_runs: number | null;
   quota_remaining_below: number | null;
   max_consecutive_failures: number | null;
@@ -47,15 +56,106 @@ export interface ScheduledTaskRow {
 
 export interface ScheduledRunResult {
   runId: string;
-  status: 'success' | 'failed' | 'stopped';
+  status: 'success' | 'failed' | 'stopped' | 'skipped';
   sessionId: string | null;
   error?: string;
 }
 
 const inFlight = new Set<string>();
+const evaluatingConditions = new Set<string>();
 let schedulerTimer: ReturnType<typeof setInterval> | null = null;
 
 class TargetUnavailableError extends Error {}
+class ExecutionWindowClosedError extends Error {}
+class StartConditionsNotMetError extends Error {}
+
+interface ConditionDecision { allowed: boolean; reason?: string; pausedUntil?: string }
+
+async function conditionContext(task: ScheduledTaskRow, now: number): Promise<ConditionContext> {
+  const start = parseTaskConditions(task.start_conditions);
+  const stop = parseTaskConditions(task.daily_stop_conditions);
+  const conditions = [...flattenTaskConditions(start), ...flattenTaskConditions(stop)];
+  let quotaRemaining: number | null = null;
+  if (conditions.some((condition) => condition.type === 'quota_below')) {
+    try {
+      const quota = await readCodexWeeklyQuota();
+      if (!quota.stale) quotaRemaining = quota.remainingPercent;
+    } catch { /* unknown guard state blocks dispatch, rather than stopping forever */ }
+  }
+  let targetIdle: boolean | null = null;
+  if (conditions.some((condition) => condition.type === 'target_idle') && task.target_session_id) {
+    const session = sessionManager.getSession(task.target_session_id);
+    if (session?.created_by_user_id === task.user_id && session.project_id === task.project_id) {
+      const tracker = getTracker(session.id);
+      const state = tracker?.state;
+      targetIdle = !sessionManager.isSessionActive(session.id) ? true
+        : state ? (state.processState === 'idle' || (state.processState === 'waiting_for_input' && state.promptType === 'text' && !state.isPermission)) && !tracker!.hasPendingExecute : null;
+    }
+  }
+  let successesToday = 0;
+  let failuresToday = 0;
+  if (conditions.some((condition) => condition.type === 'successes_today' || condition.type === 'failures_today')) {
+    now = Math.max(now, Date.now());
+    const today = localDateKey(now, task.timezone);
+    const runs = getDb().prepare(`SELECT status, started_at FROM scheduled_task_runs WHERE task_id = ? AND datetime(started_at) >= datetime(?, '-2 days')`)
+      .all(task.id, new Date(now).toISOString()) as Array<{ status: string; started_at: string }>;
+    for (const run of runs) {
+      const timestamp = Date.parse(run.started_at.includes('T') ? run.started_at : `${run.started_at.replace(' ', 'T')}Z`);
+      if (!Number.isFinite(timestamp) || localDateKey(timestamp, task.timezone) !== today) continue;
+      if (run.status === 'success') successesToday++;
+      if (run.status === 'failed') failuresToday++;
+    }
+  }
+  return { now, timezone: task.timezone, targetIdle, quotaRemaining, successesToday, failuresToday };
+}
+
+async function conditionDecision(task: ScheduledTaskRow, now = Date.now(), stopOnly = false): Promise<ConditionDecision> {
+  if (task.daily_paused_until && Date.parse(task.daily_paused_until) > now) return {
+    allowed: false, reason: task.daily_pause_reason || '当天停止条件已满足', pausedUntil: task.daily_paused_until,
+  };
+  const context = await conditionContext(task, now);
+  context.now = Math.max(now, Date.now()); // Account for a quota read crossing a clock condition.
+  const stop = evaluateTaskConditions(parseTaskConditions(task.daily_stop_conditions), context, false);
+  if (stop === true) return { allowed: false, reason: '当天停止条件已满足，次日重新判断开始条件', pausedUntil: nextConditionDay(task.timezone, context.now) };
+  if (stop === null) return { allowed: false, reason: '无法确认每天停止条件，本次不发送' };
+  if (stopOnly) return { allowed: true };
+  const start = evaluateTaskConditions(parseTaskConditions(task.start_conditions), context, true);
+  return { allowed: start === true, reason: start === null ? '无法确认开始条件，本次不发送' : start === false ? '开始条件未满足，跳过本次' : undefined };
+}
+
+/** Keep an interval anchored to its planned occurrence, not tick latency. */
+function nextTaskCheckAt(task: ScheduledTaskRow, now: number): string {
+  if (task.schedule_kind === 'interval' && !task.daily_start_time && task.next_run_at) {
+    const previous = Date.parse(task.next_run_at);
+    const interval = Number(task.schedule_value) * 60_000;
+    if (Number.isFinite(previous) && Number.isFinite(interval) && interval > 0) {
+      return new Date(previous + Math.max(1, Math.floor((now - previous) / interval) + 1) * interval).toISOString();
+    }
+  }
+  return nextScheduledAt(task.schedule_kind, task.schedule_value, task.timezone, now, task);
+}
+
+function storeConditionDecision(task: ScheduledTaskRow, decision: ConditionDecision): void {
+  if (decision.pausedUntil) {
+    getDb().prepare(`UPDATE scheduled_tasks SET daily_paused_until = ?, daily_pause_reason = ?, waiting_reason = NULL, next_run_at = ?, updated_at = datetime('now') WHERE id = ? AND enabled = 1`)
+      .run(decision.pausedUntil, decision.reason, decision.pausedUntil, task.id);
+  } else {
+    getDb().prepare(`UPDATE scheduled_tasks SET daily_paused_until = NULL, daily_pause_reason = NULL, waiting_reason = ? WHERE id = ?`)
+      .run(decision.allowed ? null : decision.reason, task.id);
+  }
+}
+
+async function assertStartConditions(task: ScheduledTaskRow): Promise<void> {
+  const decision = await conditionDecision(task);
+  storeConditionDecision(task, decision);
+  if (!decision.allowed) throw new StartConditionsNotMetError(decision.reason);
+}
+
+function assertExecutionWindow(task: ScheduledTaskRow): void {
+  if (!isWithinDailyWindow(task, task.timezone)) {
+    throw new ExecutionWindowClosedError(`当前不在每日执行时段（${task.daily_start_time}–${task.daily_end_time}，${task.timezone}）`);
+  }
+}
 
 function stopTask(taskId: string, reason: string, now = new Date().toISOString()): void {
   getDb().prepare(`
@@ -122,6 +222,8 @@ function failSessionSpawn(sessionId: string): void {
 }
 
 async function createScheduledSession(task: ScheduledTaskRow, projectPath: string): Promise<string> {
+  await assertStartConditions(task);
+  assertExecutionWindow(task);
   const mode = task.new_mode ?? 'session';
   const cliType = task.new_cli_type === 'codex' ? 'codex' : 'claude';
   if (!userCanUseToolForProject(task.user_id, task.project_id, mode, mode === 'terminal' ? 'claude' : cliType)) {
@@ -130,12 +232,9 @@ async function createScheduledSession(task: ScheduledTaskRow, projectPath: strin
   const usage = getUserTabUsage(task.user_id);
   if (!usage.allowed) throw new Error(`已达到活动标签页上限（${usage.limit}）`);
 
-  const agentType = mode === 'agent' ? (task.new_agent_type || 'coder') : undefined;
   const label = mode === 'terminal'
     ? 'Terminal'
-    : mode === 'agent'
-      ? `Agent (${agentType}): ${task.prompt}`
-      : task.prompt;
+    : task.prompt;
   const session = sessionManager.createSession(
     projectPath,
     label,
@@ -143,7 +242,6 @@ async function createScheduledSession(task: ScheduledTaskRow, projectPath: strin
     cliType,
     task.user_id,
     mode,
-    agentType,
   );
 
   try {
@@ -153,8 +251,7 @@ async function createScheduledSession(task: ScheduledTaskRow, projectPath: strin
         || !sessionManager.writeToSession(session.id, '\r')) {
         throw new Error('新终端已创建，但提示词发送失败');
       }
-    } else if (mode === 'agent') {
-      await sessionManager.spawnAgent(session.id, projectPath, task.prompt, agentType!, 120, 40, cliType);
+
     } else {
       await sessionManager.spawnSession(session.id, projectPath, task.prompt, 120, 40, cliType);
     }
@@ -201,7 +298,7 @@ async function sendToExistingSession(task: ScheduledTaskRow): Promise<string> {
     || session.project_id !== task.project_id) {
     throw new TargetUnavailableError('目标标签页不存在或不属于任务创建者');
   }
-  const mode = session.mode === 'agent' ? 'agent' : session.mode === 'terminal' ? 'terminal' : 'session';
+  const mode = session.mode === 'terminal' ? 'terminal' : 'session';
   const cliType = session.cli_type === 'codex' ? 'codex' : 'claude';
   if (!userCanUseToolForProject(task.user_id, task.project_id, mode, mode === 'terminal' ? 'claude' : cliType)) {
     throw new Error('用户已无权操作该目标标签页');
@@ -211,6 +308,8 @@ async function sendToExistingSession(task: ScheduledTaskRow): Promise<string> {
   } catch (error) {
     throw new TargetUnavailableError(error instanceof Error ? error.message : '目标标签页无法恢复');
   }
+  assertExecutionWindow(task);
+  await assertStartConditions(task);
   if (!sessionManager.writeToSession(session.id, task.prompt, true)
     || !sessionManager.writeToSession(session.id, '\r')) {
     throw new TargetUnavailableError('目标标签页提示词发送失败');
@@ -231,7 +330,7 @@ async function executeTask(task: ScheduledTaskRow): Promise<string> {
 export async function runScheduledTask(
   taskId: string,
   trigger: 'scheduled' | 'manual' = 'manual',
-  scheduledFor = new Date().toISOString(),
+  scheduledFor = new Date(Date.now()).toISOString(),
 ): Promise<ScheduledRunResult> {
   if (inFlight.has(taskId)) {
     return { runId: '', status: 'failed', sessionId: null, error: '该任务已有一次执行正在进行' };
@@ -245,11 +344,13 @@ export async function runScheduledTask(
   inFlight.add(taskId);
   const runId = nanoid(12);
   getDb().prepare(`
-    INSERT INTO scheduled_task_runs (id, task_id, trigger, scheduled_for, status)
-    VALUES (?, ?, ?, ?, 'running')
-  `).run(runId, taskId, trigger, scheduledFor);
+    INSERT INTO scheduled_task_runs (id, task_id, trigger, scheduled_for, status, started_at)
+    VALUES (?, ?, ?, ?, 'running', ?)
+  `).run(runId, taskId, trigger, scheduledFor, new Date(Date.now()).toISOString());
 
   try {
+    await assertStartConditions(task);
+    assertExecutionWindow(task);
     const reason = await stopReasonBeforeRun(task);
     if (reason) {
       getDb().transaction(() => {
@@ -278,12 +379,22 @@ export async function runScheduledTask(
         SET last_run_at = ?, last_status = 'success', last_error = NULL,
           successful_runs = ?, consecutive_failures = 0, updated_at = datetime('now')
         WHERE id = ?
-      `).run(new Date().toISOString(), successfulRuns, taskId);
+      `).run(new Date(Date.now()).toISOString(), successfulRuns, taskId);
       if (stopReason) stopTask(taskId, stopReason);
     })();
     return { runId, status: 'success', sessionId };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof ExecutionWindowClosedError || error instanceof StartConditionsNotMetError) {
+      getDb().prepare(`
+        UPDATE scheduled_task_runs SET status = 'skipped', error = ?, completed_at = datetime('now') WHERE id = ?
+      `).run(message, runId);
+      if (error instanceof StartConditionsNotMetError && trigger === 'scheduled' && task.condition_unmet_policy === 'wait') {
+        getDb().prepare(`UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ? AND enabled = 1 AND daily_paused_until IS NULL`)
+          .run(new Date(Date.now() + 15_000).toISOString(), task.id);
+      }
+      return { runId, status: 'skipped', sessionId: null, error: message };
+    }
     const consecutiveFailures = task.consecutive_failures + 1;
     const stopReason = task.stop_on_target_unavailable && error instanceof TargetUnavailableError
       ? `目标标签页不可用：${message}`
@@ -301,7 +412,7 @@ export async function runScheduledTask(
         SET last_run_at = ?, last_status = 'failed', last_error = ?,
           consecutive_failures = ?, updated_at = datetime('now')
         WHERE id = ?
-      `).run(new Date().toISOString(), message, consecutiveFailures, taskId);
+      `).run(new Date(Date.now()).toISOString(), message, consecutiveFailures, taskId);
       if (stopReason) stopTask(taskId, stopReason);
     })();
     return { runId, status: 'failed', sessionId: null, error: message };
@@ -325,6 +436,20 @@ export async function tickScheduledTasks(now = Date.now()): Promise<void> {
     stopTask(task.id, `已到每日停止时间（${task.daily_stop_time}，${task.timezone}）`, nowIso);
   }
 
+  // Daily stop guards must also be observed between executions (e.g. an
+  // 18:00 stop on a task whose next interval would otherwise be at 20:00).
+  const dailyGuarded = getDb().prepare(`SELECT * FROM scheduled_tasks WHERE enabled = 1 AND (daily_stop_conditions IS NOT NULL OR daily_paused_until IS NOT NULL)`).all() as ScheduledTaskRow[];
+  for (const task of dailyGuarded) {
+    if (inFlight.has(task.id) || evaluatingConditions.has(task.id)) continue;
+    evaluatingConditions.add(task.id);
+    try {
+      const decision = await conditionDecision(task, now, true);
+      if (decision.pausedUntil || !decision.allowed || task.daily_paused_until) storeConditionDecision(task, decision);
+    } catch (error) {
+      stopTask(task.id, `条件配置无效：${error instanceof Error ? error.message : String(error)}`, nowIso);
+    } finally { evaluatingConditions.delete(task.id); }
+  }
+
   const due = getDb().prepare(`
     SELECT * FROM scheduled_tasks
     WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?
@@ -332,12 +457,38 @@ export async function tickScheduledTasks(now = Date.now()): Promise<void> {
   `).all(nowIso) as ScheduledTaskRow[];
 
   for (const task of due) {
-    if (inFlight.has(task.id) || !task.next_run_at) continue;
+    if (inFlight.has(task.id) || evaluatingConditions.has(task.id) || !task.next_run_at) continue;
+    if (task.start_conditions || task.daily_stop_conditions || task.daily_paused_until) {
+      evaluatingConditions.add(task.id);
+      let decision: ConditionDecision;
+      try { decision = await conditionDecision(task, now); }
+      catch (error) {
+        stopTask(task.id, `条件配置无效：${error instanceof Error ? error.message : String(error)}`, nowIso);
+        continue;
+      } finally { evaluatingConditions.delete(task.id); }
+      storeConditionDecision(task, decision);
+      if (!decision.allowed) {
+        if (!decision.pausedUntil) {
+          const retryAt = task.condition_unmet_policy === 'skip'
+            ? nextTaskCheckAt(task, now)
+            : new Date(now + 15_000).toISOString();
+          getDb().transaction(() => {
+            const claim = getDb().prepare('UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ? AND next_run_at = ? AND enabled = 1').run(retryAt, task.id, task.next_run_at);
+            if (claim.changes && task.condition_unmet_policy === 'skip') {
+              getDb().prepare(`INSERT INTO scheduled_task_runs (id, task_id, trigger, scheduled_for, status, session_id, error, started_at, completed_at) VALUES (?, ?, 'scheduled', ?, 'skipped', ?, ?, ?, ?)`)
+                .run(nanoid(12), task.id, task.next_run_at, task.target_session_id, decision.reason, nowIso, nowIso);
+              getDb().prepare(`UPDATE scheduled_tasks SET last_run_at = ?, last_status = 'skipped', last_error = NULL WHERE id = ?`).run(nowIso, task.id);
+            }
+          })();
+        }
+        continue;
+      }
+    }
     let nextRun: string;
     try {
       // Missed occurrences are intentionally collapsed into one run. Compute
       // the next future occurrence from now so restarts never cause a storm.
-      nextRun = nextScheduledAt(task.schedule_kind, task.schedule_value, task.timezone, now);
+      nextRun = nextTaskCheckAt(task, now);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       getDb().prepare(`
@@ -353,6 +504,9 @@ export async function tickScheduledTasks(now = Date.now()): Promise<void> {
       WHERE id = ? AND enabled = 1 AND next_run_at = ?
     `).run(nextRun, task.id, task.next_run_at);
     if (claimed.changes === 0) continue;
+    // A restart after the window closed must advance to tomorrow without
+    // submitting yesterday's missed prompt or disabling the recurring task.
+    if (!isWithinDailyWindow(task, task.timezone, now)) continue;
     void runScheduledTask(task.id, 'scheduled', task.next_run_at).then((result) => {
       if (result.status === 'failed') console.error(`[SCHEDULE] ${task.id} failed: ${result.error}`);
     });

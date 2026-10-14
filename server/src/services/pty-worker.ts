@@ -16,7 +16,7 @@ import { existsSync, unlinkSync, mkdirSync, createReadStream, readFileSync, read
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import type { ReadStream } from 'fs';
-import { buildAgentCommand, buildSessionCommand } from './cli-command.js';
+import { buildSessionCommand } from './cli-command.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -62,8 +62,7 @@ interface SpawnMessage {
   sessionId: string;
   projectPath: string;
   task: string;
-  mode: 'session' | 'terminal' | 'agent';
-  agentType?: string;
+  mode: 'session' | 'terminal';
   sessionCommand?: string;
   cliType?: 'claude' | 'codex';
   /** When set, resume this CLI's native conversation instead of launching a
@@ -114,8 +113,7 @@ type ParentMessage =
   | { type: 'input'; data: string; bracketedPaste?: boolean }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'capture' }
-  | { type: 'kill' }
-  | { type: 'release' };
+  | { type: 'kill' };
 
 /* ================================================================
    tmux helpers (same as session-manager but local to worker)
@@ -382,7 +380,7 @@ export class PendingWorkerControls {
   private inputs: QueuedWorkerInput[] = [];
   private inputBytes = 0;
   private resize: { cols: number; rows: number } | null = null;
-  private closeAction: 'kill' | 'release' | null = null;
+  private closeAction: 'kill' | null = null;
 
   constructor(private readonly maxInputBytes = MAX_PENDING_WORKER_INPUT_BYTES) {}
 
@@ -422,15 +420,15 @@ export class PendingWorkerControls {
     this.closeAction = null;
   }
 
-  requestClose(action: 'kill' | 'release'): void {
+  requestClose(action: 'kill'): void {
     this.inputs = [];
     this.inputBytes = 0;
     this.resize = null;
-    if (action === 'kill' || this.closeAction === null) this.closeAction = action;
+    this.closeAction = action;
   }
 
   get byteLength(): number { return this.inputBytes; }
-  get requestedClose(): 'kill' | 'release' | null { return this.closeAction; }
+  get requestedClose(): 'kill' | null { return this.closeAction; }
 }
 
 interface PausableOutputSource {
@@ -569,31 +567,6 @@ async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
         });
       } else {
         ptyProcess = spawnDirect(msg, shell, ['-i']);
-      }
-    } else if (msg.mode === 'agent' && msg.agentType) {
-      // agent mode — launch CLI with --agent flag
-      const command = buildAgentCommand(msg.agentType, msg.task, msg.useTmux, sessionCmd, cliType, msg.assignSessionId, msg.codexBindingPath);
-      if (msg.useTmux) {
-        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command, msg.inaccessiblePaths, msg.sandboxRequired);
-        const pp = setupPipePane(msg.sessionId);
-        if (pp) {
-          pipePaneStream = pp.stream;
-          pipePaneFifo = pp.fifoPath;
-          hasPipePane = true;
-        }
-        ptyProcess = pty.spawn('tmux', [...tmuxBaseArgs, 'attach-session', '-t', tmuxSessionName(msg.sessionId)], {
-          name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
-          env: sessionEnv(),
-        });
-      } else if (msg.useDtach) {
-        await dtachCreate(msg.sessionId, msg.projectPath, command, msg.inaccessiblePaths, msg.sandboxRequired);
-        await new Promise(r => setTimeout(r, 100));
-        ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
-          name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
-          env: sessionEnv(),
-        });
-      } else {
-        ptyProcess = spawnDirect(msg, shell, ['-i', '-c', command]);
       }
     } else {
       // session mode
@@ -822,34 +795,12 @@ async function handleKill(): Promise<void> {
   setTimeout(() => process.exit(0), 300);
 }
 
-/**
- * Release: detach the worker from the tmux/dtach session without killing it.
- * Used by pop-out so an external terminal can attach to the still-running session.
- */
-async function handleRelease(): Promise<void> {
-  // Kill the PTY process (our tmux attach client / dtach -a client) — this just detaches,
-  // the tmux session / dtach master keeps running
-  if (ptyProcess) {
-    try { ptyProcess.kill('SIGTERM'); } catch { /* dead */ }
-  }
-
-  // Clean up pipe-pane (external terminal doesn't need it)
-  if (currentSessionId && pipePaneStream) {
-    pipePaneStream.destroy();
-    cleanupPipePane(currentSessionId, pipePaneFifo ?? undefined);
-  }
-
-  send({ type: 'killed' });
-  setTimeout(() => process.exit(0), 300);
-}
-
 /* ================================================================
    Main IPC message handler
    ================================================================ */
 
 type WorkerPhase = 'idle' | 'starting' | 'ready' | 'closing' | 'closed';
 let workerPhase: WorkerPhase = 'idle';
-let closeAction: 'kill' | 'release' = 'kill';
 const pendingControls = new PendingWorkerControls();
 
 async function startLifecycle(msg: SpawnMessage | ReconnectMessage | AdoptMessage): Promise<void> {
@@ -861,13 +812,11 @@ async function startLifecycle(msg: SpawnMessage | ReconnectMessage | AdoptMessag
         ? await handleReconnect(msg)
         : await handleAdopt(msg);
 
-    // A kill/release received while creation was blocked must run against the
+    // A kill received while creation was blocked must run against the
     // newly-created PTY/session before this worker exits.
     if ((workerPhase as WorkerPhase) === 'closing') {
-      const startupClose = pendingControls.requestedClose || closeAction;
       pendingControls.clear();
-      if (startupClose === 'release') await handleRelease();
-      else await handleKill();
+      await handleKill();
       workerPhase = 'closed';
       return;
     }
@@ -895,7 +844,7 @@ function receiveParentMessage(msg: ParentMessage): void {
   if (workerPhase === 'idle') {
     if (msg.type === 'spawn' || msg.type === 'reconnect' || msg.type === 'adopt') {
       void startLifecycle(msg);
-    } else if (msg.type === 'kill' || msg.type === 'release') {
+    } else if (msg.type === 'kill') {
       workerPhase = 'closed';
       send({ type: 'killed' });
       setTimeout(() => process.exit(0), 50);
@@ -908,15 +857,13 @@ function receiveParentMessage(msg: ParentMessage): void {
       if (!pendingControls.enqueueInput(msg.data, msg.bracketedPaste)) {
         pendingControls.requestClose('kill');
         workerPhase = 'closing';
-        closeAction = 'kill';
         send({ type: 'error', message: 'Pending worker input is too large' });
       }
     } else if (msg.type === 'resize') {
       pendingControls.setResize(msg.cols, msg.rows);
-    } else if (msg.type === 'kill' || msg.type === 'release') {
+    } else if (msg.type === 'kill') {
       pendingControls.requestClose(msg.type);
       workerPhase = 'closing';
-      closeAction = msg.type;
     } else if (msg.type === 'capture') {
       send({ type: 'capture', data: null });
     }
@@ -925,7 +872,6 @@ function receiveParentMessage(msg: ParentMessage): void {
 
   if (workerPhase === 'closing') {
     if (msg.type === 'kill') {
-      closeAction = 'kill';
       pendingControls.requestClose('kill');
     }
     return;
@@ -943,13 +889,7 @@ function receiveParentMessage(msg: ParentMessage): void {
       break;
     case 'kill':
       workerPhase = 'closing';
-      closeAction = 'kill';
       void handleKill().finally(() => { workerPhase = 'closed'; });
-      break;
-    case 'release':
-      workerPhase = 'closing';
-      closeAction = 'release';
-      void handleRelease().finally(() => { workerPhase = 'closed'; });
       break;
     case 'spawn':
     case 'reconnect':
@@ -965,7 +905,6 @@ process.on('message', receiveParentMessage);
 process.on('disconnect', () => {
   if (workerPhase === 'starting' || workerPhase === 'closing') {
     pendingControls.requestClose('kill');
-    closeAction = 'kill';
     workerPhase = 'closing';
     return;
   }

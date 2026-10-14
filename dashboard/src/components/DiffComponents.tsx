@@ -3,6 +3,7 @@
  */
 import { useState, useEffect, useRef, useMemo, forwardRef } from 'react';
 import { FileDiff } from 'lucide-react';
+import './DiffComponents.css';
 import {
   extractFileName,
   GUTTER_W,
@@ -22,7 +23,7 @@ export function FileSeparator({ name }: { name: string }) {
   return (
     <div className="flex items-center gap-1.5 px-3 py-1 text-xs font-semibold" style={{ background: 'var(--accent)', color: '#fff', minHeight: 28 }}>
       <FileDiff className="w-3.5 h-3.5 shrink-0" />
-      {name}
+      <span className="min-w-0 break-all">{name}</span>
     </div>
   );
 }
@@ -43,7 +44,7 @@ export const SplitHalf = forwardRef<HTMLDivElement, {
 }>(function SplitHalf({ num, text, type, isCurrentHunk, isEditable, isEdited, onEdit, onClick }, ref) {
   if (type === 'separator') {
     return (
-      <div ref={ref} className="flex items-center px-2 text-xs font-semibold" style={{ height: ROW_H + 8, background: 'var(--accent)', color: '#fff', letterSpacing: '0.02em' }}>
+      <div ref={ref} className="diff-half flex min-w-0 items-center px-2 text-xs font-semibold" style={{ minHeight: ROW_H + 8, background: 'var(--accent)', color: '#fff', letterSpacing: '0.02em' }}>
         <FileDiff className="w-3.5 h-3.5 mr-1.5 shrink-0" />
         <span className="truncate">{text}</span>
       </div>
@@ -52,12 +53,10 @@ export const SplitHalf = forwardRef<HTMLDivElement, {
 
   if (type === 'header') {
     return (
-      <div ref={ref} className="text-xs leading-5 px-1" style={{
-        height: ROW_H,
+      <div ref={ref} className="diff-half diff-line text-xs leading-5 px-1" style={{
+        minHeight: ROW_H,
         color: 'var(--accent)',
         background: isCurrentHunk ? HUNK_HIGHLIGHT : 'var(--bg-secondary)',
-        whiteSpace: 'pre',
-        overflow: 'hidden',
         cursor: onClick ? 'pointer' : undefined,
       }} onClick={onClick}>
         {text}
@@ -94,21 +93,23 @@ export const SplitHalf = forwardRef<HTMLDivElement, {
   };
 
   return (
-    <div ref={ref} className="flex text-xs" style={{ height: ROW_H, background: bg, outline: isCurrentHunk ? `1px solid rgba(234,179,8,0.15)` : undefined }}>
+    <div ref={ref} className="diff-half flex min-w-0 text-xs" style={{ minHeight: ROW_H, background: bg, outline: isCurrentHunk ? `1px solid rgba(234,179,8,0.15)` : undefined }}>
       <span className="shrink-0 text-right pr-1.5 select-none leading-5" style={{ width: GUTTER_W, color: 'var(--text-tertiary)', background: gutterBg }}>
         {num ?? ''}
       </span>
       <span className="shrink-0 w-4 text-center select-none leading-5" style={{ color: textColor }}>{num !== null ? marker : ''}</span>
       <span
-        className="flex-1 min-w-0 leading-5"
+        className="diff-line flex-1 min-w-0 leading-5"
         style={{
           color: textColor,
-          whiteSpace: 'pre',
           outline: 'none',
           cursor: isEditable ? 'text' : undefined,
           borderBottom: isEdited ? '1px dashed var(--accent)' : undefined,
         }}
         contentEditable={isEditable}
+        role={isEditable ? 'textbox' : undefined}
+        aria-label={isEditable ? `修改第 ${num} 行` : undefined}
+        aria-multiline={isEditable ? false : undefined}
         suppressContentEditableWarning
         onBlur={handleBlur}
         onKeyDown={isEditable ? handleKeyDown : undefined}
@@ -131,6 +132,7 @@ export function OverviewRuler({ markers, scrollRef, onJump }: {
 }) {
   const rulerRef = useRef<HTMLDivElement>(null);
   const [viewportRatio, setViewportRatio] = useState({ top: 0, height: 1 });
+  const [layout, setLayout] = useState<{ height: number; rows: Record<number, { top: number; bottom: number }> } | null>(null);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -140,11 +142,25 @@ export function OverviewRuler({ markers, scrollRef, onJump }: {
       if (scrollHeight <= clientHeight) { setViewportRatio({ top: 0, height: 1 }); return; }
       setViewportRatio({ top: scrollTop / scrollHeight, height: clientHeight / scrollHeight });
     };
-    update();
+    const measureRows = () => {
+      const origin = el.getBoundingClientRect().top - el.scrollTop;
+      const rows: Record<number, { top: number; bottom: number }> = {};
+      for (const row of el.querySelectorAll<HTMLElement>('[data-diff-row]')) {
+        const rect = row.getBoundingClientRect();
+        rows[Number(row.dataset.diffRow)] = { top: rect.top - origin, bottom: rect.bottom - origin };
+      }
+      const height = el.scrollHeight;
+      setLayout((previous) => previous?.height === height && Object.keys(previous.rows).length === Object.keys(rows).length
+        && Object.entries(rows).every(([index, row]) => previous.rows[Number(index)]?.top === row.top && previous.rows[Number(index)]?.bottom === row.bottom)
+        ? previous : { height, rows });
+      update();
+    };
+    measureRows();
     el.addEventListener('scroll', update, { passive: true });
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => { el.removeEventListener('scroll', update); ro.disconnect(); };
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measureRows);
+    ro?.observe(el);
+    if (el.firstElementChild) ro?.observe(el.firstElementChild);
+    return () => { el.removeEventListener('scroll', update); ro?.disconnect(); };
   }, [scrollRef, markers]);
 
   const handleClick = (e: React.MouseEvent) => {
@@ -178,8 +194,10 @@ export function OverviewRuler({ markers, scrollRef, onJump }: {
       className="shrink-0 relative"
       style={{ width: 14, background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', cursor: 'pointer' }}>
       {bands.map((b, i) => {
-        const top = `${(b.start / total) * 100}%`;
-        const heightPct = ((b.end - b.start + 1) / total) * 100;
+        const first = layout?.rows[b.start], last = layout?.rows[b.end];
+        if (layout?.height && (!first || !last)) return null;
+        const top = `${(layout?.height && first ? first.top / layout.height : b.start / total) * 100}%`;
+        const heightPct = (layout?.height && first && last ? (last.bottom - first.top) / layout.height : (b.end - b.start + 1) / total) * 100;
         const color = b.type === 'removed' ? 'rgba(248,81,73,0.8)'
           : b.type === 'added' ? 'rgba(63,185,80,0.8)'
           : 'rgba(88,166,255,0.8)';
@@ -247,13 +265,13 @@ export function UnifiedDiff({ diff, currentHunk, onHunkClick, revertedHunks }: {
 
   return (
     <div className="flex-1 min-h-0 flex">
-      <div ref={scrollRef} className="flex-1 min-w-0 overflow-auto" style={{ fontFamily: MONO }}>
-        <div style={{ minWidth: 'fit-content' }}>
+      <div ref={scrollRef} className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden" style={{ fontFamily: MONO }}>
+        <div className="w-full min-w-0">
           {lines.map((line, i) => {
             const isFileSep = line.startsWith('diff --git');
             if (isFileSep) {
               const fileName = extractFileName(line);
-              return <FileSeparator key={i} name={fileName} />;
+              return <div key={i} data-diff-row={i}><FileSeparator name={fileName} /></div>;
             }
 
             const hunkIdx = lineHunkMap.get(i);
@@ -267,8 +285,8 @@ export function UnifiedDiff({ diff, currentHunk, onHunkClick, revertedHunks }: {
                 const displayLine = ' ' + line.slice(1);
                 const { color: ctxColor } = lineStyle(displayLine);
                 return (
-                  <div key={i} className="px-3 text-xs leading-5"
-                    style={{ color: ctxColor, background: isCurrentHunk ? HUNK_HIGHLIGHT : 'transparent', whiteSpace: 'pre' }}>
+                  <div key={i} data-diff-row={i} className="diff-line px-3 text-xs leading-5"
+                    style={{ color: ctxColor, background: isCurrentHunk ? HUNK_HIGHLIGHT : 'transparent' }}>
                     {displayLine}
                   </div>
                 );
@@ -289,9 +307,10 @@ export function UnifiedDiff({ diff, currentHunk, onHunkClick, revertedHunks }: {
             return (
               <div
                 key={i}
+                data-diff-row={i}
                 ref={refCallback}
-                className="px-3 text-xs leading-5"
-                style={{ color, background: highlightBg, whiteSpace: 'pre', cursor: isHunkHeader ? 'pointer' : undefined }}
+                className="diff-line px-3 text-xs leading-5"
+                style={{ color, background: highlightBg, cursor: isHunkHeader ? 'pointer' : undefined }}
                 onClick={isHunkHeader && hunkIdx !== undefined ? () => onHunkClick(hunkIdx) : undefined}
               >
                 {line}
@@ -306,7 +325,7 @@ export function UnifiedDiff({ diff, currentHunk, onHunkClick, revertedHunks }: {
 }
 
 /* ================================================================
-   SplitDiff with synced dual-panel scroll
+   SplitDiff with paired rows and a shared scroll viewport
    ================================================================ */
 
 export function SplitDiff({ diff, currentHunk, onHunkClick, isEditable, onLineEdit, editedLines, revertedHunks }: {
@@ -314,9 +333,7 @@ export function SplitDiff({ diff, currentHunk, onHunkClick, isEditable, onLineEd
   isEditable: boolean; onLineEdit: (lineNum: number, text: string) => void; editedLines: Map<number, string>; revertedHunks: Set<number>;
 }) {
   const rows = useMemo(() => parseSplitRows(diff), [diff]);
-  const leftRef = useRef<HTMLDivElement>(null);
-  const rightRef = useRef<HTMLDivElement>(null);
-  const syncing = useRef(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const hunkRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   const markers = rows.map(r => {
@@ -328,124 +345,37 @@ export function SplitDiff({ diff, currentHunk, onHunkClick, isEditable, onLineEd
     return null;
   });
 
-  function syncScroll(source: 'left' | 'right') {
-    if (syncing.current) return;
-    syncing.current = true;
-    const from = source === 'left' ? leftRef.current : rightRef.current;
-    const to = source === 'left' ? rightRef.current : leftRef.current;
-    if (from && to) {
-      to.scrollTop = from.scrollTop;
-      to.scrollLeft = from.scrollLeft;
-    }
-    requestAnimationFrame(() => { syncing.current = false; });
-  }
-
-  const handleRulerScroll = (scrollTop: number) => {
-    if (leftRef.current) leftRef.current.scrollTop = scrollTop;
-    if (rightRef.current) rightRef.current.scrollTop = scrollTop;
-  };
-
   useEffect(() => {
-    const el = hunkRefs.current[currentHunk];
-    if (el && leftRef.current) {
-      const containerRect = leftRef.current.getBoundingClientRect();
-      const elRect = el.getBoundingClientRect();
-      const scrollTarget = leftRef.current.scrollTop + (elRect.top - containerRect.top) - containerRect.height / 3;
-      leftRef.current.scrollTop = Math.max(0, scrollTarget);
-      if (rightRef.current) rightRef.current.scrollTop = leftRef.current.scrollTop;
-    }
+    const element = hunkRefs.current[currentHunk], scroller = scrollRef.current;
+    if (!element || !scroller) return;
+    const container = scroller.getBoundingClientRect();
+    scroller.scrollTop = Math.max(0, scroller.scrollTop + element.getBoundingClientRect().top - container.top - container.height / 3);
   }, [currentHunk]);
 
   let hunkRefIdx = -1;
-
-  return (
-    <div className="flex-1 min-h-0 flex">
-      {/* Left panel (original) */}
-      <div ref={leftRef} onScroll={() => syncScroll('left')}
-        className="flex-1 min-w-0 overflow-auto"
-        style={{ fontFamily: MONO, borderRight: '1px solid var(--border)' }}>
-        <div style={{ minWidth: 'fit-content' }}>
-          {rows.map((r, i) => {
-            const isReverted = r.hunkIndex !== null && revertedHunks.has(r.hunkIndex);
-            const isHunkHeader = r.leftType === 'header' && r.leftText.startsWith('@@');
-            let refCb: ((el: HTMLDivElement | null) => void) | undefined;
-            if (isHunkHeader) {
-              hunkRefIdx++;
-              const idx = hunkRefIdx;
-              refCb = (el) => { hunkRefs.current[idx] = el; };
-            }
-
-            if (isReverted && !isHunkHeader && r.leftType !== 'separator') {
-              if (r.leftNum === null && r.rightType === 'added') return null;
-              return (
-                <SplitHalf
-                  key={i} ref={refCb}
-                  num={r.leftNum} text={r.leftText}
-                  type={r.leftType === 'removed' ? 'normal' : r.leftType}
-                  isCurrentHunk={r.hunkIndex === currentHunk}
-                  isEditable={false}
-                  onClick={undefined}
-                />
-              );
-            }
-
-            return (
-              <SplitHalf
-                key={i}
-                ref={refCb}
-                num={r.leftNum}
-                text={r.leftText}
-                type={r.leftType}
-                isCurrentHunk={r.hunkIndex === currentHunk}
-                isEditable={false}
-                onClick={isHunkHeader && r.hunkIndex !== null ? () => onHunkClick(r.hunkIndex!) : undefined}
-              />
-            );
-          })}
-        </div>
-      </div>
-      {/* Right panel (modified) */}
-      <div ref={rightRef} onScroll={() => syncScroll('right')}
-        className="flex-1 min-w-0 overflow-auto"
-        style={{ fontFamily: MONO }}>
-        <div style={{ minWidth: 'fit-content' }}>
-          {(() => { hunkRefIdx = -1; return null; })()}
-          {rows.map((r, i) => {
-            const isReverted = r.hunkIndex !== null && revertedHunks.has(r.hunkIndex);
-            const isHunkHeader = r.rightType === 'header';
-
-            if (isReverted && !isHunkHeader && r.rightType !== 'separator') {
-              if (r.leftNum === null && r.rightType === 'added') return null;
-              return (
-                <SplitHalf
-                  key={i}
-                  num={r.leftNum} text={r.leftText}
-                  type="normal"
-                  isCurrentHunk={r.hunkIndex === currentHunk}
-                  isEditable={false}
-                  onClick={undefined}
-                />
-              );
-            }
-
-            const edited = r.rightNum !== null ? editedLines.get(r.rightNum) : undefined;
-            return (
-              <SplitHalf
-                key={i}
-                num={r.rightNum}
-                text={edited !== undefined ? edited : r.rightText}
-                type={r.rightType}
-                isCurrentHunk={r.hunkIndex === currentHunk}
-                isEditable={isEditable && r.rightType !== 'header' && r.rightType !== 'separator' && r.rightNum !== null}
-                isEdited={edited !== undefined}
-                onEdit={r.rightNum !== null ? (text) => onLineEdit(r.rightNum!, text) : undefined}
-                onClick={r.rightType === 'header' && r.rightText === '' && r.hunkIndex !== null ? () => onHunkClick(r.hunkIndex!) : undefined}
-              />
-            );
-          })}
-        </div>
-      </div>
-      <OverviewRuler markers={markers} scrollRef={rightRef} onJump={handleRulerScroll} />
+  return <div className="flex min-h-0 min-w-0 flex-1">
+    <div ref={scrollRef} role="region" aria-label="左右内容对比" className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ fontFamily: MONO }}>
+      <div className="w-full min-w-0">{rows.map((row, index) => {
+        const hunkHeader = row.leftType === 'header' && row.leftText.startsWith('@@');
+        const reverted = row.hunkIndex !== null && revertedHunks.has(row.hunkIndex) && !hunkHeader && row.leftType !== 'separator';
+        if (reverted && row.leftNum === null && row.rightType === 'added') return null;
+        let refCallback: ((element: HTMLDivElement | null) => void) | undefined;
+        if (hunkHeader) {
+          const hunkIndex = ++hunkRefIdx;
+          refCallback = (element) => { hunkRefs.current[hunkIndex] = element; };
+        }
+        const edited = row.rightNum !== null ? editedLines.get(row.rightNum) : undefined;
+        const selectHunk = hunkHeader && row.hunkIndex !== null ? () => onHunkClick(row.hunkIndex!) : undefined;
+        return <div key={index} ref={refCallback} data-diff-row={index} className="diff-paired-row">
+          <SplitHalf num={row.leftNum} text={row.leftText} type={reverted && row.leftType === 'removed' ? 'normal' : row.leftType}
+            isCurrentHunk={row.hunkIndex === currentHunk} isEditable={false} onClick={selectHunk} />
+          <SplitHalf num={reverted ? row.leftNum : row.rightNum} text={reverted ? row.leftText : edited ?? row.rightText}
+            type={reverted ? 'normal' : row.rightType} isCurrentHunk={row.hunkIndex === currentHunk}
+            isEditable={!reverted && isEditable && row.rightType !== 'header' && row.rightType !== 'separator' && row.rightNum !== null}
+            isEdited={!reverted && edited !== undefined} onEdit={row.rightNum !== null ? (text) => onLineEdit(row.rightNum!, text) : undefined} onClick={selectHunk} />
+        </div>;
+      })}</div>
     </div>
-  );
+    <OverviewRuler markers={markers} scrollRef={scrollRef} />
+  </div>;
 }
