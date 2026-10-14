@@ -71,6 +71,7 @@ test('previews diagrams, tables, images, PDF, and readable wrapped text locally'
   await expect.poll(() => image.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBe(200);
 
   await tree.getByRole('button', { name: 'test.pdf', exact: true }).click();
+  const pdfScroll = page.getByLabel('PDF 预览').locator('.overflow-auto');
   const pdfPage = page.locator('canvas[aria-label="PDF 第 1 页"]');
   await expect(pdfPage).toHaveAttribute('data-rendered', 'true');
   expect(await pdfPage.evaluate(canvas => {
@@ -81,13 +82,21 @@ test('previews diagrams, tables, images, PDF, and readable wrapped text locally'
     return false;
   })).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('pdf-preview.png') });
-  await page.getByRole('button', { name: '下一页' }).click();
-  await expect(page.locator('canvas[aria-label="PDF 第 2 页"]')).toHaveAttribute('data-rendered', 'true');
-  await expect(page.getByLabel('页码')).toHaveText('2 / 2');
-  await page.getByRole('button', { name: '上一页' }).click();
+  await expect(page.getByText('2 页 · 连续滚动')).toBeVisible();
+  await expect(page.getByRole('button', { name: '下一页' })).toHaveCount(0);
+  await expect.poll(() => pdfScroll.evaluate(node => node.scrollHeight - node.clientHeight)).toBeGreaterThan(0);
+  await pdfScroll.evaluate(node => { node.scrollTop = node.scrollHeight; });
+  const secondPage = page.locator('canvas[aria-label="PDF 第 2 页"]');
+  await expect(secondPage).toBeInViewport();
+  await expect(secondPage).toHaveAttribute('data-rendered', 'true');
+  await pdfScroll.evaluate(node => { node.scrollTop = 0; });
+  await expect(pdfPage).toBeInViewport();
   await expect(pdfPage).toHaveAttribute('data-rendered', 'true');
+  await pdfScroll.evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await expect(secondPage).toBeInViewport();
+  await expect(secondPage).toHaveAttribute('data-rendered', 'true');
   await page.getByRole('button', { name: '放大 PDF' }).click();
-  await expect(pdfPage).toHaveAttribute('data-rendered', 'true');
+  await expect(secondPage).toHaveAttribute('data-rendered', 'true');
   await expect(page.getByText('125%', { exact: true })).toBeVisible();
   await tree.getByRole('button', { name: 'slides.odp', exact: true }).click();
   if (existsSync('/usr/lib/libreoffice/program/libsdlo.so') && existsSync('/usr/bin/bwrap')) {
