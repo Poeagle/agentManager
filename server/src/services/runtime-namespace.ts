@@ -5,5 +5,5 @@ export function runtimeNames(env: NodeJS.ProcessEnv = process.env) {
     throw new Error('AGENTMANAGER_RUNTIME_NAMESPACE must contain 1–32 letters, digits, _ or -');
   }
   const base = namespace ? `agentmanager-${namespace}` : 'agentmanager';
-  return { tmuxServer: base, socketPrefix: `${base}-`, pipeDirectory: `${base}-pipes`, sandboxPrefix: `${base}-sandbox-` };
+  return { sessionCookie: namespace ? `agentmanager_session_${namespace}` : 'agentmanager_session', tmuxServer: base, socketPrefix: `${base}-`, pipeDirectory: `${base}-pipes`, sandboxPrefix: `${base}-sandbox-` };
 }

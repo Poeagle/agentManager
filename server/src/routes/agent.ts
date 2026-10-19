@@ -7,7 +7,7 @@ import { isSessionActive, writeToSession, querySessionOutputSince, getSession } 
 import { RESIZE_MARKER } from '../services/session-manager.js';
 import { getTracker, getOrCreateTracker } from '../services/session-state.js';
 import type { SessionState } from '../services/session-state.js';
-import { readSessionCookie, userCanUseSessionTool } from '../auth.js';
+import { readSessionCookie, sessionCookieName, userCanUseSessionTool } from '../auth.js';
 import { registerUserConnection } from '../services/user-connections.js';
 import { requirePermission } from '../services/rbac.js';
 import { getDb } from '../db/index.js';
@@ -88,7 +88,7 @@ export function getAgentApiContract() {
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
       type: 'HttpOnly session cookie',
-      cookieName: 'agentmanager_session',
+      cookieName: sessionCookieName(),
       loginEndpoint: '/api/auth/login',
       capabilitiesEndpoint: '/api/agent/capabilities',
       login: 'POST /api/auth/login with { username, password }; persist the Set-Cookie response in a private cookie jar.',
@@ -149,12 +149,12 @@ export function getAgentApiContract() {
         method: 'POST',
         path: '/api/auth/login',
         public: true,
-        description: 'Authenticate and set the HttpOnly agentmanager_session cookie. Use a cookie-capable client and keep the returned cookie private.',
+        description: `Authenticate and set the HttpOnly ${sessionCookieName()} cookie. Use a cookie-capable client and keep the returned cookie private.`,
         request: {
           username: { type: 'string', required: true },
           password: { type: 'string', required: true },
         },
-        response: { user: 'Authenticated user (password hash omitted)', setCookie: 'agentmanager_session (HttpOnly; SameSite=Lax)' },
+        response: { user: 'Authenticated user (password hash omitted)', setCookie: `${sessionCookieName()} (HttpOnly; SameSite=Lax)` },
         errors: { 400: 'Missing username/password', 401: 'Invalid username or password' },
       },
       {

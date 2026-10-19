@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createHash } from 'crypto';
-import { createSession as createAuthSession, destroySession, findUserById } from '../../auth.js';
+import { createSession as createAuthSession, destroySession, findUserById, sessionCookieName } from '../../auth.js';
 import { getDb } from '../../db/index.js';
 import { getAgentApiContract } from '../../routes/agent.js';
 import * as sessionManager from '../session-manager.js';
@@ -55,7 +55,7 @@ export async function platformApi(app: FastifyInstance, userId: string, method: 
   const cookie = createAuthSession(userId);
   try {
     const response = await app.inject({ method: method as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url,
-      headers: { cookie: `agentmanager_session=${cookie}` }, ...(body ? { payload: body } : {}) });
+      headers: { cookie: `${sessionCookieName()}=${cookie}` }, ...(body ? { payload: body } : {}) });
     if (response.statusCode >= 400) {
       let detail = '';
       try { detail = response.json().error || ''; } catch { /* avoid logging raw HTML/bodies */ }

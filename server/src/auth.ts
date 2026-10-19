@@ -12,6 +12,7 @@ import { nanoid } from 'nanoid';
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { getDb } from './db/index.js';
 import { config } from './config.js';
+import { runtimeNames } from './services/runtime-namespace.js';
 import { userHasPermission } from './services/rbac.js';
 import { SESSION_CLIENTS, parseSessionClients } from './services/session-clients.js';
 
@@ -33,7 +34,7 @@ declare module 'fastify' {
   }
 }
 
-const SESSION_COOKIE = 'agentmanager_session';
+export function sessionCookieName(): string { return runtimeNames().sessionCookie; }
 const SESSION_TTL_DAYS = 30;
 const SESSION_TTL_SECONDS = SESSION_TTL_DAYS * 24 * 60 * 60;
 export const MIN_PASSWORD_LENGTH = 6;
@@ -270,7 +271,7 @@ export function readSessionCookie(req: FastifyRequest): string | null {
   for (const part of raw.split(';')) {
     const eq = part.indexOf('=');
     if (eq === -1) continue;
-    if (part.slice(0, eq).trim() === SESSION_COOKIE) {
+    if (part.slice(0, eq).trim() === sessionCookieName()) {
       try {
         return decodeURIComponent(part.slice(eq + 1).trim());
       } catch {
@@ -285,13 +286,13 @@ export function setSessionCookie(reply: FastifyReply, token: string): void {
   const secure = config.secureCookies ? '; Secure' : '';
   reply.header(
     'Set-Cookie',
-    `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}${secure}`,
+    `${sessionCookieName()}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}${secure}`,
   );
 }
 
 export function clearSessionCookie(reply: FastifyReply): void {
   const secure = config.secureCookies ? '; Secure' : '';
-  reply.header('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
+  reply.header('Set-Cookie', `${sessionCookieName()}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
 }
 
 /* ── Auth gate (Fastify onRequest hook) ────────────────────────────── */

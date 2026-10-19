@@ -12,9 +12,9 @@
 npm run dev:platform-ai
 ```
 
-默认前端 `127.0.0.1:43221`、后端 `127.0.0.1:43220`，数据库和项目配置位于当前 worktree 的 `.test-data/platform-ai-dev/`。端口已占用时直接退出，不结束已有进程。可以用 `DEV_API_PORT`、`DEV_UI_PORT` 选择其他端口。
+默认前端监听 `0.0.0.0:43221`，支持局域网访问；后端仍仅监听 `127.0.0.1:43220`，由前端代理连接，数据库和项目配置位于当前 worktree 的 `.test-data/platform-ai-dev/`。端口已占用时直接退出，不结束已有进程。可以用 `DEV_API_PORT`、`DEV_UI_PORT` 选择其他端口；设置 `DEV_UI_HOST=127.0.0.1` 可仅允许本机访问。
 
-`AGENTMANAGER_RUNTIME_NAMESPACE` 隔离 tmux server、dtach socket、PTY 管道和 systemd sandbox 名称；开发启动器还使用独立的 Vite 缓存。未设置时保留现有生产名称。此启动器不会导入生产数据库、用户或项目。需要在新实例创建管理员，并注册专用于开发的项目目录；不要把正在被生产 Agent 修改的工作目录用于并行开发。
+`AGENTMANAGER_RUNTIME_NAMESPACE` 隔离登录 Cookie、tmux server、dtach socket、PTY 管道和 systemd sandbox 名称；开发启动器还使用独立的 Vite 缓存。未设置时保留现有生产名称。此启动器不会导入生产数据库、用户或项目。需要在新实例创建管理员，并注册专用于开发的项目目录；不要把正在被生产 Agent 修改的工作目录用于并行开发。
 
 模型、渠道凭据和通知地址均单独配置，不从生产环境复制。API Key 和渠道凭据使用 AES-256-GCM 加密，密钥为数据库目录下权限 `0600` 的 `.platform-ai.key`。备份/迁移时必须同时保留数据库和此密钥；密钥丢失时不会静默生成新密钥覆盖已有配置。
 
