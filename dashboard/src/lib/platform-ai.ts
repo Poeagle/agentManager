@@ -5,6 +5,11 @@ export interface PlatformAiConfig {
   timeout_ms: number; max_tool_rounds: number; observation_interval_seconds: number;
   assessment_interval_seconds: number; notification_interval_seconds: number;
 }
+export interface ModelConnectionDraft { endpoint: string; model?: string; api_key?: string; timeout_ms: number }
+export interface ModelProbeResult {
+  ok: boolean; model: string; elapsed_ms: number;
+  checks: Record<'connection' | 'response' | 'tools', {status: 'passed' | 'failed' | 'skipped'; message: string}>;
+}
 export type ChannelKind = 'webhook' | 'wecom' | 'wechat' | 'qq';
 export interface AiChannel {
   id: string; name: string; kind: ChannelKind; enabled: number; config: Record<string, string>;
@@ -22,6 +27,8 @@ export const platformAiApi = {
   status: () => fetchJSON<{enabled: boolean}>(`${base}/status`),
   config: () => fetchJSON<{config: PlatformAiConfig}>(`${base}/config`),
   saveConfig: (value: Partial<PlatformAiConfig> & {api_key?: string; clear_api_key?: boolean}) => fetchJSON<{config: PlatformAiConfig}>(`${base}/config`, json('PUT', value)),
+  discoverModels: (value: ModelConnectionDraft) => fetchJSON<{models: string[]}>(`${base}/config/models`, json('POST', value)),
+  testConnection: (value: ModelConnectionDraft) => fetchJSON<ModelProbeResult>(`${base}/config/test`, json('POST', value)),
   conversations: () => fetchJSON<{conversations: AiConversation[]}>(`${base}/conversations`),
   conversation: (id: string) => fetchJSON<{conversation: AiConversation; messages: AiMessage[]}>(`${base}/conversations/${encodeURIComponent(id)}`),
   send: (value: {content: string; request_id: string; conversation_id?: string}) => fetchJSON<{conversation_id: string; message_id: string; duplicate: boolean}>(`${base}/messages`, json('POST', value)),

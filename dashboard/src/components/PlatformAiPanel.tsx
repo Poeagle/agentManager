@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bot, Loader2, MessageSquare, Plus, Send } from 'lucide-react';
 import { api, type MyPermissions } from '../lib/api';
 import { hasPermission } from '../lib/permissions';
-import { platformAiApi, type AiChannel, type ChannelInput, type ChannelKind, type PlatformAiConfig } from '../lib/platform-ai';
+import { platformAiApi, type AiChannel, type ChannelInput, type ChannelKind, type ModelProbeResult, type PlatformAiConfig } from '../lib/platform-ai';
 
 const fieldStyle = { background: 'var(--bg-primary)', borderColor: 'var(--border)', color: 'var(--text-primary)' };
 const muted = { color: 'var(--text-secondary)' };
@@ -114,11 +114,30 @@ function AiConfigForm({initial}: {initial: PlatformAiConfig}) {
   const client = useQueryClient();
   const [config, setConfig] = useState(initial);
   const [key, setKey] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<'models' | 'test' | 'save' | null>(null);
+  const [models, setModels] = useState<string[] | null>(null);
+  const [probe, setProbe] = useState<ModelProbeResult | null>(null);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  function updateConnection(patch: Partial<PlatformAiConfig>) {
+    setConfig({...config, ...patch}); setProbe(null); setNotice(''); setError('');
+    if ('endpoint' in patch) setModels(null);
+  }
+  async function check(action: 'models' | 'test') {
+    if (busy) return;
+    setBusy(action); setError(''); setNotice(''); setProbe(null);
+    if (action === 'models') setModels(null);
+    const draft = {endpoint: config.endpoint.trim(), model: config.model.trim(), timeout_ms: config.timeout_ms, ...(key ? {api_key: key} : {})};
+    try {
+      if (action === 'models') setModels((await platformAiApi.discoverModels(draft)).models);
+      else setProbe(await platformAiApi.testConnection(draft));
+    } catch (failure) {
+      setError((failure instanceof Error ? failure.message : '请求失败') + (action === 'models' ? '。可手动填写模型名称，再测试连通性。' : ''));
+    } finally {setBusy(null);}
+  }
   async function save() {
-    setBusy(true); setNotice(''); setError('');
+    if (busy) return;
+    setBusy('save'); setNotice(''); setError(''); setProbe(null);
     try {
       const values: Partial<PlatformAiConfig> = {...config};
       delete values.api_key_configured;
@@ -126,21 +145,33 @@ function AiConfigForm({initial}: {initial: PlatformAiConfig}) {
       setConfig(result.config); setKey(''); setNotice('配置已保存');
       await client.invalidateQueries({queryKey: ['platform-ai-status']});
     } catch (failure) {setError(failure instanceof Error ? failure.message : '保存失败');}
-    finally {setBusy(false);}
+    finally {setBusy(null);}
   }
   return <form className="max-w-3xl space-y-5 p-5" onSubmit={event => {event.preventDefault(); void save();}}>
     <p className="text-sm leading-6" style={muted}>配置支持工具调用的模型 API。平台 AI 使用此模型理解需求和调度；项目内 Codex/Claude 保持各自的模型配置。</p>
+    <fieldset disabled={!!busy} className="min-w-0 space-y-5">
     <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={config.enabled} onChange={event => setConfig({...config, enabled: event.target.checked})} />启用平台 AI</label>
-    <label className="block text-sm">模型 API 地址<input className={fieldClass + ' mt-2'} style={fieldStyle} value={config.endpoint} onChange={event => setConfig({...config, endpoint: event.target.value})} placeholder="https://provider.example/v1" /></label>
-    <label className="block text-sm">模型名称<input className={fieldClass + ' mt-2'} style={fieldStyle} value={config.model} onChange={event => setConfig({...config, model: event.target.value})} /></label>
-    <label className="block text-sm">API Key<input type="password" autoComplete="new-password" className={fieldClass + ' mt-2'} style={fieldStyle} value={key} onChange={event => setKey(event.target.value)} placeholder={config.api_key_configured ? '已配置，留空保留' : '输入 API Key'} /></label>
+    <label className="block text-sm">模型 API 地址<input className={fieldClass + ' mt-2'} style={fieldStyle} value={config.endpoint} onChange={event => updateConnection({endpoint: event.target.value})} placeholder="https://provider.example/v1" /></label>
+    <label className="block text-sm">API Key<input type="password" autoComplete="new-password" className={fieldClass + ' mt-2'} style={fieldStyle} value={key} onChange={event => {setKey(event.target.value); setModels(null); setProbe(null); setNotice(''); setError('');}} placeholder={config.api_key_configured ? '已配置，留空保留' : '输入 API Key'} /></label>
+    <div className="space-y-3">
+      <button type="button" disabled={!config.endpoint.trim() || (!key && !config.api_key_configured)} className={buttonClass} style={fieldStyle} onClick={() => void check('models')}>{busy === 'models' ? '正在获取模型…' : '获取模型列表'}</button>
+      <p className="text-xs leading-6" style={muted}>填写地址和 Key 后即可探测，无需先保存或启用。使用兼容接口的 /models 列表；列表中的模型仍需测试是否支持工具调用。</p>
+      {models !== null && (models.length ? <label className="block text-sm">选择探测到的模型<select className={fieldClass + ' mt-2'} style={fieldStyle} value={models.includes(config.model) ? config.model : ''} onChange={event => {if (event.target.value) updateConnection({model: event.target.value});}}><option value="">已发现 {models.length} 个模型，请选择</option>{models.map(model => <option key={model} value={model}>{model}</option>)}</select></label> : <p className="text-xs" style={muted}>接口返回的模型列表为空，可手动填写模型名称。</p>)}
+    </div>
+    <label className="block text-sm">模型名称<input className={fieldClass + ' mt-2'} style={fieldStyle} value={config.model} onChange={event => updateConnection({model: event.target.value})} placeholder="从上方列表选择，也可手动输入" /></label>
+    <div className="space-y-3">
+      <button type="button" disabled={!config.endpoint.trim() || !config.model.trim() || (!key && !config.api_key_configured)} className={buttonClass} style={fieldStyle} onClick={() => void check('test')}>{busy === 'test' ? '正在测试…' : '测试连通性'}</button>
+      <p className="text-xs leading-6" style={muted}>向所选模型发送两次小型请求，分别检查普通回复和结构化工具调用，可能产生少量 API 费用。测试不会派发开发任务。</p>
+    </div>
+    {probe && <section aria-label="模型连通性测试结果" className="space-y-3 rounded-md border p-4 text-sm" style={{borderColor: 'var(--border)'}}><p role="status" style={{color: probe.ok ? 'var(--success)' : 'var(--text-primary)'}}>{probe.ok ? '测试通过，可用于平台 AI' : '测试未全部通过'} · {probe.model} · {(probe.elapsed_ms / 1000).toFixed(1)} 秒</p>{([['connection','接口连接'],['response','模型响应'],['tools','工具调用']] as const).map(([id,label]) => <div key={id}><span>{label}：{({passed: '通过', failed: '失败', skipped: '未测试'})[probe.checks[id].status]}</span><p className="mt-1 text-xs leading-6" style={muted}>{probe.checks[id].message}</p></div>)}</section>}
     <div className="grid gap-4 sm:grid-cols-2">{([
       ['timeout_ms', '单次模型超时（毫秒）', 1000, 120000], ['max_tool_rounds', '每轮最多工具调用轮数', 1, 16],
       ['observation_interval_seconds', '会话读取间隔（秒）', 5, 300], ['assessment_interval_seconds', 'AI 进度分析最小间隔（秒）', 30, 1800],
       ['notification_interval_seconds', '常规进度汇报间隔（秒）', 60, 3600],
-    ] as const).map(([name,label,min,max]) => <label key={name} className="block text-sm">{label}<input type="number" min={min} max={max} required className={fieldClass + ' mt-2'} style={fieldStyle} value={config[name]} onChange={event => setConfig({...config, [name]: Number(event.target.value)})} /></label>)}</div>
+    ] as const).map(([name,label,min,max]) => <label key={name} className="block text-sm">{label}<input type="number" min={min} max={max} required className={fieldClass + ' mt-2'} style={fieldStyle} value={config[name]} onChange={event => updateConnection({[name]: Number(event.target.value)})} /></label>)}</div>
     {error && <p role="alert" className="text-sm text-red-400">{error}</p>}{notice && <p role="status" className="text-sm" style={{color: 'var(--success)'}}>{notice}</p>}
-    <button disabled={busy} className={buttonClass} style={fieldStyle}>{busy ? '保存中…' : '保存模型配置'}</button>
+    <button className={buttonClass} style={fieldStyle}>{busy === 'save' ? '保存中…' : '保存模型配置'}</button>
+    </fieldset>
   </form>;
 }
 

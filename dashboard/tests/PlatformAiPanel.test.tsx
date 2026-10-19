@@ -8,6 +8,7 @@ import { api, type MyPermissions } from '../src/lib/api';
 vi.mock('../src/lib/platform-ai', () => ({platformAiApi: {
   status: vi.fn(), config: vi.fn(), saveConfig: vi.fn(), conversations: vi.fn(), conversation: vi.fn(), send: vi.fn(),
   tasks: vi.fn(), stopTracking: vi.fn(), deliveries: vi.fn(), channels: vi.fn(), saveChannel: vi.fn(), saveBinding: vi.fn(), deleteBinding: vi.fn(), tools: vi.fn(),
+  discoverModels: vi.fn(), testConnection: vi.fn(),
 }}));
 vi.mock('../src/lib/api', () => ({api: {users: {list: vi.fn()}}}));
 let client: QueryClient;
@@ -72,6 +73,62 @@ describe('platform AI user flows', () => {
     expect(platformAiApi.saveConfig).toHaveBeenCalledWith(expect.objectContaining({model:'changed-model'}));
     expect(vi.mocked(platformAiApi.saveConfig).mock.calls[0][0]).not.toHaveProperty('api_key');
     expect(vi.mocked(platformAiApi.saveConfig).mock.calls[0][0]).not.toHaveProperty('api_key_configured');
+  });
+  it('discovers models from the current draft and selects one without saving first', async () => {
+    vi.mocked(platformAiApi.discoverModels).mockResolvedValue({models:['alpha-model','tools-model']});
+    mount();fireEvent.click(screen.getByRole('button',{name:'模型配置'}));
+    fireEvent.change(await screen.findByLabelText('模型 API 地址'),{target:{value:'https://new.example/v1'}});
+    fireEvent.change(screen.getByLabelText('API Key'),{target:{value:'unsaved-key'}});
+    fireEvent.click(screen.getByRole('button',{name:'获取模型列表'}));
+    const select = await screen.findByLabelText('选择探测到的模型');
+    fireEvent.change(select,{target:{value:'tools-model'}});
+    expect(screen.getByLabelText('模型名称')).toHaveValue('tools-model');
+    expect(platformAiApi.discoverModels).toHaveBeenCalledWith(expect.objectContaining({endpoint:'https://new.example/v1',api_key:'unsaved-key'}));
+    expect(platformAiApi.saveConfig).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('模型 API 地址'),{target:{value:'https://other.example/v1'}});
+    expect(screen.queryByLabelText('选择探测到的模型')).not.toBeInTheDocument();
+  });
+  it('keeps manual model input available if the provider has no model listing endpoint', async () => {
+    vi.mocked(platformAiApi.discoverModels).mockRejectedValue(new Error('模型请求失败 (HTTP 404)'));
+    mount();fireEvent.click(screen.getByRole('button',{name:'模型配置'}));
+    fireEvent.click(await screen.findByRole('button',{name:'获取模型列表'}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('可手动填写模型名称');
+    fireEvent.change(screen.getByLabelText('模型名称'),{target:{value:'manual-model'}});
+    expect(screen.getByRole('button',{name:'测试连通性'})).toBeEnabled();
+  });
+  it('tests with a stored key, displays each check and clears stale results when the model changes', async () => {
+    vi.mocked(platformAiApi.testConnection).mockResolvedValue({ok:true,model:'test-model',elapsed_ms:250,checks:{connection:{status:'passed',message:'接口可达'},response:{status:'passed',message:'回复有效'},tools:{status:'passed',message:'结构化调用有效'}}});
+    mount();fireEvent.click(screen.getByRole('button',{name:'模型配置'}));
+    fireEvent.click(await screen.findByRole('button',{name:'测试连通性'}));
+    expect(await screen.findByRole('status')).toHaveTextContent('测试通过');
+    expect(screen.getByText('接口连接：通过')).toBeVisible();
+    expect(screen.getByText('模型响应：通过')).toBeVisible();
+    expect(screen.getByText('工具调用：通过')).toBeVisible();
+    expect(platformAiApi.testConnection).toHaveBeenCalledWith({endpoint:'https://model.example/v1',model:'test-model',timeout_ms:45000});
+    expect(platformAiApi.saveConfig).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('模型名称'),{target:{value:'other-model'}});
+    expect(screen.queryByRole('region',{name:'模型连通性测试结果'})).not.toBeInTheDocument();
+  });
+  it('reports unsupported tools separately and does not claim the model is ready', async () => {
+    vi.mocked(platformAiApi.testConnection).mockResolvedValue({ok:false,model:'test-model',elapsed_ms:250,checks:{connection:{status:'passed',message:'接口可达'},response:{status:'passed',message:'回复有效'},tools:{status:'failed',message:'不支持工具调用'}}});
+    mount();fireEvent.click(screen.getByRole('button',{name:'模型配置'}));
+    fireEvent.click(await screen.findByRole('button',{name:'测试连通性'}));
+    expect(await screen.findByRole('status')).toHaveTextContent('测试未全部通过');
+    expect(screen.getByText('模型响应：通过')).toBeVisible();
+    expect(screen.getByText('工具调用：失败')).toBeVisible();
+  });
+  it('prevents duplicate requests and configuration changes while a test is running', async () => {
+    let finish!: () => void;
+    vi.mocked(platformAiApi.discoverModels).mockImplementation(() => new Promise(resolve => {finish = () => resolve({models:[]});}));
+    mount();fireEvent.click(screen.getByRole('button',{name:'模型配置'}));
+    fireEvent.click(await screen.findByRole('button',{name:'获取模型列表'}));
+    expect(screen.getByRole('button',{name:'正在获取模型…'})).toBeDisabled();
+    expect(screen.getByLabelText('模型 API 地址')).toBeDisabled();
+    expect(screen.getByRole('button',{name:'测试连通性'})).toBeDisabled();
+    expect(screen.getByRole('button',{name:'保存模型配置'})).toBeDisabled();
+    finish();
+    await screen.findByText('接口返回的模型列表为空，可手动填写模型名称。');
+    expect(screen.getByLabelText('模型 API 地址')).toBeEnabled();
   });
   it('creates a channel and binds its external identity to a selected platform user', async () => {
     const channel={id:'channel-1',name:'团队企业微信',kind:'wecom' as const,enabled:0,config:{},secret_fields_configured:[],callback_path:'/api/platform-ai/callbacks/channel-1'};

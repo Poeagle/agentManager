@@ -4,31 +4,73 @@ export interface ToolCall { id: string; type: 'function'; function: { name: stri
 export interface ModelMessage { role: 'system' | 'user' | 'assistant' | 'tool'; content: string | null; tool_calls?: ToolCall[]; tool_call_id?: string }
 export interface ModelTool { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }
 
-export async function callModel(config: AiConfig, messages: ModelMessage[], tools?: ModelTool[], signal?: AbortSignal): Promise<ModelMessage> {
-  if (!config.enabled || !config.api_key || !config.endpoint || !config.model) throw new Error('平台 AI 尚未启用或模型配置不完整');
-  const url = new URL(config.endpoint);
-  if (!url.pathname.endsWith('/chat/completions')) url.pathname = url.pathname.replace(/\/$/, '') + '/chat/completions';
-  const response = await fetch(url.toString(), {
-    method: 'POST', redirect: 'error',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.api_key}` },
-    body: JSON.stringify({ model: config.model, messages, ...(tools?.length ? { tools, tool_choice: 'auto', parallel_tool_calls: false } : {}), max_tokens: 2400 }),
-    signal: AbortSignal.any([AbortSignal.timeout(config.timeout_ms), ...(signal ? [signal] : [])]),
-  });
+export class ModelRequestError extends Error {
+  constructor(message: string, public reachable: boolean, public httpStatus?: number) { super(message); }
+}
+
+export function modelApiUrl(endpoint: string, path: 'models' | 'chat/completions'): string {
+  const url = new URL(endpoint);
+  url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/(?:chat\/completions|models)$/, '') + '/' + path;
+  return url.toString();
+}
+
+/** Share authentication, URL rules, bounds and error redaction with configuration probes. */
+export async function requestModelJson(config: AiConfig, path: 'models' | 'chat/completions', body?: unknown, signal?: AbortSignal): Promise<any> {
+  const abort = AbortSignal.any([AbortSignal.timeout(config.timeout_ms), ...(signal ? [signal] : [])]);
+  let response: Response;
+  try {
+    response = await fetch(modelApiUrl(config.endpoint, path), {
+      method: body === undefined ? 'GET' : 'POST', redirect: 'error',
+      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), Authorization: `Bearer ${config.api_key}` },
+      ...(body === undefined ? {} : {body: JSON.stringify(body)}), signal: abort,
+    });
+  } catch {
+    throw new ModelRequestError(abort.aborted ? '模型请求超时或已取消' : '无法连接模型接口，请检查地址、网络和 TLS 配置', false);
+  }
   if (!response.ok) {
     await response.body?.cancel();
-    throw new Error(`模型请求失败 (HTTP ${response.status})`);
+    const hint = response.status === 401 || response.status === 403 ? '，请检查 API Key 和模型权限'
+      : response.status === 404 ? '，请检查 API 地址及该接口是否受支持'
+      : response.status === 429 ? '，请检查额度或稍后重试' : '';
+    throw new ModelRequestError(`模型请求失败 (HTTP ${response.status})${hint}`, true, response.status);
   }
-  const raw = await response.text();
-  if (raw.length > 512000) throw new Error('模型响应超过大小限制');
-  let data: any;
-  try { data = JSON.parse(raw); } catch { throw new Error('模型返回了无效 JSON'); }
+  const reader = response.body?.getReader();
+  if (!reader) throw new ModelRequestError('模型返回了空响应', true);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 1024 * 1024) {
+        await reader.cancel();
+        throw new ModelRequestError('模型响应超过大小限制', true);
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (error instanceof ModelRequestError) throw error;
+    throw new ModelRequestError(abort.aborted ? '模型响应超时或已取消' : '读取模型响应失败', true);
+  } finally { reader.releaseLock(); }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { throw new ModelRequestError('模型返回了无效 JSON，请检查 API 地址', true); }
+}
+
+export async function callModel(config: AiConfig, messages: ModelMessage[], tools?: ModelTool[], signal?: AbortSignal, options?: {maxTokens?: number}): Promise<ModelMessage> {
+  if (!config.enabled || !config.api_key || !config.endpoint || !config.model) throw new Error('平台 AI 尚未启用或模型配置不完整');
+  const data = await requestModelJson(config, 'chat/completions', {
+    model: config.model, messages,
+    ...(tools?.length ? { tools, tool_choice: 'auto', parallel_tool_calls: false } : {}),
+    max_tokens: options?.maxTokens ?? 2400,
+  }, signal);
   const message = data?.choices?.[0]?.message;
-  if (!message || (message.content != null && typeof message.content !== 'string')) throw new Error('模型没有返回有效回复');
+  if (!message || (message.content != null && typeof message.content !== 'string')) throw new ModelRequestError('模型没有返回有效回复', true);
   if (message.tool_calls != null && (!Array.isArray(message.tool_calls) || message.tool_calls.length > 8 || message.tool_calls.some((call: any) =>
     typeof call?.id !== 'string' || call.id.length > 200 || call.type !== 'function' || typeof call.function?.name !== 'string' || typeof call.function?.arguments !== 'string' || call.function.arguments.length > 64000))) {
-    throw new Error('模型返回的工具调用无效');
+    throw new ModelRequestError('模型返回的工具调用无效', true);
   }
-  if (!message.content?.trim() && !message.tool_calls?.length) throw new Error('模型返回了空回复');
+  if (!message.content?.trim() && !message.tool_calls?.length) throw new ModelRequestError('模型返回了空回复', true);
   return { role: 'assistant', content: message.content?.slice(0, 16000) || null, ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}) };
 }
 

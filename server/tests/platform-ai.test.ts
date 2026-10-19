@@ -82,6 +82,8 @@ describe('platform AI configuration and access boundaries', () => {
     const endpoints = result.json().endpoints;
     expect(endpoints.find((item: any) => item.endpoint_id==='GET /api/sessions/:id/display').callable).toBe(true);
     expect(endpoints.find((item: any) => item.endpoint_id==='GET /api/platform-ai/config').callable).toBe(false);
+    expect(endpoints.find((item: any) => item.endpoint_id==='POST /api/platform-ai/config/models').callable).toBe(false);
+    expect(endpoints.find((item: any) => item.endpoint_id==='POST /api/platform-ai/config/test').callable).toBe(false);
     expect(endpoints.find((item: any) => item.endpoint_id==='POST /api/platform-ai/bindings').callable).toBe(false);
     expect(new Set(endpoints.map((item: any) => item.endpoint_id)).size).toBe(endpoints.length);
   });

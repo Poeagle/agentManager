@@ -9,13 +9,27 @@ test('Platform AI chats through real platform tools and a signed external gatewa
   test.setTimeout(90000);
   const deliveries: Array<{body: string; headers: Record<string, unknown>}> = [];
   const modelRequests: any[] = [];
+  const probeRequests: any[] = [];
   const server=createServer(async (request,response) => {
     let body='';for await (const chunk of request) body+=chunk;
     response.setHeader('Content-Type','application/json');
     if (request.url==='/delivery') {
       deliveries.push({body,headers:request.headers});response.end('{}');return;
     }
-    const payload=JSON.parse(body);modelRequests.push(payload);
+    if (request.url==='/v1/models' && request.method==='GET') {
+      expect(request.headers.authorization).toBe('Bearer e2e-platform-ai-secret');
+      response.end(JSON.stringify({data:[{id:'e2e-text-model'},{id:'e2e-tools-model'}]}));return;
+    }
+    const payload=JSON.parse(body);
+    if (payload.messages[0]?.content==='This is a connectivity test. Reply with OK.') {
+      probeRequests.push(payload);response.end(JSON.stringify({choices:[{message:{content:'OK'}}]}));return;
+    }
+    if (payload.tools?.[0]?.function?.name==='platform_connection_probe') {
+      probeRequests.push(payload);
+      const token=payload.messages[0].content.match(/exactly "([a-f0-9]+)"/)[1];
+      response.end(JSON.stringify({choices:[{message:{content:null,tool_calls:[{id:'probe',type:'function',function:{name:'platform_connection_probe',arguments:JSON.stringify({token})}}]}}]}));return;
+    }
+    modelRequests.push(payload);
     const last=payload.messages.at(-1);
     const message=last.role==='tool'
       ? {content:'当前可访问项目包含：平台 AI 验证项目。你可以指定项目并下发开发需求。'}
@@ -38,9 +52,19 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     await page.getByRole('button',{name:'平台 AI',exact:true}).click();
     const dialog=page.getByRole('dialog',{name:'平台管理'});
     await dialog.getByRole('button',{name:'模型配置',exact:true}).click();
+    const beforeProbe=await (await page.request.get('/api/platform-ai/config')).json();
     await dialog.getByLabel('模型 API 地址',{exact:true}).fill(provider+'/v1');
-    await dialog.getByLabel('模型名称',{exact:true}).fill('e2e-tools-model');
     await dialog.getByLabel('API Key',{exact:true}).fill('e2e-platform-ai-secret');
+    await dialog.getByRole('button',{name:'获取模型列表',exact:true}).click();
+    await expect(dialog.getByLabel('选择探测到的模型')).toBeVisible();
+    await dialog.getByLabel('选择探测到的模型').selectOption('e2e-tools-model');
+    await expect(dialog.getByLabel('模型名称',{exact:true})).toHaveValue('e2e-tools-model');
+    await dialog.getByRole('button',{name:'测试连通性',exact:true}).click();
+    await expect(dialog.getByRole('status')).toContainText('测试通过，可用于平台 AI');
+    await expect(dialog.getByText('工具调用：通过',{exact:true})).toBeVisible();
+    expect(probeRequests.length).toBe(2);
+    expect(await (await page.request.get('/api/platform-ai/config')).json()).toEqual(beforeProbe);
+    await page.screenshot({path:testInfo.outputPath('platform-ai-model-probes.png')});
     await dialog.getByLabel('启用平台 AI',{exact:true}).check();
     await dialog.getByRole('button',{name:'保存模型配置',exact:true}).click();
     await expect(dialog.getByRole('status')).toHaveText('配置已保存');

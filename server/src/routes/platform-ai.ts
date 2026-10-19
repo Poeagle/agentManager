@@ -9,6 +9,7 @@ import { ChannelError, decodeCallback, getChannel, listChannels, saveChannel } f
 import { getConversation, receiveMessage } from '../services/platform-ai/store.js';
 import { platformCatalog, PLATFORM_TOOLS } from '../services/platform-ai/tools.js';
 import { PlatformAiWorker } from '../services/platform-ai/worker.js';
+import { discoverModels, testModelConnection } from '../services/platform-ai/model-probes.js';
 
 const idSchema = z.string().min(1).max(256);
 const callbackRate = new Map<string, { start: number; count: number }>();
@@ -29,6 +30,14 @@ export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = asy
   app.put('/platform-ai/config', async (req, reply) => {
     if (!requirePermission(req, reply, 'settings', 'write')) return;
     return { config: updateAiConfig(req.body) };
+  });
+  app.post('/platform-ai/config/models', async (req, reply) => {
+    if (!requirePermission(req, reply, 'settings', 'write')) return;
+    return discoverModels(req.body);
+  });
+  app.post('/platform-ai/config/test', async (req, reply) => {
+    if (!requirePermission(req, reply, 'settings', 'write')) return;
+    return testModelConnection(req.body);
   });
   app.get('/platform-ai/status', async (req, reply) => {
     if (!requirePermission(req, reply, 'agent_api')) return;
