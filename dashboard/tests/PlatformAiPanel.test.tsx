@@ -36,6 +36,23 @@ function mount(permissions = adminPermissions) {
 }
 
 describe('platform AI user flows', () => {
+  it('renders AI Markdown tables, emphasis and code while preserving literal user messages', async () => {
+    const content = '当前账户下可见的项目有 **1 个**：\n\n| 项目 | 路径 | 可用客户端 |\n| --- | --- | --- |\n| xeleQuote | `/home/xlli/ymchen/xeleQuote` | **Codex** |\n\n- 只读分析\n\n```sh\ncodex --version\n```';
+    vi.mocked(platformAiApi.conversations).mockResolvedValue({conversations:[{id:'chat-1',title:'项目列表',channel_id:null}]});
+    vi.mocked(platformAiApi.conversation).mockResolvedValue({conversation:{id:'chat-1',title:'项目列表',channel_id:null},messages:[
+      {id:'u1',role:'user',content:'保留原文 **项目**',status:'done',error:null,created_at:'2026-10-19'},
+      {id:'a1',role:'assistant',content,status:'done',error:null,created_at:'2026-10-19'},
+    ]});
+    mount();fireEvent.click(await screen.findByRole('button',{name:/项目列表/}));
+    expect(await screen.findByRole('table')).toBeVisible();
+    expect(screen.getByRole('columnheader',{name:'项目'})).toBeVisible();
+    expect(screen.getByRole('cell',{name:'xeleQuote'})).toBeVisible();
+    expect(screen.getByText('1 个').tagName).toBe('STRONG');
+    expect(screen.getByText('Codex',{exact:true}).tagName).toBe('STRONG');
+    expect(screen.getByText('codex --version').closest('pre')).not.toBeNull();
+    expect(screen.getByRole('region',{name:'横向滚动表格'})).toHaveClass('overflow-x-auto');
+    expect(screen.getByText('保留原文 **项目**')).toBeVisible();
+  });
   it('shows discovered agents and streams progress and partial text into the current conversation', async () => {
     const sources: Array<{url: string; onopen: (()=>void) | null; onerror: (()=>void) | null; onmessage: ((event: {data: string})=>void) | null; close: ReturnType<typeof vi.fn>}> = [];
     vi.stubGlobal('EventSource', class {
@@ -58,9 +75,10 @@ describe('platform AI user flows', () => {
     expect(sources[0].url).toBe('/api/platform-ai/conversations/chat-1/events');
     act(()=>{
       sources[0].onopen?.();
-      sources[0].onmessage?.({data:JSON.stringify({type:'message',message:{...userMessage,progress:'正在生成回复…',partial_content:'当前有两个'}})});
+      sources[0].onmessage?.({data:JSON.stringify({type:'message',message:{...userMessage,progress:'正在生成回复…',partial_content:'**当前有两个**'}})});
     });
     expect(await screen.findByText('当前有两个')).toBeVisible();
+    expect(screen.getByText('当前有两个').tagName).toBe('STRONG');
     expect(screen.getByText('实时更新中')).toBeVisible();
     act(()=>{sources[0].onerror?.();});
     expect(screen.getByText('连接恢复中，暂用定时更新')).toBeVisible();

@@ -16,6 +16,7 @@ test('Platform AI chats through real platform tools and a signed external gatewa
   const probeRequests: any[] = [];
   let releaseFirstReply: (()=>void) | undefined;
   let pauseFirstReply = true;
+  const replyText='当前可访问项目包含：平台 AI 验证项目。你可以指定项目并下发开发需求。\n\n当前可见 **1 个**项目：\n\n| 项目 | ID | 路径 | 可用客户端 | 会话权限 |\n| --- | --- | --- | --- | --- |\n| 平台 AI 验证项目 | project-test | `/workspace/'+ 'nested-project/'.repeat(12) +'src/index.ts` | **Codex** | 可创建会话、可开终端 |';
   const server=createServer(async (request,response) => {
     let body='';for await (const chunk of request) body+=chunk;
     response.setHeader('Content-Type','application/json');
@@ -38,7 +39,7 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     modelRequests.push(payload);
     const last=payload.messages.at(-1);
     const message=last.role==='tool'
-      ? {content:'当前可访问项目包含：平台 AI 验证项目。你可以指定项目并下发开发需求。'}
+      ? {content:replyText}
       : {content:null,tool_calls:[{id:'list-projects',type:'function',function:{name:'platform_request',arguments:JSON.stringify({endpoint_id:'GET /api/projects'})}}]};
     if (payload.stream) {
       response.setHeader('Content-Type','text/event-stream');
@@ -95,11 +96,25 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     await page.screenshot({path:testInfo.outputPath('platform-ai-streaming-reply.png')});
     expect(releaseFirstReply).toBeDefined();releaseFirstReply!();
     await expect(dialog.getByText('当前可访问项目包含：平台 AI 验证项目。你可以指定项目并下发开发需求。',{exact:true})).toBeVisible();
+    const table=dialog.getByRole('table');
+    await expect(table.getByRole('columnheader',{name:'项目',exact:true})).toBeVisible();
+    await expect(table.getByRole('cell',{name:'Codex',exact:true})).toBeVisible();
+    expect(await dialog.getByText('1 个',{exact:true}).evaluate(element=>element.tagName)).toBe('STRONG');
     expect(modelRequests.length).toBe(2);
     const tool=JSON.parse(modelRequests[1].messages.find((message: any) => message.role==='tool').content);
     expect(tool.projects.some((project: any) => project.name==='平台 AI 验证项目')).toBeTruthy();
     expect(JSON.stringify(modelRequests)).not.toContain('agentmanager_session');
     await page.screenshot({path:testInfo.outputPath('platform-ai-chat.png')});
+    await page.setViewportSize({width:390,height:844});
+    await table.scrollIntoViewIfNeeded();
+    const overflow=await table.evaluate(element=>{
+      const parent=element.parentElement!;
+      return {scrolls:parent.scrollWidth>parent.clientWidth,overflow:getComputedStyle(parent).overflowX};
+    });
+    expect(overflow).toEqual({scrolls:true,overflow:'auto'});
+    expect(await dialog.evaluate(element=>element.scrollWidth<=element.clientWidth+1)).toBe(true);
+    await page.screenshot({path:testInfo.outputPath('platform-ai-mobile-markdown.png')});
+    await page.setViewportSize({width:1280,height:720});
 
     await dialog.getByRole('button',{name:'渠道与用户映射',exact:true}).click();
     await dialog.getByRole('button',{name:'添加渠道',exact:true}).click();
