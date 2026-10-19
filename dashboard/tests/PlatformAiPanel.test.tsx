@@ -27,7 +27,7 @@ beforeEach(() => {
   vi.mocked(api.users.list).mockResolvedValue({users:[{id:'u1',username:'member',display_name:'成员',role:'member'}]});
   vi.mocked(platformAiApi.tools).mockResolvedValue({tools:[],endpoints:[]});
 });
-afterEach(() => client.clear());
+afterEach(() => { client.clear(); vi.unstubAllGlobals(); });
 function mount(permissions = adminPermissions) {
   const onOpenSession = vi.fn();
   render(<QueryClientProvider client={client}><PlatformAiPanel permissions={permissions} onOpenSession={onOpenSession} /></QueryClientProvider>);
@@ -55,6 +55,30 @@ describe('platform AI user flows', () => {
     fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
     await screen.findByText('有一个项目可供访问。');
     expect(vi.mocked(platformAiApi.send).mock.calls[0][0].request_id).toBe(vi.mocked(platformAiApi.send).mock.calls[1][0].request_id);
+  });
+  it('sends on a LAN HTTP origin where randomUUID is unavailable', async () => {
+    vi.stubGlobal('crypto', {getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto)});
+    expect(typeof crypto.randomUUID).toBe('undefined');
+    vi.mocked(platformAiApi.send).mockResolvedValue({conversation_id:'chat-1',message_id:'m1',duplicate:false});
+    mount();
+    fireEvent.change(screen.getByLabelText('发送给平台 AI 的消息'),{target:{value:'你好'}});
+    await waitFor(() => expect(screen.getByRole('button',{name:'发送消息'})).toBeEnabled());
+    fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+    await screen.findByText('有一个项目可供访问。');
+    expect(platformAiApi.send).toHaveBeenCalledWith(expect.objectContaining({content:'你好',request_id:expect.stringMatching(/^[a-f0-9]{32}$/)}));
+    expect(screen.getByLabelText('发送给平台 AI 的消息')).toHaveValue('');
+    expect(screen.getByLabelText('发送给平台 AI 的消息')).toBeEnabled();
+  });
+  it('recovers the send button and preserves the draft if request preparation fails', async () => {
+    vi.spyOn(crypto,'getRandomValues').mockImplementationOnce(() => {throw new Error('生成请求编号失败');});
+    mount();
+    fireEvent.change(screen.getByLabelText('发送给平台 AI 的消息'),{target:{value:'保留这条消息'}});
+    await waitFor(() => expect(screen.getByRole('button',{name:'发送消息'})).toBeEnabled());
+    fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('生成请求编号失败');
+    expect(platformAiApi.send).not.toHaveBeenCalled();
+    expect(screen.getByRole('button',{name:'发送消息'})).toBeEnabled();
+    expect(screen.getByLabelText('发送给平台 AI 的消息')).toHaveValue('保留这条消息');
   });
   it('hides configuration and blocks sending for a read-only user', async () => {
     mount({permissions:{agent_api:'read'},roles:[],catalog:[]});

@@ -53,10 +53,14 @@ function AiChat({enabled, canSend}: {enabled: boolean; canSend: boolean}) {
     const content = draft.trim();
     if (!content || busy || !enabled || !canSend) return;
     setBusy(true); setError('');
-    const previous = pendingRequest.current;
-    const request = previous?.content === content && previous.conversation === selected ? previous : {content, conversation: selected, id: crypto.randomUUID()};
-    pendingRequest.current = request;
     try {
+      const previous = pendingRequest.current;
+      // getRandomValues is also available on LAN HTTP origins, unlike randomUUID.
+      const request = previous?.content === content && previous.conversation === selected ? previous : {
+        content, conversation: selected,
+        id: Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''),
+      };
+      pendingRequest.current = request;
       const result = await platformAiApi.send({content, request_id: request.id, ...(selected ? {conversation_id: selected} : {})});
       setSelected(result.conversation_id); setDraft(''); pendingRequest.current = null;
       await client.invalidateQueries({queryKey: ['platform-ai-conversations']});

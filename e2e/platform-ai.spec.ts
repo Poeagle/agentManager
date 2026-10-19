@@ -7,6 +7,10 @@ import { fileURLToPath } from 'node:url';
 
 test('Platform AI chats through real platform tools and a signed external gateway', async ({page},testInfo) => {
   test.setTimeout(90000);
+  // Match the crypto API available when the dashboard is opened over LAN HTTP.
+  await page.addInitScript(() => {
+    Object.defineProperty(globalThis.crypto, 'randomUUID', {value: undefined, configurable: true});
+  });
   const deliveries: Array<{body: string; headers: Record<string, unknown>}> = [];
   const modelRequests: any[] = [];
   const probeRequests: any[] = [];
