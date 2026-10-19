@@ -17,6 +17,7 @@ import { claimMessage, getConversation, receiveMessage, trackTask, type InboxMes
 import { PlatformAiWorker, validateAssessment } from '../src/services/platform-ai/worker.js';
 import { captureScheduledBaseline, reconcileScheduledObservations } from '../src/services/platform-ai/scheduled-observation.js';
 import { createTestDatabase } from './helpers/database.js';
+import * as agents from '../src/services/platform-ai/agents.js';
 
 const providerResponse = (message: Record<string, unknown>) => new Response(JSON.stringify({choices: [{message}]}), {status: 200});
 const toolResponse = (name: string, args: unknown, id = 'call-1') => providerResponse({content: null, tool_calls: [{id, type: 'function', function: {name, arguments: JSON.stringify(args)}}]});
@@ -33,6 +34,8 @@ let nativeTurns: Array<{user: string; assistant: string}>;
 let display: {cursor: number; output: string; processState: string; promptType: string | null};
 
 beforeEach(async () => {
+  vi.spyOn(agents, 'detectWorkAgent').mockImplementation(async cli => ({cli_type: cli, label: cli, status:'available',reason:'Test fixture'}));
+  vi.spyOn(agents, 'detectWorkAgents').mockResolvedValue([{cli_type:'codex',label:'Codex',status:'available',reason:'Test fixture'},{cli_type:'claude',label:'Claude',status:'unavailable',reason:'Test fixture'}]);
   const database = createTestDatabase();
   cleanup = database.cleanup; databaseDir = database.dir;
   admin = createUser({username: 'admin', password: 'password1', role: 'admin'}).id;
@@ -200,6 +203,21 @@ describe('signed external channel ingestion', () => {
 });
 
 describe('durable platform AI tool execution', () => {
+  it('exposes discovered agents and rejects a missing CLI before creating any session or task', async () => {
+    configure();
+    vi.mocked(agents.detectWorkAgent).mockResolvedValue({cli_type:'claude',label:'Claude',status:'unavailable',reason:'找不到启动命令'});
+    const spawn = vi.spyOn(manager,'spawnSession').mockResolvedValue();
+    const fetchMock = vi.fn().mockResolvedValueOnce(toolResponse('start_work',{project_id:'p',requirement:'只读分析项目',cli_type:'claude'}))
+      .mockResolvedValueOnce(providerResponse({content:'Claude 当前不可用，可选择已探测可用的 Codex。'}));
+    vi.stubGlobal('fetch',fetchMock);
+    const capabilities = await app.inject({url:'/api/platform-ai/agents',headers:{cookie}});
+    expect(capabilities.json().agents).toHaveLength(2);
+    inbound('只读分析项目'); worker.tick(); await worker.drain();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({n:0});
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM platform_ai_tasks').get()).toEqual({n:0});
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).messages.find((m: any) => m.role==='tool').content).toContain('Claude 当前不可用');
+  });
   it('claims conversations in FIFO order without blocking independent users', () => {
     const first = inbound('first','one'); inbound('second','two'); inbound('other','three',other);
     const a = claimMessage(Date.now(),60000)!;
@@ -281,6 +299,36 @@ describe('durable platform AI tool execution', () => {
 });
 
 describe('session observation and notification reliability', () => {
+  it('reports a missing CLI from an ended snapshot immediately without asking the model', async () => {
+    configure();seedSession();const received=inbound();
+    const task=trackTask(getConversation(received.conversation_id)!,'session-1','只读分析',100,'missing-cli');
+    getDb().prepare("UPDATE sessions SET status='completed',exit_code=0 WHERE id='session-1'").run();
+    display={cursor:0,output:'zsh:1: command not found: claude',processState:'idle',promptType:null};
+    const fetchMock=vi.fn();vi.stubGlobal('fetch',fetchMock);
+    await worker.observe(task,readAiConfig());
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getDb().prepare('SELECT status,summary FROM platform_ai_tasks WHERE id=?').get(task.id)).toMatchObject({status:'failed',summary:expect.stringContaining('本次需求未执行')});
+    expect(getDb().prepare("SELECT content FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get()).toMatchObject({content:expect.stringContaining('启动失败')});
+  });
+  it('does not leave an ended session with no output in running status', async () => {
+    configure();seedSession();const received=inbound();
+    const task=trackTask(getConversation(received.conversation_id)!,'session-1','分析项目',0,'ended-task');
+    getDb().prepare("UPDATE sessions SET status='completed',exit_code=0 WHERE id='session-1'").run();
+    const fetchMock=vi.fn();vi.stubGlobal('fetch',fetchMock);
+    await worker.observe(task,readAiConfig());
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getDb().prepare('SELECT status,summary FROM platform_ai_tasks WHERE id=?').get(task.id)).toMatchObject({status:'uncertain',summary:expect.stringContaining('会话已结束')});
+  });
+  it.each(['', 'zsh:1: command not found: claude'])('uses the current native final reply despite empty replay or quoted error examples (%s)', async output => {
+    configure();seedSession();const received=inbound();
+    const task=trackTask(getConversation(received.conversation_id)!,'session-1','分析项目',0,'ended-success');
+    getDb().prepare("UPDATE sessions SET status='completed',exit_code=0 WHERE id='session-1'").run();
+    display={cursor:0,output,processState:'idle',promptType:null};
+    nativeTurns=[{user:'分析项目 [Platform task reference: ended-success]',assistant:'分析报告已完成，未修改文件。'}];
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'reported_complete',summary:'分析完成，未修改文件。',evidence:'分析报告已完成'})})));
+    await worker.observe(task,readAiConfig());
+    expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'reported_complete'});
+  });
   it('suspends observation immediately after project access is revoked', async () => {
     configure();seedSession();const received=inbound();
     const task=trackTask(getConversation(received.conversation_id)!,'session-1','实现导出');

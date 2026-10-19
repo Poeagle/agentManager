@@ -12,6 +12,7 @@ import { callModel, PLATFORM_SYSTEM_PROMPT, type ModelMessage, type ToolCall } f
 import { boundedToolResult, executePlatformTool, isMutatingTool, operationKey, platformApi, PlatformApiError, PLATFORM_TOOLS } from './tools.js';
 import { userHasPermission } from '../rbac.js';
 import { assertLiveUser, claimMessage, enqueueNotice, getConversation, trackTask, type Conversation, type InboxMessage, type TrackedTask } from './store.js';
+import { publishMessage, refreshConversation } from './live.js';
 
 const assessmentSchema = z.object({
   status: z.enum(['running', 'blocked', 'reported_complete', 'failed', 'uncertain']),
@@ -149,7 +150,12 @@ export class PlatformAiWorker {
   }
 
   async processMessage(message: InboxMessage, config: AiConfig): Promise<void> {
+    const progress = (stage: string, content?: string) => {
+      getDb().prepare(`UPDATE platform_ai_messages SET progress=?,partial_content=COALESCE(?,partial_content) WHERE id=? AND status='processing'`).run(stage, content ?? null, message.id);
+      publishMessage(message.id);
+    };
     try {
+      progress(message.attempts > 1 ? '正在重试本轮处理…' : '正在理解需求…', '');
       const conversation = getConversation(message.conversation_id);
       if (!conversation) throw new Error('对话不存在');
       this.assertConversation(conversation);
@@ -169,13 +175,21 @@ export class PlatformAiWorker {
         const answered = new Set(messages.slice(lastAssistant + 1).map(item => item.tool_call_id));
         for (const call of pendingCalls) {
           if (answered.has(call.id)) continue;
+          const labels: Record<string, string> = {platform_capabilities: '探测 Agent 与平台能力', platform_request: '查询或操作平台接口', start_work: '校验并启动工作 Agent', send_to_session: '向工作 Agent 发送需求', track_session: '建立任务跟踪', list_tracked_tasks: '查询任务进度'};
+          progress(`正在${labels[call.function.name] || '调用平台工具'}…`);
           const content = await this.runTool(conversation, message.id, call);
           messages.push({ role: 'tool', tool_call_id: call.id, content });
           this.checkpoint(message.id, messages);
         }
         const toolsAllowed = usedToolRounds < config.max_tool_rounds;
         const tasks = getDb().prepare('SELECT id,session_id,status,summary FROM platform_ai_tasks WHERE conversation_id=? ORDER BY rowid DESC LIMIT 5').all(conversation.id);
-        const response = await callModel(config, [{ role: 'system', content: PLATFORM_SYSTEM_PROMPT + `\n当前时间：${new Date().toISOString()}\n本对话近期任务：${JSON.stringify(tasks)}` }, ...messages], toolsAllowed ? PLATFORM_TOOLS : undefined, this.abort.signal);
+        progress(round ? '正在整理工具结果并生成回复…' : '正在等待模型回复…', '');
+        let partial = '', lastFlush = 0;
+        const response = await callModel(config, [{ role: 'system', content: PLATFORM_SYSTEM_PROMPT + `\n当前时间：${new Date().toISOString()}\n本对话近期任务：${JSON.stringify(tasks)}` }, ...messages], toolsAllowed ? PLATFORM_TOOLS : undefined, this.abort.signal, {onContent: content => {
+          partial = content.slice(0, 16000);
+          if (Date.now() - lastFlush >= 100) {progress('正在生成回复…', partial); lastFlush = Date.now();}
+        }});
+        if (partial) progress('正在生成回复…', partial);
         if (response.tool_calls?.length) {
           if (!toolsAllowed) throw new ChannelError('本轮工具调用已达上限，已执行操作保留，请查询状态后继续', 400, true);
           usedToolRounds++;
@@ -191,6 +205,8 @@ export class PlatformAiWorker {
       const retry = message.attempts < 3 && !(error instanceof ChannelError && error.permanent) && !this.abort.signal.aborted;
       getDb().prepare('UPDATE platform_ai_messages SET status=?,error=?,available_at=?,lease_until=0 WHERE id=?')
         .run(retry || this.abort.signal.aborted ? 'queued' : 'failed', failure, this.abort.signal.aborted ? 0 : Date.now() + 10000 * message.attempts, message.id);
+      getDb().prepare('UPDATE platform_ai_messages SET progress=? WHERE id=?').run(retry ? '处理暂时失败，等待重试…' : '本轮处理已停止', message.id);
+      publishMessage(message.id);
       if (!retry && !this.abort.signal.aborted) enqueueNotice(message.conversation_id, `message-failed:${message.id}`, `本轮处理未能完成：${failure}\n已执行的操作会保留，请查看任务状态后继续。`);
     }
   }
@@ -199,12 +215,14 @@ export class PlatformAiWorker {
         getDb().transaction(() => {
           getDb().prepare(`INSERT OR IGNORE INTO platform_ai_messages (id,conversation_id,external_id,role,content,status) VALUES (?,?,?,'assistant',?,'done')`)
             .run(nanoid(16), conversation.id, message.id, content);
-          getDb().prepare("UPDATE platform_ai_messages SET status='done',checkpoint='[]',error=NULL,lease_until=0 WHERE id=?").run(message.id);
+          getDb().prepare("UPDATE platform_ai_messages SET status='done',checkpoint='[]',error=NULL,progress='',partial_content='',lease_until=0 WHERE id=?").run(message.id);
           getDb().prepare("UPDATE platform_ai_conversations SET context=?,updated_at=datetime('now') WHERE id=?")
             .run(JSON.stringify([...history.slice(-18), { role: 'user', content: message.content }, { role: 'assistant', content }]), conversation.id);
           getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox (id,conversation_id,dedupe_key,content,reply_context) VALUES (?,?,?,?,?)`)
             .run(nanoid(16), conversation.id, `reply:${message.id}`, content, message.reply_context);
         })();
+        publishMessage(message.id);
+        refreshConversation(conversation.id);
   }
 
   async observe(task: TrackedTask, config: AiConfig): Promise<void> {
@@ -217,16 +235,30 @@ export class PlatformAiWorker {
       const { session } = await platformApi(this.app, task.user_id, 'GET', `/api/sessions/${encodeURIComponent(task.session_id)}`);
       const display = await platformApi(this.app, task.user_id, 'GET', `/api/sessions/${encodeURIComponent(task.session_id)}/display?lines=300&since=${task.cursor}`);
       const cursor = Number(display.cursor) || 0;
-      if (cursor < task.cursor) {
+      const ended = ['completed', 'failed', 'cancelled'].includes(session.status);
+      if (cursor < task.cursor && !ended) {
         this.saveAssessment(task, { status: 'uncertain', summary: '会话输出游标已重置，需要核对任务对应的执行轮次。', evidence: '' }, now, true);
         getDb().prepare('UPDATE platform_ai_tasks SET cursor=?,output=? WHERE id=?').run(cursor, '', task.id);
         return;
       }
-      const output = (task.output + (display.output ? '\n' + display.output : '')).slice(-24000);
+      const output = (display.outputSource === 'snapshot' ? display.output : task.output + (display.output ? '\n' + display.output : '')).slice(-24000);
       let fingerprint = createHash('sha256').update(JSON.stringify([output, display.processState, display.promptType, session.status])).digest('hex');
       getDb().prepare(`UPDATE platform_ai_tasks SET cursor=?,output=?,last_fingerprint=?,observation_failures=0 WHERE id=?`)
         .run(cursor, output, fingerprint, task.id);
-      if (!output.trim() && ['failed', 'cancelled'].includes(session.status)) {
+      const readFinal = async () => {
+        const native = await platformApi(this.app, task.user_id, 'GET', `/api/sessions/${encodeURIComponent(task.session_id)}/completed-turn`);
+        const matching = Array.isArray(native.turns) ? native.turns.find((turn: any) => typeof turn.user === 'string' && turn.user.includes(`[Platform task reference: ${task.source_ref}]`)) : undefined;
+        return typeof matching?.assistant === 'string' ? matching.assistant as string : '';
+      };
+      // A native final answer can survive a later terminal crash. Also avoid
+      // treating error examples quoted by a completed analysis as launch errors.
+      let nativeFinal = ended && task.source_ref ? await readFinal() : '';
+      const missingCommand = ended ? output.match(/(?:^|\n)([^\n]*(?:command not found: (?:claude|codex)|(?:claude|codex): command not found)[^\n]*)/i)?.[1] : undefined;
+      if (missingCommand && !nativeFinal) {
+        this.saveAssessment(task, {status: 'failed', summary: `${session.cli_type === 'codex' ? 'Codex' : 'Claude'} 启动失败：系统找不到启动命令，本次需求未执行。请选择已探测可用的 Agent 后重新下发。`, evidence: missingCommand.trim()}, now, true);
+        return;
+      }
+      if (['failed', 'cancelled'].includes(session.status) && !nativeFinal) {
         this.saveAssessment(task, { status: 'failed', summary: '工作会话已失败或取消，尚无任务完成证据。', evidence: `平台会话状态：${session.status}` }, now, true);
         return;
       }
@@ -235,14 +267,14 @@ export class PlatformAiWorker {
         this.saveAssessment(task, { status: 'blocked', summary: '工作 Agent 正在等待交互确认，请在平台查看对应标签页。', evidence: output.slice(-1000) }, now, task.status !== 'blocked');
         return;
       }
-      if (!output.trim()) return;
+      if (!output.trim() && !ended) return;
       if (now - task.last_assessed_at < config.assessment_interval_seconds * 1000) return;
       if (display.processState === 'busy' && now - task.last_assessed_at < config.notification_interval_seconds * 1000) return;
-      let nativeFinal = '';
-      if (task.source_ref && display.processState !== 'busy') {
-        const native = await platformApi(this.app, task.user_id, 'GET', `/api/sessions/${encodeURIComponent(task.session_id)}/completed-turn`);
-        const matching = Array.isArray(native.turns) ? native.turns.find((turn: any) => typeof turn.user === 'string' && turn.user.includes(`[Platform task reference: ${task.source_ref}]`)) : undefined;
-        if (typeof matching?.assistant === 'string') nativeFinal = matching.assistant;
+      if (!ended && task.source_ref && display.processState !== 'busy') nativeFinal = await readFinal();
+      if (ended && !nativeFinal) {
+        this.saveAssessment(task, {status: 'uncertain', summary: '工作会话已结束，但未读取到本次任务对应的最终答复，结果待核对；不会将退出状态当作任务完成。', evidence: `平台会话状态：${session.status}`}, now, task.status !== 'uncertain');
+        getDb().prepare('UPDATE platform_ai_tasks SET last_assessed_at=? WHERE id=?').run(now, task.id);
+        return;
       }
       fingerprint = createHash('sha256').update(fingerprint + nativeFinal).digest('hex');
       if (fingerprint === task.last_assessed_fingerprint) {

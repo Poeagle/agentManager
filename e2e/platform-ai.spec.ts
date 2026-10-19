@@ -14,6 +14,8 @@ test('Platform AI chats through real platform tools and a signed external gatewa
   const deliveries: Array<{body: string; headers: Record<string, unknown>}> = [];
   const modelRequests: any[] = [];
   const probeRequests: any[] = [];
+  let releaseFirstReply: (()=>void) | undefined;
+  let pauseFirstReply = true;
   const server=createServer(async (request,response) => {
     let body='';for await (const chunk of request) body+=chunk;
     response.setHeader('Content-Type','application/json');
@@ -38,6 +40,18 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     const message=last.role==='tool'
       ? {content:'当前可访问项目包含：平台 AI 验证项目。你可以指定项目并下发开发需求。'}
       : {content:null,tool_calls:[{id:'list-projects',type:'function',function:{name:'platform_request',arguments:JSON.stringify({endpoint_id:'GET /api/projects'})}}]};
+    if (payload.stream) {
+      response.setHeader('Content-Type','text/event-stream');
+      const emit=(delta: unknown,finish_reason: string | null=null)=>response.write(`data: ${JSON.stringify({choices:[{delta,finish_reason}]})}\n\n`);
+      if (message.tool_calls) {
+        emit({tool_calls:message.tool_calls.map((call,index)=>({...call,index}))});emit({},'tool_calls');
+      } else {
+        emit({content:'当前可访问项目包含：'});
+        if (pauseFirstReply) {pauseFirstReply=false;await new Promise<void>(resolveReply=>{releaseFirstReply=resolveReply;});}
+        emit({content:message.content.slice('当前可访问项目包含：'.length)});emit({},'stop');
+      }
+      response.end('data: [DONE]\n\n');return;
+    }
     response.end(JSON.stringify({choices:[{message}]}));
   });
   await new Promise<void>(resolveListen => server.listen(0,'127.0.0.1',resolveListen));
@@ -75,6 +89,11 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     await dialog.getByRole('button',{name:'对话',exact:true}).click();
     await dialog.getByLabel('发送给平台 AI 的消息').fill('列出我能访问的项目');
     await dialog.getByRole('button',{name:'发送消息'}).click();
+    await expect(dialog.getByText('当前可访问项目包含：',{exact:true})).toBeVisible();
+    await expect(dialog.getByText('正在生成回复…',{exact:true})).toBeVisible();
+    await expect(dialog.getByText('实时更新中',{exact:true})).toBeVisible();
+    await page.screenshot({path:testInfo.outputPath('platform-ai-streaming-reply.png')});
+    expect(releaseFirstReply).toBeDefined();releaseFirstReply!();
     await expect(dialog.getByText('当前可访问项目包含：平台 AI 验证项目。你可以指定项目并下发开发需求。',{exact:true})).toBeVisible();
     expect(modelRequests.length).toBe(2);
     const tool=JSON.parse(modelRequests[1].messages.find((message: any) => message.role==='tool').content);
@@ -120,6 +139,7 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     await expect(dialog.getByLabel('映射平台用户')).toBeVisible();
     await page.screenshot({path:testInfo.outputPath('platform-ai-mobile-channels.png')});
   } finally {
+    releaseFirstReply?.();
     await page.request.put('/api/platform-ai/config',{data:{enabled:false}}).catch(()=>{});
     await new Promise<void>(resolveClose=>server.close(()=>resolveClose()));
   }

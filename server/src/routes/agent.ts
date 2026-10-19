@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as { Terminal: any };
 const { SerializeAddon } = require('@xterm/addon-serialize') as { SerializeAddon: any };
-import { isSessionActive, writeToSession, querySessionOutputSince, getSession } from '../services/session-manager.js';
+import { isSessionActive, writeToSession, querySessionOutputSince, getSession, getSessionSnapshot } from '../services/session-manager.js';
 import { RESIZE_MARKER } from '../services/session-manager.js';
 import { getTracker, getOrCreateTracker } from '../services/session-state.js';
 import type { SessionState } from '../services/session-state.js';
@@ -82,7 +82,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version: '2.4.0',
+    version: '2.5.0',
     updatedAt: '2026-10-19',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, Codex quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -262,7 +262,7 @@ export function getAgentApiContract() {
         description: 'Rendered terminal output + inline state for polling. Returns clean text (no ANSI), with cursor-based incremental fetching. No side effects — safe for periodic polling.',
         request: {
           lines: { type: 'number', required: false, default: 50, description: 'Max lines of rendered terminal text to return (from the end). Max 5000.' },
-          since: { type: 'number', required: false, description: 'Cursor value from a previous response. Only returns output produced after this point. Omit for initial fetch.' },
+          since: { type: 'number', required: false, description: 'Cursor value from a previous response for incremental replay. Ended sessions may return their archived final snapshot; check outputSource and replace, rather than append, snapshot output.' },
           cols: { type: 'number', required: false, default: 120, description: 'Terminal column width for rendering.' },
           rows: { type: 'number', required: false, default: 40, description: 'Terminal row height for rendering.' },
         },
@@ -272,6 +272,7 @@ export function getAgentApiContract() {
           promptType: 'choice | confirmation | text | null',
           choices: 'string[] | null',
           output: 'string — last N lines of clean rendered terminal text',
+          outputSource: 'replay | snapshot — snapshot is the archived final screen after replay was removed; it may repeat even with since',
           cursor: 'number | null — pass back as ?since= for incremental polling',
           truncated: 'boolean — true if output was trimmed or more data exists',
         },
@@ -619,11 +620,16 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     // We over-fetch chunks then trim the rendered output to `lines` lines
     const chunkLimit = since != null ? 50000 : lines * 10;
     const result = querySessionOutputSince(id, { since, limit: chunkLimit });
+    // Replay is archived and deleted when a session exits. Keep final failures
+    // observable through the same authorized, clean-text monitoring endpoint.
+    const snapshot = result.chunks.length === 0 && ['completed', 'failed', 'cancelled'].includes(session.status)
+      ? getSessionSnapshot(id) : null;
+    const chunks = snapshot ? [{seq: result.latestSeq, data: snapshot.rendered}] : result.chunks;
 
     // Determine initial terminal dimensions from first resize marker or defaults
-    let initCols = cols;
-    let initRows = rows;
-    for (const chunk of result.chunks) {
+    let initCols = snapshot?.cols || cols;
+    let initRows = snapshot?.rows || rows;
+    for (const chunk of chunks) {
       if (chunk.data.startsWith(RESIZE_MARKER)) {
         const parts = chunk.data.slice(RESIZE_MARKER.length).split(',');
         initCols = parseInt(parts[0], 10) || cols;
@@ -645,8 +651,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
 
       function processNext() {
         let batchData = '';
-        while (idx < result.chunks.length) {
-          const chunk = result.chunks[idx];
+        while (idx < chunks.length) {
+          const chunk = chunks[idx];
           if (chunk.data.startsWith(RESIZE_MARKER)) {
             if (batchData) { term.write(batchData); batchData = ''; }
             const parts = chunk.data.slice(RESIZE_MARKER.length).split(',');
@@ -708,6 +714,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       promptType,
       choices,
       output: rendered,
+      outputSource: snapshot ? 'snapshot' : 'replay',
       cursor: result.latestSeq,
       truncated: result.hasMore || rendered.split('\n').length < (result.chunks.length > 0 ? lines : 0),
     };

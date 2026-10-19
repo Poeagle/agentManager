@@ -1,12 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PlatformAiPanel } from '../src/components/PlatformAiPanel';
 import { platformAiApi } from '../src/lib/platform-ai';
 import { api, type MyPermissions } from '../src/lib/api';
 
 vi.mock('../src/lib/platform-ai', () => ({platformAiApi: {
-  status: vi.fn(), config: vi.fn(), saveConfig: vi.fn(), conversations: vi.fn(), conversation: vi.fn(), send: vi.fn(),
+  status: vi.fn(), agents: vi.fn(), config: vi.fn(), saveConfig: vi.fn(), conversations: vi.fn(), conversation: vi.fn(), send: vi.fn(),
   tasks: vi.fn(), stopTracking: vi.fn(), deliveries: vi.fn(), channels: vi.fn(), saveChannel: vi.fn(), saveBinding: vi.fn(), deleteBinding: vi.fn(), tools: vi.fn(),
   discoverModels: vi.fn(), testConnection: vi.fn(),
 }}));
@@ -18,6 +18,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   client = new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
   vi.mocked(platformAiApi.status).mockResolvedValue({enabled:true});
+  vi.mocked(platformAiApi.agents).mockResolvedValue({agents:[{cli_type:'codex',label:'Codex',status:'available',reason:'命令可找到'},{cli_type:'claude',label:'Claude',status:'unavailable',reason:'未找到命令'}]});
   vi.mocked(platformAiApi.conversations).mockResolvedValue({conversations:[]});
   vi.mocked(platformAiApi.conversation).mockResolvedValue({conversation:{id:'chat-1',title:'项目查询',channel_id:null},messages:[{id:'m1',role:'assistant',content:'有一个项目可供访问。',status:'done',error:null,created_at:'2026-10-19'}]});
   vi.mocked(platformAiApi.config).mockResolvedValue({config:{enabled:true,endpoint:'https://model.example/v1',model:'test-model',api_key_configured:true,timeout_ms:45000,max_tool_rounds:8,observation_interval_seconds:15,assessment_interval_seconds:90,notification_interval_seconds:300}});
@@ -35,6 +36,37 @@ function mount(permissions = adminPermissions) {
 }
 
 describe('platform AI user flows', () => {
+  it('shows discovered agents and streams progress and partial text into the current conversation', async () => {
+    const sources: Array<{url: string; onopen: (()=>void) | null; onerror: (()=>void) | null; onmessage: ((event: {data: string})=>void) | null; close: ReturnType<typeof vi.fn>}> = [];
+    vi.stubGlobal('EventSource', class {
+      url: string;
+      onopen: (()=>void) | null = null;
+      onerror: (()=>void) | null = null;
+      onmessage: ((event: {data: string})=>void) | null = null;
+      close = vi.fn();
+      constructor(url: string) {this.url=url;sources.push(this);}
+    });
+    const userMessage={id:'user-1',role:'user' as const,content:'列出项目',status:'processing',error:null,created_at:'2026-10-19',progress:'正在等待模型回复…',partial_content:''};
+    vi.mocked(platformAiApi.conversation).mockResolvedValue({conversation:{id:'chat-1',title:'项目查询',channel_id:null},messages:[userMessage]});
+    vi.mocked(platformAiApi.send).mockResolvedValue({conversation_id:'chat-1',message_id:'user-1',duplicate:false});
+    mount();
+    expect(await screen.findByText('Codex · 命令可用')).toBeVisible();
+    expect(screen.getByText('Claude · 未找到')).toBeVisible();
+    fireEvent.change(screen.getByLabelText('发送给平台 AI 的消息'),{target:{value:'列出项目'}});
+    fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+    await screen.findByText('正在等待模型回复…');
+    expect(sources[0].url).toBe('/api/platform-ai/conversations/chat-1/events');
+    act(()=>{
+      sources[0].onopen?.();
+      sources[0].onmessage?.({data:JSON.stringify({type:'message',message:{...userMessage,progress:'正在生成回复…',partial_content:'当前有两个'}})});
+    });
+    expect(await screen.findByText('当前有两个')).toBeVisible();
+    expect(screen.getByText('实时更新中')).toBeVisible();
+    act(()=>{sources[0].onerror?.();});
+    expect(screen.getByText('连接恢复中，暂用定时更新')).toBeVisible();
+    fireEvent.click(screen.getByRole('button',{name:'任务跟踪'}));
+    expect(sources[0].close).toHaveBeenCalledTimes(1);
+  });
   it('sends a natural-language request and opens the persisted conversation', async () => {
     vi.mocked(platformAiApi.send).mockResolvedValue({conversation_id:'chat-1',message_id:'m1',duplicate:false});
     mount();

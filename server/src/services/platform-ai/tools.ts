@@ -9,6 +9,7 @@ import { getTracker } from '../session-state.js';
 import { userHasPermission } from '../rbac.js';
 import { trackTask, type Conversation } from './store.js';
 import type { ModelTool } from './model.js';
+import { detectWorkAgent, detectWorkAgents } from './agents.js';
 
 const workspaceDispatches = new Set<string>();
 
@@ -84,7 +85,7 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
     const input = z.object({ endpoint_id: z.string().optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(50).default(50) }).strict().parse(args);
     const catalog = platformCatalog(app);
     if (input.endpoint_id) return catalog.find(item => item.endpoint_id === input.endpoint_id) || { error: 'Unknown endpoint' };
-    return { total: catalog.length, next_offset: input.offset + input.limit < catalog.length ? input.offset + input.limit : null, endpoints: catalog.slice(input.offset, input.offset + input.limit).map(({ endpoint_id, description, callable }) => ({ endpoint_id, description, callable })),
+    return { agents: await detectWorkAgents(), total: catalog.length, next_offset: input.offset + input.limit < catalog.length ? input.offset + input.limit : null, endpoints: catalog.slice(input.offset, input.offset + input.limit).map(({ endpoint_id, description, callable }) => ({ endpoint_id, description, callable })),
       guidance: 'Use start_work for new sessions, send_to_session for input, list_tracked_tasks for task progress. APIs remain permission scoped.' };
   }
   if (name === 'platform_request') {
@@ -113,6 +114,8 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
   if (name === 'start_work') {
     const input = z.object({ project_id: z.string().min(1), requirement: z.string().trim().min(1).max(24000), cli_type: z.enum(['codex', 'claude']) }).strict().parse(args);
     const { project } = await platformApi(app, userId, 'GET', `/api/projects/${encodeURIComponent(input.project_id)}`);
+    const agent = await detectWorkAgent(input.cli_type, project.path, true);
+    if (agent.status === 'unavailable') throw new Error(`${agent.label} 当前不可用：${agent.reason}。请从 platform_capabilities 返回的可用 Agent 中选择；用户明确指定了 Agent 时应先说明情况，不得擅自替换。`);
     noOtherWorkspaceTask(input.project_id);
     if (workspaceDispatches.has(input.project_id)) throw new Error('该项目已有派发操作正在进行');
     workspaceDispatches.add(input.project_id);

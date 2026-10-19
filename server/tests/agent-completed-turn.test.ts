@@ -34,4 +34,12 @@ describe('native completed-turn observation API',()=>{
     const result=await app.inject({url:'/api/sessions/own/completed-turn',headers:{cookie}});
     expect(result.statusCode).toBe(200);expect(result.json()).toEqual({turns:[]});
   });
+  it('renders an ended session snapshot for monitoring after replay has been archived',async()=>{
+    getDb().prepare("UPDATE sessions SET status='completed',exit_code=0 WHERE id='own'").run();
+    getDb().prepare("INSERT INTO session_snapshots(session_id,cols,rows,rendered) VALUES ('own',120,40,?)").run('zsh:1: command not found: codex\u001b[1B');
+    const result=await app.inject({url:'/api/sessions/own/display?since=99',headers:{cookie}});
+    expect(result.statusCode).toBe(200);
+    expect(result.json()).toMatchObject({outputSource:'snapshot',output:expect.stringContaining('command not found: codex')});
+    expect((await app.inject({url:'/api/sessions/other/display',headers:{cookie}})).statusCode).toBe(404);
+  });
 });

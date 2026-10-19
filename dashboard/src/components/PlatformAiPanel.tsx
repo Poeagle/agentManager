@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bot, Loader2, MessageSquare, Plus, Send } from 'lucide-react';
 import { api, type MyPermissions } from '../lib/api';
 import { hasPermission } from '../lib/permissions';
-import { platformAiApi, type AiChannel, type ChannelInput, type ChannelKind, type ModelProbeResult, type PlatformAiConfig } from '../lib/platform-ai';
+import { platformAiApi, type AiChannel, type AiMessage, type ChannelInput, type ChannelKind, type ModelProbeResult, type PlatformAiConfig } from '../lib/platform-ai';
 
 const fieldStyle = { background: 'var(--bg-primary)', borderColor: 'var(--border)', color: 'var(--text-primary)' };
 const muted = { color: 'var(--text-secondary)' };
@@ -41,14 +41,41 @@ export function PlatformAiPanel({ permissions, onOpenSession }: {permissions: My
 function AiChat({enabled, canSend}: {enabled: boolean; canSend: boolean}) {
   const client = useQueryClient();
   const conversations = useQuery({queryKey: ['platform-ai-conversations'], queryFn: platformAiApi.conversations, refetchInterval: 5000});
+  const agents = useQuery({queryKey: ['platform-ai-agents'], queryFn: platformAiApi.agents, refetchInterval: 15000});
   const [selected, setSelected] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [live, setLive] = useState(false);
   const pendingRequest = useRef<{content: string; conversation: string | null; id: string} | null>(null);
   const messages = useQuery({queryKey: ['platform-ai-conversation', selected], queryFn: () => platformAiApi.conversation(selected!), enabled: !!selected, refetchInterval: 2000});
   const bottom = useRef<HTMLDivElement>(null);
-  useEffect(() => { bottom.current?.scrollIntoView?.({block: 'nearest'}); }, [messages.data?.messages.length]);
+  useEffect(() => { bottom.current?.scrollIntoView?.({block: 'nearest'}); }, [messages.data]);
+  useEffect(() => {
+    if (!selected || typeof EventSource === 'undefined') return;
+    const source = new EventSource(`/api/platform-ai/conversations/${encodeURIComponent(selected)}/events`);
+    const refresh = () => {
+      void client.invalidateQueries({queryKey: ['platform-ai-conversation', selected]});
+      void client.invalidateQueries({queryKey: ['platform-ai-conversations']});
+    };
+    source.onopen = () => setLive(true);
+    source.onerror = () => setLive(false);
+    source.onmessage = event => {
+      try {
+        const update = JSON.parse(event.data) as {type: string; message?: AiMessage};
+        if (update.type === 'refresh') {refresh(); return;}
+        const message = update.message;
+        if (update.type !== 'message' || !message?.id) return;
+        client.setQueryData<Awaited<ReturnType<typeof platformAiApi.conversation>>>(['platform-ai-conversation', selected], previous => {
+          if (!previous) return previous;
+          const exists = previous.messages.some(item => item.id === message.id);
+          return {...previous, messages: exists ? previous.messages.map(item => item.id === message.id ? message : item) : [...previous.messages, message].slice(-100)};
+        });
+        if (message.status === 'done' || message.status === 'failed') refresh();
+      } catch { /* A reconnect plus the REST snapshot recovers malformed/interrupted events. */ }
+    };
+    return () => source.close();
+  }, [selected, client]);
   async function send() {
     const content = draft.trim();
     if (!content || busy || !enabled || !canSend) return;
@@ -75,9 +102,11 @@ function AiChat({enabled, canSend}: {enabled: boolean; canSend: boolean}) {
       <div className="flex gap-2 overflow-auto sm:flex-col">{conversations.data?.conversations.map(conversation => <button key={conversation.id} onClick={() => {setSelected(conversation.id); setError('');}} className="shrink-0 rounded-md p-2 text-left text-xs sm:shrink" style={{background: selected === conversation.id ? 'var(--bg-tertiary)' : 'transparent'}}><span className="block truncate">{conversation.title || '新对话'}</span><span style={muted}>{conversation.channel_name || '平台网页'}</span></button>)}</div>
     </aside>
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-2 text-xs" style={{...muted, borderColor:'var(--border)'}}><span>工作 Agent</span>{agents.data?.agents.map(agent => <span key={agent.cli_type} title={agent.reason} style={{color: agent.status === 'available' ? 'var(--success)' : 'var(--text-secondary)'}}>{agent.label} · {({available:'命令可用',unavailable:'未找到',unknown:'待验证'})[agent.status]}</span>)}{agents.isPending && <span>正在探测…</span>}{agents.error && <span>探测暂不可用</span>}{selected && <span className="ml-auto">{live ? '实时更新中' : '连接恢复中，暂用定时更新'}</span>}</div>
       <div aria-live="polite" className="min-h-0 flex-1 space-y-4 overflow-auto p-5">
         {!selected && <div className="mx-auto mt-12 max-w-xl text-center"><MessageSquare className="mx-auto mb-4 h-8 w-8" style={{color: 'var(--accent)'}} /><p className="text-base">直接告诉平台 AI 你想做什么</p><p className="mt-3 text-sm leading-7" style={muted}>例如：列出我能访问的项目；让某个项目的 Codex 实现一个功能；查询执行进展；创建每天运行的定时任务。</p></div>}
         {messages.data?.messages.map(message => <article key={message.id} className={'max-w-3xl rounded-lg border p-4 ' + (message.role === 'user' ? 'ml-auto' : '')} style={{borderColor: 'var(--border)', background: message.role === 'user' ? 'var(--bg-tertiary)' : 'var(--bg-primary)'}}><div className="mb-2 flex items-center justify-between gap-4 text-xs" style={muted}><span>{message.role === 'user' ? '你' : message.role === 'notice' ? '任务通知' : '平台 AI'}</span><span>{message.status !== 'done' ? statusLabels[message.status] || message.status : ''}</span></div><div className="whitespace-pre-wrap break-words text-sm leading-7">{message.content}</div>{message.error && <p role="alert" className="mt-2 text-xs text-red-400">{message.error}</p>}</article>)}
+        {messages.data?.messages.filter(message => message.role === 'user' && ['queued','processing'].includes(message.status)).map(message => <article key={`live-${message.id}`} aria-label="平台 AI 处理进度" className="max-w-3xl space-y-3 rounded-lg border p-4" style={{borderColor:'var(--border)',background:'var(--bg-primary)'}}><div className="flex items-center gap-2 text-xs" style={muted}><Loader2 className="h-3 w-3 animate-spin" /><span>{message.progress || (message.status === 'queued' ? '消息已接收，等待处理…' : '正在处理…')}</span></div>{message.partial_content && <div className="whitespace-pre-wrap break-words text-sm leading-7">{message.partial_content}</div>}</article>)}
         <div ref={bottom} />
       </div>
       <div className="shrink-0 border-t p-4" style={{borderColor: 'var(--border)'}}>

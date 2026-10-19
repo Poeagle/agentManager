@@ -17,7 +17,8 @@ export interface AiChannel {
 }
 export interface AiBinding { id: string; channel_id: string; external_user_id: string; user_id: string; username: string; display_name: string }
 export interface AiConversation { id: string; title: string; channel_id: string | null; channel_name?: string; updated_at?: string }
-export interface AiMessage { id: string; role: 'user' | 'assistant' | 'notice'; content: string; status: string; error: string | null; created_at: string }
+export interface AiMessage { id: string; role: 'user' | 'assistant' | 'notice'; content: string; status: string; error: string | null; created_at: string; progress?: string; partial_content?: string }
+export interface WorkAgent { cli_type: 'codex' | 'claude'; label: string; status: 'available' | 'unavailable' | 'unknown'; reason: string }
 export interface AiTask { id: string; conversation_id: string; session_id: string; project_id: string | null; requirement: string; status: string; summary: string; evidence: string; updated_at: string }
 export interface AiDelivery { id: string; conversation_id: string; status: string; attempts: number; error: string | null; created_at: string }
 export interface ChannelInput { name: string; kind: ChannelKind; enabled: boolean; config: Record<string, string>; secrets: Record<string, string> }
@@ -25,6 +26,7 @@ const json = (method: string, value: unknown) => ({ method, body: JSON.stringify
 const base = '/platform-ai';
 export const platformAiApi = {
   status: () => fetchJSON<{enabled: boolean}>(`${base}/status`),
+  agents: () => fetchJSON<{agents: WorkAgent[]}>(`${base}/agents`),
   config: () => fetchJSON<{config: PlatformAiConfig}>(`${base}/config`),
   saveConfig: (value: Partial<PlatformAiConfig> & {api_key?: string; clear_api_key?: boolean}) => fetchJSON<{config: PlatformAiConfig}>(`${base}/config`, json('PUT', value)),
   discoverModels: (value: ModelConnectionDraft) => fetchJSON<{models: string[]}>(`${base}/config/models`, json('POST', value)),

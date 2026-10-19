@@ -2,19 +2,23 @@ import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { z, ZodError } from 'zod';
 import { getDb } from '../db/index.js';
-import { findUserById } from '../auth.js';
-import { requirePermission } from '../services/rbac.js';
+import { findUserById, getSessionUser, readSessionCookie } from '../auth.js';
+import { requirePermission, userHasPermission } from '../services/rbac.js';
 import { readAiConfig, safeAiConfig, updateAiConfig, publicFailure } from '../services/platform-ai/config.js';
 import { ChannelError, decodeCallback, getChannel, listChannels, saveChannel } from '../services/platform-ai/channels.js';
 import { getConversation, receiveMessage } from '../services/platform-ai/store.js';
 import { platformCatalog, PLATFORM_TOOLS } from '../services/platform-ai/tools.js';
 import { PlatformAiWorker } from '../services/platform-ai/worker.js';
 import { discoverModels, testModelConnection } from '../services/platform-ai/model-probes.js';
+import { detectWorkAgents } from '../services/platform-ai/agents.js';
+import { publicMessageColumns, subscribeConversation, type LiveEvent } from '../services/platform-ai/live.js';
 
 const idSchema = z.string().min(1).max(256);
 const callbackRate = new Map<string, { start: number; count: number }>();
 
 export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = async (app, options) => {
+  const liveClosers = new Set<() => void>();
+  app.addHook('preClose', async () => { for (const close of [...liveClosers]) close(); });
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) return reply.code(400).send({ error: error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('; ').slice(0, 1000) });
     if (error instanceof ChannelError) return reply.code(error.statusCode).send({ error: error.message });
@@ -42,6 +46,10 @@ export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = asy
   app.get('/platform-ai/status', async (req, reply) => {
     if (!requirePermission(req, reply, 'agent_api')) return;
     return { enabled: readAiConfig().enabled };
+  });
+  app.get('/platform-ai/agents', async (req, reply) => {
+    if (!requirePermission(req, reply, 'agent_api')) return;
+    return {agents: await detectWorkAgents()};
   });
   app.get('/platform-ai/tools', async (req, reply) => {
     if (!requirePermission(req, reply, 'agent_api')) return;
@@ -96,9 +104,36 @@ export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = asy
     if (!conversation || conversation.user_id !== req.user!.id) return reply.code(404).send({ error: '对话不存在' });
     return {
       conversation: { id: conversation.id, title: conversation.title, channel_id: conversation.channel_id },
-      messages: getDb().prepare(`SELECT id,role,content,status,error,created_at FROM (
-        SELECT rowid AS sequence,id,role,content,status,error,created_at FROM platform_ai_messages WHERE conversation_id=? ORDER BY rowid DESC LIMIT 100) ORDER BY sequence`).all(conversation.id),
+      messages: getDb().prepare(`SELECT ${publicMessageColumns} FROM (
+        SELECT rowid AS sequence,${publicMessageColumns} FROM platform_ai_messages WHERE conversation_id=? ORDER BY rowid DESC LIMIT 100) ORDER BY sequence`).all(conversation.id),
     };
+  });
+  app.get<{Params: {id: string}}>('/platform-ai/conversations/:id/events', async (req, reply) => {
+    if (!requirePermission(req, reply, 'agent_api')) return;
+    const id = req.params.id, userId = req.user!.id, token = readSessionCookie(req);
+    if (getConversation(id)?.user_id !== userId) return reply.code(404).send({error: '对话不存在'});
+    reply.hijack();
+    reply.raw.writeHead(200, {'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no'});
+    reply.raw.flushHeaders();
+    let closed = false;
+    let heartbeat: ReturnType<typeof setInterval>;
+    let unsubscribe: (() => void) | undefined;
+    const close = () => {
+      if (closed) return;
+      closed = true; clearInterval(heartbeat); unsubscribe?.(); liveClosers.delete(close); reply.raw.end();
+    };
+    const authorized = () => token && getSessionUser(token)?.id === userId && userHasPermission(userId, 'agent_api') && getConversation(id)?.user_id === userId;
+    const send = (event: LiveEvent) => {
+      if (closed) return;
+      if (!authorized() || reply.raw.writableLength > 256 * 1024) {close(); return;}
+      try { reply.raw.write(`data: ${JSON.stringify(event)}\n\n`); } catch {close();}
+    };
+    unsubscribe = subscribeConversation(id, send);
+    heartbeat = setInterval(() => {if (!authorized()) close(); else reply.raw.write(': heartbeat\n\n');}, 15000);
+    heartbeat.unref();
+    liveClosers.add(close);
+    reply.raw.on('close', close);
+    send({type: 'refresh'});
   });
   app.post('/platform-ai/messages', async (req, reply) => {
     if (!requirePermission(req, reply, 'agent_api', 'write')) return;
