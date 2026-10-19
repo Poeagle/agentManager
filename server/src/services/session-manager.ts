@@ -1358,7 +1358,7 @@ export function querySessionOutput(
 export function querySessionOutputSince(
   sessionId: string,
   opts: { since?: number; limit: number }
-): { chunks: { seq: number; data: string }[]; hasMore: boolean; latestSeq: number | null } {
+): { chunks: { seq: number; data: string }[]; hasMore: boolean; latestSeq: number | null; cursorReset?: boolean } {
   const db = getDb();
   const limit = Math.min(opts.limit, 500000);
 
@@ -1385,6 +1385,11 @@ export function querySessionOutputSince(
   const hasMore = rows.length > limit;
   if (hasMore) rows = rows.slice(0, limit);
 
+  if (rows.length === 0) {
+    const highWater = (db.prepare('SELECT MAX(seq) AS seq FROM pty_output WHERE session_id=?').get(sessionId) as {seq: number | null}).seq;
+    const cursorReset = highWater != null && highWater < opts.since;
+    return {chunks: [], hasMore: false, latestSeq: cursorReset ? highWater : opts.since, ...(cursorReset ? {cursorReset: true} : {})};
+  }
   return {
     chunks: rows,
     hasMore,

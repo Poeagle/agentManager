@@ -73,6 +73,7 @@ export function migratePlatformAi(db: Database.Database): void {
   `);
   const taskColumns = db.prepare('PRAGMA table_info(platform_ai_tasks)').all() as Array<{name: string}>;
   if (!taskColumns.some(column => column.name === 'source_ref')) db.exec("ALTER TABLE platform_ai_tasks ADD COLUMN source_ref TEXT NOT NULL DEFAULT ''");
+  if (!taskColumns.some(column => column.name === 'last_assessed_output')) db.exec("ALTER TABLE platform_ai_tasks ADD COLUMN last_assessed_output TEXT NOT NULL DEFAULT ''");
   const messageColumns = db.prepare('PRAGMA table_info(platform_ai_messages)').all() as Array<{name: string}>;
   for (const column of ['progress', 'partial_content']) {
     if (!messageColumns.some(item => item.name === column)) db.exec(`ALTER TABLE platform_ai_messages ADD COLUMN ${column} TEXT NOT NULL DEFAULT ''`);

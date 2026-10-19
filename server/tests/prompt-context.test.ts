@@ -47,6 +47,25 @@ describe('prompt enhancement conversation context', () => {
     expect(JSON.stringify(turns)).not.toContain('正在检查');
     expect(JSON.stringify(turns)).not.toContain('hidden reasoning');
   });
+  it('reads Codex response-item user prompts when user_message events are absent', () => {
+    const turns = extractCodexPromptContext([
+      {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'<environment_context>metadata</environment_context>'}]}},
+      {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'只读分析项目 [Platform task reference: task-one]'}]}},
+      {type:'response_item',payload:{type:'message',role:'assistant',phase:'commentary',content:[{type:'output_text',text:'正在读取文件'}]}},
+      {type:'response_item',payload:{type:'message',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'已完成源码分析，未修改文件。'}]}},
+      {type:'event_msg',payload:{type:'task_complete',last_agent_message:'已完成源码分析，未修改文件。'}},
+    ],1);
+    expect(turns).toEqual([{user:'只读分析项目 [Platform task reference: task-one]',assistant:'已完成源码分析，未修改文件。'}]);
+  });
+  it('deduplicates dual-format Codex prompts and keeps later interrupted work out', () => {
+    const prompt={type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'完成第一轮'}]}};
+    expect(extractCodexPromptContext([
+      {type:'event_msg',payload:{type:'user_message',message:'完成第一轮'}},prompt,
+      {type:'event_msg',payload:{type:'task_complete',last_agent_message:'第一轮结果'}},
+      {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'未完成第二轮'}]}},
+      {type:'response_item',payload:{type:'message',role:'assistant',phase:'commentary',content:[{type:'output_text',text:'还在处理中'}]}},
+    ],5)).toEqual([{user:'完成第一轮',assistant:'第一轮结果'}]);
+  });
 
   it('keeps only the configured newest rounds within the context budget', () => {
     const turns = Array.from({ length: 12 }, (_, index) => ({

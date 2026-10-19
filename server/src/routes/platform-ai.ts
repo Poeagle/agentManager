@@ -102,10 +102,18 @@ export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = asy
     if (!requirePermission(req, reply, 'agent_api')) return;
     const conversation = getConversation(req.params.id);
     if (!conversation || conversation.user_id !== req.user!.id) return reply.code(404).send({ error: '对话不存在' });
+    const messages = getDb().prepare(`SELECT ${publicMessageColumns} FROM (
+      SELECT rowid AS sequence,${publicMessageColumns} FROM platform_ai_messages WHERE conversation_id=? ORDER BY rowid DESC LIMIT 100) ORDER BY sequence`).all(conversation.id) as Array<{role: string; content: string}>;
+    // Preserve the audit rows, but show identical historical notices once.
+    const notices = new Set<string>();
+    const visible = messages.slice().reverse().filter(message => {
+      if (message.role !== 'notice') return true;
+      if (notices.has(message.content)) return false;
+      notices.add(message.content); return true;
+    }).reverse();
     return {
       conversation: { id: conversation.id, title: conversation.title, channel_id: conversation.channel_id },
-      messages: getDb().prepare(`SELECT ${publicMessageColumns} FROM (
-        SELECT rowid AS sequence,${publicMessageColumns} FROM platform_ai_messages WHERE conversation_id=? ORDER BY rowid DESC LIMIT 100) ORDER BY sequence`).all(conversation.id),
+      messages: visible,
     };
   });
   app.get<{Params: {id: string}}>('/platform-ai/conversations/:id/events', async (req, reply) => {

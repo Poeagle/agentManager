@@ -6,7 +6,7 @@ import { migrateRbac } from '../services/rbac.js';
 import { migratePlatformAi } from '../services/platform-ai/schema.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;

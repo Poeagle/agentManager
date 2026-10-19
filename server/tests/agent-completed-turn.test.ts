@@ -42,4 +42,16 @@ describe('native completed-turn observation API',()=>{
     expect(result.json()).toMatchObject({outputSource:'snapshot',output:expect.stringContaining('command not found: codex')});
     expect((await app.inject({url:'/api/sessions/other/display',headers:{cookie}})).statusCode).toBe(404);
   });
+  it('keeps the incremental cursor on empty polls and returns actual rendered text',async()=>{
+    getDb().prepare("INSERT INTO pty_output(session_id,seq,data) VALUES ('own',42,?)").run('\u001b[31m旧内容\u001b[0m\r\u001b[2K最终结果');
+    const full=await app.inject({url:'/api/sessions/own/display',headers:{cookie}});
+    expect(full.json()).toMatchObject({cursor:42,cursorReset:false,output:'最终结果'});
+    expect(full.json().output).not.toContain('\u001b');
+    for (let attempt=0;attempt<3;attempt++) {
+      const empty=await app.inject({url:'/api/sessions/own/display?since=42',headers:{cookie}});
+      expect(empty.json()).toMatchObject({cursor:42,cursorReset:false,output:''});
+    }
+    const reset=await app.inject({url:'/api/sessions/own/display?since=100',headers:{cookie}});
+    expect(reset.json()).toMatchObject({cursor:42,cursorReset:true});
+  });
 });

@@ -2,7 +2,6 @@ import { FastifyPluginAsync } from 'fastify';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as { Terminal: any };
-const { SerializeAddon } = require('@xterm/addon-serialize') as { SerializeAddon: any };
 import { isSessionActive, writeToSession, querySessionOutputSince, getSession, getSessionSnapshot } from '../services/session-manager.js';
 import { RESIZE_MARKER } from '../services/session-manager.js';
 import { getTracker, getOrCreateTracker } from '../services/session-state.js';
@@ -82,7 +81,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version: '2.5.0',
+    version: '2.6.0',
     updatedAt: '2026-10-19',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, Codex quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -274,6 +273,7 @@ export function getAgentApiContract() {
           output: 'string — last N lines of clean rendered terminal text',
           outputSource: 'replay | snapshot — snapshot is the archived final screen after replay was removed; it may repeat even with since',
           cursor: 'number | null — pass back as ?since= for incremental polling',
+          cursorReset: 'boolean — true only when retained replay proves the cursor moved backwards; resync without since. Empty polls preserve the supplied cursor.',
           truncated: 'boolean — true if output was trimmed or more data exists',
         },
       },
@@ -642,8 +642,6 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const term = new HeadlessTerminal({
       cols: initCols, rows: initRows, scrollback: 200000, allowProposedApi: true,
     });
-    const serializeAddon = new SerializeAddon();
-    term.loadAddon(serializeAddon);
 
     const rendered = await new Promise<string>((resolve) => {
       let idx = 0;
@@ -673,7 +671,12 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       }
 
       function finalize() {
-        const raw = serializeAddon.serialize();
+        // SerializeAddon emits an ANSI replay stream, not clean text. Read the
+        // rendered terminal cells so automation does not receive cursor codes.
+        const buffer = term.buffer.active;
+        const screenLines: string[] = [];
+        for (let index = 0; index < buffer.length; index++) screenLines.push(buffer.getLine(index)?.translateToString(true) || '');
+        const raw = screenLines.join('\n');
         term.dispose();
 
         // Clean up: collapse blank lines, strip ANSI remnants from line content check
@@ -716,6 +719,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       output: rendered,
       outputSource: snapshot ? 'snapshot' : 'replay',
       cursor: result.latestSeq,
+      cursorReset: result.cursorReset || false,
       truncated: result.hasMore || rendered.split('\n').length < (result.chunks.length > 0 ? lines : 0),
     };
   });

@@ -200,7 +200,7 @@ function AiConfigForm({initial}: {initial: PlatformAiConfig}) {
     {probe && <section aria-label="模型连通性测试结果" className="space-y-3 rounded-md border p-4 text-sm" style={{borderColor: 'var(--border)'}}><p role="status" style={{color: probe.ok ? 'var(--success)' : 'var(--text-primary)'}}>{probe.ok ? '测试通过，可用于平台 AI' : '测试未全部通过'} · {probe.model} · {(probe.elapsed_ms / 1000).toFixed(1)} 秒</p>{([['connection','接口连接'],['response','模型响应'],['tools','工具调用']] as const).map(([id,label]) => <div key={id}><span>{label}：{({passed: '通过', failed: '失败', skipped: '未测试'})[probe.checks[id].status]}</span><p className="mt-1 text-xs leading-6" style={muted}>{probe.checks[id].message}</p></div>)}</section>}
     <div className="grid gap-4 sm:grid-cols-2">{([
       ['timeout_ms', '单次模型超时（毫秒）', 1000, 120000], ['max_tool_rounds', '每轮最多工具调用轮数', 1, 16],
-      ['observation_interval_seconds', '会话读取间隔（秒）', 5, 300], ['assessment_interval_seconds', 'AI 进度分析最小间隔（秒）', 30, 1800],
+      ['observation_interval_seconds', '活跃输出读取最小间隔（秒）', 5, 300], ['assessment_interval_seconds', 'AI 进度分析最小间隔（秒）', 30, 1800],
       ['notification_interval_seconds', '常规进度汇报间隔（秒）', 60, 3600],
     ] as const).map(([name,label,min,max]) => <label key={name} className="block text-sm">{label}<input type="number" min={min} max={max} required className={fieldClass + ' mt-2'} style={fieldStyle} value={config[name]} onChange={event => updateConnection({[name]: Number(event.target.value)})} /></label>)}</div>
     {error && <p role="alert" className="text-sm text-red-400">{error}</p>}{notice && <p role="status" className="text-sm" style={{color: 'var(--success)'}}>{notice}</p>}

@@ -13,7 +13,7 @@ export interface InboxMessage {
 export interface TrackedTask {
   id: string; conversation_id: string; user_id: string; session_id: string;
   requirement: string; source_ref: string; status: string; cursor: number; output: string;
-  last_fingerprint: string; last_assessed_fingerprint: string; summary: string; evidence: string;
+  last_fingerprint: string; last_assessed_fingerprint: string; last_assessed_output: string; summary: string; evidence: string;
   next_observe_at: number; last_assessed_at: number; last_notified_at: number; observation_failures: number;
 }
 

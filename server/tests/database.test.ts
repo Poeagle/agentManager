@@ -39,7 +39,7 @@ describe('database schema and durable session identity', () => {
     const { webPageInstances: _web, activeWebPageId: _active, ...retained } = tabs;
     expect(JSON.parse(state.value)).toEqual(retained);
     expect(getDb().prepare(`SELECT value FROM user_ui_state WHERE key = 'project:corrupt'`).get()).toEqual({ value: 'not-json' });
-    const backup = readdirSync(database.dir).find((file) => file.includes('.pre-v14-') && file.endsWith('.bak'));
+    const backup = readdirSync(database.dir).find((file) => file.includes('.pre-v15-') && file.endsWith('.bak'));
     expect(backup).toBeDefined();
     const original = new Database(join(database.dir, backup!), { readonly: true });
     try { expect(original.prepare('SELECT default_web_url FROM projects WHERE id = ?').get('p')).toEqual({ default_web_url: 'https://example.com' }); }
@@ -101,7 +101,7 @@ describe('database schema and durable session identity', () => {
       'stopped_at',
       'stop_reason',
     ]));
-    expect(db.pragma('user_version', { simple: true })).toBe(14);
+    expect(db.pragma('user_version', { simple: true })).toBe(15);
   });
 
   it('preserves legacy project prompt data while migrating', () => {
@@ -128,7 +128,7 @@ describe('database schema and durable session identity', () => {
     initDb();
     const migrated = getDb().prepare('SELECT session_prompt FROM projects WHERE id = ?').get('legacy') as { session_prompt: string };
     expect(migrated.session_prompt).toBe('keep this prompt');
-    expect(getDb().pragma('user_version', { simple: true })).toBe(14);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(15);
 
     cleanup = () => {
       closeDb();
@@ -213,6 +213,6 @@ describe('database schema and durable session identity', () => {
       'legacy-orphan-project': null,
       'legacy-owned': 'owner',
     });
-    expect(getDb().pragma('user_version', { simple: true })).toBe(14);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(15);
   });
 });

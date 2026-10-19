@@ -13,11 +13,12 @@ import { scheduledTaskRoutes } from '../src/routes/scheduled-tasks.js';
 import * as manager from '../src/services/session-manager.js';
 import { readAiConfig, updateAiConfig } from '../src/services/platform-ai/config.js';
 import { decodeCallback, decryptWechatMessage, getChannel, hmacSignature, saveChannel, xmlText } from '../src/services/platform-ai/channels.js';
-import { claimMessage, getConversation, receiveMessage, trackTask, type InboxMessage } from '../src/services/platform-ai/store.js';
-import { PlatformAiWorker, validateAssessment } from '../src/services/platform-ai/worker.js';
+import { claimMessage, enqueueNotice, getConversation, receiveMessage, trackTask, type InboxMessage } from '../src/services/platform-ai/store.js';
+import { newObservationText, PlatformAiWorker, validateAssessment } from '../src/services/platform-ai/worker.js';
 import { captureScheduledBaseline, reconcileScheduledObservations } from '../src/services/platform-ai/scheduled-observation.js';
 import { createTestDatabase } from './helpers/database.js';
 import * as agents from '../src/services/platform-ai/agents.js';
+import { broadcastEphemeral } from '../src/services/event-store.js';
 
 const providerResponse = (message: Record<string, unknown>) => new Response(JSON.stringify({choices: [{message}]}), {status: 200});
 const toolResponse = (name: string, args: unknown, id = 'call-1') => providerResponse({content: null, tool_calls: [{id, type: 'function', function: {name, arguments: JSON.stringify(args)}}]});
@@ -31,7 +32,8 @@ let adminCookie: string;
 let cookie: string;
 let databaseDir: string;
 let nativeTurns: Array<{user: string; assistant: string}>;
-let display: {cursor: number; output: string; processState: string; promptType: string | null};
+let display: {cursor: number | null; output: string; processState: string; promptType: string | null; cursorReset?: boolean};
+let displayRequests: string[];
 
 beforeEach(async () => {
   vi.spyOn(agents, 'detectWorkAgent').mockImplementation(async cli => ({cli_type: cli, label: cli, status:'available',reason:'Test fixture'}));
@@ -54,8 +56,10 @@ beforeEach(async () => {
   await app.register(platformAiRoutes, {prefix: '/api', runWorker: false});
   display = {cursor: 0, output: '', processState: 'idle', promptType: null};
   nativeTurns = [];
+  displayRequests = [];
   app.get('/api/sessions/:id/completed-turn', async () => ({turns: nativeTurns}));
   app.get<{Params: {id: string}}>('/api/sessions/:id/display', async (req, reply) => {
+    displayRequests.push(req.url);
     if (!userCanUseSessionTool(req.user!.id, req.params.id, 'codex', 'session')) return reply.code(404).send({error: 'Session not found'});
     return {...display};
   });
@@ -65,6 +69,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await worker.stop();
   await app.close();
+  vi.useRealTimers();
   vi.restoreAllMocks(); vi.unstubAllGlobals();
   cleanup();
 });
@@ -299,6 +304,139 @@ describe('durable platform AI tool execution', () => {
 });
 
 describe('session observation and notification reliability', () => {
+  it('uses tracked-tab events to wake a coalesced durable queue and ignores unrelated tabs', async () => {
+    configure();seedSession();const received=inbound();
+    const task=trackTask(getConversation(received.conversation_id)!,'session-1','分析项目');
+    getDb().prepare("UPDATE platform_ai_messages SET status='done'").run();
+    vi.useFakeTimers({toFake:['Date','setInterval','clearInterval']});
+    const now=Date.now();
+    const observe=vi.spyOn(worker,'observe').mockImplementation(async task=>{
+      getDb().prepare('UPDATE platform_ai_tasks SET next_observe_at=? WHERE id=?').run(Date.now()+300000,task.id);
+    });
+    worker.start();worker.tick();await worker.drain();
+    expect(observe).toHaveBeenCalledTimes(1);
+    broadcastEphemeral({type:'session.state',session_id:'untracked',data:{processState:'idle'}});
+    worker.tick();await worker.drain();expect(observe).toHaveBeenCalledTimes(1);
+    for(let index=0;index<10;index++) broadcastEphemeral({type:'session.state',session_id:'session-1',data:{processState:'idle'}});
+    worker.tick();await worker.drain();expect(observe).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(now+500);worker.tick();await worker.drain();
+    expect(observe).toHaveBeenCalledTimes(2);expect(observe.mock.calls[1][2]).toBe(true);
+    vi.setSystemTime(now+1000);
+    for(let index=0;index<10;index++) broadcastEphemeral({type:'session.activity',session_id:'session-1',data:{lastActivity:Date.now()}});
+    worker.tick();await worker.drain();expect(observe).toHaveBeenCalledTimes(2);
+    vi.setSystemTime(now+16000);worker.tick();await worker.drain();expect(observe).toHaveBeenCalledTimes(3);
+    await worker.stop();
+    const due=(getDb().prepare('SELECT next_observe_at FROM platform_ai_tasks WHERE id=?').get(task.id) as {next_observe_at:number}).next_observe_at;
+    broadcastEphemeral({type:'session_end',session_id:'session-1'});
+    expect(getDb().prepare('SELECT next_observe_at FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({next_observe_at:due});
+  });
+  it('does only bounded local rechecks while the native final log is delayed', async () => {
+    configure();seedSession();const received=inbound();
+    let task=trackTask(getConversation(received.conversation_id)!,'session-1','分析项目',0,'delayed-event');
+    display={cursor:4,output:'Agent 刚刚停止输出',processState:'idle',promptType:null};
+    const fetchMock=vi.fn();vi.stubGlobal('fetch',fetchMock);
+    for(let index=0;index<4;index++) {
+      await worker.observe(task,readAiConfig(),index===0);
+      task=getDb().prepare('SELECT * FROM platform_ai_tasks WHERE id=?').get(task.id) as typeof task;
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(task.next_observe_at-Date.now()).toBeGreaterThan(290000);
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM platform_ai_outbox').get()).toEqual({n:0});
+  });
+  it('reports an authorization question from a tab event without calling a model', async () => {
+    configure();seedSession();const received=inbound();
+    const task=trackTask(getConversation(received.conversation_id)!,'session-1','分析项目');
+    display={cursor:5,output:'Do you want to allow reading this directory? (y/n)',processState:'waiting_for_input',promptType:'confirmation'};
+    const fetchMock=vi.fn();vi.stubGlobal('fetch',fetchMock);
+    await worker.observe(task,readAiConfig(),true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'blocked'});
+    expect((getDb().prepare('SELECT content FROM platform_ai_outbox').get() as {content:string}).content).toContain('Do you want to allow reading this directory?');
+  });
+  it('analyzes a new text question promptly even if its output was seen during a recent busy state', async () => {
+    configure();seedSession();const received=inbound();
+    const task=trackTask(getConversation(received.conversation_id)!,'session-1','实现导出');
+    task.last_assessed_at=Date.now();task.last_assessed_output='要导出 CSV 还是 JSON?';task.output=task.last_assessed_output;
+    display={cursor:0,output:'',processState:'waiting_for_input',promptType:'text'};
+    const fetchMock=vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'blocked',summary:'Agent 需要选择导出格式：CSV 或 JSON。',evidence:'要导出 CSV 还是 JSON?'})}));
+    vi.stubGlobal('fetch',fetchMock);
+    await worker.observe(task,readAiConfig(),true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'blocked'});
+  });
+  it('uses the matching native final instead of mistaking a numbered report for an input prompt', async () => {
+    configure();seedSession();const received=inbound();
+    const task=trackTask(getConversation(received.conversation_id)!,'session-1','分析项目',0,'numbered-report');
+    display={cursor:5,output:'1. 项目定位\n2. 技术架构',processState:'waiting_for_input',promptType:'choice'};
+    nativeTurns=[{user:'分析项目 [Platform task reference: numbered-report]',assistant:'项目分析已完成，未执行构建测试。'}];
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'reported_complete',summary:'分析已完成，未执行构建测试。',evidence:'项目分析已完成'})})));
+    await worker.observe(task,readAiConfig(),true);
+    expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'reported_complete'});
+  });
+  it('does not turn repeated empty null-cursor polls into resets or model requests', async () => {
+    configure();seedSession();const received=inbound();
+    let task=trackTask(getConversation(received.conversation_id)!,'session-1','分析项目',42,'empty-poll');
+    display={cursor:null,output:'',processState:'idle',promptType:null};
+    const fetchMock=vi.fn();vi.stubGlobal('fetch',fetchMock);
+    for (let index=0;index<4;index++) {
+      await worker.observe(task,readAiConfig());
+      task=getDb().prepare('SELECT * FROM platform_ai_tasks WHERE id=?').get(task.id) as typeof task;
+    }
+    expect(task).toMatchObject({cursor:42,status:'running'});
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM platform_ai_outbox').get()).toEqual({n:0});
+  });
+  it('recovers a real cursor reset internally without discarding a completed native result', async () => {
+    configure();seedSession();const received=inbound();
+    const task=trackTask(getConversation(received.conversation_id)!,'session-1','分析项目',42,'resynced-task');
+    display={cursor:3,cursorReset:true,output:'恢复后的屏幕',processState:'idle',promptType:null};
+    nativeTurns=[{user:'分析项目 [Platform task reference: resynced-task]',assistant:'已完成项目概览。未执行构建测试。'}];
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'reported_complete',summary:'已完成分析，未执行构建测试。',evidence:'已完成项目概览'})})));
+    await worker.observe(task,readAiConfig());
+    expect(displayRequests).toEqual(['/api/sessions/session-1/display?lines=300&since=42','/api/sessions/session-1/display?lines=300']);
+    expect(getDb().prepare('SELECT cursor,status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({cursor:3,status:'reported_complete'});
+    const notice=getDb().prepare("SELECT content FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get() as {content:string};
+    expect(notice.content).toContain('已完成项目概览。未执行构建测试。');
+    expect(notice.content).not.toContain('游标');
+  });
+  it('detects a newly available native final even without output and before the next analysis interval', async () => {
+    configure();seedSession();const received=inbound();
+    const task=trackTask(getConversation(received.conversation_id)!,'session-1','分析项目',42,'idle-result');
+    task.last_assessed_at=Date.now();
+    display={cursor:null,output:'',processState:'idle',promptType:null};
+    nativeTurns=[{user:'分析项目 [Platform task reference: idle-result]',assistant:'已完成分析，报告正文。'}];
+    const fetchMock=vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'reported_complete',summary:'分析报告已完成，未运行测试。',evidence:'已完成分析'})}));
+    vi.stubGlobal('fetch',fetchMock);
+    await worker.observe(task,readAiConfig());
+    expect(getDb().prepare('SELECT cursor,status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({cursor:42,status:'reported_complete'});
+    const modelInput=JSON.parse(JSON.parse(fetchMock.mock.calls[0][1].body).messages[1].content);
+    expect(modelInput.output).toBe('');expect(modelInput.native_final_answer).toBe('已完成分析，报告正文。');
+  });
+  it('sends incremental, bounded progress text and deduplicates unchanged progress notices', async () => {
+    configure();seedSession();const received=inbound();
+    let task=trackTask(getConversation(received.conversation_id)!,'session-1','分析项目');
+    const fetchMock=vi.fn().mockImplementation(async()=>providerResponse({content:JSON.stringify({status:'running',summary:'正在分析核心模块',evidence:''})}));
+    vi.stubGlobal('fetch',fetchMock);
+    for(let index=0;index<3;index++) {
+      display={cursor:index+1,output:`进展${index}`,processState:'idle',promptType:null};
+      task.last_assessed_at=0;task.last_notified_at=0;
+      await worker.observe(task,readAiConfig());
+      task=getDb().prepare('SELECT * FROM platform_ai_tasks WHERE id=?').get(task.id) as typeof task;
+    }
+    expect(getDb().prepare("SELECT COUNT(*) AS n FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get()).toEqual({n:1});
+    const third=JSON.parse(JSON.parse(fetchMock.mock.calls[2][1].body).messages[1].content);
+    expect(third.output).toContain('进展2');expect(third.output).not.toContain('进展0');
+    expect(third.previous_summary).toBe('正在分析核心模块');
+    expect(newObservationText('A'.repeat(12000)+'B'.repeat(12000),'B'.repeat(12000)+'C'.repeat(12000))).toBe('C'.repeat(6000));
+    expect(newObservationText('unchanged','unchanged')).toBe('');
+  });
+  it('collapses identical historical notices in the conversation while retaining the audit rows', async () => {
+    const received=inbound();
+    for (let index=0;index<3;index++) enqueueNotice(received.conversation_id,`old:${index}`,'同一条历史通知');
+    const result=await app.inject({url:`/api/platform-ai/conversations/${received.conversation_id}`,headers:{cookie}});
+    expect(result.json().messages.filter((message: {role:string})=>message.role==='notice')).toHaveLength(1);
+    expect(getDb().prepare("SELECT COUNT(*) AS n FROM platform_ai_messages WHERE role='notice'").get()).toEqual({n:3});
+  });
   it('reports a missing CLI from an ended snapshot immediately without asking the model', async () => {
     configure();seedSession();const received=inbound();
     const task=trackTask(getConversation(received.conversation_id)!,'session-1','只读分析',100,'missing-cli');

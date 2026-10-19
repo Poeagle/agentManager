@@ -144,9 +144,13 @@ export function extractCodexPromptContext(entries: Iterable<unknown>, rounds: nu
     if (!isRecord(value) || !isRecord(value.payload)) continue;
     const payload = value.payload;
 
-    if (value.type === 'event_msg' && payload.type === 'user_message') {
-      const text = cleanText(payload.message);
+    if ((value.type === 'event_msg' && payload.type === 'user_message')
+      || (value.type === 'response_item' && payload.type === 'message' && payload.role === 'user')) {
+      const text = value.type === 'event_msg' ? cleanText(payload.message) : contentText(payload.content, 'input_text');
       if (!text) continue;
+      if (/^<environment_context>[\s\S]*<\/environment_context>$/.test(text)) continue;
+      // Some releases record the same prompt in both event and response forms.
+      if (text === user && !finalAnswer) continue;
       // A new human message means any preceding turn without a final answer was
       // interrupted; it must not leak commentary into enhancement context.
       commit();
