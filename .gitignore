@@ -47,3 +47,7 @@ CLAUDE.local.md
 .agentmanager-pro/
 # AgentManager-generated agents manifest
 AGENTS.md
+
+# Platform AI private encryption key and migration backups
+.platform-ai.key
+*.db.pre-v*.bak

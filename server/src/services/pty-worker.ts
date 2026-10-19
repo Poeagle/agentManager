@@ -1,3 +1,4 @@
+import { runtimeNames } from './runtime-namespace.js';
 /**
  * PTY Worker — runs as a separate child process per session.
  *
@@ -119,7 +120,8 @@ type ParentMessage =
    tmux helpers (same as session-manager but local to worker)
    ================================================================ */
 
-const TMUX_SERVER = 'agentmanager';
+const runtime = runtimeNames();
+const TMUX_SERVER = runtime.tmuxServer;
 const tmuxBaseArgs = ['-L', TMUX_SERVER];
 
 function tmuxSessionName(sessionId: string): string {
@@ -127,7 +129,7 @@ function tmuxSessionName(sessionId: string): string {
 }
 
 function sandboxUnitName(sessionId: string): string {
-  return `agentmanager-sandbox-${sessionId.replace(/[^A-Za-z0-9_.-]/g, '-')}`;
+  return `${runtime.sandboxPrefix}${sessionId.replace(/[^A-Za-z0-9_.-]/g, '-')}`;
 }
 
 export function buildSandboxCommand(
@@ -249,7 +251,7 @@ async function tmuxKill(sessionId: string): Promise<void> {
    ================================================================ */
 
 function dtachSocket(sessionId: string): string {
-  return `/tmp/agentmanager-${sessionId}.sock`;
+  return `/tmp/${runtime.socketPrefix}${sessionId}.sock`;
 }
 
 function dtachExists(sessionId: string): boolean {
@@ -309,7 +311,7 @@ function spawnDirect(msg: SpawnMessage, program: string, args: string[]): pty.IP
    pipe-pane: capture raw application output via FIFO
    ================================================================ */
 
-const PIPE_PANE_DIR = join(tmpdir(), 'agentmanager-pipes');
+const PIPE_PANE_DIR = join(tmpdir(), runtime.pipeDirectory);
 mkdirSync(PIPE_PANE_DIR, { recursive: true });
 
 function setupPipePane(sessionId: string, server?: string): { stream: ReadStream; fifoPath: string } | null {

@@ -34,7 +34,7 @@ export default defineConfig({
       reuseExistingServer: false,
     },
     {
-      command: `VITE_PORT=${UI_PORT} VITE_API_TARGET=http://127.0.0.1:${API_PORT} npm --prefix dashboard run dev -- --host 127.0.0.1`,
+      command: `VITE_CACHE_DIR=node_modules/.vite-platform-ai-e2e VITE_PORT=${UI_PORT} VITE_API_TARGET=http://127.0.0.1:${API_PORT} npm --prefix dashboard run dev -- --host 127.0.0.1`,
       url: `http://127.0.0.1:${UI_PORT}`,
       timeout: 60_000,
       reuseExistingServer: false,

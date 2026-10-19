@@ -1,3 +1,4 @@
+import { runtimeNames } from '../services/runtime-namespace.js';
 import type { FastifyPluginAsync } from 'fastify';
 import { execFile } from 'child_process';
 import { readFileSync } from 'fs';
@@ -83,7 +84,7 @@ function measureSandboxCgroup(sessionId: string) {
   if (process.platform !== 'linux' || typeof process.getuid !== 'function') return null;
   const uid = process.getuid();
   const safeId = sessionId.replace(/[^A-Za-z0-9_.-]/g, '-');
-  const unit = `agentmanager-sandbox-${safeId}.service`;
+  const unit = `${runtimeNames().sandboxPrefix}${safeId}.service`;
   const userRoot = `/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service`;
   for (const slice of ['app.slice', 'session.slice', 'background.slice']) {
     const root = `${userRoot}/${slice}/${unit}`;

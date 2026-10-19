@@ -3,9 +3,10 @@ import { dirname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { config } from '../config.js';
 import { migrateRbac } from '../services/rbac.js';
+import { migratePlatformAi } from '../services/platform-ai/schema.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -384,6 +385,7 @@ function runMigrations(): void {
         SET value = json_remove(value, '$.webPageInstances', '$.activeWebPageId')
         WHERE key LIKE 'project:%' AND json_valid(value)`);
     }
+    migratePlatformAi(db);
     createCurrentIndexes();
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
   });

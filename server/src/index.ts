@@ -25,6 +25,8 @@ import { gitRoutes } from './routes/git.js';
 import { agentRoutes } from './routes/agent.js';
 import { settingsRoutes } from './routes/settings.js';
 import { promptEnhancerRoutes } from './routes/prompt-enhancer.js';
+import { platformAiRoutes } from './routes/platform-ai.js';
+import { installPlatformApiRegistry } from './services/platform-ai/api-registry.js';
 import { skillsRoutes } from './routes/skills.js';
 import { userStateRoutes } from './routes/user-state.js';
 import { scheduledTaskRoutes } from './routes/scheduled-tasks.js';
@@ -79,6 +81,7 @@ async function start() {
     },
   });
   server = app;
+  installPlatformApiRegistry(app);
 
   if (timingLogPath) await writeFile(timingLogPath, '').catch(() => {});
 
@@ -142,6 +145,7 @@ async function start() {
   await app.register(agentRoutes, { prefix: '/api' });
   await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(promptEnhancerRoutes, { prefix: '/api' });
+  await app.register(platformAiRoutes, { prefix: '/api' });
   await app.register(skillsRoutes, { prefix: '/api' });
   await app.register(userStateRoutes, { prefix: '/api' });
   await app.register(scheduledTaskRoutes, { prefix: '/api' });
@@ -319,7 +323,7 @@ async function start() {
   console.log(`\n🌊 AgentManager running at http://localhost:${config.port}`);
   console.log(`   API: http://localhost:${config.port}/api`);
   if (config.isDev) {
-    console.log(`   Dashboard: http://localhost:42011 (Vite dev server)`);
+    console.log(`   Dashboard: http://localhost:${process.env.VITE_PORT || '42011'} (Vite dev server)`);
   }
 }
 

@@ -6,6 +6,8 @@ import { ChangePassword, ProjectAccessAdmin } from './AccountModal';
 import { RoleManagementPanel } from './RoleManagementPanel';
 import { UserManagementPanel } from './UserManagementPanel';
 
+const PlatformAi = lazy(() => import('./PlatformAiPanel').then((module) => ({ default: module.PlatformAiPanel })));
+
 const SettingsPanel = lazy(() => import('./SettingsModal').then((module) => ({ default: module.SettingsModal })));
 const AgentGuide = lazy(() => import('./AgentGuide').then((module) => ({ default: module.AgentGuideModal })));
 const Monitor = lazy(() => import('./AdminMonitorPage').then((module) => ({ default: module.AdminMonitorPage })));
@@ -16,6 +18,7 @@ const sections = [
   { id: 'roles', label: '角色与权限', group: '权限中心', icon: ShieldCheck, permission: 'roles' },
   { id: 'projects', label: '项目授权', group: '权限中心', icon: FolderKey, permission: 'project_access' },
   { id: 'monitor', label: '用户监控', group: '平台', icon: Activity, permission: 'monitor' },
+  { id: 'assistant', label: '平台 AI', group: '平台', icon: Bot, permission: 'agent_api' },
   { id: 'settings', label: '平台设置', group: '平台', icon: Settings, permission: 'settings' },
   { id: 'agent', label: 'Agent API', group: '集成', icon: Bot, permission: 'agent_api' },
 ] as const;
@@ -39,7 +42,7 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
       if (dialogRef.current?.querySelector('.fixed.inset-0')) return;
       if (event.key === 'Escape' && !event.defaultPrevented) onClose();
       if (event.key !== 'Tab') return;
-      const controls = [...(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]') ?? [])].filter((control) => control.offsetParent !== null && !control.closest('fieldset:disabled'));
+      const controls = [...(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]') ?? [])].filter((control) => control.offsetParent !== null && !control.closest('fieldset:disabled'));
       const first = controls[0];
       const last = controls.at(-1);
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
@@ -69,6 +72,7 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
                   {current.id === 'roles' && query.data && <RoleManagementPanel permissions={query.data} />}
                   {current.id === 'projects' && <div className="page-content h-full overflow-auto py-4 sm:py-6"><ProjectAccessAdmin readOnly={!hasPermission(query.data, 'project_access', 'write')} /></div>}
                   {current.id === 'settings' && <SettingsPanel embedded onClose={onClose} readOnly={!hasPermission(query.data, 'settings', 'write')} />}
+                  {current.id === 'assistant' && query.data && <PlatformAi permissions={query.data} onOpenSession={onOpenSession} />}
                   {current.id === 'agent' && <AgentGuide embedded onClose={onClose} />}
                   {current.id === 'monitor' && <Monitor onBack={onClose} onOpenSession={onOpenSession} canWrite={hasPermission(query.data, 'monitor', 'write')} canDelete={hasPermission(query.data, 'monitor', 'delete')} canOpenSessions={currentUser.role === 'admin'} />}
                 </Suspense>

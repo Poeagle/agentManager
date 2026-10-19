@@ -312,6 +312,8 @@ export async function authHook(req: FastifyRequest, reply: FastifyReply) {
   // Claude Code hooks POST events with no session cookie — allow ingest.
   // (Reads of /api/events still require login + owner filtering in the route.)
   if (req.method === 'POST' && path === '/api/events') return;
+  // Channel callbacks authenticate their own signed payloads; no browser cookie.
+  if (['GET', 'POST'].includes(req.method) && /^\/api\/platform-ai\/callbacks\/[A-Za-z0-9_-]+$/.test(path)) return;
 
   // Always resolve the user when a valid session cookie is present, so public
   // endpoints (e.g. /auth/status) can still report who is logged in.

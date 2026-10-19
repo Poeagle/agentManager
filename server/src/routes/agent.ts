@@ -10,6 +10,8 @@ import type { SessionState } from '../services/session-state.js';
 import { readSessionCookie, userCanUseSessionTool } from '../auth.js';
 import { registerUserConnection } from '../services/user-connections.js';
 import { requirePermission } from '../services/rbac.js';
+import { getDb } from '../db/index.js';
+import { loadRecentPromptContext } from '../services/prompt-context.js';
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
   if (mode === 'terminal') return mode;
@@ -80,8 +82,8 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version: '2.3.0',
-    updatedAt: '2026-10-13',
+    version: '2.4.0',
+    updatedAt: '2026-10-19',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, Codex quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
@@ -245,6 +247,13 @@ export function getAgentApiContract() {
         path: '/api/sessions/:id/resume',
         description: 'Resume an ended Claude or Codex conversation in place while preserving the AgentManager session id.',
         response: { ok: 'true', session: 'Resumed Session' },
+      },
+      {
+        category: 'Session control',
+        method: 'GET',
+        path: '/api/sessions/:id/completed-turn',
+        description: 'Read the latest completed native user/final-answer pair for this exact session. A completed turn is not independent proof that all business acceptance criteria passed.',
+        response: { turns: 'Array<{user: string, assistant: string}>; empty when native history is unavailable or the turn has not completed.' },
       },
       {
         category: 'Session control',
@@ -568,6 +577,20 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     }
 
     return tracker.state;
+  });
+
+  app.get<{Params: {id: string}}>('/sessions/:id/completed-turn', async (req, reply) => {
+    if (!canAccessAgentSession(req.user!.id, req.params.id)) return reply.status(404).send({ error: 'Session not found' });
+    const session = getSession(req.params.id);
+    if (!session) return reply.status(404).send({ error: 'Session not found' });
+    const project = session.project_id ? getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path: string} | undefined : undefined;
+    const turns = await loadRecentPromptContext({
+      cli_type: session.cli_type === 'codex' ? 'codex' : 'claude',
+      codex_session_id: session.codex_session_id || null,
+      claude_session_id: session.claude_session_id || null,
+      project_path: project?.path || null,
+    }, 1);
+    return { turns };
   });
 
   /* ----------------------------------------------------------------

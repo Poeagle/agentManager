@@ -1,3 +1,4 @@
+import { captureScheduledBaseline, PlatformAiScheduleBusyError, scheduledObservationPrompt } from './platform-ai/scheduled-observation.js';
 import { nanoid } from 'nanoid';
 import { getDb } from '../db/index.js';
 import { getUserTabUsage, userCanUseToolForProject } from '../auth.js';
@@ -349,6 +350,7 @@ export async function runScheduledTask(
   `).run(runId, taskId, trigger, scheduledFor, new Date(Date.now()).toISOString());
 
   try {
+    captureScheduledBaseline(taskId, runId, task.target_session_id);
     await assertStartConditions(task);
     assertExecutionWindow(task);
     const reason = await stopReasonBeforeRun(task);
@@ -363,7 +365,8 @@ export async function runScheduledTask(
       })();
       return { runId, status: 'stopped', sessionId: null, error: reason };
     }
-    const sessionId = await executeTask(task);
+    captureScheduledBaseline(taskId, runId, task.target_session_id, true);
+    const sessionId = await executeTask({...task, prompt: scheduledObservationPrompt(taskId, runId, task.prompt)});
     const successfulRuns = task.successful_runs + 1;
     const stopReason = task.max_successful_runs != null && successfulRuns >= task.max_successful_runs
       ? `已完成 ${successfulRuns} 次成功执行`
@@ -385,7 +388,7 @@ export async function runScheduledTask(
     return { runId, status: 'success', sessionId };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (error instanceof ExecutionWindowClosedError || error instanceof StartConditionsNotMetError) {
+    if (error instanceof ExecutionWindowClosedError || error instanceof StartConditionsNotMetError || error instanceof PlatformAiScheduleBusyError) {
       getDb().prepare(`
         UPDATE scheduled_task_runs SET status = 'skipped', error = ?, completed_at = datetime('now') WHERE id = ?
       `).run(message, runId);

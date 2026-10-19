@@ -1,0 +1,98 @@
+import { expect, test } from '@playwright/test';
+import { createServer } from 'node:http';
+import { createHmac } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+test('Platform AI chats through real platform tools and a signed external gateway', async ({page},testInfo) => {
+  test.setTimeout(90000);
+  const deliveries: Array<{body: string; headers: Record<string, unknown>}> = [];
+  const modelRequests: any[] = [];
+  const server=createServer(async (request,response) => {
+    let body='';for await (const chunk of request) body+=chunk;
+    response.setHeader('Content-Type','application/json');
+    if (request.url==='/delivery') {
+      deliveries.push({body,headers:request.headers});response.end('{}');return;
+    }
+    const payload=JSON.parse(body);modelRequests.push(payload);
+    const last=payload.messages.at(-1);
+    const message=last.role==='tool'
+      ? {content:'当前可访问项目包含：平台 AI 验证项目。你可以指定项目并下发开发需求。'}
+      : {content:null,tool_calls:[{id:'list-projects',type:'function',function:{name:'platform_request',arguments:JSON.stringify({endpoint_id:'GET /api/projects'})}}]};
+    response.end(JSON.stringify({choices:[{message}]}));
+  });
+  await new Promise<void>(resolveListen => server.listen(0,'127.0.0.1',resolveListen));
+  const address=server.address();
+  if (!address || typeof address==='string') throw new Error('Cannot start test provider');
+  const provider=`http://127.0.0.1:${address.port}`;
+  try {
+    const auth=await (await page.request.get('/api/auth/status')).json();
+    expect((await page.request.post(auth.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
+    await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true'}}});
+    const projectPath=join(resolve(dirname(fileURLToPath(import.meta.url)),'..'),'.test-data','e2e','platform-ai-project');
+    mkdirSync(projectPath,{recursive:true});
+    const created=await page.request.post('/api/projects',{data:{name:'平台 AI 验证项目',path:projectPath}});
+    expect(created.ok()).toBeTruthy();
+    await page.goto('/');
+    await page.getByRole('button',{name:'平台 AI',exact:true}).click();
+    const dialog=page.getByRole('dialog',{name:'平台管理'});
+    await dialog.getByRole('button',{name:'模型配置',exact:true}).click();
+    await dialog.getByLabel('模型 API 地址',{exact:true}).fill(provider+'/v1');
+    await dialog.getByLabel('模型名称',{exact:true}).fill('e2e-tools-model');
+    await dialog.getByLabel('API Key',{exact:true}).fill('e2e-platform-ai-secret');
+    await dialog.getByLabel('启用平台 AI',{exact:true}).check();
+    await dialog.getByRole('button',{name:'保存模型配置',exact:true}).click();
+    await expect(dialog.getByRole('status')).toHaveText('配置已保存');
+    await dialog.getByRole('button',{name:'对话',exact:true}).click();
+    await dialog.getByLabel('发送给平台 AI 的消息').fill('列出我能访问的项目');
+    await dialog.getByRole('button',{name:'发送消息'}).click();
+    await expect(dialog.getByText('当前可访问项目包含：平台 AI 验证项目。你可以指定项目并下发开发需求。',{exact:true})).toBeVisible();
+    expect(modelRequests.length).toBe(2);
+    const tool=JSON.parse(modelRequests[1].messages.find((message: any) => message.role==='tool').content);
+    expect(tool.projects.some((project: any) => project.name==='平台 AI 验证项目')).toBeTruthy();
+    expect(JSON.stringify(modelRequests)).not.toContain('agentmanager_session');
+    await page.screenshot({path:testInfo.outputPath('platform-ai-chat.png')});
+
+    await dialog.getByRole('button',{name:'渠道与用户映射',exact:true}).click();
+    await dialog.getByRole('button',{name:'添加渠道',exact:true}).click();
+    await dialog.getByLabel('渠道名称',{exact:true}).fill('E2E 外部网关');
+    await dialog.getByLabel('渠道类型',{exact:true}).selectOption('webhook');
+    await dialog.getByLabel('回复接收地址',{exact:true}).fill(provider+'/delivery');
+    const secret='e2e-gateway-signing-secret-'.repeat(2);
+    await dialog.getByLabel('HMAC 签名密钥（至少 32 字符）',{exact:true}).fill(secret);
+    await dialog.getByLabel('启用此渠道',{exact:true}).check();
+    await dialog.getByRole('button',{name:'保存渠道',exact:true}).click();
+    await expect(dialog.getByLabel('映射渠道').locator('option',{hasText:'E2E 外部网关'})).toHaveCount(1);
+    const channels=await (await page.request.get('/api/platform-ai/channels')).json();
+    const channel=channels.channels.find((item: any) => item.name==='E2E 外部网关');
+    const users=await (await page.request.get('/api/users')).json();
+    const admin=users.users.find((user: any) => user.username==='e2e-admin');
+    await dialog.getByLabel('映射渠道').selectOption(channel.id);
+    await dialog.getByLabel('外部用户 ID',{exact:true}).fill('external-admin');
+    await dialog.getByLabel('映射平台用户').selectOption(admin.id);
+    await dialog.getByRole('button',{name:'保存用户映射',exact:true}).click();
+    await expect(dialog.getByText(/external-admin →/)).toBeVisible();
+    const raw=JSON.stringify({message_id:'external-message-1',user_id:'external-admin',chat_id:'external-chat',content:'外部渠道：列出我的项目'});
+    const timestamp=String(Math.floor(Date.now()/1000));
+    const signature=createHmac('sha256',secret).update(timestamp+'.'+raw).digest('hex');
+    const callback={data:raw,headers:{'Content-Type':'application/json','X-Platform-Timestamp':timestamp,'X-Platform-Signature':signature}};
+    expect((await page.request.post(channel.callback_path,callback)).ok()).toBeTruthy();
+    expect((await page.request.post(channel.callback_path,callback)).ok()).toBeTruthy();
+    await expect.poll(() => deliveries.length).toBe(1);
+    const delivered=deliveries[0];
+    const sentTimestamp=String(delivered.headers['x-platform-timestamp']);
+    expect(delivered.headers['x-platform-signature']).toBe(createHmac('sha256',secret).update(sentTimestamp+'.'+delivered.body).digest('hex'));
+    expect(JSON.parse(delivered.body)).toMatchObject({user_id:'external-admin',chat_id:'external-chat',content:expect.stringContaining('平台 AI 验证项目')});
+    expect(delivered.headers['idempotency-key']).toBe(JSON.parse(delivered.body).delivery_id);
+    const storedConfig=await (await page.request.get('/api/platform-ai/config')).text();
+    expect(storedConfig).not.toContain('e2e-platform-ai-secret');
+    expect(JSON.stringify(channels)).not.toContain(secret);
+    await page.setViewportSize({width:390,height:844});
+    await expect(dialog.getByLabel('映射平台用户')).toBeVisible();
+    await page.screenshot({path:testInfo.outputPath('platform-ai-mobile-channels.png')});
+  } finally {
+    await page.request.put('/api/platform-ai/config',{data:{enabled:false}}).catch(()=>{});
+    await new Promise<void>(resolveClose=>server.close(()=>resolveClose()));
+  }
+});

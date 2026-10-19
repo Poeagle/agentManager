@@ -1,3 +1,4 @@
+import { runtimeNames } from './runtime-namespace.js';
 import { fork, execFile, execFileSync, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { createRequire } from 'module';
@@ -1397,7 +1398,8 @@ export function querySessionOutputSince(
    the worker process.
    ================================================================ */
 
-const TMUX_SERVER = 'agentmanager';
+const runtime = runtimeNames();
+const TMUX_SERVER = runtime.tmuxServer;
 const tmuxBaseArgs = ['-L', TMUX_SERVER];
 
 function tmuxSessionName(sessionId: string): string {
@@ -1449,7 +1451,7 @@ function tmuxListAgentmanagerSessionIds(): string[] {
    dtach helpers — only used for status checks in the main process.
    ================================================================ */
 
-const DTACH_PREFIXES = ['agentmanager-'];
+const DTACH_PREFIXES = [runtime.socketPrefix];
 
 /** Find the dtach socket for a session, checking all name prefixes */
 function dtachSocket(sessionId: string): string {
@@ -1459,7 +1461,7 @@ function dtachSocket(sessionId: string): string {
     if (existsSync(sock)) return sock;
   }
   // Default to new prefix for new sessions
-  return `/tmp/agentmanager-${sessionId}.sock`;
+  return `/tmp/${runtime.socketPrefix}${sessionId}.sock`;
 }
 
 function dtachExists(sessionId: string): boolean {

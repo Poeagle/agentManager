@@ -134,6 +134,18 @@ interfaces, but remote browsers cannot use the API unless you explicitly set
 `AGENTMANAGER_ALLOW_LAN=true` (and protect the host with a firewall or reverse
 proxy). The isolated command uses the same dashboard port by default.
 
+### Platform AI and external channels
+
+The optional platform AI can answer project/status questions, dispatch work to
+Codex or Claude without a browser, manage scheduled tasks, and monitor each
+work session before sending progress notifications. Configure its model,
+WeCom/QQ/WeChat public-account/Webhook channels and external user bindings in
+**平台 AI**. It is disabled by default.
+
+Use `npm run dev:platform-ai` in a feature worktree for separate database,
+ports and terminal resources. See [platform AI setup and architecture](docs/platform-ai.md)
+for channel requirements, task completion evidence and recovery semantics.
+
 ### Session recovery and quota polling
 
 Server startup reconnects surviving tmux/dtach sessions. Sessions whose processes

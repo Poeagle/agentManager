@@ -1,0 +1,126 @@
+# 平台 AI 与外部渠道
+
+平台 AI 是平台的通用交互入口：用户可以查询项目和会话、下发开发需求、读取状态、管理定时任务。项目内的 Codex/Claude 继续负责实际工作。平台通过 Agent API 主动读取会话状态和派发后的增量输出，不要求工作 Agent 主动回调。
+
+功能默认关闭。未配置模型和渠道凭据时，不连接外部渠道，也不会启动开发 Agent。
+
+## 隔离开发
+
+在 feature worktree 中运行：
+
+```bash
+npm run dev:platform-ai
+```
+
+默认前端 `127.0.0.1:43221`、后端 `127.0.0.1:43220`，数据库和项目配置位于当前 worktree 的 `.test-data/platform-ai-dev/`。端口已占用时直接退出，不结束已有进程。可以用 `DEV_API_PORT`、`DEV_UI_PORT` 选择其他端口。
+
+`AGENTMANAGER_RUNTIME_NAMESPACE` 隔离 tmux server、dtach socket、PTY 管道和 systemd sandbox 名称；开发启动器还使用独立的 Vite 缓存。未设置时保留现有生产名称。此启动器不会导入生产数据库、用户或项目。需要在新实例创建管理员，并注册专用于开发的项目目录；不要把正在被生产 Agent 修改的工作目录用于并行开发。
+
+模型、渠道凭据和通知地址均单独配置，不从生产环境复制。API Key 和渠道凭据使用 AES-256-GCM 加密，密钥为数据库目录下权限 `0600` 的 `.platform-ai.key`。备份/迁移时必须同时保留数据库和此密钥；密钥丢失时不会静默生成新密钥覆盖已有配置。
+
+## 使用
+
+1. 从顶部“平台 AI”或“平台管理 → 平台 AI”打开功能。
+2. 管理员在“模型配置”填写支持 Chat Completions 工具调用的 API 地址、模型名称和 Key，启用模型。
+3. 可先在网页对话中查询项目、创建后台开发任务并查看“任务跟踪”。
+4. 在“渠道与用户映射”配置渠道和外部身份映射，再启用渠道。
+5. 回调地址为渠道页面显示的路径；使用反向代理将该路径通过 HTTPS 暴露给渠道平台。不要为接入渠道额外公开终端或管理接口。
+
+平台 AI 的模型配置独立于 Codex/Claude。能力目录从实际注册路由生成完整 API 清单，并按需提供已有 Agent API 的参数契约。普通 JSON 状态查询可以直接调用；凭据/身份配置、WebSocket 和二进制接口使用专用入口，写操作通过已声明的命令工具或契约调用。
+
+工具通过一次性内部 Cookie 调用现有 Fastify 路由，继承真实用户的 RBAC、项目、会话归属和工具权限；Cookie 不发送给模型或外部网络。外部群聊以发送者身份隔离上下文，而非将整群映射到一个管理员。
+
+模型配置需要 `settings:write`，使用 AI 和工具调用需要相应 `agent_api` 权限。渠道配置和用户映射另外需要 `roles:write`，因为绑定外部身份会赋予其对应平台用户的操作能力。
+
+## 已实现的渠道
+
+| 渠道 | 接入 | 出站通知 | 外部用户标识 |
+| --- | --- | --- | --- |
+| 企业微信 | 自建应用文本消息回调、URL 校验、AES 解密、签名与应用身份校验 | 应用文本消息 | 成员 UserID |
+| QQ | 官方机器人 Webhook，Ed25519 验签和验证握手，C2C/群 @ 文本 | 在允许窗口被动回复，超出窗口尝试主动发送 | user_openid / member_openid |
+| 微信 | 公众号文本回调，明文签名或安全模式 AES 验签解密 | 客服文本消息 | 公众号 OpenID |
+| 通用 Webhook | 时间戳 + HMAC-SHA256 签名的统一消息 | 对管理员配置的固定地址发送签名 JSON | 网关定义的稳定用户 ID |
+
+微信指公众号入口，不是个人微信账号。QQ 主动消息、公众号客服消息均受各自平台账号权限、额度和互动时限约束。失败保留在“通知记录”，自动退避重试，达到次数上限后标记失败。长文本在原渠道精简，完整内容保留在平台对话中。
+
+当前仅支持文本。图片、语音、附件、企业微信智能机器人长连接、QQ WebSocket 网关和个人微信桥接尚未实现。真实渠道上线前需要使用对应账号进行收发联调；自动化测试使用签名回调样本和模拟 HTTP 服务，不代表已经通过腾讯侧账号审核或实际投递验证。
+
+### 通用 Webhook 协议
+
+入站 HTTP POST，`Content-Type: application/json`：
+
+```json
+{
+  "message_id": "channel-message-id",
+  "user_id": "external-sender-id",
+  "chat_id": "external-conversation-id",
+  "content": "列出我能访问的项目"
+}
+```
+
+请求头：
+
+```text
+X-Platform-Timestamp: <Unix 秒时间戳>
+X-Platform-Signature: <hex HMAC-SHA256(secret, timestamp + "." + rawBody)>
+```
+
+签名针对原始 UTF-8 请求体，不重新序列化；时间戳容忍五分钟。消息持久保存和去重后才确认接收。签名密钥至少 32 字符。
+
+出站使用相同签名算法，JSON 包含 `delivery_id`、`chat_id`、`user_id`、`content`。`Idempotency-Key` 和 `delivery_id` 在重试时不变，接收网关必须据此去重。签名涵盖时间戳和原始请求体。回复地址只能由管理员在渠道配置中指定，入站消息不能指定任意出站 URL。
+
+## 执行和恢复语义
+
+```text
+Signed callback / Web chat
+            |
+      Durable inbox
+            |
+  Conversation FIFO + AI tools
+            |
+ Existing authenticated platform APIs
+            |
+   Work session + Tracked task
+            |
+    Poll rendered output + cursor
+            |
+  Evidence assessment + Notification outbox
+```
+
+后台 Worker 当前随 API 进程运行，以便复用进程内 Agent 生命周期和状态跟踪器；消息处理、观察和通知是独立并发队列，慢模型请求不会阻塞观察与投递。当前每个数据库应只运行一个 API/Worker 实例，尚不支持多实例共享数据库调度。队列、上下文、工具检查点、任务和通知存入 SQLite，重启后通过租约恢复。
+
+每次工具执行保存操作记录；模型或网络重试会复用工具结果。对中断期间结果不明的写入，不自动重发。新开发会话的操作引用写入会话任务元数据，用于核对原会话。模型最后回复已持久化但消息尚未确认时，恢复直接完成原回复，不重新运行工具。
+
+外部消息按至少一次处理设计，使用消息 ID 去重。通知按至少一次投递设计；通用网关通过稳定投递 ID 去重，腾讯渠道在缺少强幂等接口的情况下，极端网络中断仍可能导致重复通知。
+
+## 完成判断与效率
+
+- 只跟踪登记的任务；每次读取保存游标，并限制持久输出窗口。
+- 无新内容不调用模型；活跃输出按汇报间隔节流，非活跃输出按评估间隔节流。
+- 交互授权/选择提示由程序标记受阻，不自动代替用户批准。
+- 空闲、进程退出、`execute.completed`、定时任务 `success` 都不直接表示需求完成。
+- 每次派发都附带唯一任务引用；新增 `GET /api/sessions/:id/completed-turn` 读取该会话原生记录中的最近一组用户输入/最终答复。只有用户输入包含本次引用，且完成依据确实来自该最终答复，才允许标记 `reported_complete`。历史最终答复、终端回显和日志中的完成示例不能通过该判断。
+- 原生最终答复延迟写入时，会继续按评估间隔读取，即使终端没有新输出也会核对。原生记录不可读、任务未通过平台派发或无法绑定本轮输入时，保留 `uncertain`。
+- 失败判断也需要输出中的连续原文依据；进程明确启动失败或取消时由程序记录会话失败状态。
+- `reported_complete` 表示 Agent 报告完成，平台并未因此独立证明所有验收要求通过。任务同时保存摘要与证据；无法确定时保留 `uncertain`。
+- 用户可以停止跟踪，不会因此终止 Agent。取消期间到达的旧评估不会重新激活任务。
+
+定时任务复用原有调度器；通过平台 AI 创建的任务会关联源对话。每次发送前记录观察游标，每次成功派发创建跟踪任务，再汇报 Agent 后续结果；发送失败或条件跳过有独立通知。现有未关联平台 AI 的定时任务保持原有行为。
+
+同一项目的已跟踪工作默认串行，平台 AI 不会把另一个对话的活跃任务抢占到自己名下。人工在网页输入、现有定时任务和其他 API 客户端仍可操作会话，当前版本尚未建立覆盖所有历史输入入口的统一消息邮箱；需要严格独占的任务应使用专用会话与独立工作目录。
+
+## 参考
+
+参考 [Hermes Gateway Internals](https://hermes-agent.nousresearch.com/docs/developer-guide/gateway-internals/) 的渠道适配、会话身份与后台投递职责划分；此实现沿用本平台 TypeScript/Fastify/SQLite 栈，不依赖运行 Hermes。
+
+QQ 回调协议核对自 [腾讯官方 Node SDK](https://github.com/tencent-connect/qqbot-nodejs/tree/main/src/protocol/transport)。
+
+## 验证
+
+```bash
+npm --prefix server test -- platform-ai.test.ts runtime-namespace.test.ts database.test.ts
+npm --prefix dashboard test -- PlatformAiPanel.test.tsx
+npm run build
+```
+
+测试覆盖签名/加密、用户隔离、消息去重、工具权限、无浏览器启动、执行恢复、定时任务关联、完成证据、取消竞争和通知重试。所有测试使用临时数据库和模拟模型/渠道，不需要生产凭据。

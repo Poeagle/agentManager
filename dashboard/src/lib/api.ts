@@ -4,7 +4,7 @@ function fileEndpoint(url: string, projectId?: string): string {
   return projectId ? `${url}${url.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(projectId)}` : url;
 }
 
-async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {};
   if (init?.body) headers['Content-Type'] = 'application/json';
   const res = await fetch(`${API_BASE}${url}`, {
