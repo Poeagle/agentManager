@@ -320,7 +320,11 @@ export class PlatformAiWorker {
         messages.push(response);
         this.checkpoint(message.id, messages);
         if (response.tool_calls?.length) continue;
-        this.finishMessage(message, conversation, history, (visionUnavailable ? '图片已保存，但当前模型接口未接受图像输入，暂时无法直接识图。\n\n' : '') + response.content!.trim());
+        const calls = messages.flatMap(item => item.tool_calls || []);
+        const statusQuery = calls.some(call => ['list_project_tabs','read_tab'].includes(call.function.name))
+          && calls.every(call => !isMutatingTool(call.function.name, call.function.arguments));
+        const content = statusQuery ? response.content!.trim().replace(/\n\s*\n(?:需要我|要不要我|你需要我)[^\n]*(?:新任务|派发|跟进|继续盯|继续关注)[^\n]*[?？]\s*$/, '') : response.content!.trim();
+        this.finishMessage(message, conversation, history, (visionUnavailable ? '图片已保存，但当前模型接口未接受图像输入，暂时无法直接识图。\n\n' : '') + content);
         return;
       }
     } catch (error) {

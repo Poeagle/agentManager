@@ -259,6 +259,13 @@ describe('signed external channel ingestion', () => {
 });
 
 describe('durable platform AI tool execution', () => {
+  it('does not append an unsolicited new-task offer to a status query', async () => {
+    configure();seedSession();
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(toolResponse('list_project_tabs',{project_id:'p'}))
+      .mockResolvedValueOnce(providerResponse({content:'当前没有运行任务。\n\n需要我在某个标签页开新任务吗？'})));
+    inbound('有哪些任务正在跑？');worker.tick();await worker.drain();
+    expect(getDb().prepare("SELECT content FROM platform_ai_messages WHERE role='assistant'").get()).toEqual({content:'当前没有运行任务。'});
+  });
   it('creates another project tab while existing work is busy and forwards the exact user text instead of model embellishment', async () => {
     configure(); seedSession('busy-tab');
     const prior = inbound('正在执行的其他工作','old',''+member,'old-chat');
