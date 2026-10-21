@@ -120,7 +120,7 @@ export class PlatformAiWorker {
   private recheckNativeFinal(taskId: string, now: number): void {
     const delays = [2000, 5000, 15000];
     const attempt = this.nativeRechecks.get(taskId) || 0;
-    if (attempt >= delays.length) return;
+    if (attempt >= delays.length) { this.nativeRechecks.delete(taskId); return; }
     this.nativeRechecks.set(taskId, attempt + 1);
     getDb().prepare('UPDATE platform_ai_tasks SET next_observe_at=MIN(next_observe_at,?) WHERE id=?').run(now + delays[attempt], taskId);
   }
@@ -271,6 +271,28 @@ export class PlatformAiWorker {
           messages.push({ role: 'tool', tool_call_id: call.id, content });
           this.checkpoint(message.id, messages);
         }
+        // Dispatch receipts are facts from completed tool operations. Avoid a
+        // second model pass inventing workflow explanations or follow-up plans.
+        if (pendingCalls.length && pendingCalls.every(call => ['start_work','send_to_session'].includes(call.function.name))) {
+          const receipts: string[] = [];
+          for (const call of pendingCalls) {
+            const toolReply = messages.find(item => item.role === 'tool' && item.tool_call_id === call.id);
+            let result: any;
+            try { result = JSON.parse(toolReply?.content || '{}'); } catch { break; }
+            if (!result.monitoring || result.error || result.uncertain || result.status === 'uncertain' || !result.session_id) break;
+            const session = getSession(result.session_id);
+            const label = session ? sessionPresenter(conversation.user_id)(session) : result;
+            const location = [label.project_name, label.tab_name || label.display_name].filter(Boolean).join(' / ') || '目标标签页';
+            receipts.push(call.function.name === 'start_work' ? `已在「${location}」新建任务。` : `已转发到「${location}」。`);
+          }
+          if (receipts.length === pendingCalls.length) {
+            const content = receipts.join('\n');
+            messages.push({role:'assistant',content});
+            this.checkpoint(message.id, messages);
+            this.finishMessage(message, conversation, history, content);
+            return;
+          }
+        }
         const toolsAllowed = usedToolRounds < config.max_tool_rounds;
         const tasks = getDb().prepare('SELECT id,session_id,status,summary FROM platform_ai_tasks WHERE conversation_id=? ORDER BY rowid DESC LIMIT 5').all(conversation.id);
         progress(round ? '正在整理工具结果并生成回复…' : '正在等待模型回复…', '');
@@ -356,7 +378,24 @@ export class PlatformAiWorker {
       };
       // A native final answer can survive a later terminal crash. Also avoid
       // treating error examples quoted by a completed analysis as launch errors.
-      const nativeFinal = task.source_ref && (ended || display.processState !== 'busy') ? await readFinal() : '';
+      // A goal may immediately continue after a public final/question, keeping
+      // the terminal busy throughout. Read native replies independently of PTY
+      // busy/idle so a request for user input is not lost behind another turn.
+      const native = await platformApi(this.app, task.user_id, 'GET', `/api/sessions/${encodeURIComponent(task.session_id)}/agent-messages`);
+      const messages: AgentTextMessage[] = native.messages || [];
+      let start = -1;
+      if (task.source_ref) {
+        for (let index = messages.length - 1; index >= 0; index--) {
+          if (messages[index].role === 'user' && messages[index].text.includes(`[Platform task reference: ${task.source_ref}]`)) { start = index; break; }
+        }
+      }
+      const current = task.source_ref
+        ? (start >= 0 ? messages.slice(start + 1) : messages.filter(message => message.task_reference === task.source_ref))
+        : messages.filter(message => message.timestamp && Date.parse(message.timestamp) >= Date.parse(task.created_at + (task.created_at.endsWith('Z') ? '' : 'Z')));
+      const nextUser = current.findIndex(message => message.role === 'user');
+      const replies = (nextUser < 0 ? current : current.slice(0, nextUser)).filter(message => message.role === 'assistant');
+      const latestFinal = task.source_ref ? [...replies].reverse().find(message => message.phase === 'final')?.text || '' : '';
+      const nativeFinal = latestFinal || (task.source_ref ? await readFinal() : '');
       const missingCommand = ended ? output.match(/(?:^|\n)([^\n]*(?:command not found: (?:claude|codex)|(?:claude|codex): command not found)[^\n]*)/i)?.[1] : undefined;
       if (missingCommand && !nativeFinal) {
         this.saveAssessment(task, {status: 'failed', summary: `${session.cli_type === 'codex' ? 'Codex' : 'Claude'} 启动失败：系统找不到启动命令，本次需求未执行。请选择已探测可用的 Agent 后重新下发。`, evidence: missingCommand.trim()}, now, true);
@@ -374,11 +413,8 @@ export class PlatformAiWorker {
       if (nativeFinal) this.nativeRechecks.delete(task.id);
       else if (task.source_ref && display.processState === 'idle' && (urgent || this.nativeRechecks.has(task.id))) this.recheckNativeFinal(task.id, now);
       const questionSignal = urgent && display.processState === 'waiting_for_input';
-      // An idle signal prompts a native-final check, not another interpretation
-      // of terminal prose while the Agent's log is still flushing.
-      if ((urgent || this.nativeRechecks.has(task.id)) && display.processState === 'idle' && !nativeFinal && !ended) return;
       if (!nativeFinal && !questionSignal && now - task.last_assessed_at < config.assessment_interval_seconds * 1000) return;
-      if (display.processState === 'busy' && now - task.last_assessed_at < config.notification_interval_seconds * 1000) return;
+      if (!nativeFinal && !questionSignal && display.processState === 'busy' && now - task.last_assessed_at < config.notification_interval_seconds * 1000) return;
       if (ended && !nativeFinal) {
         this.saveAssessment(task, {status: 'uncertain', summary: '工作会话已结束，但未读取到本次任务对应的最终答复，结果待核对；不会将退出状态当作任务完成。', evidence: `平台会话状态：${session.status}`}, now, task.status !== 'uncertain');
         getDb().prepare('UPDATE platform_ai_tasks SET last_assessed_at=? WHERE id=?').run(now, task.id);
@@ -386,22 +422,7 @@ export class PlatformAiWorker {
       }
       // Display remains a local signal for process/permission failures. Only
       // public agent messages go to the model, never terminal tool output.
-      let messageOutput = '';
-      if (!nativeFinal) {
-        const native = await platformApi(this.app, task.user_id, 'GET', `/api/sessions/${encodeURIComponent(task.session_id)}/agent-messages`);
-        const messages: AgentTextMessage[] = native.messages || [];
-        let start = -1;
-        if (task.source_ref) {
-          for (let index = messages.length - 1; index >= 0; index--) {
-            if (messages[index].role === 'user' && messages[index].text.includes(`[Platform task reference: ${task.source_ref}]`)) { start = index; break; }
-          }
-        }
-        const current = task.source_ref
-          ? (start >= 0 ? messages.slice(start + 1) : messages.filter(message => message.task_reference === task.source_ref))
-          : messages.filter(message => message.timestamp && Date.parse(message.timestamp) >= Date.parse(task.created_at + (task.created_at.endsWith('Z') ? '' : 'Z')));
-        const nextUser = current.findIndex(message => message.role === 'user');
-        messageOutput = (nextUser < 0 ? current : current.slice(0, nextUser)).filter(message => message.role === 'assistant').map(message => message.text).join('\n\n');
-      }
+      const messageOutput = nativeFinal ? '' : replies.map(message => message.text).join('\n\n');
       fingerprint = createHash('sha256').update(JSON.stringify([messageOutput, nativeFinal, display.processState, display.promptType, session.status])).digest('hex');
       if (fingerprint === task.last_assessed_fingerprint) {
         getDb().prepare('UPDATE platform_ai_tasks SET last_assessed_at=? WHERE id=?').run(now, task.id);
@@ -445,11 +466,11 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
       const updated = getDb().prepare(`UPDATE platform_ai_tasks SET status=?,summary=?,evidence=?,last_notified_at=?,updated_at=datetime('now') WHERE id=? AND status IN ('running','blocked','uncertain')`)
         .run(assessment.status, assessment.summary, assessment.evidence, notify ? now : task.last_notified_at, task.id);
       if (notify && updated.changes) {
-        const title = assessment.status === 'reported_complete' ? 'Agent 已报告完成（请查看验证情况）' : assessment.status === 'blocked' ? '任务需要处理' : assessment.status === 'failed' ? '任务执行失败' : '任务进展';
+        const title = assessment.status === 'reported_complete' ? 'Agent 已报告完成' : assessment.status === 'blocked' ? '需要你回复' : assessment.status === 'failed' ? '执行失败' : '进展';
         const key = createHash('sha256').update(JSON.stringify([assessment.status, assessment.summary.replace(/\s+/g, ' ').trim()])).digest('hex').slice(0, 24);
-        const result = assessment.status === 'reported_complete' && finalAnswer ? `\n\n### Agent 最终答复\n\n${finalAnswer}\n` : '';
-        const question = assessment.status === 'blocked' && assessment.evidence ? `\n\n### 需要你处理的内容\n\n${assessment.evidence}\n` : '';
-        enqueueNotice(task.conversation_id, `task:${task.id}:${key}`, `${title} · ${taskLocation(task)}\n\n${assessment.summary}${question}${result}`);
+        const question = assessment.status === 'blocked' && assessment.evidence && !finalAnswer ? `\n\n### 需要你处理的内容\n\n${assessment.evidence}\n` : '';
+        const body = finalAnswer || `${assessment.summary}${question}`;
+        enqueueNotice(task.conversation_id, `task:${task.id}:${key}`, `${title} · ${taskLocation(task)}\n\n${body}`);
       }
     })();
     if (notify) refreshConversation(task.conversation_id);

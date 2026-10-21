@@ -12,6 +12,28 @@ import {
 } from '../src/services/prompt-context.js';
 
 describe('prompt enhancement conversation context', () => {
+  it('keeps automatic goal replies associated with the original human task and hides internal instructions', () => {
+    const prompt='查看未完成 Jira [Platform task reference: original-task]';
+    const internal='<codex_internal_context source="goal">internal continuation instructions</codex_internal_context>';
+    const entries=[
+      {type:'event_msg',payload:{type:'user_message',message:prompt}},
+      {type:'event_msg',payload:{type:'task_complete',last_agent_message:'正在检查连接'}},
+      {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:internal}]}},
+      {type:'response_item',payload:{type:'message',role:'assistant',phase:'commentary',content:[{type:'output_text',text:'继续检查项目历史'}]}},
+      {type:'event_msg',payload:{type:'task_complete',last_agent_message:'仍未找到接入，请提供 Jira 项目链接。'}},
+      {type:'event_msg',payload:{type:'user_message',message:internal}},
+      {type:'event_msg',payload:{type:'task_complete',last_agent_message:'任务受阻，请提供 Jira 项目或筛选器链接。'}},
+    ];
+    const messages=extractAgentMessages(entries,'codex');
+    expect(messages.filter(message=>message.role==='user').map(message=>message.text)).toEqual([prompt]);
+    expect(messages.at(-1)).toMatchObject({phase:'final',task_reference:'original-task',text:'任务受阻，请提供 Jira 项目或筛选器链接。'});
+    expect(JSON.stringify(messages)).not.toContain('internal continuation instructions');
+    expect(extractCodexPromptContext(entries,1)).toEqual([{user:prompt,assistant:'任务受阻，请提供 Jira 项目或筛选器链接。'}]);
+    // A genuine new human prompt breaks the old task association.
+    const next=[...entries,{type:'event_msg',payload:{type:'user_message',message:'改查别的项目'}},{type:'event_msg',payload:{type:'task_complete',last_agent_message:'新请求的答复'}}];
+    expect(extractAgentMessages(next,'codex').at(-1)?.task_reference).toBeNull();
+    expect(extractCodexPromptContext(next,1)).toEqual([{user:'改查别的项目',assistant:'新请求的答复'}]);
+  });
   it('extracts Codex progress and final messages while excluding tools, reasoning and duplicate event records', () => {
     const messages=extractAgentMessages([
       {type:'event_msg',payload:{type:'user_message',message:'查询 Jira'}},

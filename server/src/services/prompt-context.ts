@@ -17,12 +17,19 @@ export interface AgentTextMessage {
   task_reference?: string | null;
 }
 
+function isCodexContinuation(text: string): boolean {
+  return /^<codex_internal_context\b[^>]*>[\s\S]*<\/codex_internal_context>$/.test(text);
+}
+
 /** Public conversation text only: never tool arguments/results or reasoning. */
 export function extractAgentMessages(entries: Iterable<unknown>, kind: CliType): AgentTextMessage[] {
   const messages: AgentTextMessage[] = [];
   let taskReference: string | null = null;
   const append = (role: AgentTextMessage['role'], phase: AgentTextMessage['phase'], text: string, timestamp: unknown) => {
     if (!text || /^<environment_context>[\s\S]*<\/environment_context>$/.test(text)) return;
+    // Goal/automation continuation is internal scheduling metadata, not a new
+    // human request. Keep the original task association across these turns.
+    if (role === 'user' && kind === 'codex' && isCodexContinuation(text)) return;
     if (role === 'user') taskReference = /\[Platform task reference: ([A-Za-z0-9_-]+)\]/.exec(text)?.[1] || null;
     const last = messages.at(-1);
     if (last?.role === role && last.text === text) {
@@ -178,6 +185,7 @@ export function extractClaudePromptContext(entries: Iterable<unknown>, rounds: n
 export function extractCodexPromptContext(entries: Iterable<unknown>, rounds: number): PromptContextTurn[] {
   const turns: PromptContextTurn[] = [];
   let user = '';
+  let lastHuman = '';
   let finalAnswer = '';
 
   const commit = () => {
@@ -195,12 +203,17 @@ export function extractCodexPromptContext(entries: Iterable<unknown>, rounds: nu
       const text = value.type === 'event_msg' ? cleanText(payload.message) : contentText(payload.content, 'input_text');
       if (!text) continue;
       if (/^<environment_context>[\s\S]*<\/environment_context>$/.test(text)) continue;
+      if (isCodexContinuation(text)) {
+        if (!user) user = lastHuman;
+        continue;
+      }
       // Some releases record the same prompt in both event and response forms.
       if (text === user && !finalAnswer) continue;
       // A new human message means any preceding turn without a final answer was
       // interrupted; it must not leak commentary into enhancement context.
       commit();
       user = text;
+      lastHuman = text;
       continue;
     }
 

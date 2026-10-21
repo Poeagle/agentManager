@@ -17,8 +17,23 @@ const objectParams = (properties: Record<string, unknown>, required: string[] = 
 const stringParam = { type: 'string' };
 const attachmentParam = {type: 'array', items: stringParam, maxItems: MAX_IMAGES, description: 'Image attachment IDs from this conversation to give to the work agent.'};
 const sourceMessagesParam = {type: 'array', items: stringParam, maxItems: 4, description: 'Optional original user message IDs needed for a multi-turn request. Their text is forwarded verbatim in chronological order, always including the current message. Never write or expand the requirement yourself.'};
+const REPORT_TIME_ZONE = 'Asia/Shanghai';
+
+/** Format once on the server: UTC native timestamps must not look like local time. */
+function tabUpdateTime(activity: unknown, messages: Array<{timestamp?: unknown}>) {
+  const times = [activity, ...messages.map(message => message.timestamp)].flatMap(value => {
+    if (typeof value !== 'string') return [];
+    const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? value.replace(' ', 'T') + 'Z' : value;
+    const timestamp = Date.parse(normalized);
+    return Number.isFinite(timestamp) ? [timestamp] : [];
+  });
+  const date = times.length ? new Date(Math.max(...times)) : null;
+  return {latest_update_at: date?.toISOString() || null,
+    latest_update_local: date ? new Intl.DateTimeFormat('sv-SE', {timeZone: REPORT_TIME_ZONE,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(date) : null,
+    time_zone: REPORT_TIME_ZONE, utc_offset: '+08:00'};
+}
 export const PLATFORM_TOOLS: ModelTool[] = [
-  {type: 'function', function: {name: 'list_project_tabs', description: 'Read accessible project tabs with their actual dashboard names and process state. Works for terminal tabs as well as Codex/Claude sessions. Use before answering which work is running; no tracking registration required.', parameters: objectParams({project_id: stringParam, project_name: stringParam, include_ended: {type: 'boolean'}})}},
+  {type: 'function', function: {name: 'list_project_tabs', description: 'Read accessible tabs with their actual dashboard names, process state AND latest public agent message. Includes terminal tabs with bound agents. Use to answer which work is running; no tracking registration required. read_tab gives more conversation detail.', parameters: objectParams({project_id: stringParam, project_name: stringParam, include_ended: {type: 'boolean'}})}},
   {type: 'function', function: {name: 'read_tab', description: 'READ ONLY: read recent public agent progress/final messages and live state with dashboard name. Includes terminal tabs with bound agents. Tool calls/results and reasoning are excluded. Use even when no task was registered. Does not send input or change a process.', parameters: objectParams({session_id: stringParam, lines: {type: 'integer', minimum: 20, maximum: 1000}}, ['session_id'])}},
   { type: 'function', function: { name: 'platform_capabilities', description: 'Read the platform API catalog. Optional endpoint_id returns its full request and response definition.', parameters: objectParams({ endpoint_id: stringParam, offset: {type: 'integer', minimum: 0}, limit: {type: 'integer', minimum: 1, maximum: 50} }) } },
   { type: 'function', function: { name: 'platform_request', description: 'Call a catalog endpoint as the current platform user. Read endpoint parameters first. New work and sending input use start_work/send_to_session.', parameters: objectParams({ endpoint_id: stringParam, path_params: { type: 'object', additionalProperties: { type: 'string' } }, query: { type: 'object', additionalProperties: { type: 'string' } }, body: { type: 'object', additionalProperties: true } }, ['endpoint_id']) } },
@@ -116,7 +131,22 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
       .slice(0,50).map((session: any) => ({session_id: session.id, ...present(session), mode: session.mode, status: session.status,
         process_state: session.processState || 'unknown', prompt_type: session.promptType || null, last_activity_at: session.last_activity_at,
         started_at: session.started_at}));
-    return {tabs, guidance: 'Reply using tab_name and project_name, not opaque IDs. For actual progress, call read_tab for relevant tabs; a preview, process age, busy/idle flag or empty task registry is insufficient.'};
+    // Include actual agent text in discovery itself. The model must not infer
+    // "unreadable" from terminal mode after inspecting only another tab.
+    // Bound local IO concurrency; each route still checks session permissions.
+    for (let offset = 0; offset < tabs.length; offset += 4) {
+      const batch = tabs.slice(offset, offset + 4);
+      const results = await Promise.allSettled(batch.map((tab: {session_id: string}) => platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(tab.session_id)}/agent-messages`)));
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          const messages = result.value.messages || [];
+          const latest = [...messages].reverse().find((message: {role: string}) => message.role === 'assistant');
+          Object.assign(batch[index], {...tabUpdateTime(batch[index].last_activity_at, messages), agent_messages_available: result.value.available,
+            latest_agent_message: latest ? {text: String(latest.text).slice(-1600), phase: latest.phase, timestamp: latest.timestamp} : null});
+        } else Object.assign(batch[index], {...tabUpdateTime(batch[index].last_activity_at, []), agent_messages_available: null, message_read_error: '本次消息读取暂不可用，可以使用 read_tab 重试；不能根据标签模式推断不可读'});
+      });
+    }
+    return {tabs, guidance: 'For multiple tabs use a concise Markdown table: 标签页 | 状态 | 最近进展 | 最新更新（北京时间）. latest_update_local is already converted to UTC+08:00; copy it exactly, never interpret a raw Z timestamp as local time. Each tab includes its actual latest public agent message, including terminal tabs; call read_tab for detail. Never claim terminal mode prevents message reads. Use names, not opaque IDs. Activity alone does not prove progress or a hang.'};
   }
   if (name === 'read_tab') {
     const input = z.object({session_id: z.string().min(1).max(256), lines: z.number().int().min(20).max(1000).default(200)}).strict().parse(args);
@@ -127,8 +157,9 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
     return {session_id: session.id, ...sessionPresenter(userId)(session), mode: session.mode, session_status: session.status,
       process_state: display.processState || 'unknown', prompt_type: display.promptType || null, choices: display.choices || null,
       observed_at: display.observed_at || new Date().toISOString(), last_activity_at: display.last_activity_at || null,
+      ...tabUpdateTime(display.last_activity_at, messages),
       messages, messages_available: native.available, output_source: 'native_messages',
-      guidance: 'Use the tab name. Relay agent commentary/final messages faithfully with state; do not invent execution prerequisites. Tool calls/results are deliberately excluded. If messages_available is false, report that agent messages are currently unavailable and give only the known state, without inventing progress or asking the user to copy logs. Process age/activity alone does not prove progress or a hang. Missing tracking does not prevent reading messages; do not suggest killing/restarting work because tracking is empty.'};
+      guidance: 'Use the tab name and latest_update_local (already UTC+08:00, copy exactly). Relay recent agent messages briefly with state; do not invent prerequisites or append unsolicited suggestions. Tool calls/results are excluded. If messages_available is false, report only the known state and actual read failure, without inventing progress or asking the user to copy logs. Process age/activity alone does not prove progress or a hang. Missing tracking does not prevent reading messages; do not suggest killing/restarting work because tracking is empty.'};
   }
   if (name === 'platform_capabilities') {
     const input = z.object({ endpoint_id: z.string().optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(50).default(50) }).strict().parse(args);

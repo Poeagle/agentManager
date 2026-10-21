@@ -94,15 +94,19 @@ function seedSession(id = 'session-1') {
 describe('platform AI configuration and access boundaries', () => {
   it('lists dashboard tab names and reads terminal work even with no tracked task', async () => {
     configure(); seedSession('design-tab');
-    getDb().prepare("UPDATE sessions SET mode='terminal',task='Terminal' WHERE id='design-tab'").run();
+    getDb().prepare("UPDATE sessions SET mode='terminal',task='Terminal',started_at='2026-10-21 09:00:00',updated_at='2026-10-21 09:00:00',created_at='2026-10-21 09:00:00' WHERE id='design-tab'").run();
     getDb().prepare('INSERT INTO user_ui_state (user_id,key,value) VALUES (?,?,?)').run(member, 'project:p', JSON.stringify({terminalInstances: [{id:'design-tab',label:'Terminal 1',customLabel:'设计'}], terminalLabels: {'design-tab':'旧名称'}}));
     const received = inbound('Project 项目正在跑什么？'); const conversation = getConversation(received.conversation_id)!;
+    nativeMessages = [{role:'assistant',phase:'commentary',text:'正在修改分区匹配逻辑',timestamp:'2026-10-21T09:34:00.000Z'}];
     const tabs = await executePlatformTool(app, conversation, 'list_project_tabs', JSON.stringify({project_name:'Project'}), 'list');
     expect(tabs.tabs).toEqual([expect.objectContaining({session_id:'design-tab',tab_name:'设计',project_name:'Project',mode:'terminal'})]);
+    expect(tabs.tabs[0]).toMatchObject({agent_messages_available:true,latest_agent_message:{text:'正在修改分区匹配逻辑',phase:'commentary'}});
+    expect(tabs.tabs[0].latest_update_local).toBe('2026-10-21 17:34:00');
     display = {...display, processState:'busy',output:'tool result: private command output'};
-    nativeMessages = [{role:'assistant',phase:'commentary',text:'已补充 full-scope 测试；尚未执行测试。',timestamp:new Date().toISOString()}];
+    nativeMessages = [{role:'assistant',phase:'commentary',text:'已补充 full-scope 测试；尚未执行测试。',timestamp:'2026-10-21T09:34:00.000Z'}];
     const result = await executePlatformTool(app, conversation, 'read_tab', JSON.stringify({session_id:'design-tab'}), 'read');
     expect(result).toMatchObject({tab_name:'设计',project_name:'Project',mode:'terminal',process_state:'busy',messages:nativeMessages});
+    expect(result).toMatchObject({latest_update_at:'2026-10-21T09:34:00.000Z',latest_update_local:'2026-10-21 17:34:00',utc_offset:'+08:00'});
     expect(JSON.stringify(result)).not.toContain('private command output');
     expect(displayRequests.at(-1)).toBe('/api/sessions/design-tab/display?lines=200');
     expect(getDb().prepare('SELECT COUNT(*) AS n FROM platform_ai_tasks').get()).toEqual({n:0});
@@ -339,7 +343,7 @@ describe('durable platform AI tool execution', () => {
     expect(b.conversation_id).not.toBe(a.conversation_id);
     expect(claimMessage(Date.now(),60000)).toBeUndefined();
   });
-  it('starts a Codex task without a browser and does not duplicate it after a model retry', async () => {
+  it('acknowledges a dispatched task in one sentence without a second model call or duplicate dispatch', async () => {
     configure();
     const spawn = vi.spyOn(manager,'spawnSession').mockResolvedValue();
     const fetchMock = vi.fn()
@@ -355,8 +359,11 @@ describe('durable platform AI tool execution', () => {
     worker.tick(); await worker.drain();
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(getDb().prepare('SELECT status FROM platform_ai_messages WHERE id=?').get(received.message_id)).toEqual({status:'done'});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const reply=getDb().prepare("SELECT content FROM platform_ai_messages WHERE role='assistant'").get() as {content:string};
+    expect(reply.content).toMatch(/^已在「Project \/ .+」新建任务。$/);
+    expect(reply.content).not.toMatch(/队列|超时|接下来|跟踪/);
     const modelBodies = fetchMock.mock.calls.map(call => JSON.parse(call[1].body));
-    expect(modelBodies.at(-1).messages.some((m: any) => m.role === 'tool')).toBe(true);
     expect(JSON.stringify(modelBodies)).not.toContain('agentmanager_session');
   });
   it('uses real API authorization when a model attempts to access another user project', async () => {
@@ -412,6 +419,43 @@ describe('durable platform AI tool execution', () => {
 });
 
 describe('session observation and notification reliability', () => {
+  it('promptly forwards a matched native blocked reply even while Codex automatically continues and stays busy', async () => {
+    configure();seedSession();const received=inbound();
+    let task=trackTask(getConversation(received.conversation_id)!,'session-1','查看未完成 Jira',0,'auto-goal');
+    task.last_assessed_at=Date.now();task.last_notified_at=Date.now();
+    display={cursor:1,output:'tool result deliberately excluded',processState:'busy',promptType:null};
+    const reply='已检查项目文档和历史，仍未找到 Jira 地址。请提供项目或筛选器链接，才能继续查询。';
+    nativeMessages=[{role:'assistant',phase:'final',text:reply,timestamp:new Date().toISOString(),task_reference:'auto-goal'}];
+    const fetchMock=vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'blocked',summary:'Agent 请求提供 Jira 项目或筛选器链接。',evidence:'请提供项目或筛选器链接'})}));
+    vi.stubGlobal('fetch',fetchMock);
+    await worker.observe(task,readAiConfig());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'blocked'});
+    expect((getDb().prepare("SELECT content FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get() as {content:string}).content).toContain(reply);
+    const input=JSON.parse(JSON.parse(fetchMock.mock.calls[0][1].body).messages[1].content);
+    expect(input.native_final_answer).toBe(reply);expect(input.output).toBe('');
+    task=getDb().prepare('SELECT * FROM platform_ai_tasks WHERE id=?').get(task.id) as typeof task;
+    await worker.observe(task,readAiConfig());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getDb().prepare("SELECT COUNT(*) AS n FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get()).toEqual({n:1});
+  });
+  it('does not permanently skip public questions after bounded idle log rechecks are exhausted', async () => {
+    configure();seedSession();const received=inbound();
+    let task=trackTask(getConversation(received.conversation_id)!,'session-1','查看未完成 Jira',0,'late-question');
+    display={cursor:0,output:'',processState:'idle',promptType:null};
+    const fetchMock=vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'blocked',summary:'Agent 需要项目链接。',evidence:'请提供项目链接'})}));
+    vi.stubGlobal('fetch',fetchMock);
+    for(let i=0;i<4;i++){
+      await worker.observe(task,readAiConfig(),i===0);
+      task=getDb().prepare('SELECT * FROM platform_ai_tasks WHERE id=?').get(task.id) as typeof task;
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    nativeMessages=[{role:'assistant',phase:'commentary',text:'请提供项目链接',timestamp:new Date().toISOString(),task_reference:'late-question'}];
+    task.last_assessed_at=0;
+    await worker.observe(task,readAiConfig());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'blocked'});
+  });
   it('uses tracked-tab events to wake a coalesced durable queue and ignores unrelated tabs', async () => {
     configure();seedSession();const received=inbound();
     const task=trackTask(getConversation(received.conversation_id)!,'session-1','分析项目');
@@ -631,7 +675,8 @@ describe('session observation and notification reliability', () => {
     await worker.observe(task,readAiConfig());
     expect(getDb().prepare('SELECT status,evidence FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'reported_complete',evidence:display.output});
     const notice=getDb().prepare("SELECT content FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get() as any;
-    expect(notice.content).toContain('Agent 已报告完成');expect(notice.content).toContain('测试尚未执行');
+    expect(notice.content).toContain('Agent 已报告完成');expect(notice.content).toContain(nativeTurns[0].assistant);
+    expect(notice.content).not.toContain('请查看验证情况');expect(notice.content).not.toContain('###');
   });
   it('does not revive a task cancelled during model assessment', async () => {
     configure();seedSession();const received=inbound();
