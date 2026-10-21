@@ -21,12 +21,16 @@ const REPORT_TIME_ZONE = 'Asia/Shanghai';
 
 /** Format once on the server: UTC native timestamps must not look like local time. */
 function tabUpdateTime(activity: unknown, messages: Array<{timestamp?: unknown}>) {
-  const times = [activity, ...messages.map(message => message.timestamp)].flatMap(value => {
+  const parseTimes = (values: unknown[]) => values.flatMap(value => {
     if (typeof value !== 'string') return [];
     const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? value.replace(' ', 'T') + 'Z' : value;
     const timestamp = Date.parse(normalized);
     return Number.isFinite(timestamp) ? [timestamp] : [];
   });
+  // PTY trackers can be recreated on reconnect/restart. Prefer the actual
+  // conversation timestamp so old replies do not suddenly appear newly updated.
+  const messageTimes = parseTimes(messages.map(message => message.timestamp));
+  const times = messageTimes.length ? messageTimes : parseTimes([activity]);
   const date = times.length ? new Date(Math.max(...times)) : null;
   return {latest_update_at: date?.toISOString() || null,
     latest_update_local: date ? new Intl.DateTimeFormat('sv-SE', {timeZone: REPORT_TIME_ZONE,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(date) : null,

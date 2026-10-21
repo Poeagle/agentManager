@@ -94,7 +94,7 @@ function seedSession(id = 'session-1') {
 describe('platform AI configuration and access boundaries', () => {
   it('lists dashboard tab names and reads terminal work even with no tracked task', async () => {
     configure(); seedSession('design-tab');
-    getDb().prepare("UPDATE sessions SET mode='terminal',task='Terminal',started_at='2026-10-21 09:00:00',updated_at='2026-10-21 09:00:00',created_at='2026-10-21 09:00:00' WHERE id='design-tab'").run();
+    getDb().prepare("UPDATE sessions SET mode='terminal',task='Terminal',started_at='2026-10-21 10:00:00',updated_at='2026-10-21 10:00:00',created_at='2026-10-21 09:00:00' WHERE id='design-tab'").run();
     getDb().prepare('INSERT INTO user_ui_state (user_id,key,value) VALUES (?,?,?)').run(member, 'project:p', JSON.stringify({terminalInstances: [{id:'design-tab',label:'Terminal 1',customLabel:'设计'}], terminalLabels: {'design-tab':'旧名称'}}));
     const received = inbound('Project 项目正在跑什么？'); const conversation = getConversation(received.conversation_id)!;
     nativeMessages = [{role:'assistant',phase:'commentary',text:'正在修改分区匹配逻辑',timestamp:'2026-10-21T09:34:00.000Z'}];
