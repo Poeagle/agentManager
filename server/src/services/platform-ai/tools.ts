@@ -146,7 +146,7 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
           const messages = result.value.messages || [];
           const latest = [...messages].reverse().find((message: {role: string}) => message.role === 'assistant');
           Object.assign(batch[index], {...tabUpdateTime(batch[index].last_activity_at, messages), agent_messages_available: result.value.available,
-            latest_agent_message: latest ? {text: String(latest.text).slice(-1600), phase: latest.phase, timestamp: latest.timestamp} : null});
+            latest_agent_message: latest ? {text: String(latest.text).slice(0,800), text_truncated: String(latest.text).length > 800, phase: latest.phase, timestamp: latest.timestamp} : null});
         } else Object.assign(batch[index], {...tabUpdateTime(batch[index].last_activity_at, []), agent_messages_available: null, message_read_error: '本次消息读取暂不可用，可以使用 read_tab 重试；不能根据标签模式推断不可读'});
       });
     }
