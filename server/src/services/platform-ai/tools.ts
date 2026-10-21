@@ -11,17 +11,19 @@ import { trackTask, type Conversation } from './store.js';
 import type { ModelTool } from './model.js';
 import { detectWorkAgent, detectWorkAgents } from './agents.js';
 import { MAX_IMAGES, messageAttachments, ownedImage } from './attachments.js';
-
-const workspaceDispatches = new Set<string>();
+import { sessionPresenter } from '../session-labels.js';
 
 const objectParams = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const stringParam = { type: 'string' };
 const attachmentParam = {type: 'array', items: stringParam, maxItems: MAX_IMAGES, description: 'Image attachment IDs from this conversation to give to the work agent.'};
+const sourceMessagesParam = {type: 'array', items: stringParam, maxItems: 4, description: 'Optional original user message IDs needed for a multi-turn request. Their text is forwarded verbatim in chronological order, always including the current message. Never write or expand the requirement yourself.'};
 export const PLATFORM_TOOLS: ModelTool[] = [
+  {type: 'function', function: {name: 'list_project_tabs', description: 'Read accessible project tabs with their actual dashboard names and process state. Works for terminal tabs as well as Codex/Claude sessions. Use before answering which work is running; no tracking registration required.', parameters: objectParams({project_id: stringParam, project_name: stringParam, include_ended: {type: 'boolean'}})}},
+  {type: 'function', function: {name: 'read_tab', description: 'READ ONLY: read recent public agent progress/final messages and live state with dashboard name. Includes terminal tabs with bound agents. Tool calls/results and reasoning are excluded. Use even when no task was registered. Does not send input or change a process.', parameters: objectParams({session_id: stringParam, lines: {type: 'integer', minimum: 20, maximum: 1000}}, ['session_id'])}},
   { type: 'function', function: { name: 'platform_capabilities', description: 'Read the platform API catalog. Optional endpoint_id returns its full request and response definition.', parameters: objectParams({ endpoint_id: stringParam, offset: {type: 'integer', minimum: 0}, limit: {type: 'integer', minimum: 1, maximum: 50} }) } },
   { type: 'function', function: { name: 'platform_request', description: 'Call a catalog endpoint as the current platform user. Read endpoint parameters first. New work and sending input use start_work/send_to_session.', parameters: objectParams({ endpoint_id: stringParam, path_params: { type: 'object', additionalProperties: { type: 'string' } }, query: { type: 'object', additionalProperties: { type: 'string' } }, body: { type: 'object', additionalProperties: true } }, ['endpoint_id']) } },
-  { type: 'function', function: { name: 'start_work', description: 'Create and start a Codex/Claude project session without a browser, and register background observation. Same workspace active work is serialized.', parameters: objectParams({ project_id: stringParam, requirement: stringParam, cli_type: { type: 'string', enum: ['codex', 'claude'] }, attachment_ids: attachmentParam }, ['project_id', 'requirement', 'cli_type']) } },
-  { type: 'function', function: { name: 'send_to_session', description: 'Send an explicit instruction to a ready session and track the resulting task. Busy sessions are rejected. Permission prompts require explicit user authorization.', parameters: objectParams({ session_id: stringParam, instruction: stringParam, attachment_ids: attachmentParam }, ['session_id', 'instruction']) } },
+  { type: 'function', function: { name: 'start_work', description: 'Forward the original user request verbatim into a new Codex/Claude project tab and register observation. Uses the same permissions and tab limits as manual tab creation; other busy tabs in the project do not block creation.', parameters: objectParams({ project_id: stringParam, requirement: stringParam, cli_type: { type: 'string', enum: ['codex', 'claude'] }, attachment_ids: attachmentParam, source_message_ids: sourceMessagesParam }, ['project_id', 'requirement', 'cli_type']) } },
+  { type: 'function', function: { name: 'send_to_session', description: 'Forward original user text verbatim to the selected ready tab and track its result. Only the selected tab must be ready; other busy tabs do not block it.', parameters: objectParams({ session_id: stringParam, instruction: stringParam, attachment_ids: attachmentParam, source_message_ids: sourceMessagesParam }, ['session_id', 'instruction']) } },
   { type: 'function', function: { name: 'track_session', description: 'Observe an existing accessible session from its current output position. Does not send input or restart the agent.', parameters: objectParams({ session_id: stringParam, requirement: stringParam }, ['session_id', 'requirement']) } },
   { type: 'function', function: { name: 'list_tracked_tasks', description: 'Read current user task progress, summaries and completion evidence.', parameters: objectParams({}) } },
 ];
@@ -68,21 +70,21 @@ export async function platformApi(app: FastifyInstance, userId: string, method: 
   } finally { destroySession(cookie); }
 }
 
-function noOtherWorkspaceTask(projectId: string, exceptSessionId?: string): void {
-  const task = getDb().prepare(`SELECT t.id FROM platform_ai_tasks t JOIN sessions s ON s.id=t.session_id
-    WHERE s.project_id=? AND t.status IN ('running','blocked','uncertain') AND t.session_id!=? LIMIT 1`)
-    .get(projectId, exceptSessionId || '') as {id: string} | undefined;
-  if (task) throw new Error('该项目已有跟踪中的任务，请先完成当前工作，或在独立工作区执行并行任务');
-  const sessions = getDb().prepare("SELECT id FROM sessions WHERE project_id=? AND id!=? AND status IN ('pending','launching','running','detached','released')").all(projectId, exceptSessionId || '') as Array<{id: string}>;
-  if (sessions.some(session => {
-    const tracker = getTracker(session.id);
-    return sessionManager.isSessionActive(session.id) && (!tracker || tracker.hasPendingExecute || tracker.state.processState === 'busy');
-  })) throw new Error('该工作目录有其他活跃会话尚未空闲，请先完成当前工作或使用独立工作区');
-}
-
 export async function executePlatformTool(app: FastifyInstance, conversation: Conversation, name: string, rawArguments: string, operationId: string, messageId?: string): Promise<any> {
   const args = JSON.parse(rawArguments);
   const userId = conversation.user_id;
+  const originalRequest = (fallback: string, sourceIds?: string[]) => {
+    // Production tool calls always carry the current inbox ID. Resolve trusted
+    // user rows here instead of accepting an LLM's rewritten business brief.
+    if (!messageId) return fallback;
+    const ids = [...new Set([...(sourceIds || []), messageId])];
+    const rows = getDb().prepare(`SELECT id,content FROM platform_ai_messages WHERE conversation_id=? AND role='user'
+      AND id IN (${ids.map(() => '?').join(',')}) ORDER BY rowid`).all(conversation.id, ...ids) as Array<{id: string; content: string}>;
+    if (rows.length !== ids.length) throw new Error('原始需求消息不属于当前对话或已不存在');
+    const text = rows.map(row => row.content).join('\n\n');
+    if (text.length > 24000) throw new Error('选中的原始需求超过长度限制，请减少关联消息');
+    return text;
+  };
   const imagesForWork = (ids?: string[]) => {
     const selected = ids || (messageId ? messageAttachments(messageId).filter(image => image.status === 'ready').map(image => image.id) : []);
     return [...new Set(selected)].map(id => {
@@ -99,19 +101,52 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
     }
     return paths.length ? '\n\n用户提供的参考图片（请打开原图查看，不要仅根据文字猜测）：\n' + paths.map((path, index) => `图片 ${index + 1}：${path}`).join('\n') : '';
   };
+  if (name === 'list_project_tabs') {
+    const input = z.object({project_id: z.string().min(1).optional(), project_name: z.string().trim().min(1).optional(), include_ended: z.boolean().default(false)}).strict().parse(args);
+    let projectId = input.project_id;
+    if (!projectId && input.project_name) {
+      const {projects} = await platformApi(app, userId, 'GET', '/api/projects');
+      const matches = projects.filter((project: {name: string}) => project.name.toLowerCase() === input.project_name!.toLowerCase());
+      if (matches.length !== 1) return {error: matches.length ? '项目名称不唯一，请按项目 ID 选择' : '没有找到可访问的同名项目', projects: projects.map((project: {id: string; name: string}) => ({id: project.id, name: project.name}))};
+      projectId = matches[0].id;
+    }
+    const {sessions} = await platformApi(app, userId, 'GET', '/api/sessions' + (projectId ? '?project_id=' + encodeURIComponent(projectId) : ''));
+    const present = sessionPresenter(userId);
+    const tabs = sessions.filter((session: {status: string}) => input.include_ended || ['running','detached','pending','launching','released'].includes(session.status))
+      .slice(0,50).map((session: any) => ({session_id: session.id, ...present(session), mode: session.mode, status: session.status,
+        process_state: session.processState || 'unknown', prompt_type: session.promptType || null, last_activity_at: session.last_activity_at,
+        started_at: session.started_at}));
+    return {tabs, guidance: 'Reply using tab_name and project_name, not opaque IDs. For actual progress, call read_tab for relevant tabs; a preview, process age, busy/idle flag or empty task registry is insufficient.'};
+  }
+  if (name === 'read_tab') {
+    const input = z.object({session_id: z.string().min(1).max(256), lines: z.number().int().min(20).max(1000).default(200)}).strict().parse(args);
+    const {session} = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(input.session_id)}`);
+    const display = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(input.session_id)}/display?lines=${input.lines}`);
+    const native = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(input.session_id)}/agent-messages`);
+    const messages = native.messages || [];
+    return {session_id: session.id, ...sessionPresenter(userId)(session), mode: session.mode, session_status: session.status,
+      process_state: display.processState || 'unknown', prompt_type: display.promptType || null, choices: display.choices || null,
+      observed_at: display.observed_at || new Date().toISOString(), last_activity_at: display.last_activity_at || null,
+      messages, messages_available: native.available, output_source: 'native_messages',
+      guidance: 'Use the tab name. Relay agent commentary/final messages faithfully with state; do not invent execution prerequisites. Tool calls/results are deliberately excluded. If messages_available is false, report that agent messages are currently unavailable and give only the known state, without inventing progress or asking the user to copy logs. Process age/activity alone does not prove progress or a hang. Missing tracking does not prevent reading messages; do not suggest killing/restarting work because tracking is empty.'};
+  }
   if (name === 'platform_capabilities') {
     const input = z.object({ endpoint_id: z.string().optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(50).default(50) }).strict().parse(args);
     const catalog = platformCatalog(app);
     if (input.endpoint_id) return catalog.find(item => item.endpoint_id === input.endpoint_id) || { error: 'Unknown endpoint' };
     return { agents: await detectWorkAgents(), total: catalog.length, next_offset: input.offset + input.limit < catalog.length ? input.offset + input.limit : null, endpoints: catalog.slice(input.offset, input.offset + input.limit).map(({ endpoint_id, description, callable }) => ({ endpoint_id, description, callable })),
-      guidance: 'Use start_work for new sessions, send_to_session for input, list_tracked_tasks for task progress. APIs remain permission scoped.' };
+      guidance: 'For progress/status of existing work use list_project_tabs then read_tab (terminal tabs included). Tracking registration is not required for read_tab. Use start_work for new sessions, send_to_session for input, list_tracked_tasks for registered task history. APIs remain permission scoped.' };
   }
   if (name === 'platform_request') {
     const input = z.object({ endpoint_id: z.string(), path_params: z.record(z.string().max(256)).default({}), query: z.record(z.string().max(1024)).default({}), body: z.record(z.unknown()).optional() }).strict().parse(args);
     const endpoint = platformCatalog(app).find(item => item.endpoint_id === input.endpoint_id);
     if (!endpoint) throw new Error('接口不在平台 AI 能力目录中');
-    if (!endpoint.callable) throw new Error(endpoint.restriction || '此接口需要使用专用工具或在平台中操作');
-    let path = endpoint.path.replace(/:([A-Za-z_]+)/g, (_, key: string) => {
+    const cleanDisplayAlias = endpoint.method === 'GET' && /^\/api\/sessions\/:id\/(?:output|rendered-output)$/.test(endpoint.path);
+    if (!endpoint.callable && !cleanDisplayAlias) throw new Error(endpoint.restriction || '此接口需要使用专用工具或在平台中操作');
+    if (endpoint.method === 'GET' && /^\/api\/sessions\/:id\/(?:output|rendered-output|display)$/.test(endpoint.path)) {
+      return executePlatformTool(app, conversation, 'read_tab', JSON.stringify({session_id: input.path_params.id}), operationId, messageId);
+    }
+    let path = (cleanDisplayAlias ? '/api/sessions/:id/display' : endpoint.path).replace(/:([A-Za-z_]+)/g, (_, key: string) => {
       if (!input.path_params[key] || !/^[A-Za-z0-9_-]+$/.test(input.path_params[key])) throw new Error('缺少或无效的接口路径参数');
       return encodeURIComponent(input.path_params[key]);
     });
@@ -127,22 +162,22 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
   }
   if (name === 'list_tracked_tasks') {
     z.object({}).strict().parse(args);
-    return { tasks: getDb().prepare(`SELECT id,session_id,requirement,status,summary,evidence,updated_at FROM platform_ai_tasks WHERE user_id=? ORDER BY rowid DESC LIMIT 30`).all(userId) };
+    const tasks = getDb().prepare(`SELECT id,session_id,requirement,status,summary,evidence,updated_at FROM platform_ai_tasks WHERE user_id=? ORDER BY rowid DESC LIMIT 30`).all(userId) as Array<{session_id: string}>;
+    const present = sessionPresenter(userId);
+    return {tasks: tasks.map(task => {const session = sessionManager.getSession(task.session_id); return {...task, ...(session ? present(session) : {})};}),
+      guidance: 'These are explicitly registered tasks only. An empty list does not mean no work is running; use list_project_tabs and read_tab to inspect existing terminal/session tabs.'};
   }
   if (name === 'start_work') {
-    const input = z.object({ project_id: z.string().min(1), requirement: z.string().trim().min(1).max(24000), cli_type: z.enum(['codex', 'claude']), attachment_ids: z.array(z.string().min(1).max(64)).max(MAX_IMAGES).optional() }).strict().parse(args);
+    const input = z.object({ project_id: z.string().min(1), requirement: z.string().trim().min(1).max(24000), cli_type: z.enum(['codex', 'claude']), attachment_ids: z.array(z.string().min(1).max(64)).max(MAX_IMAGES).optional(), source_message_ids: z.array(z.string().min(1).max(64)).max(4).optional() }).strict().parse(args);
+    const requirement = originalRequest(input.requirement, input.source_message_ids);
     const images = imagesForWork(input.attachment_ids);
     const { project } = await platformApi(app, userId, 'GET', `/api/projects/${encodeURIComponent(input.project_id)}`);
     const agent = await detectWorkAgent(input.cli_type, project.path, true);
     if (agent.status === 'unavailable') throw new Error(`${agent.label} 当前不可用：${agent.reason}。请从 platform_capabilities 返回的可用 Agent 中选择；用户明确指定了 Agent 时应先说明情况，不得擅自替换。`);
-    noOtherWorkspaceTask(input.project_id);
-    if (workspaceDispatches.has(input.project_id)) throw new Error('该项目已有派发操作正在进行');
-    workspaceDispatches.add(input.project_id);
-    try {
     // Include a stable operation reference in task metadata for crash reconciliation.
-    let taskText = `${input.requirement}\n\n[Platform task reference: ${operationId}]`;
+    let taskText = `${requirement}\n\n[Platform task reference: ${operationId}]`;
     const { session } = await platformApi(app, userId, 'POST', '/api/sessions', { project_id: input.project_id, project_path: project.path, task: taskText, cli_type: input.cli_type, mode: 'session' });
-    const task = trackTask(conversation, session.id, input.requirement, 0, operationId);
+    const task = trackTask(conversation, session.id, requirement, 0, operationId);
     getDb().prepare("UPDATE platform_ai_operations SET result=? WHERE id=?").run(JSON.stringify({ session_id: session.id, task_id: task.id }), operationId);
     // Existing session creation defers spawn until WebSocket attachment. External users
     // have no browser, so consume the pending spawn and start it explicitly.
@@ -160,20 +195,18 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
       getDb().prepare("UPDATE platform_ai_tasks SET status='uncertain',summary='Agent 启动未能确认，请检查会话状态；平台不会重复派发。' WHERE id=?").run(task.id);
       return { task_id: task.id, session_id: session.id, status: 'uncertain', message: 'Agent 启动结果待核对，请读取该会话状态，不要重复创建。', monitoring: true };
     }
-    return { task_id: task.id, session_id: session.id, status: 'running', monitoring: true };
-    } finally { workspaceDispatches.delete(input.project_id); }
+    return { task_id: task.id, session_id: session.id, ...sessionPresenter(userId)({...session, task: requirement}), status: 'running', monitoring: true, forwarded_verbatim: !!messageId };
   }
   if (name === 'send_to_session' || name === 'track_session') {
     const input = name === 'send_to_session'
-      ? z.object({ session_id: z.string().min(1), instruction: z.string().trim().min(1).max(24000), attachment_ids: z.array(z.string().min(1).max(64)).max(MAX_IMAGES).optional() }).strict().parse(args)
+      ? z.object({ session_id: z.string().min(1), instruction: z.string().trim().min(1).max(24000), attachment_ids: z.array(z.string().min(1).max(64)).max(MAX_IMAGES).optional(), source_message_ids: z.array(z.string().min(1).max(64)).max(4).optional() }).strict().parse(args)
       : z.object({ session_id: z.string().min(1), requirement: z.string().trim().min(1).max(24000) }).strict().parse(args);
     const sessionId = input.session_id;
     const { session } = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(sessionId)}`);
     if (session.mode === 'terminal') throw new Error('平台 AI 开发任务需要选择 Codex/Claude Session');
     const display = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(sessionId)}/display?lines=100`);
-    const requirement = 'instruction' in input ? input.instruction : input.requirement;
+    const requirement = 'instruction' in input ? originalRequest(input.instruction, input.source_message_ids) : input.requirement;
     if (name === 'track_session') return trackTask(conversation, sessionId, requirement, Number(display.cursor) || 0);
-    noOtherWorkspaceTask(session.project_id, sessionId);
     const state = getTracker(sessionId);
     if (display.processState === 'busy' || state?.hasPendingExecute) throw new Error('目标会话正在执行，请稍后再发送');
     if (display.promptType === 'confirmation' || display.promptType === 'choice' || state?.state.isPermission) throw new Error('目标会话等待交互确认，请用户在平台查看并处理后继续');

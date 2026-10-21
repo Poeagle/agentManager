@@ -9,6 +9,52 @@ export interface PromptContextTurn {
   assistant: string;
 }
 
+export interface AgentTextMessage {
+  role: 'user' | 'assistant';
+  phase: 'user' | 'commentary' | 'final';
+  text: string;
+  timestamp: string | null;
+  task_reference?: string | null;
+}
+
+/** Public conversation text only: never tool arguments/results or reasoning. */
+export function extractAgentMessages(entries: Iterable<unknown>, kind: CliType): AgentTextMessage[] {
+  const messages: AgentTextMessage[] = [];
+  let taskReference: string | null = null;
+  const append = (role: AgentTextMessage['role'], phase: AgentTextMessage['phase'], text: string, timestamp: unknown) => {
+    if (!text || /^<environment_context>[\s\S]*<\/environment_context>$/.test(text)) return;
+    if (role === 'user') taskReference = /\[Platform task reference: ([A-Za-z0-9_-]+)\]/.exec(text)?.[1] || null;
+    const last = messages.at(-1);
+    if (last?.role === role && last.text === text) {
+      if (phase === 'final') last.phase = phase;
+      return;
+    }
+    messages.push({role, phase, text: clipped(text), timestamp: typeof timestamp === 'string' ? timestamp : null, task_reference: taskReference});
+  };
+  for (const entry of entries) {
+    if (!isRecord(entry)) continue;
+    if (kind === 'codex' && isRecord(entry.payload)) {
+      const p = entry.payload;
+      if (entry.type === 'response_item' && p.type === 'message') {
+        if (p.role === 'user') append('user', 'user', contentText(p.content, 'input_text'), entry.timestamp);
+        if (p.role === 'assistant') append('assistant', p.phase === 'final_answer' ? 'final' : 'commentary', contentText(p.content, 'output_text'), entry.timestamp);
+      } else if (entry.type === 'event_msg') {
+        if (p.type === 'user_message') append('user', 'user', cleanText(p.message), entry.timestamp);
+        if (p.type === 'agent_message') append('assistant', p.phase === 'final_answer' ? 'final' : 'commentary', cleanText(p.message), entry.timestamp);
+        if (p.type === 'task_complete') append('assistant', 'final', cleanText(p.last_agent_message), entry.timestamp);
+      }
+    } else if (kind === 'claude' && entry.isSidechain !== true && entry.isMeta !== true && isRecord(entry.message)) {
+      const m = entry.message;
+      if (entry.type === 'user' && m.role === 'user') {
+        const origin = isRecord(entry.origin) ? entry.origin : null;
+        if (!origin || !origin.kind || origin.kind === 'human') append('user', 'user', contentText(m.content, 'text'), entry.timestamp);
+      }
+      if (entry.type === 'assistant' && m.role === 'assistant') append('assistant', m.stop_reason === 'end_turn' ? 'final' : 'commentary', contentText(m.content, 'text'), entry.timestamp);
+    }
+  }
+  return messages;
+}
+
 export interface PromptContextSession {
   cli_type: CliType | null;
   claude_session_id: string | null;
@@ -192,7 +238,7 @@ async function relevantTailEntries(filePath: string, kind: CliType, maxBytes: nu
     for (const line of lines) {
       const relevant = kind === 'claude'
         ? /"type"\s*:\s*"(?:user|assistant|system)"/.test(line)
-        : /"type"\s*:\s*"(?:user_message|task_complete|message)"/.test(line);
+        : /"type"\s*:\s*"(?:user_message|agent_message|task_complete|message)"/.test(line);
       if (!relevant) continue;
       try { entries.push(JSON.parse(line)); } catch { /* partial line while CLI is writing */ }
     }
@@ -237,6 +283,33 @@ async function findCodexRollout(sessionId: string): Promise<string | null> {
   const path = join(match.parentPath, match.name);
   codexRolloutCache.set(sessionId, path);
   return path;
+}
+
+export async function loadRecentAgentMessages(session: PromptContextSession): Promise<AgentTextMessage[]> {
+  try {
+    let file: string | null = null;
+    let kind: CliType = 'claude';
+    if (session.cli_type === 'codex' && session.codex_session_id && NATIVE_SESSION_ID_RE.test(session.codex_session_id)) {
+      kind = 'codex';
+      file = await findCodexRollout(session.codex_session_id);
+    } else if (session.claude_session_id && session.project_path && NATIVE_SESSION_ID_RE.test(session.claude_session_id)) {
+      const dir = resolveClaudeDir(session.project_path);
+      if (dir) file = join(dir, `${session.claude_session_id}.jsonl`);
+    }
+    if (!file) return [];
+    const {entries} = await relevantTailEntries(file, kind, CONTEXT_TAIL_BUDGETS[0]);
+    const selected: AgentTextMessage[] = [];
+    let remaining = MAX_PROMPT_CONTEXT_CHARS;
+    for (const message of extractAgentMessages(entries, kind).reverse()) {
+      if (selected.length >= 30 || remaining <= 0) break;
+      const text = message.text.slice(-remaining);
+      selected.push({...message, text});
+      remaining -= text.length;
+    }
+    return selected.reverse();
+  } catch {
+    return [];
+  }
 }
 
 /** Resolve the tab's bound native history and return only completed user/final pairs. */

@@ -33,8 +33,10 @@ let adminCookie: string;
 let cookie: string;
 let databaseDir: string;
 let nativeTurns: Array<{user: string; assistant: string}>;
+let nativeMessages: Array<{role: string; phase: string; text: string; timestamp: string; task_reference?:string}>;
 let display: {cursor: number | null; output: string; processState: string; promptType: string | null; cursorReset?: boolean};
 let displayRequests: string[];
+let executeRequests: Array<{input: string}>;
 
 beforeEach(async () => {
   vi.spyOn(agents, 'detectWorkAgent').mockImplementation(async cli => ({cli_type: cli, label: cli, status:'available',reason:'Test fixture'}));
@@ -57,13 +59,17 @@ beforeEach(async () => {
   await app.register(platformAiRoutes, {prefix: '/api', runWorker: false});
   display = {cursor: 0, output: '', processState: 'idle', promptType: null};
   nativeTurns = [];
+  nativeMessages = [];
   displayRequests = [];
+  executeRequests = [];
   app.get('/api/sessions/:id/completed-turn', async () => ({turns: nativeTurns}));
+  app.get('/api/sessions/:id/agent-messages', async () => ({messages:nativeMessages,available:nativeMessages.length>0}));
   app.get<{Params: {id: string}}>('/api/sessions/:id/display', async (req, reply) => {
     displayRequests.push(req.url);
     if (!userCanUseSessionTool(req.user!.id, req.params.id, 'codex', 'session')) return reply.code(404).send({error: 'Session not found'});
     return {...display};
   });
+  app.post<{Body: {input: string}}>('/api/sessions/:id/execute', async req => {executeRequests.push(req.body);return {status:'completed'};});
   worker = new PlatformAiWorker(app);
   await app.ready();
 });
@@ -86,6 +92,46 @@ function seedSession(id = 'session-1') {
 }
 
 describe('platform AI configuration and access boundaries', () => {
+  it('lists dashboard tab names and reads terminal work even with no tracked task', async () => {
+    configure(); seedSession('design-tab');
+    getDb().prepare("UPDATE sessions SET mode='terminal',task='Terminal' WHERE id='design-tab'").run();
+    getDb().prepare('INSERT INTO user_ui_state (user_id,key,value) VALUES (?,?,?)').run(member, 'project:p', JSON.stringify({terminalInstances: [{id:'design-tab',label:'Terminal 1',customLabel:'设计'}], terminalLabels: {'design-tab':'旧名称'}}));
+    const received = inbound('Project 项目正在跑什么？'); const conversation = getConversation(received.conversation_id)!;
+    const tabs = await executePlatformTool(app, conversation, 'list_project_tabs', JSON.stringify({project_name:'Project'}), 'list');
+    expect(tabs.tabs).toEqual([expect.objectContaining({session_id:'design-tab',tab_name:'设计',project_name:'Project',mode:'terminal'})]);
+    display = {...display, processState:'busy',output:'tool result: private command output'};
+    nativeMessages = [{role:'assistant',phase:'commentary',text:'已补充 full-scope 测试；尚未执行测试。',timestamp:new Date().toISOString()}];
+    const result = await executePlatformTool(app, conversation, 'read_tab', JSON.stringify({session_id:'design-tab'}), 'read');
+    expect(result).toMatchObject({tab_name:'设计',project_name:'Project',mode:'terminal',process_state:'busy',messages:nativeMessages});
+    expect(JSON.stringify(result)).not.toContain('private command output');
+    expect(displayRequests.at(-1)).toBe('/api/sessions/design-tab/display?lines=200');
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM platform_ai_tasks').get()).toEqual({n:0});
+    const listed = await app.inject({url:'/api/sessions?project_id=p',headers:{cookie}});
+    expect(listed.json().sessions[0].display_name).toBe('设计');
+  });
+  it('does not expose another users tab contents through the read-only progress tools', async () => {
+    configure(); seedSession('private-tab');
+    getDb().prepare("UPDATE sessions SET created_by_user_id=? WHERE id='private-tab'").run(other);
+    const received = inbound();
+    await expect(executePlatformTool(app,getConversation(received.conversation_id)!,'read_tab',JSON.stringify({session_id:'private-tab'}),'read')).rejects.toThrow('404');
+    expect(displayRequests).toHaveLength(0);
+  });
+  it('translates a legacy rendered-output read to the authorized clean display without requiring tracking', async () => {
+    configure(); seedSession();const received = inbound();
+    const catalog = app.platformAiApiRegistry!;
+    catalog.set('GET /api/sessions/:id/rendered-output',{endpoint_id:'GET /api/sessions/:id/rendered-output',method:'GET',path:'/api/sessions/:id/rendered-output',description:'legacy',callable:false,restriction:'Use display'});
+    display.output = 'private tool result';
+    nativeMessages = [{role:'assistant',phase:'commentary',text:'实际 Agent 进度消息',timestamp:new Date().toISOString()}];
+    const result = await executePlatformTool(app,getConversation(received.conversation_id)!,'platform_request',JSON.stringify({endpoint_id:'GET /api/sessions/:id/rendered-output',path_params:{id:'session-1'},query:{lines:'200'}}),'read');
+    expect(result.messages).toEqual(nativeMessages);expect(JSON.stringify(result)).not.toContain('private tool result');expect(displayRequests.at(-1)).toContain('/display?lines=200');
+  });
+  it('returns state without terminal tool output when native messages are unavailable', async () => {
+    configure();seedSession();const received=inbound();
+    display={...display,processState:'busy',output:'sensitive tool result should not reach the model'};
+    const result=await executePlatformTool(app,getConversation(received.conversation_id)!,'read_tab',JSON.stringify({session_id:'session-1'}),'read');
+    expect(result).toMatchObject({process_state:'busy',messages_available:false,messages:[]});
+    expect(JSON.stringify(result)).not.toContain(display.output);
+  });
   it('inventories actual API routes, exposes scoped state reads and keeps credential routes out of generic calls', async () => {
     const result = await app.inject({url:'/api/platform-ai/tools',headers:{cookie}});
     const endpoints = result.json().endpoints;
@@ -209,6 +255,43 @@ describe('signed external channel ingestion', () => {
 });
 
 describe('durable platform AI tool execution', () => {
+  it('creates another project tab while existing work is busy and forwards the exact user text instead of model embellishment', async () => {
+    configure(); seedSession('busy-tab');
+    const prior = inbound('正在执行的其他工作','old',''+member,'old-chat');
+    trackTask(getConversation(prior.conversation_id)!,'busy-tab','其他工作');
+    vi.spyOn(manager,'isSessionActive').mockReturnValue(true);
+    const spawn = vi.spyOn(manager,'spawnSession').mockResolvedValue();
+    const original = '这个项目建个任务，查看当前未完成的jira';
+    const received = inbound(original,'jira');
+    const result = await executePlatformTool(app,getConversation(received.conversation_id)!,'start_work',JSON.stringify({project_id:'p',cli_type:'codex',requirement:'只读自查仓库 JIRA 接入，禁止写操作，输出 markdown 表格和验收标准'}),'jira-operation',received.message_id);
+    expect(result.status).toBe('running');expect(result.forwarded_verbatim).toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0][2]).toBe(original+'\n\n[Platform task reference: jira-operation]');
+    expect(getDb().prepare('SELECT requirement FROM platform_ai_tasks WHERE session_id=?').get(result.session_id)).toEqual({requirement:original});
+    expect(getDb().prepare("SELECT status FROM sessions WHERE id='busy-tab'").get()).toEqual({status:'running'});
+  });
+  it('forwards selected original clarification messages in order and rejects sources from another conversation', async () => {
+    configure();
+    const first = inbound('查看当前未完成的jira','first');
+    const second = inbound('项目是 Project，用 Codex','second');
+    const unrelated = inbound('别的对话内容','third',member,'other-conversation');
+    const conversation = getConversation(second.conversation_id)!;
+    await expect(executePlatformTool(app,conversation,'start_work',JSON.stringify({project_id:'p',cli_type:'codex',requirement:'expanded',source_message_ids:[unrelated.message_id]}),'bad',second.message_id)).rejects.toThrow('不属于当前对话');
+    const spawn=vi.spyOn(manager,'spawnSession').mockResolvedValue();
+    await executePlatformTool(app,conversation,'start_work',JSON.stringify({project_id:'p',cli_type:'codex',requirement:'expanded',source_message_ids:[first.message_id]}),'clarified',second.message_id);
+    expect(spawn.mock.calls[0][2]).toBe('查看当前未完成的jira\n\n项目是 Project，用 Codex\n\n[Platform task reference: clarified]');
+  });
+  it('only checks the selected target tab before forwarding a follow-up verbatim', async () => {
+    configure();seedSession('target-tab');seedSession('other-busy-tab');
+    vi.spyOn(manager,'isSessionActive').mockReturnValue(true);
+    const received=inbound('继续查询未完成的jira','followup');const conversation=getConversation(received.conversation_id)!;
+    display={...display,processState:'busy'};
+    await expect(executePlatformTool(app,conversation,'send_to_session',JSON.stringify({session_id:'target-tab',instruction:'自定义改写'}),'blocked',received.message_id)).rejects.toThrow('目标会话正在执行');
+    expect(executeRequests).toHaveLength(0);
+    display={...display,processState:'idle'};
+    await executePlatformTool(app,conversation,'send_to_session',JSON.stringify({session_id:'target-tab',instruction:'只读调查并必须输出报告'}),'ready',received.message_id);
+    expect(executeRequests[0].input).toBe('继续查询未完成的jira\n\n[Platform task reference: ready]');
+  });
   it('copies the current screenshots into the authorized project before spawning the work agent', async () => {
     configure(); const received = inbound('根据截图修复项目');
     const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6CsAAAAAASUVORK5CYII=', 'base64');
@@ -382,6 +465,7 @@ describe('session observation and notification reliability', () => {
     configure();seedSession();const received=inbound();
     const task=trackTask(getConversation(received.conversation_id)!,'session-1','实现导出');
     task.last_assessed_at=Date.now();task.last_assessed_output='要导出 CSV 还是 JSON?';task.output=task.last_assessed_output;
+    nativeMessages=[{role:'assistant',phase:'commentary',text:task.last_assessed_output,timestamp:new Date().toISOString()}];
     display={cursor:0,output:'',processState:'waiting_for_input',promptType:'text'};
     const fetchMock=vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'blocked',summary:'Agent 需要选择导出格式：CSV 或 JSON。',evidence:'要导出 CSV 还是 JSON?'})}));
     vi.stubGlobal('fetch',fetchMock);
@@ -444,6 +528,7 @@ describe('session observation and notification reliability', () => {
     vi.stubGlobal('fetch',fetchMock);
     for(let index=0;index<3;index++) {
       display={cursor:index+1,output:`进展${index}`,processState:'idle',promptType:null};
+      nativeMessages.push({role:'assistant',phase:'commentary',text:`进展${index}`,timestamp:new Date().toISOString()});
       task.last_assessed_at=0;task.last_notified_at=0;
       await worker.observe(task,readAiConfig());
       task=getDb().prepare('SELECT * FROM platform_ai_tasks WHERE id=?').get(task.id) as typeof task;
@@ -508,7 +593,7 @@ describe('session observation and notification reliability', () => {
     nativeTurns=[{user:'实现导出\n[Platform task reference: old-reference]',assistant:display.output}];
     vi.stubGlobal('fetch',vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'reported_complete',summary:'实现完成',evidence:display.output})})));
     await worker.observe(task,readAiConfig());
-    expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'uncertain'});
+    expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'running'});
   });
   it('rechecks a delayed native final answer even if no further terminal output arrives', async () => {
     configure();seedSession();const received=inbound();
@@ -552,6 +637,7 @@ describe('session observation and notification reliability', () => {
     configure();seedSession();const received=inbound();
     const task=trackTask(getConversation(received.conversation_id)!,'session-1','实现导出');
     display={cursor:5,output:'功能完成',processState:'idle',promptType:null};
+    nativeMessages=[{role:'assistant',phase:'commentary',text:'功能完成',timestamp:new Date().toISOString()}];
     vi.stubGlobal('fetch',vi.fn().mockImplementation(async () => {
       getDb().prepare("UPDATE platform_ai_tasks SET status='cancelled' WHERE id=?").run(task.id);
       return providerResponse({content:JSON.stringify({status:'reported_complete',summary:'功能完成',evidence:'功能完成'})});
@@ -559,6 +645,38 @@ describe('session observation and notification reliability', () => {
     await worker.observe(task,readAiConfig());
     expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'cancelled'});
     expect((getDb().prepare('SELECT COUNT(*) AS n FROM platform_ai_outbox').get() as any).n).toBe(0);
+  });
+  it('does not call the model for tool-only output and assesses only this tasks public agent messages', async () => {
+    configure();seedSession();const received=inbound();
+    const task=trackTask(getConversation(received.conversation_id)!,'session-1','检查 Jira',0,'message-only');
+    display={cursor:1,output:'private tool execution result',processState:'busy',promptType:null};
+    const fetchMock=vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'running',summary:'正在检查已有 Jira 配置',evidence:''})}));
+    vi.stubGlobal('fetch',fetchMock);
+    await worker.observe(task,readAiConfig());
+    expect(fetchMock).not.toHaveBeenCalled();
+    nativeMessages=[
+      {role:'assistant',phase:'final',text:'旧任务已完成',timestamp:new Date().toISOString()},
+      {role:'user',phase:'user',text:'检查 Jira [Platform task reference: message-only]',timestamp:new Date().toISOString()},
+      {role:'assistant',phase:'commentary',text:'正在检查已有 Jira 配置',timestamp:new Date().toISOString()},
+      {role:'user',phase:'user',text:'另一个任务',timestamp:new Date().toISOString()},
+      {role:'assistant',phase:'commentary',text:'不属于当前任务',timestamp:new Date().toISOString()},
+    ];
+    await worker.observe(task,readAiConfig());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const input=JSON.parse(JSON.parse(fetchMock.mock.calls[0][1].body).messages[1].content);
+    expect(input.output).toBe('正在检查已有 Jira 配置');
+    expect(JSON.stringify(input)).not.toContain('private tool execution result');
+  });
+  it('keeps reading this tasks new messages when the original prompt has scrolled out and terminal replay is empty', async () => {
+    configure();seedSession();const received=inbound();
+    const task=trackTask(getConversation(received.conversation_id)!,'session-1','检查 Jira',0,'long-turn');
+    display={cursor:0,output:'',processState:'busy',promptType:null};
+    nativeMessages=[{role:'assistant',phase:'commentary',text:'找到已有接入，正在查询',timestamp:new Date().toISOString(),task_reference:'long-turn'}];
+    const fetchMock=vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'running',summary:'正在查询',evidence:''})}));
+    vi.stubGlobal('fetch',fetchMock);
+    await worker.observe(task,readAiConfig());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(JSON.parse(fetchMock.mock.calls[0][1].body).messages[1].content).output).toBe('找到已有接入，正在查询');
   });
   it('retries failed outbound delivery with a stable idempotency key', async () => {
     configure();

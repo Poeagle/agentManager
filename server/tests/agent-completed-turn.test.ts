@@ -34,6 +34,17 @@ describe('native completed-turn observation API',()=>{
     const result=await app.inject({url:'/api/sessions/own/completed-turn',headers:{cookie}});
     expect(result.statusCode).toBe(200);expect(result.json()).toEqual({turns:[]});
   });
+  it('reads public agent messages from an authorized terminal tab and checks access before reading history',async()=>{
+    getDb().prepare("UPDATE sessions SET mode='terminal' WHERE id='own'").run();
+    const owner=getDb().prepare("SELECT created_by_user_id AS id FROM sessions WHERE id='own'").get() as {id:string};
+    setProjectToolAccess({projectId:'p',userId:owner.id,canSession:false,canTerminal:true,sessionClients:[],grantedBy:owner.id});
+    const messages=[{role:'assistant' as const,phase:'commentary' as const,text:'正在检查现有配置',timestamp:null}];
+    const load=vi.spyOn(context,'loadRecentAgentMessages').mockResolvedValue(messages);
+    const result=await app.inject({url:'/api/sessions/own/agent-messages',headers:{cookie}});
+    expect(result.statusCode).toBe(200);expect(result.json()).toMatchObject({messages,available:true,project_name:'Project'});
+    expect((await app.inject({url:'/api/sessions/other/agent-messages',headers:{cookie}})).statusCode).toBe(404);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
   it('renders an ended session snapshot for monitoring after replay has been archived',async()=>{
     getDb().prepare("UPDATE sessions SET status='completed',exit_code=0 WHERE id='own'").run();
     getDb().prepare("INSERT INTO session_snapshots(session_id,cols,rows,rendered) VALUES ('own',120,40,?)").run('zsh:1: command not found: codex\u001b[1B');
@@ -53,5 +64,15 @@ describe('native completed-turn observation API',()=>{
     }
     const reset=await app.inject({url:'/api/sessions/own/display?since=100',headers:{cookie}});
     expect(reset.json()).toMatchObject({cursor:42,cursorReset:true});
+  });
+  it('reads terminal tab text with the dashboard label without registering a tracked task',async()=>{
+    const session=getDb().prepare("SELECT created_by_user_id AS user_id FROM sessions WHERE id='own'").get() as {user_id:string};
+    setProjectToolAccess({projectId:'p',userId:session.user_id,canSession:false,canTerminal:true,sessionClients:[],grantedBy:session.user_id});
+    getDb().prepare("UPDATE sessions SET mode='terminal',task='Terminal' WHERE id='own'").run();
+    getDb().prepare("INSERT INTO user_ui_state(user_id,key,value) VALUES (?,'project:p',?)").run(session.user_id,JSON.stringify({terminalInstances:[{id:'own',label:'Terminal 1',customLabel:'设计'}]}));
+    getDb().prepare("INSERT INTO pty_output(session_id,seq,data) VALUES ('own',1,?)").run('正在补充测试用例\r\n尚未运行测试');
+    const result=await app.inject({url:'/api/sessions/own/display?lines=200',headers:{cookie}});
+    expect(result.statusCode).toBe(200);expect(result.json()).toMatchObject({display_name:'设计',project_name:'Project',output:'正在补充测试用例\n尚未运行测试'});
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM platform_ai_tasks').get()).toEqual({n:0});
   });
 });

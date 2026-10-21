@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   extractClaudePromptContext,
+  extractAgentMessages,
   extractCodexPromptContext,
   limitPromptContext,
   loadPromptContextFromFile,
@@ -11,6 +12,35 @@ import {
 } from '../src/services/prompt-context.js';
 
 describe('prompt enhancement conversation context', () => {
+  it('extracts Codex progress and final messages while excluding tools, reasoning and duplicate event records', () => {
+    const messages=extractAgentMessages([
+      {type:'event_msg',payload:{type:'user_message',message:'查询 Jira'}},
+      {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'查询 Jira'}]}},
+      {type:'response_item',payload:{type:'reasoning',text:'hidden thought'}},
+      {type:'response_item',payload:{type:'function_call',arguments:'private arguments'}},
+      {type:'response_item',payload:{type:'function_call_output',output:'private result'}},
+      {type:'event_msg',payload:{type:'agent_message',message:'正在检查已有配置'}},
+      {type:'response_item',payload:{type:'message',role:'assistant',phase:'commentary',content:[{type:'output_text',text:'正在检查已有配置'}]}},
+      {type:'response_item',payload:{type:'message',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'找到三个未完成问题'}]}},
+      {type:'event_msg',payload:{type:'task_complete',last_agent_message:'找到三个未完成问题'}},
+    ],'codex');
+    expect(messages.map(({role,phase,text})=>({role,phase,text}))).toEqual([
+      {role:'user',phase:'user',text:'查询 Jira'},
+      {role:'assistant',phase:'commentary',text:'正在检查已有配置'},
+      {role:'assistant',phase:'final',text:'找到三个未完成问题'},
+    ]);
+  });
+  it('extracts Claude text messages while ignoring nested tool results, thinking and sidechains', () => {
+    const messages=extractAgentMessages([
+      {type:'user',message:{role:'user',content:'检查配置'}},
+      {type:'assistant',message:{role:'assistant',content:[{type:'thinking',thinking:'hidden'},{type:'tool_use',input:{token:'private'}},{type:'text',text:'正在检查'}]}},
+      {type:'user',message:{role:'user',content:[{type:'tool_result',content:[{type:'text',text:'private result'}]}]}},
+      {type:'assistant',isSidechain:true,message:{role:'assistant',content:'subagent detail'}},
+      {type:'assistant',message:{role:'assistant',stop_reason:'end_turn',content:[{type:'text',text:'需要你确认项目范围'}]}},
+    ],'claude');
+    expect(messages.map(m=>m.text)).toEqual(['检查配置','正在检查','需要你确认项目范围']);
+    expect(messages.at(-1)?.phase).toBe('final');
+  });
   it('keeps Claude human prompts and end-turn text while excluding tools, thinking, and unfinished work', () => {
     const turns = extractClaudePromptContext([
       { type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: '修复标签页黑屏' } },

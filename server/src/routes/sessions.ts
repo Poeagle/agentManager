@@ -14,6 +14,7 @@ import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'fs';
 import { isAbsolute, join, relative, sep } from 'path';
 import { prunePastesDir } from '../services/paste-cleanup.js';
+import { sessionPresenter } from '../services/session-labels.js';
 
 const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_PASTED_FILE_BYTES = 35 * 1024 * 1024;
@@ -134,6 +135,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         outputActivity.set(row.session_id, { createdAt: row.created_at, data: row.data });
       }
     }
+    const present = sessionPresenter(req.user!.id);
     const sessions = visible
       // Enrich with live process-state (busy/idle/waiting_for_input) so tab signal
       // lights are correct on first load, before any WS state_change arrives.
@@ -144,6 +146,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
           : sqliteUtcToIso(outputActivity.get(s.id)?.createdAt ?? s.updated_at ?? s.completed_at ?? s.started_at ?? s.created_at);
         return {
           ...s,
+          ...present(s),
           last_activity_at: lastActivityAt,
           content_summary: summarizeSessionContent(s.task, outputActivity.get(s.id)?.data),
           ...(st ? { processState: st.processState, promptType: st.promptType, isPermission: st.isPermission } : {}),
@@ -195,7 +198,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   }>('/sessions/:id', async (req, reply) => {
     const session = sessionManager.getSession(req.params.id);
     if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
-    return { session };
+    return { session: {...session, ...sessionPresenter(req.user!.id)(session)} };
   });
 
   // Clipboard data is stored inside the session's project; the terminal only

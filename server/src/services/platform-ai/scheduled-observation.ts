@@ -8,13 +8,11 @@ export class PlatformAiScheduleBusyError extends Error {}
 export function captureScheduledBaseline(scheduleId: string, runId: string, sessionId: string | null, requireAvailable = false): void {
   const link = getDb().prepare('SELECT conversation_id FROM platform_ai_schedule_links WHERE schedule_id=?').get(scheduleId) as {conversation_id: string} | undefined;
   if (!link) return;
-  if (requireAvailable) {
-    const active = getDb().prepare(`SELECT t.id FROM platform_ai_tasks t JOIN sessions s ON s.id=t.session_id
-      JOIN scheduled_tasks scheduled ON scheduled.project_id=s.project_id
-      WHERE scheduled.id=? AND t.status IN ('running','blocked','uncertain') LIMIT 1`).get(scheduleId);
-    const tracker = sessionId ? getTracker(sessionId) : undefined;
+  if (requireAvailable && sessionId) {
+    const active = getDb().prepare(`SELECT id FROM platform_ai_tasks WHERE session_id=? AND status IN ('running','blocked','uncertain') LIMIT 1`).get(sessionId);
+    const tracker = getTracker(sessionId);
     if (active || tracker?.hasPendingExecute || tracker?.state.processState === 'busy') {
-      throw new PlatformAiScheduleBusyError('项目已有未完成的工作或目标会话忙碌，跳过本次发送');
+      throw new PlatformAiScheduleBusyError('目标标签页已有未完成的工作或正在忙碌，跳过本次发送');
     }
   }
   const baseline = sessionId ? (getDb().prepare('SELECT COALESCE(MAX(seq),0) AS cursor FROM pty_output WHERE session_id=?').get(sessionId) as {cursor: number}).cursor : 0;

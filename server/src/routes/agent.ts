@@ -10,7 +10,8 @@ import { readSessionCookie, sessionCookieName, userCanUseSessionTool } from '../
 import { registerUserConnection } from '../services/user-connections.js';
 import { requirePermission } from '../services/rbac.js';
 import { getDb } from '../db/index.js';
-import { loadRecentPromptContext } from '../services/prompt-context.js';
+import { loadRecentAgentMessages, loadRecentPromptContext } from '../services/prompt-context.js';
+import { sessionPresenter } from '../services/session-labels.js';
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
   if (mode === 'terminal') return mode;
@@ -81,8 +82,8 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version: '2.6.0',
-    updatedAt: '2026-10-19',
+    version: '2.7.0',
+    updatedAt: '2026-10-21',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, Codex quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
@@ -250,6 +251,13 @@ export function getAgentApiContract() {
       {
         category: 'Session control',
         method: 'GET',
+        path: '/api/sessions/:id/agent-messages',
+        description: 'Read recent public user/assistant messages, including progress commentary and final replies, from this exact tab native conversation. Excludes tool calls, tool results and reasoning; terminal tabs with a bound agent are supported.',
+        response: { messages: 'Array<{role,phase,text,timestamp}>; empty when native history is unavailable.', available: 'boolean', tab_name: 'Dashboard tab name', project_name: 'Project name' },
+      },
+      {
+        category: 'Session control',
+        method: 'GET',
         path: '/api/sessions/:id/completed-turn',
         description: 'Read the latest completed native user/final-answer pair for this exact session. A completed turn is not independent proof that all business acceptance criteria passed.',
         response: { turns: 'Array<{user: string, assistant: string}>; empty when native history is unavailable or the turn has not completed.' },
@@ -267,6 +275,10 @@ export function getAgentApiContract() {
         },
         response: {
           sessionId: 'string',
+          tab_name: 'string — actual dashboard label when available',
+          project_name: 'string',
+          observed_at: 'ISO timestamp of this read',
+          last_activity_at: 'ISO timestamp | null — activity is not proof of task progress',
           processState: 'busy | idle | waiting_for_input',
           promptType: 'choice | confirmation | text | null',
           choices: 'string[] | null',
@@ -580,6 +592,16 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     return tracker.state;
   });
 
+  app.get<{Params: {id: string}}>('/sessions/:id/agent-messages', async (req, reply) => {
+    if (!canAccessAgentSession(req.user!.id, req.params.id)) return reply.status(404).send({error: 'Session not found'});
+    const session = getSession(req.params.id);
+    if (!session) return reply.status(404).send({error: 'Session not found'});
+    const project = session.project_id ? getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path: string} | undefined : undefined;
+    const messages = await loadRecentAgentMessages({cli_type: session.cli_type === 'codex' ? 'codex' : 'claude', codex_session_id: session.codex_session_id || null,
+      claude_session_id: session.claude_session_id || null, project_path: project?.path || null});
+    return {session_id: session.id, ...sessionPresenter(req.user!.id)(session), messages, available: messages.length > 0};
+  });
+
   app.get<{Params: {id: string}}>('/sessions/:id/completed-turn', async (req, reply) => {
     if (!canAccessAgentSession(req.user!.id, req.params.id)) return reply.status(404).send({ error: 'Session not found' });
     const session = getSession(req.params.id);
@@ -713,6 +735,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
 
     return {
       sessionId: id,
+      ...sessionPresenter(req.user!.id)(session),
+      observed_at: new Date().toISOString(),
+      last_activity_at: tracker?.state.lastActivity ? new Date(tracker.state.lastActivity).toISOString() : null,
       processState,
       promptType,
       choices,

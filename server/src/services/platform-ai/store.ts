@@ -16,6 +16,7 @@ export interface TrackedTask {
   requirement: string; source_ref: string; status: string; cursor: number; output: string;
   last_fingerprint: string; last_assessed_fingerprint: string; last_assessed_output: string; summary: string; evidence: string;
   next_observe_at: number; last_assessed_at: number; last_notified_at: number; observation_failures: number;
+  created_at: string;
 }
 
 export function getConversation(id: string): Conversation | undefined {
