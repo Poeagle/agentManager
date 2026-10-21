@@ -42,13 +42,13 @@ export const PLATFORM_TOOLS: ModelTool[] = [
   { type: 'function', function: { name: 'platform_capabilities', description: 'Read the platform API catalog. Optional endpoint_id returns its full request and response definition.', parameters: objectParams({ endpoint_id: stringParam, offset: {type: 'integer', minimum: 0}, limit: {type: 'integer', minimum: 1, maximum: 50} }) } },
   { type: 'function', function: { name: 'platform_request', description: 'Call a catalog endpoint as the current platform user. Read endpoint parameters first. New work and sending input use start_work/send_to_session.', parameters: objectParams({ endpoint_id: stringParam, path_params: { type: 'object', additionalProperties: { type: 'string' } }, query: { type: 'object', additionalProperties: { type: 'string' } }, body: { type: 'object', additionalProperties: true } }, ['endpoint_id']) } },
   { type: 'function', function: { name: 'start_work', description: 'Forward the original user request verbatim into a new Codex/Claude project tab and register observation. Uses the same permissions and tab limits as manual tab creation; other busy tabs in the project do not block creation.', parameters: objectParams({ project_id: stringParam, requirement: stringParam, cli_type: { type: 'string', enum: ['codex', 'claude'] }, attachment_ids: attachmentParam, source_message_ids: sourceMessagesParam }, ['project_id', 'requirement', 'cli_type']) } },
-  { type: 'function', function: { name: 'send_to_session', description: 'Forward original user text verbatim to the selected ready tab and track its result. Only the selected tab must be ready; other busy tabs do not block it.', parameters: objectParams({ session_id: stringParam, instruction: stringParam, attachment_ids: attachmentParam, source_message_ids: sourceMessagesParam }, ['session_id', 'instruction']) } },
+  { type: 'function', function: { name: 'send_to_session', description: 'Forward original user text verbatim IMMEDIATELY to the selected running agent tab, even while busy or an execute call is pending. Supports terminal tabs with a live Codex/Claude. Does not interrupt the agent; the CLI handles additional input. Track the updated request.', parameters: objectParams({ session_id: stringParam, instruction: stringParam, attachment_ids: attachmentParam, source_message_ids: sourceMessagesParam }, ['session_id', 'instruction']) } },
   { type: 'function', function: { name: 'track_session', description: 'Subscribe to results/questions from the current agent request in an accessible tab, INCLUDING terminal tabs with bound Codex/Claude. Read-only observation: never sends prompts, creates tabs or schedules, or restarts work. Use when the user asks to be notified on completion.', parameters: objectParams({ session_id: stringParam, requirement: stringParam }, ['session_id', 'requirement']) } },
   { type: 'function', function: { name: 'list_tracked_tasks', description: 'Read current user task progress, summaries and completion evidence.', parameters: objectParams({}) } },
 ];
 
 export function platformCatalog(app?: FastifyInstance) {
-  const excluded = new Set(['/api/auth/login', '/api/sessions', '/api/sessions/:id/execute', '/api/sessions/:id/agent']);
+  const excluded = new Set(['/api/auth/login', '/api/sessions', '/api/sessions/:id/execute', '/api/sessions/:id/input', '/api/sessions/:id/agent']);
   const endpoints = getAgentApiContract().endpoints.filter(endpoint => endpoint.method !== 'WS' && !('public' in endpoint && endpoint.public) && !(excluded.has(endpoint.path) && endpoint.method !== 'GET'));
   const documented = [
     ...endpoints.map(endpoint => ({ ...endpoint, path: endpoint.path.split('?')[0], endpoint_id: `${endpoint.method} ${endpoint.path.split('?')[0]}` })),
@@ -249,28 +249,28 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
       if (!task.source_ref) getDb().prepare('UPDATE platform_ai_tasks SET source_ref=?,next_observe_at=0 WHERE id=?').run(reference,task.id);
       return {task_id:task.id,session_id:sessionId,...sessionPresenter(userId)(session),monitoring:true};
     }
-    if (session.mode === 'terminal') throw new Error('向已有终端发送开发指令需要选择 Codex/Claude Session；只读跟踪可使用 track_session');
+    if (session.mode === 'terminal' && !await sessionManager.getLiveWorkAgent(sessionId)) throw new Error('该标签当前没有运行 Codex/Claude，无法将需求发给工作 Agent');
     const state = getTracker(sessionId);
-    if (display.processState === 'busy' || state?.hasPendingExecute) throw new Error('目标会话正在执行，请稍后再发送');
-    if (display.promptType === 'confirmation' || display.promptType === 'choice' || state?.state.isPermission) throw new Error('目标会话等待交互确认，请用户在平台查看并处理后继续');
+    if (display.processState === 'waiting_for_input' && (display.promptType === 'confirmation' || display.promptType === 'choice' || state?.state.isPermission)) throw new Error('目标会话正在等待交互确认，请先处理这个提示后发送需求');
     if (!sessionManager.isSessionActive(sessionId)) throw new Error('目标会话当前未运行，请先恢复该会话');
     const imagePrompt = await copyImages(sessionId, imagesForWork('attachment_ids' in input ? input.attachment_ids : undefined));
     const task = getDb().transaction(() => {
       const prior = getDb().prepare("SELECT id,user_id,conversation_id FROM platform_ai_tasks WHERE session_id=? AND status IN ('running','blocked','uncertain')").get(sessionId) as {id: string; user_id: string; conversation_id: string} | undefined;
       if (prior && (prior.user_id !== userId || prior.conversation_id !== conversation.id)) throw new Error('该会话已有其他对话跟踪的任务');
       if (prior) getDb().prepare("UPDATE platform_ai_tasks SET status='superseded',summary='已由用户的后续指令替代',updated_at=datetime('now') WHERE id=?").run(prior.id);
-      return trackTask(conversation, sessionId, requirement, Number(display.cursor) || 0, operationId);
+      const combined = prior ? (getDb().prepare('SELECT requirement FROM platform_ai_tasks WHERE id=?').get(prior.id) as {requirement:string}).requirement + '\n\n用户补充：' + requirement : requirement;
+      return trackTask(conversation, sessionId, combined.slice(-24000), Number(display.cursor) || 0, operationId);
     })();
     let result: any;
-    try { result = await platformApi(app, userId, 'POST', `/api/sessions/${encodeURIComponent(sessionId)}/execute`, { input: `${requirement}\n\n[Platform task reference: ${operationId}]${imagePrompt}`, timeout: 1000, quiescenceMs: 1000 }); }
+    try { result = await platformApi(app, userId, 'POST', `/api/sessions/${encodeURIComponent(sessionId)}/input`, { input: `${requirement}\n\n[Platform task reference: ${operationId}]${imagePrompt}` }); }
     catch {
       getDb().prepare("UPDATE platform_ai_tasks SET status='uncertain',summary='指令发送结果待核对，请读取会话状态；平台不会自动重发。' WHERE id=?").run(task.id);
       return { task_id: task.id, session_id: sessionId, status: 'uncertain', message: '发送结果待核对，请查询原会话，不要重复发送。' };
     }
     getDb().prepare(`UPDATE platform_ai_tasks SET requirement=?,status='running',cursor=?,output='',last_fingerprint='',
       last_assessed_fingerprint='',summary='',evidence='',next_observe_at=0,updated_at=datetime('now') WHERE id=?`)
-      .run(requirement, Number(display.cursor) || 0, task.id);
-    return { task_id: task.id, session_id: sessionId, dispatch_status: result.status, monitoring: true };
+      .run(task.requirement, Number(display.cursor) || 0, task.id);
+    return { task_id: task.id, session_id: sessionId,...sessionPresenter(userId)(session), dispatch_status: result.status, monitoring: true };
   }
   throw new Error('未知的平台 AI 工具');
 }

@@ -35,6 +35,7 @@ const MAX_WAIT_FOR_LENGTH = 512;
 const MAX_EXECUTE_TIMEOUT = 120_000;
 const MAX_EXECUTE_QUIESCENCE = 30_000;
 const MAX_AGENT_MESSAGE_BYTES = 128 * 1024;
+const pendingInputs = new Map<string, Promise<void>>();
 
 interface ValidatedExecuteRequest {
   input: string;
@@ -82,7 +83,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version: '2.7.0',
+    version: '2.8.0',
     updatedAt: '2026-10-21',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, Codex quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -127,7 +128,7 @@ export function getAgentApiContract() {
     ],
     stateMachine: {
       states: {
-        busy: 'Session is producing output. Wait before sending input.',
+        busy: 'Session is producing output. POST input can submit a follow-up immediately; the CLI controls how it handles the new message.',
         idle: 'No output for 2s and no prompt detected. Safe to send input.',
         waiting_for_input: 'A prompt was detected. Check promptType and choices for what is expected.',
       },
@@ -311,6 +312,14 @@ export function getAgentApiContract() {
       {
         category: 'Session control',
         method: 'POST',
+        path: '/api/sessions/:id/input',
+        description: 'Submit a follow-up immediately, including while busy or another execute request is waiting. Uses bracketed paste plus Enter, like typing in the dashboard. Does not cancel the current operation, reset output, or wait for an agent reply. Session ownership and project write access are required.',
+        request: {input: {type:'string',required:true,description:'Non-empty text, at most 64 KiB. Submitted as one pasted message.'}},
+        response: {id:'Session id',status:'submitted — handed to the terminal; not proof of agent acceptance or task completion'},
+      },
+      {
+        category: 'Session control',
+        method: 'POST',
         path: '/api/sessions/:id/execute',
         description: 'Send input and get clean rendered output. Output is processed through a virtual terminal that handles all TUI cursor movements, screen redraws, and ANSI codes — you get readable text, not raw terminal data. Only one execute per session at a time (409 if busy).',
         request: {
@@ -453,7 +462,7 @@ export function getAgentApiContract() {
     ],
     tips: [
       'The output fields from display and execute are CLEAN TEXT — read them directly; do not strip ANSI or parse raw PTY data.',
-      'Always check state before sending input. If state is "busy", wait for idle or waiting_for_input.',
+      'POST /api/sessions/:id/input submits a follow-up immediately, including while busy or execute is pending. It does not interrupt work. Use execute only when you need to wait for output.',
       'For interactive prompts, read promptType and choices from state to decide what to send.',
       'Prefer explicit input. An empty input string is valid and intentionally sends Enter, which may accept a prompt default.',
       'Use literal waitFor text for commands with known output to get faster responses.',
@@ -490,6 +499,30 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     requirePermission(req, reply, 'agent_api', req.method === 'GET' && !req.routeOptions.url?.endsWith('/agent') ? 'read' : 'write');
   });
   app.get('/agent/capabilities', async () => getAgentApiContract());
+
+  app.post<{Params:{id:string};Body:{input?:unknown}}>('/sessions/:id/input', async (req, reply) => {
+    const {id} = req.params;
+    if (!canAccessAgentSession(req.user!.id,id) || !isSessionActive(id)) return reply.code(404).send({error:'Session not found or not running'});
+    const input = req.body?.input;
+    if (typeof input !== 'string' || !input.trim() || Buffer.byteLength(input) > MAX_EXECUTE_INPUT_BYTES) return reply.code(400).send({error:'input must be non-empty text of at most 64 KiB'});
+    // Serialize only the brief paste/Enter pair, never the agent's execution.
+    // A second caller must not paste its text before the first caller's Enter.
+    const prior = pendingInputs.get(id) || Promise.resolve();
+    const submission = prior.catch(() => {}).then(async () => {
+      if (!writeToSession(id,input,true)) throw new Error('Session input is unavailable');
+      await new Promise(resolve => setTimeout(resolve,50));
+      if (!writeToSession(id,'\r',false)) throw new Error('Input was pasted but submission could not be confirmed');
+    });
+    pendingInputs.set(id,submission);
+    try {
+      await submission;
+      return reply.code(202).send({id,status:'submitted'});
+    } catch {
+      return reply.code(503).send({error:'Input submission could not be confirmed; inspect the tab before retrying'});
+    } finally {
+      if (pendingInputs.get(id) === submission) pendingInputs.delete(id);
+    }
+  });
 
   /* ----------------------------------------------------------------
      POST /sessions/:id/execute — Send input and wait for response

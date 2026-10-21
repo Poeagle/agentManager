@@ -762,6 +762,13 @@ export async function getSessionProcessRootPid(sessionId: string): Promise<numbe
   return terminalRootPid(sessionId);
 }
 
+/** Fresh process check before routing natural-language input to a terminal tab. */
+export async function getLiveWorkAgent(sessionId: string): Promise<'claude' | 'codex' | null> {
+  if (!isSessionActive(sessionId)) return null;
+  const rootPid = await terminalRootPid(sessionId);
+  return rootPid ? findCliProcess(rootPid)?.cliType || null : null;
+}
+
 function persistTerminalCliIdentity(sessionId: string, identity: DetectedCliIdentity): void {
   const db = getDb();
   const row = db.prepare(`

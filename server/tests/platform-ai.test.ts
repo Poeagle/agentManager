@@ -37,6 +37,7 @@ let nativeMessages: Array<{role: string; phase: string; text: string; timestamp:
 let display: {cursor: number | null; output: string; processState: string; promptType: string | null; cursorReset?: boolean};
 let displayRequests: string[];
 let executeRequests: Array<{input: string}>;
+let inputRequests: Array<{input:string}>;
 
 beforeEach(async () => {
   vi.spyOn(agents, 'detectWorkAgent').mockImplementation(async cli => ({cli_type: cli, label: cli, status:'available',reason:'Test fixture'}));
@@ -62,6 +63,7 @@ beforeEach(async () => {
   nativeMessages = [];
   displayRequests = [];
   executeRequests = [];
+  inputRequests = [];
   app.get('/api/sessions/:id/completed-turn', async () => ({turns: nativeTurns}));
   app.get('/api/sessions/:id/agent-messages', async () => ({messages:nativeMessages,available:nativeMessages.length>0}));
   app.get<{Params: {id: string}}>('/api/sessions/:id/display', async (req, reply) => {
@@ -70,6 +72,7 @@ beforeEach(async () => {
     return {...display};
   });
   app.post<{Body: {input: string}}>('/api/sessions/:id/execute', async req => {executeRequests.push(req.body);return {status:'completed'};});
+  app.post<{Body:{input:string}}>('/api/sessions/:id/input',async req=>{inputRequests.push(req.body);return {status:'submitted'};});
   worker = new PlatformAiWorker(app);
   await app.ready();
 });
@@ -292,16 +295,28 @@ describe('durable platform AI tool execution', () => {
     await executePlatformTool(app,conversation,'start_work',JSON.stringify({project_id:'p',cli_type:'codex',requirement:'expanded',source_message_ids:[first.message_id]}),'clarified',second.message_id);
     expect(spawn.mock.calls[0][2]).toBe('查看当前未完成的jira\n\n项目是 Project，用 Codex\n\n[Platform task reference: clarified]');
   });
-  it('only checks the selected target tab before forwarding a follow-up verbatim', async () => {
+  it('immediately submits a clarification to a busy tab and tracks the original request plus correction', async () => {
     configure();seedSession('target-tab');seedSession('other-busy-tab');
     vi.spyOn(manager,'isSessionActive').mockReturnValue(true);
-    const received=inbound('继续查询未完成的jira','followup');const conversation=getConversation(received.conversation_id)!;
+    const received=inbound('我说的是 v1.0.1 这个版本的','followup');const conversation=getConversation(received.conversation_id)!;
+    trackTask(conversation,'target-tab','查看项目当前未完成的 Jira',0,'initial-request');
     display={...display,processState:'busy'};
-    await expect(executePlatformTool(app,conversation,'send_to_session',JSON.stringify({session_id:'target-tab',instruction:'自定义改写'}),'blocked',received.message_id)).rejects.toThrow('目标会话正在执行');
-    expect(executeRequests).toHaveLength(0);
-    display={...display,processState:'idle'};
-    await executePlatformTool(app,conversation,'send_to_session',JSON.stringify({session_id:'target-tab',instruction:'只读调查并必须输出报告'}),'ready',received.message_id);
-    expect(executeRequests[0].input).toBe('继续查询未完成的jira\n\n[Platform task reference: ready]');
+    const result=await executePlatformTool(app,conversation,'send_to_session',JSON.stringify({session_id:'target-tab',instruction:'自定义改写'}),'clarification',received.message_id);
+    expect(result).toMatchObject({dispatch_status:'submitted',monitoring:true});
+    expect(executeRequests).toHaveLength(0);expect(inputRequests).toEqual([{input:'我说的是 v1.0.1 这个版本的\n\n[Platform task reference: clarification]'}]);
+    expect(getDb().prepare('SELECT requirement FROM platform_ai_tasks WHERE id=?').get(result.task_id)).toEqual({requirement:'查看项目当前未完成的 Jira\n\n用户补充：我说的是 v1.0.1 这个版本的'});
+  });
+  it('forwards to busy terminal tabs with a live agent but never sends natural-language requests to a plain shell',async()=>{
+    configure();seedSession();getDb().prepare("UPDATE sessions SET mode='terminal' WHERE id='session-1'").run();
+    vi.spyOn(manager,'isSessionActive').mockReturnValue(true);
+    const live=vi.spyOn(manager,'getLiveWorkAgent').mockResolvedValue(null);
+    const received=inbound('只查 v1.0.1','terminal-followup');const conversation=getConversation(received.conversation_id)!;
+    display.processState='busy';
+    await expect(executePlatformTool(app,conversation,'send_to_session',JSON.stringify({session_id:'session-1',instruction:'只查 v1.0.1'}),'shell',received.message_id)).rejects.toThrow('当前没有运行 Codex/Claude');
+    expect(inputRequests).toHaveLength(0);
+    live.mockResolvedValue('codex');
+    await executePlatformTool(app,conversation,'send_to_session',JSON.stringify({session_id:'session-1',instruction:'只查 v1.0.1'}),'terminal',received.message_id);
+    expect(inputRequests).toEqual([{input:'只查 v1.0.1\n\n[Platform task reference: terminal]'}]);
   });
   it('copies the current screenshots into the authorized project before spawning the work agent', async () => {
     configure(); const received = inbound('根据截图修复项目');
