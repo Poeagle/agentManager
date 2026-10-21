@@ -19,6 +19,7 @@ import { captureScheduledBaseline, reconcileScheduledObservations } from '../src
 import { createTestDatabase } from './helpers/database.js';
 import * as agents from '../src/services/platform-ai/agents.js';
 import { broadcastEphemeral } from '../src/services/event-store.js';
+import { executePlatformTool } from '../src/services/platform-ai/tools.js';
 
 const providerResponse = (message: Record<string, unknown>) => new Response(JSON.stringify({choices: [{message}]}), {status: 200});
 const toolResponse = (name: string, args: unknown, id = 'call-1') => providerResponse({content: null, tool_calls: [{id, type: 'function', function: {name, arguments: JSON.stringify(args)}}]});
@@ -208,6 +209,30 @@ describe('signed external channel ingestion', () => {
 });
 
 describe('durable platform AI tool execution', () => {
+  it('copies the current screenshots into the authorized project before spawning the work agent', async () => {
+    configure(); const received = inbound('根据截图修复项目');
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6CsAAAAAASUVORK5CYII=', 'base64');
+    getDb().prepare("INSERT INTO platform_ai_attachments (id,message_id,status,mime,bytes,data) VALUES (?,?,'ready','image/png',?,?)").run('screenshot-1', received.message_id, png.length, png);
+    const spawn = vi.spyOn(manager, 'spawnSession').mockResolvedValue();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(toolResponse('start_work', {project_id: 'p', requirement: '根据用户提供的截图修复显示问题', cli_type: 'codex'}))
+      .mockResolvedValueOnce(providerResponse({content: '已连同截图派发。'})));
+    worker.tick(); await worker.drain();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const prompt = spawn.mock.calls[0][2];
+    const path = prompt.match(/图片 1：([^\n]+)/)?.[1];
+    expect(path).toContain(databaseDir + '/.agentmanager/pastes/');
+    expect(readFileSync(path!).equals(png)).toBe(true);
+    expect(prompt).toContain('[Platform task reference:');
+    expect((getDb().prepare('SELECT task FROM sessions').get() as {task: string}).task).toBe(prompt);
+  });
+  it('rejects image attachments from another conversation before creating an agent session', async () => {
+    configure(); const first = inbound('我的项目', 'first');
+    const second = inbound('其他对话图片', 'second', other, 'other-chat');
+    getDb().prepare("INSERT INTO platform_ai_attachments (id,message_id,status,mime,bytes,data) VALUES (?,?,'ready','image/png',8,?)").run('private-image', second.message_id, Buffer.from('private-data'));
+    await expect(executePlatformTool(app, getConversation(first.conversation_id)!, 'start_work', JSON.stringify({project_id: 'p', requirement: '修复', cli_type: 'codex', attachment_ids: ['private-image']}), 'test-operation'))
+      .rejects.toThrow('不属于当前对话');
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({n: 0});
+  });
   it('exposes discovered agents and rejects a missing CLI before creating any session or task', async () => {
     configure();
     vi.mocked(agents.detectWorkAgent).mockResolvedValue({cli_type:'claude',label:'Claude',status:'unavailable',reason:'找不到启动命令'});

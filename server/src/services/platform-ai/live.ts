@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import { getDb } from '../../db/index.js';
+import { messageAttachments } from './attachments.js';
 
 export const publicMessageColumns = 'id,role,content,status,error,progress,partial_content,created_at';
 const bus = new EventEmitter();
@@ -13,6 +14,6 @@ export function publishMessage(id: string): void {
   const row = getDb().prepare(`SELECT conversation_id,${publicMessageColumns} FROM platform_ai_messages WHERE id=?`).get(id) as {conversation_id: string} | undefined;
   if (!row) return;
   const {conversation_id, ...message} = row;
-  bus.emit(conversation_id, {type: 'message', message});
+  bus.emit(conversation_id, {type: 'message', message: {...message, attachments: messageAttachments(String((message as Record<string, unknown>).id))}});
 }
 export function refreshConversation(id: string): void { bus.emit(id, {type: 'refresh'}); }

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { getDb } from '../../db/index.js';
 import { openSecret, sealSecret, validateHttpUrl } from './config.js';
 import { channelsChanged, getBotTransport } from './channel-runtime.js';
+import type { ImageSource } from './attachments.js';
 
 export const channelKinds = ['webhook', 'wecom', 'wecom_bot', 'wecom_webhook', 'wechat', 'qq'] as const;
 export interface Channel {
@@ -14,6 +15,7 @@ interface ChannelRow extends Omit<Channel, 'config' | 'secrets'> { config: strin
 export interface InboundMessage {
   externalUserId: string; chatId: string; messageId: string; content: string;
   replyContext: Record<string, unknown>;
+  images?: ImageSource[];
 }
 export class ChannelError extends Error {
   constructor(message: string, public statusCode = 400, public permanent = false) { super(message); }

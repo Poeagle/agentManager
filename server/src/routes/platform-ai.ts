@@ -15,6 +15,7 @@ import { PlatformAiWorker } from '../services/platform-ai/worker.js';
 import { discoverModels, testModelConnection } from '../services/platform-ai/model-probes.js';
 import { detectWorkAgents } from '../services/platform-ai/agents.js';
 import { publicMessageColumns, subscribeConversation, type LiveEvent } from '../services/platform-ai/live.js';
+import { messageAttachments, ownedImage } from '../services/platform-ai/attachments.js';
 
 const idSchema = z.string().min(1).max(256);
 const callbackRate = new Map<string, { start: number; count: number }>();
@@ -157,8 +158,16 @@ export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = asy
     }).reverse();
     return {
       conversation: { id: conversation.id, title: conversation.title, channel_id: conversation.channel_id },
-      messages: visible,
+      messages: visible.map(message => ({...message, attachments: messageAttachments(String((message as Record<string, unknown>).id))})),
     };
+  });
+  app.get<{Params: {id: string}}>('/platform-ai/attachments/:id', async (req, reply) => {
+    if (!requirePermission(req, reply, 'agent_api')) return;
+    const image = ownedImage(req.params.id, req.user!.id);
+    if (!image) return reply.code(404).send({error: '图片不存在或无访问权限'});
+    return reply.header('Cache-Control', 'private, no-store').header('X-Content-Type-Options', 'nosniff')
+      .header('Content-Security-Policy', "default-src 'none'; sandbox")
+      .header('Content-Disposition', 'inline').type(image.mime).send(image.data);
   });
   app.get<{Params: {id: string}}>('/platform-ai/conversations/:id/events', async (req, reply) => {
     if (!requirePermission(req, reply, 'agent_api')) return;

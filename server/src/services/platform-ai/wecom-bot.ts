@@ -7,6 +7,8 @@ import { ChannelError, compactText, getChannel, type Channel } from './channels.
 import { acceptChannelMessage } from './ingress.js';
 import { subscribeConversation } from './live.js';
 import { getBotTransport, setBotTransport, subscribeChannelChanges, type BotTransport, type ChannelConnection } from './channel-runtime.js';
+import { MAX_IMAGES, prepareImages, type ImageSource } from './attachments.js';
+import { publishMessage } from './live.js';
 
 const silentLogger = {debug() {}, info() {}, warn() {}, error() {}};
 export type BotClient = Pick<WSClient, 'on' | 'connect' | 'disconnect' | 'replyStream' | 'sendMessage' | 'removeAllListeners'>;
@@ -19,6 +21,7 @@ interface Stream {
 interface Connection extends BotTransport {
   fingerprint: string; client: BotClient; streams: Map<string, Stream>; stopped: boolean;
   rateStart: number; rateCount: number;
+  abort: AbortController;
 }
 
 /** A single authenticated socket per bot; SDK owns heartbeats/backoff/ACKs. */
@@ -57,7 +60,7 @@ export class WecomBotManager {
     const client = this.factory({botId: channel.config.bot_id, secret: channel.secrets.bot_secret,
       maxReconnectAttempts: -1, maxAuthFailureAttempts: 3, maxReplyQueueSize: 8, requestTimeout: 10000, logger: silentLogger});
     const connection: Connection = {
-      fingerprint, client, streams: new Map(), stopped: false, rateStart: 0, rateCount: 0,
+      fingerprint, client, streams: new Map(), stopped: false, rateStart: 0, rateCount: 0, abort: new AbortController(),
       status: {state: 'connecting', message: '正在连接企业微信', updated_at: new Date().toISOString()},
       deliver: (chatId, content, context, deliveryId) => this.deliver(channel.id, connection, chatId, content, context, deliveryId),
     };
@@ -75,9 +78,9 @@ export class WecomBotManager {
       const code = (error as Error & {code?: string}).code;
       this.state(connection, 'error', code === 'WS_AUTH_FAILURE_EXHAUSTED' ? '认证失败，请检查 Bot ID 与 Secret 后重连' : '连接或认证失败，正在按策略重试');
     });
-    client.on('message.text', frame => this.receive(channel.id, connection, frame));
     client.on('message', frame => {
-      if (!['text', 'event'].includes(frame.body?.msgtype || '')) this.reject(connection, frame, '当前支持文本指令，请将需求作为文字发送。');
+      if (['text', 'image', 'mixed'].includes(frame.body?.msgtype || '')) this.receive(channel.id, connection, frame);
+      else if (frame.body?.msgtype !== 'event') this.reject(connection, frame, '当前支持文字、图片和图文消息，请将需求作为文字或截图发送。');
     });
     try { client.connect(); } catch { this.state(connection, 'error', '无法建立连接，请检查网络和机器人配置'); }
   }
@@ -103,13 +106,33 @@ export class WecomBotManager {
     if (!channel?.enabled || body?.aibotid !== channel.config.bot_id || !frame.headers?.req_id || frame.headers.req_id.length > 256) return;
     const userId = body.from?.userid, messageId = body.msgid;
     const chatId = body.chattype === 'single' ? userId : body.chattype === 'group' ? body.chatid : null;
-    const content = typeof body.text?.content === 'string' ? body.text.content.trim() : '';
+    const images: ImageSource[] = [];
+    const texts: string[] = [];
+    const addImage = (value: {url?: unknown; aeskey?: unknown} | undefined) => {
+      images.push({url: typeof value?.url === 'string' ? value.url : '', aesKey: typeof value?.aeskey === 'string' ? value.aeskey : ''});
+    };
+    const addText = (value: unknown) => {if (typeof value === 'string' && value.trim()) texts.push(value.trim());};
+    if (body.msgtype === 'text') addText(body.text?.content);
+    if (body.msgtype === 'image') addImage(body.image);
+    if (body.msgtype === 'mixed' && Array.isArray(body.mixed?.msg_item)) {
+      for (const item of body.mixed.msg_item) {
+        if (item.msgtype === 'text') addText(item.text?.content);
+        if (item.msgtype === 'image') addImage(item.image);
+      }
+    }
+    if (body.quote?.msgtype === 'image') addImage(body.quote.image);
+    if (body.quote?.msgtype === 'text') addText(body.quote.text?.content ? `引用内容：${body.quote.text.content}` : '');
+    const content = texts.join('\n') || (images.length ? '请查看我发送的图片。' : '');
     if (![userId, messageId, chatId].every(value => typeof value === 'string' && value.length > 0 && value.length <= 256) || !content || content.length > 24000) {
       this.reject(connection, frame, '消息格式无效，或文字超过 24000 字符。'); return;
     }
     try {
-      const result = acceptChannelMessage(channel, {externalUserId: userId, chatId, messageId, content, replyContext: {bot_message_id: messageId}});
+      if (images.length > MAX_IMAGES) {this.reject(connection, frame, `单条消息最多支持 ${MAX_IMAGES} 张图片，请分开发送。`); return;}
+      const result = acceptChannelMessage(channel, {externalUserId: userId, chatId, messageId, content, images, replyContext: {bot_message_id: messageId}});
       if (result.duplicate) return;
+      publishMessage(result.message_id);
+      // Download expiring media immediately, independently from model queue load.
+      if (images.length) void prepareImages(result.message_id, connection.abort.signal).then(() => publishMessage(result.message_id)).catch(() => {});
       if (connection.streams.size >= 100) { this.reject(connection, frame, '指令已接收，将通过后续消息返回结果。'); return; }
       const owner = getDb().prepare('SELECT user_id FROM platform_ai_conversations WHERE id=?').get(result.conversation_id) as {user_id: string};
       const stream: Stream = {messageId, userId: owner.user_id, externalUserId: userId, frame: {headers: {req_id: frame.headers.req_id}},
@@ -182,6 +205,7 @@ export class WecomBotManager {
     const connection = this.connections.get(id);
     if (!connection) return;
     connection.stopped = true;
+    connection.abort.abort();
     for (const stream of [...connection.streams.values()]) this.clearStream(connection, stream);
     connection.client.disconnect(); connection.client.removeAllListeners();
     this.connections.delete(id); setBotTransport(id);

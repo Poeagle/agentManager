@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 import { getDb } from '../../db/index.js';
 import { findUserById } from '../../auth.js';
+import { storeImageSources, type ImageSource } from './attachments.js';
 
 export interface Conversation {
   id: string; user_id: string; channel_id: string | null; external_chat_id: string;
@@ -28,7 +29,7 @@ export function assertLiveUser(userId: string): void {
 
 export function receiveMessage(input: {
   userId: string; channelId?: string; externalUserId: string; chatId: string;
-  messageId: string; content: string; replyContext?: Record<string, unknown>;
+  messageId: string; content: string; replyContext?: Record<string, unknown>; images?: ImageSource[];
 }) {
   assertLiveUser(input.userId);
   return getDb().transaction(() => {
@@ -47,6 +48,7 @@ export function receiveMessage(input: {
       (id,conversation_id,external_id,role,content,reply_context) VALUES (?,?,?,'user',?,?)`)
       .run(id, conversation.id, input.messageId, input.content, JSON.stringify(input.replyContext || {}));
     if (inserted.changes) {
+      if (input.images?.length) storeImageSources(id, input.images);
       getDb().prepare(`UPDATE platform_ai_conversations SET reply_context=?,updated_at=datetime('now') WHERE id=?`)
         .run(JSON.stringify(input.replyContext || {}), conversation.id);
     }

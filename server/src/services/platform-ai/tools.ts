@@ -10,16 +10,18 @@ import { userHasPermission } from '../rbac.js';
 import { trackTask, type Conversation } from './store.js';
 import type { ModelTool } from './model.js';
 import { detectWorkAgent, detectWorkAgents } from './agents.js';
+import { MAX_IMAGES, messageAttachments, ownedImage } from './attachments.js';
 
 const workspaceDispatches = new Set<string>();
 
 const objectParams = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const stringParam = { type: 'string' };
+const attachmentParam = {type: 'array', items: stringParam, maxItems: MAX_IMAGES, description: 'Image attachment IDs from this conversation to give to the work agent.'};
 export const PLATFORM_TOOLS: ModelTool[] = [
   { type: 'function', function: { name: 'platform_capabilities', description: 'Read the platform API catalog. Optional endpoint_id returns its full request and response definition.', parameters: objectParams({ endpoint_id: stringParam, offset: {type: 'integer', minimum: 0}, limit: {type: 'integer', minimum: 1, maximum: 50} }) } },
   { type: 'function', function: { name: 'platform_request', description: 'Call a catalog endpoint as the current platform user. Read endpoint parameters first. New work and sending input use start_work/send_to_session.', parameters: objectParams({ endpoint_id: stringParam, path_params: { type: 'object', additionalProperties: { type: 'string' } }, query: { type: 'object', additionalProperties: { type: 'string' } }, body: { type: 'object', additionalProperties: true } }, ['endpoint_id']) } },
-  { type: 'function', function: { name: 'start_work', description: 'Create and start a Codex/Claude project session without a browser, and register background observation. Same workspace active work is serialized.', parameters: objectParams({ project_id: stringParam, requirement: stringParam, cli_type: { type: 'string', enum: ['codex', 'claude'] } }, ['project_id', 'requirement', 'cli_type']) } },
-  { type: 'function', function: { name: 'send_to_session', description: 'Send an explicit instruction to a ready session and track the resulting task. Busy sessions are rejected. Permission prompts require explicit user authorization.', parameters: objectParams({ session_id: stringParam, instruction: stringParam }, ['session_id', 'instruction']) } },
+  { type: 'function', function: { name: 'start_work', description: 'Create and start a Codex/Claude project session without a browser, and register background observation. Same workspace active work is serialized.', parameters: objectParams({ project_id: stringParam, requirement: stringParam, cli_type: { type: 'string', enum: ['codex', 'claude'] }, attachment_ids: attachmentParam }, ['project_id', 'requirement', 'cli_type']) } },
+  { type: 'function', function: { name: 'send_to_session', description: 'Send an explicit instruction to a ready session and track the resulting task. Busy sessions are rejected. Permission prompts require explicit user authorization.', parameters: objectParams({ session_id: stringParam, instruction: stringParam, attachment_ids: attachmentParam }, ['session_id', 'instruction']) } },
   { type: 'function', function: { name: 'track_session', description: 'Observe an existing accessible session from its current output position. Does not send input or restart the agent.', parameters: objectParams({ session_id: stringParam, requirement: stringParam }, ['session_id', 'requirement']) } },
   { type: 'function', function: { name: 'list_tracked_tasks', description: 'Read current user task progress, summaries and completion evidence.', parameters: objectParams({}) } },
 ];
@@ -78,9 +80,25 @@ function noOtherWorkspaceTask(projectId: string, exceptSessionId?: string): void
   })) throw new Error('该工作目录有其他活跃会话尚未空闲，请先完成当前工作或使用独立工作区');
 }
 
-export async function executePlatformTool(app: FastifyInstance, conversation: Conversation, name: string, rawArguments: string, operationId: string): Promise<any> {
+export async function executePlatformTool(app: FastifyInstance, conversation: Conversation, name: string, rawArguments: string, operationId: string, messageId?: string): Promise<any> {
   const args = JSON.parse(rawArguments);
   const userId = conversation.user_id;
+  const imagesForWork = (ids?: string[]) => {
+    const selected = ids || (messageId ? messageAttachments(messageId).filter(image => image.status === 'ready').map(image => image.id) : []);
+    return [...new Set(selected)].map(id => {
+      const image = ownedImage(id, userId, conversation.id);
+      if (!image) throw new Error('图片附件不存在、尚未接收成功或不属于当前对话');
+      return image;
+    });
+  };
+  const copyImages = async (sessionId: string, images: ReturnType<typeof imagesForWork>) => {
+    const paths: string[] = [];
+    for (const image of images) {
+      const result = await platformApi(app, userId, 'POST', `/api/sessions/${encodeURIComponent(sessionId)}/paste-image`, {dataUrl: `data:${image.mime};base64,${image.data.toString('base64')}`});
+      paths.push(result.path);
+    }
+    return paths.length ? '\n\n用户提供的参考图片（请打开原图查看，不要仅根据文字猜测）：\n' + paths.map((path, index) => `图片 ${index + 1}：${path}`).join('\n') : '';
+  };
   if (name === 'platform_capabilities') {
     const input = z.object({ endpoint_id: z.string().optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(50).default(50) }).strict().parse(args);
     const catalog = platformCatalog(app);
@@ -112,7 +130,8 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
     return { tasks: getDb().prepare(`SELECT id,session_id,requirement,status,summary,evidence,updated_at FROM platform_ai_tasks WHERE user_id=? ORDER BY rowid DESC LIMIT 30`).all(userId) };
   }
   if (name === 'start_work') {
-    const input = z.object({ project_id: z.string().min(1), requirement: z.string().trim().min(1).max(24000), cli_type: z.enum(['codex', 'claude']) }).strict().parse(args);
+    const input = z.object({ project_id: z.string().min(1), requirement: z.string().trim().min(1).max(24000), cli_type: z.enum(['codex', 'claude']), attachment_ids: z.array(z.string().min(1).max(64)).max(MAX_IMAGES).optional() }).strict().parse(args);
+    const images = imagesForWork(input.attachment_ids);
     const { project } = await platformApi(app, userId, 'GET', `/api/projects/${encodeURIComponent(input.project_id)}`);
     const agent = await detectWorkAgent(input.cli_type, project.path, true);
     if (agent.status === 'unavailable') throw new Error(`${agent.label} 当前不可用：${agent.reason}。请从 platform_capabilities 返回的可用 Agent 中选择；用户明确指定了 Agent 时应先说明情况，不得擅自替换。`);
@@ -121,13 +140,20 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
     workspaceDispatches.add(input.project_id);
     try {
     // Include a stable operation reference in task metadata for crash reconciliation.
-    const taskText = `${input.requirement}\n\n[Platform task reference: ${operationId}]`;
+    let taskText = `${input.requirement}\n\n[Platform task reference: ${operationId}]`;
     const { session } = await platformApi(app, userId, 'POST', '/api/sessions', { project_id: input.project_id, project_path: project.path, task: taskText, cli_type: input.cli_type, mode: 'session' });
     const task = trackTask(conversation, session.id, input.requirement, 0, operationId);
     getDb().prepare("UPDATE platform_ai_operations SET result=? WHERE id=?").run(JSON.stringify({ session_id: session.id, task_id: task.id }), operationId);
     // Existing session creation defers spawn until WebSocket attachment. External users
     // have no browser, so consume the pending spawn and start it explicitly.
     sessionManager.consumePendingSpawn(session.id);
+    try {
+      taskText += await copyImages(session.id, images);
+      if (images.length) getDb().prepare('UPDATE sessions SET task=? WHERE id=?').run(taskText, session.id);
+    } catch {
+      getDb().prepare("UPDATE platform_ai_tasks SET status='failed',summary='参考图片未能保存到项目，任务尚未启动，请检查后重新派发' WHERE id=?").run(task.id);
+      throw new Error('参考图片未能保存到项目，Agent 尚未启动');
+    }
     try {
       await sessionManager.spawnSession(session.id, project.path, taskText, 120, 40, input.cli_type);
     } catch {
@@ -139,7 +165,7 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
   }
   if (name === 'send_to_session' || name === 'track_session') {
     const input = name === 'send_to_session'
-      ? z.object({ session_id: z.string().min(1), instruction: z.string().trim().min(1).max(24000) }).strict().parse(args)
+      ? z.object({ session_id: z.string().min(1), instruction: z.string().trim().min(1).max(24000), attachment_ids: z.array(z.string().min(1).max(64)).max(MAX_IMAGES).optional() }).strict().parse(args)
       : z.object({ session_id: z.string().min(1), requirement: z.string().trim().min(1).max(24000) }).strict().parse(args);
     const sessionId = input.session_id;
     const { session } = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(sessionId)}`);
@@ -152,6 +178,7 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
     if (display.processState === 'busy' || state?.hasPendingExecute) throw new Error('目标会话正在执行，请稍后再发送');
     if (display.promptType === 'confirmation' || display.promptType === 'choice' || state?.state.isPermission) throw new Error('目标会话等待交互确认，请用户在平台查看并处理后继续');
     if (!sessionManager.isSessionActive(sessionId)) throw new Error('目标会话当前未运行，请先恢复该会话');
+    const imagePrompt = await copyImages(sessionId, imagesForWork('attachment_ids' in input ? input.attachment_ids : undefined));
     const task = getDb().transaction(() => {
       const prior = getDb().prepare("SELECT id,user_id,conversation_id FROM platform_ai_tasks WHERE session_id=? AND status IN ('running','blocked','uncertain')").get(sessionId) as {id: string; user_id: string; conversation_id: string} | undefined;
       if (prior && (prior.user_id !== userId || prior.conversation_id !== conversation.id)) throw new Error('该会话已有其他对话跟踪的任务');
@@ -159,7 +186,7 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
       return trackTask(conversation, sessionId, requirement, Number(display.cursor) || 0, operationId);
     })();
     let result: any;
-    try { result = await platformApi(app, userId, 'POST', `/api/sessions/${encodeURIComponent(sessionId)}/execute`, { input: `${requirement}\n\n[Platform task reference: ${operationId}]`, timeout: 1000, quiescenceMs: 1000 }); }
+    try { result = await platformApi(app, userId, 'POST', `/api/sessions/${encodeURIComponent(sessionId)}/execute`, { input: `${requirement}\n\n[Platform task reference: ${operationId}]${imagePrompt}`, timeout: 1000, quiescenceMs: 1000 }); }
     catch {
       getDb().prepare("UPDATE platform_ai_tasks SET status='uncertain',summary='指令发送结果待核对，请读取会话状态；平台不会自动重发。' WHERE id=?").run(task.id);
       return { task_id: task.id, session_id: sessionId, status: 'uncertain', message: '发送结果待核对，请查询原会话，不要重复发送。' };

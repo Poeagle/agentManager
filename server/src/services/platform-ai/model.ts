@@ -1,7 +1,8 @@
 import type { AiConfig } from './config.js';
+import { modelImageContent, MAX_IMAGES } from './attachments.js';
 
 export interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
-export interface ModelMessage { role: 'system' | 'user' | 'assistant' | 'tool'; content: string | null; tool_calls?: ToolCall[]; tool_call_id?: string }
+export interface ModelMessage { role: 'system' | 'user' | 'assistant' | 'tool'; content: string | null; tool_calls?: ToolCall[]; tool_call_id?: string; attachment_ids?: string[] }
 export interface ModelTool { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }
 
 export class ModelRequestError extends Error {
@@ -150,10 +151,18 @@ async function requestStreamedChat(config: AiConfig, body: Record<string, unknow
   return {choices: [{message: {content: content || null, ...(calls.size ? {tool_calls: [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call)} : {})}}]};
 }
 
-export async function callModel(config: AiConfig, messages: ModelMessage[], tools?: ModelTool[], signal?: AbortSignal, options?: {maxTokens?: number; onContent?: (content: string) => void}): Promise<ModelMessage> {
+export async function callModel(config: AiConfig, messages: ModelMessage[], tools?: ModelTool[], signal?: AbortSignal, options?: {maxTokens?: number; onContent?: (content: string) => void; userId?: string}): Promise<ModelMessage> {
   if (!config.enabled || !config.api_key || !config.endpoint || !config.model) throw new Error('平台 AI 尚未启用或模型配置不完整');
+  let imagesLeft = MAX_IMAGES;
+  const wireMessages = messages.slice().reverse().map(({attachment_ids, ...message}) => {
+    const ids = message.role === 'user' ? (attachment_ids || []).slice(0, imagesLeft) : [];
+    imagesLeft -= ids.length;
+    if (!ids.length) return message;
+    if (!options?.userId) throw new Error('图片请求缺少用户身份');
+    return {...message, content: [{type: 'text', text: message.content || '请查看图片'}, ...modelImageContent(ids, options.userId)]};
+  }).reverse();
   const body = {
-    model: config.model, messages,
+    model: config.model, messages: wireMessages,
     ...(tools?.length ? { tools, tool_choice: 'auto', parallel_tool_calls: false } : {}),
     max_tokens: options?.maxTokens ?? 2400,
   };
@@ -175,6 +184,7 @@ export const PLATFORM_SYSTEM_PROMPT = `你是本平台的通用 AI 助手。用�
 platform_capabilities 的 agents 是实时探测的工作 Agent。派发前核对该结果和项目的 session_clients 权限，不使用 unavailable 的 Agent。用户未指定时优先选择 available 的 Agent；明确指定但不可用时说明原因并询问替代方案，不安装软件或擅自更换。unknown 只表示尚未验证，不能声称可用或已成功启动。
 下发开发需求时整理目标、约束和验收标准，再用 start_work 在选定项目创建后台 Agent 会话；它无需打开网页即可执行。
 继续现有工作使用 send_to_session，先查询状态；忙碌、等待授权、目标不明确或同一工作目录已有任务时应等待或向用户说明。
+用户消息可能包含图片附件。只有实际收到 image_url 图像内容时才能描述图中信息；下载失败或模型不支持图像时必须说明，不能猜测。派发与截图有关的工作时，将消息中提供的附件 ID 放入 start_work/send_to_session 的 attachment_ids，平台会把原图保存到目标项目并提供本地路径。用户只发图片且目标不明确时，先查看图片并询问需求，不擅自创建开发任务。
 仅用户明确要操作时才调用写入工具；项目不明确时先列出可见项目或澄清。不得将验证码、API Key、凭据或会话 Cookie 传给模型工具或开发 Agent。
 建立定时任务前确认时区、触发周期、目标和提示词，调用定时任务接口；创建成功后会自动关联此对话进行结果通知。
 任务和会话状态不同：idle、execute completed、定时任务 success 仅表示空闲或发送完成，不代表业务完成。

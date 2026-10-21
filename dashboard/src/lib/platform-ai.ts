@@ -20,7 +20,8 @@ export interface AiBinding { id: string; channel_id: string; external_user_id: s
 export interface AiSender {channel_id: string; external_user_id: string; last_chat_id: string; last_seen_at: string}
 export interface AiNotificationTarget {id: string; channel_id: string; user_id: string; username: string; display_name: string}
 export interface AiConversation { id: string; title: string; channel_id: string | null; channel_name?: string; updated_at?: string }
-export interface AiMessage { id: string; role: 'user' | 'assistant' | 'notice'; content: string; status: string; error: string | null; created_at: string; progress?: string; partial_content?: string }
+export interface AiAttachment {id: string; status: string; mime: string; bytes: number; error: string | null}
+export interface AiMessage { id: string; role: 'user' | 'assistant' | 'notice'; content: string; status: string; error: string | null; created_at: string; progress?: string; partial_content?: string; attachments?: AiAttachment[] }
 export interface WorkAgent { cli_type: 'codex' | 'claude'; label: string; status: 'available' | 'unavailable' | 'unknown'; reason: string }
 export interface AiTask { id: string; conversation_id: string; session_id: string; project_id: string | null; requirement: string; status: string; summary: string; evidence: string; updated_at: string }
 export interface AiDelivery { id: string; conversation_id: string; status: string; attempts: number; error: string | null; created_at: string; channel_name?: string | null }

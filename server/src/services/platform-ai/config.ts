@@ -28,6 +28,7 @@ function encryptionKey(): Buffer {
   catch (error: any) {
     if (error?.code !== 'ENOENT') throw error;
     const hasSecrets = getDb().prepare(`SELECT 1 FROM platform_ai_channels WHERE secrets != ''
+      UNION ALL SELECT 1 FROM platform_ai_attachments WHERE source != ''
       UNION ALL SELECT 1 FROM settings WHERE key = 'platform_ai_api_key' AND value != '' LIMIT 1`).get();
     if (hasSecrets) throw new Error('Platform AI encryption key is missing; restore the key beside the database');
     key = randomBytes(32);

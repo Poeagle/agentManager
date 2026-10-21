@@ -4,6 +4,7 @@ import { createHmac } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 test('Platform AI chats through real platform tools and a signed external gateway', async ({page},testInfo) => {
   test.setTimeout(90000);
@@ -158,4 +159,35 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     await page.request.put('/api/platform-ai/config',{data:{enabled:false}}).catch(()=>{});
     await new Promise<void>(resolveClose=>server.close(()=>resolveClose()));
   }
+});
+
+test('Platform AI displays persisted channel images through the authenticated attachment endpoint', async ({page}, testInfo) => {
+  const auth = await (await page.request.get('/api/auth/status')).json();
+  expect((await page.request.post(auth.needsSetup ? '/api/auth/setup' : '/api/auth/login', {data: {username: 'e2e-admin', password: 'test-password'}})).ok()).toBeTruthy();
+  const users = await (await page.request.get('/api/users')).json();
+  const user = users.users.find((user: any) => user.username === 'e2e-admin');
+  // Seed only the isolated test DB; SDK/decryption is covered by transport tests.
+  const require = createRequire(import.meta.url);
+  const Database = require('../server/node_modules/better-sqlite3');
+  const db = new Database(join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), '.test-data', 'e2e', 'agentmanager.db'));
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6CsAAAAAASUVORK5CYII=', 'base64');
+  try {
+    db.pragma('foreign_keys = ON');
+    db.prepare("INSERT INTO platform_ai_conversations (id,user_id,external_chat_id,external_user_id,title) VALUES ('image-conversation',?,'image-chat',?,'机器人截图需求')").run(user.id, user.id);
+    db.prepare("INSERT INTO platform_ai_messages (id,conversation_id,external_id,role,content,status) VALUES ('image-message','image-conversation','image-source','user','请按截图修复这个问题','done')").run();
+    db.prepare("INSERT INTO platform_ai_attachments (id,message_id,status,mime,bytes,data) VALUES ('image-fixture','image-message','ready','image/png',?,?)").run(png.length, png);
+  } finally {db.close();}
+  await page.goto('/');
+  await page.getByRole('button', {name: '平台 AI', exact: true}).click();
+  const dialog = page.getByRole('dialog', {name: '平台管理'});
+  await dialog.getByRole('button').filter({hasText: '机器人截图需求'}).click();
+  const image = dialog.getByRole('img', {name: '用户发送的图片 1'});
+  await expect(image).toBeVisible();
+  await expect.poll(() => image.evaluate(element => (element as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  const original = await page.request.get('/api/platform-ai/attachments/image-fixture');
+  expect(original.ok()).toBe(true); expect((await original.body()).equals(png)).toBe(true);
+  await page.setViewportSize({width: 390, height: 844});
+  await expect(image).toBeVisible();
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await page.screenshot({path: testInfo.outputPath('platform-ai-received-image.png')});
 });

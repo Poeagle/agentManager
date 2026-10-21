@@ -37,6 +37,24 @@ function mount(permissions = adminPermissions) {
 }
 
 describe('platform AI user flows', () => {
+  it('shows received images, pending downloads and failed media while keeping image URLs authenticated', async () => {
+    vi.mocked(platformAiApi.conversations).mockResolvedValue({conversations: [{id: 'chat-1', title: '截图需求', channel_id: 'bot-1'}]});
+    vi.mocked(platformAiApi.conversation).mockResolvedValue({conversation: {id: 'chat-1', title: '截图需求', channel_id: 'bot-1'}, messages: [{
+      id: 'image-message', role: 'user', content: '请根据截图修复', status: 'done', error: null, created_at: '', attachments: [
+        {id: 'image-1', status: 'ready', mime: 'image/png', bytes: 100, error: null},
+        {id: 'image-2', status: 'pending', mime: '', bytes: 0, error: null},
+        {id: 'image-3', status: 'failed', mime: '', bytes: 0, error: '图片下载失败，请重新发送'},
+      ],
+    }]});
+    mount(); fireEvent.click(await screen.findByRole('button', {name: /截图需求/}));
+    const image = await screen.findByRole('img', {name: '用户发送的图片 1'});
+    expect(image).toHaveAttribute('src', '/api/platform-ai/attachments/image-1');
+    expect(screen.getByRole('link', {name: '查看原图 1'})).toHaveAttribute('href', '/api/platform-ai/attachments/image-1');
+    expect(screen.getByText('图片 2：正在接收…')).toBeVisible();
+    expect(screen.getByText('图片 3：图片下载失败，请重新发送')).toBeVisible();
+    fireEvent.error(image);
+    expect(screen.getByText('图片加载失败，点击重试查看原图')).toBeVisible();
+  });
   it('renders AI Markdown tables, emphasis and code while preserving literal user messages', async () => {
     const content = '当前账户下可见的项目有 **1 个**：\n\n| 项目 | 路径 | 可用客户端 |\n| --- | --- | --- |\n| xeleQuote | `/home/xlli/ymchen/xeleQuote` | **Codex** |\n\n- 只读分析\n\n```sh\ncodex --version\n```';
     vi.mocked(platformAiApi.conversations).mockResolvedValue({conversations:[{id:'chat-1',title:'项目列表',channel_id:null}]});

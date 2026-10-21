@@ -1,4 +1,5 @@
 import { once } from 'events';
+import { createCipheriv, randomBytes } from 'crypto';
 import { WebSocket, WebSocketServer } from 'ws';
 import { WSClient } from '@wecom/aibot-node-sdk';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -13,6 +14,7 @@ import { publishMessage } from '../src/services/platform-ai/live.js';
 import { enqueueNotice, receiveMessage } from '../src/services/platform-ai/store.js';
 import { WecomBotManager } from '../src/services/platform-ai/wecom-bot.js';
 import { PlatformAiWorker } from '../src/services/platform-ai/worker.js';
+import { messageAttachments, prepareImages, validateImageSource } from '../src/services/platform-ai/attachments.js';
 import { createTestDatabase } from './helpers/database.js';
 
 let cleanup: () => void;
@@ -81,6 +83,90 @@ function webConversation() {
   getDb().prepare("UPDATE platform_ai_messages SET status='done'").run();
   return result.conversation_id;
 }
+
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6CsAAAAAASUVORK5CYII=', 'base64');
+function imageFixture() {
+  const key = randomBytes(32), padding = 32 - png.length % 32;
+  const cipher = createCipheriv('aes-256-cbc', key, key.subarray(0,16)); cipher.setAutoPadding(false);
+  const encrypted = Buffer.concat([cipher.update(Buffer.concat([png, Buffer.alloc(padding,padding)])), cipher.final()]);
+  return {source: {url: 'https://wework.qpic.cn/private-test-image?token=private-download-token', aeskey: key.toString('base64')}, encrypted};
+}
+
+describe('WeCom image and mixed-message ingestion', () => {
+  it('persists, decrypts and displays a mixed message, feeds the model real image bytes, and deduplicates replay', async () => {
+    const channel = bot(); bind(channel.id); manager.start(); await connected(channel.id);
+    const image = imageFixture();
+    const modelBodies: any[] = [];
+    const fetch = vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url === image.source.url) return new Response(image.encrypted, {status: 200});
+      modelBodies.push(JSON.parse(String(options?.body)));
+      return new Response(JSON.stringify({choices: [{message: {role: 'assistant', content: '图片已收到，请说明要修改的项目。'}}]}), {status: 200});
+    }); vi.stubGlobal('fetch', fetch);
+    const frame = {...inbound('with-image'), body: {...inbound('with-image').body, msgtype: 'mixed', text: undefined, mixed: {msg_item: [
+      {msgtype: 'text', text: {content: '请根据截图分析'}}, {msgtype: 'image', image: image.source},
+    ]}}};
+    send(frame as any); send(frame as any);
+    await expect.poll(() => getDb().prepare("SELECT COUNT(*) AS n FROM platform_ai_attachments WHERE status='ready'").get()).toEqual({n: 1});
+    const message = getDb().prepare('SELECT id,conversation_id,content FROM platform_ai_messages').get() as {id: string; conversation_id: string; content: string};
+    const attachment = messageAttachments(message.id)[0];
+    expect(message.content).toBe('请根据截图分析');
+    const conversation = await app.inject({url: `/api/platform-ai/conversations/${message.conversation_id}`, headers: {cookie: memberCookie}});
+    expect(conversation.json().messages[0].attachments).toEqual([expect.objectContaining({id: attachment.id, mime: 'image/png', status: 'ready'})]);
+    expect(conversation.body).not.toContain('private-download-token'); expect(conversation.body).not.toContain(image.source.aeskey);
+    expect(conversation.body).not.toContain(png.toString('base64'));
+    const url = `/api/platform-ai/attachments/${attachment.id}`;
+    const viewed = await app.inject({url, headers: {cookie: memberCookie}});
+    expect(viewed.headers['content-type']).toContain('image/png'); expect(viewed.rawPayload.equals(png)).toBe(true);
+    expect((await app.inject({url})).statusCode).toBe(401);
+    expect((await app.inject({url, headers: {cookie: adminCookie}})).statusCode).toBe(404);
+    worker.tick(); await worker.drain(); worker.tick(); await worker.drain();
+    const content = modelBodies[0].messages.find((message: any) => message.role === 'user').content;
+    expect(content).toEqual([expect.objectContaining({type: 'text'}), {type: 'image_url', image_url: {url: `data:image/png;base64,${png.toString('base64')}`}}]);
+    expect(modelBodies[0].messages.some((message: any) => message.attachment_ids)).toBe(false);
+    expect(fetch.mock.calls.filter(call => call[0] === image.source.url)).toHaveLength(1);
+    expect(frames.some(frame => frame.body?.stream?.finish && frame.body.stream.content.includes('图片已收到'))).toBe(true);
+    const stored = getDb().prepare('SELECT context FROM platform_ai_conversations').get() as {context: string};
+    expect(stored.context).toContain(attachment.id); expect(stored.context).not.toContain(png.toString('base64'));
+    await prepareImages(message.id); expect(fetch.mock.calls.filter(call => call[0] === image.source.url)).toHaveLength(1);
+  });
+
+  it('keeps image-only messages and falls back honestly when a text-only model rejects vision input', async () => {
+    const channel = bot(); bind(channel.id); manager.start(); await connected(channel.id);
+    const image = imageFixture(); let textCalls = 0;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url === image.source.url) return new Response(image.encrypted, {status: 200});
+      const body = JSON.parse(String(options?.body));
+      if (body.messages.some((message: any) => Array.isArray(message.content))) return new Response('{}', {status: 400});
+      textCalls++;
+      expect(body.messages[0].content).toContain('不得猜测图片内容');
+      return new Response(JSON.stringify({choices: [{message: {role: 'assistant', content: '原图已保存，可交给工作 Agent 查看。'}}]}), {status: 200});
+    }));
+    send({...inbound('image-only'), body: {...inbound('image-only').body, msgtype: 'image', text: undefined, image: image.source}} as any);
+    await expect.poll(() => getDb().prepare("SELECT COUNT(*) AS n FROM platform_ai_attachments WHERE status='ready'").get()).toEqual({n: 1});
+    worker.tick(); await worker.drain(); worker.tick(); await worker.drain();
+    expect(getDb().prepare("SELECT status FROM platform_ai_messages WHERE role='user'").get()).toEqual({status: 'done'});
+    expect(textCalls).toBe(1);
+    expect((getDb().prepare("SELECT content FROM platform_ai_messages WHERE role='assistant'").get() as {content: string}).content).toContain('当前模型接口未接受图像输入');
+    expect(frames.some(frame => frame.body?.stream?.finish && frame.body.stream.content.includes('图片已保存'))).toBe(true);
+  });
+
+  it('retains failed image records without leaking temporary media credentials or downloading unbound users images', async () => {
+    const channel = bot(); manager.start(); await connected(channel.id); const image = imageFixture();
+    const fetch = vi.fn().mockRejectedValue(new Error(image.source.url + image.source.aeskey)); vi.stubGlobal('fetch', fetch);
+    const frame = {...inbound('unbound-image'), body: {...inbound('unbound-image').body, msgtype: 'image', text: undefined, image: image.source}};
+    send(frame as any);
+    await expect.poll(() => frames.some(frame => frame.body?.stream?.content?.includes('尚未绑定'))).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+    bind(channel.id); send({...frame, headers: {req_id: 'bound-image'}, body: {...frame.body, msgid: 'bound-image'}} as any);
+    await expect.poll(() => getDb().prepare("SELECT COUNT(*) AS n FROM platform_ai_attachments WHERE status='failed'").get()).toEqual({n: 1});
+    const attachment = getDb().prepare('SELECT id,message_id,source,error FROM platform_ai_attachments').get() as {id: string; message_id: string; source: string; error: string};
+    expect(attachment.source).toBe(''); expect(attachment.error).toContain('请重新发送'); expect(attachment.error).not.toContain('private-download-token');
+    expect((await app.inject({url: `/api/platform-ai/attachments/${attachment.id}`, headers: {cookie: memberCookie}})).statusCode).toBe(404);
+    for (const url of ['http://127.0.0.1/image','https://example.com/image','https://wework.qpic.cn.evil.example/image']) {
+      expect(() => validateImageSource({url, aesKey: image.source.aeskey})).toThrow('媒体服务');
+    }
+  });
+});
 
 describe('WeCom bot transport with the real official SDK and a local WebSocket peer', () => {
   it('runs the durable inbox/model/outbox flow and delivers the reply without any extra model calls for notifications', async () => {
@@ -246,7 +332,7 @@ describe('WeCom configuration, group subscriptions and migration', () => {
     getDb().exec(`CREATE TABLE old_channels (id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('webhook','wecom','wechat','qq')),enabled INTEGER NOT NULL DEFAULT 0,config TEXT NOT NULL DEFAULT '{}',secrets TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL DEFAULT (datetime('now')));
       INSERT INTO old_channels SELECT * FROM platform_ai_channels; DROP TABLE platform_ai_channels; ALTER TABLE old_channels RENAME TO platform_ai_channels; PRAGMA user_version=15;`);
     closeDb(); initDb();
-    expect(getDb().pragma('user_version', {simple: true})).toBe(16);
+    expect(getDb().pragma('user_version', {simple: true})).toBe(17);
     expect(getDb().pragma('foreign_key_check')).toEqual([]);
     expect(getDb().pragma('foreign_keys', {simple: true})).toBe(1);
     expect(getDb().prepare('SELECT COUNT(*) AS n FROM platform_ai_bindings').get()).toEqual({n: 1});

@@ -8,7 +8,8 @@ import { userCanUseSessionTool } from '../../auth.js';
 import { getTracker } from '../session-state.js';
 import { readAiConfig, publicFailure, type AiConfig } from './config.js';
 import { ChannelError, deliverMessage, getChannel } from './channels.js';
-import { callModel, PLATFORM_SYSTEM_PROMPT, type ModelMessage, type ToolCall } from './model.js';
+import { callModel, ModelRequestError, PLATFORM_SYSTEM_PROMPT, type ModelMessage, type ToolCall } from './model.js';
+import { messageAttachments, prepareImages } from './attachments.js';
 import { boundedToolResult, executePlatformTool, isMutatingTool, operationKey, platformApi, PlatformApiError, PLATFORM_TOOLS } from './tools.js';
 import { userHasPermission } from '../rbac.js';
 import { assertLiveUser, claimMessage, enqueueNotice, getConversation, trackTask, type Conversation, type InboxMessage, type TrackedTask } from './store.js';
@@ -22,6 +23,13 @@ const assessmentSchema = z.object({
   summary: z.string().min(1).max(1500), evidence: z.string().max(3000),
 }).strict();
 export type Assessment = z.infer<typeof assessmentSchema>;
+
+function userMessage(message: InboxMessage): ModelMessage {
+  const images = messageAttachments(message.id);
+  const ready = images.filter(image => image.status === 'ready').map(image => image.id);
+  const details = images.map(image => `图片附件 ID：${image.id}；${image.status === 'ready' ? '已保存，可交给工作 Agent 查看' : image.error || '正在接收'}`).join('\n');
+  return {role: 'user', content: message.content + (details ? '\n\n' + details : ''), ...(ready.length ? {attachment_ids: ready} : {})};
+}
 
 /** Extract only text added since the last successful assessment, even after
  * the rolling output window dropped its prefix. KMP bounds work to O(n). */
@@ -203,7 +211,7 @@ export class PlatformAiWorker {
     getDb().prepare(`INSERT INTO platform_ai_operations (id,message_id,tool_name,arguments,status) VALUES (?,?,?,?,'started')
       ON CONFLICT(id) DO UPDATE SET status='started'`).run(id, messageId, call.function.name, call.function.arguments);
     try {
-      const result = boundedToolResult(await executePlatformTool(this.app, conversation, call.function.name, call.function.arguments, id));
+      const result = boundedToolResult(await executePlatformTool(this.app, conversation, call.function.name, call.function.arguments, id, messageId));
       getDb().prepare("UPDATE platform_ai_operations SET status='done',result=? WHERE id=?").run(result, id);
       return result;
     } catch (error) {
@@ -224,9 +232,16 @@ export class PlatformAiWorker {
       const conversation = getConversation(message.conversation_id);
       if (!conversation) throw new Error('对话不存在');
       this.assertConversation(conversation);
+      if (messageAttachments(message.id).some(image => image.status === 'pending')) {
+        progress('正在接收图片…');
+        await prepareImages(message.id, this.abort.signal);
+        this.assertConversation(conversation);
+        publishMessage(message.id);
+      }
       const history = JSON.parse(conversation.context) as ModelMessage[];
       let messages = JSON.parse(message.checkpoint) as ModelMessage[];
-      if (!messages.length) messages = [...history.slice(-20), { role: 'user', content: message.content }];
+      if (!messages.length) messages = [...history.slice(-20), userMessage(message)];
+      let visionUnavailable = false;
       const savedFinal = messages.at(-1);
       if (savedFinal?.role === 'assistant' && !savedFinal.tool_calls?.length && savedFinal.content?.trim()) {
         this.finishMessage(message, conversation, history, savedFinal.content.trim());
@@ -250,10 +265,21 @@ export class PlatformAiWorker {
         const tasks = getDb().prepare('SELECT id,session_id,status,summary FROM platform_ai_tasks WHERE conversation_id=? ORDER BY rowid DESC LIMIT 5').all(conversation.id);
         progress(round ? '正在整理工具结果并生成回复…' : '正在等待模型回复…', '');
         let partial = '', lastFlush = 0;
-        const response = await callModel(config, [{ role: 'system', content: PLATFORM_SYSTEM_PROMPT + `\n当前时间：${new Date().toISOString()}\n本对话近期任务：${JSON.stringify(tasks)}` }, ...messages], toolsAllowed ? PLATFORM_TOOLS : undefined, this.abort.signal, {onContent: content => {
+        const onContent = (content: string) => {
           partial = content.slice(0, 16000);
           if (Date.now() - lastFlush >= 100) {progress('正在生成回复…', partial); lastFlush = Date.now();}
-        }});
+        };
+        const ask = () => callModel(config, [{ role: 'system', content: PLATFORM_SYSTEM_PROMPT + `\n当前时间：${new Date().toISOString()}\n本对话近期任务：${JSON.stringify(tasks)}` + (visionUnavailable ? '\n当前模型接口拒绝图片输入。图片已保存在附件中；明确告诉用户当前不能识图，不得猜测图片内容。如用户要求开发，可把附件交给工作 Agent。' : '') },
+          ...messages.map(message => visionUnavailable ? {...message, attachment_ids: undefined} : message)], toolsAllowed ? PLATFORM_TOOLS : undefined, this.abort.signal, {userId: conversation.user_id, onContent});
+        let response: ModelMessage;
+        try {response = await ask();}
+        catch (error) {
+          if (!visionUnavailable && !partial && messages.some(message => message.attachment_ids?.length) && error instanceof ModelRequestError && [400,415,422].includes(error.httpStatus || 0)) {
+            visionUnavailable = true;
+            progress('图片已保存，当前模型拒绝图片输入，正在继续处理文字与附件…', '');
+            response = await ask();
+          } else throw error;
+        }
         if (partial) progress('正在生成回复…', partial);
         if (response.tool_calls?.length) {
           if (!toolsAllowed) throw new ChannelError('本轮工具调用已达上限，已执行操作保留，请查询状态后继续', 400, true);
@@ -262,7 +288,7 @@ export class PlatformAiWorker {
         messages.push(response);
         this.checkpoint(message.id, messages);
         if (response.tool_calls?.length) continue;
-        this.finishMessage(message, conversation, history, response.content!.trim());
+        this.finishMessage(message, conversation, history, (visionUnavailable ? '图片已保存，但当前模型接口未接受图像输入，暂时无法直接识图。\n\n' : '') + response.content!.trim());
         return;
       }
     } catch (error) {
@@ -282,7 +308,7 @@ export class PlatformAiWorker {
             .run(nanoid(16), conversation.id, message.id, content);
           getDb().prepare("UPDATE platform_ai_messages SET status='done',checkpoint='[]',error=NULL,progress='',partial_content='',lease_until=0 WHERE id=?").run(message.id);
           getDb().prepare("UPDATE platform_ai_conversations SET context=?,updated_at=datetime('now') WHERE id=?")
-            .run(JSON.stringify([...history.slice(-18), { role: 'user', content: message.content }, { role: 'assistant', content }]), conversation.id);
+            .run(JSON.stringify([...history.slice(-18), userMessage(message), { role: 'assistant', content }]), conversation.id);
           getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox (id,conversation_id,dedupe_key,content,reply_context) VALUES (?,?,?,?,?)`)
             .run(nanoid(16), conversation.id, `reply:${message.id}`, content, message.reply_context);
         })();
