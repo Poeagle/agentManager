@@ -5,7 +5,10 @@ import { getDb } from '../db/index.js';
 import { findUserById, getSessionUser, readSessionCookie } from '../auth.js';
 import { requirePermission, userHasPermission } from '../services/rbac.js';
 import { readAiConfig, safeAiConfig, updateAiConfig, publicFailure } from '../services/platform-ai/config.js';
-import { ChannelError, decodeCallback, getChannel, listChannels, saveChannel } from '../services/platform-ai/channels.js';
+import { ChannelError, decodeCallback, getChannel, listChannels, saveChannel, testChannelConnection } from '../services/platform-ai/channels.js';
+import { acceptChannelMessage } from '../services/platform-ai/ingress.js';
+import { WecomBotManager } from '../services/platform-ai/wecom-bot.js';
+import { channelsChanged } from '../services/platform-ai/channel-runtime.js';
 import { getConversation, receiveMessage } from '../services/platform-ai/store.js';
 import { platformCatalog, PLATFORM_TOOLS } from '../services/platform-ai/tools.js';
 import { PlatformAiWorker } from '../services/platform-ai/worker.js';
@@ -17,6 +20,7 @@ const idSchema = z.string().min(1).max(256);
 const callbackRate = new Map<string, { start: number; count: number }>();
 
 export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = async (app, options) => {
+  const bots = options.runWorker !== false ? new WecomBotManager() : undefined;
   const liveClosers = new Set<() => void>();
   app.addHook('preClose', async () => { for (const close of [...liveClosers]) close(); });
   app.setErrorHandler((error, _request, reply) => {
@@ -59,7 +63,11 @@ export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = asy
   app.get('/platform-ai/channels', async (req, reply) => {
     if (!requirePermission(req, reply, 'settings', 'write') || !requirePermission(req, reply, 'roles', 'write')) return;
     const bindings = getDb().prepare(`SELECT b.*,u.username,u.display_name FROM platform_ai_bindings b JOIN users u ON u.id=b.user_id ORDER BY b.rowid`).all();
-    return { channels: listChannels(), bindings };
+    const senders = getDb().prepare(`SELECT s.* FROM platform_ai_channel_senders s
+      LEFT JOIN platform_ai_bindings b ON b.channel_id=s.channel_id AND b.external_user_id=s.external_user_id
+      WHERE b.id IS NULL ORDER BY s.last_seen_at DESC LIMIT 200`).all();
+    const notification_targets = getDb().prepare(`SELECT n.*,u.username,u.display_name FROM platform_ai_notification_targets n JOIN users u ON u.id=n.user_id ORDER BY n.rowid`).all();
+    return { channels: listChannels(), bindings, senders, notification_targets };
   });
   app.post('/platform-ai/channels', async (req, reply) => {
     if (!requirePermission(req, reply, 'settings', 'write') || !requirePermission(req, reply, 'roles', 'write')) return;
@@ -71,15 +79,51 @@ export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = asy
   });
   app.delete<{Params: {id: string}}>('/platform-ai/channels/:id', async (req, reply) => {
     if (!requirePermission(req, reply, 'settings', 'write') || !requirePermission(req, reply, 'roles', 'write')) return;
-    const linked = getDb().prepare('SELECT 1 FROM platform_ai_conversations WHERE channel_id=? LIMIT 1').get(req.params.id);
+    const linked = getDb().prepare('SELECT 1 FROM platform_ai_conversations WHERE channel_id=? UNION ALL SELECT 1 FROM platform_ai_outbox WHERE destination_channel_id=? LIMIT 1').get(req.params.id, req.params.id);
     if (linked) return reply.code(409).send({ error: '该渠道已有对话记录，请停用渠道以保留任务和历史' });
     getDb().prepare('DELETE FROM platform_ai_channels WHERE id=?').run(req.params.id);
+    channelsChanged();
     return { ok: true };
+  });
+  app.post<{Params: {id: string}}>('/platform-ai/channels/:id/test', async (req, reply) => {
+    if (!requirePermission(req, reply, 'settings', 'write') || !requirePermission(req, reply, 'roles', 'write')) return;
+    const channel = getChannel(req.params.id);
+    if (!channel) return reply.code(404).send({error: '渠道不存在'});
+    if (!channel.enabled) return reply.code(400).send({error: '请先补齐配置并启用渠道'});
+    if (channel.kind === 'wecom_bot') {
+      if (!bots) return reply.code(503).send({error: '机器人连接服务未启动'});
+      return bots.test(channel.id);
+    }
+    return testChannelConnection(channel);
+  });
+  app.post<{Params: {id: string}}>('/platform-ai/channels/:id/reconnect', async (req, reply) => {
+    if (!requirePermission(req, reply, 'settings', 'write') || !requirePermission(req, reply, 'roles', 'write')) return;
+    const channel = getChannel(req.params.id);
+    if (!channel || !channel.enabled || channel.kind !== 'wecom_bot') return reply.code(400).send({error: '请选择已启用的智能机器人渠道'});
+    if (!bots) return reply.code(503).send({error: '机器人连接服务未启动'});
+    bots.reconnect(channel.id);
+    return {ok: true};
+  });
+  app.post('/platform-ai/notification-targets', async (req, reply) => {
+    if (!requirePermission(req, reply, 'settings', 'write') || !requirePermission(req, reply, 'roles', 'write')) return;
+    const input = z.object({channel_id: idSchema, user_id: idSchema}).strict().parse(req.body);
+    if (getChannel(input.channel_id)?.kind !== 'wecom_webhook') return reply.code(400).send({error: '通知订阅请选择企业微信群机器人渠道'});
+    const user = findUserById(input.user_id);
+    if (!user || user.disabled) return reply.code(400).send({error: '请选择有效的平台用户'});
+    getDb().prepare('INSERT OR IGNORE INTO platform_ai_notification_targets (id,channel_id,user_id) VALUES (?,?,?)').run(nanoid(16), input.channel_id, input.user_id);
+    return {ok: true};
+  });
+  app.delete<{Params: {id: string}}>('/platform-ai/notification-targets/:id', async (req, reply) => {
+    if (!requirePermission(req, reply, 'settings', 'write') || !requirePermission(req, reply, 'roles', 'write')) return;
+    getDb().prepare('DELETE FROM platform_ai_notification_targets WHERE id=?').run(req.params.id);
+    return {ok: true};
   });
   app.post('/platform-ai/bindings', async (req, reply) => {
     if (!requirePermission(req, reply, 'settings', 'write') || !requirePermission(req, reply, 'roles', 'write')) return;
     const input = z.object({ channel_id: idSchema, external_user_id: idSchema, user_id: idSchema }).strict().parse(req.body);
-    if (!getChannel(input.channel_id)) return reply.code(404).send({ error: '渠道不存在' });
+    const channel = getChannel(input.channel_id);
+    if (!channel) return reply.code(404).send({ error: '渠道不存在' });
+    if (channel.kind === 'wecom_webhook') return reply.code(400).send({error: '群 Webhook 只接收通知，请使用任务通知订阅'});
     const user = findUserById(input.user_id);
     if (!user || user.disabled) return reply.code(400).send({ error: '请选择有效的平台用户' });
     getDb().prepare(`INSERT INTO platform_ai_bindings (id,channel_id,external_user_id,user_id) VALUES (?,?,?,?)
@@ -169,8 +213,9 @@ export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = asy
   });
   app.get('/platform-ai/deliveries', async (req, reply) => {
     if (!requirePermission(req, reply, 'agent_api')) return;
-    return { deliveries: getDb().prepare(`SELECT o.id,o.conversation_id,o.status,o.attempts,o.error,o.created_at FROM platform_ai_outbox o
-      JOIN platform_ai_conversations c ON c.id=o.conversation_id WHERE c.user_id=? ORDER BY o.rowid DESC LIMIT 100`).all(req.user!.id) };
+    return { deliveries: getDb().prepare(`SELECT o.id,o.conversation_id,o.status,o.attempts,o.error,o.created_at,ch.name AS channel_name FROM platform_ai_outbox o
+      JOIN platform_ai_conversations c ON c.id=o.conversation_id LEFT JOIN platform_ai_channels ch ON ch.id=COALESCE(o.destination_channel_id,c.channel_id)
+      WHERE c.user_id=? ORDER BY o.rowid DESC LIMIT 100`).all(req.user!.id) };
   });
 
   await app.register(async callbacks => {
@@ -190,11 +235,7 @@ export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = asy
         if (++window.count > 120) return reply.code(429).send({ error: '渠道消息过于频繁' });
         const decoded = decodeCallback(channel, req.method, req.query, req.headers, typeof req.body === 'string' ? req.body : '');
         if (decoded.message) {
-          if (!readAiConfig().enabled) return reply.code(503).send({ error: '平台 AI 尚未启用' });
-          const binding = getDb().prepare('SELECT user_id FROM platform_ai_bindings WHERE channel_id=? AND external_user_id=?')
-            .get(channel.id, decoded.message.externalUserId) as {user_id: string} | undefined;
-          if (!binding || !findUserById(binding.user_id) || findUserById(binding.user_id)!.disabled) return reply.code(403).send({ error: '外部用户尚未绑定有效的平台用户' });
-          receiveMessage({ userId: binding.user_id, channelId: channel.id, ...decoded.message });
+          acceptChannelMessage(channel, decoded.message);
         }
         if (typeof decoded.response === 'string') return reply.type('text/plain; charset=utf-8').send(decoded.response);
         return decoded.response;
@@ -204,7 +245,7 @@ export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = asy
 
   if (options.runWorker !== false) {
     const worker = new PlatformAiWorker(app);
-    app.addHook('onReady', async () => worker.start());
-    app.addHook('preClose', async () => worker.stop());
+    app.addHook('onReady', async () => { bots!.start(); worker.start(); });
+    app.addHook('preClose', async () => { bots!.stop(); await worker.stop(); });
   }
 };

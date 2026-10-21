@@ -9,6 +9,7 @@ vi.mock('../src/lib/platform-ai', () => ({platformAiApi: {
   status: vi.fn(), agents: vi.fn(), config: vi.fn(), saveConfig: vi.fn(), conversations: vi.fn(), conversation: vi.fn(), send: vi.fn(),
   tasks: vi.fn(), stopTracking: vi.fn(), deliveries: vi.fn(), channels: vi.fn(), saveChannel: vi.fn(), saveBinding: vi.fn(), deleteBinding: vi.fn(), tools: vi.fn(),
   discoverModels: vi.fn(), testConnection: vi.fn(),
+  testChannel: vi.fn(), reconnectChannel: vi.fn(), saveNotificationTarget: vi.fn(), deleteNotificationTarget: vi.fn(), deleteChannel: vi.fn(),
 }}));
 vi.mock('../src/lib/api', () => ({api: {users: {list: vi.fn()}}}));
 let client: QueryClient;
@@ -213,6 +214,7 @@ describe('platform AI user flows', () => {
     mount();fireEvent.click(screen.getByRole('button',{name:'渠道与用户映射'}));
     fireEvent.click(await screen.findByRole('button',{name:'添加渠道'}));
     fireEvent.change(screen.getByLabelText('渠道名称'),{target:{value:'团队企业微信'}});
+    fireEvent.change(screen.getByLabelText('渠道类型'),{target:{value:'wecom'}});
     fireEvent.click(screen.getByRole('button',{name:'保存渠道'}));
     await screen.findByRole('option',{name:'团队企业微信'});
     fireEvent.change(screen.getByLabelText('映射渠道'),{target:{value:'channel-1'}});
@@ -220,6 +222,45 @@ describe('platform AI user flows', () => {
     fireEvent.change(screen.getByLabelText('映射平台用户'),{target:{value:'u1'}});
     fireEvent.click(screen.getByRole('button',{name:'保存用户映射'}));
     await waitFor(() => expect(platformAiApi.saveBinding).toHaveBeenCalledWith({channel_id:'channel-1',external_user_id:'wecom-member',user_id:'u1'}));
+  });
+  it('configures a long-connection bot, shows its state and tests the existing connection', async () => {
+    const channel = {id: 'bot-1', name: '开发机器人', kind: 'wecom_bot' as const, enabled: 1, config: {bot_id: 'wx-bot'}, secret_fields_configured: ['bot_secret'], callback_path: null, connection: {state: 'connected', message: '已连接并通过认证', updated_at: ''}};
+    vi.mocked(platformAiApi.channels).mockResolvedValue({channels: [channel], bindings: [], senders: [{channel_id: 'bot-1', external_user_id: 'encrypted-member', last_chat_id: 'chat', last_seen_at: ''}]});
+    vi.mocked(platformAiApi.testChannel).mockResolvedValue({ok: true, message: '长连接认证通过'});
+    vi.mocked(platformAiApi.reconnectChannel).mockResolvedValue({ok: true});
+    mount(); fireEvent.click(screen.getByRole('button', {name: '渠道与用户映射'}));
+    expect(await screen.findByText('连接状态：已连接并通过认证')).toBeVisible();
+    expect(screen.getByText('平台主动建立长连接，无需公网回调地址。')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', {name: '测试连接'}));
+    expect(await screen.findByRole('status')).toHaveTextContent('长连接认证通过');
+    expect(platformAiApi.testChannel).toHaveBeenCalledWith('bot-1');
+    fireEvent.click(screen.getByRole('button', {name: '填入映射'}));
+    expect(screen.getByLabelText('映射渠道')).toHaveValue('bot-1');
+    expect(screen.getByLabelText('外部用户 ID')).toHaveValue('encrypted-member');
+    fireEvent.click(screen.getByRole('button', {name: '重新连接'}));
+    await waitFor(() => expect(platformAiApi.reconnectChannel).toHaveBeenCalledWith('bot-1'));
+    fireEvent.click(screen.getByRole('button', {name: '添加渠道'}));
+    expect(screen.getByLabelText('渠道类型')).toHaveValue('wecom_bot');
+    expect(screen.getByLabelText('Bot ID')).toBeVisible();
+    expect(screen.getByLabelText('机器人 Secret')).toHaveAttribute('type', 'password');
+  });
+  it('subscribes group notifications separately from inbound identity bindings', async () => {
+    const channel = {id: 'group-1', name: '开发通知群', kind: 'wecom_webhook' as const, enabled: 1, config: {}, secret_fields_configured: ['webhook_url'], callback_path: null};
+    vi.mocked(platformAiApi.channels).mockResolvedValue({channels: [channel], bindings: [], notification_targets: [{id: 'target-1', channel_id: 'group-1', user_id: 'u1', username: 'member', display_name: '成员'}]});
+    vi.mocked(platformAiApi.saveNotificationTarget).mockResolvedValue({ok: true});
+    vi.mocked(platformAiApi.deleteNotificationTarget).mockResolvedValue({ok: true});
+    vi.mocked(platformAiApi.testChannel).mockResolvedValue({ok: true, message: '测试通知已获确认'});
+    mount(); fireEvent.click(screen.getByRole('button', {name: '渠道与用户映射'}));
+    await screen.findByRole('button', {name: '发送测试通知'});
+    expect(screen.getByLabelText('映射渠道').querySelectorAll('option')).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText('通知渠道'), {target: {value: 'group-1'}});
+    fireEvent.change(screen.getByLabelText('订阅用户'), {target: {value: 'u1'}});
+    fireEvent.click(screen.getByRole('button', {name: '添加通知订阅'}));
+    await waitFor(() => expect(platformAiApi.saveNotificationTarget).toHaveBeenCalledWith({channel_id: 'group-1', user_id: 'u1'}));
+    fireEvent.click(screen.getByRole('button', {name: '取消订阅'}));
+    await waitFor(() => expect(platformAiApi.deleteNotificationTarget).toHaveBeenCalledWith('target-1'));
+    fireEvent.click(screen.getByRole('button', {name: '发送测试通知'}));
+    expect(await screen.findByRole('status')).toHaveTextContent('测试通知已获确认');
   });
   it('shows completion evidence and opens the corresponding project session', async () => {
     vi.mocked(platformAiApi.tasks).mockResolvedValue({tasks:[{id:'task-1',conversation_id:'chat-1',session_id:'session-1',project_id:'p1',requirement:'实现导出',status:'reported_complete',summary:'实现完成，测试未执行。',evidence:'已完成导出功能',updated_at:'2026-10-19'}]});

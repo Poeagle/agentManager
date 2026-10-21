@@ -3,8 +3,9 @@ import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { getDb } from '../../db/index.js';
 import { openSecret, sealSecret, validateHttpUrl } from './config.js';
+import { channelsChanged, getBotTransport } from './channel-runtime.js';
 
-export const channelKinds = ['webhook', 'wecom', 'wechat', 'qq'] as const;
+export const channelKinds = ['webhook', 'wecom', 'wecom_bot', 'wecom_webhook', 'wechat', 'qq'] as const;
 export interface Channel {
   id: string; name: string; kind: typeof channelKinds[number]; enabled: number;
   config: Record<string, string>; secrets: Record<string, string>;
@@ -21,6 +22,8 @@ export class ChannelError extends Error {
 const fields: Record<Channel['kind'], { config: string[]; secrets: string[] }> = {
   webhook: { config: ['outbound_url'], secrets: ['signing_secret'] },
   wecom: { config: ['corp_id', 'agent_id'], secrets: ['app_secret', 'token', 'aes_key'] },
+  wecom_bot: { config: ['bot_id'], secrets: ['bot_secret'] },
+  wecom_webhook: { config: [], secrets: ['webhook_url'] },
   wechat: { config: ['app_id'], secrets: ['app_secret', 'token', 'aes_key'] },
   qq: { config: ['app_id'], secrets: ['app_secret'] },
 };
@@ -32,7 +35,10 @@ export function getChannel(id: string): Channel | undefined {
 
 export function safeChannel(channel: Channel) {
   const { secrets, ...safe } = channel;
-  return { ...safe, secret_fields_configured: Object.keys(secrets).filter(key => !!secrets[key]), callback_path: `/api/platform-ai/callbacks/${channel.id}` };
+  const callback = !['wecom_bot', 'wecom_webhook'].includes(channel.kind);
+  return { ...safe, secret_fields_configured: Object.keys(secrets).filter(key => !!secrets[key]),
+    callback_path: callback ? `/api/platform-ai/callbacks/${channel.id}` : null,
+    connection: channel.kind === 'wecom_bot' ? getBotTransport(channel.id)?.status || {state: 'disconnected', message: channel.enabled ? '等待连接' : '渠道已停用', updated_at: ''} : undefined };
 }
 
 export function listChannels() {
@@ -53,12 +59,24 @@ export function saveChannel(input: unknown, id?: string) {
     throw new ChannelError('包含不支持的渠道配置字段');
   }
   const config = { ...previous?.config, ...parsed.config };
+  if (config.bot_id) {
+    config.bot_id = config.bot_id.trim();
+    if (config.bot_id.length > 256 || /[\s\x00-\x1f]/.test(config.bot_id)) throw new ChannelError('Bot ID 格式无效');
+  }
   const secrets = { ...previous?.secrets };
   for (const [key, value] of Object.entries(parsed.secrets)) {
     // Omitted/empty secret inputs preserve existing values. Deleting the channel removes them.
     if (value) secrets[key] = value;
   }
   if (config.outbound_url) config.outbound_url = validateHttpUrl(config.outbound_url);
+  if (secrets.webhook_url) {
+    let url: URL;
+    try { url = new URL(secrets.webhook_url); } catch { throw new ChannelError('请输入有效的企业微信群机器人 Webhook 地址'); }
+    if (url.protocol !== 'https:' || url.hostname !== 'qyapi.weixin.qq.com' || url.port || url.username || url.password || url.hash || url.pathname !== '/cgi-bin/webhook/send' || !url.searchParams.get('key') || [...url.searchParams.keys()].some(key => key !== 'key')) {
+      throw new ChannelError('群机器人地址必须为 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…');
+    }
+    secrets.webhook_url = url.toString();
+  }
   if (secrets.aes_key && (!/^[A-Za-z0-9+/]{43}$/.test(secrets.aes_key) || Buffer.from(secrets.aes_key + '=', 'base64').length !== 32)) {
     throw new ChannelError('EncodingAESKey 必须为 43 位 Base64 字符');
   }
@@ -68,12 +86,17 @@ export function saveChannel(input: unknown, id?: string) {
     if (requiredConfig.some(key => !config[key]) || requiredSecrets.some(key => !secrets[key])) throw new ChannelError('请先补齐该渠道的连接参数和凭据');
     if (parsed.kind === 'webhook' && secrets.signing_secret.length < 32) throw new ChannelError('Webhook 签名密钥至少需要 32 个字符');
     if (parsed.kind === 'wecom' && !/^\d+$/.test(config.agent_id)) throw new ChannelError('企业微信 Agent ID 必须为数字');
+    if (parsed.kind === 'wecom_bot') {
+      const duplicate = getDb().prepare("SELECT 1 FROM platform_ai_channels WHERE kind='wecom_bot' AND enabled=1 AND id<>? AND json_extract(config,'$.bot_id')=?").get(channelId, config.bot_id);
+      if (duplicate) throw new ChannelError('该 Bot ID 已在另一个启用的渠道中使用');
+    }
   }
   const sealed = sealSecret(JSON.stringify(secrets), `channel:${channelId}`);
   getDb().prepare(`INSERT INTO platform_ai_channels (id,name,kind,enabled,config,secrets) VALUES (?,?,?,?,?,?)
     ON CONFLICT(id) DO UPDATE SET name=excluded.name,enabled=excluded.enabled,config=excluded.config,secrets=excluded.secrets`)
     .run(channelId, parsed.name, parsed.kind, Number(parsed.enabled), JSON.stringify(config), sealed);
   tokenCache.delete(channelId);
+  channelsChanged();
   return safeChannel(getChannel(channelId)!);
 }
 
@@ -139,6 +162,7 @@ function qqPrivateKey(secret: string) {
 export function decodeCallback(channel: Channel, method: string, query: Record<string, string>, headers: Record<string, string | string[] | undefined>, raw = ''):
   { response: unknown; message?: InboundMessage } {
   if (!channel.enabled) throw new ChannelError('渠道未启用', 404);
+  if (channel.kind === 'wecom_bot' || channel.kind === 'wecom_webhook') throw new ChannelError('此渠道不接受 HTTP 回调', 405);
   if (channel.kind === 'webhook') {
     if (method !== 'POST') throw new ChannelError('Method not allowed', 405);
     const timestamp = String(headers['x-platform-timestamp'] || '');
@@ -199,10 +223,17 @@ function validateInbound(message: InboundMessage): void {
 const tokenCache = new Map<string, { token: string; expires: number; fingerprint: string }>();
 
 async function requestJson(url: string, init?: RequestInit): Promise<any> {
-  const response = await fetch(url, { ...init, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(15000), ...(init?.signal ? [init.signal] : [])]) });
+  let response: Response;
+  try { response = await fetch(url, { ...init, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(15000), ...(init?.signal ? [init.signal] : [])]) }); }
+  catch { throw new ChannelError('无法连接渠道接口，请检查网络与 TLS 配置', 502); }
   if (!response.ok) throw new ChannelError(`渠道请求失败 (HTTP ${response.status})`, 502, response.status === 403);
-  const result = await response.json() as any;
-  if (result.errcode || (result.code && result.code !== 0)) throw new ChannelError(`渠道接口错误 (${result.errcode || result.code})`, 502);
+  let result: any;
+  try { result = await response.json(); } catch { throw new ChannelError('渠道返回了无效响应', 502); }
+  if (!result || typeof result !== 'object') throw new ChannelError('渠道返回了无效响应', 502);
+  if (result.errcode || (result.code && result.code !== 0)) {
+    const code = String(result.errcode || result.code);
+    throw new ChannelError(`渠道接口错误 (${ /^-?\d{1,10}$/.test(code) ? code : '未知错误码'})`, 502);
+  }
   return result;
 }
 
@@ -226,13 +257,24 @@ async function accessToken(channel: Channel, signal?: AbortSignal): Promise<stri
   return result.access_token;
 }
 
-function compactText(content: string): string {
-  if (Buffer.byteLength(content) <= 1850) return content;
+export async function testChannelConnection(channel: Channel): Promise<{ok: boolean; message: string}> {
+  if (!channel.enabled) throw new ChannelError('请先补齐配置并启用渠道');
+  if (channel.kind === 'wecom_bot') throw new ChannelError('智能机器人需要通过长连接测试');
+  if (channel.kind === 'wecom_webhook' || channel.kind === 'webhook') {
+    await deliverMessage(channel, 'connection-test', 'connection-test', '平台 AI 渠道测试通知：消息投递成功。', {}, `test-${nanoid(16)}`);
+    return {ok: true, message: '测试通知已获渠道确认，请在目标会话检查接收情况'};
+  }
+  await accessToken(channel);
+  return {ok: true, message: '应用凭据有效；消息回调和真实收发仍需发送文字验证'};
+}
+
+export function compactText(content: string, limit = 1850): string {
+  if (Buffer.byteLength(content) <= limit) return content;
   let result = '';
   let bytes = 0;
   for (const character of content) {
     bytes += Buffer.byteLength(character);
-    if (bytes > 1750) break;
+    if (bytes > limit - 100) break;
     result += character;
   }
   return result + '\n…完整内容请在平台 AI 中查看。';
@@ -240,6 +282,22 @@ function compactText(content: string): string {
 
 export async function deliverMessage(channel: Channel, chatId: string, externalUserId: string, content: string, replyContext: Record<string, unknown>, deliveryId: string, signal?: AbortSignal): Promise<void> {
   if (!channel.enabled) throw new ChannelError('渠道已停用', 403, true);
+  if (channel.kind === 'wecom_bot') {
+    const transport = getBotTransport(channel.id);
+    if (!transport || transport.status.state !== 'connected') throw new ChannelError('企业微信智能机器人尚未连接，通知将自动重试', 503);
+    await transport.deliver(chatId, content, replyContext, deliveryId);
+    return;
+  }
+  if (channel.kind === 'wecom_webhook') {
+    try {
+      await requestJson(channel.secrets.webhook_url, {method: 'POST', signal, headers: {'Content-Type': 'application/json'}, body: JSON.stringify({msgtype: 'text', text: {content: compactText(content)}})});
+    } catch (error) {
+      // Fetch errors may contain the URL/key; never expose the raw exception.
+      if (error instanceof ChannelError) throw error;
+      throw new ChannelError('企业微信群机器人请求失败，请检查网络与 Webhook 配置', 502);
+    }
+    return;
+  }
   if (channel.kind === 'webhook') {
     const body = JSON.stringify({ delivery_id: deliveryId, chat_id: chatId, user_id: externalUserId, content });
     const timestamp = String(Math.floor(Date.now() / 1000));

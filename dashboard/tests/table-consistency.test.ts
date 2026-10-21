@@ -14,8 +14,9 @@ it('keeps platform table structures and expand controls in the shared component'
   const violations: string[] = [];
   for (const path of sources(components)) {
     const file = relative(components, path);
-    // The spreadsheet viewer renders document cells, rather than a platform list.
-    if (file === 'table/DataTable.tsx' || file === 'table/TableActions.tsx' || file === 'SpreadsheetPreview.tsx') continue;
+    // Spreadsheet and AI Markdown tables render document content. They do not
+    // implement platform list sorting, pagination or expandable detail rows.
+    if (file === 'table/DataTable.tsx' || file === 'table/TableActions.tsx' || file === 'SpreadsheetPreview.tsx' || file === 'AiReply.tsx') continue;
     const source = readFileSync(path, 'utf8');
     const tree = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
     function visit(node: ts.Node) {

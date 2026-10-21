@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bot, Loader2, MessageSquare, Plus, Send } from 'lucide-react';
 import { AiReply } from './AiReply';
-import { api, type MyPermissions } from '../lib/api';
+import { PlatformAiChannels } from './PlatformAiChannels';
+import { type MyPermissions } from '../lib/api';
 import { hasPermission } from '../lib/permissions';
-import { platformAiApi, type AiChannel, type AiMessage, type ChannelInput, type ChannelKind, type ModelProbeResult, type PlatformAiConfig } from '../lib/platform-ai';
+import { platformAiApi, type AiMessage, type ModelProbeResult, type PlatformAiConfig } from '../lib/platform-ai';
 
 const fieldStyle = { background: 'var(--bg-primary)', borderColor: 'var(--border)', color: 'var(--text-primary)' };
 const muted = { color: 'var(--text-secondary)' };
@@ -34,7 +35,7 @@ export function PlatformAiPanel({ permissions, onOpenSession }: {permissions: My
       {tab === 'deliveries' && <AiDeliveries />}
       {tab === 'tools' && <AiTools />}
       {tab === 'config' && canConfigure && <AiConfiguration />}
-      {tab === 'channels' && canConfigure && <AiChannels />}
+      {tab === 'channels' && canConfigure && <PlatformAiChannels />}
     </div>
   </div>;
 }
@@ -129,7 +130,7 @@ function AiTasks({onOpenSession, canWrite}: {onOpenSession: (projectId: string, 
 
 function AiDeliveries() {
   const query = useQuery({queryKey: ['platform-ai-deliveries'], queryFn: platformAiApi.deliveries, refetchInterval: 10000});
-  return <div className="space-y-3 p-5"><p className="text-xs" style={muted}>外部通知失败后会自动重试；网页对话的回复直接保留在对话记录中。</p>{query.error && <p role="alert" className="text-red-400">{query.error.message}</p>}{query.data?.deliveries.length === 0 && <p className="py-8 text-sm" style={muted}>暂无通知记录。</p>}{query.data?.deliveries.map(item => <div key={item.id} className="rounded border p-3 text-sm" style={{borderColor: 'var(--border)'}}><div className="flex flex-wrap justify-between gap-2"><span>{statusLabels[item.status] || item.status} · 尝试 {item.attempts} 次</span><span className="text-xs" style={muted}>{item.created_at}</span></div>{item.error && <p className="mt-2 text-xs text-red-400">{item.error}</p>}</div>)}</div>;
+  return <div className="space-y-3 p-5"><p className="text-xs" style={muted}>外部通知失败后会自动重试；网页对话的回复直接保留在对话记录中。</p>{query.error && <p role="alert" className="text-red-400">{query.error.message}</p>}{query.data?.deliveries.length === 0 && <p className="py-8 text-sm" style={muted}>暂无通知记录。</p>}{query.data?.deliveries.map(item => <div key={item.id} className="rounded border p-3 text-sm" style={{borderColor: 'var(--border)'}}><div className="flex flex-wrap justify-between gap-2"><span>{item.channel_name || '平台网页'} · {statusLabels[item.status] || item.status} · 尝试 {item.attempts} 次</span><span className="text-xs" style={muted}>{item.created_at}</span></div>{item.error && <p className="mt-2 text-xs text-red-400">{item.error}</p>}</div>)}</div>;
 }
 
 function AiTools() {
@@ -206,56 +207,5 @@ function AiConfigForm({initial}: {initial: PlatformAiConfig}) {
     {error && <p role="alert" className="text-sm text-red-400">{error}</p>}{notice && <p role="status" className="text-sm" style={{color: 'var(--success)'}}>{notice}</p>}
     <button className={buttonClass} style={fieldStyle}>{busy === 'save' ? '保存中…' : '保存模型配置'}</button>
     </fieldset>
-  </form>;
-}
-
-const channelFields: Record<ChannelKind, {name: string; config: Array<[string,string]>; secrets: Array<[string,string]>; hint: string}> = {
-  wecom: {name: '企业微信自建应用', config: [['corp_id','企业 ID'],['agent_id','Agent ID']], secrets: [['app_secret','应用 Secret'],['token','回调 Token'],['aes_key','EncodingAESKey']], hint: '使用应用的“接收消息”API 回调，支持成员单聊和应用主动通知。'},
-  qq: {name: 'QQ 官方机器人', config: [['app_id','App ID']], secrets: [['app_secret','App Secret']], hint: '使用官方 Webhook 回调，支持单聊和群内 @。主动通知受 QQ 平台权限与额度限制。'},
-  wechat: {name: '微信公众号', config: [['app_id','App ID']], secrets: [['app_secret','App Secret'],['token','回调 Token'],['aes_key','EncodingAESKey（加密模式填写）']], hint: '使用公众号消息回调与客服消息接口。客服回复受微信互动时限和账号权限限制。'},
-  webhook: {name: '通用 Webhook / 外部网关', config: [['outbound_url','回复接收地址']], secrets: [['signing_secret','HMAC 签名密钥（至少 32 字符）']], hint: '用于自有渠道适配器或外部消息网关；收发消息均使用时间戳和 HMAC 签名。'},
-};
-
-function AiChannels() {
-  const client = useQueryClient();
-  const query = useQuery({queryKey: ['platform-ai-channels'], queryFn: platformAiApi.channels});
-  const users = useQuery({queryKey: ['users'], queryFn: api.users.list});
-  const [selected, setSelected] = useState<AiChannel | null | undefined>(undefined);
-  const [channelId, setChannelId] = useState('');
-  const [externalId, setExternalId] = useState('');
-  const [userId, setUserId] = useState('');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  async function bind() {
-    setBusy(true); setError('');
-    try {await platformAiApi.saveBinding({channel_id: channelId, external_user_id: externalId.trim(), user_id: userId}); setExternalId(''); await client.invalidateQueries({queryKey: ['platform-ai-channels']});}
-    catch (failure) {setError(failure instanceof Error ? failure.message : '绑定失败');}
-    finally {setBusy(false);}
-  }
-  return <div className="space-y-6 p-5"><div className="flex items-center justify-between gap-3"><p className="text-sm" style={muted}>外部身份绑定到平台用户后，使用该用户的项目和工具权限。</p><button className={buttonClass + ' shrink-0'} style={fieldStyle} onClick={() => setSelected(null)}>添加渠道</button></div>
-    {(error || query.error || users.error) && <p role="alert" className="text-sm text-red-400">{error || query.error?.message || users.error?.message}</p>}
-    {query.data?.channels.map(channel => <div key={channel.id} className="rounded-lg border p-4" style={{borderColor: 'var(--border)'}}><div className="flex items-center justify-between gap-2"><div className="text-sm">{channel.name} <span className="text-xs" style={muted}>{channelFields[channel.kind].name} · {channel.enabled ? '已启用' : '未启用'}</span></div><button className="text-xs underline" onClick={() => setSelected(channel)}>编辑</button></div><div className="mt-2 break-all text-xs" style={muted}>回调路径：{channel.callback_path}</div></div>)}
-    {selected !== undefined && <ChannelForm key={selected?.id || 'new'} channel={selected || undefined} onClose={() => setSelected(undefined)} onSaved={() => {setSelected(undefined); void client.invalidateQueries({queryKey: ['platform-ai-channels']});}} />}
-    <section className="rounded-lg border p-4" style={{borderColor: 'var(--border)'}}><h3 className="mb-4 text-sm font-medium">外部用户映射</h3><form className="grid gap-3 sm:grid-cols-3" onSubmit={event => {event.preventDefault(); void bind();}}><label className="text-xs">渠道<select required aria-label="映射渠道" className={fieldClass + ' mt-2'} style={fieldStyle} value={channelId} onChange={event => setChannelId(event.target.value)}><option value="">请选择渠道</option>{query.data?.channels.map(channel => <option key={channel.id} value={channel.id}>{channel.name}</option>)}</select></label><label className="text-xs">外部用户 ID<input required maxLength={256} className={fieldClass + ' mt-2'} style={fieldStyle} value={externalId} onChange={event => setExternalId(event.target.value)} placeholder="成员 ID / OpenID / 网关用户 ID" /></label><label className="text-xs">平台用户<select required aria-label="映射平台用户" className={fieldClass + ' mt-2'} style={fieldStyle} value={userId} onChange={event => setUserId(event.target.value)}><option value="">请选择用户</option>{users.data?.users.filter(user => !user.disabled).map(user => <option key={user.id} value={user.id}>{user.display_name} (@{user.username})</option>)}</select></label><button disabled={busy} className={buttonClass + ' justify-self-start'} style={fieldStyle}>{busy ? '保存中…' : '保存用户映射'}</button></form><div className="mt-4 space-y-2">{query.data?.bindings.map(binding => <div key={binding.id} className="flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-xs" style={{borderColor: 'var(--border)'}}><span className="break-all">{query.data.channels.find(channel => channel.id === binding.channel_id)?.name} · {binding.external_user_id} → {binding.display_name || binding.username}</span><button className="underline" onClick={() => {void platformAiApi.deleteBinding(binding.id).then(() => client.invalidateQueries({queryKey: ['platform-ai-channels']})).catch(failure => setError(failure.message));}}>解除映射</button></div>)}</div></section>
-  </div>;
-}
-
-function ChannelForm({channel, onClose, onSaved}: {channel?: AiChannel; onClose: () => void; onSaved: () => void}) {
-  const [value, setValue] = useState<ChannelInput>({name: channel?.name || '', kind: channel?.kind || 'wecom', enabled: !!channel?.enabled, config: channel?.config || {}, secrets: {}});
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  const fields = channelFields[value.kind];
-  async function save() {
-    setBusy(true); setError('');
-    try {await platformAiApi.saveChannel(value, channel?.id); onSaved();}
-    catch (failure) {setError(failure instanceof Error ? failure.message : '保存失败');}
-    finally {setBusy(false);}
-  }
-  return <form aria-label="渠道配置" className="space-y-4 rounded-lg border p-4" style={{borderColor: 'var(--border)'}} onSubmit={event => {event.preventDefault(); void save();}}>
-    <div className="grid gap-4 sm:grid-cols-2"><label className="text-sm">渠道名称<input required className={fieldClass + ' mt-2'} style={fieldStyle} value={value.name} onChange={event => setValue({...value, name: event.target.value})} /></label><label className="text-sm">渠道类型<select aria-label="渠道类型" disabled={!!channel} className={fieldClass + ' mt-2'} style={fieldStyle} value={value.kind} onChange={event => setValue({...value, kind: event.target.value as ChannelKind, config: {}, secrets: {}})}>{Object.entries(channelFields).map(([kind,info]) => <option key={kind} value={kind}>{info.name}</option>)}</select></label></div>
-    <p className="text-xs leading-6" style={muted}>{fields.hint}</p>
-    <div className="grid gap-4 sm:grid-cols-2">{fields.config.map(([key,label]) => <label key={key} className="text-sm">{label}<input className={fieldClass + ' mt-2'} style={fieldStyle} value={value.config[key] || ''} onChange={event => setValue({...value, config: {...value.config, [key]: event.target.value}})} /></label>)}{fields.secrets.map(([key,label]) => <label key={key} className="text-sm">{label}<input type="password" autoComplete="new-password" className={fieldClass + ' mt-2'} style={fieldStyle} value={value.secrets[key] || ''} placeholder={channel?.secret_fields_configured.includes(key) ? '已配置，留空保留' : '输入凭据'} onChange={event => setValue({...value, secrets: {...value.secrets, [key]: event.target.value}})} /></label>)}</div>
-    <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={value.enabled} onChange={event => setValue({...value, enabled: event.target.checked})} />启用此渠道</label>
-    {error && <p role="alert" className="text-sm text-red-400">{error}</p>}<div className="flex gap-2"><button disabled={busy} className={buttonClass} style={fieldStyle}>{busy ? '保存中…' : '保存渠道'}</button><button type="button" className={buttonClass} style={fieldStyle} onClick={onClose}>取消</button></div>
   </form>;
 }

@@ -412,14 +412,23 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
       const conversation = getConversation(item.conversation_id);
       if (!conversation) return;
       this.assertConversation(conversation);
-      if (conversation.channel_id) {
+      if (conversation.channel_id || item.destination_channel_id) {
         // Revocation of session access also revokes pending task notifications.
         const task = item.dedupe_key.startsWith('task:') ? getDb().prepare('SELECT session_id FROM platform_ai_tasks WHERE id=?').get(item.dedupe_key.split(':')[1]) as {session_id: string} | undefined : undefined;
         if (task) {
           const session = getDb().prepare('SELECT mode,cli_type FROM sessions WHERE id=?').get(task.session_id) as {mode: string; cli_type: string} | undefined;
           if (!session || !userCanUseSessionTool(conversation.user_id, task.session_id, session.cli_type === 'codex' ? 'codex' : 'claude', session.mode === 'terminal' ? 'terminal' : 'session')) throw new ChannelError('任务访问权限已失效', 403, true);
         }
-        await deliverMessage(getChannel(conversation.channel_id)!, conversation.external_chat_id, conversation.external_user_id, item.content, JSON.parse(item.reply_context), item.id, this.abort.signal);
+        const destination = item.destination_channel_id || conversation.channel_id;
+        const channel = getChannel(destination);
+        if (!channel) throw new ChannelError('通知渠道不存在', 403, true);
+        if (item.destination_channel_id) {
+          const subscription = getDb().prepare('SELECT 1 FROM platform_ai_notification_targets WHERE channel_id=? AND user_id=?').get(destination, conversation.user_id);
+          if (!subscription || channel.kind !== 'wecom_webhook') throw new ChannelError('通知订阅已取消', 403, true);
+        }
+        // Task notices are active messages, never updates to a user's still-open reply stream.
+        const context = channel.kind === 'wecom_bot' && !item.dedupe_key.startsWith('reply:') ? {} : JSON.parse(item.reply_context);
+        await deliverMessage(channel, conversation.external_chat_id, conversation.external_user_id, item.content, context, item.id, this.abort.signal);
       }
       getDb().prepare("UPDATE platform_ai_outbox SET status='sent',error=NULL,lease_until=0 WHERE id=?").run(item.id);
     } catch (error) {

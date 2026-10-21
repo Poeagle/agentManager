@@ -6,7 +6,7 @@ import { migrateRbac } from '../services/rbac.js';
 import { migratePlatformAi } from '../services/platform-ai/schema.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -387,9 +387,14 @@ function runMigrations(): void {
     }
     migratePlatformAi(db);
     createCurrentIndexes();
+    if ((db.pragma('foreign_key_check') as unknown[]).length) throw new Error('Foreign key validation failed after migration');
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
   });
-  migrate();
+  // SQLite cannot change a table CHECK constraint in place. Disable FK actions
+  // outside the transaction while v16 rebuilds the channel parent, validate
+  // references before commit, and always restore enforcement.
+  if (current < 16) db.pragma('foreign_keys = OFF');
+  try { migrate(); } finally { db.pragma('foreign_keys = ON'); }
 }
 
 function backupBeforeMigration(): string {
