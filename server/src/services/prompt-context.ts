@@ -1,6 +1,7 @@
 import { access, open, readdir, stat } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
+import { createHash } from 'crypto';
 import { resolveClaudeDir } from './claude-history.js';
 import { NATIVE_SESSION_ID_RE, type CliType } from './session-identity.js';
 
@@ -30,12 +31,13 @@ export function extractAgentMessages(entries: Iterable<unknown>, kind: CliType):
     // Goal/automation continuation is internal scheduling metadata, not a new
     // human request. Keep the original task association across these turns.
     if (role === 'user' && kind === 'codex' && isCodexContinuation(text)) return;
-    if (role === 'user') taskReference = /\[Platform task reference: ([A-Za-z0-9_-]+)\]/.exec(text)?.[1] || null;
     const last = messages.at(-1);
     if (last?.role === role && last.text === text) {
       if (phase === 'final') last.phase = phase;
       return;
     }
+    if (role === 'user') taskReference = /\[Platform task reference: ([A-Za-z0-9_-]+)\]/.exec(text)?.[1]
+      || 'native:' + createHash('sha256').update(JSON.stringify([timestamp || null,text])).digest('hex').slice(0,40);
     messages.push({role, phase, text: clipped(text), timestamp: typeof timestamp === 'string' ? timestamp : null, task_reference: taskReference});
   };
   for (const entry of entries) {
@@ -310,10 +312,15 @@ export async function loadRecentAgentMessages(session: PromptContextSession): Pr
       if (dir) file = join(dir, `${session.claude_session_id}.jsonl`);
     }
     if (!file) return [];
-    const {entries} = await relevantTailEntries(file, kind, CONTEXT_TAIL_BUDGETS[0]);
+    let messages: AgentTextMessage[] = [];
+    for (const budget of CONTEXT_TAIL_BUDGETS) {
+      const {entries,reachedStart} = await relevantTailEntries(file, kind, budget);
+      messages = extractAgentMessages(entries, kind);
+      if (messages.some(message => message.role === 'user') || reachedStart) break;
+    }
     const selected: AgentTextMessage[] = [];
     let remaining = MAX_PROMPT_CONTEXT_CHARS;
-    for (const message of extractAgentMessages(entries, kind).reverse()) {
+    for (const message of messages.reverse()) {
       if (selected.length >= 30 || remaining <= 0) break;
       const text = message.text.slice(-remaining);
       selected.push({...message, text});

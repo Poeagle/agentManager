@@ -419,6 +419,24 @@ describe('durable platform AI tool execution', () => {
 });
 
 describe('session observation and notification reliability', () => {
+  it('subscribes to a busy terminal native request without sending input and notifies on its matching final reply', async () => {
+    configure();seedSession();getDb().prepare("UPDATE sessions SET mode='terminal' WHERE id='session-1'").run();
+    const received=inbound('这个任务完成通知我');const conversation=getConversation(received.conversation_id)!;
+    display={cursor:6,output:'tool output is not sent',processState:'busy',promptType:null};
+    nativeMessages=[{role:'user',phase:'user',text:'修复 OPS-779 并部署',timestamp:'2026-10-21T09:00:00Z',task_reference:'native:request-one'},
+      {role:'assistant',phase:'commentary',text:'正在部署',timestamp:'2026-10-21T09:34:00Z',task_reference:'native:request-one'}];
+    const subscription=await executePlatformTool(app,conversation,'track_session',JSON.stringify({session_id:'session-1',requirement:'修复 OPS-779 并部署完成后通知'}),'subscribe');
+    expect(subscription.monitoring).toBe(true);expect(executeRequests).toHaveLength(0);
+    const task=getDb().prepare('SELECT * FROM platform_ai_tasks WHERE id=?').get(subscription.task_id) as any;
+    expect(task.source_ref).toBe('native:request-one');
+    display.processState='idle';
+    nativeMessages.push({role:'assistant',phase:'final',text:'OPS-779 已修复并部署，线上健康检查通过。',timestamp:'2026-10-21T09:45:00Z',task_reference:'native:request-one'});
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'reported_complete',summary:'Agent 已报告完成部署',evidence:'OPS-779 已修复并部署'})})));
+    await worker.observe(task,readAiConfig(),true);
+    expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'reported_complete'});
+    expect((getDb().prepare("SELECT content FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get() as {content:string}).content).toContain('OPS-779 已修复并部署，线上健康检查通过。');
+    expect(executeRequests).toHaveLength(0);expect(getDb().prepare('SELECT COUNT(*) AS n FROM scheduled_tasks').get()).toEqual({n:0});
+  });
   it('promptly forwards a matched native blocked reply even while Codex automatically continues and stays busy', async () => {
     configure();seedSession();const received=inbound();
     let task=trackTask(getConversation(received.conversation_id)!,'session-1','查看未完成 Jira',0,'auto-goal');

@@ -43,7 +43,7 @@ export const PLATFORM_TOOLS: ModelTool[] = [
   { type: 'function', function: { name: 'platform_request', description: 'Call a catalog endpoint as the current platform user. Read endpoint parameters first. New work and sending input use start_work/send_to_session.', parameters: objectParams({ endpoint_id: stringParam, path_params: { type: 'object', additionalProperties: { type: 'string' } }, query: { type: 'object', additionalProperties: { type: 'string' } }, body: { type: 'object', additionalProperties: true } }, ['endpoint_id']) } },
   { type: 'function', function: { name: 'start_work', description: 'Forward the original user request verbatim into a new Codex/Claude project tab and register observation. Uses the same permissions and tab limits as manual tab creation; other busy tabs in the project do not block creation.', parameters: objectParams({ project_id: stringParam, requirement: stringParam, cli_type: { type: 'string', enum: ['codex', 'claude'] }, attachment_ids: attachmentParam, source_message_ids: sourceMessagesParam }, ['project_id', 'requirement', 'cli_type']) } },
   { type: 'function', function: { name: 'send_to_session', description: 'Forward original user text verbatim to the selected ready tab and track its result. Only the selected tab must be ready; other busy tabs do not block it.', parameters: objectParams({ session_id: stringParam, instruction: stringParam, attachment_ids: attachmentParam, source_message_ids: sourceMessagesParam }, ['session_id', 'instruction']) } },
-  { type: 'function', function: { name: 'track_session', description: 'Observe an existing accessible session from its current output position. Does not send input or restart the agent.', parameters: objectParams({ session_id: stringParam, requirement: stringParam }, ['session_id', 'requirement']) } },
+  { type: 'function', function: { name: 'track_session', description: 'Subscribe to results/questions from the current agent request in an accessible tab, INCLUDING terminal tabs with bound Codex/Claude. Read-only observation: never sends prompts, creates tabs or schedules, or restarts work. Use when the user asks to be notified on completion.', parameters: objectParams({ session_id: stringParam, requirement: stringParam }, ['session_id', 'requirement']) } },
   { type: 'function', function: { name: 'list_tracked_tasks', description: 'Read current user task progress, summaries and completion evidence.', parameters: objectParams({}) } },
 ];
 
@@ -238,10 +238,18 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
       : z.object({ session_id: z.string().min(1), requirement: z.string().trim().min(1).max(24000) }).strict().parse(args);
     const sessionId = input.session_id;
     const { session } = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(sessionId)}`);
-    if (session.mode === 'terminal') throw new Error('平台 AI 开发任务需要选择 Codex/Claude Session');
     const display = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(sessionId)}/display?lines=100`);
     const requirement = 'instruction' in input ? originalRequest(input.instruction, input.source_message_ids) : input.requirement;
-    if (name === 'track_session') return trackTask(conversation, sessionId, requirement, Number(display.cursor) || 0);
+    if (name === 'track_session') {
+      const native = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(sessionId)}/agent-messages`);
+      const reference = [...(native.messages || [])].reverse().find(message => message.task_reference)?.task_reference;
+      if (!reference) throw new Error('尚未读取到该标签当前 Agent 请求的原生记录，暂时无法绑定完成通知；不会向标签发送指令');
+      const task = trackTask(conversation, sessionId, requirement, Number(display.cursor) || 0, reference);
+      // An older observation without a native binding can be upgraded safely.
+      if (!task.source_ref) getDb().prepare('UPDATE platform_ai_tasks SET source_ref=?,next_observe_at=0 WHERE id=?').run(reference,task.id);
+      return {task_id:task.id,session_id:sessionId,...sessionPresenter(userId)(session),monitoring:true};
+    }
+    if (session.mode === 'terminal') throw new Error('向已有终端发送开发指令需要选择 Codex/Claude Session；只读跟踪可使用 track_session');
     const state = getTracker(sessionId);
     if (display.processState === 'busy' || state?.hasPendingExecute) throw new Error('目标会话正在执行，请稍后再发送');
     if (display.promptType === 'confirmation' || display.promptType === 'choice' || state?.state.isPermission) throw new Error('目标会话等待交互确认，请用户在平台查看并处理后继续');

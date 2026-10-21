@@ -31,7 +31,7 @@ describe('prompt enhancement conversation context', () => {
     expect(extractCodexPromptContext(entries,1)).toEqual([{user:prompt,assistant:'任务受阻，请提供 Jira 项目或筛选器链接。'}]);
     // A genuine new human prompt breaks the old task association.
     const next=[...entries,{type:'event_msg',payload:{type:'user_message',message:'改查别的项目'}},{type:'event_msg',payload:{type:'task_complete',last_agent_message:'新请求的答复'}}];
-    expect(extractAgentMessages(next,'codex').at(-1)?.task_reference).toBeNull();
+    expect(extractAgentMessages(next,'codex').at(-1)?.task_reference).toMatch(/^native:/);
     expect(extractCodexPromptContext(next,1)).toEqual([{user:'改查别的项目',assistant:'新请求的答复'}]);
   });
   it('extracts Codex progress and final messages while excluding tools, reasoning and duplicate event records', () => {

@@ -273,7 +273,7 @@ export class PlatformAiWorker {
         }
         // Dispatch receipts are facts from completed tool operations. Avoid a
         // second model pass inventing workflow explanations or follow-up plans.
-        if (pendingCalls.length && pendingCalls.every(call => ['start_work','send_to_session'].includes(call.function.name))) {
+        if (pendingCalls.length && pendingCalls.every(call => ['start_work','send_to_session','track_session'].includes(call.function.name))) {
           const receipts: string[] = [];
           for (const call of pendingCalls) {
             const toolReply = messages.find(item => item.role === 'tool' && item.tool_call_id === call.id);
@@ -283,7 +283,7 @@ export class PlatformAiWorker {
             const session = getSession(result.session_id);
             const label = session ? sessionPresenter(conversation.user_id)(session) : result;
             const location = [label.project_name, label.tab_name || label.display_name].filter(Boolean).join(' / ') || '目标标签页';
-            receipts.push(call.function.name === 'start_work' ? `已在「${location}」新建任务。` : `已转发到「${location}」。`);
+            receipts.push(call.function.name === 'start_work' ? `已在「${location}」新建任务。` : call.function.name === 'track_session' ? `已关注「${location}」，有结果会通知你。` : `已转发到「${location}」。`);
           }
           if (receipts.length === pendingCalls.length) {
             const content = receipts.join('\n');
@@ -372,6 +372,7 @@ export class PlatformAiWorker {
       getDb().prepare(`UPDATE platform_ai_tasks SET cursor=?,output=?,last_fingerprint=?,observation_failures=0 WHERE id=?`)
         .run(cursor, output, fingerprint, task.id);
       const readFinal = async () => {
+        if (task.source_ref.startsWith('native:')) return '';
         const native = await platformApi(this.app, task.user_id, 'GET', `/api/sessions/${encodeURIComponent(task.session_id)}/completed-turn`);
         const matching = Array.isArray(native.turns) ? native.turns.find((turn: any) => typeof turn.user === 'string' && turn.user.includes(`[Platform task reference: ${task.source_ref}]`)) : undefined;
         return typeof matching?.assistant === 'string' ? matching.assistant as string : '';
@@ -386,7 +387,7 @@ export class PlatformAiWorker {
       let start = -1;
       if (task.source_ref) {
         for (let index = messages.length - 1; index >= 0; index--) {
-          if (messages[index].role === 'user' && messages[index].text.includes(`[Platform task reference: ${task.source_ref}]`)) { start = index; break; }
+          if (messages[index].role === 'user' && (messages[index].task_reference === task.source_ref || messages[index].text.includes(`[Platform task reference: ${task.source_ref}]`))) { start = index; break; }
         }
       }
       const current = task.source_ref
