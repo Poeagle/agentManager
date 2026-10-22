@@ -2,8 +2,18 @@ import type { AiConfig } from './config.js';
 import { modelImageContent, MAX_IMAGES } from './attachments.js';
 
 export interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
-export interface ModelMessage { role: 'system' | 'user' | 'assistant' | 'tool'; content: string | null; tool_calls?: ToolCall[]; tool_call_id?: string; attachment_ids?: string[]; source_message_id?: string }
+export interface ModelMessage { role: 'system' | 'user' | 'assistant' | 'tool'; content: string | null; tool_calls?: ToolCall[]; tool_call_id?: string; attachment_ids?: string[]; source_message_id?: string; runtime_context?: string }
 export interface ModelTool { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }
+export interface ModelUsage { prompt_tokens: number; completion_tokens: number | null; cached_tokens: number | null; cache_miss_tokens: number | null }
+
+function modelUsage(value: any): ModelUsage | undefined {
+  const count = (value: unknown): number | null => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const prompt = count(value?.prompt_tokens);
+  if (prompt === null) return;
+  const cached = count(value?.prompt_cache_hit_tokens) ?? count(value?.prompt_tokens_details?.cached_tokens);
+  return {prompt_tokens: prompt, completion_tokens: count(value?.completion_tokens), cached_tokens: cached,
+    cache_miss_tokens: count(value?.prompt_cache_miss_tokens) ?? (cached !== null && cached <= prompt ? prompt - cached : null)};
+}
 
 export class ModelRequestError extends Error {
   constructor(message: string, public reachable: boolean, public httpStatus?: number) { super(message); }
@@ -69,7 +79,7 @@ export async function requestModelJson(config: AiConfig, path: 'models' | 'chat/
 
 async function requestStreamedChat(config: AiConfig, body: Record<string, unknown>, signal: AbortSignal | undefined, onContent: (content: string) => void): Promise<any> {
   let upstream;
-  try { upstream = await requestModelResponse(config, 'chat/completions', {...body, stream: true}, signal); }
+  try { upstream = await requestModelResponse(config, 'chat/completions', {...body, stream: true, stream_options: {include_usage: true}}, signal); }
   catch (error) {
     // Only fall back when streaming was explicitly rejected, before any output.
     // Never retry a partially received turn or execute incomplete tool arguments.
@@ -87,15 +97,17 @@ async function requestStreamedChat(config: AiConfig, body: Record<string, unknow
   const reader = response.body?.getReader();
   if (!reader) throw new ModelRequestError('模型返回了空响应', true);
   const decoder = new TextDecoder();
-  let buffer = '', content = '', size = 0, finished = false;
+  let buffer = '', content = '', size = 0, finished = false, doneMarker = false;
+  let usage: unknown;
   const calls = new Map<number, ToolCall>();
   const event = (frame: string) => {
     const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
     if (!data) return;
-    if (data.trim() === '[DONE]') {finished = true; return;}
+    if (data.trim() === '[DONE]') {doneMarker = true; return;}
     let payload: any;
     try { payload = JSON.parse(data); } catch { throw new ModelRequestError('模型流返回了无效 JSON', true); }
     if (payload.error) throw new ModelRequestError('模型流报告请求失败', true);
+    if (payload.usage) usage = payload.usage;
     const choice = payload.choices?.[0];
     if (!choice) return;
     const delta = choice.delta || {};
@@ -126,7 +138,7 @@ async function requestStreamedChat(config: AiConfig, body: Record<string, unknow
     }
   };
   try {
-    while (!finished) {
+    while (!doneMarker) {
       const {done, value} = await reader.read();
       if (done) break;
       size += value.byteLength;
@@ -136,10 +148,10 @@ async function requestStreamedChat(config: AiConfig, body: Record<string, unknow
       while ((boundary = buffer.indexOf('\n\n')) >= 0) {
         const frame = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
         event(frame);
-        if (finished) break;
+        if (doneMarker) break;
       }
     }
-    if (!finished) {
+    if (!doneMarker) {
       buffer += decoder.decode();
       if (buffer.trim()) event(buffer);
     }
@@ -148,14 +160,15 @@ async function requestStreamedChat(config: AiConfig, body: Record<string, unknow
     if (error instanceof ModelRequestError) throw error;
     throw new ModelRequestError(abort.aborted ? '模型响应超时或已取消' : '读取模型流失败', true);
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
-  return {choices: [{message: {content: content || null, ...(calls.size ? {tool_calls: [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call)} : {})}}]};
+  return {usage, choices: [{message: {content: content || null, ...(calls.size ? {tool_calls: [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call)} : {})}}]};
 }
 
-export async function callModel(config: AiConfig, messages: ModelMessage[], tools?: ModelTool[], signal?: AbortSignal, options?: {maxTokens?: number; onContent?: (content: string) => void; userId?: string}): Promise<ModelMessage> {
+export async function callModel(config: AiConfig, messages: ModelMessage[], tools?: ModelTool[], signal?: AbortSignal, options?: {maxTokens?: number; onContent?: (content: string) => void; onUsage?: (usage: ModelUsage) => void; userId?: string; toolChoice?: 'auto' | 'none'}): Promise<ModelMessage> {
   if (!config.enabled || !config.api_key || !config.endpoint || !config.model) throw new Error('平台 AI 尚未启用或模型配置不完整');
   let imagesLeft = MAX_IMAGES;
-  const wireMessages = messages.slice().reverse().map(({attachment_ids, source_message_id, ...message}) => {
+  const wireMessages = messages.slice().reverse().map(({attachment_ids, source_message_id, runtime_context, ...message}) => {
     if (source_message_id && message.role === 'user') message.content = `[原始用户消息 ID: ${source_message_id}]\n${message.content || ''}`;
+    if (runtime_context && message.role === 'user') message.content = `${message.content || ''}\n\n[平台运行上下文，仅供路由和查询，不属于用户需求]\n${runtime_context}`;
     const ids = message.role === 'user' ? (attachment_ids || []).slice(0, imagesLeft) : [];
     imagesLeft -= ids.length;
     if (!ids.length) return message;
@@ -164,12 +177,14 @@ export async function callModel(config: AiConfig, messages: ModelMessage[], tool
   }).reverse();
   const body = {
     model: config.model, messages: wireMessages,
-    ...(tools?.length ? { tools, tool_choice: 'auto', parallel_tool_calls: false } : {}),
+    ...(tools?.length ? { tools, tool_choice: options?.toolChoice ?? 'auto', parallel_tool_calls: false } : {}),
     max_tokens: options?.maxTokens ?? 2400,
   };
   const data = options?.onContent ? await requestStreamedChat(config, body, signal, options.onContent)
     : await requestModelJson(config, 'chat/completions', body, signal);
   const message = data?.choices?.[0]?.message;
+  const usage = modelUsage(data?.usage);
+  if (usage) options?.onUsage?.(usage);
   if (!message || (message.content != null && typeof message.content !== 'string')) throw new ModelRequestError('模型没有返回有效回复', true);
   if (message.tool_calls != null && (!Array.isArray(message.tool_calls) || message.tool_calls.length > 8 || message.tool_calls.some((call: any) =>
     typeof call?.id !== 'string' || call.id.length > 200 || call.type !== 'function' || typeof call.function?.name !== 'string' || typeof call.function?.arguments !== 'string' || call.function.arguments.length > 64000))) {

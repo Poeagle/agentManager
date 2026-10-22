@@ -99,6 +99,12 @@ export function migratePlatformAi(db: Database.Database): void {
     bytes INTEGER NOT NULL DEFAULT 0, data BLOB, error TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')));
     CREATE INDEX IF NOT EXISTS idx_platform_ai_attachments_message ON platform_ai_attachments(message_id);`);
+  // CREATE TABLE IF NOT EXISTS does not repair an already-created table.
+  // Run on every startup, including databases already at the current version.
+  const watchColumns = db.prepare('PRAGMA table_info(platform_ai_project_notification_watches)').all() as Array<{name: string}>;
+  if (watchColumns.length && !watchColumns.some(column => column.name === 'rechecks')) {
+    db.exec('ALTER TABLE platform_ai_project_notification_watches ADD COLUMN rechecks INTEGER NOT NULL DEFAULT 0');
+  }
   const outboxColumns = db.prepare('PRAGMA table_info(platform_ai_outbox)').all() as Array<{name: string}>;
   if (!outboxColumns.some(column => column.name === 'destination_channel_id')) {
     db.exec('ALTER TABLE platform_ai_outbox ADD COLUMN destination_channel_id TEXT REFERENCES platform_ai_channels(id) ON DELETE SET NULL');

@@ -138,7 +138,8 @@ describe('WeCom image and mixed-message ingestion', () => {
       const body = JSON.parse(String(options?.body));
       if (body.messages.some((message: any) => Array.isArray(message.content))) return new Response('{}', {status: 400});
       textCalls++;
-      expect(body.messages[0].content).toContain('不得猜测图片内容');
+      expect(body.messages.at(-1).content).toContain('不得猜测图片内容');
+      expect(body.messages[0].content).not.toContain('当前模型接口拒绝图片输入');
       return new Response(JSON.stringify({choices: [{message: {role: 'assistant', content: '原图已保存，可交给工作 Agent 查看。'}}]}), {status: 200});
     }));
     send({...inbound('image-only'), body: {...inbound('image-only').body, msgtype: 'image', text: undefined, image: image.source}} as any);

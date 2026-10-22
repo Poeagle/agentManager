@@ -14,6 +14,27 @@ const streamed = (text: string, fragment = false) => new Response(new ReadableSt
 afterEach(() => vi.unstubAllGlobals());
 
 describe('streamed platform model replies', () => {
+  it('reads usage after finish_reason, including a separate usage-only chunk', async () => {
+    const usage={prompt_tokens:1000,completion_tokens:20,prompt_cache_hit_tokens:896,prompt_cache_miss_tokens:104};
+    const onUsage=vi.fn();
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(streamed(frame({content:'完成'},'stop') + `data: ${JSON.stringify({choices:[],usage})}\n\n` + 'data: [DONE]\n\n',true)));
+    expect((await callModel(config,messages,undefined,undefined,{onContent:()=>{},onUsage})).content).toBe('完成');
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith({prompt_tokens:1000,completion_tokens:20,cached_tokens:896,cache_miss_tokens:104});
+  });
+  it('captures usage from the final content chunk and from JSON providers', async () => {
+    const usage={prompt_tokens:1000,completion_tokens:20,prompt_tokens_details:{cached_tokens:768}};
+    const onUsage=vi.fn();
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(streamed(`data: ${JSON.stringify({choices:[{delta:{content:'完成'},finish_reason:'stop'}],usage})}\n\n`))
+      .mockResolvedValueOnce(new Response(JSON.stringify({choices:[{message:{content:'完成'}}],usage}))));
+    await callModel(config,messages,undefined,undefined,{onContent:()=>{},onUsage});
+    await callModel(config,messages,undefined,undefined,{onUsage});
+    expect(onUsage).toHaveBeenCalledTimes(2);
+    expect(onUsage).toHaveBeenLastCalledWith({prompt_tokens:1000,completion_tokens:20,cached_tokens:768,cache_miss_tokens:232});
+  });
+  it('does not accept DONE as proof that incomplete tool arguments finished', async () => {
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(streamed(frame({tool_calls:[{index:0,id:'x',type:'function',function:{name:'start_work',arguments:'{'}}]})+'data: [DONE]\n\n')));
+    await expect(callModel(config,messages,undefined,undefined,{onContent:()=>{}})).rejects.toThrow('提前断开');
+  });
   it('publishes visible text before the response finishes and handles split Unicode/CRLF frames', async () => {
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     const response = new Response(new ReadableStream<Uint8Array>({start(value) {controller = value;}}),{headers:{'Content-Type':'text/event-stream'}});

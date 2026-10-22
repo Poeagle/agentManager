@@ -1,3 +1,4 @@
+import { compactConversation, completedConversation } from './context.js';
 import { reconcileScheduledObservations } from './scheduled-observation.js';
 import type { FastifyInstance } from 'fastify';
 import { createHash } from 'crypto';
@@ -82,6 +83,7 @@ export class PlatformAiWorker {
   private lastObservations = new Map<string, number>();
   private urgentObservations = new Set<string>();
   private nativeRechecks = new Map<string, number>();
+  private queueErrors = new Map<string, number>();
 
   constructor(private app: FastifyInstance) {}
 
@@ -131,6 +133,17 @@ export class PlatformAiWorker {
     this.pending.add(pending);
   }
 
+  private runQueueStep(component: string, work: () => void): void {
+    try { work(); this.queueErrors.delete(component); }
+    catch (error) {
+      const now = Date.now();
+      if (!this.queueErrors.has(component) || now - this.queueErrors.get(component)! >= 60000) {
+        this.app.log.error({component, error: publicFailure(error)}, 'Platform AI queue component failed; other queues continue');
+        this.queueErrors.set(component, now);
+      }
+    }
+  }
+
   tick(): void {
     if (this.stopped) return;
     let config: AiConfig;
@@ -138,7 +151,7 @@ export class PlatformAiWorker {
     if (!config.enabled) return;
     this.observationIntervalMs = config.observation_interval_seconds * 1000;
     const now = Date.now();
-    reconcileScheduledObservations();
+    this.runQueueStep('scheduled-observations', () => reconcileScheduledObservations());
     if (now - this.lastLeaseSweep > 30000) {
       this.lastLeaseSweep = now;
       getDb().prepare("UPDATE platform_ai_messages SET status='queued' WHERE status='processing' AND lease_until<?").run(now);
@@ -150,30 +163,36 @@ export class PlatformAiWorker {
         for (const id of this.nativeRechecks.keys()) if (!active.has(id)) this.nativeRechecks.delete(id);
       }
     }
-    while (this.messages.size < 2) {
-      const message = claimMessage(now, (config.timeout_ms + 30000) * (config.max_tool_rounds + 2));
-      if (!message) break;
-      this.messages.add(message.id);
-      this.launch(this.processMessage(message, config), () => this.messages.delete(message.id));
-    }
-    const tasks = getDb().prepare(`SELECT * FROM platform_ai_tasks WHERE status IN ('running','blocked','uncertain') AND next_observe_at<=? ORDER BY next_observe_at,rowid LIMIT 10`)
-      .all(now) as TrackedTask[];
-    for (const task of tasks) {
-      if (this.observations.size >= 2) break;
-      if (this.observations.has(task.id)) continue;
-      this.observations.add(task.id);
-      if (this.lastObservations.size > 1000) this.lastObservations.clear();
-      this.lastObservations.set(task.id, now);
-      const urgent = this.urgentObservations.delete(task.id);
-      this.launch(this.observe(task, config, urgent), () => this.observations.delete(task.id));
-    }
-    const outbox = getDb().prepare(`SELECT * FROM platform_ai_outbox WHERE status='pending' AND available_at<=? ORDER BY rowid LIMIT 10`).all(now) as any[];
-    for (const item of outbox) {
-      if (this.deliveries.size >= 2) break;
-      if (this.deliveries.has(item.id)) continue;
-      this.deliveries.add(item.id);
-      this.launch(this.deliver(item), () => this.deliveries.delete(item.id));
-    }
+    this.runQueueStep('messages', () => {
+      while (this.messages.size < 2) {
+        const message = claimMessage(now, (config.timeout_ms + 30000) * (config.max_tool_rounds + 2));
+        if (!message) break;
+        this.messages.add(message.id);
+        this.launch(this.processMessage(message, config), () => this.messages.delete(message.id));
+      }
+    });
+    this.runQueueStep('observations', () => {
+      const tasks = getDb().prepare(`SELECT * FROM platform_ai_tasks WHERE status IN ('running','blocked','uncertain') AND next_observe_at<=? ORDER BY next_observe_at,rowid LIMIT 10`)
+        .all(now) as TrackedTask[];
+      for (const task of tasks) {
+        if (this.observations.size >= 2) break;
+        if (this.observations.has(task.id)) continue;
+        this.observations.add(task.id);
+        if (this.lastObservations.size > 1000) this.lastObservations.clear();
+        this.lastObservations.set(task.id, now);
+        const urgent = this.urgentObservations.delete(task.id);
+        this.launch(this.observe(task, config, urgent), () => this.observations.delete(task.id));
+      }
+    });
+    this.runQueueStep('deliveries', () => {
+      const outbox = getDb().prepare(`SELECT * FROM platform_ai_outbox WHERE status='pending' AND available_at<=? ORDER BY rowid LIMIT 10`).all(now) as any[];
+      for (const item of outbox) {
+        if (this.deliveries.size >= 2) break;
+        if (this.deliveries.has(item.id)) continue;
+        this.deliveries.add(item.id);
+        this.launch(this.deliver(item), () => this.deliveries.delete(item.id));
+      }
+    });
   }
 
   /** Useful for isolated integrations; each lane remains independent in normal operation. */
@@ -250,18 +269,25 @@ export class PlatformAiWorker {
       }
       const history = JSON.parse(conversation.context) as ModelMessage[];
       let messages = JSON.parse(message.checkpoint) as ModelMessage[];
-      if (!messages.length) messages = [...history.slice(-20), userMessage(message)];
+      if (!messages.length) {
+        const tasks = getDb().prepare('SELECT id,session_id,status,summary FROM platform_ai_tasks WHERE conversation_id=? ORDER BY rowid DESC LIMIT 5').all(conversation.id);
+        const current = {...userMessage(message), runtime_context: `当前时间：${new Date().toISOString()}\n本对话近期任务：${JSON.stringify(tasks)}`};
+        messages = [...compactConversation(history), current];
+        // Persist the timestamp and snapshot once: retries reuse identical input.
+        this.checkpoint(message.id, messages);
+      }
+      const turnStart = messages.map(item => item.role).lastIndexOf('user');
       let visionUnavailable = false;
       const savedFinal = messages.at(-1);
       if (savedFinal?.role === 'assistant' && !savedFinal.tool_calls?.length && savedFinal.content?.trim()) {
-        this.finishMessage(message, conversation, history, savedFinal.content.trim());
+        this.finishMessage(message, conversation, messages, savedFinal.content.trim());
         return;
       }
-      let usedToolRounds = messages.filter(item => item.role === 'assistant' && item.tool_calls?.length).length;
+      let usedToolRounds = messages.slice(turnStart).filter(item => item.role === 'assistant' && item.tool_calls?.length).length;
       for (let round = 0; round <= config.max_tool_rounds; round++) {
         // Resume a checkpoint containing unanswered tool calls before asking the model again.
         const lastAssistant = messages.map(item => item.role).lastIndexOf('assistant');
-        const pendingCalls = lastAssistant >= 0 ? messages[lastAssistant].tool_calls || [] : [];
+        const pendingCalls = lastAssistant > turnStart ? messages[lastAssistant].tool_calls || [] : [];
         const answered = new Set(messages.slice(lastAssistant + 1).map(item => item.tool_call_id));
         for (const call of pendingCalls) {
           if (answered.has(call.id)) continue;
@@ -289,20 +315,22 @@ export class PlatformAiWorker {
             const content = receipts.join('\n');
             messages.push({role:'assistant',content});
             this.checkpoint(message.id, messages);
-            this.finishMessage(message, conversation, history, content);
+            this.finishMessage(message, conversation, messages, content);
             return;
           }
         }
         const toolsAllowed = usedToolRounds < config.max_tool_rounds;
-        const tasks = getDb().prepare('SELECT id,session_id,status,summary FROM platform_ai_tasks WHERE conversation_id=? ORDER BY rowid DESC LIMIT 5').all(conversation.id);
         progress(round ? '正在整理工具结果并生成回复…' : '正在等待模型回复…', '');
         let partial = '', lastFlush = 0;
         const onContent = (content: string) => {
           partial = content.slice(0, 16000);
           if (Date.now() - lastFlush >= 100) {progress('正在生成回复…', partial); lastFlush = Date.now();}
         };
-        const ask = () => callModel(config, [{ role: 'system', content: PLATFORM_SYSTEM_PROMPT + `\n当前时间：${new Date().toISOString()}\n本对话近期任务：${JSON.stringify(tasks)}` + (visionUnavailable ? '\n当前模型接口拒绝图片输入。图片已保存在附件中；明确告诉用户当前不能识图，不得猜测图片内容。如用户要求开发，可把附件交给工作 Agent。' : '') },
-          ...messages.map(message => visionUnavailable ? {...message, attachment_ids: undefined} : message)], toolsAllowed ? PLATFORM_TOOLS : undefined, this.abort.signal, {userId: conversation.user_id, onContent});
+        const ask = () => callModel(config, [{role: 'system', content: PLATFORM_SYSTEM_PROMPT},
+          ...messages.map(message => visionUnavailable ? {...message, attachment_ids: undefined} : message),
+          ...(visionUnavailable ? [{role: 'user' as const, content: '[平台提示] 当前模型接口拒绝图片输入。图片已保存在附件中；明确告诉用户当前不能识图，不得猜测图片内容。如用户要求开发，可把附件交给工作 Agent。'}] : [])],
+          PLATFORM_TOOLS, this.abort.signal, {userId: conversation.user_id, onContent, toolChoice: toolsAllowed ? 'auto' : 'none',
+            onUsage: usage => this.app.log.info({conversation_id: conversation.id, message_id: message.id, kind: 'conversation', model: config.model, ...usage}, 'Platform AI model usage')});
         let response: ModelMessage;
         try {response = await ask();}
         catch (error) {
@@ -320,11 +348,11 @@ export class PlatformAiWorker {
         messages.push(response);
         this.checkpoint(message.id, messages);
         if (response.tool_calls?.length) continue;
-        const calls = messages.flatMap(item => item.tool_calls || []);
+        const calls = messages.slice(turnStart).flatMap(item => item.tool_calls || []);
         const statusQuery = calls.some(call => ['list_project_tabs','read_tab'].includes(call.function.name))
           && calls.every(call => !isMutatingTool(call.function.name, call.function.arguments));
         const content = statusQuery ? response.content!.trim().replace(/\n\s*\n(?:需要我|要不要我|你需要我)[^\n]*(?:新任务|派发|跟进|继续盯|继续关注)[^\n]*[?？]\s*$/, '') : response.content!.trim();
-        this.finishMessage(message, conversation, history, (visionUnavailable ? '图片已保存，但当前模型接口未接受图像输入，暂时无法直接识图。\n\n' : '') + content);
+        this.finishMessage(message, conversation, messages, (visionUnavailable ? '图片已保存，但当前模型接口未接受图像输入，暂时无法直接识图。\n\n' : '') + content);
         return;
       }
     } catch (error) {
@@ -338,13 +366,13 @@ export class PlatformAiWorker {
     }
   }
 
-  private finishMessage(message: InboxMessage, conversation: Conversation, history: ModelMessage[], content: string): void {
+  private finishMessage(message: InboxMessage, conversation: Conversation, transcript: ModelMessage[], content: string): void {
         getDb().transaction(() => {
           getDb().prepare(`INSERT OR IGNORE INTO platform_ai_messages (id,conversation_id,external_id,role,content,status) VALUES (?,?,?,'assistant',?,'done')`)
             .run(nanoid(16), conversation.id, message.id, content);
           getDb().prepare("UPDATE platform_ai_messages SET status='done',checkpoint='[]',error=NULL,progress='',partial_content='',lease_until=0 WHERE id=?").run(message.id);
           getDb().prepare("UPDATE platform_ai_conversations SET context=?,updated_at=datetime('now') WHERE id=?")
-            .run(JSON.stringify([...history.slice(-18), userMessage(message), { role: 'assistant', content }]), conversation.id);
+            .run(JSON.stringify(completedConversation(transcript, content)), conversation.id);
           getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox (id,conversation_id,dedupe_key,content,reply_context) VALUES (?,?,?,?,?)`)
             .run(nanoid(16), conversation.id, `reply:${message.id}`, content, message.reply_context);
         })();
@@ -453,7 +481,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
 不要将代码、日志中的示例结果或任务要求本身当作已执行结果。` },
         ...(nativeSubscription ? [{role:'system' as const,content:'这是已有标签的只读消息订阅，不是新派发的开发任务。只分类 Agent 本轮原生答复：明确说已修复、已完成、测试部署通过等，标记 reported_complete；索要信息或等待用户确认标记 blocked；明确仍在处理则 running。不要要求 Agent 的答复包含项目名、标签名、平台订阅指令或“已通知用户”等字样，不额外验证业务条件。当前请求的关联已由程序核对。'}] : []),
         { role: 'user', content: JSON.stringify({ requirement, previous_summary: nativeSubscription ? '' : task.summary.slice(0, 1500), process_state: display.processState, session_status: session.status, output: incrementalOutput, output_is_incremental: true, native_final_answer: nativeFinal }) },
-      ], undefined, this.abort.signal);
+      ], undefined, this.abort.signal, {onUsage: usage => this.app.log.info({task_id: task.id, kind: 'observation', model: config.model, ...usage}, 'Platform AI model usage')});
       let assessment = validateAssessment(JSON.parse(response.content || '{}'), nativeFinal || messageOutput, display.processState);
       if (assessment.status === 'reported_complete' && (!nativeFinal || !nativeFinal.includes(assessment.evidence))) {
         assessment = { status: 'uncertain', summary: '尚未读取到本次需求对应的原生最终答复，结果待核对。' + assessment.summary, evidence: '' };
