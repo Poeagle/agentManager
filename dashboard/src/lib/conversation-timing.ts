@@ -21,19 +21,25 @@ export function formatElapsed(milliseconds: number): string {
   return `${Math.floor(minutes/60)}时${minutes%60}分${seconds%60}秒`;
 }
 
-export function conversationTimings(messages: ConversationMessage[], now: number, busy: boolean) {
+export function conversationTimings(messages: ConversationMessage[], now: number, busy: boolean,activeTurnId?:string|null) {
   const result=new Map<string,{label:string;title:string}>();
   let userTime:string|null=null;
+  let userTurn:string|undefined;
   for(let index=0;index<messages.length;index++) {
     const message=messages[index];
-    if(message.role==='user') {userTime=message.timestamp;continue;}
+    if(message.role==='user') {userTime=message.timestamp;userTurn=message.turn_id;continue;}
     if(message.phase==='final') {
+      if(userTurn && message.turn_id && userTurn!==message.turn_id)continue;
       const elapsed=elapsedBetween(userTime,message.timestamp);
-      if(elapsed!==null) result.set(message.id,{label:`本轮耗时 ${formatElapsed(elapsed)}`,title:'从本轮用户消息到这条答复的时间间隔'});
-    } else {
+      if(elapsed!==null) result.set(message.id,{label:`本轮耗时 ${formatElapsed(elapsed)}`,title:'最近一条用户消息到本条答复记录的时间差，包含等待时间'});
+    } else if(message.phase==='commentary') {
       const next=messages[index+1];
+      // A later human message, error or different turn is not the end of this
+      // progress step. Never turn human/offline waiting into execution time.
+      if(next && (next.role!=='assistant' || !['commentary','final'].includes(next.phase||'') || message.turn_id && next.turn_id && message.turn_id!==next.turn_id))continue;
+      if(!next && activeTurnId && message.turn_id && activeTurnId!==message.turn_id)continue;
       const elapsed=elapsedBetween(message.timestamp,next?.timestamp ?? (!next && busy ? now : null));
-      if(elapsed!==null) result.set(message.id,{label:`${next?'阶段间隔':'已持续'} ${formatElapsed(elapsed)}`,title:next?'从本条进展到下一条对话的时间间隔；不代表单个工具的执行耗时':'从本条进展开始计时，等待下一条进展或答复'});
+      if(elapsed!==null) result.set(message.id,{label:`${next?'消息间隔':'距上次更新'} ${formatElapsed(elapsed)}`,title:next?'同一轮相邻 Agent 输出的记录时间差，包含等待或暂停；不是工具执行耗时':'当前轮仍在执行，距离最近进展记录的时间；不是工具执行耗时'});
     }
   }
   return result;

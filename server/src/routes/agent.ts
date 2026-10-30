@@ -6,9 +6,9 @@ import { isSessionActive, writeToSession, querySessionOutputSince, getSession, g
 import { RESIZE_MARKER } from '../services/session-manager.js';
 import { getTracker, getOrCreateTracker } from '../services/session-state.js';
 import type { SessionState } from '../services/session-state.js';
-import { readSessionCookie, sessionCookieName, userCanUseSessionTool } from '../auth.js';
+import { getSessionUser,readSessionCookie, sessionCookieName, userCanUseSessionTool } from '../auth.js';
 import { registerUserConnection } from '../services/user-connections.js';
-import { requirePermission } from '../services/rbac.js';
+import { requirePermission,userHasPermission } from '../services/rbac.js';
 import { getDb } from '../db/index.js';
 import { loadRecentAgentMessages, loadRecentPromptContext } from '../services/prompt-context.js';
 import { sessionPresenter } from '../services/session-labels.js';
@@ -658,6 +658,17 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       if(!canAccessAgentSession(req.user!.id,id)) {socket.close(1008);return;}
       if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(frame.type==='snapshot'?{...frame,messages:decorateConversationAttachments(id,frame.messages)}:frame));
       else if(socket.readyState===1) socket.close(1013,'Slow conversation client');
+      if(frame.type==='unavailable'&&frame.reconnect&&socket.readyState===1)socket.close(1012,'Native connection lost');
+    });
+    socket.on('message',bytes=>{
+      let frame:any;try{const raw=bytes.toString();if(Buffer.byteLength(raw)>64*1024){socket.close(1009,'Interaction response too large');return;}frame=JSON.parse(raw);}catch{return;}
+      if(frame?.type!=='interaction_response'||typeof frame.request_id!=='string')return;
+      let error:string|undefined;
+      try {
+        if(getSessionUser(readSessionCookie(req)||'')?.id!==req.user!.id||!canAccessAgentSession(req.user!.id,id)||!userHasPermission(req.user!.id,'agent_api','write'))throw new Error('当前账号没有处理该会话交互的权限');
+        stop.respond(frame.request_id,frame.answer);
+      }catch(failure){error=failure instanceof Error?failure.message:'交互提交失败';}
+      if(socket.readyState===1)socket.send(JSON.stringify({type:'interaction_result',request_id:frame.request_id,ok:!error,...(error?{error}:{})}));
     });
     const heartbeat=setInterval(()=>{if(socket.readyState===1) socket.ping();},25000);
     socket.once('close',()=>{clearInterval(heartbeat);stop();});

@@ -81,14 +81,14 @@ export function ConversationWidthHandles({root,scroll,active,storageKey}:{
   ><span/></div>)}</>;
 }
 
-export interface ConversationOutlineItem {id:string;prompt:string;response:string;answers:string[];streaming:boolean}
+export interface ConversationOutlineItem {id:string;prompt:string;question:string;response:string;answers:string[];streaming:boolean}
 function excerpt(text:string,limit:number) {return text.slice(0,limit*3).replace(/\[([^\]]+)\]\([^)]*\)/g,'$1').replace(/[*_#>`~]/g,'').replace(/\s+/g,' ').trim().slice(0,limit);}
 export function conversationOutline(messages:ConversationMessage[]):ConversationOutlineItem[] {
   const items:ConversationOutlineItem[]=[];
   for(const message of messages) {
-    if(message.role==='user')items.push({id:message.id,prompt:excerpt(parseConversationInput(message.text).text,140)||'未命名提问',response:'',answers:[],streaming:false});
+    if(message.role==='user')items.push({id:message.id,prompt:excerpt(parseConversationInput(message.text).text,140)||'未命名提问',question:parseConversationInput(message.text).text.slice(0,4000)||'附件提问',response:'',answers:[],streaming:false});
     else {
-      if(!items.length)items.push({id:message.id,prompt:'较早的回复',response:'',answers:[],streaming:false});
+      if(!items.length)items.push({id:message.id,prompt:'较早的回复',question:'',response:'',answers:[],streaming:false});
       const item=items[items.length-1];item.answers.push(message.id);item.streaming ||= !!message.streaming;
       if(message.text.trim())item.response=excerpt(message.text,200);
     }
@@ -130,7 +130,7 @@ export const ConversationNavigator=memo(function ConversationNavigator({messages
     const headings=item.answers.flatMap(id=>[...(target(id)?.querySelectorAll<HTMLElement>('[data-chat-heading]')||[])].map(node=>({id:node.id,text:node.textContent||'',level:Number(node.dataset.chatHeading)})));
     const bounds=nav.current?.getBoundingClientRect();const area=scroll.current?.getBoundingClientRect();
     const top=button.getBoundingClientRect().top-(bounds?.top||0);
-    const height=Math.min(300,Math.max(96,(area?.height||300)-16));
+    const height=Math.min(420,Math.max(96,(area?.height||420)-16));
     setPreview({id:item.id,top:Math.max((area?.top||0)-(bounds?.top||0)+8,Math.min(top,(area?.bottom||innerHeight)-(bounds?.top||0)-height-8)),headings});
   }
   function jump(node:HTMLElement|null) {
@@ -146,10 +146,12 @@ export const ConversationNavigator=memo(function ConversationNavigator({messages
     <div className="conversation-navigator-scroll" ref={ladder}>{items.map((entry,index)=><button key={entry.id} className="conversation-nav-mark" aria-label={`跳转到第 ${index+1} 段对话：${entry.prompt}`} aria-current={current===entry.id?'location':undefined} aria-haspopup="dialog" aria-expanded={preview?.id===entry.id} data-streaming={entry.streaming}
       onPointerEnter={event=>show(entry,event.currentTarget)} onFocus={event=>show(entry,event.currentTarget)} onBlur={event=>{if(!nav.current?.contains(event.relatedTarget))setPreview(null);}}
       onClick={()=>jump(target(entry.answers.at(-1)||entry.id))}><span/></button>)}</div>
-    {item && preview && <div className="conversation-nav-preview" style={{top:preview.top,maxHeight:Math.max(96,(scroll.current?.clientHeight||316)-16),overflowY:'auto'}} role="dialog" aria-label="对话预览" id={previewId}>
+    {item && preview && <div className="conversation-nav-preview" style={{top:preview.top}} role="dialog" aria-label="对话预览" id={previewId}><div className="conversation-nav-preview-content" style={{maxHeight:Math.min(394,Math.max(64,(scroll.current?.clientHeight||316)-42)),overflowY:'auto',overflowX:'hidden'}}>
+      {item.question&&<div className="conversation-nav-title conversation-nav-question-label">你的问题</div>}
+      {item.question&&<button className="conversation-nav-question" onClick={()=>jump(target(item.id))}>{item.question}</button>}
       <div className="conversation-nav-title">Agent 输出</div>
       <button className="conversation-nav-response" disabled={!item.answers.length} onClick={()=>jump(target(item.answers.at(-1)||item.id))}>{item.response||'Agent 尚未回复'}</button>
       {preview.headings.length>0 && <div className="conversation-nav-headings" aria-label="回复章节">{preview.headings.map(heading=><button key={heading.id} style={{paddingLeft:Math.min(heading.level-1,3)*8}} onClick={()=>jump([...(scroll.current?.querySelectorAll<HTMLElement>('[data-chat-heading]')||[])].find(node=>node.id===heading.id)||null)}>{heading.text}</button>)}</div>}
-    </div>}
+    </div></div>}
   </nav>;
 });

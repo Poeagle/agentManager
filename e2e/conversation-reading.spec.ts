@@ -35,7 +35,7 @@ test('conversation shares its tab row, resizes, previews and navigates rich stre
   await page.mouse.move(box!.x+box!.width/2,box!.y+box!.height/2);await page.mouse.down();await page.mouse.move(box!.x+box!.width/2-90,box!.y+box!.height/2,{steps:12});await page.mouse.up();
   const smaller=Number(await widthHandle.getAttribute('aria-valuenow'));expect(smaller).toBeLessThan(originalWidth-100);
   const nav=chat.getByRole('navigation',{name:'对话目录'});const third=nav.getByRole('button',{name:/跳转到第 3 段对话/});
-  await third.hover();const preview=nav.getByRole('dialog',{name:'对话预览'});await expect(preview).not.toContainText('问题 3');await expect(preview).toContainText('Agent 输出');await expect(preview).toContainText('重点说明');
+  await third.hover();const preview=nav.getByRole('dialog',{name:'对话预览'});await expect(preview).toContainText('问题 3');await expect(preview).toContainText('Agent 输出');await expect(preview).toContainText('重点说明');await expect(preview.getByRole('button',{name:'问题 3：分析第 3 个部分',exact:true})).toHaveClass('conversation-nav-question');expect(await preview.locator('.conversation-nav-preview-content').evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
   await page.screenshot({path:testInfo.outputPath('navigation-preview.png')});
   await preview.getByRole('button',{name:'细节 3',exact:true}).click();const heading=chat.getByRole('heading',{name:'细节 3',exact:true});
   await expect.poll(async()=>{const h=await heading.boundingBox();const area=await chat.locator('.session-chat-scroll').boundingBox();return Math.abs(h!.y-area!.y-20);}).toBeLessThan(5);

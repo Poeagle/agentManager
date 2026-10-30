@@ -1,3 +1,4 @@
+import {ConversationInteraction,type ConversationInteractionRequest} from './ConversationInteraction';
 import {memo,useCallback,useEffect,useRef,useState} from 'react';
 import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
 import {api,type ConversationMessage,type ConversationPage,type Session} from '../lib/api';
@@ -29,7 +30,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
     } catch {setCopied(false);}
   }
   if(message.phase==='error')return <article className="session-chat-message session-chat-error-notice" role="alert" data-phase="error" data-streaming="false" data-retrying={retrying} data-retry-ended={!!message.error?.will_retry && !retrying} data-chat-message-id={message.id}>
-    <div className="session-chat-error-heading"><AlertTriangle size={16}/><strong>{message.error?.will_retry?retrying?'执行遇到错误，正在自动重试':'重试已结束':'本轮执行出错'}</strong>{message.timestamp && <time dateTime={message.timestamp} title={new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}>{formatConversationTimestamp(message.timestamp)}</time>}</div>
+    <div className="session-chat-error-heading"><AlertTriangle size={16}/><strong>{message.error?.will_retry?retrying?'执行遇到错误，正在自动重试':'重试已结束':'本轮执行出错'}</strong>{message.timestamp && <time dateTime={message.timestamp} title={`原生消息记录时间：${new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}（本地时区）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>}</div>
     <p className="session-chat-error-original">{message.text}</p>
     <p>{message.error?.will_retry?retrying?'Agent 正在自动重试，无需重复发送。':'该次重试过程已结束。':message.error?.code==='server_overloaded' || /at capacity/i.test(message.text)?'当前模型繁忙，本轮已停止。可稍后重试，或在原始终端切换模型。':'本轮已停止。请根据错误信息处理后再试。'}</p>
     <div className="session-chat-error-actions"><button type="button" onClick={onRaw}>查看原始终端</button><button type="button" onClick={()=>void copy()}>{copied?'已复制':'复制错误信息'}</button></div>
@@ -39,7 +40,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
     <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text">{parsed.text}</div><ConversationMessageAttachments items={parsed.attachments} projectId={projectId} onOpenFile={onOpenFile}/></>:<ConversationMarkdown content={message.text} messageId={message.id} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
     <div className="session-chat-message-meta">
       {durationLabel && <span className="session-chat-message-duration" title={durationTitle}>{durationLabel}</span>}
-      {!compact && message.timestamp && <time dateTime={message.timestamp} title={new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}>{formatConversationTimestamp(message.timestamp)}</time>}
+      {!compact && message.timestamp && <time dateTime={message.timestamp} title={`原生消息记录时间：${new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}（本地时区）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>}
       <button type="button" onClick={()=>void copy()} aria-label={`复制${message.role==='user'?'你的消息':'Agent 回复'}`} title={copied?'已复制':'复制消息'}>{copied?<Check size={13}/>:<Copy size={13}/>}</button>
     </div>
   </article>;
@@ -65,6 +66,10 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
   const [unread,setUnread]=useState(false);
   const [refresh,setRefresh]=useState(0);
   const [liveState,setLiveState]=useState<'connecting'|'connected'|'unavailable'>('connecting');
+  const [connectionGeneration,setConnectionGeneration]=useState(0);
+  const [requests,setRequests]=useState<ConversationInteractionRequest[]>([]);
+  const liveSocket=useRef<WebSocket|null>(null);
+  const pendingAnswers=useRef(new Map<string,{resolve:()=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>());
   const [liveBusy,setLiveBusy]=useState(false);
   const [liveProgress,setLiveProgress]=useState<LiveProgress>({turn_id:null,started_at:null,stage:'idle'});
   const [now,setNow]=useState(Date.now);
@@ -127,12 +132,15 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
       if(disposed) return;
       setLiveState('connecting');
       socket=new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/api/sessions/${encodeURIComponent(session.id)}/conversation/stream`);
+      liveSocket.current=socket;setConnectionGeneration(value=>value+1);
       socket.onmessage=event=>{
         if(disposed) return;
-        let frame:{type:string;messages?:ConversationMessage[];busy?:boolean}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
+        let frame:{type:string;messages?:ConversationMessage[];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
+        if(frame.type==='interaction_result' && frame.request_id) {const pending=pendingAnswers.current.get(frame.request_id);if(pending){clearTimeout(pending.timer);pendingAnswers.current.delete(frame.request_id);if(frame.ok)pending.resolve();else pending.reject(new Error(frame.error||'提交失败'));}return;}
         if(frame.type==='unavailable') {setLiveState('unavailable');setLiveBusy(false);return;}
         if(frame.type!=='snapshot' || !Array.isArray(frame.messages)) return;
         setLiveState('connected');setLiveBusy(!!frame.busy);
+        setRequests(Array.isArray(frame.interactions)?frame.interactions:[]);
         if(frame.stage) setLiveProgress({turn_id:frame.turn_id||null,started_at:frame.started_at||null,completed_at:frame.completed_at||null,activities:Array.isArray(frame.activities)?frame.activities:[],stage:frame.stage});
         const incoming=frame.messages;
         setMessages(previous=>mergeConversationTimeline(previous,incoming));
@@ -143,11 +151,11 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
           if(settled.length) setRefresh(value=>value+1);
         }
       };
-      socket.onclose=()=>{if(!disposed){setLiveState('unavailable');setLiveBusy(false);retry=setTimeout(connect,2500);}};
+      socket.onclose=()=>{if(!disposed){liveSocket.current=null;for(const pending of pendingAnswers.current.values()){clearTimeout(pending.timer);pending.reject(new Error('连接已断开，请重连核对请求状态'));}pendingAnswers.current.clear();setLiveState('unavailable');setLiveBusy(false);retry=setTimeout(connect,2500);}};
       socket.onerror=()=>socket.close();
     };
     connect();
-    return ()=>{disposed=true;clearTimeout(retry);socket?.close();};
+    return ()=>{disposed=true;clearTimeout(retry);socket?.close();liveSocket.current=null;for(const pending of pendingAnswers.current.values()){clearTimeout(pending.timer);pending.reject(new Error('连接已关闭，请重新连接后确认请求状态'));}pendingAnswers.current.clear();};
   },[active,canRead,session.id,session.cli_type,page?.native_id,ended]);
 
   async function loadOlder() {
@@ -164,8 +172,19 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
   }
 
   const interaction=page?.interaction;
-  const needsAction=!!interaction && interaction.processState==='waiting_for_input' && (interaction.isPermission || interaction.promptType==='choice' || interaction.promptType==='confirmation');
-  const waiting=needsAction || page?.runtime?.state==='waiting_for_input';
+  const nativeStateKnown=session.cli_type==='codex' && !!page?.runtime && page.runtime.state!=='unknown';
+  const needsAction=(!nativeStateKnown || page?.runtime?.state==='waiting_for_input') && !!interaction && interaction.processState==='waiting_for_input' && (interaction.isPermission || interaction.promptType==='choice' || interaction.promptType==='confirmation');
+  const waiting=requests.length?requests.some(request=>request.blocking):needsAction || page?.runtime?.state==='waiting_for_input';
+  function answerRequest(id:string,answer:unknown):Promise<void> {
+    const socket=liveSocket.current;
+    if(!canSend||!socket||socket.readyState!==1)return Promise.reject(new Error('当前连接不可提交，请重新连接后处理'));
+    if(pendingAnswers.current.has(id))return Promise.reject(new Error('该回答正在提交'));
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{pendingAnswers.current.delete(id);reject(new Error('未收到提交确认，请重连核对请求状态后再处理'));},10000);
+      pendingAnswers.current.set(id,{resolve,reject,timer});
+      try {socket.send(JSON.stringify({type:'interaction_response',request_id:id,answer}));}catch {clearTimeout(timer);pendingAnswers.current.delete(id);reject(new Error('连接已断开'));}
+    });
+  }
   async function send() {
     const text=draftRef.current;
     const attached=attachments.values();
@@ -194,12 +213,12 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
   const continuingAfterFollowup=busy && !currentAnswer && !!currentTurn && messages.some((message,index)=>index<lastUserIndex && message.role==='assistant' && message.turn_id===currentTurn);
   const started=continuingAfterFollowup?lastUserTime:liveProgress.started_at||lastUserTime;
   const elapsed=started?Math.max(0,Math.floor((now-Date.parse(started))/1000)):0;
-  const waitingForText=busy && !currentAnswer && !activeError;
+  const waitingForText=busy && !currentAnswer && !activeError && !waiting;
   const displayed=messages;
   const streamingId=!activeError && liveState==='connected' && busy && !['tools','finishing'].includes(liveProgress.stage)
     ? messages.reduce<string|null>((id,message,index)=>index>lastUserIndex && message.role==='assistant' && message.streaming && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id)?message.id:id,null):null;
   const groups=groupConversationProgress(displayed);
-  const timings=conversationTimings(displayed,now,busy);
+  const timings=conversationTimings(displayed,now,busy,liveProgress.turn_id);
   const bubble=(message:ConversationMessage,compact=false)=><Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} durationLabel={!compact?timings.get(message.id)?.label:undefined} durationTitle={!compact?timings.get(message.id)?.title:undefined} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
   return <section ref={readingRoot} className="session-chat" aria-label="会话对话">
     <div className="session-chat-reading">
@@ -212,7 +231,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
           <div className="session-chat-agent"><Sparkles size={16}/><span>{agentName}</span><span className="session-chat-writing">进展</span><span className="session-chat-progress-count">{group.messages.length} 条</span>{busy && groups.at(-1)===group && <span className="session-chat-progress-live">进行中</span>}</div>
           <div className="session-chat-progress-content">{group.messages.map((message,index)=><div key={message.id} className="session-chat-progress-entry" data-active={message.id===streamingId}>
             <div className="session-chat-progress-entry-head"><span className="session-chat-progress-number" aria-label={`进展序号 ${index+1}`}>{index+1}</span>
-              {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label="进展时间" dateTime={message.timestamp} title={new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}>{formatConversationTimestamp(message.timestamp)}</time>:<span className="session-chat-progress-time-unknown">时间未知</span>}
+              {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label="进展时间" dateTime={message.timestamp} title={`原生消息记录时间：${new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}（本地时区）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>:<span className="session-chat-progress-time-unknown">时间未知</span>}
               {timings.get(message.id) && <span className="session-chat-message-duration" title={timings.get(message.id)!.title}>{timings.get(message.id)!.label}</span>}
               {message.id===streamingId && <span className="session-chat-progress-updating">正在输出</span>}
             </div>{bubble(message,true)}
@@ -228,7 +247,8 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
     {canRead && <ConversationNavigator messages={displayed} scroll={list} active={active} hasMore={hasMore} loadingOlder={older} onLoadOlder={()=>void loadOlder()} onNavigate={navigate}/>}
     </div>
     {unread && <button className="session-chat-new" onClick={scrollBottom}><ArrowDown size={14}/>有新消息</button>}
-    {waiting && <div className="session-chat-action" role="status"><strong>{interaction?.isPermission?'Agent 需要授权':'Agent 需要你确认或选择'}</strong>
+    {requests.length>0&&<div className="conversation-interactions">{requests.length>1&&<p className="conversation-interaction-queue">还有 {requests.length-1} 项待处理</p>}{requests.slice(0,1).map(request=><ConversationInteraction key={`${connectionGeneration}:${request.id}`} request={request} storageKey={`agentmanager-question:${userId}:${session.id}:${request.id}`} connected={active&&liveState==='connected'} canAnswer={canSend&&!ended} onAnswer={answerRequest} onRaw={onRaw}/>)}</div>}
+    {waiting && !requests.length && <div className="session-chat-action" role="status"><strong>{interaction?.isPermission?'Agent 需要授权':'Agent 需要你确认或选择'}</strong>
       {interaction?.choices?.length ? <p>{interaction.choices.join(' / ')}</p>:null}<button onClick={onRaw}>切到原始终端处理</button></div>}
     <footer className="session-chat-composer">
       <div className="session-chat-status" role="status"><span className={`session-chat-connection ${liveState}`} aria-hidden="true"/>
@@ -241,12 +261,12 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
       <form onSubmit={event=>{event.preventDefault();void send();}}
         onDragOver={event=>{if(Array.from(event.dataTransfer.types).includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=canSend&&!ended&&!sending?'copy':'none';}}}
         onDrop={event=>{if(!event.dataTransfer.files.length)return;event.preventDefault();event.stopPropagation();if(canSend&&!ended&&!sending)attachments.enqueue(Array.from(event.dataTransfer.files));}}>
-        <textarea aria-label="发送给当前 Agent 的消息" value={draft} onChange={event=>setDraft(event.target.value)} placeholder={waiting?'请先在原始终端完成交互':'输入消息，Enter 发送，Shift+Enter 换行'} disabled={!canSend || ended || waiting} rows={2}
+        <textarea aria-label="发送给当前 Agent 的消息" value={draft} onChange={event=>setDraft(event.target.value)} placeholder={waiting?requests.length?'请先回答上方问题或确认请求':'请先在原始终端完成交互':'输入消息，Enter 发送，Shift+Enter 换行'} disabled={!canSend || ended || waiting} rows={2}
           onPaste={event=>{const files=Array.from(event.clipboardData.files);if(!files.length)return;event.preventDefault();if(canSend&&!ended&&!sending)attachments.enqueue(files);}}
           onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();void send();}}}/>
         <div className="session-chat-input-tools"><ConversationAttachmentPicker items={attachments.items} error={attachments.error} disabled={!canSend||ended||sending} onFiles={attachments.enqueue} onRemove={attachments.remove}/><span>Enter 发送 · Shift+Enter 换行</span><button type="submit" aria-label="发送消息" disabled={sending||attachments.uploading||attachments.failed||!canSend||(!draft.trim()&&!attachments.items.length)||!page?.session_active||ended||waiting}>{sending?<Loader2 size={17} className="animate-spin"/>:<ArrowUp size={18}/>}</button></div>
       </form>
-      <p className="session-chat-hint">{liveState==='unavailable' && session.cli_type==='codex'?'当前会话未提供实时事件，进展说明和答复会自动更新。':'展示对话、进展说明与答复'}<span>工具详情、文件及授权可在原始终端处理</span></p>
+      <p className="session-chat-hint">{liveState==='unavailable' && session.cli_type==='codex'?'当前会话未提供实时事件，进展说明和答复会自动更新。':'展示对话、进展说明与答复'}<span>工具详情及其他交互可在原始终端查看</span></p>
     </footer>
   </section>;
 }

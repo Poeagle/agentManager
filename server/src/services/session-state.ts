@@ -96,10 +96,13 @@ function detectPrompt(text: string): { type: PromptType; choices: string[] | nul
   let hasCursor = false;
   const byNum = new Map<number, string>();
   for (const raw of tail.split('\n')) {
-    if (CURSOR_PATTERN.test(raw)) hasCursor = true;
+    const gutter=raw.match(GUTTER_PATTERN)?.[0]||'';
     const cleaned = raw.replace(GUTTER_PATTERN, '').trimEnd();
     const m = cleaned.match(/^(\d+)[.)]\s+(.+)$/);
     if (m) {
+      // The selector must precede an option number. A play icon inside prose
+      // or a standalone idle input cursor does not make a numbered list a menu.
+      if(CURSOR_PATTERN.test(gutter))hasCursor=true;
       const n = parseInt(m[1], 10);
       if (n === 1) hasOne = true;
       if (n === 2) hasTwo = true;

@@ -27,7 +27,7 @@ test('one-line tool activity scrolls, keeps real timers and never enters public 
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
   const ticker=chat.getByTestId('conversation-activity-line');
   await expect(ticker).toContainText('运行命令 · npm run build');await expect(ticker).toContainText('本轮 3分');
-  await expect(chat.getByText('阶段间隔 1分46秒',{exact:true})).toBeVisible();
+  await expect(chat.getByText('消息间隔 1分46秒',{exact:true})).toBeVisible();
   expect((await ticker.boundingBox())!.height).toBeLessThan(26);
   const long='调用工具 · tools / exec_command · '+Array.from({length:18},()=> '只在状态栏显示的工具活动').join(' ');
   push?.(frame([activity('one','运行命令 · npm run build'),activity('two',long)]));

@@ -32,6 +32,7 @@ Object.assign(process.env, {
   LOG_LEVEL: 'silent',
   NODE_ENV: 'development',
   AGENTMANAGER_DB_PATH: join(testRoot, 'agentmanager.db'),
+  AGENTMANAGER_CODEX_STREAM_SOCKET: join(testRoot, 'codex.sock'),
   AGENTMANAGER_USE_TMUX: 'false',
   AGENTMANAGER_USE_DTACH: 'false',
   AGENTMANAGER_SKIP_UPDATE_CHECK: '1',

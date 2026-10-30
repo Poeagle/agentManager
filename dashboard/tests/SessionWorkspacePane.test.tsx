@@ -118,6 +118,15 @@ describe('chat/raw terminal display',()=>{
     expect(screen.getByRole('button',{name:'发送消息',exact:true})).toBeDisabled();
     fireEvent.click(screen.getByRole('button',{name:'切到原始终端处理'}));expect(screen.getByTestId('raw')).toBeVisible();
   });
+  it.each(['idle','running','failed'] as const)('does not turn Outlook instructions into a choice prompt when native Codex is %s',async state=>{
+    page={...page,runtime:{source:'codex_rollout',session_id:'native',state,last_activity_at:null,observed_at:new Date().toISOString(),reason:'native execution'},interaction:{processState:'waiting_for_input',promptType:'choice',isPermission:false,choices:['打开齿轮 → 邮件 → 规则','点击 ▶ 立即运行规则']}};
+    mount();await screen.findByText('检查已完成。');expect(screen.queryByText('Agent 需要你确认或选择')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button',{name:'切到原始终端处理'})).not.toBeInTheDocument();expect(screen.getByRole('textbox')).toBeEnabled();
+  });
+  it('still shows genuine native requests for user input',async()=>{
+    page={...page,runtime:{source:'codex_rollout',session_id:'native',state:'waiting_for_input',last_activity_at:null,observed_at:new Date().toISOString(),reason:'native request'},interaction:{processState:'waiting_for_input',promptType:'choice',isPermission:false,choices:['继续','取消']}};
+    mount();expect(await screen.findByText('Agent 需要你确认或选择')).toBeVisible();expect(screen.getByRole('textbox')).toBeDisabled();
+  });
   it('does not retry ambiguous sends or discard text on failure',async()=>{
     vi.mocked(api.agent.sendInput).mockRejectedValue(new Error('发送未能确认'));
     mount();await screen.findByText('检查已完成。');const input=screen.getByRole('textbox');fireEvent.change(input,{target:{value:'保留草稿'}});

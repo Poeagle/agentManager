@@ -10,14 +10,15 @@ import {conversationMessageId} from '../src/services/conversation-reader.js';
 let server:Server,wss:WebSocketServer,peer:WebSocket,dir:string,stop:(()=>void)|undefined;
 let submissions:any[],requests:string[],frames:ConversationStreamFrame[],loaded:boolean;
 let active=false;
+let humanRequests:any[]=[],humanResponses:any[]=[];
 let baselineItems:any[]=[];
 let baselineFailure:any=null;
 beforeEach(async()=>{
   dir=mkdtempSync(join(tmpdir(),'chat-stream-'));const path=join(dir,'sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',path);
-  server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;baselineItems=[];baselineFailure=null;
+  server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;baselineItems=[];baselineFailure=null;humanRequests=[];humanResponses=[];
   wss.on('connection',socket=>{
     peer=socket;socket.on('message',bytes=>{
-      const {id,method,params}=JSON.parse(bytes.toString());requests.push(method);if(method==='turn/start')submissions.push(params);if(!id) return;
+      const frame=JSON.parse(bytes.toString());const {id,method,params}=frame;if(!method){humanResponses.push(frame);return;}requests.push(method);if(method==='thread/resume')for(const request of humanRequests)socket.send(JSON.stringify(request));if(method==='turn/start')submissions.push(params);if(!id) return;
       const result=method==='thread/start'?{thread:{id:'019ff001-8888-7888-8888-888888888888'}}:method==='thread/read'?{thread:{status:{type:active?'active':loaded?'idle':'notLoaded'}}}:method==='thread/turns/list'?{data:active?[{id:'turn',status:'inProgress',items:baselineItems}]:baselineFailure?[{id:'turn',status:'failed',error:baselineFailure,completedAt:1793340000,items:[]}]:[]}:{};
       socket.send(JSON.stringify({id,result}));
     });
@@ -27,6 +28,36 @@ beforeEach(async()=>{
 afterEach(async()=>{stop?.();stop=undefined;for(const client of wss.clients) client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 const send=(method:string,params:unknown)=>peer.send(JSON.stringify({method,params}));
 describe('native Codex conversation streaming',()=>{
+  it('replays genuine native questions on resume and answers exactly once on the subscribed socket',async()=>{
+    const native={id:3,method:'item/tool/requestUserInput',params:{threadId:'thread',turnId:'turn',itemId:'ask',isBlocking:true,questions:[{id:'q',header:'范围',question:'选择部署范围',isOther:false,isSecret:false,options:[{label:'试用',description:'隔离环境'},{label:'正式',description:'日常环境'}]}]}};
+    humanRequests=[native];
+    const observer=observeCodexConversation('thread',frame=>frames.push(frame));stop=observer;
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({type:'snapshot',interactions:[{id:'3',kind:'question',submitted:false}]}));
+    expect(requests).toContain('thread/turns/list'); // Native request id collides with our resume RPC id.
+    expect(()=>observer.respond('3',{answers:{q:{answers:['伪造']}}})).toThrow('提供的选项');
+    observer.respond('3',{answers:{q:{answers:['试用']}}});
+    expect(()=>observer.respond('3',{answers:{q:{answers:['正式']}}})).toThrow('已提交');
+    await vi.waitFor(()=>expect(humanResponses).toEqual([{id:3,result:{answers:{q:{answers:['试用']}}}}]));
+    send('serverRequest/resolved',{threadId:'other',requestId:3});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({interactions:[{submitted:true}]}));
+    send('serverRequest/resolved',{threadId:'thread',requestId:3});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({interactions:[]}));
+    expect(()=>observer.respond('3',{answers:{q:{answers:['试用']}}})).toThrow('失效');
+    expect(requests).not.toContain('turn/start');
+  });
+  it('restores still-pending approvals after reconnect, and never turns text or another thread into controls',async()=>{
+    humanRequests=[{id:'approval',method:'item/commandExecution/requestApproval',params:{threadId:'thread',turnId:'turn',command:'echo test',cwd:'/project'}}];
+    let observer=observeCodexConversation('thread',frame=>frames.push(frame));stop=observer;
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({interactions:[{id:'"approval"',kind:'command'}]}));
+    observer();observer=observeCodexConversation('thread',frame=>frames.push(frame));stop=observer;
+    await vi.waitFor(()=>expect(requests.filter(m=>m==='thread/resume')).toHaveLength(2));
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({interactions:[{submitted:false}]}));
+    peer.send(JSON.stringify({id:8,method:'item/tool/requestUserInput',params:{threadId:'other',turnId:'turn',questions:[{id:'q',question:'private'}]}}));
+    observer.respond('"approval"',{decision:'decline'});
+    await vi.waitFor(()=>expect(humanResponses).toEqual([{id:'approval',result:{decision:'decline'}}]));
+    send('turn/completed',{threadId:'thread',turn:{id:'turn',status:'completed'}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({interactions:[]}));
+  });
   it('shows a public failure immediately, stops streaming, and deduplicates its completion echo',async()=>{
     stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
     send('turn/started',{threadId:'thread',turn:{id:'turn'}});

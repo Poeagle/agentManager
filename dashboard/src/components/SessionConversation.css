@@ -199,3 +199,34 @@
 @keyframes session-chat-activity-scroll{0%,15%{transform:translateX(0)}85%,100%{transform:translateX(var(--activity-travel,0))}}
 @media(max-width:600px){.session-chat-live-label{display:none}.session-chat-round-duration{font-size:10px}}
 @media(prefers-reduced-motion:reduce){.session-chat-activity-switch,.session-chat-activity-text[data-overflow=true]{animation:none}.session-chat-activity-text{max-width:100%;overflow:hidden;text-overflow:ellipsis}}
+
+.conversation-nav-question-label {color:var(--text-primary);font-weight:600;}
+.conversation-nav-question {display:block;width:100%;min-width:0;max-height:8.5em;overflow:auto;overflow-x:hidden;margin:0 0 10px;padding:8px 10px;border-left:3px solid var(--accent,#3566eb);border-radius:4px;background:var(--bg-secondary);font-size:13px;font-weight:600;text-align:left;white-space:normal;overflow-wrap:anywhere;line-height:1.7;}
+.conversation-interaction {display:flex;flex-direction:column;min-height:0;margin:6px max(16px,calc((100% - var(--chat-reading-width,784px))/2));border:1px solid var(--border);border-radius:10px;background:var(--bg-primary);box-shadow:0 2px 10px #00000006;flex:1 1 auto;}
+.conversation-interaction header {flex-shrink:0;display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--border);color:var(--text-primary);font-size:13px;}
+.conversation-interaction header>svg {color:var(--accent,#3566eb);flex-shrink:0;}
+.conversation-interaction header>span {display:flex;align-items:center;gap:3px;font-size:11px;color:var(--text-secondary);}
+.conversation-interaction-body {min-height:0;flex:1;overflow:auto;padding:12px 14px;overscroll-behavior:contain;}
+.conversation-interaction-body pre {font-size:12px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;}
+.conversation-interaction fieldset {border:0;padding:0;margin:0 0 14px;min-width:0;}
+.conversation-interaction fieldset:last-child {margin-bottom:0;}
+.conversation-interaction legend {font-size:13px;font-weight:600;line-height:1.7;margin-bottom:8px;overflow-wrap:anywhere;}
+.conversation-question-index {display:inline-flex;justify-content:center;align-items:center;min-width:20px;height:20px;margin-right:7px;border-radius:50%;background:var(--bg-secondary);font-size:11px;}
+.conversation-question-option {display:flex;align-items:flex-start;gap:8px;padding:9px 10px;margin:5px 0;border:1px solid var(--border);border-radius:7px;font-size:12px;cursor:pointer;}
+.conversation-question-option[data-selected=true] {border-color:var(--accent,#3566eb);background:var(--bg-secondary);}
+.conversation-question-option input {margin-top:3px;accent-color:var(--accent,#3566eb);flex-shrink:0;}
+.conversation-question-option b {font-weight:500;}
+.conversation-question-option small {display:block;color:var(--text-secondary);line-height:1.6;margin-top:3px;}
+.conversation-question-option span {overflow-wrap:anywhere;min-width:0;}
+.conversation-question-custom {display:block;font-size:12px;}
+.conversation-question-custom>span {display:block;margin:8px 0 5px;}
+.conversation-question-custom textarea,.conversation-question-custom input {box-sizing:border-box;width:100%;min-height:36px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);font:inherit;line-height:1.6;}
+.conversation-interaction-actions {flex-shrink:0;display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:9px 14px;border-top:1px solid var(--border);font-size:12px;flex-wrap:wrap;}
+.conversation-interaction-actions>span {flex:1;color:var(--text-secondary);font-size:11px;}
+.conversation-interaction-actions button {display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);padding:6px 10px;border-radius:6px;}
+.conversation-interaction-actions .conversation-interaction-primary {background:var(--accent,#3566eb);color:white;border-color:transparent;}
+.conversation-interaction button:disabled {opacity:.55;cursor:default;}
+
+.conversation-interactions {display:flex;flex-direction:column;flex:0 1 auto;max-height:48%;min-height:0;overflow:hidden;}
+.conversation-interaction form {display:flex;flex-direction:column;min-height:0;}
+.conversation-interaction-queue {font-size:11px;color:var(--text-secondary);margin:2px 32px;}

@@ -4,6 +4,7 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {authHook,createSession,createUser,setProjectToolAccess} from '../src/auth.js';
 import {getDb} from '../src/db/index.js';
 import {agentRoutes} from '../src/routes/agent.js';
+import {setRoleGrants,setUserRoles} from '../src/services/rbac.js';
 import * as manager from '../src/services/session-manager.js';
 import * as state from '../src/services/session-state.js';
 import * as conversation from '../src/services/conversation-stream.js';
@@ -29,6 +30,24 @@ describe('immediate session input',()=>{
     app=Fastify();await app.register(websocket);app.addHook('onRequest',authHook);await app.register(agentRoutes,{prefix:'/api'});await app.ready();
   });
   afterEach(async()=>{tracker.destroy();await app.close();vi.restoreAllMocks();vi.unstubAllEnvs();cleanup();});
+  it('allows native responses only with fresh write permission, session access and a live login',async()=>{
+    getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();
+    const user=getDb().prepare("SELECT id FROM users WHERE username='owner'").get() as {id:string};
+    getDb().prepare("UPDATE users SET role='member' WHERE id=?").run(user.id);
+    getDb().prepare("INSERT INTO rbac_roles(id,name) VALUES ('read-chat','Read chat')").run();setRoleGrants('read-chat',{agent_api:'read'});setUserRoles(user.id,['read-chat']);
+    const respond=vi.fn(),stop=Object.assign(vi.fn(),{respond});
+    vi.spyOn(conversation,'observeCodexConversation').mockReturnValue(stop);
+    const received:any[]=[];
+    const socket=await app.injectWS('/api/sessions/own/conversation/stream',{headers:{cookie}},{onInit:ws=>ws.on('message',bytes=>received.push(JSON.parse(bytes.toString())))});
+    const send=()=>socket.send(JSON.stringify({type:'interaction_response',request_id:'7',answer:{decision:'accept'}}));
+    try {
+      send();await vi.waitFor(()=>expect(received.at(-1)).toMatchObject({type:'interaction_result',ok:false}));expect(respond).not.toHaveBeenCalled();
+      setRoleGrants('read-chat',{agent_api:'write'});received.length=0;send();await vi.waitFor(()=>expect(received.at(-1)).toMatchObject({ok:true}));expect(respond).toHaveBeenCalledOnce();
+      getDb().prepare("UPDATE sessions SET created_by_user_id=(SELECT id FROM users WHERE username='other') WHERE id='own'").run();received.length=0;send();await vi.waitFor(()=>expect(received.at(-1)).toMatchObject({ok:false}));expect(respond).toHaveBeenCalledOnce();
+      getDb().prepare("UPDATE sessions SET created_by_user_id=? WHERE id='own'").run(user.id);getDb().prepare('DELETE FROM auth_sessions WHERE user_id=?').run(user.id);received.length=0;send();await vi.waitFor(()=>expect(received.at(-1)).toMatchObject({ok:false}));expect(respond).toHaveBeenCalledOnce();
+    }finally {await new Promise<void>(resolve=>{socket.once('close',()=>resolve());socket.close();});}
+    expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
   it('routes chat followups directly to the existing native engine instead of a terminal menu',async()=>{
     vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');
     getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();

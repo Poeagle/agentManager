@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import {nativeInteraction,nativeInteractionAnswer,type ConversationInteraction} from './conversation-interactions.js';
 import {homedir} from 'os';
 import {join} from 'path';
 import {randomUUID} from 'crypto';
@@ -9,8 +10,8 @@ import {conversationErrorMessage} from './conversation-error.js';
 import {conversationActivity,type ConversationActivity} from './conversation-activity.js';
 
 export type ConversationStreamFrame =
-  | {type:'snapshot';messages:ConversationMessage[];activities:ConversationActivity[];busy:boolean;connected:true;turn_id:string|null;started_at:string|null;completed_at:string|null;stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
-  | {type:'unavailable';reason:string};
+  | {type:'snapshot';messages:ConversationMessage[];interactions:ConversationInteraction[];activities:ConversationActivity[];busy:boolean;connected:true;turn_id:string|null;started_at:string|null;completed_at:string|null;stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
+  | {type:'unavailable';reason:string;reconnect?:boolean};
 
 type CodexRequest = (method:string,params:unknown)=>Promise<any>;
 
@@ -27,7 +28,7 @@ async function withCodexConnection<T>(action:(request:CodexRequest)=>Promise<T>)
   const opened=new Promise<void>((resolve,reject)=>{socket.once('open',resolve);socket.once('error',()=>reject(new Error('无法连接独立 Codex 服务')));});
   socket.on('message',bytes=>{
     let frame:any;try{frame=JSON.parse(bytes.toString());}catch{return;}
-    const waiting=pending.get(frame.id);if(!waiting)return;pending.delete(frame.id);clearTimeout(waiting.timer);
+    const waiting=!frame.method?pending.get(frame.id):undefined;if(!waiting)return;pending.delete(frame.id);clearTimeout(waiting.timer);
     if(frame.error) waiting.reject(new Error('Codex 会话请求失败'));else waiting.resolve(frame.result);
   });
   const rejectPending=()=>{for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('Codex 连接已关闭'));}pending.clear();};
@@ -83,6 +84,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   const items=new Map<string,{message:ConversationMessage;phase:string|null}>();
   const activities=new Map<string,ConversationActivity>();
+  const interactions=new Map<string,{card:ConversationInteraction;nativeId:number|string;params:any}>();
   let next=0,closed=false,busy=false;
   let turnId:string|null=null,startedAt:string|null=null,completedAt:string|null=null;
   let stage:'waiting'|'tools'|'answering'|'finishing'|'idle'='idle';
@@ -91,7 +93,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   let flush:ReturnType<typeof setTimeout>|undefined;
   function snapshot() {
     flush=undefined;
-    if(!closed) emit({type:'snapshot',messages:[...items.values()].filter(item=>item.message.text.length>0).map(item=>item.message),activities:[...activities.values()],busy,connected:true,turn_id:turnId,started_at:startedAt,completed_at:completedAt,stage});
+    if(!closed) emit({type:'snapshot',interactions:[...interactions.values()].map(entry=>entry.card),messages:[...items.values()].filter(item=>item.message.text.length>0).map(item=>item.message),activities:[...activities.values()],busy,connected:true,turn_id:turnId,started_at:startedAt,completed_at:completedAt,stage});
   }
   function changed() {if(!flush) flush=setTimeout(snapshot,35);}
   function request(method:string,params:unknown):Promise<any> {
@@ -101,10 +103,11 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       pending.set(id,{resolve,reject,timer});socket.send(JSON.stringify({id,method,params}));
     });
   }
-  function unavailable() {if(!closed) emit({type:'unavailable',reason:'当前会话尚未连接实时事件，已完成的回复仍会自动更新。'});}
+  function unavailable(reconnect=false) {if(!closed) emit({type:'unavailable',reconnect,reason:'当前会话尚未连接实时事件，已完成的回复仍会自动更新。'});}
   function reportError(id:string,error:unknown,willRetry:boolean,timestamp:string|null) {
     const message=conversationErrorMessage(id,error,willRetry,timestamp);if(!message)return;
     items.delete(`error:${message.id}`);items.set(`error:${message.id}`,{message,phase:'error'});
+    if(!willRetry)interactions.clear();
     busy=willRetry;stage=willRetry?'waiting':'idle';
     for(const item of items.values())if(item.message.streaming)item.message={...item.message,streaming:false};
     changed();
@@ -172,18 +175,21 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   socket.on('open',()=>{
     void request('initialize',{clientInfo:{name:'octoally-conversation',version:'1.0.0'}}).then(()=>{
       if(closed) return;socket.send(JSON.stringify({method:'initialized'}));return attach();
-    }).catch(unavailable);
+    }).catch(()=>unavailable());
   });
   socket.on('message',bytes=>{
     let frame:any;try{frame=JSON.parse(bytes.toString());}catch{return;}
-    const waiting=pending.get(frame.id);
+    const waiting=!frame.method?pending.get(frame.id):undefined;
     if(waiting) {pending.delete(frame.id);clearTimeout(waiting.timer);if(frame.error) waiting.reject(new Error('Codex 事件接口不可用'));else waiting.resolve(frame.result);return;}
     const data=frame.params;
     if(data?.threadId!==threadId) return;
+    if(frame.method==='serverRequest/resolved') {interactions.delete(JSON.stringify(data.requestId));changed();return;}
+    const card=nativeInteraction(frame,threadId);
+    if(card) {if(!interactions.has(card.id))interactions.set(card.id,{card,nativeId:frame.id,params:data});changed();return;}
     if(!['turn/started','item/started','item/completed','item/agentMessage/delta','turn/completed','error'].includes(frame.method))return;
     revision++;
     if(frame.method==='turn/started') {
-      items.clear();activities.clear();busy=true;completedAt=null;turnId=data.turn?.id||null;
+      items.clear();activities.clear();interactions.clear();busy=true;completedAt=null;turnId=data.turn?.id||null;
       startedAt=typeof data.turn?.startedAt==='number'?new Date(data.turn.startedAt*1000).toISOString():new Date().toISOString();
       stage='waiting';changed();
     }
@@ -201,16 +207,25 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     } else if(frame.method==='turn/completed') {
       if(turnId && data.turn?.id && turnId!==data.turn.id)return;
       completedAt=typeof data.turn?.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString();
-      busy=false;stage='idle';for(const item of items.values()) item.message={...item.message,streaming:false};
+      interactions.clear();busy=false;stage='idle';for(const item of items.values()) item.message={...item.message,streaming:false};
       if(data.turn?.error)reportError(data.turn.id,data.turn.error,false,typeof data.turn.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString());
       changed();
     }
   });
-  const lost=()=>{for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('事件连接已关闭'));}pending.clear();unavailable();};
+  const lost=()=>{if(closed)return;clearTimeout(retry);clearTimeout(flush);for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('事件连接已关闭'));}pending.clear();unavailable(true);closed=true;};
   socket.on('error',lost);socket.on('close',lost);
-  return ()=>{
+  const stop=()=>{
     closed=true;clearTimeout(retry);clearTimeout(flush);
     for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('事件订阅已结束'));}pending.clear();
     if(socket.readyState===WebSocket.CONNECTING) socket.terminate();else socket.close();
   };
+  return Object.assign(stop,{respond:(id:string,answer:unknown)=>{
+    const entry=interactions.get(id);
+    if(closed||socket.readyState!==WebSocket.OPEN)throw new Error('实时连接已断开，请重新连接后处理');
+    if(!entry||entry.card.submitted)throw new Error('该请求已提交或已失效，请等待最新状态');
+    const result=nativeInteractionAnswer(entry.card,entry.params,answer);
+    entry.card={...entry.card,submitted:true};
+    try {socket.send(JSON.stringify({id:entry.nativeId,result}));}catch {entry.card={...entry.card,submitted:false};throw new Error('提交失败，请检查连接');}
+    changed();
+  }});
 }
