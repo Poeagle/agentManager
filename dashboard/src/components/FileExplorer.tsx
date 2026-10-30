@@ -343,7 +343,7 @@ function ContextMenu({ x, y, items, onClose }: ContextMenuState & { onClose: () 
       let ny = y;
       if (x + rect.width > window.innerWidth - 8) nx = Math.max(8, window.innerWidth - rect.width - 8);
       if (y + rect.height > window.innerHeight - 8) ny = Math.max(8, window.innerHeight - rect.height - 8);
-      if (nx !== x || ny !== y) setPos({ x: nx, y: ny });
+      setPos(previous=>previous.x===nx && previous.y===ny?previous:{x:nx,y:ny});
     }
     const onDown = () => onClose();
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -354,7 +354,7 @@ function ContextMenu({ x, y, items, onClose }: ContextMenuState & { onClose: () 
       document.removeEventListener('keydown', onKey);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onClose]);
+  }, [x,y,onClose]);
 
   return (
     <div
@@ -650,6 +650,12 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
   const [clipboard, setClipboard] = useState<{ kind: 'cut' | 'copy'; path: string; isDir: boolean } | null>(null);
   const [actionMessage, setActionMessage] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
   const exportInProgress = useExportTransferStore((state) => isExportTransferActive(state.task));
+
+  useEffect(()=>{
+    if(!active || (workspace && !workspace.treeHost)) {
+      setContextMenu(null);setPendingDelete(null);
+    }
+  },[active,workspace?.treeHost]);
 
   useEffect(() => {
     if (!actionMessage) return;
@@ -1676,10 +1682,11 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
         )}
         <div
           ref={treeScrollRef}
+          aria-label="文件目录"
           className="flex-1 overflow-y-auto"
           onContextMenu={(e) => {
-            // Right-click on empty area of the tree panel — context for currentPath
-            if (e.target === e.currentTarget) openContextMenuFor(e, null);
+            // Entry rows stop propagation; remaining events include empty-state text.
+            openContextMenuFor(e, null);
           }}
         >
         {sortedTree.map((node) => (
@@ -2004,16 +2011,16 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
         )}
       </div>
 
-      {contextMenu && (
+      {contextMenu && createPortal(
         <ContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
           items={contextMenu.items}
           onClose={() => setContextMenu(null)}
-        />
+        />, document.body
       )}
 
-      {pendingDelete && (
+      {pendingDelete && createPortal(
         <ConfirmModal
           title={pendingDelete.isDir ? 'Delete folder?' : 'Delete file?'}
           message={
@@ -2025,7 +2032,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
           variant="danger"
           onConfirm={confirmDelete}
           onCancel={() => setPendingDelete(null)}
-        />
+        />, document.body
       )}
     </div>
   );

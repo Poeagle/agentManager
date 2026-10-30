@@ -34,13 +34,13 @@ test('chat uploads pasted images and dropped files, retains drafts, and restores
   await page.getByRole('button',{name:'对话',exact:true}).click();await expect(chat.getByLabel('待发送附件')).toContainText('截图.png');
   await expect(send).toBeEnabled();
   let posted:any;
-  await page.route(`**/api/sessions/${session.id}/input`,async route=>{posted=route.request().postDataJSON();await route.fulfill({status:202,json:{id:session.id,status:'submitted'}});});
+  await page.route(`**/api/sessions/${session.id}/input`,async route=>{posted=route.request().postDataJSON();await route.fulfill({response:await route.fetch()});});
   await send.click();await expect(chat.getByLabel('待发送附件')).toHaveCount(0);
   expect(posted.input).toBe('');expect(posted.attachments.map((item:any)=>item.kind)).toEqual(['image','file']);
   for(const attachment of posted.attachments)expect(attachment.path.startsWith(join(path,'.agentmanager','pastes')+'/')).toBe(true);
   expect(readFileSync(posted.attachments[1].path,'utf8')).toBe('attachment payload');
-  const text=`请查看附件。\n\n<agentmanager_attachments>\n${JSON.stringify(posted.attachments)}\n</agentmanager_attachments>`;
-  appendFileSync(log,entry('response_item',{type:'message',role:'user',content:[{type:'input_text',text},{type:'input_text',text:`<image name=[Image #1] path="${posted.attachments[0].path}">`},{type:'input_image',image_url:'data:image/png;base64,'+'A'.repeat(3*1024*1024)},{type:'input_text',text:'</image>'}]})+entry('event_msg',{type:'task_complete',last_agent_message:'已接收图片和文件。'}));
+  const text='请查看附件。\n\n附件：\n'+posted.attachments.map((item:any)=>`- ${item.name}: ${item.path}`).join('\n');
+  appendFileSync(log,entry('response_item',{type:'message',role:'user',content:[{type:'input_text',text}]})+entry('event_msg',{type:'task_complete',last_agent_message:'已接收图片和文件。'}));
   await expect(chat.getByText('已接收图片和文件。',{exact:true})).toBeVisible();
   await expect(chat.getByRole('button',{name:'打开附件 截图.png'})).toHaveCount(1);
   await expect(chat).not.toContainText('agentmanager_attachments');

@@ -15,6 +15,7 @@ test('chat hides tool logs, sends to the same live session and switches to its o
     +entry('response_item',{type:'function_call',arguments:'PRIVATE TOOL ARGS'})
     +entry('response_item',{type:'function_call_output',output:'PRIVATE TOOL OUTPUT'})
     +entry('event_msg',{type:'agent_message',message:'这是 Agent 的中途进展。'})
+    +entry('event_msg',{type:'agent_message',message:'已核对项目结构，继续检查配置。'})
     +entry('event_msg',{type:'task_complete',last_agent_message:'检查已完成。\n\n- 已整理结果\n- 可以继续提问'}));
   const require=createRequire(import.meta.url);const Database=require('../server/node_modules/better-sqlite3');const db=new Database(join(root,'agentmanager.db'));
   try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',id,session.id);}finally{db.close();}
@@ -25,6 +26,10 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
   await expect(chat.getByText('请检查这个项目。',{exact:true})).toBeVisible();await expect(chat.getByText('检查已完成。',{exact:true})).toBeVisible();
   await expect(chat).not.toContainText('PRIVATE TOOL');await expect(chat.getByText('这是 Agent 的中途进展。',{exact:true})).toBeVisible();
+  const progress=chat.getByRole('region',{name:'Codex 进展'});await expect(progress).toHaveCount(1);await expect(progress).toContainText('已核对项目结构');
+  await expect(progress.getByLabel('进展序号 1')).toBeVisible();await expect(progress.getByLabel('进展序号 2')).toBeVisible();
+  await expect(progress.getByLabel('进展时间')).toHaveCount(2);await expect(progress).not.toContainText('检查已完成。');
+  await page.screenshot({path:testInfo.outputPath('progress-timeline.png')});
   expect(await chat.locator('.session-chat-message.user .session-chat-body').evaluate(node=>getComputedStyle(node).backgroundColor)).not.toBe(await chat.locator('.session-chat-message.assistant').first().evaluate(node=>getComputedStyle(node).backgroundColor));
   await expect.poll(async()=>{const data=await(await page.request.get('/api/sessions')).json();return data.sessions.find((item:{id:string})=>item.id===session.id)?.status;}).toBe('running');
   const pid=(await(await page.request.get('/api/sessions')).json()).sessions.find((item:{id:string})=>item.id===session.id).pid;

@@ -1,12 +1,49 @@
 import {open,realpath,stat} from 'fs/promises';
 import {dirname,extname,isAbsolute,join,relative,sep} from 'path';
 import {getDb} from '../db/index.js';
+import {createHash} from 'crypto';
 
 export interface ConversationAttachment {kind:'image'|'file';name:string;path:string}
 const MIB=1024*1024;
-export function formatConversationInput(text:string,attachments:ConversationAttachment[]) {
+export function formatConversationInput(text:string,attachments:ConversationAttachment[],includeImagePaths=false) {
   if(!attachments.length)return text;
-  return `${text.trim()?text:'请查看附件。'}\n\n<agentmanager_attachments>\n${JSON.stringify(attachments.map(({kind,name,path})=>({kind,name,path})))}\n</agentmanager_attachments>`;
+  const files=attachments.filter(item=>includeImagePaths || item.kind==='file');
+  return (text.trim()?text:'请查看附件。')+(files.length?'\n\n附件：\n'+files.map(item=>`- ${item.name}: ${item.path}`).join('\n'):'');
+}
+
+function inputKey(text:string,images:string[]) {
+  return createHash('sha256').update(JSON.stringify([text.trim(),[...images].sort()])).digest('hex');
+}
+/** Display metadata stays in the application database, never in model text. */
+export function rememberConversationAttachments(sessionId:string,clientId:string,text:string,attachments:ConversationAttachment[],nativeImages:boolean) {
+  if(!attachments.length)return;
+  const nativeText=formatConversationInput(text,attachments,!nativeImages);
+  getDb().prepare(`INSERT INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments)
+    VALUES(?,?,?,?,?) ON CONFLICT(session_id,client_id) DO UPDATE SET input_key=excluded.input_key,input_text=excluded.input_text,attachments=excluded.attachments`)
+    .run(sessionId,clientId,inputKey(nativeText,nativeImages?attachments.filter(item=>item.kind==='image').map(item=>item.path):[]),text.trim()?text:'请查看附件。',JSON.stringify(attachments));
+}
+
+/** Both native localImage input and persisted image wrappers carry the same
+ * uploaded path. Use it to restore metadata even after resume changes item IDs. */
+export function conversationImagePaths(content:unknown):string[] {
+  if(!Array.isArray(content))return [];
+  return content.flatMap((part,index)=>{
+    if(part?.type==='localImage' && typeof part.path==='string')return [part.path];
+    if(part?.type==='input_text' && content[index+1]?.type==='input_image' && typeof part.text==='string') {
+      const path=/^<image name=\[Image #\d+\] path="([\s\S]*)">$/.exec(part.text.trim())?.[1];return path?[path]:[];
+    }
+    return [];
+  });
+}
+
+export function decorateConversationAttachments<T extends {role:string;text:string;client_id?:string;image_paths?:string[];attachments?:ConversationAttachment[]}>(sessionId:string,messages:T[]):T[] {
+  return messages.map(message=>{
+    const {image_paths,...visible}=message;
+    if(message.role!=='user'||(!image_paths?.length && !message.client_id && !message.text.includes('\n\n附件：\n')))return visible as T;
+    const row=getDb().prepare(`SELECT input_text,attachments FROM conversation_attachments WHERE session_id=? AND
+      (client_id=? OR input_key=?) ORDER BY rowid DESC LIMIT 1`).get(sessionId,message.client_id||'',inputKey(message.text,image_paths||[])) as {input_text:string;attachments:string}|undefined;
+    return row?{...visible,text:row.input_text,attachments:JSON.parse(row.attachments)} as T:visible as T;
+  });
 }
 
 /** Only files saved by the existing project-scoped paste/upload endpoints

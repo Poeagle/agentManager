@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import {homedir} from 'os';
 import {join} from 'path';
 import {randomUUID} from 'crypto';
-import {formatConversationInput,type ConversationAttachment} from './conversation-attachments.js';
+import {conversationImagePaths,formatConversationInput,type ConversationAttachment} from './conversation-attachments.js';
 import {extractAgentMessages} from './prompt-context.js';
 import {conversationMessageId,type ConversationMessage} from './conversation-reader.js';
 
@@ -99,7 +99,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     });
   }
   function unavailable() {if(!closed) emit({type:'unavailable',reason:'当前会话尚未连接实时事件，已完成的回复仍会自动更新。'});}
-  function acceptItem(item:any,turnId:string,streaming:boolean,timestamp?:number) {
+  function acceptItem(item:any,turnId:string,streaming:boolean,timestamp?:number|null) {
     if(!['agentMessage','userMessage'].includes(item?.type)||typeof item.id!=='string'||typeof turnId!=='string') return;
     const role=item.type==='userMessage'?'user':'assistant';
     const previous=items.get(item.id);
@@ -110,7 +110,8 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       id:conversationMessageId(turnId,role,item.id),role,turn_id:turnId,
       ...(role==='assistant'?{phase:item.phase==='final_answer'?'final' as const:'commentary' as const}:{}),
       ...(typeof item.clientId==='string'?{client_id:item.clientId}:{}),
-      text:text.slice(0,128*1024),timestamp:previous?.message.timestamp || new Date(timestamp||Date.now()).toISOString(),streaming:role==='assistant' && streaming,
+      ...(role==='user'?{image_paths:conversationImagePaths(item.content)}:{}),
+      text:text.slice(0,128*1024),timestamp:previous?.message.timestamp || (timestamp===null?null:new Date(timestamp??Date.now()).toISOString()),streaming:role==='assistant' && streaming,
     }});
     changed();
   }
@@ -133,8 +134,10 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
         turnId=turn.id;startedAt=typeof turn.startedAt==='number'?new Date(turn.startedAt*1000).toISOString():null;
         if(!busy)stage='idle';else if(!sameTurn || stage==='idle')stage='waiting';
         if(busy) for(const item of turn.items||[]) {
-          acceptItem(item,turn.id,true);
-          if(item.type==='agentMessage' && item.text?.length && stage==='waiting') stage=items.get(item.id)?.message.streaming?'answering':'finishing';
+          const streaming=item===(turn.items||[]).at(-1) && item.type==='agentMessage' && !item.completedAtMs;
+          acceptItem(item,turn.id,streaming,typeof item.startedAtMs==='number'?item.startedAtMs:typeof item.completedAtMs==='number'?item.completedAtMs:null);
+          if(item.type==='agentMessage' && item.text?.length) stage=streaming?'answering':item.phase==='final_answer'?'finishing':'tools';
+          else if(['commandExecution','mcpToolCall','fileChange'].includes(item.type))stage='tools';
         }
         // The baseline is an ordered prefix; fresh events may already have
         // inserted later items while the request was in flight.

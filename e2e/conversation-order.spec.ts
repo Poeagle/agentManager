@@ -38,13 +38,14 @@ test('sending, early native echoes, late history and reload preserve causal mess
     const turn=`t${round}`,stamp=`201${round}-01-01T00:00:00Z`;
     // Real Codex uses different IDs in userMessage events and rollout records.
     const user={id:id(turn,'user',`stream-user-${round}`),role:'user',text:'继续',timestamp:stamp,turn_id:turn,client_id:submitted!.client_id};
-    const answer={id:id(turn,'assistant',`a${round}`),role:'assistant',text:`第 ${round} 轮答复`,timestamp:stamp,turn_id:turn,streaming:true};
+    const answer={id:id(turn,'assistant',`stream-a${round}`),role:'assistant',phase:round===1?'commentary':'final',text:`第 ${round} 轮答复\n`,timestamp:stamp,turn_id:turn,streaming:true};
     push(JSON.stringify({type:'snapshot',messages:[user,answer],busy:true,stage:'answering',turn_id:turn}));
-    expected.push(answer.text);await expect(bodies).toHaveText(expected);
-    appendFileSync(log,record(turn,'user',`log-user-${round}`,'继续',stamp)+record(turn,'assistant',`a${round}`,answer.text,stamp));
+    expected.push(answer.text.trim());await expect(bodies).toHaveText(expected);
+    appendFileSync(log,record(turn,'user',`log-user-${round}`,'继续',stamp)+record(turn,'assistant',`a${round}`,answer.text.trim(),stamp).replace('"phase":"final_answer"',`"phase":"${round===1?'commentary':'final_answer'}"`));
     push(JSON.stringify({type:'snapshot',messages:[user,{...answer,streaming:false}],busy:false,stage:'idle',turn_id:turn}));
     // Let durable reconciliation run before the HTTP send is acknowledged.
     await expect(chat.locator(`[data-chat-message-id="${id(turn,'user',`log-user-${round}`)}"]`)).toHaveCount(1);
+    await expect(chat.locator(`[data-chat-message-id="${id(turn,'assistant',`a${round}`)}"]`)).toHaveAttribute('data-streaming','false');
     await expect(bodies).toHaveText(expected);release();await expect(chat.getByRole('textbox')).toHaveValue('');
     // Replaying the same live snapshot must not resurrect its aliased user ID.
     push(JSON.stringify({type:'snapshot',messages:[user,{...answer,streaming:false}],busy:false}));

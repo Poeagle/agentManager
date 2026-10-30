@@ -12,6 +12,16 @@ let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
 
 describe('database schema and durable session identity', () => {
+  it('adds separate attachment storage to v18 while keeping sessions and login valid',()=>{
+    const fixture=createTestDatabase();cleanup=fixture.cleanup;
+    const user=createUser({username:'attachment-owner',password:'password1'}),token=createSession(user.id);
+    getDb().prepare("INSERT INTO projects(id,name,path) VALUES('p','Keep','/tmp/attachment-migration')").run();
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status) VALUES('s','p','Keep task','running')").run();
+    getDb().exec('DROP TABLE conversation_attachments');getDb().pragma('user_version = 18');closeDb();initDb();
+    expect(getSessionUser(token)?.id).toBe(user.id);expect(getDb().prepare("SELECT task,status FROM sessions WHERE id='s'").get()).toEqual({task:'Keep task',status:'running'});
+    expect(getDb().prepare('SELECT COUNT(*) n FROM conversation_attachments').get()).toEqual({n:0});
+    expect(getDb().pragma('user_version',{simple:true})).toBe(19);expect(readdirSync(fixture.dir).some(file=>file.includes('.pre-v19-'))).toBe(true);
+  });
   it('removes retired browser configuration from v11 without losing projects, sessions, login or other tab state', () => {
     const database = createTestDatabase();
     cleanup = database.cleanup;
@@ -39,7 +49,7 @@ describe('database schema and durable session identity', () => {
     const { webPageInstances: _web, activeWebPageId: _active, ...retained } = tabs;
     expect(JSON.parse(state.value)).toEqual(retained);
     expect(getDb().prepare(`SELECT value FROM user_ui_state WHERE key = 'project:corrupt'`).get()).toEqual({ value: 'not-json' });
-    const backup = readdirSync(database.dir).find((file) => file.includes('.pre-v18-') && file.endsWith('.bak'));
+    const backup = readdirSync(database.dir).find((file) => file.includes('.pre-v19-') && file.endsWith('.bak'));
     expect(backup).toBeDefined();
     const original = new Database(join(database.dir, backup!), { readonly: true });
     try { expect(original.prepare('SELECT default_web_url FROM projects WHERE id = ?').get('p')).toEqual({ default_web_url: 'https://example.com' }); }
@@ -101,7 +111,7 @@ describe('database schema and durable session identity', () => {
       'stopped_at',
       'stop_reason',
     ]));
-    expect(db.pragma('user_version', { simple: true })).toBe(18);
+    expect(db.pragma('user_version', { simple: true })).toBe(19);
   });
 
   it('adds project notifications to v17 without losing users, projects or login sessions', () => {
@@ -116,7 +126,7 @@ describe('database schema and durable session identity', () => {
     expect(getDb().prepare("SELECT name,owner_id FROM projects WHERE id='notify'").get()).toEqual({name:'Notify',owner_id:user.id});
     expect(getDb().prepare('SELECT * FROM platform_ai_project_notifications').all()).toEqual([]);
     expect(getDb().pragma('foreign_key_check')).toEqual([]);
-    expect(readdirSync(database.dir).some(file => file.includes('.pre-v18-'))).toBe(true);
+    expect(readdirSync(database.dir).some(file => file.includes('.pre-v19-'))).toBe(true);
   });
 
   it('preserves legacy project prompt data while migrating', () => {
@@ -143,7 +153,7 @@ describe('database schema and durable session identity', () => {
     initDb();
     const migrated = getDb().prepare('SELECT session_prompt FROM projects WHERE id = ?').get('legacy') as { session_prompt: string };
     expect(migrated.session_prompt).toBe('keep this prompt');
-    expect(getDb().pragma('user_version', { simple: true })).toBe(18);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(19);
 
     cleanup = () => {
       closeDb();
@@ -228,6 +238,6 @@ describe('database schema and durable session identity', () => {
       'legacy-orphan-project': null,
       'legacy-owned': 'owner',
     });
-    expect(getDb().pragma('user_version', { simple: true })).toBe(18);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(19);
   });
 });

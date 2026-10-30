@@ -3,6 +3,14 @@ import {mergeConversationTimeline,type TimelineMessage} from '../src/lib/convers
 const message=(id:string,role:'user'|'assistant',extra:Partial<TimelineMessage>={}):TimelineMessage=>({id,role,text:id,timestamp:null,...extra});
 const ids=(items:TimelineMessage[])=>items.map(item=>item.id);
 describe('causal conversation timeline',()=>{
+  it('reconciles resumed assistant item IDs and trailing newlines without merging repeated items or phases',()=>{
+    const live=[message('live-one','assistant',{text:'正在检查。\n',turn_id:'turn',phase:'commentary',streaming:true}),message('live-two','assistant',{text:'正在检查。\n',turn_id:'turn',phase:'commentary',streaming:true}),message('live-final','assistant',{text:'正在检查。',turn_id:'turn',phase:'final',streaming:true})];
+    const history=[message('saved-one','assistant',{text:'正在检查。',turn_id:'turn',phase:'commentary',sequence:100}),message('saved-two','assistant',{text:'正在检查。',turn_id:'turn',phase:'commentary',sequence:200}),message('saved-final','assistant',{text:'正在检查。',turn_id:'turn',phase:'final',sequence:300})];
+    const merged=mergeConversationTimeline(live,history);expect(ids(merged)).toEqual(ids(history));expect(merged.every(item=>!item.streaming)).toBe(true);
+    expect(ids(mergeConversationTimeline(merged,live))).toEqual(ids(history));expect(mergeConversationTimeline(merged,live).every(item=>!item.streaming)).toBe(true);
+    expect(ids(mergeConversationTimeline(history,live))).toEqual(ids(history));
+    expect(mergeConversationTimeline(history,[message('other','assistant',{text:'正在检查。',turn_id:'other',phase:'commentary',streaming:true})])).toHaveLength(4);
+  });
   it('ignores clock skew and completion timestamp changes while preserving a streaming bubble',()=>{
     const old=[message('q1','user',{timestamp:'2030-01-01'}),message('a1','assistant',{timestamp:'2030-01-02'}),message('q2','user',{timestamp:'2020-01-01'}),message('a2','assistant',{timestamp:'2020-01-02',streaming:true})];
     const merged=mergeConversationTimeline(old,[message('a2','assistant',{timestamp:'2019-01-01',sequence:400})]);

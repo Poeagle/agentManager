@@ -142,4 +142,32 @@ describe('chat/raw terminal display',()=>{
     fireEvent.click(screen.getByRole('button',{name:'原始终端',exact:true}));expect(sockets[0].close).toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button',{name:'对话',exact:true}));expect(screen.getAllByText('真正的流式回复')).toHaveLength(1);
   });
+  it('shows at most one live caret and clears all stale carets while tools run or a turn ends',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const messages=['第一段进展','第二段进展'].map((text,index)=>({id:`progress-${index}`,role:'assistant',phase:'commentary',text,turn_id:'active-turn',streaming:true,timestamp:null}));
+    const frame=(stage:string,busy=true)=>act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages,busy,stage,turn_id:'active-turn'})}));
+    frame('answering');expect(document.querySelectorAll('.session-chat-caret')).toHaveLength(1);expect(screen.getByText('第一段进展').closest('article')).toHaveAttribute('data-streaming','false');
+    frame('tools');expect(document.querySelectorAll('.session-chat-caret')).toHaveLength(0);
+    frame('idle',false);expect(document.querySelectorAll('.session-chat-caret')).toHaveLength(0);
+  });
+  it('updates one progress region in place, keeps final replies separate and starts a new region after a followup',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    page.messages=[...page.messages,{id:'progress-one',role:'assistant',phase:'commentary',text:'开始检查',turn_id:'turn',timestamp:'2026-10-30T06:59:01Z'}];
+    mount();await screen.findByText('开始检查');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const region=screen.getByRole('region',{name:'Codex 进展'});
+    const progress={id:'progress-two',role:'assistant',phase:'commentary',text:'正在核对日志',turn_id:'turn',streaming:true,timestamp:'2026-10-30T06:59:05Z'};
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages:[progress],busy:true,stage:'answering',turn_id:'turn'})}));
+    expect(screen.getByRole('region',{name:'Codex 进展'})).toBe(region);expect(region).toHaveTextContent('开始检查');expect(region).toHaveTextContent('正在核对日志');
+    expect(screen.getByLabelText('进展序号 1')).toHaveTextContent('1');expect(screen.getByLabelText('进展序号 2')).toHaveTextContent('2');
+    expect(screen.getAllByLabelText('进展时间').map(node=>node.getAttribute('datetime'))).toEqual(['2026-10-30T06:59:01Z','2026-10-30T06:59:05Z']);
+    for(const time of screen.getAllByLabelText('进展时间'))expect(time).toHaveTextContent(/^\d{2}:\d{2}:\d{2}$/);
+    const final={id:'final-answer',role:'assistant',phase:'final',text:'最终结论：检查通过',turn_id:'turn',timestamp:null};
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages:[{...progress,streaming:false},final],busy:false,stage:'idle',turn_id:'turn'})}));
+    expect(region).not.toContainElement(screen.getByText('最终结论：检查通过'));expect(region.querySelectorAll('.session-chat-caret')).toHaveLength(0);
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages:[{id:'followup',role:'user',text:'继续核对',turn_id:'turn-two',timestamp:null},{...progress,id:'next-progress',text:'新一轮进展',turn_id:'turn-two'}],busy:true,stage:'answering',turn_id:'turn-two'})}));
+    expect(screen.getAllByRole('region',{name:'Codex 进展'})).toHaveLength(2);expect(screen.getAllByRole('region',{name:'Codex 进展'})[1]).toHaveTextContent('新一轮进展');
+  });
 });

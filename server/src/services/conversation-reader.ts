@@ -2,8 +2,9 @@ import {open} from 'fs/promises';
 import {createHash} from 'crypto';
 import {extractAgentMessages,nativeConversationFile,type PromptContextSession} from './prompt-context.js';
 import type {CliType} from './session-identity.js';
+import {conversationImagePaths,type ConversationAttachment} from './conversation-attachments.js';
 
-export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final';client_id?:string;sequence?:number}
+export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final';client_id?:string;sequence?:number;attachments?:ConversationAttachment[];image_paths?:string[]}
 interface IndexedMessage extends Omit<ConversationMessage,'text'> {offset:number;length:number;hash:string;recordType:string;nativeItem:boolean}
 interface Index {inode:number;mtime:number;start:number;offset:number;partial:Buffer;messages:IndexedMessage[];generation:string;skipPartial:boolean;anchor:Buffer}
 const WINDOW=2*1024*1024;
@@ -46,7 +47,7 @@ function publicMessage(line:Buffer,kind:CliType) {
     const message=extractAgentMessages([entry],kind,128*1024).find(message=>message.role==='user'||message.role==='assistant');
     const turnId=entry.payload?.turn_id || entry.payload?.internal_chat_message_metadata_passthrough?.turn_id;
     const itemId=kind==='codex' && entry.type==='response_item' && typeof entry.payload?.id==='string'?entry.payload.id:undefined;
-    return message ? {message,itemId,turnId:typeof turnId==='string'?turnId:undefined,recordType:entry.type==='event_msg' ? entry.payload?.type : entry.type} : null;
+    return message ? {message,itemId,imagePaths:message.role==='user'?conversationImagePaths(entry.payload?.content):[],turnId:typeof turnId==='string'?turnId:undefined,recordType:entry.type==='event_msg' ? entry.payload?.type : entry.type} : null;
   } catch {return null;}
 }
 function scan(buffer:Buffer,base:number,kind:CliType):IndexedMessage[] {
@@ -156,7 +157,7 @@ export async function readConversation(session:PromptContextSession,query:{after
       for(const item of selected) {
         const buffer=Buffer.alloc(item.length);await handle.read(buffer,0,buffer.length,item.offset);
         const parsed=publicMessage(buffer,file.kind);
-        if(parsed) messages.push({id:item.id,role:item.role,text:parsed.message.text,timestamp:item.timestamp,turn_id:item.turn_id,phase:item.phase,sequence:item.offset});
+        if(parsed) messages.push({id:item.id,role:item.role,text:parsed.message.text,timestamp:item.timestamp,turn_id:item.turn_id,phase:item.phase,sequence:item.offset,...(parsed.imagePaths.length?{image_paths:parsed.imagePaths}:{})});
       }
       const first=selected[0];
       return {messages,has_more:index.start>0 || (!!first && index.messages[0]?.id!==first.id),reset,available:true,generation:index.generation};

@@ -12,9 +12,10 @@ import { requirePermission } from '../services/rbac.js';
 import { getDb } from '../db/index.js';
 import { loadRecentAgentMessages, loadRecentPromptContext } from '../services/prompt-context.js';
 import { sessionPresenter } from '../services/session-labels.js';
+import {randomUUID} from 'crypto';
 import {readConversation} from '../services/conversation-reader.js';
 import {readCodexRuntime} from '../services/codex-runtime.js';
-import {formatConversationInput,validateConversationAttachments} from '../services/conversation-attachments.js';
+import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,validateConversationAttachments} from '../services/conversation-attachments.js';
 import {observeCodexConversation,submitStreamingCodexInput} from '../services/conversation-stream.js';
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
@@ -517,15 +518,18 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const clientId=req.body?.client_id;
     if(clientId!==undefined && (typeof clientId!=='string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(clientId))) return reply.code(400).send({error:'Invalid client_id'});
     let attachments;try{attachments=await validateConversationAttachments(id,req.body?.attachments);}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'附件不可用'});}
-    const preparedInput=formatConversationInput(input,attachments);
+    const preparedInput=formatConversationInput(input,attachments,true);
+    const attachmentClientId=typeof clientId==='string'?clientId:randomUUID();
     // Serialize only the brief paste/Enter pair, never the agent's execution.
     // A second caller must not paste its text before the first caller's Enter.
     const prior = pendingInputs.get(id) || Promise.resolve();
     const submission = prior.catch(() => {}).then(async () => {
       const session=getSession(id);
       if(req.body?.source==='conversation' && process.env.AGENTMANAGER_CODEX_STREAM_SOCKET && session?.cli_type==='codex' && session.codex_session_id) {
-        if(await (attachments.length?submitStreamingCodexInput(session.codex_session_id,input,clientId,attachments):clientId?submitStreamingCodexInput(session.codex_session_id,input,clientId):submitStreamingCodexInput(session.codex_session_id,input))) return;
+        if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,true);
+        if(await (attachments.length?submitStreamingCodexInput(session.codex_session_id,input,attachmentClientId,attachments):clientId?submitStreamingCodexInput(session.codex_session_id,input,clientId):submitStreamingCodexInput(session.codex_session_id,input))) return;
       }
+      if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);
       if (!writeToSession(id,preparedInput,true)) throw new Error('Session input is unavailable');
       await new Promise(resolve => setTimeout(resolve,50));
       if (!writeToSession(id,'\r',false)) throw new Error('Input was pasted but submission could not be confirmed');
@@ -652,7 +656,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     }
     const stop=observeCodexConversation(session.codex_session_id,frame=>{
       if(!canAccessAgentSession(req.user!.id,id)) {socket.close(1008);return;}
-      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(frame));
+      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(frame.type==='snapshot'?{...frame,messages:decorateConversationAttachments(id,frame.messages)}:frame));
       else if(socket.readyState===1) socket.close(1013,'Slow conversation client');
     });
     const heartbeat=setInterval(()=>{if(socket.readyState===1) socket.ping();},25000);
@@ -671,7 +675,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       {after:req.query.after,before:req.query.before,limit:Number(req.query.limit)||40});
     const state=getTracker(id)?.state;
     const runtime=session.cli_type==='codex' ? await readCodexRuntime(session.codex_session_id) : null;
-    return reply.header('Cache-Control','private, no-store').send({...page,session_id:id,session_status:session.status,session_active:isSessionActive(id),
+    return reply.header('Cache-Control','private, no-store').send({...page,messages:decorateConversationAttachments(id,page.messages),session_id:id,session_status:session.status,session_active:isSessionActive(id),
       native_id:session.cli_type==='codex'?session.codex_session_id:session.claude_session_id,runtime,
       interaction:state ? {processState:state.processState,promptType:state.promptType,isPermission:state.isPermission,choices:state.choices} : null});
   });

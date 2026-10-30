@@ -8,6 +8,23 @@
 .session-chat-agent {display:flex;align-items:center;gap:8px;margin-bottom:12px;color:var(--text-primary);font-size:12px;font-weight:600;}
 .session-chat-agent>svg {color:var(--accent);}
 .session-chat-agent .session-chat-writing {margin-left:2px;color:var(--text-muted);font-size:11px;font-weight:400;}
+.session-chat-progress {margin-bottom:28px;}
+.session-chat-progress-count {font-size:11px;font-weight:400;color:var(--text-muted);}
+.session-chat-progress-live {margin-left:auto;font-size:11px;font-weight:400;color:var(--accent);}
+.session-chat-progress-entry {position:relative;padding:0 0 18px 34px;}
+.session-chat-progress-entry:last-child {padding-bottom:0;}
+.session-chat-progress-entry:not(:last-child)::before {content:'';position:absolute;left:10px;top:24px;bottom:2px;width:1px;background:var(--border);}
+.session-chat-progress-entry-head {display:flex;align-items:center;gap:10px;height:22px;margin-bottom:5px;color:var(--text-secondary);font-size:11px;}
+.session-chat-progress-entry-head time {font-variant-numeric:tabular-nums;}
+.session-chat-progress-number {position:absolute;left:0;top:0;display:flex;align-items:center;justify-content:center;width:22px;height:22px;border:1px solid var(--border);border-radius:50%;background:var(--bg-secondary);color:var(--text-secondary);font-size:11px;}
+.session-chat-progress-entry[data-active="true"] .session-chat-progress-number {border-color:var(--accent);background:var(--accent);color:var(--bg-primary);}
+.session-chat-progress-updating {color:var(--accent);}
+.session-chat-progress-time-unknown {color:var(--text-muted);}
+.session-chat-progress .session-chat-message {margin-bottom:0;}
+.session-chat-progress .markdown-preview {font-size:13px;line-height:1.85;}
+.session-chat-progress .markdown-preview>:last-child {margin-bottom:0;}
+.session-chat-progress .session-chat-message-meta {position:absolute;top:-28px;right:0;min-height:22px;margin:0;background:var(--bg-primary);border-radius:4px;}
+.session-chat-progress-entry:hover .session-chat-message-meta {opacity:1;}
 .session-chat-body {min-width:0;overflow-wrap:anywhere;}
 .session-chat-message .markdown-preview {font-size:14px;line-height:1.85;}
 .session-chat-message .markdown-preview p {margin:0 0 12px;}

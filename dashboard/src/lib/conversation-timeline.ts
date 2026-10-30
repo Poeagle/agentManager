@@ -7,6 +7,10 @@ export interface TimelineMessage extends ConversationMessage {
   aliases?: string[];
 }
 
+function sameInput(a:ConversationMessage,b:ConversationMessage) {
+  return a.text.trim()===b.text.trim() && (!a.attachments || !b.attachments || JSON.stringify(a.attachments.map(item=>item.path))===JSON.stringify(b.attachments.map(item=>item.path)));
+}
+
 /** Reconcile ordered native batches. Timestamps are display data, never order
  * keys: client clocks, item-start times and durable completion times differ. */
 export function mergeConversationTimeline(previous:TimelineMessage[],incoming:ConversationMessage[],placement:'append'|'prepend'='append'):TimelineMessage[] {
@@ -18,12 +22,12 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
     if(index<0 && message.role==='user') {
       index=result.findIndex(item=>item.optimistic && (message.client_id
         ? item.client_id===message.client_id
-        : message.sequence!==undefined && message.sequence>item.optimistic.afterSequence && item.text.trim()===message.text.trim()));
+        : message.sequence!==undefined && message.sequence>item.optimistic.afterSequence && sameInput(item,message)));
     }
-    if(index<0 && message.role==='user' && message.turn_id) {
-      // Native stream/rollout user IDs differ. Reconcile their ordered
+    if(index<0 && message.turn_id) {
+      // Native stream/rollout item IDs can differ after resume. Reconcile ordered
       // occurrences within the same turn, including identical followups.
-      index=result.findIndex((item,index)=>!matched.has(index) && !item.optimistic && item.role==='user' && item.turn_id===message.turn_id && item.text===message.text && (!item.client_id || !message.client_id || item.client_id===message.client_id) && (item.sequence===undefined)!==(message.sequence===undefined));
+      index=result.findIndex((item,index)=>!matched.has(index) && !item.optimistic && item.role===message.role && item.turn_id===message.turn_id && sameInput(item,message) && (message.role==='user' || item.phase===message.phase) && (!item.client_id || !message.client_id || item.client_id===message.client_id) && (item.sequence===undefined)!==(message.sequence===undefined));
     }
     if(index>=0) {
       matched.add(index);

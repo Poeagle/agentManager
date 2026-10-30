@@ -333,7 +333,7 @@ describe('WeCom configuration, group subscriptions and migration', () => {
     getDb().exec(`CREATE TABLE old_channels (id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('webhook','wecom','wechat','qq')),enabled INTEGER NOT NULL DEFAULT 0,config TEXT NOT NULL DEFAULT '{}',secrets TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL DEFAULT (datetime('now')));
       INSERT INTO old_channels SELECT * FROM platform_ai_channels; DROP TABLE platform_ai_channels; ALTER TABLE old_channels RENAME TO platform_ai_channels; PRAGMA user_version=15;`);
     closeDb(); initDb();
-    expect(getDb().pragma('user_version', {simple: true})).toBe(18);
+    expect(getDb().pragma('user_version', {simple: true})).toBe(19);
     expect(getDb().pragma('foreign_key_check')).toEqual([]);
     expect(getDb().pragma('foreign_keys', {simple: true})).toBe(1);
     expect(getDb().prepare('SELECT COUNT(*) AS n FROM platform_ai_bindings').get()).toEqual({n: 1});

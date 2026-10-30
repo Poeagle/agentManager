@@ -10,13 +10,14 @@ import {conversationMessageId} from '../src/services/conversation-reader.js';
 let server:Server,wss:WebSocketServer,peer:WebSocket,dir:string,stop:(()=>void)|undefined;
 let submissions:any[],requests:string[],frames:ConversationStreamFrame[],loaded:boolean;
 let active=false;
+let baselineItems:any[]=[];
 beforeEach(async()=>{
   dir=mkdtempSync(join(tmpdir(),'chat-stream-'));const path=join(dir,'sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',path);
-  server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;
+  server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;baselineItems=[];
   wss.on('connection',socket=>{
     peer=socket;socket.on('message',bytes=>{
       const {id,method,params}=JSON.parse(bytes.toString());requests.push(method);if(method==='turn/start')submissions.push(params);if(!id) return;
-      const result=method==='thread/start'?{thread:{id:'019ff001-8888-7888-8888-888888888888'}}:method==='thread/read'?{thread:{status:{type:active?'active':loaded?'idle':'notLoaded'}}}:method==='thread/turns/list'?{data:active?[{id:'turn',status:'inProgress',items:[]}]:[]}:{};
+      const result=method==='thread/start'?{thread:{id:'019ff001-8888-7888-8888-888888888888'}}:method==='thread/read'?{thread:{status:{type:active?'active':loaded?'idle':'notLoaded'}}}:method==='thread/turns/list'?{data:active?[{id:'turn',status:'inProgress',items:baselineItems}]:[]}:{};
       socket.send(JSON.stringify({id,result}));
     });
   });
@@ -25,6 +26,12 @@ beforeEach(async()=>{
 afterEach(async()=>{stop?.();stop=undefined;for(const client of wss.clients) client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 const send=(method:string,params:unknown)=>peer.send(JSON.stringify({method,params}));
 describe('native Codex conversation streaming',()=>{
+  it('does not mark already completed progress as streaming when reconnecting during tool execution',async()=>{
+    active=true;baselineItems=[{type:'agentMessage',id:'item-resumed',phase:'commentary',text:'正在检查。\n'},{type:'commandExecution',id:'tool',status:'inProgress',command:'private'}];
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({type:'snapshot',busy:true,stage:'tools',messages:[{text:'正在检查。\n',streaming:false,timestamp:null}]}));
+    expect(JSON.stringify(frames)).not.toContain('private');
+  });
   it('submits conversation followups to the existing engine without terminal menus or a second thread',async()=>{
     expect(await submitStreamingCodexInput('thread','能否再详细一下')).toBe(true);
     expect(requests.filter(method=>method==='turn/start')).toHaveLength(1);expect(requests).not.toContain('thread/start');expect(requests).not.toContain('thread/resume');
@@ -42,6 +49,9 @@ describe('native Codex conversation streaming',()=>{
     const attachments=[{kind:'image' as const,name:'截图.png',path:'/project/.agentmanager/pastes/image.png'},{kind:'file' as const,name:'报告.txt',path:'/project/.agentmanager/pastes/report.txt'}];
     expect(await submitStreamingCodexInput('thread','看看附件','client-image',attachments)).toBe(true);
     expect(submissions[0].input).toEqual([{type:'text',text:expect.stringContaining('报告.txt'),text_elements:[]},{type:'localImage',path:attachments[0].path}]);
+    expect(submissions[0].input[0].text).not.toContain('agentmanager_attachments');
+    await submitStreamingCodexInput('thread','仅图片','image-only',attachments.slice(0,1));
+    expect(submissions[1].input[0].text).toBe('仅图片');
   });
   it('retains the terminal input path for an embedded CLI',async()=>{
     loaded=false;expect(await submitStreamingCodexInput('thread','followup')).toBe(false);expect(requests).not.toContain('turn/start');

@@ -37,6 +37,22 @@ beforeEach(()=>{
 afterEach(()=>{client.clear();vi.restoreAllMocks();});
 const mount=()=>render(<QueryClientProvider client={client}><ProjectView currentUserId="u" projectId="p" projectPath="/workspace/p" projectName="Project"/></QueryClientProvider>);
 describe('file sidebar in the session workspace',()=>{
+  it('offers tree actions and delete confirmation while the terminal is active and no file has been opened',async()=>{
+    mount();const raw=await screen.findByLabelText('终端草稿');
+    fireEvent.click(screen.getByRole('button',{name:'File Explorer',exact:true}));
+    const tree=screen.getByRole('complementary',{name:'项目文件树'}),file=await within(tree).findByRole('button',{name:'a.txt',exact:true});
+    fireEvent.contextMenu(file,{clientX:120,clientY:180});
+    const menu=screen.getByRole('menu');expect(menu).toBeVisible();
+    fireEvent.click(within(menu).getByRole('button',{name:'Copy',exact:true}));
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    fireEvent.contextMenu(file.parentElement!,{clientX:120,clientY:250});
+    expect(screen.getByRole('menu')).toBeVisible();expect(screen.getByRole('button',{name:'Paste (copy)',exact:true})).toBeEnabled();
+    fireEvent.keyDown(document,{key:'Escape'});
+    fireEvent.contextMenu(file);fireEvent.click(screen.getByRole('button',{name:'Delete',exact:true}));
+    expect(screen.getByRole('heading',{name:'Delete file?',exact:true})).toBeVisible();
+    fireEvent.click(screen.getByRole('button',{name:'Cancel',exact:true}));
+    expect(raw).toBeVisible();expect(api.files.read).not.toHaveBeenCalled();
+  });
   it('toggles only the tree, keeps separate file/session rows and retains terminal and unsaved file drafts',async()=>{
     mount();const raw=await screen.findByLabelText('终端草稿');fireEvent.change(raw,{target:{value:'unfinished command'}});
     const treeToggle=screen.getByRole('button',{name:'File Explorer',exact:true});

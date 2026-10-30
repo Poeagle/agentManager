@@ -16,6 +16,12 @@ beforeEach(() => {
 });
 
 describe('project explorer boundaries', () => {
+  it('opens the directory menu on empty-state text without opening a file',async()=>{
+    render(<FileExplorer rootPath="/project"/>);
+    fireEvent.contextMenu(await screen.findByText('No files found'));
+    expect(screen.getByRole('menu')).toBeVisible();expect(screen.getByRole('button',{name:'Paste',exact:true})).toBeDisabled();
+    fireEvent.keyDown(document,{key:'Escape'});expect(screen.queryByRole('menu')).not.toBeInTheDocument();expect(api.files.read).not.toHaveBeenCalled();
+  });
   it('disables parent navigation at the project root', async () => {
     render(<FileExplorer rootPath="/project" projectId="project-1" />);
     await screen.findByText('No files found');
