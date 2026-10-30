@@ -203,7 +203,7 @@ describe('chat/raw terminal display',()=>{
     expect(screen.getByRole('region',{name:'Codex 进展'})).toBe(region);expect(region).toHaveTextContent('开始检查');expect(region).toHaveTextContent('正在核对日志');
     expect(screen.getByLabelText('进展序号 1')).toHaveTextContent('1');expect(screen.getByLabelText('进展序号 2')).toHaveTextContent('2');
     expect(screen.getAllByLabelText('进展时间').map(node=>node.getAttribute('datetime'))).toEqual(['2026-10-30T06:59:01Z','2026-10-30T06:59:05Z']);
-    for(const time of screen.getAllByLabelText('进展时间'))expect(time).toHaveTextContent(/^\d{2}:\d{2}:\d{2}$/);
+    for(const time of screen.getAllByLabelText('进展时间'))expect(time).toHaveTextContent(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
     const final={id:'final-answer',role:'assistant',phase:'final',text:'最终结论：检查通过',turn_id:'turn',timestamp:null};
     act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages:[{...progress,streaming:false},final],busy:false,stage:'idle',turn_id:'turn'})}));
     expect(region).not.toContainElement(screen.getByText('最终结论：检查通过'));expect(region.querySelectorAll('.session-chat-caret')).toHaveLength(0);

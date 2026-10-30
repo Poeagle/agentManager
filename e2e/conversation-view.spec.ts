@@ -28,7 +28,13 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   await expect(chat).not.toContainText('PRIVATE TOOL');await expect(chat.getByText('这是 Agent 的中途进展。',{exact:true})).toBeVisible();
   const progress=chat.getByRole('region',{name:'Codex 进展'});await expect(progress).toHaveCount(1);await expect(progress).toContainText('已核对项目结构');
   await expect(progress.getByLabel('进展序号 1')).toBeVisible();await expect(progress.getByLabel('进展序号 2')).toBeVisible();
-  await expect(progress.getByLabel('进展时间')).toHaveCount(2);await expect(progress).not.toContainText('检查已完成。');
+  await expect(progress.getByLabel('进展时间')).toHaveCount(2);
+  for(const time of await chat.locator('time[datetime]').all())await expect(time).toHaveText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  await page.mouse.move(0,0);
+  const answerMeta=chat.locator('.session-chat-message[data-phase="final"] .session-chat-message-meta').first();
+  await expect(answerMeta).toHaveCSS('opacity','1');
+  await expect(answerMeta.getByRole('button',{name:'复制Agent 回复'})).toBeVisible();
+await expect(progress).not.toContainText('检查已完成。');
   await page.screenshot({path:testInfo.outputPath('progress-timeline.png')});
   expect(await chat.locator('.session-chat-message.user .session-chat-body').evaluate(node=>getComputedStyle(node).backgroundColor)).not.toBe(await chat.locator('.session-chat-message.assistant').first().evaluate(node=>getComputedStyle(node).backgroundColor));
   await expect.poll(async()=>{const data=await(await page.request.get('/api/sessions')).json();return data.sessions.find((item:{id:string})=>item.id===session.id)?.status;}).toBe('running');

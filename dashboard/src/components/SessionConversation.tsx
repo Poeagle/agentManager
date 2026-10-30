@@ -8,7 +8,7 @@ import {ConversationWidthHandles,ConversationNavigator} from './ConversationRead
 import {hasPermission,usePermissions} from '../lib/permissions';
 import {conversationClientId,mergeConversationTimeline,type TimelineMessage} from '../lib/conversation-timeline';
 import {groupConversationProgress} from '../lib/conversation-progress';
-import {conversationTimings,elapsedBetween} from '../lib/conversation-timing';
+import {conversationTimings,elapsedBetween,formatConversationTimestamp} from '../lib/conversation-timing';
 import {ConversationActivityLine,type ConversationActivity} from './ConversationActivityLine';
 import './SessionConversation.css';
 
@@ -29,7 +29,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
     } catch {setCopied(false);}
   }
   if(message.phase==='error')return <article className="session-chat-message session-chat-error-notice" role="alert" data-phase="error" data-streaming="false" data-retrying={retrying} data-retry-ended={!!message.error?.will_retry && !retrying} data-chat-message-id={message.id}>
-    <div className="session-chat-error-heading"><AlertTriangle size={16}/><strong>{message.error?.will_retry?retrying?'执行遇到错误，正在自动重试':'重试已结束':'本轮执行出错'}</strong>{message.timestamp && <time dateTime={message.timestamp} title={new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}>{new Date(message.timestamp).toLocaleTimeString('zh-CN',{hour12:false})}</time>}</div>
+    <div className="session-chat-error-heading"><AlertTriangle size={16}/><strong>{message.error?.will_retry?retrying?'执行遇到错误，正在自动重试':'重试已结束':'本轮执行出错'}</strong>{message.timestamp && <time dateTime={message.timestamp} title={new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}>{formatConversationTimestamp(message.timestamp)}</time>}</div>
     <p className="session-chat-error-original">{message.text}</p>
     <p>{message.error?.will_retry?retrying?'Agent 正在自动重试，无需重复发送。':'该次重试过程已结束。':message.error?.code==='server_overloaded' || /at capacity/i.test(message.text)?'当前模型繁忙，本轮已停止。可稍后重试，或在原始终端切换模型。':'本轮已停止。请根据错误信息处理后再试。'}</p>
     <div className="session-chat-error-actions"><button type="button" onClick={onRaw}>查看原始终端</button><button type="button" onClick={()=>void copy()}>{copied?'已复制':'复制错误信息'}</button></div>
@@ -39,7 +39,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
     <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text">{parsed.text}</div><ConversationMessageAttachments items={parsed.attachments} projectId={projectId} onOpenFile={onOpenFile}/></>:<ConversationMarkdown content={message.text} messageId={message.id} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
     <div className="session-chat-message-meta">
       {durationLabel && <span className="session-chat-message-duration" title={durationTitle}>{durationLabel}</span>}
-      {!compact && message.timestamp && <time dateTime={message.timestamp} title={new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}>{new Date(message.timestamp).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false})}</time>}
+      {!compact && message.timestamp && <time dateTime={message.timestamp} title={new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}>{formatConversationTimestamp(message.timestamp)}</time>}
       <button type="button" onClick={()=>void copy()} aria-label={`复制${message.role==='user'?'你的消息':'Agent 回复'}`} title={copied?'已复制':'复制消息'}>{copied?<Check size={13}/>:<Copy size={13}/>}</button>
     </div>
   </article>;
@@ -212,7 +212,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
           <div className="session-chat-agent"><Sparkles size={16}/><span>{agentName}</span><span className="session-chat-writing">进展</span><span className="session-chat-progress-count">{group.messages.length} 条</span>{busy && groups.at(-1)===group && <span className="session-chat-progress-live">进行中</span>}</div>
           <div className="session-chat-progress-content">{group.messages.map((message,index)=><div key={message.id} className="session-chat-progress-entry" data-active={message.id===streamingId}>
             <div className="session-chat-progress-entry-head"><span className="session-chat-progress-number" aria-label={`进展序号 ${index+1}`}>{index+1}</span>
-              {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label="进展时间" dateTime={message.timestamp} title={new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}>{new Date(message.timestamp).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}</time>:<span className="session-chat-progress-time-unknown">时间未知</span>}
+              {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label="进展时间" dateTime={message.timestamp} title={new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}>{formatConversationTimestamp(message.timestamp)}</time>:<span className="session-chat-progress-time-unknown">时间未知</span>}
               {timings.get(message.id) && <span className="session-chat-message-duration" title={timings.get(message.id)!.title}>{timings.get(message.id)!.label}</span>}
               {message.id===streamingId && <span className="session-chat-progress-updating">正在输出</span>}
             </div>{bubble(message,true)}

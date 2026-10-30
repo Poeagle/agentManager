@@ -14,8 +14,8 @@
 .session-chat-progress-entry {position:relative;padding:0 0 18px 34px;}
 .session-chat-progress-entry:last-child {padding-bottom:0;}
 .session-chat-progress-entry:not(:last-child)::before {content:'';position:absolute;left:10px;top:24px;bottom:2px;width:1px;background:var(--border);}
-.session-chat-progress-entry-head {display:flex;align-items:center;gap:10px;height:22px;margin-bottom:5px;color:var(--text-secondary);font-size:11px;}
-.session-chat-progress-entry-head time {font-variant-numeric:tabular-nums;}
+.session-chat-progress-entry-head {display:flex;align-items:center;gap:10px;min-height:22px;flex-wrap:wrap;padding-right:30px;margin-bottom:5px;color:var(--text-secondary);font-size:11px;}
+.session-chat-progress-entry-head time {font-variant-numeric:tabular-nums;white-space:nowrap;}
 .session-chat-progress-number {position:absolute;left:0;top:0;display:flex;align-items:center;justify-content:center;width:22px;height:22px;border:1px solid var(--border);border-radius:50%;background:var(--bg-secondary);color:var(--text-secondary);font-size:11px;}
 .session-chat-progress-entry[data-active="true"] .session-chat-progress-number {border-color:var(--accent);background:var(--accent);color:var(--bg-primary);}
 .session-chat-progress-updating {color:var(--accent);}
@@ -24,7 +24,6 @@
 .session-chat-progress .markdown-preview {font-size:13px;line-height:1.85;}
 .session-chat-progress .markdown-preview>:last-child {margin-bottom:0;}
 .session-chat-progress .session-chat-message-meta {position:absolute;top:-28px;right:0;min-height:22px;margin:0;background:var(--bg-primary);border-radius:4px;}
-.session-chat-progress-entry:hover .session-chat-message-meta {opacity:1;}
 .session-chat-body {min-width:0;overflow-wrap:anywhere;}
 .session-chat-message .markdown-preview {font-size:14px;line-height:1.85;}
 .session-chat-message .markdown-preview p {margin:0 0 12px;}
@@ -32,9 +31,9 @@
 .session-chat-message .markdown-preview a {color:var(--accent);text-decoration:none;text-underline-offset:3px;}
 .session-chat-message .markdown-preview a:hover {text-decoration:underline;}
 .session-chat-user-text {white-space:pre-wrap;overflow-wrap:anywhere;}
-.session-chat-message-meta {display:flex;align-items:center;gap:10px;min-height:23px;margin-top:5px;color:var(--text-muted);font-size:10px;opacity:0;transition:opacity .12s;}
+.session-chat-message-meta {display:flex;align-items:center;gap:10px;min-height:23px;margin-top:5px;color:var(--text-muted);font-size:10px;opacity:1;flex-wrap:wrap;}
 .session-chat-message.user .session-chat-message-meta {justify-content:flex-end;padding-right:4px;}
-.session-chat-message:hover .session-chat-message-meta,.session-chat-message:focus-within .session-chat-message-meta {opacity:1;}
+.session-chat-message-meta time {white-space:nowrap;}
 .session-chat-message-meta button {display:flex;align-items:center;padding:4px;border-radius:4px;}
 .session-chat-message-meta button:hover {background:var(--bg-tertiary);color:var(--text-primary);}
 .session-chat-caret {display:inline-block;width:7px;height:16px;margin-left:3px;border-radius:2px;background:var(--accent);vertical-align:text-bottom;animation:chat-pulse 1.1s ease-in-out infinite;}
@@ -70,7 +69,7 @@
 .session-chat-hint {display:flex;justify-content:space-between;gap:12px;margin-top:8px;color:var(--text-muted);font-size:10px;}
 .session-chat-error {color:var(--error);font-size:12px;margin-bottom:7px;}
 .session-chat-error-notice {padding:13px 15px;border:1px solid color-mix(in srgb,var(--error) 40%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--error) 5%,var(--bg-primary));font-size:12px;}
-.session-chat-error-heading {display:flex;align-items:center;gap:7px;margin-bottom:8px;color:var(--error);}
+.session-chat-error-heading {display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-bottom:8px;color:var(--error);}
 .session-chat-error-heading time {margin-left:auto;font-size:11px;color:var(--text-secondary);font-variant-numeric:tabular-nums;}
 .session-chat-error-original {white-space:pre-wrap;overflow-wrap:anywhere;font-family:ui-monospace,monospace;margin-bottom:6px;}
 .session-chat-error-actions {display:flex;gap:16px;margin-top:9px;}

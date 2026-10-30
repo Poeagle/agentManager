@@ -1,5 +1,12 @@
 import type {ConversationMessage} from './api';
 
+const timestampFormatter=new Intl.DateTimeFormat('sv-SE',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+
+export function formatConversationTimestamp(timestamp: string | null | undefined): string {
+  const value=timestamp?Date.parse(timestamp):NaN;
+  return Number.isFinite(value)?timestampFormatter.format(new Date(value)):'时间未知';
+}
+
 export function elapsedBetween(start: string | null | undefined, end: string | number | null | undefined): number | null {
   if (!start || end == null) return null;
   const from=Date.parse(start),to=typeof end==='number'?end:Date.parse(end);
