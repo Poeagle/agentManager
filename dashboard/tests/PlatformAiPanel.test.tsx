@@ -10,6 +10,7 @@ vi.mock('../src/lib/platform-ai', () => ({platformAiApi: {
   tasks: vi.fn(), stopTracking: vi.fn(), deliveries: vi.fn(), channels: vi.fn(), saveChannel: vi.fn(), saveBinding: vi.fn(), deleteBinding: vi.fn(), tools: vi.fn(),
   discoverModels: vi.fn(), testConnection: vi.fn(),
   testChannel: vi.fn(), reconnectChannel: vi.fn(), saveNotificationTarget: vi.fn(), deleteNotificationTarget: vi.fn(), deleteChannel: vi.fn(),
+  projectNotifications: vi.fn(), saveProjectNotification: vi.fn(), deleteProjectNotification: vi.fn(),
 }}));
 vi.mock('../src/lib/api', () => ({api: {users: {list: vi.fn()}}}));
 let client: QueryClient;

@@ -131,6 +131,9 @@ test('Resume shows failure, immediate retry feedback, and progress until termina
   await expect(page.getByRole('button', { name: 'Reconnect', exact: true })).toBeHidden();
   await expect.poll(() => typeof terminalReady).toBe('function');
   await page.screenshot({ path: testInfo.outputPath('resume-connecting.png') });
+  // Recovery starts in the conversation view; inspect and reconnect the
+  // same native transport through its raw view when its handshake fails.
+  await page.getByRole('button', { name: '原始终端', exact: true }).click();
   const connectionsBeforeRetry = connections;
   const handshakesBeforeRetry = handshakes;
   terminalError();

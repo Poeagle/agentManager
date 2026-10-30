@@ -49,7 +49,7 @@ export function CodexQuotaIndicator() {
     <div
       aria-label={quota ? `Codex 周额度剩余 ${quota.remainingPercent}%` : 'Codex 周额度'}
       title={title}
-      className="relative flex h-7 shrink-0 items-center gap-1 overflow-hidden whitespace-nowrap rounded-md border px-2"
+      className="workspace-indicator relative flex h-6 shrink-0 items-center gap-1 overflow-hidden whitespace-nowrap rounded border px-1.5"
       style={{
         borderColor: 'var(--border)',
         background: 'var(--bg-tertiary)',

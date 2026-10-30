@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'fs';
 import { isAbsolute, join, relative, sep } from 'path';
 import { prunePastesDir } from '../services/paste-cleanup.js';
 import { sessionPresenter } from '../services/session-labels.js';
+import { readCodexRuntime } from '../services/codex-runtime.js';
 
 const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_PASTED_FILE_BYTES = 35 * 1024 * 1024;
@@ -136,22 +137,28 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       }
     }
     const present = sessionPresenter(req.user!.id);
-    const sessions = visible
+    const sessions = await Promise.all(visible
       // Enrich with live process-state (busy/idle/waiting_for_input) so tab signal
       // lights are correct on first load, before any WS state_change arrives.
-      .map((s: any) => {
+      .map(async (s: any) => {
         const st = getTracker(s.id)?.state;
+        const native = s.cli_type === 'codex' ? {...await readCodexRuntime(s.codex_session_id)} : null;
+        if (native && ['running','waiting_for_input'].includes(native.state)
+          && await sessionManager.getLiveWorkAgent(s.id) !== 'codex') {
+          native.state='unknown'; native.reason='原生记录中的执行尚未结束，但未确认到对应 Codex 进程，当前状态待确认';
+        }
         const lastActivityAt = st?.lastActivity
           ? new Date(st.lastActivity).toISOString()
           : sqliteUtcToIso(outputActivity.get(s.id)?.createdAt ?? s.updated_at ?? s.completed_at ?? s.started_at ?? s.created_at);
         return {
           ...s,
           ...present(s),
-          last_activity_at: lastActivityAt,
+          last_activity_at: native ? native.last_activity_at : lastActivityAt,
+          ...(native ? {agent_runtime:native} : {}),
           content_summary: summarizeSessionContent(s.task, outputActivity.get(s.id)?.data),
           ...(st ? { processState: st.processState, promptType: st.promptType, isPermission: st.isPermission } : {}),
         };
-      });
+      }));
     return { sessions };
   });
 

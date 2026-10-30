@@ -20,6 +20,7 @@ import { createTestDatabase } from './helpers/database.js';
 import * as agents from '../src/services/platform-ai/agents.js';
 import { broadcastEphemeral } from '../src/services/event-store.js';
 import { executePlatformTool } from '../src/services/platform-ai/tools.js';
+import { saveProjectNotification } from '../src/services/platform-ai/project-notifications.js';
 
 const providerResponse = (message: Record<string, unknown>) => new Response(JSON.stringify({choices: [{message}]}), {status: 200});
 const toolResponse = (name: string, args: unknown, id = 'call-1') => providerResponse({content: null, tool_calls: [{id, type: 'function', function: {name, arguments: JSON.stringify(args)}}]});
@@ -93,6 +94,171 @@ function inbound(content = '列出项目', messageId = 'message-1', userId = mem
 function seedSession(id = 'session-1') {
   getDb().prepare("INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES (?,'p','Work','running','session','codex',?)").run(id, member);
 }
+
+describe('project-wide automatic notifications', () => {
+  function subscription(userId = member) {
+    const channel = saveChannel({name: '个人通知', kind: 'webhook', enabled: true, config: {outbound_url: 'https://notify.example/send'}, secrets: {signing_secret: 'a'.repeat(32)}});
+    getDb().prepare('INSERT INTO platform_ai_bindings (id,channel_id,external_user_id,user_id) VALUES (?,?,?,?)').run('project-binding', channel.id, 'external-user', userId);
+    const rule = saveProjectNotification(userId, {project_id: 'p', recipient_id: 'binding:project-binding', enabled: true, on_complete: true, on_input: true});
+    return {rule, channel};
+  }
+  const finalMessage = (text = '功能已完成，12 项测试通过。', ref = 'native:manual') => ({role: 'assistant', phase: 'final', text, timestamp: new Date(Date.now() + 1000).toISOString(), task_reference: ref});
+  function provider(kind = 'complete', evidence = '功能已完成') {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => String(url).startsWith('https://model.example')
+      ? providerResponse({content: JSON.stringify({kind, evidence})}) : new Response('{}', {status: 200}));
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+  async function checkAndDeliver() { worker.tick(); await worker.drain(); worker.tick(); await worker.drain(); }
+  function notices() { return getDb().prepare("SELECT * FROM platform_ai_outbox WHERE dedupe_key LIKE 'project-notice:%'").all() as Array<{status: string; content: string; error: string}>; }
+
+  it('exposes only current-user projects and authorized recipients and rejects invalid or duplicate rules', async () => {
+    const {rule} = subscription();
+    getDb().prepare("INSERT INTO projects (id,name,path,owner_id) VALUES ('private','Private','/private',?)").run(other);
+    const result = await app.inject({url:'/api/platform-ai/project-notifications', headers:{cookie}});
+    expect(result.json()).toMatchObject({projects:[{id:'p',name:'Project'}],recipients:[{id:'binding:project-binding'}],rules:[{id:rule.id}]});
+    const hidden = await app.inject({url:'/api/platform-ai/project-notifications',headers:{cookie:`agentmanager_session=${createAuthSession(other)}`}});
+    expect(hidden.json().rules).toEqual([]); expect(hidden.json().recipients).toEqual([]);
+    const value = {project_id:'p',recipient_id:'binding:project-binding',enabled:true,on_complete:true,on_input:false};
+    expect((await app.inject({method:'POST',url:'/api/platform-ai/project-notifications',headers:{cookie},payload:value})).statusCode).toBe(409);
+    expect((await app.inject({method:'POST',url:'/api/platform-ai/project-notifications',headers:{cookie},payload:{...value,project_id:'private'}})).statusCode).toBe(404);
+    expect((await app.inject({method:'POST',url:'/api/platform-ai/project-notifications',headers:{cookie},payload:{...value,recipient_id:'binding:other'}})).statusCode).toBe(400);
+    expect((await app.inject({method:'PUT',url:`/api/platform-ai/project-notifications/${rule.id}`,headers:{cookie},payload:{...value,on_complete:false}})).statusCode).toBe(400);
+    expect((await app.inject({method:'DELETE',url:`/api/platform-ai/project-notifications/${rule.id}`,headers:{cookie:`agentmanager_session=${createAuthSession(other)}`}})).statusCode).toBe(404);
+  });
+
+  it('notifies native manual work without registering a tracked task, even while the agent continues busy', async () => {
+    configure(); subscription(); seedSession();
+    nativeMessages = [finalMessage()]; display.processState = 'busy';
+    display.output = 'private terminal tool output';
+    const fetchMock = provider();
+    await checkAndDeliver();
+    expect(notices()).toEqual([expect.objectContaining({status:'sent',content:expect.stringContaining(nativeMessages[0].text)})]);
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM platform_ai_tasks').get()).toEqual({n:0});
+    const outbound = fetchMock.mock.calls.find(call => String(call[0]).startsWith('https://notify.example'))!;
+    expect(JSON.parse(outbound[1].body)).toMatchObject({chat_id:'external-user',user_id:'external-user'});
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain(display.output);
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    await checkAndDeliver();
+    expect(notices()).toHaveLength(1);
+  });
+
+  it('forwards a final question as needs-input and respects independent event switches', async () => {
+    configure(); const {rule} = subscription(); seedSession();
+    saveProjectNotification(member,{project_id:'p',recipient_id:rule.recipient_id,enabled:true,on_complete:false,on_input:true},rule.id);
+    nativeMessages = [finalMessage('请提供 Jira 项目链接，才能继续查询。')];
+    provider('input','请提供 Jira 项目链接');
+    await checkAndDeliver();
+    expect(notices()[0].content).toContain('需要你回复'); expect(notices()[0].content).toContain(nativeMessages[0].text);
+    nativeMessages.push(finalMessage()); provider();
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    await checkAndDeliver(); expect(notices()).toHaveLength(1);
+  });
+
+  it('detects interactive confirmation without a model, and deduplicates repeated state events', async () => {
+    configure(); subscription(); seedSession();
+    nativeMessages = [{role:'user',phase:'user',text:'修复问题',timestamp:new Date().toISOString(),task_reference:'native:question'}];
+    display.processState = 'waiting_for_input'; display.promptType = 'confirmation';
+    const fetchMock = provider();
+    await checkAndDeliver();
+    expect(notices()[0].content).toContain('需要你回复');
+    expect(fetchMock.mock.calls.filter(call => String(call[0]).startsWith('https://model.example'))).toHaveLength(0);
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    await checkAndDeliver(); expect(notices()).toHaveLength(1);
+  });
+
+  it('never treats an ordinary idle input box, old final, or commentary as completion', async () => {
+    configure(); subscription(); seedSession();
+    nativeMessages = [{...finalMessage(),timestamp:new Date(Date.now()-60000).toISOString()}, {...finalMessage(),phase:'commentary'}];
+    display.processState='waiting_for_input'; display.promptType='text';
+    const fetchMock=provider();
+    await checkAndDeliver(); expect(notices()).toHaveLength(0); expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('automatically includes newly created tabs through session events and recovers delayed native finals', async () => {
+    configure(); subscription(); provider(); worker.start();
+    worker.tick(); await worker.drain();
+    seedSession('new-tab');
+    broadcastEphemeral({type:'session.state',session_id:'new-tab',project_id:'p',data:{processState:'idle'}});
+    expect(getDb().prepare('SELECT session_id,rechecks FROM platform_ai_project_notification_watches').get()).toEqual({session_id:'new-tab',rechecks:3});
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    worker.tick(); await worker.drain(); expect(notices()).toHaveLength(0);
+    expect(getDb().prepare('SELECT rechecks FROM platform_ai_project_notification_watches').get()).toEqual({rechecks:2});
+    nativeMessages=[finalMessage()];
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    await checkAndDeliver(); expect(notices()).toHaveLength(1);
+  });
+
+  it('does not notify another users sessions in a shared project', async () => {
+    configure(); subscription(); seedSession();
+    getDb().prepare("UPDATE sessions SET created_by_user_id=? WHERE id='session-1'").run(other);
+    nativeMessages=[finalMessage()]; const fetchMock=provider();
+    await checkAndDeliver(); expect(notices()).toHaveLength(0); expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('revokes a queued notification when the rule is removed', async () => {
+    configure(); const {rule}=subscription(); seedSession(); nativeMessages=[finalMessage()]; const fetchMock=provider();
+    worker.tick(); await worker.drain(); expect(notices()).toHaveLength(1);
+    getDb().prepare('DELETE FROM platform_ai_project_notifications WHERE id=?').run(rule.id);
+    await checkAndDeliver(); expect(notices()[0].status).toBe('failed');
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://notify.example'))).toHaveLength(0);
+  });
+
+  it('rechecks project permission before delivering an already-queued notification', async () => {
+    configure(); subscription(); seedSession(); nativeMessages=[finalMessage()]; const fetchMock=provider();
+    worker.tick(); await worker.drain(); expect(notices()).toHaveLength(1);
+    setProjectToolAccess({projectId:'p',userId:member,canSession:false,canTerminal:false,sessionClients:[],grantedBy:admin});
+    await checkAndDeliver(); expect(notices()[0].status).toBe('failed');
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://notify.example'))).toHaveLength(0);
+  });
+
+  it('does not deliver notices from an earlier enabled window after pause and resume', async () => {
+    configure(); const {rule}=subscription(); seedSession(); nativeMessages=[finalMessage()]; provider();
+    worker.tick(); await worker.drain(); expect(notices()).toHaveLength(1);
+    const value={project_id:'p',recipient_id:rule.recipient_id,enabled:false,on_complete:true,on_input:true};
+    saveProjectNotification(member,value,rule.id);
+    saveProjectNotification(member,{...value,enabled:true},rule.id);
+    // Deliver the queued old notice directly; new observation is intentionally not run.
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=?').run(Date.now()+60000);
+    worker.tick(); await worker.drain(); expect(notices()[0].status).toBe('failed');
+  });
+
+  it('rejects invented model evidence and retains a retryable observation error', async () => {
+    configure(); subscription(); seedSession(); nativeMessages=[finalMessage()]; provider('complete','部署已通过');
+    await checkAndDeliver(); expect(notices()).toHaveLength(0);
+    expect(getDb().prepare('SELECT failures,error FROM platform_ai_project_notification_watches').get()).toMatchObject({failures:1,error:expect.stringContaining('原文依据')});
+    provider(); getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    await checkAndDeliver(); expect(notices()[0].status).toBe('sent');
+  });
+
+  it('preserves deduplication through worker recreation', async () => {
+    configure(); subscription(); seedSession(); nativeMessages=[finalMessage()]; provider(); await checkAndDeliver();
+    await worker.stop(); worker=new PlatformAiWorker(app);
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    await checkAndDeliver(); expect(notices()).toHaveLength(1);
+  });
+
+  it('uses existing group notification targets and never requires an inbound group binding', async () => {
+    configure(); seedSession();
+    const channel=saveChannel({name:'团队通知',kind:'wecom_webhook',enabled:true,config:{},secrets:{webhook_url:'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=project-test'}});
+    getDb().prepare('INSERT INTO platform_ai_notification_targets (id,channel_id,user_id) VALUES (?,?,?)').run('group-target',channel.id,member);
+    saveProjectNotification(member,{project_id:'p',recipient_id:'target:group-target',enabled:true,on_complete:true,on_input:true});
+    nativeMessages=[finalMessage()]; const fetchMock=provider();
+    await checkAndDeliver(); expect(notices()[0].status).toBe('sent');
+    expect(fetchMock.mock.calls.some(call=>String(call[0]).startsWith('https://qyapi.weixin.qq.com'))).toBe(true);
+  });
+
+  it('lets existing task tracking deliver once when the same request and channel are already tracked', async () => {
+    configure(); const {rule}=subscription(); seedSession();
+    const task=trackTask(getConversation(rule.conversation_id)!,'session-1','修复功能',0,'tracked-project');
+    nativeMessages=[finalMessage(undefined,'tracked-project')];
+    vi.stubGlobal('fetch',vi.fn().mockImplementation(async (url:string)=>String(url).startsWith('https://model.example')
+      ? providerResponse({content:JSON.stringify({status:'reported_complete',summary:'功能已完成',evidence:'功能已完成'})}) : new Response('{}',{status:200})));
+    await worker.observe(task,readAiConfig()); await checkAndDeliver();
+    expect(notices()).toHaveLength(0);
+    expect(getDb().prepare("SELECT status FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").all()).toEqual([{status:'sent'}]);
+  });
+});
 
 describe('platform AI configuration and access boundaries', () => {
   it('lists dashboard tab names and reads terminal work even with no tracked task', async () => {

@@ -19,6 +19,7 @@ import { subscribe, type Event as PlatformEvent } from '../event-store.js';
 import { getSession } from '../session-manager.js';
 import { sessionPresenter } from '../session-labels.js';
 import type { AgentTextMessage } from '../prompt-context.js';
+import { authorizeProjectNotice, ProjectNotifications } from './project-notifications.js';
 
 const OBSERVATION_FALLBACK_MS = 5 * 60 * 1000;
 
@@ -85,7 +86,11 @@ export class PlatformAiWorker {
   private nativeRechecks = new Map<string, number>();
   private queueErrors = new Map<string, number>();
 
-  constructor(private app: FastifyInstance) {}
+  private projectNotifications: ProjectNotifications;
+
+  constructor(private app: FastifyInstance) {
+    this.projectNotifications = new ProjectNotifications(app, this.abort.signal);
+  }
 
   start(): void {
     if (this.timer) return;
@@ -106,9 +111,9 @@ export class PlatformAiWorker {
     let state: {processState?: string} = {};
     try { state = event.data ? JSON.parse(event.data) : {}; } catch { return; }
     const urgent = event.type === 'session_end' || (event.type === 'session.state' && ['idle','waiting_for_input'].includes(state.processState || ''));
+    this.runQueueStep('project-notification-events', () => this.projectNotifications.wake(event.session_id!, urgent));
     const now = Date.now();
-    // Only explicitly tracked work has a conversation/recipient. Unrelated tabs
-    // never wake the platform AI or enqueue a notification.
+    // Explicit tracking and opt-in project notifications are independent.
     const tasks = getDb().prepare("SELECT id FROM platform_ai_tasks WHERE session_id=? AND status IN ('running','blocked','uncertain')").all(event.session_id) as Array<{id: string}>;
     for (const task of tasks) {
       if (state.processState === 'busy') this.nativeRechecks.delete(task.id);
@@ -152,6 +157,7 @@ export class PlatformAiWorker {
     this.observationIntervalMs = config.observation_interval_seconds * 1000;
     const now = Date.now();
     this.runQueueStep('scheduled-observations', () => reconcileScheduledObservations());
+    this.runQueueStep('project-notifications', () => this.projectNotifications.tick(config));
     if (now - this.lastLeaseSweep > 30000) {
       this.lastLeaseSweep = now;
       getDb().prepare("UPDATE platform_ai_messages SET status='queued' WHERE status='processing' AND lease_until<?").run(now);
@@ -196,7 +202,7 @@ export class PlatformAiWorker {
   }
 
   /** Useful for isolated integrations; each lane remains independent in normal operation. */
-  async drain(): Promise<void> { await Promise.allSettled([...this.pending]); }
+  async drain(): Promise<void> { await Promise.allSettled([...this.pending, this.projectNotifications.drain()]); }
 
   async stop(): Promise<void> {
     this.stopped = true;
@@ -524,6 +530,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
       const conversation = getConversation(item.conversation_id);
       if (!conversation) return;
       this.assertConversation(conversation);
+      const projectRecipient = item.dedupe_key.startsWith('project-notice:') ? authorizeProjectNotice(item.dedupe_key, conversation.id) : undefined;
       if (conversation.channel_id || item.destination_channel_id) {
         // Revocation of session access also revokes pending task notifications.
         const task = item.dedupe_key.startsWith('task:') ? getDb().prepare('SELECT session_id FROM platform_ai_tasks WHERE id=?').get(item.dedupe_key.split(':')[1]) as {session_id: string} | undefined : undefined;
@@ -540,7 +547,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         }
         // Task notices are active messages, never updates to a user's still-open reply stream.
         const context = channel.kind === 'wecom_bot' && !item.dedupe_key.startsWith('reply:') ? {} : JSON.parse(item.reply_context);
-        await deliverMessage(channel, conversation.external_chat_id, conversation.external_user_id, item.content, context, item.id, this.abort.signal);
+        await deliverMessage(channel, projectRecipient?.chat_id || conversation.external_chat_id, projectRecipient?.external_user_id || conversation.external_user_id, item.content, context, item.id, this.abort.signal);
       }
       getDb().prepare("UPDATE platform_ai_outbox SET status='sent',error=NULL,lease_until=0 WHERE id=?").run(item.id);
     } catch (error) {

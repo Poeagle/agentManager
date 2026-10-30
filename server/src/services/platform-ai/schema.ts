@@ -99,6 +99,22 @@ export function migratePlatformAi(db: Database.Database): void {
     bytes INTEGER NOT NULL DEFAULT 0, data BLOB, error TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')));
     CREATE INDEX IF NOT EXISTS idx_platform_ai_attachments_message ON platform_ai_attachments(message_id);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS platform_ai_project_notifications (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    recipient_id TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES platform_ai_conversations(id) ON DELETE CASCADE,
+    enabled INTEGER NOT NULL DEFAULT 1, on_complete INTEGER NOT NULL DEFAULT 1, on_input INTEGER NOT NULL DEFAULT 1,
+    since_ms INTEGER NOT NULL, UNIQUE(user_id,project_id,recipient_id));
+    CREATE TABLE IF NOT EXISTS platform_ai_project_notification_watches (
+    rule_id TEXT NOT NULL REFERENCES platform_ai_project_notifications(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    next_check_at INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, rechecks INTEGER NOT NULL DEFAULT 0, error TEXT,
+    PRIMARY KEY(rule_id,session_id));
+    CREATE INDEX IF NOT EXISTS idx_platform_ai_project_notification_due ON platform_ai_project_notification_watches(next_check_at);
+    CREATE TABLE IF NOT EXISTS platform_ai_project_notification_receipts (
+    rule_id TEXT NOT NULL REFERENCES platform_ai_project_notifications(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    event_key TEXT NOT NULL, PRIMARY KEY(rule_id,session_id,event_key));`);
   // CREATE TABLE IF NOT EXISTS does not repair an already-created table.
   // Run on every startup, including databases already at the current version.
   const watchColumns = db.prepare('PRAGMA table_info(platform_ai_project_notification_watches)').all() as Array<{name: string}>;

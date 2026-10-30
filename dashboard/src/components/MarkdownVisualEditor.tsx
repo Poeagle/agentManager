@@ -6,6 +6,7 @@ import Image from '@tiptap/extension-image';
 import { TableKit } from '@tiptap/extension-table';
 import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
+import {followDocumentLink} from '../lib/document-links';
 import type { api } from '../lib/api';
 
 interface Props {
@@ -13,7 +14,7 @@ interface Props {
   onChange: (value: string) => void;
   filesApi: typeof api.files;
   resolveLocalPath: (source: string) => string | null;
-  onOpenFile: (path: string) => void;
+  onOpenFile: (path: string, fragment?:string) => void;
 }
 
 export function MarkdownVisualEditor({ value, onChange, filesApi, resolveLocalPath, onOpenFile }: Props) {
@@ -107,12 +108,11 @@ export function MarkdownVisualEditor({ value, onChange, filesApi, resolveLocalPa
       })}
     </div>
     <EditorContent editor={editor} className="markdown-preview explorer-markdown" onClickCapture={(event) => {
-      if (!event.ctrlKey && !event.metaKey) return;
       const target = event.target instanceof Element ? event.target.closest('a[href]') : null;
-      const path = target ? resolveLocalPath(target.getAttribute('href') || '') : null;
-      if (!path) return;
+      if(!target)return;
       event.preventDefault();
-      onOpenFile(path);
+      event.stopPropagation();
+      followDocumentLink(target.getAttribute('href')||'',event.currentTarget,resolveLocalPath,onOpenFile);
     }} />
   </div>;
 }

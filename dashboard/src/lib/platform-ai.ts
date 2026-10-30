@@ -19,6 +19,17 @@ export interface AiChannel {
 export interface AiBinding { id: string; channel_id: string; external_user_id: string; user_id: string; username: string; display_name: string }
 export interface AiSender {channel_id: string; external_user_id: string; last_chat_id: string; last_seen_at: string}
 export interface AiNotificationTarget {id: string; channel_id: string; user_id: string; username: string; display_name: string}
+export interface ProjectNotificationRule {
+  id: string; project_id: string; recipient_id: string; enabled: number; on_complete: number; on_input: number; error?: string | null;
+}
+export interface ProjectNotificationInput {
+  project_id: string; recipient_id: string; enabled: boolean; on_complete: boolean; on_input: boolean;
+}
+export interface ProjectNotificationSettings {
+  projects: Array<{id: string; name: string}>;
+  recipients: Array<{id: string; name: string}>;
+  rules: ProjectNotificationRule[];
+}
 export interface AiConversation { id: string; title: string; channel_id: string | null; channel_name?: string; updated_at?: string }
 export interface AiAttachment {id: string; status: string; mime: string; bytes: number; error: string | null}
 export interface AiMessage { id: string; role: 'user' | 'assistant' | 'notice'; content: string; status: string; error: string | null; created_at: string; progress?: string; partial_content?: string; attachments?: AiAttachment[] }
@@ -30,6 +41,9 @@ const json = (method: string, value: unknown) => ({ method, body: JSON.stringify
 const base = '/platform-ai';
 export const platformAiApi = {
   status: () => fetchJSON<{enabled: boolean}>(`${base}/status`),
+  projectNotifications: () => fetchJSON<ProjectNotificationSettings>(`${base}/project-notifications`),
+  saveProjectNotification: (value: ProjectNotificationInput, id?: string) => fetchJSON<{rule: ProjectNotificationRule}>(`${base}/project-notifications${id ? '/' + encodeURIComponent(id) : ''}`, json(id ? 'PUT' : 'POST', value)),
+  deleteProjectNotification: (id: string) => fetchJSON<{ok: boolean}>(`${base}/project-notifications/${encodeURIComponent(id)}`, {method: 'DELETE'}),
   agents: () => fetchJSON<{agents: WorkAgent[]}>(`${base}/agents`),
   config: () => fetchJSON<{config: PlatformAiConfig}>(`${base}/config`),
   saveConfig: (value: Partial<PlatformAiConfig> & {api_key?: string; clear_api_key?: boolean}) => fetchJSON<{config: PlatformAiConfig}>(`${base}/config`, json('PUT', value)),

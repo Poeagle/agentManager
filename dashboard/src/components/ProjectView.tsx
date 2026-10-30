@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Monitor, FolderTree, GitBranch, Plus, X, Download, Zap, TerminalSquare, History, Sparkles, CalendarClock, Trash2 } from 'lucide-react';
+import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Trash2 } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { Terminal } from './Terminal';
+import { SessionWorkspacePane } from './SessionWorkspacePane';
 import { FileExplorer, type FileRefreshRequest } from './FileExplorer';
 import { droppedFiles, isFileDrag, type FileUploadRequest } from '../lib/file-upload';
 import { GitPanel } from './GitPanel';
@@ -19,13 +20,12 @@ import { useSessionResume } from '../lib/use-session-resume';
 import { ProjectSkillsPanel } from './ProjectSkillsPanel';
 import { ScheduledTasksPanel } from './ScheduledTasksPanel';
 import { LiveSessionSignalDot } from '../lib/session-signal';
-import { SessionActivityAge } from '../lib/session-activity';
+import { SessionTabLabel } from '../lib/session-activity';
 import { promoteWarmTerminal, TERMINAL_COLD_DELAY_MS } from '../lib/warm-terminal-pool';
 import {
   reconcileHydratedTerminalInstances,
   type TerminalInstance,
 } from '../lib/project-session-state';
-import { confirmDiscardExplorer } from '../lib/unsaved-files';
 import { moveItemByKey, orderItemsByKeys } from '../lib/reorder';
 
 interface ProjectViewProps {
@@ -49,6 +49,7 @@ type ActiveMode = 'terminal' | 'explorer' | 'events' | 'git' | 'history' | 'skil
 
 interface PersistedState {
   activeMode: ActiveMode;
+  fileTreeOpen?: boolean;
   explorerInstances: ExplorerInstance[];
   activeExplorerId: string | null;
   terminalInstances: TerminalInstance[];
@@ -145,6 +146,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const { data: projectHistoryData } = useQuery({
     queryKey: ['project-sessions', projectId],
     queryFn: () => api.sessions.list(undefined, projectId),
+    refetchInterval:(query)=>active && query.state.data?.sessions.some(session=>session.cli_type==='codex') ? 5000 : false,
   });
   const projectSessions = useMemo(
     () => (sessionsData?.sessions || []).filter(
@@ -163,8 +165,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   // also reflect completed/failed sessions that `projectSessions` filters out.
   const allSessionLookup = useMemo(
     () => new Map([
-      ...(sessionsData?.sessions || []),
       ...(projectHistoryData?.sessions || []),
+      ...(sessionsData?.sessions || []),
     ].map((s) => [s.id, s])),
     [sessionsData, projectHistoryData]
   );
@@ -202,6 +204,9 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const [activeMode, setActiveMode] = useState<ActiveMode>(
     initialized?.activeMode ?? 'terminal'
   );
+  const [fileTreeOpen,setFileTreeOpen]=useState(initialized?.fileTreeOpen ?? initialized?.activeMode==='explorer');
+  const [fileTreeHost,setFileTreeHost]=useState<HTMLDivElement|null>(null);
+  const [fileTabsHost,setFileTabsHost]=useState<HTMLDivElement|null>(null);
 
   // Discover external sessions available for adoption (on-demand only, no polling)
   const { data: discoverableData, refetch: refetchDiscoverable } = useQuery({
@@ -645,24 +650,18 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       ? initialized.activeExplorerId
       : explorerInstances[0].id,
   );
-  const [draggingExplorerId, setDraggingExplorerId] = useState<string | null>(null);
-  const [explorerDropTargetId, setExplorerDropTargetId] = useState<string | null>(null);
-  const reorderExplorerTabs = useCallback((targetId: string) => {
-    if (!draggingExplorerId || draggingExplorerId === targetId) return;
-    setExplorerInstances((current) => moveItemByKey(current, draggingExplorerId, targetId, (tab) => tab.id));
-  }, [draggingExplorerId]);
-
   // Persist state to localStorage (instant-paint cache + offline fallback).
   useEffect(() => {
     persistState(currentUserId, projectId, {
       activeMode,
+      fileTreeOpen,
       explorerInstances,
       activeExplorerId,
       terminalInstances,
       activeTerminalId,
       hiddenSessionIds: [...closedSessionIds.current],
     });
-  }, [currentUserId, projectId, activeMode, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion]);
+  }, [currentUserId, projectId, activeMode, fileTreeOpen, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion]);
 
   // ── Cross-device sync: the terminal tab list uses stable AgentManager
   // session IDs. Persisting it (plus hidden/active IDs) makes the tab-to-native
@@ -1077,22 +1076,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     }
   }
 
-  function addExplorer() {
-    const id = `${currentUserId}-${projectId}-explorer-${nextExplorerSeq++}`;
-    const label = `Explorer ${explorerInstances.length + 1}`;
-    setExplorerInstances((prev) => [...prev, { id, label }]);
-    setActiveExplorerId(id);
-  }
-
-  function closeExplorer(id: string) {
-    if (explorerInstances.length <= 1) return;
-    if (!confirmDiscardExplorer(id)) return;
-    setExplorerInstances((prev) => prev.filter((e) => e.id !== id));
-    if (activeExplorerId === id) {
-      setActiveExplorerId(explorerInstances[0].id === id ? explorerInstances[1]?.id : explorerInstances[0].id);
-    }
-  }
-
   // Focus a terminal's xterm textarea after switching views
   function focusTerminalById(sessionId: string) {
     // Terminals stay mounted, sized and connected, so switching only needs to wait
@@ -1117,7 +1100,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     setExplorerSavedFile(filePath);
   }, []);
 
-  // "Reveal in explorer" — switch mode and tell the active explorer to open the file
+  // File links open in the shared workspace without replacing its tab strip.
   const [openInExplorerRequest, setOpenInExplorerRequest] = useState<{ path: string; key: number } | null>(null);
   const handleOpenInExplorer = useCallback((filePath: string) => {
     setActiveMode('explorer');
@@ -1134,48 +1117,59 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
 
   // Sub-tab bar for terminal and explorer modes
   const showSubTabs = activeMode === 'terminal' || activeMode === 'explorer';
+  const [sessionControlsHost,setSessionControlsHost]=useState<HTMLDivElement|null>(null);
 
   return (
-    <div className="h-full flex">
+    <div className="workspace-project h-full flex">
       {/* Icon sidebar */}
       <div
-        className="flex flex-col items-center py-2 gap-1 shrink-0"
+        className="workspace-sidebar flex flex-col items-center shrink-0"
+        aria-label="项目工具栏"
         style={{
-          width: 48,
           background: 'var(--bg-secondary)',
           borderRight: '1px solid var(--border)',
         }}
       >
         {sidebarButtons.map(({ id, icon: Icon, title }) => {
-          const isActive = activeMode === id;
+          const isActive = id==='explorer'?fileTreeOpen && showSubTabs:activeMode === id;
           return (
             <button
               key={id}
-              onClick={() => setActiveMode(id)}
+              onClick={() => {
+                if(id==='explorer') {
+                  setFileTreeOpen(open=>!open);
+                  if(!showSubTabs)setActiveMode('terminal');
+                } else {
+                  setActiveMode(id);
+                  if(id==='terminal' && activeTerminalId)focusTerminalById(activeTerminalId);
+                }
+              }}
+              aria-expanded={id==='explorer'?fileTreeOpen && showSubTabs:undefined}
+              aria-controls={id==='explorer'?`project-file-tree-${projectId}`:undefined}
               onDragOver={id === 'explorer' ? (event) => {
                 if (!isFileDrag(event.dataTransfer)) return;
                 event.preventDefault();
                 event.dataTransfer.dropEffect = 'copy';
-                setActiveMode('explorer');
+                setFileTreeOpen(true);
+                if(!showSubTabs)setActiveMode('terminal');
               } : undefined}
               onDrop={id === 'explorer' ? (event) => {
                 if (!isFileDrag(event.dataTransfer)) return;
                 event.preventDefault();
                 event.stopPropagation();
-                setActiveMode('explorer');
+                setFileTreeOpen(true);
+                if(!showSubTabs)setActiveMode('terminal');
                 const files = droppedFiles(event.dataTransfer);
                 setExplorerUploadRequest((previous) => ({ ...files, explorerId: activeExplorerId, key: (previous?.key ?? 0) + 1 }));
               } : undefined}
               title={title}
-              className="flex items-center justify-center rounded-md transition-colors"
+              className="workspace-sidebar-button flex items-center justify-center rounded transition-colors"
               style={{
-                width: 36,
-                height: 36,
                 background: isActive ? 'var(--bg-tertiary)' : 'transparent',
                 color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
               }}
             >
-              <Icon className="w-5 h-5" />
+              <Icon className="w-4 h-4" />
             </button>
           );
         })}
@@ -1187,10 +1181,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
             }))}
             title="优化当前 Terminal 输入"
             aria-label="优化当前 Terminal 输入"
-            className="mt-auto mb-1 flex items-center justify-center rounded-md transition-colors"
+            className="workspace-sidebar-button mt-auto mb-1 flex items-center justify-center rounded transition-colors"
             style={{
-              width: 36,
-              height: 36,
               color: '#c4b5fd',
               background: 'rgba(139, 92, 246, 0.10)',
               border: '1px solid rgba(167, 139, 250, 0.24)',
@@ -1207,18 +1199,20 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
 
         {/* Sub-tab bar */}
         {showSubTabs && (
+          <div className="workspace-subtab-row">
           <div
-            className="flex items-center gap-0.5 px-2 py-1 shrink-0 overflow-x-auto"
+            aria-label="会话标签"
+            className="workspace-tab-strip shrink-0 overflow-x-auto"
             style={{
               borderBottom: '1px solid var(--border)',
               background: 'var(--bg-secondary)',
             }}
           >
-            {activeMode === 'terminal' && (
+            {showSubTabs && (
               <>
-                {/* Terminal session sub-tabs */}
+                {/* Sessions and files share one tab strip. */}
                 {terminalInstances.map((inst) => {
-                  const isActive = inst.id === activeTerminalId;
+                  const isActive = activeMode==='terminal' && inst.id === activeTerminalId;
                   const session = sessionLookup.get(inst.id) || allSessionLookup.get(inst.id);
                   // Status signal light — a leaf component subscribes to just this
                   // session's live state, so a state tick doesn't re-render the view.
@@ -1227,16 +1221,13 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                   const isTerminal = tabKind === 'terminal';
                   const isCodex = session?.cli_type === 'codex';
                   const tabIcon = isTerminal ? (
-                    <TerminalSquare className="w-3 h-3 shrink-0" style={{ color: '#f59e0b' }} />
+                    <TerminalSquare className="workspace-tab-icon w-3 h-3 shrink-0" style={{ color: '#f59e0b' }} />
                   ) : (
-                    <>
-                      {isCodex ? (
-                        <CodexIcon className="w-3 h-3 shrink-0" style={{ color: '#7A9DFF' }} />
-                      ) : (
-                        <ClaudeIcon className="w-3 h-3 shrink-0" style={{ color: '#D97757' }} />
-                      )}
-                      <Zap className="w-3 h-3 shrink-0" style={{ color: '#60a5fa' }} />
-                    </>
+                    isCodex ? (
+                      <CodexIcon className="workspace-tab-icon w-3 h-3 shrink-0" style={{ color: '#7A9DFF' }} />
+                    ) : (
+                      <ClaudeIcon className="workspace-tab-icon w-3 h-3 shrink-0" style={{ color: '#D97757' }} />
+                    )
                   );
                   return (
                     <div
@@ -1251,7 +1242,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         setDraggingTerminalId(null);
                         setTerminalDropTargetId(null);
                       }}
-                      className="flex items-center gap-0.5 rounded-md shrink-0 group touch-none"
+                      className="workspace-tab group touch-none"
+                      data-active={isActive}
                       onDragOver={(event) => {
                         if (!draggingTerminalId || draggingTerminalId === inst.id) return;
                         event.preventDefault();
@@ -1270,12 +1262,12 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                       }}
                     >
                       {sigSession && (
-                        <span className="pl-2 flex items-center">
+                        <span className="workspace-tab-signal">
                           <LiveSessionSignalDot session={sigSession} active={isActive} />
                         </span>
                       )}
                       {editingTerminalId === inst.id ? (
-                        <div className="flex items-center gap-1.5 pl-3 pr-1 py-1">
+                        <div className="workspace-tab-button">
                           {tabIcon}
                           <input
                             ref={renameInputRef}
@@ -1301,18 +1293,18 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                           onClick={(e) => {
                             if (e.detail > 1) return; // 2nd click of a double-click → that's a rename
                             setActiveTerminalId(inst.id);
+                            setActiveMode('terminal');
 
                             // Focus the terminal after switching tabs.
                             focusTerminalById(inst.id);
                           }}
                           onDoubleClick={() => beginTerminalRename(inst)}
-                          className="flex items-center gap-1.5 pl-3 pr-1 py-1 text-xs font-medium transition-colors"
+                          className="workspace-tab-button"
                           style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
                           title="双击重命名"
                         >
                           {tabIcon}
-                          <span className="truncate">{inst.customLabel?.trim() || inst.label}</span>
-                          <SessionActivityAge session={sigSession} />
+                          <SessionTabLabel session={sigSession} label={inst.customLabel?.trim() || inst.label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${isCodex ? 'Codex' : 'Claude'}`} />
                         </button>
                       )}
                       <button
@@ -1321,7 +1313,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                           const type = session ? sessionTabKind(session) : 'session';
                           setCloseConfirm({ id: inst.id, label: inst.customLabel?.trim() || inst.label, type });
                         }}
-                        className="p-0.5 rounded opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity mr-1"
+                        className="workspace-tab-close"
                         style={{ color: 'var(--text-secondary)' }}
                         title="Close session"
                       >
@@ -1336,7 +1328,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                   onClick={() => setShowNewSession(true)}
                   disabled={!project || projectOpenModes(project).length === 0}
                   className="flex items-center justify-center rounded-md shrink-0 transition-colors"
-                  style={{ width: 28, height: 28, color: 'var(--text-secondary)', background: 'transparent' }}
+                  style={{ width: 24, height: 24, color: 'var(--text-secondary)', background: 'transparent' }}
                   title="新建会话"
                   aria-label="新建会话"
                 >
@@ -1357,7 +1349,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                     className="flex items-center gap-1 px-2 rounded-md shrink-0 transition-colors text-xs"
                     title={hiddenSessions.length > 0 ? `${hiddenSessions.length} hidden session(s) — click to restore` : endedSessions.length > 0 ? `${endedSessions.length} recent ended session(s) — click to reopen` : 'Scan for external sessions to adopt'}
                     style={{
-                      height: 28,
+                      height: 24,
                       color: hiddenSessions.length > 0 ? '#f59e0b' : showAdoptMenu ? 'var(--warning, #f59e0b)' : 'var(--text-secondary)',
                       background: showAdoptMenu ? 'var(--bg-tertiary)' : 'transparent',
                     }}
@@ -1558,90 +1550,30 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
               </>
             )}
 
-            {activeMode === 'explorer' && (
-              <>
-                {explorerInstances.map((inst) => {
-                  const isActive = inst.id === activeExplorerId;
-                  const canClose = explorerInstances.length > 1;
-                  return (
-                    <div
-                      key={inst.id}
-                      draggable
-                      onDragStart={(event) => {
-                        event.dataTransfer.effectAllowed = 'move';
-                        event.dataTransfer.setData('text/plain', inst.id);
-                        setDraggingExplorerId(inst.id);
-                      }}
-                      onDragEnd={() => {
-                        setDraggingExplorerId(null);
-                        setExplorerDropTargetId(null);
-                      }}
-                      className="flex items-center gap-0.5 rounded-md shrink-0 group touch-none"
-                      onDragOver={(event) => {
-                        if (!draggingExplorerId || draggingExplorerId === inst.id) return;
-                        event.preventDefault();
-                        event.dataTransfer.dropEffect = 'move';
-                        setExplorerDropTargetId(inst.id);
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        reorderExplorerTabs(inst.id);
-                        setDraggingExplorerId(null);
-                        setExplorerDropTargetId(null);
-                      }}
-                      style={{
-                        background: isActive ? 'var(--bg-tertiary)' : 'transparent',
-                        outline: explorerDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
-                      }}
-                    >
-                      <button
-                        onClick={() => setActiveExplorerId(inst.id)}
-                        className="flex items-center gap-1.5 pl-3 pr-1 py-1 text-xs font-medium transition-colors"
-                        style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-                      >
-                        <FolderTree className="w-3 h-3 shrink-0" style={{ color: 'var(--accent)' }} />
-                        <span className="truncate">{inst.label}</span>
-                      </button>
-                      {canClose && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            closeExplorer(inst.id);
-                          }}
-                          className="p-0.5 rounded opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity mr-1"
-                          style={{ color: 'var(--text-secondary)' }}
-                          title="Close"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-                <button
-                  onClick={addExplorer}
-                  className="flex items-center justify-center rounded-md shrink-0 transition-colors"
-                  title="New Explorer"
-                  style={{ width: 28, height: 28, color: 'var(--text-secondary)' }}
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                </button>
-              </>
-            )}
+          </div>
+          {activeMode==='terminal' && <div ref={setSessionControlsHost} className="session-pane-controls-slot"/>}
           </div>
         )}
+
+        <div className="workspace-project-body flex flex-1 min-h-0 min-w-0">
+          <aside id={`project-file-tree-${projectId}`} aria-label="项目文件树"
+            className="workspace-file-tree" style={{display:fileTreeOpen && showSubTabs?'flex':'none'}}>
+            <div ref={setFileTreeHost} className="workspace-file-tree-host"/>
+          </aside>
+
+          <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+            <div ref={setFileTabsHost} className="workspace-file-tabs-host" aria-label="打开的文件标签" style={{display:fileTreeOpen && showSubTabs?undefined:'none'}}/>
 
         {/* Panel content */}
         <div className="flex-1 min-h-0 relative">
           {/* Terminal mode */}
-          {activeMode === 'terminal' && (
-            <>
+          <div className="h-full absolute inset-0" style={{visibility:activeMode==='terminal'?'visible':'hidden',pointerEvents:activeMode==='terminal'?'auto':'none'}}>
               {terminalInstances.length === 0 && <div className="flex h-full items-center justify-center text-xs" style={{ color: 'var(--text-secondary)' }}>暂无打开的会话，点击上方「＋」新建。</div>}
 
               {/* Terminal instances stay mounted so tab switches preserve terminal state. */}
               <div className="h-full absolute inset-0" style={{ pointerEvents: 'none' }}>
                 {mountedTerminalInstances.map((term) => {
-                  const isSingleActive = activeTerminalId === term.id;
+                  const isSingleActive = activeMode==='terminal' && activeTerminalId === term.id;
                   const termVisible = isSingleActive && active;
 
                   if (termVisible) mountedTerminals.current.add(term.id);
@@ -1659,17 +1591,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                     ? !!endedSession!.codex_session_id
                     : !!endedSession!.claude_session_id);
 
-                  return (
-                    <div
-                      key={term.id}
-                      className="h-full absolute inset-0"
-                      style={{
-                        visibility: isSingleActive ? 'visible' : 'hidden',
-                        pointerEvents: isSingleActive ? 'auto' : 'none',
-                        zIndex: isSingleActive ? 1 : 0,
-                      }}
-                    >
-                      {shouldMount && ((isEnded || resumeState?.phase === 'starting') ? (
+                  const renderTerminal = (rawVisible: boolean, chatSuspended: boolean, markReady: () => void) => (
+                    (isEnded || resumeState?.phase === 'starting') ? (
                         <div className="relative h-full w-full">
                           <HistoryViewer
                             sessionId={term.id}
@@ -1684,8 +1607,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         <Terminal
                           key={terminalConnectionVersions[term.id] ?? 0}
                           sessionId={term.id}
-                          visible={termVisible}
-                          suspended={terminalsSuspended || !warmTerminalIds.has(term.id)}
+                          visible={rawVisible}
+                          suspended={terminalsSuspended || !warmTerminalIds.has(term.id) || chatSuspended}
                           hideCursor={projectSessions.find((session) => session.id === term.id)?.task !== 'Terminal' && projectSessions.some((session) => session.id === term.id)}
                           cliType={sessionLookup.get(term.id)?.cli_type as 'claude' | 'codex' | undefined}
                           onExit={() => {
@@ -1697,20 +1620,39 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                             void queryClient.invalidateQueries({ queryKey: ['sessions'] });
                             void queryClient.invalidateQueries({ queryKey: ['project-sessions', projectId] });
                           }}
-                          onReady={sessionResume.terminalReady}
+                          onReady={(id) => { sessionResume.terminalReady(id); markReady(); }}
                           onConnectionError={sessionResume.terminalFailed}
                           onReconnect={resuming ? undefined : () => reconnectTerminal(term.id)}
                         />
-                      ))}
+                      )
+                  );
+
+                  return (
+                    <div
+                      key={term.id}
+                      className="h-full absolute inset-0"
+                      style={{
+                        visibility: isSingleActive ? 'visible' : 'hidden',
+                        pointerEvents: isSingleActive ? 'auto' : 'none',
+                        zIndex: isSingleActive ? 1 : 0,
+                      }}
+                    >
+                      {shouldMount && (endedSession ? <SessionWorkspacePane
+                        session={endedSession} userId={currentUserId} active={termVisible}
+                        controlsHost={sessionControlsHost}
+                        projectPath={projectPath} onOpenFile={handleOpenInExplorer}
+                        renderTerminal={renderTerminal} resuming={resuming} resumeFailed={resumeState?.phase==='error'}
+                        onResume={canResume || resuming ? () => { void sessionResume.resume(term.id); } : undefined}
+                        onClose={isEnded ? () => closeEndedSession(term.id) : undefined}
+                      /> : <div className="p-3 text-xs" style={{color:'var(--text-secondary)'}}>正在读取会话信息…</div>)}
                       {shouldMount && resumeState && <SessionResumeFeedback state={resumeState} />}
                     </div>
                   );
                 })}
               </div>
-            </>
-          )}
+          </div>
 
-          {/* Explorer instances */}
+          {/* Explorer instances retain edits while their trees/tabs are docked. */}
           {mountedExplorerInstances.map((expl) => (
             <div
               key={expl.id}
@@ -1723,7 +1665,17 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                 rootPath={projectPath}
                 projectId={projectId}
                 instanceId={expl.id}
-                active={active && activeMode === 'explorer' && activeExplorerId === expl.id}
+                active={active && activeExplorerId === expl.id && (activeMode === 'explorer' || fileTreeOpen && showSubTabs)}
+                workspace={{
+                  treeHost:activeExplorerId===expl.id?fileTreeHost:null,
+                  tabsHost:fileTabsHost,
+                  editorActive:active && activeMode==='explorer' && activeExplorerId===expl.id,
+                  onActivate:()=>{
+                    setActiveExplorerId(expl.id);setActiveMode('explorer');
+                    if(window.matchMedia?.('(max-width: 639px)').matches)setFileTreeOpen(false);
+                  },
+                  onEmpty:()=>{setActiveMode('terminal');if(activeTerminalId)focusTerminalById(activeTerminalId);},
+                }}
                 refreshFileRequest={gitSavedFile}
                 openFileRequest={expl.id === activeExplorerId ? openInExplorerRequest : null}
                 onFileSaved={handleExplorerFileSaved}
@@ -1772,6 +1724,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
             style={{ display: activeMode === 'scheduled' ? 'block' : 'none' }}
           >
             {activeMode === 'scheduled' && <ScheduledTasksPanel projectId={projectId} sessionTabs={terminalInstances} />}
+          </div>
+        </div>
           </div>
         </div>
       </div>

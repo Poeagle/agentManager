@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it,vi } from 'vitest';
 import {
   buildSessionCommand,
   codexIdentityFlags,
@@ -9,6 +9,21 @@ import {
 const SESSION_ID = '019f7f9d-6ad7-7110-8615-8410399fd932';
 
 describe('CLI command construction', () => {
+  it('attaches a remote terminal without submitting the initial task again',()=>{
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/chat-preview.sock');
+    try {
+      const command=buildSessionCommand('already submitted',false,'codex --cd /project','codex',undefined,SESSION_ID);
+      expect(command).toContain("--remote 'unix:///tmp/chat-preview.sock'");expect(command).toContain(`resume --no-alt-screen '${SESSION_ID}'`);
+      expect(command).not.toContain('already submitted');expect(command).not.toContain('SessionStart');
+    } finally {vi.unstubAllEnvs();}
+  });
+  it('keeps sandboxed members on the embedded CLI even with a shared engine configured',()=>{
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/shared.sock');
+    try {
+      const command=buildSessionCommand('old task',false,'codex --yolo','codex',SESSION_ID,undefined,'/tmp/member-binding.json',null);
+      expect(command).not.toContain('--remote');expect(command).toContain('SessionStart');expect(command).toContain('/tmp/member-binding.json');expect(command).toContain(SESSION_ID);expect(command).not.toContain('old task');
+    } finally {vi.unstubAllEnvs();}
+  });
   it('pins fresh Claude sessions to the assigned native UUID', () => {
     expect(buildSessionCommand("fix user's bug", false, 'claude --model sonnet', 'claude', undefined, SESSION_ID))
       .toBe(`claude --model sonnet --session-id ${SESSION_ID} 'fix user'\\''s bug'`);

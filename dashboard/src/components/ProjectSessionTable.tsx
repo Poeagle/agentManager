@@ -7,18 +7,20 @@ import { tableTime, useTableModel } from './table/use-table-model';
 
 const states: Record<string, string> = { pending: '等待启动', launching: '启动中', running: '运行中', detached: '已分离', released: '外部运行', completed: '已完成', failed: '失败', cancelled: '已关闭' };
 const activeStatuses = new Set(['running', 'pending', 'launching', 'detached', 'released']);
-function state(session: Session) { return session.status === 'running' && session.processState
+function state(session: Session) {
+  if(session.cli_type==='codex') return ({running:'Codex 运行中',idle:'本轮已结束',waiting_for_input:'等待输入',interrupted:'本轮已中断',failed:'执行失败',unknown:'原生状态未知'})[session.agent_runtime?.state || 'unknown'];
+  return session.status === 'running' && session.processState
   ? ({ busy: '处理中', idle: '空闲', waiting_for_input: '等待输入' })[session.processState] : states[session.status] ?? session.status; }
 function client(session: Session) { return session.mode === 'terminal' || session.task === 'Terminal' ? 'Terminal' : session.cli_type === 'codex' ? 'Codex' : 'Claude'; }
-function activity(session: Session) { return session.last_activity_at ?? session.updated_at ?? session.started_at ?? session.created_at; }
+function activity(session: Session) { return session.cli_type==='codex' ? session.agent_runtime?.last_activity_at ?? null : session.last_activity_at ?? session.updated_at ?? session.started_at ?? session.created_at; }
 
 export function ProjectSessionTable({ projectId, onOpen }: { projectId: string; onOpen: (sessionId: string) => void }) {
-  const query = useQuery({ queryKey: ['project-sessions', projectId], queryFn: () => api.sessions.list(undefined, projectId), staleTime: 10_000 });
+  const query = useQuery({ queryKey: ['project-sessions', projectId], queryFn: () => api.sessions.list(undefined, projectId), staleTime: 10_000, refetchInterval:(query)=>query.state.data?.sessions.some(session=>session.cli_type==='codex') ? 5000 : false });
   const liveStates = useStreamStore((store) => store.liveStates);
   const activityAt = useStreamStore((store) => store.activityAt);
   const sessions = (query.data?.sessions ?? []).filter((session) => session.project_id === projectId && activeStatuses.has(session.status)).map((session) => {
-    const live = liveStates[session.id];
-    const at = activityAt[session.id];
+    const live = session.cli_type==='codex' ? undefined : liveStates[session.id];
+    const at = session.cli_type==='codex' ? undefined : activityAt[session.id];
     return { ...session,
       ...(session.status === 'running' && live ? { processState: live.processState } : {}),
       ...(at && at > (tableTime(activity(session)) ?? 0) ? { last_activity_at: new Date(at).toISOString() } : {}),

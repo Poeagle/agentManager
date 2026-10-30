@@ -75,6 +75,8 @@ interface SpawnMessage {
   /** Durable file written by Codex's SessionStart hook. Its payload contains
    *  the native Codex conversation UUID for this AgentManager session. */
   codexBindingPath?: string;
+  /** null keeps restricted sessions in their own filesystem sandbox. */
+  codexStreamSocket?: string | null;
   cols: number;
   rows: number;
   useTmux: boolean;
@@ -573,7 +575,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
     } else {
       // session mode
       if (msg.useTmux) {
-        const command = buildSessionCommand(msg.task, true, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath);
+        const command = buildSessionCommand(msg.task, true, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath, msg.codexStreamSocket);
         await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command, msg.inaccessiblePaths, msg.sandboxRequired);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
@@ -586,7 +588,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
           env: sessionEnv(),
         });
       } else if (msg.useDtach) {
-        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath);
+        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath, msg.codexStreamSocket);
         await dtachCreate(msg.sessionId, msg.projectPath, command, msg.inaccessiblePaths, msg.sandboxRequired);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
@@ -594,7 +596,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
           env: sessionEnv(),
         });
       } else {
-        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath);
+        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath, msg.codexStreamSocket);
         ptyProcess = spawnDirect(msg, shell, ['-i', '-c', command]);
       }
     }

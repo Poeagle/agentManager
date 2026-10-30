@@ -169,14 +169,15 @@ describe('project table interactions', () => {
     await user.click(screen.getByRole('button', { name: '展开项目 Zulu 的会话' }));
     await waitFor(() => expect(api.sessions.list).toHaveBeenCalledWith(undefined, 'p1'));
     expect(await screen.findByText('Investigate memory')).toBeVisible();
-    expect(screen.getByText('空闲')).toBeVisible();
+    expect(screen.getByText('原生状态未知')).toBeVisible();
     expect(screen.getByText('Found an idle worker')).toBeVisible();
     const callsBefore = vi.mocked(api.sessions.list).mock.calls.length;
     act(() => {
       useStreamStore.getState().setLiveState('s1', { processState: 'busy', promptType: null, isPermission: false, at: Date.now() });
       useStreamStore.getState().setActivity('s1', Date.parse('2026-10-13T10:00:00Z'));
     });
-    expect(screen.getByText('处理中')).toBeVisible();
+    // A PTY busy event cannot replace missing native Codex state.
+    expect(screen.getByText('原生状态未知')).toBeVisible();
     expect(api.sessions.list).toHaveBeenCalledTimes(callsBefore);
     await user.click(within(screen.getByRole('table', { name: '项目会话' })).getByRole('button', { name: '查看' }));
     expect(open).toHaveBeenCalledWith('p1', 's1');

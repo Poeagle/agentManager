@@ -43,6 +43,11 @@ echo
 
 cd "$ROOT_DIR"
 export AGENTMANAGER_SKIP_UPDATE_CHECK=1
+# Keep the Codex engine alive across dashboard restarts. Restricted members
+# continue to use embedded CLI workers with the original filesystem sandbox.
+if [[ -z "${AGENTMANAGER_CODEX_STREAM_SOCKET:-}" ]] && command -v codex >/dev/null 2>&1; then
+  export AGENTMANAGER_CODEX_STREAM_SOCKET="$(node scripts/conversation-codex-server.mjs)"
+fi
 # --kill-others: 任一进程退出/Ctrl-C 时,另一个也一起停,不留孤儿
 exec npx concurrently --kill-others --names "api,ui" --prefix-colors "cyan,magenta" \
   "cd server && AGENTMANAGER_DB_PATH=${DEV_DB} PORT=${DEV_API_PORT} npm run dev" \

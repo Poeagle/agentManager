@@ -6,13 +6,16 @@ import {getDb} from '../src/db/index.js';
 import {agentRoutes} from '../src/routes/agent.js';
 import * as manager from '../src/services/session-manager.js';
 import * as state from '../src/services/session-state.js';
+import * as conversation from '../src/services/conversation-stream.js';
 import {createTestDatabase} from './helpers/database.js';
+import {mkdirSync,writeFileSync} from 'fs';
+import {join} from 'path';
 
 describe('immediate session input',()=>{
-  let app:FastifyInstance,cleanup:()=>void,cookie:string;
+  let app:FastifyInstance,cleanup:()=>void,cookie:string,fixtureDir:string;
   let tracker:state.SessionStateTracker;
   beforeEach(async()=>{
-    ({cleanup}=createTestDatabase());
+    ({cleanup,dir:fixtureDir}=createTestDatabase());
     const owner=createUser({username:'owner',password:'password1'});
     const other=createUser({username:'other',password:'password1'});
     cookie=`agentmanager_session=${createSession(owner.id)}`;
@@ -25,7 +28,44 @@ describe('immediate session input',()=>{
     vi.spyOn(state,'getTracker').mockReturnValue(tracker);
     app=Fastify();await app.register(websocket);app.addHook('onRequest',authHook);await app.register(agentRoutes,{prefix:'/api'});await app.ready();
   });
-  afterEach(async()=>{tracker.destroy();await app.close();vi.restoreAllMocks();cleanup();});
+  afterEach(async()=>{tracker.destroy();await app.close();vi.restoreAllMocks();vi.unstubAllEnvs();cleanup();});
+  it('routes chat followups directly to the existing native engine instead of a terminal menu',async()=>{
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');
+    getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
+    const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue(true);
+    const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'能否再详细一下',source:'conversation'}});
+    expect(result.statusCode).toBe(202);expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','能否再详细一下');expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
+  it('forwards and validates the correlation ID before submitting native chat input',async()=>{
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');
+    getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
+    const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue(true);
+    const post=(client_id:unknown)=>app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'继续',source:'conversation',client_id}});
+    expect((await post('client-one')).statusCode).toBe(202);
+    expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','继续','client-one');
+    for(const value of ['',42,'x'.repeat(101)])expect((await post(value)).statusCode).toBe(400);
+    expect(submit).toHaveBeenCalledTimes(1);expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
+  it('validates attachments before forwarding an attachment-only native message',async()=>{
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');
+    const dir=join(fixtureDir,'input-project');const pastes=join(dir,'.agentmanager','pastes');mkdirSync(pastes,{recursive:true});
+    const path=join(pastes,'note.txt');writeFileSync(path,'attached text');
+    getDb().prepare("UPDATE projects SET path=? WHERE id='p'").run(dir);
+    getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
+    const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue(true);
+    const attachments=[{kind:'file',name:'note.txt',path}];
+    const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'',source:'conversation',client_id:'file-only',attachments}});
+    expect(result.statusCode).toBe(202);expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','', 'file-only',attachments);
+    const rejected=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'read',source:'conversation',attachments:[{kind:'file',name:'private',path:'/etc/passwd'}]}});
+    expect(rejected.statusCode).toBe(400);expect(submit).toHaveBeenCalledTimes(1);expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
+  it('never retries an ambiguous native send by also pasting the message into the terminal',async()=>{
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');
+    getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
+    vi.spyOn(conversation,'submitStreamingCodexInput').mockRejectedValue(new Error('connection closed'));
+    const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'followup',source:'conversation'}});
+    expect(result.statusCode).toBe(503);expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
   it('submits during an active execute without cancelling the wait or clearing output',async()=>{
     const execution=tracker.execute({input:'first task',timeout:60000,quiescenceMs:5000,stripAnsi:true});
     await execution.ready;

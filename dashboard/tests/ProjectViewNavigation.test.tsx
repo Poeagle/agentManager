@@ -6,6 +6,7 @@ import { ProjectView } from '../src/components/ProjectView';
 import { api, type Project, type Session } from '../src/lib/api';
 
 vi.mock('../src/components/Terminal', () => ({ Terminal: ({ sessionId }: { sessionId: string }) => <div>Live terminal {sessionId}</div> }));
+vi.mock('../src/components/SessionWorkspacePane', () => ({SessionWorkspacePane: ({renderTerminal}: {renderTerminal:(visible:boolean,suspend:boolean,onReady:()=>void)=>React.ReactNode})=>renderTerminal(true,false,()=>{})}));
 vi.mock('../src/components/HistoryViewer', () => ({ HistoryViewer: ({ sessionId }: { sessionId: string }) => <div>History {sessionId}</div> }));
 vi.mock('../src/components/FileExplorer', () => ({ FileExplorer: () => null }));
 vi.mock('../src/components/GitPanel', () => ({ GitPanel: () => null }));

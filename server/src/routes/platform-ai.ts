@@ -16,6 +16,7 @@ import { discoverModels, testModelConnection } from '../services/platform-ai/mod
 import { detectWorkAgents } from '../services/platform-ai/agents.js';
 import { publicMessageColumns, subscribeConversation, type LiveEvent } from '../services/platform-ai/live.js';
 import { messageAttachments, ownedImage } from '../services/platform-ai/attachments.js';
+import { projectNotificationSettings, saveProjectNotification } from '../services/platform-ai/project-notifications.js';
 
 const idSchema = z.string().min(1).max(256);
 const callbackRate = new Map<string, { start: number; count: number }>();
@@ -55,6 +56,24 @@ export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = asy
   app.get('/platform-ai/agents', async (req, reply) => {
     if (!requirePermission(req, reply, 'agent_api')) return;
     return {agents: await detectWorkAgents()};
+  });
+  app.get('/platform-ai/project-notifications', async (req, reply) => {
+    if (!requirePermission(req, reply, 'agent_api')) return;
+    return projectNotificationSettings(req.user!.id);
+  });
+  app.post('/platform-ai/project-notifications', async (req, reply) => {
+    if (!requirePermission(req, reply, 'agent_api', 'write')) return;
+    return {rule: saveProjectNotification(req.user!.id, req.body)};
+  });
+  app.put<{Params: {id: string}}>('/platform-ai/project-notifications/:id', async (req, reply) => {
+    if (!requirePermission(req, reply, 'agent_api', 'write')) return;
+    return {rule: saveProjectNotification(req.user!.id, req.body, req.params.id)};
+  });
+  app.delete<{Params: {id: string}}>('/platform-ai/project-notifications/:id', async (req, reply) => {
+    if (!requirePermission(req, reply, 'agent_api', 'write')) return;
+    const removed = getDb().prepare('DELETE FROM platform_ai_project_notifications WHERE id=? AND user_id=?').run(req.params.id, req.user!.id);
+    if (!removed.changes) return reply.code(404).send({error: '通知规则不存在'});
+    return {ok: true};
   });
   app.get('/platform-ai/tools', async (req, reply) => {
     if (!requirePermission(req, reply, 'agent_api')) return;

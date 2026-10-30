@@ -70,6 +70,15 @@ Git diffs and file comparisons wrap long lines automatically. Paired rows
 share their height and vertical scroll position, including the merge controls;
 line numbers still refer to the original file lines.
 
+The file explorer supports name and modification-time sorting (newest/oldest),
+and remembers the choice per explorer. Refresh reloads the directory, expanded
+subdirectories and the current clean file while retaining unsaved edits.
+Drag local files or folders onto a directory or into the current path to upload;
+folder hierarchy and empty directories are retained. Upload buttons provide the
+same actions without dragging. Existing files are never overwritten silently;
+progress and per-file failures are displayed. Individual files are limited to
+50 MB; a folder drop accepts up to 5000 entries and 64 directory levels.
+
 Office preview on the Linux server requires these optional system components:
 
 ```bash
@@ -151,6 +160,14 @@ for channel requirements, task completion evidence and recovery semantics.
 Server startup reconnects surviving tmux/dtach sessions. Sessions whose processes
 have exited retain their history and native conversation IDs; use **Resume** in
 the dashboard to start them again. Restoring browser tabs does not start AI CLIs.
+
+Codex tab activity and status use the exact bound native rollout conversation.
+Native task, message and tool events advance its activity clock; terminal redraws,
+tab changes and reconnects do not. Status distinguishes running, waiting for input,
+turn ended, interrupted and unknown. A finished turn is not proof of business task
+completion. Missing native logs or an unconfirmed running Codex process show an
+unknown state instead of inferring activity from the terminal. Visible dashboards
+refresh native status approximately every five seconds.
 
 Codex sessions launched by AgentManager use `--disable plugins`.
 Plugin-provided skills, MCP integrations and hooks are unavailable in these

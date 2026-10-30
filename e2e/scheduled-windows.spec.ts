@@ -31,7 +31,7 @@ test('aligns host telemetry and separates scheduled task display from daily wind
   await expect(resource.getByText('CPU')).toBeVisible();
   const monitor = page.getByTitle('平台管理', { exact: true });
   const [left, right] = await Promise.all([resource.boundingBox(), monitor.boundingBox()]);
-  expect(left!.height).toBe(28);
+  expect(left!.height).toBe(24);
   expect(left!.y).toBe(right!.y);
   expect(left!.x + left!.width).toBeLessThan(right!.x);
   await page.getByTitle('定时任务', { exact: true }).click();

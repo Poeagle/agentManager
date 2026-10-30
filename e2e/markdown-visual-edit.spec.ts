@@ -3,6 +3,13 @@ import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 test('edits rendered Markdown and shows dotfiles', async ({ page }) => {
+  const hookErrors: string[] = [];
+  page.on('pageerror', error => {
+    if (/Invalid hook call|reading 'useRef'/.test(error.message)) hookErrors.push(error.message);
+  });
+  page.on('console', message => {
+    if (message.type() === 'error' && /Invalid hook call|reading 'useRef'/.test(message.text())) hookErrors.push(message.text());
+  });
   const status = await (await page.request.get('/api/auth/status')).json();
   expect((await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },
@@ -50,4 +57,37 @@ test('edits rendered Markdown and shows dotfiles', async ({ page }) => {
   await expect(page.locator('.cm-content')).toContainText('A short note. updated');
   await page.getByRole('button', { name: '可视编辑', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Markdown 可视编辑区' })).toContainText('A short note. updated');
+  expect(hookErrors).toEqual([]);
+});
+
+test('a failed visual editor keeps the project mounted and the complete Markdown available in source', async ({ page }) => {
+  const status = await (await page.request.get('/api/auth/status')).json();
+  expect((await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
+    data: { username: 'e2e-admin', password: 'test-password' },
+  })).ok()).toBeTruthy();
+  const root = join(process.cwd(), '.test-data', 'e2e', 'markdown-editor-recovery');
+  mkdirSync(root, { recursive: true });
+  const markdownPath = join(root, 'README.md');
+  const content = '---\ntitle: Keep metadata\n---\n# Draft\n\nKeep all content.\n';
+  writeFileSync(markdownPath, content);
+  const { project } = await (await page.request.post('/api/projects', { data: { name: 'Markdown Recovery', path: root } })).json();
+  await page.request.put('/api/settings', { data: { settings: { statusline_prompted: 'true' } } });
+  await page.request.put('/api/user-state/app', { data: { value: {
+    projectTabs: [{ projectId: project.id, projectName: project.name }], activeTab: `project-${project.id}`,
+  } } });
+  await page.route('**/src/components/MarkdownVisualEditor.tsx*', route => route.fulfill({
+    contentType: 'application/javascript',
+    body: `export function MarkdownVisualEditor() { throw new TypeError("Cannot read properties of null (reading 'useRef')"); }`,
+  }));
+  await page.goto('/');
+  await page.getByTitle('File Explorer', { exact: true }).click();
+  const tree = page.getByLabel('文件上传区域').filter({ visible: true });
+  await tree.getByRole('button', { name: 'README.md', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('当前文件内容已保留');
+  await expect(tree).toBeVisible();
+  await expect(page.getByText(/failed to render/)).toHaveCount(0);
+  await page.getByRole('button', { name: '切换到源码' }).click();
+  await expect(page.locator('.cm-content')).toContainText('title: Keep metadata');
+  await expect(page.locator('.cm-content')).toContainText('Keep all content.');
+  expect(readFileSync(markdownPath, 'utf8')).toBe(content);
 });

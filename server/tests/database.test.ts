@@ -39,7 +39,7 @@ describe('database schema and durable session identity', () => {
     const { webPageInstances: _web, activeWebPageId: _active, ...retained } = tabs;
     expect(JSON.parse(state.value)).toEqual(retained);
     expect(getDb().prepare(`SELECT value FROM user_ui_state WHERE key = 'project:corrupt'`).get()).toEqual({ value: 'not-json' });
-    const backup = readdirSync(database.dir).find((file) => file.includes('.pre-v17-') && file.endsWith('.bak'));
+    const backup = readdirSync(database.dir).find((file) => file.includes('.pre-v18-') && file.endsWith('.bak'));
     expect(backup).toBeDefined();
     const original = new Database(join(database.dir, backup!), { readonly: true });
     try { expect(original.prepare('SELECT default_web_url FROM projects WHERE id = ?').get('p')).toEqual({ default_web_url: 'https://example.com' }); }
@@ -101,7 +101,22 @@ describe('database schema and durable session identity', () => {
       'stopped_at',
       'stop_reason',
     ]));
-    expect(db.pragma('user_version', { simple: true })).toBe(17);
+    expect(db.pragma('user_version', { simple: true })).toBe(18);
+  });
+
+  it('adds project notifications to v17 without losing users, projects or login sessions', () => {
+    const database = createTestDatabase(); cleanup = database.cleanup;
+    const user = createUser({username:'notification-owner',password:'password1'});
+    const token = createSession(user.id);
+    getDb().prepare("INSERT INTO projects (id,name,path,owner_id) VALUES ('notify','Notify','/tmp/notify-migration',?)").run(user.id);
+    getDb().exec(`DROP TABLE platform_ai_project_notification_receipts;
+      DROP TABLE platform_ai_project_notification_watches; DROP TABLE platform_ai_project_notifications;`);
+    getDb().pragma('user_version = 17'); closeDb(); initDb();
+    expect(getSessionUser(token)?.id).toBe(user.id);
+    expect(getDb().prepare("SELECT name,owner_id FROM projects WHERE id='notify'").get()).toEqual({name:'Notify',owner_id:user.id});
+    expect(getDb().prepare('SELECT * FROM platform_ai_project_notifications').all()).toEqual([]);
+    expect(getDb().pragma('foreign_key_check')).toEqual([]);
+    expect(readdirSync(database.dir).some(file => file.includes('.pre-v18-'))).toBe(true);
   });
 
   it('preserves legacy project prompt data while migrating', () => {
@@ -128,7 +143,7 @@ describe('database schema and durable session identity', () => {
     initDb();
     const migrated = getDb().prepare('SELECT session_prompt FROM projects WHERE id = ?').get('legacy') as { session_prompt: string };
     expect(migrated.session_prompt).toBe('keep this prompt');
-    expect(getDb().pragma('user_version', { simple: true })).toBe(17);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(18);
 
     cleanup = () => {
       closeDb();
@@ -213,6 +228,6 @@ describe('database schema and durable session identity', () => {
       'legacy-orphan-project': null,
       'legacy-owned': 'owner',
     });
-    expect(getDb().pragma('user_version', { simple: true })).toBe(17);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(18);
   });
 });

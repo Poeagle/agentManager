@@ -1,0 +1,46 @@
+import { expect, test } from '@playwright/test';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+
+test('project notification settings persist, pause and delete through the platform UI', async ({page}, testInfo) => {
+  const status = await (await page.request.get('/api/auth/status')).json();
+  const auth = await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {data:{username:'e2e-admin',password:'test-password'}});
+  expect(auth.ok()).toBeTruthy();
+  const {user} = await auth.json();
+  await page.request.put('/api/settings', {data:{settings:{statusline_prompted:'true'}}});
+  const path = join(process.cwd(),'.test-data','e2e','notification-project');
+  mkdirSync(path,{recursive:true});
+  const created = await page.request.post('/api/projects',{data:{name:'通知验证项目',path}});
+  expect(created.ok()).toBeTruthy();
+  const {project} = await created.json();
+  // The channel is configured but never invoked: this test creates no agent work.
+  const channelResponse = await page.request.post('/api/platform-ai/channels',{data:{name:'项目通知测试渠道',kind:'webhook',enabled:true,config:{outbound_url:'http://127.0.0.1:43999/delivery'},secrets:{signing_secret:'e2e-notification-signing-secret-123456'}}});
+  expect(channelResponse.ok()).toBeTruthy();
+  const {channel} = await channelResponse.json();
+  expect((await page.request.post('/api/platform-ai/bindings',{data:{channel_id:channel.id,external_user_id:'notification-user',user_id:user.id}})).ok()).toBeTruthy();
+  await page.goto('/');
+  await page.getByRole('button',{name:'平台 AI',exact:true}).click();
+  const dialog = page.getByRole('dialog',{name:'平台管理'});
+  await dialog.getByRole('button',{name:'项目通知',exact:true}).click();
+  await dialog.getByRole('combobox',{name:'项目',exact:true}).selectOption(project.id);
+  const recipient = await dialog.getByRole('combobox',{name:'接收渠道',exact:true}).locator('option').filter({hasText:'项目通知测试渠道'}).getAttribute('value');
+  await dialog.getByRole('combobox',{name:'接收渠道',exact:true}).selectOption(recipient!);
+  await dialog.getByLabel('任务完成时通知',{exact:true}).uncheck();
+  await dialog.getByRole('button',{name:'保存通知规则',exact:true}).click();
+  await expect(dialog.getByText('通知规则已保存',{exact:true})).toBeVisible();
+  let table = dialog.getByRole('table',{name:'项目通知规则'});
+  await expect(table.getByRole('cell',{name:'需要输入',exact:true})).toBeVisible();
+  await page.reload();
+  await page.getByRole('button',{name:'平台 AI',exact:true}).click();
+  await dialog.getByRole('button',{name:'项目通知',exact:true}).click();
+  table = dialog.getByRole('table',{name:'项目通知规则'});
+  await expect(table.getByRole('cell',{name:'通知验证项目',exact:true})).toBeVisible();
+  await table.getByRole('button',{name:'暂停',exact:true}).click();
+  await expect(table.getByRole('cell',{name:'已暂停',exact:true})).toBeVisible();
+  await page.setViewportSize({width:390,height:844});
+  await expect(table.getByRole('cell',{name:'通知验证项目',exact:true})).toBeVisible();
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await page.screenshot({path:testInfo.outputPath('project-notifications-mobile.png')});
+  await table.getByRole('button',{name:'删除',exact:true}).click();
+  await expect(dialog.getByText('尚未配置项目通知',{exact:true})).toBeVisible();
+});

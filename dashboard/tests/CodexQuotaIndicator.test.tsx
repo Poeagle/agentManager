@@ -68,7 +68,7 @@ describe('CodexQuotaIndicator', () => {
     expect(card).toHaveAttribute('title', expect.stringContaining(`周额度重置时间（本地时间）：${date.toLocaleString(undefined, { timeZoneName: 'short' })}`));
     expect(card).toHaveAttribute('title', expect.stringContaining(new Date('2026-08-13T08:00:00.000Z').toLocaleString()));
     expect(screen.queryByText(/^周重置 /)).not.toBeInTheDocument();
-    expect(card).toHaveClass('h-7');
+    expect(card).toHaveClass('h-6');
     client.clear();
   });
 

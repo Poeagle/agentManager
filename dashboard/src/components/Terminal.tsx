@@ -1,3 +1,4 @@
+import {readFileAsDataUrl} from '../lib/file-data-url';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Terminal as XTerm } from '@xterm/xterm';
@@ -98,19 +99,6 @@ function sanitizeTerminalOutput(data: string) {
     .split('\u001b[?1004l').join('');
 }
 
-function readFileAsDataUrl(file: File, signal: AbortSignal): Promise<string> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(new DOMException('Upload cancelled', 'AbortError'));
-    const reader = new FileReader();
-    const cleanup = () => signal.removeEventListener('abort', abort);
-    const abort = () => reader.abort();
-    signal.addEventListener('abort', abort, { once: true });
-    reader.onload = () => { cleanup(); resolve(reader.result as string); };
-    reader.onerror = () => { cleanup(); reject(reader.error || new Error('Failed to read file')); };
-    reader.onabort = () => { cleanup(); reject(new DOMException('Upload cancelled', 'AbortError')); };
-    reader.readAsDataURL(file);
-  });
-}
 
 interface PasteUpload {
   id: number;
@@ -522,6 +510,18 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       nativePromptRef.current.replace(recovered);
       return nativePromptRef.current.snapshot();
     };
+
+    // A chat send appends to the same native composer. Keep a partially typed
+    // terminal prompt from being silently combined with the next chat message.
+    const checkDraft = (event: Event) => {
+      const detail = (event as CustomEvent<{sessionId: string; respond: (hasDraft: boolean) => void}>).detail;
+      if (detail?.sessionId === sessionId && visibleRef.current) {
+        // Only input tracked since the last submit is relevant here. Recovering
+        // from old terminal rows can mistake a previous prompt for a new draft.
+        detail.respond(!!nativePromptRef.current.snapshot()?.text.trim());
+      }
+    };
+    window.addEventListener('agentmanager:check-terminal-draft', checkDraft);
 
     let queuedInputAfterPromptReplacement: Array<{ data: string; paste: boolean }> = [];
 
@@ -1139,6 +1139,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       disposed = true;
       intentionalClose = true;
       serverAliveListeners.delete(onServerAlive);
+      window.removeEventListener('agentmanager:check-terminal-draft', checkDraft);
       connectFnRef.current = null;
       disconnectFnRef.current = null;
       if (writeFrame !== null) cancelAnimationFrame(writeFrame);
@@ -1299,7 +1300,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   useEffect(() => {
     const handler = (e: Event) => {
       const { sessionId: targetId } = (e as CustomEvent).detail;
-      if (targetId !== sessionId) return;
+      if (targetId !== sessionId || !visibleRef.current) return;
       hardRefresh();
     };
     window.addEventListener('agentmanager:refresh-terminal', handler);

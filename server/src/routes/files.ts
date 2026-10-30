@@ -1,5 +1,5 @@
 import { FastifyPluginAsync, type FastifyRequest } from 'fastify';
-import { readdir, stat, lstat, readFile, writeFile, rm, rename, cp, open, realpath } from 'fs/promises';
+import { readdir, stat, lstat, readFile, writeFile, rm, rename, cp, open, realpath, mkdir } from 'fs/promises';
 import { createReadStream } from 'fs';
 import { join, resolve, extname, dirname, basename, relative, isAbsolute, sep } from 'path';
 import { execFile } from 'child_process';
@@ -25,6 +25,7 @@ interface FileEntry {
   type: 'file' | 'directory';
   size: number;
   extension: string;
+  modified_at: string;
 }
 
 function attachmentHeader(fileName: string) {
@@ -147,6 +148,23 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.post<{Body: {path: string}}>('/files/directory', async (req, reply) => {
+    const path = req.body?.path;
+    if (typeof path !== 'string' || !path.trim() || path.includes('\0')) return reply.code(400).send({error:'目录路径无效'});
+    try {
+      await mkdir(resolve(path),{mode:0o700});
+      return {ok:true,created:true};
+    } catch (error: any) {
+      if (error.code === 'EEXIST') {
+        const existing = await lstat(path);
+        if (existing.isDirectory() && !existing.isSymbolicLink()) return {ok:true,created:false};
+        return reply.code(409).send({error:'同名路径已存在且不是普通目录'});
+      }
+      if (error.code === 'ENOENT') return reply.code(404).send({error:'父目录不存在'});
+      return reply.code(403).send({error:'无法创建目录，请检查路径和写入权限'});
+    }
+  });
+
   // List directory contents
   app.get<{
     Querystring: { path: string; showHidden?: string };
@@ -178,6 +196,7 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
             type: entry.isDirectory() ? 'directory' : 'file',
             size: stats.size,
             extension: entry.isDirectory() ? '' : extname(entry.name).slice(1),
+            modified_at: stats.mtime.toISOString(),
           });
         } catch {
           // Skip files we can't stat (permission errors, etc.)

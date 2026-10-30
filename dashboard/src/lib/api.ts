@@ -1,3 +1,4 @@
+import type {ConversationAttachment} from './conversation-attachments';
 const API_BASE = '/api';
 
 function fileEndpoint(url: string, projectId?: string): string {
@@ -331,6 +332,7 @@ export const api = {
       fetchJSON<{ ok: boolean }>(`/skills/${tool}/${scope}/${encodeURIComponent(name)}?project_id=${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
   },
   files: {
+    createDirectory: (path: string, projectId?: string) => fetchJSON<{ok:boolean;created:boolean}>(fileEndpoint('/files/directory',projectId),{method:'POST',body:JSON.stringify({path})}),
     upload: (path: string, file: File, onProgress?: (fraction: number) => void, projectId?: string) =>
       uploadWithProgress<{ ok: boolean; path: string; size: number }>(
         fileEndpoint(`/files/upload?path=${encodeURIComponent(path)}&filename=${encodeURIComponent(file.name)}`, projectId),
@@ -342,6 +344,7 @@ export const api = {
       fetchJSON<{ path: string; content: string; extension: string; size: number; previewType?: FilePreviewType }>(
         fileEndpoint(`/files/read?path=${encodeURIComponent(path)}`, projectId)
       ),
+    previewUrl:(path:string,projectId?:string)=>`${API_BASE}${fileEndpoint(`/files/preview?path=${encodeURIComponent(path)}`,projectId)}`,
     preview: async (path: string, signal?: AbortSignal, projectId?: string) => {
       const res = await fetch(`${API_BASE}${fileEndpoint(`/files/preview?path=${encodeURIComponent(path)}`, projectId)}`, { signal });
       if (!res.ok) {
@@ -463,6 +466,8 @@ export const api = {
       }),
   },
   agent: {
+    conversation:(sessionId:string,query:{after?:string;before?:string}={},signal?:AbortSignal)=>fetchJSON<ConversationPage>(`/sessions/${encodeURIComponent(sessionId)}/conversation?${new URLSearchParams(query)}`,{signal}),
+    sendInput:(sessionId:string,input:string,clientId?:string,attachments?:ConversationAttachment[])=>fetchJSON<{status:string}>(`/sessions/${encodeURIComponent(sessionId)}/input`,{method:'POST',body:JSON.stringify({input,source:'conversation',client_id:clientId,attachments})}),
     capabilities: () => fetchJSON<AgentApiContract>('/agent/capabilities'),
     execute: (sessionId: string, opts: {
       input: string;
@@ -544,8 +549,10 @@ export const api = {
 export function scopeProjectFiles(files: typeof api.files, projectId?: string): typeof api.files {
   if (!projectId) return files;
   return {
+    createDirectory: (path) => files.createDirectory(path, projectId),
     list: (path, hidden) => files.list(path, hidden, projectId),
     read: (path) => files.read(path, projectId),
+    previewUrl: (path) => files.previewUrl(path,projectId),
     preview: (path, signal) => files.preview(path, signal, projectId),
     upload: (path, file, progress) => files.upload(path, file, progress, projectId),
     export: (path, signal) => files.export(path, signal, projectId),
@@ -576,6 +583,11 @@ export interface Session {
   mode?: 'session' | 'terminal';
   claude_session_id?: string | null;
   codex_session_id?: string | null;
+  agent_runtime?: {
+    source: 'codex_rollout'; session_id: string | null;
+    state: 'running' | 'idle' | 'waiting_for_input' | 'interrupted' | 'failed' | 'unknown';
+    last_activity_at: string | null; observed_at: string; reason: string;
+  };
   // Live process-state (present when the session has an active in-memory tracker).
   processState?: 'busy' | 'idle' | 'waiting_for_input';
   promptType?: 'choice' | 'confirmation' | 'text' | null;
@@ -810,6 +822,7 @@ export interface FileEntry {
   type: 'file' | 'directory';
   size: number;
   extension: string;
+  modified_at?: string;
 }
 
 export interface GitStatus {
@@ -958,6 +971,14 @@ export interface SessionOutput {
   chunks: { seq: number; data: string }[];
   hasMore: boolean;
   oldestSeq: number | null;
+}
+
+export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final';client_id?:string;sequence?:number}
+export interface ConversationPage {
+  messages:ConversationMessage[];has_more:boolean;reset:boolean;available:boolean;generation:string|null;
+  session_id:string;session_status:Session['status'];session_active:boolean;native_id:string|null;
+  runtime:Session['agent_runtime']|null;
+  interaction:{processState:'busy'|'idle'|'waiting_for_input';promptType:'choice'|'confirmation'|'text'|null;isPermission:boolean;choices:string[]|null}|null;
 }
 
 export interface SessionStateResponse {

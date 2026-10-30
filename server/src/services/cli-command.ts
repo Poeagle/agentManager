@@ -3,8 +3,9 @@ export type CliType = 'claude' | 'codex';
 const CLAUDE_ALL_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 const CODEX_ALL_PERMISSIONS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 
-function withoutCodexPlugins(command: string): string {
-  return `${command} --disable plugins`;
+function withoutCodexPlugins(command: string, socket?:string|null): string {
+  const remote=socket && !/(?:^|\s)--remote(?:\s|=)/.test(command) ? ` --remote ${shellSingleQuote(`unix://${socket}`)}` : '';
+  return `${command}${remote} --disable plugins`;
 }
 
 /** Apply the CLI's explicit no-approval/full-access mode exactly once. */
@@ -59,18 +60,21 @@ export function buildSessionCommand(
   resumeSessionId?: string,
   assignSessionId?: string,
   codexBindingPath?: string,
+  codexStreamSocket: string | null | undefined = process.env.AGENTMANAGER_CODEX_STREAM_SOCKET,
 ): string {
   // Resume never receives the old task, so recovery cannot submit it twice.
   if (resumeSessionId) {
     const baseCmd = sessionCmd || (cliType === 'codex' ? 'codex' : 'claude');
     const cmd = cliType === 'codex'
-      ? `${withoutCodexPlugins(baseCmd)} resume${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(resumeSessionId)}`
+      ? `${withoutCodexPlugins(baseCmd,codexStreamSocket)} resume${codexStreamSocket?'':codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(resumeSessionId)}`
       : `${baseCmd} --resume ${shellSingleQuote(resumeSessionId)}`;
     return direct ? `command bash -c ${shellSingleQuote(cmd)}` : cmd;
   }
   if (cliType === 'codex') {
     const baseCmd = sessionCmd || 'codex';
-    const cmd = `${withoutCodexPlugins(baseCmd)}${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(task)}`;
+    const cmd = assignSessionId
+      ? `${withoutCodexPlugins(baseCmd,codexStreamSocket)} resume --no-alt-screen ${shellSingleQuote(assignSessionId)}`
+      : `${withoutCodexPlugins(baseCmd,codexStreamSocket)}${codexIdentityFlags(codexBindingPath)} --no-alt-screen ${shellSingleQuote(task)}`;
     return direct ? `command bash -c ${shellSingleQuote(cmd)}` : cmd;
   }
   const baseCmd = sessionCmd || 'claude';

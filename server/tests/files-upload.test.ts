@@ -44,6 +44,26 @@ function upload(path: string, filename: string, payload = Buffer.from([0, 1, 255
 }
 
 describe('file upload API', () => {
+  it('creates folder hierarchies and empty directories without overwriting existing paths', async()=>{
+    const create=(path:string)=>app.inject({method:'POST',url:'/api/files/directory?project_id=project-1',headers:{cookie},payload:{path}});
+    const root=join(project,'资料');
+    expect((await create(root)).json()).toEqual({ok:true,created:true});
+    expect((await create(join(root,'空文件夹'))).statusCode).toBe(200);
+    expect((await create(root)).json()).toEqual({ok:true,created:false});
+    expect((await upload(root,'note.txt',Buffer.from('keep'))).statusCode).toBe(200);
+    expect((await create(join(root,'note.txt'))).statusCode).toBe(409);
+    expect(readFileSync(join(root,'note.txt'),'utf8')).toBe('keep');
+    expect((await create(outside+'/escape')).statusCode).toBe(403);
+    symlinkSync(outside,join(project,'unsafe'));
+    expect((await create(join(project,'unsafe','escape'))).statusCode).toBe(403);
+  });
+
+  it('returns actual filesystem modification times for sorting',async()=>{
+    writeFileSync(join(project,'time.txt'),'data');
+    const response=await app.inject({url:`/api/files?path=${encodeURIComponent(project)}`,headers:{cookie}});
+    const entry=response.json().files.find((file:{name:string})=>file.name==='time.txt');
+    expect(Number.isFinite(Date.parse(entry.modified_at))).toBe(true);
+  });
   it('saves binary bytes with the original Unicode filename in the requested directory', async () => {
     const payload = Buffer.from([0, 1, 255, 128]);
     const response = await upload(join(project, 'reports'), '报表 & 数据.png', payload);

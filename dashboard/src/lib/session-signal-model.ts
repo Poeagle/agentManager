@@ -61,6 +61,18 @@ export function sessionSignal(status: string | undefined, live: LiveLike): Signa
 }
 
 export function signalForSession(session: Session, liveStates: Record<string, LiveSessionState>): Signal | null {
+  if (session.cli_type === 'codex') {
+    const native = session.agent_runtime?.state || 'unknown';
+    const map: Record<string, Signal> = {
+      running:{color:C.blue,pulse:true,attention:false,lock:false,title:'Codex 运行中 · 原生执行记录'},
+      idle:{color:C.green,pulse:false,attention:false,lock:false,title:'Codex 本轮已结束 · 等待输入'},
+      waiting_for_input:{color:C.yellow,pulse:false,attention:true,lock:false,title:'Codex 等待用户输入'},
+      interrupted:{color:C.grey,pulse:false,attention:false,lock:false,title:'Codex 本轮已中断'},
+      failed:{color:C.red,pulse:false,attention:true,lock:false,title:'Codex 执行失败'},
+      unknown:{color:C.grey,pulse:false,attention:false,lock:false,title:'Codex 原生状态未知'},
+    };
+    return map[native];
+  }
   const terminal = session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled';
   const live = terminal ? undefined : (liveStates[session.id] ?? liveFromSession(session));
   return sessionSignal(session.status, live);

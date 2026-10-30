@@ -131,6 +131,7 @@ describe('member PTY sandbox', () => {
   });
 
   it('includes the service DB directory and common credential paths', () => {
+    expect(sensitiveHostPathsForSandbox('/state/agentmanager.db','/home/member','/state/codex/codex.sock')).toContain('-/state/codex');
     expect(sensitiveHostPathsForSandbox('/state/agentmanager.db', '/home/member')).toEqual([
       dirname(resolve('/state/agentmanager.db')),
       '-/home/member/.ssh',

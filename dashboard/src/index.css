@@ -282,6 +282,7 @@ select:hover {
 }
 .markdown-visual-editor .ProseMirror { min-height: 60vh; outline: none; }
 .markdown-visual-editor .ProseMirror:focus-visible { outline: none; }
+.markdown-visual-editor a[href] { cursor: pointer; }
 .markdown-visual-editor .ProseMirror p:first-child { margin-top: 0; }
 .markdown-preview ul[data-type="taskList"] { list-style: none; padding-left: 1.4em; }
 .markdown-preview ul[data-type="taskList"] li { display: flex; align-items: baseline; gap: 0.25em; }
@@ -302,6 +303,7 @@ select:hover {
 .data-table > tbody > .table-detail-row > .detail-cell { padding: 8px 12px; background: var(--bg-primary); }
 .table-expand-column { width: 32px; }
 .table-actions-column { width: 140px; }
+.user-management-table > .data-table > thead > tr > .table-actions-column { width: 264px; }
 .table-state { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 20px; color: var(--text-secondary); }
 .row-expand { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 3px; color: var(--text-secondary); background: var(--bg-primary); }
 .row-expand:hover { border-color: var(--accent); color: var(--accent); }

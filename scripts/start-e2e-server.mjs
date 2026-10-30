@@ -26,6 +26,7 @@ process.once('exit', cleanup);
 
 Object.assign(process.env, {
   HOME: fakeHome,
+  CODEX_HOME: join(fakeHome, '.codex'),
   PORT: '43110',
   HOST: '127.0.0.1',
   LOG_LEVEL: 'silent',

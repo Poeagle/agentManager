@@ -31,11 +31,13 @@ async function mount() {
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
 }
 
-it('shows deployment CPU and capacity totals and refreshes every five seconds', async () => {
+it('shows compact usage percentages, keeps capacities in tooltips, and refreshes every five seconds', async () => {
   await mount();
   expect(screen.getByText('12%')).toBeVisible();
-  expect(screen.getByText('8.0/32.0G')).toBeVisible();
-  expect(screen.getByText('100/250G')).toBeVisible();
+  expect(screen.getByText('25%')).toBeVisible();
+  expect(screen.getByText('40%')).toBeVisible();
+  expect(screen.getByText('内存').parentElement).toHaveAttribute('title', expect.stringContaining('8.0 GiB / 总量 32.0 GiB'));
+  expect(screen.getByText('磁盘').parentElement).toHaveAttribute('title', expect.stringContaining('100.0 GiB / 总量 250.0 GiB'));
   expect(screen.getByLabelText('部署服务器资源')).toHaveAttribute('title', expect.stringContaining('8 个逻辑核'));
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   expect(api.admin.serverResources).toHaveBeenCalledTimes(2);

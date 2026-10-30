@@ -1,0 +1,61 @@
+import {expect,test} from '@playwright/test';
+import {appendFileSync,mkdirSync,writeFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+import {join} from 'node:path';
+
+test('conversation shares its tab row, resizes, previews and navigates rich streamed content',async({page,context},testInfo)=>{
+  const authStatus=await(await page.request.get('/api/auth/status')).json();
+  expect((await page.request.post(authStatus.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
+  const root=join(process.cwd(),'.test-data/e2e'),projectPath=join(root,'reading-project');mkdirSync(projectPath,{recursive:true});writeFileSync(join(projectPath,'README.md'),'# 本地文件已打开\n阅读工具测试。\n');
+  const {project}=await(await page.request.post('/api/projects',{data:{name:'Reading controls',path:projectPath}})).json();
+  const {session}=await(await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:projectPath,mode:'terminal'}})).json();
+  const native='019ff001-9999-7999-8999-999999999999';const dir=join(root,'home/.codex/sessions');mkdirSync(dir,{recursive:true});const log=join(dir,`rollout-reading-${native}.jsonl`);
+  let ordinal=0;const entry=(type:string,payload:unknown)=>JSON.stringify({type,timestamp:new Date(Date.UTC(2026,9,29,10,0,ordinal++)).toISOString(),payload})+'\n';
+  const code=`const result = ${JSON.stringify('长代码需要横向滚动'.repeat(20))};\nconsole.log(result);`;
+  const wideTable=`| ${Array.from({length:9},(_,i)=>`配置列${i}`).join(' | ')} |\n| ${Array.from({length:9},()=>'---').join(' | ')} |\n| ${Array.from({length:9},()=> '项目配置内容需要独立水平滚动'.repeat(3)).join(' | ')} |`;
+  let fixture='';
+  for(let index=1;index<=4;index++){
+    fixture+=entry('event_msg',{type:'user_message',message:`问题 ${index}：分析第 ${index} 个部分`});
+    const answer=`## 第 ${index} 部分\n\n这是 **重点说明**，包含中文、列表与代码。\n\n${'这一段用于验证阅读定位和换行。'.repeat(18)}\n\n### 细节 ${index}\n\n- [x] 已检查\n- [ ] 待处理\n\n\`\`\`ts\n${code}\n\`\`\`\n\n${wideTable}\n\n[本地说明](README.md)\n\n> 这是一段引用。`;
+    fixture+=entry('response_item',{type:'message',id:`answer-${index}`,role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:`turn-${index}`},content:[{type:'output_text',text:answer}]});
+  }
+  writeFileSync(log,fixture);
+  const require=createRequire(import.meta.url),Database=require('../server/node_modules/better-sqlite3');const db=new Database(join(root,'agentmanager.db'));
+  try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',native,session.id);}finally{db.close();}
+  let push:((data:string)=>void)|undefined;
+  await page.routeWebSocket('**/conversation/stream',socket=>{push=data=>socket.send(data);socket.send(JSON.stringify({type:'snapshot',messages:[],busy:false,stage:'idle'}));});
+  await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});
+  await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});
+  await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'阅读测试'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
+  await page.goto('/');
+  const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});await expect(chat.getByRole('heading',{name:'第 4 部分',exact:true})).toBeVisible();
+  const tabs=page.getByLabel('会话标签',{exact:true});const modes=page.getByRole('group',{name:'会话显示方式'});
+  const tabBox=await tabs.boundingBox(),modeBox=await modes.boundingBox();expect(Math.abs(tabBox!.y+tabBox!.height/2-modeBox!.y-modeBox!.height/2)).toBeLessThan(2);await expect(page.locator('.session-pane-toolbar')).toHaveCount(0);
+  const widthHandle=chat.getByRole('separator',{name:'右侧阅读宽度'});const originalWidth=Number(await widthHandle.getAttribute('aria-valuenow'));const box=await widthHandle.boundingBox();
+  await page.mouse.move(box!.x+box!.width/2,box!.y+box!.height/2);await page.mouse.down();await page.mouse.move(box!.x+box!.width/2-90,box!.y+box!.height/2,{steps:12});await page.mouse.up();
+  const smaller=Number(await widthHandle.getAttribute('aria-valuenow'));expect(smaller).toBeLessThan(originalWidth-100);
+  const nav=chat.getByRole('navigation',{name:'对话目录'});const third=nav.getByRole('button',{name:/跳转到第 3 段对话/});
+  await third.hover();const preview=nav.getByRole('dialog',{name:'对话预览'});await expect(preview).not.toContainText('问题 3');await expect(preview).toContainText('Agent 输出');await expect(preview).toContainText('重点说明');
+  await page.screenshot({path:testInfo.outputPath('navigation-preview.png')});
+  await preview.getByRole('button',{name:'细节 3',exact:true}).click();const heading=chat.getByRole('heading',{name:'细节 3',exact:true});
+  await expect.poll(async()=>{const h=await heading.boundingBox();const area=await chat.locator('.session-chat-scroll').boundingBox();return Math.abs(h!.y-area!.y-20);}).toBeLessThan(5);
+  await expect(third).toHaveAttribute('aria-current','location');
+  const answer=chat.locator('.session-chat-message.assistant').nth(2);await expect(answer.locator('.tok-keyword').first()).toContainText('const');
+  const table=answer.getByRole('region',{name:'横向滚动表格'});expect(await table.evaluate(node=>node.scrollWidth>node.clientWidth)).toBe(true);
+  await answer.getByRole('button',{name:'代码自动换行'}).click();await expect(answer.locator('pre')).toHaveCSS('white-space','pre-wrap');
+  await context.grantPermissions(['clipboard-read','clipboard-write']);await answer.getByRole('button',{name:'复制代码',exact:true}).click();expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe(code);
+  await page.screenshot({path:testInfo.outputPath('reading-tools.png')});
+  await page.reload();await expect(widthHandle).toHaveAttribute('aria-valuenow',String(smaller));await expect(chat.getByText('事件通道已连接',{exact:true})).toBeVisible();
+  const messages=(await(await page.request.get(`/api/sessions/${session.id}/conversation`)).json()).messages;const last=messages.filter((message:{role:string})=>message.role==='assistant').at(-1);
+  push?.(JSON.stringify({type:'snapshot',busy:true,stage:'answering',turn_id:last.turn_id,messages:[{...last,text:last.text+'\n\n## 流式新增章节\n\n第一段',streaming:true}]}));
+  await expect(chat.getByRole('heading',{name:'流式新增章节'})).toBeAttached();
+  push?.(JSON.stringify({type:'snapshot',busy:true,stage:'answering',turn_id:last.turn_id,messages:[{...last,text:last.text+'\n\n## 流式新增章节\n\n第一段继续增长。',streaming:true}]}));
+  await expect(chat.getByText('第一段继续增长。',{exact:true})).toBeAttached();
+  await nav.getByRole('button',{name:/跳转到第 4 段对话/}).hover();await expect(nav.getByRole('button',{name:'流式新增章节',exact:true})).toBeVisible();
+  await page.setViewportSize({width:390,height:844});await expect(widthHandle).not.toBeVisible();await expect(nav).not.toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:testInfo.outputPath('reading-mobile.png')});
+  await page.setViewportSize({width:1280,height:860});await expect(widthHandle).toHaveAttribute('aria-valuenow',String(smaller));
+  await nav.getByRole('button',{name:/跳转到第 1 段对话/}).click();await chat.locator('.session-chat-message.assistant').first().getByRole('link',{name:'本地说明'}).click();
+  await expect(page.getByRole('heading',{name:'本地文件已打开'})).toBeVisible();
+  await page.request.delete(`/api/sessions/${session.id}`);
+});

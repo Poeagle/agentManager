@@ -1,8 +1,11 @@
 import { useState, useCallback, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
-import { Folder, FolderOpen, File, ChevronRight, ChevronDown, ChevronUp, Loader2, Save, Circle, Eye, EyeOff, Pencil, Home, X, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, GitCompareArrows, Scissors, Copy as CopyIcon, Clipboard, Trash2, Edit3, Download } from 'lucide-react';
+import {followDocumentLink,scrollDocumentFragment} from '../lib/document-links';
+import { createPortal } from 'react-dom';
+import { Folder, FolderOpen, File, ChevronRight, ChevronDown, ChevronUp, Loader2, Save, Circle, Eye, EyeOff, Pencil, Home, X, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, GitCompareArrows, Scissors, Copy as CopyIcon, Clipboard, Trash2, Edit3, Download, RefreshCw, Upload } from 'lucide-react';
 import { api, scopeProjectFiles, type FileEntry, type FilePreviewType } from '../lib/api';
 import { isExportTransferActive, startExportTransfer, useExportTransferStore } from '../lib/export-transfer';
 import { ConfirmModal } from './ConfirmModal';
+import { ErrorBoundary } from './ErrorBoundary';
 import { SplitHalf, OverviewRuler } from './DiffComponents';
 import {
   type HunkInfo,
@@ -26,7 +29,8 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { setEditorDirty } from '../lib/unsaved-files';
-import { droppedFiles, isFileDrag, MAX_FILE_UPLOAD_BYTES, type FileUploadRequest } from '../lib/file-upload';
+import { droppedFiles, isFileDrag, MAX_FILE_UPLOAD_BYTES, safeUploadPath, type FileUploadRequest } from '../lib/file-upload';
+import { compareFileEntries, type FileSort } from '../lib/file-sort';
 import { isWithinExplorerRoot, normalizeExplorerPath } from '../lib/explorer-path';
 
 const MarkdownVisualEditor = lazy(() => import('./MarkdownVisualEditor').then((module) => ({ default: module.MarkdownVisualEditor })));
@@ -46,6 +50,13 @@ interface FileExplorerProps {
   onFileSaved?: (filePath: string) => void; // notify parent when a file is saved
   readOnly?: boolean; // when true, disable all writes (save/rename/delete/paste) — view-only
   uploadRequest?: FileUploadRequest | null;
+  workspace?: {
+    treeHost: HTMLElement | null;
+    tabsHost: HTMLElement | null;
+    editorActive: boolean;
+    onActivate: () => void;
+    onEmpty: () => void;
+  };
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -119,6 +130,7 @@ interface FileTab {
   size: number;
   viewMode: 'edit' | 'preview';
   previewType?: FilePreviewType;
+  previewRevision?: number;
 }
 
 interface CompareState {
@@ -138,6 +150,7 @@ interface PersistedExplorerState {
   openTabPaths?: { path: string; pinned: boolean }[];
   activeTabPath?: string | null;
   showHidden?: boolean;
+  sortOrder?: FileSort;
 }
 
 const MARKDOWN_EXTENSIONS = new Set(['md', 'mdx', 'markdown']);
@@ -147,12 +160,13 @@ function isMarkdownFile(ext: string) {
 }
 
 function markdownLocalPath(source: string | undefined, documentPath: string, rootPath: string): string | null {
-  if (!source || source.startsWith('/') || source.startsWith('#') || source.startsWith('?')
+  if (!source || source.startsWith('//') || source.startsWith('#') || source.startsWith('?')
     || /^[a-z][a-z\d+.-]*:/i.test(source)) return null;
   try {
     const decoded = decodeURIComponent(source.split(/[?#]/, 1)[0]);
     const directory = documentPath.slice(0, documentPath.lastIndexOf('/')) || '/';
-    const path = normalizeExplorerPath(`${directory}/${decoded}`);
+    if(decoded.includes('\0'))return null;
+    const path = normalizeExplorerPath(decoded.startsWith('/')?decoded:`${directory}/${decoded}`);
     return path && isWithinExplorerRoot(path, rootPath) ? path : null;
   } catch {
     return null;
@@ -460,6 +474,7 @@ function TreeItem({
         onContextMenu={(e) => onContextMenu(e, node)}
         data-filepath={node.fullPath}
         data-filetype={node.entry.type}
+        title={`${node.fullPath}${node.entry.modified_at ? '\n修改时间：'+new Date(node.entry.modified_at).toLocaleString('zh-CN') : ''}${isDir ? '' : '\n大小：'+formatSize(node.entry.size)}`}
         className="flex items-center gap-1 w-full text-left text-xs py-0.5 px-2 hover:bg-[var(--bg-tertiary)] transition-colors"
         style={{
           paddingLeft: `${depth * 16 + 8}px`,
@@ -545,15 +560,21 @@ function TreeItem({
   );
 }
 
-export function FileExplorer({ rootPath, projectId, instanceId, active = true, refreshFileRequest, openFileRequest, onFileSaved, readOnly = false, uploadRequest }: FileExplorerProps) {
+export function FileExplorer({ rootPath, projectId, instanceId, active = true, refreshFileRequest, openFileRequest, onFileSaved, readOnly = false, uploadRequest, workspace }: FileExplorerProps) {
   const filesApi = useMemo(() => scopeProjectFiles(api.files, projectId), [projectId]);
   // Resolve initial path from persisted state or prop
   const [initialState] = useState(() => instanceId ? loadExplorerState(instanceId, rootPath) : null);
   const [currentPath, setCurrentPath] = useState(initialState?.currentPath ?? rootPath);
   const [pathInput, setPathInput] = useState(initialState?.currentPath ?? rootPath);
   const [tree, setTree] = useState<TreeNode[]>([]);
+  const treeRef=useRef(tree); treeRef.current=tree;
   const [rootLoaded, setRootLoaded] = useState(false);
   const [showHidden, setShowHidden] = useState(initialState?.showHidden ?? true);
+  const [sortOrder,setSortOrder]=useState<FileSort>(()=>['name','modified_desc','modified_asc'].includes(initialState?.sortOrder || '') ? initialState!.sortOrder! : 'name');
+  const [refreshing,setRefreshing]=useState(false);
+  const refreshBusy=useRef(false);
+  const fileInputRef=useRef<HTMLInputElement>(null);
+  const folderInputRef=useRef<HTMLInputElement>(null);
   const [uploadTarget, setUploadTarget] = useState<string | null>(null);
   const uploadBusy = useRef(false);
   const lastUploadRequest = useRef<FileUploadRequest | null>(null);
@@ -564,16 +585,19 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
 
   // Tab state
   const [tabs, setTabs] = useState<FileTab[]>([]);
+  const tabsRef=useRef(tabs); tabsRef.current=tabs;
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
+  const [documentAnchor,setDocumentAnchor]=useState<{path:string;fragment:string}|null>(null);
 
   // Resizable tree panel
   const [treePanelWidth, setTreePanelWidth] = useState(280);
   const isDraggingRef = useRef(false);
+  const treePanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!isDraggingRef.current) return;
-      const newWidth = Math.min(Math.max(e.clientX - (containerRef.current?.getBoundingClientRect().left ?? 0), 120), 600);
+      const newWidth = Math.min(Math.max(e.clientX - (treePanelRef.current?.getBoundingClientRect().left ?? 0), 120), 600);
       setTreePanelWidth(newWidth);
     };
     const onMouseUp = () => {
@@ -703,16 +727,18 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
 
   // Open a file as a preview (single-click) or pinned (double-click)
   const openFileRequestSequence = useRef(0);
-  async function openFile(path: string, pin: boolean) {
+  async function openFile(path: string, pin: boolean, fragment?:string) {
     if (!isWithinExplorerRoot(path, rootPath)) {
       setActionMessage({ kind: 'error', text: '只能访问当前项目目录及其子目录' });
       return;
     }
+    workspace?.onActivate();
+    setDocumentAnchor(fragment?{path,fragment}:null);
     const requestSequence = ++openFileRequestSequence.current;
     // If already open, just switch to it (and pin if double-click)
     const existing = tabs.find(t => t.path === path);
     if (existing) {
-      if (pin) updateTab(path, { pinned: true });
+      if (pin || fragment) updateTab(path, { ...(pin?{pinned:true}:{}),...(fragment && isMarkdownFile(existing.extension)?{viewMode:'preview' as const}:{}) });
       setActiveTabPath(path);
       setFileLoading(false);
       setFileError(null);
@@ -763,6 +789,25 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
     }
   }
 
+  // A linked document gets its own tab so the source stays one click away.
+  function followDocumentFile(path:string,fragment?:string) {
+    if(activeTabPath)updateTab(activeTabPath,{pinned:true});
+    void openFile(path,true,fragment);
+  }
+
+  useEffect(()=>{
+    if(!documentAnchor || documentAnchor.path!==activeTabPath || !containerRef.current)return;
+    const root=containerRef.current;
+    const observer=new MutationObserver(()=>attempt());
+    const attempt=()=>{
+      if(scrollDocumentFragment(root,documentAnchor.fragment)) {observer.disconnect();setDocumentAnchor(current=>current===documentAnchor?null:current);}
+    };
+    observer.observe(root,{subtree:true,childList:true,characterData:true});
+    const frame=requestAnimationFrame(attempt);
+    const timeout=setTimeout(()=>{observer.disconnect();setDocumentAnchor(current=>current===documentAnchor?null:current);},5000);
+    return()=>{observer.disconnect();cancelAnimationFrame(frame);clearTimeout(timeout);};
+  },[documentAnchor,activeTabPath]);
+
   function handleFileClick(path: string) {
     openFile(path, false);
   }
@@ -785,6 +830,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
         setActiveTabPath(remaining[newIdx].path);
       } else {
         setActiveTabPath(null);
+        if(workspace?.editorActive) workspace.onEmpty();
       }
     }
   }
@@ -996,14 +1042,14 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
   // Ctrl+S / Cmd+S keyboard shortcut
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (active && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      if (active && (!workspace || workspace.editorActive) && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         void handleSave();
       }
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [active, handleSave]);
+  }, [active, handleSave, workspace?.editorActive]);
 
   // External "open this file" request — e.g. user clicked an icon in the git panel
   const lastOpenRequestKey = useRef<number | null>(null);
@@ -1066,8 +1112,9 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
       openTabPaths: tabs.map(t => ({ path: t.path, pinned: t.pinned })),
       activeTabPath,
       showHidden,
+      sortOrder,
     });
-  }, [instanceId, tree, activeTabPath, rootLoaded, currentPath, tabs, showHidden]);
+  }, [instanceId, tree, activeTabPath, rootLoaded, currentPath, tabs, showHidden,sortOrder]);
 
   // Load the root from an effect. A generation guard prevents a slow response
   // for an old path from replacing the tree after the user navigates elsewhere.
@@ -1236,30 +1283,17 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
     const sequence = rootLoadSequence.current;
     try {
       const data = await filesApi.list(dir, showHidden);
+      const freshNodes:TreeNode[]=data.files.map(entry=>({entry,fullPath:`${dir}/${entry.name}`,loaded:false,expanded:false}));
+      const freshChildren=await restoreExpandedNodes(freshNodes,new Set(getExpandedPaths(treeRef.current)),showHidden,filesApi);
       if (sequence !== rootLoadSequence.current) return;
       setTree(prev => {
         const node = findNodeInTree(prev, dir);
         const isRoot = dir === currentPath;
         if (!isRoot && !node) return prev;
-        // Map new entries; preserve expanded/loaded/children for matching subdirs so we don't collapse the tree.
-        const existingChildren = isRoot ? prev : node?.children ?? [];
-        const newChildren: TreeNode[] = data.files.map(f => {
-          const childPath = `${dir}/${f.name}`;
-          const existing = existingChildren.find(c => c.fullPath === childPath);
-          if (existing && existing.entry.type === f.type) {
-            return { ...existing, entry: f };
-          }
-          return {
-            entry: f,
-            fullPath: childPath,
-            children: undefined,
-            loaded: false,
-            expanded: false,
-          };
-        });
-        if (isRoot) return newChildren;
+        // Merged folder uploads can change an already expanded subtree.
+        if (isRoot) return freshChildren;
         return updateNodeInTree(prev, dir, {
-          children: newChildren,
+          children: freshChildren,
           loaded: true,
           expanded: true,
         });
@@ -1269,36 +1303,87 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
     }
   }, [currentPath, showHidden, filesApi]);
 
-  const uploadFiles = useCallback(async (request: Pick<FileUploadRequest, 'files' | 'containsDirectories'>, directory: string) => {
+  async function refreshExplorer() {
+    if(refreshBusy.current) return;
+    refreshBusy.current=true; setRefreshing(true); setFileError(null);
+    const sequence=rootLoadSequence.current;
+    const scrollTop=treeScrollRef.current?.scrollTop ?? 0;
+    const snapshot=activeTab;
+    try {
+      const data=await filesApi.list(currentPath,showHidden);
+      const nodes=data.files.map(entry=>({entry,fullPath:`${currentPath}/${entry.name}`,loaded:false,expanded:false}));
+      const refreshed=await restoreExpandedNodes(nodes,new Set(getExpandedPaths(tree)),showHidden,filesApi);
+      if(sequence!==rootLoadSequence.current) return;
+      setTree(refreshed);
+      let keptDraft=!!snapshot && snapshot.editedContent!==snapshot.content;
+      if(snapshot && !keptDraft) {
+        const data=await filesApi.read(snapshot.path);
+        if(sequence!==rootLoadSequence.current) return;
+        const latest=tabsRef.current.find(tab=>tab.path===snapshot.path);
+        if(latest && (latest.editedContent!==latest.content || latest.content!==snapshot.content)) keptDraft=true;
+        setTabs(current=>current.map(tab=>tab.path!==snapshot.path || tab.content!==snapshot.content || tab.editedContent!==tab.content ? tab : {
+          ...tab,content:data.content,editedContent:data.content,size:data.size,extension:data.extension,previewType:data.previewType,previewRevision:(tab.previewRevision || 0)+1,
+        }));
+      }
+      setActionMessage({kind:'info',text:keptDraft ? '目录已刷新；当前文件有未保存修改，已保留编辑内容' : '目录和当前文件已刷新'});
+      requestAnimationFrame(()=>{if(treeScrollRef.current && sequence===rootLoadSequence.current) treeScrollRef.current.scrollTop=scrollTop;});
+    } catch(error) {if(sequence===rootLoadSequence.current) setActionMessage({kind:'error',text:getErrorMessage(error,'刷新失败')});}
+    finally {refreshBusy.current=false;setRefreshing(false);}
+  }
+
+  const sortedTree=useMemo(()=>{
+    const sort=(nodes:TreeNode[]):TreeNode[]=>[...nodes].sort((a,b)=>compareFileEntries(a.entry,b.entry,sortOrder))
+      .map(node=>node.children ? {...node,children:sort(node.children)} : node);
+    return sort(tree);
+  },[tree,sortOrder]);
+
+  const uploadFiles = useCallback(async (request: Pick<FileUploadRequest, 'files' | 'containsDirectories' | 'tree'>, directory: string) => {
     if (uploadBusy.current) return;
-    if (readOnly || request.containsDirectories) {
-      setUploadResult({ error: true, text: readOnly ? '当前为只读模式，不能上传文件' : '暂不支持拖入文件夹，请选择文件上传' });
+    if (readOnly || (request.containsDirectories && !request.tree)) {
+      setUploadResult({ error: true, text: readOnly ? '当前为只读模式，不能上传文件' : '无法读取文件夹，请使用文件夹上传按钮' });
       return;
     }
-    if (!request.files.length) return;
+    if (!request.files.length && !request.tree) return;
     uploadBusy.current = true;
     const sequence = rootLoadSequence.current;
     setUploadResult(null);
+    if(request.tree) setUploadProgress({name:'正在读取文件夹…',index:0,total:0,percent:0,directory});
     let succeeded = 0;
     const failures: string[] = [];
     try {
-      for (const [index, file] of request.files.entries()) {
-        setUploadProgress({ name: file.name, index: index + 1, total: request.files.length, percent: 0, directory });
+      const parsed=request.tree ? await request.tree : {files:request.files.map(file=>({file,relativePath:file.webkitRelativePath || file.name})),directories:[]};
+      if ('error' in parsed && parsed.error) throw new Error(parsed.error);
+      const directories=new Set(parsed.directories);
+      for (const item of parsed.files) {
+        const parts=safeUploadPath(item.relativePath).split('/'); parts.pop();
+        while(parts.length) {directories.add(parts.join('/')); parts.pop();}
+      }
+      const failedDirectories:string[]=[];
+      for(const relative of [...directories].sort((a,b)=>a.split('/').length-b.split('/').length)) {
+        safeUploadPath(relative);
+        try {await filesApi.createDirectory(`${directory}/${relative}`);}
+        catch(error) {failedDirectories.push(relative); failures.push(`${relative}：${getErrorMessage(error,'目录创建失败')}`);}
+      }
+      for (const [index, {file,relativePath}] of parsed.files.entries()) {
+        const parent=relativePath.includes('/') ? `${directory}/${relativePath.slice(0,relativePath.lastIndexOf('/'))}` : directory;
+        setUploadProgress({ name: relativePath, index: index + 1, total: parsed.files.length, percent: 0, directory:parent });
         try {
+          if(failedDirectories.some(path=>relativePath.startsWith(path+'/'))) throw new Error('目标目录创建失败，已跳过');
           if (file.size > MAX_FILE_UPLOAD_BYTES) throw new Error('文件超过 50 MB 限制');
-          await filesApi.upload(directory, file, (fraction) => {
-            setUploadProgress({ name: file.name, index: index + 1, total: request.files.length, percent: Math.round(fraction * 100), directory });
+          await filesApi.upload(parent, file, (fraction) => {
+            setUploadProgress({ name: relativePath, index: index + 1, total: parsed.files.length, percent: Math.round(fraction * 100), directory:parent });
           });
           succeeded++;
         } catch (error) {
-          failures.push(`${file.name}：${getErrorMessage(error, '上传失败')}`);
+          failures.push(`${relativePath}：${getErrorMessage(error, '上传失败')}`);
         }
       }
-      if (succeeded && sequence === rootLoadSequence.current) await refreshDirectory(directory);
+      if ((succeeded || directories.size) && sequence === rootLoadSequence.current) await refreshDirectory(directory);
       setUploadResult({
         error: failures.length > 0,
-        text: `已上传 ${succeeded}/${request.files.length} 个文件到 ${directory}${failures.length ? `；${failures.join('；')}` : ''}`,
+        text: `已上传 ${succeeded}/${parsed.files.length} 个文件到 ${directory}${directories.size ? `（包含 ${directories.size} 个目录）` : ''}${failures.length ? `；${failures.join('；')}` : ''}`,
       });
+    } catch(error) {setUploadResult({error:true,text:getErrorMessage(error,'上传失败')});
     } finally {
       uploadBusy.current = false;
       setUploadProgress(null);
@@ -1472,11 +1557,10 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
     if (activeTabPath) updateTab(activeTabPath, { editedContent: value });
   }, [activeTabPath, updateTab]);
 
-  return (
-    <div ref={containerRef} className="h-full flex">
-      {/* Tree panel */}
+  const treePanel = <>
       <div
-        className="h-full flex flex-col shrink-0 relative"
+        ref={treePanelRef}
+        className="h-full min-w-0 flex flex-col shrink-0 relative"
         aria-label="文件上传区域"
         onDragOver={(event) => {
           if (!isFileDrag(event.dataTransfer)) return;
@@ -1497,6 +1581,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
         }}
         style={{
           width: treePanelWidth,
+          maxWidth: workspace?'calc(100% - 4px)':undefined,
           background: 'var(--bg-primary)',
           boxShadow: uploadTarget ? 'inset 0 0 0 2px var(--accent)' : undefined,
         }}
@@ -1540,9 +1625,10 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
             aria-pressed={showHidden}
           >
             {showHidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-            <span>点文件</span>
+            <span className="sr-only">点文件</span>
           </button>
           <input
+            aria-label="当前目录路径"
             value={pathInput}
             onChange={(e) => setPathInput(e.target.value)}
             className="flex-1 min-w-0 text-xs px-1.5 py-1 rounded"
@@ -1556,6 +1642,19 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
             spellCheck={false}
           />
         </form>
+
+        <div className="flex items-center gap-1 px-2 py-1 text-xs shrink-0" style={{borderBottom:'1px solid var(--border)'}}>
+          <select aria-label="文件排序" value={sortOrder} onChange={event=>setSortOrder(event.target.value as FileSort)} className="min-w-0 flex-1 rounded px-1 py-1" style={{background:'var(--bg-secondary)',color:'var(--text-primary)'}}>
+            <option value="name">名称排序</option><option value="modified_desc">修改时间：最新优先</option><option value="modified_asc">修改时间：最早优先</option>
+          </select>
+          <button type="button" aria-label="刷新目录和当前文件" title="刷新目录和当前文件（保留未保存编辑）" disabled={refreshing || !rootLoaded} onClick={()=>void refreshExplorer()} className="flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-[var(--bg-tertiary)]"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /></button>
+          {!readOnly && <>
+            <button type="button" title="上传文件到当前目录" aria-label="上传文件" disabled={!!uploadProgress} onClick={()=>fileInputRef.current?.click()} className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--bg-tertiary)]"><Upload className="h-3.5 w-3.5" /></button>
+            <button type="button" title="上传文件夹到当前目录" aria-label="上传文件夹" disabled={!!uploadProgress} onClick={()=>folderInputRef.current?.click()} className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--bg-tertiary)]"><FolderOpen className="h-3.5 w-3.5" /></button>
+            <input ref={fileInputRef} type="file" multiple className="hidden" aria-label="选择上传文件" onChange={event=>{void uploadFiles({files:Array.from(event.target.files || []),containsDirectories:false},currentPath);event.target.value='';}} />
+            <input ref={folderInputRef} type="file" multiple {...{webkitdirectory:'',directory:''}} className="hidden" aria-label="选择上传文件夹" onChange={event=>{void uploadFiles({files:Array.from(event.target.files || []),containsDirectories:false},currentPath);event.target.value='';}} />
+          </>}
+        </div>
 
         {uploadTarget && (
           <div className="absolute bottom-0 inset-x-0 z-10 pointer-events-none px-2 py-2 text-xs break-all" style={{ color: 'var(--accent)', background: 'var(--bg-secondary)', borderTop: '1px solid var(--accent)' }}>
@@ -1583,7 +1682,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
             if (e.target === e.currentTarget) openContextMenuFor(e, null);
           }}
         >
-        {tree.map((node) => (
+        {sortedTree.map((node) => (
           <TreeItem
             key={node.fullPath}
             node={node}
@@ -1623,6 +1722,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
       {/* Resize handle */}
       <div
         onMouseDown={startDragging}
+        role="separator" aria-label="调整文件树宽度" aria-orientation="vertical"
         className="shrink-0 h-full"
         style={{
           width: 4,
@@ -1634,16 +1734,15 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
         onMouseLeave={(e) => { if (!isDraggingRef.current) e.currentTarget.style.background = 'var(--border)'; }}
       />
 
-      {/* File editor / preview with tab bar */}
-      <div className="flex-1 min-w-0 h-full flex flex-col" style={{ background: 'var(--bg-primary)' }}>
-        {/* Tab bar */}
-        {tabs.length > 0 && (
+  </>;
+  const fileTabs = tabs.length > 0 ? (
+
           <div
-            className="flex items-center gap-0.5 px-1 py-0.5 shrink-0 overflow-x-auto"
-            style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}
+            className={workspace?"workspace-file-tabs":"flex items-center gap-0.5 px-1 py-0.5 shrink-0 overflow-x-auto"}
+            style={workspace?undefined:{ borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}
           >
             {tabs.map(tab => {
-              const isActive = tab.path === activeTabPath;
+              const isActive = tab.path === activeTabPath && (!workspace || workspace.editorActive);
               const tabDirty = tab.editedContent !== tab.content;
               const isCompareSelected = compareSelecting === tab.path;
               const isCompareTarget = compareSelecting && compareSelecting !== 'waiting' && compareSelecting !== tab.path;
@@ -1651,7 +1750,8 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
               return (
                 <div
                   key={tab.path}
-                  className="flex items-center rounded-md shrink-0 group"
+                  className={workspace?"workspace-tab group":"flex items-center rounded-md shrink-0 group"}
+                  data-active={isActive}
                   style={{
                     background: isCompareSelected
                       ? 'rgba(88,166,255,0.2)'
@@ -1663,6 +1763,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
                 >
                   <button
                     onClick={() => {
+                      workspace?.onActivate();
                       if (compareSelecting) {
                         selectForCompare(tab.path);
                       } else {
@@ -1672,7 +1773,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
                     onDoubleClick={() => {
                       if (!compareSelecting) updateTab(tab.path, { pinned: true });
                     }}
-                    className="flex items-center gap-1 pl-2.5 pr-0.5 py-1 text-xs transition-colors max-w-[160px]"
+                    className={workspace?"workspace-tab-button":"flex items-center gap-1 pl-2.5 pr-0.5 py-1 text-xs transition-colors max-w-[160px]"}
                     style={{
                       color: isCompareSelected
                         ? 'var(--accent)'
@@ -1693,9 +1794,10 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
                   {!compareSelecting && (
                     <button
                       onClick={(e) => { e.stopPropagation(); closeTab(tab.path); }}
-                      className="p-0.5 rounded opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity mr-0.5"
+                      className={workspace?"workspace-tab-close":"p-0.5 rounded opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity mr-0.5"}
                       style={{ color: 'var(--text-secondary)' }}
                       title="Close"
+                      aria-label={`关闭文件 ${tab.name}`}
                     >
                       <X className="w-3 h-3" />
                     </button>
@@ -1704,7 +1806,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
               );
             })}
             {/* Compare button */}
-            {tabs.filter(tab => (tab.previewType ?? 'text') === 'text').length >= 2 && (
+            {!workspace && tabs.filter(tab => (tab.previewType ?? 'text') === 'text').length >= 2 && (
               <button
                 onClick={startCompare}
                 className="flex items-center gap-1 px-2 py-1 rounded-md shrink-0 text-xs transition-colors ml-1"
@@ -1720,7 +1822,16 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
               </button>
             )}
           </div>
-        )}
+  ) : null;
+
+  return (
+    <div ref={containerRef} className="h-full flex">
+      {workspace ? workspace.treeHost && createPortal(treePanel, workspace.treeHost) : treePanel}
+
+      {/* File editor / preview with tab bar */}
+      <div className="flex-1 min-w-0 h-full flex flex-col" style={{ background: 'var(--bg-primary)' }}>
+        {/* Tab bar */}
+        {workspace ? workspace.tabsHost && createPortal(fileTabs, workspace.tabsHost) : fileTabs}
 
         {/* Compare view */}
         {compareState && (
@@ -1801,7 +1912,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
 
             {activePreviewType !== 'text' ? (
               <DocumentPreview
-                key={activeTab.path}
+                key={`${activeTab.path}:${activeTab.previewRevision || 0}`}
                 path={activeTab.path}
                 type={activePreviewType}
                 content={activeTab.content}
@@ -1822,24 +1933,29 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
                       {readOnly || activeTab.extension === 'mdx' ? <div className="markdown-preview explorer-markdown">
                         <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
                           img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} documentPath={activeTab.path} rootPath={rootPath} filesApi={filesApi} />,
-                          a: ({ href, children }) => {
-                            const localPath = markdownLocalPath(href, activeTab.path, rootPath);
-                            return <a href={href} onClick={localPath ? (event) => {
-                              event.preventDefault();
-                              void openFile(localPath, false);
-                            } : undefined}>{children}</a>;
-                          },
+                          a: ({ href, children }) => <a href={href} target={href && /^(https?:|mailto:|tel:|\/\/)/i.test(href)?'_blank':undefined} rel="noopener noreferrer" onClick={event=>{
+                            event.preventDefault();
+                            followDocumentLink(href||'',event.currentTarget.closest<HTMLElement>('.explorer-markdown')!,resolveMarkdownLocalPath,followDocumentFile);
+                          }}>{children}</a>,
                         }}>
                           {body}
                         </ReactMarkdown>
-                      </div> : <Suspense fallback={<div role="status">正在加载可视编辑器…</div>}><MarkdownVisualEditor
-                        key={activeTab.path}
+                      </div> : <ErrorBoundary key={`${activeTab.path}:${activeTab.previewRevision || 0}`} label="Markdown 可视编辑器" fallback={() => (
+                        <div role="alert" className="rounded-md border p-3 text-sm" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
+                          <p>可视编辑器加载失败。当前文件内容已保留，可切换到源码继续编辑。</p>
+                          <div className="mt-2 flex flex-wrap gap-3 text-xs">
+                            <button type="button" onClick={() => updateTab(activeTab.path, { viewMode: 'edit' })} style={{ color: 'var(--accent)' }}>切换到源码</button>
+                            <button type="button" onClick={() => window.location.reload()} style={{ color: 'var(--text-secondary)' }}>重新加载页面</button>
+                          </div>
+                        </div>
+                      )}><Suspense fallback={<div role="status">正在加载可视编辑器…</div>}><MarkdownVisualEditor
+                        key={`${activeTab.path}:${activeTab.previewRevision || 0}`}
                         value={body}
                         onChange={(markdown) => updateTab(activeTab.path, { editedContent: frontmatter + markdown })}
                         filesApi={filesApi}
                         resolveLocalPath={resolveMarkdownLocalPath}
-                        onOpenFile={(path) => void openFile(path, false)}
-                      /></Suspense>}
+                        onOpenFile={followDocumentFile}
+                      /></Suspense></ErrorBoundary>}
                     </>
                   );
                 })()}

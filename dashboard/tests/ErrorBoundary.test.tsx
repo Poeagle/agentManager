@@ -8,6 +8,15 @@ function BrokenView({ error }: { error: Error }) {
 }
 
 describe('ErrorBoundary', () => {
+  it('supports a local recovery view without replacing the surrounding workspace', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    render(<div>Workspace stays mounted<ErrorBoundary fallback={() => <div role="alert">Switch to source</div>}>
+      <BrokenView error={new TypeError("Cannot read properties of null (reading 'useRef')")} />
+    </ErrorBoundary></div>);
+    expect(screen.getByText('Workspace stays mounted')).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('Switch to source');
+    expect(screen.queryByRole('button', { name: 'Retry view' })).not.toBeInTheDocument();
+  });
   it('recognizes browser and bundler dynamic-import failures', () => {
     expect(isDynamicModuleLoadError(new TypeError(
       'Failed to fetch dynamically imported module: http://localhost/src/ProjectView.tsx',

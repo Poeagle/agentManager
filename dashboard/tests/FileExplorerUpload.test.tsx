@@ -96,12 +96,12 @@ describe('FileExplorer drag-and-drop upload', () => {
     expect(api.files.upload).not.toHaveBeenCalled();
   });
 
-  it('rejects folders and oversized files with clear feedback', async () => {
+  it('reports unreadable folder entries and oversized files with clear feedback', async () => {
     render(<FileExplorer rootPath="/project" />);
     await screen.findByText('notes.txt');
     const zone = screen.getByLabelText('文件上传区域');
     fireEvent.drop(zone, { dataTransfer: { ...transfer([]), items: [{ webkitGetAsEntry: () => ({ isDirectory: true }) }] } });
-    expect(await screen.findByRole('alert')).toHaveTextContent('暂不支持拖入文件夹');
+    expect(await screen.findByRole('alert')).toHaveTextContent('上传路径无效');
     const largeFile = new File(['x'], 'large.bin');
     Object.defineProperty(largeFile, 'size', { value: MAX_FILE_UPLOAD_BYTES + 1 });
     fireEvent.drop(zone, { dataTransfer: transfer([largeFile]) });

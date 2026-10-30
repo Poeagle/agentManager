@@ -4,6 +4,7 @@ import { Bot, Loader2, MessageSquare, Plus, Send } from 'lucide-react';
 import { AiReply } from './AiReply';
 import { AiMessageImages } from './AiMessageImages';
 import { PlatformAiChannels } from './PlatformAiChannels';
+import { ProjectNotificationsPanel } from './ProjectNotificationsPanel';
 import { type MyPermissions } from '../lib/api';
 import { hasPermission } from '../lib/permissions';
 import { platformAiApi, type AiMessage, type ModelProbeResult, type PlatformAiConfig } from '../lib/platform-ai';
@@ -23,7 +24,7 @@ export function PlatformAiPanel({ permissions, onOpenSession }: {permissions: My
   const canConfigure = hasPermission(permissions, 'settings', 'write');
   const canSend = hasPermission(permissions, 'agent_api', 'write');
   const status = useQuery({ queryKey: ['platform-ai-status'], queryFn: platformAiApi.status, refetchInterval: 15000 });
-  const tabs = [{id: 'chat', label: '对话'}, {id: 'tasks', label: '任务跟踪'}, {id: 'deliveries', label: '通知记录'}, {id: 'tools', label: '平台能力'}, ...(canConfigure ? [{id: 'config', label: '模型配置'}] : []), ...(canConfigure && hasPermission(permissions, 'roles', 'write') ? [{id: 'channels', label: '渠道与用户映射'}] : [])];
+  const tabs = [{id: 'chat', label: '对话'}, {id: 'tasks', label: '任务跟踪'}, {id: 'notifications', label: '项目通知'}, {id: 'deliveries', label: '通知记录'}, {id: 'tools', label: '平台能力'}, ...(canConfigure ? [{id: 'config', label: '模型配置'}] : []), ...(canConfigure && hasPermission(permissions, 'roles', 'write') ? [{id: 'channels', label: '渠道与用户映射'}] : [])];
   return <div className="flex h-full min-h-0 flex-col">
     <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-5 py-3" style={{borderColor: 'var(--border)'}}>
       <div className="flex items-center gap-2 text-sm"><Bot className="h-4 w-4" style={{color: 'var(--accent)'}} /><span>平台 AI</span><span className="text-xs" style={muted}>{status.data?.enabled ? '已启用' : '尚未启用'}</span></div>
@@ -33,6 +34,7 @@ export function PlatformAiPanel({ permissions, onOpenSession }: {permissions: My
     <div className="min-h-0 flex-1 overflow-auto">
       {tab === 'chat' && <AiChat enabled={!!status.data?.enabled} canSend={canSend} />}
       {tab === 'tasks' && <AiTasks onOpenSession={onOpenSession} canWrite={canSend} />}
+      {tab === 'notifications' && <ProjectNotificationsPanel canWrite={canSend} enabled={!!status.data?.enabled} />}
       {tab === 'deliveries' && <AiDeliveries />}
       {tab === 'tools' && <AiTools />}
       {tab === 'config' && canConfigure && <AiConfiguration />}

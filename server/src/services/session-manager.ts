@@ -17,7 +17,8 @@ import { getOrCreateTracker, getTracker, removeTracker, recoverFromBuffer } from
 import { encodeDir } from './claude-history.js';
 import { inaccessibleProjectPaths, isAdmin } from '../auth.js';
 import { tmuxCursorRestoreSequence } from '../lib/terminal-cursor.js';
-import { withAllPermissions } from './cli-command.js';
+import { withAllPermissions,shellSingleQuote } from './cli-command.js';
+import {createStreamingCodexThread,interruptStreamingCodexThread} from './conversation-stream.js';
 import {
   type CodexRolloutCandidate,
   cliTypeFromArgv,
@@ -265,7 +266,7 @@ function queueWebSocketOutput(sessionId: string, active: ActiveSession, data: st
   }
 }
 
-export function sensitiveHostPathsForSandbox(dbPath: string, userHome: string): string[] {
+export function sensitiveHostPathsForSandbox(dbPath: string, userHome: string, codexSocket?:string): string[] {
   return [
     dirname(resolve(dbPath)),
     `-${join(userHome, '.ssh')}`,
@@ -275,6 +276,7 @@ export function sensitiveHostPathsForSandbox(dbPath: string, userHome: string): 
     `-${join(userHome, '.config', 'gh')}`,
     `-${join(userHome, '.netrc')}`,
     `-${join(userHome, '.npmrc')}`,
+    ...(codexSocket?[`-${dirname(resolve(codexSocket))}`]:[]),
   ];
 }
 
@@ -288,7 +290,7 @@ function workerSandboxPolicy(createdByUserId: string | null | undefined): {
   return {
     inaccessiblePaths: [...new Set([
       ...inaccessibleProjectPaths(createdByUserId),
-      ...sensitiveHostPathsForSandbox(config.dbPath, homedir()),
+      ...sensitiveHostPathsForSandbox(config.dbPath, homedir(),process.env.AGENTMANAGER_CODEX_STREAM_SOCKET),
     ])],
     sandboxRequired: true,
   };
@@ -1974,13 +1976,28 @@ function assignClaudeSessionId(sessionId: string): string {
 }
 
 /** Resolve the configured command and always launch AI CLIs without approval gates. */
-function projectCliCommand(settingKey: string, cliType: 'claude' | 'codex'): string {
+function projectCliCommand(settingKey: string, cliType: 'claude' | 'codex',projectPath?:string,streamSocket?:string|null): string {
   const command = getSetting(settingKey) || cliType;
-  return withAllPermissions(command, cliType);
+  const cwd=cliType==='codex' && streamSocket && projectPath ? ` --cd ${shellSingleQuote(projectPath)}` : '';
+  // The remote engine owns permissions. Its terminal client rejects local
+  // permission overrides on resume; thread/start already sets the policy.
+  if(cwd) return command.replace(/(?:^|\s)(?:--dangerously-bypass-approvals-and-sandbox|--yolo)(?=\s|$)/g,' ').trim()+cwd;
+  return withAllPermissions(command, cliType)+cwd;
+}
+
+/** Shared full-access engines are only suitable for administrator sessions.
+ * Members keep the original per-worker sandbox and embedded CLI transport. */
+function codexStreamSocketForUser(userId:string|null|undefined):string|null {
+  return process.env.AGENTMANAGER_CODEX_STREAM_SOCKET && (!userId || isAdmin(userId))
+    ? process.env.AGENTMANAGER_CODEX_STREAM_SOCKET : null;
 }
 
 async function spawnSessionUnlocked(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
   if (activeSessions.has(sessionId)) return;
+  const creator = getDb().prepare('SELECT created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as { created_by_user_id: string | null } | undefined;
+  const streamSocket=cliType==='codex'?codexStreamSocketForUser(creator?.created_by_user_id):null;
+  const reservedCodexId=streamSocket ? await createStreamingCodexThread(projectPath,task) : undefined;
+  if(reservedCodexId) getDb().prepare('UPDATE sessions SET codex_session_id=? WHERE id=?').run(reservedCodexId,sessionId);
   const preSpawnFiles = cliType === 'claude' ? snapshotClaudeSessionFiles(projectPath) : undefined;
 
   const worker = await forkWorker();
@@ -1994,11 +2011,12 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
   const sessionCommand = projectCliCommand(
     cliType === 'codex' ? 'session_codex_command' : 'session_claude_command',
     cliType,
+    projectPath,
+    streamSocket,
   );
 
-  const assignSessionId = cliType === 'claude' ? assignClaudeSessionId(sessionId) : undefined;
+  const assignSessionId = cliType === 'claude' ? assignClaudeSessionId(sessionId) : reservedCodexId;
   const bindingPath = cliType === 'codex' ? codexBindingPath(sessionId) : undefined;
-  const creator = getDb().prepare('SELECT created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as { created_by_user_id: string | null } | undefined;
 
   // Tell the worker to spawn the session
   worker.send({
@@ -2015,6 +2033,7 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
     cliType,
     assignSessionId,
     codexBindingPath: bindingPath,
+    codexStreamSocket:streamSocket,
     ...workerSandboxPolicy(creator?.created_by_user_id),
   });
   await active.lifecycleReady;
@@ -2607,6 +2626,9 @@ function killPidTree(pid: number): void {
 export async function killSession(sessionId: string): Promise<boolean> {
   const session = getSession(sessionId);
   if (!session) return false;
+  if(process.env.AGENTMANAGER_CODEX_STREAM_SOCKET && session.cli_type==='codex' && session.codex_session_id) {
+    await interruptStreamingCodexThread(session.codex_session_id);
+  }
   const active = activeSessions.get(sessionId);
   console.log(`[KILL] Killing session ${sessionId} (active=${!!active})`);
   // A pending REST-created session may not have connected its first websocket
@@ -3079,6 +3101,7 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
   await waitForSessionReplayFinalization(sessionId);
   if (activeSessions.has(sessionId)) return;
   const sessionCliType = staleSession.cli_type === 'codex' ? 'codex' as const : 'claude' as const;
+  const streamSocket=sessionCliType==='codex'?codexStreamSocketForUser(staleSession.created_by_user_id):null;
   const nativeSessionId = nativeConversationId(staleSession);
   if (!nativeSessionId) throw new Error(`No ${sessionCliType} conversation id is stored for ${sessionId}`);
   const task = staleSession.task;
@@ -3121,6 +3144,8 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
   const sessionCommand = projectCliCommand(
     sessionCliType === 'codex' ? 'session_codex_command' : 'session_claude_command',
     sessionCliType,
+    projectPath,
+    streamSocket,
   );
   worker.send({
     type: 'spawn',
@@ -3136,6 +3161,7 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
     cliType: sessionCliType,
     resumeSessionId: nativeSessionId,
     codexBindingPath: sessionCliType === 'codex' ? codexBindingPath(sessionId) : undefined,
+    codexStreamSocket:streamSocket,
     ...workerSandboxPolicy(staleSession.created_by_user_id),
   });
   await active.lifecycleReady;

@@ -1,0 +1,41 @@
+import {expect,test} from '@playwright/test';
+import {mkdirSync,readFileSync,writeFileSync,utimesSync,existsSync} from 'node:fs';
+import {join} from 'node:path';
+
+test('explorer sorts, refreshes disk changes, protects edits and accepts folder drops',async({page},testInfo)=>{
+  const status=await(await page.request.get('/api/auth/status')).json();
+  expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
+  const path=join(process.cwd(),'.test-data','e2e','frequent-explorer');
+  mkdirSync(join(path,'target'),{recursive:true});
+  writeFileSync(join(path,'a.txt'),'old content');writeFileSync(join(path,'z.txt'),'recent');
+  utimesSync(join(path,'a.txt'),new Date('2026-01-01'),new Date('2026-01-01'));
+  const created=await page.request.post('/api/projects',{data:{name:'Frequent Explorer',path}});expect(created.ok()).toBeTruthy();
+  const {project}=await created.json();
+  await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});
+  await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});
+  await page.goto('/');await page.getByTitle('File Explorer',{exact:true}).click();
+  const zone=page.getByLabel('文件上传区域').filter({visible:true});
+  await zone.getByLabel('文件排序').selectOption('modified_desc');
+  await expect(zone.locator('[data-filetype="file"]').first()).toHaveText('z.txt');
+  await zone.getByRole('button',{name:'a.txt',exact:true}).click();
+  const editor=page.locator('.cm-content');await expect(editor).toHaveText('old content');
+  writeFileSync(join(path,'a.txt'),'new on disk');writeFileSync(join(path,'new.txt'),'new file');
+  await zone.getByRole('button',{name:'刷新目录和当前文件'}).click();
+  await expect(zone.getByRole('button',{name:'new.txt',exact:true})).toBeVisible();
+  await expect(editor).toHaveText('new on disk');
+  await editor.fill('unsaved draft');writeFileSync(join(path,'a.txt'),'external change');
+  await zone.getByRole('button',{name:'刷新目录和当前文件'}).click();
+  await expect(zone.getByText(/已保留编辑内容/)).toBeVisible();await expect(editor).toHaveText('unsaved draft');
+  const transfer=await page.evaluateHandle(()=>{
+    const file=new File(['folder contents'],'note.txt',{type:'text/plain'});
+    const empty={name:'empty',isDirectory:true,isFile:false,createReader:()=>({readEntries:(done:(entries:unknown[])=>void)=>done([])})};
+    const root={name:'资料',isDirectory:true,isFile:false,createReader:()=>{let read=false;return {readEntries:(done:(entries:unknown[])=>void)=>{done(read?[]:[{name:'note.txt',isDirectory:false,isFile:true,file:(done:(file:File)=>void)=>done(file)},empty]);read=true;}};}};
+    const data=new DataTransfer();data.items.add(file);Object.defineProperty(data,'items',{value:[{webkitGetAsEntry:()=>root}]});return data;
+  });
+  const target=zone.getByRole('button',{name:'target',exact:true});
+  await target.dispatchEvent('dragover',{dataTransfer:transfer});await target.dispatchEvent('drop',{dataTransfer:transfer});await transfer.dispose();
+  await expect(zone.getByRole('status')).toContainText('已上传 1/1');
+  expect(readFileSync(join(path,'target','资料','note.txt'),'utf8')).toBe('folder contents');
+  expect(existsSync(join(path,'target','资料','empty'))).toBe(true);
+  await page.screenshot({path:testInfo.outputPath('explorer-frequent-operations.png')});
+});

@@ -1,4 +1,4 @@
-import { Cpu, HardDrive, MemoryStick, Server } from 'lucide-react';
+import { Server } from 'lucide-react';
 import { useServerResources } from '../lib/use-server-resources';
 
 function formatBytes(bytes: number): string {
@@ -15,18 +15,18 @@ export function ServerResourceIndicator() {
   const resources = query.data?.server_resources;
   const metrics = resources ? [
     {
-      label: 'CPU', icon: Cpu, percent: resources.cpu.usage_percent,
+      label: 'CPU', percent: resources.cpu.usage_percent,
       value: `${resources.cpu.usage_percent.toFixed(0)}%`,
       detail: `CPU 使用率 ${resources.cpu.usage_percent.toFixed(1)}% · ${resources.cpu.core_count} 个逻辑核`,
     },
     {
-      label: '内存', icon: MemoryStick, percent: resources.memory.usage_percent,
-      value: `${(resources.memory.used_bytes / 1024 ** 3).toFixed(1)}/${(resources.memory.total_bytes / 1024 ** 3).toFixed(1)}G`,
+      label: '内存', percent: resources.memory.usage_percent,
+      value: `${resources.memory.usage_percent.toFixed(0)}%`,
       detail: `内存已用 ${formatBytes(resources.memory.used_bytes)} / 总量 ${formatBytes(resources.memory.total_bytes)} · 使用率 ${resources.memory.usage_percent.toFixed(1)}%`,
     },
     {
-      label: '磁盘', icon: HardDrive, percent: resources.disk?.usage_percent ?? 0,
-      value: resources.disk ? `${(resources.disk.used_bytes / 1024 ** 3).toFixed(0)}/${(resources.disk.total_bytes / 1024 ** 3).toFixed(0)}G` : '不可用',
+      label: '磁盘', percent: resources.disk?.usage_percent ?? 0,
+      value: resources.disk ? `${resources.disk.usage_percent.toFixed(0)}%` : '不可用',
       detail: resources.disk
         ? `服务所在磁盘 ${resources.disk.mount} · 已用 ${formatBytes(resources.disk.used_bytes)} / 总量 ${formatBytes(resources.disk.total_bytes)} · 使用率 ${resources.disk.usage_percent.toFixed(1)}%`
         : '无法读取服务所在磁盘用量',
@@ -42,13 +42,12 @@ export function ServerResourceIndicator() {
 
   return (
     <div aria-label="部署服务器资源" title={title}
-      className="flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-2 text-[10px]"
+      className="workspace-indicator flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded border px-1.5 text-[11px]"
       style={{ borderColor: 'var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}>
-      {resources ? metrics.map(({ label, icon: Icon, value, percent, detail }, index) => (
+      {resources ? metrics.map(({ label, value, percent, detail }, index) => (
         <span key={label} title={`${detail}\n检测时间：${sampledTime}`} className={`flex items-center gap-1 ${index ? 'border-l pl-1.5' : ''}`} style={{ borderColor: 'var(--border)' }}>
-          <Icon className="h-3 w-3 shrink-0" aria-hidden="true" />
           <span>{label}</span>
-          <strong className="font-mono text-[10px] font-medium tabular-nums" style={{ color: usageColor(percent) }}>{value}</strong>
+          <strong className="font-mono text-[11px] font-medium tabular-nums" style={{ color: usageColor(percent) }}>{value}</strong>
         </span>
       )) : <><Server className="h-3.5 w-3.5" aria-hidden="true" /><span role="status">{status}</span></>}
       {stale && <span role="status" title={status} aria-label={status} className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--error)' }} />}

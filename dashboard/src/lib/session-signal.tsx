@@ -64,7 +64,7 @@ export function LiveSessionSignalDot({
 }) {
   const live = useStreamStore((s) => s.liveStates[session.id]);
   const terminal = session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled';
-  const signal = sessionSignal(session.status, terminal ? undefined : (live ?? liveFromSession(session)));
+  const signal = session.cli_type === 'codex' ? signalForSession(session, {}) : sessionSignal(session.status, terminal ? undefined : (live ?? liveFromSession(session)));
   return <SessionSignalDot signal={signal} active={active} size={size} />;
 }
 
@@ -98,7 +98,7 @@ export function ProjectRollupDot({
   );
   if (!rollup) return null;
   return (
-    <span className="pl-2 flex items-center">
+    <span className="workspace-tab-signal">
       <SessionSignalDot signal={rollup} active={active} size={size} />
     </span>
   );

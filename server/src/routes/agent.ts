@@ -12,6 +12,10 @@ import { requirePermission } from '../services/rbac.js';
 import { getDb } from '../db/index.js';
 import { loadRecentAgentMessages, loadRecentPromptContext } from '../services/prompt-context.js';
 import { sessionPresenter } from '../services/session-labels.js';
+import {readConversation} from '../services/conversation-reader.js';
+import {readCodexRuntime} from '../services/codex-runtime.js';
+import {formatConversationInput,validateConversationAttachments} from '../services/conversation-attachments.js';
+import {observeCodexConversation,submitStreamingCodexInput} from '../services/conversation-stream.js';
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
   if (mode === 'terminal') return mode;
@@ -314,7 +318,12 @@ export function getAgentApiContract() {
         method: 'POST',
         path: '/api/sessions/:id/input',
         description: 'Submit a follow-up immediately, including while busy or another execute request is waiting. Uses bracketed paste plus Enter, like typing in the dashboard. Does not cancel the current operation, reset output, or wait for an agent reply. Session ownership and project write access are required.',
-        request: {input: {type:'string',required:true,description:'Non-empty text, at most 64 KiB. Submitted as one pasted message.'}},
+        request: {
+          input: {type:'string',required:true,description:'Text, at most 64 KiB; may be empty when attachments are present.'},
+          source: {type:'string',required:false,description:'Use conversation to submit directly to the bound live Codex engine when available.'},
+          client_id: {type:'string',required:false,description:'Client correlation ID for matching the native user-message echo.'},
+          attachments: {type:'array',required:false,description:'Up to 8 {kind: image|file, name, path} references returned by this session’s paste-image/paste-file endpoints. Images total at most 10 MiB, each file at most 35 MiB, all attachments at most 50 MiB.'},
+        },
         response: {id:'Session id',status:'submitted — handed to the terminal; not proof of agent acceptance or task completion'},
       },
       {
@@ -500,16 +509,24 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   });
   app.get('/agent/capabilities', async () => getAgentApiContract());
 
-  app.post<{Params:{id:string};Body:{input?:unknown}}>('/sessions/:id/input', async (req, reply) => {
+  app.post<{Params:{id:string};Body:{input?:unknown;source?:unknown;client_id?:unknown;attachments?:unknown}}>('/sessions/:id/input', async (req, reply) => {
     const {id} = req.params;
     if (!canAccessAgentSession(req.user!.id,id) || !isSessionActive(id)) return reply.code(404).send({error:'Session not found or not running'});
     const input = req.body?.input;
-    if (typeof input !== 'string' || !input.trim() || Buffer.byteLength(input) > MAX_EXECUTE_INPUT_BYTES) return reply.code(400).send({error:'input must be non-empty text of at most 64 KiB'});
+    if (typeof input !== 'string' || (!input.trim() && !(Array.isArray(req.body?.attachments) && req.body.attachments.length)) || Buffer.byteLength(input) > MAX_EXECUTE_INPUT_BYTES) return reply.code(400).send({error:'input must be text of at most 64 KiB, with text or at least one attachment'});
+    const clientId=req.body?.client_id;
+    if(clientId!==undefined && (typeof clientId!=='string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(clientId))) return reply.code(400).send({error:'Invalid client_id'});
+    let attachments;try{attachments=await validateConversationAttachments(id,req.body?.attachments);}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'附件不可用'});}
+    const preparedInput=formatConversationInput(input,attachments);
     // Serialize only the brief paste/Enter pair, never the agent's execution.
     // A second caller must not paste its text before the first caller's Enter.
     const prior = pendingInputs.get(id) || Promise.resolve();
     const submission = prior.catch(() => {}).then(async () => {
-      if (!writeToSession(id,input,true)) throw new Error('Session input is unavailable');
+      const session=getSession(id);
+      if(req.body?.source==='conversation' && process.env.AGENTMANAGER_CODEX_STREAM_SOCKET && session?.cli_type==='codex' && session.codex_session_id) {
+        if(await (attachments.length?submitStreamingCodexInput(session.codex_session_id,input,clientId,attachments):clientId?submitStreamingCodexInput(session.codex_session_id,input,clientId):submitStreamingCodexInput(session.codex_session_id,input))) return;
+      }
+      if (!writeToSession(id,preparedInput,true)) throw new Error('Session input is unavailable');
       await new Promise(resolve => setTimeout(resolve,50));
       if (!writeToSession(id,'\r',false)) throw new Error('Input was pasted but submission could not be confirmed');
     });
@@ -623,6 +640,40 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     }
 
     return tracker.state;
+  });
+
+  app.get<{Params:{id:string}}>('/sessions/:id/conversation/stream',{websocket:true},(socket,req)=>{
+    const id=req.params.id;
+    if(!req.user || !canAccessAgentSession(req.user.id,id)) {socket.close(1008,'Session not found');return;}
+    if(!registerUserConnection(req.user.id,readSessionCookie(req),socket)) return;
+    const session=getSession(id);
+    if(session?.cli_type!=='codex'||!session.codex_session_id) {
+      socket.send(JSON.stringify({type:'unavailable',reason:'等待原生实时会话连接'}));socket.close(1000);return;
+    }
+    const stop=observeCodexConversation(session.codex_session_id,frame=>{
+      if(!canAccessAgentSession(req.user!.id,id)) {socket.close(1008);return;}
+      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(frame));
+      else if(socket.readyState===1) socket.close(1013,'Slow conversation client');
+    });
+    const heartbeat=setInterval(()=>{if(socket.readyState===1) socket.ping();},25000);
+    socket.once('close',()=>{clearInterval(heartbeat);stop();});
+  });
+
+  app.get<{Params:{id:string};Querystring:{after?:string;before?:string;limit?:string}}>('/sessions/:id/conversation',async(req,reply)=>{
+    const id=req.params.id;
+    if(!canAccessAgentSession(req.user!.id,id)) return reply.code(404).send({error:'Session not found'});
+    if(req.query.after && req.query.before) return reply.code(400).send({error:'只能选择一种分页方向'});
+    if([req.query.after,req.query.before].some(cursor=>cursor && !/^[a-f0-9]{32}$/.test(cursor))) return reply.code(400).send({error:'分页标识无效'});
+    const session=getSession(id);
+    if(!session) return reply.code(404).send({error:'Session not found'});
+    const project=session.project_id ? getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined : undefined;
+    const page=await readConversation({cli_type:session.cli_type==='codex'?'codex':'claude',codex_session_id:session.codex_session_id,claude_session_id:session.claude_session_id,project_path:project?.path||null},
+      {after:req.query.after,before:req.query.before,limit:Number(req.query.limit)||40});
+    const state=getTracker(id)?.state;
+    const runtime=session.cli_type==='codex' ? await readCodexRuntime(session.codex_session_id) : null;
+    return reply.header('Cache-Control','private, no-store').send({...page,session_id:id,session_status:session.status,session_active:isSessionActive(id),
+      native_id:session.cli_type==='codex'?session.codex_session_id:session.claude_session_id,runtime,
+      interaction:state ? {processState:state.processState,promptType:state.promptType,isPermission:state.isPermission,choices:state.choices} : null});
   });
 
   app.get<{Params: {id: string}}>('/sessions/:id/agent-messages', async (req, reply) => {

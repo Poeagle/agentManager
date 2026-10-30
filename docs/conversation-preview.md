@@ -1,0 +1,61 @@
+# 对话视图与工作区
+
+运行 `bash scripts/dev-conversation-preview.sh`。默认端口 43231；占用时直接报错，不停止其他服务。数据放在当前工作树的 `.test-data/conversation-preview`，使用独立数据库、登录 Cookie、tmux 命名空间。首次访问按界面创建试用账号。
+
+试用服务还会启动自己的 Codex App Server，Unix Socket 在当前用户专属临时目录内，名称包含工作树路径摘要。进程和日志路径由 `scripts/conversation-codex-server.mjs` 管理。重启 Web 服务会复用该引擎，保留正在执行的任务。引擎的权限设置独立于终端 worker，因此管理员会话使用共享实时引擎；普通成员继续使用原有隔离终端与内嵌 CLI，并屏蔽共享引擎的 Socket 目录，保留原有文件权限边界。
+
+对话页与终端连接同一个原生线程。新建时由引擎提交一次初始请求，终端随后连接该原生 ID，不重复提交。用户后续消息使用现有输入接口并标记 `source: conversation`，服务端直接向已加载的同一原生线程提交，避免终端菜单吞掉文本；未加载到此引擎的旧 CLI 保留终端输入路径。原生提交结果不确定时不会再向终端补发。显式停止会话会先中断远程引擎，再结束终端；重启 Web 服务只分离终端连接。
+
+模型首段正文到达前，界面显示“等待返回正文”及从原生轮次开始计算的秒数；工具执行仅显示简短状态。收到正文片段后才显示“正文接收中”。连接状态仅表示事件通道可用，不表示模型已经产生正文。
+
+参考 DeepSeek Harness 本地源码中的 `packages/api/session-controller/src/assistant-stream.ts` 和 `packages/client/ui-chat/src/client/chat/ChatView.module.css`：分开处理实时片段与持久化记录，使用稳定身份更新同一条消息；正文采用居中阅读栏，减少消息边框和元信息。
+
+Codex 流式接入使用 [官方 App Server 协议](https://developers.openai.com/codex/app-server) 的 `item/started`、`item/agentMessage/delta`、`item/completed` 和 `turn/completed`。向浏览器发送用户消息回显、Agent 的中途进展（`commentary`）及最终回答（`final_answer`），两种正文都支持流式更新；不转发推理、工具参数或工具结果。事件每 35ms 合并一次。浏览器断线后读取最近一轮作为基线，再继续接收更新。
+
+持久化回复由原生记录分页恢复。原生 turn ID 与 item ID 共同确定最终回复身份；同一轮次因收尾期间追问而产生的多个回答分别保留。`response_item` 与稍后到达的 `task_complete` 内容回声合并；不同消息或不同轮次中内容相同的回复仍各自保留。历史视图按需读取更早记录。旧的内嵌 CLI 无可订阅接口时会明确显示实时事件不可用，仍自动更新已完成的答复；Claude 暂保留此历史更新方式。
+
+检查：`npm --prefix server test -- conversation-reader.test.ts conversation-stream.test.ts cli-command.test.ts`、`npm --prefix dashboard test -- SessionWorkspacePane.test.tsx ProjectViewNavigation.test.tsx`、`npx playwright test e2e/conversation-view.spec.ts` 和 `npm run build`。
+
+## 阅读工具与内容渲染
+
+参考版本已更新至 DeepSeek Harness `origin/master` 的 `f3803c9697`（`0.2.2-alpha.2`），通过 fetch 和 git show 查看，未切换其运行中的本地工作树。
+
+对话／原始终端切换通过 Portal 放入当前会话标签栏右侧，不再增加单独一行。阅读栏左右拖拽条控制正文和输入框共享的宽度；双击恢复默认，方向键微调。偏好按用户保存在浏览器内，缩小窗口只限制显示宽度，不覆盖原偏好。
+
+右侧刻度按提问分组，显示当前位置；悬停或键盘聚焦预览 Agent 输出，点击刻度跳到对应回复，预览中的章节按钮可直接跳到标题。尚未回复时显示等待提示，不用问题代替答复。历史较长时可从目录顶部继续加载更早对话。导航、宽度拖拽会保留阅读位置，窄屏隐藏侧边工具并保持正文可读。
+
+对话 Markdown 单独实现，不改变文件浏览器或平台 AI 的文档样式。流式更新冻结已完成的顶层块，只重新解析最后两个块；引用式链接和脚注使用完整文档上下文。代码块在流式输出和完成时保留同一组件、换行状态与复制行为，语法按需加载，超大代码和未知语言保留原始文本。支持表格内横向滚动、中文引号结尾的强调、任务列表、本地项目文件链接及图片；原始 HTML 不执行。正文及引用链接保持项目权限边界。
+
+相关检查还包括 `ConversationMarkdown.test.tsx`、`ConversationReadingTools.test.tsx` 和 `e2e/conversation-reading.spec.ts`，覆盖同一行布局、真实拖拽、宽度记忆、目录预览、章节跳转、宽表格、代码复制、流式追加章节、本地文件打开及手机布局。
+
+## 消息顺序
+
+消息按原生记录及事件中的先后顺序合并，时间戳只用于显示。点击发送时立即在末尾保留位置，并携带客户端关联 ID；原生回显先于 HTTP 确认到达时也不会重复追加。同轮次的相同追问分别匹配，Codex 实时用户消息与持久化记录的不同 ID 通过轮次内有序匹配建立别名。旧记录不能消耗新发送的相同文本，持久化后的答复也不会被过期的流式快照恢复为输出中。
+
+检查：`conversation-timeline.test.ts`、`SessionWorkspacePane.test.tsx`、服务端 `conversation-reader.test.ts`、`conversation-stream.test.ts`、`agent-input.test.ts`，以及 `e2e/conversation-order.spec.ts`。浏览器回归覆盖时钟前后偏差、连续相同追问、确认前回显、历史延迟、流式重放、窗口切换和刷新。
+
+## 文件与会话共用工作区
+
+左侧目录按钮同步展开或收起文件树与文件标签行，当前会话继续显示；隐藏时保留已打开文件和未保存内容。取消 `Explorer 1` 这一层页签；会话标签常驻上方，文件标签在右侧内容区独立一行，可直接切换。终端与对话组件保持挂载，文件编辑器也保持挂载，保留未发送草稿、未保存内容、光标和终端画面。关闭最后一个文件返回此前会话。窄屏文件树以浮层展开，选中文件后自动收起。
+
+Markdown 可视编辑和只读预览中的文档链接均可普通单击：项目内文件在文件标签中打开，来源文档保留；支持当前文档及跨文档章节定位、中文和重复标题锚点，外部地址在新页面打开。无需按住 Ctrl。文件访问继续通过原有项目文件接口。
+
+检查：`ProjectFileWorkspace.test.tsx`、`document-links.test.ts` 及 `e2e/file-workspace.spec.ts`，覆盖侧栏开关、两层标签、原终端复用、未保存编辑保留、关闭确认、普通单击链接、跨文档定位和手机布局；同时回归目录刷新、上传和 Markdown 编辑。
+
+## 自适应文档双页
+
+PDF 和 Word 转换后的分页预览，根据纸张纵横比、预览区域宽高与缩放比例自动选择单页或并排双页。默认按窗口大小适配整页，窄屏回到单页，单页文档不制造空白第二页。调整窗口、侧栏和缩放时保留当前阅读页及页内位置。页面保持连续滚动，仅绘制视口附近的画布，切换布局不重新请求服务端转换。
+
+检查：`pdf-layout.test.ts`、`document-preview.test.tsx`、`e2e/pdf-layout.spec.ts` 和 `e2e/previews.spec.ts`，覆盖横竖页、单双页、奇数页、缩放、侧栏开关、阅读位置保持、手机布局和按需渲染。
+
+## 日常服务接入
+
+`bash scripts/dev-isolated.sh` 保留原有 `42011` 前端、`42020` 后端与 `~/.agentmanager-dev/agentmanager.db`，启动时复用当前检出目录专属的 Codex App Server。已配置 `AGENTMANAGER_CODEX_STREAM_SOCKET` 时沿用该配置。后台引擎跨 Web 服务重启保留；新建或恢复的管理员 Codex 会话提供原生流式事件，普通成员继续走原有隔离 CLI。原先由内嵌 CLI 持有的运行中会话不会被额外引擎重复加载，仍可看历史答复及原始终端。
+
+## 对话附件
+
+输入框提供附件按钮，支持选择文件、粘贴截图和拖入文件。上传期间显示进度；失败保留草稿和附件并允许移除，未成功上传时不能发送。对话与原始终端切换保留附件草稿。支持仅发附件，每条最多 8 个；图片合计最多 10 MB，单个普通文件最多 35 MB，所有附件合计最多 50 MB。
+
+附件复用会话所属项目的上传接口，保存在 `.agentmanager/pastes`。提交时再次校验文件与真实路径，禁止任意主机路径或越界符号链接。共享 Codex 引擎通过原生 `localImage` 输入接收图片，普通文件以路径交给 Agent 读取；内嵌 CLI 保留文件路径输入方式。对话记录只渲染附件卡片与文本，不返回原生记录中的内联像素数据。刷新后从同一条原生用户消息恢复附件。
+
+检查：`conversation-attachments.test.ts`、`agent-input.test.ts`、`conversation-stream.test.ts`、`conversation-reader.test.ts`、`SessionWorkspacePane.test.tsx` 和 `e2e/conversation-attachments.spec.ts`，覆盖真实上传、粘贴、拖入、上传失败、附件单独发送、切换保留、原生图片输入与大图片记录恢复。

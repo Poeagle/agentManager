@@ -23,7 +23,7 @@ function isCodexContinuation(text: string): boolean {
 }
 
 /** Public conversation text only: never tool arguments/results or reasoning. */
-export function extractAgentMessages(entries: Iterable<unknown>, kind: CliType): AgentTextMessage[] {
+export function extractAgentMessages(entries: Iterable<unknown>, kind: CliType, messageLimit = 8000): AgentTextMessage[] {
   const messages: AgentTextMessage[] = [];
   let taskReference: string | null = null;
   const append = (role: AgentTextMessage['role'], phase: AgentTextMessage['phase'], text: string, timestamp: unknown) => {
@@ -38,14 +38,14 @@ export function extractAgentMessages(entries: Iterable<unknown>, kind: CliType):
     }
     if (role === 'user') taskReference = /\[Platform task reference: ([A-Za-z0-9_-]+)\]/.exec(text)?.[1]
       || 'native:' + createHash('sha256').update(JSON.stringify([timestamp || null,text])).digest('hex').slice(0,40);
-    messages.push({role, phase, text: clipped(text), timestamp: typeof timestamp === 'string' ? timestamp : null, task_reference: taskReference});
+    messages.push({role, phase, text: clipped(text, messageLimit), timestamp: typeof timestamp === 'string' ? timestamp : null, task_reference: taskReference});
   };
   for (const entry of entries) {
     if (!isRecord(entry)) continue;
     if (kind === 'codex' && isRecord(entry.payload)) {
       const p = entry.payload;
       if (entry.type === 'response_item' && p.type === 'message') {
-        if (p.role === 'user') append('user', 'user', contentText(p.content, 'input_text'), entry.timestamp);
+        if (p.role === 'user') append('user', 'user', codexUserText(p.content), entry.timestamp);
         if (p.role === 'assistant') append('assistant', p.phase === 'final_answer' ? 'final' : 'commentary', contentText(p.content, 'output_text'), entry.timestamp);
       } else if (entry.type === 'event_msg') {
         if (p.type === 'user_message') append('user', 'user', cleanText(p.message), entry.timestamp);
@@ -95,6 +95,19 @@ function contentText(content: unknown, blockType: 'text' | 'input_text' | 'outpu
     .filter(Boolean)
     .join('\n')
     .trim();
+}
+
+/** Codex persists local images between generated input_text wrappers. Their
+ * paths are already represented by attachments; they are not a second prompt. */
+function codexUserText(content:unknown):string {
+  if(!Array.isArray(content))return contentText(content,'input_text');
+  return contentText(content.filter((block,index)=>{
+    if(!isRecord(block)||block.type!=='input_text'||typeof block.text!=='string')return true;
+    const text=block.text.trim();
+    if(/^<image name=\[Image #\d+\] path=[\s\S]*>$/.test(text) && isRecord(content[index+1]) && content[index+1].type==='input_image')return false;
+    if(text==='</image>' && isRecord(content[index-1]) && content[index-1].type==='input_image')return false;
+    return true;
+  }),'input_text');
 }
 
 function clipped(text: string, limit = MAX_CONTEXT_MESSAGE_CHARS): string {
@@ -275,17 +288,19 @@ export async function loadPromptContextFromFile(filePath: string, kind: CliType,
   return latest;
 }
 
-async function findCodexRollout(sessionId: string): Promise<string | null> {
-  const cached = codexRolloutCache.get(sessionId);
+export async function findCodexRollout(sessionId: string): Promise<string | null> {
+  if (!NATIVE_SESSION_ID_RE.test(sessionId)) return null;
+  const root = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions');
+  const cacheKey = `${root}:${sessionId}`;
+  const cached = codexRolloutCache.get(cacheKey);
   if (cached) {
     try {
       await access(cached);
       return cached;
     } catch {
-      codexRolloutCache.delete(sessionId);
+      codexRolloutCache.delete(cacheKey);
     }
   }
-  const root = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions');
   let entries;
   try {
     entries = await readdir(root, { recursive: true, withFileTypes: true });
@@ -296,7 +311,7 @@ async function findCodexRollout(sessionId: string): Promise<string | null> {
   const match = entries.find((entry) => entry.isFile() && entry.name.endsWith(suffix));
   if (!match) return null;
   const path = join(match.parentPath, match.name);
-  codexRolloutCache.set(sessionId, path);
+  codexRolloutCache.set(cacheKey, path);
   return path;
 }
 
@@ -330,6 +345,17 @@ export async function loadRecentAgentMessages(session: PromptContextSession): Pr
   } catch {
     return [];
   }
+}
+
+export async function nativeConversationFile(session: PromptContextSession): Promise<{path:string;kind:CliType} | null> {
+  if(session.cli_type==='codex') {
+    if(!session.codex_session_id || !NATIVE_SESSION_ID_RE.test(session.codex_session_id)) return null;
+    const path=await findCodexRollout(session.codex_session_id);
+    return path ? {path,kind:'codex'} : null;
+  }
+  if(!session.claude_session_id || !session.project_path || !NATIVE_SESSION_ID_RE.test(session.claude_session_id)) return null;
+  const directory=resolveClaudeDir(session.project_path);
+  return directory ? {path:join(directory,`${session.claude_session_id}.jsonl`),kind:'claude'} : null;
 }
 
 /** Resolve the tab's bound native history and return only completed user/final pairs. */

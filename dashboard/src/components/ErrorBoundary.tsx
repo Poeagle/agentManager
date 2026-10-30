@@ -3,6 +3,7 @@ import { Component, type ErrorInfo, type ReactNode } from 'react';
 interface ErrorBoundaryProps {
   children: ReactNode;
   label?: string;
+  fallback?: (error: Error) => ReactNode;
 }
 
 interface ErrorBoundaryState {
@@ -31,6 +32,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   render(): ReactNode {
     if (!this.state.error) return this.props.children;
+    if (this.props.fallback) return this.props.fallback(this.state.error);
     const reloadRequired = isDynamicModuleLoadError(this.state.error);
 
     return (
