@@ -142,6 +142,24 @@ describe('chat/raw terminal display',()=>{
     fireEvent.click(screen.getByRole('button',{name:'原始终端',exact:true}));expect(sockets[0].close).toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button',{name:'对话',exact:true}));expect(screen.getAllByText('真正的流式回复')).toHaveLength(1);
   });
+  it('keeps an executing task active after a followup and inserts its next progress immediately',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    page.messages=[{id:'first-user',role:'user',text:'整理文档',turn_id:'active',timestamp:null},{id:'first-progress',role:'assistant',text:'正在补充差异说明',phase:'commentary',turn_id:'active',timestamp:null}];
+    mount();await screen.findByText('正在补充差异说明');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const frame=(messages:unknown[],stage='tools')=>act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages,busy:true,stage,turn_id:'active',started_at:new Date(Date.now()-120000).toISOString()})}));
+    frame([]);fireEvent.change(screen.getByRole('textbox'),{target:{value:'请用通俗语言解释'}});
+    fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalled());
+    await screen.findByText('追问已提交，Codex 正在继续执行');expect(screen.queryByText('尚未收到正文，收到后会立即逐段显示。')).not.toBeInTheDocument();
+    const [,text,clientId]=vi.mocked(api.agent.sendInput).mock.calls[0];
+    const echo={id:'followup-echo',role:'user',text,client_id:clientId,turn_id:'active',timestamp:new Date().toISOString()};
+    frame([echo]);expect(screen.getAllByText('请用通俗语言解释')).toHaveLength(1);
+    const progress={id:'new-progress',role:'assistant',phase:'commentary',text:'我会用',turn_id:'active',streaming:true,timestamp:new Date().toISOString()};
+    frame([echo,progress],'answering');const article=screen.getByText('我会用').closest('article');expect(article).toHaveAttribute('data-streaming','true');
+    expect(screen.queryByText('追问已提交，Codex 正在继续执行')).not.toBeInTheDocument();
+    frame([echo,{...progress,text:'我会用具体数字逐项解释'}],'answering');expect(screen.getByText('我会用具体数字逐项解释').closest('article')).toBe(article);
+    expect(screen.getAllByText('请用通俗语言解释')).toHaveLength(1);
+  });
   it('shows at most one live caret and clears all stale carets while tools run or a turn ends',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
     vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});

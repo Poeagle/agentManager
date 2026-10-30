@@ -179,7 +179,9 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
   const lastUserIndex=messages.reduce((last,message,index)=>message.role==='user'?index:last,-1);
   const lastUserTime=messages[lastUserIndex]?.timestamp;
   const currentAnswer=messages.some((message,index)=>index>lastUserIndex && message.role==='assistant' && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id || message.streaming));
-  const started=liveProgress.started_at||lastUserTime;
+  const currentTurn=liveProgress.turn_id||messages[lastUserIndex]?.turn_id;
+  const continuingAfterFollowup=busy && !currentAnswer && !!currentTurn && messages.some((message,index)=>index<lastUserIndex && message.role==='assistant' && message.turn_id===currentTurn);
+  const started=continuingAfterFollowup?lastUserTime:liveProgress.started_at||lastUserTime;
   const elapsed=started?Math.max(0,Math.floor((now-Date.parse(started))/1000)):0;
   const waitingForText=busy && !currentAnswer;
   const displayed=messages;
@@ -203,7 +205,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
             </div>{bubble(message,true)}
           </div>)}</div>
         </section>)}
-        {waitingForText && <div className="session-chat-thinking" role="status"><Sparkles size={16}/><div><span>{liveProgress.stage==='tools'?`${agentName} 正在执行任务`:`等待 ${agentName} 返回正文`}</span><time className="session-chat-elapsed">{elapsed} 秒</time><p>尚未收到正文，收到后会立即逐段显示。</p></div></div>}
+        {waitingForText && <div className="session-chat-thinking" role="status"><Sparkles size={16}/><div><span>{continuingAfterFollowup?sending?'正在提交追问…':`追问已提交，${agentName} 正在继续执行`:liveProgress.stage==='tools'?`${agentName} 正在执行任务`:`等待 ${agentName} 返回正文`}</span><time className="session-chat-elapsed">{elapsed} 秒</time><p>{continuingAfterFollowup?'当前任务仍在进行，新进展到达后会自动追加。':liveProgress.stage==='tools'?'正在执行任务，新进展到达后会立即显示。':'尚未收到正文，收到后会立即逐段显示。'}</p></div></div>}
         {!loading && canRead && !messages.length && <div className="session-chat-empty"><p>这里显示你的消息、Agent 的进展说明和回答。</p><p>{page?.available?'还没有对话记录。':'尚未读取到绑定的原生对话记录。'}<button onClick={onRaw}>查看原始终端</button></p></div>}
         {error && <p role="alert" className="session-chat-error">{error}<button onClick={()=>setRefresh(value=>value+1)}>重试</button></p>}
         <div ref={bottom}/>
@@ -216,7 +218,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
     {waiting && <div className="session-chat-action" role="status"><strong>{interaction?.isPermission?'Agent 需要授权':'Agent 需要你确认或选择'}</strong>
       {interaction?.choices?.length ? <p>{interaction.choices.join(' / ')}</p>:null}<button onClick={onRaw}>切到原始终端处理</button></div>}
     <footer className="session-chat-composer">
-      <div className="session-chat-status" role="status"><span className={`session-chat-connection ${liveState}`} aria-hidden="true"/>{ended?'会话已结束':waiting?'等待你处理':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}
+      <div className="session-chat-status" role="status"><span className={`session-chat-connection ${liveState}`} aria-hidden="true"/>{ended?'会话已结束':waiting?'等待你处理':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}
         {liveState==='connected' && <span className="session-chat-live-label">事件通道已连接</span>}
         {ended && onResume && <button onClick={onResume} disabled={resuming}>{resuming?'正在恢复…':resumeFailed?'重试恢复会话':'恢复会话'}</button>}{ended && onClose && <button onClick={onClose}>关闭会话</button>}
       </div>
