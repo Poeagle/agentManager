@@ -22,6 +22,11 @@ beforeEach(()=>{
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 
 describe('Codex native execution status',()=>{
+  it('reports a failed turn instead of idle when completion carries a model error',async()=>{
+    writeFileSync(file,event('task_started',1,{turn_id:'failed'})+event('task_complete',2,{turn_id:'failed',error:{message:'Selected model is at capacity.',codex_error_info:'server_overloaded'}}));
+    expect(await readCodexRuntime(id)).toMatchObject({state:'failed',last_activity_at:'2026-10-29T10:00:02.000Z'});
+    appendFileSync(file,event('task_started',3,{turn_id:'retry'}));expect((await readCodexRuntime(id)).state).toBe('running');
+  });
   it('preserves running status through quiet periods and ignores bookkeeping/mtime/PTY clocks',async()=>{
     writeFileSync(file,event('task_started',1,{turn_id:'a'})+event('agent_reasoning',2));
     expect(await readCodexRuntime(id)).toMatchObject({state:'running',last_activity_at:'2026-10-29T10:00:02.000Z'});

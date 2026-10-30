@@ -11,13 +11,14 @@ let server:Server,wss:WebSocketServer,peer:WebSocket,dir:string,stop:(()=>void)|
 let submissions:any[],requests:string[],frames:ConversationStreamFrame[],loaded:boolean;
 let active=false;
 let baselineItems:any[]=[];
+let baselineFailure:any=null;
 beforeEach(async()=>{
   dir=mkdtempSync(join(tmpdir(),'chat-stream-'));const path=join(dir,'sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',path);
-  server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;baselineItems=[];
+  server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;baselineItems=[];baselineFailure=null;
   wss.on('connection',socket=>{
     peer=socket;socket.on('message',bytes=>{
       const {id,method,params}=JSON.parse(bytes.toString());requests.push(method);if(method==='turn/start')submissions.push(params);if(!id) return;
-      const result=method==='thread/start'?{thread:{id:'019ff001-8888-7888-8888-888888888888'}}:method==='thread/read'?{thread:{status:{type:active?'active':loaded?'idle':'notLoaded'}}}:method==='thread/turns/list'?{data:active?[{id:'turn',status:'inProgress',items:baselineItems}]:[]}:{};
+      const result=method==='thread/start'?{thread:{id:'019ff001-8888-7888-8888-888888888888'}}:method==='thread/read'?{thread:{status:{type:active?'active':loaded?'idle':'notLoaded'}}}:method==='thread/turns/list'?{data:active?[{id:'turn',status:'inProgress',items:baselineItems}]:baselineFailure?[{id:'turn',status:'failed',error:baselineFailure,completedAt:1793340000,items:[]}]:[]}:{};
       socket.send(JSON.stringify({id,result}));
     });
   });
@@ -26,6 +27,33 @@ beforeEach(async()=>{
 afterEach(async()=>{stop?.();stop=undefined;for(const client of wss.clients) client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 const send=(method:string,params:unknown)=>peer.send(JSON.stringify({method,params}));
 describe('native Codex conversation streaming',()=>{
+  it('shows a public failure immediately, stops streaming, and deduplicates its completion echo',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
+    send('turn/started',{threadId:'thread',turn:{id:'turn'}});
+    send('item/started',{threadId:'thread',turnId:'turn',item:{type:'agentMessage',id:'progress',phase:'commentary',text:'正在处理'}});
+    const error={message:'Selected model is at capacity. Please try a different model.',codexErrorInfo:'serverOverloaded',additionalDetails:'PRIVATE'};
+    send('error',{threadId:'other',turnId:'turn',error,willRetry:false});
+    send('error',{threadId:'thread',turnId:'turn',error,willRetry:false});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({type:'snapshot',busy:false,stage:'idle',messages:[{text:'正在处理',streaming:false},{phase:'error',error:{code:'server_overloaded',will_retry:false}}]}));
+    send('turn/completed',{threadId:'thread',turn:{id:'turn',status:'failed',error}});
+    await vi.waitFor(()=>{const frame=frames.at(-1);expect(frame?.type==='snapshot'&&frame.messages.filter(message=>message.phase==='error')).toHaveLength(1);});
+    expect(JSON.stringify(frames)).not.toContain('PRIVATE');
+  });
+  it('restores the latest failed turn on reconnect without executing anything',async()=>{
+    baselineFailure={message:'Selected model is at capacity. Please try a different model.',codexErrorInfo:'serverOverloaded'};
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({type:'snapshot',busy:false,messages:[{phase:'error',error:{code:'server_overloaded',will_retry:false}}]}));
+    expect(requests).not.toContain('turn/start');
+  });
+  it('keeps native automatic retries busy and updates the same error when retrying finally fails',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
+    send('turn/started',{threadId:'thread',turn:{id:'retry'}});
+    const error={message:'Network connection interrupted',codexErrorInfo:{responseStreamDisconnected:{httpStatusCode:503}}};
+    send('error',{threadId:'thread',turnId:'retry',error,willRetry:true});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({type:'snapshot',busy:true,messages:[{phase:'error',error:{code:'response_stream_disconnected',will_retry:true}}]}));
+    send('error',{threadId:'thread',turnId:'retry',error,willRetry:false});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({type:'snapshot',busy:false,messages:[{phase:'error',error:{will_retry:false}}]}));
+  });
   it('does not mark already completed progress as streaming when reconnecting during tool execution',async()=>{
     active=true;baselineItems=[{type:'agentMessage',id:'item-resumed',phase:'commentary',text:'正在检查。\n'},{type:'commandExecution',id:'tool',status:'inProgress',command:'private'}];
     stop=observeCodexConversation('thread',frame=>frames.push(frame));

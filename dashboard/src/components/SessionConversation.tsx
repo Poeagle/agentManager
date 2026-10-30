@@ -1,5 +1,5 @@
 import {memo,useCallback,useEffect,useRef,useState} from 'react';
-import {ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
+import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
 import {api,type ConversationMessage,type ConversationPage,type Session} from '../lib/api';
 import {parseConversationInput} from '../lib/conversation-attachments';
 import {ConversationAttachmentPicker,ConversationMessageAttachments,useConversationAttachments} from './ConversationAttachments';
@@ -12,7 +12,7 @@ import './SessionConversation.css';
 
 interface LiveProgress {turn_id:string|null;started_at:string|null;stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
 
-const Bubble=memo(function Bubble({message,streaming,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate}:{message:ConversationMessage;streaming:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void}) {
+const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate,onRaw}:{message:ConversationMessage;streaming:boolean;retrying?:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void;onRaw:()=>void}) {
   const [copied,setCopied]=useState(false);
   const parsed=message.role==='user'?(message.attachments?{text:message.text,attachments:message.attachments}:parseConversationInput(message.text)):{text:message.text,attachments:[]};
   async function copy() {
@@ -26,6 +26,12 @@ const Bubble=memo(function Bubble({message,streaming,compact=false,agentName,pro
       setCopied(true);
     } catch {setCopied(false);}
   }
+  if(message.phase==='error')return <article className="session-chat-message session-chat-error-notice" role="alert" data-phase="error" data-streaming="false" data-retrying={retrying} data-retry-ended={!!message.error?.will_retry && !retrying} data-chat-message-id={message.id}>
+    <div className="session-chat-error-heading"><AlertTriangle size={16}/><strong>{message.error?.will_retry?retrying?'执行遇到错误，正在自动重试':'重试已结束':'本轮执行出错'}</strong>{message.timestamp && <time dateTime={message.timestamp} title={new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}>{new Date(message.timestamp).toLocaleTimeString('zh-CN',{hour12:false})}</time>}</div>
+    <p className="session-chat-error-original">{message.text}</p>
+    <p>{message.error?.will_retry?retrying?'Agent 正在自动重试，无需重复发送。':'该次重试过程已结束。':message.error?.code==='server_overloaded' || /at capacity/i.test(message.text)?'当前模型繁忙，本轮已停止。可稍后重试，或在原始终端切换模型。':'本轮已停止。请根据错误信息处理后再试。'}</p>
+    <div className="session-chat-error-actions"><button type="button" onClick={onRaw}>查看原始终端</button><button type="button" onClick={()=>void copy()}>{copied?'已复制':'复制错误信息'}</button></div>
+  </article>;
   return <article className={`session-chat-message ${message.role}`} data-phase={message.phase} data-streaming={streaming} data-chat-message-id={message.id}>
     {message.role==='assistant' && !compact && <div className="session-chat-agent"><Sparkles size={16}/><span>{agentName}</span>{message.phase==='final' && <span className="session-chat-writing">结论</span>}{streaming && <span className="session-chat-writing">正在输出</span>}</div>}
     <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text">{parsed.text}</div><ConversationMessageAttachments items={parsed.attachments} projectId={projectId} onOpenFile={onOpenFile}/></>:<ConversationMarkdown content={message.text} messageId={message.id} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
@@ -70,7 +76,10 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
   const scrollBottom=()=>{pinned.current=true;setUnread(false);bottom.current?.scrollIntoView({block:'nearest'});};
   const navigate=useCallback(()=>{pinned.current=false;setUnread(false);},[]);
   const ended=['completed','failed','cancelled'].includes(session.status);
-  const busy=liveState==='connected'?liveBusy:page?.runtime?.state==='running' || (!page?.runtime && page?.interaction?.processState==='busy');
+  const lastUserIndex=messages.reduce((last,message,index)=>message.role==='user'?index:last,-1);
+  const latestAssistant=messages.reduce<ConversationMessage|null>((last,message,index)=>index>lastUserIndex && message.role==='assistant'?message:last,null);
+  const activeError=latestAssistant?.phase==='error' && (liveState!=='connected' || !liveProgress.turn_id || !latestAssistant.turn_id || latestAssistant.turn_id===liveProgress.turn_id)?latestAssistant:null;
+  const busy=!(activeError && !activeError.error?.will_retry) && (liveState==='connected'?liveBusy:page?.runtime?.state==='running' || (!page?.runtime && page?.interaction?.processState==='busy'));
   useEffect(()=>{
     if(!active || !busy) return;
     setNow(Date.now());const clock=setInterval(()=>setNow(Date.now()),1000);return ()=>clearInterval(clock);
@@ -176,19 +185,18 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
     finally {sendingRef.current=false;setSending(false);}
   }
   const agentName=session.cli_type==='codex'?'Codex':'Claude';
-  const lastUserIndex=messages.reduce((last,message,index)=>message.role==='user'?index:last,-1);
   const lastUserTime=messages[lastUserIndex]?.timestamp;
-  const currentAnswer=messages.some((message,index)=>index>lastUserIndex && message.role==='assistant' && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id || message.streaming));
+  const currentAnswer=messages.some((message,index)=>index>lastUserIndex && message.role==='assistant' && message.phase!=='error' && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id || message.streaming));
   const currentTurn=liveProgress.turn_id||messages[lastUserIndex]?.turn_id;
   const continuingAfterFollowup=busy && !currentAnswer && !!currentTurn && messages.some((message,index)=>index<lastUserIndex && message.role==='assistant' && message.turn_id===currentTurn);
   const started=continuingAfterFollowup?lastUserTime:liveProgress.started_at||lastUserTime;
   const elapsed=started?Math.max(0,Math.floor((now-Date.parse(started))/1000)):0;
-  const waitingForText=busy && !currentAnswer;
+  const waitingForText=busy && !currentAnswer && !activeError;
   const displayed=messages;
-  const streamingId=liveState==='connected' && busy && !['tools','finishing'].includes(liveProgress.stage)
+  const streamingId=!activeError && liveState==='connected' && busy && !['tools','finishing'].includes(liveProgress.stage)
     ? messages.reduce<string|null>((id,message,index)=>index>lastUserIndex && message.role==='assistant' && message.streaming && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id)?message.id:id,null):null;
   const groups=groupConversationProgress(displayed);
-  const bubble=(message:ConversationMessage,compact=false)=><Bubble key={message.id} message={message} streaming={message.id===streamingId} compact={compact} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate}/>;
+  const bubble=(message:ConversationMessage,compact=false)=><Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
   return <section ref={readingRoot} className="session-chat" aria-label="会话对话">
     <div className="session-chat-reading">
     <div ref={list} className="session-chat-scroll" onScroll={()=>{if(list.current) pinned.current=list.current.scrollHeight-list.current.scrollTop-list.current.clientHeight<80;}}>
@@ -218,7 +226,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
     {waiting && <div className="session-chat-action" role="status"><strong>{interaction?.isPermission?'Agent 需要授权':'Agent 需要你确认或选择'}</strong>
       {interaction?.choices?.length ? <p>{interaction.choices.join(' / ')}</p>:null}<button onClick={onRaw}>切到原始终端处理</button></div>}
     <footer className="session-chat-composer">
-      <div className="session-chat-status" role="status"><span className={`session-chat-connection ${liveState}`} aria-hidden="true"/>{ended?'会话已结束':waiting?'等待你处理':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}
+      <div className="session-chat-status" role="status"><span className={`session-chat-connection ${liveState}`} aria-hidden="true"/>{activeError?activeError.error?.will_retry?busy?'执行遇到错误，正在自动重试…':'重试已结束':'本轮执行失败，可处理后重试':ended?'会话已结束':waiting?'等待你处理':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}
         {liveState==='connected' && <span className="session-chat-live-label">事件通道已连接</span>}
         {ended && onResume && <button onClick={onResume} disabled={resuming}>{resuming?'正在恢复…':resumeFailed?'重试恢复会话':'恢复会话'}</button>}{ended && onClose && <button onClick={onClose}>关闭会话</button>}
       </div>

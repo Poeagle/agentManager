@@ -33,7 +33,7 @@ function applyRecord(cursor: RuntimeCursor, entry: any, sessionId: string): void
   if (event === 'task_started') { cursor.activeTurns.add(turn); cursor.state='running'; cursor.waitingCall=null; }
   if (event === 'task_complete' || event === 'turn_aborted') {
     cursor.activeTurns.delete(turn);
-    cursor.state = cursor.activeTurns.size ? 'running' : event === 'task_complete' ? 'idle' : 'interrupted';
+    cursor.state = cursor.activeTurns.size ? 'running' : event === 'task_complete' ? p.error?'failed':'idle' : 'interrupted';
     cursor.waitingCall = null;
   }
   if (['request_user_input','exec_approval_request','apply_patch_approval_request'].includes(event)) cursor.state='waiting_for_input';

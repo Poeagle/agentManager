@@ -22,6 +22,28 @@ beforeEach(()=>{
 afterEach(()=>{client.clear();vi.unstubAllGlobals();});
 function mount() {return render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);}
 describe('chat/raw terminal display',()=>{
+  it('shows native errors with time, stops stale busy/caret indicators and retains the error after switching views',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const failure={id:'error-one',role:'assistant' as const,phase:'error' as const,text:'Selected model is at capacity. Please try a different model.',turn_id:'failed',timestamp:'2026-10-30T07:00:00Z',error:{code:'server_overloaded',will_retry:false}};
+    page.messages=[...page.messages,failure];
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'tools',turn_id:'failed',messages:[failure]})}));
+    const alert=await screen.findByRole('alert');expect(alert).toHaveTextContent(failure.text);expect(alert).toHaveTextContent('当前模型繁忙');expect(alert.querySelector('time')).toHaveAttribute('datetime',failure.timestamp);
+    expect(screen.getByText('本轮执行失败，可处理后重试')).toBeVisible();expect(document.querySelectorAll('.session-chat-caret')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button',{name:'查看原始终端',exact:true}));expect(screen.getByTestId('raw')).toBeVisible();
+    fireEvent.click(screen.getByRole('button',{name:'对话',exact:true}));expect(await screen.findAllByRole('alert')).toHaveLength(1);
+  });
+  it('distinguishes automatic retry from a final error and ends the retry notice after progress resumes',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const failure={id:'retry-error',role:'assistant',phase:'error',text:'Network connection interrupted',turn_id:'retry',timestamp:null,error:{code:'response_stream_disconnected',will_retry:true}};
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'waiting',turn_id:'retry',messages:[failure]})}));
+    expect(screen.getByRole('alert')).toHaveTextContent('Agent 正在自动重试');expect(screen.queryByText('本轮执行失败，可处理后重试')).not.toBeInTheDocument();
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'answering',turn_id:'retry',messages:[failure,{id:'recovered',role:'assistant',phase:'commentary',text:'连接已恢复，继续检查',turn_id:'retry',timestamp:null,streaming:true}]})}));
+    expect(screen.getByRole('alert')).toHaveTextContent('重试已结束');expect(screen.getByText('连接已恢复，继续检查')).toBeVisible();expect(screen.getByText('正文接收中…')).toBeVisible();
+  });
   it('shows only dialogue by default and switches the same terminal without remounting it',async()=>{
     mount();expect(await screen.findByText('检查已完成。')).toBeVisible();expect(screen.getByText('raw tool result')).not.toBeVisible();
     const raw=screen.getByTestId('raw');expect(raw).toHaveAttribute('data-suspended','true');

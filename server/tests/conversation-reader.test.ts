@@ -26,6 +26,16 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app.close();vi.unstubAllEnvs();cleanup();});
 describe('public conversation pages',()=>{
+  it('restores a native capacity error from task completion and excludes private details and tool errors',async()=>{
+    writeFileSync(file,user('执行任务')+line('response_item',{type:'function_call_output',error:{message:'PRIVATE TOOL FAILURE'},output:'PRIVATE RESULT'})
+      +line('event_msg',{type:'agent_message',message:'正在处理'})
+      +line('event_msg',{type:'task_complete',turn_id:'capacity-turn',last_agent_message:null,error:{message:'Selected model is at capacity. Please try a different model.',codex_error_info:'server_overloaded',additionalDetails:'PRIVATE REQUEST'}}));
+    const result=await app.inject({url:'/api/sessions/chat/conversation',headers:{cookie}});
+    expect(result.statusCode).toBe(200);const messages=result.json().messages;
+    expect(messages).toHaveLength(3);expect(messages[2]).toMatchObject({phase:'error',role:'assistant',turn_id:'capacity-turn',text:'Selected model is at capacity. Please try a different model.',error:{code:'server_overloaded',will_retry:false}});
+    expect(result.body).not.toContain('PRIVATE');expect((await readConversation(binding)).messages[2].id).toBe(messages[2].id);
+    expect((await readConversation(binding,{after:messages[1].id})).messages).toHaveLength(1);
+  });
   it('shows user messages, agent progress and final text while excluding tool records',async()=>{
     writeFileSync(file,user('修复问题')
       +line('response_item',{type:'message',role:'user',content:[{type:'input_text',text:'修复问题'}]})

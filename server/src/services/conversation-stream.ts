@@ -5,6 +5,7 @@ import {randomUUID} from 'crypto';
 import {conversationImagePaths,formatConversationInput,type ConversationAttachment} from './conversation-attachments.js';
 import {extractAgentMessages} from './prompt-context.js';
 import {conversationMessageId,type ConversationMessage} from './conversation-reader.js';
+import {conversationErrorMessage} from './conversation-error.js';
 
 export type ConversationStreamFrame =
   | {type:'snapshot';messages:ConversationMessage[];busy:boolean;connected:true;turn_id:string|null;started_at:string|null;stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
@@ -99,6 +100,13 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     });
   }
   function unavailable() {if(!closed) emit({type:'unavailable',reason:'当前会话尚未连接实时事件，已完成的回复仍会自动更新。'});}
+  function reportError(id:string,error:unknown,willRetry:boolean,timestamp:string|null) {
+    const message=conversationErrorMessage(id,error,willRetry,timestamp);if(!message)return;
+    items.delete(`error:${message.id}`);items.set(`error:${message.id}`,{message,phase:'error'});
+    busy=willRetry;stage=willRetry?'waiting':'idle';
+    for(const item of items.values())if(item.message.streaming)item.message={...item.message,streaming:false};
+    changed();
+  }
   function acceptItem(item:any,turnId:string,streaming:boolean,timestamp?:number|null) {
     if(!['agentMessage','userMessage'].includes(item?.type)||typeof item.id!=='string'||typeof turnId!=='string') return;
     const role=item.type==='userMessage'?'user':'assistant';
@@ -139,6 +147,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
           if(item.type==='agentMessage' && item.text?.length) stage=streaming?'answering':item.phase==='final_answer'?'finishing':'tools';
           else if(['commandExecution','mcpToolCall','fileChange'].includes(item.type))stage='tools';
         }
+        if(turn.error)reportError(turn.id,turn.error,false,typeof turn.completedAt==='number'?new Date(turn.completedAt*1000).toISOString():null);
         // The baseline is an ordered prefix; fresh events may already have
         // inserted later items while the request was in flight.
         const ordered=new Map<string,{message:ConversationMessage;phase:string|null}>();
@@ -160,7 +169,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(waiting) {pending.delete(frame.id);clearTimeout(waiting.timer);if(frame.error) waiting.reject(new Error('Codex 事件接口不可用'));else waiting.resolve(frame.result);return;}
     const data=frame.params;
     if(data?.threadId!==threadId) return;
-    if(!['turn/started','item/started','item/completed','item/agentMessage/delta','turn/completed'].includes(frame.method))return;
+    if(!['turn/started','item/started','item/completed','item/agentMessage/delta','turn/completed','error'].includes(frame.method))return;
     revision++;
     if(frame.method==='turn/started') {
       items.clear();busy=true;turnId=data.turn?.id||null;
@@ -175,7 +184,14 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     else if(frame.method==='item/agentMessage/delta') {
       const item=items.get(data.itemId);
       if(item && typeof data.delta==='string') {item.message={...item.message,text:(item.message.text+data.delta).slice(0,128*1024),streaming:true};if(data.delta.length)stage='answering';changed();}
-    } else if(frame.method==='turn/completed') {busy=false;stage='idle';for(const item of items.values()) item.message={...item.message,streaming:false};changed();}
+    } else if(frame.method==='error') {
+      if(typeof data.turnId==='string' && (!turnId || turnId===data.turnId))reportError(data.turnId,data.error,data.willRetry===true,new Date().toISOString());
+    } else if(frame.method==='turn/completed') {
+      if(turnId && data.turn?.id && turnId!==data.turn.id)return;
+      busy=false;stage='idle';for(const item of items.values()) item.message={...item.message,streaming:false};
+      if(data.turn?.error)reportError(data.turn.id,data.turn.error,false,typeof data.turn.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString());
+      changed();
+    }
   });
   const lost=()=>{for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('事件连接已关闭'));}pending.clear();unavailable();};
   socket.on('error',lost);socket.on('close',lost);
