@@ -67,6 +67,14 @@ beforeEach(async () => {
   inputRequests = [];
   app.get('/api/sessions/:id/completed-turn', async () => ({turns: nativeTurns}));
   app.get('/api/sessions/:id/agent-messages', async () => ({messages:nativeMessages,available:nativeMessages.length>0}));
+  app.get<{Params:{id:string};Querystring:{limit?:string}}>('/api/sessions/:id/conversation', async (req, reply) => {
+    if (!userCanUseSessionTool(req.user!.id, req.params.id, 'codex', 'session')) return reply.code(404).send({error:'Session not found'});
+    const limit=Number(req.query.limit)||40;
+    return {messages:nativeMessages.map((message,index)=>({...message,id:createHash('sha256').update(String(index)+JSON.stringify(message)).digest('hex').slice(0,32)})).slice(-limit),
+      available:nativeMessages.length>0,generation:'test',has_more:nativeMessages.length>limit,
+      interaction:{processState:display.processState,promptType:display.promptType},
+      runtime:{state:display.processState==='busy'?'running':display.processState}};
+  });
   app.get<{Params: {id: string}}>('/api/sessions/:id/display', async (req, reply) => {
     displayRequests.push(req.url);
     if (!userCanUseSessionTool(req.user!.id, req.params.id, 'codex', 'session')) return reply.code(404).send({error: 'Session not found'});
@@ -277,7 +285,7 @@ describe('platform AI configuration and access boundaries', () => {
     expect(result).toMatchObject({tab_name:'设计',project_name:'Project',mode:'terminal',process_state:'busy',messages:nativeMessages});
     expect(result).toMatchObject({latest_update_at:'2026-10-21T09:34:00.000Z',latest_update_local:'2026-10-21 17:34:00',utc_offset:'+08:00'});
     expect(JSON.stringify(result)).not.toContain('private command output');
-    expect(displayRequests.at(-1)).toBe('/api/sessions/design-tab/display?lines=200');
+    expect(displayRequests).toHaveLength(0);
     expect(getDb().prepare('SELECT COUNT(*) AS n FROM platform_ai_tasks').get()).toEqual({n:0});
     const listed = await app.inject({url:'/api/sessions?project_id=p',headers:{cookie}});
     expect(listed.json().sessions[0].display_name).toBe('设计');
@@ -296,7 +304,7 @@ describe('platform AI configuration and access boundaries', () => {
     display.output = 'private tool result';
     nativeMessages = [{role:'assistant',phase:'commentary',text:'实际 Agent 进度消息',timestamp:new Date().toISOString()}];
     const result = await executePlatformTool(app,getConversation(received.conversation_id)!,'platform_request',JSON.stringify({endpoint_id:'GET /api/sessions/:id/rendered-output',path_params:{id:'session-1'},query:{lines:'200'}}),'read');
-    expect(result.messages).toEqual(nativeMessages);expect(JSON.stringify(result)).not.toContain('private tool result');expect(displayRequests.at(-1)).toContain('/display?lines=200');
+    expect(result.messages).toMatchObject(nativeMessages);expect(JSON.stringify(result)).not.toContain('private tool result');expect(displayRequests).toHaveLength(0);
   });
   it('returns state without terminal tool output when native messages are unavailable', async () => {
     configure();seedSession();const received=inbound();

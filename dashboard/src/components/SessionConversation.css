@@ -184,3 +184,19 @@
 .session-chat-message-attachment {display:flex;align-items:center;gap:7px;max-width:230px;border:1px solid var(--border);padding:6px 8px;border-radius:8px;background:var(--bg-primary);font-size:12px;text-align:left;}
 .session-chat-message-attachment img {width:72px;height:64px;object-fit:cover;border-radius:4px;}
 .session-chat-message-attachment span {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* One physical row for tool activity; status changes slide vertically and long
+   labels move horizontally without expanding the composer. */
+.session-chat-status{min-width:0;flex-wrap:nowrap}
+.session-chat-activity-line{display:flex;align-items:center;gap:.65rem;min-width:0;flex:1;overflow:hidden;height:1.4rem;line-height:1.4rem}
+.session-chat-activity-viewport{display:block;flex:1;min-width:0;overflow:hidden;white-space:nowrap}
+.session-chat-activity-switch{display:block;animation:session-chat-activity-enter .25s ease-out both}
+.session-chat-activity-text{display:inline-block;white-space:nowrap;max-width:none}
+.session-chat-activity-text[data-overflow=true]{animation:session-chat-activity-scroll var(--activity-duration,8s) linear 1s infinite alternate}
+.session-chat-activity-duration,.session-chat-round-duration,.session-chat-message-duration{font-size:11px;color:var(--text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap;flex-shrink:0}
+.session-chat-message-meta .session-chat-message-duration{margin-right:auto}
+.session-chat-live-label{flex-shrink:0}
+@keyframes session-chat-activity-enter{from{transform:translateY(100%);opacity:0}to{transform:translateY(0);opacity:1}}
+@keyframes session-chat-activity-scroll{0%,15%{transform:translateX(0)}85%,100%{transform:translateX(var(--activity-travel,0))}}
+@media(max-width:600px){.session-chat-live-label{display:none}.session-chat-round-duration{font-size:10px}}
+@media(prefers-reduced-motion:reduce){.session-chat-activity-switch,.session-chat-activity-text[data-overflow=true]{animation:none}.session-chat-activity-text{max-width:100%;overflow:hidden;text-overflow:ellipsis}}

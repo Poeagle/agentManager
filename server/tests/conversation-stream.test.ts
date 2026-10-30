@@ -58,7 +58,8 @@ describe('native Codex conversation streaming',()=>{
     active=true;baselineItems=[{type:'agentMessage',id:'item-resumed',phase:'commentary',text:'正在检查。\n'},{type:'commandExecution',id:'tool',status:'inProgress',command:'private'}];
     stop=observeCodexConversation('thread',frame=>frames.push(frame));
     await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({type:'snapshot',busy:true,stage:'tools',messages:[{text:'正在检查。\n',streaming:false,timestamp:null}]}));
-    expect(JSON.stringify(frames)).not.toContain('private');
+    expect(JSON.stringify(frames.flatMap(frame=>frame.type==='snapshot'?frame.messages:[]))).not.toContain('private');
+    expect(frames.at(-1)).toMatchObject({activities:[{label:'运行命令 · private',status:'running',started_at:null}]});
   });
   it('submits conversation followups to the existing engine without terminal menus or a second thread',async()=>{
     expect(await submitStreamingCodexInput('thread','能否再详细一下')).toBe(true);
@@ -110,7 +111,7 @@ describe('native Codex conversation streaming',()=>{
     send('item/completed',{threadId:'thread',turnId:'turn',item:{type:'agentMessage',id:'answer',phase:'final_answer',text:'逐段输出'}});
     send('turn/completed',{threadId:'thread',turn:{id:'turn'}});
     await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({type:'snapshot',busy:false,messages:[{text:'正在检查项目结构',streaming:false},{text:'逐段输出',streaming:false}]}));
-    expect(JSON.stringify(frames)).not.toMatch(/secret command|OTHER THREAD/);
+    expect(JSON.stringify(frames.flatMap(frame=>frame.type==='snapshot'?frame.messages:[]))).not.toMatch(/secret command|OTHER THREAD/);
     expect(requests).not.toContain('turn/start');expect(requests).not.toContain('thread/start');
   });
   it('preserves distinct answer items when a followup joins a still-active turn',async()=>{

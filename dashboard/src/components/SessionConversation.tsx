@@ -8,11 +8,13 @@ import {ConversationWidthHandles,ConversationNavigator} from './ConversationRead
 import {hasPermission,usePermissions} from '../lib/permissions';
 import {conversationClientId,mergeConversationTimeline,type TimelineMessage} from '../lib/conversation-timeline';
 import {groupConversationProgress} from '../lib/conversation-progress';
+import {conversationTimings,elapsedBetween} from '../lib/conversation-timing';
+import {ConversationActivityLine,type ConversationActivity} from './ConversationActivityLine';
 import './SessionConversation.css';
 
-interface LiveProgress {turn_id:string|null;started_at:string|null;stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
+interface LiveProgress {turn_id:string|null;started_at:string|null;completed_at?:string|null;activities?:ConversationActivity[];stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
 
-const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate,onRaw}:{message:ConversationMessage;streaming:boolean;retrying?:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void;onRaw:()=>void}) {
+const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate,durationLabel,durationTitle,onRaw}:{durationLabel?:string;durationTitle?:string;retrying?:boolean;onRaw:()=>void;message:ConversationMessage;streaming:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void}) {
   const [copied,setCopied]=useState(false);
   const parsed=message.role==='user'?(message.attachments?{text:message.text,attachments:message.attachments}:parseConversationInput(message.text)):{text:message.text,attachments:[]};
   async function copy() {
@@ -36,6 +38,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
     {message.role==='assistant' && !compact && <div className="session-chat-agent"><Sparkles size={16}/><span>{agentName}</span>{message.phase==='final' && <span className="session-chat-writing">结论</span>}{streaming && <span className="session-chat-writing">正在输出</span>}</div>}
     <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text">{parsed.text}</div><ConversationMessageAttachments items={parsed.attachments} projectId={projectId} onOpenFile={onOpenFile}/></>:<ConversationMarkdown content={message.text} messageId={message.id} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
     <div className="session-chat-message-meta">
+      {durationLabel && <span className="session-chat-message-duration" title={durationTitle}>{durationLabel}</span>}
       {!compact && message.timestamp && <time dateTime={message.timestamp} title={new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}>{new Date(message.timestamp).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false})}</time>}
       <button type="button" onClick={()=>void copy()} aria-label={`复制${message.role==='user'?'你的消息':'Agent 回复'}`} title={copied?'已复制':'复制消息'}>{copied?<Check size={13}/>:<Copy size={13}/>}</button>
     </div>
@@ -130,7 +133,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
         if(frame.type==='unavailable') {setLiveState('unavailable');setLiveBusy(false);return;}
         if(frame.type!=='snapshot' || !Array.isArray(frame.messages)) return;
         setLiveState('connected');setLiveBusy(!!frame.busy);
-        if(frame.stage) setLiveProgress({turn_id:frame.turn_id||null,started_at:frame.started_at||null,stage:frame.stage});
+        if(frame.stage) setLiveProgress({turn_id:frame.turn_id||null,started_at:frame.started_at||null,completed_at:frame.completed_at||null,activities:Array.isArray(frame.activities)?frame.activities:[],stage:frame.stage});
         const incoming=frame.messages;
         setMessages(previous=>mergeConversationTimeline(previous,incoming));
         if(incoming.length) {
@@ -196,7 +199,8 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
   const streamingId=!activeError && liveState==='connected' && busy && !['tools','finishing'].includes(liveProgress.stage)
     ? messages.reduce<string|null>((id,message,index)=>index>lastUserIndex && message.role==='assistant' && message.streaming && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id)?message.id:id,null):null;
   const groups=groupConversationProgress(displayed);
-  const bubble=(message:ConversationMessage,compact=false)=><Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
+  const timings=conversationTimings(displayed,now,busy);
+  const bubble=(message:ConversationMessage,compact=false)=><Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} durationLabel={!compact?timings.get(message.id)?.label:undefined} durationTitle={!compact?timings.get(message.id)?.title:undefined} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
   return <section ref={readingRoot} className="session-chat" aria-label="会话对话">
     <div className="session-chat-reading">
     <div ref={list} className="session-chat-scroll" onScroll={()=>{if(list.current) pinned.current=list.current.scrollHeight-list.current.scrollTop-list.current.clientHeight<80;}}>
@@ -209,6 +213,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
           <div className="session-chat-progress-content">{group.messages.map((message,index)=><div key={message.id} className="session-chat-progress-entry" data-active={message.id===streamingId}>
             <div className="session-chat-progress-entry-head"><span className="session-chat-progress-number" aria-label={`进展序号 ${index+1}`}>{index+1}</span>
               {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label="进展时间" dateTime={message.timestamp} title={new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}>{new Date(message.timestamp).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}</time>:<span className="session-chat-progress-time-unknown">时间未知</span>}
+              {timings.get(message.id) && <span className="session-chat-message-duration" title={timings.get(message.id)!.title}>{timings.get(message.id)!.label}</span>}
               {message.id===streamingId && <span className="session-chat-progress-updating">正在输出</span>}
             </div>{bubble(message,true)}
           </div>)}</div>
@@ -226,7 +231,9 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
     {waiting && <div className="session-chat-action" role="status"><strong>{interaction?.isPermission?'Agent 需要授权':'Agent 需要你确认或选择'}</strong>
       {interaction?.choices?.length ? <p>{interaction.choices.join(' / ')}</p>:null}<button onClick={onRaw}>切到原始终端处理</button></div>}
     <footer className="session-chat-composer">
-      <div className="session-chat-status" role="status"><span className={`session-chat-connection ${liveState}`} aria-hidden="true"/>{activeError?activeError.error?.will_retry?busy?'执行遇到错误，正在自动重试…':'重试已结束':'本轮执行失败，可处理后重试':ended?'会话已结束':waiting?'等待你处理':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}
+      <div className="session-chat-status" role="status"><span className={`session-chat-connection ${liveState}`} aria-hidden="true"/>
+        <ConversationActivityLine key={`${session.id}:${liveState}:${liveProgress.turn_id||''}`} activities={liveState==='connected'?liveProgress.activities||[]:[]} busy={busy&&!ended&&!waiting&&!activeError} now={now} totalElapsed={elapsedBetween(started,now)}
+          fallback={activeError?activeError.error?.will_retry?busy?'执行遇到错误，正在自动重试…':'重试已结束':'本轮执行失败，可处理后重试':ended?'会话已结束':waiting?'等待你处理':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}/>
         {liveState==='connected' && <span className="session-chat-live-label">事件通道已连接</span>}
         {ended && onResume && <button onClick={onResume} disabled={resuming}>{resuming?'正在恢复…':resumeFailed?'重试恢复会话':'恢复会话'}</button>}{ended && onClose && <button onClick={onClose}>关闭会话</button>}
       </div>

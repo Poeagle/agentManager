@@ -6,9 +6,10 @@ import {conversationImagePaths,formatConversationInput,type ConversationAttachme
 import {extractAgentMessages} from './prompt-context.js';
 import {conversationMessageId,type ConversationMessage} from './conversation-reader.js';
 import {conversationErrorMessage} from './conversation-error.js';
+import {conversationActivity,type ConversationActivity} from './conversation-activity.js';
 
 export type ConversationStreamFrame =
-  | {type:'snapshot';messages:ConversationMessage[];busy:boolean;connected:true;turn_id:string|null;started_at:string|null;stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
+  | {type:'snapshot';messages:ConversationMessage[];activities:ConversationActivity[];busy:boolean;connected:true;turn_id:string|null;started_at:string|null;completed_at:string|null;stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
   | {type:'unavailable';reason:string};
 
 type CodexRequest = (method:string,params:unknown)=>Promise<any>;
@@ -81,15 +82,16 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   const socket=new WebSocket(`ws+unix://${path}:/`,{maxPayload:2*1024*1024,handshakeTimeout:4000});
   const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   const items=new Map<string,{message:ConversationMessage;phase:string|null}>();
+  const activities=new Map<string,ConversationActivity>();
   let next=0,closed=false,busy=false;
-  let turnId:string|null=null,startedAt:string|null=null;
+  let turnId:string|null=null,startedAt:string|null=null,completedAt:string|null=null;
   let stage:'waiting'|'tools'|'answering'|'finishing'|'idle'='idle';
   let revision=0;
   let retry:ReturnType<typeof setTimeout>|undefined;
   let flush:ReturnType<typeof setTimeout>|undefined;
   function snapshot() {
     flush=undefined;
-    if(!closed) emit({type:'snapshot',messages:[...items.values()].filter(item=>item.message.text.length>0).map(item=>item.message),busy,connected:true,turn_id:turnId,started_at:startedAt,stage});
+    if(!closed) emit({type:'snapshot',messages:[...items.values()].filter(item=>item.message.text.length>0).map(item=>item.message),activities:[...activities.values()],busy,connected:true,turn_id:turnId,started_at:startedAt,completed_at:completedAt,stage});
   }
   function changed() {if(!flush) flush=setTimeout(snapshot,35);}
   function request(method:string,params:unknown):Promise<any> {
@@ -105,6 +107,13 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     items.delete(`error:${message.id}`);items.set(`error:${message.id}`,{message,phase:'error'});
     busy=willRetry;stage=willRetry?'waiting':'idle';
     for(const item of items.values())if(item.message.streaming)item.message={...item.message,streaming:false};
+    changed();
+  }
+  function acceptActivity(item:any,completed:boolean,baseline=false) {
+    const activity=conversationActivity(item,completed,activities.get(item?.id),baseline?null:Date.now());
+    if(!activity)return;
+    activities.set(activity.id,activity);
+    if(activities.size>8)activities.delete(activities.keys().next().value!);
     changed();
   }
   function acceptItem(item:any,turnId:string,streaming:boolean,timestamp?:number|null) {
@@ -140,12 +149,14 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
         const sameTurn=turnId===turn.id;
         busy=turn.status==='inProgress';
         turnId=turn.id;startedAt=typeof turn.startedAt==='number'?new Date(turn.startedAt*1000).toISOString():null;
+        completedAt=typeof turn.completedAt==='number'?new Date(turn.completedAt*1000).toISOString():null;
         if(!busy)stage='idle';else if(!sameTurn || stage==='idle')stage='waiting';
         if(busy) for(const item of turn.items||[]) {
+          acceptActivity(item,['completed','failed','declined'].includes(item.status) || typeof item.completedAtMs==='number',true);
           const streaming=item===(turn.items||[]).at(-1) && item.type==='agentMessage' && !item.completedAtMs;
           acceptItem(item,turn.id,streaming,typeof item.startedAtMs==='number'?item.startedAtMs:typeof item.completedAtMs==='number'?item.completedAtMs:null);
           if(item.type==='agentMessage' && item.text?.length) stage=streaming?'answering':item.phase==='final_answer'?'finishing':'tools';
-          else if(['commandExecution','mcpToolCall','fileChange'].includes(item.type))stage='tools';
+          else if(['commandExecution','mcpToolCall','dynamicToolCall','fileChange','webSearch'].includes(item.type))stage='tools';
         }
         if(turn.error)reportError(turn.id,turn.error,false,typeof turn.completedAt==='number'?new Date(turn.completedAt*1000).toISOString():null);
         // The baseline is an ordered prefix; fresh events may already have
@@ -172,14 +183,15 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(!['turn/started','item/started','item/completed','item/agentMessage/delta','turn/completed','error'].includes(frame.method))return;
     revision++;
     if(frame.method==='turn/started') {
-      items.clear();busy=true;turnId=data.turn?.id||null;
+      items.clear();activities.clear();busy=true;completedAt=null;turnId=data.turn?.id||null;
       startedAt=typeof data.turn?.startedAt==='number'?new Date(data.turn.startedAt*1000).toISOString():new Date().toISOString();
       stage='waiting';changed();
     }
     else if(frame.method==='item/started'||frame.method==='item/completed') {
+      acceptActivity({...data.item,...(typeof data.startedAtMs==='number'?{startedAtMs:data.startedAtMs}:{}),...(typeof data.completedAtMs==='number'?{completedAtMs:data.completedAtMs}:{})},frame.method==='item/completed');
       acceptItem(data.item,data.turnId,frame.method==='item/started',data.startedAtMs||data.completedAtMs);
       if(data.item?.type==='agentMessage' && data.item.text?.length) stage=frame.method==='item/completed'?(data.item.phase==='final_answer'?'finishing':'tools'):'answering';
-      else if(frame.method==='item/started' && ['commandExecution','mcpToolCall','fileChange'].includes(data.item?.type)) {stage='tools';changed();}
+      else if(frame.method==='item/started' && ['commandExecution','mcpToolCall','dynamicToolCall','fileChange','webSearch'].includes(data.item?.type)) {stage='tools';changed();}
     }
     else if(frame.method==='item/agentMessage/delta') {
       const item=items.get(data.itemId);
@@ -188,6 +200,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       if(typeof data.turnId==='string' && (!turnId || turnId===data.turnId))reportError(data.turnId,data.error,data.willRetry===true,new Date().toISOString());
     } else if(frame.method==='turn/completed') {
       if(turnId && data.turn?.id && turnId!==data.turn.id)return;
+      completedAt=typeof data.turn?.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString();
       busy=false;stage='idle';for(const item of items.values()) item.message={...item.message,streaming:false};
       if(data.turn?.error)reportError(data.turn.id,data.turn.error,false,typeof data.turn.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString());
       changed();

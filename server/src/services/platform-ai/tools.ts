@@ -8,7 +8,8 @@ import * as sessionManager from '../session-manager.js';
 import { getTracker } from '../session-state.js';
 import { userHasPermission } from '../rbac.js';
 import { trackTask, type Conversation } from './store.js';
-import type { ModelTool } from './model.js';
+import type { ModelMessage, ModelTool } from './model.js';
+import {compactProgressMessages, conversationProcessState, hasProgressObservation, progressExcerpt, progressObservationKey} from './tab-progress.js';
 import { detectWorkAgent, detectWorkAgents } from './agents.js';
 import { MAX_IMAGES, messageAttachments, ownedImage } from './attachments.js';
 import { sessionPresenter } from '../session-labels.js';
@@ -37,8 +38,8 @@ function tabUpdateTime(activity: unknown, messages: Array<{timestamp?: unknown}>
     time_zone: REPORT_TIME_ZONE, utc_offset: '+08:00'};
 }
 export const PLATFORM_TOOLS: ModelTool[] = [
-  {type: 'function', function: {name: 'list_project_tabs', description: 'Read accessible tabs with their actual dashboard names, process state AND latest public agent message. Includes terminal tabs with bound agents. Use to answer which work is running; no tracking registration required. read_tab gives more conversation detail.', parameters: objectParams({project_id: stringParam, project_name: stringParam, include_ended: {type: 'boolean'}})}},
-  {type: 'function', function: {name: 'read_tab', description: 'READ ONLY: read recent public agent progress/final messages and live state with dashboard name. Includes terminal tabs with bound agents. Tool calls/results and reasoning are excluded. Use even when no task was registered. Does not send input or change a process.', parameters: objectParams({session_id: stringParam, lines: {type: 'integer', minimum: 20, maximum: 1000}}, ['session_id'])}},
+  {type: 'function', function: {name: 'list_project_tabs', description: 'Read tab names, live state and a short latest public conversation message. Usually sufficient for project progress; do not read every tab again. No tools or reasoning. Unchanged text is reused from this conversation history.', parameters: objectParams({project_id: stringParam, project_name: stringParam, include_ended: {type: 'boolean'}})}},
+  {type: 'function', function: {name: 'read_tab', description: 'READ ONLY: read the same public conversation as the dashboard. Default: latest progress (1000 characters), brief user request, state and update time; unchanged text is omitted when already in this conversation. Set detail=true ONLY when the user asks for detail or the short excerpt is insufficient. No tools/reasoning or terminal output. Works without tracking.', parameters: objectParams({session_id: stringParam, detail: {type: 'boolean'}}, ['session_id'])}},
   { type: 'function', function: { name: 'platform_capabilities', description: 'Read the platform API catalog. Optional endpoint_id returns its full request and response definition.', parameters: objectParams({ endpoint_id: stringParam, offset: {type: 'integer', minimum: 0}, limit: {type: 'integer', minimum: 1, maximum: 50} }) } },
   { type: 'function', function: { name: 'platform_request', description: 'Call a catalog endpoint as the current platform user. Read endpoint parameters first. New work and sending input use start_work/send_to_session.', parameters: objectParams({ endpoint_id: stringParam, path_params: { type: 'object', additionalProperties: { type: 'string' } }, query: { type: 'object', additionalProperties: { type: 'string' } }, body: { type: 'object', additionalProperties: true } }, ['endpoint_id']) } },
   { type: 'function', function: { name: 'start_work', description: 'Forward the original user request verbatim into a new Codex/Claude project tab and register observation. Uses the same permissions and tab limits as manual tab creation; other busy tabs in the project do not block creation.', parameters: objectParams({ project_id: stringParam, requirement: stringParam, cli_type: { type: 'string', enum: ['codex', 'claude'] }, attachment_ids: attachmentParam, source_message_ids: sourceMessagesParam }, ['project_id', 'requirement', 'cli_type']) } },
@@ -92,6 +93,11 @@ export async function platformApi(app: FastifyInstance, userId: string, method: 
 export async function executePlatformTool(app: FastifyInstance, conversation: Conversation, name: string, rawArguments: string, operationId: string, messageId?: string): Promise<any> {
   const args = JSON.parse(rawArguments);
   const userId = conversation.user_id;
+  const retainedHistory = (): ModelMessage[] => {
+    const checkpoint = messageId ? getDb().prepare('SELECT checkpoint FROM platform_ai_messages WHERE id=? AND conversation_id=?').get(messageId, conversation.id) as {checkpoint: string} | undefined : undefined;
+    const current = checkpoint ? JSON.parse(checkpoint.checkpoint) as ModelMessage[] : [];
+    return current.length ? current : JSON.parse(conversation.context) as ModelMessage[];
+  };
   const originalRequest = (fallback: string, sourceIds?: string[]) => {
     // Production tool calls always carry the current inbox ID. Resolve trusted
     // user rows here instead of accepting an LLM's rewritten business brief.
@@ -135,42 +141,52 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
       .slice(0,50).map((session: any) => ({session_id: session.id, ...present(session), mode: session.mode, status: session.status,
         process_state: session.processState || 'unknown', prompt_type: session.promptType || null, last_activity_at: session.last_activity_at,
         started_at: session.started_at}));
-    // Include actual agent text in discovery itself. The model must not infer
-    // "unreadable" from terminal mode after inspecting only another tab.
-    // Bound local IO concurrency; each route still checks session permissions.
+    const history = retainedHistory();
     for (let offset = 0; offset < tabs.length; offset += 4) {
       const batch = tabs.slice(offset, offset + 4);
-      const results = await Promise.allSettled(batch.map((tab: {session_id: string}) => platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(tab.session_id)}/agent-messages`)));
+      const results = await Promise.allSettled(batch.map((tab: {session_id: string}) => platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(tab.session_id)}/conversation?limit=1`)));
       results.forEach((result, index) => {
+        const tab = batch[index];
         if (result.status === 'fulfilled') {
-          const messages = result.value.messages || [];
-          const latest = [...messages].reverse().find((message: {role: string}) => message.role === 'assistant');
-          Object.assign(batch[index], {...tabUpdateTime(batch[index].last_activity_at, messages), agent_messages_available: result.value.available,
-            latest_agent_message: latest ? {text: String(latest.text).slice(0,800), text_truncated: String(latest.text).length > 800, phase: latest.phase, timestamp: latest.timestamp} : null});
-        } else Object.assign(batch[index], {...tabUpdateTime(batch[index].last_activity_at, []), agent_messages_available: null, message_read_error: '本次消息读取暂不可用，可以使用 read_tab 重试；不能根据标签模式推断不可读'});
+          const page = result.value;
+          const messages = page.messages || [];
+          const latest = messages.at(-1);
+          const agent = latest?.role === 'assistant' ? latest : null;
+          const excerpt = agent ? {text: progressExcerpt(String(agent.text), 240), text_truncated: String(agent.text).length > 240, phase: agent.phase, timestamp: agent.timestamp} : null;
+          const state = conversationProcessState(page, tab.process_state);
+          const key = progressObservationKey([page.generation, state, page.interaction?.promptType, latest?.id, latest?.text, latest?.timestamp]);
+          const unchanged = hasProgressObservation(history, tab.session_id, key);
+          Object.assign(tab, {...tabUpdateTime(tab.last_activity_at, messages), process_state: state,
+            agent_messages_available: page.available, observation_key: key,
+            ...(unchanged ? {unchanged: true} : {latest_agent_message: excerpt})});
+        } else Object.assign(tab, {...tabUpdateTime(tab.last_activity_at, []), agent_messages_available: null, message_read_error: '对话消息读取暂不可用'});
       });
     }
-    return {tabs, guidance: 'For multiple tabs use a concise Markdown table: 标签页 | 状态 | 最近进展 | 最新更新（北京时间）. latest_update_local is already converted to UTC+08:00; copy it exactly, never interpret a raw Z timestamp as local time. Each tab includes its actual latest public agent message, including terminal tabs; call read_tab for detail. Never claim terminal mode prevents message reads. Use names, not opaque IDs. Activity alone does not prove progress or a hang.'};
+    return {tabs};
   }
   if (name === 'read_tab') {
-    const input = z.object({session_id: z.string().min(1).max(256), lines: z.number().int().min(20).max(1000).default(200)}).strict().parse(args);
+    // lines remains accepted for older checkpoints; it no longer reads PTY output.
+    const input = z.object({session_id: z.string().min(1).max(256), detail: z.boolean().default(false), lines: z.number().int().min(20).max(1000).optional()}).strict().parse(args);
     const {session} = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(input.session_id)}`);
-    const display = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(input.session_id)}/display?lines=${input.lines}`);
-    const native = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(input.session_id)}/agent-messages`);
-    const messages = native.messages || [];
-    return {session_id: session.id, ...sessionPresenter(userId)(session), mode: session.mode, session_status: session.status,
-      process_state: display.processState || 'unknown', prompt_type: display.promptType || null, choices: display.choices || null,
-      observed_at: display.observed_at || new Date().toISOString(), last_activity_at: display.last_activity_at || null,
-      ...tabUpdateTime(display.last_activity_at, messages),
-      messages, messages_available: native.available, output_source: 'native_messages',
-      guidance: 'Use the tab name and latest_update_local (already UTC+08:00, copy exactly). Relay recent agent messages briefly with state; do not invent prerequisites or append unsolicited suggestions. Tool calls/results are excluded. If messages_available is false, report only the known state and actual read failure, without inventing progress or asking the user to copy logs. Process age/activity alone does not prove progress or a hang. Missing tracking does not prevent reading messages; do not suggest killing/restarting work because tracking is empty.'};
+    const page = await platformApi(app, userId, 'GET', `/api/sessions/${encodeURIComponent(input.session_id)}/conversation?limit=${input.detail ? 12 : 4}`);
+    const rawMessages = page.messages || [];
+    const compact = compactProgressMessages(rawMessages, input.detail);
+    const processState = conversationProcessState(page);
+    const choices = (page.interaction?.choices || []).slice(0, 8).map((choice: unknown) => progressExcerpt(String(choice), 120));
+    const key = progressObservationKey([page.generation, session.status, processState, page.interaction?.promptType, choices, input.detail, compact]);
+    const metadata = {session_id: session.id, ...sessionPresenter(userId)(session), mode: session.mode, session_status: session.status,
+      process_state: processState, prompt_type: page.interaction?.promptType || null, ...(choices.length ? {choices} : {}),
+      ...tabUpdateTime(page.runtime?.last_activity_at, rawMessages),
+      messages_available: page.available, output_source: 'conversation', observation_key: key};
+    if (!input.detail && hasProgressObservation(retainedHistory(), session.id, key)) return {...metadata, unchanged: true};
+    return {...metadata, ...compact, messages_omitted: compact.messages_omitted || !!page.has_more};
   }
   if (name === 'platform_capabilities') {
     const input = z.object({ endpoint_id: z.string().optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(50).default(50) }).strict().parse(args);
     const catalog = platformCatalog(app);
     if (input.endpoint_id) return catalog.find(item => item.endpoint_id === input.endpoint_id) || { error: 'Unknown endpoint' };
     return { agents: await detectWorkAgents(), total: catalog.length, next_offset: input.offset + input.limit < catalog.length ? input.offset + input.limit : null, endpoints: catalog.slice(input.offset, input.offset + input.limit).map(({ endpoint_id, description, callable }) => ({ endpoint_id, description, callable })),
-      guidance: 'For progress/status of existing work use list_project_tabs then read_tab (terminal tabs included). Tracking registration is not required for read_tab. Use start_work for new sessions, send_to_session for input, list_tracked_tasks for registered task history. APIs remain permission scoped.' };
+      guidance: 'Known tab: read_tab directly. Project overview: list_project_tabs; only read details if insufficient. No tracking required. start_work creates work, send_to_session forwards input. APIs remain permission scoped.' };
   }
   if (name === 'platform_request') {
     const input = z.object({ endpoint_id: z.string(), path_params: z.record(z.string().max(256)).default({}), query: z.record(z.string().max(1024)).default({}), body: z.record(z.unknown()).optional() }).strict().parse(args);
@@ -178,8 +194,8 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
     if (!endpoint) throw new Error('接口不在平台 AI 能力目录中');
     const cleanDisplayAlias = endpoint.method === 'GET' && /^\/api\/sessions\/:id\/(?:output|rendered-output)$/.test(endpoint.path);
     if (!endpoint.callable && !cleanDisplayAlias) throw new Error(endpoint.restriction || '此接口需要使用专用工具或在平台中操作');
-    if (endpoint.method === 'GET' && /^\/api\/sessions\/:id\/(?:output|rendered-output|display)$/.test(endpoint.path)) {
-      return executePlatformTool(app, conversation, 'read_tab', JSON.stringify({session_id: input.path_params.id}), operationId, messageId);
+    if (endpoint.method === 'GET' && /^\/api\/sessions\/:id\/(?:output|rendered-output|display|agent-messages|conversation)$/.test(endpoint.path)) {
+      return executePlatformTool(app, conversation, 'read_tab', JSON.stringify({session_id: input.path_params.id, detail: input.query.detail === 'true'}), operationId, messageId);
     }
     let path = (cleanDisplayAlias ? '/api/sessions/:id/display' : endpoint.path).replace(/:([A-Za-z_]+)/g, (_, key: string) => {
       if (!input.path_params[key] || !/^[A-Za-z0-9_-]+$/.test(input.path_params[key])) throw new Error('缺少或无效的接口路径参数');
