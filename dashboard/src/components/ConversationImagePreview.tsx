@@ -10,18 +10,26 @@ const Preview=createContext<{image:(image:PreviewImage)=>void;file:(file:Convers
 /** One preview per conversation; hiding/switching a session releases its overlay. */
 export function ConversationImagePreviewRoot({children,active=true,onOpen}:{children:ReactNode;active?:boolean;onOpen?:()=>void}) {
   const inherited=useContext(Preview),[selected,setSelected]=useState<Selection|null>(null);
+  const [docked,setDocked]=useState(false),[dock,setDock]=useState<{left:number;top:number;width:number;height:number}>(),[canDock,setCanDock]=useState(false);
+  const layout=useRef<HTMLDivElement>(null),sidebar=useRef<HTMLDivElement>(null);
+  useEffect(()=>{
+    if(inherited)return;
+    const measure=()=>{const root=layout.current,side=sidebar.current;if(root){setCanDock(root.clientWidth>=720);if(root.clientWidth>0&&root.clientWidth<720)setDocked(false);}if(side){const r=side.getBoundingClientRect();setDock({left:r.left,top:r.top,width:r.width,height:r.height});}};measure();
+    const observer=typeof ResizeObserver==='undefined'?null:new ResizeObserver(measure);if(layout.current)observer?.observe(layout.current);if(sidebar.current)observer?.observe(sidebar.current);window.addEventListener('resize',measure);window.addEventListener('scroll',measure,true);
+    return()=>{observer?.disconnect();window.removeEventListener('resize',measure);window.removeEventListener('scroll',measure,true);};
+  },[inherited,docked,!!selected]);
   const position=useRef<{node:HTMLElement;top:number;left:number}|null>(null);
   const open=useCallback((image:Selection)=>{
     const node=document.activeElement instanceof HTMLElement?document.activeElement.closest<HTMLElement>('.session-chat-scroll'):null;
     position.current=node?{node,top:node.scrollTop,left:node.scrollLeft}:null;
-    onOpen?.();setSelected(image);
+    onOpen?.();if(image.kind==='image')setDocked(false);setSelected(image);
   },[onOpen]);
   const actions=useMemo(()=>({image:(image:PreviewImage)=>open({...image,kind:'image'}),file:(file:ConversationPreviewFile)=>open({...file,kind:'file'})}),[open]);
-  const close=()=>{setSelected(null);const saved=position.current;position.current=null;if(saved)requestAnimationFrame(()=>{if(saved.node.isConnected){saved.node.scrollTop=saved.top;saved.node.scrollLeft=saved.left;}});};
+  const close=()=>{setSelected(null);setDocked(false);const saved=position.current;position.current=null;if(saved)requestAnimationFrame(()=>{if(saved.node.isConnected){saved.node.scrollTop=saved.top;saved.node.scrollLeft=saved.left;}});};
   useEffect(()=>{if(!active)setSelected(null);},[active]);
-  useEffect(()=>{if(!selected||!active)return;const before=document.body.style.overflow;document.body.style.overflow='hidden';return()=>{document.body.style.overflow=before;};},[!!selected,active]);
+  useEffect(()=>{if(!selected||!active||docked)return;const before=document.body.style.overflow;document.body.style.overflow='hidden';return()=>{document.body.style.overflow=before;};},[!!selected,active,docked]);
   if(inherited)return <>{children}</>;
-  return <Preview.Provider value={actions}>{children}{active&&selected&&(selected.kind==='image'?<ImagePreview key={selected.src} image={selected} onClose={close}/>:<ConversationFilePreview key={selected.path} file={selected} onClose={close}/>)}</Preview.Provider>;
+  return <Preview.Provider value={actions}><div ref={layout} className="conversation-preview-layout"><div className="conversation-preview-main">{children}</div>{active&&docked&&selected?.kind==='file'&&<div ref={sidebar} className="conversation-preview-sidebar" aria-hidden="true"/>}</div>{active&&selected&&(selected.kind==='image'?<ImagePreview key={selected.src} image={selected} onClose={close}/>:<ConversationFilePreview key={selected.path} file={selected} onClose={close} dock={docked?dock:undefined} canDock={canDock} onDock={()=>setDocked(value=>!value)}/>)}</Preview.Provider>;
 }
 export function useConversationImagePreview(){return useContext(Preview)?.image;}
 export function useConversationFilePreview(){return useContext(Preview)?.file;}

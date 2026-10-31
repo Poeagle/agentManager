@@ -1,7 +1,12 @@
+import {createServer} from 'node:http';
 import {expect,test} from '@playwright/test';
 import {mkdirSync,writeFileSync,appendFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {join} from 'node:path';
+
+let nativeServer:any,nativeWss:any;
+test.beforeEach(async()=>{const require=createRequire(import.meta.url),{WebSocketServer}=require('../server/node_modules/ws');nativeServer=createServer();nativeWss=new WebSocketServer({server:nativeServer});nativeWss.on('connection',(socket:any)=>socket.on('message',(bytes:any)=>{const frame=JSON.parse(bytes.toString());if(!frame.method||!frame.id)return;socket.send(JSON.stringify({id:frame.id,result:frame.method==='thread/read'?{thread:{status:{type:'notLoaded'}}}:{}}));}));await new Promise<void>(resolve=>nativeServer.listen(join(process.cwd(),'.test-data/e2e/codex.sock'),resolve));});
+test.afterEach(async()=>{for(const client of nativeWss.clients)client.terminate();await new Promise<void>(resolve=>nativeWss.close(()=>resolve()));await new Promise<void>(resolve=>nativeServer.close(()=>resolve()));});
 
 test('chat hides tool logs, sends to the same live session and switches to its original terminal',async({page},testInfo)=>{
   const status=await(await page.request.get('/api/auth/status')).json();
@@ -9,7 +14,7 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   const root=join(process.cwd(),'.test-data','e2e');const projectPath=join(root,'conversation-project');mkdirSync(projectPath,{recursive:true});
   const projectResponse=await page.request.post('/api/projects',{data:{name:'Conversation Preview',path:projectPath}});expect(projectResponse.ok()).toBeTruthy();const {project}=await projectResponse.json();
   const created=await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:projectPath,mode:'terminal'}});expect(created.ok()).toBeTruthy();const {session}=await created.json();
-  const id='019ff001-7777-7777-8777-777777777777';const logDir=join(root,'home','.codex','sessions');mkdirSync(logDir,{recursive:true});const log=join(logDir,`rollout-chat-${id}.jsonl`);
+  const id='019ff001-7777-7777-8777-777777777780';const logDir=join(root,'home','.codex','sessions');mkdirSync(logDir,{recursive:true});const log=join(logDir,`rollout-chat-${id}.jsonl`);
   const entry=(type:string,payload:unknown)=>JSON.stringify({timestamp:new Date().toISOString(),type,payload})+'\n';
   writeFileSync(log,entry('event_msg',{type:'user_message',message:'请检查这个项目。'})
     +entry('response_item',{type:'function_call',arguments:'PRIVATE TOOL ARGS'})

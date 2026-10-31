@@ -92,7 +92,7 @@ PDF 和 Word 转换后的分页预览，根据纸张纵横比、预览区域宽�
 验证：`conversation-interactions.test.ts`、`conversation-stream.test.ts`、`agent-input.test.ts`、`ConversationInteraction.test.tsx`、`ConversationReadingTools.test.tsx` 及 `e2e/conversation-interactions.spec.ts`、`e2e/conversation-reading.spec.ts`。浏览器交互测试使用隔离的原生协议服务，不向现有会话提交问题或执行命令。
 
 
-Codex 的 `request_user_input_async` 还会以 `AgentMessage.delivery = async` 和 `questions` 字段发出非阻塞问题，工具调用本身立即完成。此类消息在对话正文内显示选项与自定义回答卡片，历史读取和实时消息都保留结构化字段；答案通过正常用户输入发送到同一会话，不冒充待处理 RPC 请求。提交不会清空输入框或附件草稿，后续已有用户发言的旧提问停止接收答案。仅凭编号文本或工具参数不会生成卡片。回归使用真实异步消息的字段形状，见 `e2e/conversation-async-questions.spec.ts`。
+Codex 的 `request_user_input_async` 还会以 `AgentMessage.delivery = async` 和 `questions` 字段发出非阻塞问题，工具调用本身立即完成。此类消息在输入区显示选项与自定义回答卡片，正文保留可展开摘要，历史读取和实时消息都保留结构化字段；答案通过正常用户输入发送到同一会话，不冒充待处理 RPC 请求。提交不会清空输入框或附件草稿，后续已有用户发言的旧提问停止接收答案。仅凭编号文本或工具参数不会生成卡片。回归使用真实异步消息的字段形状，见 `e2e/conversation-async-questions.spec.ts`。
 
 
 异步提问按 DSH 的 composer takeover 方式在输入区显示；“稍后回答”恢复普通输入，保留问题草稿。提交成功后撤下表单，正文仅留一行可展开的“已回答 · 问题 · 答案”摘要，刷新后仍默认折叠；失败则恢复草稿供重试。答案使用 Codex 原生 `<send_user_message_question_reply>` 信封，携带 `JSON.stringify(["request_user_input_async", itemId, index])` 的问题身份；附着到同一线程的终端据此清除对应提问。对话界面将该信封解析成可读问答，不展示内部标记。
@@ -108,3 +108,16 @@ Codex 的 `request_user_input_async` 还会以 `AgentMessage.delivery = async` �
 项目会话列表、展开的最近内容和管理监控摘要统一读取原生对话中的进展、结果及错误，摘要读取限制并发并短时缓存。原始终端仍可明确切换查看。管理监控中的关闭操作也会先停止会话，再移除标签，历史记录保留。
 
 原生异步提问同时支持 `item_completed.AgentMessage` 和 `agent_message` 的结构化元数据。后一种格式从实际 `request_user_input_async` 调用关联原始问题编号；不依据问号、选项列表或工具输出推断提问。回答后折叠为摘要，并使用同一原生编号同步终端状态。
+
+
+## 输入区的模型和会话信息
+
+Codex 对话输入框下方提供模型、推理强度、上下文占比、周额度剩余和“详情”。模型及强度来自实际 `model/list`，不写死可用型号。选择后显示“下轮生效”，允许撤销；进行中追问保持原任务设置，下一次空闲状态下启动新任务时才将所选 `model`、`effort` 交给同一线程的 `turn/start`。原生提交失败时保留设置，不补发到终端。仅具有写权限的会话所有者可修改已加载的共享 Codex 会话，成员不会读取宿主账号的模型目录和额度。
+
+详情显示实际设置、工作目录、当前 Git 分支及变更项、访问权限、服务版本与会话创建版本，并区分最近一次请求和会话累计的输入、缓存命中输入、输出、推理输出 Token。上下文占比按最近一次原生请求的总 Token 与窗口容量计算，不拿累计用量计算；缺失字段显示“未提供”。原生额度记录及官方额度接口均只投影剩余比例、周期和重置时间，不返回账号余额或凭证。参考 [Codex App Server 协议](https://learn.chatgpt.com/docs/app-server)。
+
+文件预览标题栏的“显示到侧边”把同一个只读预览器固定在对话右侧，释放遮罩和焦点限制；左侧可继续输入并发送反馈。“居中显示”可切回，保留文件滚动位置、已打开文件及输入草稿。窄窗口使用居中预览。展开详情和侧边预览在切换会话时退出，避免遮挡其他会话。
+
+回归：`conversation-controls.test.ts`、`ConversationControls.test.tsx`、`ConversationImagePreview.test.tsx`、`e2e/conversation-controls.spec.ts`。进展条目同时进一步收紧正文行高、元信息间隔、序号尺寸和条目之间留白，保留编号、完整时间和复制入口。
+
+输入区底部的展示说明和“原始终端查看工具详情”常驻提示已移除，保留实际状态、操作入口与会话信息栏。

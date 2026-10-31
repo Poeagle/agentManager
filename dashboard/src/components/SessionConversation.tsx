@@ -1,4 +1,5 @@
 import {ConversationImagePreviewRoot} from './ConversationImagePreview';
+import {ConversationControls} from './ConversationControls';
 import {ConversationInteraction,ConversationAsyncQuestion,ConversationQuestionSummary,type ConversationInteractionRequest} from './ConversationInteraction';
 import {memo,useCallback,useEffect,useRef,useState} from 'react';
 import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
@@ -284,7 +285,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
           onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();void send();}}}/>
         <div className="session-chat-input-tools"><ConversationAttachmentPicker items={attachments.items} error={attachments.error} disabled={!canSend||ended||sending} onFiles={attachments.enqueue} onRemove={attachments.remove}/><span>Enter 发送 · Shift+Enter 换行</span><button type="submit" aria-label="发送消息" disabled={sending||attachments.uploading||attachments.failed||!canSend||(!draft.trim()&&!attachments.items.length)||!page?.session_active||ended||waiting}>{sending?<Loader2 size={17} className="animate-spin"/>:<ArrowUp size={18}/>}</button></div>
       </form>
-      <p className="session-chat-hint">{liveState==='unavailable' && session.cli_type==='codex'?'当前会话未提供实时事件，进展说明和答复会自动更新。':'展示对话、进展说明与答复'}<span>工具详情及其他交互可在原始终端查看</span></p>
+      {session.cli_type==='codex'&&!!page?.native_id&&canRead&&<ConversationControls sessionId={session.id} active={active}/>}
     </footer>
   </section></ConversationImagePreviewRoot>;
 }

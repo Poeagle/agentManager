@@ -6,7 +6,7 @@ import { isSessionActive, writeToSession, querySessionOutputSince, getSession, g
 import { RESIZE_MARKER } from '../services/session-manager.js';
 import { getTracker, getOrCreateTracker } from '../services/session-state.js';
 import type { SessionState } from '../services/session-state.js';
-import { getSessionUser,readSessionCookie, sessionCookieName, userCanUseSessionTool } from '../auth.js';
+import { getSessionUser,readSessionCookie, sessionCookieName, userCanUseSessionTool,isAdmin } from '../auth.js';
 import { registerUserConnection } from '../services/user-connections.js';
 import { requirePermission,userHasPermission } from '../services/rbac.js';
 import { getDb } from '../db/index.js';
@@ -17,6 +17,7 @@ import {readConversation} from '../services/conversation-reader.js';
 import {readCodexRuntime} from '../services/codex-runtime.js';
 import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,validateConversationAttachments} from '../services/conversation-attachments.js';
 import {observeCodexConversation,submitStreamingCodexInput} from '../services/conversation-stream.js';
+import {readConversationControls,readModelPreference,validateModelPreference,saveModelPreference,pendingModelPreference} from '../services/conversation-controls.js';
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
   if (mode === 'terminal') return mode;
@@ -510,6 +511,30 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   });
   app.get('/agent/capabilities', async () => getAgentApiContract());
 
+  app.get<{Params:{id:string}}>('/sessions/:id/controls',async(req,reply)=>{
+    const session=getSession(req.params.id);
+    if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
+    if(session.cli_type!=='codex'||!session.codex_session_id)return reply.code(409).send({error:'当前会话未绑定 Codex'});
+    const shared=req.user!.role==='admin'&&(!session.created_by_user_id||isAdmin(session.created_by_user_id));
+    const data=await readConversationControls(session.codex_session_id,shared);
+    const owned=!session.created_by_user_id||session.created_by_user_id===req.user!.id;
+    return reply.header('Cache-Control','private, no-store').send({...data,pending:readModelPreference(req.user!.id,session.id),
+      can_edit:shared&&owned&&data.loaded&&data.models.length>0&&isSessionActive(session.id)&&userHasPermission(req.user!.id,'agent_api','write')});
+  });
+  app.put<{Params:{id:string};Body:unknown}>('/sessions/:id/controls',async(req,reply)=>{
+    const session=getSession(req.params.id);
+    if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
+    if(req.user!.role!=='admin'||session.created_by_user_id&&session.created_by_user_id!==req.user!.id)return reply.code(403).send({error:'只能修改自己的会话设置'});
+    if(session.cli_type!=='codex'||!session.codex_session_id||!isSessionActive(session.id))return reply.code(409).send({error:'当前会话不可修改，请先恢复会话'});
+    if(req.body===null){saveModelPreference(req.user!.id,session.id,null);return {ok:true,pending:null};}
+    try {
+      const data=await readConversationControls(session.codex_session_id,true);
+      if(!data.loaded)return reply.code(409).send({error:'此会话暂不支持在对话中切换，请在原始终端设置'});
+      const value=await validateModelPreference(req.body);saveModelPreference(req.user!.id,session.id,value);
+      return {ok:true,pending:value};
+    }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'设置失败，请重试'});}
+  });
+
   app.post<{Params:{id:string};Body:{input?:unknown;source?:unknown;client_id?:unknown;attachments?:unknown}}>('/sessions/:id/input', async (req, reply) => {
     const {id} = req.params;
     if (!canAccessAgentSession(req.user!.id,id) || !isSessionActive(id)) return reply.code(404).send({error:'Session not found or not running'});
@@ -527,7 +552,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       const session=getSession(id);
       if(req.body?.source==='conversation' && process.env.AGENTMANAGER_CODEX_STREAM_SOCKET && session?.cli_type==='codex' && session.codex_session_id) {
         if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,true);
-        if(await (attachments.length?submitStreamingCodexInput(session.codex_session_id,input,attachmentClientId,attachments):clientId?submitStreamingCodexInput(session.codex_session_id,input,clientId):submitStreamingCodexInput(session.codex_session_id,input))) return;
+        const settings=req.user!.role==='admin'&&(!session.created_by_user_id||session.created_by_user_id===req.user!.id)?await pendingModelPreference(req.user!.id,id):undefined;
+        if(await (settings?submitStreamingCodexInput(session.codex_session_id,input,attachmentClientId,attachments,settings):attachments.length?submitStreamingCodexInput(session.codex_session_id,input,attachmentClientId,attachments):clientId?submitStreamingCodexInput(session.codex_session_id,input,clientId):submitStreamingCodexInput(session.codex_session_id,input))) return;
       }
       if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);
       if (!writeToSession(id,preparedInput,true)) throw new Error('Session input is unavailable');

@@ -21,6 +21,17 @@ describe('conversation image preview',()=>{
     fireEvent.click(screen.getByRole('button',{name:'打开附件 截图.png'}));fireEvent.mouseDown(screen.getByRole('dialog').parentElement!);expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button',{name:'打开附件 截图.png'}));view.rerender(<ConversationImagePreviewRoot active={false}><ConversationMessageAttachments items={[image]} projectId="p"/></ConversationImagePreviewRoot>);expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(document.body.style.overflow).toBe('');
   });
+  it('docks a file without remounting the reader or trapping conversation focus, and switches back',async()=>{
+    const size=vi.spyOn(HTMLElement.prototype,'clientWidth','get').mockReturnValue(1000);
+    try {
+      render(<ConversationImagePreviewRoot><textarea aria-label="对话草稿" defaultValue="保留反馈"/><ConversationMessageAttachments items={[{kind:'file',name:'说明.txt',path:'/project/note.txt'}]} projectId="p"/></ConversationImagePreviewRoot>);
+      fireEvent.click(screen.getByRole('button',{name:'打开附件 说明.txt'}));const reader=await screen.findByTestId('preview-file');
+      fireEvent.click(screen.getByRole('button',{name:'显示到侧边'}));const side=screen.getByRole('complementary',{name:'文件预览 · 说明.txt'});
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(screen.getByTestId('preview-file')).toBe(reader);expect(document.body.style.overflow).toBe('');
+      const draft=screen.getByRole('textbox',{name:'对话草稿'});draft.focus();fireEvent.change(draft,{target:{value:'继续反馈'}});expect(draft).toHaveFocus();expect(draft).toHaveValue('继续反馈');expect(fireEvent.keyDown(side,{key:'Tab'})).toBe(true);
+      fireEvent.click(within(side).getByRole('button',{name:'居中显示'}));expect(screen.getByRole('dialog')).toBeInTheDocument();expect(screen.getByTestId('preview-file')).toBe(reader);expect(document.body.style.overflow).toBe('hidden');
+    }finally{size.mockRestore();}
+  });
   it('uses the same dialog for Markdown image links and reports loading failures',()=>{
     render(<ConversationMarkdown content="[![示意图](https://example.com/image.png)](https://example.com/full.png)" messageId="m" projectId="p" onNavigate={()=>{}}/>);
     expect(screen.queryByRole('link')).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'预览图片 示意图'}));const dialog=screen.getByRole('dialog');fireEvent.error(within(dialog).getByRole('img'));expect(within(dialog).getByRole('alert')).toHaveTextContent('图片加载失败');

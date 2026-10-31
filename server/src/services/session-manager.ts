@@ -3325,6 +3325,7 @@ export function purgeSessionRecord(sessionId: string): { ok: boolean; error?: st
   try { db.prepare('DELETE FROM pty_output WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
   try { db.prepare('DELETE FROM session_snapshots WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
   try { db.prepare('DELETE FROM events WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
+  db.prepare('DELETE FROM user_ui_state WHERE key = ?').run(`session-control:${sessionId}`);
   try { unlinkSync(join(CODEX_BINDINGS_DIR, `${sessionId}.json`)); } catch { /* ignore */ }
   db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
   return { ok: true };

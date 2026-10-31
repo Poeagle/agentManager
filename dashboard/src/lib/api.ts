@@ -466,6 +466,8 @@ export const api = {
       }),
   },
   agent: {
+    controls:(sessionId:string)=>fetchJSON<ConversationControlsData>(`/sessions/${encodeURIComponent(sessionId)}/controls`),
+    setControls:(sessionId:string,value:{model:string;effort:string}|null)=>fetchJSON<{ok:boolean;pending:{model:string;effort:string}|null}>(`/sessions/${encodeURIComponent(sessionId)}/controls`,{method:'PUT',body:JSON.stringify(value)}),
     conversation:(sessionId:string,query:{after?:string;before?:string}={},signal?:AbortSignal)=>fetchJSON<ConversationPage>(`/sessions/${encodeURIComponent(sessionId)}/conversation?${new URLSearchParams(query)}`,{signal}),
     sendInput:(sessionId:string,input:string,clientId?:string,attachments?:ConversationAttachment[])=>fetchJSON<{status:string}>(`/sessions/${encodeURIComponent(sessionId)}/input`,{method:'POST',body:JSON.stringify({input,source:'conversation',client_id:clientId,attachments})}),
     capabilities: () => fetchJSON<AgentApiContract>('/agent/capabilities'),
@@ -974,6 +976,14 @@ export interface SessionOutput {
 }
 
 export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
+export interface ConversationControlsData {
+  engine_version?:string|null;git?:{branch:string;changes:number}|null;state?:string|null;
+  model:string|null;effort:string|null;provider:string|null;cwd:string|null;cli_version:string|null;permission:string|null;approval:string|null;service_tier:string|null;
+  usage:{total:Record<string,number|null>;last:Record<string,number|null>;window:number|null}|null;
+  limits:Array<{used_percent:number;minutes:number;resets_at:number|null}>;
+  models:Array<{model:string;name:string;description:string;efforts:Array<{value:string;description:string}>;defaultEffort:string}>;
+  can_edit:boolean;loaded:boolean;pending:{model:string;effort:string}|null;warning:string|null;native_id:string;checked_at:string;usage_observed_at:string|null;
+}
 export interface ConversationPage {
   messages:ConversationMessage[];has_more:boolean;reset:boolean;available:boolean;generation:string|null;
   session_id:string;session_status:Session['status'];session_active:boolean;native_id:string|null;

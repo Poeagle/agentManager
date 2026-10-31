@@ -15,7 +15,7 @@ export type ConversationStreamFrame =
 
 type CodexRequest = (method:string,params:unknown)=>Promise<any>;
 
-async function withCodexConnection<T>(action:(request:CodexRequest)=>Promise<T>):Promise<T> {
+export async function withCodexConnection<T>(action:(request:CodexRequest,server:{userAgent:string|null})=>Promise<T>):Promise<T> {
   const path=process.env.AGENTMANAGER_CODEX_STREAM_SOCKET;
   if(!path) throw new Error('Codex stream socket is not configured');
   const socket=new WebSocket(`ws+unix://${path}:/`,{maxPayload:2*1024*1024,handshakeTimeout:4000});
@@ -35,9 +35,9 @@ async function withCodexConnection<T>(action:(request:CodexRequest)=>Promise<T>)
   socket.on('close',rejectPending);socket.on('error',rejectPending);
   try {
     await opened;
-    await request('initialize',{clientInfo:{name:'octoally-terminal',version:'1.0.0'}});
+    const initialized=await request('initialize',{clientInfo:{name:'octoally-terminal',version:'1.0.0'}});
     socket.send(JSON.stringify({method:'initialized'}));
-    return await action(request);
+    return await action(request,{userAgent:typeof initialized?.userAgent==='string'?initialized.userAgent:null});
   } finally {rejectPending();if(socket.readyState===WebSocket.CONNECTING)socket.terminate();else socket.close();}
 }
 
@@ -67,11 +67,13 @@ export async function interruptStreamingCodexThread(threadId:string) {
 
 /** Conversation text goes to the same engine, independently of terminal UI
  * menus, focus, and transport suspension. Embedded CLIs retain their PTY path. */
-export async function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[]=[]):Promise<boolean> {
+export async function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[]=[],settings?:{model:string;effort:string;applied:()=>void}):Promise<boolean> {
   return withCodexConnection(async request=>{
     const current=await request('thread/read',{threadId});
     if(current.thread?.status?.type==='notLoaded') return false;
-    await request('turn/start',{threadId,clientUserMessageId:clientId||randomUUID(),input:[{type:'text',text:formatConversationInput(text,attachments),text_elements:[]},...attachments.filter(item=>item.kind==='image').map(item=>({type:'localImage',path:item.path}))]});
+    const overrides=settings&&current.thread?.status?.type==='idle'?{model:settings.model,effort:settings.effort}:{};
+    await request('turn/start',{threadId,clientUserMessageId:clientId||randomUUID(),...overrides,input:[{type:'text',text:formatConversationInput(text,attachments),text_elements:[]},...attachments.filter(item=>item.kind==='image').map(item=>({type:'localImage',path:item.path}))]});
+    if(settings&&overrides.model)settings.applied();
     return true;
   });
 }
