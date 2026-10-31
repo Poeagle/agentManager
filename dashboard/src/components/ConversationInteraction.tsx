@@ -1,4 +1,5 @@
 import type {ConversationMessage} from '../lib/api';
+import {encodeQuestionReply} from '../lib/conversation-question-reply';
 import {formatConversationTimestamp} from '../lib/conversation-timing';
 import {useRef,useState} from 'react';
 import {Check,Loader2,MessageCircleQuestion,ShieldCheck} from 'lucide-react';
@@ -8,9 +9,9 @@ export interface ConversationInteractionRequest {
   questions?:Array<{id:string;header:string;question:string;isOther:boolean;isSecret:boolean;options:Array<{label:string;description:string}>|null}>;
 }
 interface Draft {choice:string;custom:string}
-export function ConversationInteraction({request,storageKey,connected,canAnswer,onAnswer,onRaw,inline=false,resolvedLabel}:{
+export function ConversationInteraction({request,storageKey,connected,canAnswer,onAnswer,onRaw,inline=false,resolvedLabel,onMinimize}:{
   request:ConversationInteractionRequest;storageKey:string;connected:boolean;canAnswer:boolean;
-  onAnswer:(id:string,answer:unknown)=>Promise<void>;onRaw:()=>void;inline?:boolean;resolvedLabel?:string;
+  onAnswer:(id:string,answer:unknown)=>Promise<void>;onRaw:()=>void;inline?:boolean;resolvedLabel?:string;onMinimize?:()=>void;
 }) {
   const [drafts,setDrafts]=useState<Record<string,Draft>>(()=>{
     try {const value=JSON.parse(sessionStorage.getItem(storageKey)||'{}');return Object.fromEntries((request.questions||[]).filter(q=>!q.isSecret).flatMap(q=>typeof value[q.id]?.choice==='string'&&typeof value[q.id]?.custom==='string'?[[q.id,value[q.id]]]:[]));}catch{return {};}
@@ -48,7 +49,7 @@ export function ConversationInteraction({request,storageKey,connected,canAnswer,
         })}
       </div>
       {error&&<p role="alert" className="session-chat-error">{error}</p>}
-      <div className="conversation-interaction-actions"><button type="button" onClick={onRaw}>原始终端</button><span>{!canAnswer?'当前账号只读':!connected?'连接已断开，重连后可处理':submitted?resolvedLabel||'已提交，等待 Agent 继续':sending?'正在提交…':''}</span>
+      <div className="conversation-interaction-actions"><button type="button" onClick={onMinimize||onRaw}>{onMinimize?'稍后回答':'原始终端'}</button><span>{!canAnswer?'当前账号只读':!connected?'连接已断开，重连后可处理':submitted?resolvedLabel||'已提交，等待 Agent 继续':sending?'正在提交…':''}</span>
         {request.kind==='question'?<button type="submit" className="conversation-interaction-primary" disabled={disabled||!complete}>{sending?<Loader2 size={14} className="animate-spin"/>:null}提交回答</button>:<>{request.kind!=='permissions'&&<button type="button" disabled={disabled} onClick={()=>void submit({decision:'cancel'})}>取消</button>}<button type="button" disabled={disabled} onClick={()=>void submit({decision:'decline'})}>拒绝</button><button type="button" className="conversation-interaction-primary" disabled={disabled} onClick={()=>void submit({decision:'accept'})}>允许本次</button></>}
       </div>
     </form>
@@ -58,20 +59,33 @@ export function ConversationInteraction({request,storageKey,connected,canAnswer,
 
 /** Nonblocking Codex questions are messages, not pending JSON-RPC requests.
  * Reply through the normal user-input path, preserving the composer's draft. */
-export function ConversationAsyncQuestion({message,answered,agentName,storageKey,connected,canAnswer,onReply,onRaw}:{
-  message:ConversationMessage;answered:boolean;agentName:string;storageKey:string;connected:boolean;canAnswer:boolean;
-  onReply:(text:string)=>Promise<void>;onRaw:()=>void;
+export function ConversationAsyncQuestion({message,agentName,storageKey,connected,canAnswer,onReply,onRaw,onMinimize}:{
+  message:ConversationMessage;agentName:string;storageKey:string;connected:boolean;canAnswer:boolean;
+  onReply:(text:string)=>Promise<void>;onRaw:()=>void;onMinimize:()=>void;
 }) {
   const questions=message.async_questions||[];
-  const request:ConversationInteractionRequest={id:message.id,turn_id:message.turn_id||'',kind:'question',title:`${agentName} 向你提问`,detail:'',blocking:false,submitted:answered,
+  const request:ConversationInteractionRequest={id:message.id,turn_id:message.turn_id||'',kind:'question',title:`${agentName} 向你提问`,detail:'',blocking:false,submitted:false,
     questions:questions.map((q,index)=>({id:`question-${index+1}`,header:'',question:q.title,isOther:true,isSecret:false,options:q.options?.map(label=>({label,description:''}))||null}))};
-  return <article className="session-chat-message assistant session-chat-async-question" data-chat-message-id={message.id}>
-    <ConversationInteraction request={request} storageKey={storageKey} connected={connected} canAnswer={canAnswer} inline resolvedLabel={answered?'后续已有消息':undefined} onRaw={onRaw}
-      onAnswer={async(_id,value)=>{
-        const answers=(value as {answers:Record<string,{answers:string[]}>}).answers;
-        const text=questions.map((q,index)=>`${index+1}. ${q.title}\n我的回答：${answers[`question-${index+1}`].answers[0]}`).join('\n\n');
-        await onReply(`回复你的提问：\n${text}`);
-      }}/>
+  return <ConversationInteraction request={request} storageKey={storageKey} connected={connected} canAnswer={canAnswer} inline onRaw={onRaw} onMinimize={onMinimize}
+    onAnswer={async(_id,value)=>{
+      const answers=(value as {answers:Record<string,{answers:string[]}>}).answers;
+      const replies=questions.map((q,index)=>{
+        if(!q.id||q.id.length>512)throw new Error('请刷新页面以获取此提问的原生标识');
+        let question='',bytes=0;for(const char of q.title.replace(/[\r\n]/g,' ')){const length=new TextEncoder().encode(char).length;if(bytes+length>512)break;question+=char;bytes+=length;}
+        return {question_id:q.id,question,answer:answers[`question-${index+1}`].answers[0]};
+      });
+      await onReply(encodeQuestionReply(replies));
+    }}/>;
+}
+
+export function ConversationQuestionSummary({message,answers,continued,onAnswer}:{message:ConversationMessage;answers:string[]|null;continued:boolean;onAnswer:()=>void}) {
+  const questions=message.async_questions||[],settled=answers!==null;
+  return <article className="session-chat-question-summary" data-chat-message-id={message.id}>
+    <details key={settled?'answered':'pending'}>
+      <summary><MessageCircleQuestion size={14}/><span className="conversation-question-state">{settled?'已回答':continued?'已继续对话':'待回答'}</span><strong>{questions[0]?.title}</strong>{answers&&<span className="conversation-question-answer-preview">{answers.join('；')}</span>}<span className="conversation-question-expand">查看详情</span></summary>
+      <dl>{questions.map((q,index)=><div key={q.id||index}><dt>{q.title}</dt><dd>{answers?.[index]||'暂无回答'}</dd></div>)}</dl>
+      {!settled&&!continued&&<button type="button" onClick={onAnswer}>回答问题</button>}
+    </details>
     {message.timestamp&&<div className="session-chat-message-meta"><time dateTime={message.timestamp}>{formatConversationTimestamp(message.timestamp)}</time></div>}
   </article>;
 }

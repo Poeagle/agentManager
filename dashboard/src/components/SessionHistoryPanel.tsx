@@ -179,7 +179,7 @@ export function SessionHistoryPanel({
   return <div className="flex h-full flex-col" style={{ background: 'var(--bg-secondary)' }}>
     <div className="flex shrink-0 items-center gap-2 px-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
       <Clock className="h-4 w-4" style={{ color: 'var(--accent)' }} />
-      <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>项目会话</span>
+      <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>项目会话记录</span>
       <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{visibleSessions.length}/{sessions.length}</span>
       <button onClick={() => refetch()} title="刷新" className="ml-auto rounded p-1 hover:opacity-80" style={{ color: 'var(--text-secondary)' }}><RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} /></button>
     </div>
@@ -191,14 +191,14 @@ export function SessionHistoryPanel({
                   deleting={deletion.isPending} onDelete={(target) => { deletion.reset(); setDeleteTarget(target); }} />)}
       </DataTable>
     </div>
-    {deleteTarget && <Dialog title="删除会话" busy={deletion.isPending} onClose={() => setDeleteTarget(null)}>
+    {deleteTarget && <Dialog title="删除记录" busy={deletion.isPending} onClose={() => setDeleteTarget(null)}>
       <p className="break-words text-sm">确定删除“{sessionTitle(deleteTarget, displayNames[deleteTarget.id])}”？</p>
       <p className="mt-2 text-xs" style={{ color: 'var(--text-secondary)' }}>会话记录及已保存的输出将被永久删除，无法撤销。</p>
       {deletion.error && <p role="alert" className="mt-3 text-xs" style={{ color: 'var(--error)' }}>删除失败：{deletion.error.message}</p>}
       <footer className="mt-4 flex justify-end gap-2">
         <TableActionButton disabled={deletion.isPending} onClick={() => setDeleteTarget(null)}>取消</TableActionButton>
         <TableActionButton disabled={deletion.isPending} style={{ background: 'var(--error)', borderColor: 'var(--error)', color: '#fff' }}
-          onClick={() => { if (!deletion.isPending) deletion.mutate(deleteTarget.id); }}>{deletion.isPending ? '删除中…' : '删除会话'}</TableActionButton>
+          onClick={() => { if (!deletion.isPending) deletion.mutate(deleteTarget.id); }}>{deletion.isPending ? '删除中…' : '删除记录'}</TableActionButton>
       </footer>
     </Dialog>}
   </div>;

@@ -1,7 +1,15 @@
 import {describe,expect,it} from 'vitest';
-import {nativeInteraction,nativeInteractionAnswer,conversationAsyncQuestions} from '../src/services/conversation-interactions.js';
+import {nativeInteraction,nativeInteractionAnswer,conversationAsyncQuestions,conversationQuestionReply} from '../src/services/conversation-interactions.js';
 const request=(method:string,params:any)=>({id:'request',method,params:{threadId:'thread',turnId:'turn',...params}});
 describe('structured human requests',()=>{
+  it('exports native IDs and decodes only complete question reply envelopes',()=>{
+    const q=conversationAsyncQuestions({id:'call-test',delivery:'async',questions:[{title:'去哪？',options:['A','B']}]})!;
+    expect(q[0].id).toBe(JSON.stringify(['request_user_input_async','call-test',0]));
+    const body={questionItemId:q[0].id,question:'去哪？',answer:'测试'};
+    const envelope='<send_user_message_question_reply>'+JSON.stringify([body])+'</send_user_message_question_reply>';
+    expect(conversationQuestionReply(envelope)).toEqual({text:'回复你的提问：\n1. 去哪？\n我的回答：测试',answers:[{question_id:q[0].id,question:'去哪？',answer:'测试'}]});
+    expect(conversationQuestionReply('quoted '+envelope)).toBeUndefined();expect(conversationQuestionReply(envelope+' trailing')).toBeUndefined();
+  });
   it('recognizes actual nonblocking AgentMessage metadata without inferring questions from text',()=>{
     const questions=[{title:'想去哪里？',options:['太空','深海','森林']}];
     expect(conversationAsyncQuestions({delivery:'async',questions})).toEqual(questions);

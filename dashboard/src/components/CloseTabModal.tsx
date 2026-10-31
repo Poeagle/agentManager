@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { AlertTriangle, EyeOff, Trash2 } from 'lucide-react';
+import { AlertTriangle, EyeOff, Power } from 'lucide-react';
 
 interface CloseTabModalProps {
   /** e.g. "Session 1", "Terminal 2" */
@@ -40,11 +40,11 @@ export function CloseTabModal({
   }, [onCancel]);
 
   const isProject = type === 'project';
-  const typeLabel = type;
 
   const message = isProject
-    ? `This project has ${sessionCount} running session${sessionCount !== 1 ? 's' : ''}. You can hide the tab (sessions keep running in the background) or close and terminate all sessions.`
-    : `"${label}" is still running. You can hide the tab (the ${typeLabel} keeps running in the background) or close and kill the process.`;
+    ? `此项目有 ${sessionCount} 个会话正在运行。隐藏标签会让它们继续在后台运行；关闭并终止会停止这些会话。两种操作均保留会话历史。`
+    : `“${label}”仍在运行。隐藏标签会让它继续在后台运行；关闭并终止会停止进程，但保留会话历史。`;
+
 
   return (
     <div
@@ -71,7 +71,7 @@ export function CloseTabModal({
             <AlertTriangle className="w-5 h-5" style={{ color: '#f59e0b' }} />
           </div>
           <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-            Close {isProject ? 'Project Tab' : `${label}`}
+            关闭{isProject ? '项目标签' : `“${label}”`}
           </h3>
         </div>
 
@@ -80,6 +80,7 @@ export function CloseTabModal({
           <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
             {message}
           </p>
+          <p className="mt-2 text-xs leading-relaxed" style={{color:'var(--text-muted)'}}>若要永久删除，请在会话结束后，进入“项目会话记录”选择“删除记录”。</p>
         </div>
 
         {/* Actions */}
@@ -97,7 +98,7 @@ export function CloseTabModal({
               border: '1px solid var(--border)',
             }}
           >
-            Cancel
+            取消
           </button>
           <button
             onClick={onHide}
@@ -109,7 +110,7 @@ export function CloseTabModal({
             }}
           >
             <EyeOff className="w-3 h-3" />
-            Hide Tab
+            仅隐藏标签
           </button>
           <button
             onClick={onKill}
@@ -120,8 +121,8 @@ export function CloseTabModal({
               border: 'none',
             }}
           >
-            <Trash2 className="w-3 h-3" />
-            {isProject ? 'Close & Terminate' : 'Close & Kill'}
+            <Power className="w-3 h-3" />
+            关闭并终止
           </button>
         </div>
       </div>

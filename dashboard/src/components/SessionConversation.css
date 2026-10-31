@@ -234,3 +234,22 @@
 .conversation-interaction-inline {margin:8px 0;flex:initial;}
 .conversation-interaction-inline .conversation-interaction-body {max-height:min(44vh,360px);flex:initial;}
 .session-chat-async-question {margin-top:16px;}
+.session-chat-question-summary {margin:12px 0 22px;font-size:12px;}
+.session-chat-question-summary details {border:1px solid var(--border);border-radius:8px;background:var(--bg-primary);}
+.session-chat-question-summary summary {display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;list-style:none;min-width:0;}
+.session-chat-question-summary summary::-webkit-details-marker {display:none;}
+.session-chat-question-summary summary>svg {flex-shrink:0;color:var(--accent);}
+.conversation-question-state {flex-shrink:0;color:var(--text-muted);font-size:11px;}
+.session-chat-question-summary summary strong {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;}
+.conversation-question-answer-preview {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent);}
+.conversation-question-expand {flex-shrink:0;margin-left:auto;font-size:10px;color:var(--text-muted);}
+.session-chat-question-summary dl {margin:0;padding:4px 14px 12px;}
+.session-chat-question-summary dt {font-weight:500;line-height:1.7;}
+.session-chat-question-summary dd {margin:3px 0 10px;color:var(--text-secondary);white-space:pre-wrap;overflow-wrap:anywhere;}
+.session-chat-question-summary details>button {margin:0 14px 12px;color:var(--accent);}
+.session-chat-composer form[hidden] {display:none;}
+.session-chat-composer .conversation-interaction form {border:0;padding:0;border-radius:0;box-shadow:none;}
+.session-chat-question-seat .conversation-interaction {margin:5px 0 8px;}
+.session-chat-question-seat .conversation-interaction-body {max-height:min(42vh,340px);}
+.session-chat-question-reminder {display:flex;align-items:center;width:100%;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+.session-chat-question-reminder span {margin-left:auto;flex-shrink:0;color:var(--accent);}

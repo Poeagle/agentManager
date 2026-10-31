@@ -43,10 +43,11 @@ test('the actual Codex async AgentMessage becomes a persistent choice card and r
     await page.getByRole('button',{name:'对话',exact:true}).click();
     await card.getByRole('radio',{name:/太空/}).check();await expect(submit).toBeEnabled();
     await page.reload();await expect(card.getByRole('radio',{name:/太空/})).toBeChecked();
-    const draft=page.getByRole('textbox',{name:'发送给当前 Agent 的消息'}).filter({visible:true});await draft.fill('保留这份未发送草稿');
+    await card.getByRole('button',{name:'稍后回答'}).click();
+    const draft=page.getByRole('textbox',{name:'发送给当前 Agent 的消息'}).filter({visible:true});await draft.fill('保留这份未发送草稿');await page.getByRole('button',{name:/^待回答/}).click();
     await card.scrollIntoViewIfNeeded();await expect(card.getByText('免费旅行，你最想去哪里？',{exact:false}).first()).toBeInViewport();
     await page.screenshot({path:testInfo.outputPath('actual-async-question.png')});
-    await submit.click();await expect.poll(()=>inputs.length).toBe(1);expect(inputs[0].input[0].text).toBe('回复你的提问：\n1. 免费旅行，你最想去哪里？\n我的回答：太空');await expect(draft).toHaveValue('保留这份未发送草稿');
-    await expect(submit).toBeDisabled();await page.reload();await expect(submit).toBeDisabled();await expect(card).toContainText('后续已有消息');expect(inputs).toHaveLength(1);
+    await submit.click();await expect.poll(()=>inputs.length).toBe(1);const reply=JSON.parse(inputs[0].input[0].text.replace('<send_user_message_question_reply>','').replace('</send_user_message_question_reply>',''));expect(reply).toEqual([{questionItemId:JSON.stringify(['request_user_input_async','call-question',0]),question:'免费旅行，你最想去哪里？',answer:'太空'}]);await expect(draft).toHaveValue('保留这份未发送草稿');
+    await expect(card).toHaveCount(0);const summary=page.locator('.session-chat-question-summary');await expect(summary).toContainText('已回答');await expect(summary.locator('details')).toHaveJSProperty('open',false);expect((await summary.boundingBox())!.height).toBeLessThan(90);await summary.getByText('查看详情').click();await expect(summary.locator('details')).toHaveJSProperty('open',true);await expect(summary.locator('dd')).toHaveText('太空');await summary.getByText('查看详情').click();await page.screenshot({path:testInfo.outputPath('answered-collapsed.png')});await page.reload();await expect(summary).toContainText('已回答');await expect(summary.locator('details')).toHaveJSProperty('open',false);expect(inputs).toHaveLength(1);await expect(page.getByText('<send_user_message_question_reply>',{exact:false})).toHaveCount(0);
   }finally {if(sessionId)await page.request.delete(`/api/sessions/${sessionId}`);for(const client of wss.clients)client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });

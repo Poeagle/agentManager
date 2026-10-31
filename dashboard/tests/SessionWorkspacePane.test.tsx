@@ -23,15 +23,15 @@ afterEach(()=>{client.clear();vi.unstubAllGlobals();});
 function mount() {return render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);}
 describe('chat/raw terminal display',()=>{
   it('renders real async question messages as choice cards and replies without clearing the composer draft',async()=>{
-    page.messages=[page.messages[0],{id:'question-message',role:'assistant',phase:'final',text:'免费旅行，你最想去哪里？',timestamp:null,async_questions:[{title:'免费旅行，你最想去哪里？',options:['太空','深海','森林']}]},{id:'after-question',role:'assistant',text:'问题已发出。',timestamp:null}];
-    mount();const option=await screen.findByRole('radio',{name:/太空/});const draft=screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'});fireEvent.change(draft,{target:{value:'这份草稿先留着'}});
-    fireEvent.click(option);await act(async()=>fireEvent.click(screen.getByRole('button',{name:'提交回答',exact:true})));
-    expect(api.agent.sendInput).toHaveBeenCalledExactlyOnceWith('chat','回复你的提问：\n1. 免费旅行，你最想去哪里？\n我的回答：太空',expect.any(String));expect(draft).toHaveValue('这份草稿先留着');expect(screen.getByRole('button',{name:'提交回答',exact:true})).toBeDisabled();
+    page.messages=[page.messages[0],{id:'question-message',role:'assistant',phase:'final',text:'免费旅行，你最想去哪里？',timestamp:null,async_questions:[{id:'native-question',title:'免费旅行，你最想去哪里？',options:['太空','深海','森林']}]},{id:'after-question',role:'assistant',text:'问题已发出。',timestamp:null}];
+    mount();await screen.findByRole('radio',{name:/太空/});fireEvent.click(screen.getByRole('button',{name:'稍后回答'}));const draft=screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'});fireEvent.change(draft,{target:{value:'这份草稿先留着'}});
+    fireEvent.click(screen.getByRole('button',{name:/^待回答/}));fireEvent.click(screen.getByRole('radio',{name:/太空/}));await act(async()=>fireEvent.click(screen.getByRole('button',{name:'提交回答',exact:true})));
+    expect(api.agent.sendInput).toHaveBeenCalledExactlyOnceWith('chat',expect.stringContaining('<send_user_message_question_reply>'),expect.any(String));expect(draft).toHaveValue('这份草稿先留着');expect(screen.queryByRole('button',{name:'提交回答',exact:true})).not.toBeInTheDocument();expect(screen.getByText('已回答')).toBeVisible();
   });
   it('keeps an async answer editable after a failed submission and locks superseded history on restore',async()=>{
-    const question={id:'question',role:'assistant' as const,text:'哪个？',timestamp:null,async_questions:[{title:'哪个？',options:['A','B']}]};page.messages=[page.messages[0],question];vi.mocked(api.agent.sendInput).mockRejectedValueOnce(new Error('网络断开'));
+    const question={id:'question',role:'assistant' as const,text:'哪个？',timestamp:null,async_questions:[{id:'native-id',title:'哪个？',options:['A','B']}]};page.messages=[page.messages[0],question];vi.mocked(api.agent.sendInput).mockRejectedValueOnce(new Error('网络断开'));
     const view=mount();fireEvent.click(await screen.findByRole('radio',{name:/A/}));await act(async()=>fireEvent.click(screen.getByRole('button',{name:'提交回答',exact:true})));expect(await screen.findByRole('alert')).toHaveTextContent('网络断开');expect(screen.getByRole('button',{name:'提交回答',exact:true})).toBeEnabled();view.unmount();
-    page.messages=[...page.messages,{id:'next-user',role:'user',text:'下一个问题',timestamp:null}];mount();expect(await screen.findByRole('button',{name:'提交回答',exact:true})).toBeDisabled();expect(screen.getAllByText('后续已有消息').length).toBeGreaterThan(0);
+    page.messages=[...page.messages,{id:'next-user',role:'user',text:'下一个问题',timestamp:null}];mount();expect(screen.queryByRole('button',{name:'提交回答',exact:true})).not.toBeInTheDocument();expect(await screen.findByText('已继续对话')).toBeVisible();
   });
   it('shows native errors with time, stops stale busy/caret indicators and retains the error after switching views',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];

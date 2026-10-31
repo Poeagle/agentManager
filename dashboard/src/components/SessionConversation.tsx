@@ -1,7 +1,8 @@
-import {ConversationInteraction,ConversationAsyncQuestion,type ConversationInteractionRequest} from './ConversationInteraction';
+import {ConversationInteraction,ConversationAsyncQuestion,ConversationQuestionSummary,type ConversationInteractionRequest} from './ConversationInteraction';
 import {memo,useCallback,useEffect,useRef,useState} from 'react';
 import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
 import {api,type ConversationMessage,type ConversationPage,type Session} from '../lib/api';
+import {decodeQuestionReply,questionAnswers} from '../lib/conversation-question-reply';
 import {parseConversationInput} from '../lib/conversation-attachments';
 import {ConversationAttachmentPicker,ConversationMessageAttachments,useConversationAttachments} from './ConversationAttachments';
 import {ConversationMarkdown} from './ConversationMarkdown';
@@ -61,6 +62,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
   const [error,setError]=useState('');
   const [sendError,setSendError]=useState('');
   const [draft,setDraft]=useState('');
+  const [minimizedQuestion,setMinimizedQuestion]=useState<string|null>(null);
   const attachments=useConversationAttachments(session.id);
   const [sending,setSending]=useState(false);
   const [unread,setUnread]=useState(false);
@@ -203,8 +205,9 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
     if(new TextEncoder().encode(text).byteLength>64*1024) {if(fromQuestion)throw new Error('回答超过 64 KB，请缩短后发送');setSendError('消息超过 64 KB，请缩短后发送。');return;}
     sendingRef.current=true;setSending(true);setSendError('');
     const clientId=conversationClientId();
-    const timestamp=new Date().toISOString(),visibleText=text.trim()?text:attached.length?'请查看附件。':text,attachedIds=fromQuestion?[]:attachments.items.map(item=>item.id);
-    setMessages(previous=>[...previous,{id:`pending-${clientId}`,client_id:clientId,role:'user',text:visibleText,attachments:attached,timestamp,optimistic:{afterSequence:previous.reduce((last,item)=>Math.max(last,item.sequence??-1),-1)}}]);
+    const parsedReply=decodeQuestionReply(text);
+    const timestamp=new Date().toISOString(),visibleText=parsedReply?.text??(text.trim()?text:attached.length?'请查看附件。':text),attachedIds=fromQuestion?[]:attachments.items.map(item=>item.id);
+    setMessages(previous=>[...previous,{id:`pending-${clientId}`,client_id:clientId,role:'user',text:visibleText,attachments:attached,timestamp,...(parsedReply?{question_replies:parsedReply.answers}:{}),optimistic:{afterSequence:previous.reduce((last,item)=>Math.max(last,item.sequence??-1),-1)}}]);
     pinned.current=true;requestAnimationFrame(scrollBottom);
     try {
       if(attached.length)await api.agent.sendInput(session.id,text,clientId,attached);else await api.agent.sendInput(session.id,text,clientId);
@@ -214,7 +217,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
       setLiveProgress(previous=>previous.stage==='idle'?{turn_id:null,started_at:new Date().toISOString(),stage:'waiting'}:previous);
       if(!fromQuestion&&draftRef.current===text) setDraft('');
       pinned.current=true;setRefresh(value=>value+1);requestAnimationFrame(scrollBottom);
-    } catch(failure) {setMessages(previous=>previous.filter(item=>!(item.optimistic && item.client_id===clientId)));if(fromQuestion)throw failure;setSendError(`${failure instanceof Error?failure.message:'发送失败'}。请查看原始终端确认后再重试。`);}
+    } catch(failure) {setMessages(previous=>previous.filter(item=>!(item.optimistic && item.client_id===clientId)));if(fromQuestion){setSendError(failure instanceof Error?failure.message:'回答提交失败');throw failure;}setSendError(`${failure instanceof Error?failure.message:'发送失败'}。请查看原始终端确认后再重试。`);}
     finally {sendingRef.current=false;setSending(false);}
   }
   const agentName=session.cli_type==='codex'?'Codex':'Claude';
@@ -230,7 +233,9 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
     ? messages.reduce<string|null>((id,message,index)=>index>lastUserIndex && message.role==='assistant' && message.streaming && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id)?message.id:id,null):null;
   const groups=groupConversationProgress(displayed);
   const timings=conversationTimings(displayed,now,busy,liveProgress.turn_id);
-  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationAsyncQuestion key={message.id} message={message} answered={messages.slice(messages.indexOf(message)+1).some(item=>item.role==='user')} agentName={agentName} storageKey={`agentmanager-question:${userId}:${session.id}:${message.id}`} connected={active&&!!page?.session_active&&!ended} canAnswer={canSend} onReply={send} onRaw={onRaw}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} durationLabel={!compact?timings.get(message.id)?.label:undefined} durationTitle={!compact?timings.get(message.id)?.title:undefined} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
+  const pendingQuestion=messages.slice(lastUserIndex+1).reduce<ConversationMessage|null>((last,message)=>message.async_questions?.length?message:last,null);
+  const questionActive=!!pendingQuestion&&minimizedQuestion!==pendingQuestion.id;
+  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} answers={questionAnswers(message,messages.slice(messages.indexOf(message)+1))} continued={messages.slice(messages.indexOf(message)+1).some(item=>item.role==='user')} onAnswer={()=>setMinimizedQuestion(null)}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} durationLabel={!compact?timings.get(message.id)?.label:undefined} durationTitle={!compact?timings.get(message.id)?.title:undefined} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
   return <section ref={readingRoot} className="session-chat" aria-label="会话对话">
     <div className="session-chat-reading">
     <div ref={list} className="session-chat-scroll" onScroll={()=>{if(list.current) pinned.current=list.current.scrollHeight-list.current.scrollTop-list.current.clientHeight<80;}}>
@@ -269,7 +274,8 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
         {ended && onResume && <button onClick={onResume} disabled={resuming}>{resuming?'正在恢复…':resumeFailed?'重试恢复会话':'恢复会话'}</button>}{ended && onClose && <button onClick={onClose}>关闭会话</button>}
       </div>
       {sendError && <p role="alert" className="session-chat-error">{sendError}</p>}
-      <form onSubmit={event=>{event.preventDefault();void send();}}
+      {pendingQuestion&&<div className="session-chat-question-seat">{questionActive?<ConversationAsyncQuestion key={pendingQuestion.id} message={pendingQuestion} agentName={agentName} storageKey={`agentmanager-question:${userId}:${session.id}:${pendingQuestion.id}`} connected={active&&!!page?.session_active&&!ended} canAnswer={canSend} onReply={send} onRaw={onRaw} onMinimize={()=>setMinimizedQuestion(pendingQuestion.id)}/>:<button type="button" className="session-chat-question-reminder" onClick={()=>setMinimizedQuestion(null)}>待回答 · {pendingQuestion.async_questions?.[0].title}<span>回答问题</span></button>}</div>}
+      <form hidden={questionActive} onSubmit={event=>{event.preventDefault();void send();}}
         onDragOver={event=>{if(Array.from(event.dataTransfer.types).includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=canSend&&!ended&&!sending?'copy':'none';}}}
         onDrop={event=>{if(!event.dataTransfer.files.length)return;event.preventDefault();event.stopPropagation();if(canSend&&!ended&&!sending)attachments.enqueue(Array.from(event.dataTransfer.files));}}>
         <textarea aria-label="发送给当前 Agent 的消息" value={draft} onChange={event=>setDraft(event.target.value)} placeholder={waiting?requests.length?'请先回答上方问题或确认请求':'请先在原始终端完成交互':'输入消息，Enter 发送，Shift+Enter 换行'} disabled={!canSend || ended || waiting} rows={2}

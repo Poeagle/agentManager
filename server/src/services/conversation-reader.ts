@@ -1,4 +1,4 @@
-import {conversationAsyncQuestions,type ConversationAsyncQuestion} from './conversation-interactions.js';
+import {conversationAsyncQuestions,conversationQuestionReply,type ConversationAsyncQuestion,type ConversationQuestionReply} from './conversation-interactions.js';
 import {open} from 'fs/promises';
 import {createHash} from 'crypto';
 import {extractAgentMessages,nativeConversationFile,type PromptContextSession} from './prompt-context.js';
@@ -6,7 +6,7 @@ import type {CliType} from './session-identity.js';
 import {conversationImagePaths,type ConversationAttachment} from './conversation-attachments.js';
 import {conversationErrorMessage} from './conversation-error.js';
 
-export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];image_paths?:string[];async_questions?:ConversationAsyncQuestion[]}
+export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];image_paths?:string[];async_questions?:ConversationAsyncQuestion[];question_replies?:ConversationQuestionReply[]}
 interface IndexedMessage extends Omit<ConversationMessage,'text'> {offset:number;length:number;hash:string;recordType:string;nativeItem:boolean}
 interface Index {inode:number;mtime:number;start:number;offset:number;partial:Buffer;messages:IndexedMessage[];generation:string;skipPartial:boolean;anchor:Buffer}
 const WINDOW=2*1024*1024;
@@ -55,9 +55,11 @@ function publicMessage(line:Buffer,kind:CliType) {
       :kind==='codex' && entry.type==='response_item' && entry.payload?.type==='message' && entry.payload.role==='assistant'?entry.payload:null;
     const asyncQuestions=conversationAsyncQuestions(asyncItem);
     const asyncMessage=asyncQuestions?{role:'assistant' as const,phase:'final' as const,text:(asyncItem.content||[]).filter((part:any)=>['Text','output_text'].includes(part.type)&&typeof part.text==='string').map((part:any)=>part.text).join('\n').slice(0,128*1024)||asyncQuestions.map(q=>q.title).join('\n'),timestamp:typeof entry.timestamp==='string'?entry.timestamp:null}:null;
-    const message=failure||asyncMessage||extractAgentMessages([entry],kind,128*1024).find(message=>message.role==='user'||message.role==='assistant');
+    const extracted=failure||asyncMessage||extractAgentMessages([entry],kind,128*1024).find(message=>message.role==='user'||message.role==='assistant');
+    const reply=extracted?.role==='user'?conversationQuestionReply(extracted.text):undefined;
+    const message=reply?{...extracted!,text:reply.text}:extracted;
     const itemId=asyncQuestions&&typeof asyncItem?.id==='string'?asyncItem.id:kind==='codex' && entry.type==='response_item' && typeof entry.payload?.id==='string'?entry.payload.id:undefined;
-    return message ? {message,failure,itemId,asyncQuestions,imagePaths:message.role==='user'?conversationImagePaths(entry.payload?.content):[],turnId:typeof turnId==='string'?turnId:undefined,recordType:asyncQuestions?'async_question':entry.type==='event_msg' ? entry.payload?.type : entry.type} : null;
+    return message ? {message,failure,itemId,asyncQuestions,questionReplies:reply?.answers,imagePaths:message.role==='user'?conversationImagePaths(entry.payload?.content):[],turnId:typeof turnId==='string'?turnId:undefined,recordType:asyncQuestions?'async_question':entry.type==='event_msg' ? entry.payload?.type : entry.type} : null;
   } catch {return null;}
 }
 function scan(buffer:Buffer,base:number,kind:CliType):IndexedMessage[] {
@@ -171,7 +173,7 @@ export async function readConversation(session:PromptContextSession,query:{after
       for(const item of selected) {
         const buffer=Buffer.alloc(item.length);await handle.read(buffer,0,buffer.length,item.offset);
         const parsed=publicMessage(buffer,file.kind);
-        if(parsed) messages.push({id:item.id,role:item.role,text:parsed.message.text,timestamp:item.timestamp,turn_id:item.turn_id,phase:item.phase,...(parsed.asyncQuestions?{async_questions:parsed.asyncQuestions}:{}),...(item.error?{error:item.error}:{}),sequence:item.offset,...(parsed.imagePaths.length?{image_paths:parsed.imagePaths}:{})});
+        if(parsed) messages.push({id:item.id,role:item.role,text:parsed.message.text,timestamp:item.timestamp,turn_id:item.turn_id,phase:item.phase,...(parsed.questionReplies?{question_replies:parsed.questionReplies}:{}),...(parsed.asyncQuestions?{async_questions:parsed.asyncQuestions}:{}),...(item.error?{error:item.error}:{}),sequence:item.offset,...(parsed.imagePaths.length?{image_paths:parsed.imagePaths}:{})});
       }
       const first=selected[0];
       return {messages,has_more:index.start>0 || (!!first && index.messages[0]?.id!==first.id),reset,available:true,generation:index.generation};

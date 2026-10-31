@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import {nativeInteraction,nativeInteractionAnswer,conversationAsyncQuestions,type ConversationInteraction} from './conversation-interactions.js';
+import {nativeInteraction,nativeInteractionAnswer,conversationAsyncQuestions,conversationQuestionReply,type ConversationInteraction} from './conversation-interactions.js';
 import {homedir} from 'os';
 import {join} from 'path';
 import {randomUUID} from 'crypto';
@@ -123,12 +123,15 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(!['agentMessage','userMessage'].includes(item?.type)||typeof item.id!=='string'||typeof turnId!=='string') return;
     const role=item.type==='userMessage'?'user':'assistant';
     const previous=items.get(item.id);
-    const text=role==='user'?extractAgentMessages([{type:'response_item',payload:{type:'message',role:'user',content:(item.content||[]).filter((part:any)=>part.type==='text').map((part:any)=>({type:'input_text',text:part.text}))}}],'codex',128*1024)[0]?.text||'':typeof item.text==='string'?item.text:'';
+    const rawText=role==='user'?extractAgentMessages([{type:'response_item',payload:{type:'message',role:'user',content:(item.content||[]).filter((part:any)=>part.type==='text').map((part:any)=>({type:'input_text',text:part.text}))}}],'codex',128*1024)[0]?.text||'':typeof item.text==='string'?item.text:'';
+    const reply=role==='user'?conversationQuestionReply(rawText):undefined;
+    const text=reply?.text??rawText;
     // A reconnect baseline can arrive after fresh deltas on the same socket.
     if(previous && streaming && (previous.message.text.length>text.length || (!previous.message.streaming && previous.message.text.length>=text.length))) return;
     items.set(item.id,{phase:item.phase??previous?.phase??null,message:{
       id:conversationMessageId(turnId,role,item.id),role,turn_id:turnId,
       ...(role==='assistant'?{phase:item.phase==='final_answer'?'final' as const:'commentary' as const}:{}),
+      ...(reply?{question_replies:reply.answers}:{}),
       ...(role==='assistant'&&conversationAsyncQuestions(item)?{async_questions:conversationAsyncQuestions(item)}:{}),
       ...(typeof item.clientId==='string'?{client_id:item.clientId}:{}),
       ...(role==='user'?{image_paths:conversationImagePaths(item.content)}:{}),

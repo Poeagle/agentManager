@@ -973,7 +973,7 @@ export interface SessionOutput {
   oldestSeq: number | null;
 }
 
-export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{title:string;options:string[]|null}>}
+export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
 export interface ConversationPage {
   messages:ConversationMessage[];has_more:boolean;reset:boolean;available:boolean;generation:string|null;
   session_id:string;session_status:Session['status'];session_active:boolean;native_id:string|null;

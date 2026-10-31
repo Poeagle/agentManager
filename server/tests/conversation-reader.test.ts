@@ -32,7 +32,7 @@ describe('public conversation pages',()=>{
     writeFileSync(file,user('出个问题')+line('response_item',{type:'function_call',name:'request_user_input_async',arguments:JSON.stringify({questions})})+line('event_msg',{type:'item_completed',thread_id:id,turn_id:'turn',item})+final('免费旅行，你最想去哪里？\n- 太空\n- 深海\n- 森林'));
     const result=await readConversation(binding);expect(result.messages).toHaveLength(2);
     expect(result.messages.at(-1)).toMatchObject({id:conversationMessageId('turn','assistant','call-question'),role:'assistant',phase:'final',async_questions:questions});
-    expect((await readConversation(binding)).messages.at(-1)?.async_questions).toEqual(questions);
+    expect((await readConversation(binding)).messages.at(-1)?.async_questions).toEqual([{...questions[0],id:JSON.stringify(['request_user_input_async','call-question',0])}]);
     appendFileSync(file,user('我选太空'));expect((await readConversation(binding)).messages.map(message=>message.role)).toEqual(['user','assistant','user']);
   });
   it('never converts quoted question metadata in tool output or unstructured prose into a form',async()=>{
