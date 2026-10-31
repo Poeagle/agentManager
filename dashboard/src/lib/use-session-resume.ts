@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { api, type Session } from './api';
 
 export interface SessionResumeState {
+  action?:'resume'|'reload';
   phase: 'starting' | 'connecting' | 'ready' | 'error';
   startedAt: number;
   error?: string;
@@ -13,6 +14,7 @@ export function useSessionResume(projectId: string) {
   const queryClient = useQueryClient();
   const [states, setStates] = useState<Record<string, SessionResumeState>>({});
   const pending = useRef(new Set<string>());
+  const replacing=useRef(new Set<string>());
   const failedConnections = useRef(new Set<string>());
   const successTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
@@ -21,18 +23,20 @@ export function useSessionResume(projectId: string) {
     return () => { for (const timer of timers.values()) clearTimeout(timer); };
   }, []);
 
-  const resume = useCallback(async (sessionId: string) => {
+  const run = useCallback(async (sessionId: string,action:'resume'|'reload') => {
     // A ref guards double clicks before React has painted the disabled button.
     if (pending.current.has(sessionId)) return;
     pending.current.add(sessionId);
+    if(action==='reload')replacing.current.add(sessionId);
     failedConnections.current.delete(sessionId);
     const timer = successTimers.current.get(sessionId);
     if (timer) clearTimeout(timer);
     successTimers.current.delete(sessionId);
     const startedAt = Date.now();
-    setStates((current) => ({ ...current, [sessionId]: { phase: 'starting', startedAt } }));
+    setStates((current) => ({ ...current, [sessionId]: { phase: 'starting', startedAt,action } }));
     try {
-      const { session } = await api.sessions.resume(sessionId);
+      const { session } = await (action==='reload'?api.sessions.reload(sessionId):api.sessions.resume(sessionId));
+      replacing.current.delete(sessionId);
       // Both queries feed ProjectView; an old ended row must not override the
       // resumed row and leave the user looking at history after a successful POST.
       for (const queryKey of [['sessions'], ['project-sessions', projectId]]) {
@@ -40,15 +44,20 @@ export function useSessionResume(projectId: string) {
           sessions: [session, ...(current?.sessions ?? []).filter((row) => row.id !== sessionId)],
         }));
       }
-      setStates((current) => ({ ...current, [sessionId]: { phase: 'connecting', startedAt } }));
+      setStates((current) => ({ ...current, [sessionId]: { phase: 'connecting', startedAt,action } }));
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
       void queryClient.invalidateQueries({ queryKey: ['project-sessions', projectId] });
+      void queryClient.invalidateQueries({queryKey:['conversation-controls',sessionId]});
     } catch (error) {
+      replacing.current.delete(sessionId);
       pending.current.delete(sessionId);
       setStates((current) => ({
         ...current,
-        [sessionId]: { phase: 'error', startedAt, error: error instanceof Error ? error.message : 'Unable to resume session' },
+        [sessionId]: { phase: 'error', startedAt,action,error: error instanceof Error ? error.message : 'Unable to resume session' },
       }));
+      void queryClient.invalidateQueries({queryKey:['sessions']});
+      void queryClient.invalidateQueries({queryKey:['project-sessions',projectId]});
+      if(action==='reload')throw error;
     }
   }, [projectId, queryClient]);
 
@@ -68,6 +77,7 @@ export function useSessionResume(projectId: string) {
   }, []);
 
   const terminalFailed = useCallback((sessionId: string, error: string) => {
+    if(replacing.current.has(sessionId))return;
     if (!pending.current.delete(sessionId)) return;
     failedConnections.current.add(sessionId);
     setStates((current) => ({
@@ -77,6 +87,7 @@ export function useSessionResume(projectId: string) {
   }, []);
 
   const terminalExited = useCallback((sessionId: string) => {
+    if(replacing.current.has(sessionId))return;
     const wasPending = pending.current.delete(sessionId);
     const wasConnectionFailure = failedConnections.current.delete(sessionId);
     if (!wasPending && !wasConnectionFailure) return;
@@ -87,6 +98,7 @@ export function useSessionResume(projectId: string) {
   }, []);
 
   const forget = useCallback((sessionId: string) => {
+    replacing.current.delete(sessionId);
     pending.current.delete(sessionId);
     failedConnections.current.delete(sessionId);
     const timer = successTimers.current.get(sessionId);
@@ -100,5 +112,7 @@ export function useSessionResume(projectId: string) {
     });
   }, []);
 
-  return { states, resume, terminalReady, terminalExited, terminalFailed, forget };
+  const resume=useCallback((id:string)=>run(id,'resume'),[run]);
+  const reload=useCallback((id:string)=>run(id,'reload'),[run]);
+  return { states, resume,reload, terminalReady, terminalExited, terminalFailed, forget };
 }

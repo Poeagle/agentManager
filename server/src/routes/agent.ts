@@ -16,8 +16,9 @@ import {randomUUID} from 'crypto';
 import {readConversation} from '../services/conversation-reader.js';
 import {readCodexRuntime} from '../services/codex-runtime.js';
 import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,validateConversationAttachments} from '../services/conversation-attachments.js';
+import {observeConversationFile} from '../services/conversation-file-stream.js';
 import {observeCodexConversation,submitStreamingCodexInput} from '../services/conversation-stream.js';
-import {readConversationControls,readModelPreference,validateModelPreference,saveModelPreference,pendingModelPreference} from '../services/conversation-controls.js';
+import {readConversationControls,readModelPreference,validateModelPreference,saveModelPreference,applyCodexModelSettings} from '../services/conversation-controls.js';
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
   if (mode === 'terminal') return mode;
@@ -511,12 +512,13 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   });
   app.get('/agent/capabilities', async () => getAgentApiContract());
 
-  app.get<{Params:{id:string}}>('/sessions/:id/controls',async(req,reply)=>{
+  app.get<{Params:{id:string};Querystring:{refresh?:string}}>('/sessions/:id/controls',async(req,reply)=>{
     const session=getSession(req.params.id);
     if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
     if(session.cli_type!=='codex'||!session.codex_session_id)return reply.code(409).send({error:'当前会话未绑定 Codex'});
     const shared=req.user!.role==='admin'&&(!session.created_by_user_id||isAdmin(session.created_by_user_id));
-    const data=await readConversationControls(session.codex_session_id,shared);
+    if(req.query.refresh!==undefined&&req.query.refresh!=='true')return reply.code(400).send({error:'Invalid refresh flag'});
+    const data=await readConversationControls(session.codex_session_id,shared,req.query.refresh==='true');
     const owned=!session.created_by_user_id||session.created_by_user_id===req.user!.id;
     return reply.header('Cache-Control','private, no-store').send({...data,pending:readModelPreference(req.user!.id,session.id),
       can_edit:shared&&owned&&data.loaded&&data.models.length>0&&isSessionActive(session.id)&&userHasPermission(req.user!.id,'agent_api','write')});
@@ -530,8 +532,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     try {
       const data=await readConversationControls(session.codex_session_id,true);
       if(!data.loaded)return reply.code(409).send({error:'此会话暂不支持在对话中切换，请在原始终端设置'});
-      const value=await validateModelPreference(req.body);saveModelPreference(req.user!.id,session.id,value);
-      return {ok:true,pending:value};
+      const value=await validateModelPreference(req.body);
+      try {const applied=await applyCodexModelSettings(session.codex_session_id,value);saveModelPreference(req.user!.id,session.id,null);return {ok:true,pending:null,...applied};}
+      catch(error){return reply.code(503).send({error:error instanceof Error?error.message:'设置失败，请刷新确认'});}
     }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'设置失败，请重试'});}
   });
 
@@ -552,8 +555,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       const session=getSession(id);
       if(req.body?.source==='conversation' && process.env.AGENTMANAGER_CODEX_STREAM_SOCKET && session?.cli_type==='codex' && session.codex_session_id) {
         if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,true);
-        const settings=req.user!.role==='admin'&&(!session.created_by_user_id||session.created_by_user_id===req.user!.id)?await pendingModelPreference(req.user!.id,id):undefined;
-        if(await (settings?submitStreamingCodexInput(session.codex_session_id,input,attachmentClientId,attachments,settings):attachments.length?submitStreamingCodexInput(session.codex_session_id,input,attachmentClientId,attachments):clientId?submitStreamingCodexInput(session.codex_session_id,input,clientId):submitStreamingCodexInput(session.codex_session_id,input))) return;
+        if(await (attachments.length?submitStreamingCodexInput(session.codex_session_id,input,attachmentClientId,attachments):clientId?submitStreamingCodexInput(session.codex_session_id,input,clientId):submitStreamingCodexInput(session.codex_session_id,input))) return;
       }
       if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);
       if (!writeToSession(id,preparedInput,true)) throw new Error('Session input is unavailable');
@@ -680,10 +682,14 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     if(session?.cli_type!=='codex'||!session.codex_session_id) {
       socket.send(JSON.stringify({type:'unavailable',reason:'等待原生实时会话连接'}));socket.close(1000);return;
     }
-    const stop=observeCodexConversation(session.codex_session_id,frame=>{
+    const send=(frame:any)=>{
       if(!canAccessAgentSession(req.user!.id,id)) {socket.close(1008);return;}
-      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(frame.type==='snapshot'?{...frame,messages:decorateConversationAttachments(id,frame.messages)}:frame));
+      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(['snapshot','history'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,frame.messages)}:frame));
       else if(socket.readyState===1) socket.close(1013,'Slow conversation client');
+    };
+    const stopFile=observeConversationFile({cli_type:'codex',codex_session_id:session.codex_session_id,claude_session_id:null,project_path:null},send);
+    const stop=observeCodexConversation(session.codex_session_id,frame=>{
+      send(frame);
       if(frame.type==='unavailable'&&frame.reconnect&&socket.readyState===1)socket.close(1012,'Native connection lost');
     });
     socket.on('message',bytes=>{
@@ -697,7 +703,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       if(socket.readyState===1)socket.send(JSON.stringify({type:'interaction_result',request_id:frame.request_id,ok:!error,...(error?{error}:{})}));
     });
     const heartbeat=setInterval(()=>{if(socket.readyState===1) socket.ping();},25000);
-    socket.once('close',()=>{clearInterval(heartbeat);stop();});
+    socket.once('close',()=>{clearInterval(heartbeat);stopFile?.();stop();});
   });
 
   app.get<{Params:{id:string};Querystring:{after?:string;before?:string;limit?:string}}>('/sessions/:id/conversation',async(req,reply)=>{

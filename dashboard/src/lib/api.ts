@@ -203,6 +203,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(automatic ? { automatic: true } : {}),
       }),
+    reload:(id:string)=>fetchJSON<{ok:boolean;session:Session;client_version?:string}>(`/sessions/${encodeURIComponent(id)}/reload`,{method:'POST'}),
     // Permanently delete an ended session from history (record + events + JSONL).
     deleteRecord: (id: string, stop = false) =>
       fetchJSON<{ ok: boolean }>(`/sessions/${id}/record${stop?'?stop=true':''}`, { method: 'DELETE' }),
@@ -466,8 +467,8 @@ export const api = {
       }),
   },
   agent: {
-    controls:(sessionId:string)=>fetchJSON<ConversationControlsData>(`/sessions/${encodeURIComponent(sessionId)}/controls`),
-    setControls:(sessionId:string,value:{model:string;effort:string}|null)=>fetchJSON<{ok:boolean;pending:{model:string;effort:string}|null}>(`/sessions/${encodeURIComponent(sessionId)}/controls`,{method:'PUT',body:JSON.stringify(value)}),
+    controls:(sessionId:string,refresh=false)=>fetchJSON<ConversationControlsData>(`/sessions/${encodeURIComponent(sessionId)}/controls${refresh?'?refresh=true':''}`),
+    setControls:(sessionId:string,value:{model:string;effort:string}|null)=>fetchJSON<{ok:boolean;pending:{model:string;effort:string}|null;model?:string;effort?:string}>(`/sessions/${encodeURIComponent(sessionId)}/controls`,{method:'PUT',body:JSON.stringify(value)}),
     conversation:(sessionId:string,query:{after?:string;before?:string}={},signal?:AbortSignal)=>fetchJSON<ConversationPage>(`/sessions/${encodeURIComponent(sessionId)}/conversation?${new URLSearchParams(query)}`,{signal}),
     sendInput:(sessionId:string,input:string,clientId?:string,attachments?:ConversationAttachment[])=>fetchJSON<{status:string}>(`/sessions/${encodeURIComponent(sessionId)}/input`,{method:'POST',body:JSON.stringify({input,source:'conversation',client_id:clientId,attachments})}),
     capabilities: () => fetchJSON<AgentApiContract>('/agent/capabilities'),
@@ -977,7 +978,7 @@ export interface SessionOutput {
 
 export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
 export interface ConversationControlsData {
-  engine_version?:string|null;git?:{branch:string;changes:number}|null;state?:string|null;
+  engine_version?:string|null;installed_cli_version?:string|null;git?:{branch:string;changes:number}|null;state?:string|null;
   model:string|null;effort:string|null;provider:string|null;cwd:string|null;cli_version:string|null;permission:string|null;approval:string|null;service_tier:string|null;
   usage:{total:Record<string,number|null>;last:Record<string,number|null>;window:number|null}|null;
   limits:Array<{used_percent:number;minutes:number;resets_at:number|null}>;

@@ -20,13 +20,27 @@ beforeEach(()=>{
   vi.mocked(api.agent.conversation).mockImplementation(async()=>page);vi.mocked(api.agent.sendInput).mockResolvedValue({status:'submitted'});
 });
 afterEach(()=>{client.clear();vi.unstubAllGlobals();});
-function mount() {return render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);}
+function typeDraft(node:HTMLElement,value:string){node.textContent=value;fireEvent.input(node);}
+function mount(onReload?:()=>Promise<void>) {return render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active onReload={onReload} renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);}
 describe('chat/raw terminal display',()=>{
+  it('refreshes stale startup permissions once the terminal becomes ready without waiting five minutes',async()=>{
+    const cached={model:'a',effort:'high',models:[{model:'a',name:'A',efforts:[{value:'high'}],defaultEffort:'high'}],usage:null,limits:[],loaded:true,can_edit:false,pending:null};
+    client.setQueryData(['conversation-controls',session.id],cached);
+    const get=vi.spyOn(api.agent,'controls').mockResolvedValue({...cached,can_edit:true} as any);
+    try{render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active renderTerminal={(_visible,_suspended,ready)=><button onClick={ready}>测试终端就绪</button>}/></QueryClientProvider>);const select=await screen.findByRole('combobox',{name:'选择模型'});expect(select).toBeDisabled();fireEvent.click(screen.getByText('测试终端就绪'));await waitFor(()=>expect(select).toBeEnabled());expect(get).toHaveBeenCalledTimes(1);}finally{get.mockRestore();}
+  });
+  it('folds injected project instructions with a clear automatic category',async()=>{
+    page.messages.splice(1,0,{id:'rules',role:'user',text:'# AGENTS.md instructions for /project\n\n<INSTRUCTIONS>\n'+('项目规则\n'.repeat(50))+'</INSTRUCTIONS>',timestamp:'2026-10-31T03:00:00Z'});mount();const label=await screen.findByText('自动信息 · 项目规则');const details=label.closest('details')!;expect(details.open).toBe(false);fireEvent.click(label);expect(details.open).toBe(true);expect(details.querySelector('pre')).toHaveTextContent('项目规则');
+  });
+  it('confirms reload once, retains draft text, and keeps a failed reload reviewable',async()=>{
+    let finish!:()=>void;const reload=vi.fn(()=>new Promise<void>(resolve=>finish=resolve));mount(reload);await screen.findByText('检查已完成。');const input=screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'});typeDraft(input,'尚未发送的反馈');fireEvent.click(screen.getByRole('button',{name:'重载标签页',exact:true}));expect(screen.getByRole('button',{name:'取消',exact:true})).toHaveFocus();expect(reload).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'重载并保留对话'}));expect(reload).toHaveBeenCalledTimes(1);expect(screen.getByRole('button',{name:'正在重载…'})).toBeDisabled();await act(async()=>finish());expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(input).toHaveTextContent('尚未发送的反馈');
+  });
+
   it('renders real async question messages as choice cards and replies without clearing the composer draft',async()=>{
     page.messages=[page.messages[0],{id:'question-message',role:'assistant',phase:'final',text:'免费旅行，你最想去哪里？',timestamp:null,async_questions:[{id:'native-question',title:'免费旅行，你最想去哪里？',options:['太空','深海','森林']}]},{id:'after-question',role:'assistant',text:'问题已发出。',timestamp:null}];
-    mount();await screen.findByRole('radio',{name:/太空/});fireEvent.click(screen.getByRole('button',{name:'稍后回答'}));const draft=screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'});fireEvent.change(draft,{target:{value:'这份草稿先留着'}});
+    mount();await screen.findByRole('radio',{name:/太空/});fireEvent.click(screen.getByRole('button',{name:'稍后回答'}));const draft=screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'});typeDraft(draft,'这份草稿先留着');
     fireEvent.click(screen.getByRole('button',{name:/^待回答/}));fireEvent.click(screen.getByRole('radio',{name:/太空/}));await act(async()=>fireEvent.click(screen.getByRole('button',{name:'提交回答',exact:true})));
-    expect(api.agent.sendInput).toHaveBeenCalledExactlyOnceWith('chat',expect.stringContaining('<send_user_message_question_reply>'),expect.any(String));expect(draft).toHaveValue('这份草稿先留着');expect(screen.queryByRole('button',{name:'提交回答',exact:true})).not.toBeInTheDocument();expect(screen.getByText('已回答')).toBeVisible();
+    expect(api.agent.sendInput).toHaveBeenCalledExactlyOnceWith('chat',expect.stringContaining('<send_user_message_question_reply>'),expect.any(String));expect(draft).toHaveTextContent('这份草稿先留着');expect(screen.queryByRole('button',{name:'提交回答',exact:true})).not.toBeInTheDocument();expect(screen.getByText('已回答')).toBeVisible();
   });
   it('keeps an async answer editable after a failed submission and locks superseded history on restore',async()=>{
     const question={id:'question',role:'assistant' as const,text:'哪个？',timestamp:null,async_questions:[{id:'native-id',title:'哪个？',options:['A','B']}]};page.messages=[page.messages[0],question];vi.mocked(api.agent.sendInput).mockRejectedValueOnce(new Error('网络断开'));
@@ -66,10 +80,10 @@ describe('chat/raw terminal display',()=>{
   it('sends directly to the current session once and keeps composer drafts through switching',async()=>{
     mount();const input=await screen.findByRole('textbox',{name:'发送给当前 Agent 的消息'});
     await screen.findByText('检查已完成。');
-    fireEvent.change(input,{target:{value:'继续修复'}});fireEvent.click(screen.getByRole('button',{name:'原始终端',exact:true}));fireEvent.click(screen.getByRole('button',{name:'对话',exact:true}));
-    expect(input).toHaveValue('继续修复');fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));
+    typeDraft(input,'继续修复');fireEvent.click(screen.getByRole('button',{name:'原始终端',exact:true}));fireEvent.click(screen.getByRole('button',{name:'对话',exact:true}));
+    expect(input).toHaveTextContent('继续修复');fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));
     await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledWith('chat','继续修复',expect.any(String)));
-    expect(api.agent.sendInput).toHaveBeenCalledTimes(1);await waitFor(()=>expect(input).toHaveValue(''));
+    expect(api.agent.sendInput).toHaveBeenCalledTimes(1);await waitFor(()=>expect(input).toHaveTextContent(''));
   });
   it('reserves send order immediately and reconciles an echo and streamed answer before the HTTP response',async()=>{
     let acknowledge!:(result:{status:string})=>void;
@@ -79,9 +93,9 @@ describe('chat/raw terminal display',()=>{
     // Browser and native clocks can differ by much more than five seconds.
     page.messages[0].timestamp='2099-01-01T00:00:00Z';page.messages[1].timestamp='2099-01-02T00:00:00Z';
     mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
-    const input=screen.getByRole('textbox');fireEvent.change(input,{target:{value:'继续修复'}});
+    const input=screen.getByRole('textbox');typeDraft(input,'继续修复');
     fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));
-    const order=()=>Array.from(document.querySelectorAll('.session-chat-message .session-chat-body')).map(node=>node.textContent);
+    const order=()=>Array.from(document.querySelectorAll('.session-chat-message .session-chat-body')).map(node=>{const copy=node.cloneNode(true) as HTMLElement;copy.querySelectorAll('.session-chat-message-meta').forEach(meta=>meta.remove());return (copy.querySelector('.session-chat-user-text')||copy).textContent;});
     expect(order()).toEqual(['检查代码','检查已完成。','继续修复']);
     const clientId=vi.mocked(api.agent.sendInput).mock.calls[0][2];
     const echo={id:'d'.repeat(32),role:'user' as const,text:'继续修复',timestamp:'2020-01-01T00:00:00Z',client_id:clientId};
@@ -111,17 +125,17 @@ describe('chat/raw terminal display',()=>{
     fireEvent.change(screen.getByLabelText('选择对话附件'),{target:{files:[new File(['report'],'报告.txt',{type:'text/plain'})]}});
     await waitFor(()=>expect(api.sessions.pasteFile).toHaveBeenCalledTimes(1));await waitFor(()=>expect(screen.queryByText('正在上传…')).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole('button',{name:'原始终端',exact:true}));fireEvent.click(screen.getByRole('button',{name:'对话',exact:true}));
-    expect(screen.getByLabelText('待发送附件')).toHaveTextContent('截图.png');expect(screen.getByLabelText('待发送附件')).toHaveTextContent('报告.txt');
+    expect(screen.getByRole('button',{name:'预览待发送图片 截图.png'})).toHaveTextContent('图片 1');expect(screen.getByRole('button',{name:'预览待发送文件 报告.txt'})).toHaveTextContent('文件 1');
     fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));
     await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledWith('chat','',expect.any(String),[{kind:'image',name:'截图.png',path:'/project/.agentmanager/pastes/image.png'},{kind:'file',name:'报告.txt',path:'/project/.agentmanager/pastes/note.txt'}]));
     await waitFor(()=>expect(screen.queryByLabelText('待发送附件')).not.toBeInTheDocument());expect(screen.getByRole('button',{name:'打开附件 截图.png'})).toBeVisible();expect(document.body.textContent).not.toContain('agentmanager_attachments');
   });
   it('keeps failed uploads and unsent drafts visible and never sends before upload completion',async()=>{
     vi.mocked(api.sessions.pasteFile).mockRejectedValue(new Error('上传失败'));
-    mount();await screen.findByText('检查已完成。');fireEvent.change(screen.getByRole('textbox'),{target:{value:'保留文字'}});
+    mount();await screen.findByText('检查已完成。');typeDraft(screen.getByRole('textbox'),'保留文字');
     fireEvent.change(screen.getByLabelText('选择对话附件'),{target:{files:[new File(['report'],'报告.txt',{type:'text/plain'})]}});
-    expect(await screen.findByRole('alert')).toHaveTextContent('上传失败');expect(screen.getByRole('button',{name:'发送消息',exact:true})).toBeDisabled();expect(screen.getByRole('textbox')).toHaveValue('保留文字');expect(api.agent.sendInput).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button',{name:'移除附件 报告.txt'}));expect(screen.queryByLabelText('待发送附件')).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'发送消息',exact:true})).toBeEnabled();
+    expect(await screen.findByRole('alert')).toHaveTextContent('上传失败');expect(screen.getByRole('button',{name:'发送消息',exact:true})).toBeDisabled();expect(screen.getByRole('textbox')).toHaveTextContent('保留文字');expect(api.agent.sendInput).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole('button',{name:'预览待发送文件 报告.txt'}),{key:'Backspace'});expect(screen.queryByLabelText('待发送附件')).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'发送消息',exact:true})).toBeEnabled();
   });
   it('keeps interactive confirmation visible and routes it to the original terminal',async()=>{
     page={...page,interaction:{processState:'waiting_for_input',promptType:'choice',isPermission:true,choices:['Allow','Deny']}};
@@ -136,13 +150,13 @@ describe('chat/raw terminal display',()=>{
   });
   it('still shows genuine native requests for user input',async()=>{
     page={...page,runtime:{source:'codex_rollout',session_id:'native',state:'waiting_for_input',last_activity_at:null,observed_at:new Date().toISOString(),reason:'native request'},interaction:{processState:'waiting_for_input',promptType:'choice',isPermission:false,choices:['继续','取消']}};
-    mount();expect(await screen.findByText('Agent 需要你确认或选择')).toBeVisible();expect(screen.getByRole('textbox')).toBeDisabled();
+    mount();expect(await screen.findByText('Agent 需要你确认或选择')).toBeVisible();expect(screen.getByRole('textbox')).toHaveAttribute('aria-disabled','true');
   });
   it('does not retry ambiguous sends or discard text on failure',async()=>{
     vi.mocked(api.agent.sendInput).mockRejectedValue(new Error('发送未能确认'));
-    mount();await screen.findByText('检查已完成。');const input=screen.getByRole('textbox');fireEvent.change(input,{target:{value:'保留草稿'}});
+    mount();await screen.findByText('检查已完成。');const input=screen.getByRole('textbox');typeDraft(input,'保留草稿');
     await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));});
-    expect(await screen.findByRole('alert')).toHaveTextContent('请查看原始终端确认后再重试');expect(input).toHaveValue('保留草稿');expect(api.agent.sendInput).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('alert')).toHaveTextContent('请查看原始终端确认后再重试');expect(input).toHaveTextContent('保留草稿');expect(api.agent.sendInput).toHaveBeenCalledTimes(1);
   });
   it('keeps a native terminal draft from being combined with chat input',async()=>{
     mount();await screen.findByText('检查已完成。');
@@ -190,7 +204,7 @@ describe('chat/raw terminal display',()=>{
     page.messages=[{id:'first-user',role:'user',text:'整理文档',turn_id:'active',timestamp:null},{id:'first-progress',role:'assistant',text:'正在补充差异说明',phase:'commentary',turn_id:'active',timestamp:null}];
     mount();await screen.findByText('正在补充差异说明');await waitFor(()=>expect(sockets).toHaveLength(1));
     const frame=(messages:unknown[],stage='tools')=>act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages,busy:true,stage,turn_id:'active',started_at:new Date(Date.now()-120000).toISOString()})}));
-    frame([]);fireEvent.change(screen.getByRole('textbox'),{target:{value:'请用通俗语言解释'}});
+    frame([]);typeDraft(screen.getByRole('textbox'),'请用通俗语言解释');
     fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalled());
     await screen.findByText('追问已提交，Codex 正在继续执行');expect(screen.queryByText('尚未收到正文，收到后会立即逐段显示。')).not.toBeInTheDocument();
     const [,text,clientId]=vi.mocked(api.agent.sendInput).mock.calls[0];

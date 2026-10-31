@@ -2623,7 +2623,7 @@ function killPidTree(pid: number): void {
   }, 3000);
 }
 
-export async function killSession(sessionId: string): Promise<boolean> {
+export async function killSession(sessionId: string, options?:{preserveLifecycle?:boolean}): Promise<boolean> {
   const session = getSession(sessionId);
   if (!session) return false;
   if(process.env.AGENTMANAGER_CODEX_STREAM_SOCKET && session.cli_type==='codex' && session.codex_session_id) {
@@ -2634,7 +2634,7 @@ export async function killSession(sessionId: string): Promise<boolean> {
   // A pending REST-created session may not have connected its first websocket
   // yet. Remove its deferred spawn so it cannot start after being cancelled.
   const wasPending = pendingSpawns.delete(sessionId);
-  if (wasPending || sessionLifecyclePromises.has(sessionId)) {
+  if (!options?.preserveLifecycle && (wasPending || sessionLifecyclePromises.has(sessionId))) {
     cancelledSessionLifecycles.add(sessionId);
   }
   if (!active) notifySessionLifecycleListeners(sessionId, false);
@@ -3204,6 +3204,55 @@ export async function resumeSessionById(sessionId: string, skipCircuitBreaker = 
   return { ok: true };
 }
 
+/** A stop request can race a pending attach/reload. Let its cancellation
+ * finish before attempting permanent deletion, while keeping the wait bounded. */
+export async function waitForStoppedSessionLifecycle(sessionId:string):Promise<void> {
+  const pending=sessionLifecyclePromises.get(sessionId);if(!pending)return;
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try {await Promise.race([pending.catch(()=>{}),new Promise<void>(resolve=>{timer=setTimeout(resolve,8000);})]);}
+  finally{clearTimeout(timer);}
+}
+
+/** Explicitly replace only this tab's terminal client. Keep the native thread,
+ * saved conversation and UI identity, and wait for the old wrapper to die. */
+type SessionReloadResult={ok:boolean;error?:string;client_version?:string};
+const sessionReloads=new Map<string,Promise<SessionReloadResult>>();
+export function reloadCodexSessionById(sessionId:string):Promise<SessionReloadResult> {
+  const pending=sessionReloads.get(sessionId);if(pending)return pending;
+  if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'会话正在启动或连接，请稍后重载'});
+  const operation=runSessionLifecycle<SessionReloadResult>(sessionId,async()=>{
+    const session=getSession(sessionId);
+    if(!session||session.cli_type!=='codex'||!nativeConversationId(session))return {ok:false,error:'此标签页没有可重载的 Codex 会话'};
+    const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
+    if(!project?.path)return {ok:false,error:'找不到会话项目目录，原会话已保留'};
+    try {
+      const {prepareCodexReload}=await import('./codex-version.js');
+      const version=await prepareCodexReload(!!codexStreamSocketForUser(session.created_by_user_id));
+      if(cancelledSessionLifecycles.has(sessionId))throw Error('重载已取消');
+      const worker=activeSessions.get(sessionId)?.worker;
+      let exited=!worker||worker.exitCode!==null||worker.signalCode!==null;
+      const onExit=()=>{exited=true;};worker?.once('exit',onExit);
+      try {
+        await killSession(sessionId,{preserveLifecycle:true});
+        const deadline=Date.now()+7000;
+        while(true) {
+          const tmuxAlive=config.useTmux?await tmuxExistsAsync(sessionId):false;
+          const dtachAlive=config.useDtach?await dtachExistsAsync(sessionId):false;
+          if(exited&&!tmuxAlive&&!dtachAlive)break;
+          if(Date.now()>=deadline)throw Error('原终端尚未完全退出，历史已保留，请稍后重试');
+          await new Promise(resolve=>setTimeout(resolve,100));
+        }
+      }finally{worker?.off('exit',onExit);}
+      if(cancelledSessionLifecycles.has(sessionId)||!getSession(sessionId))throw Error('重载已取消');
+      await resumeCrashedSessionUnlocked(getSession(sessionId)!,project.path,true);
+      insertEvent({session_id:sessionId,type:'session_reload',data:{nativeSessionId:session.codex_session_id,clientVersion:version}});
+      return {ok:true,client_version:version};
+    }catch(error){return {ok:false,error:error instanceof Error?error.message:'重载失败，历史已保留，请重试'};}
+  },()=>({ok:false,error:'会话正在启动或连接，请稍后重载'}));
+  sessionReloads.set(sessionId,operation);
+  return operation.finally(()=>{if(sessionReloads.get(sessionId)===operation)sessionReloads.delete(sessionId);});
+}
+
 /**
  * Reattach persisted tabs only when their terminal wrapper is still alive.
  * Never create a new CLI process from an automatic browser connection.
@@ -3307,7 +3356,7 @@ export function purgeSessionRecord(sessionId: string): { ok: boolean; error?: st
   const db = getDb();
   const session = getSession(sessionId);
   if (!session) return { ok: false, error: 'Session not found' };
-  if (activeSessions.has(sessionId) || sessionStatusMayHaveProcess(session.status)) {
+  if (activeSessions.has(sessionId) || sessionLifecyclePromises.has(sessionId) || sessionStatusMayHaveProcess(session.status)) {
     return { ok: false, error: 'Stop the session before deleting it' };
   }
 

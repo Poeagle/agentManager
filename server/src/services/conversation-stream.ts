@@ -10,6 +10,7 @@ import {conversationErrorMessage} from './conversation-error.js';
 import {conversationActivity,type ConversationActivity} from './conversation-activity.js';
 
 export type ConversationStreamFrame =
+  | {type:'settings';model:string;effort:string|null}
   | {type:'snapshot';messages:ConversationMessage[];interactions:ConversationInteraction[];activities:ConversationActivity[];busy:boolean;connected:true;turn_id:string|null;started_at:string|null;completed_at:string|null;stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
   | {type:'unavailable';reason:string;reconnect?:boolean};
 
@@ -35,7 +36,7 @@ export async function withCodexConnection<T>(action:(request:CodexRequest,server
   socket.on('close',rejectPending);socket.on('error',rejectPending);
   try {
     await opened;
-    const initialized=await request('initialize',{clientInfo:{name:'octoally-terminal',version:'1.0.0'}});
+    const initialized=await request('initialize',{clientInfo:{name:'octoally-terminal',version:'1.0.0'},capabilities:{experimentalApi:true}});
     socket.send(JSON.stringify({method:'initialized'}));
     return await action(request,{userAgent:typeof initialized?.userAgent==='string'?initialized.userAgent:null});
   } finally {rejectPending();if(socket.readyState===WebSocket.CONNECTING)socket.terminate();else socket.close();}
@@ -67,13 +68,11 @@ export async function interruptStreamingCodexThread(threadId:string) {
 
 /** Conversation text goes to the same engine, independently of terminal UI
  * menus, focus, and transport suspension. Embedded CLIs retain their PTY path. */
-export async function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[]=[],settings?:{model:string;effort:string;applied:()=>void}):Promise<boolean> {
+export async function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[]=[]):Promise<boolean> {
   return withCodexConnection(async request=>{
     const current=await request('thread/read',{threadId});
     if(current.thread?.status?.type==='notLoaded') return false;
-    const overrides=settings&&current.thread?.status?.type==='idle'?{model:settings.model,effort:settings.effort}:{};
-    await request('turn/start',{threadId,clientUserMessageId:clientId||randomUUID(),...overrides,input:[{type:'text',text:formatConversationInput(text,attachments),text_elements:[]},...attachments.filter(item=>item.kind==='image').map(item=>({type:'localImage',path:item.path}))]});
-    if(settings&&overrides.model)settings.applied();
+    await request('turn/start',{threadId,clientUserMessageId:clientId||randomUUID(),input:[{type:'text',text:formatConversationInput(text,attachments),text_elements:[]},...attachments.filter(item=>item.kind==='image').map(item=>({type:'localImage',path:item.path}))]});
     return true;
   });
 }
@@ -97,7 +96,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     flush=undefined;
     if(!closed) emit({type:'snapshot',interactions:[...interactions.values()].map(entry=>entry.card),messages:[...items.values()].filter(item=>item.message.text.length>0).map(item=>item.message),activities:[...activities.values()],busy,connected:true,turn_id:turnId,started_at:startedAt,completed_at:completedAt,stage});
   }
-  function changed() {if(!flush) flush=setTimeout(snapshot,35);}
+  function changed() {if(!flush) flush=setTimeout(snapshot,10);}
   function request(method:string,params:unknown):Promise<any> {
     const id=++next;
     return new Promise((resolve,reject)=>{
@@ -179,7 +178,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     } catch {unavailable();if(!closed && socket.readyState===WebSocket.OPEN) retry=setTimeout(()=>void attach(),3000);}
   }
   socket.on('open',()=>{
-    void request('initialize',{clientInfo:{name:'octoally-conversation',version:'1.0.0'}}).then(()=>{
+    void request('initialize',{clientInfo:{name:'octoally-conversation',version:'1.0.0'},capabilities:{experimentalApi:true}}).then(()=>{
       if(closed) return;socket.send(JSON.stringify({method:'initialized'}));return attach();
     }).catch(()=>unavailable());
   });
@@ -189,6 +188,9 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(waiting) {pending.delete(frame.id);clearTimeout(waiting.timer);if(frame.error) waiting.reject(new Error('Codex 事件接口不可用'));else waiting.resolve(frame.result);return;}
     const data=frame.params;
     if(data?.threadId!==threadId) return;
+    if(frame.method==='thread/settings/updated'&&typeof data.threadSettings?.model==='string') {
+      if(!closed)emit({type:'settings',model:data.threadSettings.model,effort:data.threadSettings.effort??null});return;
+    }
     if(frame.method==='serverRequest/resolved') {interactions.delete(JSON.stringify(data.requestId));changed();return;}
     const card=nativeInteraction(frame,threadId);
     if(card) {if(!interactions.has(card.id))interactions.set(card.id,{card,nativeId:frame.id,params:data});changed();return;}

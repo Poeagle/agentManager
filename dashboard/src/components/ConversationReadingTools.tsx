@@ -1,3 +1,4 @@
+import {automaticConversationContext} from '../lib/conversation-context';
 import {memo,useEffect,useId,useMemo,useRef,useState,type RefObject} from 'react';
 import {ChevronUp} from 'lucide-react';
 import {parseConversationInput} from '../lib/conversation-attachments';
@@ -86,6 +87,7 @@ function excerpt(text:string,limit:number) {return text.slice(0,limit*3).replace
 export function conversationOutline(messages:ConversationMessage[]):ConversationOutlineItem[] {
   const items:ConversationOutlineItem[]=[];
   for(const message of messages) {
+    if(message.role==='user'&&automaticConversationContext(message.text))continue;
     if(message.role==='user')items.push({id:message.id,prompt:excerpt(parseConversationInput(message.text).text,140)||'未命名提问',question:parseConversationInput(message.text).text.slice(0,4000)||'附件提问',response:'',answers:[],streaming:false});
     else {
       if(!items.length)items.push({id:message.id,prompt:'较早的回复',question:'',response:'',answers:[],streaming:false});

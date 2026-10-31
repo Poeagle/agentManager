@@ -1639,6 +1639,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         projectPath={projectPath} onOpenFile={handleOpenInExplorer}
                         renderTerminal={renderTerminal} resuming={resuming} resumeFailed={resumeState?.phase==='error'}
                         onResume={canResume || resuming ? () => { void sessionResume.resume(term.id); } : undefined}
+                        onReload={endedSession.cli_type==='codex'&&endedSession.codex_session_id?async()=>{await sessionResume.reload(term.id);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
                         onClose={isEnded ? () => closeEndedSession(term.id) : undefined}
                       /> : <div className="p-3 text-xs" style={{color:'var(--text-secondary)'}}>正在读取会话信息…</div>)}
                       {shouldMount && resumeState && <SessionResumeFeedback state={resumeState} />}

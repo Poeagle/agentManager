@@ -3,8 +3,8 @@ import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 
 const parser=unified().use(remarkParse).use(remarkGfm);
-export interface MarkdownBlock {key:number;offset:number;source:string}
-interface PositionedBlock {position?:{start:{offset?:number};end:{offset?:number}}}
+export interface MarkdownBlock {key:number;offset:number;source:string;kind?:string}
+interface PositionedBlock {type?:string;position?:{start:{offset?:number};end:{offset?:number}}}
 /** Keep completed blocks stable while the final two blocks are still being
  * shaped by appended text (lists, tables and unfinished fences in particular).
  * Reference links and footnotes need document-wide context, so use one full
@@ -26,7 +26,7 @@ export class ConversationMarkdownBlocks {
     for(const block of tree.children){
       const start=block.position?.start.offset;const end=block.position?.end.offset;
       if(start===undefined||end===undefined)continue;
-      chunks.push({key:this.frontier+start,offset:this.frontier+previousEnd,source:tail.slice(previousEnd,end)});previousEnd=end;
+      chunks.push({key:this.frontier+start,offset:this.frontier+previousEnd,source:tail.slice(previousEnd,end),kind:block.type});previousEnd=end;
     }
     const newlyFrozen=chunks.slice(0,stable);const unstable=chunks.slice(stable);
     this.frozen.push(...newlyFrozen);

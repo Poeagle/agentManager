@@ -28,6 +28,13 @@ beforeEach(async()=>{
 afterEach(async()=>{stop?.();stop=undefined;for(const client of wss.clients) client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 const send=(method:string,params:unknown)=>peer.send(JSON.stringify({method,params}));
 describe('native Codex conversation streaming',()=>{
+  it('forwards native settings immediately without leaking other thread settings or private fields',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
+    send('thread/settings/updated',{threadId:'other',threadSettings:{model:'private',effort:'high'}});
+    send('thread/settings/updated',{threadId:'thread',threadSettings:{model:'chosen',effort:'medium',private:'PRIVATE'}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toEqual({type:'settings',model:'chosen',effort:'medium'}));
+    expect(JSON.stringify(frames)).not.toContain('PRIVATE');expect(submissions).toHaveLength(0);
+  });
   it('streams nonblocking question metadata on the actual AgentMessage item without creating a blocking RPC request',async()=>{
     stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
     const questions=[{title:'想去哪里？',options:['太空','深海','森林']}];

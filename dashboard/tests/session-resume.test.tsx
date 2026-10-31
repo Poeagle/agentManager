@@ -8,7 +8,7 @@ import { SessionResumeFeedback } from '../src/components/SessionResumeFeedback';
 
 vi.mock('../src/lib/api', async () => {
   const actual = await vi.importActual<typeof import('../src/lib/api')>('../src/lib/api');
-  return { ...actual, api: { ...actual.api, sessions: { ...actual.api.sessions, resume: vi.fn() } } };
+  return { ...actual, api: { ...actual.api, sessions: { ...actual.api.sessions, resume: vi.fn(), reload:vi.fn() } } };
 });
 
 const ended: Session = {
@@ -50,6 +50,18 @@ describe('manual session resume feedback', () => {
     expect(api.sessions.resume).toHaveBeenCalledTimes(1);
     act(() => result.current.terminalReady(ended.id));
     expect(result.current.states[ended.id].phase).toBe('ready');
+  });
+
+  it('ignores the expected old-terminal exit while reloading, then waits for the replacement',async()=>{
+    let finish!:(value:{ok:boolean;session:Session})=>void;
+    vi.mocked(api.sessions.reload).mockReturnValue(new Promise(resolve=>finish=resolve));
+    const {result}=setup();let request!:Promise<void>;
+    act(()=>{request=result.current.reload(ended.id);});
+    act(()=>{result.current.terminalExited(ended.id);result.current.terminalFailed(ended.id,'old socket closed');});
+    expect(result.current.states[ended.id]).toMatchObject({action:'reload',phase:'starting'});
+    await act(async()=>{finish({ok:true,session:resumed});await request;});
+    expect(result.current.states[ended.id].phase).toBe('connecting');
+    act(()=>result.current.terminalReady(ended.id));expect(result.current.states[ended.id].phase).toBe('ready');
   });
 
   it('updates both session caches so stale history cannot keep the resumed tab ended', async () => {

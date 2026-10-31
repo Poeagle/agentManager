@@ -29,14 +29,15 @@ test('sending, early native echoes, late history and reload preserve causal mess
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
   await expect(chat.getByText('事件通道已连接')).toBeVisible();
   const bodies=chat.locator('.session-chat-message .session-chat-body');
-  const expected=['之前的问题','之前的答复'];await expect(bodies).toHaveText(expected);
+  const expectBodies=async(value:string[])=>expect.poll(()=>bodies.evaluateAll(nodes=>nodes.map(node=>{const clone=node.cloneNode(true) as HTMLElement;clone.querySelectorAll('.session-chat-message-meta').forEach(meta=>meta.remove());return clone.textContent?.trim()||'';}))).toEqual(value);
+  const expected=['之前的问题','之前的答复'];await expectBodies(expected);
   for(let round=1;round<=2;round++) {
     submitted=undefined;
     await chat.getByRole('textbox').fill('继续');await chat.getByRole('button',{name:'发送消息',exact:true}).click();
-    expected.push('继续');await expect(bodies).toHaveText(expected);
+    expected.push('继续');await expectBodies(expected);
     await expect.poll(()=>submitted?.client_id).toMatch(/^[a-f0-9]{32}$/);
     if(round===2) {
-      release();await expect(chat.getByRole('textbox')).toHaveValue('');
+      release();await expect(chat.getByRole('textbox')).toHaveText('');
       await expect(chat.getByText('追问已提交，Codex 正在继续执行',{exact:true})).toBeVisible();
       await expect(chat.getByText('尚未收到正文，收到后会立即逐段显示。',{exact:true})).toHaveCount(0);
     }
@@ -45,20 +46,20 @@ test('sending, early native echoes, late history and reload preserve causal mess
     const user={id:id(turn,'user',`stream-user-${round}`),role:'user',text:'继续',timestamp:stamp,turn_id:turn,client_id:submitted!.client_id};
     const answer={id:id(turn,'assistant',`stream-a${round}`),role:'assistant',phase:round===1?'commentary':'final',text:`第 ${round} 轮答复\n`,timestamp:stamp,turn_id:turn,streaming:true};
     push(JSON.stringify({type:'snapshot',messages:[user,answer],busy:true,stage:'answering',turn_id:turn}));
-    expected.push(answer.text.trim());await expect(bodies).toHaveText(expected);
+    expected.push(answer.text.trim());await expectBodies(expected);
     await expect(chat.getByText('追问已提交，Codex 正在继续执行',{exact:true})).toHaveCount(0);
     appendFileSync(log,record(turn,'user',`log-user-${round}`,'继续',stamp)+record(turn,'assistant',`a${round}`,answer.text.trim(),stamp).replace('"phase":"final_answer"',`"phase":"${round===1?'commentary':'final_answer'}"`));
     push(JSON.stringify({type:'snapshot',messages:[user,{...answer,streaming:false}],busy:round===1,stage:round===1?'tools':'idle',turn_id:turn}));
     // Let durable reconciliation run before the HTTP send is acknowledged.
     await expect(chat.locator(`[data-chat-message-id="${id(turn,'user',`log-user-${round}`)}"]`)).toHaveCount(1);
     await expect(chat.locator(`[data-chat-message-id="${id(turn,'assistant',`a${round}`)}"]`)).toHaveAttribute('data-streaming','false');
-    await expect(bodies).toHaveText(expected);if(round===1)release();await expect(chat.getByRole('textbox')).toHaveValue('');
+    await expectBodies(expected);if(round===1)release();await expect(chat.getByRole('textbox')).toHaveText('');
     // Replaying the same live snapshot must not resurrect its aliased user ID.
     push(JSON.stringify({type:'snapshot',messages:[user,{...answer,streaming:false}],busy:round===1,stage:round===1?'tools':'idle',turn_id:turn}));
-    await expect(bodies).toHaveText(expected);
+    await expectBodies(expected);
   }
-  await page.getByRole('button',{name:'原始终端',exact:true}).click();await page.getByRole('button',{name:'对话',exact:true}).click();await expect(bodies).toHaveText(expected);
-  await page.reload();await expect(chat.getByText('事件通道已连接')).toBeVisible();await expect(bodies).toHaveText(expected);
+  await page.getByRole('button',{name:'原始终端',exact:true}).click();await page.getByRole('button',{name:'对话',exact:true}).click();await expectBodies(expected);
+  await page.reload();await expect(chat.getByText('事件通道已连接')).toBeVisible();await expectBodies(expected);
   await page.screenshot({path:testInfo.outputPath('message-order.png')});
   await page.request.delete(`/api/sessions/${session.id}`);
 });

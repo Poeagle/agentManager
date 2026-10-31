@@ -1,12 +1,12 @@
 import {ConversationImagePreviewRoot,useConversationImagePreview,useConversationFilePreview} from './ConversationImagePreview';
 import {useEffect,useRef,useState} from 'react';
-import {File,Image,Loader2,Paperclip,X} from 'lucide-react';
+import {File,Paperclip} from 'lucide-react';
 import {api} from '../lib/api';
 import {readFileAsDataUrl} from '../lib/file-data-url';
 import {conversationClientId} from '../lib/conversation-timeline';
 import type {ConversationAttachment} from '../lib/conversation-attachments';
 
-interface DraftAttachment {id:string;name:string;kind:'image'|'file';size:number;path?:string;thumbnail?:string;status:'uploading'|'ready'|'error';error?:string}
+export interface DraftAttachment {id:string;name:string;kind:'image'|'file';size:number;path?:string;thumbnail?:string;status:'uploading'|'ready'|'error';error?:string}
 export function useConversationAttachments(sessionId:string) {
   const [items,setItems]=useState<DraftAttachment[]>([]),[error,setError]=useState('');
   const current=useRef(items),alive=useRef(true),queue=useRef(Promise.resolve());
@@ -46,20 +46,9 @@ export function useConversationAttachments(sessionId:string) {
   return {items,error,enqueue,remove,clear:(ids:string[])=>{for(const id of ids)remove(id);},uploading:items.some(item=>item.status==='uploading'),failed:items.some(item=>item.status==='error'),values:()=>current.current.filter(item=>item.status==='ready' && item.path).map(item=>({kind:item.kind,name:item.name,path:item.path!})) as ConversationAttachment[]};
 }
 
-export function ConversationAttachmentPicker({items,error,disabled,onFiles,onRemove}:{items:DraftAttachment[];error:string;disabled:boolean;onFiles:(files:File[])=>void;onRemove:(id:string)=>void}) {
+export function ConversationAttachmentPicker({disabled,onFiles}:{disabled:boolean;onFiles:(files:File[])=>void}) {
   const input=useRef<HTMLInputElement>(null);
-  return <>
-    <input ref={input} type="file" multiple hidden aria-label="选择对话附件" disabled={disabled} onChange={event=>{onFiles(Array.from(event.target.files||[]));event.target.value='';}}/>
-    <button type="button" className="session-chat-attach" aria-label="上传图片或文件" title="上传图片或文件，也可粘贴截图、拖入文件" disabled={disabled} onClick={()=>input.current?.click()}><Paperclip size={17}/></button>
-    {(items.length>0 || error) && <div className="session-chat-attachment-tray" aria-label="待发送附件">
-      {items.map(item=><div key={item.id} className="session-chat-draft-attachment" data-status={item.status}>
-        {item.thumbnail?<img src={item.thumbnail} alt={item.name}/>:item.kind==='image'?<Image size={17}/>:<File size={17}/>}
-        <span><strong>{item.name}</strong>{item.status==='uploading'?<small><Loader2 size={12} className="animate-spin"/>正在上传…</small>:item.error?<small role="alert">{item.error}</small>:null}</span>
-        <button type="button" aria-label={`移除附件 ${item.name}`} disabled={disabled} onClick={()=>onRemove(item.id)}><X size={13}/></button>
-      </div>)}
-      {error && <p role="alert" className="session-chat-error">{error}</p>}
-    </div>}
-  </>;
+  return <><input ref={input} type="file" multiple hidden aria-label="选择对话附件" disabled={disabled} onChange={event=>{onFiles(Array.from(event.target.files||[]));event.target.value='';}}/><button type="button" className="session-chat-attach" aria-label="上传图片或文件" title="上传图片或文件，也可粘贴截图、拖入文件" disabled={disabled} onClick={()=>input.current?.click()}><Paperclip size={17}/></button></>;
 }
 
 export function ConversationMessageAttachments({items,projectId,onOpenFile,projectPath}:{items:ConversationAttachment[];projectId:string|null;projectPath?:string;onOpenFile?:(path:string)=>void}) {

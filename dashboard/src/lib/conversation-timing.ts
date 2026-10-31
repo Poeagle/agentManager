@@ -1,4 +1,5 @@
 import type {ConversationMessage} from './api';
+import {automaticConversationContext} from './conversation-context';
 
 const timestampFormatter=new Intl.DateTimeFormat('sv-SE',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
 
@@ -22,6 +23,7 @@ export function formatElapsed(milliseconds: number): string {
 }
 
 export function conversationTimings(messages: ConversationMessage[], now: number, busy: boolean,activeTurnId?:string|null) {
+  messages=messages.filter(message=>message.role!=='user'||!automaticConversationContext(message.text));
   const result=new Map<string,{label:string;title:string}>();
   let userTime:string|null=null;
   let userTurn:string|undefined;

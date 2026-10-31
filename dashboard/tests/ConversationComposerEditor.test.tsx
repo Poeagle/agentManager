@@ -1,0 +1,19 @@
+import {useState} from 'react';import{fireEvent,render,screen}from'@testing-library/react';import{describe,it,expect,vi}from'vitest';
+import {ConversationComposerEditor,composerPlainText} from '../src/components/ConversationComposerEditor';
+import {ConversationImagePreviewRoot} from '../src/components/ConversationImagePreview';
+import type{DraftAttachment}from'../src/components/ConversationAttachments';
+vi.mock('../src/lib/api',()=>({api:{files:{previewUrl:(path:string)=>path}}}));
+const first:DraftAttachment={id:'one',kind:'image',name:'first.png',size:100,status:'ready',path:'/project/one.png'},second:DraftAttachment={...first,id:'two',name:'second.png',path:'/project/two.png'};
+function mount(){const submit=vi.fn();function Harness(){const [text,setText]=useState('我的问题'),[items,setItems]=useState([first,second]);return <ConversationImagePreviewRoot><ConversationComposerEditor value={text} items={items} disabled={false} placeholder="输入" projectId="p" projectPath="/project" onChange={setText} onRemove={id=>setItems(current=>current.filter(item=>item.id!==id))} onFiles={()=>{}} onSubmit={submit}/></ConversationImagePreviewRoot>;}render(<Harness/>);return submit;}
+function caret(node:Node,offset:number){const selection=window.getSelection()!,range=document.createRange();range.setStart(node,offset);range.collapse(true);selection.removeAllRanges();selection.addRange(range);}
+describe('attachment text in the composer',()=>{
+ it('shows ordered atomic text, opens preview and deletes the focused token with Backspace',()=>{
+  mount();const editor=screen.getByRole('textbox');expect(composerPlainText(editor)).toBe('我的问题');const token=screen.getByRole('button',{name:'预览待发送图片 first.png'});expect(token).toHaveTextContent('图片 1');expect(screen.getByRole('button',{name:'预览待发送图片 second.png'})).toHaveTextContent('图片 2');expect(screen.queryByRole('button',{name:/移除附件/})).not.toBeInTheDocument();fireEvent.click(token);const dialog=screen.getByRole('dialog');fireEvent.keyDown(dialog,{key:'Escape'});fireEvent.keyDown(token,{key:'Backspace'});expect(screen.queryByRole('button',{name:'预览待发送图片 first.png'})).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'预览待发送图片 second.png'})).toHaveTextContent('图片 1');expect(composerPlainText(editor)).toBe('我的问题');
+ });
+ it('deletes the atom next to the caret without changing ordinary message text',()=>{
+  mount();const editor=screen.getByRole('textbox'),token=screen.getByRole('button',{name:'预览待发送图片 second.png'}),parent=token.parentNode!;caret(parent,Array.from(parent.childNodes).indexOf(token)+1);fireEvent.keyDown(editor,{key:'Backspace'});expect(screen.queryByRole('button',{name:'预览待发送图片 second.png'})).not.toBeInTheDocument();expect(composerPlainText(editor)).toBe('我的问题');const firstToken=screen.getByRole('button',{name:'预览待发送图片 first.png'});caret(firstToken.parentNode!,Array.from(firstToken.parentNode!.childNodes).indexOf(firstToken));fireEvent.keyDown(editor,{key:'Delete'});expect(screen.queryByLabelText('待发送附件')).not.toBeInTheDocument();
+ });
+ it('keeps IME Enter from sending and pastes HTML as plain text',()=>{
+  const submit=mount(),editor=screen.getByRole('textbox');fireEvent.compositionStart(editor);fireEvent.keyDown(editor,{key:'Enter',isComposing:true});expect(submit).not.toHaveBeenCalled();fireEvent.compositionEnd(editor);caret(editor.firstChild!,4);fireEvent.paste(editor,{clipboardData:{files:[],getData:()=>'<img src=x onerror=bad>'}});expect(editor.querySelector('img')).toBeNull();expect(composerPlainText(editor)).toContain('<img src=x onerror=bad>');fireEvent.keyDown(editor,{key:'Enter'});expect(submit).toHaveBeenCalledOnce();
+ });
+});

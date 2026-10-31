@@ -27,6 +27,7 @@ beforeEach(async()=>{
     if(f.method==='model/list')result={data:[{model:'model-a',displayName:'Model A',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'},{model:'model-b',displayName:'Model B',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'}],defaultReasoningEffort:'low'},{model:'hidden',displayName:'Hidden',hidden:true,supportedReasoningEfforts:[{reasoningEffort:'low'}]}]};
     if(f.method==='model/list'&&noModels)result={data:[]};
     if(f.method==='account/rateLimits/read')result={rateLimits:{primary:{usedPercent:30,windowDurationMins:10080,resetsAt:1900000000},credits:{balance:'PRIVATE BALANCE'}}};
+    if(f.method==='thread/settings/update'){if(fail){ws.send(JSON.stringify({id:f.id,error:{message:'failed'}}));return;}model=f.params.model;effort=f.params.effort;}
     if(f.method==='turn/start'){inputs.push(f.params);if(fail){ws.send(JSON.stringify({id:f.id,error:{message:'failed'}}));return;}if(f.params.model)model=f.params.model;if(f.params.effort)effort=f.params.effort;}
     ws.send(JSON.stringify({id:f.id,result}));
   }));await new Promise<void>(r=>server.listen(socket,r));
@@ -47,15 +48,18 @@ describe('native conversation controls',()=>{
  it('does not cache an empty model catalog as a successful result and recovers on the next read',async()=>{
   noModels=true;const first=await get();expect(first.json()).toMatchObject({can_edit:false,models:[]});noModels=false;const second=await get();expect(second.json()).toMatchObject({can_edit:true,models:[{model:'model-a'},{model:'model-b'}],limits:[{used_percent:30}]});expect(methods.filter(m=>m==='model/list')).toHaveLength(2);
  });
- it('saves preferences without mutating the engine and applies them exactly once when an idle turn starts',async()=>{
-  expect((await set({model:'model-b',effort:'medium'})).statusCode).toBe(200);expect(inputs).toHaveLength(0);expect((await get()).json().pending).toEqual({model:'model-b',effort:'medium'});
-  expect((await send()).statusCode).toBe(202);expect(inputs[0]).toMatchObject({model:'model-b',effort:'medium'});expect(readModelPreference(owner,'s')).toBeNull();expect((await get()).json().model).toBe('model-b');await send();expect(inputs[1]).not.toHaveProperty('model');expect(manager.writeToSession).not.toHaveBeenCalled();
+ it('applies settings immediately through the TUI settings-only RPC without submitting a user turn',async()=>{
+  expect((await set({model:'model-b',effort:'medium'})).statusCode).toBe(200);expect(inputs).toHaveLength(0);expect(methods).toContain('thread/settings/update');expect((await get()).json()).toMatchObject({model:'model-b',effort:'medium',pending:null});expect(readModelPreference(owner,'s')).toBeNull();
+  expect((await send()).statusCode).toBe(202);expect(inputs[0]).not.toHaveProperty('model');expect(manager.writeToSession).not.toHaveBeenCalled();
  });
- it('keeps changes pending during active followups and consumes them only on a later idle task',async()=>{
-  await set({model:'model-b',effort:'low'});active=true;expect((await send()).statusCode).toBe(202);expect(inputs[0]).not.toHaveProperty('model');expect(readModelPreference(owner,'s')).not.toBeNull();active=false;await send();expect(inputs[1]).toMatchObject({model:'model-b',effort:'low'});expect(readModelPreference(owner,'s')).toBeNull();
+ it('updates settings while a task is active without interrupting it or waiting for another task',async()=>{
+  active=true;expect((await set({model:'model-b',effort:'low'})).statusCode).toBe(200);expect(inputs).toHaveLength(0);expect(methods).not.toContain('turn/interrupt');expect((await get()).json()).toMatchObject({model:'model-b',effort:'low',pending:null});
  });
- it('retains pending settings when a native send fails and never duplicates it through the terminal',async()=>{
-  await set({model:'model-b',effort:'low'});fail=true;expect((await send()).statusCode).toBe(503);expect(readModelPreference(owner,'s')).not.toBeNull();expect(manager.writeToSession).not.toHaveBeenCalled();
+ it('does not claim a failed update applied or send it through the terminal, and clears legacy pending state only on success',async()=>{
+  saveModelPreference(owner,'s',{model:'model-b',effort:'low'});fail=true;expect((await set({model:'model-b',effort:'low'})).statusCode).toBe(503);expect(readModelPreference(owner,'s')).not.toBeNull();expect(manager.writeToSession).not.toHaveBeenCalled();expect(inputs).toHaveLength(0);fail=false;expect((await set({model:'model-b',effort:'low'})).statusCode).toBe(200);expect(readModelPreference(owner,'s')).toBeNull();
+ });
+ it('manual refresh bypasses catalog and quota caches',async()=>{
+  await get();methods=[];const response=await app.inject({url:'/api/sessions/s/controls?refresh=true',headers:{cookie}});expect(response.statusCode).toBe(200);expect(methods).toContain('model/list');expect(methods).toContain('account/rateLimits/read');
  });
  it('rejects unsupported effort, hidden models and permission injection, and allows undo',async()=>{
   for(const value of [{model:'model-b',effort:'high'},{model:'hidden',effort:'low'},{model:'model-a',effort:'high',approvalPolicy:'never'}])expect((await set(value)).statusCode).toBe(400);

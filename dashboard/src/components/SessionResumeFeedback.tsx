@@ -26,7 +26,7 @@ export function SessionResumeFeedback({ state }: { state: SessionResumeState }) 
       <div className="flex items-center gap-2">
         <Icon className={`h-4 w-4 shrink-0 ${busy ? 'animate-spin motion-reduce:animate-none' : ''}`} style={{ color }} />
         <span className="font-medium">
-          {state.phase === 'starting' ? 'Resuming — starting session…'
+          {state.action==='reload'?(state.phase==='starting'?'正在重载标签页…':state.phase==='connecting'?'重载中，正在连接终端…':failed?'重载失败':'标签页已重载'):state.phase === 'starting' ? 'Resuming — starting session…'
             : state.phase === 'connecting' ? 'Resuming — connecting terminal…'
               : failed ? 'Resume failed' : 'Session resumed'}
         </span>

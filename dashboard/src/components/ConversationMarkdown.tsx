@@ -12,9 +12,14 @@ import {MarkdownTable} from './AiReply';
 
 const Streaming=createContext(false);
 const SourceOffset=createContext(0);
-const MarkdownSegment=memo(function MarkdownSegment({source,offset,components}:{source:string;offset:number;components:Components}) {
-  return <SourceOffset.Provider value={offset}><ReactMarkdown remarkPlugins={[remarkGfm,conversationCjkStrong]} components={components} skipHtml>{source}</ReactMarkdown></SourceOffset.Provider>;
+const Trailing=createContext<{content:ReactNode;end:number;kind?:string}|null>(null);
+const MarkdownSegment=memo(function MarkdownSegment({source,offset,components,footer,kind}:{source:string;offset:number;components:Components;footer?:ReactNode;kind?:string}) {
+  const trailing=useMemo(()=>footer?{content:footer,end:source.trimEnd().length,kind}:null,[footer,source,kind]);
+  return <SourceOffset.Provider value={offset}><Trailing.Provider value={trailing}><ReactMarkdown remarkPlugins={[remarkGfm,conversationCjkStrong]} components={components} skipHtml>{source}</ReactMarkdown></Trailing.Provider></SourceOffset.Provider>;
 });
+const trailingKinds=new Set(['paragraph','list','blockquote']);
+function FooterParagraph({children,node,className,...props}:any){const trailing=useContext(Trailing),show=!!trailing&&['paragraph','blockquote'].includes(trailing.kind||'')&&node?.position?.end.offset===trailing.end;return <p {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{show?<span>{children}</span>:children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</p>;}
+function FooterListItem({children,node,className,...props}:any){const trailing=useContext(Trailing),show=!!trailing&&trailing.kind==='list'&&node?.position?.end.offset===trailing.end&&!node.children?.some((child:any)=>['ul','ol'].includes(child.tagName));return <li {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</li>;}
 export async function copyConversationText(text:string) {
   if(navigator.clipboard && window.isSecureContext){await navigator.clipboard.writeText(text);return;}
   const focused=document.activeElement;const area=document.createElement('textarea');area.value=text;area.style.position='fixed';area.style.top='-9999px';document.body.appendChild(area);
@@ -63,8 +68,8 @@ function MarkdownImage({src,alt,root,projectId}:{src?:string;alt?:string;root?:s
   return error?<span className="conversation-image-error">图片加载失败{alt?`：${alt}`:''}</span>:<button type="button" className="conversation-inline-image" aria-label={`预览图片 ${alt||'图片'}`} disabled={!url} onClick={event=>{event.preventDefault();event.stopPropagation();if(url)openPreview?.({src:url,name:alt||'图片'});}}><img src={url} alt={alt||'图片'} loading="lazy" onError={()=>setError(true)}/></button>;
 }
 
-export const ConversationMarkdown=memo(function ConversationMarkdown({content,messageId,streaming=false,projectPath,projectId,onOpenFile,onNavigate}:{
-  content:string;messageId:string;streaming?:boolean;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void;
+export const ConversationMarkdown=memo(function ConversationMarkdown({content,messageId,streaming=false,projectPath,projectId,onOpenFile,onNavigate,footer}:{
+  content:string;messageId:string;streaming?:boolean;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void;footer?:ReactNode;
 }) {
   const blockReader=useRef<ConversationMarkdownBlocks|null>(null);
   blockReader.current??=new ConversationMarkdownBlocks();
@@ -75,6 +80,7 @@ export const ConversationMarkdown=memo(function ConversationMarkdown({content,me
       const Tag=`h${level}` as const;return <Tag id={`chat-${messageId}-section-${offset+(node?.position?.start.offset??0)}`} data-chat-heading={level}>{children}</Tag>;
     };
     return {
+      p:FooterParagraph,li:FooterListItem,
       h1:heading(1),h2:heading(2),h3:heading(3),h4:heading(4),h5:heading(5),h6:heading(6),
       pre:({children})=>{
         const child=Children.toArray(children).find(element=>isValidElement(element));
@@ -99,5 +105,6 @@ export const ConversationMarkdown=memo(function ConversationMarkdown({content,me
       img:({src,alt})=><MarkdownImage src={typeof src==='string'?src:undefined} alt={alt} root={projectPath} projectId={projectId}/>,
     };
   },[messageId,projectPath,projectId,onOpenFile,onNavigate]);
-  return <ConversationImagePreviewRoot><Streaming.Provider value={streaming}><div className="markdown-preview conversation-markdown">{blocks.map(block=><MarkdownSegment key={block.key} source={block.source} offset={block.offset} components={components}/>)}</div></Streaming.Provider></ConversationImagePreviewRoot>;
+  const inline=trailingKinds.has(blocks.at(-1)?.kind||'');
+  return <ConversationImagePreviewRoot><Streaming.Provider value={streaming}><div className="markdown-preview conversation-markdown">{blocks.map((block,index)=><MarkdownSegment key={block.key} source={block.source} offset={block.offset} components={components} kind={block.kind} footer={inline&&index===blocks.length-1?footer:undefined}/>)}{!inline&&footer&&<div className="conversation-footer-fallback">{footer}</div>}</div></Streaming.Provider></ConversationImagePreviewRoot>;
 });

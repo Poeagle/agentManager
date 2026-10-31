@@ -6,6 +6,10 @@ import {ConversationMarkdownBlocks} from '../src/lib/conversation-markdown-block
 vi.mock('../src/components/FileExplorer',()=>({FileExplorer:({openFileRequest}:{openFileRequest:{path:string}})=><div>{openFileRequest.path}</div>}));
 const props={messageId:'message',projectId:'project',projectPath:'/work/project',onNavigate:()=>{}};
 describe('conversation Markdown',()=>{
+  it.each(['完成。','- 第一项\n- 最后一项','> 引用结论。'])('keeps one metadata footer in the last prose block: %s',content=>{
+    const view=render(<ConversationMarkdown {...props} content={content} footer={<time>12:30</time>}/>);
+    expect(view.container.querySelectorAll('time')).toHaveLength(1);expect(view.container.querySelector('.conversation-inline-meta time')).toHaveTextContent('12:30');
+  });
   it('renders quoted Chinese strong text without interpreting code or escaped markers',()=>{
     const view=render(<ConversationMarkdown {...props} content={'**“重点”**内容\n\n`**“代码”**内容`\n\n\\*\\*“原样”\\*\\*内容'}/>);
     expect(view.container.querySelector('strong')).toHaveTextContent('“重点”');expect(view.container.querySelectorAll('strong')).toHaveLength(1);

@@ -2,6 +2,7 @@ import {open} from 'fs/promises';
 import {getDb} from '../db/index.js';
 import {findCodexRollout} from './prompt-context.js';
 import {withCodexConnection} from './conversation-stream.js';
+import {installedCodexVersion} from './codex-version.js';
 import {execFile} from 'child_process';
 import {promisify} from 'util';
 const execute=promisify(execFile);
@@ -52,9 +53,9 @@ export async function readConversationTelemetry(threadId:string):Promise<Telemet
 
 let catalog:{key:string;until:number;data:ModelChoice[]}|undefined;
 let loadingCatalog:{key:string;promise:Promise<ModelChoice[]>}|undefined;
-export async function readCodexModels():Promise<ModelChoice[]> {
+export async function readCodexModels(force=false):Promise<ModelChoice[]> {
   const key=process.env.AGENTMANAGER_CODEX_STREAM_SOCKET||'';
-  if(catalog?.key===key&&catalog.until>Date.now())return catalog.data;
+  if(!force&&catalog?.key===key&&catalog.until>Date.now())return catalog.data;
   if(loadingCatalog?.key===key)return loadingCatalog.promise;
   const promise=withCodexConnection(async request=>{
     const data:ModelChoice[]=[];let cursor:string|undefined;
@@ -87,16 +88,25 @@ export function saveModelPreference(userId:string,sessionId:string,value:ModelPr
   if(!value){getDb().prepare('DELETE FROM user_ui_state WHERE user_id=? AND key=?').run(userId,preferenceKey(sessionId));return;}
   getDb().prepare("INSERT INTO user_ui_state(user_id,key,value,updated_at) VALUES(?,?,?,datetime('now')) ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at").run(userId,preferenceKey(sessionId),JSON.stringify(value));
 }
-export async function pendingModelPreference(userId:string,sessionId:string) {
-  const value=readModelPreference(userId,sessionId);if(!value)return;
-  const validated=await validateModelPreference(value);
-  return {...validated,applied:()=>{getDb().prepare('DELETE FROM user_ui_state WHERE user_id=? AND key=? AND value=?').run(userId,preferenceKey(sessionId),JSON.stringify(value));}};
+const settingWrites=new Map<string,Promise<ModelPreference>>();
+/** The same settings-only RPC used by Codex TUI /model. Never starts a turn,
+ * sends user input, changes permissions or interrupts an in-flight request. */
+export function applyCodexModelSettings(threadId:string,value:ModelPreference):Promise<ModelPreference> {
+  const prior=settingWrites.get(threadId)||Promise.resolve();
+  const work=prior.catch(()=>{}).then(()=>withCodexConnection(async request=>{
+    const before=await request('thread/read',{threadId});
+    if(!before.thread||before.thread.status?.type==='notLoaded')throw Error('会话未接入实时控制，请重载标签页后再试');
+    await request('thread/settings/update',{threadId,model:value.model,effort:value.effort});
+    const actual=await request('thread/read',{threadId});
+    if(actual.thread?.model!==value.model||actual.thread?.reasoningEffort!==value.effort)throw Error('设置状态尚未确认，请手动刷新查看');
+    return value;
+  }));settingWrites.set(threadId,work);return work.finally(()=>{if(settingWrites.get(threadId)===work)settingWrites.delete(threadId);});
 }
 
 let quota:{key:string;until:number;data:ReturnType<typeof windows>}|undefined;
 const gitCache=new Map<string,{until:number;data:{branch:string;changes:number}|null}>();
-async function readGitInfo(cwd:string|null) {
-  if(!cwd)return null;const cached=gitCache.get(cwd);if(cached&&cached.until>Date.now())return cached.data;
+async function readGitInfo(cwd:string|null,force=false) {
+  if(!cwd)return null;const cached=gitCache.get(cwd);if(!force&&cached&&cached.until>Date.now())return cached.data;
   let data:{branch:string;changes:number}|null=null;
   try {
     const {stdout}=await execute('git',['-c','core.fsmonitor=false','-C',cwd,'status','--porcelain=v1','--branch','--untracked-files=normal','--ignore-submodules=all'],{timeout:1500,maxBuffer:128*1024,env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}});
@@ -105,7 +115,7 @@ async function readGitInfo(cwd:string|null) {
   }catch{/* Not every session directory is a Git repository. */}
   gitCache.set(cwd,{until:Date.now()+3000,data});if(gitCache.size>64)gitCache.delete(gitCache.keys().next().value!);return data;
 }
-export async function readConversationControls(threadId:string,sharedAccess:boolean) {
+export async function readConversationControls(threadId:string,sharedAccess:boolean,force=false) {
   const telemetry=await readConversationTelemetry(threadId).catch(()=>empty());
   let native:any=null,loaded=false,models:ModelChoice[]=[],warning:string|null=null,limits=telemetry.limits,engineVersion:string|null=null;
   if(sharedAccess&&process.env.AGENTMANAGER_CODEX_STREAM_SOCKET) {
@@ -118,9 +128,9 @@ export async function readConversationControls(threadId:string,sharedAccess:bool
         return response.thread;
       });
       if(loaded) {
-        models=await readCodexModels();
+        models=await readCodexModels(force);
         const key=process.env.AGENTMANAGER_CODEX_STREAM_SOCKET;
-        if(quota?.key===key&&quota.until>Date.now())limits=quota.data;
+        if(!force&&quota?.key===key&&quota.until>Date.now())limits=quota.data;
         else try {const current=await withCodexConnection(async request=>{const response=await request('account/rateLimits/read',{});return windows(response.rateLimitsByLimitId?.codex??response.rateLimits,true);});if(current.length){limits=current;quota={key,until:Date.now()+60000,data:limits};}}catch{/* Last native usage still has timestamped limits. */}
       }
     }catch{warning='实时设置暂不可用，可稍后刷新';}
@@ -128,9 +138,9 @@ export async function readConversationControls(threadId:string,sharedAccess:bool
   // Host account quotas are never exposed through an ordinary member session.
   if(!sharedAccess)limits=[];
   const cwd=typeof native?.cwd==='string'?native.cwd:null;
-  const git=await readGitInfo(cwd);
+  const git=await readGitInfo(cwd,force);
   return {model:typeof native?.model==='string'?native.model:telemetry.model,effort:typeof native?.reasoningEffort==='string'?native.reasoningEffort:telemetry.effort,
-    provider:typeof native?.modelProvider==='string'?native.modelProvider:null,cwd,cli_version:typeof native?.cliVersion==='string'?native.cliVersion:null,engine_version:engineVersion,git,state:typeof native?.status?.type==='string'?native.status.type:null,
+    provider:typeof native?.modelProvider==='string'?native.modelProvider:null,cwd,cli_version:typeof native?.cliVersion==='string'?native.cliVersion:null,engine_version:engineVersion,installed_cli_version:await installedCodexVersion(force).catch(()=>null),git,state:typeof native?.status?.type==='string'?native.status.type:null,
     permission:telemetry.permission,approval:telemetry.approval,service_tier:telemetry.service_tier,usage:telemetry.usage,limits,usage_observed_at:telemetry.observed_at,
     models,loaded,warning,native_id:threadId,checked_at:new Date().toISOString()};
 }

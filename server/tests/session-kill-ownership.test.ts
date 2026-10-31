@@ -45,6 +45,13 @@ describe('session kill ownership', () => {
     cleanup();
   });
 
+  it('reload is restricted to the owner and requires Agent write permission',async()=>{
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES('reload-owned','project-1','Work','running','session','codex','019ff001-3434-7434-8434-343434343434',?)").run(ownerId);
+    const reload=vi.spyOn(sessionManager,'reloadCodexSessionById').mockResolvedValue({ok:true,client_version:'0.166.0'});
+    const denied=await app.inject({method:'POST',url:'/api/sessions/reload-owned/reload',headers:{cookie:viewerCookie}});expect(denied.statusCode).toBe(404);expect(reload).not.toHaveBeenCalled();
+    getDb().prepare("UPDATE users SET role='member' WHERE id=?").run(ownerId);getDb().prepare('DELETE FROM rbac_user_roles WHERE user_id=?').run(ownerId);expect((await app.inject({method:'POST',url:'/api/sessions/reload-owned/reload',headers:{cookie:ownerCookie}})).statusCode).toBe(403);expect(reload).not.toHaveBeenCalled();
+    getDb().prepare("UPDATE users SET role='admin' WHERE id=?").run(ownerId);const result=await app.inject({method:'POST',url:'/api/sessions/reload-owned/reload',headers:{cookie:ownerCookie}});expect(result.statusCode).toBe(200);expect(result.json().session.id).toBe('reload-owned');expect(reload).toHaveBeenCalledExactlyOnceWith('reload-owned');
+  });
   it('explicit deletion stops the owned running session before purging its record',async()=>{
     getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES('delete-running','project-1','Task','running','session','codex',?)").run(ownerId);
     const kill=vi.spyOn(sessionManager,'killSession').mockImplementation(async id=>{getDb().prepare("UPDATE sessions SET status='cancelled' WHERE id=?").run(id);return true;});
