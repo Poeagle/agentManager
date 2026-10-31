@@ -45,6 +45,19 @@ describe('session kill ownership', () => {
     cleanup();
   });
 
+  it('explicit deletion stops the owned running session before purging its record',async()=>{
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES('delete-running','project-1','Task','running','session','codex',?)").run(ownerId);
+    const kill=vi.spyOn(sessionManager,'killSession').mockImplementation(async id=>{getDb().prepare("UPDATE sessions SET status='cancelled' WHERE id=?").run(id);return true;});
+    const result=await app.inject({method:'DELETE',url:'/api/sessions/delete-running/record?stop=true',headers:{cookie:ownerCookie}});
+    expect(result.statusCode).toBe(200);expect(kill).toHaveBeenCalledExactlyOnceWith('delete-running');expect(sessionManager.getSession('delete-running')).toBeNull();
+  });
+  it('checks ownership before stopping, and retains the record if stopping fails',async()=>{
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES('delete-running','project-1','Task','running','session','codex',?)").run(ownerId);
+    const kill=vi.spyOn(sessionManager,'killSession').mockRejectedValue(new Error('stop unavailable'));
+    expect((await app.inject({method:'DELETE',url:'/api/sessions/delete-running/record?stop=true',headers:{cookie:viewerCookie}})).statusCode).toBe(404);expect(kill).not.toHaveBeenCalled();
+    expect((await app.inject({method:'DELETE',url:'/api/sessions/delete-running/record?stop=invalid',headers:{cookie:ownerCookie}})).statusCode).toBe(400);expect(kill).not.toHaveBeenCalled();
+    const result=await app.inject({method:'DELETE',url:'/api/sessions/delete-running/record?stop=true',headers:{cookie:ownerCookie}});expect(result.statusCode).toBe(503);expect(result.json().error).toContain('记录已保留');expect(sessionManager.getSession('delete-running')?.status).toBe('running');
+  });
   it('does not let a viewer kill another user\'s open tab', async () => {
     getDb().prepare(`
       INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)

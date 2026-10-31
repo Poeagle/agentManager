@@ -1,3 +1,4 @@
+import {ConversationImagePreviewRoot,useConversationImagePreview,useConversationFilePreview} from './ConversationImagePreview';
 import {Children,createContext,isValidElement,memo,useContext,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
 import ReactMarkdown,{type Components} from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -51,6 +52,7 @@ const CodeBlock=memo(function CodeBlock({source,language}:{source:string;languag
   </div>;
 });
 function MarkdownImage({src,alt,root,projectId}:{src?:string;alt?:string;root?:string;projectId:string|null}) {
+  const openPreview=useConversationImagePreview();
   const local=conversationLocalPath(src,root);const [preview,setPreview]=useState<{path:string;url:string}|null>(null);const [error,setError]=useState(false);
   useEffect(()=>{
     setError(false);if(!local)return;const controller=new AbortController();let objectUrl:string|undefined;
@@ -58,7 +60,7 @@ function MarkdownImage({src,alt,root,projectId}:{src?:string;alt?:string;root?:s
     return ()=>{controller.abort();if(objectUrl)URL.revokeObjectURL(objectUrl);};
   },[local,projectId,src]);
   const url=local?(preview?.path===local?preview.url:undefined):src && /^https?:\/\//i.test(src)?src:undefined;
-  return error?<span className="conversation-image-error">图片加载失败{alt?`：${alt}`:''}</span>:<img src={url} alt={alt||'图片'} loading="lazy" onError={()=>setError(true)}/>;
+  return error?<span className="conversation-image-error">图片加载失败{alt?`：${alt}`:''}</span>:<button type="button" className="conversation-inline-image" aria-label={`预览图片 ${alt||'图片'}`} disabled={!url} onClick={event=>{event.preventDefault();event.stopPropagation();if(url)openPreview?.({src:url,name:alt||'图片'});}}><img src={url} alt={alt||'图片'} loading="lazy" onError={()=>setError(true)}/></button>;
 }
 
 export const ConversationMarkdown=memo(function ConversationMarkdown({content,messageId,streaming=false,projectPath,projectId,onOpenFile,onNavigate}:{
@@ -81,9 +83,11 @@ export const ConversationMarkdown=memo(function ConversationMarkdown({content,me
         return <CodeBlock source={source} language={language}/>;
       },
       table:({children})=><MarkdownTable className="conversation-table-scroll">{children}</MarkdownTable>,
-      a:({href,children,title})=>{
+      a:({href,children,title,node})=>{
+        const previewFile=useConversationFilePreview();
+        if(node?.children.some(child=>child.type==='element'&&child.tagName==='img'))return <>{children}</>;
         const path=conversationLocalPath(href,projectPath);
-        if(path)return onOpenFile?<a href={href} title={title||path} onClick={event=>{event.preventDefault();onOpenFile(path);}}>{children}</a>:<span title={path}>{children}</span>;
+        if(path)return <a href={href} title={title||path} onClick={event=>{event.preventDefault();if(previewFile&&projectPath)previewFile({path,rootPath:projectPath,projectId,name:path.split('/').pop()||path});else onOpenFile?.(path);}}>{children}</a>;
         if(href?.startsWith('#'))return <a href={href} onClick={event=>{
           const scope=event.currentTarget.closest('.session-chat-message');let fragment:string;try{fragment=decodeURIComponent(href.slice(1));}catch{return;}
           const target=[...(scope?.querySelectorAll<HTMLElement>('[id]')||[])].find(node=>node.id===fragment || node.id===`user-content-${fragment}` || node.dataset.chatHeading && (node.textContent||'').trim().toLowerCase().replace(/\s+/g,'-')===fragment);
@@ -95,5 +99,5 @@ export const ConversationMarkdown=memo(function ConversationMarkdown({content,me
       img:({src,alt})=><MarkdownImage src={typeof src==='string'?src:undefined} alt={alt} root={projectPath} projectId={projectId}/>,
     };
   },[messageId,projectPath,projectId,onOpenFile,onNavigate]);
-  return <Streaming.Provider value={streaming}><div className="markdown-preview conversation-markdown">{blocks.map(block=><MarkdownSegment key={block.key} source={block.source} offset={block.offset} components={components}/>)}</div></Streaming.Provider>;
+  return <ConversationImagePreviewRoot><Streaming.Provider value={streaming}><div className="markdown-preview conversation-markdown">{blocks.map(block=><MarkdownSegment key={block.key} source={block.source} offset={block.offset} components={components}/>)}</div></Streaming.Provider></ConversationImagePreviewRoot>;
 });

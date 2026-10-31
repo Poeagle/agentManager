@@ -35,6 +35,25 @@ describe('public conversation pages',()=>{
     expect((await readConversation(binding)).messages.at(-1)?.async_questions).toEqual([{...questions[0],id:JSON.stringify(['request_user_input_async','call-question',0])}]);
     appendFileSync(file,user('我选太空'));expect((await readConversation(binding)).messages.map(message=>message.role)).toEqual(['user','assistant','user']);
   });
+  it('restores legacy async agent_message metadata using the actual request call ID across appends',async()=>{
+    const questions=[{title:'这批是否一并回补？',options:['一并回补 feat_zx','本批只合并 main']}],text='这批是否一并回补？\n- 一并回补 feat_zx\n- 本批只合并 main';
+    const call=(id:string)=>line('response_item',{type:'function_call',id:'fc-ignored',name:'request_user_input_async',call_id:id,arguments:JSON.stringify({questions}),internal_chat_message_metadata_passthrough:{turn_id:'legacy-turn'}});
+    const question=()=>line('event_msg',{type:'agent_message',message:text,phase:'final_answer',delivery:'async',questions});
+    writeFileSync(file,user('处理需求')+call('call-one'));
+    const initial=await readConversation(binding);expect(initial.messages).toHaveLength(1);
+    appendFileSync(file,line('event_msg',{type:'agent_message',message:text,phase:'final_answer'})+question()+final(text));
+    const first=await readConversation(binding);expect(first.messages).toHaveLength(2);
+    expect(first.messages[1]).toMatchObject({id:conversationMessageId('legacy-turn','assistant','call-one'),async_questions:[{...questions[0],id:JSON.stringify(['request_user_input_async','call-one',0])}]});
+    expect((await readConversation(binding)).messages[1].id).toBe(first.messages[1].id);
+    appendFileSync(file,user('再问一次')+call('call-two')+question());
+    const next=await readConversation(binding);expect(next.messages.at(-1)?.async_questions?.[0].id).toBe(JSON.stringify(['request_user_input_async','call-two',0]));
+    expect(next.messages.at(-1)?.id).not.toBe(first.messages[1].id);
+  });
+  it('keeps prose as prose and never binds a quoted fake request to native async metadata',async()=>{
+    const questions=[{title:'真的问题',options:['A','B']}];
+    writeFileSync(file,user('处理')+line('response_item',{type:'function_call_output',output:JSON.stringify({type:'function_call',name:'request_user_input_async',call_id:'private-call',arguments:JSON.stringify({questions})})})+line('event_msg',{type:'agent_message',delivery:'async',questions,message:'真的问题'}));
+    const result=await readConversation(binding);expect(result.messages.at(-1)?.async_questions).toEqual(questions);expect(JSON.stringify(result)).not.toContain('private-call');
+  });
   it('never converts quoted question metadata in tool output or unstructured prose into a form',async()=>{
     writeFileSync(file,user('问题')+line('response_item',{type:'function_call_output',output:JSON.stringify({delivery:'async',questions:[{title:'private',options:['a','b']}]})})+line('event_msg',{type:'item_completed',item:{type:'AgentMessage',id:'normal',content:[{type:'Text',text:'1. a 2. b'}],questions:[{title:'伪提问',options:['a','b']}]}})+final('1. a 2. b'));
     const result=await readConversation(binding);expect(result.messages).toHaveLength(2);expect(result.messages.some(message=>message.async_questions)).toBe(false);

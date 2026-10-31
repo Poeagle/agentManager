@@ -10,10 +10,9 @@ import {
   passwordLengthError, createSession as createAuthSession, setSessionCookie,
 } from '../auth.js';
 import { getTracker, inferQuiescentSessionState } from '../services/session-state.js';
-import { getSessionProcessRootPid, killSession, RESIZE_MARKER } from '../services/session-manager.js';
+import { getSessionProcessRootPid, killSession } from '../services/session-manager.js';
 import { broadcastEphemeral } from '../services/event-store.js';
-import { cleanOutput } from '../lib/ansi.js';
-import { VirtualTerminal } from '../lib/virtual-terminal.js';
+import {readConversationPreview} from '../services/conversation-preview.js';
 import { revokeUserConnections } from '../services/user-connections.js';
 import { serverResourceSampler } from '../services/server-resources.js';
 import { requirePermission, userHasPermission, userRoleIds } from '../services/rbac.js';
@@ -102,79 +101,6 @@ function measureSandboxCgroup(sessionId: string) {
     } catch { /* this session is not running in this systemd slice */ }
   }
   return null;
-}
-
-const monitorScreenCache = new Map<string, { seq: number; screen: string }>();
-
-async function renderCurrentScreen(sessionId: string, rows: Array<{ seq: number; data: string }>, initialCols: number): Promise<string> {
-  const latestSeq = rows[0]?.seq ?? -1;
-  const cached = monitorScreenCache.get(sessionId);
-  if (cached?.seq === latestSeq) return cached.screen;
-  const terminal = new VirtualTerminal(Math.max(40, initialCols || 120), 60, true);
-  try {
-    for (const row of rows.slice().reverse()) {
-      if (row.data.startsWith(RESIZE_MARKER)) {
-        await terminal.flush();
-        const [colsRaw, rowsRaw] = row.data.slice(RESIZE_MARKER.length).split(',');
-        const cols = Number(colsRaw);
-        const screenRows = Number(rowsRaw);
-        if (Number.isInteger(cols) && cols >= 40 && Number.isInteger(screenRows) && screenRows >= 10) terminal.resize(cols, screenRows);
-      } else {
-        terminal.write(row.data);
-      }
-    }
-    await terminal.flush();
-    const screen = terminal.getScreen();
-    monitorScreenCache.set(sessionId, { seq: latestSeq, screen });
-    if (monitorScreenCache.size > 500) monitorScreenCache.delete(monitorScreenCache.keys().next().value!);
-    return screen;
-  } finally {
-    terminal.dispose();
-  }
-}
-
-function isTerminalUiNoise(line: string): boolean {
-  return !line
-    || /background terminals? running.*\/(?:ps|stop)/i.test(line)
-    || /(?:gpt-[\w.-]+|claude[\w.-]*).*(?:Context|Full Access|No changes|weekly|window)/i.test(line)
-    || /(?:Context \d+% used|Full Access|No changes|weekly \d+% left|\d+[KM] window|\d+(?:\.\d+)?M used)/i.test(line)
-    || /^[>›] ?\s*Implement \{feature\}\s*$/i.test(line)
-    || /^(?:\?|esc)\s+(?:for shortcuts|to interrupt)/i.test(line)
-    || /^[─-╿▀-▟\s]+$/.test(line);
-}
-
-function meaningfulOutput(screen: string, waitingForInput: boolean): string | null {
-  const lines = cleanOutput(screen).split('\n').map((line) => line.trim()).filter((line) => !isTerminalUiNoise(line));
-  if (lines.length === 0) return null;
-  if (waitingForInput) {
-    let promptIndex = -1;
-    for (let index = lines.length - 1; index >= 0; index--) {
-      if (/\?|do you want|allow|approve|permission|proceed|continue|confirm/i.test(lines[index])) {
-        promptIndex = index;
-        break;
-      }
-    }
-    const promptLines = promptIndex >= 0 ? lines.slice(promptIndex, promptIndex + 3) : lines.slice(-3);
-    return promptLines.join(' · ').slice(0, 320);
-  }
-  let assistantIndex = -1;
-  for (let index = lines.length - 1; index >= 0; index--) {
-    if (/^[•●⏺✻]\s*/.test(lines[index])) {
-      assistantIndex = index;
-      break;
-    }
-  }
-  if (assistantIndex >= 0) {
-    const block: string[] = [];
-    for (const line of lines.slice(assistantIndex)) {
-      if (block.length > 0 && /^[>›]\s*/.test(line)) break;
-      block.push(line.replace(/^[•●⏺✻]\s*/, ''));
-      if (block.length >= 3) break;
-    }
-    const text = block.join(' ').trim();
-    if (text) return text.slice(0, 320);
-  }
-  return lines.slice(-2).join(' · ').slice(0, 320) || null;
 }
 
 interface StoredMonitorTab {
@@ -337,7 +263,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
         FROM sessions s
         WHERE s.created_by_user_id IS NOT NULL OR s.id IN (${tabSessionPlaceholders})
       )
-      SELECT id, project_id, task, status, mode, cli_type, pid, terminal_cols,
+      SELECT id, project_id, task, status, mode, cli_type, claude_session_id, codex_session_id, pid, terminal_cols,
              created_by_user_id, started_at, completed_at, created_at, updated_at
       FROM ranked
       WHERE status IN ('pending', 'launching', 'running', 'detached', 'released')
@@ -352,7 +278,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
       mode: string | null;
       cli_type: string | null;
       pid: number | null;
-      terminal_cols: number | null;
+      terminal_cols: number | null;claude_session_id:string|null;codex_session_id:string|null;
       created_by_user_id: string | null;
       started_at: string | null;
       completed_at: string | null;
@@ -381,7 +307,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
         ? measureSandboxCgroup(session.id) ?? measureProcessTree(rootPids.get(session.id) ?? session.pid, processSnapshot)
         : { root_pid: null, process_count: 0, memory_bytes: null as number | null };
       const processState = live?.processState ?? inferred?.processState ?? null;
-      const screen = outputRows.length > 0 ? await renderCurrentScreen(session.id, outputRows, session.terminal_cols ?? 120) : '';
+      const preview=await readConversationPreview(session);
       return {
         ...session,
         created_by_user_id: session.created_by_user_id ?? inferredUserId,
@@ -389,7 +315,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
         last_activity_at: live?.lastActivity
           ? new Date(live.lastActivity).toISOString()
           : outputRows[0]?.created_at ?? session.updated_at,
-        last_output: meaningfulOutput(screen, processState === 'waiting_for_input'),
+        last_output: preview?.text??null,
         process_state: processState,
         prompt_type: live?.promptType ?? inferred?.promptType ?? null,
         choices: live?.choices ?? inferred?.choices ?? null,
@@ -507,8 +433,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     return { ok: true, tab: { id: sessionId, name } };
   });
 
-  // Remove only the saved tab. A live session keeps running and becomes a
-  // background session, matching the dashboard's existing "Hide Tab" action.
+  // Stop a monitored session before removing its saved tab; retain history.
   app.delete<{
     Params: { userId: string; projectId: string; sessionId: string };
   }>('/admin/monitor/users/:userId/projects/:projectId/tabs/:sessionId', async (req, reply) => {
@@ -519,6 +444,11 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     if (!state) return reply.code(404).send({ error: '项目标签状态不存在' });
     const current = state.terminalInstances!;
     if (!current.some((value) => value?.id === sessionId)) return reply.code(404).send({ error: '会话标签不存在' });
+    const ownedSession=getDb().prepare('SELECT project_id,created_by_user_id,status FROM sessions WHERE id=?').get(sessionId) as {project_id:string|null;created_by_user_id:string|null;status:string}|undefined;
+    if(ownedSession&&(ownedSession.project_id!==projectId||ownedSession.created_by_user_id&&ownedSession.created_by_user_id!==userId))return reply.code(404).send({error:'会话与所选用户或项目不匹配'});
+    if(ownedSession&&['pending','launching','running','detached','released'].includes(ownedSession.status)) {
+      try{await killSession(sessionId);}catch{return reply.code(503).send({error:'停止会话失败，标签已保留'});}
+    }
     const remaining = current.filter((value) => value?.id !== sessionId);
     state.terminalInstances = remaining;
     if (state.terminalLabels && typeof state.terminalLabels === 'object') delete state.terminalLabels[sessionId];
@@ -527,15 +457,13 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     hidden.add(sessionId);
     state.hiddenSessionIds = [...hidden];
     writeStoredProjectTabState(userId, projectId, state);
-    const session = getDb().prepare('SELECT status FROM sessions WHERE id = ?').get(sessionId) as { status: string } | undefined;
-    const sessionContinues = !!session && ['pending', 'launching', 'running', 'detached', 'released'].includes(session.status);
     broadcastEphemeral({
       session_id: sessionId,
       project_id: projectId,
       type: 'user.tab_state',
       data: { targetUserId: userId, projectId, sessionId, action: 'delete' },
     });
-    return { ok: true, session_continues: sessionContinues };
+    return { ok: true, session_continues: false };
   });
 
   // List users (admin).

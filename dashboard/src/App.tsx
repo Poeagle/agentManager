@@ -377,8 +377,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     try {
       await Promise.all(runningSessions.map((s) => api.sessions.kill(s.id)));
     } catch {
-      window.alert('One or more sessions could not be stopped. The project tab was kept open.');
-      return;
+      throw new Error('部分会话未能停止，项目标签仍保留，请重试。');
     }
     cleanupProjectStorage(authUser.id, projectId);
     setProjectTabs((prev) => prev.filter((t) => t.projectId !== projectId));
@@ -684,19 +683,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           label={projectTabs.find((t) => t.projectId === confirmClose.projectId)?.projectName || 'Project'}
           type="project"
           sessionCount={confirmClose.count}
-          onHide={() => {
-            // Hide the project tab but keep sessions running
-            const { projectId } = confirmClose;
-            const projectPath = projects.find((project) => project.id === projectId)?.path;
-            if (projectPath && !confirmDiscardProject(projectPath)) return;
-            cleanupProjectStorage(authUser.id, projectId);
-            setProjectTabs((prev) => prev.filter((t) => t.projectId !== projectId));
-            if (activeTab === `project-${projectId}`) {
-              setActiveTab('home');
-            }
-            setConfirmClose(null);
-          }}
-          onKill={() => confirmCloseProject()}
+          onStop={confirmCloseProject}
           onCancel={() => setConfirmClose(null)}
         />
       )}

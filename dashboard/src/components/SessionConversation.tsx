@@ -1,3 +1,4 @@
+import {ConversationImagePreviewRoot} from './ConversationImagePreview';
 import {ConversationInteraction,ConversationAsyncQuestion,ConversationQuestionSummary,type ConversationInteractionRequest} from './ConversationInteraction';
 import {memo,useCallback,useEffect,useRef,useState} from 'react';
 import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
@@ -38,7 +39,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
   </article>;
   return <article className={`session-chat-message ${message.role}`} data-phase={message.phase} data-streaming={streaming} data-chat-message-id={message.id}>
     {message.role==='assistant' && !compact && <div className="session-chat-agent"><Sparkles size={16}/><span>{agentName}</span>{message.phase==='final' && <span className="session-chat-writing">结论</span>}{streaming && <span className="session-chat-writing">正在输出</span>}</div>}
-    <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text">{parsed.text}</div><ConversationMessageAttachments items={parsed.attachments} projectId={projectId} onOpenFile={onOpenFile}/></>:<ConversationMarkdown content={message.text} messageId={message.id} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
+    <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text">{parsed.text}</div><ConversationMessageAttachments items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/></>:<ConversationMarkdown content={message.text} messageId={message.id} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
     <div className="session-chat-message-meta">
       {durationLabel && <span className="session-chat-message-duration" title={durationTitle}>{durationLabel}</span>}
       {!compact && message.timestamp && <time dateTime={message.timestamp} title={`原生消息记录时间：${new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}（本地时区）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>}
@@ -236,7 +237,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
   const pendingQuestion=messages.slice(lastUserIndex+1).reduce<ConversationMessage|null>((last,message)=>message.async_questions?.length?message:last,null);
   const questionActive=!!pendingQuestion&&minimizedQuestion!==pendingQuestion.id;
   const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} answers={questionAnswers(message,messages.slice(messages.indexOf(message)+1))} continued={messages.slice(messages.indexOf(message)+1).some(item=>item.role==='user')} onAnswer={()=>setMinimizedQuestion(null)}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} durationLabel={!compact?timings.get(message.id)?.label:undefined} durationTitle={!compact?timings.get(message.id)?.title:undefined} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
-  return <section ref={readingRoot} className="session-chat" aria-label="会话对话">
+  return <ConversationImagePreviewRoot active={active} onOpen={navigate}><section ref={readingRoot} className="session-chat" aria-label="会话对话">
     <div className="session-chat-reading">
     <div ref={list} className="session-chat-scroll" onScroll={()=>{if(list.current) pinned.current=list.current.scrollHeight-list.current.scrollTop-list.current.clientHeight<80;}}>
       <div className="session-chat-feed">
@@ -285,5 +286,5 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
       </form>
       <p className="session-chat-hint">{liveState==='unavailable' && session.cli_type==='codex'?'当前会话未提供实时事件，进展说明和答复会自动更新。':'展示对话、进展说明与答复'}<span>工具详情及其他交互可在原始终端查看</span></p>
     </footer>
-  </section>;
+  </section></ConversationImagePreviewRoot>;
 }

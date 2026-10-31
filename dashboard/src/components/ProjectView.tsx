@@ -1003,16 +1003,12 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     }).catch((err) => console.error('Failed to persist closed terminal tab:', id, err));
   }
 
-  function closeTerminal(id: string) {
+  async function closeTerminal(id:string,removeRecord=false) {
+    if(removeRecord)await api.sessions.deleteRecord(id,true);else await api.sessions.kill(id);
     removeTerminalTabFromState(id);
-    api.sessions.kill(id)
-      .then(() => queryClient.invalidateQueries({ queryKey: ['sessions'] }))
-      .catch((err) => console.error('Failed to kill session:', id, err));
-  }
-
-  function closeTerminalTab(id: string) {
-    removeTerminalTabFromState(id);
-    queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    setCloseConfirm(null);
+    void queryClient.invalidateQueries({queryKey:['sessions']});
+    void queryClient.invalidateQueries({queryKey:['project-sessions',projectId]});
   }
 
   async function closeEndedSession(id: string) {
@@ -1700,7 +1696,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           >
             {activeMode === 'history' && (
               <SessionHistoryPanel
-                projectId={projectId}
+                projectId={projectId} projectPath={projectPath}
                 openTabIds={new Set(terminalInstances.map((t) => t.id))}
                 displayNames={sessionDisplayNames}
                 onOpen={handleOpenProjectSession}
@@ -1737,14 +1733,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         <CloseTabModal
           label={closeConfirm.label}
           type={closeConfirm.type}
-          onHide={() => {
-            closeTerminalTab(closeConfirm.id);
-            setCloseConfirm(null);
-          }}
-          onKill={() => {
-            closeTerminal(closeConfirm.id);
-            setCloseConfirm(null);
-          }}
+          onStop={()=>closeTerminal(closeConfirm.id)}
+          onDelete={()=>closeTerminal(closeConfirm.id,true)}
           onCancel={() => setCloseConfirm(null)}
         />
       )}

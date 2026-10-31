@@ -453,7 +453,7 @@ function TabRow({ userId, projectId, tab, session, referenceTime, onOpen, onChan
               {canOpenSessions && <TableActionButton onClick={onOpen} disabled={!session} style={{ color: 'var(--accent)' }} aria-label={`打开会话标签 ${tab.name}`}><ExternalLink className="h-3.5 w-3.5" /></TableActionButton>}
               <RowActionsMenu label={`${tab.name} 的更多操作`} actions={[
                 ...(canWrite ? [{ label: '重命名', icon: <Pencil className="h-3.5 w-3.5" />, onClick: () => { setName(tab.name); setEditing(true); setActionError(''); } }] : []),
-                ...(canDelete ? [{ label: '删除标签', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, onClick: () => setConfirmDelete(true) }] : []),
+                ...(canDelete ? [{ label: '停止并关闭', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, onClick: () => setConfirmDelete(true) }] : []),
               ]} />
             </>
           )}
@@ -463,11 +463,11 @@ function TabRow({ userId, projectId, tab, session, referenceTime, onOpen, onChan
           <div className="w-full max-w-sm rounded-xl p-5 shadow-2xl" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
             <div className="flex items-start gap-3">
               <span className="rounded-full p-2" style={{ color: '#f59e0b', background: 'rgba(245,158,11,.12)' }}><AlertTriangle className="h-5 w-5" /></span>
-              <div><h3 className="text-sm font-semibold">删除会话标签？</h3><p className="mt-2 text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>将从用户页面移除“{tab.name}”标签。{session && ACTIVE_STATUSES.has(session.status) ? '会话进程不会终止，将继续在后台运行。' : '这不会删除会话历史记录。'}</p></div>
+              <div><h3 className="text-sm font-semibold">停止并关闭会话？</h3><p className="mt-2 text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>将从用户页面移除“{tab.name}”标签。{session && ACTIVE_STATUSES.has(session.status) ? '将停止会话的当前运行，保留会话历史记录。' : '会话历史记录会保留。'}</p></div>
             </div>
             <div className="mt-5 flex justify-end gap-2">
               <button onClick={() => setConfirmDelete(false)} disabled={busy} className="rounded-md px-3 py-1.5 text-xs disabled:opacity-40" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border)' }}>取消</button>
-              <button onClick={() => void deleteTab()} disabled={busy} className="rounded-md px-3 py-1.5 text-xs text-white disabled:opacity-40" style={{ background: 'var(--error)' }}>{busy ? '删除中…' : '仅删除标签'}</button>
+              <button onClick={() => void deleteTab()} disabled={busy} className="rounded-md px-3 py-1.5 text-xs text-white disabled:opacity-40" style={{ background: 'var(--error)' }}>{busy ? '正在停止…' : '停止并关闭'}</button>
             </div>
           </div>
           </div>,
@@ -525,14 +525,12 @@ function OutputInsight({ session }: { session: AdminMonitorSession }) {
     ? '检测到会话正在等待你处理，点击进入查看完整提示。'
     : session.process_state === 'busy'
       ? '会话正在执行，尚未产生可汇总的结果。'
-      : '尚未获取到有意义的 会话输出。';
+      : '暂无原生对话记录。';
   return (
     <div className="leading-tight">
       <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-wider" style={{ color: needsAction ? '#f59e0b' : 'var(--text-muted)' }}>{label}</div>
       <div className="truncate" title={session.last_output ?? undefined} style={{ color: session.last_output ? 'var(--text-primary)' : 'var(--text-muted)' }}>{session.last_output || fallback}</div>
-      {session.choices && session.choices.length > 0 && (
-        <div className="mt-1 truncate text-[10px]" style={{ color: '#f59e0b' }}>可选：{session.choices.slice(0, 4).join(' / ')}</div>
-      )}
+
     </div>
   );
 }

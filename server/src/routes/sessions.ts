@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'fs';
 import { isAbsolute, join, relative, sep } from 'path';
 import { prunePastesDir } from '../services/paste-cleanup.js';
 import { sessionPresenter } from '../services/session-labels.js';
+import {readConversationPreview,humanSessionTask} from '../services/conversation-preview.js';
 import { readCodexRuntime } from '../services/codex-runtime.js';
 
 const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -93,22 +94,6 @@ function sqliteUtcToIso(value: string | null | undefined): string | null {
   return `${value.replace(' ', 'T')}Z`;
 }
 
-function summarizeSessionContent(task: string | null | undefined, output: string | null | undefined): string {
-  const normalizedTask = (task || '').replace(/\s+/g, ' ').trim();
-  if (normalizedTask && normalizedTask !== 'Terminal') return normalizedTask.slice(0, 180);
-
-  const text = strip(output || '')
-    .replace(/\r/g, '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-4)
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return text.slice(0, 180) || normalizedTask || '暂无会话内容';
-}
-
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
   // List sessions
   app.get<{
@@ -142,6 +127,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       // lights are correct on first load, before any WS state_change arrives.
       .map(async (s: any) => {
         const st = getTracker(s.id)?.state;
+        const preview=await readConversationPreview(s);
         const native = s.cli_type === 'codex' ? {...await readCodexRuntime(s.codex_session_id)} : null;
         if (native && ['running','waiting_for_input'].includes(native.state)
           && await sessionManager.getLiveWorkAgent(s.id) !== 'codex') {
@@ -155,7 +141,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
           ...present(s),
           last_activity_at: native ? native.last_activity_at : lastActivityAt,
           ...(native ? {agent_runtime:native} : {}),
-          content_summary: summarizeSessionContent(s.task, outputActivity.get(s.id)?.data),
+          content_summary: preview?.text||humanSessionTask(s.task),
           ...(st ? { processState: st.processState, promptType: st.promptType, isPermission: st.isPermission } : {}),
         };
       }));
@@ -280,13 +266,18 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
 
   // Permanently delete an ended session from history: DB row + events + the
   // Claude JSONL conversation file. Refuses (409) while the session is active.
-  app.delete<{ Params: { id: string } }>('/sessions/:id/record', async (req, reply) => {
+  app.delete<{ Params: { id: string };Querystring:{stop?:string} }>('/sessions/:id/record', async (req, reply) => {
     const { id } = req.params;
     const session = sessionManager.getSession(id);
     // Match the personal session list and close endpoint: monitoring access
     // does not grant permission to delete another user's conversation.
     if (!session || session.created_by_user_id !== req.user!.id || !canAccessSessionByRow(req.user!.id, session)) {
       return reply.status(404).send({ error: 'Session not found' });
+    }
+    if(req.query.stop!==undefined&&!['true','false'].includes(req.query.stop))return reply.status(400).send({error:'stop must be true or false'});
+    if(req.query.stop==='true') {
+      try {await sessionManager.killSession(id);}
+      catch {return reply.status(503).send({error:'停止会话失败，记录已保留，请重试'});}
     }
     const result = sessionManager.purgeSessionRecord(id);
     if (!result.ok) return reply.status(409).send({ error: result.error });

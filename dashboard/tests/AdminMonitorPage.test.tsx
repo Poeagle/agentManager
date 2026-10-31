@@ -107,7 +107,7 @@ beforeEach(() => {
   vi.mocked(api.admin.monitor).mockResolvedValue(response);
   vi.mocked(api.admin.serverResources).mockResolvedValue({ server_resources: response.server_resources });
   vi.mocked(api.admin.renameMonitorTab).mockResolvedValue({ ok: true, tab: { id: 'session-live-1234', name: '新标签名' } });
-  vi.mocked(api.admin.deleteMonitorTab).mockResolvedValue({ ok: true, session_continues: true });
+  vi.mocked(api.admin.deleteMonitorTab).mockResolvedValue({ ok: true, session_continues: false });
 });
 
 describe('administrator monitor page', () => {
@@ -147,9 +147,9 @@ describe('administrator monitor page', () => {
     expect(api.admin.renameMonitorTab).toHaveBeenCalledWith('user-1', 'project-1', 'session-live-1234', '新标签名');
 
     await user.click(await screen.findByRole('button', { name: '性能排查 的更多操作' }));
-    await user.click(screen.getByRole('menuitem', { name: '删除标签' }));
-    expect(screen.getByText('删除会话标签？')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: '仅删除标签' }));
+    await user.click(screen.getByRole('menuitem', { name: '停止并关闭' }));
+    expect(screen.getByText('停止并关闭会话？')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '停止并关闭' }));
     expect(api.admin.deleteMonitorTab).toHaveBeenCalledWith('user-1', 'project-1', 'session-live-1234');
 
     await user.click(screen.getByRole('button', { name: '状态说明' }));

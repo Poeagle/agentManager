@@ -204,8 +204,8 @@ export const api = {
         body: JSON.stringify(automatic ? { automatic: true } : {}),
       }),
     // Permanently delete an ended session from history (record + events + JSONL).
-    deleteRecord: (id: string) =>
-      fetchJSON<{ ok: boolean }>(`/sessions/${id}/record`, { method: 'DELETE' }),
+    deleteRecord: (id: string, stop = false) =>
+      fetchJSON<{ ok: boolean }>(`/sessions/${id}/record${stop?'?stop=true':''}`, { method: 'DELETE' }),
     // Permanently delete this account's ended records for one project.
     deleteEndedRecords: (projectId: string) =>
       fetchJSON<{ ok: boolean; deleted: number; failed: number }>(`/sessions/records/ended?project_id=${encodeURIComponent(projectId)}`, {

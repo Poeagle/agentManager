@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
-import {fireEvent,render,screen,waitFor,within} from '@testing-library/react';
+import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {ProjectView} from '../src/components/ProjectView';
 import {api,type Session} from '../src/lib/api';
@@ -17,7 +17,7 @@ vi.mock('../src/components/ScheduledTasksPanel',()=>({ScheduledTasksPanel:()=>nu
 vi.mock('../src/lib/api',async original=>{
   const actual=await original<typeof import('../src/lib/api')>();
   return {...actual,api:{...actual.api,
-    projects:{...actual.api.projects,list:vi.fn()},sessions:{...actual.api.sessions,list:vi.fn(),create:vi.fn()},
+    projects:{...actual.api.projects,list:vi.fn()},sessions:{...actual.api.sessions,list:vi.fn(),create:vi.fn(),kill:vi.fn(),deleteRecord:vi.fn()},
     userState:{...actual.api.userState,getAll:vi.fn(),set:vi.fn()},
     files:{...actual.api.files,list:vi.fn(),read:vi.fn(),write:vi.fn()},
   }};
@@ -29,7 +29,7 @@ beforeEach(()=>{
   client=new QueryClient({defaultOptions:{queries:{retry:false}}});
   localStorage.setItem('agentmanager-project-u-p',JSON.stringify({activeMode:'terminal',terminalInstances:[{id:'current',label:'Terminal 1'}],activeTerminalId:'current',explorerInstances:[]}));
   vi.mocked(api.projects.list).mockResolvedValue({projects:[]});
-  vi.mocked(api.sessions.list).mockResolvedValue({sessions:[session]});
+  vi.mocked(api.sessions.list).mockResolvedValue({sessions:[session]});vi.mocked(api.sessions.kill).mockResolvedValue({ok:true});vi.mocked(api.sessions.deleteRecord).mockResolvedValue({ok:true});
   vi.mocked(api.userState.getAll).mockResolvedValue({state:{}});vi.mocked(api.userState.set).mockResolvedValue({ok:true});
   vi.mocked(api.files.list).mockResolvedValue({path:'/workspace/p',files:['a.txt','b.txt'].map(name=>({name,type:'file',extension:'txt',size:4,modified_at:''}))});
   vi.mocked(api.files.read).mockImplementation(async path=>({path,content:`disk ${path.split('/').pop()}`,size:10,extension:'txt'}));
@@ -37,6 +37,16 @@ beforeEach(()=>{
 afterEach(()=>{client.clear();vi.restoreAllMocks();});
 const mount=()=>render(<QueryClientProvider client={client}><ProjectView currentUserId="u" projectId="p" projectPath="/workspace/p" projectName="Project"/></QueryClientProvider>);
 describe('file sidebar in the session workspace',()=>{
+  it.each([false,true])('stops or deletes only after confirmation and keeps the terminal mounted until success (delete=%s)',async deleting=>{
+    let complete!:(value:{ok:boolean})=>void;const handler=deleting?vi.mocked(api.sessions.deleteRecord):vi.mocked(api.sessions.kill);handler.mockImplementation(()=>new Promise(resolve=>{complete=resolve;}));
+    mount();const raw=await screen.findByLabelText('终端草稿');fireEvent.click(screen.getByTitle('Close session'));
+    expect(screen.queryByText(/仅隐藏标签/)).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:deleting?'删除会话':'停止并关闭',exact:true}));expect(raw).toBeInTheDocument();
+    expect(handler).toHaveBeenCalledWith(...(deleting?['current',true]:['current']));
+    await act(async()=>complete({ok:true}));expect(screen.queryByLabelText('终端草稿')).not.toBeInTheDocument();
+  });
+  it('retains a failed stop in the open tab instead of hiding it',async()=>{
+    vi.mocked(api.sessions.kill).mockRejectedValue(new Error('停止失败'));mount();const raw=await screen.findByLabelText('终端草稿');fireEvent.click(screen.getByTitle('Close session'));fireEvent.click(screen.getByRole('button',{name:'停止并关闭',exact:true}));expect(await screen.findByRole('alert')).toHaveTextContent('停止失败');expect(raw).toBeInTheDocument();expect(screen.getByRole('button',{name:'停止并关闭',exact:true})).toBeEnabled();
+  });
   it('offers tree actions and delete confirmation while the terminal is active and no file has been opened',async()=>{
     mount();const raw=await screen.findByLabelText('终端草稿');
     fireEvent.click(screen.getByRole('button',{name:'File Explorer',exact:true}));

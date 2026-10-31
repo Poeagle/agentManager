@@ -5,7 +5,7 @@ import {appendFileSync,mkdirSync,writeFileSync} from 'fs';
 import {join} from 'path';
 const require=createRequire(import.meta.url),{WebSocketServer}=require('../server/node_modules/ws'),Database=require('../server/node_modules/better-sqlite3');
 
-test('the actual Codex async AgentMessage becomes a persistent choice card and replies as a normal user message',async({page},testInfo)=>{
+for(const format of ['item_completed','agent_message'] as const) test(`Codex async ${format} becomes a choice card and collapses after its native answer`,async({page},testInfo)=>{
   const root=join(process.cwd(),'.test-data/e2e'),native='019ff001-5555-7555-8555-555555555555';
   const logDir=join(root,'home/.codex/sessions');mkdirSync(logDir,{recursive:true});const log=join(logDir,`rollout-${native}.jsonl`);
   const record=(type:string,payload:unknown)=>JSON.stringify({type,timestamp:new Date().toISOString(),payload})+'\n';
@@ -13,7 +13,7 @@ test('the actual Codex async AgentMessage becomes a persistent choice card and r
   // call, including its completed-tool semantics and string-array options.
   const questions=[{title:'免费旅行，你最想去哪里？',options:['太空','深海','森林']}];
   const item={type:'AgentMessage',id:'call-question',phase:'final_answer',delivery:'async',questions,content:[{type:'Text',text:'免费旅行，你最想去哪里？\n- 太空\n- 深海\n- 森林'}]};
-  writeFileSync(log,record('event_msg',{type:'user_message',message:'随机出个问题'})+record('event_msg',{type:'item_completed',thread_id:native,turn_id:'question-turn',item})+record('response_item',{type:'message',role:'assistant',id:'followup',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'question-turn'},content:[{type:'output_text',text:'问题已发出，可以点选。'}]}));
+  writeFileSync(log,record('event_msg',{type:'user_message',message:'随机出个问题'})+(format==='item_completed'?record('event_msg',{type:'item_completed',thread_id:native,turn_id:'question-turn',item}):record('response_item',{type:'function_call',id:'fc-ignored',name:'request_user_input_async',call_id:item.id,arguments:JSON.stringify({questions}),internal_chat_message_metadata_passthrough:{turn_id:'question-turn'}})+record('event_msg',{type:'agent_message',message:item.content[0].text,phase:'final_answer',delivery:'async',questions}))+record('response_item',{type:'message',role:'assistant',id:'followup',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'question-turn'},content:[{type:'output_text',text:'问题已发出，可以点选。'}]}));
   const server=createServer(),wss=new WebSocketServer({server}),inputs:any[]=[];
   wss.on('connection',(socket:any)=>socket.on('message',(bytes:any)=>{
     const frame=JSON.parse(bytes.toString());if(!frame.method)return;
@@ -29,7 +29,7 @@ test('the actual Codex async AgentMessage becomes a persistent choice card and r
   let sessionId:string|undefined;
   try {
     const auth=await(await page.request.get('/api/auth/status')).json();expect((await page.request.post(auth.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
-    const path=join(root,'async-question-project');mkdirSync(path,{recursive:true});const {project}=await(await page.request.post('/api/projects',{data:{name:'异步提问验证',path}})).json();
+    const path=join(root,`async-question-project-${format}`);mkdirSync(path,{recursive:true});const {project}=await(await page.request.post('/api/projects',{data:{name:'异步提问验证',path}})).json();
     const {session}=await(await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:path,mode:'terminal'}})).json();sessionId=session.id;
     const db=new Database(join(root,'agentmanager.db'));try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',native,session.id);}finally{db.close();}
     await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});

@@ -3,6 +3,7 @@ import {describe,expect,it,vi} from 'vitest';
 import {ConversationMarkdown,conversationLocalPath} from '../src/components/ConversationMarkdown';
 import {ConversationMarkdownBlocks} from '../src/lib/conversation-markdown-blocks';
 
+vi.mock('../src/components/FileExplorer',()=>({FileExplorer:({openFileRequest}:{openFileRequest:{path:string}})=><div>{openFileRequest.path}</div>}));
 const props={messageId:'message',projectId:'project',projectPath:'/work/project',onNavigate:()=>{}};
 describe('conversation Markdown',()=>{
   it('renders quoted Chinese strong text without interpreting code or escaped markers',()=>{
@@ -25,7 +26,7 @@ describe('conversation Markdown',()=>{
     const onOpenFile=vi.fn();const view=render(<ConversationMarkdown {...props} onOpenFile={onOpenFile} content={'## 内容\n\n| 列名 | 数值 |\n| --- | --- |\n| 测试 | 42 |\n\n- [x] 完成\n- [ ] 待处理\n\n[说明](README.md)\n\n<script>window.bad=1</script>'}/>);
     expect(screen.getByRole('region',{name:'横向滚动表格'})).toContainElement(screen.getByRole('table'));
     expect(screen.getAllByRole('checkbox')).toHaveLength(2);expect(view.container.querySelector('script')).toBeNull();
-    fireEvent.click(screen.getByRole('link',{name:'说明'}));expect(onOpenFile).toHaveBeenCalledWith('/work/project/README.md');
+    fireEvent.click(screen.getByRole('link',{name:'说明'}));expect(onOpenFile).not.toHaveBeenCalled();expect(screen.getByRole('dialog',{name:'文件预览 · README.md'})).toBeVisible();
   });
   it('repairs incomplete tables and resolves document-wide reference links and footnotes',()=>{
     const view=render(<ConversationMarkdown {...props} streaming content={'首段。\n\n| 名称 | 数值 |'}/>);

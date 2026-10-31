@@ -2,6 +2,10 @@ import {expect,test} from '@playwright/test';
 import {appendFileSync,mkdirSync,writeFileSync,readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {join} from 'node:path';
+import {createServer} from 'node:http';
+let nativeServer:any,nativeWss:any;
+test.beforeEach(async()=>{const require=createRequire(import.meta.url),{WebSocketServer}=require('../server/node_modules/ws');nativeServer=createServer();nativeWss=new WebSocketServer({server:nativeServer});nativeWss.on('connection',(socket:any)=>socket.on('message',(bytes:any)=>{const f=JSON.parse(bytes.toString());if(!f.method)return;socket.send(JSON.stringify({id:f.id,result:f.method==='thread/read'?{thread:{status:{type:'idle'}}}:f.method==='thread/turns/list'?{data:[]}: {}}));}));await new Promise<void>(resolve=>nativeServer.listen(join(process.cwd(),'.test-data/e2e/codex.sock'),resolve));});
+test.afterEach(async()=>{for(const client of nativeWss.clients)client.terminate();await new Promise<void>(resolve=>nativeWss.close(()=>resolve()));await new Promise<void>(resolve=>nativeServer.close(()=>resolve()));});
 
 test('chat uploads pasted images and dropped files, retains drafts, and restores attachment history',async({page},testInfo)=>{
   const status=await(await page.request.get('/api/auth/status')).json();
@@ -20,6 +24,7 @@ test('chat uploads pasted images and dropped files, retains drafts, and restores
   await page.goto('/');
   const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true}),input=chat.getByRole('textbox',{name:'发送给当前 Agent 的消息'}),send=chat.getByRole('button',{name:'发送消息',exact:true});
   await expect(chat.getByText('可以发附件。',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'对话',exact:true})).toHaveCSS('color','rgb(255, 255, 255)');
   await expect(send).toBeDisabled();
   await input.evaluate(node=>{
     const canvas=document.createElement('canvas');canvas.width=128;canvas.height=128;const context=canvas.getContext('2d')!;context.fillStyle='red';context.fillRect(0,0,128,128);
@@ -39,14 +44,21 @@ test('chat uploads pasted images and dropped files, retains drafts, and restores
   expect(posted.input).toBe('');expect(posted.attachments.map((item:any)=>item.kind)).toEqual(['image','file']);
   for(const attachment of posted.attachments)expect(attachment.path.startsWith(join(path,'.agentmanager','pastes')+'/')).toBe(true);
   expect(readFileSync(posted.attachments[1].path,'utf8')).toBe('attachment payload');
-  const text='请查看附件。\n\n附件：\n'+posted.attachments.map((item:any)=>`- ${item.name}: ${item.path}`).join('\n');
-  appendFileSync(log,entry('response_item',{type:'message',role:'user',content:[{type:'input_text',text}]})+entry('event_msg',{type:'task_complete',last_agent_message:'已接收图片和文件。'}));
+  const text='请查看附件。\n\n附件：\n'+posted.attachments.filter((item:any)=>item.kind==='file').map((item:any)=>`- ${item.name}: ${item.path}`).join('\n');
+  appendFileSync(log,entry('response_item',{type:'message',role:'user',content:[{type:'input_text',text},...posted.attachments.filter((item:any)=>item.kind==='image').flatMap((item:any,index:number)=>[{type:'input_text',text:`<image name=[Image #${index+1}] path="${item.path}">`},{type:'input_image',image_url:'data:image/png;base64,'}])]})+entry('event_msg',{type:'task_complete',last_agent_message:'已接收图片和文件。'}));
   await expect(chat.getByText('已接收图片和文件。',{exact:true})).toBeVisible();
   await expect(chat.getByRole('button',{name:'打开附件 截图.png'})).toHaveCount(1);
   await expect(chat).not.toContainText('agentmanager_attachments');
   await expect.poll(()=>chat.getByRole('img',{name:'截图.png'}).evaluate(node=>(node as HTMLImageElement).naturalWidth)).toBe(128);
   await page.reload();await expect(chat.getByRole('button',{name:'打开附件 说明.txt'})).toHaveCount(1);
   await expect(chat.getByRole('button',{name:'打开附件 截图.png'})).toHaveCount(1);
+  await input.fill('预览后保留草稿');
+  const thumb=chat.getByRole('button',{name:'打开附件 截图.png'});await thumb.scrollIntoViewIfNeeded();await expect(thumb.getByRole('img')).toHaveCSS('width','48px');
+  const location=page.url(),tabs=page.context().pages().length,area=chat.locator('.session-chat-scroll'),position=await area.evaluate(node=>node.scrollTop);
+  await thumb.click();const image=page.getByRole('dialog',{name:'图片预览 · 截图.png'});await expect(image).toBeVisible();await image.getByRole('button',{name:'放大图片'}).click();await expect(image.getByLabel('图片缩放比例')).toContainText('%');await page.screenshot({path:testInfo.outputPath('image-centered.png')});await page.keyboard.press('Escape');await expect(image).toHaveCount(0);expect(page.url()).toBe(location);expect(page.context().pages()).toHaveLength(tabs);await expect(input).toHaveValue('预览后保留草稿');expect(await area.evaluate(node=>node.scrollTop)).toBe(position);
+  await chat.getByRole('button',{name:'打开附件 说明.txt'}).click();const file=page.getByRole('dialog',{name:'文件预览 · 说明.txt'});await expect(file).toContainText('attachment payload');await page.keyboard.press('Control+w');await expect(file).toHaveCount(0);await expect(input).toHaveValue('预览后保留草稿');
+  writeFileSync(join(path,'REPORT.md'),'# 完整审查报告\n\n结果已经核对。\n');appendFileSync(log,entry('response_item',{type:'message',id:'report-link',role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'report-turn'},content:[{type:'output_text',text:'报告已生成：[查看完整报告](REPORT.md)'}]}));await chat.getByRole('link',{name:'查看完整报告'}).click();const report=page.getByRole('dialog',{name:'文件预览 · REPORT.md'});await expect(report.getByRole('heading',{name:'完整审查报告'})).toBeVisible();await page.screenshot({path:testInfo.outputPath('file-centered.png')});await page.keyboard.press('Escape');await expect(report).toHaveCount(0);await expect(input).toHaveValue('预览后保留草稿');
+  await expect.poll(async()=>{const value=await(await page.request.get(`/api/sessions?project_id=${project.id}`)).json();return value.sessions.find((s:any)=>s.id===session.id)?.content_summary;}).toContain('报告已生成');
   await input.fill('保留这个草稿');
   await page.route(`**/api/sessions/${session.id}/paste-file`,route=>route.fulfill({status:500,json:{error:'模拟上传失败'}}));
   await chat.getByLabel('选择对话附件').setInputFiles({name:'failed.txt',mimeType:'text/plain',buffer:Buffer.from('failed upload')});

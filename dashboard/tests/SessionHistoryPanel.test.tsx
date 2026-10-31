@@ -7,7 +7,7 @@ import { api, type Session } from '../src/lib/api';
 
 vi.mock('../src/lib/api', async (original) => {
   const actual = await original<typeof import('../src/lib/api')>();
-  return { ...actual, api: { ...actual.api, sessions: { ...actual.api.sessions, list: vi.fn(), deleteRecord: vi.fn(), output: vi.fn() } } };
+  return { ...actual, api: { ...actual.api, sessions: { ...actual.api.sessions, list: vi.fn(), deleteRecord: vi.fn(), output: vi.fn() },agent:{...actual.api.agent,conversation:vi.fn()} } };
 });
 
 const ended: Session = { id: 'ended', project_id: 'project', task: 'Ended task', status: 'cancelled', mode: 'session', cli_type: 'codex',
@@ -21,6 +21,7 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   client.setQueryData(['sessions'], { sessions: [ended, active, { ...ended, id: 'other-project', project_id: 'other' }] });
   vi.mocked(api.sessions.list).mockImplementation(async () => ({ sessions: records }));
+  vi.mocked(api.agent.conversation).mockResolvedValue({messages:[{id:'q',role:'user',text:'用户问题不冒充进展',timestamp:null},{id:'progress',role:'assistant',phase:'commentary',text:'正在核对配置。',timestamp:'2026-10-31T02:00:00Z'},{id:'result',role:'assistant',phase:'final',text:'已完成核对。',timestamp:'2026-10-31T02:01:00Z'}]} as any);
   vi.mocked(api.sessions.output).mockResolvedValue({ chunks: [], hasMore: false, oldestSeq: null });
   vi.mocked(api.sessions.deleteRecord).mockImplementation(async (id) => { records = records.filter((record) => record.id !== id); return { ok: true }; });
 });
@@ -41,7 +42,7 @@ describe('project session deletion', () => {
     expect(within(table).getAllByRole('columnheader').at(-1)).toHaveTextContent('操作');
     expect(screen.getByRole('button', { name: '删除会话 Active task' })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: '展开会话 已关闭的会话' }));
-    expect((await screen.findByText('最近会话内容')).closest('td')).toHaveAttribute('colspan', '7');
+    expect((await screen.findByText('最近会话内容')).closest('td')).toHaveAttribute('colspan', '7');await screen.findByText('已完成核对。');expect(screen.getByText('正在核对配置。')).toBeVisible();expect(screen.getByText('进展')).toBeVisible();expect(screen.getByText('结果')).toBeVisible();expect(screen.queryByText('用户问题不冒充进展')).not.toBeInTheDocument();expect(api.sessions.output).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: '删除会话 已关闭的会话' }));
     expect(api.sessions.deleteRecord).not.toHaveBeenCalled();
     await user.click(within(screen.getByRole('dialog', { name: '删除记录' })).getByRole('button', { name: '取消' }));

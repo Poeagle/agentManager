@@ -6,6 +6,8 @@ import { Clock, Loader2, Monitor, RefreshCw, Trash2 } from 'lucide-react';
 import { api, type Session } from '../lib/api';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { TableActionButton, TableActions } from './table/TableActions';
+import {ConversationMarkdown} from './ConversationMarkdown';
+import {formatConversationTimestamp} from '../lib/conversation-timing';
 import { Dialog } from './Dialog';
 
 const ACTIVE = new Set(['running', 'detached', 'pending', 'launching', 'released']);
@@ -39,27 +41,19 @@ function sessionActivity(session: Session): string | null | undefined {
   return session.last_activity_at || session.completed_at || session.started_at || session.created_at;
 }
 
-function cleanTerminalText(value: string): string {
-  return value
-    // eslint-disable-next-line no-control-regex -- Strip actual PTY escape sequences from terminal previews.
-    .replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))|\r/g, '')
-    // eslint-disable-next-line no-control-regex -- Strip ANSI CSI controls from terminal previews.
-    .replace(/\[[0-?]*[ -/]*[@-~]/g, '')
-    .trim();
-}
-
 function SessionIcon({ session }: { session: Session }) {
   if (session.cli_type === 'codex') return <CodexIcon className="h-3.5 w-3.5 shrink-0" style={{ color: '#60a5fa' }} />;
   if (session.cli_type === 'claude') return <ClaudeIcon className="h-3.5 w-3.5 shrink-0" style={{ color: '#D97757' }} />;
   return <Monitor className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--text-secondary)' }} />;
 }
 
-function SessionDetails({ session }: { session: Session }) {
+function SessionDetails({ session,projectPath }: { session: Session;projectPath?:string }) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ['project-session-detail', session.id],
-    queryFn: () => api.sessions.output(session.id, { limit: 5 }),
+    queryFn: () => api.agent.conversation(session.id),
+    refetchInterval: ACTIVE.has(session.status)?3000:false,
   });
-  const contents = (data?.chunks || []).map((chunk) => cleanTerminalText(chunk.data)).filter(Boolean);
+  const contents=(data?.messages||[]).filter(message=>message.role==='assistant'&&message.text.trim()).slice(-6);
 
   return (
     <TableDetailRow columnCount={7}>
@@ -70,10 +64,13 @@ function SessionDetails({ session }: { session: Session }) {
           ) : isError ? (
             <p className="text-[11px]" style={{ color: 'var(--error)' }}>无法加载会话内容。</p>
           ) : contents.length === 0 ? (
-            <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>暂无会话内容。</p>
+            <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>尚无可读的 Agent 对话记录，可打开会话查看。</p>
           ) : (
             <div className="space-y-1.5">
-              {contents.map((content, index) => <pre key={`${session.id}-${index}`} className="max-h-20 overflow-hidden whitespace-pre-wrap break-words rounded px-2 py-1.5 text-[11px] leading-4" style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>{content}</pre>)}
+              {contents.map(message=><section key={message.id} className="rounded border px-3 py-2" style={{borderColor:'var(--border)',background:'var(--bg-primary)'}}>
+                <div className="mb-1 flex items-center gap-2 text-[10px]" style={{color:message.phase==='error'?'var(--error)':'var(--text-muted)'}}><strong>{message.async_questions?'提问':message.phase==='error'?'错误':message.phase==='final'?'结果':'进展'}</strong>{message.timestamp&&<time dateTime={message.timestamp}>{formatConversationTimestamp(message.timestamp)}</time>}</div>
+                <div className="session-history-conversation max-h-64 overflow-auto"><ConversationMarkdown content={message.text} messageId={`history-${session.id}-${message.id}`} projectId={session.project_id} projectPath={projectPath} onNavigate={()=>{}}/></div>
+              </section>)}
             </div>
           )}
         </div>
@@ -89,7 +86,7 @@ function ProjectSessionRow({
   onToggle,
   onOpen,
   onDelete,
-  deleting,
+  deleting,projectPath,
 }: {
   session: Session;
   isOpen: boolean;
@@ -98,7 +95,7 @@ function ProjectSessionRow({
   onToggle: () => void;
   onOpen: (session: Session) => void;
   onDelete: (session: Session) => void;
-  deleting: boolean;
+  deleting: boolean;projectPath?:string;
 }) {
   const active = ACTIVE.has(session.status);
   const activity = sessionActivity(session);
@@ -123,18 +120,18 @@ function ProjectSessionRow({
         aria-label={`删除会话 ${sessionTitle(session, displayName)}`} title={DELETABLE.has(session.status) ? '删除会话记录' : '请先关闭会话后再删除'}
         style={{ color: 'var(--error)' }} onClick={() => onDelete(session)}><Trash2 className="h-3.5 w-3.5" />删除</TableActionButton></TableActions></td>
     </tr>
-    {expanded && <SessionDetails session={session} />}
+    {expanded && <SessionDetails session={session} projectPath={projectPath}/>}
   </>;
 }
 
 export function SessionHistoryPanel({
-  projectId,
+  projectId,projectPath,
   openTabIds,
   displayNames = {},
   onOpen,
   onDeleted,
 }: {
-  projectId: string;
+  projectId: string;projectPath?:string;
   openTabIds: Set<string>;
   displayNames?: Record<string, string>;
   onOpen: (session: Session) => void;
@@ -187,7 +184,7 @@ export function SessionHistoryPanel({
       <DataTable label="会话历史" model={table} minWidth={1180} expandable actions columnWidths={['w-[23%]', 'w-28', 'w-44', 'w-44', '']}
         loading={isLoading} error={isError ? `加载失败: ${(error as Error)?.message || '未知错误'}` : undefined} onRetry={() => { void refetch(); }}
         empty={visibleSessions.length === 0} emptyMessage={sessions.length ? '没有匹配的会话' : '这个项目还没有会话'}>
-                {visibleSessions.map((session) => <ProjectSessionRow key={session.id} session={session} isOpen={openTabIds.has(session.id)} displayName={displayNames[session.id]} expanded={expandedIds.has(session.id)} onToggle={() => toggleExpanded(session.id)} onOpen={onOpen}
+                {visibleSessions.map((session) => <ProjectSessionRow key={session.id} session={session} projectPath={projectPath} isOpen={openTabIds.has(session.id)} displayName={displayNames[session.id]} expanded={expandedIds.has(session.id)} onToggle={() => toggleExpanded(session.id)} onOpen={onOpen}
                   deleting={deletion.isPending} onDelete={(target) => { deletion.reset(); setDeleteTarget(target); }} />)}
       </DataTable>
     </div>

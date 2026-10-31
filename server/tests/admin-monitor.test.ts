@@ -1,5 +1,7 @@
+import {mkdirSync,writeFileSync} from 'fs';
+import {join} from 'path';
 import Fastify from 'fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it,vi } from 'vitest';
 import { createUser } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
 import { userRoutes } from '../src/routes/users.js';
@@ -7,11 +9,12 @@ import { createTestDatabase } from './helpers/database.js';
 import { serverResourceSampler } from '../src/services/server-resources.js';
 
 let cleanup: (() => void) | undefined;
-afterEach(async () => { await serverResourceSampler.stop(); cleanup?.(); });
+afterEach(async () => { await serverResourceSampler.stop(); cleanup?.();vi.unstubAllEnvs(); });
 
 describe('administrator monitoring', () => {
   it('rejects members and groups each users open projects and sessions for admins', async () => {
-    ({ cleanup } = createTestDatabase());
+    const fixture=createTestDatabase();cleanup=fixture.cleanup;vi.stubEnv('CODEX_HOME',fixture.dir);mkdirSync(join(fixture.dir,'sessions'));
+    const native='019ffabc-1212-7212-8212-123456789012';writeFileSync(join(fixture.dir,'sessions',`rollout-${native}.jsonl`),JSON.stringify({type:'event_msg',timestamp:'2026-10-31T02:00:00Z',payload:{type:'agent_message',phase:'commentary',message:'正在分析查询计划，等待结果'}})+'\n');
     const admin = createUser({ username: 'admin', password: 'password1', role: 'admin' });
     const member = createUser({ username: 'member', password: 'password2', max_tabs: 4 });
     const db = getDb();
@@ -43,6 +46,7 @@ describe('administrator monitoring', () => {
       INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
       VALUES ('legacy-session', 'p1', 'Legacy running task', 'running', 'session', 'codex', NULL)
     `).run();
+    db.prepare("UPDATE sessions SET codex_session_id=? WHERE id='s1'").run(native);
     db.prepare("INSERT INTO pty_output (session_id, seq, data) VALUES ('s1', 1, ?)").run('\u001b[32mAnalyzing query plan\u001b[0m\nWaiting for result');
     db.prepare("INSERT INTO pty_output (session_id, seq, data) VALUES ('legacy-session', 1, ?)").run('Do you want to proceed?\n❯ 1. Yes\n  2. No');
 
@@ -103,7 +107,7 @@ describe('administrator monitoring', () => {
       cli_type: 'codex',
       memory_bytes: null,
       process_count: 0,
-      last_output: 'Analyzing query plan · Waiting for result',
+      last_output: '正在分析查询计划，等待结果',
       process_state: 'idle',
     });
     expect(monitoredMember.projects[0].sessions.find((session: any) => session.id === 's1').last_activity_at).toEqual(expect.any(String));
@@ -138,11 +142,11 @@ describe('administrator monitoring', () => {
       headers: { 'x-test-role': 'admin' },
     });
     expect(removed.statusCode).toBe(200);
-    expect(removed.json()).toMatchObject({ ok: true, session_continues: true });
+    expect(removed.json()).toMatchObject({ ok: true, session_continues: false });
     const removedState = JSON.parse((db.prepare("SELECT value FROM user_ui_state WHERE user_id = ? AND key = 'project:p1'").get(member.id) as any).value);
     expect(removedState.terminalInstances.some((tab: any) => tab.id === 'legacy-session')).toBe(false);
     expect(removedState.hiddenSessionIds).toContain('legacy-session');
-    expect(db.prepare("SELECT status FROM sessions WHERE id = 'legacy-session'").get()).toEqual({ status: 'running' });
+    expect(db.prepare("SELECT status FROM sessions WHERE id = 'legacy-session'").get()).toEqual({ status: 'cancelled' });
 
     const selfDelete = await app.inject({
       method: 'DELETE',
