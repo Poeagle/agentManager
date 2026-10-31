@@ -28,6 +28,15 @@ beforeEach(async()=>{
 afterEach(async()=>{stop?.();stop=undefined;for(const client of wss.clients) client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 const send=(method:string,params:unknown)=>peer.send(JSON.stringify({method,params}));
 describe('native Codex conversation streaming',()=>{
+  it('streams nonblocking question metadata on the actual AgentMessage item without creating a blocking RPC request',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
+    const questions=[{title:'想去哪里？',options:['太空','深海','森林']}];
+    send('turn/started',{threadId:'thread',turn:{id:'turn'}});
+    send('item/completed',{threadId:'thread',turnId:'turn',item:{type:'agentMessage',id:'call-question',phase:'final_answer',text:'想去哪里？',delivery:'async',questions}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({type:'snapshot',interactions:[],messages:[{id:conversationMessageId('turn','assistant','call-question'),async_questions:questions}]}));
+    send('turn/completed',{threadId:'thread',turn:{id:'turn',status:'completed'}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:false,messages:[{async_questions:questions,streaming:false}]}));
+  });
   it('replays genuine native questions on resume and answers exactly once on the subscribed socket',async()=>{
     const native={id:3,method:'item/tool/requestUserInput',params:{threadId:'thread',turnId:'turn',itemId:'ask',isBlocking:true,questions:[{id:'q',header:'范围',question:'选择部署范围',isOther:false,isSecret:false,options:[{label:'试用',description:'隔离环境'},{label:'正式',description:'日常环境'}]}]}};
     humanRequests=[native];

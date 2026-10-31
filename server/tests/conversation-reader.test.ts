@@ -26,6 +26,19 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app.close();vi.unstubAllEnvs();cleanup();});
 describe('public conversation pages',()=>{
+  it('restores actual async question items as structured messages and keeps one stable identity',async()=>{
+    const questions=[{title:'免费旅行，你最想去哪里？',options:['太空','深海','森林']}];
+    const item={type:'AgentMessage',id:'call-question',delivery:'async',phase:'final_answer',questions,content:[{type:'Text',text:'免费旅行，你最想去哪里？\n- 太空\n- 深海\n- 森林'}]};
+    writeFileSync(file,user('出个问题')+line('response_item',{type:'function_call',name:'request_user_input_async',arguments:JSON.stringify({questions})})+line('event_msg',{type:'item_completed',thread_id:id,turn_id:'turn',item})+final('免费旅行，你最想去哪里？\n- 太空\n- 深海\n- 森林'));
+    const result=await readConversation(binding);expect(result.messages).toHaveLength(2);
+    expect(result.messages.at(-1)).toMatchObject({id:conversationMessageId('turn','assistant','call-question'),role:'assistant',phase:'final',async_questions:questions});
+    expect((await readConversation(binding)).messages.at(-1)?.async_questions).toEqual(questions);
+    appendFileSync(file,user('我选太空'));expect((await readConversation(binding)).messages.map(message=>message.role)).toEqual(['user','assistant','user']);
+  });
+  it('never converts quoted question metadata in tool output or unstructured prose into a form',async()=>{
+    writeFileSync(file,user('问题')+line('response_item',{type:'function_call_output',output:JSON.stringify({delivery:'async',questions:[{title:'private',options:['a','b']}]})})+line('event_msg',{type:'item_completed',item:{type:'AgentMessage',id:'normal',content:[{type:'Text',text:'1. a 2. b'}],questions:[{title:'伪提问',options:['a','b']}]}})+final('1. a 2. b'));
+    const result=await readConversation(binding);expect(result.messages).toHaveLength(2);expect(result.messages.some(message=>message.async_questions)).toBe(false);
+  });
   it('restores a native capacity error from task completion and excludes private details and tool errors',async()=>{
     writeFileSync(file,user('执行任务')+line('response_item',{type:'function_call_output',error:{message:'PRIVATE TOOL FAILURE'},output:'PRIVATE RESULT'})
       +line('event_msg',{type:'agent_message',message:'正在处理'})

@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import {nativeInteraction,nativeInteractionAnswer,type ConversationInteraction} from './conversation-interactions.js';
+import {nativeInteraction,nativeInteractionAnswer,conversationAsyncQuestions,type ConversationInteraction} from './conversation-interactions.js';
 import {homedir} from 'os';
 import {join} from 'path';
 import {randomUUID} from 'crypto';
@@ -129,6 +129,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     items.set(item.id,{phase:item.phase??previous?.phase??null,message:{
       id:conversationMessageId(turnId,role,item.id),role,turn_id:turnId,
       ...(role==='assistant'?{phase:item.phase==='final_answer'?'final' as const:'commentary' as const}:{}),
+      ...(role==='assistant'&&conversationAsyncQuestions(item)?{async_questions:conversationAsyncQuestions(item)}:{}),
       ...(typeof item.clientId==='string'?{client_id:item.clientId}:{}),
       ...(role==='user'?{image_paths:conversationImagePaths(item.content)}:{}),
       text:text.slice(0,128*1024),timestamp:previous?.message.timestamp || (timestamp===null?null:new Date(timestamp??Date.now()).toISOString()),streaming:role==='assistant' && streaming,

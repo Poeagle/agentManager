@@ -28,6 +28,7 @@ export function conversationTimings(messages: ConversationMessage[], now: number
   for(let index=0;index<messages.length;index++) {
     const message=messages[index];
     if(message.role==='user') {userTime=message.timestamp;userTurn=message.turn_id;continue;}
+    if(message.async_questions?.length)continue;
     if(message.phase==='final') {
       if(userTurn && message.turn_id && userTurn!==message.turn_id)continue;
       const elapsed=elapsedBetween(userTime,message.timestamp);

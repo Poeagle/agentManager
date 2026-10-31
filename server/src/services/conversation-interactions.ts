@@ -52,3 +52,17 @@ export function nativeInteractionAnswer(request:ConversationInteraction,params:a
   }
   return {answers};
 }
+
+export interface ConversationAsyncQuestion {title:string;options:string[]|null}
+/** Codex also delivers nonblocking questions as AgentMessage metadata. They
+ * complete their tool call immediately; answers arrive as a later user turn. */
+export function conversationAsyncQuestions(item:any):ConversationAsyncQuestion[]|undefined {
+  if(item?.delivery!=='async'||!Array.isArray(item.questions)||!item.questions.length||item.questions.length>20)return;
+  const questions:ConversationAsyncQuestion[]=[];
+  for(const q of item.questions) {
+    if(!object(q)||typeof q.title!=='string'||!q.title.trim()||q.title.length>12000)return;
+    if(q.options!==null&&q.options!==undefined&&(!Array.isArray(q.options)||q.options.length>30||q.options.some((option:unknown)=>typeof option!=='string'||!option.trim()||option.length>1000)))return;
+    questions.push({title:q.title,options:q.options?.length?[...q.options]:null});
+  }
+  return questions;
+}

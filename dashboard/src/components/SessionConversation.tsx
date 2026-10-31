@@ -1,4 +1,4 @@
-import {ConversationInteraction,type ConversationInteractionRequest} from './ConversationInteraction';
+import {ConversationInteraction,ConversationAsyncQuestion,type ConversationInteractionRequest} from './ConversationInteraction';
 import {memo,useCallback,useEffect,useRef,useState} from 'react';
 import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
 import {api,type ConversationMessage,type ConversationPage,type Session} from '../lib/api';
@@ -81,7 +81,17 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
   const sendingRef=useRef(false);
   const draftRef=useRef(draft);draftRef.current=draft;
   const bottom=useRef<HTMLDivElement>(null);
-  const scrollBottom=()=>{pinned.current=true;setUnread(false);bottom.current?.scrollIntoView({block:'nearest'});};
+  const focusedQuestion=useRef<string|null>(null);
+  const timelineRef=useRef(messages);timelineRef.current=messages;
+  const scrollBottom=()=>{
+    pinned.current=true;setUnread(false);bottom.current?.scrollIntoView({block:'nearest'});
+    const timeline=timelineRef.current,lastHuman=timeline.reduce((last,item,index)=>item.role==='user'?index:last,-1);
+    const question=timeline.slice(lastHuman+1).reduce<ConversationMessage|null>((last,item)=>item.async_questions?.length?item:last,null);
+    if(question&&focusedQuestion.current!==question.id) {
+      const node=[...(list.current?.querySelectorAll<HTMLElement>('[data-chat-message-id]')||[])].find(item=>item.dataset.chatMessageId===question.id);
+      if(node){focusedQuestion.current=question.id;node.scrollIntoView({block:'nearest'});}
+    }
+  };
   const navigate=useCallback(()=>{pinned.current=false;setUnread(false);},[]);
   const ended=['completed','failed','cancelled'].includes(session.status);
   const lastUserIndex=messages.reduce((last,message,index)=>message.role==='user'?index:last,-1);
@@ -185,25 +195,26 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
       try {socket.send(JSON.stringify({type:'interaction_response',request_id:id,answer}));}catch {clearTimeout(timer);pendingAnswers.current.delete(id);reject(new Error('连接已断开'));}
     });
   }
-  async function send() {
-    const text=draftRef.current;
-    const attached=attachments.values();
-    if((!text.trim() && !attached.length) || attachments.uploading || attachments.failed || sendingRef.current || !canSend || !page?.session_active || ended || waiting) return;
-    if(new TextEncoder().encode(text).byteLength>64*1024) {setSendError('消息超过 64 KB，请缩短后发送。');return;}
+  async function send(questionReply?:string) {
+    const fromQuestion=questionReply!==undefined;
+    const text=questionReply??draftRef.current;
+    const attached=fromQuestion?[]:attachments.values();
+    if((!text.trim() && !attached.length) || !fromQuestion&&(attachments.uploading || attachments.failed) || sendingRef.current || !canSend || !page?.session_active || ended || waiting) {if(fromQuestion)throw new Error('当前无法提交回答，请等待会话就绪或完成其他交互');return;}
+    if(new TextEncoder().encode(text).byteLength>64*1024) {if(fromQuestion)throw new Error('回答超过 64 KB，请缩短后发送');setSendError('消息超过 64 KB，请缩短后发送。');return;}
     sendingRef.current=true;setSending(true);setSendError('');
     const clientId=conversationClientId();
-    const timestamp=new Date().toISOString(),visibleText=text.trim()?text:attached.length?'请查看附件。':text,attachedIds=attachments.items.map(item=>item.id);
+    const timestamp=new Date().toISOString(),visibleText=text.trim()?text:attached.length?'请查看附件。':text,attachedIds=fromQuestion?[]:attachments.items.map(item=>item.id);
     setMessages(previous=>[...previous,{id:`pending-${clientId}`,client_id:clientId,role:'user',text:visibleText,attachments:attached,timestamp,optimistic:{afterSequence:previous.reduce((last,item)=>Math.max(last,item.sequence??-1),-1)}}]);
     pinned.current=true;requestAnimationFrame(scrollBottom);
     try {
       if(attached.length)await api.agent.sendInput(session.id,text,clientId,attached);else await api.agent.sendInput(session.id,text,clientId);
-      attachments.clear(attachedIds);
+      if(!fromQuestion)attachments.clear(attachedIds);
       // The native turn/started event can precede this HTTP acknowledgement;
       // only initialize the waiting state if a new turn has not arrived yet.
       setLiveProgress(previous=>previous.stage==='idle'?{turn_id:null,started_at:new Date().toISOString(),stage:'waiting'}:previous);
-      if(draftRef.current===text) setDraft('');
+      if(!fromQuestion&&draftRef.current===text) setDraft('');
       pinned.current=true;setRefresh(value=>value+1);requestAnimationFrame(scrollBottom);
-    } catch(failure) {setMessages(previous=>previous.filter(item=>!(item.optimistic && item.client_id===clientId)));setSendError(`${failure instanceof Error?failure.message:'发送失败'}。请查看原始终端确认后再重试。`);}
+    } catch(failure) {setMessages(previous=>previous.filter(item=>!(item.optimistic && item.client_id===clientId)));if(fromQuestion)throw failure;setSendError(`${failure instanceof Error?failure.message:'发送失败'}。请查看原始终端确认后再重试。`);}
     finally {sendingRef.current=false;setSending(false);}
   }
   const agentName=session.cli_type==='codex'?'Codex':'Claude';
@@ -219,7 +230,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
     ? messages.reduce<string|null>((id,message,index)=>index>lastUserIndex && message.role==='assistant' && message.streaming && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id)?message.id:id,null):null;
   const groups=groupConversationProgress(displayed);
   const timings=conversationTimings(displayed,now,busy,liveProgress.turn_id);
-  const bubble=(message:ConversationMessage,compact=false)=><Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} durationLabel={!compact?timings.get(message.id)?.label:undefined} durationTitle={!compact?timings.get(message.id)?.title:undefined} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
+  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationAsyncQuestion key={message.id} message={message} answered={messages.slice(messages.indexOf(message)+1).some(item=>item.role==='user')} agentName={agentName} storageKey={`agentmanager-question:${userId}:${session.id}:${message.id}`} connected={active&&!!page?.session_active&&!ended} canAnswer={canSend} onReply={send} onRaw={onRaw}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} durationLabel={!compact?timings.get(message.id)?.label:undefined} durationTitle={!compact?timings.get(message.id)?.title:undefined} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
   return <section ref={readingRoot} className="session-chat" aria-label="会话对话">
     <div className="session-chat-reading">
     <div ref={list} className="session-chat-scroll" onScroll={()=>{if(list.current) pinned.current=list.current.scrollHeight-list.current.scrollTop-list.current.clientHeight<80;}}>

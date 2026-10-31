@@ -90,3 +90,6 @@ PDF 和 Word 转换后的分页预览，根据纸张纵横比、预览区域宽�
 右侧目录预览上方以加粗、浅色底和侧边色条突出“你的问题”，下方保留 Agent 输出摘要与章节。点击问题定位到该次提问，点击摘要定位到回答，点击章节定位到具体段落。长问题在预览内换行、滚动，不撑开横向滚动条。
 
 验证：`conversation-interactions.test.ts`、`conversation-stream.test.ts`、`agent-input.test.ts`、`ConversationInteraction.test.tsx`、`ConversationReadingTools.test.tsx` 及 `e2e/conversation-interactions.spec.ts`、`e2e/conversation-reading.spec.ts`。浏览器交互测试使用隔离的原生协议服务，不向现有会话提交问题或执行命令。
+
+
+Codex 的 `request_user_input_async` 还会以 `AgentMessage.delivery = async` 和 `questions` 字段发出非阻塞问题，工具调用本身立即完成。此类消息在对话正文内显示选项与自定义回答卡片，历史读取和实时消息都保留结构化字段；答案通过正常用户输入发送到同一会话，不冒充待处理 RPC 请求。提交不会清空输入框或附件草稿，后续已有用户发言的旧提问停止接收答案。仅凭编号文本或工具参数不会生成卡片。回归使用真实异步消息的字段形状，见 `e2e/conversation-async-questions.spec.ts`。

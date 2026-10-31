@@ -230,3 +230,7 @@
 .conversation-interactions {display:flex;flex-direction:column;flex:0 1 auto;max-height:48%;min-height:0;overflow:hidden;}
 .conversation-interaction form {display:flex;flex-direction:column;min-height:0;}
 .conversation-interaction-queue {font-size:11px;color:var(--text-secondary);margin:2px 32px;}
+
+.conversation-interaction-inline {margin:8px 0;flex:initial;}
+.conversation-interaction-inline .conversation-interaction-body {max-height:min(44vh,360px);flex:initial;}
+.session-chat-async-question {margin-top:16px;}

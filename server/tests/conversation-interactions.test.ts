@@ -1,7 +1,12 @@
 import {describe,expect,it} from 'vitest';
-import {nativeInteraction,nativeInteractionAnswer} from '../src/services/conversation-interactions.js';
+import {nativeInteraction,nativeInteractionAnswer,conversationAsyncQuestions} from '../src/services/conversation-interactions.js';
 const request=(method:string,params:any)=>({id:'request',method,params:{threadId:'thread',turnId:'turn',...params}});
 describe('structured human requests',()=>{
+  it('recognizes actual nonblocking AgentMessage metadata without inferring questions from text',()=>{
+    const questions=[{title:'想去哪里？',options:['太空','深海','森林']}];
+    expect(conversationAsyncQuestions({delivery:'async',questions})).toEqual(questions);
+    for(const item of [{questions},{delivery:'async',questions:[]},{delivery:'async',questions:[{title:'x',options:[42]}]},{delivery:'async',questions:[{title:'',options:null}]}])expect(conversationAsyncQuestions(item)).toBeUndefined();
+  });
   it('ignores unknown tools, non-requests, other threads and malformed question sets',()=>{
     for(const frame of [request('item/tool/call',{}),{method:'item/tool/requestUserInput',params:{}},request('item/tool/requestUserInput',{questions:[]}),request('item/tool/requestUserInput',{questions:[{id:'q',question:'a'},{id:'q',question:'b'}]})])expect(nativeInteraction(frame,'thread')).toBeNull();
     expect(nativeInteraction(request('item/fileChange/requestApproval',{}),'other')).toBeNull();

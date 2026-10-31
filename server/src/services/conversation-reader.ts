@@ -1,3 +1,4 @@
+import {conversationAsyncQuestions,type ConversationAsyncQuestion} from './conversation-interactions.js';
 import {open} from 'fs/promises';
 import {createHash} from 'crypto';
 import {extractAgentMessages,nativeConversationFile,type PromptContextSession} from './prompt-context.js';
@@ -5,7 +6,7 @@ import type {CliType} from './session-identity.js';
 import {conversationImagePaths,type ConversationAttachment} from './conversation-attachments.js';
 import {conversationErrorMessage} from './conversation-error.js';
 
-export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];image_paths?:string[]}
+export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];image_paths?:string[];async_questions?:ConversationAsyncQuestion[]}
 interface IndexedMessage extends Omit<ConversationMessage,'text'> {offset:number;length:number;hash:string;recordType:string;nativeItem:boolean}
 interface Index {inode:number;mtime:number;start:number;offset:number;partial:Buffer;messages:IndexedMessage[];generation:string;skipPartial:boolean;anchor:Buffer}
 const WINDOW=2*1024*1024;
@@ -42,15 +43,21 @@ function publicMessage(line:Buffer,kind:CliType) {
   if(line.length>MAX_RECORD)text=text.replace(/"image_url"\s*:\s*"data:[^"]*"/g,'"image_url":""');
   // Do not parse or retain tool results/reasoning. The extractor also checks
   // the actual JSON structure so quoted records in tool output cannot leak.
-  if(!/"(?:type|role)"\s*:\s*"(?:user|assistant|message|user_message|agent_message|task_complete|error)"/.test(text.slice(0,400))) return null;
+  const header=text.slice(0,400);
+  const agentItem=/"type"\s*:\s*"item_completed"/.test(header)&&/"type"\s*:\s*"AgentMessage"/.test(header);
+  if(!agentItem && !/"(?:type|role)"\s*:\s*"(?:user|assistant|message|user_message|agent_message|task_complete|error)"/.test(text.slice(0,400))) return null;
   try {
     const entry=JSON.parse(text);
     const turnId=entry.payload?.turn_id || entry.payload?.internal_chat_message_metadata_passthrough?.turn_id;
     const failure=kind==='codex' && entry.type==='event_msg' && ['task_complete','error'].includes(entry.payload?.type)
       ? conversationErrorMessage(typeof turnId==='string'?turnId:`event:${entry.timestamp}`,entry.payload.error??(entry.payload.type==='error'?entry.payload:null),entry.payload.will_retry===true || entry.payload.willRetry===true,typeof entry.timestamp==='string'?entry.timestamp:null):null;
-    const message=failure||extractAgentMessages([entry],kind,128*1024).find(message=>message.role==='user'||message.role==='assistant');
-    const itemId=kind==='codex' && entry.type==='response_item' && typeof entry.payload?.id==='string'?entry.payload.id:undefined;
-    return message ? {message,failure,itemId,imagePaths:message.role==='user'?conversationImagePaths(entry.payload?.content):[],turnId:typeof turnId==='string'?turnId:undefined,recordType:entry.type==='event_msg' ? entry.payload?.type : entry.type} : null;
+    const asyncItem=kind==='codex' && entry.type==='event_msg' && entry.payload?.type==='item_completed' && entry.payload.item?.type==='AgentMessage'?entry.payload.item
+      :kind==='codex' && entry.type==='response_item' && entry.payload?.type==='message' && entry.payload.role==='assistant'?entry.payload:null;
+    const asyncQuestions=conversationAsyncQuestions(asyncItem);
+    const asyncMessage=asyncQuestions?{role:'assistant' as const,phase:'final' as const,text:(asyncItem.content||[]).filter((part:any)=>['Text','output_text'].includes(part.type)&&typeof part.text==='string').map((part:any)=>part.text).join('\n').slice(0,128*1024)||asyncQuestions.map(q=>q.title).join('\n'),timestamp:typeof entry.timestamp==='string'?entry.timestamp:null}:null;
+    const message=failure||asyncMessage||extractAgentMessages([entry],kind,128*1024).find(message=>message.role==='user'||message.role==='assistant');
+    const itemId=asyncQuestions&&typeof asyncItem?.id==='string'?asyncItem.id:kind==='codex' && entry.type==='response_item' && typeof entry.payload?.id==='string'?entry.payload.id:undefined;
+    return message ? {message,failure,itemId,asyncQuestions,imagePaths:message.role==='user'?conversationImagePaths(entry.payload?.content):[],turnId:typeof turnId==='string'?turnId:undefined,recordType:asyncQuestions?'async_question':entry.type==='event_msg' ? entry.payload?.type : entry.type} : null;
   } catch {return null;}
 }
 function scan(buffer:Buffer,base:number,kind:CliType):IndexedMessage[] {
@@ -81,7 +88,7 @@ function dedupe(messages:IndexedMessage[]):IndexedMessage[] {
       && (!previous.turn_id || !message.turn_id || previous.turn_id===message.turn_id)
       && ((message.role==='user' && previous.recordType!==message.recordType)
         || (message.role==='assistant' && previous.phase!=='error' && previous.recordType!==message.recordType))) {
-      if(message.recordType==='response_item' && message.nativeItem) result[result.length-1]=message;
+      if(message.recordType==='response_item' && message.nativeItem && previous.recordType!=='async_question') result[result.length-1]=message;
       continue;
     }
     result.push(message);
@@ -164,7 +171,7 @@ export async function readConversation(session:PromptContextSession,query:{after
       for(const item of selected) {
         const buffer=Buffer.alloc(item.length);await handle.read(buffer,0,buffer.length,item.offset);
         const parsed=publicMessage(buffer,file.kind);
-        if(parsed) messages.push({id:item.id,role:item.role,text:parsed.message.text,timestamp:item.timestamp,turn_id:item.turn_id,phase:item.phase,...(item.error?{error:item.error}:{}),sequence:item.offset,...(parsed.imagePaths.length?{image_paths:parsed.imagePaths}:{})});
+        if(parsed) messages.push({id:item.id,role:item.role,text:parsed.message.text,timestamp:item.timestamp,turn_id:item.turn_id,phase:item.phase,...(parsed.asyncQuestions?{async_questions:parsed.asyncQuestions}:{}),...(item.error?{error:item.error}:{}),sequence:item.offset,...(parsed.imagePaths.length?{image_paths:parsed.imagePaths}:{})});
       }
       const first=selected[0];
       return {messages,has_more:index.start>0 || (!!first && index.messages[0]?.id!==first.id),reset,available:true,generation:index.generation};
