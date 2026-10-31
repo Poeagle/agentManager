@@ -11,7 +11,7 @@ const stamp=(value:string|null)=>value?new Date(value).toLocaleString('zh-CN',{h
 const permissions:Record<string,string>={'danger-full-access':'完整访问','workspace-write':'工作区可写','read-only':'只读'};
 export function ConversationControls({sessionId,active}:{sessionId:string;active:boolean}) {
   const queryClient=useQueryClient(),[expanded,setExpanded]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState('');
-  const query=useQuery({queryKey:['conversation-controls',sessionId],queryFn:()=>api.agent.controls(sessionId),enabled:active,refetchInterval:active?5000:false,retry:false});
+  const query=useQuery({queryKey:['conversation-controls',sessionId],queryFn:()=>api.agent.controls(sessionId),enabled:active,refetchInterval:active?300000:false,staleTime:300000,refetchOnWindowFocus:false,retry:false});
   useEffect(()=>{if(!active)setExpanded(false);},[active]);
   const data=query.data,selected=data?.pending||{model:data?.model||'',effort:data?.effort||''};
   const model=data?.models.find(m=>m.model===selected.model),usage=data?.usage;
@@ -35,7 +35,7 @@ export function ConversationControls({sessionId,active}:{sessionId:string;active
         {data.pending&&<span className="conversation-control-pending" title="下次开始新任务时生效；进行中的任务和追问继续使用当前设置。">下轮生效 <button type="button" disabled={saving} onClick={()=>void save(null)}>撤销</button></span>}
         {context!==null&&<span className="conversation-control-context" title="最近一次模型请求的 Token 数占上下文窗口的比例，下一次请求可能变化。"><i><b style={{width:`${context}%`}}/></i>上下文 {context}%</span>}
         {weekly&&<span title={weekly.resets_at?`重置时间：${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>周额度剩余 {Math.round(100-weekly.used_percent)}%</span>}
-        <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>详情</button>
+        <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>详情</button><button type="button" aria-label="刷新会话信息" title="每 5 分钟自动刷新，也可手动刷新" disabled={query.isFetching} onClick={()=>void query.refetch()}><RefreshCw size={13} className={query.isFetching?'animate-spin':''}/>刷新</button>
       </>:<><span>{query.isPending?'读取会话信息…':'会话信息暂不可用'}</span>{query.isError&&<button type="button" onClick={()=>void query.refetch()}><RefreshCw size={13}/>重试</button>}</>}
     </div>
     {error&&<p className="session-chat-error" role="alert">{error}</p>}

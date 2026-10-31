@@ -1,4 +1,4 @@
-import {fireEvent,render,screen,waitFor,within} from '@testing-library/react';
+import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {beforeEach,afterEach,describe,expect,it,vi} from 'vitest';
 import {ConversationControls} from '../src/components/ConversationControls';
@@ -9,6 +9,16 @@ beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}})
 afterEach(()=>client.clear());
 const mount=()=>render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active/></QueryClientProvider>);
 describe('compact conversation controls',()=>{
+ it('refreshes every five minutes, ignores focus refresh and retains a manual refresh action',async()=>{
+  vi.useFakeTimers();vi.mocked(api.agent.controls).mockClear();
+  try {
+   await act(async()=>{mount();await vi.advanceTimersByTimeAsync(0);});expect(api.agent.controls).toHaveBeenCalledTimes(1);
+   await act(async()=>{await vi.advanceTimersByTimeAsync(299999);window.dispatchEvent(new Event('focus'));document.dispatchEvent(new Event('visibilitychange'));});expect(api.agent.controls).toHaveBeenCalledTimes(1);
+   await act(async()=>{await vi.advanceTimersByTimeAsync(1);});expect(api.agent.controls).toHaveBeenCalledTimes(2);
+   await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'刷新会话信息'}));await vi.advanceTimersByTimeAsync(0);});expect(api.agent.controls).toHaveBeenCalledTimes(3);
+  }finally{vi.useRealTimers();}
+ });
+
  it('shows actual context and weekly remaining values and expands only allowlisted details',async()=>{
   mount();expect(await screen.findByText('上下文 30%')).toBeVisible();expect(screen.getByText('周额度剩余 75%')).toBeVisible();expect(screen.queryByRole('dialog')).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'详情'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(dialog).toHaveTextContent('工作区可写');expect(dialog).toHaveTextContent('40,000');expect(dialog).toHaveTextContent('400,000');expect(within(dialog).getByText('缓存命中输入')).toBeVisible();fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
  });
