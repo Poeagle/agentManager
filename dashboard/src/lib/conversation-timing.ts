@@ -42,7 +42,7 @@ export function conversationTimings(messages: ConversationMessage[], now: number
       if(next && (next.role!=='assistant' || !['commentary','final'].includes(next.phase||'') || message.turn_id && next.turn_id && message.turn_id!==next.turn_id))continue;
       if(!next && activeTurnId && message.turn_id && activeTurnId!==message.turn_id)continue;
       const elapsed=elapsedBetween(message.timestamp,next?.timestamp ?? (!next && busy ? now : null));
-      if(elapsed!==null) result.set(message.id,{label:`${next?'消息间隔':'距上次更新'} ${formatElapsed(elapsed)}`,title:next?'同一轮相邻 Agent 输出的记录时间差，包含等待或暂停；不是工具执行耗时':'当前轮仍在执行，距离最近进展记录的时间；不是工具执行耗时'});
+      if(elapsed!==null) result.set(message.id,{label:`${next?'':'距上次更新 '}${formatElapsed(elapsed)}`,title:next?'同一轮相邻 Agent 输出的记录时间差，包含等待或暂停；不是工具执行耗时':'当前轮仍在执行，距离最近进展记录的时间；不是工具执行耗时'});
     }
   }
   return result;

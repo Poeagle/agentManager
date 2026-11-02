@@ -43,7 +43,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
       {message.queued&&<span className="session-chat-queued" role="status">已排队 · 等待处理</span>}
       {durationLabel && <span className="session-chat-message-duration" title={durationTitle}>{durationLabel}</span>}
       {!compact && message.timestamp && <time dateTime={message.timestamp} title={`原生消息记录时间：${new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}（本地时区）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>}
-      <button type="button" onClick={()=>void copy()} aria-label={`复制${message.role==='user'?'你的消息':'Agent 回复'}`} title={copied?'已复制':'复制消息'}>{copied?<Check size={13}/>:<Copy size={13}/>}</button>
+      {!compact && <button type="button" onClick={()=>void copy()} aria-label={`复制${message.role==='user'?'你的消息':'Agent 回复'}`} title={copied?'已复制':'复制消息'}>{copied?<Check size={13}/>:<Copy size={13}/>}</button>}
     </span>);
   const automatic=message.role==='user'?automaticConversationContext(message.text):null;
   if(automatic)return <ConversationAutomaticContext message={message} context={automatic} copied={copied} onCopy={()=>void copy()}/>;
@@ -56,7 +56,6 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
   return <article className={`session-chat-message ${message.role}`} data-phase={message.phase} data-streaming={streaming} data-chat-message-id={message.id}>
     {message.role==='assistant' && !compact && <div className="session-chat-agent"><Sparkles size={16}/><span>{agentName}</span>{message.phase==='final' && <span className="session-chat-writing">结论</span>}{streaming && <span className="session-chat-writing">正在输出</span>}</div>}
     <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text"><ConversationMessageAttachments text={parsed.attachments.length&&!parsed.attachments.some(item=>item.offset!==undefined)?parsed.text.trimEnd():parsed.text} items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/></div>{metadata}</>:<ConversationMarkdown content={message.text} messageId={message.id} footer={!compact?metadata:undefined} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
-    {message.role==='assistant'&&compact&&metadata}
   </article>;
 });
 
