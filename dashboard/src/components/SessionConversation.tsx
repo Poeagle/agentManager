@@ -51,7 +51,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
   </article>;
   return <article className={`session-chat-message ${message.role}`} data-phase={message.phase} data-streaming={streaming} data-chat-message-id={message.id}>
     {message.role==='assistant' && !compact && <div className="session-chat-agent"><Sparkles size={16}/><span>{agentName}</span>{message.phase==='final' && <span className="session-chat-writing">结论</span>}{streaming && <span className="session-chat-writing">正在输出</span>}</div>}
-    <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text">{parsed.text}</div><ConversationMessageAttachments items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>{metadata}</>:<ConversationMarkdown content={message.text} messageId={message.id} footer={!compact?metadata:undefined} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
+    <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text">{parsed.text}<ConversationMessageAttachments items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/></div>{metadata}</>:<ConversationMarkdown content={message.text} messageId={message.id} footer={!compact?metadata:undefined} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
     {message.role==='assistant'&&compact&&metadata}
   </article>;
 });

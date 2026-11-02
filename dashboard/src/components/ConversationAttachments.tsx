@@ -1,6 +1,6 @@
 import {ConversationImagePreviewRoot,useConversationImagePreview,useConversationFilePreview} from './ConversationImagePreview';
 import {useEffect,useRef,useState} from 'react';
-import {File,Paperclip} from 'lucide-react';
+import {Paperclip} from 'lucide-react';
 import {api} from '../lib/api';
 import {readFileAsDataUrl} from '../lib/file-data-url';
 import {conversationClientId} from '../lib/conversation-timeline';
@@ -57,8 +57,7 @@ export function ConversationMessageAttachments({items,projectId,onOpenFile,proje
 function MessageAttachments({items,projectId,projectPath}:{items:ConversationAttachment[];projectId:string|null;projectPath?:string;onOpenFile?:(path:string)=>void}) {
   const preview=useConversationImagePreview(),previewFile=useConversationFilePreview();
   if(!items.length)return null;
-  return <div className="session-chat-message-attachments">{items.map((item,index)=><button type="button" key={`${item.path}-${index}`} className="session-chat-message-attachment" title={item.name} aria-label={`打开附件 ${item.name}`} onClick={()=>item.kind==='image'?preview?.({src:api.files.previewUrl(item.path,projectId||undefined),name:item.name}):previewFile?.({path:item.path,rootPath:projectPath||item.path.slice(0,item.path.lastIndexOf('/'))||'/',projectId,name:item.name})}>
-    {item.kind==='image'?<img src={api.files.previewUrl(item.path,projectId||undefined)} alt={item.name} loading="lazy"/>:<File size={18}/>}
-    <span>{item.name}</span>
-  </button>)}</div>;
+  return <span className="session-chat-message-attachments">{items.map((item,index)=><button type="button" key={`${item.path}-${index}`} className="session-chat-message-attachment" title={item.name} aria-label={`打开附件 ${item.name}`} onClick={()=>item.kind==='image'?preview?.({src:api.files.previewUrl(item.path,projectId||undefined),name:item.name}):previewFile?.({path:item.path,rootPath:projectPath||item.path.slice(0,item.path.lastIndexOf('/'))||'/',projectId,name:item.name})}>
+    {item.kind==='image'?'图片':'文件'} {items.slice(0,index+1).filter(other=>other.kind===item.kind).length}
+  </button>)}</span>;
 }
