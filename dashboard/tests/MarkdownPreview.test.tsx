@@ -47,6 +47,12 @@ describe('Markdown file preview', () => {
     expect(api.files.preview).toHaveBeenCalledWith('/project/backupRestore.png', expect.any(AbortSignal), 'project-1');
   });
 
+  it('keeps readonly image nodes and Blob URLs stable across workspace rerenders',async()=>{
+    const view=render(<FileExplorer rootPath="/project" projectId="project-1" readOnly/>);fireEvent.click(await screen.findByText('README.md'));const image=await screen.findByRole('img',{name:'backupRestore'});await waitFor(()=>expect(image).toHaveAttribute('src','blob:diagram'));
+    for(let index=0;index<5;index++)view.rerender(<FileExplorer rootPath="/project" projectId="project-1" readOnly active={index%2===0}/>);
+    expect(screen.getByRole('img',{name:'backupRestore'})).toBe(image);expect(api.files.preview).toHaveBeenCalledTimes(1);expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    fireEvent.click(image);expect(await screen.findByRole('dialog',{name:'图片预览 · backupRestore'})).toBeVisible();fireEvent.keyDown(screen.getByRole('dialog'),{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(screen.getByRole('img',{name:'backupRestore'})).toBe(image);
+  });
   it('opens relative file links with Ctrl-click while editing', async () => {
     render(<FileExplorer rootPath="/project" projectId="project-1" />);
     fireEvent.click(await screen.findByText('README.md'));

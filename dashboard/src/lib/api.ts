@@ -825,7 +825,7 @@ export interface ProjectUserAccess extends ProjectToolPermissions {
   updated_at?: string;
 }
 
-export type FilePreviewType = 'text' | 'pdf' | 'word' | 'presentation' | 'spreadsheet' | 'csv' | 'image' | 'drawio';
+export type FilePreviewType = 'text' | 'pdf' | 'word' | 'presentation' | 'spreadsheet' | 'csv' | 'image' | 'drawio' | 'video' | 'audio';
 
 export interface FileEntry {
   name: string;

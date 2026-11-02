@@ -1,7 +1,8 @@
+import {ImagePreview} from './ConversationImagePreview';
 import CodeBlock from '@tiptap/extension-code-block';
 import {NodeViewContent,NodeViewWrapper,ReactNodeViewRenderer,type NodeViewProps} from '@tiptap/react';
 import {MermaidDiagram,isMermaidCode} from './MermaidDiagram';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from '@tiptap/markdown';
@@ -25,6 +26,7 @@ function DiagramCodeView({node}:NodeViewProps) {
   return <NodeViewWrapper>{diagram?<><MermaidDiagram source={node.textContent}/><details contentEditable={false}><summary>编辑图表源码</summary><pre><NodeViewContent<'code'> as="code" contentEditable/></pre></details></>:<pre><NodeViewContent<'code'> as="code"/></pre>}</NodeViewWrapper>;
 }
 export function MarkdownVisualEditor({ value, onChange, filesApi, resolveLocalPath, onOpenFile }: Props) {
+  const [expandedImage,setExpandedImage]=useState<{src:string;name:string}|null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
   const lastValueRef = useRef(value);
@@ -42,6 +44,11 @@ export function MarkdownVisualEditor({ value, onChange, filesApi, resolveLocalPa
           container.className = 'markdown-visual-image';
           const image = document.createElement('img');
           image.alt = node.attrs.alt || '';
+          image.className='document-inline-image';
+          container.tabIndex=0;container.setAttribute('role','button');container.setAttribute('aria-label',`放大图片 ${image.alt||'文档图片'}`);
+          const open=()=>{if(image.src)setExpandedImage({src:image.src,name:image.alt||'文档图片'});};
+          container.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();open();});
+          container.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)){event.preventDefault();open();}});
           const label = document.createElement('span');
           label.textContent = image.alt || '加载图片…';
           container.append(image, label);
@@ -96,6 +103,7 @@ export function MarkdownVisualEditor({ value, onChange, filesApi, resolveLocalPa
   );
 
   return <div className="markdown-visual-editor">
+    {expandedImage&&<ImagePreview image={expandedImage} onClose={()=>setExpandedImage(null)}/>}
     <div className="markdown-visual-toolbar" role="toolbar" aria-label="Markdown 格式">
       {button('B', '加粗', () => editor?.chain().focus().toggleBold().run())}
       {button('I', '斜体', () => editor?.chain().focus().toggleItalic().run())}

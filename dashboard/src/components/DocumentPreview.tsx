@@ -25,6 +25,7 @@ export function DocumentPreview({ path, type, content, filesApi, onDownload }: P
     let cancelled = false;
     async function load() {
       try {
+        if(type==='video'||type==='audio'){if(!cancelled)setPreview({url:filesApi.previewUrl(path)});return;}
         if (type === 'csv') {
           const sheets = parseDelimitedFile(content, path.split('/').pop() || 'CSV');
           if (!cancelled) setPreview({ sheets });
@@ -65,13 +66,15 @@ export function DocumentPreview({ path, type, content, filesApi, onDownload }: P
 
   return <div className="flex-1 min-h-0 flex flex-col">
     <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs shrink-0" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
-      <span>{type === 'word' ? 'Word / 文本文档只读预览 · 保留分页与排版' : type === 'presentation' ? '演示文稿只读预览 · 按幻灯片分页' : type === 'drawio' ? 'draw.io 只读预览 · 外部链接和远程资源已禁用' : type === 'image' ? '图片预览' : type === 'csv' || type === 'spreadsheet' ? '表格只读预览 · 支持切换工作表' : 'PDF 只读预览'}</span>
+      <span>{type==='video'?'视频预览':type==='audio'?'音频预览':type === 'word' ? 'Word / 文本文档只读预览 · 保留分页与排版' : type === 'presentation' ? '演示文稿只读预览 · 按幻灯片分页' : type === 'drawio' ? 'draw.io 只读预览 · 外部链接和远程资源已禁用' : type === 'image' ? '图片预览' : type === 'csv' || type === 'spreadsheet' ? '表格只读预览 · 支持切换工作表' : 'PDF 只读预览'}</span>
       <button type="button" onClick={onDownload} className="shrink-0 hover:underline" style={{ color: 'var(--accent)' }}>下载原文件</button>
     </div>
     {!preview && <div role="status" className="flex-1 flex items-center justify-center gap-2 text-sm" style={{ color: 'var(--text-secondary)' }}>
       <Loader2 className="w-4 h-4 animate-spin" />{office ? '正在服务器本地转换文档，请稍候…' : '正在加载预览…'}
     </div>}
     {preview?.error && <div role="alert" className="p-6 text-sm whitespace-pre-wrap break-words" style={{ color: 'var(--error)' }}>{preview.error}</div>}
+    {preview?.url&&type==='video'&&<video aria-label="视频预览" src={preview.url} controls playsInline preload="metadata" className="min-h-0 w-full flex-1 bg-black" onError={()=>setPreview({error:'浏览器无法解码此视频，请下载后查看'})}/>}
+    {preview?.url&&type==='audio'&&<div className="flex flex-1 items-center justify-center p-6"><audio aria-label="音频预览" src={preview.url} controls preload="metadata" onError={()=>setPreview({error:'浏览器无法解码此音频，请下载后查看'})}/></div>}
     {preview?.html && <iframe title="draw.io 图表预览" sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={preview.html} className="w-full flex-1 min-h-0 border-0 bg-white" />}
     {preview?.sheets && <SpreadsheetPreview sheets={preview.sheets} />}
     {preview?.pdfData && <Suspense fallback={<div role="status" className="p-6 text-sm">正在加载 PDF 渲染器…</div>}><PdfPreview data={preview.pdfData} /></Suspense>}

@@ -1,3 +1,5 @@
+import {HtmlPreview} from './HtmlPreview';
+import {ImagePreview} from './ConversationImagePreview';
 import {MarkdownDiagramPre} from './MermaidDiagram';
 import { useState, useCallback, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 import {followDocumentLink,scrollDocumentFragment} from '../lib/document-links';
@@ -27,7 +29,7 @@ import { rust } from '@codemirror/lang-rust';
 import { java } from '@codemirror/lang-java';
 import { cpp } from '@codemirror/lang-cpp';
 import { oneDark } from '@codemirror/theme-one-dark';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown,{type Components} from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { setEditorDirty } from '../lib/unsaved-files';
 import { droppedFiles, isFileDrag, MAX_FILE_UPLOAD_BYTES, safeUploadPath, type FileUploadRequest } from '../lib/file-upload';
@@ -156,6 +158,8 @@ interface PersistedExplorerState {
 
 const MARKDOWN_EXTENSIONS = new Set(['md', 'mdx', 'markdown']);
 
+function isHtmlFile(ext:string){return ['html','htm','xhtml'].includes(ext.toLowerCase());}
+function isPageFile(ext:string){return isMarkdownFile(ext)||isHtmlFile(ext);}
 function isMarkdownFile(ext: string) {
   return MARKDOWN_EXTENSIONS.has(ext);
 }
@@ -181,6 +185,7 @@ function MarkdownImage({ src, alt, documentPath, rootPath, filesApi }: {
   rootPath: string;
   filesApi: typeof api.files;
 }) {
+  const [expanded,setExpanded]=useState(false);
   const localPath = markdownLocalPath(src, documentPath, rootPath);
   const [preview, setPreview] = useState<{ path: string; url: string } | null>(null);
   useEffect(() => {
@@ -197,7 +202,20 @@ function MarkdownImage({ src, alt, documentPath, rootPath, filesApi }: {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [localPath, filesApi]);
-  return <img src={localPath ? (preview?.path === localPath ? preview.url : undefined) : src} alt={alt ?? ''} />;
+  const source=localPath ? (preview?.path === localPath ? preview.url : undefined) : src;
+  return <><img className="document-inline-image" src={source} alt={alt ?? ''} tabIndex={0} aria-label={alt||'文档图片'} title="点击放大图片" onClick={()=>{if(source)setExpanded(true);}} onKeyDown={event=>{if(source&&['Enter',' '].includes(event.key)){event.preventDefault();setExpanded(true);}}}/>{expanded&&source&&<ImagePreview image={{src:source,name:alt||'文档图片'}} onClose={()=>setExpanded(false)}/>}</>;
+}
+
+/** Stable renderer component identities keep image Blob URLs and scroll
+ * position alive when session events rerender the surrounding workspace. */
+function ReadonlyMarkdownPreview({body,documentPath,rootPath,filesApi,onLink}:{body:string;documentPath:string;rootPath:string;filesApi:typeof api.files;onLink:(href:string,container:HTMLElement)=>void}){
+  const follow=useRef(onLink);follow.current=onLink;
+  const components=useMemo<Components>(()=>({
+    pre:MarkdownDiagramPre,
+    img:({src,alt})=><MarkdownImage src={src} alt={alt} documentPath={documentPath} rootPath={rootPath} filesApi={filesApi}/>,
+    a:({href,children})=><a href={href} target={href&&/^(https?:|mailto:|tel:|\/\/)/i.test(href)?'_blank':undefined} rel="noopener noreferrer" onClick={event=>{event.preventDefault();follow.current(href||'',event.currentTarget.closest<HTMLElement>('.explorer-markdown')!);}}>{children}</a>,
+  }),[documentPath,rootPath,filesApi]);
+  return <div className="markdown-preview explorer-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{body}</ReactMarkdown></div>;
 }
 
 /**
@@ -639,6 +657,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
 
   // Shared loading/error state
   const [fileLoading, setFileLoading] = useState(false);
+  const failedPreviewPath=useRef<string|null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const saveInFlightRef = useRef(false);
@@ -667,6 +686,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
   // Derived state
   const activeTab = tabs.find(t => t.path === activeTabPath) ?? null;
   const isDirty = activeTab ? activeTab.editedContent !== activeTab.content : false;
+  const isHtml=!!activeTab&&isHtmlFile(activeTab.extension);
   const isMarkdown = activeTab ? isMarkdownFile(activeTab.extension) : false;
   const resolveMarkdownLocalPath = useCallback((source: string) =>
     markdownLocalPath(source, activeTabPath ?? rootPath, rootPath), [activeTabPath, rootPath]);
@@ -753,7 +773,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
     }
 
     setFileLoading(true);
-    setFileError(null);
+    setFileError(null);failedPreviewPath.current=path;
     try {
       const data = await filesApi.read(path);
       if (requestSequence !== openFileRequestSequence.current) return;
@@ -766,7 +786,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
         extension: data.extension,
         size: data.size,
         previewType: data.previewType,
-        viewMode: isMarkdownFile(data.extension) ? 'preview' : 'edit',
+        viewMode: isPageFile(data.extension) ? 'preview' : 'edit',
       };
 
       setTabs(prev => {
@@ -1159,7 +1179,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
                 extension: fileData.extension,
                 size: fileData.size,
                 previewType: fileData.previewType,
-                viewMode: isMarkdownFile(fileData.extension) ? 'preview' as const : 'edit' as const,
+                viewMode: isPageFile(fileData.extension) ? 'preview' as const : 'edit' as const,
               };
             } catch {
               return null;
@@ -1178,7 +1198,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
               extension: fileData.extension,
               size: fileData.size,
               previewType: fileData.previewType,
-              viewMode: isMarkdownFile(fileData.extension) ? 'preview' : 'edit',
+              viewMode: isPageFile(fileData.extension) ? 'preview' : 'edit',
             }];
           } catch {
             // The legacy file may have been deleted.
@@ -1895,7 +1915,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
                     {saving ? 'Saving...' : 'Save'}
                   </button>
                 )}
-                {isMarkdown && activePreviewType === 'text' && (
+                {(isMarkdown||isHtml) && activePreviewType === 'text' && (
                   <button
                     onClick={() => updateTab(activeTab.path, {
                       viewMode: activeTab.viewMode === 'preview' ? 'edit' : 'preview',
@@ -1905,12 +1925,12 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
                       background: 'var(--bg-tertiary)',
                       color: 'var(--text-primary)',
                     }}
-                    title={activeTab.viewMode === 'preview' ? '编辑 Markdown 源码' : '可视编辑 Markdown'}
+                    title={activeTab.viewMode === 'preview' ? '查看源码' : isHtml?'网页预览':'可视编辑 Markdown'}
                   >
                     {activeTab.viewMode === 'preview' ? (
                       <><Pencil className="w-3 h-3" /> 源码</>
                     ) : (
-                      <><Eye className="w-3 h-3" /> 可视编辑</>
+                      <><Eye className="w-3 h-3" /> {isHtml?'网页预览':'可视编辑'}</>
                     )}
                   </button>
                 )}
@@ -1927,7 +1947,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
                 filesApi={filesApi}
                 onDownload={() => void startExportTransfer({ path: activeTab.path, name: activeTab.name, isDirectory: false, ...(projectId ? { projectId } : {}) })}
               />
-            ) : isMarkdown && activeTab.viewMode === 'preview' ? (
+            ) : isHtml&&activeTab.viewMode==='preview' ? (<HtmlPreview key={activeTab.path} content={activeTab.editedContent} path={activeTab.path} rootPath={rootPath} filesApi={filesApi} onLink={href=>followDocumentLink(href.startsWith('/')&&!href.startsWith(rootPath+'/')?rootPath+href:href,document.body,resolveMarkdownLocalPath,followDocumentFile)}/>) : isMarkdown && activeTab.viewMode === 'preview' ? (
               <div
                 className="flex-1 overflow-auto p-4 prose-invert"
                 style={{ color: 'var(--text-primary)' }}
@@ -1938,18 +1958,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
                   return (
                     <>
                       {meta.length > 0 && <FrontmatterPanel meta={meta} />}
-                      {readOnly || activeTab.extension === 'mdx' ? <div className="markdown-preview explorer-markdown">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                          pre:MarkdownDiagramPre,
-                          img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} documentPath={activeTab.path} rootPath={rootPath} filesApi={filesApi} />,
-                          a: ({ href, children }) => <a href={href} target={href && /^(https?:|mailto:|tel:|\/\/)/i.test(href)?'_blank':undefined} rel="noopener noreferrer" onClick={event=>{
-                            event.preventDefault();
-                            followDocumentLink(href||'',event.currentTarget.closest<HTMLElement>('.explorer-markdown')!,resolveMarkdownLocalPath,followDocumentFile);
-                          }}>{children}</a>,
-                        }}>
-                          {body}
-                        </ReactMarkdown>
-                      </div> : <ErrorBoundary key={`${activeTab.path}:${activeTab.previewRevision || 0}`} label="Markdown 可视编辑器" fallback={() => (
+                      {readOnly || activeTab.extension === 'mdx' ? <ReadonlyMarkdownPreview body={body} documentPath={activeTab.path} rootPath={rootPath} filesApi={filesApi} onLink={(href,container)=>followDocumentLink(href,container,resolveMarkdownLocalPath,followDocumentFile)}/> : <ErrorBoundary key={`${activeTab.path}:${activeTab.previewRevision || 0}`} label="Markdown 可视编辑器" fallback={() => (
                         <div role="alert" className="rounded-md border p-3 text-sm" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
                           <p>可视编辑器加载失败。当前文件内容已保留，可切换到源码继续编辑。</p>
                           <div className="mt-2 flex flex-wrap gap-3 text-xs">
@@ -2004,6 +2013,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
         {fileError && (
           <div className="flex-1 flex items-center justify-center text-xs" style={{ color: 'var(--error)' }}>
             {fileError}
+            {failedPreviewPath.current&&<button type="button" className="ml-3 underline" onClick={()=>{const path=failedPreviewPath.current!;void startExportTransfer({path,name:path.split('/').pop()||path,isDirectory:false,...projectId?{projectId}:{}});}}>下载原文件</button>}
           </div>
         )}
         {!activeTab && !compareState && !fileLoading && !fileError && (

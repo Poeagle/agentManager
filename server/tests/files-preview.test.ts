@@ -50,6 +50,9 @@ describe('document previews', () => {
     expect(response.json()).toMatchObject({ previewType: kind, content: '', size: 4 });
   });
 
+  it('classifies video/audio and serves only the requested byte range',async()=>{
+    for(const [extension,type] of [['mp4','video'],['mp3','audio']]){const path=join(root,`clip.${extension}`);writeFileSync(path,Buffer.from('0123456789'));expect((await request('read',path)).json()).toMatchObject({previewType:type,content:''});const response=await app.inject({url:`/api/files/preview?project_id=p1&path=${encodeURIComponent(path)}`,headers:{cookie,range:'bytes=2-5'}});expect(response.statusCode).toBe(206);expect(response.rawPayload.toString()).toBe('2345');expect(response.headers['content-range']).toBe('bytes 2-5/10');}
+  });
   it('streams a PDF with the original bytes', async () => {
     const path = join(root, 'test.pdf');
     writeFileSync(path, pdf);

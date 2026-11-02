@@ -10,7 +10,10 @@ import { DocumentPreviewError, previewOfficeDocument, OFFICE_EXTENSIONS, SPREADS
 
 const IMAGE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml', ico: 'image/x-icon', avif: 'image/avif' };
 
+const MEDIA_TYPES:Record<string,string>={mp4:'video/mp4',webm:'video/webm',ogv:'video/ogg',mp3:'audio/mpeg',wav:'audio/wav',ogg:'audio/ogg',m4a:'audio/mp4',flac:'audio/flac'};
+const FONT_TYPES:Record<string,string>={woff:'font/woff',woff2:'font/woff2',ttf:'font/ttf',otf:'font/otf'};
 function filePreviewType(extension: string): string {
+  if(MEDIA_TYPES[extension])return MEDIA_TYPES[extension].startsWith('video/')?'video':'audio';
   if (extension === 'pdf') return 'pdf';
   if (IMAGE_TYPES[extension]) return 'image';
   if (SPREADSHEET_EXTENSIONS.has(extension)) return 'spreadsheet';
@@ -264,7 +267,7 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
     if (!req.query.path) return reply.status(400).send({ error: 'path is required' });
     const path = resolve(req.query.path);
     const extension = extname(path).slice(1).toLowerCase();
-    if (extension !== 'pdf' && !OFFICE_EXTENSIONS.has(extension) && !IMAGE_TYPES[extension]) return reply.status(415).send({ error: 'Unsupported document preview' });
+    if (extension !== 'pdf' && !OFFICE_EXTENSIONS.has(extension) && !IMAGE_TYPES[extension] && !MEDIA_TYPES[extension] && !FONT_TYPES[extension]) return reply.status(415).send({ error: 'Unsupported document preview' });
     try {
       const info = await stat(path);
       if (!info.isFile()) return reply.status(400).send({ error: 'Path is not a file' });
@@ -275,9 +278,19 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
       reply.header('Cache-Control', 'no-store');
       reply.header('X-Content-Type-Options', 'nosniff');
       const spreadsheet = SPREADSHEET_EXTENSIONS.has(extension);
-      reply.header('Content-Type', IMAGE_TYPES[extension] || (spreadsheet ? 'text/html; charset=utf-8' : 'application/pdf'));
+      reply.header('Content-Type', IMAGE_TYPES[extension] || MEDIA_TYPES[extension] || FONT_TYPES[extension] || (spreadsheet ? 'text/html; charset=utf-8' : 'application/pdf'));
       reply.header('Content-Disposition', attachmentHeader(basename(path)));
       reply.header('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:");
+      if(MEDIA_TYPES[extension]){
+        reply.header('Accept-Ranges','bytes');
+        if(req.headers.range){
+          const match=/^bytes=(\d*)-(\d*)$/.exec(req.headers.range);let start=0,end=info.size-1;
+          if(match){if(match[1]){start=Number(match[1]);if(match[2])end=Math.min(end,Number(match[2]));}else if(match[2])start=Math.max(0,info.size-Number(match[2]));}
+          if(!match||start>end||start<0||start>=info.size||!Number.isSafeInteger(start)||!Number.isSafeInteger(end)){return reply.header('Content-Range',`bytes */${info.size}`).code(416).send();}
+          return reply.header('Content-Range',`bytes ${start}-${end}/${info.size}`).header('Content-Length',end-start+1).code(206).send(createReadStream(path,{start,end}));
+        }
+        reply.header('Content-Length',info.size);
+      }
       if (!office) return reply.send(createReadStream(path));
       const document = await previewOfficeDocument(await readFile(path), extension);
       return reply.send(document);
