@@ -5,20 +5,20 @@ import {withCodexConnection} from './conversation-stream.js';
 import {installedCodexVersion} from './codex-version.js';
 import {execFile} from 'child_process';
 import {promisify} from 'util';
+import {publicTokenCounters} from './conversation-usage.js';
 const execute=promisify(execFile);
 
 export interface ModelChoice {model:string;name:string;description:string;efforts:Array<{value:string;description:string}>;defaultEffort:string}
 export interface ModelPreference {model:string;effort:string}
 const finite=(n:unknown):number|null=>typeof n==='number'&&Number.isFinite(n)&&n>=0?n:null;
-const tokenFields=['input_tokens','cached_input_tokens','output_tokens','reasoning_output_tokens','total_tokens'] as const;
-function tokens(value:any) {return Object.fromEntries(tokenFields.map(key=>[key,finite(value?.[key])])) as Record<typeof tokenFields[number],number|null>;}
+const tokens=publicTokenCounters;
 function windows(value:any,camel=false) {return [value?.primary,value?.secondary].flatMap(window=>{
   const used=finite(camel?window?.usedPercent:window?.used_percent),minutes=finite(camel?window?.windowDurationMins:window?.window_minutes);
   return used===null||minutes===null?[]:[{used_percent:Math.min(100,used),minutes,resets_at:finite(camel?window?.resetsAt:window?.resets_at)}];
 });}
 interface Telemetry {model:string|null;effort:string|null;permission:string|null;approval:string|null;service_tier:string|null;usage:{total:ReturnType<typeof tokens>;last:ReturnType<typeof tokens>;window:number|null}|null;limits:ReturnType<typeof windows>;observed_at:string|null}
 const empty=():Telemetry=>({model:null,effort:null,permission:null,approval:null,service_tier:null,usage:null,limits:[],observed_at:null});
-const telemetryCache=new Map<string,{size:number;inode:number;mtime:number;data:Telemetry}>();
+const telemetryCache=new Map<string,{size:number;inode:number;mtime:number;partial:Buffer;data:Telemetry}>();
 /** Only allowlisted public counters and settings are retained. No tool output,
  * credentials, prompts or reasoning text is sent to the browser. */
 export async function readConversationTelemetry(threadId:string):Promise<Telemetry> {
@@ -29,8 +29,14 @@ export async function readConversationTelemetry(threadId:string):Promise<Telemet
     if(saved&&saved.size===stat.size&&saved.inode===stat.ino&&saved.mtime===stat.mtimeMs)return saved.data;
     const resumed=!!saved&&saved.inode===stat.ino&&saved.size<stat.size;
     const data:Telemetry=resumed?{...saved.data}:empty();
-    const start=Math.max(0,stat.size-2*1024*1024),buffer=Buffer.alloc(stat.size-start);await handle.read(buffer,0,buffer.length,start);
-    const content=buffer.toString('utf8'),lines=(start?content.slice(content.indexOf('\n')+1):content).split('\n');
+    const start=resumed?Math.max(saved.size,stat.size-2*1024*1024):Math.max(0,stat.size-2*1024*1024);
+    const buffer=Buffer.alloc(stat.size-start);await handle.read(buffer,0,buffer.length,start);
+    const continued=resumed&&start===saved.size;
+    const bytes=continued?Buffer.concat([saved.partial,buffer]):buffer;
+    const first=continued||start===0?0:bytes.indexOf(10)+1;
+    const end=bytes.lastIndexOf(10)+1;
+    const partial=bytes.subarray(Math.max(first,end));
+    const lines=end>first?bytes.subarray(first,end).toString('utf8').split('\n'):[];
     for(const line of lines) {
       if(line.length>256*1024||!/^\s*\{/.test(line))continue;
       const header=line.slice(0,400);if(!/"type"\s*:\s*"(?:turn_context|token_count)"/.test(header))continue;
@@ -45,7 +51,7 @@ export async function readConversationTelemetry(threadId:string):Promise<Telemet
         if(p.rate_limits)data.limits=windows(p.rate_limits);
       }
     }
-    telemetryCache.delete(path);telemetryCache.set(path,{size:stat.size,inode:stat.ino,mtime:stat.mtimeMs,data});
+    telemetryCache.delete(path);telemetryCache.set(path,{size:stat.size,inode:stat.ino,mtime:stat.mtimeMs,partial:partial.length<=256*1024?Buffer.from(partial):Buffer.alloc(0),data});
     if(telemetryCache.size>64)telemetryCache.delete(telemetryCache.keys().next().value!);
     return data;
   }finally{await handle.close();}
@@ -69,7 +75,7 @@ export async function readCodexModels(force=false):Promise<ModelChoice[]> {
       if(!response.nextCursor)break;cursor=response.nextCursor;
     }
     if(!data.length)throw Error('Codex 未返回可用模型，请稍后刷新');
-    catalog={key,until:Date.now()+60000,data};return data;
+    catalog={key,until:Date.now()+300000,data};return data;
   });loadingCatalog={key,promise};try{return await promise;}finally{if(loadingCatalog?.promise===promise)loadingCatalog=undefined;}
 }
 
@@ -131,7 +137,7 @@ export async function readConversationControls(threadId:string,sharedAccess:bool
         models=await readCodexModels(force);
         const key=process.env.AGENTMANAGER_CODEX_STREAM_SOCKET;
         if(!force&&quota?.key===key&&quota.until>Date.now())limits=quota.data;
-        else try {const current=await withCodexConnection(async request=>{const response=await request('account/rateLimits/read',{});return windows(response.rateLimitsByLimitId?.codex??response.rateLimits,true);});if(current.length){limits=current;quota={key,until:Date.now()+60000,data:limits};}}catch{/* Last native usage still has timestamped limits. */}
+        else try {const current=await withCodexConnection(async request=>{const response=await request('account/rateLimits/read',{});return windows(response.rateLimitsByLimitId?.codex??response.rateLimits,true);});if(current.length){limits=current;quota={key,until:Date.now()+300000,data:limits};}}catch{/* Last native usage still has timestamped limits. */}
       }
     }catch{warning='实时设置暂不可用，可稍后刷新';}
   }

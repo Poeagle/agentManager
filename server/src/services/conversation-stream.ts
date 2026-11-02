@@ -8,13 +8,12 @@ import {extractAgentMessages} from './prompt-context.js';
 import {conversationMessageId,type ConversationMessage} from './conversation-reader.js';
 import {conversationErrorMessage} from './conversation-error.js';
 import {conversationActivity,type ConversationActivity} from './conversation-activity.js';
+import {nativeUsageFrame,type ConversationUsageFrame} from './conversation-usage.js';
 
 export interface ConversationCompaction {id:string;status:'running'|'completed'|'failed'|'interrupted';started_at:string|null;completed_at:string|null;duration_ms:number|null}
-const publicCount=(n:unknown):number|null=>typeof n==='number'&&Number.isFinite(n)&&n>=0?n:null;
-function publicUsage(value:any){const fields:Record<string,string>={total_tokens:'totalTokens',input_tokens:'inputTokens',cached_input_tokens:'cachedInputTokens',output_tokens:'outputTokens',reasoning_output_tokens:'reasoningOutputTokens'};const counts=(v:any)=>Object.fromEntries(Object.entries(fields).map(([key,native])=>[key,publicCount(v?.[native])]));return {total:counts(value.total),last:counts(value.last),window:publicCount(value.modelContextWindow)};}
 export type ConversationStreamFrame =
   | {type:'queue';messages:ConversationMessage[]}
-  | {type:'usage';usage:ReturnType<typeof publicUsage>;observed_at:string}
+  | ConversationUsageFrame
   | {type:'settings';model:string;effort:string|null}
   | {type:'snapshot';messages:ConversationMessage[];interactions:ConversationInteraction[];activities:ConversationActivity[];compaction:ConversationCompaction|null;busy:boolean;connected:true;turn_id:string|null;started_at:string|null;completed_at:string|null;stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
   | {type:'unavailable';reason:string;reconnect?:boolean};
@@ -125,11 +124,25 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   let revision=0;
   let retry:ReturnType<typeof setTimeout>|undefined;
   let flush:ReturnType<typeof setTimeout>|undefined;
+  let lastUsageFingerprint:string|undefined;
   function snapshot() {
     flush=undefined;
     if(!closed) emit({type:'snapshot',interactions:[...interactions.values()].map(entry=>entry.card),messages:[...items.values()].filter(item=>item.message.text.length>0).map(item=>item.message),activities:[...activities.values()],compaction,busy,connected:true,turn_id:turnId,started_at:startedAt,completed_at:completedAt,stage});
   }
   function changed() {if(!flush) flush=setTimeout(snapshot,10);}
+  function applyNativeState(state:unknown) {
+    if(!['idle','active','systemError'].includes(String(state)))return;
+    busy=state==='active';
+    if(!busy){if(compaction?.status==='running')compaction={...compaction,status:state==='systemError'?'failed':'interrupted',completed_at:new Date().toISOString()};stage='idle';for(const item of items.values())item.message={...item.message,streaming:false};}
+    changed();
+  }
+  async function syncNativeState() {
+    const before=revision;
+    try {
+      const response=await request('thread/read',{threadId});
+      if(!closed&&before===revision)applyNativeState(response.thread?.status?.type);
+    }catch{/* The state event stream or next reconnect can recover. */}
+  }
   function request(method:string,params:unknown):Promise<any> {
     const id=++next;
     return new Promise((resolve,reject)=>{
@@ -227,6 +240,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
         items.clear();for(const [id,value] of ordered)items.set(id,value);
       }
       snapshot();
+      void syncNativeState();
     } catch {unavailable();if(!closed && socket.readyState===WebSocket.OPEN) retry=setTimeout(()=>void attach(),3000);}
   }
   socket.on('open',()=>{
@@ -241,7 +255,16 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     const data=frame.params;
     if(data?.threadId!==threadId) return;
     if(frame.method==='thread/queue/changed'){void readQueue();return;}
-    if(frame.method==='thread/tokenUsage/updated'&&data.tokenUsage){if(!closed)emit({type:'usage',usage:publicUsage(data.tokenUsage),observed_at:new Date().toISOString()});return;}
+    if(frame.method==='thread/tokenUsage/updated') {
+      const usage=nativeUsageFrame(threadId,data.tokenUsage);
+      if(usage&&!closed) {
+        const fingerprint=JSON.stringify(usage.usage);
+        if(fingerprint!==lastUsageFingerprint){lastUsageFingerprint=fingerprint;emit(usage);}
+      }
+      return;
+    }
+    if(frame.method==='thread/status/changed') {revision++;applyNativeState(data.status?.type);return;}
+    if(frame.method==='thread/compacted') {void syncNativeState();return;}
     if(frame.method==='thread/settings/updated'&&typeof data.threadSettings?.model==='string') {
       if(!closed)emit({type:'settings',model:data.threadSettings.model,effort:data.threadSettings.effort??null});return;
     }
@@ -264,6 +287,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       acceptItem(data.item,data.turnId,frame.method==='item/started',data.startedAtMs||data.completedAtMs);
       if(data.item?.type==='agentMessage' && data.item.text?.length) stage=frame.method==='item/completed'?(data.item.phase==='final_answer'?'finishing':'tools'):'answering';
       else if(frame.method==='item/started' && ['commandExecution','mcpToolCall','dynamicToolCall','fileChange','webSearch','contextCompaction'].includes(data.item?.type)) {stage='tools';changed();}
+      if(frame.method==='item/completed'&&data.item?.type==='contextCompaction')void syncNativeState();
     }
     else if(frame.method==='item/agentMessage/delta') {
       const item=items.get(data.itemId);

@@ -3,15 +3,26 @@ import {dirname,basename} from 'path';
 import {nativeConversationFile,type PromptContextSession} from './prompt-context.js';
 import {readConversation,type ConversationMessage} from './conversation-reader.js';
 import {readCodexRuntime,type CodexRuntime} from './codex-runtime.js';
+import {readConversationTelemetry} from './conversation-controls.js';
+import type {ConversationUsageFrame} from './conversation-usage.js';
 export interface ConversationHistoryFrame {type:'history';messages:ConversationMessage[];runtime:CodexRuntime}
 /** Legacy CLIs have no observable RPC owner. Push newly persisted public
  * messages on file changes instead of waiting for a browser polling tick. */
-export function observeConversationFile(binding:PromptContextSession,emit:(frame:ConversationHistoryFrame)=>void) {
+export function observeConversationFile(binding:PromptContextSession,emit:(frame:ConversationHistoryFrame|ConversationUsageFrame)=>void) {
   let closed=false,watcher:FSWatcher|undefined,timer:ReturnType<typeof setTimeout>|undefined,reading=false,again=false,cursor:string|undefined,lastState:string|undefined;
+  let lastUsage:string|undefined;
   function changed(){if(closed)return;again=true;if(!reading&&!timer)timer=setTimeout(()=>void refresh(),50);}
   async function refresh(){timer=undefined;if(closed)return;reading=true;again=false;
     try {const page=await readConversation(binding,cursor?{after:cursor,limit:20}:{limit:8}),runtime=await readCodexRuntime(binding.codex_session_id);
       if(closed)return;if(page.messages.length||lastState!==runtime.state){emit({type:'history',messages:page.messages,runtime});lastState=runtime.state;}cursor=page.messages.at(-1)?.id||cursor;
+      if(binding.codex_session_id) {
+        const telemetry=await readConversationTelemetry(binding.codex_session_id);
+        if(closed)return;
+        const fingerprint=JSON.stringify(telemetry.usage);
+        if(telemetry.usage&&telemetry.observed_at&&lastUsage!==fingerprint) {
+          emit({type:'usage',native_id:binding.codex_session_id,usage:telemetry.usage,observed_at:telemetry.observed_at});lastUsage=fingerprint;
+        }
+      }
       if(page.messages.length===20)again=true;
     }catch{/* Native engine may be rotating a rollout; a later change retries. */}
     finally{reading=false;if(again)changed();}

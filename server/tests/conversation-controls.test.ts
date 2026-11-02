@@ -42,6 +42,20 @@ const get=()=>app.inject({url:'/api/sessions/s/controls',headers:{cookie}});
 const set=(value:any)=>app.inject({method:'PUT',url:'/api/sessions/s/controls',headers:{cookie,'content-type':'application/json'},payload:JSON.stringify(value)});
 const send=()=>app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{input:'继续',source:'conversation'}});
 describe('native conversation controls',()=>{
+ it('keeps external model and quota reads cached for five minutes while local counters can change immediately',async()=>{
+  let now=Date.now();vi.spyOn(Date,'now').mockImplementation(()=>now);
+  await get();methods=[];now+=120000;
+  appendFileSync(log,record('event_msg',{type:'token_count',info:{last_token_usage:{total_tokens:2400},model_context_window:40000}}));
+  const local=await get();expect(local.json().usage.last.total_tokens).toBe(2400);
+  expect(methods).not.toContain('model/list');expect(methods).not.toContain('account/rateLimits/read');
+  methods=[];now+=180001;await get();expect(methods).toContain('model/list');expect(methods).toContain('account/rateLimits/read');
+ });
+ it('waits for a complete appended usage record rather than caching a partial JSON line',async()=>{
+  await readConversationTelemetry(native);
+  const next=record('event_msg',{type:'token_count',info:{last_token_usage:{total_tokens:2400},model_context_window:40000}});
+  appendFileSync(log,next.slice(0,40));expect((await readConversationTelemetry(native)).usage?.last.total_tokens).toBe(12000);
+  appendFileSync(log,next.slice(40));expect((await readConversationTelemetry(native)).usage?.last.total_tokens).toBe(2400);
+ });
  it('returns actual dynamic model capabilities and allowlisted counters without tools, credentials or quota balances',async()=>{
   const response=await get();expect(response.statusCode).toBe(200);expect(response.json()).toMatchObject({model:'model-a',effort:'high',can_edit:true,usage:{last:{total_tokens:12000},window:40000},limits:[{used_percent:30}]});expect(response.json().models.map((m:any)=>m.model)).toEqual(['model-a','model-b']);expect(response.body).not.toContain('PRIVATE');expect(methods).not.toContain('thread/resume');expect(methods).not.toContain('turn/start');
  });
