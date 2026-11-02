@@ -1,3 +1,4 @@
+import {ConversationRetryStatus,type ConversationRetry} from './ConversationRetryStatus';
 import {ConversationPromptEnhancer} from './ConversationPromptEnhancer';
 import {ConversationComposerEditor} from './ConversationComposerEditor';
 import {ConversationImagePreviewRoot} from './ConversationImagePreview';
@@ -25,7 +26,7 @@ import './SessionConversation.css';
 
 interface LiveProgress {turn_id:string|null;started_at:string|null;completed_at?:string|null;activities?:ConversationActivity[];stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
 
-const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate,durationLabel,durationTitle,onRaw}:{durationLabel?:string;durationTitle?:string;retrying?:boolean;onRaw:()=>void;message:ConversationMessage;streaming:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void}) {
+const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,onCancelRetry,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate,durationLabel,durationTitle,onRaw}:{durationLabel?:string;durationTitle?:string;retrying?:boolean;autoRetry?:ConversationRetry;onCancelRetry?:()=>Promise<void>;onRaw:()=>void;message:ConversationMessage;streaming:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void}) {
   const [copied,setCopied]=useState(false);
   const parsed=message.role==='user'?(message.attachments?{text:message.text,attachments:message.attachments}:parseConversationInput(message.text)):{text:message.text,attachments:[]};
   async function copy() {
@@ -49,10 +50,10 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
     </span>);
   const automatic=message.role==='user'?automaticConversationContext(message.text):null;
   if(automatic)return <ConversationAutomaticContext message={message} context={automatic} copied={copied} onCopy={()=>void copy()}/>;
-  if(message.phase==='error')return <article className="session-chat-message session-chat-error-notice" role="alert" data-phase="error" data-streaming="false" data-retrying={retrying} data-retry-ended={!!message.error?.will_retry && !retrying} data-chat-message-id={message.id}>
-    <div className="session-chat-error-heading"><AlertTriangle size={16}/><strong>{message.error?.will_retry?retrying?'执行遇到错误，正在自动重试':'重试已结束':'本轮执行出错'}</strong>{message.timestamp && <time dateTime={message.timestamp} title={`原生消息记录时间：${new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}（本地时区）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>}</div>
+  if(message.phase==='error')return <article className="session-chat-message session-chat-error-notice" role="alert" data-phase="error" data-streaming="false" data-recovered={autoRetry?.status==='succeeded'} data-retrying={retrying||!!autoRetry&&['waiting','submitting','running'].includes(autoRetry.status)} data-retry-ended={!!message.error?.will_retry && !retrying} data-chat-message-id={message.id}>
+    <div className="session-chat-error-heading"><AlertTriangle size={16}/><strong>{autoRetry?'模型繁忙 · 自动恢复':message.error?.will_retry?retrying?'执行遇到错误，正在自动重试':'重试已结束':'本轮执行出错'}</strong>{message.timestamp && <time dateTime={message.timestamp} title={`原生消息记录时间：${new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}（本地时区）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>}</div>
     <p className="session-chat-error-original">{message.text}</p>
-    <p>{message.error?.will_retry?retrying?'Agent 正在自动重试，无需重复发送。':'该次重试过程已结束。':message.error?.code==='server_overloaded' || /at capacity/i.test(message.text)?'当前模型繁忙，本轮已停止。可稍后重试，或在原始终端切换模型。':'本轮已停止。请根据错误信息处理后再试。'}</p>
+    {autoRetry?<ConversationRetryStatus retry={autoRetry} onCancel={onCancelRetry}/>:<p>{message.error?.will_retry?retrying?'Agent 正在自动重试，无需重复发送。':'该次重试过程已结束。':message.error?.code==='server_overloaded' || /at capacity/i.test(message.text)?'当前模型繁忙，本轮已停止。可稍后重试，或在原始终端切换模型。':'本轮已停止。请根据错误信息处理后再试。'}</p>}
     <div className="session-chat-error-actions"><button type="button" onClick={onRaw}>查看原始终端</button><button type="button" onClick={()=>void copy()}>{copied?'已复制':'复制错误信息'}</button></div>
   </article>;
   return <article className={`session-chat-message ${message.role}`} data-phase={message.phase} data-streaming={streaming} data-chat-message-id={message.id}>
@@ -71,6 +72,8 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const canRead=hasPermission(permissions.data,'agent_api');
   const canSend=hasPermission(permissions.data,'agent_api','write');
   const [messages,setMessages]=useState<TimelineMessage[]>([]);
+  const [autoRetries,setAutoRetries]=useState<Record<string,ConversationRetry>>({});
+  useEffect(()=>setAutoRetries({}),[session.id,session.codex_session_id]);
   const [statistics,setStatistics]=useState<ConversationStatistics[]>([]);
   const [page,setPage]=useState<ConversationPage|null>(null);
   const [hasMore,setHasMore]=useState(false);
@@ -199,7 +202,8 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
       liveSocket.current=socket;setConnectionGeneration(value=>value+1);
       socket.onmessage=event=>{
         if(disposed) return;
-        let frame:{type:string;model?:string;effort?:string|null;native_id?:string;usage?:ConversationUsageUpdate['usage'];statistics?:ConversationStatistics[];observed_at?:string;messages?:ConversationMessage[];runtime?:ConversationPage['runtime'];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string;compaction?:NativeCompaction|null}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
+        let frame:{type:string;model?:string;effort?:string|null;native_id?:string;usage?:ConversationUsageUpdate['usage'];statistics?:ConversationStatistics[];retry?:ConversationRetry;observed_at?:string;messages?:ConversationMessage[];runtime?:ConversationPage['runtime'];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string;compaction?:NativeCompaction|null}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
+        if(frame.type==='retry'&&frame.retry&&frame.retry.native_id===session.codex_session_id){const retry=frame.retry;setAutoRetries(previous=>({...previous,[retry.root_turn_id]:retry}));return;}
         if(frame.type==='usage') {
           if(typeof frame.native_id==='string'&&frame.native_id===session.codex_session_id&&frame.usage&&frame.observed_at&&Number.isFinite(Date.parse(frame.observed_at))) {
             const update:ConversationUsageUpdate={native_id:frame.native_id,usage:frame.usage,observed_at:frame.observed_at};
@@ -306,7 +310,8 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const timings=conversationTimings(displayed.filter(message=>!message.queued),now,busy,liveProgress.turn_id);
   const pendingQuestion=messages.slice(lastUserIndex+1).reduce<ConversationMessage|null>((last,message)=>message.async_questions?.length?message:last,null);
   const questionActive=!!pendingQuestion&&minimizedQuestion!==pendingQuestion.id;
-  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} answers={questionAnswers(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1))} continued={messages.slice(messages.findIndex(item=>item.id===message.id)+1).some(item=>item.role==='user'&&!automaticConversationContext(item.text))} onAnswer={()=>setMinimizedQuestion(null)}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} durationLabel={timings.get(message.id)?.label} durationTitle={timings.get(message.id)?.title} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
+  async function cancelRetry(){const response=await fetch(`/api/sessions/${encodeURIComponent(session.id)}/conversation/retry/cancel`,{method:'POST'});if(!response.ok)throw new Error('停止重试失败，请重试');}
+  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} answers={questionAnswers(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1))} continued={messages.slice(messages.findIndex(item=>item.id===message.id)+1).some(item=>item.role==='user'&&!automaticConversationContext(item.text))} onAnswer={()=>setMinimizedQuestion(null)}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} autoRetry={Object.values(autoRetries).find(retry=>retry.failed_turn_ids.includes(message.turn_id||''))} onCancelRetry={canSend?cancelRetry:undefined} compact={compact} durationLabel={timings.get(message.id)?.label} durationTitle={timings.get(message.id)?.title} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
   return <ConversationImagePreviewRoot active={active} onOpen={navigate}><section ref={readingRoot} className="session-chat" aria-label="会话对话">
     <ConversationPromptEnhancer sessionId={session.id} active={active} canEdit={canSend&&!ended&&!waiting} value={draft} onApply={setDraft}/>
     <div className="session-chat-reading">

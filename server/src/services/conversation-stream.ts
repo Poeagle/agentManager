@@ -109,7 +109,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
 }
 
 /** Observe an already loaded Codex thread. Never start a thread or a turn. */
-export function observeCodexConversation(threadId:string,emit:(frame:ConversationStreamFrame)=>void) {
+export function observeCodexConversation(threadId:string,emit:(frame:ConversationStreamFrame)=>void,onFailure?:(turnId:string,error:unknown,willRetry:boolean)=>void) {
   const path=process.env.AGENTMANAGER_CODEX_STREAM_SOCKET
     || join(process.env.CODEX_HOME||join(homedir(),'.codex'),'app-server-control','app-server-control.sock');
   const socket=new WebSocket(`ws+unix://${path}:/`,{maxPayload:2*1024*1024,handshakeTimeout:4000});
@@ -151,8 +151,9 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     });
   }
   function unavailable(reconnect=false) {if(!closed) emit({type:'unavailable',reconnect,reason:'当前会话尚未连接实时事件，已完成的回复仍会自动更新。'});}
-  function reportError(id:string,error:unknown,willRetry:boolean,timestamp:string|null) {
+  function reportError(id:string,error:unknown,willRetry:boolean,timestamp:string|null,live=false) {
     const message=conversationErrorMessage(id,error,willRetry,timestamp);if(!message)return;
+    if(live)onFailure?.(id,error,willRetry);
     items.delete(`error:${message.id}`);items.set(`error:${message.id}`,{message,phase:'error'});
     if(!willRetry)interactions.clear();
     if(!willRetry&&compaction?.status==='running')compaction={...compaction,status:'failed',completed_at:timestamp};
@@ -293,13 +294,13 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       const item=items.get(data.itemId);
       if(item && typeof data.delta==='string') {item.message={...item.message,text:(item.message.text+data.delta).slice(0,128*1024),streaming:true};if(data.delta.length)stage='answering';changed();}
     } else if(frame.method==='error') {
-      if(typeof data.turnId==='string' && (!turnId || turnId===data.turnId))reportError(data.turnId,data.error,data.willRetry===true,new Date().toISOString());
+      if(typeof data.turnId==='string' && (!turnId || turnId===data.turnId))reportError(data.turnId,data.error,data.willRetry===true,new Date().toISOString(),true);
     } else if(frame.method==='turn/completed') {
       if(turnId && data.turn?.id && turnId!==data.turn.id)return;
       completedAt=typeof data.turn?.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString();
       if(compaction){const status=data.turn?.status==='interrupted'?'interrupted':data.turn?.status==='failed'?'failed':compaction.status==='running'?'completed':compaction.status;compaction={...compaction,status,completed_at:completedAt,duration_ms:compaction.started_at?Math.max(0,Date.parse(completedAt!)-Date.parse(compaction.started_at)):compaction.duration_ms};}
       interactions.clear();busy=false;stage='idle';for(const item of items.values()) item.message={...item.message,streaming:false};
-      if(data.turn?.error)reportError(data.turn.id,data.turn.error,false,typeof data.turn.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString());
+      if(data.turn?.error)reportError(data.turn.id,data.turn.error,false,typeof data.turn.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString(),true);
       changed();
     }
   });

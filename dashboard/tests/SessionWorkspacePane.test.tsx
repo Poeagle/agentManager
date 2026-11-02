@@ -69,6 +69,16 @@ describe('chat/raw terminal display',()=>{
     const view=mount();fireEvent.click(await screen.findByRole('radio',{name:/A/}));await act(async()=>fireEvent.click(screen.getByRole('button',{name:'提交回答',exact:true})));expect(await screen.findByRole('alert')).toHaveTextContent('网络断开');expect(screen.getByRole('button',{name:'提交回答',exact:true})).toBeEnabled();view.unmount();
     page.messages=[...page.messages,{id:'next-user',role:'user',text:'下一个问题',timestamp:null}];mount();expect(screen.queryByRole('button',{name:'提交回答',exact:true})).not.toBeInTheDocument();expect(await screen.findByText('已继续对话')).toBeVisible();
   });
+  it('attaches server retry status to the original failure and updates it after recovery',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const failure={id:'capacity-error',role:'assistant',phase:'error',text:'Selected model is at capacity.',turn_id:'failed',timestamp:null,error:{will_retry:false}};
+    const retry={session_id:'chat',native_id:'native',root_turn_id:'failed',failed_turn_ids:['failed'],attempt:0,max_attempts:3,status:'waiting',next_retry_at:new Date(Date.now()+10000).toISOString()};
+    act(()=>{sockets[0].onmessage?.({data:JSON.stringify({type:'retry',retry})});sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:false,stage:'idle',turn_id:'failed',messages:[failure]})});});
+    expect(await screen.findByRole('alert')).toHaveTextContent('自动重试（1/3）');expect(screen.getByRole('button',{name:'停止自动重试'})).toBeVisible();
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'retry',retry:{...retry,attempt:1,status:'succeeded',next_retry_at:null}})}));expect(screen.getByRole('alert')).toHaveTextContent('已自动恢复（1/3）');expect(screen.queryByRole('button',{name:'停止自动重试'})).not.toBeInTheDocument();
+  });
   it('shows native errors with time, stops stale busy/caret indicators and retains the error after switching views',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
     vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});

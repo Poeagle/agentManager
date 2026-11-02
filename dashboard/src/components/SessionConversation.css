@@ -320,3 +320,13 @@
 .session-chat-send-actions .session-chat-enhance:disabled {opacity:.4;cursor:default;}
 .session-chat-send-actions>button:focus-visible {outline:2px solid var(--accent);outline-offset:2px;}
 .session-pane-switch .session-pane-enhance {display:flex;align-items:center;gap:4px;color:#8b5cf6;}
+
+.session-chat-retry-status{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;font-size:13px}
+.session-chat-retry-status p{display:flex;align-items:center;gap:6px;margin:4px 0}
+.session-chat-retry-status button{border:1px solid currentColor;border-radius:5px;background:transparent;padding:3px 8px;color:inherit;font:inherit;cursor:pointer}
+.session-chat-retry-spinner{animation:session-chat-retry-spin 1s linear infinite}
+@keyframes session-chat-retry-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.session-chat-retry-spinner{animation:none}}
+
+.session-chat-error-notice[data-recovered="true"]{border-color:color-mix(in srgb,#15803d 40%,var(--border));background:color-mix(in srgb,#15803d 4%,var(--bg-primary))}
+.session-chat-error-notice[data-recovered="true"] .session-chat-error-heading{color:#15803d}

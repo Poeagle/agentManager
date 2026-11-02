@@ -18,6 +18,7 @@ import {readConversation} from '../services/conversation-reader.js';
 import {readCodexRuntime} from '../services/codex-runtime.js';
 import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,validateConversationAttachments} from '../services/conversation-attachments.js';
 import {observeConversationFile} from '../services/conversation-file-stream.js';
+import {ConversationRetryManager} from '../services/conversation-retry.js';
 import {observeCodexConversation,submitStreamingCodexInput,CodexRpcError} from '../services/conversation-stream.js';
 import {readConversationControls,readModelPreference,validateModelPreference,saveModelPreference,applyCodexModelSettings} from '../services/conversation-controls.js';
 
@@ -508,6 +509,12 @@ export function getAgentApiContract() {
 }
 
 export const agentRoutes: FastifyPluginAsync = async (app) => {
+  const retries=new ConversationRetryManager(getDb(),{allowed:(id,userId,nativeId)=>{
+    const session=getSession(id);
+    return !!session&&session.cli_type==='codex'&&session.codex_session_id===nativeId&&session.status==='running'&&canAccessAgentSession(userId,id)&&userHasPermission(userId,'agent_api','write');
+  }});
+  app.addHook('onClose',async()=>retries.close());
+  app.addHook('onListen',async()=>{if(process.env.AGENTMANAGER_CODEX_STREAM_SOCKET)for(const session of getDb().prepare("SELECT id,created_by_user_id,codex_session_id FROM sessions WHERE status='running' AND cli_type='codex' AND codex_session_id IS NOT NULL AND created_by_user_id IS NOT NULL").all() as {id:string;created_by_user_id:string;codex_session_id:string}[])retries.monitor(session.id,session.created_by_user_id,session.codex_session_id);});
   app.addHook('preHandler', async (req, reply) => {
     requirePermission(req, reply, 'agent_api', req.method === 'GET' && !req.routeOptions.url?.endsWith('/agent') ? 'read' : 'write');
   });
@@ -550,6 +557,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     // The server can restart after the browser's last ready snapshot. Reattach
     // the existing wrapper before submission; never replay an ambiguous send.
     if(!await attachExistingSession(id))return reply.code(409).send({error:'会话连接尚未就绪，请重新连接；进程已退出时需恢复会话。',submission:'rejected'});
+    const current=getSession(id);if(current?.codex_session_id)retries.cancel(id,current.codex_session_id);
     const preparedInput=formatConversationInput(input,attachments,true);
     const attachmentClientId=typeof clientId==='string'?clientId:randomUUID();
     // Serialize only the brief paste/Enter pair, never the agent's execution.
@@ -680,6 +688,13 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     return tracker.state;
   });
 
+  app.post<{Params:{id:string}}>('/sessions/:id/conversation/retry/cancel',async(req,reply)=>{
+    const session=getSession(req.params.id);
+    if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
+    if(session.codex_session_id)retries.cancel(session.id,session.codex_session_id);
+    return {ok:true};
+  });
+
   app.get<{Params:{id:string}}>('/sessions/:id/conversation/stream',{websocket:true},(socket,req)=>{
     const id=req.params.id;
     if(!req.user || !canAccessAgentSession(req.user.id,id)) {socket.close(1008,'Session not found');return;}
@@ -699,11 +714,13 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(['snapshot','history','queue'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,frame.messages)}:frame));
       else if(socket.readyState===1) socket.close(1013,'Slow conversation client');
     };
+    retries.monitor(id,req.user!.id,session.codex_session_id);
+    const stopRetry=retries.subscribe(id,session.codex_session_id,send);
     const stopFile=observeConversationFile({cli_type:'codex',codex_session_id:session.codex_session_id,claude_session_id:null,project_path:null},send);
     const stop=observeCodexConversation(session.codex_session_id,frame=>{
       send(frame);
       if(frame.type==='unavailable'&&frame.reconnect&&socket.readyState===1)socket.close(1012,'Native connection lost');
-    });
+    },(turnId,error,willRetry)=>retries.failure(id,req.user!.id,session.codex_session_id!,turnId,error,willRetry));
     socket.on('message',bytes=>{
       let frame:any;try{const raw=bytes.toString();if(Buffer.byteLength(raw)>64*1024){socket.close(1009,'Interaction response too large');return;}frame=JSON.parse(raw);}catch{return;}
       if(frame?.type!=='interaction_response'||typeof frame.request_id!=='string')return;
@@ -715,7 +732,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       if(socket.readyState===1)socket.send(JSON.stringify({type:'interaction_result',request_id:frame.request_id,ok:!error,...(error?{error}:{})}));
     });
     const heartbeat=setInterval(()=>{if(socket.readyState===1) socket.ping();},25000);
-    socket.once('close',()=>{clearInterval(heartbeat);stopFile?.();stop();});
+    socket.once('close',()=>{clearInterval(heartbeat);stopFile?.();stop();stopRetry();});
   });
 
   app.get<{Params:{id:string};Querystring:{after?:string;before?:string;limit?:string}}>('/sessions/:id/conversation',async(req,reply)=>{
