@@ -18,6 +18,8 @@ import { encodeDir } from './claude-history.js';
 import { inaccessibleProjectPaths, isAdmin } from '../auth.js';
 import { tmuxCursorRestoreSequence } from '../lib/terminal-cursor.js';
 import { withAllPermissions,shellSingleQuote } from './cli-command.js';
+import {compactCodexConversation,prepareFreshCodexConversation,releaseCodexConversation} from './conversation-actions.js';
+import {snapshotConversation,activateFreshConversation,restoreConversationSnapshot} from './conversation-history.js';
 import {createStreamingCodexThread,interruptStreamingCodexThread} from './conversation-stream.js';
 import {
   type CodexRolloutCandidate,
@@ -3251,6 +3253,73 @@ export function reloadCodexSessionById(sessionId:string):Promise<SessionReloadRe
   },()=>({ok:false,error:'会话正在启动或连接，请稍后重载'}));
   sessionReloads.set(sessionId,operation);
   return operation.finally(()=>{if(sessionReloads.get(sessionId)===operation)sessionReloads.delete(sessionId);});
+}
+
+/** Explicit operations on this tab only; share the existing lifecycle lock. */
+export function compactSessionConversation(sessionId:string):Promise<SessionReloadResult> {
+  if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'});
+  return runSessionLifecycle(sessionId,async()=>{
+    const session=getSession(sessionId);
+    if(!session?.codex_session_id||!codexStreamSocketForUser(session.created_by_user_id))return {ok:false,error:'请先重载此 Codex 标签页以接入实时控制'};
+    try {await compactCodexConversation(session.codex_session_id);return {ok:true};}
+    catch(error){return {ok:false,error:error instanceof Error?error.message:'压缩失败，请重试'};}
+  },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
+}
+
+export function newSessionConversation(sessionId:string):Promise<SessionReloadResult&{history_id?:string}> {
+  if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'});
+  return runSessionLifecycle(sessionId,async()=>{
+    const session=getSession(sessionId);
+    if(!session?.codex_session_id||!codexStreamSocketForUser(session.created_by_user_id))return {ok:false,error:'请先重载此 Codex 标签页以接入实时控制'};
+    const project=getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined;
+    if(!project?.path)return {ok:false,error:'找不到项目目录，原会话已保留'};
+    let fresh:string|undefined,history:string|undefined,activated=false,stopped=false;
+    const binding=(id:string)=>{const path=codexBindingPath(sessionId),temp=`${path}.new`;fsWriteFileSync(temp,JSON.stringify({session_id:id,source:'new-conversation'}));renameSync(temp,path);};
+    try {
+      const {prepareCodexReload}=await import('./codex-version.js');await prepareCodexReload(true);
+      fresh=await prepareFreshCodexConversation(session.codex_session_id,project.path);
+      if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');
+      history=snapshotConversation(sessionId);
+      const worker=activeSessions.get(sessionId)?.worker;
+      await killSession(sessionId,{preserveLifecycle:true});
+      const deadline=Date.now()+7000;
+      while((worker&&worker.exitCode===null&&worker.signalCode===null)||(config.useTmux&&await tmuxExistsAsync(sessionId))||(config.useDtach&&await dtachExistsAsync(sessionId))) {
+        if(Date.now()>=deadline)throw Error('原终端尚未完全退出，请稍后重试');
+        await new Promise(resolve=>setTimeout(resolve,100));
+      }
+      stopped=true;
+      if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');
+      await waitForSessionReplayFinalization(sessionId);
+      getDb().prepare('DELETE FROM session_snapshots WHERE session_id=?').run(sessionId);
+      activateFreshConversation(sessionId,history,fresh);activated=true;binding(fresh);
+      await resumeCrashedSessionUnlocked(getSession(sessionId)!,project.path,true);
+      // Release only the old thread. Never restart the shared server or archive
+      // a user thread and its descendants to reclaim one tab.
+      let warning:string|undefined;
+      try{await releaseCodexConversation(session.codex_session_id);}catch{warning='新会话已打开，旧会话后台终端回收未确认，请在历史中检查。';}
+      insertEvent({session_id:sessionId,type:'conversation_new',data:{previousSessionId:history,nativeSessionId:fresh}});
+      return {ok:true,history_id:history,...warning?{warning}:{}};
+    } catch(error) {
+      if(history){
+        if(activated){
+          const failedWorker=activeSessions.get(sessionId)?.worker;
+          await killSession(sessionId,{preserveLifecycle:true}).catch(()=>{});
+          const deadline=Date.now()+7000;
+          while((failedWorker&&failedWorker.exitCode===null&&failedWorker.signalCode===null)||(config.useTmux&&await tmuxExistsAsync(sessionId))||(config.useDtach&&await dtachExistsAsync(sessionId))){
+            if(Date.now()>=deadline)return {ok:false,error:'新会话启动失败，旧会话已保留在项目会话记录中，请从历史恢复。'};
+            await new Promise(resolve=>setTimeout(resolve,100));
+          }
+          await waitForSessionReplayFinalization(sessionId);
+          restoreConversationSnapshot(sessionId,history);binding(session.codex_session_id);
+        }
+        // Keep the history snapshot on pre-activation failure, including a
+        // concurrent Close. Never undo an explicit user cancellation.
+        if(stopped&&!cancelledSessionLifecycles.has(sessionId))await resumeCrashedSessionUnlocked(getSession(sessionId)!,project.path,true).catch(()=>{});
+      }
+      if(fresh)await releaseCodexConversation(fresh).catch(()=>{});
+      return {ok:false,error:error instanceof Error?error.message:'新开失败，原会话历史已保留'};
+    }
+  },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
 }
 
 /**

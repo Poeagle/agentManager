@@ -1,3 +1,4 @@
+import {MarkdownDiagramPre} from './MermaidDiagram';
 import { memo,type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -7,6 +8,7 @@ export function MarkdownTable({children,className='my-3 max-w-full overflow-x-au
 }
 
 const components: Components = {
+  pre:MarkdownDiagramPre,
   table: ({ children }) => <MarkdownTable>{children}</MarkdownTable>,
   a: ({ href, children, title }) => <a href={href} title={title} target="_blank" rel="noopener noreferrer">{children}</a>,
 };

@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {useQuery,useQueryClient} from '@tanstack/react-query';
-import {ChevronDown,Info,RefreshCw} from 'lucide-react';
+import {ChevronDown,Info,RefreshCw,Minimize2,Plus} from 'lucide-react';
 import {api,type ConversationControlsData} from '../lib/api';
 import {Dialog} from './Dialog';
 
@@ -9,13 +9,21 @@ const number=(value:number|null|undefined)=>value==null?'未提供':value.toLoca
 const compact=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(value);
 const stamp=(value:string|null)=>value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'未提供';
 const permissions:Record<string,string>={'danger-full-access':'完整访问','workspace-write':'工作区可写','read-only':'只读'};
-export function ConversationControls({sessionId,active}:{sessionId:string;active:boolean}) {
+export function ConversationControls({sessionId,active,busy=false,onNewConversation}:{sessionId:string;active:boolean;busy?:boolean;onNewConversation?:()=>Promise<void>}) {
   const queryClient=useQueryClient(),[expanded,setExpanded]=useState(false),[saving,setSaving]=useState(false),[applied,setApplied]=useState(false),[error,setError]=useState('');
+  const [operation,setOperation]=useState<'compact'|'new'|null>(null),[newOpen,setNewOpen]=useState(false),[notice,setNotice]=useState('');
+  const operationLock=useRef(false);
   const migrated=useRef<string|null>(null);
   const forceRefresh=useRef(false);
   const query=useQuery({queryKey:['conversation-controls',sessionId],queryFn:()=>{const force=forceRefresh.current;forceRefresh.current=false;return api.agent.controls(sessionId,force);},enabled:active,refetchInterval:active?300000:false,staleTime:300000,refetchOnWindowFocus:false,retry:false});
   const refresh=()=>{forceRefresh.current=true;void query.refetch();};
-  useEffect(()=>{if(!active)setExpanded(false);},[active]);
+  useEffect(()=>{if(!active){setExpanded(false);if(!operation)setNewOpen(false);}},[active,operation]);
+  async function perform(action:'compact'|'new') {
+    if(operationLock.current)return;operationLock.current=true;setOperation(action);setError('');setNotice('');
+    try{if(action==='new'){await onNewConversation?.();setNewOpen(false);setNotice('新会话已打开，原会话保留在项目会话记录中。');}else{await api.sessions.compactConversation(sessionId);setNotice('已开始压缩，进度会在当前会话中显示。');}void queryClient.invalidateQueries({queryKey:['conversation-controls',sessionId]});}
+    catch(failure){setError(failure instanceof Error?failure.message:'操作失败，请重试');}
+    finally{operationLock.current=false;setOperation(null);}
+  }
   const data=query.data,selected=data?.pending||{model:data?.model||'',effort:data?.effort||''};
   const model=data?.models.find(m=>m.model===selected.model),usage=data?.usage;
   const context=usage?.window&&usage.last.total_tokens!=null?Math.min(100,Math.round(100*usage.last.total_tokens/usage.window)):null;
@@ -40,11 +48,19 @@ export function ConversationControls({sessionId,active}:{sessionId:string;active
         {data.pending&&<span className="conversation-control-pending">之前的选择待同步 <button type="button" disabled={saving} onClick={()=>void save(data.pending)}>应用</button><button type="button" disabled={saving} onClick={()=>void save(null)}>取消</button></span>}
         {applied&&!data.pending&&<span className="conversation-control-pending" role="status">已应用</span>}
         {context!==null&&<span className="conversation-control-context" title="最近一次模型请求的 Token 数占上下文窗口的比例，下一次请求可能变化。"><i><b style={{width:`${context}%`}}/></i>上下文 {context}%</span>}
+        <button type="button" disabled={!data.can_edit||busy||saving||!!operation} title={busy?'当前任务完成后可压缩':'压缩当前会话上下文，保留对话记录'} onClick={()=>void perform('compact')}><Minimize2 size={12}/>{operation==='compact'?'压缩中…':'压缩'}</button>
+        {onNewConversation&&<button type="button" disabled={!data.can_edit||saving||!!operation} title="在当前标签页新开会话，保留旧记录并停止旧会话" onClick={()=>{let rawDraft=false;window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId,respond:(value:boolean)=>{rawDraft ||= value;}}}));if(rawDraft){setError('原始终端还有未发送内容，请先发送或清空。');return;}setError('');setNewOpen(true);}}><Plus size={12}/>{operation==='new'?'新开中…':'新开'}</button>}
         {weekly&&<span title={weekly.resets_at?`重置时间：${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>周额度剩余 {Math.round(100-weekly.used_percent)}%</span>}
         <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>详情</button>
         <button type="button" aria-label="刷新会话信息" title="每 5 分钟自动刷新，也可手动刷新" disabled={query.isFetching} onClick={refresh}><RefreshCw size={13} className={query.isFetching?'animate-spin':''}/>刷新</button>
       </>:<><span>{query.isPending?'读取会话信息…':'会话信息暂不可用'}</span>{query.isError&&<button type="button" onClick={refresh}><RefreshCw size={13}/>重试</button>}</>}
     </div>
+    {notice&&<p className="conversation-controls-note" role="status">{notice}</p>}
+    {newOpen&&<Dialog title="在当前标签页新开会话" busy={operation==='new'} onClose={()=>setNewOpen(false)}>
+      <p className="text-sm leading-relaxed">新会话将使用当前模型和推理强度。当前任务会停止，旧会话的后台终端会回收，历史消息可从“项目会话记录”重新打开。当前输入框中未发送的文字和附件会保留。</p>
+      {error&&<p role="alert" className="session-chat-error">{error}</p>}
+      <footer className="mt-4 flex justify-end gap-3 text-sm"><button type="button" disabled={!!operation} onClick={()=>setNewOpen(false)}>取消</button><button type="button" disabled={!!operation} onClick={()=>void perform('new')}>{operation==='new'?'正在新开…':'停止旧会话并新开'}</button></footer>
+    </Dialog>}
     {error&&<p className="session-chat-error" role="alert">{error}</p>}
     {expanded&&data&&<ControlDetails data={data} onClose={()=>setExpanded(false)} onRefresh={refresh} refreshing={query.isFetching}/>}
   </div>;

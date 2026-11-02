@@ -274,6 +274,16 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return {...result,session:sessionManager.getSession(session.id)};
   });
 
+  for(const action of ['compact','new-conversation'] as const)app.post<{Params:{id:string}}>(`/sessions/:id/${action}`,async(req,reply)=>{
+    const session=sessionManager.getSession(req.params.id);
+    if(!session||session.created_by_user_id!==req.user!.id||!canAccessSessionByRow(req.user!.id,session))return reply.code(404).send({error:'Session not found'});
+    if(!requirePermission(req,reply,'agent_api','write'))return reply;
+    if(req.user!.role!=='admin')return reply.code(403).send({error:'当前账号不可操作共享 Codex 服务'});
+    const result=await (action==='compact'?sessionManager.compactSessionConversation(session.id):sessionManager.newSessionConversation(session.id));
+    if(!result.ok)return reply.code(409).send({error:result.error});
+    return {...result,session:sessionManager.getSession(session.id)};
+  });
+
   // Permanently delete an ended session from history: DB row + events + the
   // Claude JSONL conversation file. Refuses (409) while the session is active.
   app.delete<{ Params: { id: string };Querystring:{stop?:string} }>('/sessions/:id/record', async (req, reply) => {

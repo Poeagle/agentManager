@@ -57,8 +57,8 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
   </article>;
 });
 
-export function SessionConversation({session,active,onRaw,onResume,onClose,resuming=false,resumeFailed=false,userId='local',projectPath,onOpenFile}: {
-  session:Session;active:boolean;onRaw:()=>void;onResume?:()=>void;onClose?:()=>void;resuming?:boolean;resumeFailed?:boolean;
+export function SessionConversation({session,active,onRaw,onResume,onNewConversation,onClose,resuming=false,resumeFailed=false,userId='local',projectPath,onOpenFile}: {
+  session:Session;active:boolean;onRaw:()=>void;onResume?:()=>void;onNewConversation?:()=>Promise<void>;onClose?:()=>void;resuming?:boolean;resumeFailed?:boolean;
   userId?:string;projectPath?:string;onOpenFile?:(path:string)=>void;
 }) {
   const permissions=usePermissions();
@@ -108,6 +108,12 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
     }
   };
   const navigate=useCallback(()=>{pinned.current=false;setUnread(false);},[]);
+  useEffect(()=>{
+    cursor.current=undefined;generation.current=null;pushAvailable.current=false;
+    setMessages([]);setPage(null);setRequests([]);setHasMore(false);setLoading(true);setLiveBusy(false);
+    setLiveProgress({turn_id:null,started_at:null,stage:'idle'});setMinimizedQuestion(null);setUnread(false);setError('');
+    for(const answer of pendingAnswers.current.values()){clearTimeout(answer.timer);answer.reject(Error('会话已切换'));}pendingAnswers.current.clear();
+  },[session.codex_session_id,session.claude_session_id]);
   const ended=['completed','failed','cancelled'].includes(session.status);
   const lastUserIndex=messages.reduce((last,message,index)=>message.role==='user'&&!automaticConversationContext(message.text)?index:last,-1);
   const latestAssistant=messages.reduce<ConversationMessage|null>((last,message,index)=>index>lastUserIndex && message.role==='assistant'?message:last,null);
@@ -148,10 +154,10 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
     };
     void poll();
     return ()=>{controller.abort();clearTimeout(timer);};
-  },[active,canRead,session.id,refresh]);
+  },[active,canRead,session.id,session.codex_session_id,session.claude_session_id,refresh]);
 
   useEffect(()=>{
-    if(!active || !canRead || session.cli_type!=='codex' || !page?.native_id || ended) return;
+    if(!active || !canRead || session.cli_type!=='codex' || !page?.native_id || page.native_id!==session.codex_session_id || ended) return;
     let disposed=false;const settledIds=new Set<string>();let socket:WebSocket;let retry:ReturnType<typeof setTimeout>;
     const connect=()=>{
       if(disposed) return;
@@ -299,7 +305,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
 
         <div className="session-chat-input-tools"><ConversationAttachmentPicker disabled={!canSend||ended||sending} onFiles={attachments.enqueue}/><span>Enter 发送 · Shift+Enter 换行</span><button type="submit" aria-label="发送消息" disabled={sending||attachments.uploading||attachments.failed||!canSend||(!draft.trim()&&!attachments.items.length)||!page?.session_active||ended||waiting}>{sending?<Loader2 size={17} className="animate-spin"/>:<ArrowUp size={18}/>}</button></div>
       </form>
-      {session.cli_type==='codex'&&!!page?.native_id&&canRead&&<ConversationControls sessionId={session.id} active={active}/>}
+      {session.cli_type==='codex'&&!!page?.native_id&&canRead&&<ConversationControls sessionId={session.id} active={active} busy={busy||sending||resuming} onNewConversation={onNewConversation}/>}
     </footer>
   </section></ConversationImagePreviewRoot>;
 }

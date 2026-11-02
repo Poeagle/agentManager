@@ -1,3 +1,4 @@
+import {MarkdownDiagramPre} from './MermaidDiagram';
 import { useState, useCallback, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 import {followDocumentLink,scrollDocumentFragment} from '../lib/document-links';
 import { createPortal } from 'react-dom';
@@ -1939,6 +1940,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
                       {meta.length > 0 && <FrontmatterPanel meta={meta} />}
                       {readOnly || activeTab.extension === 'mdx' ? <div className="markdown-preview explorer-markdown">
                         <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                          pre:MarkdownDiagramPre,
                           img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} documentPath={activeTab.path} rootPath={rootPath} filesApi={filesApi} />,
                           a: ({ href, children }) => <a href={href} target={href && /^(https?:|mailto:|tel:|\/\/)/i.test(href)?'_blank':undefined} rel="noopener noreferrer" onClick={event=>{
                             event.preventDefault();

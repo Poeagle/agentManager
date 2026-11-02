@@ -3,7 +3,7 @@ import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {beforeEach,afterEach,describe,expect,it,vi} from 'vitest';
 import {ConversationControls} from '../src/components/ConversationControls';
 import {api,type ConversationControlsData} from '../src/lib/api';
-vi.mock('../src/lib/api',()=>({api:{agent:{controls:vi.fn(),setControls:vi.fn()}}}));
+vi.mock('../src/lib/api',()=>({api:{agent:{controls:vi.fn(),setControls:vi.fn()},sessions:{compactConversation:vi.fn().mockResolvedValue({ok:true})}}}));
 let client:QueryClient,data:ConversationControlsData;
 beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}});data={model:'model-a',effort:'high',provider:'openai',cwd:'/project',cli_version:'0.test',permission:'workspace-write',approval:'never',service_tier:null,usage:{total:{total_tokens:400000},last:{total_tokens:12000,input_tokens:11000,cached_input_tokens:9000,output_tokens:1000},window:40000},limits:[{used_percent:25,minutes:10080,resets_at:1900000000}],models:[{model:'model-a',name:'Model A',description:'默认',efforts:[{value:'high',description:''}],defaultEffort:'high'},{model:'model-b',name:'Model B',description:'另一模型',efforts:[{value:'low',description:''},{value:'medium',description:''}],defaultEffort:'low'}],can_edit:true,loaded:true,pending:null,warning:null,native_id:'native',checked_at:'2026-10-31T02:00:00Z',usage_observed_at:'2026-10-31T01:59:00Z'};vi.mocked(api.agent.controls).mockImplementation(async()=>data);vi.mocked(api.agent.setControls).mockImplementation(async(_id,value)=>({ok:true,pending:null,...value}));});
 afterEach(()=>client.clear());
@@ -27,6 +27,11 @@ describe('compact conversation controls',()=>{
  });
  it('retains the selected model and reports failed saves',async()=>{
   vi.mocked(api.agent.setControls).mockRejectedValueOnce(new Error('连接失败'));mount();const model=await screen.findByRole('combobox',{name:'选择模型'});fireEvent.change(model,{target:{value:'model-b'}});expect(await screen.findByRole('alert')).toHaveTextContent('连接失败');expect(model).toHaveValue('model-a');
+ });
+ it('compacts once and asks explicitly before replacing the current conversation',async()=>{
+  const open=vi.fn().mockResolvedValue(undefined);render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active onNewConversation={open}/></QueryClientProvider>);
+  fireEvent.click(await screen.findByRole('button',{name:'压缩',exact:true}));await waitFor(()=>expect(api.sessions.compactConversation).toHaveBeenCalledWith('s'));expect(await screen.findByText('已开始压缩，进度会在当前会话中显示。')).toBeVisible();
+  fireEvent.click(screen.getByRole('button',{name:'新开',exact:true}));expect(open).not.toHaveBeenCalled();const dialog=screen.getByRole('dialog',{name:'在当前标签页新开会话'});fireEvent.click(within(dialog).getByRole('button',{name:'停止旧会话并新开'}));await waitFor(()=>expect(open).toHaveBeenCalledTimes(1));await waitFor(()=>expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
  });
  it('does not invent percentages or editable options for missing or read-only telemetry',async()=>{
   data={...data,can_edit:false,loaded:false,models:[],limits:[],usage:null,model:null,effort:null};mount();expect(await screen.findByRole('combobox',{name:'选择模型'})).toBeDisabled();expect(screen.queryByText(/上下文 \d/)).not.toBeInTheDocument();expect(screen.queryByText(/周额度剩余/)).not.toBeInTheDocument();

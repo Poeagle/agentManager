@@ -1,3 +1,6 @@
+import {copyConversationText} from '../lib/conversation-clipboard';
+export {copyConversationText} from '../lib/conversation-clipboard';
+import {MermaidDiagram,isMermaidCode} from './MermaidDiagram';
 import {ConversationImagePreviewRoot,useConversationImagePreview,useConversationFilePreview} from './ConversationImagePreview';
 import {Children,createContext,isValidElement,memo,useContext,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
 import ReactMarkdown,{type Components} from 'react-markdown';
@@ -20,11 +23,6 @@ const MarkdownSegment=memo(function MarkdownSegment({source,offset,components,fo
 const trailingKinds=new Set(['paragraph','list','blockquote']);
 function FooterParagraph({children,node,className,...props}:any){const trailing=useContext(Trailing),show=!!trailing&&['paragraph','blockquote'].includes(trailing.kind||'')&&node?.position?.end.offset===trailing.end;return <p {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{show?<span>{children}</span>:children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</p>;}
 function FooterListItem({children,node,className,...props}:any){const trailing=useContext(Trailing),show=!!trailing&&trailing.kind==='list'&&node?.position?.end.offset===trailing.end&&!node.children?.some((child:any)=>['ul','ol'].includes(child.tagName));return <li {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</li>;}
-export async function copyConversationText(text:string) {
-  if(navigator.clipboard && window.isSecureContext){await navigator.clipboard.writeText(text);return;}
-  const focused=document.activeElement;const area=document.createElement('textarea');area.value=text;area.style.position='fixed';area.style.top='-9999px';document.body.appendChild(area);
-  try{area.select();if(!document.execCommand('copy'))throw new Error('复制失败');}finally{area.remove();if(focused instanceof HTMLElement)focused.focus({preventScroll:true});}
-}
 export function conversationLocalPath(source:string|undefined,root:string|undefined):string|null {
   if(!source||!root||source.startsWith('#')||source.startsWith('?')||source.startsWith('//')||/^[a-z][a-z\d+.-]*:/i.test(source))return null;
   try{
@@ -35,7 +33,8 @@ export function conversationLocalPath(source:string|undefined,root:string|undefi
   }catch{return null;}
 }
 
-const CodeBlock=memo(function CodeBlock({source,language}:{source:string;language:string}) {
+const CodeBlock=memo(function DiagramOrCode({source,language}:{source:string;language:string}){const streaming=useContext(Streaming);return isMermaidCode(source,language)?<MermaidDiagram source={source} streaming={streaming}/>:<PlainCodeBlock source={source} language={language}/>;});
+const PlainCodeBlock=memo(function PlainCodeBlock({source,language}:{source:string;language:string}) {
   const streaming=useContext(Streaming);const [wrap,setWrap]=useState(false);const [copied,setCopied]=useState(false);const [copyError,setCopyError]=useState(false);
   const [highlighted,setHighlighted]=useState<{source:string;tokens:CodeToken[]}|null>(null);
   const code=source.endsWith('\n')?source.slice(0,-1):source;

@@ -1,3 +1,6 @@
+import CodeBlock from '@tiptap/extension-code-block';
+import {NodeViewContent,NodeViewWrapper,ReactNodeViewRenderer,type NodeViewProps} from '@tiptap/react';
+import {MermaidDiagram,isMermaidCode} from './MermaidDiagram';
 import { useEffect, useMemo, useRef } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -17,12 +20,17 @@ interface Props {
   onOpenFile: (path: string, fragment?:string) => void;
 }
 
+function DiagramCodeView({node}:NodeViewProps) {
+  const diagram=isMermaidCode(node.textContent,node.attrs.language||'');
+  return <NodeViewWrapper>{diagram?<><MermaidDiagram source={node.textContent}/><details contentEditable={false}><summary>编辑图表源码</summary><pre><NodeViewContent<'code'> as="code" contentEditable/></pre></details></>:<pre><NodeViewContent<'code'> as="code"/></pre>}</NodeViewWrapper>;
+}
 export function MarkdownVisualEditor({ value, onChange, filesApi, resolveLocalPath, onOpenFile }: Props) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
   const lastValueRef = useRef(value);
   const extensions = useMemo(() => [
-    StarterKit.configure({ link: { openOnClick: false } }),
+    StarterKit.configure({codeBlock:false, link: { openOnClick: false } }),
+    CodeBlock.extend({addNodeView(){return ReactNodeViewRenderer(DiagramCodeView);}}),
     Markdown.configure({ markedOptions: { gfm: true, breaks: false } }),
     TableKit,
     TaskList,

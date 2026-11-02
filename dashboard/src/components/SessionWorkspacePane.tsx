@@ -8,10 +8,10 @@ import type {ConversationControlsData} from '../lib/api';
 import {RotateCw} from 'lucide-react';
 import {hasPermission,usePermissions} from '../lib/permissions';
 
-export function SessionWorkspacePane({session,userId,active,renderTerminal,onResume,onReload,onClose,resuming,resumeFailed,controlsHost,projectPath,onOpenFile}: {
+export function SessionWorkspacePane({session,userId,active,renderTerminal,onResume,onReload,onNewConversation,onClose,resuming,resumeFailed,controlsHost,projectPath,onOpenFile}: {
   session:Session;userId:string;active:boolean;
   renderTerminal:(visible:boolean,suspend:boolean,onReady:()=>void)=>ReactNode;
-  onResume?:()=>void;onReload?:()=>Promise<void>;onClose?:()=>void;resuming?:boolean;resumeFailed?:boolean;
+  onResume?:()=>void;onReload?:()=>Promise<void>;onNewConversation?:()=>Promise<void>;onClose?:()=>void;resuming?:boolean;resumeFailed?:boolean;
   controlsHost?:HTMLElement|null;
   projectPath?:string;onOpenFile?:(path:string)=>void;
 }) {
@@ -56,7 +56,7 @@ export function SessionWorkspacePane({session,userId,active,renderTerminal,onRes
       <div className="absolute inset-0" style={{visibility:active&&raw?'visible':'hidden',pointerEvents:active&&raw?'auto':'none'}} aria-hidden={!raw}>
         {(!ended||openedRaw||raw) && renderTerminal(active&&raw,!raw&&ready,terminalReady)}
       </div>
-      {canChat && <div className="absolute inset-0" style={{display:raw?'none':'block'}}><SessionConversation session={session} userId={userId} projectPath={projectPath} onOpenFile={onOpenFile} active={active&&!raw} onRaw={()=>choose('terminal')} onResume={onResume} onClose={onClose} resuming={resuming} resumeFailed={resumeFailed}/></div>}
+      {canChat && <div className="absolute inset-0" style={{display:raw?'none':'block'}}><SessionConversation session={session} userId={userId} projectPath={projectPath} onOpenFile={onOpenFile} active={active&&!raw} onRaw={()=>choose('terminal')} onResume={onResume} onNewConversation={onNewConversation} onClose={onClose} resuming={resuming} resumeFailed={resumeFailed}/></div>}
     </div>
   </div>;
 }

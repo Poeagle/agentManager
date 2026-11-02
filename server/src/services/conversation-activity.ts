@@ -19,6 +19,7 @@ export function conversationActivity(item: any, completed: boolean, previous?: C
   else if (item.type === 'mcpToolCall') label = `调用工具 · ${short([item.server, item.tool].filter(Boolean).join(' / ')) || 'MCP 工具'}`;
   else if (item.type === 'dynamicToolCall') label = `调用工具 · ${short(item.tool) || '工具'}`;
   else if (item.type === 'fileChange') label = `修改文件 · ${short((item.changes || []).slice(0, 3).map((change: any) => change.path).filter(Boolean).join('、')) || '项目文件'}`;
+  else if (item.type === 'contextCompaction') label = '压缩会话上下文';
   else if (item.type === 'webSearch') label = `搜索 · ${short(item.query || item.action?.query) || '网页搜索'}`;
   else return null;
   const started = typeof item.startedAtMs === 'number' && Number.isFinite(item.startedAtMs) ? item.startedAtMs : previous?.started_at ? Date.parse(previous.started_at) : completed ? null : observedAt;

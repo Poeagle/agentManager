@@ -34,7 +34,7 @@ export function ConversationImagePreviewRoot({children,active=true,onOpen}:{chil
 export function useConversationImagePreview(){return useContext(Preview)?.image;}
 export function useConversationFilePreview(){return useContext(Preview)?.file;}
 
-function ImagePreview({image,onClose}:{image:PreviewImage;onClose:()=>void}) {
+export function ImagePreview({image,onClose}:{image:PreviewImage;onClose:()=>void}) {
   const stage=useRef<HTMLDivElement>(null),[natural,setNatural]=useState({width:0,height:0}),[available,setAvailable]=useState({width:800,height:500});
   const [zoom,setZoom]=useState<number|null>(null),[failed,setFailed]=useState(false);
   useEffect(()=>{

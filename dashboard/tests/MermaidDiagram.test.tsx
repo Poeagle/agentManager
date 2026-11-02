@@ -1,0 +1,9 @@
+import {fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {beforeEach,expect,it,vi} from 'vitest';
+import {ConversationMarkdown} from '../src/components/ConversationMarkdown';
+import {isMermaidCode} from '../src/lib/mermaid-render';
+import {renderMermaid} from '../src/lib/mermaid-render';
+vi.mock('../src/lib/mermaid-render',async actual=>({...await actual<typeof import('../src/lib/mermaid-render')>(),renderMermaid:vi.fn()}));
+beforeEach(()=>{vi.stubGlobal('URL',Object.assign(URL,{createObjectURL:vi.fn(()=>'blob:diagram'),revokeObjectURL:vi.fn()}));vi.mocked(renderMermaid).mockResolvedValue('<svg/>');});
+it('recognizes explicit and unlabelled diagrams without converting ordinary code',()=>{expect(isMermaidCode('flowchart TD\n A-->B')).toBe(true);expect(isMermaidCode('sequenceDiagram\n A->>B: Hi','')).toBe(true);expect(isMermaidCode('flowchart TD\n A-->B','bash')).toBe(false);expect(isMermaidCode('const a=1','js')).toBe(false);});
+it('renders a diagram in conversation, keeps source toggle and lets invalid diagrams fall back to source',async()=>{const view=render(<ConversationMarkdown messageId="m" content={'```mermaid\nflowchart TD\n A-->B\n```'} projectId={null} onNavigate={()=>{}}/>);await screen.findByRole('img',{name:'Mermaid 图表'});expect(view.container.querySelector('.conversation-code')).toBeNull();fireEvent.click(screen.getByRole('button',{name:'查看源码'}));expect(view.container.querySelector('code')).toHaveTextContent('flowchart TD');vi.mocked(renderMermaid).mockRejectedValueOnce(Error('syntax'));view.rerender(<ConversationMarkdown messageId="m" content={'```mermaid\ninvalid diagram\n```'} projectId={null} onNavigate={()=>{}}/>);await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('图表暂时无法显示'));expect(view.container.querySelector('code')).toHaveTextContent('invalid diagram');});

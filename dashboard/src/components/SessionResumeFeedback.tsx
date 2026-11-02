@@ -26,12 +26,13 @@ export function SessionResumeFeedback({ state }: { state: SessionResumeState }) 
       <div className="flex items-center gap-2">
         <Icon className={`h-4 w-4 shrink-0 ${busy ? 'animate-spin motion-reduce:animate-none' : ''}`} style={{ color }} />
         <span className="font-medium">
-          {state.action==='reload'?(state.phase==='starting'?'正在重载标签页…':state.phase==='connecting'?'重载中，正在连接终端…':failed?'重载失败':'标签页已重载'):state.phase === 'starting' ? 'Resuming — starting session…'
+          {state.action==='new'?(state.phase==='starting'?'正在新开会话…':state.phase==='connecting'?'正在连接新会话…':failed?'新开失败':'新会话已打开'):state.action==='reload'?(state.phase==='starting'?'正在重载标签页…':state.phase==='connecting'?'重载中，正在连接终端…':failed?'重载失败':'标签页已重载'):state.phase === 'starting' ? 'Resuming — starting session…'
             : state.phase === 'connecting' ? 'Resuming — connecting terminal…'
               : failed ? 'Resume failed' : 'Session resumed'}
         </span>
         {busy && <span aria-live="off" style={{ color: 'var(--text-muted)' }}>{elapsed}s</span>}
       </div>
+      {state.warning&&<p className="mt-1.5 max-w-md break-words">{state.warning}</p>}
       {failed && <p className="mt-1.5 max-w-md break-words">{state.error}</p>}
       {busy && elapsed >= 15 && (
         <p className="mt-1.5" style={{ color: 'var(--text-secondary)' }}>This is taking longer than usual. Still waiting for the session to connect.</p>
