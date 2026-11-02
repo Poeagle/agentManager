@@ -10,13 +10,25 @@ type Selection=({kind:'image'}&PreviewImage)|({kind:'file'}&ConversationPreviewF
 const Preview=createContext<{image:(image:PreviewImage)=>void;file:(file:ConversationPreviewFile)=>void;hover:{show:(image:PreviewImage,anchor:HTMLElement)=>void;hide:()=>void}}|null>(null);
 const sidebarWidthKey='conversation-preview-width';
 function savedSidebarWidth(){try{const value=Number(localStorage.getItem(sidebarWidthKey));if(value>=.2&&value<=.7)return value;}catch{/* Storage may be unavailable. */}return .46;}
+function HoverImagePreview({image}:{image:PreviewImage&{anchor:DOMRect}}) {
+  const [natural,setNatural]=useState({width:0,height:0}),[failed,setFailed]=useState(false);
+  const above=image.anchor.top>=window.innerHeight-image.anchor.bottom;
+  const maxWidth=Math.max(1,Math.min(960,window.innerWidth-32)-18);
+  const maxHeight=Math.max(1,Math.min(560,(above?image.anchor.top:window.innerHeight-image.anchor.bottom)-48));
+  const scale=natural.width?Math.min(1,maxWidth/natural.width,maxHeight/natural.height):1;
+  const width=natural.width?natural.width*scale:Math.min(300,maxWidth),height=natural.height?natural.height*scale:undefined;
+  return <div className="conversation-image-hover" role="tooltip" aria-label={`图片缩略预览 · ${image.name}`} style={{left:Math.max(8,Math.min(image.anchor.left,window.innerWidth-width-26)),...(above?{bottom:window.innerHeight-image.anchor.top+8}:{top:image.anchor.bottom+8})}}>
+    {failed?<span>图片加载失败，点击可重试预览</span>:<img src={image.src} alt={image.name} style={{width:natural.width?width:undefined,height,maxWidth,maxHeight}} onLoad={event=>setNatural({width:event.currentTarget.naturalWidth,height:event.currentTarget.naturalHeight})} onError={()=>setFailed(true)}/>}
+    <span>{image.name}</span>
+  </div>;
+}
 /** One preview per conversation; hiding/switching a session releases its overlay. */
 export function ConversationImagePreviewRoot({children,active=true,onOpen}:{children:ReactNode;active?:boolean;onOpen?:()=>void}) {
   const inherited=useContext(Preview),[selected,setSelected]=useState<Selection|null>(null);
-  const [hovered,setHovered]=useState<(PreviewImage&{anchor:DOMRect})|null>(null),[hoverFailed,setHoverFailed]=useState(false);
+  const [hovered,setHovered]=useState<(PreviewImage&{anchor:DOMRect})|null>(null);
   const hoverTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
   const hideHover=useCallback(()=>{if(hoverTimer.current)clearTimeout(hoverTimer.current);hoverTimer.current=null;setHovered(null);},[]);
-  const hover=useMemo(()=>({hide:hideHover,show:(image:PreviewImage,anchor:HTMLElement)=>{hideHover();hoverTimer.current=setTimeout(()=>{hoverTimer.current=null;if(anchor.isConnected){setHoverFailed(false);setHovered({...image,anchor:anchor.getBoundingClientRect()});}},200);}}),[hideHover]);
+  const hover=useMemo(()=>({hide:hideHover,show:(image:PreviewImage,anchor:HTMLElement)=>{hideHover();hoverTimer.current=setTimeout(()=>{hoverTimer.current=null;if(anchor.isConnected)setHovered({...image,anchor:anchor.getBoundingClientRect()});},200);}}),[hideHover]);
   useEffect(()=>()=>{if(hoverTimer.current)clearTimeout(hoverTimer.current);},[]);
   useEffect(()=>{if(!active)hideHover();},[active,hideHover]);
   useEffect(()=>{if(!hovered)return;window.addEventListener('resize',hideHover);window.addEventListener('scroll',hideHover,true);return()=>{window.removeEventListener('resize',hideHover);window.removeEventListener('scroll',hideHover,true);};},[!!hovered,hideHover]);
@@ -55,7 +67,7 @@ export function ConversationImagePreviewRoot({children,active=true,onOpen}:{chil
   useEffect(()=>{if(!selected||!active||docked)return;const before=document.body.style.overflow;document.body.style.overflow='hidden';return()=>{document.body.style.overflow=before;};},[!!selected,active,docked]);
   if(inherited)return <>{children}</>;
   return <Preview.Provider value={actions}><div ref={layout} className="conversation-preview-layout"><div className="conversation-preview-main">{children}</div>{active&&docked&&selected?.kind==='file'&&<div ref={sidebar} className="conversation-preview-sidebar" style={{width:`${sidebarWidth*100}%`}} aria-hidden="true"/>}</div>{active&&selected&&(selected.kind==='image'?<ImagePreview key={selected.src} image={selected} onClose={close}/>:<ConversationFilePreview key={selected.path} file={selected} onClose={close} dock={docked?dock:undefined} canDock={canDock} onDock={()=>setDocked(value=>!value)}/>)}
-    {active&&hovered&&createPortal(<div className="conversation-image-hover" role="tooltip" aria-label={`图片缩略预览 · ${hovered.name}`} style={{left:Math.max(8,Math.min(hovered.anchor.left,window.innerWidth-296)),...(hovered.anchor.top>=230?{bottom:window.innerHeight-hovered.anchor.top+8}:{top:Math.min(hovered.anchor.bottom+8,Math.max(8,window.innerHeight-230))})}}>{hoverFailed?<span>图片加载失败，点击可重试预览</span>:<img src={hovered.src} alt={hovered.name} onError={()=>setHoverFailed(true)}/>}<span>{hovered.name}</span></div>,document.body)}
+    {active&&hovered&&createPortal(<HoverImagePreview key={hovered.src} image={hovered}/>,document.body)}
     {active&&docked&&selected?.kind==='file'&&dock&&createPortal(<>
       {dragging&&<div className="conversation-preview-resize-shield"/>}
       <div className="conversation-preview-resizer" role="separator" aria-label="调整文件预览宽度" aria-orientation="vertical" tabIndex={0} aria-valuemin={300} aria-valuemax={Math.round(Math.min((layout.current?.clientWidth||0)*.7,(layout.current?.clientWidth||0)-328))} aria-valuenow={Math.round(dock.width)} title="左右拖动调整宽度，双击恢复默认"
