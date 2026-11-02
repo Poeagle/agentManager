@@ -9,6 +9,19 @@ beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}})
 afterEach(()=>client.clear());
 const mount=()=>render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active/></QueryClientProvider>);
 describe('compact conversation controls',()=>{
+ it('updates usage immediately without an extra controls request and ignores an older metadata refresh',async()=>{
+  mount();await screen.findByText('上下文 30%');const calls=vi.mocked(api.agent.controls).mock.calls.length;
+  await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-02T03:20:55Z',usage:{last:{total_tokens:2400,input_tokens:2000,cached_input_tokens:1900,output_tokens:400},total:{total_tokens:402400,input_tokens:400000,cached_input_tokens:380000},window:40000}});});
+  expect(await screen.findByText('上下文 6%')).toBeVisible();expect(api.agent.controls).toHaveBeenCalledTimes(calls);
+  await act(async()=>{await client.invalidateQueries({queryKey:['conversation-controls','s']});});
+  expect(screen.getByText('上下文 6%')).toBeVisible();
+  fireEvent.click(screen.getByRole('button',{name:'详情'}));expect(within(screen.getByLabelText('本次缓存命中率')).getByText('95.0%')).toBeVisible();
+ });
+ it('does not mix another native thread usage into this tab',async()=>{
+  mount();await screen.findByText('上下文 30%');
+  await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'other',observed_at:'2026-11-02T03:20:55Z',usage:{last:{total_tokens:1000},total:{},window:40000}});});
+  expect(screen.getByText('上下文 30%')).toBeVisible();
+ });
  it('refreshes every five minutes, ignores focus refresh and retains a manual refresh action',async()=>{
   vi.useFakeTimers();vi.mocked(api.agent.controls).mockClear();
   try {
@@ -20,7 +33,7 @@ describe('compact conversation controls',()=>{
  });
 
  it('shows actual context and weekly remaining values and expands only allowlisted details',async()=>{
-  mount();expect(await screen.findByText('上下文 30%')).toBeVisible();expect(screen.getByText('周额度剩余 75%')).toBeVisible();expect(screen.queryByRole('dialog')).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'详情'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(dialog).toHaveTextContent('工作区可写');expect(dialog).toHaveTextContent('40,000');expect(dialog).toHaveTextContent('400,000');expect(within(dialog).getByText('缓存命中输入')).toBeVisible();fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  mount();expect(await screen.findByText('上下文 30%')).toBeVisible();expect(screen.getByText('周额度剩余 75%')).toBeVisible();expect(screen.queryByRole('dialog')).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'详情'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(dialog).toHaveTextContent('工作区可写');expect(dialog).toHaveTextContent('40,000');expect(dialog).toHaveTextContent('400,000');fireEvent.click(within(dialog).getByText('查看完整用量明细'));expect(within(dialog).getByText('缓存命中输入')).toBeVisible();fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
  });
  it('applies model and effort immediately and shows the confirmed current settings',async()=>{
   mount();const model=await screen.findByRole('combobox',{name:'选择模型'});fireEvent.change(model,{target:{value:'model-b'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenCalledWith('s',{model:'model-b',effort:'low'}));expect(await screen.findByText('已应用')).toBeVisible();expect(screen.getByRole('combobox',{name:'选择推理强度'})).toHaveValue('low');expect(screen.queryByText('下轮生效')).not.toBeInTheDocument();fireEvent.change(screen.getByRole('combobox',{name:'选择推理强度'}),{target:{value:'medium'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenLastCalledWith('s',{model:'model-b',effort:'medium'}));expect(model).toHaveValue('model-b');

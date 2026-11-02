@@ -682,8 +682,14 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     if(session?.cli_type!=='codex'||!session.codex_session_id) {
       socket.send(JSON.stringify({type:'unavailable',reason:'等待原生实时会话连接'}));socket.close(1000);return;
     }
+    let lastUsageFingerprint:string|undefined;
     const send=(frame:any)=>{
       if(!canAccessAgentSession(req.user!.id,id)) {socket.close(1008);return;}
+      if(frame.type==='usage') {
+        const fingerprint=JSON.stringify([frame.native_id,frame.usage]);
+        if(fingerprint===lastUsageFingerprint)return;
+        lastUsageFingerprint=fingerprint;
+      }
       if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(['snapshot','history'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,frame.messages)}:frame));
       else if(socket.readyState===1) socket.close(1013,'Slow conversation client');
     };

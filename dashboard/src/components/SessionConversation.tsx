@@ -10,7 +10,7 @@ import {ConversationInteraction,ConversationAsyncQuestion,ConversationQuestionSu
 import {memo,useCallback,useEffect,useRef,useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
-import {api,type ConversationMessage,type ConversationPage,type ConversationControlsData,type Session} from '../lib/api';
+import {api,type ConversationMessage,type ConversationPage,type ConversationControlsData,type ConversationUsageUpdate,type Session} from '../lib/api';
 import {decodeQuestionReply,questionAnswers} from '../lib/conversation-question-reply';
 import {parseConversationInput} from '../lib/conversation-attachments';
 import {ConversationAttachmentPicker,ConversationMessageAttachments,useConversationAttachments} from './ConversationAttachments';
@@ -169,8 +169,17 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
       liveSocket.current=socket;setConnectionGeneration(value=>value+1);
       socket.onmessage=event=>{
         if(disposed) return;
-        let frame:{type:string;model?:string;effort?:string|null;messages?:ConversationMessage[];runtime?:ConversationPage['runtime'];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string;usage?:NonNullable<ConversationControlsData['usage']>;observed_at?:string;compaction?:NativeCompaction|null}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
-        if(frame.type==='usage'&&frame.usage&&frame.observed_at){compaction.usage(frame.usage,frame.observed_at);return;}
+        let frame:{type:string;model?:string;effort?:string|null;native_id?:string;usage?:ConversationUsageUpdate['usage'];observed_at?:string;messages?:ConversationMessage[];runtime?:ConversationPage['runtime'];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string;compaction?:NativeCompaction|null}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
+        if(frame.type==='usage') {
+          if(typeof frame.native_id==='string'&&frame.native_id===session.codex_session_id&&frame.usage&&frame.observed_at&&Number.isFinite(Date.parse(frame.observed_at))) {
+            const update:ConversationUsageUpdate={native_id:frame.native_id,usage:frame.usage,observed_at:frame.observed_at};
+            const previous=queryClient.getQueryData<ConversationUsageUpdate>(['conversation-usage',session.id]);
+            if(previous?.native_id===update.native_id&&Date.parse(previous.observed_at)>Date.parse(update.observed_at))return;
+            compaction.usage(update.usage,update.observed_at);
+            queryClient.setQueryData<ConversationUsageUpdate>(['conversation-usage',session.id],previous=>previous?.native_id===update.native_id&&Date.parse(previous.observed_at)>Date.parse(update.observed_at)?previous:update);
+          }
+          return;
+        }
         if(frame.type==='settings'&&typeof frame.model==='string'){queryClient.setQueryData<ConversationControlsData>(['conversation-controls',session.id],previous=>previous?{...previous,model:frame.model!,effort:frame.effort??null,pending:null}:previous);return;}
         if(frame.type==='interaction_result' && frame.request_id) {const pending=pendingAnswers.current.get(frame.request_id);if(pending){clearTimeout(pending.timer);pendingAnswers.current.delete(frame.request_id);if(frame.ok)pending.resolve();else pending.reject(new Error(frame.error||'提交失败'));}return;}
         if(frame.type==='history'&&Array.isArray(frame.messages)){pushAvailable.current=true;setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));setPage(previous=>previous?{...previous,runtime:frame.runtime||previous.runtime}:previous);if(frame.messages.length){if(pinned.current)requestAnimationFrame(()=>{if(!disposed)scrollBottom();});else setUnread(true);}return;}
