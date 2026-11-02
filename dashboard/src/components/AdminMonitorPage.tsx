@@ -1,4 +1,6 @@
 import { TableActionButton, TableActions } from './table/TableActions';
+import {loginDevice} from '../lib/login-device';
+import {formatConversationTimestamp} from '../lib/conversation-timing';
 import { RowActionsMenu } from './table/RowActionsMenu';
 import { useTableModel } from './table/use-table-model';
 import { DataTable, TableExpandButton, TableDetailRow, TableStateRow } from './table/DataTable';
@@ -58,7 +60,7 @@ function parseServerTime(value: string | null): number | null {
 
 function absoluteTime(value: string | null): string {
   const time = parseServerTime(value);
-  return time === null ? '暂无记录' : new Date(time).toLocaleString();
+  return time === null ? '暂无记录' : formatConversationTimestamp(new Date(time).toISOString());
 }
 
 function relativeTime(value: string | null, referenceTime: number): string {
@@ -136,7 +138,7 @@ export function AdminMonitorPage({ onBack, onOpenSession, canWrite = true, canDe
   const query = search.trim().toLocaleLowerCase();
   const users = useMemo(() => (data?.users ?? [])
     .map((user) => {
-      const userMatches = [user.username, user.display_name].join('\n').toLocaleLowerCase().includes(query);
+      const userMatches = [user.username, user.display_name,...(user.login_sessions||[]).flatMap(login=>[login.login_ip,login.last_ip,loginDevice(login.user_agent)])].join('\n').toLocaleLowerCase().includes(query);
       const projects = user.projects
         .filter((project) => project.is_open || (showHistory && project.sessions.length > 0))
         .map((project) => ({
@@ -161,12 +163,14 @@ export function AdminMonitorPage({ onBack, onOpenSession, canWrite = true, canDe
 
   const usersTable = useTableModel(users, [
     { key: 'user', title: '用户', value: ({ user }) => `${user.display_name || user.username} @${user.username}` },
-    { key: 'status', title: '状态', value: ({ user }) => user.disabled ? '已禁用' : user.online ? '在线' : '离线' },
+    { key: 'status', title: '连接状态', value: ({ user }) => presenceLabel(user) },
     { key: 'projects', title: '打开项目', value: ({ user }) => user.open_projects },
     { key: 'tabs', title: '会话标签', value: ({ projects }) => projects.filter(({ project }) => project.is_open).reduce((sum, { project }) => sum + project.tabs.length, 0) },
     { key: 'sessions', title: '活动会话', value: ({ user }) => user.active_sessions },
     { key: 'memory', title: '内存', value: ({ user }) => user.memory_bytes, format: (value) => formatBytes(typeof value === 'number' ? value : null) },
-    { key: 'login', title: '登录活动', value: ({ user }) => user.last_seen_at, kind: 'date', format: (value) => absoluteTime(value == null ? null : String(value)) },
+    { key: 'ip', title: '最近访问 IP', value: ({ user }) => user.login_sessions?.[0]?.last_ip },
+    { key: 'device', title: '设备 / 浏览器', value: ({ user }) => loginDevice(user.login_sessions?.[0]?.user_agent) },
+    { key: 'login', title: '最近活动', value: ({ user }) => user.last_seen_at, kind: 'date', format: (value) => absoluteTime(value == null ? null : String(value)) },
   ]);
   const referenceTime = parseServerTime(data?.generated_at ?? null) ?? 0;
   const onlineUsers = data?.users.filter((user) => user.online).length ?? 0;
@@ -193,7 +197,7 @@ export function AdminMonitorPage({ onBack, onOpenSession, canWrite = true, canDe
         <div className="flex flex-col gap-2 py-2 xl:flex-row xl:items-center xl:justify-between">
           <label className="relative block w-full xl:max-w-md">
             <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索用户、项目、会话标签、任务或会话 ID" className="w-full rounded-md py-1.5 pl-9 pr-3 text-sm outline-none transition-colors focus:ring-1" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索用户、IP、设备、项目或会话" className="w-full rounded-md py-1.5 pl-9 pr-3 text-sm outline-none transition-colors focus:ring-1" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
           </label>
           <div className="flex flex-wrap items-center gap-2">
             <button onClick={() => setShowStatusHelp((value) => !value)} aria-expanded={showStatusHelp} className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors hover:bg-white/5" style={{ color: showStatusHelp ? 'var(--accent)' : 'var(--text-secondary)', border: '1px solid var(--border)' }}>
@@ -220,7 +224,7 @@ export function AdminMonitorPage({ onBack, onOpenSession, canWrite = true, canDe
 
         {showStatusHelp && <StatusGuide />}
 
-          <DataTable label="用户监控" model={usersTable} minWidth={700} expandable className="mb-3"
+          <DataTable label="用户监控" model={usersTable} minWidth={1300} expandable className="mb-3" columnWidths={['w-56','w-24','w-20','w-20','w-24','w-24','w-40','w-40','w-44']}
             loading={isLoading} error={error ? error instanceof Error ? error.message : '监控数据加载失败' : undefined}
             onRetry={() => { void refetch(); }} empty={usersTable.rows.length === 0} emptyMessage="没有匹配的用户、项目或会话标签">
             {usersTable.rows.map(({ user, projects }) => {
@@ -254,6 +258,8 @@ function StatusGuide() {
       <div className="border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
         <div className="text-sm font-semibold">如何理解状态</div>
         <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>生命周期说明会话是否还存在；工作状态说明正在运行的 Agent 此刻在做什么，两者会同时出现。</p>
+        <p className="mt-2 text-xs" style={{color:'var(--text-secondary)'}}>连接状态仅依据网页实时连接：连接存活且 75 秒内收到握手或心跳为在线；连接仍在但心跳超时为连接异常；没有连接为离线。心跳每 25 秒一次，本表每 5 秒刷新。浏览器离线不代表后台任务已停止。</p>
+        <p className="mt-2 text-xs" style={{color:'var(--text-secondary)'}}>最近活动是认证请求或连接心跳时间，不是登录时间。展开用户可查看各有效登录的登录时间、登录 IP、最近访问 IP 和设备。IP 是服务端实际观测到的来源，可能是代理地址；设备由客户端报告，未采集的数据标记“未记录”。</p>
       </div>
       <div className="grid gap-px lg:grid-cols-2" style={{ background: 'var(--border)' }}>
         <GuideGroup title="会话生命周期" items={STATUS_META} />
@@ -261,6 +267,29 @@ function StatusGuide() {
       </div>
     </section>
   );
+}
+
+function presenceLabel(user:AdminMonitorUser) {
+  return user.disabled?'已禁用':user.presence?.state==='online'?'在线':user.presence?.state==='unresponsive'?'连接异常':user.presence?.state==='offline'?'离线':'未知';
+}
+
+function LoginSessions({user}:{user:AdminMonitorUser}) {
+  const rows=user.login_sessions||[];
+  const table=useTableModel(rows,[
+    {key:'login',title:'登录时间',value:item=>item.login_at,kind:'date',format:value=>absoluteTime(value==null?null:String(value))},
+    {key:'login_ip',title:'登录 IP',value:item=>item.login_ip||'未记录'},
+    {key:'last_ip',title:'最近访问 IP',value:item=>item.last_ip||'未记录'},
+    {key:'device',title:'设备 / 浏览器',value:item=>loginDevice(item.user_agent)},
+    {key:'state',title:'网页连接',value:item=>item.presence.state==='online'?`在线 · ${item.presence.connections} 个连接`:item.presence.state==='unresponsive'?'心跳超时':'未连接'},
+    {key:'heartbeat',title:'最后心跳',value:item=>item.presence.last_heartbeat_at,kind:'date',format:value=>absoluteTime(value==null?null:String(value))},
+    {key:'activity',title:'最近活动',value:item=>item.last_seen_at,kind:'date',format:value=>absoluteTime(value==null?null:String(value))},
+  ]);
+  return <section className="mb-3" aria-label={`${user.username} 的登录连接`}>
+    <p className="mb-2 text-xs" style={{color:'var(--text-secondary)'}}>有效登录 · {rows.length} 处（登录时间与最近活动分别记录）</p>
+    <DataTable label={`${user.username} 的登录连接`} model={table} minWidth={1000} empty={!rows.length} emptyMessage="没有有效登录记录。">{table.rows.map((item,index)=><tr key={index}>
+      <td className="whitespace-nowrap">{absoluteTime(item.login_at)}</td><td className="font-mono text-xs">{item.login_ip||'未记录'}</td><td className="font-mono text-xs">{item.last_ip||'未记录'}</td><td title={item.user_agent||'未记录'}>{loginDevice(item.user_agent)}</td><td className="whitespace-nowrap">{item.presence.state==='online'?`在线 · ${item.presence.connections} 个连接`:item.presence.state==='unresponsive'?'心跳超时':'未连接'}</td><td className="whitespace-nowrap">{absoluteTime(item.presence.last_heartbeat_at)}</td><td className="whitespace-nowrap">{absoluteTime(item.last_seen_at)}</td>
+    </tr>)}</DataTable>
+  </section>;
 }
 
 function GuideGroup({ title, items }: { title: string; items: Record<string, { label: string; description: string; color: string }> }) {
@@ -296,11 +325,15 @@ function UserTree({ user, projects, collapsed, onToggle, expandedProjects, onTog
   return <Fragment>
     <tr>
       <td><TableExpandButton expanded={!collapsed} label={`用户 ${user.username}`} onClick={onToggle} /></td>
-      <td className="whitespace-nowrap"><span className="font-medium">{user.display_name || user.username}</span><span className="ml-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>@{user.username}</span></td>
-      <td><span className="inline-flex items-center gap-1.5 whitespace-nowrap"><span className="h-1.5 w-1.5 rounded-full" style={{ background: user.disabled ? 'var(--error)' : user.online ? 'var(--success)' : 'var(--text-muted)' }} />{user.disabled ? '已禁用' : user.online ? '在线' : '离线'}</span></td>
-      <td>{user.open_projects}</td><td>{tabCount}</td><td>{user.active_sessions}{user.role === 'member' ? ` / ${user.max_tabs ?? 10}` : ''}</td><td className="whitespace-nowrap">{formatBytes(user.memory_bytes)}</td><td className="whitespace-nowrap" title={absoluteTime(user.last_seen_at)}>{relativeTime(user.last_seen_at, referenceTime)}</td>
+      <td title={`${user.display_name||user.username} @${user.username}`}><div className="flex min-w-0 items-center gap-2"><span className="min-w-0 truncate font-medium">{user.display_name || user.username}</span><span className="min-w-0 truncate text-[11px]" style={{ color: 'var(--text-secondary)' }}>@{user.username}</span></div></td>
+      <td title={user.presence?`网页连接 ${user.presence.connections} 个；最后心跳：${absoluteTime(user.presence.last_heartbeat_at)}。浏览器连接状态与后台任务分开统计。`:'尚未取得连接状态'}><span className="inline-flex items-center gap-1.5 whitespace-nowrap"><span className="h-1.5 w-1.5 rounded-full" style={{ background: user.disabled ? 'var(--error)' : user.presence?.state==='online' ? 'var(--success)' : user.presence?.state==='unresponsive'?'var(--warning,#d97706)':'var(--text-muted)' }} />{presenceLabel(user)}</span></td>
+      <td>{user.open_projects}</td><td>{tabCount}</td><td>{user.active_sessions}{user.role === 'member' ? ` / ${user.max_tabs ?? 10}` : ''}</td><td className="whitespace-nowrap">{formatBytes(user.memory_bytes)}</td>
+      <td className="whitespace-nowrap font-mono text-xs">{user.login_sessions?.[0]?.last_ip||'未记录'}</td>
+      <td className="whitespace-nowrap" title={user.login_sessions?.[0]?.user_agent||'未记录客户端信息'}>{loginDevice(user.login_sessions?.[0]?.user_agent)}{(user.login_sessions?.length||0)>1&&<span className="ml-1 text-xs" style={{color:'var(--text-secondary)'}}>（{user.login_sessions!.length} 处登录）</span>}</td>
+      <td className="whitespace-nowrap" title={absoluteTime(user.last_seen_at)}>{absoluteTime(user.last_seen_at)}</td>
     </tr>
-    {!collapsed && <TableDetailRow columnCount={8}>
+    {!collapsed && <TableDetailRow columnCount={10}>
+      <LoginSessions user={user}/>
       <DataTable label={`${user.username} 的项目`} model={projectsTable} minWidth={850} expandable columnWidths={['w-48', '', 'w-24', 'w-32', 'w-32', 'w-28']}
         empty={projectsTable.rows.length === 0} emptyMessage={showHistory ? '暂无项目或会话记录。' : '当前没有打开的项目。'}>{projectsTable.rows.map((entry) => {
         const { project, sessions } = entry;

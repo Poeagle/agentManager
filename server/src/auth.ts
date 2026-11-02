@@ -15,6 +15,7 @@ import { config } from './config.js';
 import { runtimeNames } from './services/runtime-namespace.js';
 import { userHasPermission } from './services/rbac.js';
 import { SESSION_CLIENTS, parseSessionClients } from './services/session-clients.js';
+import {requestLoginMetadata,type LoginMetadata} from './services/login-metadata.js';
 
 export interface User {
   id: string;
@@ -224,19 +225,19 @@ export async function setUserPasswordAsync(id: string, password: string): Promis
 
 /* ── Login sessions ────────────────────────────────────────────────── */
 
-export function createSession(userId: string): string {
+export function createSession(userId: string,metadata?:LoginMetadata): string {
   const token = randomBytes(32).toString('hex');
   getDb()
     .prepare(
-      `INSERT INTO auth_sessions (token, user_id, expires_at)
-       VALUES (?, ?, datetime('now', ?))`,
+      `INSERT INTO auth_sessions (token, user_id, expires_at,login_ip,last_ip,user_agent,session_kind)
+       VALUES (?, ?, datetime('now', ?),?,?,?,?)`,
     )
-    .run(token, userId, `+${SESSION_TTL_DAYS} days`);
+    .run(token, userId, `+${SESSION_TTL_DAYS} days`,metadata?.ip??null,metadata?.ip??null,metadata?.userAgent??null,metadata?.kind??'browser');
   return token;
 }
 
 /** Resolve a session token to a live, non-disabled user; slides expiry. */
-export function getSessionUser(token: string): User | undefined {
+export function getSessionUser(token: string,metadata?:LoginMetadata): User | undefined {
   const db = getDb();
   const row = db
     .prepare('SELECT user_id, expires_at FROM auth_sessions WHERE token = ?')
@@ -247,8 +248,9 @@ export function getSessionUser(token: string): User | undefined {
     return undefined;
   }
   db.prepare(
-    `UPDATE auth_sessions SET last_seen_at = datetime('now'), expires_at = datetime('now', ?) WHERE token = ?`,
-  ).run(`+${SESSION_TTL_DAYS} days`, token);
+    `UPDATE auth_sessions SET last_seen_at = datetime('now'), expires_at = datetime('now', ?),
+      last_ip=COALESCE(?,last_ip),user_agent=COALESCE(?,user_agent) WHERE token = ?`,
+  ).run(`+${SESSION_TTL_DAYS} days`,metadata?.ip??null,metadata?.userAgent??null, token);
   const user = findUserById(row.user_id);
   if (!user || user.disabled) return undefined;
   return user;
@@ -319,7 +321,7 @@ export async function authHook(req: FastifyRequest, reply: FastifyReply) {
   // Always resolve the user when a valid session cookie is present, so public
   // endpoints (e.g. /auth/status) can still report who is logged in.
   const token = readSessionCookie(req);
-  const user = token ? getSessionUser(token) : undefined;
+  const user = token ? getSessionUser(token,requestLoginMetadata(req)) : undefined;
   if (user) req.user = user;
 
   if (PUBLIC_PATHS.has(path)) return;        // public: login not required

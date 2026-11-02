@@ -6,7 +6,7 @@ import { migrateRbac } from '../services/rbac.js';
 import { migratePlatformAi } from '../services/platform-ai/schema.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 19;
+const SCHEMA_VERSION = 22;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -126,7 +126,12 @@ function createCurrentSchema(): void {
       user_id TEXT NOT NULL REFERENCES users(id),
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       expires_at TEXT NOT NULL,
-      last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      login_ip TEXT,
+      last_ip TEXT,
+      user_agent TEXT,
+      session_kind TEXT NOT NULL DEFAULT 'browser',
+      last_heartbeat_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS user_ui_state (
@@ -363,6 +368,11 @@ function runMigrations(): void {
 
   const migrate = db.transaction(() => {
     createCurrentSchema();
+    addColumn('auth_sessions', 'login_ip', 'TEXT');
+    addColumn('auth_sessions', 'last_ip', 'TEXT');
+    addColumn('auth_sessions', 'user_agent', 'TEXT');
+    addColumn('auth_sessions', 'session_kind', "TEXT NOT NULL DEFAULT 'browser'");
+    addColumn('auth_sessions', 'last_heartbeat_at', 'TEXT');
     if (current < 11) migrateWorkspacePermissions();
     if (current < 1) migrateLegacySchema();
     if (current < 2) migrateTerminalDimensionsAndOutputKeys();

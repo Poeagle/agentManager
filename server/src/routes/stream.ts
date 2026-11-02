@@ -11,7 +11,7 @@ import { userHasPermission } from '../services/rbac.js';
 export const streamRoutes: FastifyPluginAsync = async (app) => {
   app.get('/stream', { websocket: true }, (socket, req) => {
     const userId = req.user?.id;
-    if (!userId || !registerUserConnection(userId, readSessionCookie(req), socket)) return;
+    if (!userId || !registerUserConnection(userId, readSessionCookie(req), socket,true)) return;
     // Subscribe to events
     const unsubscribe = subscribe((event: any) => {
       // Host telemetry has the same read permission as its REST endpoint.
@@ -43,6 +43,7 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
     // detect a silent drop (no close frame) and reconnect. Cleared on close.
     const heartbeat = setInterval(() => {
       try {
+        socket.ping();
         socket.send(JSON.stringify({ type: 'ping', timestamp: new Date().toISOString() }));
       } catch {
         // Socket closed mid-send

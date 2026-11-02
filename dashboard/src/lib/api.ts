@@ -732,11 +732,27 @@ export interface AdminMonitorTab {
 
 export interface AdminMonitorUser extends AuthUser {
   online: boolean;
+  presence?:AdminMonitorPresence;
+  login_sessions?:AdminMonitorLogin[];
   last_seen_at: string | null;
   active_sessions: number;
   open_projects: number;
   memory_bytes: number;
   projects: AdminMonitorProject[];
+}
+
+export interface AdminMonitorPresence {
+  state:'online'|'offline'|'unresponsive';
+  connections:number;
+  last_heartbeat_at:string|null;
+}
+export interface AdminMonitorLogin {
+  login_at:string;
+  last_seen_at:string;
+  login_ip:string|null;
+  last_ip:string|null;
+  user_agent:string|null;
+  presence:AdminMonitorPresence;
 }
 
 export interface AdminMonitorResponse {

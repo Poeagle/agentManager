@@ -6,6 +6,7 @@ import {
 } from '../auth.js';
 import { config } from '../config.js';
 import { revokeTokenConnections } from '../services/user-connections.js';
+import {requestLoginMetadata} from '../services/login-metadata.js';
 
 interface LoginAttemptBucket {
   failures: number[];
@@ -124,7 +125,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     if (!user) return reply.code(409).send({ error: 'Already set up' });
     // First admin inherits any pre-existing (ownerless) projects.
     claimOrphanProjects(user.id);
-    setSessionCookie(reply, createSession(user.id));
+    setSessionCookie(reply, createSession(user.id,requestLoginMetadata(req)));
     return { user };
   });
 
@@ -160,7 +161,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     const blockedAfterHash = currentBlock(keys, Date.now());
     if (blockedAfterHash > Date.now()) return sendRateLimited(reply, blockedAfterHash);
     loginAttempts.delete(`account:${normalizedUsername.toLocaleLowerCase('en-US')}`);
-    setSessionCookie(reply, createSession(row.id));
+    setSessionCookie(reply, createSession(row.id,requestLoginMetadata(req)));
     const { password_hash, ...user } = row;
     return { user };
   });

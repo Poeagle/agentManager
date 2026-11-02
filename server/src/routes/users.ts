@@ -13,7 +13,8 @@ import { getTracker, inferQuiescentSessionState } from '../services/session-stat
 import { getSessionProcessRootPid, killSession } from '../services/session-manager.js';
 import { broadcastEphemeral } from '../services/event-store.js';
 import {readConversationPreview} from '../services/conversation-preview.js';
-import { revokeUserConnections } from '../services/user-connections.js';
+import { revokeUserConnections,userPresence } from '../services/user-connections.js';
+import {requestLoginMetadata} from '../services/login-metadata.js';
 import { serverResourceSampler } from '../services/server-resources.js';
 import { requirePermission, userHasPermission, userRoleIds } from '../services/rbac.js';
 
@@ -153,10 +154,9 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     const db = getDb();
     const users = db.prepare(`
       SELECT u.id, u.username, u.display_name, u.role, u.disabled, u.max_tabs,
-             MAX(a.last_seen_at) AS last_seen_at,
-             CASE WHEN MAX(a.last_seen_at) >= datetime('now', '-2 minutes') THEN 1 ELSE 0 END AS online
+             MAX(a.last_seen_at) AS last_seen_at
       FROM users u
-      LEFT JOIN auth_sessions a ON a.user_id = u.id AND a.expires_at > datetime('now')
+      LEFT JOIN auth_sessions a ON a.user_id = u.id AND a.expires_at > datetime('now') AND a.session_kind='browser'
       GROUP BY u.id
       ORDER BY u.disabled, u.display_name, u.username
     `).all() as Array<{
@@ -167,8 +167,11 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
       disabled: number;
       max_tabs: number;
       last_seen_at: string | null;
-      online: number;
     }>;
+    const loginRows=db.prepare(`SELECT token,user_id,created_at AS login_at,last_seen_at,login_ip,last_ip,user_agent
+      FROM auth_sessions WHERE expires_at>datetime('now') AND session_kind='browser' ORDER BY last_seen_at DESC,created_at DESC`).all() as Array<{
+        token:string;user_id:string;login_at:string;last_seen_at:string;login_ip:string|null;last_ip:string|null;user_agent:string|null;
+      }>;
     const projects = db.prepare('SELECT id, name, path FROM projects').all() as Array<{
       id: string;
       name: string;
@@ -387,7 +390,9 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
       });
       return {
         ...user,
-        online: Boolean(user.online),
+        online: userPresence(user.id).state==='online',
+        presence: userPresence(user.id),
+        login_sessions:loginRows.filter(login=>login.user_id===user.id).map(({token,user_id,...login})=>({...login,presence:userPresence(user.id,token)})),
         active_sessions: userSessions.filter((session) => activeStatuses.has(session.status)).length,
         open_projects: monitorProjects.filter((project) => project.is_open).length,
         memory_bytes: userSessions.reduce((total, session) => total + (session.memory_bytes ?? 0), 0),
@@ -645,7 +650,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     // underlying PTYs remain detached and reconnect under the fresh cookie.
     destroyUserSessions(req.user!.id);
     revokeUserConnections(req.user!.id);
-    setSessionCookie(reply, createAuthSession(req.user!.id));
+    setSessionCookie(reply, createAuthSession(req.user!.id,requestLoginMetadata(req)));
     return { ok: true };
   });
 };

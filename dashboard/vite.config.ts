@@ -53,6 +53,15 @@ export default defineConfig(({ command }) => {
           // 默认连本机生产后端 :42010;agentmanager-dev 设 VITE_API_TARGET 指向 dev 后端 :42020
           target: process.env.VITE_API_TARGET || 'http://127.0.0.1:42010',
           ws: true,
+          configure(proxy) {
+            // Replace supplied values. The API accepts this header only from
+            // loopback, where this development proxy connects to the backend.
+            const clientIp=(outgoing:{setHeader:(name:string,value:string)=>void},incoming:{socket:{remoteAddress?:string}})=>{
+              outgoing.setHeader('x-agentmanager-client-ip',incoming.socket.remoteAddress||'');
+            };
+            proxy.on('proxyReq',clientIp);
+            proxy.on('proxyReqWs',clientIp);
+          },
         },
       },
     },

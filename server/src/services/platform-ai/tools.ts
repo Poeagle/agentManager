@@ -78,7 +78,7 @@ export class PlatformApiError extends Error {
 export async function platformApi(app: FastifyInstance, userId: string, method: string, url: string, body?: Record<string, unknown>): Promise<any> {
   const user = findUserById(userId);
   if (!user || user.disabled || !userHasPermission(userId, 'agent_api', method === 'GET' ? 'read' : 'write')) throw new PlatformApiError('用户不可用或没有平台 AI 工具权限', 403);
-  const cookie = createAuthSession(userId);
+  const cookie = createAuthSession(userId,{ip:null,userAgent:null,kind:'internal'});
   try {
     const response = await app.inject({ method: method as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url,
       headers: { cookie: `${sessionCookieName()}=${cookie}` }, ...(body ? { payload: body } : {}) });

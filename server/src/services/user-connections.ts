@@ -1,18 +1,35 @@
 import { getDb } from '../db/index.js';
+import {getSessionUser} from '../auth.js';
 
 interface ClosableSocket {
   readyState: number;
   close(code?: number, reason?: string): void;
   once(event: 'close', listener: () => void): unknown;
+  on?(event:'pong',listener:()=>void):unknown;
+  off?(event:'pong',listener:()=>void):unknown;
 }
 
 interface UserConnection {
   socket: ClosableSocket;
   token: string;
+  heartbeatAt?:number;
 }
 
 const connectionsByUser = new Map<string, Set<UserConnection>>();
 let validationTimer: ReturnType<typeof setInterval> | null = null;
+export const PRESENCE_STALE_MS=75_000;
+
+/** Only the dashboard event stream registers presence. Terminal/API activity
+ * and stored login cookies do not establish browser connectivity. */
+export function userPresence(userId:string,token?:string,now=Date.now()) {
+  const entries=[...(connectionsByUser.get(userId)||[])].filter(entry=>entry.heartbeatAt!==undefined&&entry.socket.readyState===1&&(!token||entry.token===token)&&tokenIsActive(userId,entry.token));
+  const fresh=entries.filter(entry=>now-(entry.heartbeatAt!)<=PRESENCE_STALE_MS);
+  const latest=entries.reduce((last,entry)=>Math.max(last,entry.heartbeatAt!),0);
+  const recorded=getDb().prepare(`SELECT MAX(last_heartbeat_at) AS at FROM auth_sessions
+    WHERE user_id=? AND session_kind='browser' AND expires_at>datetime('now')${token?' AND token=?':''}`).get(...token?[userId,token]:[userId]) as {at:string|null};
+  const at=Math.max(latest,recorded.at?Date.parse(recorded.at.replace(' ','T')+'Z')||0:0);
+  return {state:fresh.length?'online':entries.length?'unresponsive':'offline',connections:fresh.length,last_heartbeat_at:at?new Date(at).toISOString():null} as const;
+}
 
 function stopValidationTimerIfIdle(): void {
   if (connectionsByUser.size === 0 && validationTimer) {
@@ -43,13 +60,23 @@ export function registerUserConnection(
   userId: string,
   token: string | null,
   socket: ClosableSocket,
+  presence=false,
 ): (() => void) | null {
   if (!token || !tokenIsActive(userId, token)) {
     try { socket.close(1008, 'Authentication revoked'); } catch { /* already closed */ }
     return null;
   }
 
-  const entry = { socket, token };
+  const browser=presence&&(getDb().prepare("SELECT session_kind FROM auth_sessions WHERE token=?").get(token) as {session_kind:string}|undefined)?.session_kind==='browser';
+  const entry:UserConnection = { socket, token,...browser?{heartbeatAt:Date.now()}:{}};
+  const heartbeat=()=>{
+    if(!browser||!tokenIsActive(userId,token))return;
+    entry.heartbeatAt=Date.now();
+    getSessionUser(token);
+    getDb().prepare("UPDATE auth_sessions SET last_heartbeat_at=datetime('now') WHERE token=?").run(token);
+  };
+  if(browser)getDb().prepare("UPDATE auth_sessions SET last_heartbeat_at=datetime('now') WHERE token=?").run(token);
+  if(presence)socket.on?.('pong',heartbeat);
   let connections = connectionsByUser.get(userId);
   if (!connections) {
     connections = new Set();
@@ -59,6 +86,7 @@ export function registerUserConnection(
   ensureValidationTimer();
 
   const unregister = () => {
+    if(presence)socket.off?.('pong',heartbeat);
     const current = connectionsByUser.get(userId);
     current?.delete(entry);
     if (current?.size === 0) connectionsByUser.delete(userId);

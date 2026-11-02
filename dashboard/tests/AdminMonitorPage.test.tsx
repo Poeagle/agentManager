@@ -79,6 +79,8 @@ const response: AdminMonitorResponse = {
     disabled: 0,
     max_tabs: 6,
     online: true,
+    presence:{state:'online',connections:1,last_heartbeat_at:'2026-07-31T12:00:00.000Z'},
+    login_sessions:[{login_at:'2026-07-31T10:00:00Z',last_seen_at:'2026-07-31T12:00:00Z',login_ip:'192.0.2.10',last_ip:'192.0.2.11',user_agent:'Mozilla/5.0 (Windows NT 10.0) Chrome/130.0.0.0 Safari/537.36',presence:{state:'online',connections:1,last_heartbeat_at:'2026-07-31T12:00:00Z'}}],
     last_seen_at: '2026-07-31T12:00:00.000Z',
     active_sessions: 1,
     open_projects: 1,
@@ -111,6 +113,11 @@ beforeEach(() => {
 });
 
 describe('administrator monitor page', () => {
+  it('does not infer browser connectivity from activity, and distinguishes stale heartbeats',async()=>{
+    vi.mocked(api.admin.monitor).mockResolvedValue({...response,users:[{...response.users[0],online:false,presence:{state:'unresponsive',connections:0,last_heartbeat_at:'2026-07-31T11:58:00Z'},login_sessions:[]}]});
+    const client=new QueryClient({defaultOptions:{queries:{retry:false}}});render(<QueryClientProvider client={client}><AdminMonitorPage onBack={vi.fn()} onOpenSession={vi.fn()}/></QueryClientProvider>);
+    expect(await screen.findByText('连接异常')).toBeInTheDocument();expect(screen.getAllByText('未记录')).toHaveLength(2);expect(screen.queryByText('刚刚')).not.toBeInTheDocument();
+  });
   it('shows the user-project-tab hierarchy, status help and ended sessions', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const user = userEvent.setup();
@@ -126,7 +133,9 @@ describe('administrator monitor page', () => {
     expect(await screen.findByText('agent-host-01')).toBeInTheDocument();
     expect(screen.getByText('37%')).toBeInTheDocument();
     expect(screen.queryByText('DolphinDB Manager')).not.toBeInTheDocument();
+    expect(screen.getByText('192.0.2.11')).toBeInTheDocument();expect(screen.getByText('Chrome · Windows')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '展开用户 operator' }));
+    expect(screen.getByText('192.0.2.10')).toBeInTheDocument();expect(screen.getByRole('table',{name:'operator 的登录连接'})).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '展开项目 DolphinDB Manager' }));
     expect(await screen.findByText(/Investigate query latency/)).toBeInTheDocument();
     expect(screen.getAllByText('128 MiB').length).toBeGreaterThan(0);
