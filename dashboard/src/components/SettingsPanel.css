@@ -1,6 +1,6 @@
 /* Dimensions follow dolphindb_manager's SettingsPage and ModelProviderEditor. */
 .settings-panel-shell {
-  font-family: Inter, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-family:var(--app-font-family);
 }
 
 .settings-panel-workbench {

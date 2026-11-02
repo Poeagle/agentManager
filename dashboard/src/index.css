@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* Shared page width and gutters for workspace and management content. */
-:root { --page-gutter: 16px; }
+:root { --page-gutter: 16px; --app-font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 @media (min-width: 640px) {
   :root { --page-gutter: 24px; }
 }
@@ -148,13 +148,14 @@
 
 html {
   font-size: var(--app-font-size, 16px);
+  font-family: var(--app-font-family);
 }
 
 body {
   margin: 0;
   background: var(--bg-primary);
   color: var(--text-primary);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--app-font-family);
 }
 
 /* Global interactive element styles */

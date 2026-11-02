@@ -1,4 +1,4 @@
-.ai-source-fields {display:flex;flex-direction:column;gap:12px;font-family:Inter,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;font-size:13px;line-height:1.6;color:var(--text-primary);min-width:0;}
+.ai-source-fields {display:flex;flex-direction:column;gap:12px;font-family:var(--app-font-family);font-size:13px;line-height:1.6;color:var(--text-primary);min-width:0;}
 .ai-source-picker {border:0;padding:0;margin:0;min-width:0;}
 .ai-source-picker legend {font-weight:500;margin-bottom:8px;}
 .ai-source-options {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(130px,100%),1fr));gap:8px;}

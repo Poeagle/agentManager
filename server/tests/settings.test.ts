@@ -63,6 +63,15 @@ describe('memory cleanup settings API', () => {
     expect(read.json().settings).toMatchObject(settings);
   });
 
+  it('persists custom font names and can restore the default without accepting CSS syntax',async()=>{
+    for(const family of ['霞鹜文楷','Microsoft YaHei','']){
+      const update=await app.inject({method:'PUT',url:'/api/settings',headers:adminHeaders,payload:{settings:{app_font_family:family}}});expect(update.statusCode).toBe(200);expect((await app.inject({url:'/api/settings',headers:adminHeaders})).json().settings.app_font_family).toBe(family);
+    }
+    for(const family of ['x; color:red','url(https://example.com/font)','A'.repeat(101),123]){
+      const update=await app.inject({method:'PUT',url:'/api/settings',headers:adminHeaders,payload:{settings:{app_font_family:family,app_theme:'light'}}});expect(update.statusCode).toBe(400);expect(getSetting('app_theme')).toBe('midnight');
+    }
+  });
+
   it('rejects invalid values before writing any part of the settings request', async () => {
     const invalid = [
       { memory_cleanup_enabled: 'yes' },

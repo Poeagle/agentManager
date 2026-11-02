@@ -17,6 +17,7 @@ const DEFAULTS: Record<string, string> = {
   session_codex_command: 'codex --dangerously-bypass-approvals-and-sandbox',
   terminal_font_size: '12',
   app_font_size: '16',
+  app_font_family: '',
   app_theme: 'midnight',           // UI theme id (see dashboard/src/lib/themes.ts)
   statusline_prompted: 'false',    // whether we've asked the user about statusline install
 };
@@ -64,6 +65,10 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
     }
     const cleanupError = memoryCleanupSettingError(settings);
     if (cleanupError) return reply.status(400).send({ error: cleanupError });
+    if(Object.prototype.hasOwnProperty.call(settings,'app_font_family')&&
+      (typeof settings.app_font_family!=='string'||! /^[\p{L}\p{N} _.-]{0,100}$/u.test(settings.app_font_family))) {
+      return reply.status(400).send({error:'字体名称最多 100 字符，可包含中英文、数字、空格、点、横线和下划线。'});
+    }
 
     const db = getDb();
     const upsert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');

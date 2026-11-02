@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsModal } from '../src/components/SettingsModal';
 import { api } from '../src/lib/api';
+import {appFontStack,applyAppFont} from '../src/lib/app-font';
 
 vi.mock('../src/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/lib/api')>();
@@ -74,5 +75,20 @@ describe('server memory cleanup settings', () => {
     vi.mocked(api.settings.update).mockRejectedValueOnce(new Error('保存失败'));
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('保存失败');
+  });
+
+  it('previews a custom font, saves it and restores the saved font after a later unsaved preview',async()=>{
+    const view=render(<QueryClientProvider client={client}><SettingsModal onClose={vi.fn()}/></QueryClientProvider>);
+    await waitFor(()=>expect(screen.getByLabelText('内存使用率阈值（%）')).toHaveValue(90));fireEvent.click(screen.getByRole('button',{name:'外观',exact:true}));
+    fireEvent.change(screen.getByLabelText('平台字体'),{target:{value:'custom'}});fireEvent.change(screen.getByLabelText('自定义字体名称'),{target:{value:'测试字体'}});
+    expect(document.documentElement.style.getPropertyValue('--app-font-family')).toBe(appFontStack('测试字体'));fireEvent.click(screen.getByRole('button',{name:'保存设置'}));
+    await waitFor(()=>expect(api.settings.update).toHaveBeenCalledWith(expect.objectContaining({app_font_family:'测试字体'})));
+    await screen.findByText('已保存');fireEvent.change(screen.getByLabelText('平台字体'),{target:{value:'arial'}});view.unmount();expect(document.documentElement.style.getPropertyValue('--app-font-family')).toBe(appFontStack('测试字体'));
+  });
+
+  it('restores the persisted font if saving a preview fails',async()=>{
+    vi.mocked(api.settings.get).mockResolvedValue({settings:{app_font_family:'Arial'}});vi.mocked(api.settings.update).mockRejectedValueOnce(new Error('保存字体失败'));applyAppFont('Arial');
+    const view=render(<QueryClientProvider client={client}><SettingsModal onClose={vi.fn()}/></QueryClientProvider>);await waitFor(()=>expect(screen.getByLabelText('平台字体')).toHaveValue('arial'));
+    fireEvent.change(screen.getByLabelText('平台字体'),{target:{value:'yahei'}});fireEvent.click(screen.getByRole('button',{name:'保存设置'}));expect(await screen.findByRole('alert')).toHaveTextContent('保存字体失败');view.unmount();expect(document.documentElement.style.getPropertyValue('--app-font-family')).toBe(appFontStack('Arial'));
   });
 });

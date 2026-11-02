@@ -261,7 +261,7 @@
 .conversation-auto-context-body {padding:8px 12px;border-top:1px solid var(--border);}
 .conversation-auto-context-body button {display:flex;align-items:center;gap:5px;margin-bottom:6px;color:var(--accent);}
 .conversation-auto-context pre {max-height:280px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.6;color:var(--text-secondary);}
-.conversation-controls {display:flex;align-items:center;gap:6px 12px;flex-wrap:wrap;min-height:30px;margin-top:5px;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;font-size:12px;line-height:20px;font-weight:400;font-variant-numeric:tabular-nums;color:var(--text-secondary);}
+.conversation-controls {display:flex;align-items:center;gap:6px 12px;flex-wrap:wrap;min-height:30px;margin-top:5px;font-family:var(--app-font-family);font-size:12px;line-height:20px;font-weight:400;font-variant-numeric:tabular-nums;color:var(--text-secondary);}
 .conversation-control-select {display:flex;gap:5px;align-items:center;position:relative;}
 .conversation-control-select>span {color:var(--text-muted);}
 .conversation-control-select select {max-width:190px;appearance:none;background:transparent;color:var(--text-primary);font:inherit;font-weight:500;padding:4px 16px 4px 2px;cursor:pointer;}
@@ -297,7 +297,7 @@
 .session-chat-inline-attachment:focus-visible {outline:2px solid var(--accent);outline-offset:2px;border-radius:2px;}
 .session-chat-inline-attachment[data-status="error"] {color:var(--error);}
 .conversation-inline-meta {display:inline-flex;max-width:100%;margin-left:10px;vertical-align:baseline;}
-.conversation-inline-meta .session-chat-message-meta,.conversation-footer-fallback .session-chat-message-meta {margin:0;min-height:20px;line-height:20px;font-size:12px;gap:9px;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;font-variant-numeric:tabular-nums;color:var(--text-secondary);}
+.conversation-inline-meta .session-chat-message-meta,.conversation-footer-fallback .session-chat-message-meta {margin:0;min-height:20px;line-height:20px;font-size:12px;gap:9px;font-family:var(--app-font-family);font-variant-numeric:tabular-nums;color:var(--text-secondary);}
 .conversation-inline-meta .session-chat-message-duration {margin-right:0;font:inherit;}
 .conversation-footer-fallback {display:flex;font-size:12px;}
 .session-chat-body .conversation-markdown>:last-child {margin-bottom:0;}

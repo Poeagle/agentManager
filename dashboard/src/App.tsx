@@ -10,6 +10,7 @@ import { hasPermission, usePermissions } from './lib/permissions';
 import type { PlatformSection } from './components/PlatformCenter';
 import { CloseTabModal } from './components/CloseTabModal';
 import { applyTheme } from './lib/themes';
+import {applyAppFont} from './lib/app-font';
 import { ProjectRollupDot } from './lib/session-signal';
 import { ProjectTabLabel } from './lib/session-activity';
 import './workspace-chrome.css';
@@ -125,6 +126,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     }
     // Apply the saved UI theme (falls back to the default for unknown/empty)
     applyTheme(appSettings?.settings?.app_theme);
+    applyAppFont(appSettings?.settings?.app_font_family);
   }, [appSettings]);
 
   const queryClient = useQueryClient();

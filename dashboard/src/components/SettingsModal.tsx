@@ -6,6 +6,7 @@ import { api, type PromptEnhancerMode } from '../lib/api';
 import { X, Settings, Check, Loader2, Zap, Type, Globe, Palette, Sparkles, PlugZap, Search, LockKeyhole } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { THEMES, applyTheme, DEFAULT_THEME } from '../lib/themes';
+import {APP_FONT_OPTIONS,applyAppFont,validAppFont} from '../lib/app-font';
 import './SettingsPanel.css';
 
 interface SettingsModalProps {
@@ -80,6 +81,8 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
   const [sessionCodexCmd, setSessionCodexCmd] = useState('');
   const [fontSize, setFontSize] = useState('12');
   const [appFontSize, setAppFontSize] = useState('16');
+  const [appFont,setAppFont]=useState('system');
+  const [customFont,setCustomFont]=useState('');
   const [theme, setTheme] = useState(DEFAULT_THEME);
   const [memoryCleanupEnabled, setMemoryCleanupEnabled] = useState(false);
   const [memoryCleanupThreshold, setMemoryCleanupThreshold] = useState('85');
@@ -87,10 +90,9 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
   const [saved, setSaved] = useState(false);
   const [activePage, setActivePage] = useState<'session' | 'appearance' | 'enhancer' | 'server'>('session');
 
-  // Theme is previewed live on click; if the modal closes without a save we
-  // revert to the persisted theme so an un-saved preview doesn't linger.
+  // Appearance previews revert to the last successfully persisted settings.
   const persistedThemeRef = useRef(DEFAULT_THEME);
-  const themeCommittedRef = useRef(false);
+  const persistedFontRef=useRef('');
 
   useEffect(() => {
     if (data?.settings) {
@@ -101,6 +103,9 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
       setSessionCodexCmd(s.session_codex_command || '');
       setFontSize(s.terminal_font_size || '12');
       setAppFontSize(s.app_font_size || '16');
+      setAppFont(APP_FONT_OPTIONS.find(option=>option.family===(s.app_font_family||''))?.id||'custom');
+      setCustomFont(s.app_font_family||'');
+      persistedFontRef.current=s.app_font_family||'';
       setTheme(s.app_theme || DEFAULT_THEME);
       persistedThemeRef.current = s.app_theme || DEFAULT_THEME;
       setMemoryCleanupEnabled(s.memory_cleanup_enabled === 'true');
@@ -109,10 +114,11 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
     }
   }, [data]);
 
-  // On unmount, undo any unsaved live theme preview.
+  // On unmount, undo unsaved previews, including after a failed save.
   useEffect(() => {
     return () => {
-      if (!themeCommittedRef.current) applyTheme(persistedThemeRef.current);
+      applyTheme(persistedThemeRef.current);
+      applyAppFont(persistedFontRef.current);
     };
   }, []);
 
@@ -128,7 +134,9 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
 
   const mutation = useMutation({
     mutationFn: (settings: Record<string, string>) => api.settings.update(settings),
-    onSuccess: () => {
+    onSuccess: (_result,settings) => {
+      persistedThemeRef.current=settings.app_theme||DEFAULT_THEME;
+      persistedFontRef.current=settings.app_font_family||'';
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -136,6 +144,8 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
   });
 
   const memoryThreshold = Number(memoryCleanupThreshold);
+  const appFontFamily=appFont==='custom'?customFont.trim():APP_FONT_OPTIONS.find(option=>option.id===appFont)?.family||'';
+  const appFontError=appFont==='custom'&&!appFontFamily?'请输入字体名称。':!validAppFont(appFontFamily)?'字体名称最多 100 字符，可包含中英文、数字、空格、点、横线和下划线。':null;
   const memoryIdleMinutes = Number(memoryCleanupIdleMinutes);
   const memoryCleanupError = !Number.isFinite(memoryThreshold) || memoryThreshold < 1 || memoryThreshold > 100
     ? '内存使用率阈值须在 1% 到 100% 之间。'
@@ -144,15 +154,13 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
       : null;
 
   function handleSave() {
-    if (memoryCleanupError) return;
-    // The previewed theme is now the persisted one — don't revert it on close.
-    themeCommittedRef.current = true;
-    persistedThemeRef.current = theme;
+    if (memoryCleanupError||appFontError) return;
     mutation.mutate({
       session_claude_command: sessionClaudeCmd,
       session_codex_command: sessionCodexCmd,
       terminal_font_size: fontSize,
       app_font_size: appFontSize,
+      app_font_family:appFontFamily,
       app_theme: theme,
       memory_cleanup_enabled: String(memoryCleanupEnabled),
       memory_cleanup_threshold_percent: memoryCleanupThreshold,
@@ -306,7 +314,7 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
               {/* ── RIGHT COLUMN ── */}
               <div className={activePage === 'appearance' || activePage === 'enhancer' ? 'space-y-3' : 'hidden'}>
                 {/* Appearance */}
-                <SettingsSection title="外观" description="主题会即时预览；保存设置后才会长期生效。" className={activePage === 'appearance' ? '' : 'hidden'}>
+                <SettingsSection title="外观" description="主题和字体即时预览；保存设置后在全平台生效。" className={activePage === 'appearance' ? '' : 'hidden'}>
                   <div className="space-y-6">
                     {/* Theme */}
                     <div className="space-y-2">
@@ -317,6 +325,18 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
                       <select aria-label="界面主题" value={theme} onChange={(event) => { setTheme(event.target.value); applyTheme(event.target.value); }} className="settings-panel-control">
                         {THEMES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                       </select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label htmlFor="app-font-family" className="text-xs font-medium">平台字体</label>
+                      <select id="app-font-family" value={appFont} onChange={event=>{const id=event.target.value;setAppFont(id);applyAppFont(id==='custom'?customFont:APP_FONT_OPTIONS.find(option=>option.id===id)?.family);}} className="settings-panel-control">
+                        {APP_FONT_OPTIONS.map(option=><option key={option.id} value={option.id}>{option.label}</option>)}
+                        <option value="custom">自定义字体</option>
+                      </select>
+                      {appFont==='custom'&&<label className="settings-panel-field"><span>自定义字体名称</span><input className="settings-panel-control" value={customFont} maxLength={100} placeholder="例如：LXGW WenKai 或 思源宋体" onChange={event=>{setCustomFont(event.target.value);if(validAppFont(event.target.value))applyAppFont(event.target.value);}}/></label>}
+                      <p className="text-xs leading-5" style={{color:'var(--text-secondary)'}}>使用当前设备已安装的字体，未安装时自动回退。界面和对话使用此字体，代码及终端保持等宽字体。</p>
+                      {appFontError&&<p role="alert" className="text-xs" style={{color:'var(--error)'}}>{appFontError}</p>}
+                      <div aria-label="字体预览" className="rounded-md border p-3 text-sm leading-7" style={{borderColor:'var(--border)',background:'var(--bg-secondary)'}}><p>字体预览：项目、对话与任务进展</p><p>The quick brown fox · 0123456789</p></div>
                     </div>
 
                     {/* App Font Size */}
@@ -404,7 +424,7 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
           </button>}
           {!readOnly && <button
             onClick={handleSave}
-            disabled={mutation.isPending || !!memoryCleanupError}
+            disabled={mutation.isPending || !!memoryCleanupError||!!appFontError}
             className="settings-panel-button settings-panel-button--primary"
             style={{
               background: saved ? 'var(--success, #22c55e)' : 'var(--accent)',
