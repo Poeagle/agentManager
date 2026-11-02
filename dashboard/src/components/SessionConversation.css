@@ -275,6 +275,9 @@
 .conversation-control-context {display:flex;gap:5px;align-items:center;}
 .conversation-control-context i {display:block;width:34px;height:4px;border-radius:4px;overflow:hidden;background:var(--border);}
 .conversation-control-context b {display:block;height:100%;background:var(--accent);}
+.conversation-control-environment {display:contents;}
+.conversation-control-environment>span {white-space:nowrap;font-size:10px;color:var(--text-muted);}
+.conversation-control-environment .conversation-control-directory {max-width:min(360px,70vw);overflow:hidden;text-overflow:ellipsis;}
 .conversation-controls-details {display:grid;grid-template-columns:1fr 1fr;gap:9px 20px;font-size:12px;}
 .conversation-controls-details>div {min-width:0;}
 .conversation-controls-details dt {font-size:11px;color:var(--text-muted);margin-bottom:3px;}

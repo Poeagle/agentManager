@@ -75,16 +75,19 @@ export function useConversationImageHover(){return useContext(Preview)?.hover;}
 
 export function ImagePreview({image,onClose}:{image:PreviewImage;onClose:()=>void}) {
   const stage=useRef<HTMLDivElement>(null),[natural,setNatural]=useState({width:0,height:0}),[available,setAvailable]=useState({width:800,height:500});
+  const [viewport,setViewport]=useState(()=>({width:window.innerWidth,height:window.innerHeight}));
   const [zoom,setZoom]=useState<number|null>(null),[failed,setFailed]=useState(false);
   useEffect(()=>{
     const node=stage.current;if(!node)return;
-    const measure=()=>{if(node.clientWidth&&node.clientHeight)setAvailable({width:node.clientWidth,height:node.clientHeight});};measure();
+    const measure=()=>{setViewport({width:window.innerWidth,height:window.innerHeight});if(node.clientWidth&&node.clientHeight)setAvailable({width:node.clientWidth,height:node.clientHeight});};measure();
     const observer=typeof ResizeObserver==='undefined'?null:new ResizeObserver(measure);observer?.observe(node);window.addEventListener('resize',measure);
     return ()=>{observer?.disconnect();window.removeEventListener('resize',measure);};
   },[]);
-  const fit=natural.width?Math.min(1,Math.max(.05,(available.width-24)/natural.width),Math.max(.05,(available.height-24)/natural.height)):1;
+  const maxWidth=Math.max(100,Math.min(1600,viewport.width*.92)-34),maxHeight=Math.max(80,Math.min(900,viewport.height*.72,viewport.height-190));
+  const fit=natural.width?Math.min(1,(maxWidth-24)/natural.width,(maxHeight-24)/natural.height):1;
   const scale=zoom??fit;
-  return <Dialog title={`图片预览 · ${image.name}`} size="image" onClose={onClose}>
+  const width=natural.width?Math.max(360,natural.width*scale+58):420,height=natural.height?Math.min(maxHeight,Math.max(48,natural.height*scale+24)):120;
+  return <Dialog title={`图片预览 · ${image.name}`} size="image" width={width} onClose={onClose}>
     <div className="conversation-image-preview-toolbar" role="group" aria-label="图片缩放">
       <span>{natural.width?`${natural.width} × ${natural.height}`:'正在加载…'}</span>
       <button type="button" disabled={!natural.width||scale<=.1} aria-label="缩小图片" onClick={()=>setZoom(Math.max(.1,scale/1.25))}><Minus size={15}/></button>
@@ -92,7 +95,7 @@ export function ImagePreview({image,onClose}:{image:PreviewImage;onClose:()=>voi
       <button type="button" disabled={!natural.width||scale>=4} aria-label="放大图片" onClick={()=>setZoom(Math.min(4,scale*1.25))}><Plus size={15}/></button>
       <button type="button" disabled={!natural.width} onClick={()=>setZoom(null)}><Scan size={15}/>适应窗口</button>
     </div>
-    <div ref={stage} className="conversation-image-preview-stage" tabIndex={0} aria-label="图片预览区域">
+    <div ref={stage} className="conversation-image-preview-stage" style={{height}} tabIndex={0} aria-label="图片预览区域">
       {failed?<p role="alert">图片加载失败，请关闭后重试。</p>:<div className="conversation-image-preview-canvas" style={{width:Math.max(available.width,natural.width*scale),height:Math.max(available.height,natural.height*scale)}}>
         <img src={image.src} alt={image.name} draggable={false} onLoad={event=>setNatural({width:event.currentTarget.naturalWidth,height:event.currentTarget.naturalHeight})} onError={()=>setFailed(true)} style={{width:natural.width?natural.width*scale:undefined,height:natural.height?natural.height*scale:undefined}}/>
       </div>}

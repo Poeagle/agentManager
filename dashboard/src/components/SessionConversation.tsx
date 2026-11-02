@@ -7,10 +7,10 @@ import {ConversationControls} from './ConversationControls';
 import {ConversationAutomaticContext} from './ConversationAutomaticContext';
 import {automaticConversationContext} from '../lib/conversation-context';
 import {ConversationInteraction,ConversationAsyncQuestion,ConversationQuestionSummary,type ConversationInteractionRequest} from './ConversationInteraction';
-import {memo,useCallback,useEffect,useRef,useState} from 'react';
+import {memo,useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
-import {api,ApiError,type ConversationMessage,type ConversationPage,type ConversationControlsData,type ConversationUsageUpdate,type Session} from '../lib/api';
+import {api,ApiError,type ConversationMessage,type ConversationPage,type ConversationControlsData,type ConversationUsageUpdate,type ConversationStatistics,type Session} from '../lib/api';
 import {decodeQuestionReply,questionAnswers} from '../lib/conversation-question-reply';
 import {parseConversationInput} from '../lib/conversation-attachments';
 import {ConversationAttachmentPicker,ConversationMessageAttachments,useConversationAttachments} from './ConversationAttachments';
@@ -41,6 +41,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
   }
   const metadata=(<span className="session-chat-message-meta">
       {message.queued&&<span className="session-chat-queued" role="status">已排队 · 等待处理</span>}
+      {message.role==='assistant'&&message.statistics&&<span className="session-chat-message-statistics" title={`${message.statistics.complete?'截至该条所在模型请求结束的本轮累计':'日志窗口不完整，仅显示已记录部分'}；${message.statistics.requests} 次模型请求，${message.statistics.tool_calls} 次原生工具请求、${message.statistics.tool_rounds} 轮工具调用。同一模型响应的并行工具计为一轮，代码模式内部调用不拆分。Token 包含重复上下文、缓存输入和推理，不是该段文字的独立用量或金额。`}>{message.statistics.complete?(compact?'累计':'本轮'):'已记录'} {message.statistics.tokens?.total_tokens!=null&&`${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(message.statistics.tokens.total_tokens)} Token · `}工具 {message.statistics.tool_calls}次/{message.statistics.tool_rounds}轮</span>}
       {durationLabel && <span className="session-chat-message-duration" title={durationTitle}>{durationLabel}</span>}
       {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label={compact?'进展时间':undefined} dateTime={message.timestamp} title={`原生消息记录时间：${new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}（本地时区）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>:compact?<span className="session-chat-progress-time-unknown">时间未知</span>:null}
       {compact&&streaming&&<span className="session-chat-progress-updating">正在输出</span>}
@@ -70,6 +71,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const canRead=hasPermission(permissions.data,'agent_api');
   const canSend=hasPermission(permissions.data,'agent_api','write');
   const [messages,setMessages]=useState<TimelineMessage[]>([]);
+  const [statistics,setStatistics]=useState<ConversationStatistics[]>([]);
   const [page,setPage]=useState<ConversationPage|null>(null);
   const [hasMore,setHasMore]=useState(false);
   const [loading,setLoading]=useState(true);
@@ -115,7 +117,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const navigate=useCallback(()=>{pinned.current=false;setUnread(false);},[]);
   useEffect(()=>{
     cursor.current=undefined;generation.current=null;pushAvailable.current=false;
-    setMessages([]);setPage(null);setRequests([]);setHasMore(false);setLoading(true);setLiveBusy(false);
+    setMessages([]);setStatistics([]);setPage(null);setRequests([]);setHasMore(false);setLoading(true);setLiveBusy(false);
     setLiveProgress({turn_id:null,started_at:null,stage:'idle'});setMinimizedQuestion(null);setUnread(false);setError('');
     for(const answer of pendingAnswers.current.values()){clearTimeout(answer.timer);answer.reject(Error('会话已切换'));}pendingAnswers.current.clear();
   },[session.codex_session_id,session.claude_session_id]);
@@ -140,7 +142,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
         const reset=result.reset || (generation.current!==null && result.generation!==generation.current);
         const first=!cursor.current || reset;
         generation.current=result.generation;
-        setPage(result);setError('');setLoading(false);
+        setPage(result);if(result.statistics)setStatistics(previous=>reset?result.statistics!:[...new Map([...previous,...result.statistics!].map(item=>[item.sequence,item])).values()].slice(-80));setError('');setLoading(false);
         if(first) {setMessages(previous=>{
           if(reset) return mergeConversationTimeline(previous.filter(item=>item.optimistic),result.messages,'prepend');
           return mergeConversationTimeline(previous,result.messages,'prepend');
@@ -171,7 +173,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
       liveSocket.current=socket;setConnectionGeneration(value=>value+1);
       socket.onmessage=event=>{
         if(disposed) return;
-        let frame:{type:string;model?:string;effort?:string|null;native_id?:string;usage?:ConversationUsageUpdate['usage'];observed_at?:string;messages?:ConversationMessage[];runtime?:ConversationPage['runtime'];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string;compaction?:NativeCompaction|null}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
+        let frame:{type:string;model?:string;effort?:string|null;native_id?:string;usage?:ConversationUsageUpdate['usage'];statistics?:ConversationStatistics[];observed_at?:string;messages?:ConversationMessage[];runtime?:ConversationPage['runtime'];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string;compaction?:NativeCompaction|null}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
         if(frame.type==='usage') {
           if(typeof frame.native_id==='string'&&frame.native_id===session.codex_session_id&&frame.usage&&frame.observed_at&&Number.isFinite(Date.parse(frame.observed_at))) {
             const update:ConversationUsageUpdate={native_id:frame.native_id,usage:frame.usage,observed_at:frame.observed_at};
@@ -182,6 +184,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
           }
           return;
         }
+        if(frame.type==='statistics'&&frame.native_id===session.codex_session_id&&Array.isArray(frame.statistics)){setStatistics(previous=>{const merged=new Map(previous.map(item=>[item.sequence,item]));for(const item of frame.statistics!)merged.set(item.sequence,item);return [...merged.values()].slice(-80);});return;}
         if(frame.type==='settings'&&typeof frame.model==='string'){queryClient.setQueryData<ConversationControlsData>(['conversation-controls',session.id],previous=>previous?{...previous,model:frame.model!,effort:frame.effort??null,pending:null}:previous);return;}
         if(frame.type==='interaction_result' && frame.request_id) {const pending=pendingAnswers.current.get(frame.request_id);if(pending){clearTimeout(pending.timer);pendingAnswers.current.delete(frame.request_id);if(frame.ok)pending.resolve();else pending.reject(new Error(frame.error||'提交失败'));}return;}
         if(frame.type==='queue'&&Array.isArray(frame.messages)){const clients=new Set(frame.messages.map(item=>item.client_id));setMessages(previous=>mergeConversationTimeline(previous.filter(item=>!item.queued||clients.has(item.client_id)),frame.messages!));return;}
@@ -270,14 +273,14 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const started=continuingAfterFollowup?lastUserTime:liveProgress.started_at||lastUserTime;
   const elapsed=started?Math.max(0,Math.floor((now-Date.parse(started))/1000)):0;
   const waitingForText=!compaction.running && busy && !currentAnswer && !activeError && !waiting;
-  const displayed=messages;
+  const displayed=useMemo(()=>messages.map(message=>{const stats=statistics.find(item=>item.turn_id===message.turn_id&&(item.message_id===message.id||item.message_id&&message.aliases?.includes(item.message_id)||message.sequence===item.sequence));return stats?{...message,statistics:stats}:message;}),[messages,statistics]);
   const streamingId=!activeError && liveState==='connected' && busy && !['tools','finishing'].includes(liveProgress.stage)
     ? messages.reduce<string|null>((id,message,index)=>index>lastUserIndex && message.role==='assistant' && message.streaming && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id)?message.id:id,null):null;
   const groups=groupConversationProgress(displayed);
   const timings=conversationTimings(displayed.filter(message=>!message.queued),now,busy,liveProgress.turn_id);
   const pendingQuestion=messages.slice(lastUserIndex+1).reduce<ConversationMessage|null>((last,message)=>message.async_questions?.length?message:last,null);
   const questionActive=!!pendingQuestion&&minimizedQuestion!==pendingQuestion.id;
-  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} answers={questionAnswers(message,messages.slice(messages.indexOf(message)+1))} continued={messages.slice(messages.indexOf(message)+1).some(item=>item.role==='user'&&!automaticConversationContext(item.text))} onAnswer={()=>setMinimizedQuestion(null)}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} durationLabel={timings.get(message.id)?.label} durationTitle={timings.get(message.id)?.title} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
+  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} answers={questionAnswers(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1))} continued={messages.slice(messages.findIndex(item=>item.id===message.id)+1).some(item=>item.role==='user'&&!automaticConversationContext(item.text))} onAnswer={()=>setMinimizedQuestion(null)}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} durationLabel={timings.get(message.id)?.label} durationTitle={timings.get(message.id)?.title} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
   return <ConversationImagePreviewRoot active={active} onOpen={navigate}><section ref={readingRoot} className="session-chat" aria-label="会话对话">
     <ConversationPromptEnhancer sessionId={session.id} active={active} canEdit={canSend&&!ended&&!waiting} value={draft} onApply={setDraft}/>
     <div className="session-chat-reading">

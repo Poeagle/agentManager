@@ -5,17 +5,22 @@ import {readConversation,type ConversationMessage} from './conversation-reader.j
 import {readCodexRuntime,type CodexRuntime} from './codex-runtime.js';
 import {readConversationTelemetry} from './conversation-controls.js';
 import type {ConversationUsageFrame} from './conversation-usage.js';
+import type {ConversationStatistics} from './conversation-statistics.js';
+export interface ConversationStatisticsFrame {type:'statistics';native_id:string;statistics:ConversationStatistics[]}
 export interface ConversationHistoryFrame {type:'history';messages:ConversationMessage[];runtime:CodexRuntime}
 /** Legacy CLIs have no observable RPC owner. Push newly persisted public
  * messages on file changes instead of waiting for a browser polling tick. */
-export function observeConversationFile(binding:PromptContextSession,emit:(frame:ConversationHistoryFrame|ConversationUsageFrame)=>void) {
+export function observeConversationFile(binding:PromptContextSession,emit:(frame:ConversationHistoryFrame|ConversationUsageFrame|ConversationStatisticsFrame)=>void) {
   let closed=false,watcher:FSWatcher|undefined,timer:ReturnType<typeof setTimeout>|undefined,reading=false,again=false,cursor:string|undefined,lastState:string|undefined;
   let lastUsage:string|undefined;
+  const sentStatistics=new Map<number,string>();
   function changed(){if(closed)return;again=true;if(!reading&&!timer)timer=setTimeout(()=>void refresh(),50);}
   async function refresh(){timer=undefined;if(closed)return;reading=true;again=false;
     try {const page=await readConversation(binding,cursor?{after:cursor,limit:20}:{limit:8}),runtime=await readCodexRuntime(binding.codex_session_id);
       if(closed)return;if(page.messages.length||lastState!==runtime.state){emit({type:'history',messages:page.messages,runtime});lastState=runtime.state;}cursor=page.messages.at(-1)?.id||cursor;
       if(binding.codex_session_id) {
+        const changedStatistics=(page.statistics||[]).filter(item=>sentStatistics.get(item.sequence)!==JSON.stringify(item));
+        if(changedStatistics.length){for(const item of changedStatistics)sentStatistics.set(item.sequence,JSON.stringify(item));while(sentStatistics.size>80)sentStatistics.delete(sentStatistics.keys().next().value!);emit({type:'statistics',native_id:binding.codex_session_id,statistics:changedStatistics});}
         const telemetry=await readConversationTelemetry(binding.codex_session_id);
         if(closed)return;
         const fingerprint=JSON.stringify(telemetry.usage);

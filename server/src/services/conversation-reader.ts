@@ -5,8 +5,9 @@ import {extractAgentMessages,nativeConversationFile,type PromptContextSession} f
 import type {CliType} from './session-identity.js';
 import {conversationImagePaths,type ConversationAttachment} from './conversation-attachments.js';
 import {conversationErrorMessage} from './conversation-error.js';
+import {readConversationStatistics,type ConversationStatistics} from './conversation-statistics.js';
 
-export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];image_paths?:string[];async_questions?:ConversationAsyncQuestion[];question_replies?:ConversationQuestionReply[]}
+export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;statistics?:ConversationStatistics;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];image_paths?:string[];async_questions?:ConversationAsyncQuestion[];question_replies?:ConversationQuestionReply[]}
 interface IndexedMessage extends Omit<ConversationMessage,'text'> {offset:number;length:number;hash:string;recordType:string;nativeItem:boolean;questionSignature?:string;questionCallId?:string}
 interface NativeQuestionCall {offset:number;id:string;turnId?:string;signature:string}
 function questionSignature(questions:ConversationAsyncQuestion[]) {return createHash('sha256').update(JSON.stringify(questions.map(q=>({title:q.title,options:q.options})))).digest('hex');}
@@ -127,7 +128,7 @@ function dedupe(messages:IndexedMessage[]):IndexedMessage[] {
  * bodies or tool output; only the requested page's public text is read. */
 export async function readConversation(session:PromptContextSession,query:{after?:string;before?:string;limit?:number}={}) {
   const file=await nativeConversationFile(session);
-  const empty={messages:[] as ConversationMessage[],has_more:false,reset:false,available:false,generation:null as string|null};
+  const empty={messages:[] as ConversationMessage[],statistics:[] as ConversationStatistics[],has_more:false,reset:false,available:false,generation:null as string|null};
   if(!file) return empty;
   const previous=locks.get(file.path)||Promise.resolve();
   const work=previous.catch(()=>{}).then(async()=>{
@@ -199,13 +200,15 @@ export async function readConversation(session:PromptContextSession,query:{after
         selected=after<0 ? index.messages.slice(-limit) : index.messages.slice(after+1,after+1+limit);
       } else {selected=index.messages.slice(Math.max(0,before-limit),before<0?undefined:before);}
       const messages:ConversationMessage[]=[];
+      const statistics=file.kind==='codex'?await readConversationStatistics(file.path).catch(()=>[]):[];
+      const byOffset=new Map(statistics.map(item=>[item.sequence,item]));
       for(const item of selected) {
         const buffer=Buffer.alloc(item.length);await handle.read(buffer,0,buffer.length,item.offset);
         const parsed=publicMessage(buffer,file.kind,item.questionCallId);
-        if(parsed) messages.push({id:item.id,role:item.role,text:parsed.message.text,timestamp:item.timestamp,turn_id:item.turn_id,phase:item.phase,...(parsed.questionReplies?{question_replies:parsed.questionReplies}:{}),...(parsed.asyncQuestions?{async_questions:parsed.asyncQuestions}:{}),...(item.error?{error:item.error}:{}),sequence:item.offset,...(parsed.imagePaths.length?{image_paths:parsed.imagePaths}:{})});
+        if(parsed) messages.push({id:item.id,role:item.role,text:parsed.message.text,timestamp:item.timestamp,turn_id:item.turn_id,phase:item.phase,...(byOffset.has(item.offset)?{statistics:byOffset.get(item.offset)}:{}),...(parsed.questionReplies?{question_replies:parsed.questionReplies}:{}),...(parsed.asyncQuestions?{async_questions:parsed.asyncQuestions}:{}),...(item.error?{error:item.error}:{}),sequence:item.offset,...(parsed.imagePaths.length?{image_paths:parsed.imagePaths}:{})});
       }
       const first=selected[0];
-      return {messages,has_more:index.start>0 || (!!first && index.messages[0]?.id!==first.id),reset,available:true,generation:index.generation};
+      return {messages,statistics,has_more:index.start>0 || (!!first && index.messages[0]?.id!==first.id),reset,available:true,generation:index.generation};
     } finally {await handle.close();}
   }).catch(()=>empty);
   locks.set(file.path,work);

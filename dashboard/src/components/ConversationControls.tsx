@@ -57,6 +57,17 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         <button type="button" disabled={!data.can_edit||busy||compacting||saving||!!operation} title={compactReason} onClick={()=>void perform('compact')}>{compacting||operation==='compact'?<Loader2 size={12} className="animate-spin"/>:<Minimize2 size={12}/>} {compacting||operation==='compact'?'压缩中…':'压缩'}</button>
         {onNewConversation&&<button type="button" disabled={!data.can_edit||saving||!!operation} title="在当前标签页新开会话，保留旧记录并停止旧会话" onClick={()=>{let rawDraft=false;window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId,respond:(value:boolean)=>{rawDraft ||= value;}}}));if(rawDraft){setError('原始终端还有未发送内容，请先发送或清空。');return;}setError('');setNewOpen(true);}}><Plus size={12}/>{operation==='new'?'新开中…':'新开'}</button>}
         {weekly&&<span title={weekly.resets_at?`重置时间：${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>周额度剩余 {Math.round(100-weekly.used_percent)}%</span>}
+        <span className="conversation-control-environment" aria-label="会话运行信息">
+          {data.cwd&&<span className="conversation-control-directory" title={`工作目录：${data.cwd}`}>{data.cwd}</span>}
+          {data.git&&<><span title="当前 Git 分支">{data.git.branch}</span><span title="工作区状态，每 5 分钟刷新，也可手动刷新">{data.git.changes?`${data.git.changes} 项变更`:'无变更'}</span></>}
+          <span title="会话运行状态">{compacting?'压缩中':busy?'执行中':data.loaded?'等待输入':'未接入实时控制'}</span>
+          {data.permission&&<span title="当前会话访问权限">{permissions[data.permission]||data.permission}</span>}
+          {data.engine_version&&<span title="当前连接的 Codex 服务版本">Codex {data.engine_version}</span>}
+          {usage?.window!=null&&<span title={`上下文窗口容量：${usage.window.toLocaleString()} Token`}>窗口 {compact(usage.window)}</span>}
+          {usage?.total.total_tokens!=null&&<span title={`会话累计用量：${usage.total.total_tokens.toLocaleString()} Token，包含重复上下文输入和缓存命中；不是当前上下文占用或金额`}>累计 {compact(usage.total.total_tokens)} Token</span>}
+          {usage?.total.input_tokens!=null&&<span title={`会话累计输入：${usage.total.input_tokens.toLocaleString()} Token，包含缓存命中`}>输入 {compact(usage.total.input_tokens)}</span>}
+          {usage?.total.output_tokens!=null&&<span title={`会话累计输出：${usage.total.output_tokens.toLocaleString()} Token，包含推理输出`}>输出 {compact(usage.total.output_tokens)}</span>}
+        </span>
         <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>详情</button>
         <button type="button" aria-label="刷新会话信息" title="用量随会话事件实时更新，其他信息每 5 分钟刷新，也可手动刷新" disabled={query.isFetching} onClick={refresh}><RefreshCw size={13} className={query.isFetching?'animate-spin':''}/>刷新</button>
       </>:<><span>{query.isPending?'读取会话信息…':'会话信息暂不可用'}</span>{query.isError&&<button type="button" onClick={refresh}><RefreshCw size={13}/>重试</button>}</>}
@@ -72,16 +83,16 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   </div>;
 }
 function ControlDetails({data,onClose,onRefresh,refreshing}:{data:ConversationControlsData;onClose:()=>void;onRefresh:()=>void;refreshing:boolean}) {
-  const fields=[['当前模型',data.model],['当前推理强度',data.effort?`${effortNames[data.effort]||data.effort}（${data.effort}）`:null],['模型服务',data.provider],['访问权限',data.permission?permissions[data.permission]||data.permission:null],['执行确认',data.approval==='never'?'无需逐次确认':data.approval],['服务层级',data.service_tier],['工作目录',data.cwd],['当前分支',data.git?.branch],['工作区状态',data.git?data.git.changes?`${data.git.changes} 项变更`:'无变更':null],['会话状态',data.state==='active'?'执行中':data.state==='idle'?'等待输入':data.state==='notLoaded'?'未接入实时控制':data.state],['Codex 服务版本',data.engine_version],['服务器已安装版本',data.installed_cli_version],['会话创建版本（历史）',data.cli_version],['原生会话编号',data.native_id]];
+  const fields=[['当前模型',data.model],['当前推理强度',data.effort?`${effortNames[data.effort]||data.effort}（${data.effort}）`:null],['模型服务',data.provider],['访问权限',data.permission?permissions[data.permission]||data.permission:null],['执行确认',data.approval==='never'?'无需逐次确认':data.approval],['服务层级',data.service_tier],['工作目录',data.cwd],['当前分支',data.git?.branch],['工作区状态',data.git?data.git.changes?`${data.git.changes} 项变更`:'无变更':null],['会话状态',data.state==='active'?'执行中':data.state==='idle'?'等待输入':data.state==='notLoaded'?'未接入实时控制':data.state],['当前运行的 Codex 服务版本',data.engine_version]];
   return <Dialog title="会话详情" size="lg" onClose={onClose} actions={<button className="conversation-preview-dock" type="button" onClick={onRefresh} disabled={refreshing}><RefreshCw size={14} className={refreshing?'animate-spin':''}/>刷新</button>}>
     {data.pending&&<p className="conversation-controls-note">之前保存的选择正在同步：{data.pending.model} · {data.pending.effort}。</p>}
     {data.warning&&<p role="status" className="conversation-controls-note">{data.warning}</p>}
     {!data.can_edit&&<p className="conversation-controls-note">当前显示只读信息。可在原始终端查看或修改该会话支持的设置。</p>}
     <ConversationUsagePanel usage={data.usage} observedAt={data.usage_observed_at}/>
-    <details className="conversation-usage-details"><summary>模型与运行环境详情</summary>
+    <details className="conversation-usage-details" open><summary>模型与运行环境详情</summary>
     <dl className="conversation-controls-details">{fields.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value||'未提供'}</dd></div>)}</dl>
-    <p className="conversation-controls-note">会话创建版本记录最初创建时的版本，不会随重载改变；当前运行情况请看 Codex 服务版本。</p>
     </details>
+    <p className="conversation-controls-note">原生会话编号：{data.native_id}</p>
     {data.limits.length>0&&<><h4 className="conversation-controls-heading">可用额度</h4><ul className="conversation-controls-limits">{data.limits.map((limit,index)=><li key={index}><strong>{limit.minutes>=6*24*60?'周额度':limit.minutes>=60?`${compact(limit.minutes/60)} 小时额度`:`${limit.minutes} 分钟额度`}</strong><span>剩余 {Math.round(100-limit.used_percent)}%</span><span>{limit.resets_at?`重置：${new Date(limit.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:'未提供重置时间'}</span></li>)}</ul></>}
     <p className="conversation-controls-note">模型目录与账号额度每 5 分钟刷新，用量随本地事件更新。信息读取时间：{stamp(data.checked_at)}。未提供的数据不作估算。</p>
   </Dialog>;

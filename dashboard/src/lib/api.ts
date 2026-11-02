@@ -983,7 +983,8 @@ export interface SessionOutput {
   oldestSeq: number | null;
 }
 
-export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
+export interface ConversationStatistics {sequence:number;message_id?:string;turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean}
+export interface ConversationMessage {statistics?:ConversationStatistics;id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
 export interface ConversationUsageUpdate {native_id:string;usage:NonNullable<ConversationControlsData['usage']>;observed_at:string}
 export interface ConversationControlsData {
   engine_version?:string|null;installed_cli_version?:string|null;git?:{branch:string;changes:number}|null;state?:string|null;
@@ -994,7 +995,7 @@ export interface ConversationControlsData {
   can_edit:boolean;loaded:boolean;pending:{model:string;effort:string}|null;warning:string|null;native_id:string;checked_at:string;usage_observed_at:string|null;
 }
 export interface ConversationPage {
-  messages:ConversationMessage[];has_more:boolean;reset:boolean;available:boolean;generation:string|null;
+  messages:ConversationMessage[];statistics?:ConversationStatistics[];has_more:boolean;reset:boolean;available:boolean;generation:string|null;
   session_id:string;session_status:Session['status'];session_active:boolean;native_id:string|null;
   runtime:Session['agent_runtime']|null;
   interaction:{processState:'busy'|'idle'|'waiting_for_input';promptType:'choice'|'confirmation'|'text'|null;isPermission:boolean;choices:string[]|null}|null;

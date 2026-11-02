@@ -2,14 +2,14 @@ import {afterEach,expect,it,vi} from 'vitest';
 import {mkdtempSync,mkdirSync,writeFileSync,appendFileSync,rmSync} from 'fs';
 import {tmpdir} from 'os';
 import {join} from 'path';
-import {observeConversationFile,type ConversationHistoryFrame} from '../src/services/conversation-file-stream.js';
+import {observeConversationFile,type ConversationHistoryFrame,type ConversationStatisticsFrame} from '../src/services/conversation-file-stream.js';
 import type {ConversationUsageFrame} from '../src/services/conversation-usage.js';
 let close:(()=>void)|undefined,dir:string|undefined;
 afterEach(()=>{close?.();vi.unstubAllEnvs();if(dir)rmSync(dir,{recursive:true,force:true});});
 it('pushes new public legacy conversation records on file writes and stops when closed',async()=>{
  dir=mkdtempSync(join(tmpdir(),'conversation-file-'));vi.stubEnv('CODEX_HOME',dir);mkdirSync(join(dir,'sessions'));
  const native='019ff001-2345-7345-8345-234523452345',file=join(dir,'sessions',`rollout-${native}.jsonl`),record=(payload:any)=>JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload})+'\n';
- writeFileSync(file,record({type:'user_message',message:'检查推送'}));const frames:Array<ConversationHistoryFrame|ConversationUsageFrame>=[];
+ writeFileSync(file,record({type:'user_message',message:'检查推送'}));const frames:Array<ConversationHistoryFrame|ConversationUsageFrame|ConversationStatisticsFrame>=[];
  close=observeConversationFile({cli_type:'codex',codex_session_id:native,claude_session_id:null,project_path:dir},frame=>frames.push(frame));
  await vi.waitFor(()=>expect(frames.flatMap(f=>f.type==='history'?f.messages:[]).map(m=>m.text)).toContain('检查推送'));
  const started=Date.now();appendFileSync(file,record({type:'agent_message',message:'新进展立即推送',phase:'commentary'}));
@@ -20,7 +20,7 @@ it('pushes compaction usage changes even without new conversation text and does 
  dir=mkdtempSync(join(tmpdir(),'conversation-file-usage-'));vi.stubEnv('CODEX_HOME',dir);mkdirSync(join(dir,'sessions'));
  const native='019ff001-4545-7454-8454-454545454545',file=join(dir,'sessions',`rollout-${native}.jsonl`);
  const count=(value:number)=>JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'token_count',info:{last_token_usage:{total_tokens:value},total_token_usage:{total_tokens:500000},model_context_window:40000}}})+'\n';
- writeFileSync(file,count(24000));const frames:Array<ConversationHistoryFrame|ConversationUsageFrame>=[];
+ writeFileSync(file,count(24000));const frames:Array<ConversationHistoryFrame|ConversationUsageFrame|ConversationStatisticsFrame>=[];
  close=observeConversationFile({cli_type:'codex',codex_session_id:native,claude_session_id:null,project_path:dir},frame=>frames.push(frame));
  await vi.waitFor(()=>expect(frames.filter(frame=>frame.type==='usage')).toHaveLength(1));
  appendFileSync(file,JSON.stringify({type:'compacted',payload:{message:'PRIVATE_SUMMARY'}})+'\n'+count(2400));

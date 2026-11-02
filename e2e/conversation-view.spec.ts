@@ -16,18 +16,21 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   const created=await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:projectPath,mode:'terminal'}});expect(created.ok()).toBeTruthy();const {session}=await created.json();
   const id='019ff001-7777-7777-8777-777777777780';const logDir=join(root,'home','.codex','sessions');mkdirSync(logDir,{recursive:true});const log=join(logDir,`rollout-chat-${id}.jsonl`);
   const entry=(type:string,payload:unknown)=>JSON.stringify({timestamp:new Date().toISOString(),type,payload})+'\n';
-  writeFileSync(log,entry('event_msg',{type:'user_message',message:'请检查这个项目。'})
+  const turn='statistics-turn';
+  const assistant=(id:string,text:string,phase='commentary')=>entry('response_item',{type:'message',id,role:'assistant',phase,content:[{type:'output_text',text}],internal_chat_message_metadata_passthrough:{turn_id:turn}});
+  const counters=(total:number,last:number)=>entry('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{total_tokens:last,input_tokens:last-10,cached_input_tokens:0,output_tokens:10,reasoning_output_tokens:0}}});
+  writeFileSync(log,entry('event_msg',{type:'task_started',turn_id:turn})+entry('event_msg',{type:'user_message',message:'请检查这个项目。'})
     +entry('response_item',{type:'function_call',arguments:'PRIVATE TOOL ARGS'})
     +entry('response_item',{type:'function_call_output',output:'PRIVATE TOOL OUTPUT'})
-    +entry('event_msg',{type:'agent_message',message:'这是 Agent 的中途进展。'})
-    +entry('event_msg',{type:'agent_message',message:'已核对项目结构，继续检查配置。'})
-    +entry('event_msg',{type:'task_complete',last_agent_message:'检查已完成。\n\n- 已整理结果\n- 可以继续提问'}));
+    +assistant('progress-one','这是 Agent 的中途进展。')+entry('response_item',{type:'function_call',call_id:'tool-one',arguments:'PRIVATE TOOL ARGS'})+entry('response_item',{type:'function_call',call_id:'tool-two',arguments:'PRIVATE TOOL ARGS'})+counters(1000,100)
+    +assistant('progress-two','已核对项目结构，继续检查配置。')+entry('response_item',{type:'custom_tool_call',call_id:'tool-three',input:'PRIVATE TOOL ARGS'})+counters(1200,200)
+    +assistant('final','检查已完成。\n\n- 已整理结果\n- 可以继续提问','final_answer'));
   const require=createRequire(import.meta.url);const Database=require('../server/node_modules/better-sqlite3');const db=new Database(join(root,'agentmanager.db'));
   try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',id,session.id);}finally{db.close();}
   await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});
   await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'对话试用'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
-  await page.goto('/');
+  await page.setViewportSize({width:1600,height:1000});await page.goto('/');
   const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
   await expect(chat.getByText('请检查这个项目。',{exact:true})).toBeVisible();await expect(chat.getByText('检查已完成。',{exact:true})).toBeVisible();
   await expect(chat).not.toContainText('PRIVATE TOOL');await expect(chat.getByText('这是 Agent 的中途进展。',{exact:true})).toBeVisible();
@@ -39,6 +42,7 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   const answerMeta=chat.locator('.session-chat-message[data-phase="final"] .session-chat-message-meta').first();
   await expect(answerMeta).toHaveCSS('opacity','1');
   await expect(answerMeta.getByRole('button',{name:'复制Agent 回复'})).toBeVisible();
+  appendFileSync(log,counters(1500,300)+entry('event_msg',{type:'task_complete',turn_id:turn}));await expect(answerMeta).toContainText('本轮 600 Token · 工具 4次/2轮');await expect(progress).toContainText('累计 100 Token · 工具 3次/1轮');
   for(const footer of await chat.locator('.conversation-inline-meta').all()){
     const geometry=await footer.evaluate(node=>{const previous=node.previousSibling!,range=document.createRange();range.selectNodeContents(previous);const text=[...range.getClientRects()].at(-1)!,meta=node.getBoundingClientRect(),timeRange=document.createRange();timeRange.selectNodeContents(node.querySelector('time')!);const timestamp=timeRange.getBoundingClientRect();return {gap:meta.left-text.right,top:timestamp.top,bottom:meta.bottom,textTop:text.top,textBottom:text.bottom};});
     expect(geometry.gap).toBeGreaterThanOrEqual(8);expect(geometry.gap).toBeLessThan(15);expect(geometry.top).toBeGreaterThanOrEqual(geometry.textTop);expect(geometry.top).toBeLessThan(geometry.textBottom);
