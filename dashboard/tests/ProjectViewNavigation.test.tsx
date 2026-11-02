@@ -35,6 +35,13 @@ beforeEach(() => {
 });
 
 describe('project workspace navigation', () => {
+  it.each(['detached','launching'] as const)('keeps an old %s tab omitted from the global window through delayed hydration and refresh',async status=>{
+    const jira={...oldSession,id:'jira',status};let hydrate!:(value:{state:Record<string,unknown>})=>void;
+    const saved={terminalInstances:[{id:'jira',label:'Jira',customLabel:'Jira'}],activeTerminalId:'jira',hiddenSessionIds:[],explorerInstances:[]};localStorage.setItem('agentmanager-project-u1-p1',JSON.stringify(saved));
+    vi.mocked(api.userState.getAll).mockReturnValue(new Promise(resolve=>hydrate=resolve));vi.mocked(api.sessions.list).mockImplementation(async(_status,projectId)=>({sessions:projectId?[jira]:[]}));
+    const client=new QueryClient({defaultOptions:{queries:{retry:false}}});const view=render(<QueryClientProvider client={client}><ProjectView currentUserId="u1" projectId="p1" projectPath="/workspace/p1" projectName="P1"/></QueryClientProvider>);
+    try{await waitFor(()=>expect(api.sessions.list).toHaveBeenCalledWith(undefined,'p1'));expect(api.userState.set).not.toHaveBeenCalled();await act(async()=>hydrate({state:{'project:p1':saved}}));expect(await screen.findByRole('button',{name:'Jira',exact:true})).toBeVisible();expect(await screen.findByText('Live terminal jira')).toBeVisible();await act(async()=>{await client.invalidateQueries({queryKey:['sessions']});await client.invalidateQueries({queryKey:['project-sessions','p1']});});expect(screen.getByRole('button',{name:'Jira',exact:true})).toBeVisible();expect(JSON.parse(localStorage.getItem('agentmanager-project-u1-p1')!).terminalInstances.map((t:{id:string})=>t.id)).toContain('jira');}finally{view.unmount();client.clear();}
+  });
   it('ignores legacy webpage selection and restores the existing terminal without creating a session', async () => {
     const session = { ...oldSession, id: 'current', status: 'running' as const };
     vi.mocked(api.sessions.list).mockResolvedValue({ sessions: [session] });

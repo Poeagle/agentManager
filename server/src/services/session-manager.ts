@@ -2741,10 +2741,10 @@ export function listSessions(status?: string): Session[] {
   }
   // Return ALL active sessions (never drop them) plus the 50 most recent inactive ones
   return db.prepare(`
-    SELECT * FROM sessions WHERE status IN ('running', 'pending', 'launching')
+    SELECT * FROM sessions WHERE status IN ('running', 'pending', 'launching', 'detached', 'released')
     UNION ALL
     SELECT * FROM (
-      SELECT * FROM sessions WHERE status NOT IN ('running', 'pending', 'launching')
+      SELECT * FROM sessions WHERE status NOT IN ('running', 'pending', 'launching', 'detached', 'released')
       ORDER BY created_at DESC LIMIT 50
     )
     ORDER BY created_at DESC
@@ -2767,11 +2767,11 @@ export function listSessionsForUser(userId: string, status?: string, projectId?:
   }
   return db.prepare(`
     SELECT * FROM sessions
-    WHERE created_by_user_id = ? AND status IN ('running', 'pending', 'launching')
+    WHERE created_by_user_id = ? AND status IN ('running', 'pending', 'launching', 'detached', 'released')
     UNION ALL
     SELECT * FROM (
       SELECT * FROM sessions
-      WHERE created_by_user_id = ? AND status NOT IN ('running', 'pending', 'launching')
+      WHERE created_by_user_id = ? AND status NOT IN ('running', 'pending', 'launching', 'detached', 'released')
       ORDER BY created_at DESC LIMIT 50
     )
     ORDER BY created_at DESC

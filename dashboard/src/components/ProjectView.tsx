@@ -143,16 +143,16 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   });
   // Keep the complete project record set available for the project sessions
   // view and for naming/restoring older tabs beyond the global history window.
-  const { data: projectHistoryData } = useQuery({
+  const { data: projectHistoryData, isSuccess: projectHistoryLoaded } = useQuery({
     queryKey: ['project-sessions', projectId],
     queryFn: () => api.sessions.list(undefined, projectId),
     refetchInterval:(query)=>active && query.state.data?.sessions.some(session=>session.cli_type==='codex') ? 5000 : false,
   });
   const projectSessions = useMemo(
-    () => (sessionsData?.sessions || []).filter(
-      (s) => s.project_id === projectId && (s.status === 'running' || s.status === 'detached' || s.status === 'pending')
+    () => [...new Map([...(projectHistoryData?.sessions||[]),...(sessionsData?.sessions||[])].map(session=>[session.id,session])).values()].filter(
+      (s) => s.project_id === projectId && isLiveSessionStatus(s.status)
     ),
-    [sessionsData, projectId]
+    [sessionsData, projectHistoryData, projectId]
   );
 
   // Lookup map for session metadata (cli_type, task, etc.) — used in tab rendering
@@ -262,10 +262,10 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   // account's session IDs. A local ended tab is valid only when it is also in
   // the authoritative server project state; live and just-created tabs remain.
   useEffect(() => {
-    if (!sessionsLoaded) return;
+    if (!sessionsLoaded || !projectHistoryLoaded || !projHydrated) return;
     const knownSessionIds = new Set(allSessionLookup.keys());
     const allowed = new Set(
-      (sessionsData?.sessions || [])
+      [...allSessionLookup.values()]
         .filter((session) => isLiveSessionStatus(session.status))
         .map((session) => session.id),
     );
@@ -280,7 +280,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       return next.length === prev.length ? prev : next;
     });
     setActiveTerminalId((prev) => prev && !allowed.has(prev) && !locallyCreatedSessionIds.current.has(prev) ? null : prev);
-  }, [sessionsLoaded, sessionsData, allSessionLookup, projHydrated]);
+  }, [sessionsLoaded, projectHistoryLoaded, sessionsData, allSessionLookup, projHydrated]);
 
   // ── Inline session-tab rename ──────────────────────────────────────
   // ProjectView refocuses the active terminal (xterm) on session updates / tab
@@ -472,6 +472,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   // Sync terminal instances with server sessions (auto-detect running sessions)
   const syncedRef = useRef(false);
   useEffect(() => {
+    if(!projHydrated||!projectHistoryLoaded)return;
     if (projectSessions.length === 0 && syncedRef.current) return;
     if (projectSessions.length === 0 && !syncedRef.current) {
       syncedRef.current = true;
@@ -481,8 +482,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
 
     // Prune closed IDs that are no longer alive on the server (kill completed)
     const allAliveIds = new Set(
-      (sessionsData?.sessions || [])
-        .filter((session) => session.status === 'running' || session.status === 'detached' || session.status === 'pending')
+      [...allSessionLookup.values()]
+        .filter((session) => isLiveSessionStatus(session.status))
         .map((session) => session.id)
     );
     let pruned = false;
@@ -539,14 +540,14 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
 
       return result;
     });
-  }, [projectSessions, sessionsLoaded, sessionsData, projectHistoryData, allSessionLookup]);
+  }, [projectSessions, sessionsLoaded, sessionsData, projectHistoryData, allSessionLookup,projHydrated,projectHistoryLoaded]);
 
   // Select an existing terminal when no session is active.
   useEffect(() => {
-    if (terminalInstances.length > 0 && !activeTerminalId) {
+    if (terminalInstances.length > 0 && (!activeTerminalId || projHydrated&&projectHistoryLoaded&&!terminalInstances.some(tab=>tab.id===activeTerminalId))) {
       setActiveTerminalId(terminalInstances[0].id);
     }
-  }, [terminalInstances, activeTerminalId]);
+  }, [terminalInstances, activeTerminalId,projHydrated,projectHistoryLoaded]);
 
   // Focus a specific session when requested (e.g. from the admin monitor or a quick-launch command)
   useEffect(() => {
@@ -761,7 +762,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   // source of truth for whether a CLI exists; this state preserves presentation
   // order, active selection and explicit hidden tabs.
   useEffect(() => {
-    if (!projHydrated) return;
+    if (!projHydrated||!projectHistoryLoaded) return;
     const h = setTimeout(() => {
       const terminalLabels: Record<string, string> = {};
       for (const t of terminalInstances) {
@@ -777,7 +778,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       }).catch(() => {});
     }, 600);
     return () => clearTimeout(h);
-  }, [projHydrated, projectId, terminalInstances, activeTerminalId, closedIdsVersion, explorerInstances]);
+  }, [projHydrated, projectHistoryLoaded, projectId, terminalInstances, activeTerminalId, closedIdsVersion, explorerInstances]);
 
   function handleSessionCreated(session: Session) {
     locallyCreatedSessionIds.current.add(session.id);
