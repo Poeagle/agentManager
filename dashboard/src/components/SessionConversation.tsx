@@ -1,3 +1,4 @@
+import {ConversationPromptEnhancer} from './ConversationPromptEnhancer';
 import {ConversationComposerEditor} from './ConversationComposerEditor';
 import {ConversationImagePreviewRoot} from './ConversationImagePreview';
 import {ConversationControls} from './ConversationControls';
@@ -51,7 +52,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
   </article>;
   return <article className={`session-chat-message ${message.role}`} data-phase={message.phase} data-streaming={streaming} data-chat-message-id={message.id}>
     {message.role==='assistant' && !compact && <div className="session-chat-agent"><Sparkles size={16}/><span>{agentName}</span>{message.phase==='final' && <span className="session-chat-writing">结论</span>}{streaming && <span className="session-chat-writing">正在输出</span>}</div>}
-    <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text">{parsed.text}<ConversationMessageAttachments items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/></div>{metadata}</>:<ConversationMarkdown content={message.text} messageId={message.id} footer={!compact?metadata:undefined} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
+    <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text">{parsed.attachments.length?parsed.text.trimEnd():parsed.text}<ConversationMessageAttachments items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/></div>{metadata}</>:<ConversationMarkdown content={message.text} messageId={message.id} footer={!compact?metadata:undefined} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
     {message.role==='assistant'&&compact&&metadata}
   </article>;
 });
@@ -250,6 +251,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
   const questionActive=!!pendingQuestion&&minimizedQuestion!==pendingQuestion.id;
   const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} answers={questionAnswers(message,messages.slice(messages.indexOf(message)+1))} continued={messages.slice(messages.indexOf(message)+1).some(item=>item.role==='user'&&!automaticConversationContext(item.text))} onAnswer={()=>setMinimizedQuestion(null)}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} durationLabel={!compact?timings.get(message.id)?.label:undefined} durationTitle={!compact?timings.get(message.id)?.title:undefined} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
   return <ConversationImagePreviewRoot active={active} onOpen={navigate}><section ref={readingRoot} className="session-chat" aria-label="会话对话">
+    <ConversationPromptEnhancer sessionId={session.id} active={active} canEdit={canSend&&!ended&&!waiting} value={draft} onApply={setDraft}/>
     <div className="session-chat-reading">
     <div ref={list} className="session-chat-scroll" onScroll={()=>{if(list.current) pinned.current=list.current.scrollHeight-list.current.scrollTop-list.current.clientHeight<80;}}>
       <div className="session-chat-feed">

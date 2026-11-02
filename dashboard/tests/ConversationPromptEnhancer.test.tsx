@@ -1,0 +1,15 @@
+import {useState} from 'react';
+import {act,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {beforeEach,expect,it,vi} from 'vitest';
+import {ConversationPromptEnhancer} from '../src/components/ConversationPromptEnhancer';
+import {api} from '../src/lib/api';
+vi.mock('../src/lib/api',()=>({api:{promptEnhancer:{enhance:vi.fn()}}}));
+vi.mock('../src/components/ConversationMarkdown',()=>({copyConversationText:vi.fn().mockResolvedValue(undefined)}));
+const apply=vi.fn();
+function mount(value='原草稿'){function Harness(){const [draft,setDraft]=useState(value);return <><input aria-label="草稿" value={draft} onChange={event=>setDraft(event.target.value)}/><ConversationPromptEnhancer sessionId="s" active canEdit value={draft} onApply={text=>{apply(text);setDraft(text);}}/></>;}return render(<Harness/>);}
+const click=()=>act(()=>window.dispatchEvent(new CustomEvent('agentmanager:enhance-native-prompt',{detail:{sessionId:'s'}})));
+beforeEach(()=>{vi.clearAllMocks();vi.mocked(api.promptEnhancer.enhance).mockResolvedValue({prompt:'优化后的草稿',context:{included_rounds:2,requested_rounds:3}});});
+it('previews an editable result and applies only on explicit confirmation',async()=>{mount();click();expect(await screen.findByDisplayValue('优化后的草稿')).toBeVisible();expect(screen.getByLabelText('草稿')).toHaveValue('原草稿');expect(apply).not.toHaveBeenCalled();fireEvent.change(screen.getByLabelText('优化结果'),{target:{value:'审阅后结果'}});fireEvent.click(screen.getByRole('button',{name:'应用到输入框'}));expect(screen.getByLabelText('草稿')).toHaveValue('审阅后结果');expect(apply).toHaveBeenCalledExactlyOnceWith('审阅后结果');expect(screen.queryByRole('dialog')).toBeNull();});
+it('does not overwrite a draft edited during the request',async()=>{mount();click();await screen.findByDisplayValue('优化后的草稿');fireEvent.change(screen.getByLabelText('草稿'),{target:{value:'后续输入'}});expect(screen.getByRole('button',{name:'应用到输入框'})).toBeDisabled();fireEvent.click(screen.getByRole('button',{name:'取消'}));expect(screen.getByLabelText('草稿')).toHaveValue('后续输入');expect(apply).not.toHaveBeenCalled();});
+it('aborts a cancelled request and ignores a late response',async()=>{let finish!:(data:{prompt:string})=>void;vi.mocked(api.promptEnhancer.enhance).mockReturnValue(new Promise(resolve=>finish=resolve));mount();click();const signal=vi.mocked(api.promptEnhancer.enhance).mock.calls[0][1]!;fireEvent.click(screen.getByRole('button',{name:'取消'}));expect(signal.aborted).toBe(true);await act(async()=>finish({prompt:'迟到结果'}));expect(screen.queryByRole('dialog')).toBeNull();});
+it('shows empty-input and backend failures without changing the draft',async()=>{mount('');click();expect(await screen.findByRole('alert')).toHaveTextContent('请先');expect(api.promptEnhancer.enhance).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'取消'}));fireEvent.change(screen.getByLabelText('草稿'),{target:{value:'保留内容'}});vi.mocked(api.promptEnhancer.enhance).mockRejectedValueOnce(Error('尚未配置提示词优化'));click();await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('尚未配置'));expect(screen.getByLabelText('草稿')).toHaveValue('保留内容');});

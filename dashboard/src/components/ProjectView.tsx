@@ -1175,8 +1175,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
             onClick={() => window.dispatchEvent(new CustomEvent('agentmanager:enhance-native-prompt', {
               detail: { sessionId: activeTerminalId },
             }))}
-            title="优化当前 Terminal 输入"
-            aria-label="优化当前 Terminal 输入"
+            title="优化当前输入"
+            aria-label="优化当前输入"
             className="workspace-sidebar-button mt-auto mb-1 flex items-center justify-center rounded transition-colors"
             style={{
               color: '#c4b5fd',

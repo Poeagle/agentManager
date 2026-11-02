@@ -96,7 +96,7 @@ test('copying an enhanced prompt keeps the preview open and never writes to the 
   };
   await expect.poll(renderedTerminal).toContain('Original terminal draft');
 
-  await page.getByRole('button', { name: '优化当前 Terminal 输入' }).click();
+  await page.getByRole('button', { name: '优化当前输入' }).click();
   const preview = page.getByRole('dialog', { name: '提示词优化预览' });
   await expect(preview).toBeVisible();
   const enhancedEditor = preview.getByLabel('编辑优化后的提示词');

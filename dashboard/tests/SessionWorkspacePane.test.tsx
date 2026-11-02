@@ -29,6 +29,9 @@ describe('chat/raw terminal display',()=>{
     const get=vi.spyOn(api.agent,'controls').mockResolvedValue({...cached,can_edit:true} as any);
     try{render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active renderTerminal={(_visible,_suspended,ready)=><button onClick={ready}>测试终端就绪</button>}/></QueryClientProvider>);const select=await screen.findByRole('combobox',{name:'选择模型'});expect(select).toBeDisabled();fireEvent.click(screen.getByText('测试终端就绪'));await waitFor(()=>expect(select).toBeEnabled());expect(get).toHaveBeenCalledTimes(1);}finally{get.mockRestore();}
   });
+  it('does not preserve native trailing newlines before inline image text',async()=>{
+    page.messages=[{id:'image-user',role:'user',text:'这段正文\n\n',timestamp:null,attachments:[{kind:'image',name:'image.png',path:'/project/image.png'}]}];mount();const image=await screen.findByRole('button',{name:'打开附件 image.png'});const parent=image.closest('.session-chat-user-text')!;expect(parent.firstChild?.textContent).toBe('这段正文');expect(parent).toHaveTextContent('这段正文图片 1');expect(parent.querySelector('img')).toBeNull();
+  });
   it('folds injected project instructions with a clear automatic category',async()=>{
     page.messages.splice(1,0,{id:'rules',role:'user',text:'# AGENTS.md instructions for /project\n\n<INSTRUCTIONS>\n'+('项目规则\n'.repeat(50))+'</INSTRUCTIONS>',timestamp:'2026-10-31T03:00:00Z'});mount();const label=await screen.findByText('自动信息 · 项目规则');const details=label.closest('details')!;expect(details.open).toBe(false);fireEvent.click(label);expect(details.open).toBe(true);expect(details.querySelector('pre')).toHaveTextContent('项目规则');
   });
