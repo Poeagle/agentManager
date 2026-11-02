@@ -5,7 +5,7 @@ import {SessionConversation} from './SessionConversation';
 import {Dialog} from './Dialog';
 import {useQueryClient} from '@tanstack/react-query';
 import type {ConversationControlsData} from '../lib/api';
-import {RotateCw} from 'lucide-react';
+import {RotateCw,Sparkles} from 'lucide-react';
 import {hasPermission,usePermissions} from '../lib/permissions';
 
 export function SessionWorkspacePane({session,userId,active,renderTerminal,onResume,onReload,onNewConversation,onClose,resuming,resumeFailed,controlsHost,projectPath,onOpenFile}: {
@@ -42,7 +42,7 @@ export function SessionWorkspacePane({session,userId,active,renderTerminal,onRes
     }
     setSwitchError('');setView(next);if(next==='terminal') setOpenedRaw(true);try{localStorage.setItem(key,next);}catch{/* Storage unavailable. */}
   }
-  const controls=<div className="session-pane-switch" role="group" aria-label="会话显示方式"><button disabled={!canChat} title={canChat?'显示你的消息、Agent 进展和回答':'当前为 Shell，绑定 Agent 后可查看对话'} aria-pressed={!raw} onClick={()=>choose('chat')}>对话</button><button aria-pressed={raw} onClick={()=>choose('terminal')}>原始终端</button>{onReload&&session.cli_type==='codex'&&session.codex_session_id&&hasPermission(permissions.data,'agent_api','write')&&<button type="button" className="session-pane-reload" disabled={reloading||resuming} title="保留历史，重新启动此标签页的 Codex 客户端" onClick={openReload}><RotateCw size={12} className={reloading?'animate-spin':''}/>重载标签页</button>}</div>;
+  const controls=<div className="session-pane-switch" role="group" aria-label="会话显示方式"><button disabled={!canChat} title={canChat?'显示你的消息、Agent 进展和回答':'当前为 Shell，绑定 Agent 后可查看对话'} aria-pressed={!raw} onClick={()=>choose('chat')}>对话</button><button aria-pressed={raw} onClick={()=>choose('terminal')}>原始终端</button>{raw&&!ended&&hasPermission(permissions.data,'agent_api','write')&&<button type="button" className="session-pane-enhance" aria-label="优化当前输入" title="增强提示词" onClick={()=>window.dispatchEvent(new CustomEvent('agentmanager:enhance-native-prompt',{detail:{sessionId:session.id}}))}><Sparkles size={13}/></button>}{onReload&&session.cli_type==='codex'&&session.codex_session_id&&hasPermission(permissions.data,'agent_api','write')&&<button type="button" className="session-pane-reload" disabled={reloading||resuming} title="保留历史，重新启动此标签页的 Codex 客户端" onClick={openReload}><RotateCw size={12} className={reloading?'animate-spin':''}/>重载标签页</button>}</div>;
   return <div className="session-pane">
     {reloadOpen&&<Dialog title="重载标签页" onClose={()=>setReloadOpen(false)} busy={reloading} initialFocus={cancel}>
       <p className="text-sm leading-relaxed">重载会中断此会话当前正在执行的任务，并使用服务器已安装的 Codex 重新打开同一段对话。历史消息、对话输入框中未发送的文字和附件会保留。</p>
