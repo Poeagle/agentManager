@@ -303,3 +303,9 @@
 .conversation-footer-fallback {display:flex;justify-content:flex-end;font-size:9px;}
 .conversation-footer-fallback .session-chat-message-meta {margin:0;min-height:16px;}
 .session-chat-body .conversation-markdown>:last-child {margin-bottom:0;}
+
+.conversation-compaction-status {display:inline-flex;align-items:center;gap:7px;min-width:0;color:var(--accent);font-size:11px;}
+.conversation-compaction-status svg,.conversation-compaction-status time {flex-shrink:0;}
+.conversation-compaction-status time {font-variant-numeric:tabular-nums;color:var(--text-muted);}
+.conversation-compaction-status[data-state="completed"] {color:var(--success,#22a879);}
+.conversation-compaction-status[data-state="failed"],.conversation-compaction-status[data-state="interrupted"] {color:var(--error,#dc2626);}

@@ -1,6 +1,8 @@
 import {ConversationPromptEnhancer} from './ConversationPromptEnhancer';
 import {ConversationComposerEditor} from './ConversationComposerEditor';
 import {ConversationImagePreviewRoot} from './ConversationImagePreview';
+import {useConversationCompaction,type NativeCompaction} from '../lib/use-conversation-compaction';
+import {ConversationCompactionStatus} from './ConversationCompactionStatus';
 import {ConversationControls} from './ConversationControls';
 import {ConversationAutomaticContext} from './ConversationAutomaticContext';
 import {automaticConversationContext} from '../lib/conversation-context';
@@ -61,6 +63,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   session:Session;active:boolean;onRaw:()=>void;onResume?:()=>void;onNewConversation?:()=>Promise<void>;onClose?:()=>void;resuming?:boolean;resumeFailed?:boolean;
   userId?:string;projectPath?:string;onOpenFile?:(path:string)=>void;
 }) {
+  const compaction=useConversationCompaction(session.id,session.codex_session_id);
   const permissions=usePermissions();
   const queryClient=useQueryClient();
   const canRead=hasPermission(permissions.data,'agent_api');
@@ -120,9 +123,9 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const activeError=latestAssistant?.phase==='error' && (liveState!=='connected' || !liveProgress.turn_id || !latestAssistant.turn_id || latestAssistant.turn_id===liveProgress.turn_id)?latestAssistant:null;
   const busy=!(activeError && !activeError.error?.will_retry) && (liveState==='connected'?liveBusy:page?.runtime?.state==='running' || (!page?.runtime && page?.interaction?.processState==='busy'));
   useEffect(()=>{
-    if(!active || !busy) return;
+    if(!active || !busy&&!compaction.running) return;
     setNow(Date.now());const clock=setInterval(()=>setNow(Date.now()),1000);return ()=>clearInterval(clock);
-  },[active,busy]);
+  },[active,busy,compaction.running]);
   useEffect(()=>{if(ended) setMessages(previous=>previous.map(message=>message.streaming?{...message,streaming:false}:message));},[ended]);
 
   useEffect(()=>{
@@ -166,13 +169,15 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
       liveSocket.current=socket;setConnectionGeneration(value=>value+1);
       socket.onmessage=event=>{
         if(disposed) return;
-        let frame:{type:string;model?:string;effort?:string|null;messages?:ConversationMessage[];runtime?:ConversationPage['runtime'];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
+        let frame:{type:string;model?:string;effort?:string|null;messages?:ConversationMessage[];runtime?:ConversationPage['runtime'];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string;usage?:NonNullable<ConversationControlsData['usage']>;observed_at?:string;compaction?:NativeCompaction|null}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
+        if(frame.type==='usage'&&frame.usage&&frame.observed_at){compaction.usage(frame.usage,frame.observed_at);return;}
         if(frame.type==='settings'&&typeof frame.model==='string'){queryClient.setQueryData<ConversationControlsData>(['conversation-controls',session.id],previous=>previous?{...previous,model:frame.model!,effort:frame.effort??null,pending:null}:previous);return;}
         if(frame.type==='interaction_result' && frame.request_id) {const pending=pendingAnswers.current.get(frame.request_id);if(pending){clearTimeout(pending.timer);pendingAnswers.current.delete(frame.request_id);if(frame.ok)pending.resolve();else pending.reject(new Error(frame.error||'提交失败'));}return;}
         if(frame.type==='history'&&Array.isArray(frame.messages)){pushAvailable.current=true;setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));setPage(previous=>previous?{...previous,runtime:frame.runtime||previous.runtime}:previous);if(frame.messages.length){if(pinned.current)requestAnimationFrame(()=>{if(!disposed)scrollBottom();});else setUnread(true);}return;}
-        if(frame.type==='unavailable') {pushAvailable.current=false;setLiveState('unavailable');setLiveBusy(false);return;}
+        if(frame.type==='unavailable') {pushAvailable.current=false;setLiveState('unavailable');setLiveBusy(false);compaction.disconnected();return;}
         if(frame.type!=='snapshot' || !Array.isArray(frame.messages)) return;
         pushAvailable.current=true;setLiveState('connected');setLiveBusy(!!frame.busy);
+        if('compaction' in frame)compaction.observe(frame.compaction??null,!!frame.busy);
         setRequests(Array.isArray(frame.interactions)?frame.interactions:[]);
         if(frame.stage) setLiveProgress({turn_id:frame.turn_id||null,started_at:frame.started_at||null,completed_at:frame.completed_at||null,activities:Array.isArray(frame.activities)?frame.activities:[],stage:frame.stage});
         const incoming=frame.messages;
@@ -184,7 +189,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
           if(settled.length) setRefresh(value=>value+1);
         }
       };
-      socket.onclose=()=>{if(!disposed){pushAvailable.current=false;liveSocket.current=null;for(const pending of pendingAnswers.current.values()){clearTimeout(pending.timer);pending.reject(new Error('连接已断开，请重连核对请求状态'));}pendingAnswers.current.clear();setLiveState('unavailable');setLiveBusy(false);retry=setTimeout(connect,2500);}};
+      socket.onclose=()=>{if(!disposed){pushAvailable.current=false;liveSocket.current=null;for(const pending of pendingAnswers.current.values()){clearTimeout(pending.timer);pending.reject(new Error('连接已断开，请重连核对请求状态'));}pendingAnswers.current.clear();setLiveState('unavailable');setLiveBusy(false);compaction.disconnected();retry=setTimeout(connect,2500);}};
       socket.onerror=()=>socket.close();
     };
     connect();
@@ -248,7 +253,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const continuingAfterFollowup=busy && !currentAnswer && !!currentTurn && messages.some((message,index)=>index<lastUserIndex && message.role==='assistant' && message.turn_id===currentTurn);
   const started=continuingAfterFollowup?lastUserTime:liveProgress.started_at||lastUserTime;
   const elapsed=started?Math.max(0,Math.floor((now-Date.parse(started))/1000)):0;
-  const waitingForText=busy && !currentAnswer && !activeError && !waiting;
+  const waitingForText=!compaction.running && busy && !currentAnswer && !activeError && !waiting;
   const displayed=messages;
   const streamingId=!activeError && liveState==='connected' && busy && !['tools','finishing'].includes(liveProgress.stage)
     ? messages.reduce<string|null>((id,message,index)=>index>lastUserIndex && message.role==='assistant' && message.streaming && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id)?message.id:id,null):null;
@@ -290,8 +295,8 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
       {interaction?.choices?.length ? <p>{interaction.choices.join(' / ')}</p>:null}<button onClick={onRaw}>切到原始终端处理</button></div>}
     <footer className="session-chat-composer">
       <div className="session-chat-status" role="status"><span className={`session-chat-connection ${liveState}`} aria-hidden="true"/>
-        <ConversationActivityLine key={`${session.id}:${liveState}:${liveProgress.turn_id||''}`} activities={liveState==='connected'?liveProgress.activities||[]:[]} busy={busy&&!ended&&!waiting&&!activeError} now={now} totalElapsed={elapsedBetween(started,now)}
-          fallback={activeError?activeError.error?.will_retry?busy?'执行遇到错误，正在自动重试…':'重试已结束':'本轮执行失败，可处理后重试':ended?'会话已结束':waiting?'等待你处理':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}/>
+        {compaction.state?<ConversationCompactionStatus state={compaction.state} now={now}/>:<ConversationActivityLine key={`${session.id}:${liveState}:${liveProgress.turn_id||''}`} activities={liveState==='connected'?liveProgress.activities||[]:[]} busy={busy&&!ended&&!waiting&&!activeError} now={now} totalElapsed={elapsedBetween(started,now)}
+          fallback={activeError?activeError.error?.will_retry?busy?'执行遇到错误，正在自动重试…':'重试已结束':'本轮执行失败，可处理后重试':ended?'会话已结束':waiting?'等待你处理':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}/>}
         {liveState==='connected' && <span className="session-chat-live-label">事件通道已连接</span>}
         {ended && onResume && <button onClick={onResume} disabled={resuming}>{resuming?'正在恢复…':resumeFailed?'重试恢复会话':'恢复会话'}</button>}{ended && onClose && <button onClick={onClose}>关闭会话</button>}
       </div>
@@ -305,7 +310,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
 
         <div className="session-chat-input-tools"><ConversationAttachmentPicker disabled={!canSend||ended||sending} onFiles={attachments.enqueue}/><span>Enter 发送 · Shift+Enter 换行</span><button type="submit" aria-label="发送消息" disabled={sending||attachments.uploading||attachments.failed||!canSend||(!draft.trim()&&!attachments.items.length)||!page?.session_active||ended||waiting}>{sending?<Loader2 size={17} className="animate-spin"/>:<ArrowUp size={18}/>}</button></div>
       </form>
-      {session.cli_type==='codex'&&!!page?.native_id&&canRead&&<ConversationControls sessionId={session.id} active={active} busy={busy||sending||resuming} onNewConversation={onNewConversation}/>}
+      {session.cli_type==='codex'&&!!page?.native_id&&canRead&&<ConversationControls sessionId={session.id} active={active} busy={busy||sending||resuming} compacting={compaction.running} onCompact={compaction.start} onNewConversation={onNewConversation}/>}
     </footer>
   </section></ConversationImagePreviewRoot>;
 }

@@ -30,7 +30,7 @@ describe('compact conversation controls',()=>{
  });
  it('compacts once and asks explicitly before replacing the current conversation',async()=>{
   const open=vi.fn().mockResolvedValue(undefined);render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active onNewConversation={open}/></QueryClientProvider>);
-  fireEvent.click(await screen.findByRole('button',{name:'压缩',exact:true}));await waitFor(()=>expect(api.sessions.compactConversation).toHaveBeenCalledWith('s'));expect(await screen.findByText('已开始压缩，进度会在当前会话中显示。')).toBeVisible();
+  fireEvent.click(await screen.findByRole('button',{name:'压缩',exact:true}));await waitFor(()=>expect(api.sessions.compactConversation).toHaveBeenCalledWith('s'));expect(screen.queryByText('已开始压缩，进度会在当前会话中显示。')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'新开',exact:true}));expect(open).not.toHaveBeenCalled();const dialog=screen.getByRole('dialog',{name:'在当前标签页新开会话'});fireEvent.click(within(dialog).getByRole('button',{name:'停止旧会话并新开'}));await waitFor(()=>expect(open).toHaveBeenCalledTimes(1));await waitFor(()=>expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
  });
  it('does not invent percentages or editable options for missing or read-only telemetry',async()=>{

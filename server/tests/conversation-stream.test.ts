@@ -28,6 +28,21 @@ beforeEach(async()=>{
 afterEach(async()=>{stop?.();stop=undefined;for(const client of wss.clients) client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 const send=(method:string,params:unknown)=>peer.send(JSON.stringify({method,params}));
 describe('native Codex conversation streaming',()=>{
+  it('streams compaction start, real token usage and completion without model text or extra requests',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
+    send('turn/started',{threadId:'thread',turn:{id:'compact'}});send('item/started',{threadId:'thread',turnId:'compact',item:{id:'compact-item',type:'contextCompaction'}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({type:'snapshot',busy:true,stage:'tools',messages:[],compaction:{id:'compact-item',status:'running'}}));
+    send('thread/tokenUsage/updated',{threadId:'other',tokenUsage:{private:'PRIVATE'}});
+    send('thread/tokenUsage/updated',{threadId:'thread',tokenUsage:{total:{totalTokens:1000000,private:'PRIVATE'},last:{totalTokens:2000,inputTokens:1800},modelContextWindow:40000,private:'PRIVATE'}});
+    await vi.waitFor(()=>expect(frames.some(frame=>frame.type==='usage'&&frame.usage.last.total_tokens===2000)).toBe(true));expect(JSON.stringify(frames)).not.toContain('PRIVATE');
+    send('item/completed',{threadId:'thread',turnId:'compact',item:{id:'compact-item',type:'contextCompaction'}});send('turn/completed',{threadId:'thread',turn:{id:'compact',status:'completed'}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:false,compaction:{status:'completed',duration_ms:expect.any(Number)}}));expect(requests).not.toContain('turn/start');
+  });
+  it('restores active compaction on reconnect and distinguishes an interrupted compaction from success',async()=>{
+    active=true;baselineItems=[{id:'compact-item',type:'contextCompaction'}];stop=observeCodexConversation('thread',frame=>frames.push(frame));
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:true,compaction:{status:'running',started_at:null}}));
+    send('turn/completed',{threadId:'thread',turn:{id:'turn',status:'interrupted'}});await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:false,compaction:{status:'interrupted'}}));
+  });
   it('forwards native settings immediately without leaking other thread settings or private fields',async()=>{
     stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
     send('thread/settings/updated',{threadId:'other',threadSettings:{model:'private',effort:'high'}});

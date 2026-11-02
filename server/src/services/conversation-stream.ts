@@ -9,9 +9,13 @@ import {conversationMessageId,type ConversationMessage} from './conversation-rea
 import {conversationErrorMessage} from './conversation-error.js';
 import {conversationActivity,type ConversationActivity} from './conversation-activity.js';
 
+export interface ConversationCompaction {id:string;status:'running'|'completed'|'failed'|'interrupted';started_at:string|null;completed_at:string|null;duration_ms:number|null}
+const publicCount=(n:unknown):number|null=>typeof n==='number'&&Number.isFinite(n)&&n>=0?n:null;
+function publicUsage(value:any){const fields:Record<string,string>={total_tokens:'totalTokens',input_tokens:'inputTokens',cached_input_tokens:'cachedInputTokens',output_tokens:'outputTokens',reasoning_output_tokens:'reasoningOutputTokens'};const counts=(v:any)=>Object.fromEntries(Object.entries(fields).map(([key,native])=>[key,publicCount(v?.[native])]));return {total:counts(value.total),last:counts(value.last),window:publicCount(value.modelContextWindow)};}
 export type ConversationStreamFrame =
+  | {type:'usage';usage:ReturnType<typeof publicUsage>;observed_at:string}
   | {type:'settings';model:string;effort:string|null}
-  | {type:'snapshot';messages:ConversationMessage[];interactions:ConversationInteraction[];activities:ConversationActivity[];busy:boolean;connected:true;turn_id:string|null;started_at:string|null;completed_at:string|null;stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
+  | {type:'snapshot';messages:ConversationMessage[];interactions:ConversationInteraction[];activities:ConversationActivity[];compaction:ConversationCompaction|null;busy:boolean;connected:true;turn_id:string|null;started_at:string|null;completed_at:string|null;stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
   | {type:'unavailable';reason:string;reconnect?:boolean};
 
 type CodexRequest = (method:string,params:unknown)=>Promise<any>;
@@ -89,12 +93,13 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   let next=0,closed=false,busy=false;
   let turnId:string|null=null,startedAt:string|null=null,completedAt:string|null=null;
   let stage:'waiting'|'tools'|'answering'|'finishing'|'idle'='idle';
+  let compaction:ConversationCompaction|null=null;
   let revision=0;
   let retry:ReturnType<typeof setTimeout>|undefined;
   let flush:ReturnType<typeof setTimeout>|undefined;
   function snapshot() {
     flush=undefined;
-    if(!closed) emit({type:'snapshot',interactions:[...interactions.values()].map(entry=>entry.card),messages:[...items.values()].filter(item=>item.message.text.length>0).map(item=>item.message),activities:[...activities.values()],busy,connected:true,turn_id:turnId,started_at:startedAt,completed_at:completedAt,stage});
+    if(!closed) emit({type:'snapshot',interactions:[...interactions.values()].map(entry=>entry.card),messages:[...items.values()].filter(item=>item.message.text.length>0).map(item=>item.message),activities:[...activities.values()],compaction,busy,connected:true,turn_id:turnId,started_at:startedAt,completed_at:completedAt,stage});
   }
   function changed() {if(!flush) flush=setTimeout(snapshot,10);}
   function request(method:string,params:unknown):Promise<any> {
@@ -109,6 +114,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     const message=conversationErrorMessage(id,error,willRetry,timestamp);if(!message)return;
     items.delete(`error:${message.id}`);items.set(`error:${message.id}`,{message,phase:'error'});
     if(!willRetry)interactions.clear();
+    if(!willRetry&&compaction?.status==='running')compaction={...compaction,status:'failed',completed_at:timestamp};
     busy=willRetry;stage=willRetry?'waiting':'idle';
     for(const item of items.values())if(item.message.streaming)item.message={...item.message,streaming:false};
     changed();
@@ -116,6 +122,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   function acceptActivity(item:any,completed:boolean,baseline=false) {
     const activity=conversationActivity(item,completed,activities.get(item?.id),baseline?null:Date.now());
     if(!activity)return;
+    if(item.type==='contextCompaction')compaction={...activity};
     activities.set(activity.id,activity);
     if(activities.size>8)activities.delete(activities.keys().next().value!);
     changed();
@@ -160,12 +167,13 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
         completedAt=typeof turn.completedAt==='number'?new Date(turn.completedAt*1000).toISOString():null;
         if(!busy)stage='idle';else if(!sameTurn || stage==='idle')stage='waiting';
         if(busy) for(const item of turn.items||[]) {
-          acceptActivity(item,['completed','failed','declined'].includes(item.status) || typeof item.completedAtMs==='number',true);
+          acceptActivity(item.type==='contextCompaction'&&(turn.items||[]).length===1&&typeof turn.startedAt==='number'?{...item,startedAtMs:turn.startedAt*1000}:item,['completed','failed','declined'].includes(item.status) || typeof item.completedAtMs==='number' || item.type==='contextCompaction'&&item!==(turn.items||[]).at(-1),true);
           const streaming=item===(turn.items||[]).at(-1) && item.type==='agentMessage' && !item.completedAtMs;
           acceptItem(item,turn.id,streaming,typeof item.startedAtMs==='number'?item.startedAtMs:typeof item.completedAtMs==='number'?item.completedAtMs:null);
           if(item.type==='agentMessage' && item.text?.length) stage=streaming?'answering':item.phase==='final_answer'?'finishing':'tools';
           else if(['commandExecution','mcpToolCall','dynamicToolCall','fileChange','webSearch','contextCompaction'].includes(item.type))stage='tools';
         }
+        if(!busy)for(const item of turn.items||[])if(item.type==='contextCompaction'){acceptActivity(item,true,true);if(compaction&&turn.status==='interrupted')compaction={...compaction,status:'interrupted'};}
         if(turn.error)reportError(turn.id,turn.error,false,typeof turn.completedAt==='number'?new Date(turn.completedAt*1000).toISOString():null);
         // The baseline is an ordered prefix; fresh events may already have
         // inserted later items while the request was in flight.
@@ -188,6 +196,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(waiting) {pending.delete(frame.id);clearTimeout(waiting.timer);if(frame.error) waiting.reject(new Error('Codex 事件接口不可用'));else waiting.resolve(frame.result);return;}
     const data=frame.params;
     if(data?.threadId!==threadId) return;
+    if(frame.method==='thread/tokenUsage/updated'&&data.tokenUsage){if(!closed)emit({type:'usage',usage:publicUsage(data.tokenUsage),observed_at:new Date().toISOString()});return;}
     if(frame.method==='thread/settings/updated'&&typeof data.threadSettings?.model==='string') {
       if(!closed)emit({type:'settings',model:data.threadSettings.model,effort:data.threadSettings.effort??null});return;
     }
@@ -197,11 +206,12 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(!['turn/started','item/started','item/completed','item/agentMessage/delta','turn/completed','error'].includes(frame.method))return;
     revision++;
     if(frame.method==='turn/started') {
-      items.clear();activities.clear();interactions.clear();busy=true;completedAt=null;turnId=data.turn?.id||null;
+      items.clear();activities.clear();compaction=null;interactions.clear();busy=true;completedAt=null;turnId=data.turn?.id||null;
       startedAt=typeof data.turn?.startedAt==='number'?new Date(data.turn.startedAt*1000).toISOString():new Date().toISOString();
       stage='waiting';changed();
     }
     else if(frame.method==='item/started'||frame.method==='item/completed') {
+      if(data.item?.type==='contextCompaction'&&frame.method==='item/started'){busy=true;stage='tools';}
       acceptActivity({...data.item,...(typeof data.startedAtMs==='number'?{startedAtMs:data.startedAtMs}:{}),...(typeof data.completedAtMs==='number'?{completedAtMs:data.completedAtMs}:{})},frame.method==='item/completed');
       acceptItem(data.item,data.turnId,frame.method==='item/started',data.startedAtMs||data.completedAtMs);
       if(data.item?.type==='agentMessage' && data.item.text?.length) stage=frame.method==='item/completed'?(data.item.phase==='final_answer'?'finishing':'tools'):'answering';
@@ -215,6 +225,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     } else if(frame.method==='turn/completed') {
       if(turnId && data.turn?.id && turnId!==data.turn.id)return;
       completedAt=typeof data.turn?.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString();
+      if(compaction){const status=data.turn?.status==='interrupted'?'interrupted':data.turn?.status==='failed'?'failed':compaction.status==='running'?'completed':compaction.status;compaction={...compaction,status,completed_at:completedAt,duration_ms:compaction.started_at?Math.max(0,Date.parse(completedAt!)-Date.parse(compaction.started_at)):compaction.duration_ms};}
       interactions.clear();busy=false;stage='idle';for(const item of items.values()) item.message={...item.message,streaming:false};
       if(data.turn?.error)reportError(data.turn.id,data.turn.error,false,typeof data.turn.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString());
       changed();
