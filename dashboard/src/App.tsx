@@ -5,7 +5,7 @@ import { api, type AuthUser } from './lib/api';
 import { AuthGate } from './components/AuthGate';
 import { cleanupProjectStorage } from './lib/project-view-storage';
 import { confirmDiscardProject } from './lib/unsaved-files';
-import { X, LayoutGrid, Settings, ArrowUpCircle, LogOut, KeyRound, Plus, Bot } from 'lucide-react';
+import { X, LayoutGrid, Settings, ArrowUpCircle, LogOut, KeyRound, Plus } from 'lucide-react';
 import { hasPermission, usePermissions } from './lib/permissions';
 import type { PlatformSection } from './components/PlatformCenter';
 import { CloseTabModal } from './components/CloseTabModal';
@@ -401,13 +401,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         <div className="workspace-header-tools flex min-w-0 items-center overflow-x-auto [scrollbar-width:none] [&>*]:shrink-0">
           <CodexQuotaIndicator />
           {hasPermission(permissionsQuery.data, 'monitor') && <ServerResourceIndicator />}
-          {hasPermission(permissionsQuery.data, 'agent_api') && <button
-            onClick={() => setPlatformSection('assistant')}
-            className="workspace-header-button border"
-            style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)', background: 'var(--bg-tertiary)' }}
-            title="平台 AI"
-            aria-label="平台 AI"
-          ><Bot className="h-3.5 w-3.5" /><span className="hidden sm:inline">平台 AI</span></button>}
           <button
             onClick={() => setPlatformSection(hasPermission(permissionsQuery.data, 'monitor') ? 'monitor' : 'account')}
             className="workspace-header-button border font-medium hover:opacity-80"

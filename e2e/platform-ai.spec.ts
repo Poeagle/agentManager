@@ -69,7 +69,7 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     const created=await page.request.post('/api/projects',{data:{name:'平台 AI 验证项目',path:projectPath}});
     expect(created.ok()).toBeTruthy();
     await page.goto('/');
-    await page.getByRole('button',{name:'平台 AI',exact:true}).click();
+    await page.getByRole('button',{name:'平台管理',exact:true}).click();await page.getByRole('navigation',{name:'平台管理分类'}).getByRole('button',{name:'平台 AI',exact:true}).click();
     const dialog=page.getByRole('dialog',{name:'平台管理'});
     await dialog.getByRole('button',{name:'模型配置',exact:true}).click();
     await dialog.getByRole('radio',{name:/外部 API/}).check();
@@ -180,7 +180,7 @@ test('Platform AI displays persisted channel images through the authenticated at
     db.prepare("INSERT INTO platform_ai_attachments (id,message_id,status,mime,bytes,data) VALUES ('image-fixture','image-message','ready','image/png',?,?)").run(png.length, png);
   } finally {db.close();}
   await page.goto('/');
-  await page.getByRole('button', {name: '平台 AI', exact: true}).click();
+  await page.getByRole('button',{name:'平台管理',exact:true}).click();await page.getByRole('navigation',{name:'平台管理分类'}).getByRole('button',{name:'平台 AI',exact:true}).click();
   const dialog = page.getByRole('dialog', {name: '平台管理'});
   await dialog.getByRole('button').filter({hasText: '机器人截图需求'}).click();
   const image = dialog.getByRole('img', {name: '用户发送的图片 1'});
