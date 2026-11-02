@@ -39,6 +39,14 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   const answerMeta=chat.locator('.session-chat-message[data-phase="final"] .session-chat-message-meta').first();
   await expect(answerMeta).toHaveCSS('opacity','1');
   await expect(answerMeta.getByRole('button',{name:'复制Agent 回复'})).toBeVisible();
+  for(const footer of await chat.locator('.conversation-inline-meta').all()){
+    const geometry=await footer.evaluate(node=>{const previous=node.previousSibling!,range=document.createRange();range.selectNodeContents(previous);const text=[...range.getClientRects()].at(-1)!,meta=node.getBoundingClientRect(),timeRange=document.createRange();timeRange.selectNodeContents(node.querySelector('time')!);const timestamp=timeRange.getBoundingClientRect();return {gap:meta.left-text.right,top:timestamp.top,bottom:meta.bottom,textTop:text.top,textBottom:text.bottom};});
+    expect(geometry.gap).toBeGreaterThanOrEqual(8);expect(geometry.gap).toBeLessThan(15);expect(geometry.top).toBeGreaterThanOrEqual(geometry.textTop);expect(geometry.top).toBeLessThan(geometry.textBottom);
+  }
+  await expect(chat.locator('.conversation-footer-line').filter({hasText:'可以继续提问'})).toHaveCSS('display','list-item');
+  await expect(progress.locator('.session-chat-progress-entry-head')).toHaveCount(0);
+  await expect(progress.getByRole('button',{name:'复制Agent 回复'})).toHaveCount(0);
+
 await expect(progress).not.toContainText('检查已完成。');
   await page.screenshot({path:testInfo.outputPath('progress-timeline.png')});
   expect(await chat.locator('.session-chat-message.user .session-chat-body').evaluate(node=>getComputedStyle(node).backgroundColor)).not.toBe(await chat.locator('.session-chat-message.assistant').first().evaluate(node=>getComputedStyle(node).backgroundColor));

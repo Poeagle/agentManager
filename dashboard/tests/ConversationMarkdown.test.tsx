@@ -6,7 +6,7 @@ import {ConversationMarkdownBlocks} from '../src/lib/conversation-markdown-block
 vi.mock('../src/components/FileExplorer',()=>({FileExplorer:({openFileRequest}:{openFileRequest:{path:string}})=><div>{openFileRequest.path}</div>}));
 const props={messageId:'message',projectId:'project',projectPath:'/work/project',onNavigate:()=>{}};
 describe('conversation Markdown',()=>{
-  it.each(['完成。','- 第一项\n- 最后一项','> 引用结论。'])('keeps one metadata footer in the last prose block: %s',content=>{
+  it.each(['完成。','- 第一项\n- 最后一项','- 第一项\n\n- 最后一项','- 第一项\n  - 最后子项','> 引用结论。'])('keeps one metadata footer in the last prose block: %s',content=>{
     const view=render(<ConversationMarkdown {...props} content={content} footer={<time>12:30</time>}/>);
     expect(view.container.querySelectorAll('time')).toHaveLength(1);expect(view.container.querySelector('.conversation-inline-meta time')).toHaveTextContent('12:30');
   });
