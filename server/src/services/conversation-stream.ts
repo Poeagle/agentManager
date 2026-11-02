@@ -3,7 +3,7 @@ import {nativeInteraction,nativeInteractionAnswer,conversationAsyncQuestions,con
 import {homedir} from 'os';
 import {join} from 'path';
 import {randomUUID} from 'crypto';
-import {conversationImagePaths,formatConversationInput,type ConversationAttachment} from './conversation-attachments.js';
+import {conversationImagePaths,nativeConversationInput,type ConversationAttachment} from './conversation-attachments.js';
 import {extractAgentMessages} from './prompt-context.js';
 import {conversationMessageId,type ConversationMessage} from './conversation-reader.js';
 import {conversationErrorMessage} from './conversation-error.js';
@@ -81,7 +81,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
   const operation=withCodexConnection(async request=>{
     const current=await request('thread/read',{threadId});
     if(current.thread?.status?.type==='notLoaded')return false;
-    const input=[{type:'text',text:formatConversationInput(text,attachments),text_elements:[]},...attachments.filter(item=>item.kind==='image').map(item=>({type:'localImage',path:item.path}))];
+    const input=nativeConversationInput(text,attachments);
     const queue=async()=>{
       const existing=await request('thread/queue/list',{threadId,limit:100});
       if(existing.data?.some((entry:any)=>entry.clientUserMessageId===identity))return 'queued' as const;

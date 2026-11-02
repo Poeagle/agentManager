@@ -39,8 +39,8 @@ describe('native Codex conversation streaming',()=>{
   });
   it('accepts messages during compaction into the native queue once and retains image inputs',async()=>{
     active=true;baselineItems=[{id:'compact',type:'contextCompaction'}];const image={kind:'image' as const,name:'image.png',path:'/tmp/image.png'};
-    const [first,repeat]=await Promise.all([submitStreamingCodexInput('thread','after compaction','same-client',[image]),submitStreamingCodexInput('thread','after compaction','same-client',[image])]);expect(first).toBe('queued');expect(repeat).toBe('queued');expect(requests.filter(m=>m==='thread/queue/add')).toHaveLength(1);expect(requests).not.toContain('turn/start');expect(queueEntries[0]).toMatchObject({clientUserMessageId:'same-client',input:[{type:'text',text:'after compaction'},{type:'localImage',path:image.path}]});
-    await submitStreamingCodexInput('thread','second','second-client');expect(queueEntries.map(q=>q.input[0].text)).toEqual(['after compaction','second']);
+    const [first,repeat]=await Promise.all([submitStreamingCodexInput('thread','after compaction','same-client',[image]),submitStreamingCodexInput('thread','after compaction','same-client',[image])]);expect(first).toBe('queued');expect(repeat).toBe('queued');expect(requests.filter(m=>m==='thread/queue/add')).toHaveLength(1);expect(requests).not.toContain('turn/start');expect(queueEntries[0]).toMatchObject({clientUserMessageId:'same-client',input:[{type:'text',text:'after compaction[Image #1]'},{type:'localImage',path:image.path}]});
+    await submitStreamingCodexInput('thread','second','second-client');expect(queueEntries.map(q=>q.input[0].text)).toEqual(['after compaction[Image #1]','second']);
     stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(frames.some(frame=>frame.type==='queue'&&frame.messages.length===2&&frame.messages[0].queued)).toBe(true));
     queueEntries=[];send('thread/queue/changed',{threadId:'thread'});await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({type:'queue',messages:[]}));
   });
@@ -182,10 +182,10 @@ describe('native Codex conversation streaming',()=>{
   it('submits images as native localImage inputs and keeps file references in user text',async()=>{
     const attachments=[{kind:'image' as const,name:'截图.png',path:'/project/.agentmanager/pastes/image.png'},{kind:'file' as const,name:'报告.txt',path:'/project/.agentmanager/pastes/report.txt'}];
     expect(await submitStreamingCodexInput('thread','看看附件','client-image',attachments)).toBe(true);
-    expect(submissions[0].input).toEqual([{type:'text',text:expect.stringContaining('报告.txt'),text_elements:[]},{type:'localImage',path:attachments[0].path}]);
+    expect(submissions[0].input).toEqual([{type:'text',text:expect.stringContaining('报告.txt'),text_elements:[{byteRange:{start:12,end:22},placeholder:'[Image #1]'}]},{type:'localImage',path:attachments[0].path}]);
     expect(submissions[0].input[0].text).not.toContain('agentmanager_attachments');
     await submitStreamingCodexInput('thread','仅图片','image-only',attachments.slice(0,1));
-    expect(submissions[1].input[0].text).toBe('仅图片');
+    expect(submissions[1].input[0].text).toBe('仅图片[Image #1]');
   });
   it('retains the terminal input path for an embedded CLI',async()=>{
     loaded=false;expect(await submitStreamingCodexInput('thread','followup')).toBe(false);expect(requests).not.toContain('turn/start');

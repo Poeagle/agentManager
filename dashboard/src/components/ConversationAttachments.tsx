@@ -1,4 +1,4 @@
-import {ConversationImagePreviewRoot,useConversationImagePreview,useConversationFilePreview} from './ConversationImagePreview';
+import {ConversationImagePreviewRoot,useConversationImagePreview,useConversationFilePreview,useConversationImageHover} from './ConversationImagePreview';
 import {useEffect,useRef,useState} from 'react';
 import {Paperclip} from 'lucide-react';
 import {api} from '../lib/api';
@@ -55,10 +55,10 @@ export function ConversationMessageAttachments({items,projectId,onOpenFile,proje
   return <ConversationImagePreviewRoot><MessageAttachments text={text} items={items} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/></ConversationImagePreviewRoot>;
 }
 function MessageAttachments({items,projectId,projectPath,text}:{text?:string;items:ConversationAttachment[];projectId:string|null;projectPath?:string;onOpenFile?:(path:string)=>void}) {
-  const preview=useConversationImagePreview(),previewFile=useConversationFilePreview();
+  const preview=useConversationImagePreview(),previewFile=useConversationFilePreview(),hover=useConversationImageHover();
   if(!items.length)return text||null;
   const body=text??'';let cursor=0;const ordered=items.map((item,index)=>({item,index,offset:Math.min(body.length,Math.max(0,item.offset??body.length))})).sort((a,b)=>a.offset-b.offset||a.index-b.index);
-  return <span className="session-chat-message-attachments">{ordered.map(({item,index,offset})=>{const prefix=body.slice(cursor,offset);cursor=offset;return <span key={`${item.path}-${index}`}>{prefix}<button type="button" key={`${item.path}-${index}`} className="session-chat-message-attachment" title={item.name} aria-label={`打开附件 ${item.name}`} onClick={()=>item.kind==='image'?preview?.({src:api.files.previewUrl(item.path,projectId||undefined),name:item.name}):previewFile?.({path:item.path,rootPath:projectPath||item.path.slice(0,item.path.lastIndexOf('/'))||'/',projectId,name:item.name})}>
+  return <span className="session-chat-message-attachments">{ordered.map(({item,index,offset})=>{const prefix=body.slice(cursor,offset);cursor=offset;return <span key={`${item.path}-${index}`}>{prefix}<button type="button" key={`${item.path}-${index}`} className="session-chat-message-attachment" title={item.kind==='image'?undefined:item.name} aria-label={`打开附件 ${item.name}`} onMouseEnter={event=>{if(item.kind==='image')hover?.show({src:api.files.previewUrl(item.path,projectId||undefined),name:item.name},event.currentTarget);}} onMouseLeave={()=>hover?.hide()} onFocus={event=>{if(item.kind==='image')hover?.show({src:api.files.previewUrl(item.path,projectId||undefined),name:item.name},event.currentTarget);}} onBlur={()=>hover?.hide()} onClick={()=>item.kind==='image'?preview?.({src:api.files.previewUrl(item.path,projectId||undefined),name:item.name}):previewFile?.({path:item.path,rootPath:projectPath||item.path.slice(0,item.path.lastIndexOf('/'))||'/',projectId,name:item.name})}>
     {item.kind==='image'?'图片':'文件'} {items.slice(0,index+1).filter(other=>other.kind===item.kind).length}
   </button></span>;})}{body.slice(cursor)}</span>;
 }

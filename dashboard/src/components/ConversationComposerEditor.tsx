@@ -1,7 +1,7 @@
 import {useLayoutEffect,useRef} from 'react';
 import {api} from '../lib/api';
 import type {DraftAttachment} from './ConversationAttachments';
-import {useConversationImagePreview,useConversationFilePreview} from './ConversationImagePreview';
+import {useConversationImagePreview,useConversationFilePreview,useConversationImageHover} from './ConversationImagePreview';
 const SPACE='\u200b';
 function composerContents(root:Node):{text:string;positions:Array<[string,number]>} {
   if(root.nodeType===Node.TEXT_NODE)return {text:(root.textContent||'').replaceAll(SPACE,''),positions:[]};
@@ -15,7 +15,7 @@ export function composerPlainText(root:Node):string{return composerContents(root
 export function composerAttachmentPositions(root:Node){return new Map(composerContents(root).positions);}
 export function ConversationComposerEditor({value,items,disabled,placeholder,projectId,projectPath,onChange,onRemove,onFiles,onSubmit,snapshotRef}:{snapshotRef?:{current:(()=>Map<string,number>)|null};value:string;items:DraftAttachment[];disabled:boolean;placeholder:string;projectId:string|null;projectPath?:string;onChange:(value:string)=>void;onRemove:(id:string)=>void;onFiles:(files:File[])=>void;onSubmit:()=>void}) {
   const root=useRef<HTMLDivElement>(null),composing=useRef(false),known=useRef(new Set<string>()),savedRange=useRef<Range|null>(null);
-  const preview=useConversationImagePreview(),filePreview=useConversationFilePreview();
+  const preview=useConversationImagePreview(),filePreview=useConversationFilePreview(),hover=useConversationImageHover();
   const props=useRef({value,items,disabled,onChange,onRemove,onFiles,onSubmit,projectId,projectPath});props.current={value,items,disabled,onChange,onRemove,onFiles,onSubmit,projectId,projectPath};
   function rememberCaret(){const selection=window.getSelection(),node=root.current;if(node&&selection?.rangeCount&&node.contains(selection.anchorNode))savedRange.current=selection.getRangeAt(0).cloneRange();}
   function syncText(){const node=root.current;if(!node)return;const ids=new Set([...node.querySelectorAll<HTMLElement>('[data-attachment-id]')].map(token=>token.dataset.attachmentId!));for(const id of known.current)if(!ids.has(id))props.current.onRemove(id);for(const token of node.querySelectorAll<HTMLElement>('[data-attachment-id]'))if(!props.current.items.some(item=>item.id===token.dataset.attachmentId))token.remove();props.current.onChange(composerPlainText(node));}
@@ -32,12 +32,12 @@ export function ConversationComposerEditor({value,items,disabled,placeholder,pro
       if(!token){token=document.createElement('span');token.contentEditable='false';token.dataset.attachmentId=item.id;token.className='session-chat-inline-attachment';token.tabIndex=0;token.setAttribute('role','button');const fragment=document.createDocumentFragment();fragment.append(document.createTextNode(SPACE),token,document.createTextNode(SPACE));insertion.deleteContents();insertion.insertNode(fragment);insertion.setStartAfter(token);insertion.collapse(true);}
       const number=items.slice(0,index+1).filter(other=>other.kind===item.kind).length;
       token.textContent=`${item.kind==='image'?'图片':'文件'} ${number}${item.status==='uploading'?'（上传中）':item.status==='error'?'（上传失败）':''}`;
-      token.setAttribute('aria-label',`${item.kind==='image'?'预览待发送图片':'预览待发送文件'} ${item.name}`);token.title=`${item.name} · 点击预览，Backspace/Delete 删除`;token.dataset.status=item.status;last=token;
+      token.setAttribute('aria-label',`${item.kind==='image'?'预览待发送图片':'预览待发送文件'} ${item.name}`);token.title=item.kind==='image'?'':`${item.name} · 点击预览，Backspace/Delete 删除`;token.dataset.status=item.status;last=token;
     }
     known.current=new Set(items.map(item=>item.id));
     if(added&&last&&!disabled){node.focus({preventScroll:true});const range=document.createRange();range.setStartAfter(last);range.collapse(true);const selection=window.getSelection();selection?.removeAllRanges();selection?.addRange(range);savedRange.current=range.cloneRange();}
   },[value,items,disabled]);
-  function open(token:HTMLElement){const item=props.current.items.find(item=>item.id===token.dataset.attachmentId);if(!item)return;if(item.kind==='image'){const src=item.path?api.files.previewUrl(item.path,projectId||undefined):item.thumbnail;if(src)preview?.({src,name:item.name});}else if(item.path&&projectPath)filePreview?.({path:item.path,rootPath:projectPath,projectId,name:item.name});}
+  function open(token:HTMLElement){hover?.hide();const item=props.current.items.find(item=>item.id===token.dataset.attachmentId);if(!item)return;if(item.kind==='image'){const src=item.path?api.files.previewUrl(item.path,projectId||undefined):item.thumbnail;if(src)preview?.({src,name:item.name});}else if(item.path&&projectPath)filePreview?.({path:item.path,rootPath:projectPath,projectId,name:item.name});}
   function insert(text:string){const node=root.current,selection=window.getSelection();if(!node||!selection)return;node.focus();const range=selection.rangeCount&&node.contains(selection.anchorNode)?selection.getRangeAt(0):document.createRange();if(!node.contains(range.startContainer)){range.selectNodeContents(node);range.collapse(false);}range.deleteContents();const textNode=document.createTextNode(text);range.insertNode(textNode);range.setStartAfter(textNode);range.collapse(true);selection.removeAllRanges();selection.addRange(range);syncText();}
   function deleteToken(event:React.KeyboardEvent<HTMLDivElement>){
     const node=root.current,selection=window.getSelection();if(!node||!selection)return;
@@ -50,6 +50,7 @@ export function ConversationComposerEditor({value,items,disabled,placeholder,pro
   return <><div ref={root} className="session-chat-editor" role="textbox" aria-label="发送给当前 Agent 的消息" aria-multiline="true" aria-disabled={disabled} contentEditable={!disabled} suppressContentEditableWarning tabIndex={disabled?-1:0} spellCheck={false} data-placeholder={placeholder}
     onInput={()=>{if(!composing.current)syncText();rememberCaret();}} onKeyUp={rememberCaret} onMouseUp={rememberCaret} onBlur={rememberCaret}
     onCompositionStart={()=>{composing.current=true;}} onCompositionEnd={()=>{composing.current=false;syncText();}}
+    onMouseOver={event=>{const token=event.target instanceof HTMLElement?event.target.closest<HTMLElement>('[data-attachment-id]'):null;if(!token)return;const item=props.current.items.find(item=>item.id===token.dataset.attachmentId);if(item?.kind==='image'){const src=item.thumbnail||(item.path?api.files.previewUrl(item.path,projectId||undefined):undefined);if(src)hover?.show({src,name:item.name},token);}}} onMouseOut={()=>hover?.hide()}
     onClick={event=>{const token=event.target instanceof HTMLElement?event.target.closest<HTMLElement>('[data-attachment-id]'):null;if(token)open(token);}}
     onPaste={event=>{event.preventDefault();if(disabled)return;const files=Array.from(event.clipboardData.files);if(files.length){rememberCaret();onFiles(files);}else insert(event.clipboardData.getData('text/plain'));}}
     onDrop={event=>{if(!event.dataTransfer.files.length){event.preventDefault();if(!disabled)insert(event.dataTransfer.getData('text/plain'));}}}

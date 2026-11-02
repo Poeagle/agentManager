@@ -11,13 +11,29 @@ export function formatConversationInput(text:string,attachments:ConversationAtta
   return (text.trim()?text:'请查看附件。')+(files.length?'\n\n附件：\n'+files.map(item=>`- ${item.name}: ${item.path}`).join('\n'):'');
 }
 
+/** Native TUI history needs both image attachments and their inline text spans.
+ * Positions from the browser use UTF-16; the native spans use UTF-8 bytes. */
+export function nativeConversationInput(text:string,attachments:ConversationAttachment[]):[{type:'text';text:string;text_elements:{byteRange:{start:number;end:number};placeholder:string}[]},...{type:'localImage';path:string}[]] {
+  const body=text.trim()?text:'请查看附件。';
+  const images=attachments.filter(item=>item.kind==='image').map((item,index)=>({item,index,offset:Math.min(body.length,Math.max(0,item.offset??body.length))})).sort((a,b)=>a.offset-b.offset||a.index-b.index);
+  let value='',cursor=0;
+  const text_elements:{byteRange:{start:number;end:number};placeholder:string}[]=[];
+  images.forEach(({offset,index})=>{
+    value+=body.slice(cursor,offset);cursor=offset;
+    const placeholder=`[Image #${index+1}]`,start=Buffer.byteLength(value);
+    value+=placeholder;text_elements.push({byteRange:{start,end:start+Buffer.byteLength(placeholder)},placeholder});
+  });
+  value+=body.slice(cursor);
+  return [{type:'text',text:formatConversationInput(value,attachments),text_elements},...attachments.filter(item=>item.kind==='image').map(item=>({type:'localImage' as const,path:item.path}))];
+}
+
 function inputKey(text:string,images:string[]) {
   return createHash('sha256').update(JSON.stringify([text.trim(),[...images].sort()])).digest('hex');
 }
 /** Display metadata stays in the application database, never in model text. */
 export function rememberConversationAttachments(sessionId:string,clientId:string,text:string,attachments:ConversationAttachment[],nativeImages:boolean) {
   if(!attachments.length)return;
-  const nativeText=formatConversationInput(text,attachments,!nativeImages);
+  const nativeText=nativeImages?nativeConversationInput(text,attachments)[0].text:formatConversationInput(text,attachments,true);
   getDb().prepare(`INSERT INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments)
     VALUES(?,?,?,?,?) ON CONFLICT(session_id,client_id) DO UPDATE SET input_key=excluded.input_key,input_text=excluded.input_text,attachments=excluded.attachments`)
     .run(sessionId,clientId,inputKey(nativeText,nativeImages?attachments.filter(item=>item.kind==='image').map(item=>item.path):[]),text.trim()?text:'请查看附件。',JSON.stringify(attachments));
