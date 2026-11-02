@@ -6,6 +6,8 @@ function fileEndpoint(url: string, projectId?: string): string {
   return projectId ? `${url}${url.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(projectId)}` : url;
 }
 
+export class ApiError extends Error {readonly status:number;readonly submission?:string;constructor(message:string,status:number,submission?:string){super(message);this.status=status;this.submission=submission;}}
+
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {};
   if (init?.body) headers['Content-Type'] = 'application/json';
@@ -15,7 +17,7 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.error || `API error: ${res.status}`);
+    throw new ApiError(body?.error || `API error: ${res.status}`,res.status,body?.submission);
   }
   return res.json();
 }
@@ -981,7 +983,7 @@ export interface SessionOutput {
   oldestSeq: number | null;
 }
 
-export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
+export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
 export interface ConversationControlsData {
   engine_version?:string|null;installed_cli_version?:string|null;git?:{branch:string;changes:number}|null;state?:string|null;
   model:string|null;effort:string|null;provider:string|null;cwd:string|null;cli_version:string|null;permission:string|null;approval:string|null;service_tier:string|null;

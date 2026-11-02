@@ -13,12 +13,16 @@ let active=false;
 let humanRequests:any[]=[],humanResponses:any[]=[];
 let baselineItems:any[]=[];
 let baselineFailure:any=null;
+let queueEntries:any[]=[],turnStartFailure:string|null=null;
 beforeEach(async()=>{
   dir=mkdtempSync(join(tmpdir(),'chat-stream-'));const path=join(dir,'sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',path);
-  server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;baselineItems=[];baselineFailure=null;humanRequests=[];humanResponses=[];
+  server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;baselineItems=[];baselineFailure=null;queueEntries=[];turnStartFailure=null;humanRequests=[];humanResponses=[];
   wss.on('connection',socket=>{
     peer=socket;socket.on('message',bytes=>{
       const frame=JSON.parse(bytes.toString());const {id,method,params}=frame;if(!method){humanResponses.push(frame);return;}requests.push(method);if(method==='thread/resume')for(const request of humanRequests)socket.send(JSON.stringify(request));if(method==='turn/start')submissions.push(params);if(!id) return;
+      if(method==='turn/start'&&turnStartFailure){socket.send(JSON.stringify({id,error:{message:turnStartFailure,code:-32600}}));return;}
+      if(method==='thread/queue/add')queueEntries.push({id:`queued-${queueEntries.length}`,clientUserMessageId:params.clientUserMessageId,input:params.input});
+      if(method==='thread/queue/add'||method==='thread/queue/list'){socket.send(JSON.stringify({id,result:method==='thread/queue/add'?{queuedSubmission:queueEntries.at(-1)}:{data:queueEntries}}));return;}
       const result=method==='thread/start'?{thread:{id:'019ff001-8888-7888-8888-888888888888'}}:method==='thread/read'?{thread:{status:{type:active?'active':loaded?'idle':'notLoaded'}}}:method==='thread/turns/list'?{data:active?[{id:'turn',status:'inProgress',items:baselineItems}]:baselineFailure?[{id:'turn',status:'failed',error:baselineFailure,completedAt:1793340000,items:[]}]:[]}:{};
       socket.send(JSON.stringify({id,result}));
     });
@@ -28,6 +32,22 @@ beforeEach(async()=>{
 afterEach(async()=>{stop?.();stop=undefined;for(const client of wss.clients) client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 const send=(method:string,params:unknown)=>peer.send(JSON.stringify({method,params}));
 describe('native Codex conversation streaming',()=>{
+  it('flushes accepted queued user echoes before a rapid next turn clears the batch',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
+    for(const id of ['one','two']){send('turn/started',{threadId:'thread',turn:{id}});send('item/completed',{threadId:'thread',turnId:id,item:{type:'userMessage',id:`user-${id}`,clientId:id,content:[{type:'text',text:id}]}});send('turn/completed',{threadId:'thread',turn:{id,status:'completed'}});}
+    await vi.waitFor(()=>{for(const id of ['one','two'])expect(frames.some(f=>f.type==='snapshot'&&f.messages.some(m=>m.client_id===id))).toBe(true);});
+  });
+  it('accepts messages during compaction into the native queue once and retains image inputs',async()=>{
+    active=true;baselineItems=[{id:'compact',type:'contextCompaction'}];const image={kind:'image' as const,name:'image.png',path:'/tmp/image.png'};
+    const [first,repeat]=await Promise.all([submitStreamingCodexInput('thread','after compaction','same-client',[image]),submitStreamingCodexInput('thread','after compaction','same-client',[image])]);expect(first).toBe('queued');expect(repeat).toBe('queued');expect(requests.filter(m=>m==='thread/queue/add')).toHaveLength(1);expect(requests).not.toContain('turn/start');expect(queueEntries[0]).toMatchObject({clientUserMessageId:'same-client',input:[{type:'text',text:'after compaction'},{type:'localImage',path:image.path}]});
+    await submitStreamingCodexInput('thread','second','second-client');expect(queueEntries.map(q=>q.input[0].text)).toEqual(['after compaction','second']);
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(frames.some(frame=>frame.type==='queue'&&frame.messages.length===2&&frame.messages[0].queued)).toBe(true));
+    queueEntries=[];send('thread/queue/changed',{threadId:'thread'});await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({type:'queue',messages:[]}));
+  });
+  it('handles the compaction-start race through the queue but never retries an unrelated rejection as another input',async()=>{
+    turnStartFailure='Thread is busy compacting context';expect(await submitStreamingCodexInput('thread','one','race-client')).toBe('queued');expect(queueEntries).toHaveLength(1);
+    turnStartFailure='Model access rejected';await expect(submitStreamingCodexInput('thread','two','rejected-client')).rejects.toThrow('暂未接受');expect(queueEntries).toHaveLength(1);
+  });
   it('streams compaction start, real token usage and completion without model text or extra requests',async()=>{
     stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
     send('turn/started',{threadId:'thread',turn:{id:'compact'}});send('item/started',{threadId:'thread',turnId:'compact',item:{id:'compact-item',type:'contextCompaction'}});

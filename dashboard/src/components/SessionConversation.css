@@ -309,3 +309,5 @@
 .conversation-compaction-status time {font-variant-numeric:tabular-nums;color:var(--text-muted);}
 .conversation-compaction-status[data-state="completed"] {color:var(--success,#22a879);}
 .conversation-compaction-status[data-state="failed"],.conversation-compaction-status[data-state="interrupted"] {color:var(--error,#dc2626);}
+
+.session-chat-queued {color:var(--accent);font-size:10px;white-space:nowrap;}

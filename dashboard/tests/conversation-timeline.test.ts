@@ -49,3 +49,14 @@ describe('causal conversation timeline',()=>{
     expect(ids(mergeConversationTimeline([message('a1','assistant')],[message('q1','user'),message('a1','assistant')]))).toEqual(['q1','a1']);
   });
 });
+
+
+it('reconciles a restored native queued message with its eventual user echo exactly once',()=>{
+ const queued={id:'queued-c',role:'user' as const,text:'压缩后处理',timestamp:null,client_id:'c',queued:true};
+ const result=mergeConversationTimeline([queued],[{id:'native',role:'user',text:queued.text,timestamp:null,client_id:'c',turn_id:'new-turn'}]);expect(result).toHaveLength(1);expect(result[0].queued).toBe(false);expect(result[0].id).toBe('native');
+});
+
+it('keeps waiting messages after the active answer and ignores a delayed queue snapshot once a message has started',()=>{
+ const queue=(id:string)=>({id:`q-${id}`,role:'user' as const,text:id,timestamp:null,client_id:id,queued:true});
+ let result=mergeConversationTimeline([queue('one'),queue('two')],[{id:'one',role:'user',text:'one',timestamp:null,client_id:'one',turn_id:'t1'},{id:'answer',role:'assistant',text:'answer one',timestamp:null,turn_id:'t1'}]);expect(result.map(item=>item.text)).toEqual(['one','answer one','two']);result=mergeConversationTimeline(result,[queue('one'),queue('two')]);expect(result.map(item=>item.text)).toEqual(['one','answer one','two']);
+});

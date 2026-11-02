@@ -13,11 +13,13 @@ export interface ConversationCompaction {id:string;status:'running'|'completed'|
 const publicCount=(n:unknown):number|null=>typeof n==='number'&&Number.isFinite(n)&&n>=0?n:null;
 function publicUsage(value:any){const fields:Record<string,string>={total_tokens:'totalTokens',input_tokens:'inputTokens',cached_input_tokens:'cachedInputTokens',output_tokens:'outputTokens',reasoning_output_tokens:'reasoningOutputTokens'};const counts=(v:any)=>Object.fromEntries(Object.entries(fields).map(([key,native])=>[key,publicCount(v?.[native])]));return {total:counts(value.total),last:counts(value.last),window:publicCount(value.modelContextWindow)};}
 export type ConversationStreamFrame =
+  | {type:'queue';messages:ConversationMessage[]}
   | {type:'usage';usage:ReturnType<typeof publicUsage>;observed_at:string}
   | {type:'settings';model:string;effort:string|null}
   | {type:'snapshot';messages:ConversationMessage[];interactions:ConversationInteraction[];activities:ConversationActivity[];compaction:ConversationCompaction|null;busy:boolean;connected:true;turn_id:string|null;started_at:string|null;completed_at:string|null;stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
   | {type:'unavailable';reason:string;reconnect?:boolean};
 
+export class CodexRpcError extends Error {constructor(readonly nativeMessage:string){super('原生 Codex 暂未接受此操作，请稍后重试');}}
 type CodexRequest = (method:string,params:unknown)=>Promise<any>;
 
 export async function withCodexConnection<T>(action:(request:CodexRequest,server:{userAgent:string|null})=>Promise<T>):Promise<T> {
@@ -34,7 +36,7 @@ export async function withCodexConnection<T>(action:(request:CodexRequest,server
   socket.on('message',bytes=>{
     let frame:any;try{frame=JSON.parse(bytes.toString());}catch{return;}
     const waiting=!frame.method?pending.get(frame.id):undefined;if(!waiting)return;pending.delete(frame.id);clearTimeout(waiting.timer);
-    if(frame.error) waiting.reject(new Error('Codex 会话请求失败'));else waiting.resolve(frame.result);
+    if(frame.error) waiting.reject(new CodexRpcError(typeof frame.error.message==='string'?frame.error.message.slice(0,1000):''));else waiting.resolve(frame.result);
   });
   const rejectPending=()=>{for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('Codex 连接已关闭'));}pending.clear();};
   socket.on('close',rejectPending);socket.on('error',rejectPending);
@@ -72,13 +74,39 @@ export async function interruptStreamingCodexThread(threadId:string) {
 
 /** Conversation text goes to the same engine, independently of terminal UI
  * menus, focus, and transport suspension. Embedded CLIs retain their PTY path. */
-export async function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[]=[]):Promise<boolean> {
-  return withCodexConnection(async request=>{
+type SubmissionResult=boolean|'queued';
+const acceptedInputs=new Map<string,{promise:Promise<SubmissionResult>;fingerprint:string}>();
+export function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[]=[]):Promise<SubmissionResult> {
+  const identity=clientId||randomUUID(),key=JSON.stringify([process.env.AGENTMANAGER_CODEX_STREAM_SOCKET,threadId,identity]),fingerprint=JSON.stringify([text,attachments]);
+  const existing=acceptedInputs.get(key);if(existing)return existing.fingerprint===fingerprint?existing.promise:Promise.reject(new CodexRpcError('Client input identity has different contents'));
+  const operation=withCodexConnection(async request=>{
     const current=await request('thread/read',{threadId});
-    if(current.thread?.status?.type==='notLoaded') return false;
-    await request('turn/start',{threadId,clientUserMessageId:clientId||randomUUID(),input:[{type:'text',text:formatConversationInput(text,attachments),text_elements:[]},...attachments.filter(item=>item.kind==='image').map(item=>({type:'localImage',path:item.path}))]});
-    return true;
+    if(current.thread?.status?.type==='notLoaded')return false;
+    const input=[{type:'text',text:formatConversationInput(text,attachments),text_elements:[]},...attachments.filter(item=>item.kind==='image').map(item=>({type:'localImage',path:item.path}))];
+    const queue=async()=>{
+      const existing=await request('thread/queue/list',{threadId,limit:100});
+      if(existing.data?.some((entry:any)=>entry.clientUserMessageId===identity))return 'queued' as const;
+      await request('thread/queue/add',{threadId,clientUserMessageId:identity,input});
+      return 'queued' as const;
+    };
+    if(current.thread?.status?.type==='active'){
+      const latest=await request('thread/turns/list',{threadId,limit:1,itemsView:'full'});
+      const turn=latest.data?.[0];
+      if(turn?.items?.some((item:any)=>item.type==='userMessage'&&item.clientId===identity))return true;
+      if(turn?.status==='inProgress'&&turn.items?.at(-1)?.type==='contextCompaction')return queue();
+    }
+    try{await request('turn/start',{threadId,clientUserMessageId:identity,input});return true;}
+    catch(error){
+      // Only an explicit native rejection is safe to retry through the queue.
+      // A transport timeout has an unknown outcome and must never be resent.
+      if(error instanceof CodexRpcError&&/compact|already.*(?:turn|running|processing)|(?:turn|thread).*(?:active|running|busy)/i.test(error.nativeMessage))return queue();
+      throw error;
+    }
   });
+  acceptedInputs.set(key,{promise:operation,fingerprint});
+  void operation.then(result=>{if(!result)acceptedInputs.delete(key);},()=>acceptedInputs.delete(key));
+  if(acceptedInputs.size>512)acceptedInputs.delete(acceptedInputs.keys().next().value!);
+  return operation;
 }
 
 /** Observe an already loaded Codex thread. Never start a thread or a turn. */
@@ -127,6 +155,21 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(activities.size>8)activities.delete(activities.keys().next().value!);
     changed();
   }
+  let queueRevision=0;
+  async function readQueue(){
+    const version=++queueRevision;
+    try{
+      const result=await request('thread/queue/list',{threadId,limit:100});
+      if(closed||version!==queueRevision)return;
+      const messages:ConversationMessage[]=(result.data||[]).filter((item:any)=>typeof item.clientUserMessageId==='string'&&Array.isArray(item.input)).map((item:any)=>{
+        const rawText=extractAgentMessages([{type:'response_item',payload:{type:'message',role:'user',content:item.input.filter((part:any)=>part.type==='text').map((part:any)=>({type:'input_text',text:part.text}))}}],'codex',128*1024)[0]?.text||'';
+        const reply=conversationQuestionReply(rawText);
+        return {id:`queued-${item.clientUserMessageId}`,role:'user' as const,client_id:item.clientUserMessageId,queued:true,timestamp:null,
+          text:reply?.text??rawText,...reply?{question_replies:reply.answers}:{},image_paths:conversationImagePaths(item.input)};
+      });
+      emit({type:'queue',messages});
+    }catch{/* Older native servers may not expose queued submissions. */}
+  }
   function acceptItem(item:any,turnId:string,streaming:boolean,timestamp?:number|null) {
     if(!['agentMessage','userMessage'].includes(item?.type)||typeof item.id!=='string'||typeof turnId!=='string') return;
     const role=item.type==='userMessage'?'user':'assistant';
@@ -156,6 +199,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       if(current.thread?.status?.type==='notLoaded') {unavailable();retry=setTimeout(()=>void attach(),2000);return;}
       await request('thread/resume',{threadId,excludeTurns:true});
       if(closed) return;
+      void readQueue();
       const baselineRevision=revision;
       const baseline=await request('thread/turns/list',{threadId,limit:1,itemsView:'full'});
       if(closed) return;
@@ -196,6 +240,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(waiting) {pending.delete(frame.id);clearTimeout(waiting.timer);if(frame.error) waiting.reject(new Error('Codex 事件接口不可用'));else waiting.resolve(frame.result);return;}
     const data=frame.params;
     if(data?.threadId!==threadId) return;
+    if(frame.method==='thread/queue/changed'){void readQueue();return;}
     if(frame.method==='thread/tokenUsage/updated'&&data.tokenUsage){if(!closed)emit({type:'usage',usage:publicUsage(data.tokenUsage),observed_at:new Date().toISOString()});return;}
     if(frame.method==='thread/settings/updated'&&typeof data.threadSettings?.model==='string') {
       if(!closed)emit({type:'settings',model:data.threadSettings.model,effort:data.threadSettings.effort??null});return;
@@ -206,6 +251,9 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(!['turn/started','item/started','item/completed','item/agentMessage/delta','turn/completed','error'].includes(frame.method))return;
     revision++;
     if(frame.method==='turn/started') {
+      // A queued next turn can start before the 10 ms batch is emitted. Flush
+      // the prior turn first so its accepted user message cannot disappear.
+      if(flush){clearTimeout(flush);snapshot();}
       items.clear();activities.clear();compaction=null;interactions.clear();busy=true;completedAt=null;turnId=data.turn?.id||null;
       startedAt=typeof data.turn?.startedAt==='number'?new Date(data.turn.startedAt*1000).toISOString():new Date().toISOString();
       stage='waiting';changed();

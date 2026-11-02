@@ -6,7 +6,7 @@ import type {CliType} from './session-identity.js';
 import {conversationImagePaths,type ConversationAttachment} from './conversation-attachments.js';
 import {conversationErrorMessage} from './conversation-error.js';
 
-export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];image_paths?:string[];async_questions?:ConversationAsyncQuestion[];question_replies?:ConversationQuestionReply[]}
+export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];image_paths?:string[];async_questions?:ConversationAsyncQuestion[];question_replies?:ConversationQuestionReply[]}
 interface IndexedMessage extends Omit<ConversationMessage,'text'> {offset:number;length:number;hash:string;recordType:string;nativeItem:boolean;questionSignature?:string;questionCallId?:string}
 interface NativeQuestionCall {offset:number;id:string;turnId?:string;signature:string}
 function questionSignature(questions:ConversationAsyncQuestion[]) {return createHash('sha256').update(JSON.stringify(questions.map(q=>({title:q.title,options:q.options})))).digest('hex');}

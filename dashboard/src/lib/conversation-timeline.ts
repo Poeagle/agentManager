@@ -18,11 +18,12 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
   const batch:TimelineMessage[]=[];
   const matched=new Set<number>();
   for(const message of incoming) {
+    if(message.queued&&message.client_id&&result.some(item=>item.role==='user'&&item.client_id===message.client_id&&!item.queued&&!item.optimistic))continue;
     let index=result.findIndex(item=>item.id===message.id || item.aliases?.includes(message.id));
     if(index<0 && message.role==='user') {
-      index=result.findIndex(item=>item.optimistic && (message.client_id
+      index=result.findIndex(item=>(item.optimistic||item.queued) && (message.client_id
         ? item.client_id===message.client_id
-        : message.sequence!==undefined && message.sequence>item.optimistic.afterSequence && sameInput(item,message)));
+        : message.sequence!==undefined && !!item.optimistic && message.sequence>item.optimistic.afterSequence && sameInput(item,message)));
     }
     if(index<0 && message.turn_id) {
       // Native stream/rollout item IDs can differ after resume. Reconcile ordered
@@ -36,7 +37,7 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
       // incomplete stream. Keep native order/identity and local correlation.
       const value=old.sequence!==undefined && message.sequence===undefined
         ? {...message,...old,client_id:message.client_id??old.client_id}
-        : {...old,...message,streaming:message.streaming??false,optimistic:undefined};
+        : {...old,...message,streaming:message.streaming??false,optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
       if(old.id!==message.id) value.aliases=[...new Set([...(old.aliases||[]),old.id,message.id])];
       result[index]=value;batch.push(value);
     } else batch.push(message);
@@ -57,7 +58,7 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
     const current=result.findIndex(item=>item.id===batch[i].id);
     if(current<before) {const [message]=result.splice(current,1);result.splice(before,0,message);}
   }
-  return result;
+  return [...result.filter(item=>!item.queued),...result.filter(item=>item.queued)];
 }
 
 /** crypto.randomUUID is unavailable on HTTP LAN previews; getRandomValues is

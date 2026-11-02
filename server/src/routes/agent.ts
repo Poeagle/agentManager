@@ -17,7 +17,7 @@ import {readConversation} from '../services/conversation-reader.js';
 import {readCodexRuntime} from '../services/codex-runtime.js';
 import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,validateConversationAttachments} from '../services/conversation-attachments.js';
 import {observeConversationFile} from '../services/conversation-file-stream.js';
-import {observeCodexConversation,submitStreamingCodexInput} from '../services/conversation-stream.js';
+import {observeCodexConversation,submitStreamingCodexInput,CodexRpcError} from '../services/conversation-stream.js';
 import {readConversationControls,readModelPreference,validateModelPreference,saveModelPreference,applyCodexModelSettings} from '../services/conversation-controls.js';
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
@@ -42,7 +42,7 @@ const MAX_WAIT_FOR_LENGTH = 512;
 const MAX_EXECUTE_TIMEOUT = 120_000;
 const MAX_EXECUTE_QUIESCENCE = 30_000;
 const MAX_AGENT_MESSAGE_BYTES = 128 * 1024;
-const pendingInputs = new Map<string, Promise<void>>();
+const pendingInputs = new Map<string, Promise<unknown>>();
 
 interface ValidatedExecuteRequest {
   input: string;
@@ -555,7 +555,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       const session=getSession(id);
       if(req.body?.source==='conversation' && process.env.AGENTMANAGER_CODEX_STREAM_SOCKET && session?.cli_type==='codex' && session.codex_session_id) {
         if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,true);
-        if(await (attachments.length?submitStreamingCodexInput(session.codex_session_id,input,attachmentClientId,attachments):clientId?submitStreamingCodexInput(session.codex_session_id,input,clientId):submitStreamingCodexInput(session.codex_session_id,input))) return;
+        const native=await (attachments.length?submitStreamingCodexInput(session.codex_session_id,input,attachmentClientId,attachments):clientId?submitStreamingCodexInput(session.codex_session_id,input,clientId):submitStreamingCodexInput(session.codex_session_id,input));
+        if(native)return native==='queued'?'queued':'submitted';
       }
       if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);
       if (!writeToSession(id,preparedInput,true)) throw new Error('Session input is unavailable');
@@ -564,10 +565,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     });
     pendingInputs.set(id,submission);
     try {
-      await submission;
-      return reply.code(202).send({id,status:'submitted'});
-    } catch {
-      return reply.code(503).send({error:'Input submission could not be confirmed; inspect the tab before retrying'});
+      const status=await submission;
+      return reply.code(202).send({id,status:status==='queued'?'queued':'submitted'});
+    } catch(error) {
+      if(error instanceof CodexRpcError)return reply.code(409).send({error:error.message,submission:'rejected'});
+      return reply.code(503).send({error:'暂未确认消息是否提交，请在原始终端核对后再重试',submission:'unknown'});
     } finally {
       if (pendingInputs.get(id) === submission) pendingInputs.delete(id);
     }
@@ -684,7 +686,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     }
     const send=(frame:any)=>{
       if(!canAccessAgentSession(req.user!.id,id)) {socket.close(1008);return;}
-      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(['snapshot','history'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,frame.messages)}:frame));
+      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(['snapshot','history','queue'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,frame.messages)}:frame));
       else if(socket.readyState===1) socket.close(1013,'Slow conversation client');
     };
     const stopFile=observeConversationFile({cli_type:'codex',codex_session_id:session.codex_session_id,claude_session_id:null,project_path:null},send);

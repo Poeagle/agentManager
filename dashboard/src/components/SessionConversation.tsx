@@ -10,7 +10,7 @@ import {ConversationInteraction,ConversationAsyncQuestion,ConversationQuestionSu
 import {memo,useCallback,useEffect,useRef,useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
-import {api,type ConversationMessage,type ConversationPage,type ConversationControlsData,type Session} from '../lib/api';
+import {api,ApiError,type ConversationMessage,type ConversationPage,type ConversationControlsData,type Session} from '../lib/api';
 import {decodeQuestionReply,questionAnswers} from '../lib/conversation-question-reply';
 import {parseConversationInput} from '../lib/conversation-attachments';
 import {ConversationAttachmentPicker,ConversationMessageAttachments,useConversationAttachments} from './ConversationAttachments';
@@ -40,6 +40,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
     } catch {setCopied(false);}
   }
   const metadata=(<span className="session-chat-message-meta">
+      {message.queued&&<span className="session-chat-queued" role="status">已排队 · 等待处理</span>}
       {durationLabel && <span className="session-chat-message-duration" title={durationTitle}>{durationLabel}</span>}
       {!compact && message.timestamp && <time dateTime={message.timestamp} title={`原生消息记录时间：${new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}（本地时区）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>}
       <button type="button" onClick={()=>void copy()} aria-label={`复制${message.role==='user'?'你的消息':'Agent 回复'}`} title={copied?'已复制':'复制消息'}>{copied?<Check size={13}/>:<Copy size={13}/>}</button>
@@ -97,13 +98,14 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const readingRoot=useRef<HTMLElement>(null);
   const pinned=useRef(true);
   const sendingRef=useRef(false);
+  const submissionIdentity=useRef<{fingerprint:string;id:string}|null>(null);
   const draftRef=useRef(draft);draftRef.current=draft;
   const bottom=useRef<HTMLDivElement>(null);
   const focusedQuestion=useRef<string|null>(null);
   const timelineRef=useRef(messages);timelineRef.current=messages;
   const scrollBottom=()=>{
     pinned.current=true;setUnread(false);bottom.current?.scrollIntoView({block:'nearest'});
-    const timeline=timelineRef.current,lastHuman=timeline.reduce((last,item,index)=>item.role==='user'&&!automaticConversationContext(item.text)?index:last,-1);
+    const timeline=timelineRef.current,lastHuman=timeline.reduce((last,item,index)=>item.role==='user'&&!item.queued&&!automaticConversationContext(item.text)?index:last,-1);
     const question=timeline.slice(lastHuman+1).reduce<ConversationMessage|null>((last,item)=>item.async_questions?.length?item:last,null);
     if(question&&focusedQuestion.current!==question.id) {
       const node=[...(list.current?.querySelectorAll<HTMLElement>('[data-chat-message-id]')||[])].find(item=>item.dataset.chatMessageId===question.id);
@@ -118,7 +120,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     for(const answer of pendingAnswers.current.values()){clearTimeout(answer.timer);answer.reject(Error('会话已切换'));}pendingAnswers.current.clear();
   },[session.codex_session_id,session.claude_session_id]);
   const ended=['completed','failed','cancelled'].includes(session.status);
-  const lastUserIndex=messages.reduce((last,message,index)=>message.role==='user'&&!automaticConversationContext(message.text)?index:last,-1);
+  const lastUserIndex=messages.reduce((last,message,index)=>message.role==='user'&&!message.queued&&!automaticConversationContext(message.text)?index:last,-1);
   const latestAssistant=messages.reduce<ConversationMessage|null>((last,message,index)=>index>lastUserIndex && message.role==='assistant'?message:last,null);
   const activeError=latestAssistant?.phase==='error' && (liveState!=='connected' || !liveProgress.turn_id || !latestAssistant.turn_id || latestAssistant.turn_id===liveProgress.turn_id)?latestAssistant:null;
   const busy=!(activeError && !activeError.error?.will_retry) && (liveState==='connected'?liveBusy:page?.runtime?.state==='running' || (!page?.runtime && page?.interaction?.processState==='busy'));
@@ -173,6 +175,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
         if(frame.type==='usage'&&frame.usage&&frame.observed_at){compaction.usage(frame.usage,frame.observed_at);return;}
         if(frame.type==='settings'&&typeof frame.model==='string'){queryClient.setQueryData<ConversationControlsData>(['conversation-controls',session.id],previous=>previous?{...previous,model:frame.model!,effort:frame.effort??null,pending:null}:previous);return;}
         if(frame.type==='interaction_result' && frame.request_id) {const pending=pendingAnswers.current.get(frame.request_id);if(pending){clearTimeout(pending.timer);pendingAnswers.current.delete(frame.request_id);if(frame.ok)pending.resolve();else pending.reject(new Error(frame.error||'提交失败'));}return;}
+        if(frame.type==='queue'&&Array.isArray(frame.messages)){const clients=new Set(frame.messages.map(item=>item.client_id));setMessages(previous=>mergeConversationTimeline(previous.filter(item=>!item.queued||clients.has(item.client_id)),frame.messages!));return;}
         if(frame.type==='history'&&Array.isArray(frame.messages)){pushAvailable.current=true;setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));setPage(previous=>previous?{...previous,runtime:frame.runtime||previous.runtime}:previous);if(frame.messages.length){if(pinned.current)requestAnimationFrame(()=>{if(!disposed)scrollBottom();});else setUnread(true);}return;}
         if(frame.type==='unavailable') {pushAvailable.current=false;setLiveState('unavailable');setLiveBusy(false);compaction.disconnected();return;}
         if(frame.type!=='snapshot' || !Array.isArray(frame.messages)) return;
@@ -230,20 +233,24 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     if((!text.trim() && !attached.length) || !fromQuestion&&(attachments.uploading || attachments.failed) || sendingRef.current || !canSend || !page?.session_active || ended || waiting) {if(fromQuestion)throw new Error('当前无法提交回答，请等待会话就绪或完成其他交互');return;}
     if(new TextEncoder().encode(text).byteLength>64*1024) {if(fromQuestion)throw new Error('回答超过 64 KB，请缩短后发送');setSendError('消息超过 64 KB，请缩短后发送。');return;}
     sendingRef.current=true;setSending(true);setSendError('');
-    const clientId=conversationClientId();
+    const fingerprint=JSON.stringify([session.codex_session_id,session.claude_session_id,text,attached]);
+    const clientId=submissionIdentity.current?.fingerprint===fingerprint?submissionIdentity.current.id:conversationClientId();submissionIdentity.current={fingerprint,id:clientId};
     const parsedReply=decodeQuestionReply(text);
     const timestamp=new Date().toISOString(),visibleText=parsedReply?.text??(text.trim()?text:attached.length?'请查看附件。':text),attachedIds=fromQuestion?[]:attachments.items.map(item=>item.id);
-    setMessages(previous=>[...previous,{id:`pending-${clientId}`,client_id:clientId,role:'user',text:visibleText,attachments:attached,timestamp,...(parsedReply?{question_replies:parsedReply.answers}:{}),optimistic:{afterSequence:previous.reduce((last,item)=>Math.max(last,item.sequence??-1),-1)}}]);
+    const accepted=timelineRef.current.find(item=>item.role==='user'&&item.client_id===clientId&&!item.optimistic);
+    if(!accepted)setMessages(previous=>[...previous,{id:`pending-${clientId}`,client_id:clientId,role:'user',text:visibleText,attachments:attached,timestamp,...(parsedReply?{question_replies:parsedReply.answers}:{}),optimistic:{afterSequence:previous.reduce((last,item)=>Math.max(last,item.sequence??-1),-1)}}]);
     pinned.current=true;requestAnimationFrame(scrollBottom);
     try {
-      if(attached.length)await api.agent.sendInput(session.id,text,clientId,attached);else await api.agent.sendInput(session.id,text,clientId);
+      const response=accepted?{status:accepted.queued?'queued':'submitted'}:await (attached.length?api.agent.sendInput(session.id,text,clientId,attached):api.agent.sendInput(session.id,text,clientId));
+      submissionIdentity.current=null;
+      if(response.status==='queued')setMessages(previous=>previous.map(item=>item.optimistic&&item.client_id===clientId?{...item,queued:true}:item));
       if(!fromQuestion)attachments.clear(attachedIds);
       // The native turn/started event can precede this HTTP acknowledgement;
       // only initialize the waiting state if a new turn has not arrived yet.
-      setLiveProgress(previous=>previous.stage==='idle'?{turn_id:null,started_at:new Date().toISOString(),stage:'waiting'}:previous);
+      setLiveProgress(previous=>response.status!=='queued'&&previous.stage==='idle'?{turn_id:null,started_at:new Date().toISOString(),stage:'waiting'}:previous);
       if(!fromQuestion&&draftRef.current===text) setDraft('');
       pinned.current=true;setRefresh(value=>value+1);requestAnimationFrame(scrollBottom);
-    } catch(failure) {setMessages(previous=>previous.filter(item=>!(item.optimistic && item.client_id===clientId)));if(fromQuestion){setSendError(failure instanceof Error?failure.message:'回答提交失败');throw failure;}setSendError(`${failure instanceof Error?failure.message:'发送失败'}。请查看原始终端确认后再重试。`);}
+    } catch(failure) {setMessages(previous=>previous.filter(item=>!(item.optimistic && item.client_id===clientId)));if(fromQuestion){setSendError(failure instanceof Error?failure.message:'回答提交失败');throw failure;}setSendError(failure instanceof ApiError&&['rejected','unknown'].includes(failure.submission||'')?failure.message:`${failure instanceof Error?failure.message:'发送失败'}。请查看原始终端确认后再重试。`);}
     finally {sendingRef.current=false;setSending(false);}
   }
   const agentName=session.cli_type==='codex'?'Codex':'Claude';
@@ -258,7 +265,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const streamingId=!activeError && liveState==='connected' && busy && !['tools','finishing'].includes(liveProgress.stage)
     ? messages.reduce<string|null>((id,message,index)=>index>lastUserIndex && message.role==='assistant' && message.streaming && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id)?message.id:id,null):null;
   const groups=groupConversationProgress(displayed);
-  const timings=conversationTimings(displayed,now,busy,liveProgress.turn_id);
+  const timings=conversationTimings(displayed.filter(message=>!message.queued),now,busy,liveProgress.turn_id);
   const pendingQuestion=messages.slice(lastUserIndex+1).reduce<ConversationMessage|null>((last,message)=>message.async_questions?.length?message:last,null);
   const questionActive=!!pendingQuestion&&minimizedQuestion!==pendingQuestion.id;
   const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} answers={questionAnswers(message,messages.slice(messages.indexOf(message)+1))} continued={messages.slice(messages.indexOf(message)+1).some(item=>item.role==='user'&&!automaticConversationContext(item.text))} onAnswer={()=>setMinimizedQuestion(null)}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} compact={compact} durationLabel={!compact?timings.get(message.id)?.label:undefined} durationTitle={!compact?timings.get(message.id)?.title:undefined} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;

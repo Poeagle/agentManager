@@ -55,6 +55,10 @@ describe('immediate session input',()=>{
     const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'能否再详细一下',source:'conversation'}});
     expect(result.statusCode).toBe(202);expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','能否再详细一下');expect(manager.writeToSession).not.toHaveBeenCalled();
   });
+  it('acknowledges native queued input without falling through to terminal paste',async()=>{
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
+    vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue('queued');const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'压缩完再处理',source:'conversation',client_id:'queue-one'}});expect(result.statusCode).toBe(202);expect(result.json()).toMatchObject({status:'queued'});expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
   it('forwards and validates the correlation ID before submitting native chat input',async()=>{
     vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');
     getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
