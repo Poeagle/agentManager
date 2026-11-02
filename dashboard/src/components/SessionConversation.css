@@ -297,10 +297,9 @@
 .session-chat-inline-attachment:focus-visible {outline:2px solid var(--accent);outline-offset:2px;border-radius:2px;}
 .session-chat-inline-attachment[data-status="error"] {color:var(--error);}
 .conversation-inline-meta {display:inline-flex;max-width:100%;margin-left:10px;vertical-align:baseline;}
-.conversation-inline-meta .session-chat-message-meta {margin:0;min-height:16px;line-height:16px;font-size:9px;gap:7px;}
-.conversation-inline-meta .session-chat-message-duration {margin-right:0;}
-.conversation-footer-fallback {display:flex;font-size:9px;}
-.conversation-footer-fallback .session-chat-message-meta {margin:0;min-height:16px;}
+.conversation-inline-meta .session-chat-message-meta,.conversation-footer-fallback .session-chat-message-meta {margin:0;min-height:20px;line-height:20px;font-size:12px;gap:9px;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;font-variant-numeric:tabular-nums;color:var(--text-secondary);}
+.conversation-inline-meta .session-chat-message-duration {margin-right:0;font:inherit;}
+.conversation-footer-fallback {display:flex;font-size:12px;}
 .session-chat-body .conversation-markdown>:last-child {margin-bottom:0;}
 
 .conversation-compaction-status {display:inline-flex;align-items:center;gap:7px;min-width:0;color:var(--accent);font-size:11px;}
