@@ -443,6 +443,7 @@ function PromptEnhancerSettings({ readOnly }: { readOnly: boolean }) {
   const [endpoint, setEndpoint] = useState('');
   const [source,setSource]=useState<AiSource>({kind:'api'});
   const local=source.kind!=='api';
+  const native=source.kind==='codex'||source.kind==='claude';
   const [model, setModel] = useState('');
   const [mode, setMode] = useState<PromptEnhancerMode>('standard');
   const [contextRounds, setContextRounds] = useState('3');
@@ -539,7 +540,7 @@ function PromptEnhancerSettings({ readOnly }: { readOnly: boolean }) {
                 onChange={(event) => setApiKey(event.target.value)} placeholder={keyConfigured ? '留空保留已保存的密钥' : '输入 API Key'}
                 className="settings-panel-control" />
             </div>
-            </>}<div className="settings-panel-field">
+            </>}{!native&&<div className="settings-panel-field">
               <label htmlFor="enhancer-model">模型</label>
               <div className="settings-panel-input-action">
                 <input id="enhancer-model" list="prompt-enhancer-models" value={model} onChange={(event) => setModel(event.target.value)}
@@ -556,7 +557,7 @@ function PromptEnhancerSettings({ readOnly }: { readOnly: boolean }) {
                 {models.map((item) => <option key={item} value={item} />)}
               </datalist>
               {modelsResult && <span role="status" className="settings-panel-help" style={{ color: modelsResult.startsWith('已发现') ? 'var(--success)' : 'var(--error)' }}>{modelsResult}</span>}
-            </div>
+            </div>}
             <div className="settings-panel-field">
               <label htmlFor="enhancer-mode">优化模式</label>
               <select id="enhancer-mode" value={mode} onChange={(event) => setMode(event.target.value as PromptEnhancerMode)} className="settings-panel-control">

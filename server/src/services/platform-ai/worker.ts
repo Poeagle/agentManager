@@ -1,3 +1,4 @@
+import {quickQuery,configuredModelReply,projectListReply} from './quick-queries.js';
 import { compactConversation, completedConversation } from './context.js';
 import { reconcileScheduledObservations } from './scheduled-observation.js';
 import type { FastifyInstance } from 'fastify';
@@ -277,7 +278,7 @@ export class PlatformAiWorker {
       let messages = JSON.parse(message.checkpoint) as ModelMessage[];
       if (!messages.length) {
         const tasks = getDb().prepare('SELECT id,session_id,status,summary FROM platform_ai_tasks WHERE conversation_id=? ORDER BY rowid DESC LIMIT 5').all(conversation.id);
-        const current = {...userMessage(message), runtime_context: `当前时间：${new Date().toISOString()}\n本对话近期任务：${JSON.stringify(tasks)}`};
+        const current = {...userMessage(message), runtime_context: `当前时间：${new Date().toISOString()}\n本对话近期任务：${JSON.stringify(tasks)}\n当前平台配置的 AI 来源：${config.source?.kind||'api'}；模型：${config.model||'客户端默认（未指定名称）'}`};
         messages = [...compactConversation(history), current];
         // Persist the timestamp and snapshot once: retries reuse identical input.
         this.checkpoint(message.id, messages);
@@ -289,6 +290,18 @@ export class PlatformAiWorker {
         this.finishMessage(message, conversation, messages, savedFinal.content.trim());
         return;
       }
+      if(messages.length===turnStart+1&&!messageAttachments(message.id).length) {
+        const intent=quickQuery(message.content);let quick:string|null=null;
+        if(intent==='model')quick=configuredModelReply(config);
+        if(intent==='projects') {
+          progress('正在读取可访问的项目…');
+          const call:ToolCall={id:'quick-project-list',type:'function',function:{name:'list_projects',arguments:'{}'}};
+          const content=await this.runTool(conversation,message.id,call);
+          messages.push({role:'assistant',content:null,tool_calls:[call]},{role:'tool',tool_call_id:call.id,content});this.checkpoint(message.id,messages);
+          try{quick=projectListReply(JSON.parse(content));}catch{/* Fall back to model handling with the audited result. */}
+        }
+        if(quick){messages.push({role:'assistant',content:quick});this.checkpoint(message.id,messages);this.finishMessage(message,conversation,messages,quick);return;}
+      }
       let usedToolRounds = messages.slice(turnStart).filter(item => item.role === 'assistant' && item.tool_calls?.length).length;
       for (let round = 0; round <= config.max_tool_rounds; round++) {
         // Resume a checkpoint containing unanswered tool calls before asking the model again.
@@ -297,7 +310,7 @@ export class PlatformAiWorker {
         const answered = new Set(messages.slice(lastAssistant + 1).map(item => item.tool_call_id));
         for (const call of pendingCalls) {
           if (answered.has(call.id)) continue;
-          const labels: Record<string, string> = {list_project_tabs: '读取项目标签页名称与状态', read_tab: '读取标签页可见内容与进度', platform_capabilities: '探测 Agent 与平台能力', platform_request: '查询或操作平台接口', start_work: '校验并启动工作 Agent', send_to_session: '向工作 Agent 发送需求', track_session: '建立任务跟踪', list_tracked_tasks: '查询任务进度'};
+          const labels: Record<string, string> = {list_projects:'读取可访问的项目', list_project_tabs: '读取项目标签页名称与状态', read_tab: '读取标签页可见内容与进度', platform_capabilities: '探测 Agent 与平台能力', platform_request: '查询或操作平台接口', start_work: '校验并启动工作 Agent', send_to_session: '向工作 Agent 发送需求', track_session: '建立任务跟踪', list_tracked_tasks: '查询任务进度'};
           progress(`正在${labels[call.function.name] || '调用平台工具'}…`);
           const content = await this.runTool(conversation, message.id, call);
           messages.push({ role: 'tool', tool_call_id: call.id, content });
@@ -332,11 +345,11 @@ export class PlatformAiWorker {
           partial = content.slice(0, 16000);
           if (Date.now() - lastFlush >= 100) {progress('正在生成回复…', partial); lastFlush = Date.now();}
         };
-        const ask = () => callModel(config, [{role: 'system', content: PLATFORM_SYSTEM_PROMPT},
+        const ask = () => {const started=Date.now();return callModel(config, [{role: 'system', content: PLATFORM_SYSTEM_PROMPT},
           ...messages.map(message => visionUnavailable ? {...message, attachment_ids: undefined} : message),
           ...(visionUnavailable ? [{role: 'user' as const, content: '[平台提示] 当前模型接口拒绝图片输入。图片已保存在附件中；明确告诉用户当前不能识图，不得猜测图片内容。如用户要求开发，可把附件交给工作 Agent。'}] : [])],
           PLATFORM_TOOLS, this.abort.signal, {userId: conversation.user_id, onContent, toolChoice: toolsAllowed ? 'auto' : 'none',
-            onUsage: usage => this.app.log.info({conversation_id: conversation.id, message_id: message.id, kind: 'conversation', model: config.model, ...usage}, 'Platform AI model usage')});
+            onUsage: usage => this.app.log.info({conversation_id: conversation.id, message_id: message.id, kind: 'conversation', model: config.model, ...usage}, 'Platform AI model usage')}).finally(()=>this.app.log.info({message_id:message.id,source:config.source?.kind||'api',model:config.model,round:round+1,elapsed_ms:Date.now()-started},'Platform AI model request timing'));};
         let response: ModelMessage;
         try {response = await ask();}
         catch (error) {

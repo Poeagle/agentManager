@@ -96,7 +96,7 @@ afterEach(async () => {
 function configure() {
   updateAiConfig({enabled: true, endpoint: 'https://model.example/v1', model: 'test-model', api_key: 'model-secret-never-expose'});
 }
-function inbound(content = '列出项目', messageId = 'message-1', userId = member, chatId = 'web-test') {
+function inbound(content = '检查项目情况', messageId = 'message-1', userId = member, chatId = 'web-test') {
   return receiveMessage({userId, externalUserId: userId, chatId, messageId, content});
 }
 function seedSession(id = 'session-1') {
@@ -436,6 +436,16 @@ describe('signed external channel ingestion', () => {
 });
 
 describe('durable platform AI tool execution', () => {
+  it('answers simple project listing with one audited permission-scoped read and no model request',async()=>{
+    configure();getDb().prepare("INSERT INTO projects(id,name,path,owner_id) VALUES('hidden','Private hidden','/private',?)").run(other);
+    const model=vi.fn();vi.stubGlobal('fetch',model);const received=inbound('现在有哪些项目');worker.tick();await worker.drain();
+    const reply=getDb().prepare("SELECT content FROM platform_ai_messages WHERE role='assistant' AND conversation_id=?").get(received.conversation_id) as {content:string};expect(reply.content).toContain('Project');expect(reply.content).not.toContain('Private hidden');expect(model).not.toHaveBeenCalled();expect(getDb().prepare('SELECT tool_name FROM platform_ai_operations WHERE message_id=?').all(received.message_id)).toEqual([{tool_name:'list_projects'}]);
+  });
+  it('answers configured model identity directly but leaves compound requests to the model',async()=>{
+    configure();const model=vi.fn().mockResolvedValue(providerResponse({content:'请选择需要处理的项目。'}));vi.stubGlobal('fetch',model);const received=inbound('你是什么模型');worker.tick();await worker.drain();const reply=getDb().prepare("SELECT content FROM platform_ai_messages WHERE role='assistant' AND conversation_id=?").get(received.conversation_id) as {content:string};expect(reply.content).toContain('test-model');expect(reply.content).not.toContain('model-secret');expect(model).not.toHaveBeenCalled();
+    inbound('有哪些项目需要删除？','compound');worker.tick();await worker.drain();expect(model).toHaveBeenCalledTimes(1);
+  });
+
   it('does not append an unsolicited new-task offer to a status query', async () => {
     configure();seedSession();
     vi.stubGlobal('fetch',vi.fn().mockResolvedValueOnce(toolResponse('list_project_tabs',{project_id:'p'}))

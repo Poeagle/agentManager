@@ -72,6 +72,7 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     await page.getByRole('button',{name:'平台 AI',exact:true}).click();
     const dialog=page.getByRole('dialog',{name:'平台管理'});
     await dialog.getByRole('button',{name:'模型配置',exact:true}).click();
+    await dialog.getByRole('radio',{name:/外部 API/}).check();
     const beforeProbe=await (await page.request.get('/api/platform-ai/config')).json();
     await dialog.getByLabel('模型 API 地址',{exact:true}).fill(provider+'/v1');
     await dialog.getByLabel('API Key',{exact:true}).fill('e2e-platform-ai-secret');
@@ -106,6 +107,7 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     expect(tool.projects.some((project: any) => project.name==='平台 AI 验证项目')).toBeTruthy();
     expect(JSON.stringify(modelRequests)).not.toContain('agentmanager_session');
     await page.screenshot({path:testInfo.outputPath('platform-ai-chat.png')});
+    await dialog.getByLabel('发送给平台 AI 的消息').fill('你是什么模型');await dialog.getByRole('button',{name:'发送消息'}).click();await expect(dialog.getByText('e2e-tools-model',{exact:true})).toBeVisible();expect(modelRequests.length).toBe(2);await dialog.getByLabel('发送给平台 AI 的消息').fill('现在有哪些项目');await dialog.getByRole('button',{name:'发送消息'}).click();await expect(dialog.getByText(/^当前可访问的项目共有/)).toBeVisible();expect(modelRequests.length).toBe(2);
     await page.setViewportSize({width:390,height:844});
     await table.scrollIntoViewIfNeeded();
     const overflow=await table.evaluate(element=>{

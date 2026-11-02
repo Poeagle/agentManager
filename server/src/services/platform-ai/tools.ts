@@ -38,6 +38,7 @@ function tabUpdateTime(activity: unknown, messages: Array<{timestamp?: unknown}>
     time_zone: REPORT_TIME_ZONE, utc_offset: '+08:00'};
 }
 export const PLATFORM_TOOLS: ModelTool[] = [
+  {type:'function',function:{name:'list_projects',description:'List project names accessible to the current user. Call directly without capability discovery when listing projects.',parameters:objectParams({})}},
   {type: 'function', function: {name: 'list_project_tabs', description: 'Read tab names, live state and a short latest public conversation message. Usually sufficient for project progress; do not read every tab again. No tools or reasoning. Unchanged text is reused from this conversation history.', parameters: objectParams({project_id: stringParam, project_name: stringParam, include_ended: {type: 'boolean'}})}},
   {type: 'function', function: {name: 'read_tab', description: 'READ ONLY: read the same public conversation as the dashboard. Default: latest progress (1000 characters), brief user request, state and update time; unchanged text is omitted when already in this conversation. Set detail=true ONLY when the user asks for detail or the short excerpt is insufficient. No tools/reasoning or terminal output. Works without tracking.', parameters: objectParams({session_id: stringParam, detail: {type: 'boolean'}}, ['session_id'])}},
   { type: 'function', function: { name: 'platform_capabilities', description: 'Read the platform API catalog. Optional endpoint_id returns its full request and response definition.', parameters: objectParams({ endpoint_id: stringParam, offset: {type: 'integer', minimum: 0}, limit: {type: 'integer', minimum: 1, maximum: 50} }) } },
@@ -126,6 +127,11 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
     }
     return paths.length ? '\n\n用户提供的参考图片（请打开原图查看，不要仅根据文字猜测）：\n' + paths.map((path, index) => `图片 ${index + 1}：${path}`).join('\n') : '';
   };
+  if(name==='list_projects') {
+    z.object({}).strict().parse(args);
+    const {projects}=await platformApi(app,userId,'GET','/api/projects');
+    return {total:projects.length,has_more:projects.length>100,projects:projects.slice(0,100).map((project:{id:string;name:string})=>({id:project.id,name:project.name}))};
+  }
   if (name === 'list_project_tabs') {
     const input = z.object({project_id: z.string().min(1).optional(), project_name: z.string().trim().min(1).optional(), include_ended: z.boolean().default(false)}).strict().parse(args);
     let projectId = input.project_id;
