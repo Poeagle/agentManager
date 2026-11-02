@@ -18,6 +18,7 @@ import { sessionPresenter } from '../services/session-labels.js';
 import {readConversationPreview,humanSessionTask} from '../services/conversation-preview.js';
 import { readCodexRuntime } from '../services/codex-runtime.js';
 import {requirePermission} from '../services/rbac.js';
+import {attachExistingSession} from '../services/session-attachment.js';
 
 const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_PASTED_FILE_BYTES = 35 * 1024 * 1024;
@@ -541,9 +542,9 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const session = sessionManager.getSession(req.params.id);
     if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
 
-    const reconnected = await sessionManager.reconnectSession(req.params.id);
-    if (!reconnected) return reply.status(404).send({ error: 'Session not found or not detached' });
-    return { ok: true, session };
+    const reconnected = await attachExistingSession(req.params.id);
+    if (!reconnected) return reply.status(409).send({ error: '未能连接现有终端；请查看原始终端状态，进程已退出时需恢复会话。' });
+    return { ok: true, session: sessionManager.getSession(req.params.id) };
   });
 
   // Paginated PTY output (stored in SQLite)

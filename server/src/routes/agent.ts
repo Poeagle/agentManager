@@ -4,6 +4,7 @@ const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as { Terminal: any };
 import { isSessionActive, writeToSession, querySessionOutputSince, getSession, getSessionSnapshot } from '../services/session-manager.js';
 import { RESIZE_MARKER } from '../services/session-manager.js';
+import {attachExistingSession} from '../services/session-attachment.js';
 import { getTracker, getOrCreateTracker } from '../services/session-state.js';
 import type { SessionState } from '../services/session-state.js';
 import { getSessionUser,readSessionCookie, sessionCookieName, userCanUseSessionTool,isAdmin } from '../auth.js';
@@ -540,12 +541,15 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
 
   app.post<{Params:{id:string};Body:{input?:unknown;source?:unknown;client_id?:unknown;attachments?:unknown}}>('/sessions/:id/input', async (req, reply) => {
     const {id} = req.params;
-    if (!canAccessAgentSession(req.user!.id,id) || !isSessionActive(id)) return reply.code(404).send({error:'Session not found or not running'});
+    if (!canAccessAgentSession(req.user!.id,id)) return reply.code(404).send({error:'Session not found'});
     const input = req.body?.input;
     if (typeof input !== 'string' || (!input.trim() && !(Array.isArray(req.body?.attachments) && req.body.attachments.length)) || Buffer.byteLength(input) > MAX_EXECUTE_INPUT_BYTES) return reply.code(400).send({error:'input must be text of at most 64 KiB, with text or at least one attachment'});
     const clientId=req.body?.client_id;
     if(clientId!==undefined && (typeof clientId!=='string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(clientId))) return reply.code(400).send({error:'Invalid client_id'});
     let attachments;try{attachments=await validateConversationAttachments(id,req.body?.attachments);}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'附件不可用'});}
+    // The server can restart after the browser's last ready snapshot. Reattach
+    // the existing wrapper before submission; never replay an ambiguous send.
+    if(!await attachExistingSession(id))return reply.code(409).send({error:'会话连接尚未就绪，请重新连接；进程已退出时需恢复会话。',submission:'rejected'});
     const preparedInput=formatConversationInput(input,attachments,true);
     const attachmentClientId=typeof clientId==='string'?clientId:randomUUID();
     // Serialize only the brief paste/Enter pair, never the agent's execution.

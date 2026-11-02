@@ -45,6 +45,13 @@ describe('session kill ownership', () => {
     cleanup();
   });
 
+  it('reconnect is idempotent for an already attached tab and returns current session data',async()=>{
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES('attached','project-1','Work','running','session','codex',?)").run(ownerId);
+    vi.spyOn(sessionManager,'isSessionActive').mockReturnValue(true);const reconnect=vi.spyOn(sessionManager,'reconnectSession');
+    const result=await app.inject({method:'POST',url:'/api/sessions/attached/reconnect',headers:{cookie:ownerCookie}});
+    expect(result.statusCode).toBe(200);expect(result.json()).toMatchObject({ok:true,session:{id:'attached',status:'running'}});expect(reconnect).not.toHaveBeenCalled();
+  });
+
   it('reload is restricted to the owner and requires Agent write permission',async()=>{
     getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES('reload-owned','project-1','Work','running','session','codex','019ff001-3434-7434-8434-343434343434',?)").run(ownerId);
     const reload=vi.spyOn(sessionManager,'reloadCodexSessionById').mockResolvedValue({ok:true,client_version:'0.166.0'});

@@ -31,7 +31,7 @@ export function SessionWorkspacePane({session,userId,active,renderTerminal,onRes
   function openReload(){let rawDraft=false;window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId:session.id,respond:(value:boolean)=>{rawDraft ||= value;}}}));if(rawDraft){setSwitchError('原始终端还有未发送的内容，请先发送或清空后重载。');return;}setSwitchError('');setReloadError('');setReloadOpen(true);}
   async function reload(){if(reloadLock.current||!onReload)return;reloadLock.current=true;setReloading(true);setReloadError('');try{await onReload();setReloadOpen(false);}catch(error){setReloadError(error instanceof Error?error.message:'重载失败，请重试');}finally{reloadLock.current=false;setReloading(false);}}
   useEffect(()=>{if(!active&&!reloading)setReloadOpen(false);},[active,reloading]);
-  useEffect(()=>{if(resuming||session.status==='pending'||session.status==='launching') setReady(false);},[resuming,session.status]);
+  useEffect(()=>{if(resuming||session.status==='pending'||session.status==='launching'||session.status==='detached') setReady(false);},[resuming,session.status]);
   const raw=view==='terminal'||!canChat;
   const ended=['completed','failed','cancelled'].includes(session.status);
   function choose(next:'chat'|'terminal') {

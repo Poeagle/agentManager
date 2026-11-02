@@ -30,6 +30,23 @@ describe('immediate session input',()=>{
     app=Fastify();await app.register(websocket);app.addHook('onRequest',authHook);await app.register(agentRoutes,{prefix:'/api'});await app.ready();
   });
   afterEach(async()=>{tracker.destroy();await app.close();vi.restoreAllMocks();vi.unstubAllEnvs();cleanup();});
+  it('reattaches before sending when the server restarted after the last browser snapshot',async()=>{
+    vi.mocked(manager.isSessionActive).mockReturnValue(false);getDb().prepare("UPDATE sessions SET status='detached' WHERE id='own'").run();
+    const reconnect=vi.spyOn(manager,'reconnectSession').mockResolvedValue(true);
+    const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'继续当前任务'}});
+    expect(result.statusCode).toBe(202);expect(reconnect).toHaveBeenCalledExactlyOnceWith('own');expect(manager.writeToSession).toHaveBeenCalledTimes(2);
+  });
+  it('rejects an unavailable terminal clearly and does not write or resend the input',async()=>{
+    vi.mocked(manager.isSessionActive).mockReturnValue(false);vi.spyOn(manager,'reconnectSession').mockResolvedValue(false);vi.spyOn(manager,'recoverSessionOnAttach').mockResolvedValue(false);
+    const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'继续'}});
+    expect(result.statusCode).toBe(409);expect(result.json()).toMatchObject({submission:'rejected'});expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
+  it('checks access and payload before reattaching any terminal',async()=>{
+    const reconnect=vi.spyOn(manager,'reconnectSession').mockResolvedValue(true);
+    expect((await app.inject({method:'POST',url:'/api/sessions/other/input',headers:{cookie},payload:{input:'继续'}})).statusCode).toBe(404);
+    expect((await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:''}})).statusCode).toBe(400);
+    expect(reconnect).not.toHaveBeenCalled();expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
   it('allows native responses only with fresh write permission, session access and a live login',async()=>{
     getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();
     const user=getDb().prepare("SELECT id FROM users WHERE username='owner'").get() as {id:string};

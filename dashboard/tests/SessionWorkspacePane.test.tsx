@@ -6,7 +6,7 @@ import {SessionWorkspacePane} from '../src/components/SessionWorkspacePane';
 import {api,type ConversationPage,type Session} from '../src/lib/api';
 vi.mock('../src/lib/api',async(original)=>{
   const actual=await original<typeof import('../src/lib/api')>();
-  return {...actual,api:{...actual.api,agent:{...actual.api.agent,conversation:vi.fn(),sendInput:vi.fn()},sessions:{...actual.api.sessions,pasteImage:vi.fn(),pasteFile:vi.fn()},rbac:{...actual.api.rbac,me:vi.fn()}}};
+  return {...actual,api:{...actual.api,agent:{...actual.api.agent,conversation:vi.fn(),sendInput:vi.fn()},sessions:{...actual.api.sessions,reconnect:vi.fn(),pasteImage:vi.fn(),pasteFile:vi.fn()},rbac:{...actual.api.rbac,me:vi.fn()}}};
 });
 const session={id:'chat',project_id:'p',task:'Work',status:'running',mode:'session',cli_type:'codex',codex_session_id:'native',pid:null,started_at:null,completed_at:null,exit_code:null,created_at:'2026-10-29T10:00:00Z'} satisfies Session;
 let client:QueryClient;let page:ConversationPage;
@@ -23,6 +23,22 @@ afterEach(()=>{client.clear();vi.unstubAllGlobals();});
 function typeDraft(node:HTMLElement,value:string){node.textContent=value;fireEvent.input(node);}
 function mount(onReload?:()=>Promise<void>) {return render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active onReload={onReload} renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);}
 describe('chat/raw terminal display',()=>{
+  it('reattaches a detached chat without opening raw terminal or losing its draft',async()=>{
+    page={...page,session_active:false,session_status:'detached'};
+    let finish!:()=>void;vi.mocked(api.sessions.reconnect).mockImplementation(()=>new Promise(resolve=>{finish=()=>{page={...page,session_active:true,session_status:'running'};resolve({ok:true,session});};}));
+    mount();const input=await screen.findByRole('textbox',{name:'发送给当前 Agent 的消息'});typeDraft(input,'继续处理');
+    await screen.findByRole('button',{name:'正在重新连接…'});expect(api.sessions.reconnect).toHaveBeenCalledExactlyOnceWith('chat');expect(screen.getByRole('button',{name:'发送消息'})).toBeDisabled();expect(screen.getByTestId('raw')).not.toBeVisible();
+    await act(async()=>finish());await waitFor(()=>expect(screen.getByRole('button',{name:'发送消息'})).toBeEnabled());expect(input).toHaveTextContent('继续处理');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledExactlyOnceWith('chat','继续处理',expect.any(String)));
+  });
+  it('shows a failed reattachment and retries explicitly instead of looping forever',async()=>{
+    page={...page,session_active:false,session_status:'detached'};vi.mocked(api.sessions.reconnect).mockRejectedValueOnce(new Error('现有终端暂不可用'));
+    mount();expect(await screen.findByRole('alert')).toHaveTextContent('现有终端暂不可用');expect(api.sessions.reconnect).toHaveBeenCalledTimes(1);
+    vi.mocked(api.sessions.reconnect).mockImplementation(async()=>{page={...page,session_active:true,session_status:'running'};return {ok:true,session};});
+    fireEvent.click(screen.getByRole('button',{name:'重新连接',exact:true}));await waitFor(()=>expect(screen.queryByText('会话连接已断开')).not.toBeInTheDocument());expect(api.sessions.reconnect).toHaveBeenCalledTimes(2);
+  });
+  it.each(['failed','completed','cancelled','released','pending','launching'] as const)('never automatically resumes or starts a %s session',async status=>{
+    page={...page,session_active:false,session_status:status};mount();await screen.findByText('检查已完成。');expect(api.sessions.reconnect).not.toHaveBeenCalled();expect(api.agent.sendInput).not.toHaveBeenCalled();
+  });
   it('refreshes stale startup permissions once the terminal becomes ready without waiting five minutes',async()=>{
     const cached={model:'a',effort:'high',models:[{model:'a',name:'A',efforts:[{value:'high'}],defaultEffort:'high'}],usage:null,limits:[],loaded:true,can_edit:false,pending:null};
     client.setQueryData(['conversation-controls',session.id],cached);
