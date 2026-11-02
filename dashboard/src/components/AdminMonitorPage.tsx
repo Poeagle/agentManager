@@ -285,7 +285,7 @@ function LoginSessions({user}:{user:AdminMonitorUser}) {
     {key:'activity',title:'最近活动',value:item=>item.last_seen_at,kind:'date',format:value=>absoluteTime(value==null?null:String(value))},
   ]);
   return <section className="mb-3" aria-label={`${user.username} 的登录连接`}>
-    <p className="mb-2 text-xs" style={{color:'var(--text-secondary)'}}>有效登录 · {rows.length} 处（登录时间与最近活动分别记录）</p>
+    <p className="mb-2 text-xs" style={{color:'var(--text-secondary)'}}>有效登录 · {rows.length} 个（登录时间与最近活动分别记录）</p>
     <DataTable label={`${user.username} 的登录连接`} model={table} minWidth={1000} empty={!rows.length} emptyMessage="没有有效登录记录。">{table.rows.map((item,index)=><tr key={index}>
       <td className="whitespace-nowrap">{absoluteTime(item.login_at)}</td><td className="font-mono text-xs">{item.login_ip||'未记录'}</td><td className="font-mono text-xs">{item.last_ip||'未记录'}</td><td title={item.user_agent||'未记录'}>{loginDevice(item.user_agent)}</td><td className="whitespace-nowrap">{item.presence.state==='online'?`在线 · ${item.presence.connections} 个连接`:item.presence.state==='unresponsive'?'心跳超时':'未连接'}</td><td className="whitespace-nowrap">{absoluteTime(item.presence.last_heartbeat_at)}</td><td className="whitespace-nowrap">{absoluteTime(item.last_seen_at)}</td>
     </tr>)}</DataTable>
@@ -329,7 +329,7 @@ function UserTree({ user, projects, collapsed, onToggle, expandedProjects, onTog
       <td title={user.presence?`网页连接 ${user.presence.connections} 个；最后心跳：${absoluteTime(user.presence.last_heartbeat_at)}。浏览器连接状态与后台任务分开统计。`:'尚未取得连接状态'}><span className="inline-flex items-center gap-1.5 whitespace-nowrap"><span className="h-1.5 w-1.5 rounded-full" style={{ background: user.disabled ? 'var(--error)' : user.presence?.state==='online' ? 'var(--success)' : user.presence?.state==='unresponsive'?'var(--warning,#d97706)':'var(--text-muted)' }} />{presenceLabel(user)}</span></td>
       <td>{user.open_projects}</td><td>{tabCount}</td><td>{user.active_sessions}{user.role === 'member' ? ` / ${user.max_tabs ?? 10}` : ''}</td><td className="whitespace-nowrap">{formatBytes(user.memory_bytes)}</td>
       <td className="whitespace-nowrap font-mono text-xs">{user.login_sessions?.[0]?.last_ip||'未记录'}</td>
-      <td className="whitespace-nowrap" title={user.login_sessions?.[0]?.user_agent||'未记录客户端信息'}>{loginDevice(user.login_sessions?.[0]?.user_agent)}{(user.login_sessions?.length||0)>1&&<span className="ml-1 text-xs" style={{color:'var(--text-secondary)'}}>（{user.login_sessions!.length} 处登录）</span>}</td>
+      <td className="whitespace-nowrap" title={user.login_sessions?.[0]?.user_agent||'未记录客户端信息'}>{loginDevice(user.login_sessions?.[0]?.user_agent)}{(user.login_sessions?.length||0)>1&&<span className="ml-1 text-xs" style={{color:'var(--text-secondary)'}}>（{user.login_sessions!.length} 个登录）</span>}</td>
       <td className="whitespace-nowrap" title={absoluteTime(user.last_seen_at)}>{absoluteTime(user.last_seen_at)}</td>
     </tr>
     {!collapsed && <TableDetailRow columnCount={10}>
