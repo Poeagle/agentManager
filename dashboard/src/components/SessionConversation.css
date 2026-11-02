@@ -261,14 +261,14 @@
 .conversation-auto-context-body {padding:8px 12px;border-top:1px solid var(--border);}
 .conversation-auto-context-body button {display:flex;align-items:center;gap:5px;margin-bottom:6px;color:var(--accent);}
 .conversation-auto-context pre {max-height:280px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.6;color:var(--text-secondary);}
-.conversation-controls {display:flex;align-items:center;gap:14px;flex-wrap:wrap;min-height:30px;margin-top:5px;font-size:11px;color:var(--text-secondary);}
+.conversation-controls {display:flex;align-items:center;gap:6px 12px;flex-wrap:wrap;min-height:30px;margin-top:5px;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;font-size:12px;line-height:20px;font-weight:400;font-variant-numeric:tabular-nums;color:var(--text-secondary);}
 .conversation-control-select {display:flex;gap:5px;align-items:center;position:relative;}
 .conversation-control-select>span {color:var(--text-muted);}
-.conversation-control-select select {max-width:190px;appearance:none;background:transparent;color:var(--text-primary);font-size:11px;padding:4px 16px 4px 2px;cursor:pointer;}
+.conversation-control-select select {max-width:190px;appearance:none;background:transparent;color:var(--text-primary);font:inherit;font-weight:500;padding:4px 16px 4px 2px;cursor:pointer;}
 .conversation-control-select select:disabled {cursor:default;opacity:.8;}
 .conversation-control-select>svg {position:absolute;right:0;pointer-events:none;}
 .conversation-control-select select:focus-visible {outline:2px solid var(--accent);border-radius:4px;}
-.conversation-control-details,.conversation-controls>button {display:flex;gap:4px;align-items:center;color:var(--accent);}
+.conversation-control-details,.conversation-controls>button {display:flex;gap:4px;align-items:center;font:inherit;font-weight:500;color:var(--accent);}
 .conversation-control-details {margin-left:auto;}
 .conversation-control-pending {color:var(--accent);font-size:10px;}
 .conversation-control-pending button {text-decoration:underline;margin-left:5px;}
@@ -276,7 +276,7 @@
 .conversation-control-context i {display:block;width:34px;height:4px;border-radius:4px;overflow:hidden;background:var(--border);}
 .conversation-control-context b {display:block;height:100%;background:var(--accent);}
 .conversation-control-environment {display:contents;}
-.conversation-control-environment>span {white-space:nowrap;font-size:10px;color:var(--text-muted);}
+.conversation-control-environment>span {white-space:nowrap;font:inherit;color:var(--text-secondary);}
 .conversation-control-environment .conversation-control-directory {max-width:min(360px,70vw);overflow:hidden;text-overflow:ellipsis;}
 .conversation-controls-details {display:grid;grid-template-columns:1fr 1fr;gap:9px 20px;font-size:12px;}
 .conversation-controls-details>div {min-width:0;}
