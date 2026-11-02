@@ -1,3 +1,5 @@
+import {AiSourceFields} from './AiSourceFields';
+import type {AiSource} from '../lib/ai-source';
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type PromptEnhancerMode } from '../lib/api';
@@ -439,6 +441,8 @@ function PromptEnhancerSettings({ readOnly }: { readOnly: boolean }) {
   });
   const [enabled, setEnabled] = useState(false);
   const [endpoint, setEndpoint] = useState('');
+  const [source,setSource]=useState<AiSource>({kind:'api'});
+  const local=source.kind!=='api';
   const [model, setModel] = useState('');
   const [mode, setMode] = useState<PromptEnhancerMode>('standard');
   const [contextRounds, setContextRounds] = useState('3');
@@ -454,6 +458,7 @@ function PromptEnhancerSettings({ readOnly }: { readOnly: boolean }) {
     const config = data.config;
     // Query data is the source of truth when this settings section opens.
     // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSource(config.source||{kind:'api'});
     setEnabled(config.enabled);
     setEndpoint(config.endpoint);
     setModel(config.model);
@@ -464,6 +469,7 @@ function PromptEnhancerSettings({ readOnly }: { readOnly: boolean }) {
 
   const saveMutation = useMutation({
     mutationFn: () => api.promptEnhancer.updateConfig({
+      source,
       enabled,
       endpoint,
       model,
@@ -508,7 +514,7 @@ function PromptEnhancerSettings({ readOnly }: { readOnly: boolean }) {
       <div className="settings-panel-section-heading">
         <div>
           <h4>提示词增强</h4>
-          <p>配置用于优化提示词的模型。API Key 保存在服务器，不会返回浏览器。</p>
+          <p>选择服务器已有 AI 客户端、通用适配器或外部 API。</p>
         </div>
         <label className="settings-panel-toggle">
           <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
@@ -520,8 +526,9 @@ function PromptEnhancerSettings({ readOnly }: { readOnly: boolean }) {
         <div className="flex items-center gap-2 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}><Loader2 className="h-3.5 w-3.5 animate-spin" />加载配置…</div>
       ) : (
         <>
+          <AiSourceFields value={source} onChange={setSource} disabled={readOnly}/>
           <div className="settings-panel-form-grid">
-            <div className="settings-panel-field">
+            {!local&&<><div className="settings-panel-field">
               <label htmlFor="enhancer-endpoint">LLM URL</label>
               <input id="enhancer-endpoint" value={endpoint} onChange={(event) => setEndpoint(event.target.value)}
                 placeholder="https://api.openai.com/v1" className="settings-panel-control" />
@@ -532,12 +539,12 @@ function PromptEnhancerSettings({ readOnly }: { readOnly: boolean }) {
                 onChange={(event) => setApiKey(event.target.value)} placeholder={keyConfigured ? '留空保留已保存的密钥' : '输入 API Key'}
                 className="settings-panel-control" />
             </div>
-            <div className="settings-panel-field">
+            </>}<div className="settings-panel-field">
               <label htmlFor="enhancer-model">模型</label>
               <div className="settings-panel-input-action">
                 <input id="enhancer-model" list="prompt-enhancer-models" value={model} onChange={(event) => setModel(event.target.value)}
-                  placeholder="gpt-4.1-mini" className="settings-panel-control" />
-                {!readOnly && <button type="button"
+                  placeholder={local?'留空使用客户端默认模型':'填写模型名称'} className="settings-panel-control" />
+                {!readOnly && !local && <button type="button"
                   onClick={() => { setModelsResult(null); detectModelsMutation.mutate(); }}
                   disabled={detectModelsMutation.isPending || !endpoint.trim()}
                   className="settings-panel-button" title="从当前 LLM URL 探测可用模型">

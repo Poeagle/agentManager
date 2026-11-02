@@ -1,3 +1,4 @@
+import type {AiSource} from './ai-source';
 import type {ConversationAttachment} from './conversation-attachments';
 const API_BASE = '/api';
 
@@ -57,6 +58,7 @@ export interface AuthStatus { needsSetup: boolean; authenticated: boolean; user:
 export interface AuthCredentials { username: string; password: string; display_name?: string; }
 export type PromptEnhancerMode = 'base' | 'lite' | 'standard' | 'expert' | 'publish';
 export interface PromptEnhancerConfig {
+  source?:AiSource;
   enabled: boolean;
   endpoint: string;
   model: string;
@@ -502,6 +504,7 @@ export const api = {
   promptEnhancer: {
     config: () => fetchJSON<{ config: PromptEnhancerConfig }>('/prompt-enhancer/config'),
     updateConfig: (config: {
+      source?:AiSource;
       enabled?: boolean;
       endpoint?: string;
       model?: string;

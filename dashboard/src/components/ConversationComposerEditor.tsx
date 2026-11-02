@@ -3,22 +3,24 @@ import {api} from '../lib/api';
 import type {DraftAttachment} from './ConversationAttachments';
 import {useConversationImagePreview,useConversationFilePreview} from './ConversationImagePreview';
 const SPACE='\u200b';
-export function composerPlainText(root:Node):string {
-  if(root.nodeType===Node.TEXT_NODE)return (root.textContent||'').replaceAll(SPACE,'');
-  if(root instanceof HTMLElement&&root.dataset.attachmentId)return '';
-  if(root instanceof HTMLBRElement)return '\n';
-  let result='',previousBlock=false;
-  for(const child of root.childNodes){const text=composerPlainText(child);if(!text)continue;const block=child instanceof HTMLElement&&['DIV','P'].includes(child.tagName);if(result&&(block||previousBlock)&&!result.endsWith('\n'))result+='\n';result+=text;previousBlock=block;}
-  return result;
+function composerContents(root:Node):{text:string;positions:Array<[string,number]>} {
+  if(root.nodeType===Node.TEXT_NODE)return {text:(root.textContent||'').replaceAll(SPACE,''),positions:[]};
+  if(root instanceof HTMLElement&&root.dataset.attachmentId)return {text:'',positions:[[root.dataset.attachmentId,0]]};
+  if(root instanceof HTMLBRElement)return {text:'\n',positions:[]};
+  let text='',previousBlock=false,occupied=false;const positions:Array<[string,number]>=[];
+  for(const child of root.childNodes){const part=composerContents(child);if(!part.text&&!part.positions.length)continue;const block=child instanceof HTMLElement&&['DIV','P'].includes(child.tagName);if(occupied&&(block||previousBlock)&&!text.endsWith('\n'))text+='\n';for(const [id,offset] of part.positions)positions.push([id,text.length+offset]);text+=part.text;previousBlock=block;occupied=true;}
+  return {text,positions};
 }
-export function ConversationComposerEditor({value,items,disabled,placeholder,projectId,projectPath,onChange,onRemove,onFiles,onSubmit}:{value:string;items:DraftAttachment[];disabled:boolean;placeholder:string;projectId:string|null;projectPath?:string;onChange:(value:string)=>void;onRemove:(id:string)=>void;onFiles:(files:File[])=>void;onSubmit:()=>void}) {
+export function composerPlainText(root:Node):string{return composerContents(root).text;}
+export function composerAttachmentPositions(root:Node){return new Map(composerContents(root).positions);}
+export function ConversationComposerEditor({value,items,disabled,placeholder,projectId,projectPath,onChange,onRemove,onFiles,onSubmit,snapshotRef}:{snapshotRef?:{current:(()=>Map<string,number>)|null};value:string;items:DraftAttachment[];disabled:boolean;placeholder:string;projectId:string|null;projectPath?:string;onChange:(value:string)=>void;onRemove:(id:string)=>void;onFiles:(files:File[])=>void;onSubmit:()=>void}) {
   const root=useRef<HTMLDivElement>(null),composing=useRef(false),known=useRef(new Set<string>()),savedRange=useRef<Range|null>(null);
   const preview=useConversationImagePreview(),filePreview=useConversationFilePreview();
   const props=useRef({value,items,disabled,onChange,onRemove,onFiles,onSubmit,projectId,projectPath});props.current={value,items,disabled,onChange,onRemove,onFiles,onSubmit,projectId,projectPath};
   function rememberCaret(){const selection=window.getSelection(),node=root.current;if(node&&selection?.rangeCount&&node.contains(selection.anchorNode))savedRange.current=selection.getRangeAt(0).cloneRange();}
   function syncText(){const node=root.current;if(!node)return;const ids=new Set([...node.querySelectorAll<HTMLElement>('[data-attachment-id]')].map(token=>token.dataset.attachmentId!));for(const id of known.current)if(!ids.has(id))props.current.onRemove(id);for(const token of node.querySelectorAll<HTMLElement>('[data-attachment-id]'))if(!props.current.items.some(item=>item.id===token.dataset.attachmentId))token.remove();props.current.onChange(composerPlainText(node));}
   useLayoutEffect(()=>{
-    const node=root.current;if(!node||composing.current)return;
+    const node=root.current;if(!node||composing.current)return;if(snapshotRef)snapshotRef.current=()=>composerAttachmentPositions(node);
     if(composerPlainText(node)!==value){node.textContent=value;savedRange.current=null;}
     let insertion=savedRange.current?.cloneRange();if(!insertion||!node.contains(insertion.startContainer)){insertion=document.createRange();insertion.selectNodeContents(node);insertion.collapse(false);}
     const container=insertion.startContainer instanceof HTMLElement?insertion.startContainer:insertion.startContainer.parentElement;const atom=container?.closest('[data-attachment-id]');if(atom){insertion.setStartAfter(atom);insertion.collapse(true);}

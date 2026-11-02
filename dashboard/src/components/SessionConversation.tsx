@@ -52,7 +52,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,compact=fals
   </article>;
   return <article className={`session-chat-message ${message.role}`} data-phase={message.phase} data-streaming={streaming} data-chat-message-id={message.id}>
     {message.role==='assistant' && !compact && <div className="session-chat-agent"><Sparkles size={16}/><span>{agentName}</span>{message.phase==='final' && <span className="session-chat-writing">结论</span>}{streaming && <span className="session-chat-writing">正在输出</span>}</div>}
-    <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text">{parsed.attachments.length?parsed.text.trimEnd():parsed.text}<ConversationMessageAttachments items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/></div>{metadata}</>:<ConversationMarkdown content={message.text} messageId={message.id} footer={!compact?metadata:undefined} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
+    <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text"><ConversationMessageAttachments text={parsed.attachments.length&&!parsed.attachments.some(item=>item.offset!==undefined)?parsed.text.trimEnd():parsed.text} items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/></div>{metadata}</>:<ConversationMarkdown content={message.text} messageId={message.id} footer={!compact?metadata:undefined} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
     {message.role==='assistant'&&compact&&metadata}
   </article>;
 });
@@ -75,6 +75,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
   const [draft,setDraft]=useState('');
   const [minimizedQuestion,setMinimizedQuestion]=useState<string|null>(null);
   const attachments=useConversationAttachments(session.id);
+  const attachmentPositions=useRef<(()=>Map<string,number>)|null>(null);
   const [sending,setSending]=useState(false);
   const [unread,setUnread]=useState(false);
   const [refresh,setRefresh]=useState(0);
@@ -214,7 +215,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
   async function send(questionReply?:string) {
     const fromQuestion=questionReply!==undefined;
     const text=questionReply??draftRef.current;
-    const attached=fromQuestion?[]:attachments.values();
+    const positions=attachmentPositions.current?.();const attached=fromQuestion?[]:attachments.values().map((item,index)=>({...item,offset:positions?.get(attachments.items.filter(entry=>entry.status==='ready'&&entry.path)[index]?.id)??text.length}));
     if((!text.trim() && !attached.length) || !fromQuestion&&(attachments.uploading || attachments.failed) || sendingRef.current || !canSend || !page?.session_active || ended || waiting) {if(fromQuestion)throw new Error('当前无法提交回答，请等待会话就绪或完成其他交互');return;}
     if(new TextEncoder().encode(text).byteLength>64*1024) {if(fromQuestion)throw new Error('回答超过 64 KB，请缩短后发送');setSendError('消息超过 64 KB，请缩短后发送。');return;}
     sendingRef.current=true;setSending(true);setSendError('');
@@ -293,7 +294,7 @@ export function SessionConversation({session,active,onRaw,onResume,onClose,resum
       <form hidden={questionActive} onSubmit={event=>{event.preventDefault();void send();}}
         onDragOver={event=>{if(Array.from(event.dataTransfer.types).includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=canSend&&!ended&&!sending?'copy':'none';}}}
         onDrop={event=>{if(!event.dataTransfer.files.length)return;event.preventDefault();event.stopPropagation();if(canSend&&!ended&&!sending)attachments.enqueue(Array.from(event.dataTransfer.files));}}>
-        <ConversationComposerEditor value={draft} items={attachments.items} disabled={!canSend||ended||waiting} placeholder={waiting?'请先处理上方交互':'输入消息，Enter 发送，Shift+Enter 换行'} projectId={session.project_id} projectPath={projectPath} onChange={setDraft} onRemove={attachments.remove} onFiles={attachments.enqueue} onSubmit={()=>void send()}/>
+        <ConversationComposerEditor snapshotRef={attachmentPositions} value={draft} items={attachments.items} disabled={!canSend||ended||waiting} placeholder={waiting?'请先处理上方交互':'输入消息，Enter 发送，Shift+Enter 换行'} projectId={session.project_id} projectPath={projectPath} onChange={setDraft} onRemove={attachments.remove} onFiles={attachments.enqueue} onSubmit={()=>void send()}/>
         {attachments.error&&<p role="alert" className="session-chat-error">{attachments.error}</p>}
 
         <div className="session-chat-input-tools"><ConversationAttachmentPicker disabled={!canSend||ended||sending} onFiles={attachments.enqueue}/><span>Enter 发送 · Shift+Enter 换行</span><button type="submit" aria-label="发送消息" disabled={sending||attachments.uploading||attachments.failed||!canSend||(!draft.trim()&&!attachments.items.length)||!page?.session_active||ended||waiting}>{sending?<Loader2 size={17} className="animate-spin"/>:<ArrowUp size={18}/>}</button></div>

@@ -3,7 +3,7 @@ import {dirname,extname,isAbsolute,join,relative,sep} from 'path';
 import {getDb} from '../db/index.js';
 import {createHash} from 'crypto';
 
-export interface ConversationAttachment {kind:'image'|'file';name:string;path:string}
+export interface ConversationAttachment {kind:'image'|'file';name:string;path:string;offset?:number}
 const MIB=1024*1024;
 export function formatConversationInput(text:string,attachments:ConversationAttachment[],includeImagePaths=false) {
   if(!attachments.length)return text;
@@ -73,7 +73,8 @@ export async function validateConversationAttachments(sessionId:string,value:unk
           || extension==='.webp' && header.subarray(0,4).toString()==='RIFF' && header.subarray(8,12).toString()==='WEBP';
         if(!valid)throw new Error();
       }
-      attachments.push({kind:item.kind,name:item.name,path});
+      if(item.offset!==undefined&&(!Number.isSafeInteger(item.offset)||item.offset<0||item.offset>65536))throw new Error();
+      attachments.push({kind:item.kind,name:item.name,path,...(item.offset!==undefined?{offset:item.offset}:{})});
     }
     if(total>50*MIB || images>10*MIB)throw new Error('附件总大小最多 50 MB，其中图片总大小最多 10 MB');
     return attachments;

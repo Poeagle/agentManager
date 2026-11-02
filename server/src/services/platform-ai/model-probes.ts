@@ -1,10 +1,12 @@
+import {aiSourceSchema,isClientSource} from '../ai-source.js';
 import { randomBytes } from 'crypto';
 import { z } from 'zod';
 import { readAiConfig, validateHttpUrl, type AiConfig } from './config.js';
 import { callModel, ModelRequestError, modelApiUrl, requestModelJson } from './model.js';
 
 const draftSchema = z.object({
-  endpoint: z.string().trim().min(1).max(2048),
+  source:aiSourceSchema.optional(),
+  endpoint: z.string().trim().max(2048),
   model: z.string().trim().max(160).optional(),
   api_key: z.string().max(4096).optional(),
   timeout_ms: z.number().int().min(1000).max(120000).optional(),
@@ -14,6 +16,7 @@ const draftSchema = z.object({
 function resolveDraft(input: unknown, requireModel: boolean): AiConfig {
   const draft = draftSchema.parse(input);
   const saved = readAiConfig();
+  if(isClientSource(draft.source))return {...saved,...draft,source:draft.source,enabled:true,model:draft.model||''};
   const endpoint = validateHttpUrl(draft.endpoint);
   if (!draft.api_key && saved.api_key && (!saved.endpoint || modelApiUrl(endpoint, 'chat/completions') !== modelApiUrl(saved.endpoint, 'chat/completions'))) {
     throw new Error('API 地址已更改，请重新输入 API Key 后再探测或测试');
@@ -26,6 +29,7 @@ function resolveDraft(input: unknown, requireModel: boolean): AiConfig {
 
 export async function discoverModels(input: unknown) {
   const config = resolveDraft(input, false);
+  if(isClientSource(config.source))throw Error('本机客户端沿用登录账号的可用模型；可留空使用默认模型，或填写模型名后测试');
   const data = await requestModelJson(config, 'models');
   if (!Array.isArray(data?.data)) throw new Error('模型列表格式无效；仍可手动输入模型名称并测试');
   const models = [...new Set<string>(data.data.flatMap((item: unknown) => {

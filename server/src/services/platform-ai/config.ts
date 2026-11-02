@@ -5,7 +5,9 @@ import { z } from 'zod';
 import { config as serverConfig } from '../../config.js';
 import { getDb } from '../../db/index.js';
 
+import {aiSourceSchema,isClientSource} from '../ai-source.js';
 const configSchema = z.object({
+  source: aiSourceSchema.optional(),
   enabled: z.boolean().default(false),
   endpoint: z.string().trim().max(2048).default(''),
   model: z.string().trim().max(160).default(''),
@@ -87,7 +89,7 @@ export function updateAiConfig(input: unknown) {
   const next = configSchema.parse({ ...previous, ...patch });
   if (next.endpoint) next.endpoint = validateHttpUrl(next.endpoint);
   const apiKey = patch.clear_api_key ? '' : patch.api_key || previous.api_key;
-  if (next.enabled && (!next.endpoint || !next.model || !apiKey)) {
+  if (next.enabled && !isClientSource(next.source) && (!next.endpoint || !next.model || !apiKey)) {
     throw new Error('启用平台 AI 前，请配置模型地址、模型名称和 API Key');
   }
   const { api_key: _key, clear_api_key: _clear, ...publicConfig } = next;

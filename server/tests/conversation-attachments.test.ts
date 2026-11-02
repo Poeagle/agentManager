@@ -31,6 +31,9 @@ describe('conversation attachment validation',()=>{
     expect(decorateConversationAttachments('s',[{role:'user',text:formatConversationInput('',attachments,true)}])[0]).toMatchObject({text:'请查看附件。',attachments});
     getDb().prepare("DELETE FROM sessions WHERE id='s'").run();expect(getDb().prepare('SELECT COUNT(*) n FROM conversation_attachments').get()).toEqual({n:0});
   });
+  it('validates and durably restores text positions without adding them to model input',async()=>{
+    const items=await validateConversationAttachments('s',[{kind:'image',name:'first.png',path:join(directory,'image.png'),offset:0},{kind:'file',name:'middle.txt',path:join(directory,'note.txt'),offset:2}]);rememberConversationAttachments('s','offsets','前文后文',items,true);expect(decorateConversationAttachments('s',[{role:'user',text:formatConversationInput('前文后文',items),image_paths:[items[0].path]}])[0]).toMatchObject({attachments:[{offset:0},{offset:2}]});expect(formatConversationInput('前文后文',items)).not.toContain('offset');for(const offset of [-1,0.5,65537,'2'])await expect(validateConversationAttachments('s',[{...items[0],offset}])).rejects.toThrow();
+  });
   it('rejects host files, escaped directories and symlinked attachments',async()=>{
     const outside=join(root,'private.txt');writeFileSync(outside,'private');symlinkSync(outside,join(directory,'link.txt'));
     for(const path of [outside,join(directory,'link.txt'),'/etc/passwd'])await expect(validateConversationAttachments('s',[{kind:'file',name:'file',path}])).rejects.toThrow('附件不可用');

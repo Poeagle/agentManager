@@ -30,7 +30,10 @@ describe('chat/raw terminal display',()=>{
     try{render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active renderTerminal={(_visible,_suspended,ready)=><button onClick={ready}>测试终端就绪</button>}/></QueryClientProvider>);const select=await screen.findByRole('combobox',{name:'选择模型'});expect(select).toBeDisabled();fireEvent.click(screen.getByText('测试终端就绪'));await waitFor(()=>expect(select).toBeEnabled());expect(get).toHaveBeenCalledTimes(1);}finally{get.mockRestore();}
   });
   it('does not preserve native trailing newlines before inline image text',async()=>{
-    page.messages=[{id:'image-user',role:'user',text:'这段正文\n\n',timestamp:null,attachments:[{kind:'image',name:'image.png',path:'/project/image.png'}]}];mount();const image=await screen.findByRole('button',{name:'打开附件 image.png'});const parent=image.closest('.session-chat-user-text')!;expect(parent.firstChild?.textContent).toBe('这段正文');expect(parent).toHaveTextContent('这段正文图片 1');expect(parent.querySelector('img')).toBeNull();
+    page.messages=[{id:'image-user',role:'user',text:'这段正文\n\n',timestamp:null,attachments:[{kind:'image',name:'image.png',path:'/project/image.png'}]}];mount();const image=await screen.findByRole('button',{name:'打开附件 image.png'});const parent=image.closest('.session-chat-user-text')!;expect(image.previousSibling?.textContent).toBe('这段正文');expect(parent).toHaveTextContent('这段正文图片 1');expect(parent.querySelector('img')).toBeNull();
+  });
+  it.each([0,2,4])('restores an attachment at its recorded text offset %s',async offset=>{
+    page.messages=[{id:'image-user',role:'user',text:'前文后文',timestamp:null,attachments:[{kind:'image',name:'image.png',path:'/project/image.png',offset}]}];mount();const image=await screen.findByRole('button',{name:'打开附件 image.png'});expect(image.previousSibling?.textContent||'').toBe('前文后文'.slice(0,offset));expect(image.closest('.session-chat-user-text')?.textContent).toBe('前文后文'.slice(0,offset)+'图片 1'+'前文后文'.slice(offset));
   });
   it('folds injected project instructions with a clear automatic category',async()=>{
     page.messages.splice(1,0,{id:'rules',role:'user',text:'# AGENTS.md instructions for /project\n\n<INSTRUCTIONS>\n'+('项目规则\n'.repeat(50))+'</INSTRUCTIONS>',timestamp:'2026-10-31T03:00:00Z'});mount();const label=await screen.findByText('自动信息 · 项目规则');const details=label.closest('details')!;expect(details.open).toBe(false);fireEvent.click(label);expect(details.open).toBe(true);expect(details.querySelector('pre')).toHaveTextContent('项目规则');
@@ -130,7 +133,7 @@ describe('chat/raw terminal display',()=>{
     fireEvent.click(screen.getByRole('button',{name:'原始终端',exact:true}));fireEvent.click(screen.getByRole('button',{name:'对话',exact:true}));
     expect(screen.getByRole('button',{name:'预览待发送图片 截图.png'})).toHaveTextContent('图片 1');expect(screen.getByRole('button',{name:'预览待发送文件 报告.txt'})).toHaveTextContent('文件 1');
     fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));
-    await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledWith('chat','',expect.any(String),[{kind:'image',name:'截图.png',path:'/project/.agentmanager/pastes/image.png'},{kind:'file',name:'报告.txt',path:'/project/.agentmanager/pastes/note.txt'}]));
+    await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledWith('chat','',expect.any(String),[{kind:'image',name:'截图.png',path:'/project/.agentmanager/pastes/image.png',offset:0},{kind:'file',name:'报告.txt',path:'/project/.agentmanager/pastes/note.txt',offset:0}]));
     await waitFor(()=>expect(screen.queryByLabelText('待发送附件')).not.toBeInTheDocument());expect(screen.getByRole('button',{name:'打开附件 截图.png'})).toBeVisible();expect(document.body.textContent).not.toContain('agentmanager_attachments');
   });
   it('keeps failed uploads and unsent drafts visible and never sends before upload completion',async()=>{

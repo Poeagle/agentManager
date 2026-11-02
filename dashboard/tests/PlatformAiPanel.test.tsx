@@ -12,7 +12,7 @@ vi.mock('../src/lib/platform-ai', () => ({platformAiApi: {
   testChannel: vi.fn(), reconnectChannel: vi.fn(), saveNotificationTarget: vi.fn(), deleteNotificationTarget: vi.fn(), deleteChannel: vi.fn(),
   projectNotifications: vi.fn(), saveProjectNotification: vi.fn(), deleteProjectNotification: vi.fn(),
 }}));
-vi.mock('../src/lib/api', () => ({api: {users: {list: vi.fn()}}}));
+vi.mock('../src/lib/api', () => ({fetchJSON:vi.fn().mockResolvedValue({clients:[]}),api: {users: {list: vi.fn()}}}));
 let client: QueryClient;
 const adminPermissions: MyPermissions = {permissions: {settings:'write',agent_api:'write',roles:'write'},roles:[],catalog:[]};
 

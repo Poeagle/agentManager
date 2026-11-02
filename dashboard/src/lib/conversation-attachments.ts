@@ -1,4 +1,4 @@
-export interface ConversationAttachment {kind:'image'|'file';name:string;path:string}
+export interface ConversationAttachment {kind:'image'|'file';name:string;path:string;offset?:number}
 export function formatConversationInput(text:string,attachments:ConversationAttachment[]) {
   if(!attachments.length)return text;
   return `${text.trim()?text:'请查看附件。'}\n\n<agentmanager_attachments>\n${JSON.stringify(attachments.map(({kind,name,path})=>({kind,name,path})))}\n</agentmanager_attachments>`;

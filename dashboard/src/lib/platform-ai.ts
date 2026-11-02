@@ -1,11 +1,13 @@
+import type {AiSource} from './ai-source';
 import { fetchJSON } from './api';
 
 export interface PlatformAiConfig {
+  source?:AiSource;
   enabled: boolean; endpoint: string; model: string; api_key_configured: boolean;
   timeout_ms: number; max_tool_rounds: number; observation_interval_seconds: number;
   assessment_interval_seconds: number; notification_interval_seconds: number;
 }
-export interface ModelConnectionDraft { endpoint: string; model?: string; api_key?: string; timeout_ms: number }
+export interface ModelConnectionDraft { source?:AiSource; endpoint: string; model?: string; api_key?: string; timeout_ms: number }
 export interface ModelProbeResult {
   ok: boolean; model: string; elapsed_ms: number;
   checks: Record<'connection' | 'response' | 'tools', {status: 'passed' | 'failed' | 'skipped'; message: string}>;
