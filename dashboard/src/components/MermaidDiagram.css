@@ -2,7 +2,7 @@
 .mermaid-diagram figcaption {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-secondary);}
 .mermaid-diagram figcaption>div {display:flex;gap:12px;}
 .mermaid-diagram figcaption button {color:var(--accent);}
-.mermaid-diagram-image {display:block;width:100%;padding:12px;cursor:zoom-in;overflow:auto;max-height:620px;}
-.mermaid-diagram-image img {display:block;width:auto;max-width:100%;margin:auto;object-fit:contain;}
+.mermaid-diagram-image {display:block;width:100%;padding:12px;cursor:zoom-in;overflow:hidden;}
+.mermaid-diagram .mermaid-diagram-image>img {display:block;width:auto;height:auto;max-width:100%;max-height:55vh;max-height:55dvh;margin:0 auto;object-fit:contain;border-radius:0;}
 .mermaid-diagram>p {font-size:12px;padding:12px;}
 .mermaid-diagram .mermaid-diagram-source {margin:0;border:0;border-radius:0;max-height:360px;overflow:auto;text-align:left;white-space:pre;font-size:12px;}
