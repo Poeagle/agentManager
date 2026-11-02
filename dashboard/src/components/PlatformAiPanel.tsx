@@ -191,7 +191,7 @@ function AiConfigForm({initial}: {initial: PlatformAiConfig}) {
     <p className="text-sm leading-6" style={muted}>选择已登录的服务器客户端、通用适配器或外部 API。平台 AI 使用所选来源理解需求和调度，平台操作继续按当前用户权限执行。</p>
     <fieldset disabled={!!busy} className="min-w-0 space-y-5">
     <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={config.enabled} onChange={event => setConfig({...config, enabled: event.target.checked})} />启用平台 AI</label>
-    <AiSourceFields value={config.source} onChange={source=>updateConnection({source})}/>
+    <AiSourceFields value={config.source} model={config.model} onModelChange={model=>updateConnection({model})} onChange={(source,defaultModel)=>{setModels(null);updateConnection({source,...(source.kind!==(config.source?.kind||'api')?{model:defaultModel||''}:{})});}}/>
     {!local&&<><label className="block text-sm">模型 API 地址<input className={fieldClass + ' mt-2'} style={fieldStyle} value={config.endpoint} onChange={event => updateConnection({endpoint: event.target.value})} placeholder="https://provider.example/v1" /></label>
     <label className="block text-sm">API Key<input type="password" autoComplete="new-password" className={fieldClass + ' mt-2'} style={fieldStyle} value={key} onChange={event => {setKey(event.target.value); setModels(null); setProbe(null); setNotice(''); setError('');}} placeholder={config.api_key_configured ? '已配置，留空保留' : '输入 API Key'} /></label>
     <div className="space-y-3">

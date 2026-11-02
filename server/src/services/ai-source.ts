@@ -1,6 +1,5 @@
 import {prepareAiSandbox,validateAiHosts} from './ai-sandbox.js';
-import {spawn,execFile} from 'child_process';
-import {promisify} from 'util';
+import {spawn} from 'child_process';
 import {mkdtemp,writeFile,rm} from 'fs/promises';
 import {tmpdir} from 'os';
 import {join} from 'path';
@@ -14,8 +13,7 @@ export const aiSourceSchema=z.object({kind:z.enum(['api','codex','claude','comma
 });
 export type AiSource=z.infer<typeof aiSourceSchema>;
 export const isClientSource=(source?:AiSource)=>!!source&&source.kind!=='api';
-const execute=promisify(execFile);
-export async function availableAiClients(){return Promise.all(['codex','claude'].map(async kind=>{try{await execute(kind,['--version'],{timeout:3000,maxBuffer:8192});return {kind,installed:true};}catch{return {kind,installed:false};}}));}
+export {availableAiClients} from './ai-source-discovery.js';
 const replySchema={type:'object',properties:{content:{type:'string'},tool_calls:{type:'array',maxItems:8,items:{type:'object',properties:{name:{type:'string'},arguments:{type:'string'}},required:['name','arguments'],additionalProperties:false}}},required:['content','tool_calls'],additionalProperties:false};
 let active=0;
 /** One-shot model adapters. Built-in clients have no host tools; platform

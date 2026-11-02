@@ -42,7 +42,7 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   const answerMeta=chat.locator('.session-chat-message[data-phase="final"] .session-chat-message-meta').first();
   await expect(answerMeta).toHaveCSS('opacity','1');
   await expect(answerMeta.getByRole('button',{name:'复制Agent 回复'})).toBeVisible();
-  appendFileSync(log,counters(1500,300)+entry('event_msg',{type:'task_complete',turn_id:turn}));await expect(answerMeta).toContainText('本轮 600 Token · 工具 4次/2轮');await expect(progress).toContainText('累计 100 Token · 工具 3次/1轮');
+  appendFileSync(log,counters(1500,300)+entry('event_msg',{type:'task_complete',turn_id:turn}));await expect(answerMeta).toContainText('本轮 600 Token · 工具 4次/2轮');await expect(progress).toContainText('本轮累计 100 Token · 工具 3次/1轮');
   for(const footer of await chat.locator('.conversation-inline-meta').all()){
     const geometry=await footer.evaluate(node=>{const previous=node.previousSibling!,range=document.createRange();range.selectNodeContents(previous);const text=[...range.getClientRects()].at(-1)!,meta=node.getBoundingClientRect(),timeRange=document.createRange();timeRange.selectNodeContents(node.querySelector('time')!);const timestamp=timeRange.getBoundingClientRect();return {gap:meta.left-text.right,top:timestamp.top,bottom:meta.bottom,textTop:text.top,textBottom:text.bottom};});
     expect(geometry.gap).toBeGreaterThanOrEqual(8);expect(geometry.gap).toBeLessThan(15);expect(geometry.top).toBeGreaterThanOrEqual(geometry.textTop);expect(geometry.top).toBeLessThan(geometry.textBottom);

@@ -526,7 +526,7 @@ function PromptEnhancerSettings({ readOnly }: { readOnly: boolean }) {
         <div className="flex items-center gap-2 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}><Loader2 className="h-3.5 w-3.5 animate-spin" />加载配置…</div>
       ) : (
         <>
-          <AiSourceFields value={source} onChange={setSource} disabled={readOnly}/>
+          <AiSourceFields value={source} model={model} onModelChange={value=>{setModel(value);setSaved(false);setTestResult(null);}} onChange={(next,defaultModel)=>{if(next.kind!==source.kind){setModel(defaultModel||'');setModels([]);setModelsResult(null);setTestResult(null);}setSaved(false);setSource(next);}} disabled={readOnly}/>
           <div className="settings-panel-form-grid">
             {!local&&<><div className="settings-panel-field">
               <label htmlFor="enhancer-endpoint">LLM URL</label>

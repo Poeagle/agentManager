@@ -311,7 +311,7 @@ function updateConfig(input: Record<string, unknown>) {
 }
 
 export const promptEnhancerRoutes: FastifyPluginAsync = async (app) => {
-  app.get('/ai-sources',async(req,reply)=>{if(!requirePermission(req,reply,'settings','read'))return;return {clients:await availableAiClients()};});
+  app.get<{Querystring:{refresh?:string}}>('/ai-sources',async(req,reply)=>{if(!requirePermission(req,reply,'settings','read'))return;return {clients:await availableAiClients(req.query.refresh==='true')};});
   app.get('/prompt-enhancer/config', async () => ({ config: safeConfig(readConfig()) }));
 
   app.put<{ Body: Record<string, unknown> }>('/prompt-enhancer/config', async (req, reply) => {
