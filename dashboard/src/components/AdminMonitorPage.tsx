@@ -224,7 +224,7 @@ export function AdminMonitorPage({ onBack, onOpenSession, canWrite = true, canDe
 
         {showStatusHelp && <StatusGuide />}
 
-          <DataTable label="用户监控" model={usersTable} minWidth={1300} expandable className="mb-3" columnWidths={['w-56','w-24','w-20','w-20','w-24','w-24','w-40','w-40','w-44']}
+          <DataTable label="用户监控" model={usersTable} minWidth={1400} expandable className="mb-3" columnWidths={['w-56','w-32','w-28','w-28','w-32','w-28','w-40','w-44','w-44']}
             loading={isLoading} error={error ? error instanceof Error ? error.message : '监控数据加载失败' : undefined}
             onRetry={() => { void refetch(); }} empty={usersTable.rows.length === 0} emptyMessage="没有匹配的用户、项目或会话标签">
             {usersTable.rows.map(({ user, projects }) => {
