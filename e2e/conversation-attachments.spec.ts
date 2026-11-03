@@ -72,3 +72,27 @@ test('chat uploads pasted images and dropped files, retains drafts, and restores
   await page.screenshot({path:testInfo.outputPath('attachments.png')});
   await page.request.delete(`/api/sessions/${session.id}`);
 });
+
+test('uploads selected and dropped directories as ZIP attachments with nested paths intact',async({page})=>{
+ const auth=await(await page.request.get('/api/auth/status')).json();expect((await page.request.post(auth.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
+ const root=join(process.cwd(),'.test-data/e2e'),projectPath=join(root,'directory-upload-project'),source=join(root,'folder-source');mkdirSync(projectPath,{recursive:true});mkdirSync(join(source,'子目录'),{recursive:true});writeFileSync(join(source,'说明.txt'),'目录说明');writeFileSync(join(source,'子目录','data.csv'),'a,b\n1,2');
+ const {project}=await(await page.request.post('/api/projects',{data:{name:'目录上传',path:projectPath}})).json();const {session}=await(await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:projectPath,mode:'terminal'}})).json();
+ const native='019ff001-7777-7777-8777-777777777779',logs=join(root,'home/.codex/sessions');mkdirSync(logs,{recursive:true});writeFileSync(join(logs,`rollout-${native}.jsonl`),JSON.stringify({timestamp:new Date().toISOString(),type:'event_msg',payload:{type:'task_complete',last_agent_message:'可以上传目录。'}})+'\n');
+ const require=createRequire(import.meta.url),Database=require('../server/node_modules/better-sqlite3'),{unzipSync,strFromU8}=require('../server/node_modules/fflate'),db=new Database(join(root,'agentmanager.db'));try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',native,session.id);}finally{db.close();}
+ await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'目录上传'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
+ try{
+  await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true}),editor=chat.getByRole('textbox',{name:'发送给当前 Agent 的消息'});await expect(chat.getByText('可以上传目录。')).toBeVisible();await editor.fill('请检查这些目录');
+  const uploaded=page.waitForResponse(response=>response.url().endsWith(`/sessions/${session.id}/paste-file`)&&response.request().method()==='POST');await chat.getByLabel('选择对话目录').setInputFiles(source);const result=await(await uploaded).json();
+  await expect(chat.getByRole('button',{name:'预览待发送文件 folder-source.zip'})).toHaveAttribute('data-status','ready');
+  const zip=unzipSync(readFileSync(result.path));expect(strFromU8(zip['folder-source/说明.txt'])).toBe('目录说明');expect(strFromU8(zip['folder-source/子目录/data.csv'])).toContain('1,2');await expect(editor).toContainText('请检查这些目录');
+  const dropped=page.waitForResponse(response=>response.url().endsWith(`/sessions/${session.id}/paste-file`)&&response.request().method()==='POST');
+  await editor.evaluate(node=>{
+   const f={name:'note.txt',isDirectory:false,file:(done:(file:File)=>void)=>done(new File(['dropped content'],'note.txt'))};
+   const directory=(name:string,batches:unknown[][])=>({name,isDirectory:true,createReader:()=>{let index=0;return{readEntries:(done:(files:unknown[])=>void)=>done(batches[index++]||[])}}});
+   const entry=directory('拖入目录',[[directory('nested',[[f]])],[directory('empty',[])]]),transfer=new DataTransfer();transfer.items.add(new File([''],'placeholder'));
+   Object.defineProperty(transfer,'items',{value:[{kind:'file',webkitGetAsEntry:()=>entry,getAsFile:()=>null}]});node.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+  });
+  const dropResult=await(await dropped).json();await expect(chat.getByRole('button',{name:'预览待发送文件 拖入目录.zip'})).toHaveAttribute('data-status','ready');const second=unzipSync(readFileSync(dropResult.path));expect(strFromU8(second['拖入目录/nested/note.txt'])).toBe('dropped content');expect(Object.keys(second)).toContain('拖入目录/empty/');
+  await chat.getByRole('button',{name:'发送消息',exact:true}).click();await expect.poll(()=>nativeInputs.length).toBe(1);expect(nativeInputs[0].input[0].text).toContain('folder-source.zip');expect(nativeInputs[0].input[0].text).toContain('拖入目录.zip');await expect(editor).toHaveText('');
+ }finally{await page.request.delete(`/api/sessions/${session.id}`).catch(()=>{});}
+});

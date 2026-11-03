@@ -558,7 +558,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     // The server can restart after the browser's last ready snapshot. Reattach
     // the existing wrapper before submission; never replay an ambiguous send.
     if(!await attachExistingSession(id))return reply.code(409).send({error:'会话连接尚未就绪，请重新连接；进程已退出时需恢复会话。',submission:'rejected'});
-    const current=getSession(id);if(current?.codex_session_id)retries.cancel(id,current.codex_session_id);
+    const current=getSession(id);if(current?.codex_session_id)retries.cancel(id,current.codex_session_id,'new_input');
     const preparedInput=formatConversationInput(input,attachments,true);
     const attachmentClientId=typeof clientId==='string'?clientId:randomUUID();
     // Serialize only the brief paste/Enter pair, never the agent's execution.

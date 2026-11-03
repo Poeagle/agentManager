@@ -20,3 +20,19 @@ it('shows terminal initiated compaction and keeps disconnects and interruptions 
 it('keeps request failures visible instead of claiming compression started',async()=>{
  vi.mocked(api.sessions.compactConversation).mockRejectedValueOnce(Error('请等待当前任务完成后再压缩会话'));const {result}=mount();await act(async()=>{await expect(result.current.start()).rejects.toThrow('当前任务');});expect(result.current.state).toMatchObject({status:'failed',error:'请等待当前任务完成后再压缩会话'});expect(result.current.running).toBe(false);
 });
+it('expires completion after three seconds and never resurrects it from repeated snapshots',()=>{
+ vi.useFakeTimers();const {result}=mount(),now=Date.now(),native={id:'once',status:'completed' as const,started_at:new Date(now-10000).toISOString(),completed_at:new Date(now).toISOString(),duration_ms:10000};
+ act(()=>result.current.observe(native,true));expect(result.current.state?.status).toBe('completed');
+ act(()=>vi.advanceTimersByTime(3000));expect(result.current.state).toBeNull();
+ act(()=>result.current.observe({...native,completed_at:new Date().toISOString()},true));expect(result.current.state).toBeNull();
+});
+it('immediately yields to resumed work and ignores old completion on reconnect',()=>{
+ vi.useFakeTimers();const {result}=mount(),now=Date.now(),native={id:'done',status:'completed' as const,started_at:null,completed_at:new Date(now).toISOString(),duration_ms:1000};
+ act(()=>result.current.observe(native,true));expect(result.current.state?.status).toBe('completed');
+ act(()=>result.current.observe(native,true,true));expect(result.current.state).toBeNull();
+ act(()=>result.current.observe(native,true));expect(result.current.state).toBeNull();
+ const old={...native,id:'old',completed_at:new Date(now-60000).toISOString()};act(()=>result.current.observe(old));expect(result.current.state).toBeNull();
+ act(()=>result.current.observe({...native,id:'new-turn'}));expect(result.current.state?.status).toBe('completed');
+ act(()=>result.current.observe(null,true));expect(result.current.state).toBeNull();
+ act(()=>result.current.observe({...native,id:'new-turn'}));expect(result.current.state).toBeNull();
+});

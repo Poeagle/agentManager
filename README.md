@@ -94,10 +94,30 @@ converters. Unprivileged user namespaces must be available for bubblewrap;
 there is no unsandboxed fallback. Missing components produce a clear message.
 Server fonts determine Office conversion fidelity; install CJK fonts for Chinese
 documents to avoid missing glyphs, and the original fonts when exact layout matters.
+Installed user font files are also available inside the isolated converter.
+Word previews disclose detected font substitutions (for example FangSong →
+FandolFang); a substitute is not reported as the original font. Theme-only fonts
+and legacy Office formats may not be fully inspectable, which the preview notes.
 PDF/image preview does not require LibreOffice; PDF rendering uses the browser's
 built-in viewer. The bundled [draw.io viewer](dashboard/src/vendor/drawio/README.md)
 runs offline in a sandboxed iframe; remote images, fonts and math resources are
 not fetched. Limits: 20 MB Office, 50 MB PDF/image and 5 MB text/diagram files.
+
+The conversation composer accepts directory drops and a directory picker. It
+packs each directory as a ZIP in a dedicated browser worker before uploading,
+preserving relative paths and empty directories reported by the browser. Each
+directory supports 2000 files, 100 MB of source data and a 35 MB resulting ZIP;
+the existing 8-attachment and 50 MB per-message limits still apply. The directory
+picker may omit empty folders depending on browser support.
+
+Conversation timestamps follow the browser clock and timezone. A timestamp on
+normal settings responses calibrates server/native log times to the browser;
+there is no extra polling or external clock lookup. Historical messages keep
+stable event times across tab switches. Original timestamps and native ordering
+are preserved, and active durations use a monotonic clock in the native clock
+domain. Progress metadata appears after completion, with elapsed time since the
+previous completed progress (or the user message). Partial statistics show known
+Token/tool lower bounds instead of hiding available data.
 
 ### Scheduled task conditions
 
@@ -176,7 +196,10 @@ tab changes and reconnects do not. Status distinguishes running, waiting for inp
 turn ended, interrupted and unknown. A finished turn is not proof of business task
 completion. Missing native logs or an unconfirmed running Codex process show an
 unknown state instead of inferring activity from the terminal. Visible dashboards
-refresh native status approximately every five seconds.
+receive native status and pending-question changes through the live event
+stream; approximately five-second polling remains as a fallback. One native-file
+observer is shared per active session, burst writes are coalesced, and unchanged
+status is not broadcast. Idle-history question metadata is reused from cache.
 
 New Codex conversations with valid native metadata show green **Ready** until
 their first turn. Unanswered asynchronous questions show yellow attention even
@@ -188,6 +211,19 @@ the agent. Later questions retain their own reminders.
 Chat image previews offer downloads as PNG, JPEG, WebP or the original file;
 Mermaid and other SVG images additionally offer SVG. Downloads use original
 image dimensions, independently of the preview zoom.
+
+The activity row follows the latest running tool immediately. Compaction
+completion appears for at most three seconds, yields when work resumes, and
+cannot reappear from replayed snapshots. A later task completion does not change
+the compaction step's own timestamp or duration. Answered question cards retain
+the original question; the user's answer appears once in its own message.
+
+Temporary model-capacity failures can retry up to three times. Async question
+items may have native `final_answer` phase but do not count as completed task
+answers and cannot cancel a retry on that basis. Cancelled plans display the
+actual dispatch count and persist a reason such as new input, a newer turn,
+changed access, or an actual final answer. Historical records without a reason
+are identified explicitly.
 
 Codex sessions launched by AgentManager use `--disable plugins`.
 Plugin-provided skills, MCP integrations and hooks are unavailable in these

@@ -22,6 +22,13 @@ beforeEach(()=>{
 });
 afterEach(()=>{manager.close();db.close();vi.useRealTimers();});
 describe('bounded durable conversation retries',()=>{
+ it('does not mistake an async final-phase question for a final answer before or during retries',async()=>{
+  const question={type:'agentMessage',phase:'final_answer',delivery:'async',questions:[{title:'哪个目录？',options:['A','B']}],text:'哪个目录？'};
+  native.turn.items=[question];failure();await vi.advanceTimersByTimeAsync(10000);
+  expect(start).toHaveBeenCalledTimes(1);expect(status()).toMatchObject({status:'running',attempt:1});
+  native.turn.items.push(question);await failRetry();await vi.advanceTimersByTimeAsync(20000);
+  expect(start).toHaveBeenCalledTimes(2);expect(status()).toMatchObject({status:'running',attempt:2});
+ });
  it('detects future errors in a server monitor without a browser subscription',async()=>{
   manager.monitor('session','user','native');failed!('initial',capacity,false);await vi.advanceTimersByTimeAsync(10000);expect(start).toHaveBeenCalledTimes(1);
  });
@@ -48,7 +55,7 @@ describe('bounded durable conversation retries',()=>{
  });
  it.each(['queued','newer','final','permission'])('cancels when %s supersedes the failure',async reason=>{
   failure();if(reason==='queued')native.queued=true;if(reason==='newer')native.turn.id='manual';if(reason==='permission')allowed=false;if(reason==='final')native.turn.items=[{type:'agentMessage',phase:'final_answer',text:'Already done'}];
-  await vi.advanceTimersByTimeAsync(10000);expect(start).not.toHaveBeenCalled();expect(status()?.status).toBe('cancelled');
+  await vi.advanceTimersByTimeAsync(10000);expect(start).not.toHaveBeenCalled();expect(status()).toMatchObject({status:'cancelled',attempt:0,stop_reason:({queued:'queued_input',newer:'newer_turn',final:'final_answer',permission:'access_changed'})[reason]});
  });
  it('cancels immediately on a manual turn or queued message and does not interrupt it',async()=>{
   failure();native.turn.id='manual';snapshot();await vi.advanceTimersByTimeAsync(10000);expect(status()?.status).toBe('cancelled');expect(start).not.toHaveBeenCalled();

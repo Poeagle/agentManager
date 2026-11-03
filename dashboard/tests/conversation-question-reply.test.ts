@@ -1,7 +1,14 @@
 import {describe,expect,it} from 'vitest';
-import {decodeQuestionReply,encodeQuestionReply,questionAnswers,pendingConversationQuestions} from '../src/lib/conversation-question-reply';
+import {decodeQuestionReply,encodeQuestionReply,questionAnswers,pendingConversationQuestions,questionReplyDisplayText} from '../src/lib/conversation-question-reply';
 import type {ConversationMessage} from '../src/lib/api';
 describe('native asynchronous answers',()=>{
+  it('shows only answer text while retaining native reply metadata and ordinary messages',()=>{
+    const message={id:'answer',role:'user',text:'回复你的提问：\n1. 原问题\n我的回答：只处理一级目录',timestamp:null,question_replies:[{question_id:'q',question:'原问题',answer:'只处理一级目录'}]} satisfies ConversationMessage;
+    expect(questionReplyDisplayText(message)).toBe('只处理一级目录');
+    expect(message.question_replies[0].question).toBe('原问题');
+    expect(questionReplyDisplayText({...message,question_replies:[...message.question_replies,{question_id:'q2',question:'第二个问题',answer:'保留\n完整换行'}]})).toBe('1. 只处理一级目录\n\n2. 保留\n完整换行');
+    expect(questionReplyDisplayText({...message,question_replies:undefined})).toBe(message.text);
+  });
   it('ignores a snapshot of question IDs without hiding later questions and supports partial answers',()=>{
     const group={id:'a',questions:[{id:'q1',title:'A',options:null},{id:'q2',title:'B',options:null}],timestamp:null};
     const later={id:'b',questions:[{id:'q3',title:'C',options:null}],timestamp:null};

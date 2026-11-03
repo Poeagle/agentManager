@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import { api, type FilePreviewType } from '../lib/api';
+import { api, type FilePreviewType,type PreviewFontReport } from '../lib/api';
 import { buildDrawioPreview } from '../lib/drawio-preview';
 import { parseDelimitedFile, parseSpreadsheetHtml, type PreviewSheet } from '../lib/spreadsheet-preview';
 import { SpreadsheetPreview } from './SpreadsheetPreview';
@@ -18,8 +18,10 @@ interface Props {
 
 export function DocumentPreview({ path, type, content, filesApi, onDownload }: Props) {
   const [preview, setPreview] = useState<{ url?: string; pdfData?: Uint8Array; html?: string; sheets?: PreviewSheet[]; error?: string } | null>(null);
+  const [fonts,setFonts]=useState<PreviewFontReport|null>(null);
   const office = ['word', 'spreadsheet', 'presentation'].includes(type);
   useEffect(() => {
+    setPreview(null);setFonts(null);
     const controller = new AbortController();
     let url: string | undefined;
     let cancelled = false;
@@ -34,7 +36,7 @@ export function DocumentPreview({ path, type, content, filesApi, onDownload }: P
           const html = buildDrawioPreview(content, viewer);
           if (!cancelled) setPreview({ html });
         } else {
-          const blob = await filesApi.preview(path, controller.signal);
+          const blob = await filesApi.preview(path, controller.signal,undefined,report=>{if(!cancelled)setFonts(report);});
           if (cancelled) return;
           if (type === 'spreadsheet') {
             const sheets = parseSpreadsheetHtml(await blob.text());
@@ -66,9 +68,13 @@ export function DocumentPreview({ path, type, content, filesApi, onDownload }: P
 
   return <div className="flex-1 min-h-0 flex flex-col">
     <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs shrink-0" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
-      <span>{type==='video'?'视频预览':type==='audio'?'音频预览':type === 'word' ? 'Word / 文本文档只读预览 · 保留分页与排版' : type === 'presentation' ? '演示文稿只读预览 · 按幻灯片分页' : type === 'drawio' ? 'draw.io 只读预览 · 外部链接和远程资源已禁用' : type === 'image' ? '图片预览' : type === 'csv' || type === 'spreadsheet' ? '表格只读预览 · 支持切换工作表' : 'PDF 只读预览'}</span>
+      <span>{type==='video'?'视频预览':type==='audio'?'音频预览':type === 'word' ? 'Word / 文本文档只读预览 · 服务器转换' : type === 'presentation' ? '演示文稿只读预览 · 按幻灯片分页' : type === 'drawio' ? 'draw.io 只读预览 · 外部链接和远程资源已禁用' : type === 'image' ? '图片预览' : type === 'csv' || type === 'spreadsheet' ? '表格只读预览 · 支持切换工作表' : 'PDF 只读预览'}</span>
       <button type="button" onClick={onDownload} className="shrink-0 hover:underline" style={{ color: 'var(--accent)' }}>下载原文件</button>
     </div>
+    {office&&fonts&&(fonts.substitutions.length>0||!fonts.checked)&&<div role="status" aria-label="文档字体提示" className="px-4 py-2 text-xs shrink-0" style={{color:'var(--text-secondary)',borderBottom:'1px solid var(--border)'}}>
+      {fonts.substitutions.length>0&&<details><summary className="cursor-pointer">预览字体替换：{fonts.substitutions[0].requested} → {fonts.substitutions[0].replacement}{fonts.substitutions.length+(fonts.omitted||0)>1&&` 等 ${fonts.substitutions.length+(fonts.omitted||0)} 项`}</summary><ul>{fonts.substitutions.map((entry,index)=><li key={index}>{entry.requested} → {entry.replacement}</li>)}{!!fonts.omitted&&<li>另有 {fonts.omitted} 项</li>}</ul></details>}
+      <p>{!fonts.checked?'部分字体未能逐项核对。':''}预览采用服务器可用字体，替换可能影响换行和分页；原文件未修改。</p>
+    </div>}
     {!preview && <div role="status" className="flex-1 flex items-center justify-center gap-2 text-sm" style={{ color: 'var(--text-secondary)' }}>
       <Loader2 className="w-4 h-4 animate-spin" />{office ? '正在服务器本地转换文档，请稍候…' : '正在加载预览…'}
     </div>}

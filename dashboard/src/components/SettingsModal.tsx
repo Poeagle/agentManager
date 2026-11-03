@@ -134,10 +134,10 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
 
   const mutation = useMutation({
     mutationFn: (settings: Record<string, string>) => api.settings.update(settings),
-    onSuccess: (_result,settings) => {
+    onSuccess: (result,settings) => {
       persistedThemeRef.current=settings.app_theme||DEFAULT_THEME;
       persistedFontRef.current=settings.app_font_family||'';
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.setQueryData(['settings'],{settings:result.settings});
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     },

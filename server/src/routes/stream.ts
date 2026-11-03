@@ -1,6 +1,8 @@
 import { FastifyPluginAsync } from 'fastify';
 import { subscribe } from '../services/event-store.js';
-import { isAdmin, readSessionCookie, userOwnsProject, userOwnsSession } from '../auth.js';
+import { isAdmin, readSessionCookie, userOwnsProject, userOwnsSession,userCanUseSessionTool } from '../auth.js';
+import {getDb} from '../db/index.js';
+import {personalQuestionRuntime} from '../services/question-attention.js';
 import { registerUserConnection } from '../services/user-connections.js';
 import { userHasPermission } from '../services/rbac.js';
 
@@ -14,6 +16,13 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
     if (!userId || !registerUserConnection(userId, readSessionCookie(req), socket,true)) return;
     // Subscribe to events
     const unsubscribe = subscribe((event: any) => {
+      if(event.type==='session.runtime'){
+        const row=getDb().prepare('SELECT codex_session_id,mode FROM sessions WHERE id=?').get(event.session_id) as {codex_session_id:string;mode:string}|undefined;
+        if(!row||!userCanUseSessionTool(userId,event.session_id,'codex',row.mode==='terminal'?'terminal':'session'))return;
+        try{const {runtime}=JSON.parse(event.data);if(runtime?.session_id!==row.codex_session_id)return;
+          socket.send(JSON.stringify({...event,data:JSON.stringify({runtime:personalQuestionRuntime(runtime,userId)})}));
+        }catch{/* Ignore malformed or stale bindings. */}return;
+      }
       // Host telemetry has the same read permission as its REST endpoint.
       if (event.type === 'server.resources' && !userHasPermission(userId, 'monitor')) return;
       // Administrator tab-management events are private to the affected user

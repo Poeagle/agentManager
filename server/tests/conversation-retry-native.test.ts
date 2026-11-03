@@ -15,6 +15,11 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{stop?.();stop=undefined;for(const client of wss.clients)client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 describe('native retry transport',()=>{
+ it.each(['async','final'])('rechecks %s final-phase messages on the actual dispatch connection',async kind=>{
+  turn.items=[{type:'agentMessage',phase:'final_answer',text:'内容',...(kind==='async'?{delivery:'async',questions:[{title:'哪个目录？',options:['A','B']}]}:{})}];
+  if(kind==='async'){expect(await startRetryTurn('native','failed','correlation')).toBe('retry');expect(requests.filter(call=>call.method==='turn/start')).toHaveLength(1);}
+  else{await expect(startRetryTurn('native','failed','correlation')).rejects.toThrow('final_answer');expect(requests.some(call=>call.method==='turn/start')).toBe(false);}
+ });
  it('continues the same thread once and asks to check completed operations',async()=>{
   expect(await startRetryTurn('native','failed','correlation')).toBe('retry');const calls=requests.filter(call=>call.method==='turn/start');expect(calls).toHaveLength(1);expect(calls[0].params).toMatchObject({threadId:'native',parentTurnId:'failed',clientUserMessageId:'correlation'});expect(calls[0].params.input[0].text).toContain('避免重复执行');expect(calls[0].params).not.toHaveProperty('model');expect(requests.some(call=>['thread/start','thread/archive','thread/resume'].includes(call.method))).toBe(false);
  });

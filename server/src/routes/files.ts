@@ -7,7 +7,7 @@ import { userOwnsFilesystemPath, userOwnsProject } from '../auth.js';
 import { getDb } from '../db/index.js';
 import { privateResourcePath } from '../services/shared-resources/path-guard.js';
 import { createDirectoryExport } from '../services/file-export-process.js';
-import { DocumentPreviewError, previewOfficeDocument, OFFICE_EXTENSIONS, SPREADSHEET_EXTENSIONS } from '../services/document-preview.js';
+import { DocumentPreviewError, previewOfficeDocumentDetailed, OFFICE_EXTENSIONS, SPREADSHEET_EXTENSIONS } from '../services/document-preview.js';
 
 const IMAGE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml', ico: 'image/x-icon', avif: 'image/avif' };
 
@@ -315,8 +315,11 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
         reply.header('Content-Length',info.size);
       }
       if (!office) return reply.send(createReadStream(path));
-      const document = await previewOfficeDocument(await readFile(path), extension);
-      return reply.send(document);
+      const document = await previewOfficeDocumentDetailed(await readFile(path), extension);
+      const fonts={...document.fonts,substitutions:document.fonts.substitutions.slice(0,8),omitted:Math.max(0,document.fonts.substitutions.length-8)};
+      while(encodeURIComponent(JSON.stringify(fonts)).length>6000&&fonts.substitutions.length){fonts.substitutions.pop();fonts.omitted++;}
+      reply.header('X-Preview-Fonts',encodeURIComponent(JSON.stringify(fonts)));
+      return reply.send(document.content);
     } catch (error: any) {
       reply.removeHeader('Content-Type');
       reply.removeHeader('Content-Disposition');

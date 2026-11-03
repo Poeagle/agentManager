@@ -4,6 +4,12 @@ import {conversationTimings} from '../src/lib/conversation-timing';
 import {conversationOutline} from '../src/components/ConversationReadingTools';
 const rules='# AGENTS.md instructions for /project\n\n<INSTRUCTIONS>\n# 项目治理\n自动规则\n</INSTRUCTIONS>';
 describe('native automatic context',()=>{
+ it('folds coalesced startup rules and environment, retaining ordinary requests after wrappers',()=>{
+  const combined=rules+'\n<environment_context>linux</environment_context>';
+  expect(automaticConversationContext(combined)).toMatchObject({kind:'combined',label:'项目规则 · 运行环境'});
+  expect(automaticConversationContext(combined+'\n请继续处理任务')).toBeNull();
+  const messages=[{id:'auto',role:'user' as const,text:combined,timestamp:null}];expect(conversationOutline(messages)).toEqual([]);
+ });
  it('labels explicit native project and environment wrappers',()=>{
   expect(automaticConversationContext(rules)).toMatchObject({kind:'project_rules',label:'项目规则'});expect(automaticConversationContext('<environment_context>linux</environment_context>')?.label).toBe('运行环境');expect(automaticConversationContext('<task_notification>done</task_notification>')?.label).toBe('任务通知');
  });

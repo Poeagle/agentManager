@@ -13,7 +13,7 @@ import {memo,useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
 import {api,ApiError,type ConversationMessage,type ConversationPage,type ConversationControlsData,type ConversationUsageUpdate,type ConversationStatistics,type Session} from '../lib/api';
-import {decodeQuestionReply,questionAnswers,pendingConversationQuestions} from '../lib/conversation-question-reply';
+import {decodeQuestionReply,questionAnswers,pendingConversationQuestions,questionReplyDisplayText} from '../lib/conversation-question-reply';
 import {parseConversationInput} from '../lib/conversation-attachments';
 import {ConversationAttachmentPicker,ConversationMessageAttachments,useConversationAttachments,type DraftAttachment} from './ConversationAttachments';
 import {ConversationMarkdown} from './ConversationMarkdown';
@@ -23,14 +23,17 @@ import {conversationClientId,mergeConversationTimeline,type TimelineMessage} fro
 import {groupConversationProgress} from '../lib/conversation-progress';
 import {conversationTimings,elapsedBetween,formatConversationTimestamp} from '../lib/conversation-timing';
 import {ConversationActivityLine,type ConversationActivity} from './ConversationActivityLine';
+import {useDisplayClock,estimatedServerNow} from '../lib/display-clock';
 import './SessionConversation.css';
 
 interface LiveProgress {turn_id:string|null;started_at:string|null;completed_at?:string|null;activities?:ConversationActivity[];stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
 interface FailedDraft {clientId:string;fingerprint:string;text:string;attachments:DraftAttachment[]}
 
 const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,onCancelRetry,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate,durationLabel,onRaw}:{durationLabel?:string;durationTitle?:string;retrying?:boolean;autoRetry?:ConversationRetry;onCancelRetry?:()=>Promise<void>;onRaw:()=>void;message:ConversationMessage;streaming:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void}) {
+  const timeZone=useDisplayClock();
   const [copied,setCopied]=useState(false);
-  const parsed=message.role==='user'?(message.attachments?{text:message.text,attachments:message.attachments}:parseConversationInput(message.text)):{text:message.text,attachments:[]};
+  const visibleText=questionReplyDisplayText(message);
+  const parsed=message.role==='user'?(message.attachments?{text:visibleText,attachments:message.attachments}:parseConversationInput(visibleText)):{text:message.text,attachments:[]};
   async function copy() {
     const copyText=parsed.text+(parsed.attachments.length?'\n'+parsed.attachments.map(item=>item.name).join('\n'):'');
     try {
@@ -42,18 +45,18 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,on
       setCopied(true);
     } catch {setCopied(false);}
   }
-  const metadata=(<span className="session-chat-message-meta">
+  const metadata=compact&&(streaming||message.streaming)?<span className="session-chat-message-meta"><span className="session-chat-progress-updating">Streaming</span></span>:(<span className="session-chat-message-meta">
       {message.queued&&<span className="session-chat-queued" role="status">Queued · waiting</span>}
       {message.role==='assistant'&&message.statistics&&<ConversationStatisticsLabel statistics={message.statistics} interval={message.phase==='commentary'}/> }
-      {durationLabel && <span className="session-chat-message-duration" title={metadataDurationTitle(message.phase)}>{englishMetadataDuration(durationLabel)}</span>}
-      {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label={compact?'进展时间':undefined} dateTime={message.timestamp} title={metadataTimestampTitle(message,compact)}>{formatConversationTimestamp(message.timestamp)}</time>:compact?<span className="session-chat-progress-time-unknown">Time pending</span>:null}
+      {(durationLabel||compact) && <span className="session-chat-message-duration" title={durationLabel?metadataDurationTitle(message.phase):'Completion timing is unavailable for this interval.'}>{durationLabel?englishMetadataDuration(durationLabel):'Elapsed: —'}</span>}
+      {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label={compact?'进展完成时间':undefined} dateTime={message.timestamp} title={metadataTimestampTitle(message,compact)}>{formatConversationTimestamp(message.timestamp)}</time>:compact?<span className="session-chat-progress-time-unknown">Time pending</span>:null}
       {compact&&streaming&&<span className="session-chat-progress-updating">Streaming</span>}
       {!compact && <button type="button" onClick={()=>void copy()} aria-label={`复制${message.role==='user'?'你的消息':'Agent 回复'}`} title={copied?'Copied':'Copy message'}>{copied?<Check size={13}/>:<Copy size={13}/>}</button>}
     </span>);
   const automatic=message.role==='user'?automaticConversationContext(message.text):null;
   if(automatic)return <ConversationAutomaticContext message={message} context={automatic} copied={copied} onCopy={()=>void copy()}/>;
   if(message.phase==='error')return <article className="session-chat-message session-chat-error-notice" role="alert" data-phase="error" data-streaming="false" data-recovered={autoRetry?.status==='succeeded'} data-retrying={retrying||!!autoRetry&&['waiting','submitting','running'].includes(autoRetry.status)} data-retry-ended={!!message.error?.will_retry && !retrying} data-chat-message-id={message.id}>
-    <div className="session-chat-error-heading"><AlertTriangle size={16}/><strong>{autoRetry?'模型繁忙 · 自动恢复':message.error?.will_retry?retrying?'执行遇到错误，正在自动重试':'重试已结束':'本轮执行出错'}</strong>{message.timestamp && <time dateTime={message.timestamp} title={`原生消息记录时间：${new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}（本地时区）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>}</div>
+    <div className="session-chat-error-heading"><AlertTriangle size={16}/><strong>{autoRetry?autoRetry.status==='cancelled'?'模型繁忙 · 重试已取消':autoRetry.status==='succeeded'?'模型繁忙 · 已恢复':autoRetry.status==='exhausted'?'模型繁忙 · 重试已达上限':autoRetry.status==='unknown'?'模型繁忙 · 重试待确认':'模型繁忙 · 自动恢复':message.error?.will_retry?retrying?'执行遇到错误，正在自动重试':'重试已结束':'本轮执行出错'}</strong>{message.timestamp && <time dateTime={message.timestamp} title={`原生消息记录时间：${formatConversationTimestamp(message.timestamp)}（浏览器时间 · ${timeZone}）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>}</div>
     <p className="session-chat-error-original">{message.text}</p>
     {autoRetry?<ConversationRetryStatus retry={autoRetry} onCancel={onCancelRetry}/>:<p>{message.error?.will_retry?retrying?'Agent 正在自动重试，无需重复发送。':'该次重试过程已结束。':message.error?.code==='server_overloaded' || /at capacity/i.test(message.text)?'当前模型繁忙，本轮已停止。可稍后重试，或在原始终端切换模型。':'本轮已停止。请根据错误信息处理后再试。'}</p>}
     <div className="session-chat-error-actions"><button type="button" onClick={onRaw}>查看原始终端</button><button type="button" onClick={()=>void copy()}>{copied?'已复制':'复制错误信息'}</button></div>
@@ -78,6 +81,12 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   useEffect(()=>setAutoRetries({}),[session.id,session.codex_session_id]);
   const [statistics,setStatistics]=useState<ConversationStatistics[]>([]);
   const [page,setPage]=useState<ConversationPage|null>(null);
+  useEffect(()=>{
+    const update=(event:Event)=>{const detail=(event as CustomEvent<{sessionId:string;runtime:NonNullable<Session['agent_runtime']>}>).detail;
+      if(detail.sessionId!==session.id||detail.runtime.session_id!==session.codex_session_id)return;
+      setPage(previous=>previous&&(!previous.runtime?.observed_at||Date.parse(previous.runtime.observed_at)<=Date.parse(detail.runtime.observed_at))?{...previous,runtime:detail.runtime}:previous);
+    };window.addEventListener('agentmanager:session-runtime',update);return()=>window.removeEventListener('agentmanager:session-runtime',update);
+  },[session.id,session.codex_session_id]);
   const [hasMore,setHasMore]=useState(false);
   const [loading,setLoading]=useState(true);
   const [older,setOlder]=useState(false);
@@ -106,7 +115,13 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const pendingAnswers=useRef(new Map<string,{resolve:()=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>());
   const [liveBusy,setLiveBusy]=useState(false);
   const [liveProgress,setLiveProgress]=useState<LiveProgress>({turn_id:null,started_at:null,stage:'idle'});
-  const [now,setNow]=useState(Date.now);
+  // The durable native completion is also an event source. If an RPC snapshot
+  // was missed, do not keep a connected socket's old busy flag indefinitely.
+  useEffect(()=>{
+    const runtime=page?.runtime;
+    if(liveBusy&&runtime&&runtime.session_id===session.codex_session_id&&runtime.completed_turn_id===liveProgress.turn_id&&['idle','interrupted','failed'].includes(runtime.state)&&Date.parse(runtime.last_activity_at||'')>Date.parse(liveProgress.started_at||''))setLiveBusy(false);
+  },[page?.runtime?.state,page?.runtime?.last_activity_at,page?.runtime?.session_id,page?.runtime?.completed_turn_id,session.codex_session_id,liveBusy,liveProgress.started_at,liveProgress.turn_id]);
+  const [now,setNow]=useState(estimatedServerNow);
   const cursor=useRef<string|undefined>(undefined);
   const generation=useRef<string|null>(null);
   const list=useRef<HTMLDivElement>(null);
@@ -163,7 +178,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const busy=!(activeError && !activeError.error?.will_retry) && (liveState==='connected'?liveBusy:page?.runtime?.state==='running' || (!page?.runtime && page?.interaction?.processState==='busy'));
   useEffect(()=>{
     if(!active || !busy&&!compaction.running) return;
-    setNow(Date.now());const clock=setInterval(()=>setNow(Date.now()),1000);return ()=>clearInterval(clock);
+    setNow(estimatedServerNow());const clock=setInterval(()=>setNow(estimatedServerNow()),1000);return ()=>clearInterval(clock);
   },[active,busy,compaction.running]);
   useEffect(()=>{if(ended) setMessages(previous=>previous.map(message=>message.streaming?{...message,streaming:false}:message));},[ended]);
 
@@ -179,7 +194,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
         const reset=result.reset || (generation.current!==null && result.generation!==generation.current);
         const first=!cursor.current || reset;
         generation.current=result.generation;
-        setPage(result);if(result.statistics)setStatistics(previous=>reset?result.statistics!:[...new Map([...previous,...result.statistics!].map(item=>[item.sequence,item])).values()].slice(-80));setError('');setLoading(false);
+        setPage(previous=>previous?.native_id===result.native_id&&Date.parse(previous.runtime?.observed_at||'')>Date.parse(result.runtime?.observed_at||'')?{...result,runtime:previous.runtime}:result);if(result.statistics)setStatistics(previous=>reset?result.statistics!:[...new Map([...previous,...result.statistics!].map(item=>[item.sequence,item])).values()].slice(-80));setError('');setLoading(false);
         if(first) {setMessages(previous=>{
           if(reset) return mergeConversationTimeline(previous.filter(item=>item.optimistic),result.messages,'prepend');
           return mergeConversationTimeline(previous,result.messages,'prepend');
@@ -226,11 +241,11 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
         if(frame.type==='settings'&&typeof frame.model==='string'){queryClient.setQueryData<ConversationControlsData>(['conversation-controls',session.id],previous=>previous?{...previous,model:frame.model!,effort:frame.effort??null,pending:null}:previous);return;}
         if(frame.type==='interaction_result' && frame.request_id) {const pending=pendingAnswers.current.get(frame.request_id);if(pending){clearTimeout(pending.timer);pendingAnswers.current.delete(frame.request_id);if(frame.ok)pending.resolve();else pending.reject(new Error(frame.error||'提交失败'));}return;}
         if(frame.type==='queue'&&Array.isArray(frame.messages)){const clients=new Set(frame.messages.map(item=>item.client_id));setMessages(previous=>mergeConversationTimeline(previous.filter(item=>!item.queued||clients.has(item.client_id)),frame.messages!));return;}
-        if(frame.type==='history'&&Array.isArray(frame.messages)){pushAvailable.current=true;setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));setPage(previous=>previous?{...previous,runtime:frame.runtime||previous.runtime}:previous);if(frame.messages.length){if(pinned.current)requestAnimationFrame(()=>{if(!disposed)scrollBottom();});else setUnread(true);}return;}
+        if(frame.type==='history'&&Array.isArray(frame.messages)){pushAvailable.current=true;setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));setPage(previous=>previous?{...previous,runtime:frame.runtime&&!(Date.parse(previous.runtime?.observed_at||'')>Date.parse(frame.runtime.observed_at))?frame.runtime:previous.runtime}:previous);if(frame.messages.length){if(pinned.current)requestAnimationFrame(()=>{if(!disposed)scrollBottom();});else setUnread(true);}return;}
         if(frame.type==='unavailable') {pushAvailable.current=false;setLiveState('unavailable');setLiveBusy(false);compaction.disconnected();return;}
         if(frame.type!=='snapshot' || !Array.isArray(frame.messages)) return;
         pushAvailable.current=true;setLiveState('connected');setLiveBusy(!!frame.busy);
-        if('compaction' in frame)compaction.observe(frame.compaction??null,!!frame.busy);
+        if('compaction' in frame){const completion=frame.compaction?.completed_at?Date.parse(frame.compaction.completed_at):Infinity;const resumed=!!frame.busy&&(frame.activities?.some(item=>item.id!==frame.compaction?.id&&item.started_at&&Date.parse(item.started_at)>=completion)||frame.messages.some(item=>item.role==='assistant'&&item.streaming&&item.timestamp&&Date.parse(item.timestamp)>=completion));compaction.observe(frame.compaction??null,!!frame.busy,!!resumed);}
         setRequests(Array.isArray(frame.interactions)?frame.interactions:[]);
         if(frame.stage) setLiveProgress({turn_id:frame.turn_id||null,started_at:frame.started_at||null,completed_at:frame.completed_at||null,activities:Array.isArray(frame.activities)?frame.activities:[],stage:frame.stage});
         const incoming=frame.messages;
@@ -286,7 +301,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     const fingerprint=JSON.stringify([session.codex_session_id,session.claude_session_id,text,attached]);
     const clientId=submissionIdentity.current?.fingerprint===fingerprint?submissionIdentity.current.id:conversationClientId();submissionIdentity.current={fingerprint,id:clientId};
     const parsedReply=decodeQuestionReply(text);
-    const timestamp=new Date().toISOString(),visibleText=parsedReply?.text??(text.trim()?text:attached.length?'请查看附件。':text),attachedIds=fromQuestion?[]:attachments.items.map(item=>item.id);
+    const timestamp=new Date(estimatedServerNow()).toISOString(),visibleText=parsedReply?.text??(text.trim()?text:attached.length?'请查看附件。':text),attachedIds=fromQuestion?[]:attachments.items.map(item=>item.id);
     const version=draftVersion.current;
     const savedAttachments=fromQuestion?[]:attachments.items.map(item=>({...item,offset:positions?.get(item.id)??text.length}));
     const accepted=timelineRef.current.find(item=>item.role==='user'&&item.client_id===clientId&&!item.optimistic);
@@ -333,7 +348,8 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const started=continuingAfterFollowup?lastUserTime:liveProgress.started_at||lastUserTime;
   const elapsed=started?Math.max(0,Math.floor((now-Date.parse(started))/1000)):0;
   const waitingForText=!compaction.running && busy && !currentAnswer && !activeError && !waiting;
-  const ignoredIds=page?.runtime?.ignored_question_ids||[];
+  const ignoredKey=JSON.stringify(page?.runtime?.ignored_question_ids||[]);
+  const ignoredIds=useMemo(()=>JSON.parse(ignoredKey) as string[],[ignoredKey]);
   const displayed=useMemo(()=>messages.map(message=>message.async_questions?.length?{...message,async_questions:message.async_questions.filter(q=>!q.id||!ignoredIds.includes(q.id))}:message).filter(message=>!message.async_questions||message.async_questions.length).map(message=>{const stats=statistics.find(item=>item.turn_id===message.turn_id&&(item.message_id===message.id||item.message_id&&message.aliases?.includes(item.message_id)||message.sequence===item.sequence));return stats?{...message,statistics:stats}:message;}),[messages,statistics,ignoredIds]);
   const streamingId=!activeError && liveState==='connected' && busy && !['tools','finishing'].includes(liveProgress.stage)
     ? messages.reduce<string|null>((id,message,index)=>index>lastUserIndex && message.role==='assistant' && message.streaming && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id)?message.id:id,null):null;
@@ -385,7 +401,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
       {interaction?.choices?.length ? <p>{interaction.choices.join(' / ')}</p>:null}<button onClick={onRaw}>切到原始终端处理</button></div>}
     <footer className="session-chat-composer">
       <div className="session-chat-status" role="status"><span className={`session-chat-connection ${liveState}`} data-attention={!!pendingQuestion||waiting} aria-hidden="true"/>
-        {compaction.state?<ConversationCompactionStatus state={compaction.state} now={now}/>:<ConversationActivityLine key={`${session.id}:${liveState}:${liveProgress.turn_id||''}`} activities={liveState==='connected'&&!reconnectable?liveProgress.activities||[]:[]} busy={busy&&!reconnectable&&!ended&&!waiting&&!activeError} now={now} totalElapsed={elapsedBetween(started,now)}
+        {compaction.state?<ConversationCompactionStatus state={compaction.state} now={now}/>:<ConversationActivityLine key={`${session.id}:${liveState}:${liveProgress.turn_id||''}`} activities={liveState==='connected'&&!reconnectable&&liveProgress.stage==='tools'?liveProgress.activities||[]:[]} busy={busy&&!reconnectable&&!ended&&!waiting&&!activeError} now={now} totalElapsed={elapsedBetween(started,now)}
           fallback={reconnecting?'正在恢复会话连接…':reconnectable?'会话连接已断开':activeError?activeError.error?.will_retry?busy?'执行遇到错误，正在自动重试…':'重试已结束':'本轮执行失败，可处理后重试':ended?'会话已结束':waiting?'等待你处理':pendingQuestion&&!busy?'有问题待回答 · 本轮已结束':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}/>}
         {liveState==='connected' && <span className="session-chat-live-label">事件通道已连接</span>}
         {ended && onResume && <button onClick={onResume} disabled={resuming}>{resuming?'正在恢复…':resumeFailed?'重试恢复会话':'恢复会话'}</button>}{ended && onClose && <button onClick={onClose}>关闭会话</button>}
@@ -399,7 +415,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
       {pendingQuestion&&<div className="session-chat-question-seat">{questionActive?<ConversationAsyncQuestion key={pendingQuestion.id} message={pendingQuestion} agentName={agentName} storageKey={`agentmanager-question:${userId}:${session.id}:${pendingQuestion.id}`} connected={active&&!!page?.session_active&&!ended} canAnswer={canSend} onReply={send} onRaw={onRaw} onMinimize={()=>setMinimizedQuestion(pendingQuestion.id)}/>:<button type="button" className="session-chat-question-reminder" onClick={()=>setMinimizedQuestion(null)}>待回答 · {pendingQuestion.async_questions?.[0].title}<span>回答问题</span></button>}</div>}
       <form hidden={questionActive} onSubmit={event=>{event.preventDefault();void send();}}
         onDragOver={event=>{if(Array.from(event.dataTransfer.types).includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=canSend&&!ended&&!sending?'copy':'none';}}}
-        onDrop={event=>{if(!event.dataTransfer.files.length)return;event.preventDefault();event.stopPropagation();if(canSend&&!ended&&!sending)attachments.enqueue(Array.from(event.dataTransfer.files));}}>
+        onDrop={event=>{if(!Array.from(event.dataTransfer.types).includes('Files'))return;event.preventDefault();event.stopPropagation();if(canSend&&!ended&&!sending)attachments.enqueueTransfer(event.dataTransfer);}}>
         <ConversationComposerEditor snapshotRef={attachmentPositions} value={draft} items={attachments.items} disabled={!canSend||ended||waiting} placeholder={waiting?'请先处理上方交互':'输入消息，Enter 发送，Shift+Enter 换行'} projectId={session.project_id} projectPath={projectPath} onChange={changeDraft} onRemove={attachments.remove} onFiles={attachments.enqueue} onSubmit={()=>void send()}/>
         {attachments.error&&<p role="alert" className="session-chat-error">{attachments.error}</p>}
 

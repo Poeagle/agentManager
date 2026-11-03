@@ -1,6 +1,12 @@
 import type {ConversationMessage} from './api';
 export type QuestionReply=NonNullable<ConversationMessage['question_replies']>[number];
 const START='<send_user_message_question_reply>',END='</send_user_message_question_reply>';
+/** Keep native reply identity and context in the message; display the user's
+ * answer once, alongside the original question's separate history card. */
+export function questionReplyDisplayText(message:ConversationMessage):string {
+  const replies=message.role==='user'?message.question_replies:undefined;
+  return replies?.length?replies.map((reply,index)=>`${replies.length>1?`${index+1}. `:''}${reply.answer}`).join('\n\n'):message.text;
+}
 export function encodeQuestionReply(answers:QuestionReply[]) {
   return START+'\n'+JSON.stringify(answers.map(q=>({questionItemId:q.question_id,question:q.question,answer:q.answer})))+'\n'+END;
 }

@@ -9,6 +9,7 @@ import {getDb} from '../src/db/index.js';
 import {sessionRoutes} from '../src/routes/sessions.js';
 import {createTestDatabase} from './helpers/database.js';
 import * as manager from '../src/services/session-manager.js';
+import * as questionIndex from '../src/services/conversation-pending-questions.js';
 
 const id='019ff001-1111-7111-8111-111111111111';
 let dir:string; let file:string;
@@ -22,6 +23,12 @@ beforeEach(()=>{
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 
 describe('Codex native execution status',()=>{
+  it('reuses pending-question metadata for unchanged native history and reads again only after append',async()=>{
+    const read=vi.spyOn(questionIndex,'readPendingQuestions');
+    writeFileSync(file,event('task_complete',1));await readCodexRuntime(id);await readCodexRuntime(id);await readCodexRuntime(id);
+    expect(read).toHaveBeenCalledTimes(1);
+    appendFileSync(file,event('task_started',2));await readCodexRuntime(id);expect(read).toHaveBeenCalledTimes(2);
+  });
   it('recognizes a newly created native conversation as ready without inventing activity',async()=>{
     writeFileSync(file,JSON.stringify({type:'session_meta',payload:{id},timestamp:'2026-10-29T10:00:00Z'})+'\n'+JSON.stringify({type:'response_item',payload:{type:'message',role:'developer',content:[{type:'input_text',text:'shared resource instructions'}]}})+'\n');
     expect(await readCodexRuntime(id)).toMatchObject({state:'ready',last_activity_at:null});
@@ -92,7 +99,7 @@ describe('Codex native execution status',()=>{
     appendFileSync(file,JSON.stringify({timestamp:'2026-10-29T10:00:04Z',type:'response_item',payload:{type:'function_call_output',call_id:'question',output:'private'}})+'\n');
     expect((await readCodexRuntime(id)).state).toBe('running');
     appendFileSync(file,event('task_complete',5,{turn_id:'a'}));
-    const runtime=await readCodexRuntime(id);expect(runtime).toMatchObject({state:'idle',last_activity_at:'2026-10-29T10:00:05.000Z'});
+    const runtime=await readCodexRuntime(id);expect(runtime).toMatchObject({state:'idle',last_activity_at:'2026-10-29T10:00:05.000Z',completed_turn_id:'a'});
     expect(JSON.stringify(runtime)).not.toContain('private');
   });
   it('does not let another turn completion or another thread override the active turn',async()=>{

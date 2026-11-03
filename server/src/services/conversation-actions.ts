@@ -1,4 +1,4 @@
-import {withCodexConnection} from './conversation-stream.js';
+import {withCodexConnection,rememberStreamingSharedResources} from './conversation-stream.js';
 
 /** Native RPCs only: no PTY keystrokes and no synthetic model turn. */
 export async function compactCodexConversation(threadId:string) {
@@ -33,6 +33,7 @@ export async function prepareFreshCodexConversation(threadId:string,cwd:string,s
       await request('thread/inject_items',{threadId:id,items:[{type:'message',role:'developer',content:[{type:'input_text',text:'A fresh conversation was opened in this platform tab. Wait for the user to provide a task. Previous conversation history has not been carried over.'}]}]});
       const verified=await request('thread/resume',{threadId:id,excludeTurns:true});
       if(verified.thread?.id!==id||verified.thread?.status?.type==='notLoaded')throw Error('新会话尚不可恢复');
+      if(sharedInstructions)rememberStreamingSharedResources(id,sharedInstructions);
       return id;
     } catch(error){await request('thread/archive',{threadId:id}).catch(()=>{});throw error;}
   });

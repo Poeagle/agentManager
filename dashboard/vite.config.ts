@@ -14,6 +14,7 @@ export default defineConfig(({ command }) => {
     optimizeDeps: {
       // Prebundle the lazy Markdown editor alongside the application's runtime.
       include: [
+        'fflate',
         'react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime',
         '@tiptap/react', '@tiptap/starter-kit', '@tiptap/markdown', '@tiptap/extension-image',
         '@tiptap/extension-table', '@tiptap/extension-task-list', '@tiptap/extension-task-item',

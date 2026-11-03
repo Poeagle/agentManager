@@ -7,7 +7,7 @@ describe('conversation elapsed time',()=>{
       {id:'next-question',role:'user',turn_id:'new',timestamp:'2026-10-30T05:55:23.219Z',text:'服务器连不上了'},
       {id:'new-progress',role:'assistant',phase:'commentary',turn_id:'new',timestamp:'2026-10-30T05:55:42.367Z',text:'开始排查'}];
     const times=conversationTimings(messages,Date.parse('2026-10-30T05:55:50Z'),true,'new');
-    expect(times.has('last-progress')).toBe(false);expect(times.get('new-progress')?.label).toBe('距上次更新 7秒');
+    expect(times.has('last-progress')).toBe(false);expect(times.get('new-progress')?.label).toBe('耗时 19秒');
   });
   it('does not cross known turn boundaries, errors or time an old historical tail as current work',()=>{
     const first:ConversationMessage={id:'old',role:'assistant',phase:'commentary',turn_id:'old',timestamp:'2026-10-30T04:18:18Z',text:'旧进展'};
@@ -20,10 +20,10 @@ describe('conversation elapsed time',()=>{
     const message=(id:string,role:'user'|'assistant',phase:'commentary'|'final'|undefined,timestamp:string|null):ConversationMessage=>({id,role,phase,timestamp,text:id});
     const messages=[message('u','user',undefined,'2026-10-30T07:40:00Z'),message('a','assistant','commentary','2026-10-30T07:40:26Z'),message('b','assistant','commentary','2026-10-30T07:42:12Z'),message('f','assistant','final','2026-10-30T07:43:00Z')];
     const timing=conversationTimings(messages,Date.parse('2027-01-01'),false);
-    expect(timing.get('a')?.label).toBe('1分46秒');expect(timing.get('b')?.label).toBe('48秒');
+    expect(timing.get('a')?.label).toBe('耗时 26秒');expect(timing.get('b')?.label).toBe('耗时 1分46秒');
     expect(timing.get('f')?.label).toBe('本轮耗时 3分0秒');
-    expect(conversationTimings(messages.slice(0,3),Date.parse('2026-10-30T07:43:12Z'),true).get('b')?.label).toBe('距上次更新 1分0秒');
-    expect(conversationTimings(messages.slice(0,3),Date.now(),false).has('b')).toBe(false);
+    expect(conversationTimings(messages.slice(0,3),Date.parse('2026-10-30T07:43:12Z'),true).get('b')?.label).toBe('耗时 1分46秒');
+    expect(conversationTimings(messages.slice(0,3),Date.now(),false).get('b')?.label).toBe('耗时 1分46秒');
   });
   it('does not invent elapsed time for missing or inconsistent timestamps',()=>{
     expect(elapsedBetween(null,Date.now())).toBeNull();expect(elapsedBetween('invalid',Date.now())).toBeNull();

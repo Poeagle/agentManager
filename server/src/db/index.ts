@@ -121,6 +121,11 @@ function createCurrentSchema(): void {
       value TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS shared_resource_injections (
+      scope_key TEXT PRIMARY KEY,
+      content_hash TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS user_shared_resources (
       user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       directory TEXT NOT NULL,

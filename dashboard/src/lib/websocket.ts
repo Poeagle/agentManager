@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { QueryClient } from '@tanstack/react-query';
 import type { Event } from './api';
 import { cacheServerResources, SERVER_RESOURCE_QUERY_KEY, type ServerResourceResponse } from './server-resource-cache';
+import {cacheSessionRuntime} from './session-runtime-cache';
 
 let queryClientRef: QueryClient | null = null;
 
@@ -119,6 +120,11 @@ export function connectStream() {
 
       // Heartbeat / handshake frames are keepalive only — nothing to render.
       if (event.type === 'ping' || event.type === 'connected') return;
+      if(event.type==='session.runtime'&&event.session_id){
+        const {runtime}=JSON.parse(event.data||'{}');if(!runtime?.session_id||!runtime.observed_at)return;
+        if(queryClientRef)cacheSessionRuntime(queryClientRef,event.session_id,runtime);
+        window.dispatchEvent(new CustomEvent('agentmanager:session-runtime',{detail:{sessionId:event.session_id,runtime}}));return;
+      }
 
       if (event.type === 'server.resources') {
         const data = event.data ? JSON.parse(event.data) as ServerResourceResponse : null;

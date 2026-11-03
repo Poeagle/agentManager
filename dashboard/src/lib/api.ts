@@ -1,6 +1,8 @@
+import {calibrateBrowserClock} from './display-clock';
 import type {AiSource} from './ai-source';
 import type {ConversationAttachment} from './conversation-attachments';
 const API_BASE = '/api';
+export interface PreviewFontReport {checked:boolean;substitutions:Array<{requested:string;replacement:string}>;omitted?:number}
 
 function fileEndpoint(url: string, projectId?: string): string {
   return projectId ? `${url}${url.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(projectId)}` : url;
@@ -367,12 +369,14 @@ export const api = {
         fileEndpoint(`/files/read?path=${encodeURIComponent(path)}`, projectId)
       ),
     previewUrl:(path:string,projectId?:string)=>`${API_BASE}${fileEndpoint(`/files/preview?path=${encodeURIComponent(path)}`,projectId)}`,
-    preview: async (path: string, signal?: AbortSignal, projectId?: string) => {
+    preview: async (path: string, signal?: AbortSignal, projectId?: string,onFonts?:(report:PreviewFontReport)=>void) => {
       const res = await fetch(`${API_BASE}${fileEndpoint(`/files/preview?path=${encodeURIComponent(path)}`, projectId)}`, { signal });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.error || `预览失败：${res.status}`);
       }
+      const header=res.headers.get('X-Preview-Fonts');
+      if(header&&onFonts)try{const report=JSON.parse(decodeURIComponent(header));if(typeof report.checked==='boolean'&&Array.isArray(report.substitutions)&&report.substitutions.every((entry:PreviewFontReport['substitutions'][number])=>typeof entry.requested==='string'&&typeof entry.replacement==='string'))onFonts(report);}catch{/* Ignore malformed preview metadata. */}
       return res.blob();
     },
     export: async (path: string, signal?: AbortSignal, projectId?: string) => {
@@ -508,7 +512,12 @@ export const api = {
       fetchJSON<SessionStateResponse>(`/sessions/${sessionId}/state`),
   },
   settings: {
-    get: () => fetchJSON<{ settings: Record<string, string> }>('/settings'),
+    get: async () => {
+      const started=performance.now();
+      const result=await fetchJSON<{ settings: Record<string, string>;server_time?:number }>('/settings');
+      if(typeof result.server_time==='number')calibrateBrowserClock(result.server_time,Date.now(),performance.now()-started);
+      return result;
+    },
     update: (settings: Record<string, string>) =>
       fetchJSON<{ ok: boolean; settings: Record<string, string> }>('/settings', {
         method: 'PUT',
@@ -578,7 +587,7 @@ export function scopeProjectFiles(files: typeof api.files, projectId?: string): 
     list: (path, hidden) => files.list(path, hidden, projectId),
     read: (path) => files.read(path, projectId),
     previewUrl: (path) => files.previewUrl(path,projectId),
-    preview: (path, signal) => files.preview(path, signal, projectId),
+    preview: (path, signal,_projectId,onFonts) => onFonts?files.preview(path, signal, projectId,onFonts):files.preview(path, signal, projectId),
     upload: (path, file, progress) => files.upload(path, file, progress, projectId),
     export: (path, signal) => files.export(path, signal, projectId),
     write: (path, content, expected) => files.write(path, content, expected, projectId),
@@ -613,6 +622,7 @@ export interface Session {
     state: 'ready' | 'running' | 'idle' | 'waiting_for_input' | 'interrupted' | 'failed' | 'unknown';
     last_activity_at: string | null; observed_at: string; reason: string;
     pending_question_count?: number;
+    completed_turn_id?:string;
     ignored_question_ids?:string[];
     pending_questions?: Array<{id:string;questions:NonNullable<ConversationMessage['async_questions']>;timestamp:string|null;turn_id?:string}>;
   };

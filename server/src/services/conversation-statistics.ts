@@ -25,7 +25,7 @@ function finish(state:State,hasUsage:boolean){
     complete:(current.intervalIntact??current.complete)&&hasUsage,shared_messages:current.waiting.length,
   };
   for(const message of current.waiting){
-    state.stats.set(message.sequence,{...message,turn_id:current.id,tokens:current.complete&&hasUsage?{...current.tokens}:null,requests:current.requests,tool_calls:current.calls.size,tool_rounds:current.rounds,complete:current.complete});
+    state.stats.set(message.sequence,{...message,turn_id:current.id,tokens:hasUsage?{...current.tokens}:null,requests:current.requests,tool_calls:current.calls.size,tool_rounds:current.rounds,complete:current.complete});
     state.stats.get(message.sequence)!.interval={...interval,tokens:interval.tokens?{...interval.tokens}:null};
   }
   current.checkpoint={tokens:{...current.tokens},requests:current.requests,calls:current.calls.size,rounds:current.rounds};current.intervalIntact=true;

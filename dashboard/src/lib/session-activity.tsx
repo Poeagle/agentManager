@@ -1,10 +1,12 @@
+import {formatDisplayTimestamp,useDisplayClock} from './display-clock';
 import { useMemo } from 'react';
 import type { Session } from './api';
 import { sessionActivityMs, timestampMs } from './session-activity-model';
 import { useStreamStore } from './websocket';
 
 function TabLabel({ label, activityAt, detail }: { label: string; activityAt: number | null; detail?: string }) {
-  const title = [label, detail, activityAt === null ? '最后活跃：未知' : `最后活跃：${new Date(activityAt).toLocaleString('zh-CN')}`, '双击重命名']
+  const timeZone=useDisplayClock();
+  const title = [label, detail, activityAt === null ? '最后活跃：未知' : `最后活跃：${formatDisplayTimestamp(activityAt)}（${timeZone}）`, '双击重命名']
     .filter(Boolean).join('\n');
   return <span className="truncate" title={title}>{label}</span>;
 }

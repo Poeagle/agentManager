@@ -18,6 +18,8 @@ import { sessionPresenter } from '../services/session-labels.js';
 import {readConversationPreview,humanSessionTask} from '../services/conversation-preview.js';
 import { readCodexRuntime } from '../services/codex-runtime.js';
 import {personalQuestionRuntime,setIgnoredQuestions} from '../services/question-attention.js';
+import {watchSessionRuntime,stopSessionRuntimeWatches} from '../services/session-runtime-watch.js';
+import {broadcastEphemeral} from '../services/event-store.js';
 import {requirePermission} from '../services/rbac.js';
 import {attachExistingSession} from '../services/session-attachment.js';
 
@@ -98,6 +100,7 @@ function sqliteUtcToIso(value: string | null | undefined): string | null {
 }
 
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
+  app.addHook('onClose',async()=>stopSessionRuntimeWatches());
   // List sessions
   app.get<{
     Querystring: { status?: string; project_id?: string };
@@ -132,6 +135,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         const st = getTracker(s.id)?.state;
         const preview=await readConversationPreview(s);
         const native = s.cli_type === 'codex' ? personalQuestionRuntime(await readCodexRuntime(s.codex_session_id),req.user!.id) : null;
+        if(native&&['running','pending','launching','detached','released'].includes(s.status))await watchSessionRuntime(s);
         if (native && ['running','waiting_for_input'].includes(native.state)
           && await sessionManager.getLiveWorkAgent(s.id) !== 'codex') {
           native.state='unknown'; native.reason='原生记录中的执行尚未结束，但未确认到对应 Codex 进程，当前状态待确认';
@@ -208,6 +212,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const available=new Set(runtime.pending_questions?.flatMap(group=>group.questions.flatMap(q=>q.id?[q.id]:[])));
     if(ids.some(id=>!available.has(id)))return reply.code(409).send({error:'问题状态已更新，请刷新后重试'});
     const ignored=setIgnoredQuestions(req.user!.id,session.codex_session_id,ids,req.body.ignored!==false);
+    broadcastEphemeral({type:'session.runtime',session_id:session.id,...session.project_id?{project_id:session.project_id}:{},data:{runtime:{...runtime,observed_at:new Date().toISOString()}}});
     return {ok:true,ignored_question_ids:ignored};
   });
 

@@ -36,13 +36,13 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   await expect(chat).not.toContainText('PRIVATE TOOL');await expect(chat.getByText('这是 Agent 的中途进展。',{exact:true})).toBeVisible();
   const progress=chat.getByRole('region',{name:'Codex 进展'});await expect(progress).toHaveCount(1);await expect(progress).toContainText('已核对项目结构');
   await expect(progress.getByLabel('进展序号 1')).toBeVisible();await expect(progress.getByLabel('进展序号 2')).toBeVisible();
-  await expect(progress.getByLabel('进展时间')).toHaveCount(2);
+  await expect(progress.getByLabel('进展完成时间')).toHaveCount(2);
   for(const time of await chat.locator('time[datetime]').all())await expect(time).toHaveText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   await page.mouse.move(0,0);
   const answerMeta=chat.locator('.session-chat-message[data-phase="final"] .session-chat-message-meta').first();
   await expect(answerMeta).toHaveCSS('opacity','1');
   await expect(answerMeta.getByRole('button',{name:'复制Agent 回复'})).toBeVisible();
-  appendFileSync(log,counters(1500,300)+entry('event_msg',{type:'task_complete',turn_id:turn}));await expect(answerMeta).toContainText('本轮 600 Token · 工具 4次/2轮');await expect(progress).toContainText('本轮累计 100 Token · 工具 3次/1轮');
+  appendFileSync(log,counters(1500,300)+entry('event_msg',{type:'task_complete',turn_id:turn}));await expect(answerMeta).toContainText('token: 600 · tools: 4 calls / 2 rounds');await expect(progress).toContainText('token: 100 · tools: 3 calls / 1 round');
   for(const footer of await chat.locator('.conversation-inline-meta').all()){
     const geometry=await footer.evaluate(node=>{const previous=node.previousSibling!,range=document.createRange();range.selectNodeContents(previous);const text=[...range.getClientRects()].at(-1)!,meta=node.getBoundingClientRect(),timeRange=document.createRange();timeRange.selectNodeContents(node.querySelector('time')!);const timestamp=timeRange.getBoundingClientRect();return {gap:meta.left-text.right,top:timestamp.top,bottom:meta.bottom,textTop:text.top,textBottom:text.bottom};});
     expect(geometry.gap).toBeGreaterThanOrEqual(8);expect(geometry.gap).toBeLessThan(15);expect(geometry.top).toBeGreaterThanOrEqual(geometry.textTop);expect(geometry.top).toBeLessThan(geometry.textBottom);

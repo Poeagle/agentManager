@@ -33,6 +33,32 @@ beforeEach(async()=>{
 afterEach(async()=>{stop?.();stop=undefined;for(const client of wss.clients) client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 const send=(method:string,params:unknown)=>peer.send(JSON.stringify({method,params}));
 describe('native Codex conversation streaming',()=>{
+  it('keeps a durable progress completion time across attach and later tool completions',async()=>{
+    const completed=Date.now()-61000;
+    active=true;baselineItems=[{type:'agentMessage',id:'previous-progress',text:'已完成的进展',phase:'commentary',startedAtMs:completed-1500,completedAtMs:completed},{type:'commandExecution',id:'next-tool',command:'true',status:'inProgress'}];
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({messages:[{timestamp:new Date(completed).toISOString(),streaming:false}]}));
+    send('item/completed',{threadId:'thread',turnId:'turn',completedAtMs:Date.now(),item:{type:'commandExecution',id:'next-tool',command:'true',status:'completed'}});
+    await vi.waitFor(()=>expect((frames.at(-1) as any).activities.at(-1).status).toBe('completed'));
+    expect((frames.at(-1) as any).messages[0].timestamp).toBe(new Date(completed).toISOString());
+  });
+  it('records assistant completion time rather than its start timestamp',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
+    send('turn/started',{threadId:'thread',turn:{id:'work'}});
+    const started=Date.now()-5000,completed=Date.now();
+    send('item/started',{threadId:'thread',turnId:'work',startedAtMs:started,item:{type:'agentMessage',id:'progress',phase:'commentary',text:'正在核查'}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({messages:[{streaming:true}]}));
+    send('item/completed',{threadId:'thread',turnId:'work',startedAtMs:started,completedAtMs:completed,item:{type:'agentMessage',id:'progress',phase:'commentary',text:'核查完成'}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({messages:[{streaming:false,timestamp:new Date(completed).toISOString()}]}));
+  });
+  it('preserves an already completed compaction timestamp and duration when later work ends',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
+    const start=Date.now()-20000,end=start+1000;
+    send('turn/started',{threadId:'thread',turn:{id:'work'}});
+    send('item/completed',{threadId:'thread',turnId:'work',item:{id:'done-compact',type:'contextCompaction',startedAtMs:start,completedAtMs:end,durationMs:1000}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({compaction:{completed_at:new Date(end).toISOString(),duration_ms:1000}}));
+    send('turn/completed',{threadId:'thread',turn:{id:'work',status:'completed',completedAt:Date.now()/1000}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:false,compaction:{completed_at:new Date(end).toISOString(),duration_ms:1000}}));
+  });
   it('flushes accepted queued user echoes before a rapid next turn clears the batch',async()=>{
     stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
     for(const id of ['one','two']){send('turn/started',{threadId:'thread',turn:{id}});send('item/completed',{threadId:'thread',turnId:id,item:{type:'userMessage',id:`user-${id}`,clientId:id,content:[{type:'text',text:id}]}});send('turn/completed',{threadId:'thread',turn:{id,status:'completed'}});}
@@ -206,7 +232,8 @@ describe('native Codex conversation streaming',()=>{
     expect(requestParams.find(frame=>frame.method==='thread/start')?.params.developerInstructions).toBe(instructions);
     expect(submissions).toHaveLength(1);
     expect(JSON.stringify(submissions)).not.toContain('octoally_shared_resources');
-    await configureStreamingSharedResources('thread',instructions);
+    const before=requestParams.length;await configureStreamingSharedResources('019ff001-8888-7888-8888-888888888888',instructions);expect(requestParams).toHaveLength(before);
+    await Promise.all([configureStreamingSharedResources('thread',instructions),configureStreamingSharedResources('thread',instructions)]);
     expect(requestParams.find(frame=>frame.method==='thread/resume')?.params).toEqual({threadId:'thread',excludeTurns:true});
     expect(requestParams.at(-1)).toMatchObject({method:'thread/inject_items',params:{threadId:'thread',items:[{role:'developer',content:[{type:'input_text',text:instructions}]}]}});
     const injected=requestParams.filter(frame=>frame.method==='thread/inject_items').length;

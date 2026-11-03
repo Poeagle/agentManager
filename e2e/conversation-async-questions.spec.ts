@@ -13,7 +13,9 @@ for(const format of ['item_completed','agent_message'] as const) test(`Codex asy
   // call, including its completed-tool semantics and string-array options.
   const questions=[{title:'免费旅行，你最想去哪里？',options:['太空','深海','森林']}];
   const item={type:'AgentMessage',id:'call-question',phase:'final_answer',delivery:'async',questions,content:[{type:'Text',text:'免费旅行，你最想去哪里？\n- 太空\n- 深海\n- 森林'}]};
-  writeFileSync(log,record('event_msg',{type:'user_message',message:'随机出个问题'})+(format==='item_completed'?record('event_msg',{type:'item_completed',thread_id:native,turn_id:'question-turn',item}):record('response_item',{type:'function_call',id:'fc-ignored',name:'request_user_input_async',call_id:item.id,arguments:JSON.stringify({questions}),internal_chat_message_metadata_passthrough:{turn_id:'question-turn'}})+record('event_msg',{type:'agent_message',message:item.content[0].text,phase:'final_answer',delivery:'async',questions}))+record('response_item',{type:'message',role:'assistant',id:'followup',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'question-turn'},content:[{type:'output_text',text:'问题已发出，可以点选。'}]})+record('event_msg',{type:'task_complete',turn_id:'question-turn'}));
+  const notice='<octoally_shared_resources>\n凭据文件：/work/.env\n按需通过本地程序读取。\n</octoally_shared_resources>';
+  const startup=record('response_item',{type:'message',id:'startup-context',role:'developer',content:[{type:'input_text',text:notice},{type:'input_text',text:'PRIVATE_SETTINGS_MUST_NOT_APPEAR'}]});
+  writeFileSync(log,startup+record('event_msg',{type:'user_message',message:'随机出个问题'})+(format==='item_completed'?record('event_msg',{type:'item_completed',thread_id:native,turn_id:'question-turn',item}):record('response_item',{type:'function_call',id:'fc-ignored',name:'request_user_input_async',call_id:item.id,arguments:JSON.stringify({questions}),internal_chat_message_metadata_passthrough:{turn_id:'question-turn'}})+record('event_msg',{type:'agent_message',message:item.content[0].text,phase:'final_answer',delivery:'async',questions}))+record('response_item',{type:'message',role:'assistant',id:'followup',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'question-turn'},content:[{type:'output_text',text:'问题已发出，可以点选。'}]})+record('event_msg',{type:'task_complete',turn_id:'question-turn'}));
   const server=createServer(),wss=new WebSocketServer({server}),inputs:any[]=[];
   wss.on('connection',(socket:any)=>socket.on('message',(bytes:any)=>{
     const frame=JSON.parse(bytes.toString());if(!frame.method)return;
@@ -38,6 +40,10 @@ for(const format of ['item_completed','agent_message'] as const) test(`Codex asy
     await page.goto('/');
     const card=page.getByRole('region',{name:'Codex 向你提问'}).filter({visible:true}),submit=card.getByRole('button',{name:'提交回答',exact:true});
     await expect(card).toContainText('免费旅行，你最想去哪里？');await expect(card.getByRole('radio')).toHaveCount(4);
+    const automatic=page.locator('[data-context-kind=shared_resources]');
+    await expect(automatic).toHaveCount(1);await expect(automatic.locator('details')).toHaveJSProperty('open',false);
+    await automatic.getByText('自动信息 · 共享资源').click();await expect(automatic.locator('pre')).toContainText('凭据文件：/work/.env');await expect(page.locator('.session-chat-feed')).not.toContainText('PRIVATE_SETTINGS_MUST_NOT_APPEAR');await automatic.getByText('自动信息 · 共享资源').click();
+
     const attention=page.locator('.session-chat-pending-attention');
     await expect(attention).toContainText('有 1 个问题待回答');
     await expect(page.locator('[title="有 1 个问题待回答 · 本轮已结束"]').first()).toBeVisible();
@@ -51,6 +57,12 @@ for(const format of ['item_completed','agent_message'] as const) test(`Codex asy
     await expect(card).toHaveCount(0);await expect(attention).toHaveCount(0);
     await page.reload();
     await expect(page.locator('.session-chat-question-summary')).toHaveCount(0);await expect(card).toHaveCount(0);
+    // A genuinely new question still arrives promptly after old ones were
+    // ignored, without relying on the 5-second sessions polling fallback.
+    appendFileSync(log,record('event_msg',{type:'item_completed',thread_id:native,turn_id:'new-question-turn',item:{type:'AgentMessage',id:`call-new-question-${format}`,delivery:'async',questions:[{title:'新问题仍需回答',options:['A','B']}]}}));
+    await expect(card).toContainText('新问题仍需回答',{timeout:1500});
+    await expect(page.locator('[title="有 1 个问题待回答 · 本轮已结束"]').first()).toBeVisible({timeout:1500});
+    await page.getByRole('button',{name:'全部忽略',exact:true}).click();await expect(card).toHaveCount(0);
     // Reset only this fixture through the API to cover the answer flow below.
     const ids=[JSON.stringify(['request_user_input_async','call-question',0])];
     expect((await page.request.post(`/api/sessions/${session.id}/questions/ignore`,{data:{question_ids:ids,ignored:false}})).ok()).toBeTruthy();
@@ -66,6 +78,6 @@ for(const format of ['item_completed','agent_message'] as const) test(`Codex asy
     await card.scrollIntoViewIfNeeded();await expect(card.getByText('免费旅行，你最想去哪里？',{exact:false}).first()).toBeInViewport();
     await page.screenshot({path:testInfo.outputPath('actual-async-question.png')});
     await submit.click();await expect.poll(()=>inputs.length).toBe(1);const reply=JSON.parse(inputs[0].input[0].text.replace('<send_user_message_question_reply>','').replace('</send_user_message_question_reply>',''));expect(reply).toEqual([{questionItemId:JSON.stringify(['request_user_input_async','call-question',0]),question:'免费旅行，你最想去哪里？',answer:'太空'}]);await expect(draft).toHaveText('保留这份未发送草稿');
-    await expect(card).toHaveCount(0);const summary=page.locator('.session-chat-question-summary');await expect(summary).toContainText('已回答');await expect(summary.locator('details')).toHaveJSProperty('open',false);expect((await summary.boundingBox())!.height).toBeLessThan(90);await summary.getByText('查看详情').click();await expect(summary.locator('details')).toHaveJSProperty('open',true);await expect(summary.locator('dd')).toHaveText('太空');await summary.getByText('查看详情').click();await page.screenshot({path:testInfo.outputPath('answered-collapsed.png')});await page.reload();await expect(summary).toContainText('已回答');await expect(summary.locator('details')).toHaveJSProperty('open',false);expect(inputs).toHaveLength(1);await expect(page.getByText('<send_user_message_question_reply>',{exact:false})).toHaveCount(0);
+    await expect(card).toHaveCount(0);const summary=page.locator('.session-chat-question-summary');await expect(summary).toContainText('已回答');await expect(summary.locator('details')).toHaveJSProperty('open',false);expect((await summary.boundingBox())!.height).toBeLessThan(90);await summary.getByText('查看详情').click();await expect(summary.locator('details')).toHaveJSProperty('open',true);await expect(summary.locator('dd')).toHaveText('太空 · 深海 · 森林');const answerBubble=page.locator('.session-chat-message.user .session-chat-user-text').filter({hasText:'太空'});await expect(answerBubble).toHaveCount(1);await expect(answerBubble).toHaveText('太空');await expect(summary.locator('.conversation-question-answer-preview')).toHaveCount(0);await summary.getByText('查看详情').click();await page.screenshot({path:testInfo.outputPath('answered-collapsed.png')});await page.reload();await expect(summary).toContainText('已回答');await expect(summary.locator('details')).toHaveJSProperty('open',false);expect(inputs).toHaveLength(1);await expect(automatic).toHaveCount(1);await expect(automatic.locator('details')).toHaveJSProperty('open',false);await expect(page.locator('.session-chat-message.user .session-chat-user-text').filter({hasText:'太空'})).toHaveText('太空');await expect(page.getByText('<send_user_message_question_reply>',{exact:false})).toHaveCount(0);
   }finally {if(sessionId)await page.request.delete(`/api/sessions/${sessionId}`);for(const client of wss.clients)client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });

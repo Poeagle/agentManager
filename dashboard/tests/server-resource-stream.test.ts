@@ -38,6 +38,18 @@ describe('shared resource stream cache', () => {
   afterEach(() => {
     socket.close(); client.clear(); vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals();
   });
+  it('updates native status and question counts in both session caches immediately without invalidation or refetch',()=>{
+    const base={id:'s',codex_session_id:'native',agent_runtime:{state:'running',observed_at:'2026-11-03T00:00:00Z'}};
+    client.setQueryData(['sessions'],{sessions:[base]});client.setQueryData(['project-sessions','p'],{sessions:[base]});
+    const runtime={session_id:'native',state:'idle',pending_question_count:1,observed_at:'2026-11-03T00:00:01Z',last_activity_at:'2026-11-03T00:00:01Z'};
+    const push=(runtime:unknown)=>socket.onmessage?.({data:JSON.stringify({type:'session.runtime',session_id:'s',data:JSON.stringify({runtime})})});
+    push(runtime);
+    for(const key of [['sessions'],['project-sessions','p']]){expect((client.getQueryData(key) as any).sessions[0].agent_runtime).toEqual(runtime);expect(client.getQueryState(key)?.isInvalidated).toBe(false);}
+    push({...runtime,state:'running',observed_at:'2026-11-03T00:00:00Z'});
+    expect((client.getQueryData(['sessions']) as any).sessions[0].agent_runtime.state).toBe('idle');
+    push({...runtime,session_id:'old-binding',state:'running'});expect((client.getQueryData(['sessions']) as any).sessions[0].agent_runtime.state).toBe('idle');
+    expect(useStreamStore.getState().events).toHaveLength(0);
+  });
 
   it('updates the resource cache from a pushed sample without adding telemetry to session events', () => {
     const sample = resources(5);

@@ -23,6 +23,39 @@ afterEach(()=>{client.clear();vi.unstubAllGlobals();});
 function typeDraft(node:HTMLElement,value:string){node.textContent=value;fireEvent.input(node);}
 function mount(onReload?:()=>Promise<void>) {return render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active onReload={onReload} renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);}
 describe('chat/raw terminal display',()=>{
+  it('shows progress completion time and statistics only after the message finishes',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const message={id:'streaming-progress',role:'assistant',phase:'commentary',text:'检查进展',turn_id:'work',streaming:true,timestamp:'2026-11-03T00:00:00Z',statistics:{complete:true,requests:1,tool_calls:3,tool_rounds:2,tokens:{total_tokens:500}}};
+    const send=(message:unknown)=>act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'answering',turn_id:'work',started_at:'2026-11-03T00:00:00Z',messages:[message]})}));
+    send(message);let bubble=document.querySelector('[data-chat-message-id="streaming-progress"]')!;
+    expect(bubble.querySelector('time')).toBeNull();expect(bubble.querySelector('.session-chat-message-statistics')).toBeNull();
+    send({...message,text:'检查结束',streaming:false,timestamp:'2026-11-03T00:00:05Z'});bubble=document.querySelector('[data-chat-message-id="streaming-progress"]')!;
+    expect(bubble.querySelector('time')).toHaveAttribute('datetime','2026-11-03T00:00:05Z');expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('token: 500 · tools: 3/2');
+  });
+  it('uses newer durable completion to clear a lost RPC busy snapshot while rejecting older completion',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'tools',turn_id:'current',started_at:'2026-11-03T00:01:00Z',activities:[{id:'tool',label:'运行命令 · 活动步骤',status:'running',started_at:'2026-11-03T00:01:00Z',completed_at:null,duration_ms:null}],messages:[]})}));
+    const push=(last_activity_at:string,observed_at:string,completed_turn_id='current')=>act(()=>window.dispatchEvent(new CustomEvent('agentmanager:session-runtime',{detail:{sessionId:'chat',runtime:{session_id:'native',state:'idle',last_activity_at,observed_at,completed_turn_id}}})));
+    push('2026-11-03T00:00:59Z','2026-11-03T00:01:01Z');expect(screen.getByTestId('conversation-activity-line')).toHaveTextContent('活动步骤');
+    push('2026-11-03T00:01:02Z','2026-11-03T00:01:02Z','other');expect(screen.getByTestId('conversation-activity-line')).toHaveTextContent('活动步骤');
+    push('2026-11-03T00:01:03Z','2026-11-03T00:01:03Z');expect(screen.getByTestId('conversation-activity-line')).toHaveTextContent('可以继续发送消息');
+  });
+  it('updates pending questions from native runtime push without waiting for a conversation refetch',async()=>{
+    const question={id:'q',title:'已有问题',options:['A','B']};
+    const runtime={source:'codex_rollout' as const,session_id:'native',state:'idle' as const,last_activity_at:null,observed_at:'2026-11-03T00:00:00Z',reason:'native',pending_questions:[{id:'call',timestamp:null,questions:[question]}],ignored_question_ids:[] as string[]};
+    page.runtime=runtime;page.messages=[{id:'question',role:'assistant',text:question.title,timestamp:null,async_questions:[question]}];
+    mount();await screen.findByRole('radio',{name:/A/});const calls=vi.mocked(api.agent.conversation).mock.calls.length;
+    const push=(runtime:unknown)=>act(()=>window.dispatchEvent(new CustomEvent('agentmanager:session-runtime',{detail:{sessionId:'chat',runtime}})));
+    push({...runtime,observed_at:'2026-11-03T00:00:01Z',ignored_question_ids:['q'],pending_questions:[]});
+    expect(screen.queryByRole('button',{name:'提交回答',exact:true})).not.toBeInTheDocument();expect(document.querySelector('.session-chat-question-summary')).toBeNull();
+    push({...runtime,observed_at:'2026-11-03T00:00:02Z',ignored_question_ids:['q'],pending_questions:[{id:'new-call',timestamp:null,questions:[{...question,id:'q2',title:'新问题'}]}]});
+    expect(screen.getByRole('region',{name:'Codex 向你提问'})).toHaveTextContent('新问题');
+    expect(vi.mocked(api.agent.conversation).mock.calls).toHaveLength(calls);
+  });
   it('reattaches a detached chat without opening raw terminal or losing its draft',async()=>{
     page={...page,session_active:false,session_status:'detached'};
     let finish!:()=>void;vi.mocked(api.sessions.reconnect).mockImplementation(()=>new Promise(resolve=>{finish=()=>{page={...page,session_active:true,session_status:'running'};resolve({ok:true,session});};}));
@@ -64,10 +97,21 @@ describe('chat/raw terminal display',()=>{
     fireEvent.click(screen.getByRole('button',{name:/^待回答/}));fireEvent.click(screen.getByRole('radio',{name:/太空/}));await act(async()=>fireEvent.click(screen.getByRole('button',{name:'提交回答',exact:true})));
     expect(api.agent.sendInput).toHaveBeenCalledExactlyOnceWith('chat',expect.stringContaining('<send_user_message_question_reply>'),expect.any(String));expect(draft).toHaveTextContent('这份草稿先留着');expect(screen.queryByRole('button',{name:'提交回答',exact:true})).not.toBeInTheDocument();expect(screen.getByText('已回答')).toBeVisible();
   });
-  it('keeps an async answer editable after a failed submission and locks superseded history on restore',async()=>{
+  it('keeps an async answer editable after failure and unrelated followups on restore',async()=>{
     const question={id:'question',role:'assistant' as const,text:'哪个？',timestamp:null,async_questions:[{id:'native-id',title:'哪个？',options:['A','B']}]};page.messages=[page.messages[0],question];vi.mocked(api.agent.sendInput).mockRejectedValueOnce(new Error('网络断开'));
     const view=mount();fireEvent.click(await screen.findByRole('radio',{name:/A/}));await act(async()=>fireEvent.click(screen.getByRole('button',{name:'提交回答',exact:true})));expect(await screen.findByRole('alert')).toHaveTextContent('网络断开');expect(screen.getByRole('button',{name:'提交回答',exact:true})).toBeEnabled();view.unmount();
-    page.messages=[...page.messages,{id:'next-user',role:'user',text:'下一个问题',timestamp:null}];mount();expect(screen.queryByRole('button',{name:'提交回答',exact:true})).not.toBeInTheDocument();expect(await screen.findByText('已继续对话')).toBeVisible();
+    page.messages=[...page.messages,{id:'next-user',role:'user',text:'下一个问题',timestamp:null}];mount();expect(await screen.findByRole('button',{name:'提交回答',exact:true})).toBeEnabled();expect(screen.queryByText('已继续对话')).not.toBeInTheDocument();
+  });
+  it('displays the answer only in the user bubble and keeps the original question in its history card',async()=>{
+    const question='安装目录是否需要递归列出全部文件？',answer='只说明一级目录，保留完整解释。';
+    page.messages=[{id:'question',role:'assistant',text:question,timestamp:null,phase:'final',async_questions:[{id:'q',title:question,options:['只处理一级','递归全部']}]},{id:'reply',role:'user',text:`回复你的提问：\n1. ${question}\n我的回答：${answer}`,timestamp:null,question_replies:[{question_id:'q',question,answer}]}];
+    mount();await screen.findByText('已回答');
+    const bubble=document.querySelector('[data-chat-message-id="reply"] .session-chat-user-text')!;
+    expect(bubble.textContent).toBe(answer);
+    const summary=document.querySelector('.session-chat-question-summary')!;
+    expect(summary).toHaveTextContent(question);expect(summary).not.toHaveTextContent(answer);
+    fireEvent.click(screen.getByText('查看详情'));expect(summary.querySelector('dt')).toHaveTextContent(question);expect(summary).not.toHaveTextContent(answer);
+    expect(api.agent.sendInput).not.toHaveBeenCalled();
   });
   it('attaches server retry status to the original failure and updates it after recovery',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
@@ -268,8 +312,8 @@ describe('chat/raw terminal display',()=>{
     act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages:[progress],busy:true,stage:'answering',turn_id:'turn'})}));
     expect(screen.getByRole('region',{name:'Codex 进展'})).toBe(region);expect(region).toHaveTextContent('开始检查');expect(region).toHaveTextContent('正在核对日志');
     expect(screen.getByLabelText('进展序号 1')).toHaveTextContent('1');expect(screen.getByLabelText('进展序号 2')).toHaveTextContent('2');
-    expect(screen.getAllByLabelText('进展时间').map(node=>node.getAttribute('datetime'))).toEqual(['2026-10-30T06:59:01Z','2026-10-30T06:59:05Z']);
-    for(const time of screen.getAllByLabelText('进展时间'))expect(time).toHaveTextContent(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(screen.getAllByLabelText('进展完成时间').map(node=>node.getAttribute('datetime'))).toEqual(['2026-10-30T06:59:01Z']);
+    for(const time of screen.getAllByLabelText('进展完成时间'))expect(time).toHaveTextContent(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
     const final={id:'final-answer',role:'assistant',phase:'final',text:'最终结论：检查通过',turn_id:'turn',timestamp:null};
     act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages:[{...progress,streaming:false},final],busy:false,stage:'idle',turn_id:'turn'})}));
     expect(region).not.toContainElement(screen.getByText('最终结论：检查通过'));expect(region.querySelectorAll('.session-chat-caret')).toHaveLength(0);

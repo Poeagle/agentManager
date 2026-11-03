@@ -5,8 +5,14 @@ import { columnName, parseDelimitedFile, parseSpreadsheetHtml } from '../src/lib
 import { SpreadsheetPreview } from '../src/components/SpreadsheetPreview';
 import { DocumentPreview } from '../src/components/DocumentPreview';
 import { api } from '../src/lib/api';
+vi.mock('../src/components/PdfPreview',()=>({PdfPreview:()=> <div>PDF 内容</div>}));
 
 describe('friendly document previews', () => {
+  it('shows the actual font substitution and keeps the original download available',async()=>{
+    const preview=vi.fn(async(_path,_signal,_project,onFonts)=>{onFonts({checked:true,substitutions:[{requested:'仿宋',replacement:'FandolFang'}]});return new Blob(['pdf']);});
+    render(<DocumentPreview path="/project/fonts.docx" type="word" content="" filesApi={{...api.files,preview}} onDownload={()=>{}}/>);
+    expect(await screen.findByLabelText('文档字体提示')).toHaveTextContent('仿宋 → FandolFang');expect(screen.getByLabelText('文档字体提示')).toHaveTextContent('原文件未修改');expect(screen.getByRole('button',{name:'下载原文件'})).toBeVisible();
+  });
   it('preserves CSV quoting, embedded newlines, empty fields and escaped quotes', () => {
     expect(parseDelimitedFile('name,value\r\n"first\nsecond","quote ""yes"""\r\n,', 'data.csv')[0].rows)
       .toEqual([[{ text: 'name' }, { text: 'value' }], [{ text: 'first\nsecond' }, { text: 'quote "yes"' }], [{ text: '' }, { text: '' }]]);

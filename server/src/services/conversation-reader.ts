@@ -62,9 +62,12 @@ function publicMessage(line:Buffer,kind:CliType,questionCallId?:string) {
     // Show only our explicit, credential-free resource notice. Other developer
     // instructions remain outside the public transcript. This is presentation
     // only: no user message is submitted to the native thread.
+    // thread/start can coalesce developerInstructions with permissions and
+    // other private instructions as separate blocks in one native message.
+    // Select only the platform's complete wrapper, never join those blocks.
     const developerText=kind==='codex'&&entry.type==='response_item'&&entry.payload?.type==='message'&&entry.payload.role==='developer'
-      ? (entry.payload.content||[]).filter((part:any)=>part.type==='input_text'&&typeof part.text==='string').map((part:any)=>part.text).join('\n').trim():'';
-    const shared=/^<octoally_shared_resources>\n[\s\S]*\n<\/octoally_shared_resources>$/.test(developerText)
+      ? (entry.payload.content||[]).filter((part:any)=>part.type==='input_text'&&typeof part.text==='string').map((part:any)=>part.text.trim()).find((text:string)=>/^<octoally_shared_resources>\n[\s\S]*\n<\/octoally_shared_resources>$/.test(text)):undefined;
+    const shared=developerText
       ? {role:'user' as const,phase:'user' as const,text:developerText,timestamp:typeof entry.timestamp==='string'?entry.timestamp:null}:null;
     const extracted=shared||failure||asyncMessage||extractAgentMessages([entry],kind,128*1024).find(message=>message.role==='user'||message.role==='assistant');
     const reply=extracted?.role==='user'?conversationQuestionReply(extracted.text):undefined;

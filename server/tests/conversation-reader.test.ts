@@ -26,6 +26,22 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app.close();vi.unstubAllEnvs();cleanup();});
 describe('public conversation pages',()=>{
+  it('shows startup shared context coalesced with other developer blocks without exposing those instructions',async()=>{
+    const notice='<octoally_shared_resources>\n凭据文件：/work/.env\n通过本地程序按需读取凭据。\n</octoally_shared_resources>';
+    writeFileSync(file,line('response_item',{type:'message',id:'startup-developer',role:'developer',internal_chat_message_metadata_passthrough:{turn_id:'startup-turn'},content:[
+      {type:'input_text',text:'PRIVATE developer prefix'},
+      {type:'input_text',text:'  '+notice+'\n'},
+      {type:'input_text',text:'PRIVATE permissions and runtime settings'},
+      {type:'input_text',text:'PRIVATE skills'},
+    ]})+user('Start up')+final('What would you like me to do?'));
+    const initial=await readConversation(binding);
+    expect(initial.messages.map(message=>message.text)).toEqual([notice,'Start up','What would you like me to do?']);
+    expect(initial.messages[0]).toMatchObject({role:'user',timestamp:'2026-10-29T10:00:00Z',id:conversationMessageId('startup-turn','user','startup-developer')});
+    expect(JSON.stringify(initial)).not.toContain('PRIVATE');
+    const page=await app.inject({url:'/api/sessions/chat/conversation',headers:{cookie}});
+    expect(page.json().messages[0].text).toBe(notice);expect(page.body).not.toContain('PRIVATE');
+    expect((await readConversation(binding,{after:initial.messages[0].id})).messages.map(message=>message.text)).toEqual(['Start up','What would you like me to do?']);
+  });
   it('shows only an actual shared-resource developer notice while hiding other developer context and tool lookalikes',async()=>{
     const notice='<octoally_shared_resources>\n凭据文件：/work/.env\n通过本地程序按需读取凭据。\n</octoally_shared_resources>';
     const developer=(text:string)=>line('response_item',{type:'message',role:'developer',content:[{type:'input_text',text}]});

@@ -31,7 +31,7 @@ test('capacity failures retry in the same tab and can be stopped',async({page},t
  await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});
  await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});
  await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'容量错误验证'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
- const fail=(id:string)=>{turn={id,status:'failed',items:[],completedAt:Date.now()/1000,error:{message:'Selected model is at capacity. Please try a different model.',codexErrorInfo:'serverOverloaded'}};state='idle';broadcast('turn/completed',{threadId:native,turn});};
+ const fail=(id:string)=>{turn={id,status:'failed',items:[{type:'agentMessage',id:'earlier-question',phase:'final_answer',delivery:'async',questions:[{title:'需要确认哪个目录？',options:['A','B']}],text:'需要确认哪个目录？'}],completedAt:Date.now()/1000,error:{message:'Selected model is at capacity. Please try a different model.',codexErrorInfo:'serverOverloaded'}};state='idle';broadcast('turn/completed',{threadId:native,turn});};
  try{
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});await expect(chat.getByText('原任务的已完成进展。')).toBeVisible();await expect.poll(()=>wss.clients.size).toBeGreaterThan(0);
   await expect.poll(()=>wss.clients.size).toBeGreaterThan(0);await page.waitForTimeout(150);fail('initial');
@@ -39,7 +39,7 @@ test('capacity failures retry in the same tab and can be stopped',async({page},t
   await expect(chat.getByText('已自动恢复（1/3）')).toBeVisible({timeout:18000});expect(inputs).toHaveLength(1);expect(inputs[0].threadId).toBe(native);expect(inputs[0].input[0].text).toContain('避免重复执行');
   // A distinct manual turn gets its own budget. Cancelling prevents dispatch.
   turn={id:'second',status:'inProgress',items:[]};state='active';broadcast('turn/started',{threadId:native,turn});fail('second');
-  await chat.getByRole('button',{name:'停止自动重试'}).click();await expect(chat.getByText('自动重试已停止。')).toBeVisible();await page.waitForTimeout(11000);expect(inputs).toHaveLength(1);
+  await chat.getByRole('button',{name:'停止自动重试'}).click();await expect(chat.getByText('自动重试已停止（已尝试 0/3 次）。')).toBeVisible();await expect(chat.getByText('停止原因：你已停止自动重试。')).toBeVisible();await page.waitForTimeout(11000);expect(inputs).toHaveLength(1);
   await page.screenshot({path:testInfo.outputPath('retry-recovered-and-stopped.png')});
  }finally{
   await page.request.delete(`/api/sessions/${session.id}`).catch(()=>{});for(const peer of wss.clients)peer.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));

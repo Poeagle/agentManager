@@ -1,5 +1,21 @@
 /** Recognize native wrappers only, never ordinary prose mentioning rules. */
 export function automaticConversationContext(text:string):{kind:string;label:string;source:string}|null {
+  const single=singleContext(text);if(single)return single;
+  // Native startup can put AGENTS.md and environment in one user message.
+  // Fold only when every part is a complete known wrapper. A trailing human
+  // request must remain an ordinary visible user message.
+  let rest=text.trim();const parts:Array<{kind:string;label:string;source:string}>=[];
+  while(rest){
+    const agents=/^# AGENTS\.md instructions for [^\r\n]+\r?\n\s*<INSTRUCTIONS>/.exec(rest);
+    const opening=agents||/^<(environment_context|permissions|skills_instructions|task_notification|turn_aborted|octoally_shared_resources)(?:\s[^>]*)?>/.exec(rest);
+    if(!opening)return null;
+    const tag=agents?'INSTRUCTIONS':opening[1],end=rest.indexOf(`</${tag}>`,opening[0].length);
+    if(end<0)return null;const length=end+tag.length+3,part=singleContext(rest.slice(0,length));if(!part)return null;
+    parts.push(part);rest=rest.slice(length).trim();
+  }
+  return parts.length>1?{kind:'combined',label:[...new Set(parts.map(part=>part.label))].join(' · '),source:parts.map(part=>part.source).filter(Boolean).join(' · ')}:null;
+}
+function singleContext(text:string):{kind:string;label:string;source:string}|null {
   const value=text.trim();
   if(/^<octoally_shared_resources>\n[\s\S]*\n<\/octoally_shared_resources>$/.test(value)) {
     const file=/^凭据文件：([^\r\n]+)$/m.exec(value)?.[1]?.trim();

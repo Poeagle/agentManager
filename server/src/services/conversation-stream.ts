@@ -9,6 +9,7 @@ import {conversationMessageId,type ConversationMessage} from './conversation-rea
 import {conversationErrorMessage} from './conversation-error.js';
 import {conversationActivity,type ConversationActivity} from './conversation-activity.js';
 import {nativeUsageFrame,type ConversationUsageFrame} from './conversation-usage.js';
+import {getDb} from '../db/index.js';
 
 export interface ConversationCompaction {id:string;status:'running'|'completed'|'failed'|'interrupted';started_at:string|null;completed_at:string|null;duration_ms:number|null}
 export type ConversationStreamFrame =
@@ -55,24 +56,36 @@ export async function createStreamingCodexThread(cwd:string,task:string,sharedIn
     const id=result.thread?.id;
     if(typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Codex 未返回原生会话标识');
     await request('turn/start',{threadId:id,input:[{type:'text',text:task,text_elements:[]}]});
+    if(sharedInstructions)rememberStreamingSharedResources(id,sharedInstructions);
     return id;
   });
 }
 
 /** Refresh discovery configuration on an explicit reload, without a model turn. */
 const sharedContextFingerprints = new Map<string, string>();
+const sharedContextUpdates=new Map<string,Promise<void>>();
+export function rememberStreamingSharedResources(threadId:string,instructions:string){
+  const key=`${process.env.AGENTMANAGER_CODEX_STREAM_SOCKET}:${threadId}`,hash=createHash('sha256').update(instructions).digest('hex');
+  sharedContextFingerprints.set(key,hash);
+  if(sharedContextFingerprints.size>1000)sharedContextFingerprints.delete(sharedContextFingerprints.keys().next().value!);
+  try{getDb().prepare(`INSERT INTO shared_resource_injections(scope_key,content_hash) VALUES(?,?) ON CONFLICT(scope_key) DO UPDATE SET content_hash=excluded.content_hash`).run(key,hash);}catch{/* The native context remains valid even when its local dedup journal is unavailable. */}
+}
 export async function configureStreamingSharedResources(threadId: string, instructions: string): Promise<void> {
   const key = `${process.env.AGENTMANAGER_CODEX_STREAM_SOCKET}:${threadId}`;
   const fingerprint = createHash('sha256').update(instructions).digest('hex');
-  if (sharedContextFingerprints.get(key) === fingerprint) return;
+  const work=(sharedContextUpdates.get(key)||Promise.resolve()).catch(()=>{}).then(async()=>{
+  let known=sharedContextFingerprints.get(key);
+  if(!known)try{known=(getDb().prepare('SELECT content_hash FROM shared_resource_injections WHERE scope_key=?').get(key) as {content_hash:string}|undefined)?.content_hash;}catch{/* In-memory dedup remains available without a journal. */}
+  if (known === fingerprint) return;
   await withCodexConnection(async request => {
     await request('thread/resume', { threadId, excludeTurns: true });
     // A loaded thread can ignore configuration overrides on resume. Append
     // developer context explicitly; it is durable and never a user message.
     await request('thread/inject_items', { threadId, items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text: instructions }] }] });
   });
-  sharedContextFingerprints.set(key, fingerprint);
-  if (sharedContextFingerprints.size > 1000) sharedContextFingerprints.delete(sharedContextFingerprints.keys().next().value!);
+  rememberStreamingSharedResources(threadId,instructions);
+  });sharedContextUpdates.set(key,work);
+  try{await work;}finally{if(sharedContextUpdates.get(key)===work)sharedContextUpdates.delete(key);}
 }
 
 /** Closing a terminal client leaves its remote engine alive; explicit session
@@ -149,7 +162,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   function applyNativeState(state:unknown) {
     if(!['idle','active','systemError'].includes(String(state)))return;
     busy=state==='active';
-    if(!busy){if(compaction?.status==='running')compaction={...compaction,status:state==='systemError'?'failed':'interrupted',completed_at:new Date().toISOString()};stage='idle';for(const item of items.values())item.message={...item.message,streaming:false};}
+    if(!busy){if(compaction?.status==='running')compaction={...compaction,status:state==='systemError'?'failed':'interrupted',completed_at:new Date().toISOString()};stage='idle';for(const item of items.values())item.message={...item.message,...item.message.streaming?{timestamp:null}:{},streaming:false};}
     changed();
   }
   async function syncNativeState() {
@@ -174,7 +187,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(!willRetry)interactions.clear();
     if(!willRetry&&compaction?.status==='running')compaction={...compaction,status:'failed',completed_at:timestamp};
     busy=willRetry;stage=willRetry?'waiting':'idle';
-    for(const item of items.values())if(item.message.streaming)item.message={...item.message,streaming:false};
+    for(const item of items.values())if(item.message.streaming)item.message={...item.message,timestamp,streaming:false};
     changed();
   }
   function acceptActivity(item:any,completed:boolean,baseline=false) {
@@ -216,7 +229,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       ...(role==='assistant'&&conversationAsyncQuestions(item)?{async_questions:conversationAsyncQuestions(item)}:{}),
       ...(typeof item.clientId==='string'?{client_id:item.clientId}:{}),
       ...(role==='user'?{image_paths:conversationImagePaths(item.content)}:{}),
-      text:text.slice(0,128*1024),timestamp:previous?.message.timestamp || (timestamp===null?null:new Date(timestamp??Date.now()).toISOString()),streaming:role==='assistant' && streaming,
+      text:text.slice(0,128*1024),timestamp:role==='assistant'&&!streaming?(timestamp===null?null:new Date(timestamp??Date.now()).toISOString()):previous?.message.timestamp || (timestamp===null?null:new Date(timestamp??Date.now()).toISOString()),streaming:role==='assistant' && streaming,
     }});
     changed();
   }
@@ -243,7 +256,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
         if(busy) for(const item of turn.items||[]) {
           acceptActivity(item.type==='contextCompaction'&&(turn.items||[]).length===1&&typeof turn.startedAt==='number'?{...item,startedAtMs:turn.startedAt*1000}:item,['completed','failed','declined'].includes(item.status) || typeof item.completedAtMs==='number' || item.type==='contextCompaction'&&item!==(turn.items||[]).at(-1),true);
           const streaming=item===(turn.items||[]).at(-1) && item.type==='agentMessage' && !item.completedAtMs;
-          acceptItem(item,turn.id,streaming,typeof item.startedAtMs==='number'?item.startedAtMs:typeof item.completedAtMs==='number'?item.completedAtMs:null);
+          acceptItem(item,turn.id,streaming,!streaming&&item.type==='agentMessage'?(typeof item.completedAtMs==='number'?item.completedAtMs:null):typeof item.startedAtMs==='number'?item.startedAtMs:typeof item.completedAtMs==='number'?item.completedAtMs:null);
           if(item.type==='agentMessage' && item.text?.length) stage=streaming?'answering':item.phase==='final_answer'?'finishing':'tools';
           else if(['commandExecution','mcpToolCall','dynamicToolCall','fileChange','webSearch','contextCompaction'].includes(item.type))stage='tools';
         }
@@ -301,7 +314,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     else if(frame.method==='item/started'||frame.method==='item/completed') {
       if(data.item?.type==='contextCompaction'&&frame.method==='item/started'){busy=true;stage='tools';}
       acceptActivity({...data.item,...(typeof data.startedAtMs==='number'?{startedAtMs:data.startedAtMs}:{}),...(typeof data.completedAtMs==='number'?{completedAtMs:data.completedAtMs}:{})},frame.method==='item/completed');
-      acceptItem(data.item,data.turnId,frame.method==='item/started',data.startedAtMs||data.completedAtMs);
+      acceptItem(data.item,data.turnId,frame.method==='item/started',frame.method==='item/completed'?(data.completedAtMs??data.item?.completedAtMs??Date.now()):(data.startedAtMs??data.item?.startedAtMs));
       if(data.item?.type==='agentMessage' && data.item.text?.length) stage=frame.method==='item/completed'?(data.item.phase==='final_answer'?'finishing':'tools'):'answering';
       else if(frame.method==='item/started' && ['commandExecution','mcpToolCall','dynamicToolCall','fileChange','webSearch','contextCompaction'].includes(data.item?.type)) {stage='tools';changed();}
       if(frame.method==='item/completed'&&data.item?.type==='contextCompaction')void syncNativeState();
@@ -314,8 +327,10 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     } else if(frame.method==='turn/completed') {
       if(turnId && data.turn?.id && turnId!==data.turn.id)return;
       completedAt=typeof data.turn?.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString();
-      if(compaction){const status=data.turn?.status==='interrupted'?'interrupted':data.turn?.status==='failed'?'failed':compaction.status==='running'?'completed':compaction.status;compaction={...compaction,status,completed_at:completedAt,duration_ms:compaction.started_at?Math.max(0,Date.parse(completedAt!)-Date.parse(compaction.started_at)):compaction.duration_ms};}
-      interactions.clear();busy=false;stage='idle';for(const item of items.values()) item.message={...item.message,streaming:false};
+      // A completed compaction is its own step. Later turn completion must not
+      // extend its duration or make an old completion look newly finished.
+      if(compaction?.status==='running'){const status=data.turn?.status==='interrupted'?'interrupted':data.turn?.status==='failed'?'failed':'completed';compaction={...compaction,status,completed_at:completedAt,duration_ms:compaction.started_at?Math.max(0,Date.parse(completedAt!)-Date.parse(compaction.started_at)):compaction.duration_ms};}
+      interactions.clear();busy=false;stage='idle';for(const item of items.values()) item.message={...item.message,...item.message.streaming?{timestamp:completedAt}:{},streaming:false};
       if(data.turn?.error)reportError(data.turn.id,data.turn.error,false,typeof data.turn.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString(),true);
       changed();
     }

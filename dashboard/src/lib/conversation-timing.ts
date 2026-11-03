@@ -1,11 +1,9 @@
 import type {ConversationMessage} from './api';
 import {automaticConversationContext} from './conversation-context';
-
-const timestampFormatter=new Intl.DateTimeFormat('sv-SE',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+import {formatDisplayTimestamp} from './display-clock';
 
 export function formatConversationTimestamp(timestamp: string | null | undefined): string {
-  const value=timestamp?Date.parse(timestamp):NaN;
-  return Number.isFinite(value)?timestampFormatter.format(new Date(value)):'时间未知';
+  return formatDisplayTimestamp(timestamp);
 }
 
 export function elapsedBetween(start: string | null | undefined, end: string | number | null | undefined): number | null {
@@ -22,27 +20,25 @@ export function formatElapsed(milliseconds: number): string {
   return `${Math.floor(minutes/60)}时${minutes%60}分${seconds%60}秒`;
 }
 
-export function conversationTimings(messages: ConversationMessage[], now: number, busy: boolean,activeTurnId?:string|null) {
+export function conversationTimings(messages: ConversationMessage[], _now: number, _busy: boolean, _activeTurnId?:string|null) {
   messages=messages.filter(message=>message.role!=='user'||!automaticConversationContext(message.text));
   const result=new Map<string,{label:string;title:string}>();
-  let userTime:string|null=null;
-  let userTurn:string|undefined;
-  for(let index=0;index<messages.length;index++) {
-    const message=messages[index];
-    if(message.role==='user') {userTime=message.timestamp;userTurn=message.turn_id;continue;}
-    if(message.async_questions?.length)continue;
+  let userTime:string|null=null,previousCompletion:string|null=null;
+  let userTurn:string|undefined,previousTurn:string|undefined;
+  for(const message of messages) {
+    if(message.role==='user') {userTime=message.timestamp;userTurn=message.turn_id;previousCompletion=null;previousTurn=undefined;continue;}
+    if(message.async_questions?.length||message.streaming)continue;
+    if(message.phase==='error'){previousCompletion=null;previousTurn=undefined;continue;}
     if(message.phase==='final') {
       if(userTurn && message.turn_id && userTurn!==message.turn_id)continue;
       const elapsed=elapsedBetween(userTime,message.timestamp);
-      if(elapsed!==null) result.set(message.id,{label:`本轮耗时 ${formatElapsed(elapsed)}`,title:'最近一条用户消息到本条答复记录的时间差，包含等待时间'});
+      if(elapsed!==null) result.set(message.id,{label:`本轮耗时 ${formatElapsed(elapsed)}`,title:'最近一条用户消息到本条答复完成的时间差，包含工具执行和等待时间'});
     } else if(message.phase==='commentary') {
-      const next=messages[index+1];
-      // A later human message, error or different turn is not the end of this
-      // progress step. Never turn human/offline waiting into execution time.
-      if(next && (next.role!=='assistant' || !['commentary','final'].includes(next.phase||'') || message.turn_id && next.turn_id && message.turn_id!==next.turn_id))continue;
-      if(!next && activeTurnId && message.turn_id && activeTurnId!==message.turn_id)continue;
-      const elapsed=elapsedBetween(message.timestamp,next?.timestamp ?? (!next && busy ? now : null));
-      if(elapsed!==null) result.set(message.id,{label:`${next?'':'距上次更新 '}${formatElapsed(elapsed)}`,title:next?'同一轮相邻 Agent 输出的记录时间差，包含等待或暂停；不是工具执行耗时':'当前轮仍在执行，距离最近进展记录的时间；不是工具执行耗时'});
+      const samePrevious=previousCompletion&&(!previousTurn||!message.turn_id||previousTurn===message.turn_id);
+      const sameUser=!userTurn||!message.turn_id||userTurn===message.turn_id;
+      const elapsed=elapsedBetween(samePrevious?previousCompletion:sameUser?userTime:null,message.timestamp);
+      if(elapsed!==null)result.set(message.id,{label:`耗时 ${formatElapsed(elapsed)}`,title:'上一条进展完成（或本轮用户消息）到本条进展完成的时间差，包含工具执行和等待；不是单独生成这段文字的耗时'});
+      previousCompletion=message.timestamp;previousTurn=message.turn_id;
     }
   }
   return result;

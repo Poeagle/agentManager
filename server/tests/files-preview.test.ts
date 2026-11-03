@@ -5,11 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { authHook, createSession, createUser } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
 import { fileRoutes } from '../src/routes/files.js';
-import { DocumentPreviewError, previewOfficeDocument } from '../src/services/document-preview.js';
+import { DocumentPreviewError, previewOfficeDocumentDetailed } from '../src/services/document-preview.js';
 import { createTestDatabase } from './helpers/database.js';
 
 vi.mock('../src/services/document-preview.js', async () => ({
-  ...await vi.importActual('../src/services/document-preview.js'), previewOfficeDocument: vi.fn(),
+  ...await vi.importActual('../src/services/document-preview.js'), previewOfficeDocumentDetailed: vi.fn(),
 }));
 
 let app: FastifyInstance;
@@ -30,7 +30,7 @@ beforeEach(async () => {
   app = Fastify({ logger: false });
   app.addHook('onRequest', authHook);
   await app.register(fileRoutes, { prefix: '/api' });
-  vi.mocked(previewOfficeDocument).mockResolvedValue(pdf);
+  vi.mocked(previewOfficeDocumentDetailed).mockResolvedValue({content:pdf,fonts:{checked:true,substitutions:[]}});
 });
 
 afterEach(async () => { await app.close(); cleanup(); });
@@ -67,18 +67,24 @@ describe('document previews', () => {
     const path = join(root, 'test.docx');
     writeFileSync(path, 'docx fixture');
     expect((await request('preview', path)).rawPayload.equals(pdf)).toBe(true);
-    expect(previewOfficeDocument).toHaveBeenCalledWith(Buffer.from('docx fixture'), 'docx');
-    vi.mocked(previewOfficeDocument).mockRejectedValue(new DocumentPreviewError('缺少 Writer', 503));
+    expect(previewOfficeDocumentDetailed).toHaveBeenCalledWith(Buffer.from('docx fixture'), 'docx');
+    vi.mocked(previewOfficeDocumentDetailed).mockRejectedValue(new DocumentPreviewError('缺少 Writer', 503));
     const response = await request('preview', path);
     expect(response.statusCode).toBe(503);
     expect(response.headers['content-type']).toContain('application/json');
     expect(response.json().error).toBe('缺少 Writer');
   });
+  it('returns bounded font substitution metadata alongside the original preview bytes',async()=>{
+    const path=join(root,'fonts.docx');writeFileSync(path,'fixture');
+    vi.mocked(previewOfficeDocumentDetailed).mockResolvedValue({content:pdf,fonts:{checked:true,substitutions:[{requested:'仿宋',replacement:'FandolFang'}]}});
+    const response=await request('preview',path);expect(response.statusCode).toBe(200);expect(response.rawPayload.equals(pdf)).toBe(true);
+    expect(JSON.parse(decodeURIComponent(String(response.headers['x-preview-fonts'])))).toMatchObject({checked:true,substitutions:[{requested:'仿宋',replacement:'FandolFang'}]});
+  });
 
   it('returns spreadsheet HTML only under restrictive CSP', async () => {
     const path = join(root, 'table.xlsx');
     writeFileSync(path, 'xlsx');
-    vi.mocked(previewOfficeDocument).mockResolvedValue(Buffer.from('<table><tr><td>42</td></tr></table>'));
+    vi.mocked(previewOfficeDocumentDetailed).mockResolvedValue({content:Buffer.from('<table><tr><td>42</td></tr></table>'),fonts:{checked:false,substitutions:[]}});
     const response = await request('preview', path);
     expect(response.headers['content-type']).toContain('text/html');
     expect(response.headers['content-security-policy']).toContain("sandbox; default-src 'none'");
@@ -113,7 +119,7 @@ describe('document previews', () => {
     symlinkSync(outside, join(root, 'link.docx'));
     expect((await request('preview', outside)).statusCode).toBe(403);
     expect((await request('preview', join(root, 'link.docx'))).statusCode).toBe(403);
-    expect(previewOfficeDocument).not.toHaveBeenCalled();
+    expect(previewOfficeDocumentDetailed).not.toHaveBeenCalled();
   });
 
   it('requires login for previews', async () => {

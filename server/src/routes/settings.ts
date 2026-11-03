@@ -51,7 +51,7 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
   app.get('/settings', async () => {
     const db = getDb();
     const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-    return { settings: effectiveSettings(rows) };
+    return { settings: effectiveSettings(rows), server_time: Date.now() };
   });
 
   // Update settings

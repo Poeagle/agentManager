@@ -7,10 +7,13 @@ export interface CodexRuntime {
   source: 'codex_rollout'; session_id: string | null; state: CodexState;
   last_activity_at: string | null; observed_at: string; reason: string;
   pending_question_count?: number; pending_questions?: PendingQuestionGroup[];
+  completed_turn_id?:string;
 }
 interface RuntimeCursor {
   offset: number; inode: number; mtime: number; partial: Buffer;
   last: string | null; state: CodexState; activeTurns: Set<string>; waitingCall: string | null;
+  questions?:PendingQuestionGroup[];
+  completedTurn?:string;
 }
 const MAX_READ = 4 * 1024 * 1024;
 const cursors = new Map<string, RuntimeCursor>();
@@ -34,10 +37,11 @@ function applyRecord(cursor: RuntimeCursor, entry: any, sessionId: string): void
   if (cursor.state === 'ready') cursor.state='unknown';
   if (!cursor.last || stamp > Date.parse(cursor.last)) cursor.last = new Date(stamp).toISOString();
   const turn = typeof p.turn_id === 'string' ? p.turn_id : 'current';
-  if (event === 'task_started') { cursor.activeTurns.add(turn); cursor.state='running'; cursor.waitingCall=null; }
+  if (event === 'task_started') { cursor.activeTurns.add(turn); cursor.state='running'; cursor.waitingCall=null; cursor.completedTurn=undefined; }
   if (event === 'task_complete' || event === 'turn_aborted') {
     cursor.activeTurns.delete(turn);
     cursor.state = cursor.activeTurns.size ? 'running' : event === 'task_complete' ? p.error?'failed':'idle' : 'interrupted';
+    if(!cursor.activeTurns.size&&typeof p.turn_id==='string')cursor.completedTurn=p.turn_id;
     cursor.waitingCall = null;
   }
   if (['request_user_input','exec_approval_request','apply_patch_approval_request'].includes(event)) cursor.state='waiting_for_input';
@@ -65,7 +69,8 @@ export async function readCodexRuntime(sessionId: string | null | undefined): Pr
       const stats = await file.stat();
       let cursor = cursors.get(filePath);
       if (!cursor || cursor.inode !== stats.ino || stats.size < cursor.offset || (stats.size === cursor.offset && stats.mtimeMs !== cursor.mtime)) cursor=freshCursor();
-      if (stats.size !== cursor.offset) {
+      const changed=stats.size!==cursor.offset;
+      if (changed) {
         const start = Math.max(cursor.offset,stats.size-MAX_READ);
         const buffer = Buffer.alloc(stats.size-start);
         const {bytesRead} = await file.read(buffer,0,buffer.length,start);
@@ -82,8 +87,11 @@ export async function readCodexRuntime(sessionId: string | null | undefined): Pr
         if (cursors.size >= 256 && !cursors.has(filePath)) cursors.delete(cursors.keys().next().value!);
         cursors.set(filePath,cursor);
       }
-      const questions = await readPendingQuestions(filePath, sessionId);
-      return {source:'codex_rollout' as const,session_id:sessionId,state:cursor.state,last_activity_at:cursor.last,observed_at:new Date().toISOString(),pending_question_count:questions.reduce((sum,group)=>sum+group.questions.length,0),pending_questions:questions,
+      // Idle history is polled too. Reuse its metadata rather than reopening
+      // the independent question index and churning its bounded LRU cache.
+      const questions = !changed&&cursor.questions ? cursor.questions : await readPendingQuestions(filePath, sessionId);
+      cursor.questions=questions;cursors.set(filePath,cursor);
+      return {source:'codex_rollout' as const,session_id:sessionId,state:cursor.state,last_activity_at:cursor.last,observed_at:new Date().toISOString(),...(cursor.completedTurn?{completed_turn_id:cursor.completedTurn}:{}),pending_question_count:questions.reduce((sum,group)=>sum+group.questions.length,0),pending_questions:questions,
         reason:cursor.state==='ready' ? '原生会话已创建，尚未开始执行' : cursor.last ? '依据 Codex 原生执行事件；本轮结束不代表业务任务验收完成' : '原生记录尚无可识别的执行事件'};
     } finally {await file.close();}
   })().catch(()=>unavailable('Codex 原生记录暂时无法读取')).finally(()=>inFlight.delete(filePath));
