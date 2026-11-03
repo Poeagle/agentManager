@@ -32,6 +32,10 @@ test('progress badges and folding keep metadata separate from the message conten
     expect(geometry.bottom).toBeLessThanOrEqual(geometry.top);expect(geometry.first).toBe('TIME');
   }};
   await checkRows();await chat.getByLabel('收起进展（2 条）').click();await expect(chat.getByText('First progress',{exact:true})).toBeHidden();await expect(chat.getByText('Finished',{exact:true})).toBeVisible();await chat.getByLabel('展开进展（2 条）').click();await expect(chat.locator('.conversation-inline-meta')).toHaveCount(0);
+  const finalHeading=chat.locator('.session-chat-final-heading');
+  const finalRow=await finalHeading.evaluate(node=>{const label=node.querySelector('.session-chat-kind')!.getBoundingClientRect(),time=node.querySelector('time')!.getBoundingClientRect();return {labelTop:label.top,labelBottom:label.bottom,timeTop:time.top,timeBottom:time.bottom};});
+  expect(finalRow.timeTop).toBeLessThan(finalRow.labelBottom);expect(finalRow.timeBottom).toBeGreaterThan(finalRow.labelTop);
+  await expect(chat.locator('.session-chat-message[data-phase="final"] .session-chat-body .session-chat-message-meta')).toHaveCount(0);
   await expect(page.getByRole('button',{name:'对话',exact:true}).first()).toBeVisible();
   await page.screenshot({path:info.outputPath('progress-interval-english.png')});
   await page.setViewportSize({width:390,height:844});await checkRows();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:info.outputPath('progress-cards-mobile.png')});
