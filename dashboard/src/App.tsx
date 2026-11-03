@@ -18,6 +18,7 @@ import { ExportTransferOverlay } from './components/ExportTransferOverlay';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { CodexQuotaIndicator } from './components/CodexQuotaIndicator';
 import { ServerResourceIndicator } from './components/ServerResourceIndicator';
+import {mergeSessionRuntimeLists} from './lib/session-runtime-cache';
 import { moveItemByKey, orderItemsByKeys } from './lib/reorder';
 
 const PlatformCenter = lazy(() => import('./components/PlatformCenter').then((module) => ({ default: module.PlatformCenter })));
@@ -35,6 +36,8 @@ const queryClient = new QueryClient({
     },
   },
 });
+queryClient.setQueryDefaults(['sessions'],{structuralSharing:mergeSessionRuntimeLists});
+queryClient.setQueryDefaults(['project-sessions'],{structuralSharing:mergeSessionRuntimeLists});
 interface ProjectTab {
   projectId: string;
   projectName: string;

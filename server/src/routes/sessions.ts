@@ -136,7 +136,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         const preview=await readConversationPreview(s);
         const native = s.cli_type === 'codex' ? personalQuestionRuntime(await readCodexRuntime(s.codex_session_id),req.user!.id) : null;
         if(native&&['running','pending','launching','detached','released'].includes(s.status))await watchSessionRuntime(s);
-        if (native && ['running','waiting_for_input'].includes(native.state)
+        if (native?.source==='codex_rollout' && ['running','waiting_for_input'].includes(native.state)
           && await sessionManager.getLiveWorkAgent(s.id) !== 'codex') {
           native.state='unknown'; native.reason='原生记录中的执行尚未结束，但未确认到对应 Codex 进程，当前状态待确认';
         }

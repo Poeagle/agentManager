@@ -1,12 +1,14 @@
 import { open } from 'fs/promises';
 import { findCodexRollout } from './prompt-context.js';
 import { readPendingQuestions, type PendingQuestionGroup } from './conversation-pending-questions.js';
+import {projectCodexRuntime} from './codex-runtime-signals.js';
 
 export type CodexState = 'ready' | 'running' | 'idle' | 'waiting_for_input' | 'interrupted' | 'failed' | 'unknown';
 export interface CodexRuntime {
-  source: 'codex_rollout'; session_id: string | null; state: CodexState;
+  source: 'codex_rollout'|'codex_stream'; session_id: string | null; state: CodexState;
   last_activity_at: string | null; observed_at: string; reason: string;
   pending_question_count?: number; pending_questions?: PendingQuestionGroup[];
+  submitted_question_ids?:string[];queued_answer_count?:number;
   completed_turn_id?:string;
 }
 interface RuntimeCursor {
@@ -91,8 +93,8 @@ export async function readCodexRuntime(sessionId: string | null | undefined): Pr
       // the independent question index and churning its bounded LRU cache.
       const questions = !changed&&cursor.questions ? cursor.questions : await readPendingQuestions(filePath, sessionId);
       cursor.questions=questions;cursors.set(filePath,cursor);
-      return {source:'codex_rollout' as const,session_id:sessionId,state:cursor.state,last_activity_at:cursor.last,observed_at:new Date().toISOString(),...(cursor.completedTurn?{completed_turn_id:cursor.completedTurn}:{}),pending_question_count:questions.reduce((sum,group)=>sum+group.questions.length,0),pending_questions:questions,
-        reason:cursor.state==='ready' ? '原生会话已创建，尚未开始执行' : cursor.last ? '依据 Codex 原生执行事件；本轮结束不代表业务任务验收完成' : '原生记录尚无可识别的执行事件'};
+      return projectCodexRuntime({source:'codex_rollout' as const,session_id:sessionId,state:cursor.state,last_activity_at:cursor.last,observed_at:new Date().toISOString(),...(cursor.completedTurn?{completed_turn_id:cursor.completedTurn}:{}),pending_question_count:questions.reduce((sum,group)=>sum+group.questions.length,0),pending_questions:questions,
+        reason:cursor.state==='ready' ? '原生会话已创建，尚未开始执行' : cursor.last ? '依据 Codex 原生执行事件；本轮结束不代表业务任务验收完成' : '原生记录尚无可识别的执行事件'});
     } finally {await file.close();}
   })().catch(()=>unavailable('Codex 原生记录暂时无法读取')).finally(()=>inFlight.delete(filePath));
   inFlight.set(filePath,work);

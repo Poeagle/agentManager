@@ -2,7 +2,7 @@ import type {ConversationMessage} from './api';
 
 export interface TimelineMessage extends ConversationMessage {
   /** A local send reserves its position before either HTTP or native echo. */
-  optimistic?: {afterSequence:number};
+  optimistic?: {afterSequence:number;accepted?:boolean};
   /** Codex assigns different user IDs to stream items and rollout records. */
   aliases?: string[];
 }

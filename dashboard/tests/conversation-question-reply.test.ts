@@ -1,7 +1,17 @@
 import {describe,expect,it} from 'vitest';
-import {decodeQuestionReply,encodeQuestionReply,questionAnswers,pendingConversationQuestions,questionReplyDisplayText} from '../src/lib/conversation-question-reply';
+import {decodeQuestionReply,encodeQuestionReply,questionAnswers,questionReplyState,pendingConversationQuestions,questionReplyDisplayText} from '../src/lib/conversation-question-reply';
 import type {ConversationMessage} from '../src/lib/api';
 describe('native asynchronous answers',()=>{
+  it('distinguishes submitting, acknowledged, queued and actually received answers',()=>{
+    const question:ConversationMessage={id:'q',role:'assistant',text:'Which?',timestamp:null,async_questions:[{id:'native-q',title:'Which?',options:null}]};
+    const reply={id:'r',role:'user' as const,text:'A',timestamp:null,question_replies:[{question_id:'native-q',question:'Which?',answer:'A'}]};
+    expect(questionReplyState(question,[])).toBe('pending');
+    expect(questionReplyState(question,[],['native-q'])).toBe('submitted');
+    expect(questionReplyState(question,[{...reply,optimistic:{afterSequence:0}}])).toBe('sending');
+    expect(questionReplyState(question,[{...reply,optimistic:{afterSequence:0,accepted:true}}])).toBe('submitted');
+    expect(questionReplyState(question,[{...reply,queued:true}])).toBe('queued');
+    expect(questionReplyState(question,[reply])).toBe('answered');
+  });
   it('shows only answer text while retaining native reply metadata and ordinary messages',()=>{
     const message={id:'answer',role:'user',text:'回复你的提问：\n1. 原问题\n我的回答：只处理一级目录',timestamp:null,question_replies:[{question_id:'q',question:'原问题',answer:'只处理一级目录'}]} satisfies ConversationMessage;
     expect(questionReplyDisplayText(message)).toBe('只处理一级目录');

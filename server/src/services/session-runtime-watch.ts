@@ -3,6 +3,7 @@ import {basename,dirname} from 'path';
 import {findCodexRollout} from './prompt-context.js';
 import {readCodexRuntime} from './codex-runtime.js';
 import {broadcastEphemeral} from './event-store.js';
+import {subscribeCodexRuntimeSignals} from './codex-runtime-signals.js';
 
 type Binding={id:string;project_id:string|null;codex_session_id?:string|null};
 const watches=new Map<string,{native:string;seen:number;stop:()=>void}>();
@@ -27,19 +28,20 @@ export function watchSessionRuntime(session:Binding):Promise<void> {
     async function refresh(){timer=undefined;if(closed)return;reading=true;again=false;
       try{
         const runtime={...await readCodexRuntime(session.codex_session_id)};if(closed)return;
-        if(['running','waiting_for_input'].includes(runtime.state)){
+        if(runtime.source==='codex_rollout'&&['running','waiting_for_input'].includes(runtime.state)){
           if(!live||Date.now()-checked>5000){const {getLiveWorkAgent}=await import('./session-manager.js');live=await getLiveWorkAgent(session.id)==='codex';checked=Date.now();}
           if(!live){runtime.state='unknown';runtime.reason='原生记录中的执行尚未结束，但未确认到对应 Codex 进程，当前状态待确认';}
         }
         if(closed)return;
-        const fingerprint=JSON.stringify([runtime.state,runtime.last_activity_at,runtime.completed_turn_id,runtime.pending_questions]);
+        const fingerprint=JSON.stringify([runtime.state,runtime.last_activity_at,runtime.completed_turn_id,runtime.pending_questions,runtime.submitted_question_ids,runtime.queued_answer_count]);
         if(last!==fingerprint){last=fingerprint;broadcastEphemeral({type:'session.runtime',session_id:session.id,...session.project_id?{project_id:session.project_id}:{},data:{runtime}});}
       }catch{/* A later native change or the polling fallback retries. */}
       finally{reading=false;if(again)changed();}
     }
     function changed(){if(closed)return;again=true;if(!reading&&!timer)timer=setTimeout(()=>void refresh(),80);}
     const observer=watch(dirname(path),(_event,name)=>{if(!name||name.toString()===basename(path))changed();});observer.unref();
-    const stop=()=>{closed=true;clearTimeout(timer);observer.close();};
+    const unsubscribe=subscribeCodexRuntimeSignals(native=>{if(native===session.codex_session_id)changed();});
+    const stop=()=>{closed=true;clearTimeout(timer);observer.close();unsubscribe();};
     observer.on('error',()=>{stop();if(watches.get(session.id)?.stop===stop){watches.delete(session.id);targets.delete(session.id);}});
     watches.set(session.id,{native:session.codex_session_id!,seen:Date.now(),stop});changed();
   })().catch(()=>{}).finally(()=>attaching.delete(key));attaching.set(key,work);return work;

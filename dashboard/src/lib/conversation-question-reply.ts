@@ -1,4 +1,5 @@
 import type {ConversationMessage} from './api';
+import type {TimelineMessage} from './conversation-timeline';
 export type QuestionReply=NonNullable<ConversationMessage['question_replies']>[number];
 const START='<send_user_message_question_reply>',END='</send_user_message_question_reply>';
 /** Keep native reply identity and context in the message; display the user's
@@ -35,6 +36,16 @@ export function questionAnswers(message:ConversationMessage,later:ConversationMe
     if(answers.length&&answers.every(answer=>answer!==null))return answers as string[];
   }
   return null;
+}
+
+export function questionReplyState(message:ConversationMessage,later:TimelineMessage[],submittedIds:string[]=[]):'pending'|'sending'|'submitted'|'queued'|'answered' {
+ if(questionAnswers(message,later)===null)return message.async_questions?.length&&message.async_questions.every(question=>question.id&&submittedIds.includes(question.id))?'submitted':'pending';
+ const ids=new Set(message.async_questions?.map(question=>question.id));
+ const replies=later.filter(item=>item.role==='user'&&item.question_replies?.some(answer=>ids.has(answer.question_id)));
+ if(replies.some(item=>item.queued))return 'queued';
+ if(replies.some(item=>item.optimistic&&!item.optimistic.accepted))return 'sending';
+ if(replies.some(item=>item.optimistic))return 'submitted';
+ return 'answered';
 }
 
 /** Include unanswered questions outside the loaded history page. A new user

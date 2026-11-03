@@ -74,7 +74,8 @@ export function signalForSession(session: Session, liveStates: Record<string, Li
       failed:{color:C.red,pulse:false,attention:true,lock:false,title:'Codex 执行失败'},
       unknown:{color:C.grey,pulse:false,attention:false,lock:false,title:'Codex 原生状态未知'},
     };
-    return map[native];
+    const signal=map[native];
+    return session.agent_runtime?.queued_answer_count&&native==='running'?{...signal,title:'Codex 运行中 · 回答已排队，等待接收'}:signal;
   }
   const terminal = session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled';
   const live = terminal ? undefined : (liveStates[session.id] ?? liveFromSession(session));

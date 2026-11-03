@@ -618,12 +618,13 @@ export interface Session {
   claude_session_id?: string | null;
   codex_session_id?: string | null;
   agent_runtime?: {
-    source: 'codex_rollout'; session_id: string | null;
+    source: 'codex_rollout'|'codex_stream'; session_id: string | null;
     state: 'ready' | 'running' | 'idle' | 'waiting_for_input' | 'interrupted' | 'failed' | 'unknown';
     last_activity_at: string | null; observed_at: string; reason: string;
     pending_question_count?: number;
     completed_turn_id?:string;
     ignored_question_ids?:string[];
+    submitted_question_ids?:string[];queued_answer_count?:number;
     pending_questions?: Array<{id:string;questions:NonNullable<ConversationMessage['async_questions']>;timestamp:string|null;turn_id?:string}>;
   };
   // Live process-state (present when the session has an active in-memory tracker).

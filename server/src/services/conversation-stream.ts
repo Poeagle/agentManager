@@ -10,6 +10,8 @@ import {conversationErrorMessage} from './conversation-error.js';
 import {conversationActivity,type ConversationActivity} from './conversation-activity.js';
 import {nativeUsageFrame,type ConversationUsageFrame} from './conversation-usage.js';
 import {getDb} from '../db/index.js';
+import {setLiveCodexRuntime,clearLiveCodexRuntime,rememberCodexQuestionReply,syncQueuedCodexQuestionReplies} from './codex-runtime-signals.js';
+import type {CodexState} from './codex-runtime.js';
 
 export interface ConversationCompaction {id:string;status:'running'|'completed'|'failed'|'interrupted';started_at:string|null;completed_at:string|null;duration_ms:number|null}
 export type ConversationStreamFrame =
@@ -121,7 +123,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
       const latest=await request('thread/turns/list',{threadId,limit:1,itemsView:'full'});
       const turn=latest.data?.[0];
       if(turn?.items?.some((item:any)=>item.type==='userMessage'&&item.clientId===identity))return true;
-      if(turn?.status==='inProgress'&&turn.items?.at(-1)?.type==='contextCompaction')return queue();
+      if(turn?.status==='inProgress'&&turn.items?.some((item:any,index:number)=>item.type==='contextCompaction'&&(index===turn.items.length-1||item.status==='inProgress')))return queue();
     }
     try{await request('turn/start',{threadId,clientUserMessageId:identity,input});return true;}
     catch(error){
@@ -132,7 +134,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
     }
   });
   acceptedInputs.set(key,{promise:operation,fingerprint});
-  void operation.then(result=>{if(!result)acceptedInputs.delete(key);},()=>acceptedInputs.delete(key));
+  void operation.then(result=>{if(!result)acceptedInputs.delete(key);else rememberCodexQuestionReply(threadId,identity,text,result==='queued');},()=>acceptedInputs.delete(key));
   if(acceptedInputs.size>512)acceptedInputs.delete(acceptedInputs.keys().next().value!);
   return operation;
 }
@@ -147,6 +149,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   const activities=new Map<string,ConversationActivity>();
   const interactions=new Map<string,{card:ConversationInteraction;nativeId:number|string;params:any}>();
   let next=0,closed=false,busy=false;
+  const runtimeSource=randomUUID();let finishedState:CodexState='unknown';
   let turnId:string|null=null,startedAt:string|null=null,completedAt:string|null=null;
   let stage:'waiting'|'tools'|'answering'|'finishing'|'idle'='idle';
   let compaction:ConversationCompaction|null=null;
@@ -156,12 +159,14 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   let lastUsageFingerprint:string|undefined;
   function snapshot() {
     flush=undefined;
+    if(!closed&&(busy||finishedState!=='unknown'))setLiveCodexRuntime(threadId,runtimeSource,[...interactions.values()].some(entry=>entry.card.blocking&&!entry.card.submitted)?'waiting_for_input':busy?'running':finishedState);
     if(!closed) emit({type:'snapshot',interactions:[...interactions.values()].map(entry=>entry.card),messages:[...items.values()].filter(item=>item.message.text.length>0).map(item=>item.message),activities:[...activities.values()],compaction,busy,connected:true,turn_id:turnId,started_at:startedAt,completed_at:completedAt,stage});
   }
   function changed() {if(!flush) flush=setTimeout(snapshot,10);}
   function applyNativeState(state:unknown) {
     if(!['idle','active','systemError'].includes(String(state)))return;
     busy=state==='active';
+    if(state==='systemError')finishedState='failed';else if(state==='idle'&&finishedState==='unknown')finishedState='idle';
     if(!busy){if(compaction?.status==='running')compaction={...compaction,status:state==='systemError'?'failed':'interrupted',completed_at:new Date().toISOString()};stage='idle';for(const item of items.values())item.message={...item.message,...item.message.streaming?{timestamp:null}:{},streaming:false};}
     changed();
   }
@@ -186,7 +191,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     items.delete(`error:${message.id}`);items.set(`error:${message.id}`,{message,phase:'error'});
     if(!willRetry)interactions.clear();
     if(!willRetry&&compaction?.status==='running')compaction={...compaction,status:'failed',completed_at:timestamp};
-    busy=willRetry;stage=willRetry?'waiting':'idle';
+    busy=willRetry;finishedState=willRetry?'unknown':'failed';stage=willRetry?'waiting':'idle';
     for(const item of items.values())if(item.message.streaming)item.message={...item.message,timestamp,streaming:false};
     changed();
   }
@@ -210,7 +215,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
         return {id:`queued-${item.clientUserMessageId}`,role:'user' as const,client_id:item.clientUserMessageId,queued:true,timestamp:null,
           text:reply?.text??rawText,...reply?{question_replies:reply.answers}:{},image_paths:conversationImagePaths(item.input)};
       });
-      emit({type:'queue',messages});
+      syncQueuedCodexQuestionReplies(threadId,messages);emit({type:'queue',messages});
     }catch{/* Older native servers may not expose queued submissions. */}
   }
   function acceptItem(item:any,turnId:string,streaming:boolean,timestamp?:number|null) {
@@ -250,6 +255,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
         if(revision!==baselineRevision && ((turnId && turnId!==turn.id) || (busy && turn.status!=='inProgress'))) continue;
         const sameTurn=turnId===turn.id;
         busy=turn.status==='inProgress';
+        if(!busy)finishedState=turn.status==='failed'?'failed':turn.status==='interrupted'?'interrupted':'idle';
         turnId=turn.id;startedAt=typeof turn.startedAt==='number'?new Date(turn.startedAt*1000).toISOString():null;
         completedAt=typeof turn.completedAt==='number'?new Date(turn.completedAt*1000).toISOString():null;
         if(!busy)stage='idle';else if(!sameTurn || stage==='idle')stage='waiting';
@@ -308,6 +314,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       // the prior turn first so its accepted user message cannot disappear.
       if(flush){clearTimeout(flush);snapshot();}
       items.clear();activities.clear();compaction=null;interactions.clear();busy=true;completedAt=null;turnId=data.turn?.id||null;
+      finishedState='unknown';
       startedAt=typeof data.turn?.startedAt==='number'?new Date(data.turn.startedAt*1000).toISOString():new Date().toISOString();
       stage='waiting';changed();
     }
@@ -331,14 +338,15 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       // extend its duration or make an old completion look newly finished.
       if(compaction?.status==='running'){const status=data.turn?.status==='interrupted'?'interrupted':data.turn?.status==='failed'?'failed':'completed';compaction={...compaction,status,completed_at:completedAt,duration_ms:compaction.started_at?Math.max(0,Date.parse(completedAt!)-Date.parse(compaction.started_at)):compaction.duration_ms};}
       interactions.clear();busy=false;stage='idle';for(const item of items.values()) item.message={...item.message,...item.message.streaming?{timestamp:completedAt}:{},streaming:false};
+      finishedState=data.turn?.status==='failed'?'failed':data.turn?.status==='interrupted'?'interrupted':'idle';
       if(data.turn?.error)reportError(data.turn.id,data.turn.error,false,typeof data.turn.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString(),true);
       changed();
     }
   });
-  const lost=()=>{if(closed)return;clearTimeout(retry);clearTimeout(flush);for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('事件连接已关闭'));}pending.clear();unavailable(true);closed=true;};
+  const lost=()=>{if(closed)return;clearTimeout(retry);clearTimeout(flush);for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('事件连接已关闭'));}pending.clear();unavailable(true);closed=true;clearLiveCodexRuntime(threadId,runtimeSource);};
   socket.on('error',lost);socket.on('close',lost);
   const stop=()=>{
-    closed=true;clearTimeout(retry);clearTimeout(flush);
+    closed=true;clearTimeout(retry);clearTimeout(flush);clearLiveCodexRuntime(threadId,runtimeSource);
     for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('事件订阅已结束'));}pending.clear();
     if(socket.readyState===WebSocket.CONNECTING) socket.terminate();else socket.close();
   };
