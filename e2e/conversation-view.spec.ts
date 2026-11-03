@@ -32,6 +32,7 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'对话试用'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
   await page.setViewportSize({width:1600,height:1000});await page.goto('/');
   const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
+  await chat.getByLabel('展开进展（2 条）').click();
   await expect(chat.getByText('请检查这个项目。',{exact:true})).toBeVisible();await expect(chat.getByText('检查已完成。',{exact:true})).toBeVisible();
   await expect(chat).not.toContainText('PRIVATE TOOL');await expect(chat.getByText('这是 Agent 的中途进展。',{exact:true})).toBeVisible();
   const progress=chat.getByRole('region',{name:'Codex 进展'});await expect(progress).toHaveCount(1);await expect(progress).toContainText('已核对项目结构');
@@ -43,11 +44,12 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   await expect(answerMeta).toHaveCSS('opacity','1');
   await expect(answerMeta.getByRole('button',{name:'复制Agent 回复'})).toBeVisible();
   appendFileSync(log,counters(1500,300)+entry('event_msg',{type:'task_complete',turn_id:turn}));await expect(answerMeta).toContainText('token: 600 · tools: 4 calls / 2 rounds');await expect(progress).toContainText('token: 100 · tools: 3 calls / 1 round');
-  for(const footer of await chat.locator('.conversation-inline-meta').all()){
-    const geometry=await footer.evaluate(node=>{const previous=node.previousSibling!,range=document.createRange();range.selectNodeContents(previous);const text=[...range.getClientRects()].at(-1)!,meta=node.getBoundingClientRect(),timeRange=document.createRange();timeRange.selectNodeContents(node.querySelector('time')!);const timestamp=timeRange.getBoundingClientRect();return {gap:meta.left-text.right,top:timestamp.top,bottom:meta.bottom,textTop:text.top,textBottom:text.bottom};});
-    expect(geometry.gap).toBeGreaterThanOrEqual(8);expect(geometry.gap).toBeLessThan(15);expect(geometry.top).toBeGreaterThanOrEqual(geometry.textTop);expect(geometry.top).toBeLessThan(geometry.textBottom);
+  await expect(chat.locator('.conversation-inline-meta')).toHaveCount(0);
+  for(const article of await chat.locator('.session-chat-message.assistant').all()){
+    const geometry=await article.evaluate(node=>{const meta=node.querySelector('.session-chat-metadata-row')!.getBoundingClientRect(),body=node.querySelector('.conversation-markdown')!.getBoundingClientRect();return {metaBottom:meta.bottom,bodyTop:body.top};});
+    expect(geometry.metaBottom).toBeLessThanOrEqual(geometry.bodyTop);
   }
-  await expect(chat.locator('.conversation-footer-line').filter({hasText:'可以继续提问'})).toHaveCSS('display','list-item');
+  await expect(chat.locator('.conversation-markdown li').filter({hasText:'可以继续提问'})).toHaveCSS('display','list-item');
   await expect(progress.locator('.session-chat-progress-entry-head')).toHaveCount(0);
   await expect(progress.getByRole('button',{name:'复制Agent 回复'})).toHaveCount(0);
 
@@ -59,6 +61,8 @@ await expect(progress).not.toContainText('检查已完成。');
   await expect(chat.getByRole('status').last()).toContainText('可以继续发送消息');
   await chat.getByRole('textbox',{name:'发送给当前 Agent 的消息'}).fill("printf 'chat-input-ok\\n'");
   const sent=page.waitForResponse(response=>response.url().endsWith(`/api/sessions/${session.id}/input`)&&response.request().method()==='POST');
+  // Exercise the legacy busy-engine fallback; idle engines now migrate before sending.
+  appendFileSync(log,entry('event_msg',{type:'task_started',turn_id:'current'}));
   await chat.getByRole('button',{name:'发送消息',exact:true}).click();expect((await sent).status()).toBe(202);
   appendFileSync(log,entry('event_msg',{type:'user_message',message:"printf 'chat-input-ok\\n'"})+entry('event_msg',{type:'task_complete',last_agent_message:'本轮答复已更新。'}));
   await expect(chat.getByText('本轮答复已更新。',{exact:true})).toBeVisible();

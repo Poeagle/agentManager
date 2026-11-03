@@ -3,6 +3,21 @@ import {mergeConversationTimeline,type TimelineMessage} from '../src/lib/convers
 const message=(id:string,role:'user'|'assistant',extra:Partial<TimelineMessage>={}):TimelineMessage=>({id,role,text:id,timestamp:null,...extra});
 const ids=(items:TimelineMessage[])=>items.map(item=>item.id);
 describe('causal conversation timeline',()=>{
+  it('reconciles pasted Windows line endings with a terminal echo and preserves intentional repeats',()=>{
+    const pending=message('pending','user',{text:'ifconfig\r\n  inet 192.168.1.31\r\n',client_id:'first',optimistic:{afterSequence:10}});
+    const echo=message('native','user',{text:'ifconfig\n  inet 192.168.1.31',sequence:20});
+    expect(mergeConversationTimeline([pending],[echo])).toHaveLength(1);
+    expect(mergeConversationTimeline([pending],[echo])[0]).toMatchObject({id:'native',client_id:'first',optimistic:undefined});
+    const second=message('repeat','user',{text:echo.text,client_id:'second',sequence:30});
+    expect(mergeConversationTimeline(mergeConversationTimeline([pending],[echo]),[second])).toHaveLength(2);
+  });
+  it('settles an existing duplicate when the terminal correlation becomes available later',()=>{
+    const pending=message('pending','user',{text:'same',client_id:'c',queued:true,optimistic:{afterSequence:999}});
+    const native=message('native','user',{text:'same',sequence:10});
+    const result=mergeConversationTimeline([pending,native],[{...native,client_id:'c'}]);
+    expect(result).toHaveLength(1);expect(result[0]).toMatchObject({id:'native',client_id:'c',sequence:10,queued:false,optimistic:undefined});
+    expect(mergeConversationTimeline(result,[{...native,id:'other-log-id',client_id:'c'}])).toHaveLength(1);
+  });
   it('reconciles resumed assistant item IDs and trailing newlines without merging repeated items or phases',()=>{
     const live=[message('live-one','assistant',{text:'正在检查。\n',turn_id:'turn',phase:'commentary',streaming:true}),message('live-two','assistant',{text:'正在检查。\n',turn_id:'turn',phase:'commentary',streaming:true}),message('live-final','assistant',{text:'正在检查。',turn_id:'turn',phase:'final',streaming:true})];
     const history=[message('saved-one','assistant',{text:'正在检查。',turn_id:'turn',phase:'commentary',sequence:100}),message('saved-two','assistant',{text:'正在检查。',turn_id:'turn',phase:'commentary',sequence:200}),message('saved-final','assistant',{text:'正在检查。',turn_id:'turn',phase:'final',sequence:300})];

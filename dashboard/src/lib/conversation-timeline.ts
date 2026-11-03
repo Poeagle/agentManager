@@ -8,7 +8,8 @@ export interface TimelineMessage extends ConversationMessage {
 }
 
 function sameInput(a:ConversationMessage,b:ConversationMessage) {
-  return a.text.trim()===b.text.trim() && (!a.attachments || !b.attachments || JSON.stringify(a.attachments.map(item=>item.path))===JSON.stringify(b.attachments.map(item=>item.path)));
+  const normalize=(text:string)=>text.replace(/\r\n?/g,'\n').trim();
+  return normalize(a.text)===normalize(b.text) && (!a.attachments || !b.attachments || JSON.stringify(a.attachments.map(item=>item.path))===JSON.stringify(b.attachments.map(item=>item.path)));
 }
 
 /** Reconcile ordered native batches. Timestamps are display data, never order
@@ -20,6 +21,7 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
   for(const message of incoming) {
     if(message.queued&&message.client_id&&result.some(item=>item.role==='user'&&item.client_id===message.client_id&&!item.queued&&!item.optimistic))continue;
     let index=result.findIndex(item=>item.id===message.id || item.aliases?.includes(message.id));
+    if(index<0&&message.role==='user'&&message.client_id)index=result.findIndex((item,i)=>!matched.has(i)&&item.role==='user'&&item.client_id===message.client_id);
     if(index<0 && message.role==='user') {
       index=result.findIndex(item=>(item.optimistic||item.queued) && (message.client_id
         ? item.client_id===message.client_id
@@ -58,7 +60,20 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
     const current=result.findIndex(item=>item.id===batch[i].id);
     if(current<before) {const [message]=result.splice(current,1);result.splice(before,0,message);}
   }
-  return [...result.filter(item=>!item.queued),...result.filter(item=>item.queued)];
+  // A native ID can be learned after both the optimistic and durable copies
+  // already exist. Once the client ID is available, settle that pair too.
+  const correlated=new Map<string,number>(),removed=new Set<number>();
+  const rank=(item:TimelineMessage)=>item.sequence!==undefined?3:!item.optimistic&&!item.queued?2:item.queued?1:0;
+  result.forEach((item,index)=>{
+    if(item.role!=='user'||!item.client_id)return;
+    const previous=correlated.get(item.client_id);
+    if(previous===undefined){correlated.set(item.client_id,index);return;}
+    const keep=rank(item)>rank(result[previous])?index:previous,drop=keep===index?previous:index;
+    result[keep]={...result[drop],...result[keep],aliases:[...new Set([...(result[keep].aliases||[]),...(result[drop].aliases||[]),result[drop].id])],queued:rank(result[keep])>=2?false:result[keep].queued,optimistic:rank(result[keep])>=2?undefined:result[keep].optimistic};
+    removed.add(drop);correlated.set(item.client_id,keep);
+  });
+  const settled=result.filter((_item,index)=>!removed.has(index));
+  return [...settled.filter(item=>!item.queued),...settled.filter(item=>item.queued)];
 }
 
 /** crypto.randomUUID is unavailable on HTTP LAN previews; getRandomValues is

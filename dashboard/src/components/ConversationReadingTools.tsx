@@ -114,7 +114,7 @@ export const ConversationNavigator=memo(function ConversationNavigator({messages
     let frame:number|null=null;
     const measure=()=>{
       frame=null;let selected=items[0]?.id||null;const top=area.getBoundingClientRect().top+48;
-      for(const item of items){const node=target(item.answers.at(-1)||item.id);if(node && node.getBoundingClientRect().top<=top)selected=item.id;}
+      for(const item of items){const node=target(item.answers.at(-1)||item.id),visible=node?.closest('details:not([open])')||node;if(visible && visible.getBoundingClientRect().top<=top)selected=item.id;}
       if(area.scrollHeight-area.scrollTop-area.clientHeight<24)selected=items.at(-1)?.id||selected;
       setCurrent(selected);
     };
@@ -137,6 +137,7 @@ export const ConversationNavigator=memo(function ConversationNavigator({messages
   }
   function jump(node:HTMLElement|null) {
     const area=scroll.current;if(!node||!area)return;onNavigate();
+    for(let parent=node.parentElement;parent&&parent!==area;parent=parent.parentElement)if(parent instanceof HTMLDetailsElement)parent.open=true;
     const reduce=window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     area.scrollTo({top:Math.max(0,area.scrollTop+node.getBoundingClientRect().top-area.getBoundingClientRect().top-20),behavior:reduce?'auto':'smooth'});
     setPreview(null);

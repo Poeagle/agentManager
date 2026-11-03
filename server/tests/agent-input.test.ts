@@ -124,6 +124,18 @@ describe('immediate session input',()=>{
     const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'followup',source:'conversation'}});
     expect(result.statusCode).toBe(503);expect(manager.writeToSession).not.toHaveBeenCalled();
   });
+  it('upgrades an unloaded idle legacy conversation before submitting the same client identity once',async()=>{
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
+    const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValueOnce(false).mockResolvedValueOnce(true),upgrade=vi.spyOn(manager,'ensureCodexConversationStreaming').mockResolvedValue(true);
+    const response=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'实时输出检查',source:'conversation',client_id:'same-client'}});
+    expect(response.statusCode).toBe(202);expect(upgrade).toHaveBeenCalledOnce();expect(submit.mock.calls).toEqual([['019ff001-8888-7888-8888-888888888888','实时输出检查','same-client'],['019ff001-8888-7888-8888-888888888888','实时输出检查','same-client']]);expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
+  it('reports a failed upgrade as not submitted and never pastes into a half-reloaded terminal',async()=>{
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
+    vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue(false);vi.spyOn(manager,'ensureCodexConversationStreaming').mockRejectedValue(new manager.CodexStreamingUpgradeError('版本不匹配，原会话已保留'));
+    const response=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'检查',source:'conversation',client_id:'client'}});
+    expect(response.statusCode).toBe(409);expect(response.json()).toMatchObject({submission:'rejected',error:'版本不匹配，原会话已保留'});expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
   it('submits during an active execute without cancelling the wait or clearing output',async()=>{
     const execution=tracker.execute({input:'first task',timeout:60000,quiescenceMs:5000,stripAnsi:true});
     await execution.ready;

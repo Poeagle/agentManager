@@ -77,6 +77,17 @@ function createCurrentSchema(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_conversation_attachments_input ON conversation_attachments(session_id,input_key);
 
+    CREATE TABLE IF NOT EXISTS conversation_input_links (
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      native_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      input_hash TEXT NOT NULL,
+      after_offset INTEGER NOT NULL,
+      message_id TEXT,
+      PRIMARY KEY (session_id,native_id,client_id),
+      UNIQUE (session_id,native_id,message_id)
+    );
+
     CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id TEXT REFERENCES sessions(id),

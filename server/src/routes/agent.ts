@@ -1,8 +1,10 @@
+import {rememberConversationInput,linkConversationInputs} from '../services/conversation-input-links.js';
+import {scheduleCodexStreamingUpgrade,stopCodexStreamingUpgrades} from '../services/codex-streaming-upgrade.js';
 import { FastifyPluginAsync } from 'fastify';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as { Terminal: any };
-import { isSessionActive, writeToSession, querySessionOutputSince, getSession, getSessionSnapshot } from '../services/session-manager.js';
+import { isSessionActive, writeToSession, querySessionOutputSince, getSession, getSessionSnapshot,ensureCodexConversationStreaming,CodexStreamingUpgradeError } from '../services/session-manager.js';
 import { RESIZE_MARKER } from '../services/session-manager.js';
 import {attachExistingSession} from '../services/session-attachment.js';
 import { getTracker, getOrCreateTracker } from '../services/session-state.js';
@@ -510,6 +512,7 @@ export function getAgentApiContract() {
 }
 
 export const agentRoutes: FastifyPluginAsync = async (app) => {
+  app.addHook('onClose',async()=>stopCodexStreamingUpgrades());
   const retries=new ConversationRetryManager(getDb(),{allowed:(id,userId,nativeId)=>{
     const session=getSession(id);
     return !!session&&session.cli_type==='codex'&&session.codex_session_id===nativeId&&session.status==='running'&&canAccessAgentSession(userId,id)&&userHasPermission(userId,'agent_api','write');
@@ -568,24 +571,41 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       const session=getSession(id);
       if(req.body?.source==='conversation' && process.env.AGENTMANAGER_CODEX_STREAM_SOCKET && session?.cli_type==='codex' && session.codex_session_id) {
         if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,true);
-        const native=await (attachments.length?submitStreamingCodexInput(session.codex_session_id,input,attachmentClientId,attachments):clientId?submitStreamingCodexInput(session.codex_session_id,input,clientId):submitStreamingCodexInput(session.codex_session_id,input));
+        const submit=()=>attachments.length?submitStreamingCodexInput(session.codex_session_id!,input,attachmentClientId,attachments):clientId?submitStreamingCodexInput(session.codex_session_id!,input,clientId):submitStreamingCodexInput(session.codex_session_id!,input);
+        let native=await submit();
+        // false means notLoaded, before turn/start. Upgrade only an idle,
+        // eligible legacy wrapper, then submit the same client identity once.
+        if(!native&&await ensureCodexConversationStreaming(id))native=await submit();
         if(native)return native==='queued'?'queued':'submitted';
       }
       if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);
+      if(req.body?.source==='conversation'&&typeof clientId==='string'&&session){
+        const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
+        await rememberConversationInput(id,{cli_type:session.cli_type==='codex'?'codex':'claude',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},clientId,preparedInput).catch(()=>{});
+      }
       if (!writeToSession(id,preparedInput,true)) throw new Error('Session input is unavailable');
       await new Promise(resolve => setTimeout(resolve,50));
       if (!writeToSession(id,'\r',false)) throw new Error('Input was pasted but submission could not be confirmed');
+      if(req.body?.source==='conversation'&&session?.cli_type==='codex')void scheduleCodexStreamingUpgrade(id).catch(()=>{});
     });
     pendingInputs.set(id,submission);
     try {
       const status=await submission;
       return reply.code(202).send({id,status:status==='queued'?'queued':'submitted'});
     } catch(error) {
-      if(error instanceof CodexRpcError)return reply.code(409).send({error:error.message,submission:'rejected'});
+      if(error instanceof CodexRpcError||error instanceof CodexStreamingUpgradeError)return reply.code(409).send({error:error.message,submission:'rejected'});
       return reply.code(503).send({error:'暂未确认消息是否提交，请在原始终端核对后再重试',submission:'unknown'});
     } finally {
       if (pendingInputs.get(id) === submission) pendingInputs.delete(id);
     }
+  });
+
+  app.post<{Params:{id:string}}>('/sessions/:id/streaming/enable',async(req,reply)=>{
+    const session=getSession(req.params.id);
+    if(!session||session.created_by_user_id!==req.user!.id||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
+    if(!requirePermission(req,reply,'agent_api','write'))return reply;
+    if(!await scheduleCodexStreamingUpgrade(session.id))return reply.code(409).send({error:'此会话暂不支持接入实时输出'});
+    return {ok:true,scheduled:true};
   });
 
   /* ----------------------------------------------------------------
@@ -715,7 +735,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         if(fingerprint===lastUsageFingerprint)return;
         lastUsageFingerprint=fingerprint;
       }
-      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(['snapshot','history','queue'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,frame.messages)}:frame));
+      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(['snapshot','history','queue'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,linkConversationInputs(id,session.codex_session_id,frame.messages))}:frame));
       else if(socket.readyState===1) socket.close(1013,'Slow conversation client');
     };
     retries.monitor(id,req.user!.id,session.codex_session_id);
@@ -751,7 +771,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       {after:req.query.after,before:req.query.before,limit:Number(req.query.limit)||40});
     const state=getTracker(id)?.state;
     const runtime=session.cli_type==='codex' ? personalQuestionRuntime(await readCodexRuntime(session.codex_session_id),req.user!.id) : null;
-    return reply.header('Cache-Control','private, no-store').send({...page,messages:decorateConversationAttachments(id,page.messages),session_id:id,session_status:session.status,session_active:isSessionActive(id),
+    return reply.header('Cache-Control','private, no-store').send({...page,messages:decorateConversationAttachments(id,linkConversationInputs(id,session.cli_type==='codex'?session.codex_session_id:session.claude_session_id,page.messages)),session_id:id,session_status:session.status,session_active:isSessionActive(id),
       native_id:session.cli_type==='codex'?session.codex_session_id:session.claude_session_id,runtime,
       interaction:state ? {processState:state.processState,promptType:state.promptType,isPermission:state.isPermission,choices:state.choices} : null});
   });

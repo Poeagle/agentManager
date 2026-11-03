@@ -35,10 +35,10 @@ describe('conversation reading controls',()=>{
   it('jumps to the agent reply and never substitutes a pending question for output',()=>{
     const messages:ConversationMessage[]=[{id:'u1',role:'user',text:'用户的问题',timestamp:null},{id:'a1',role:'assistant',text:'Agent 的回答',timestamp:null},{id:'u2',role:'user',text:'还没答的问题',timestamp:null}];
     const scroll=createRef<HTMLDivElement>(),scrollTo=vi.fn();
-    render(<><div ref={scroll}><article data-chat-message-id="u1"/><article data-chat-message-id="a1"/><article data-chat-message-id="u2"/></div><ConversationNavigator messages={messages} scroll={scroll} active hasMore={false} loadingOlder={false} onLoadOlder={()=>{}} onNavigate={()=>{}}/></>);
+    render(<><div ref={scroll}><article data-chat-message-id="u1"/><details><summary>进展</summary><article data-chat-message-id="a1"/></details><article data-chat-message-id="u2"/></div><ConversationNavigator messages={messages} scroll={scroll} active hasMore={false} loadingOlder={false} onLoadOlder={()=>{}} onNavigate={()=>{}}/></>);
     scroll.current!.scrollTo=scrollTo;
     const answer=scroll.current!.querySelector<HTMLElement>('[data-chat-message-id="a1"]')!;answer.getBoundingClientRect=()=>({top:200,bottom:240,height:40,left:0,right:100,width:100,x:0,y:200,toJSON:()=>({})});
-    fireEvent.click(screen.getByRole('button',{name:'跳转到第 1 段对话：用户的问题'}));expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({top:180}));
+    fireEvent.click(screen.getByRole('button',{name:'跳转到第 1 段对话：用户的问题'}));expect(scroll.current!.querySelector('details')?.open).toBe(true);expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({top:180}));
     fireEvent.focus(screen.getByRole('button',{name:'跳转到第 2 段对话：还没答的问题'}));const preview=screen.getByRole('dialog',{name:'对话预览'});expect(preview).toHaveTextContent('Agent 尚未回复');expect(preview).toHaveTextContent('还没答的问题');
   });
 

@@ -9,9 +9,9 @@ import {ConversationControls} from './ConversationControls';
 import {ConversationAutomaticContext} from './ConversationAutomaticContext';
 import {automaticConversationContext} from '../lib/conversation-context';
 import {ConversationInteraction,ConversationAsyncQuestion,ConversationQuestionSummary,type ConversationInteractionRequest} from './ConversationInteraction';
-import {memo,useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import {memo,useCallback,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
-import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
+import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles,ChevronDown} from 'lucide-react';
 import {api,ApiError,type ConversationMessage,type ConversationPage,type ConversationControlsData,type ConversationUsageUpdate,type ConversationStatistics,type Session} from '../lib/api';
 import {decodeQuestionReply,questionAnswers,pendingConversationQuestions,questionReplyDisplayText} from '../lib/conversation-question-reply';
 import {parseConversationInput} from '../lib/conversation-attachments';
@@ -28,6 +28,19 @@ import './SessionConversation.css';
 
 interface LiveProgress {turn_id:string|null;started_at:string|null;completed_at?:string|null;activities?:ConversationActivity[];stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
 interface FailedDraft {clientId:string;fingerprint:string;text:string;attachments:DraftAttachment[]}
+
+function ProgressSection({agentName,count,active,children}:{agentName:string;count:number;active:boolean;children:ReactNode}){
+  const [preference,setPreference]=useState<boolean|null>(null);
+  const open=preference??active;
+  return <section className="session-chat-progress" aria-label={`${agentName} 进展`}>
+    <details className="session-chat-progress-disclosure" open={open} onToggle={event=>{const next=event.currentTarget.open;if(next!==open)setPreference(next);}}>
+      <summary className="session-chat-agent session-chat-progress-toggle" aria-label={`${open?'收起':'展开'}进展（${count} 条）`} aria-expanded={open}>
+        <Sparkles size={16}/><span>{agentName}</span><span className="session-chat-kind">进展</span><span className="session-chat-progress-count">{count} 条</span>{active&&<span className="session-chat-progress-live">进行中</span>}<ChevronDown size={14} className="session-chat-progress-chevron"/>
+      </summary>
+      <div className="session-chat-progress-content">{children}</div>
+    </details>
+  </section>;
+}
 
 const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,onCancelRetry,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate,durationLabel,onRaw}:{durationLabel?:string;durationTitle?:string;retrying?:boolean;autoRetry?:ConversationRetry;onCancelRetry?:()=>Promise<void>;onRaw:()=>void;message:ConversationMessage;streaming:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void}) {
   const timeZone=useDisplayClock();
@@ -47,9 +60,9 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,on
   }
   const metadata=compact&&(streaming||message.streaming)?<span className="session-chat-message-meta"><span className="session-chat-progress-updating">Streaming</span></span>:(<span className="session-chat-message-meta">
       {message.queued&&<span className="session-chat-queued" role="status">Queued · waiting</span>}
+      {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label={compact?'进展完成时间':undefined} dateTime={message.timestamp} title={metadataTimestampTitle(message,compact)}>{formatConversationTimestamp(message.timestamp)}</time>:compact?<span className="session-chat-progress-time-unknown">Time pending</span>:null}
       {message.role==='assistant'&&message.statistics&&<ConversationStatisticsLabel statistics={message.statistics} interval={message.phase==='commentary'}/> }
       {(durationLabel||compact) && <span className="session-chat-message-duration" title={durationLabel?metadataDurationTitle(message.phase):'Completion timing is unavailable for this interval.'}>{durationLabel?englishMetadataDuration(durationLabel):'Elapsed: —'}</span>}
-      {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label={compact?'进展完成时间':undefined} dateTime={message.timestamp} title={metadataTimestampTitle(message,compact)}>{formatConversationTimestamp(message.timestamp)}</time>:compact?<span className="session-chat-progress-time-unknown">Time pending</span>:null}
       {compact&&streaming&&<span className="session-chat-progress-updating">Streaming</span>}
       {!compact && <button type="button" onClick={()=>void copy()} aria-label={`复制${message.role==='user'?'你的消息':'Agent 回复'}`} title={copied?'Copied':'Copy message'}>{copied?<Check size={13}/>:<Copy size={13}/>}</button>}
     </span>);
@@ -62,8 +75,8 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,on
     <div className="session-chat-error-actions"><button type="button" onClick={onRaw}>查看原始终端</button><button type="button" onClick={()=>void copy()}>{copied?'已复制':'复制错误信息'}</button></div>
   </article>;
   return <article className={`session-chat-message ${message.role}`} data-phase={message.phase} data-streaming={streaming} data-chat-message-id={message.id}>
-    {message.role==='assistant' && !compact && <div className="session-chat-agent"><Sparkles size={16}/><span>{agentName}</span>{message.phase==='final' && <span className="session-chat-writing">结论</span>}{streaming && <span className="session-chat-writing">正在输出</span>}</div>}
-    <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text"><ConversationMessageAttachments text={parsed.attachments.length&&!parsed.attachments.some(item=>item.offset!==undefined)?parsed.text.trimEnd():parsed.text} items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/></div>{metadata}</>:<ConversationMarkdown content={message.text} messageId={message.id} footer={metadata} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
+    {message.role==='assistant' && !compact && <div className="session-chat-agent"><Sparkles size={16}/><span>{agentName}</span>{message.phase==='final' && <span className="session-chat-kind">结论</span>}{streaming && <span className="session-chat-writing">正在输出</span>}</div>}
+    <div className="session-chat-body">{message.role==='user'?<><div className="session-chat-user-text"><ConversationMessageAttachments text={parsed.attachments.length&&!parsed.attachments.some(item=>item.offset!==undefined)?parsed.text.trimEnd():parsed.text} items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/></div>{metadata}</>:<><div className="session-chat-metadata-row">{metadata}</div><ConversationMarkdown content={message.text} messageId={message.id} streaming={streaming} projectPath={projectPath} projectId={projectId} onOpenFile={onOpenFile} onNavigate={onNavigate}/></>}{streaming && <span className="session-chat-caret" aria-label="正在输出"/>}</div>
   </article>;
 });
 
@@ -296,6 +309,9 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     const text=questionReply??draftRef.current;
     const positions=attachmentPositions.current?.();const attached=fromQuestion?[]:attachments.values().map((item,index)=>({...item,offset:positions?.get(attachments.items.filter(entry=>entry.status==='ready'&&entry.path)[index]?.id)??text.length}));
     if((!text.trim() && !attached.length) || !fromQuestion&&(attachments.uploading || attachments.failed) || sendingRef.current || !canSend || !page?.session_active || ended || waiting) {if(fromQuestion)throw new Error('当前无法提交回答，请等待会话就绪或完成其他交互');return;}
+    let terminalDraft=false;
+    window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId:session.id,respond:(value:boolean)=>{terminalDraft ||= value;}}}));
+    if(terminalDraft){const message='原始终端还有未发送内容，请先发送或清空后再从对话发送。';if(fromQuestion)throw new Error(message);setSendError(message);return;}
     if(new TextEncoder().encode(text).byteLength>64*1024) {if(fromQuestion)throw new Error('回答超过 64 KB，请缩短后发送');setSendError('消息超过 64 KB，请缩短后发送。');return;}
     sendingRef.current=true;setSending(true);setSendError('');
     const fingerprint=JSON.stringify([session.codex_session_id,session.claude_session_id,text,attached]);
@@ -380,12 +396,11 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
         {hasMore && <button className="session-chat-older" disabled={older} onClick={()=>void loadOlder()}>{older?'正在读取…':'加载更早的对话'}</button>}
         {loading && canRead && <p className="session-chat-empty"><Loader2 size={16} className="animate-spin"/>正在读取对话…</p>}
         {!canRead && !permissions.isPending && <p className="session-chat-empty">当前账号没有读取对话的权限，可切换原始终端。</p>}
-        {groups.map(group=>group.kind==='message'?bubble(group.message):<section key={`progress-${group.id}`} className="session-chat-progress" aria-label={`${agentName} 进展`}>
-          <div className="session-chat-agent"><Sparkles size={16}/><span>{agentName}</span><span className="session-chat-writing">进展</span><span className="session-chat-progress-count">{group.messages.length} 条</span>{busy && groups.at(-1)===group && <span className="session-chat-progress-live">进行中</span>}</div>
-          <div className="session-chat-progress-content">{group.messages.map((message,index)=><div key={message.id} className="session-chat-progress-entry" data-active={message.id===streamingId}>
+        {groups.map(group=>group.kind==='message'?bubble(group.message):<ProgressSection key={`progress-${group.id}`} agentName={agentName} count={group.messages.length} active={busy&&groups.at(-1)===group}>
+          {group.messages.map((message,index)=><div key={message.id} className="session-chat-progress-entry" data-active={message.id===streamingId}>
             <span className="session-chat-progress-number" aria-label={`进展序号 ${index+1}`}>{index+1}</span>{bubble(message,true)}
-          </div>)}</div>
-        </section>)}
+          </div>)}
+        </ProgressSection>)}
         {waitingForText && <div className="session-chat-thinking" role="status"><Sparkles size={16}/><div><span>{continuingAfterFollowup?sending?'正在提交追问…':`追问已提交，${agentName} 正在继续执行`:liveProgress.stage==='tools'?`${agentName} 正在执行任务`:`等待 ${agentName} 返回正文`}</span><time className="session-chat-elapsed">{elapsed} 秒</time><p>{continuingAfterFollowup?'当前任务仍在进行，新进展到达后会自动追加。':liveProgress.stage==='tools'?'正在执行任务，新进展到达后会立即显示。':'尚未收到正文，收到后会立即逐段显示。'}</p></div></div>}
         {!loading && canRead && !messages.length && <div className="session-chat-empty"><p>这里显示你的消息、Agent 的进展说明和回答。</p><p>{page?.available?'还没有对话记录。':'尚未读取到绑定的原生对话记录。'}<button onClick={onRaw}>查看原始终端</button></p></div>}
         {error && <p role="alert" className="session-chat-error">{error}<button onClick={()=>setRefresh(value=>value+1)}>重试</button></p>}
@@ -404,6 +419,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
         {compaction.state?<ConversationCompactionStatus state={compaction.state} now={now}/>:<ConversationActivityLine key={`${session.id}:${liveState}:${liveProgress.turn_id||''}`} activities={liveState==='connected'&&!reconnectable&&liveProgress.stage==='tools'?liveProgress.activities||[]:[]} busy={busy&&!reconnectable&&!ended&&!waiting&&!activeError} now={now} totalElapsed={elapsedBetween(started,now)}
           fallback={reconnecting?'正在恢复会话连接…':reconnectable?'会话连接已断开':activeError?activeError.error?.will_retry?busy?'执行遇到错误，正在自动重试…':'重试已结束':'本轮执行失败，可处理后重试':ended?'会话已结束':waiting?'等待你处理':pendingQuestion&&!busy?'有问题待回答 · 本轮已结束':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}/>}
         {liveState==='connected' && <span className="session-chat-live-label">事件通道已连接</span>}
+        {liveState==='unavailable' && <span className="session-chat-live-label" title="当前终端会话未提供实时正文事件，只能同步已完成的消息。">尚未接入实时输出</span>}
         {ended && onResume && <button onClick={onResume} disabled={resuming}>{resuming?'正在恢复…':resumeFailed?'重试恢复会话':'恢复会话'}</button>}{ended && onClose && <button onClick={onClose}>关闭会话</button>}
         {reconnectable&&canSend&&<button type="button" disabled={reconnecting} onClick={()=>void reconnect()}>{reconnecting?'正在重新连接…':'重新连接'}</button>}
       </div>
