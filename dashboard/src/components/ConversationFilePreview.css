@@ -1,0 +1,2 @@
+/* Keep directory navigation and its existing resize handle usable when docked. */
+.conversation-directory-preview [aria-label="文件上传区域"]{max-width:45%}

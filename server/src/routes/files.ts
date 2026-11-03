@@ -204,9 +204,9 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
           const stats = await stat(fullPath);
           files.push({
             name: entry.name,
-            type: entry.isDirectory() ? 'directory' : 'file',
+            type: stats.isDirectory() ? 'directory' : 'file',
             size: stats.size,
-            extension: entry.isDirectory() ? '' : extname(entry.name).slice(1),
+            extension: stats.isDirectory() ? '' : extname(entry.name).slice(1),
             modified_at: stats.mtime.toISOString(),
           });
         } catch {
@@ -225,6 +225,21 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
       if (err.code === 'ENOENT') return reply.status(404).send({ error: 'Directory not found' });
       if (err.code === 'ENOTDIR') return reply.status(400).send({ error: 'Path is not a directory' });
       return reply.status(500).send({ error: 'Failed to read directory' });
+    }
+  });
+
+  // Determine path kind without trying to decode a directory as a document.
+  // The shared preHandler applies the same project and private-file boundaries.
+  app.get<{Querystring:{path:string}}>('/files/stat',async(req,reply)=>{
+    const path=req.query.path;
+    if(typeof path!=='string'||!path||path.includes('\0'))return reply.code(400).send({error:'有效的路径参数不能为空'});
+    try {
+      const resolved=resolve(path),info=await stat(resolved);
+      return {path:resolved,type:info.isDirectory()?'directory':info.isFile()?'file':'other'};
+    } catch(error:any) {
+      if(error.code==='ENOENT'||error.code==='ENOTDIR')return reply.code(404).send({error:'路径不存在或已被删除'});
+      if(error.code==='EACCES'||error.code==='EPERM')return reply.code(403).send({error:'没有权限访问此路径'});
+      return reply.code(500).send({error:'无法读取路径信息'});
     }
   });
 
