@@ -1,3 +1,4 @@
+import {ConversationStatisticsLabel,englishMetadataDuration,metadataDurationTitle,metadataTimestampTitle} from './ConversationStatisticsLabel';
 import {ConversationRetryStatus,type ConversationRetry} from './ConversationRetryStatus';
 import {ConversationPromptEnhancer} from './ConversationPromptEnhancer';
 import {ConversationComposerEditor} from './ConversationComposerEditor';
@@ -27,7 +28,7 @@ import './SessionConversation.css';
 interface LiveProgress {turn_id:string|null;started_at:string|null;completed_at?:string|null;activities?:ConversationActivity[];stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
 interface FailedDraft {clientId:string;fingerprint:string;text:string;attachments:DraftAttachment[]}
 
-const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,onCancelRetry,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate,durationLabel,durationTitle,onRaw}:{durationLabel?:string;durationTitle?:string;retrying?:boolean;autoRetry?:ConversationRetry;onCancelRetry?:()=>Promise<void>;onRaw:()=>void;message:ConversationMessage;streaming:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void}) {
+const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,onCancelRetry,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate,durationLabel,onRaw}:{durationLabel?:string;durationTitle?:string;retrying?:boolean;autoRetry?:ConversationRetry;onCancelRetry?:()=>Promise<void>;onRaw:()=>void;message:ConversationMessage;streaming:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void}) {
   const [copied,setCopied]=useState(false);
   const parsed=message.role==='user'?(message.attachments?{text:message.text,attachments:message.attachments}:parseConversationInput(message.text)):{text:message.text,attachments:[]};
   async function copy() {
@@ -42,12 +43,12 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,on
     } catch {setCopied(false);}
   }
   const metadata=(<span className="session-chat-message-meta">
-      {message.queued&&<span className="session-chat-queued" role="status">已排队 · 等待处理</span>}
-      {message.role==='assistant'&&message.statistics&&<span className="session-chat-message-statistics" title={`${message.statistics.complete?'截至该条所在模型请求结束的本轮累计':'日志窗口不完整，仅显示已记录部分'}；${message.statistics.requests} 次模型请求，${message.statistics.tool_calls} 次原生工具请求、${message.statistics.tool_rounds} 轮工具调用。同一模型响应的并行工具计为一轮，代码模式内部调用不拆分。Token 包含重复上下文、缓存输入和推理，不是该段文字的独立用量或金额。`}>{message.statistics.complete?(compact?'本轮累计':'本轮'):'已记录'} {message.statistics.tokens?.total_tokens!=null&&`${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(message.statistics.tokens.total_tokens)} Token · `}工具 {message.statistics.tool_calls}次/{message.statistics.tool_rounds}轮</span>}
-      {durationLabel && <span className="session-chat-message-duration" title={durationTitle}>{durationLabel}</span>}
-      {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label={compact?'进展时间':undefined} dateTime={message.timestamp} title={`原生消息记录时间：${new Date(message.timestamp).toLocaleString('zh-CN',{hour12:false})}（本地时区）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>:compact?<span className="session-chat-progress-time-unknown">时间未知</span>:null}
-      {compact&&streaming&&<span className="session-chat-progress-updating">正在输出</span>}
-      {!compact && <button type="button" onClick={()=>void copy()} aria-label={`复制${message.role==='user'?'你的消息':'Agent 回复'}`} title={copied?'已复制':'复制消息'}>{copied?<Check size={13}/>:<Copy size={13}/>}</button>}
+      {message.queued&&<span className="session-chat-queued" role="status">Queued · waiting</span>}
+      {message.role==='assistant'&&message.statistics&&<ConversationStatisticsLabel statistics={message.statistics} interval={message.phase==='commentary'}/> }
+      {durationLabel && <span className="session-chat-message-duration" title={metadataDurationTitle(message.phase)}>{englishMetadataDuration(durationLabel)}</span>}
+      {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label={compact?'进展时间':undefined} dateTime={message.timestamp} title={metadataTimestampTitle(message,compact)}>{formatConversationTimestamp(message.timestamp)}</time>:compact?<span className="session-chat-progress-time-unknown">Time pending</span>:null}
+      {compact&&streaming&&<span className="session-chat-progress-updating">Streaming</span>}
+      {!compact && <button type="button" onClick={()=>void copy()} aria-label={`复制${message.role==='user'?'你的消息':'Agent 回复'}`} title={copied?'Copied':'Copy message'}>{copied?<Check size={13}/>:<Copy size={13}/>}</button>}
     </span>);
   const automatic=message.role==='user'?automaticConversationContext(message.text):null;
   if(automatic)return <ConversationAutomaticContext message={message} context={automatic} copied={copied} onCopy={()=>void copy()}/>;

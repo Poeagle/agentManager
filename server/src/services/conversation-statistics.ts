@@ -2,28 +2,40 @@ import {open} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {publicTokenCounters,tokenFields} from './conversation-usage.js';
 
+export interface ConversationInterval {
+  tokens:ReturnType<typeof publicTokenCounters>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;shared_messages:number;
+}
 export interface ConversationStatistics {
+  interval?:ConversationInterval;
   sequence:number;message_id?:string;turn_id:string;
   tokens:ReturnType<typeof publicTokenCounters>|null;
   requests:number;tool_calls:number;tool_rounds:number;complete:boolean;
 }
-interface Turn {id:string;complete:boolean;tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:Set<string>;rounds:number;pendingTools:boolean;waiting:Array<{sequence:number;message_id?:string}>}
+interface Turn {checkpoint?:{tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:number;rounds:number};intervalIntact?:boolean;id:string;complete:boolean;tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:Set<string>;rounds:number;pendingTools:boolean;waiting:Array<{sequence:number;message_id?:string}>}
 interface State {offset:number;inode:number;mtime:number;partial:Buffer;turn:Turn|null;fingerprint:string|null;stats:Map<number,ConversationStatistics>}
 const cache=new Map<string,State>(),WINDOW=2*1024*1024;
 const callTypes=new Set(['function_call','custom_tool_call','tool_search_call','web_search_call','local_shell_call']);
 function turn(id:string,complete:boolean):Turn{return {id,complete,tokens:Object.fromEntries(tokenFields.map(field=>[field,0])) as Turn['tokens'],requests:0,calls:new Set(),rounds:0,pendingTools:false,waiting:[]};}
 function finish(state:State,hasUsage:boolean){
-  const current=state.turn;if(!current)return;
+  const current=state.turn;if(!current||!current.waiting.length)return;
+  const previous=current.checkpoint;
+  const interval:ConversationInterval={
+    tokens:hasUsage?Object.fromEntries(tokenFields.map(field=>{const end=current.tokens[field],start=previous?previous.tokens[field]:0;return [field,end===null||start===null?null:Math.max(0,end-start)];})) as Turn['tokens']:null,
+    requests:current.requests-(previous?.requests??0),tool_calls:current.calls.size-(previous?.calls??0),tool_rounds:current.rounds-(previous?.rounds??0),
+    complete:(current.intervalIntact??current.complete)&&hasUsage,shared_messages:current.waiting.length,
+  };
   for(const message of current.waiting){
     state.stats.set(message.sequence,{...message,turn_id:current.id,tokens:current.complete&&hasUsage?{...current.tokens}:null,requests:current.requests,tool_calls:current.calls.size,tool_rounds:current.rounds,complete:current.complete});
+    state.stats.get(message.sequence)!.interval={...interval,tokens:interval.tokens?{...interval.tokens}:null};
   }
+  current.checkpoint={tokens:{...current.tokens},requests:current.requests,calls:current.calls.size,rounds:current.rounds};current.intervalIntact=true;
   current.waiting=[];while(state.stats.size>80)state.stats.delete(state.stats.keys().next().value!);
 }
 function consume(state:State,line:Buffer,sequence:number){
   // Only parse relevant records; never retain arguments, outputs or reasoning.
   const header=line.subarray(0,600).toString();
   if(!/"type"\s*:\s*"(?:task_started|task_complete|turn_context|token_count|message|function_call|custom_tool_call|tool_search_call|web_search_call|local_shell_call)"/.test(header))return;
-  if(line.length>256*1024){if(state.turn)state.turn.complete=false;return;}
+  if(line.length>256*1024){if(state.turn){state.turn.complete=false;state.turn.intervalIntact=false;}return;}
   let record:any;try{record=JSON.parse(line.toString());}catch{return;}
   const p=record.payload;if(!p)return;
   const id=p.turn_id||p.internal_chat_message_metadata_passthrough?.turn_id;
@@ -39,7 +51,7 @@ function consume(state:State,line:Buffer,sequence:number){
   if(record.type==='response_item'&&callTypes.has(p.type)&&state.turn){
     if(typeof id==='string'&&id!==state.turn.id){finish(state,false);state.turn=turn(id,false);}
     const key=typeof p.call_id==='string'?p.call_id:typeof p.id==='string'?p.id:`offset:${sequence}`;
-    if(!state.turn.calls.has(key)){if(state.turn.calls.size>=8192)state.turn.complete=false;else state.turn.calls.add(key);state.turn.pendingTools=true;}
+    if(!state.turn.calls.has(key)){if(state.turn.calls.size>=8192){state.turn.complete=false;state.turn.intervalIntact=false;}else state.turn.calls.add(key);state.turn.pendingTools=true;}
     return;
   }
   if(record.type==='event_msg'&&p.type==='token_count'&&p.info){
@@ -69,7 +81,7 @@ export async function readConversationStatistics(path:string):Promise<Conversati
       const base=state.offset-state.partial.length,data=Buffer.concat([state.partial,buffer.subarray(0,bytesRead)]);let start=skipFirst?data.indexOf(10)+1:0;if(skipFirst&&!start){state.offset+=bytesRead;continue;}skipFirst=false;
       for(let end=data.indexOf(10,start);end>=0;end=data.indexOf(10,start)){consume(state,data.subarray(start,end),base+start);start=end+1;}
       state.partial=Buffer.from(data.subarray(start));state.offset+=bytesRead;
-      if(state.partial.length>WINDOW){state.partial=Buffer.alloc(0);if(state.turn)state.turn.complete=false;}
+      if(state.partial.length>WINDOW){state.partial=Buffer.alloc(0);if(state.turn){state.turn.complete=false;state.turn.intervalIntact=false;}}
     }
     state.mtime=info.mtimeMs;return [...state.stats.values()];
   }finally{await handle.close();}
