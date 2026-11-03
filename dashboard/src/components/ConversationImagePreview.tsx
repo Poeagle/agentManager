@@ -1,11 +1,13 @@
 import {createContext,useCallback,useContext,useEffect,useRef,useState,useMemo,type ReactNode} from 'react';
-import {Minus,Plus,Scan} from 'lucide-react';
+import {Download,Loader2,Minus,Plus,Scan} from 'lucide-react';
 import {createPortal} from 'react-dom';
 import {Dialog} from './Dialog';
 import {ConversationFilePreview,type ConversationPreviewFile} from './ConversationFilePreview';
+import {exportBlobToLocalFolder} from '../lib/file-export';
+import {imageExportBlob,imageExportName,isSvgImage,type ImageExportFormat} from '../lib/image-export';
 import './ConversationImagePreview.css';
 
-interface PreviewImage {src:string;name:string}
+interface PreviewImage {src:string;name:string;mimeType?:string}
 type Selection=({kind:'image'}&PreviewImage)|({kind:'file'}&ConversationPreviewFile);
 const Preview=createContext<{image:(image:PreviewImage)=>void;file:(file:ConversationPreviewFile)=>void;hover:{show:(image:PreviewImage,anchor:HTMLElement)=>void;hide:()=>void}}|null>(null);
 const sidebarWidthKey='conversation-preview-width';
@@ -89,6 +91,19 @@ export function ImagePreview({image,onClose}:{image:PreviewImage;onClose:()=>voi
   const stage=useRef<HTMLDivElement>(null),[natural,setNatural]=useState({width:0,height:0}),[available,setAvailable]=useState({width:800,height:500});
   const [viewport,setViewport]=useState(()=>({width:window.innerWidth,height:window.innerHeight}));
   const [zoom,setZoom]=useState<number|null>(null),[failed,setFailed]=useState(false);
+  const [format,setFormat]=useState<ImageExportFormat>('png'),[exporting,setExporting]=useState(false),[exportError,setExportError]=useState(''),[exportNotice,setExportNotice]=useState('');
+  const exportController=useRef<AbortController|null>(null);
+  useEffect(()=>()=>exportController.current?.abort(),[]);
+  async function download() {
+    if(exportController.current)return;
+    const controller=new AbortController();exportController.current=controller;setExporting(true);setExportError('');setExportNotice('');
+    try {
+      const background=stage.current?getComputedStyle(stage.current).backgroundColor:undefined;
+      const result=await exportBlobToLocalFolder(()=>imageExportBlob(image,format,{signal:controller.signal,background}),imageExportName(image.name,format,image.mimeType|| (isSvgImage(image)?'image/svg+xml':undefined)),{signal:controller.signal});
+      if(!controller.signal.aborted&&result.kind!=='cancelled')setExportNotice(result.kind==='saved'?'图片已保存':'已开始下载图片');
+    }catch(error){if(!controller.signal.aborted)setExportError(error instanceof Error?error.message:'图片下载失败，请重试。');}
+    finally{exportController.current=null;if(!controller.signal.aborted)setExporting(false);}
+  }
   useEffect(()=>{
     const node=stage.current;if(!node)return;
     const measure=()=>{setViewport({width:window.innerWidth,height:window.innerHeight});if(node.clientWidth&&node.clientHeight)setAvailable({width:node.clientWidth,height:node.clientHeight});};measure();
@@ -99,19 +114,23 @@ export function ImagePreview({image,onClose}:{image:PreviewImage;onClose:()=>voi
   const fit=natural.width?Math.min(1,(maxWidth-24)/natural.width,(maxHeight-24)/natural.height):1;
   const scale=zoom??fit;
   const width=natural.width?Math.max(360,natural.width*scale+58):420,height=natural.height?Math.min(maxHeight,Math.max(48,natural.height*scale+24)):120;
-  return <Dialog title={`图片预览 · ${image.name}`} size="image" width={width} onClose={onClose}>
+  return <Dialog title={`图片预览 · ${image.name}`} size="image" width={width} onClose={onClose} busy={exporting}>
     <div className="conversation-image-preview-toolbar" role="group" aria-label="图片缩放">
       <span>{natural.width?`${natural.width} × ${natural.height}`:'正在加载…'}</span>
       <button type="button" disabled={!natural.width||scale<=.1} aria-label="缩小图片" onClick={()=>setZoom(Math.max(.1,scale/1.25))}><Minus size={15}/></button>
       <output aria-label="图片缩放比例">{Math.round(scale*100)}%</output>
       <button type="button" disabled={!natural.width||scale>=4} aria-label="放大图片" onClick={()=>setZoom(Math.min(4,scale*1.25))}><Plus size={15}/></button>
       <button type="button" disabled={!natural.width} onClick={()=>setZoom(null)}><Scan size={15}/>适应窗口</button>
+      <label className="conversation-image-export-format"><span className="sr-only">图片下载格式</span><select aria-label="图片下载格式" value={format} disabled={exporting} onChange={event=>{setFormat(event.target.value as ImageExportFormat);setExportNotice('');setExportError('');}}><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option>{isSvgImage(image)&&<option value="svg">SVG（矢量）</option>}<option value="original">原图</option></select></label>
+      <button type="button" aria-label="下载图片" disabled={!natural.width||failed||exporting} onClick={()=>void download()}>{exporting?<Loader2 size={15} className="animate-spin"/>:<Download size={15}/>}下载</button>
     </div>
     <div ref={stage} className="conversation-image-preview-stage" style={{height}} tabIndex={0} aria-label="图片预览区域">
       {failed?<p role="alert">图片加载失败，请关闭后重试。</p>:<div className="conversation-image-preview-canvas" style={{width:Math.max(available.width,natural.width*scale),height:Math.max(available.height,natural.height*scale)}}>
         <img src={image.src} alt={image.name} draggable={false} onLoad={event=>setNatural({width:event.currentTarget.naturalWidth,height:event.currentTarget.naturalHeight})} onError={()=>setFailed(true)} style={{width:natural.width?natural.width*scale:undefined,height:natural.height?natural.height*scale:undefined}}/>
       </div>}
     </div>
-    <p className="conversation-image-preview-hint">放大后可滚动查看 · Esc 或点击遮罩关闭</p>
+    {exportError&&<p role="alert" className="conversation-image-export-error">{exportError}</p>}
+    {exportNotice&&<p role="status" className="conversation-image-preview-hint">{exportNotice}</p>}
+    <p className="conversation-image-preview-hint">按原始尺寸下载，与预览缩放无关 · Esc 或点击遮罩关闭</p>
   </Dialog>;
 }

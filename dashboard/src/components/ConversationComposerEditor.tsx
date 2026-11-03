@@ -13,6 +13,16 @@ function composerContents(root:Node):{text:string;positions:Array<[string,number
 }
 export function composerPlainText(root:Node):string{return composerContents(root).text;}
 export function composerAttachmentPositions(root:Node){return new Map(composerContents(root).positions);}
+function rangeAtTextOffset(root:HTMLElement,offset:number) {
+  const range=document.createRange(),walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,{acceptNode:node=>node.parentElement?.closest('[data-attachment-id]')?NodeFilter.FILTER_REJECT:NodeFilter.FILTER_ACCEPT});
+  let remaining=Math.max(0,offset),node:Node|null;
+  while((node=walker.nextNode())) {
+    const raw=node.textContent||'',visible=raw.replaceAll(SPACE,'');
+    if(remaining<=visible.length&&visible.length){let index=0,count=0;while(index<raw.length&&count<remaining){if(raw[index]!==SPACE)count++;index++;}range.setStart(node,index);range.collapse(true);return range;}
+    remaining-=visible.length;
+  }
+  range.selectNodeContents(root);range.collapse(false);return range;
+}
 export function ConversationComposerEditor({value,items,disabled,placeholder,projectId,projectPath,onChange,onRemove,onFiles,onSubmit,snapshotRef}:{snapshotRef?:{current:(()=>Map<string,number>)|null};value:string;items:DraftAttachment[];disabled:boolean;placeholder:string;projectId:string|null;projectPath?:string;onChange:(value:string)=>void;onRemove:(id:string)=>void;onFiles:(files:File[])=>void;onSubmit:()=>void}) {
   const root=useRef<HTMLDivElement>(null),composing=useRef(false),known=useRef(new Set<string>()),savedRange=useRef<Range|null>(null);
   const preview=useConversationImagePreview(),filePreview=useConversationFilePreview(),hover=useConversationImageHover();
@@ -29,7 +39,9 @@ export function ConversationComposerEditor({value,items,disabled,placeholder,pro
     let last:HTMLElement|undefined;
     for(const [index,item] of items.entries()) {
       let token=[...node.querySelectorAll<HTMLElement>('[data-attachment-id]')].find(value=>value.dataset.attachmentId===item.id);
-      if(!token){token=document.createElement('span');token.contentEditable='false';token.dataset.attachmentId=item.id;token.className='session-chat-inline-attachment';token.tabIndex=0;token.setAttribute('role','button');const fragment=document.createDocumentFragment();fragment.append(document.createTextNode(SPACE),token,document.createTextNode(SPACE));insertion.deleteContents();insertion.insertNode(fragment);insertion.setStartAfter(token);insertion.collapse(true);}
+      if(!token){
+        if(item.offset!==undefined){const positions=composerAttachmentPositions(node),sameOffset=[...node.querySelectorAll<HTMLElement>('[data-attachment-id]')].filter(value=>positions.get(value.dataset.attachmentId!)===item.offset).at(-1);insertion=rangeAtTextOffset(node,item.offset);if(sameOffset){insertion.setStartAfter(sameOffset);insertion.collapse(true);}}
+        token=document.createElement('span');token.contentEditable='false';token.dataset.attachmentId=item.id;token.className='session-chat-inline-attachment';token.tabIndex=0;token.setAttribute('role','button');const fragment=document.createDocumentFragment();fragment.append(document.createTextNode(SPACE),token,document.createTextNode(SPACE));insertion.deleteContents();insertion.insertNode(fragment);insertion.setStartAfter(token);insertion.collapse(true);}
       const number=items.slice(0,index+1).filter(other=>other.kind===item.kind).length;
       token.textContent=`${item.kind==='image'?'图片':'文件'} ${number}${item.status==='uploading'?'（上传中）':item.status==='error'?'（上传失败）':''}`;
       token.setAttribute('aria-label',`${item.kind==='image'?'预览待发送图片':'预览待发送文件'} ${item.name}`);token.title=item.kind==='image'?'':`${item.name} · 点击预览，Backspace/Delete 删除`;token.dataset.status=item.status;last=token;

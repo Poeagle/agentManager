@@ -59,7 +59,14 @@ function publicMessage(line:Buffer,kind:CliType,questionCallId?:string) {
     const nativeAsyncItem=asyncItem??(kind==='codex'&&entry.type==='event_msg'&&entry.payload?.type==='agent_message'?entry.payload:null);
     const asyncQuestions=conversationAsyncQuestions(questionCallId?{...nativeAsyncItem,id:questionCallId}:nativeAsyncItem);
     const asyncMessage=asyncQuestions?{role:'assistant' as const,phase:'final' as const,text:(typeof nativeAsyncItem.message==='string'?nativeAsyncItem.message:(nativeAsyncItem.content||[]).filter((part:any)=>['Text','output_text'].includes(part.type)&&typeof part.text==='string').map((part:any)=>part.text).join('\n')).slice(0,128*1024)||asyncQuestions.map(q=>q.title).join('\n'),timestamp:typeof entry.timestamp==='string'?entry.timestamp:null}:null;
-    const extracted=failure||asyncMessage||extractAgentMessages([entry],kind,128*1024).find(message=>message.role==='user'||message.role==='assistant');
+    // Show only our explicit, credential-free resource notice. Other developer
+    // instructions remain outside the public transcript. This is presentation
+    // only: no user message is submitted to the native thread.
+    const developerText=kind==='codex'&&entry.type==='response_item'&&entry.payload?.type==='message'&&entry.payload.role==='developer'
+      ? (entry.payload.content||[]).filter((part:any)=>part.type==='input_text'&&typeof part.text==='string').map((part:any)=>part.text).join('\n').trim():'';
+    const shared=/^<octoally_shared_resources>\n[\s\S]*\n<\/octoally_shared_resources>$/.test(developerText)
+      ? {role:'user' as const,phase:'user' as const,text:developerText,timestamp:typeof entry.timestamp==='string'?entry.timestamp:null}:null;
+    const extracted=shared||failure||asyncMessage||extractAgentMessages([entry],kind,128*1024).find(message=>message.role==='user'||message.role==='assistant');
     const reply=extracted?.role==='user'?conversationQuestionReply(extracted.text):undefined;
     const message=reply?{...extracted!,text:reply.text}:extracted;
     const itemId=asyncQuestions&&typeof nativeAsyncItem?.id==='string'?nativeAsyncItem.id:kind==='codex' && entry.type==='response_item' && typeof entry.payload?.id==='string'?entry.payload.id:undefined;

@@ -30,6 +30,14 @@ function tomlBasicString(value: string): string {
     .replace(/\r/g, '\\r')}"`;
 }
 
+/** Configuration context, never a positional user prompt or terminal input. */
+export function withSharedResourceInstructions(command: string, cliType: CliType, instructions?: string): string {
+  if (!instructions) return command;
+  return cliType === 'codex'
+    ? `${command} -c ${shellSingleQuote(`developer_instructions=${tomlBasicString(instructions)}`)}`
+    : `${command} --append-system-prompt ${shellSingleQuote(instructions)}`;
+}
+
 /** Add a per-launch hook that records Codex's native conversation UUID. */
 export function codexIdentityFlags(bindingPath?: string): string {
   if (!bindingPath) return '';

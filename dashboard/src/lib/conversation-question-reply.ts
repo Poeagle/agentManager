@@ -30,3 +30,17 @@ export function questionAnswers(message:ConversationMessage,later:ConversationMe
   }
   return null;
 }
+
+/** Include unanswered questions outside the loaded history page. A new user
+ * message or a completed turn does not implicitly answer an earlier question. */
+export function pendingConversationQuestions(messages:ConversationMessage[],groups:Array<{id:string;questions:NonNullable<ConversationMessage['async_questions']>;timestamp:string|null;turn_id?:string}> = [],ignoredIds:string[]=[]):ConversationMessage[] {
+  const pending=messages.filter((message,index)=>message.async_questions?.length&&questionAnswers(message,messages.slice(index+1))===null);
+  for(const group of groups) {
+    if(pending.some(message=>message.async_questions?.some(question=>group.questions.some(item=>item.id===question.id))))continue;
+    const message:ConversationMessage={id:`pending-question-${group.id}`,role:'assistant',phase:'final',text:group.questions.map(question=>question.title).join('\n'),timestamp:group.timestamp,turn_id:group.turn_id,async_questions:group.questions};
+    if(questionAnswers(message,messages)===null)pending.push(message);
+  }
+  const ignored=new Set(ignoredIds);
+  const answered=new Set(messages.flatMap(message=>message.question_replies?.map(reply=>reply.question_id)||[]));
+  return pending.map(message=>({...message,async_questions:message.async_questions?.filter(q=>!q.id||!ignored.has(q.id)&&!answered.has(q.id))})).filter(message=>message.async_questions?.length).sort((a,b)=>Date.parse(a.timestamp||'')-Date.parse(b.timestamp||''));
+}

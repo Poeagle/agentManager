@@ -17,6 +17,7 @@ import { prunePastesDir } from '../services/paste-cleanup.js';
 import { sessionPresenter } from '../services/session-labels.js';
 import {readConversationPreview,humanSessionTask} from '../services/conversation-preview.js';
 import { readCodexRuntime } from '../services/codex-runtime.js';
+import {personalQuestionRuntime,setIgnoredQuestions} from '../services/question-attention.js';
 import {requirePermission} from '../services/rbac.js';
 import {attachExistingSession} from '../services/session-attachment.js';
 
@@ -130,7 +131,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       .map(async (s: any) => {
         const st = getTracker(s.id)?.state;
         const preview=await readConversationPreview(s);
-        const native = s.cli_type === 'codex' ? {...await readCodexRuntime(s.codex_session_id)} : null;
+        const native = s.cli_type === 'codex' ? personalQuestionRuntime(await readCodexRuntime(s.codex_session_id),req.user!.id) : null;
         if (native && ['running','waiting_for_input'].includes(native.state)
           && await sessionManager.getLiveWorkAgent(s.id) !== 'codex') {
           native.state='unknown'; native.reason='原生记录中的执行尚未结束，但未确认到对应 Codex 进程，当前状态待确认';
@@ -194,6 +195,20 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const session = sessionManager.getSession(req.params.id);
     if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
     return { session: {...session, ...sessionPresenter(req.user!.id)(session)} };
+  });
+
+  app.post<{Params:{id:string};Body:{question_ids:string[];ignored?:boolean}}>('/sessions/:id/questions/ignore',async(req,reply)=>{
+    const session=sessionManager.getSession(req.params.id);
+    if(!session||!canAccessSessionByRow(req.user!.id,session))return reply.code(404).send({error:'Session not found'});
+    if(!requirePermission(req,reply,'agent_api','write'))return reply;
+    const ids=req.body?.question_ids;
+    if(!Array.isArray(ids)||!ids.length||ids.length>500||ids.some(id=>typeof id!=='string'||id.length>2048)||req.body.ignored!==undefined&&typeof req.body.ignored!=='boolean')return reply.code(400).send({error:'问题标识无效'});
+    if(session.cli_type!=='codex'||!session.codex_session_id)return reply.code(400).send({error:'当前会话不支持问题提醒'});
+    const runtime=await readCodexRuntime(session.codex_session_id);
+    const available=new Set(runtime.pending_questions?.flatMap(group=>group.questions.flatMap(q=>q.id?[q.id]:[])));
+    if(ids.some(id=>!available.has(id)))return reply.code(409).send({error:'问题状态已更新，请刷新后重试'});
+    const ignored=setIgnoredQuestions(req.user!.id,session.codex_session_id,ids,req.body.ignored!==false);
+    return {ok:true,ignored_question_ids:ignored};
   });
 
   // Clipboard data is stored inside the session's project; the terminal only
@@ -261,7 +276,9 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     if (req.body?.automatic === true) {
       return reply.status(409).send({ error: 'Automatic resume is disabled; use Resume to restart this session' });
     }
-    const result = await sessionManager.resumeSessionById(id);
+    let result: {ok:boolean;error?:string};
+    try { result = await sessionManager.resumeSessionById(id); }
+    catch (error) { return reply.status(409).send({error: error instanceof Error ? `会话恢复失败：${error.message}` : '会话恢复失败，历史已保留，请重试'}); }
     if (!result.ok) return reply.status(400).send({ error: result.error });
     return { ok: true, session: sessionManager.getSession(id) };
   });

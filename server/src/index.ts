@@ -24,6 +24,7 @@ import { fileRoutes } from './routes/files.js';
 import { gitRoutes } from './routes/git.js';
 import { agentRoutes } from './routes/agent.js';
 import { settingsRoutes } from './routes/settings.js';
+import { sharedResourceRoutes } from './routes/shared-resources.js';
 import { promptEnhancerRoutes } from './routes/prompt-enhancer.js';
 import { platformAiRoutes } from './routes/platform-ai.js';
 import { installPlatformApiRegistry } from './services/platform-ai/api-registry.js';
@@ -144,6 +145,7 @@ async function start() {
   await app.register(gitRoutes, { prefix: '/api' });
   await app.register(agentRoutes, { prefix: '/api' });
   await app.register(settingsRoutes, { prefix: '/api' });
+  await app.register(sharedResourceRoutes, { prefix: '/api' });
   await app.register(promptEnhancerRoutes, { prefix: '/api' });
   await app.register(platformAiRoutes, { prefix: '/api' });
   await app.register(skillsRoutes, { prefix: '/api' });

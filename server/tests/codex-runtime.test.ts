@@ -22,6 +22,55 @@ beforeEach(()=>{
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 
 describe('Codex native execution status',()=>{
+  it('recognizes a newly created native conversation as ready without inventing activity',async()=>{
+    writeFileSync(file,JSON.stringify({type:'session_meta',payload:{id},timestamp:'2026-10-29T10:00:00Z'})+'\n'+JSON.stringify({type:'response_item',payload:{type:'message',role:'developer',content:[{type:'input_text',text:'shared resource instructions'}]}})+'\n');
+    expect(await readCodexRuntime(id)).toMatchObject({state:'ready',last_activity_at:null});
+    appendFileSync(file,event('task_started',1));expect((await readCodexRuntime(id)).state).toBe('running');
+    appendFileSync(file,event('turn_aborted',2));expect((await readCodexRuntime(id)).state).toBe('interrupted');
+  });
+  it('persists bulk ignore per user/native thread without sending answers or hiding later questions',async()=>{
+    const database=createTestDatabase(),app=Fastify();
+    try {
+      const user=createUser({username:'ignore-owner',password:'password1',role:'admin'}),other=createUser({username:'ignore-other',password:'password1'});
+      const cookie=`agentmanager_session=${createSession(user.id)}`;
+      getDb().prepare("INSERT INTO sessions(id,task,status,cli_type,codex_session_id,created_by_user_id) VALUES ('ignore-s','Task','completed','codex',?,?)").run(id,user.id);
+      const question=(call:string)=>event('item_completed',1,{thread_id:id,item:{type:'AgentMessage',id:call,delivery:'async',questions:[{title:call,options:['A','B']}]}});
+      writeFileSync(file,question('old-a')+question('old-b')+event('task_complete',2));
+      app.addHook('onRequest',authHook);await app.register(sessionRoutes,{prefix:'/api'});
+      const list=async()=> (await app.inject({url:'/api/sessions',headers:{cookie}})).json().sessions[0].agent_runtime;
+      const before=await list(),ids=before.pending_questions.flatMap((group:any)=>group.questions.map((q:any)=>q.id));expect(before.pending_question_count).toBe(2);
+      const request={method:'POST' as const,url:'/api/sessions/ignore-s/questions/ignore',headers:{cookie},payload:{question_ids:ids}};
+      expect((await app.inject({...request,headers:{cookie:`agentmanager_session=${createSession(other.id)}`}})).statusCode).toBe(404);
+      expect((await app.inject({...request,payload:{question_ids:['unrelated']}})).statusCode).toBe(409);
+      expect((await app.inject(request)).statusCode).toBe(200);
+      expect(await list()).toMatchObject({state:'idle',pending_question_count:0,ignored_question_ids:ids});
+      expect(await readCodexRuntime(id)).toMatchObject({pending_question_count:2});
+      appendFileSync(file,question('new-c'));
+      expect((await list()).pending_question_count).toBe(1);
+      expect((await app.inject({...request,payload:{question_ids:ids,ignored:false}})).statusCode).toBe(200);
+      expect((await list()).pending_question_count).toBe(3);
+    }finally{await app.close();database.cleanup();}
+  });
+  it('retains nonblocking questions through completion and unrelated user input, resolving only their explicit native answers',async()=>{
+    const questions=[{title:'请选择方案',options:['A','B']}],call='call-pending';
+    const record=(payload:unknown)=>JSON.stringify({timestamp:'2026-10-29T10:00:02Z',type:'response_item',payload})+'\n';
+    writeFileSync(file,event('task_started',1)+record({type:'function_call',name:'request_user_input_async',call_id:call,arguments:JSON.stringify({questions})})+event('item_completed',2,{item:{type:'AgentMessage',id:call,delivery:'async',questions}})+event('task_complete',3));
+    expect(await readCodexRuntime(id)).toMatchObject({state:'idle',pending_question_count:1});
+    appendFileSync(file,event('user_message',4,{message:'先处理另一件事'})+event('task_started',5));
+    expect(await readCodexRuntime(id)).toMatchObject({state:'running',pending_question_count:1});
+    const questionItemId=JSON.stringify(['request_user_input_async',call,0]);
+    const answer='<send_user_message_question_reply>\n'+JSON.stringify([{questionItemId,question:'请选择方案',answer:'A'}])+'\n</send_user_message_question_reply>';
+    appendFileSync(file,record({type:'message',role:'user',content:[{type:'input_text',text:answer}]}));
+    expect(await readCodexRuntime(id)).toMatchObject({state:'running',pending_question_count:0,pending_questions:[]});
+  });
+  it('finds an unanswered question outside both the runtime tail and current chat page without retaining a large tool result',async()=>{
+    const questions=[{title:'更早的提问',options:null}];
+    writeFileSync(file,event('item_completed',1,{item:{type:'AgentMessage',id:'old-question',delivery:'async',questions}})
+      +JSON.stringify({type:'response_item',payload:{type:'function_call_output',output:'x'.repeat(5*1024*1024)}})+'\n'+event('task_complete',3));
+    const runtime=await readCodexRuntime(id);
+    expect(runtime).toMatchObject({state:'idle',pending_question_count:1,pending_questions:[{id:'old-question',questions:[{title:'更早的提问'}]}]});
+    expect(JSON.stringify(runtime).length).toBeLessThan(2000);
+  });
   it('reports a failed turn instead of idle when completion carries a model error',async()=>{
     writeFileSync(file,event('task_started',1,{turn_id:'failed'})+event('task_complete',2,{turn_id:'failed',error:{message:'Selected model is at capacity.',codex_error_info:'server_overloaded'}}));
     expect(await readCodexRuntime(id)).toMatchObject({state:'failed',last_activity_at:'2026-10-29T10:00:02.000Z'});

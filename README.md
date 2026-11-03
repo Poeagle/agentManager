@@ -21,6 +21,9 @@ Key features:
   and a file explorer to review and commit what the agents changed.
 - **Multi-user** — Username/password login with project/session access controls;
   each user sees only assigned projects and sessions.
+- **Personal shared resources** — Maintain service addresses, credentials and
+  usage notes once for your projects, with silent discovery in new AI sessions.
+  See [configuration and import instructions](docs/shared-resources.md).
 - **Skills** — Browse and edit `SKILL.md`-format skills for Claude Code and Codex
   from a built-in Skills page.
 - **Dual CLI** — Use Claude Code or Codex per session, each with its own command,
@@ -161,6 +164,12 @@ Server startup reconnects surviving tmux/dtach sessions. Sessions whose processe
 have exited retain their history and native conversation IDs; use **Resume** in
 the dashboard to start them again. Restoring browser tabs does not start AI CLIs.
 
+Sending from chat immediately clears the submitted text and attachments so you
+can compose the next message while acknowledgement is pending. Failed sends
+restore the original draft, or keep it available for recovery when newer input
+already exists. A confirmed native message echo takes precedence over a late
+HTTP error, avoiding duplicate drafts of messages that were already accepted.
+
 Codex tab activity and status use the exact bound native rollout conversation.
 Native task, message and tool events advance its activity clock; terminal redraws,
 tab changes and reconnects do not. Status distinguishes running, waiting for input,
@@ -168,6 +177,17 @@ turn ended, interrupted and unknown. A finished turn is not proof of business ta
 completion. Missing native logs or an unconfirmed running Codex process show an
 unknown state instead of inferring activity from the terminal. Visible dashboards
 refresh native status approximately every five seconds.
+
+New Codex conversations with valid native metadata show green **Ready** until
+their first turn. Unanswered asynchronous questions show yellow attention even
+after a turn ends, or while the agent continues working. **Ignore all** removes
+the current session's pending question cards permanently for your account,
+including after tab switches, reloads and history replay; it sends no answer to
+the agent. Later questions retain their own reminders.
+
+Chat image previews offer downloads as PNG, JPEG, WebP or the original file;
+Mermaid and other SVG images additionally offer SVG. Downloads use original
+image dimensions, independently of the preview zoom.
 
 Codex sessions launched by AgentManager use `--disable plugins`.
 Plugin-provided skills, MCP integrations and hooks are unavailable in these

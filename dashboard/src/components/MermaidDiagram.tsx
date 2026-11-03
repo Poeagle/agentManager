@@ -24,10 +24,10 @@ export function MermaidDiagram({source,streaming=false}:{source:string;streaming
   useEffect(()=>()=>{if(url.current)URL.revokeObjectURL(url.current);},[]);
   return <figure className="mermaid-diagram" aria-label="Mermaid 图表" contentEditable={false}>
     <figcaption><span>Mermaid 图表</span><div><button type="button" aria-expanded={showSource} onClick={()=>setShowSource(value=>!value)}>{showSource?'收起源码':'查看源码'}</button><button type="button" onClick={()=>void copyConversationText(source).then(()=>setCopied(true)).catch(()=>setError('复制失败，请展开源码手动复制。'))}>{copied?'已复制':'复制源码'}</button></div></figcaption>
-    {image&&<button type="button" className="mermaid-diagram-image" aria-label="放大 Mermaid 图表" onClick={()=>preview?preview({src:image,name:'Mermaid 图表'}):setExpanded(true)}><img src={image} alt="Mermaid 图表"/></button>}
+    {image&&<button type="button" className="mermaid-diagram-image" aria-label="放大 Mermaid 图表" onClick={()=>preview?preview({src:image,name:'Mermaid 图表',mimeType:'image/svg+xml'}):setExpanded(true)}><img src={image} alt="Mermaid 图表"/></button>}
     {!image&&!error&&<p role="status">{streaming?'正在接收图表…':'正在绘制图表…'}</p>}
     {error&&<p role={streaming?'status':'alert'}>{error}</p>}
     {(showSource||!!error&&!streaming)&&<pre className="mermaid-diagram-source"><code>{source}</code></pre>}
-    {expanded&&image&&<ImagePreview image={{src:image,name:'Mermaid 图表'}} onClose={()=>setExpanded(false)}/>}
+    {expanded&&image&&<ImagePreview image={{src:image,name:'Mermaid 图表',mimeType:'image/svg+xml'}} onClose={()=>setExpanded(false)}/>}
   </figure>;
 }

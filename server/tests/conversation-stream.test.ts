@@ -4,7 +4,7 @@ import {mkdtempSync,rmSync} from 'fs';
 import {tmpdir} from 'os';
 import {join} from 'path';
 import {WebSocketServer,type WebSocket} from 'ws';
-import {createStreamingCodexThread,interruptStreamingCodexThread,submitStreamingCodexInput,observeCodexConversation,type ConversationStreamFrame} from '../src/services/conversation-stream.js';
+import {createStreamingCodexThread,interruptStreamingCodexThread,configureStreamingSharedResources,submitStreamingCodexInput,observeCodexConversation,type ConversationStreamFrame} from '../src/services/conversation-stream.js';
 import {conversationMessageId} from '../src/services/conversation-reader.js';
 
 let server:Server,wss:WebSocketServer,peer:WebSocket,dir:string,stop:(()=>void)|undefined;
@@ -14,12 +14,13 @@ let humanRequests:any[]=[],humanResponses:any[]=[];
 let baselineItems:any[]=[];
 let baselineFailure:any=null;
 let queueEntries:any[]=[],turnStartFailure:string|null=null;
+let requestParams: Array<{method:string;params:any}> = [];
 beforeEach(async()=>{
   dir=mkdtempSync(join(tmpdir(),'chat-stream-'));const path=join(dir,'sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',path);
   server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;baselineItems=[];baselineFailure=null;queueEntries=[];turnStartFailure=null;humanRequests=[];humanResponses=[];
   wss.on('connection',socket=>{
     peer=socket;socket.on('message',bytes=>{
-      const frame=JSON.parse(bytes.toString());const {id,method,params}=frame;if(!method){humanResponses.push(frame);return;}requests.push(method);if(method==='thread/resume')for(const request of humanRequests)socket.send(JSON.stringify(request));if(method==='turn/start')submissions.push(params);if(!id) return;
+      const frame=JSON.parse(bytes.toString());const {id,method,params}=frame;if(!method){humanResponses.push(frame);return;}requests.push(method);requestParams.push({method,params});if(method==='thread/resume')for(const request of humanRequests)socket.send(JSON.stringify(request));if(method==='turn/start')submissions.push(params);if(!id) return;
       if(method==='turn/start'&&turnStartFailure){socket.send(JSON.stringify({id,error:{message:turnStartFailure,code:-32600}}));return;}
       if(method==='thread/queue/add')queueEntries.push({id:`queued-${queueEntries.length}`,clientUserMessageId:params.clientUserMessageId,input:params.input});
       if(method==='thread/queue/add'||method==='thread/queue/list'){socket.send(JSON.stringify({id,result:method==='thread/queue/add'?{queuedSubmission:queueEntries.at(-1)}:{data:queueEntries}}));return;}
@@ -197,6 +198,21 @@ describe('native Codex conversation streaming',()=>{
   it('starts the initial prompt once and returns the exact identity used by the terminal',async()=>{
     expect(await createStreamingCodexThread('/project','initial request')).toBe('019ff001-8888-7888-8888-888888888888');
     expect(requests.filter(method=>method==='thread/start')).toHaveLength(1);expect(requests.filter(method=>method==='turn/start')).toHaveLength(1);
+  });
+  it('passes shared-resource discovery as configuration, never as a human message or extra model turn',async()=>{
+    requestParams=[];
+    const instructions='<octoally_shared_resources>entry only</octoally_shared_resources>';
+    await createStreamingCodexThread('/project','actual user task',instructions);
+    expect(requestParams.find(frame=>frame.method==='thread/start')?.params.developerInstructions).toBe(instructions);
+    expect(submissions).toHaveLength(1);
+    expect(JSON.stringify(submissions)).not.toContain('octoally_shared_resources');
+    await configureStreamingSharedResources('thread',instructions);
+    expect(requestParams.find(frame=>frame.method==='thread/resume')?.params).toEqual({threadId:'thread',excludeTurns:true});
+    expect(requestParams.at(-1)).toMatchObject({method:'thread/inject_items',params:{threadId:'thread',items:[{role:'developer',content:[{type:'input_text',text:instructions}]}]}});
+    const injected=requestParams.filter(frame=>frame.method==='thread/inject_items').length;
+    await configureStreamingSharedResources('thread',instructions);
+    expect(requestParams.filter(frame=>frame.method==='thread/inject_items')).toHaveLength(injected);
+    expect(submissions).toHaveLength(1);
   });
   it('streams real deltas into one stable message, includes intermediate progress, excludes tools/reasoning and settles without duplication',async()=>{
     stop=observeCodexConversation('thread',frame=>frames.push(frame));

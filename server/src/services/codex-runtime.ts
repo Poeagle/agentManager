@@ -1,10 +1,12 @@
 import { open } from 'fs/promises';
 import { findCodexRollout } from './prompt-context.js';
+import { readPendingQuestions, type PendingQuestionGroup } from './conversation-pending-questions.js';
 
-export type CodexState = 'running' | 'idle' | 'waiting_for_input' | 'interrupted' | 'failed' | 'unknown';
+export type CodexState = 'ready' | 'running' | 'idle' | 'waiting_for_input' | 'interrupted' | 'failed' | 'unknown';
 export interface CodexRuntime {
   source: 'codex_rollout'; session_id: string | null; state: CodexState;
   last_activity_at: string | null; observed_at: string; reason: string;
+  pending_question_count?: number; pending_questions?: PendingQuestionGroup[];
 }
 interface RuntimeCursor {
   offset: number; inode: number; mtime: number; partial: Buffer;
@@ -19,6 +21,7 @@ const freshCursor = (): RuntimeCursor => ({offset:0,inode:0,mtime:0,partial:Buff
 function applyRecord(cursor: RuntimeCursor, entry: any, sessionId: string): void {
   const p = entry?.payload;
   if (!p || typeof p !== 'object' || (p.thread_id && p.thread_id !== sessionId)) return;
+  if (entry.type === 'session_meta' && p.id === sessionId && cursor.state === 'unknown' && !cursor.last) cursor.state='ready';
   const event = entry.type === 'event_msg' ? p.type : '';
   const response = entry.type === 'response_item' ? p.type : '';
   if (response === 'message' && !['user','assistant'].includes(p.role)) return;
@@ -28,6 +31,7 @@ function applyRecord(cursor: RuntimeCursor, entry: any, sessionId: string): void
     || ['message','reasoning','function_call','function_call_output','custom_tool_call','custom_tool_call_output','web_search_call','local_shell_call'].includes(response);
   const stamp = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
   if (!activity || !Number.isFinite(stamp)) return;
+  if (cursor.state === 'ready') cursor.state='unknown';
   if (!cursor.last || stamp > Date.parse(cursor.last)) cursor.last = new Date(stamp).toISOString();
   const turn = typeof p.turn_id === 'string' ? p.turn_id : 'current';
   if (event === 'task_started') { cursor.activeTurns.add(turn); cursor.state='running'; cursor.waitingCall=null; }
@@ -78,8 +82,9 @@ export async function readCodexRuntime(sessionId: string | null | undefined): Pr
         if (cursors.size >= 256 && !cursors.has(filePath)) cursors.delete(cursors.keys().next().value!);
         cursors.set(filePath,cursor);
       }
-      return {source:'codex_rollout' as const,session_id:sessionId,state:cursor.state,last_activity_at:cursor.last,observed_at:new Date().toISOString(),
-        reason:cursor.last ? '依据 Codex 原生执行事件；本轮结束不代表业务任务验收完成' : '原生记录尚无可识别的执行事件'};
+      const questions = await readPendingQuestions(filePath, sessionId);
+      return {source:'codex_rollout' as const,session_id:sessionId,state:cursor.state,last_activity_at:cursor.last,observed_at:new Date().toISOString(),pending_question_count:questions.reduce((sum,group)=>sum+group.questions.length,0),pending_questions:questions,
+        reason:cursor.state==='ready' ? '原生会话已创建，尚未开始执行' : cursor.last ? '依据 Codex 原生执行事件；本轮结束不代表业务任务验收完成' : '原生记录尚无可识别的执行事件'};
     } finally {await file.close();}
   })().catch(()=>unavailable('Codex 原生记录暂时无法读取')).finally(()=>inFlight.delete(filePath));
   inFlight.set(filePath,work);

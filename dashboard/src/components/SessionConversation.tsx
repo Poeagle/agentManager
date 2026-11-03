@@ -12,9 +12,9 @@ import {memo,useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles} from 'lucide-react';
 import {api,ApiError,type ConversationMessage,type ConversationPage,type ConversationControlsData,type ConversationUsageUpdate,type ConversationStatistics,type Session} from '../lib/api';
-import {decodeQuestionReply,questionAnswers} from '../lib/conversation-question-reply';
+import {decodeQuestionReply,questionAnswers,pendingConversationQuestions} from '../lib/conversation-question-reply';
 import {parseConversationInput} from '../lib/conversation-attachments';
-import {ConversationAttachmentPicker,ConversationMessageAttachments,useConversationAttachments} from './ConversationAttachments';
+import {ConversationAttachmentPicker,ConversationMessageAttachments,useConversationAttachments,type DraftAttachment} from './ConversationAttachments';
 import {ConversationMarkdown} from './ConversationMarkdown';
 import {ConversationWidthHandles,ConversationNavigator} from './ConversationReadingTools';
 import {hasPermission,usePermissions} from '../lib/permissions';
@@ -25,6 +25,7 @@ import {ConversationActivityLine,type ConversationActivity} from './Conversation
 import './SessionConversation.css';
 
 interface LiveProgress {turn_id:string|null;started_at:string|null;completed_at?:string|null;activities?:ConversationActivity[];stage:'waiting'|'tools'|'answering'|'finishing'|'idle'}
+interface FailedDraft {clientId:string;fingerprint:string;text:string;attachments:DraftAttachment[]}
 
 const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,onCancelRetry,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate,durationLabel,durationTitle,onRaw}:{durationLabel?:string;durationTitle?:string;retrying?:boolean;autoRetry?:ConversationRetry;onCancelRetry?:()=>Promise<void>;onRaw:()=>void;message:ConversationMessage;streaming:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void}) {
   const [copied,setCopied]=useState(false);
@@ -85,7 +86,12 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const [reconnectError,setReconnectError]=useState('');
   const reconnectAttempted=useRef(false),reconnectLock=useRef(false);
   const [draft,setDraft]=useState('');
+  const [failedDrafts,setFailedDrafts]=useState<FailedDraft[]>([]);
+  const draftVersion=useRef(0);
   const [minimizedQuestion,setMinimizedQuestion]=useState<string|null>(null);
+  const [selectedQuestion,setSelectedQuestion]=useState<string|null>(null);
+  const [ignoringQuestions,setIgnoringQuestions]=useState(false);
+  const [ignoreError,setIgnoreError]=useState('');
   const attachments=useConversationAttachments(session.id);
   const attachmentPositions=useRef<(()=>Map<string,number>)|null>(null);
   const [sending,setSending]=useState(false);
@@ -108,6 +114,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const sendingRef=useRef(false);
   const submissionIdentity=useRef<{fingerprint:string;id:string}|null>(null);
   const draftRef=useRef(draft);draftRef.current=draft;
+  const changeDraft=useCallback((text:string)=>{draftVersion.current++;draftRef.current=text;setDraft(text);},[]);
   const bottom=useRef<HTMLDivElement>(null);
   const focusedQuestion=useRef<string|null>(null);
   const timelineRef=useRef(messages);timelineRef.current=messages;
@@ -279,21 +286,43 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     const clientId=submissionIdentity.current?.fingerprint===fingerprint?submissionIdentity.current.id:conversationClientId();submissionIdentity.current={fingerprint,id:clientId};
     const parsedReply=decodeQuestionReply(text);
     const timestamp=new Date().toISOString(),visibleText=parsedReply?.text??(text.trim()?text:attached.length?'请查看附件。':text),attachedIds=fromQuestion?[]:attachments.items.map(item=>item.id);
+    const version=draftVersion.current;
+    const savedAttachments=fromQuestion?[]:attachments.items.map(item=>({...item,offset:positions?.get(item.id)??text.length}));
     const accepted=timelineRef.current.find(item=>item.role==='user'&&item.client_id===clientId&&!item.optimistic);
     if(!accepted)setMessages(previous=>[...previous,{id:`pending-${clientId}`,client_id:clientId,role:'user',text:visibleText,attachments:attached,timestamp,...(parsedReply?{question_replies:parsedReply.answers}:{}),optimistic:{afterSequence:previous.reduce((last,item)=>Math.max(last,item.sequence??-1),-1)}}]);
+    // Move this exact draft into the send transaction immediately. The HTTP
+    // acknowledgement can arrive seconds after the native user-message echo.
+    if(!fromQuestion){draftRef.current='';setDraft('');attachments.take(attachedIds);}
     pinned.current=true;requestAnimationFrame(scrollBottom);
-    try {
-      const response=accepted?{status:accepted.queued?'queued':'submitted'}:await (attached.length?api.agent.sendInput(session.id,text,clientId,attached):api.agent.sendInput(session.id,text,clientId));
+    function acknowledged(status:string) {
       submissionIdentity.current=null;
-      if(response.status==='queued')setMessages(previous=>previous.map(item=>item.optimistic&&item.client_id===clientId?{...item,queued:true}:item));
-      if(!fromQuestion)attachments.clear(attachedIds);
+      if(status==='queued')setMessages(previous=>previous.map(item=>item.optimistic&&item.client_id===clientId?{...item,queued:true}:item));
+      attachments.release(savedAttachments);
       // The native turn/started event can precede this HTTP acknowledgement;
       // only initialize the waiting state if a new turn has not arrived yet.
-      setLiveProgress(previous=>response.status!=='queued'&&previous.stage==='idle'?{turn_id:null,started_at:new Date().toISOString(),stage:'waiting'}:previous);
-      if(!fromQuestion&&draftRef.current===text) setDraft('');
+      setLiveProgress(previous=>status!=='queued'&&previous.stage==='idle'?{turn_id:null,started_at:new Date().toISOString(),stage:'waiting'}:previous);
       pinned.current=true;setRefresh(value=>value+1);requestAnimationFrame(scrollBottom);
-    } catch(failure) {setMessages(previous=>previous.filter(item=>!(item.optimistic && item.client_id===clientId)));if(fromQuestion){setSendError(failure instanceof Error?failure.message:'回答提交失败');throw failure;}setSendError(failure instanceof ApiError&&['rejected','unknown'].includes(failure.submission||'')?failure.message:`${failure instanceof Error?failure.message:'发送失败'}。请查看原始终端确认后再重试。`);}
+    }
+    try {
+      const response=accepted?{status:accepted.queued?'queued':'submitted'}:await (attached.length?api.agent.sendInput(session.id,text,clientId,attached):api.agent.sendInput(session.id,text,clientId));
+      acknowledged(response.status);
+    } catch(failure) {
+      // A successful native echo is stronger evidence than a late HTTP error.
+      const echoed=timelineRef.current.find(item=>item.role==='user'&&item.client_id===clientId&&!item.optimistic);
+      if(echoed){acknowledged(echoed.queued?'queued':'submitted');return;}
+      setMessages(previous=>previous.filter(item=>!(item.optimistic && item.client_id===clientId)));
+      if(fromQuestion){setSendError(failure instanceof Error?failure.message:'回答提交失败');throw failure;}
+      if(draftVersion.current===version&&!draftRef.current&&!attachments.hasDraft()) {changeDraft(text);attachments.restore(savedAttachments);}
+      else setFailedDrafts(previous=>[...previous,{clientId,fingerprint,text,attachments:savedAttachments}]);
+      setSendError(failure instanceof ApiError&&['rejected','unknown'].includes(failure.submission||'')?failure.message:`${failure instanceof Error?failure.message:'发送失败'}。请查看原始终端确认后再重试。`);
+    }
     finally {sendingRef.current=false;setSending(false);}
+  }
+  function restoreFailedDraft(saved:FailedDraft) {
+    if(sendingRef.current||draftRef.current||attachments.hasDraft())return;
+    changeDraft(saved.text);attachments.restore(saved.attachments);
+    submissionIdentity.current={id:saved.clientId,fingerprint:saved.fingerprint};
+    setFailedDrafts(previous=>previous.filter(item=>item.clientId!==saved.clientId));
   }
   const agentName=session.cli_type==='codex'?'Codex':'Claude';
   const lastUserTime=messages[lastUserIndex]?.timestamp;
@@ -303,17 +332,31 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const started=continuingAfterFollowup?lastUserTime:liveProgress.started_at||lastUserTime;
   const elapsed=started?Math.max(0,Math.floor((now-Date.parse(started))/1000)):0;
   const waitingForText=!compaction.running && busy && !currentAnswer && !activeError && !waiting;
-  const displayed=useMemo(()=>messages.map(message=>{const stats=statistics.find(item=>item.turn_id===message.turn_id&&(item.message_id===message.id||item.message_id&&message.aliases?.includes(item.message_id)||message.sequence===item.sequence));return stats?{...message,statistics:stats}:message;}),[messages,statistics]);
+  const ignoredIds=page?.runtime?.ignored_question_ids||[];
+  const displayed=useMemo(()=>messages.map(message=>message.async_questions?.length?{...message,async_questions:message.async_questions.filter(q=>!q.id||!ignoredIds.includes(q.id))}:message).filter(message=>!message.async_questions||message.async_questions.length).map(message=>{const stats=statistics.find(item=>item.turn_id===message.turn_id&&(item.message_id===message.id||item.message_id&&message.aliases?.includes(item.message_id)||message.sequence===item.sequence));return stats?{...message,statistics:stats}:message;}),[messages,statistics,ignoredIds]);
   const streamingId=!activeError && liveState==='connected' && busy && !['tools','finishing'].includes(liveProgress.stage)
     ? messages.reduce<string|null>((id,message,index)=>index>lastUserIndex && message.role==='assistant' && message.streaming && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id)?message.id:id,null):null;
   const groups=groupConversationProgress(displayed);
   const timings=conversationTimings(displayed.filter(message=>!message.queued),now,busy,liveProgress.turn_id);
-  const pendingQuestion=messages.slice(lastUserIndex+1).reduce<ConversationMessage|null>((last,message)=>message.async_questions?.length?message:last,null);
+  const pendingQuestions=pendingConversationQuestions(messages,page?.runtime?.pending_questions,ignoredIds);
+  const pendingQuestion=pendingQuestions.find(message=>message.id===selectedQuestion)||pendingQuestions.at(-1)||null;
   const questionActive=!!pendingQuestion&&minimizedQuestion!==pendingQuestion.id;
+  async function ignoreQuestions(ids:string[],ignored=true) {
+    if(ignoringQuestions||!ids.length)return;
+    setIgnoringQuestions(true);setIgnoreError('');
+    try {
+      const result=await api.sessions.ignoreQuestions(session.id,ids,ignored);
+      setPage(previous=>previous&&previous.runtime?{...previous,runtime:{...previous.runtime,ignored_question_ids:result.ignored_question_ids}}:previous);
+      void queryClient.invalidateQueries({queryKey:['sessions']});
+      void queryClient.invalidateQueries({queryKey:['project-sessions',session.project_id]});
+      setRefresh(value=>value+1);
+    }catch(error){setIgnoreError(error instanceof Error?error.message:'忽略失败，请重试');}
+    finally{setIgnoringQuestions(false);}
+  }
   async function cancelRetry(){const response=await fetch(`/api/sessions/${encodeURIComponent(session.id)}/conversation/retry/cancel`,{method:'POST'});if(!response.ok)throw new Error('停止重试失败，请重试');}
-  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} answers={questionAnswers(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1))} continued={messages.slice(messages.findIndex(item=>item.id===message.id)+1).some(item=>item.role==='user'&&!automaticConversationContext(item.text))} onAnswer={()=>setMinimizedQuestion(null)}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} autoRetry={Object.values(autoRetries).find(retry=>retry.failed_turn_ids.includes(message.turn_id||''))} onCancelRetry={canSend?cancelRetry:undefined} compact={compact} durationLabel={timings.get(message.id)?.label} durationTitle={timings.get(message.id)?.title} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
+  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} answers={questionAnswers(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1))} onAnswer={()=>{setSelectedQuestion(message.id);setMinimizedQuestion(null);}}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} autoRetry={Object.values(autoRetries).find(retry=>retry.failed_turn_ids.includes(message.turn_id||''))} onCancelRetry={canSend?cancelRetry:undefined} compact={compact} durationLabel={timings.get(message.id)?.label} durationTitle={timings.get(message.id)?.title} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
   return <ConversationImagePreviewRoot active={active} onOpen={navigate}><section ref={readingRoot} className="session-chat" aria-label="会话对话">
-    <ConversationPromptEnhancer sessionId={session.id} active={active} canEdit={canSend&&!ended&&!waiting} value={draft} onApply={setDraft}/>
+    <ConversationPromptEnhancer sessionId={session.id} active={active} canEdit={canSend&&!ended&&!waiting} value={draft} onApply={changeDraft}/>
     <div className="session-chat-reading">
     <div ref={list} className="session-chat-scroll" onScroll={()=>{if(list.current) pinned.current=list.current.scrollHeight-list.current.scrollTop-list.current.clientHeight<80;}}>
       <div className="session-chat-feed">
@@ -340,20 +383,23 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     {waiting && !requests.length && <div className="session-chat-action" role="status"><strong>{interaction?.isPermission?'Agent 需要授权':'Agent 需要你确认或选择'}</strong>
       {interaction?.choices?.length ? <p>{interaction.choices.join(' / ')}</p>:null}<button onClick={onRaw}>切到原始终端处理</button></div>}
     <footer className="session-chat-composer">
-      <div className="session-chat-status" role="status"><span className={`session-chat-connection ${liveState}`} aria-hidden="true"/>
+      <div className="session-chat-status" role="status"><span className={`session-chat-connection ${liveState}`} data-attention={!!pendingQuestion||waiting} aria-hidden="true"/>
         {compaction.state?<ConversationCompactionStatus state={compaction.state} now={now}/>:<ConversationActivityLine key={`${session.id}:${liveState}:${liveProgress.turn_id||''}`} activities={liveState==='connected'&&!reconnectable?liveProgress.activities||[]:[]} busy={busy&&!reconnectable&&!ended&&!waiting&&!activeError} now={now} totalElapsed={elapsedBetween(started,now)}
-          fallback={reconnecting?'正在恢复会话连接…':reconnectable?'会话连接已断开':activeError?activeError.error?.will_retry?busy?'执行遇到错误，正在自动重试…':'重试已结束':'本轮执行失败，可处理后重试':ended?'会话已结束':waiting?'等待你处理':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}/>}
+          fallback={reconnecting?'正在恢复会话连接…':reconnectable?'会话连接已断开':activeError?activeError.error?.will_retry?busy?'执行遇到错误，正在自动重试…':'重试已结束':'本轮执行失败，可处理后重试':ended?'会话已结束':waiting?'等待你处理':pendingQuestion&&!busy?'有问题待回答 · 本轮已结束':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}/>}
         {liveState==='connected' && <span className="session-chat-live-label">事件通道已连接</span>}
         {ended && onResume && <button onClick={onResume} disabled={resuming}>{resuming?'正在恢复…':resumeFailed?'重试恢复会话':'恢复会话'}</button>}{ended && onClose && <button onClick={onClose}>关闭会话</button>}
         {reconnectable&&canSend&&<button type="button" disabled={reconnecting} onClick={()=>void reconnect()}>{reconnecting?'正在重新连接…':'重新连接'}</button>}
       </div>
+      {pendingQuestion&&!waiting&&<div className="session-chat-pending-attention"><span role="status">有 {pendingQuestions.reduce((sum,message)=>sum+(message.async_questions?.length||0),0)} 个问题待回答 · {busy?'Agent 仍在执行，可稍后回答':'本轮已结束，可稍后回答'}</span>{canSend&&<button type="button" disabled={ignoringQuestions} title="删除当前会话已有的全部待回答问题，以后不再提醒" onClick={()=>void ignoreQuestions(pendingQuestions.flatMap(message=>message.async_questions?.flatMap(q=>q.id?[q.id]:[])||[]))}>{ignoringQuestions?'正在忽略…':'全部忽略'}</button>}</div>}
+      {ignoreError&&<p role="alert">{ignoreError}</p>}
       {sendError && <p role="alert" className="session-chat-error">{sendError}</p>}
+      {failedDrafts.map(saved=><div key={saved.clientId} className="session-chat-error"><p>未发送内容已保留：{saved.text.slice(0,120)}{saved.attachments.length>0&&`（${saved.attachments.length} 个附件）`}</p><button type="button" disabled={sending||!!draft||attachments.items.length>0} title="请先发送或清空当前草稿，再恢复未发送内容" onClick={()=>restoreFailedDraft(saved)}>恢复未发送内容</button><button type="button" onClick={()=>{attachments.release(saved.attachments);setFailedDrafts(previous=>previous.filter(item=>item.clientId!==saved.clientId));}}>丢弃</button></div>)}
       {reconnectError && <p role="alert" className="session-chat-error">{reconnectError}</p>}
       {pendingQuestion&&<div className="session-chat-question-seat">{questionActive?<ConversationAsyncQuestion key={pendingQuestion.id} message={pendingQuestion} agentName={agentName} storageKey={`agentmanager-question:${userId}:${session.id}:${pendingQuestion.id}`} connected={active&&!!page?.session_active&&!ended} canAnswer={canSend} onReply={send} onRaw={onRaw} onMinimize={()=>setMinimizedQuestion(pendingQuestion.id)}/>:<button type="button" className="session-chat-question-reminder" onClick={()=>setMinimizedQuestion(null)}>待回答 · {pendingQuestion.async_questions?.[0].title}<span>回答问题</span></button>}</div>}
       <form hidden={questionActive} onSubmit={event=>{event.preventDefault();void send();}}
         onDragOver={event=>{if(Array.from(event.dataTransfer.types).includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=canSend&&!ended&&!sending?'copy':'none';}}}
         onDrop={event=>{if(!event.dataTransfer.files.length)return;event.preventDefault();event.stopPropagation();if(canSend&&!ended&&!sending)attachments.enqueue(Array.from(event.dataTransfer.files));}}>
-        <ConversationComposerEditor snapshotRef={attachmentPositions} value={draft} items={attachments.items} disabled={!canSend||ended||waiting} placeholder={waiting?'请先处理上方交互':'输入消息，Enter 发送，Shift+Enter 换行'} projectId={session.project_id} projectPath={projectPath} onChange={setDraft} onRemove={attachments.remove} onFiles={attachments.enqueue} onSubmit={()=>void send()}/>
+        <ConversationComposerEditor snapshotRef={attachmentPositions} value={draft} items={attachments.items} disabled={!canSend||ended||waiting} placeholder={waiting?'请先处理上方交互':'输入消息，Enter 发送，Shift+Enter 换行'} projectId={session.project_id} projectPath={projectPath} onChange={changeDraft} onRemove={attachments.remove} onFiles={attachments.enqueue} onSubmit={()=>void send()}/>
         {attachments.error&&<p role="alert" className="session-chat-error">{attachments.error}</p>}
 
         <div className="session-chat-input-tools"><ConversationAttachmentPicker disabled={!canSend||ended||sending} onFiles={attachments.enqueue}/><span>Enter 发送 · Shift+Enter 换行</span><div className="session-chat-send-actions"><button type="button" className="session-chat-enhance" aria-label="优化当前输入" title="增强提示词" disabled={!canSend||ended||waiting||sending||!draft.trim()} onClick={()=>window.dispatchEvent(new CustomEvent('agentmanager:enhance-native-prompt',{detail:{sessionId:session.id}}))}><Sparkles size={17}/></button><button type="submit" aria-label="发送消息" disabled={sending||attachments.uploading||attachments.failed||!canSend||(!draft.trim()&&!attachments.items.length)||!page?.session_active||ended||waiting}>{sending?<Loader2 size={17} className="animate-spin"/>:<ArrowUp size={18}/>}</button></div></div>

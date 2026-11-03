@@ -36,6 +36,9 @@ test('sending, early native echoes, late history and reload preserve causal mess
     await chat.getByRole('textbox').fill('继续');await chat.getByRole('button',{name:'发送消息',exact:true}).click();
     expected.push('继续');await expectBodies(expected);
     await expect.poll(()=>submitted?.client_id).toMatch(/^[a-f0-9]{32}$/);
+    // The request is still deliberately blocked: clearing must not wait for
+    // HTTP acknowledgement or a native user-message echo.
+    await expect(chat.getByRole('textbox')).toHaveText('',{timeout:1000});
     if(round===2) {
       release();await expect(chat.getByRole('textbox')).toHaveText('');
       await expect(chat.getByText('追问已提交，Codex 正在继续执行',{exact:true})).toBeVisible();

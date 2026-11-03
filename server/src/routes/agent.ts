@@ -16,6 +16,7 @@ import { sessionPresenter } from '../services/session-labels.js';
 import {randomUUID} from 'crypto';
 import {readConversation} from '../services/conversation-reader.js';
 import {readCodexRuntime} from '../services/codex-runtime.js';
+import {personalQuestionRuntime} from '../services/question-attention.js';
 import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,validateConversationAttachments} from '../services/conversation-attachments.js';
 import {observeConversationFile} from '../services/conversation-file-stream.js';
 import {ConversationRetryManager} from '../services/conversation-retry.js';
@@ -706,6 +707,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     let lastUsageFingerprint:string|undefined;
     const send=(frame:any)=>{
       if(!canAccessAgentSession(req.user!.id,id)) {socket.close(1008);return;}
+      // File observers share native state; reminder preferences belong to the
+      // connected user and must be projected on every replay/reconnect too.
+      if(frame.type==='history'&&frame.runtime)frame={...frame,runtime:personalQuestionRuntime(frame.runtime,req.user!.id)};
       if(frame.type==='usage') {
         const fingerprint=JSON.stringify([frame.native_id,frame.usage]);
         if(fingerprint===lastUsageFingerprint)return;
@@ -746,7 +750,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const page=await readConversation({cli_type:session.cli_type==='codex'?'codex':'claude',codex_session_id:session.codex_session_id,claude_session_id:session.claude_session_id,project_path:project?.path||null},
       {after:req.query.after,before:req.query.before,limit:Number(req.query.limit)||40});
     const state=getTracker(id)?.state;
-    const runtime=session.cli_type==='codex' ? await readCodexRuntime(session.codex_session_id) : null;
+    const runtime=session.cli_type==='codex' ? personalQuestionRuntime(await readCodexRuntime(session.codex_session_id),req.user!.id) : null;
     return reply.header('Cache-Control','private, no-store').send({...page,messages:decorateConversationAttachments(id,page.messages),session_id:id,session_status:session.status,session_active:isSessionActive(id),
       native_id:session.cli_type==='codex'?session.codex_session_id:session.claude_session_id,runtime,
       interaction:state ? {processState:state.processState,promptType:state.promptType,isPermission:state.isPermission,choices:state.choices} : null});

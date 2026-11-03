@@ -16,6 +16,7 @@ import { runtimeNames } from './services/runtime-namespace.js';
 import { userHasPermission } from './services/rbac.js';
 import { SESSION_CLIENTS, parseSessionClients } from './services/session-clients.js';
 import {requestLoginMetadata,type LoginMetadata} from './services/login-metadata.js';
+import { privateResourcePath } from './services/shared-resources/path-guard.js';
 
 export interface User {
   id: string;
@@ -446,6 +447,7 @@ export function userOwnsProjectPath(userId: string, path: string | null | undefi
  */
 export function userOwnsFilesystemPath(userId: string, path: string | null | undefined): boolean {
   if (!path) return false;
+  if (privateResourcePath(path)) return false;
   if (isAdmin(userId)) return true;
 
   let target: string;

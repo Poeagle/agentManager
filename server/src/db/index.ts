@@ -121,6 +121,17 @@ function createCurrentSchema(): void {
       value TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS user_shared_resources (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      directory TEXT NOT NULL,
+      scope_path TEXT NOT NULL,
+      env_file TEXT NOT NULL DEFAULT '',
+      instructions TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      revision INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS auth_sessions (
       token TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id),
@@ -373,6 +384,8 @@ function runMigrations(): void {
     addColumn('auth_sessions', 'user_agent', 'TEXT');
     addColumn('auth_sessions', 'session_kind', "TEXT NOT NULL DEFAULT 'browser'");
     addColumn('auth_sessions', 'last_heartbeat_at', 'TEXT');
+    addColumn('user_shared_resources', 'env_file', "TEXT NOT NULL DEFAULT ''");
+    addColumn('user_shared_resources', 'instructions', "TEXT NOT NULL DEFAULT ''");
     if (current < 11) migrateWorkspacePermissions();
     if (current < 1) migrateLegacySchema();
     if (current < 2) migrateTerminalDimensionsAndOutputKeys();

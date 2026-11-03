@@ -13,7 +13,7 @@ for(const format of ['item_completed','agent_message'] as const) test(`Codex asy
   // call, including its completed-tool semantics and string-array options.
   const questions=[{title:'免费旅行，你最想去哪里？',options:['太空','深海','森林']}];
   const item={type:'AgentMessage',id:'call-question',phase:'final_answer',delivery:'async',questions,content:[{type:'Text',text:'免费旅行，你最想去哪里？\n- 太空\n- 深海\n- 森林'}]};
-  writeFileSync(log,record('event_msg',{type:'user_message',message:'随机出个问题'})+(format==='item_completed'?record('event_msg',{type:'item_completed',thread_id:native,turn_id:'question-turn',item}):record('response_item',{type:'function_call',id:'fc-ignored',name:'request_user_input_async',call_id:item.id,arguments:JSON.stringify({questions}),internal_chat_message_metadata_passthrough:{turn_id:'question-turn'}})+record('event_msg',{type:'agent_message',message:item.content[0].text,phase:'final_answer',delivery:'async',questions}))+record('response_item',{type:'message',role:'assistant',id:'followup',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'question-turn'},content:[{type:'output_text',text:'问题已发出，可以点选。'}]}));
+  writeFileSync(log,record('event_msg',{type:'user_message',message:'随机出个问题'})+(format==='item_completed'?record('event_msg',{type:'item_completed',thread_id:native,turn_id:'question-turn',item}):record('response_item',{type:'function_call',id:'fc-ignored',name:'request_user_input_async',call_id:item.id,arguments:JSON.stringify({questions}),internal_chat_message_metadata_passthrough:{turn_id:'question-turn'}})+record('event_msg',{type:'agent_message',message:item.content[0].text,phase:'final_answer',delivery:'async',questions}))+record('response_item',{type:'message',role:'assistant',id:'followup',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'question-turn'},content:[{type:'output_text',text:'问题已发出，可以点选。'}]})+record('event_msg',{type:'task_complete',turn_id:'question-turn'}));
   const server=createServer(),wss=new WebSocketServer({server}),inputs:any[]=[];
   wss.on('connection',(socket:any)=>socket.on('message',(bytes:any)=>{
     const frame=JSON.parse(bytes.toString());if(!frame.method)return;
@@ -38,12 +38,30 @@ for(const format of ['item_completed','agent_message'] as const) test(`Codex asy
     await page.goto('/');
     const card=page.getByRole('region',{name:'Codex 向你提问'}).filter({visible:true}),submit=card.getByRole('button',{name:'提交回答',exact:true});
     await expect(card).toContainText('免费旅行，你最想去哪里？');await expect(card.getByRole('radio')).toHaveCount(4);
+    const attention=page.locator('.session-chat-pending-attention');
+    await expect(attention).toContainText('有 1 个问题待回答');
+    await expect(page.locator('[title="有 1 个问题待回答 · 本轮已结束"]').first()).toBeVisible();
+    await page.getByRole('button',{name:'全部忽略',exact:true}).click();
+    await expect(card).toHaveCount(0);await expect(attention).toHaveCount(0);expect(inputs).toHaveLength(0);
+    await page.getByRole('button',{name:'原始终端',exact:true}).first().click();
+    await page.getByRole('button',{name:'对话',exact:true}).click();
+    // Reconnecting replays history from the native file observer. Its runtime
+    // must carry the same personal ignore state as the HTTP conversation page.
+    await expect(page.getByText('事件通道已连接',{exact:true}).filter({visible:true})).toBeVisible();
+    await expect(card).toHaveCount(0);await expect(attention).toHaveCount(0);
+    await page.reload();
+    await expect(page.locator('.session-chat-question-summary')).toHaveCount(0);await expect(card).toHaveCount(0);
+    // Reset only this fixture through the API to cover the answer flow below.
+    const ids=[JSON.stringify(['request_user_input_async','call-question',0])];
+    expect((await page.request.post(`/api/sessions/${session.id}/questions/ignore`,{data:{question_ids:ids,ignored:false}})).ok()).toBeTruthy();
+    await page.reload();await expect(card).toBeVisible();await expect(attention).toContainText('有 1 个问题待回答');
+
     await page.getByRole('button',{name:'原始终端',exact:true}).first().click();await expect(page.locator('.xterm').filter({visible:true})).toBeVisible();
     await expect.poll(async()=>{const result=await page.request.get(`/api/sessions/${session.id}/conversation`);return (await result.json()).session_active;}).toBe(true);
     await page.getByRole('button',{name:'对话',exact:true}).click();
     await card.getByRole('radio',{name:/太空/}).check();await expect(submit).toBeEnabled();
     await page.reload();await expect(card.getByRole('radio',{name:/太空/})).toBeChecked();
-    await card.getByRole('button',{name:'稍后回答'}).click();
+    await card.getByRole('button',{name:'稍后回答'}).click();await expect(attention).toContainText('有 1 个问题待回答');
     const draft=page.getByRole('textbox',{name:'发送给当前 Agent 的消息'}).filter({visible:true});await draft.fill('保留这份未发送草稿');await page.getByRole('button',{name:/^待回答/}).click();
     await card.scrollIntoViewIfNeeded();await expect(card.getByText('免费旅行，你最想去哪里？',{exact:false}).first()).toBeInViewport();
     await page.screenshot({path:testInfo.outputPath('actual-async-question.png')});

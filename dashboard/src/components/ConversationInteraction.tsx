@@ -78,13 +78,13 @@ export function ConversationAsyncQuestion({message,agentName,storageKey,connecte
     }}/>;
 }
 
-export function ConversationQuestionSummary({message,answers,continued,onAnswer}:{message:ConversationMessage;answers:string[]|null;continued:boolean;onAnswer:()=>void}) {
+export function ConversationQuestionSummary({message,answers,onAnswer}:{message:ConversationMessage;answers:string[]|null;continued?:boolean;onAnswer:()=>void}) {
   const questions=message.async_questions||[],settled=answers!==null;
   return <article className="session-chat-question-summary" data-chat-message-id={message.id}>
     <details key={settled?'answered':'pending'}>
-      <summary><MessageCircleQuestion size={14}/><span className="conversation-question-state">{settled?'已回答':continued?'已继续对话':'待回答'}</span><strong>{questions[0]?.title}</strong>{answers&&<span className="conversation-question-answer-preview">{answers.join('；')}</span>}<span className="conversation-question-expand">查看详情</span></summary>
+      <summary><MessageCircleQuestion size={14}/><span className="conversation-question-state">{answers?'已回答':'待回答'}</span><strong>{questions[0]?.title}</strong>{answers&&<span className="conversation-question-answer-preview">{answers.join('；')}</span>}<span className="conversation-question-expand">查看详情</span></summary>
       <dl>{questions.map((q,index)=><div key={q.id||index}><dt>{q.title}</dt><dd>{answers?.[index]||'暂无回答'}</dd></div>)}</dl>
-      {!settled&&!continued&&<button type="button" onClick={onAnswer}>回答问题</button>}
+      {!settled&&<button type="button" onClick={onAnswer}>回答问题</button>}
     </details>
     {message.timestamp&&<div className="session-chat-message-meta"><time dateTime={message.timestamp}>{formatConversationTimestamp(message.timestamp)}</time></div>}
   </article>;

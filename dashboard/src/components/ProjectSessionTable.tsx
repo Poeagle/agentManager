@@ -8,7 +8,7 @@ import { tableTime, useTableModel } from './table/use-table-model';
 const states: Record<string, string> = { pending: '等待启动', launching: '启动中', running: '运行中', detached: '已分离', released: '外部运行', completed: '已完成', failed: '失败', cancelled: '已关闭' };
 const activeStatuses = new Set(['running', 'pending', 'launching', 'detached', 'released']);
 function state(session: Session) {
-  if(session.cli_type==='codex') return ({running:'Codex 运行中',idle:'本轮已结束',waiting_for_input:'等待输入',interrupted:'本轮已中断',failed:'执行失败',unknown:'原生状态未知'})[session.agent_runtime?.state || 'unknown'];
+  if(session.cli_type==='codex') return ({ready:'新会话就绪，等待输入',running:'Codex 运行中',idle:'本轮已结束',waiting_for_input:'等待输入',interrupted:'本轮已中断',failed:'执行失败',unknown:'原生状态未知'})[session.agent_runtime?.state || 'unknown'];
   return session.status === 'running' && session.processState
   ? ({ busy: '处理中', idle: '空闲', waiting_for_input: '等待输入' })[session.processState] : states[session.status] ?? session.status; }
 function client(session: Session) { return session.mode === 'terminal' || session.task === 'Terminal' ? 'Terminal' : session.cli_type === 'codex' ? 'Codex' : 'Claude'; }

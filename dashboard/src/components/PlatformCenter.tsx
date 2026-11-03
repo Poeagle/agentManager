@@ -11,9 +11,11 @@ const PlatformAi = lazy(() => import('./PlatformAiPanel').then((module) => ({ de
 const SettingsPanel = lazy(() => import('./SettingsModal').then((module) => ({ default: module.SettingsModal })));
 const AgentGuide = lazy(() => import('./AgentGuide').then((module) => ({ default: module.AgentGuideModal })));
 const Monitor = lazy(() => import('./AdminMonitorPage').then((module) => ({ default: module.AdminMonitorPage })));
+const SharedResources = lazy(() => import('./SharedResourcesPanel').then(module => ({ default: module.SharedResourcesPanel })));
 
 const sections = [
   { id: 'account', label: '我的账户', group: '个人', icon: KeyRound, permission: null },
+  { id: 'resources', label: '共享资源', group: '个人', icon: FolderKey, permission: null },
   { id: 'users', label: '用户管理', group: '权限中心', icon: Users, permission: 'users' },
   { id: 'roles', label: '角色与权限', group: '权限中心', icon: ShieldCheck, permission: 'roles' },
   { id: 'projects', label: '项目授权', group: '权限中心', icon: FolderKey, permission: 'project_access' },
@@ -68,6 +70,7 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
               <div className="min-h-0 flex-1 overflow-hidden">
                 <Suspense fallback={<div className="p-6 text-sm">正在加载…</div>}>
                   {current.id === 'account' && <div className="page-content py-4 sm:py-6"><p className="mb-5 text-sm">{currentUser.display_name || currentUser.username} <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>@{currentUser.username}</span></p><div className="mb-6 flex flex-wrap gap-2">{query.data?.roles.map((role) => <span key={role.id} className="rounded border px-2 py-1 text-xs" style={{ borderColor: 'var(--border)' }}>{role.name}</span>)}</div><ChangePassword /></div>}
+                  {current.id === 'resources' && <SharedResources userId={currentUser.id} />}
                   {current.id === 'users' && query.data && <UserManagementPanel currentUser={currentUser} permissions={query.data} />}
                   {current.id === 'roles' && query.data && <RoleManagementPanel permissions={query.data} />}
                   {current.id === 'projects' && <div className="page-content h-full overflow-auto py-4 sm:py-6"><ProjectAccessAdmin readOnly={!hasPermission(query.data, 'project_access', 'write')} /></div>}

@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import {nativeInteraction,nativeInteractionAnswer,conversationAsyncQuestions,conversationQuestionReply,type ConversationInteraction} from './conversation-interactions.js';
 import {homedir} from 'os';
 import {join} from 'path';
-import {randomUUID} from 'crypto';
+import {randomUUID,createHash} from 'crypto';
 import {conversationImagePaths,nativeConversationInput,type ConversationAttachment} from './conversation-attachments.js';
 import {extractAgentMessages} from './prompt-context.js';
 import {conversationMessageId,type ConversationMessage} from './conversation-reader.js';
@@ -49,14 +49,30 @@ export async function withCodexConnection<T>(action:(request:CodexRequest,server
 
 /** Submit the initial turn once. The terminal attaches to this exact thread
  * without resubmitting input. An empty thread has no resumable rollout yet. */
-export async function createStreamingCodexThread(cwd:string,task:string):Promise<string> {
+export async function createStreamingCodexThread(cwd:string,task:string,sharedInstructions?:string):Promise<string> {
   return withCodexConnection(async request=>{
-    const result=await request('thread/start',{cwd,approvalPolicy:'never',sandbox:'danger-full-access'});
+    const result=await request('thread/start',{cwd,approvalPolicy:'never',sandbox:'danger-full-access',...(sharedInstructions?{developerInstructions:sharedInstructions}:{})});
     const id=result.thread?.id;
     if(typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Codex 未返回原生会话标识');
     await request('turn/start',{threadId:id,input:[{type:'text',text:task,text_elements:[]}]});
     return id;
   });
+}
+
+/** Refresh discovery configuration on an explicit reload, without a model turn. */
+const sharedContextFingerprints = new Map<string, string>();
+export async function configureStreamingSharedResources(threadId: string, instructions: string): Promise<void> {
+  const key = `${process.env.AGENTMANAGER_CODEX_STREAM_SOCKET}:${threadId}`;
+  const fingerprint = createHash('sha256').update(instructions).digest('hex');
+  if (sharedContextFingerprints.get(key) === fingerprint) return;
+  await withCodexConnection(async request => {
+    await request('thread/resume', { threadId, excludeTurns: true });
+    // A loaded thread can ignore configuration overrides on resume. Append
+    // developer context explicitly; it is durable and never a user message.
+    await request('thread/inject_items', { threadId, items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text: instructions }] }] });
+  });
+  sharedContextFingerprints.set(key, fingerprint);
+  if (sharedContextFingerprints.size > 1000) sharedContextFingerprints.delete(sharedContextFingerprints.keys().next().value!);
 }
 
 /** Closing a terminal client leaves its remote engine alive; explicit session

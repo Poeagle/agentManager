@@ -5,6 +5,7 @@ import { join, resolve, extname, dirname, basename, relative, isAbsolute, sep } 
 import { execFile } from 'child_process';
 import { userOwnsFilesystemPath, userOwnsProject } from '../auth.js';
 import { getDb } from '../db/index.js';
+import { privateResourcePath } from '../services/shared-resources/path-guard.js';
 import { createDirectoryExport } from '../services/file-export-process.js';
 import { DocumentPreviewError, previewOfficeDocument, OFFICE_EXTENSIONS, SPREADSHEET_EXTENSIONS } from '../services/document-preview.js';
 
@@ -73,6 +74,12 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
     const body = (req.body || {}) as Record<string, unknown>;
     const paths = [query.path, body.path, body.pathA, body.pathB, body.src, body.destDir]
       .filter((value): value is string => typeof value === 'string' && value.length > 0);
+    if (typeof query.path === 'string' && typeof query.filename === 'string') paths.push(join(query.path, query.filename));
+    if (typeof body.path === 'string' && typeof body.newName === 'string') paths.push(join(dirname(resolve(body.path)), body.newName));
+    const recursiveOperation = /\/files\/(?:export|copy|move|delete|rename)$/.test(req.routeOptions.url || '');
+    if (paths.some(path => privateResourcePath(path, recursiveOperation))) {
+      return reply.code(403).send({ error: '个人共享资源须通过当前账号的共享资源页面管理' });
+    }
     // Project explorers carry their project id; the server, not the browser,
     // determines the root. Even administrators cannot escape this view's root.
     // Unscoped clients (e.g. the existing global skills viewer) keep their own access rules.
@@ -191,6 +198,7 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 
         try {
           const fullPath = join(resolved, entry.name);
+          if (privateResourcePath(fullPath)) continue;
           const scope = projectScopes.get(req);
           if (scope && !(await withinProjectScope(fullPath, scope))) continue;
           const stats = await stat(fullPath);

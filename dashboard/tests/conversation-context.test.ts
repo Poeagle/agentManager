@@ -10,6 +10,14 @@ describe('native automatic context',()=>{
  it('does not fold normal questions, quoted examples or a user request after context',()=>{
   for(const text of ['请修改 AGENTS.md',`例子：\n${rules}`,rules+'\n\n请修复这个问题','# Context from my IDE setup:\n\n## My request for Codex:\n修复问题'])expect(automaticConversationContext(text)).toBeNull();
  });
+ it('shows resource injection like project rules without treating it as a question or resetting timing',()=>{
+  const text='<octoally_shared_resources>\n凭据文件：/work/.env\n通过本地程序读取凭据。\n</octoally_shared_resources>';
+  expect(automaticConversationContext(text)).toEqual({kind:'shared_resources',label:'共享资源',source:'.env · /work/.env'});
+  const messages=[{id:'u',role:'user' as const,text:'原问题',timestamp:'2026-01-01T00:00:00Z'},{id:'context',role:'user' as const,text,timestamp:'2026-01-01T00:01:00Z'},{id:'a',role:'assistant' as const,phase:'final' as const,text:'结果',timestamp:'2026-01-01T00:02:00Z'}];
+  expect(conversationTimings(messages,0,false).get('a')?.label).toBe('本轮耗时 2分0秒');
+  expect(conversationOutline(messages)).toHaveLength(1);
+  expect(automaticConversationContext(`示例：${text}`)).toBeNull();
+ });
  it('does not treat automatic rules as the latest user question or reset elapsed time',()=>{
   const messages=[{id:'u',role:'user' as const,text:'我的问题',timestamp:'2026-01-01T00:00:00Z'},{id:'auto',role:'user' as const,text:rules,timestamp:'2026-01-01T00:01:00Z'},{id:'a',role:'assistant' as const,phase:'final' as const,text:'结果',timestamp:'2026-01-01T00:02:00Z'}];
   expect(conversationTimings(messages,0,false).get('a')?.label).toBe('本轮耗时 2分0秒');expect(conversationOutline(messages)).toHaveLength(1);expect(conversationOutline(messages)[0].question).toBe('我的问题');

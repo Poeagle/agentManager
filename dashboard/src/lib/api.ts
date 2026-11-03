@@ -58,6 +58,12 @@ export interface PlatformRole { id: string; name: string; description: string; b
 export interface MyPermissions { permissions: PermissionGrants; roles: Array<{ id: string; name: string }>; catalog: PermissionDefinition[]; }
 export interface AuthStatus { needsSetup: boolean; authenticated: boolean; user: AuthUser | null; }
 export interface AuthCredentials { username: string; password: string; display_name?: string; }
+export interface SharedResourcesInput {
+  directory: string; scope_path: string; env_file: string; instructions: string;
+  enabled: boolean; revision: number;
+}
+export interface SharedResources extends SharedResourcesInput { env_exists: boolean; }
+export interface SharedEnvFile { path: string; content: string; hash: string | null; exists: boolean; revision: number; }
 export type PromptEnhancerMode = 'base' | 'lite' | 'standard' | 'expert' | 'publish';
 export interface PromptEnhancerConfig {
   source?:AiSource;
@@ -114,6 +120,14 @@ export interface AgentApiContract {
 
 // Sessions
 export const api = {
+  sharedResources: {
+    get: () => fetchJSON<{ resources: SharedResources }>('/me/shared-resources'),
+    openEnv: () => fetchJSON<SharedEnvFile>('/me/shared-resources/env/open', { method: 'POST' }),
+    saveEnv: (data: { content: string; expected_hash: string | null; revision: number }) => fetchJSON<{path: string; hash: string; exists: boolean}>('/me/shared-resources/env', { method: 'PUT', body: JSON.stringify(data) }),
+    save: (data: SharedResourcesInput) => fetchJSON<{ resources: SharedResources }>('/me/shared-resources', { method: 'PUT', body: JSON.stringify(data) }),
+    preview: (scope_path: string) => fetchJSON<{ projects: Array<{ id: string; name: string; path: string }> }>('/me/shared-resources/preview', { method: 'POST', body: JSON.stringify({ scope_path }) }),
+    delete: () => fetchJSON<{ ok: boolean }>('/me/shared-resources', { method: 'DELETE' }),
+  },
   auth: {
     status: () => fetchJSON<AuthStatus>('/auth/status'),
     setup: (data: AuthCredentials) => fetchJSON<{ user: AuthUser }>('/auth/setup', { method: 'POST', body: JSON.stringify(data) }),
@@ -166,6 +180,7 @@ export const api = {
       return fetchJSON<{ sessions: Session[] }>(`/sessions${suffix}`);
     },
     get: (id: string) => fetchJSON<{ session: Session }>(`/sessions/${id}`),
+    ignoreQuestions:(id:string,questionIds:string[],ignored=true)=>fetchJSON<{ok:boolean;ignored_question_ids:string[]}>(`/sessions/${encodeURIComponent(id)}/questions/ignore`,{method:'POST',body:JSON.stringify({question_ids:questionIds,ignored})}),
     create: (data: { project_path: string; task?: string; mode?: 'session' | 'terminal'; project_id?: string; cli_type?: 'claude' | 'codex' }) =>
       fetchJSON<{ ok: boolean; session: Session }>('/sessions', {
         method: 'POST',
@@ -595,8 +610,11 @@ export interface Session {
   codex_session_id?: string | null;
   agent_runtime?: {
     source: 'codex_rollout'; session_id: string | null;
-    state: 'running' | 'idle' | 'waiting_for_input' | 'interrupted' | 'failed' | 'unknown';
+    state: 'ready' | 'running' | 'idle' | 'waiting_for_input' | 'interrupted' | 'failed' | 'unknown';
     last_activity_at: string | null; observed_at: string; reason: string;
+    pending_question_count?: number;
+    ignored_question_ids?:string[];
+    pending_questions?: Array<{id:string;questions:NonNullable<ConversationMessage['async_questions']>;timestamp:string|null;turn_id?:string}>;
   };
   // Live process-state (present when the session has an active in-memory tracker).
   processState?: 'busy' | 'idle' | 'waiting_for_input';

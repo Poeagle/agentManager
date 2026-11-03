@@ -12,7 +12,7 @@ function TabLabel({ label, activityAt, detail }: { label: string; activityAt: nu
 export function SessionTabLabel({ session, label, detail }: { session: Session | undefined; label: string; detail?: string }) {
   const liveAt = useStreamStore((state) => session ? state.activityAt[session.id] : undefined);
   const native = session?.cli_type === 'codex' ? session.agent_runtime : undefined;
-  const states = {running:'运行中',idle:'本轮已结束，等待输入',waiting_for_input:'等待用户输入',interrupted:'本轮已中断',failed:'执行失败',unknown:'状态未知'};
+  const states = {ready:'新会话就绪，等待输入',running:'运行中',idle:'本轮已结束，等待输入',waiting_for_input:'等待用户输入',interrupted:'本轮已中断',failed:'执行失败',unknown:'状态未知'};
   const description = session?.cli_type === 'codex'
     ? `${detail || 'Codex'}\nCodex 原生状态：${states[native?.state || 'unknown']}\n${native?.reason || '尚无原生活动记录'}` : detail;
   return <TabLabel label={label} detail={description} activityAt={session ? sessionActivityMs(session, liveAt) : null} />;

@@ -63,7 +63,10 @@ export function sessionSignal(status: string | undefined, live: LiveLike): Signa
 export function signalForSession(session: Session, liveStates: Record<string, LiveSessionState>): Signal | null {
   if (session.cli_type === 'codex') {
     const native = session.agent_runtime?.state || 'unknown';
+    const questions = session.agent_runtime?.pending_question_count || 0;
+    if (questions && native !== 'failed') return {color:C.yellow,pulse:false,attention:true,lock:false,title:`有 ${questions} 个问题待回答 · ${native==='running'?'Agent 仍在执行':native==='waiting_for_input'?'等待输入':'本轮已结束'}`};
     const map: Record<string, Signal> = {
+      ready:{color:C.green,pulse:false,attention:false,lock:false,title:'Codex 新会话已就绪 · 等待输入'},
       running:{color:C.blue,pulse:true,attention:false,lock:false,title:'Codex 运行中 · 原生执行记录'},
       idle:{color:C.green,pulse:false,attention:false,lock:false,title:'Codex 本轮已结束 · 等待输入'},
       waiting_for_input:{color:C.yellow,pulse:false,attention:true,lock:false,title:'Codex 等待用户输入'},

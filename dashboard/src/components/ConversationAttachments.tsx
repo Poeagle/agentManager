@@ -6,7 +6,7 @@ import {readFileAsDataUrl} from '../lib/file-data-url';
 import {conversationClientId} from '../lib/conversation-timeline';
 import type {ConversationAttachment} from '../lib/conversation-attachments';
 
-export interface DraftAttachment {id:string;name:string;kind:'image'|'file';size:number;path?:string;thumbnail?:string;status:'uploading'|'ready'|'error';error?:string}
+export interface DraftAttachment {id:string;name:string;kind:'image'|'file';size:number;path?:string;thumbnail?:string;status:'uploading'|'ready'|'error';error?:string;offset?:number}
 export function useConversationAttachments(sessionId:string) {
   const [items,setItems]=useState<DraftAttachment[]>([]),[error,setError]=useState('');
   const current=useRef(items),alive=useRef(true),queue=useRef(Promise.resolve());
@@ -43,7 +43,12 @@ export function useConversationAttachments(sessionId:string) {
       });
     }
   }
-  return {items,error,enqueue,remove,clear:(ids:string[])=>{for(const id of ids)remove(id);},uploading:items.some(item=>item.status==='uploading'),failed:items.some(item=>item.status==='error'),values:()=>current.current.filter(item=>item.status==='ready' && item.path).map(item=>({kind:item.kind,name:item.name,path:item.path!})) as ConversationAttachment[]};
+  // Keep sent previews alive until acknowledgement so a failed send can put
+  // the original attachments back without uploading them again.
+  function take(ids:string[]) {const selected=current.current.filter(item=>ids.includes(item.id));publish(current.current.filter(item=>!ids.includes(item.id)));return selected;}
+  function restore(saved:DraftAttachment[]) {publish([...saved.filter(item=>!current.current.some(value=>value.id===item.id)),...current.current]);}
+  function release(saved:DraftAttachment[]) {for(const item of saved)if(item.thumbnail&&!current.current.some(value=>value.id===item.id)){URL.revokeObjectURL(item.thumbnail);urls.current.delete(item.thumbnail);}}
+  return {items,error,enqueue,remove,take,restore,release,hasDraft:()=>current.current.length>0,clear:(ids:string[])=>{for(const id of ids)remove(id);},uploading:items.some(item=>item.status==='uploading'),failed:items.some(item=>item.status==='error'),values:()=>current.current.filter(item=>item.status==='ready' && item.path).map(item=>({kind:item.kind,name:item.name,path:item.path!})) as ConversationAttachment[]};
 }
 
 export function ConversationAttachmentPicker({disabled,onFiles}:{disabled:boolean;onFiles:(files:File[])=>void}) {

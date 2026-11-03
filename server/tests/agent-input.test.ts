@@ -8,6 +8,8 @@ import {setRoleGrants,setUserRoles} from '../src/services/rbac.js';
 import * as manager from '../src/services/session-manager.js';
 import * as state from '../src/services/session-state.js';
 import * as conversation from '../src/services/conversation-stream.js';
+import * as fileStream from '../src/services/conversation-file-stream.js';
+import {setIgnoredQuestions} from '../src/services/question-attention.js';
 import {createTestDatabase} from './helpers/database.js';
 import {mkdirSync,writeFileSync} from 'fs';
 import {join} from 'path';
@@ -30,6 +32,22 @@ describe('immediate session input',()=>{
     app=Fastify();await app.register(websocket);app.addHook('onRequest',authHook);await app.register(agentRoutes,{prefix:'/api'});await app.ready();
   });
   afterEach(async()=>{tracker.destroy();await app.close();vi.restoreAllMocks();vi.unstubAllEnvs();cleanup();});
+  it('projects personal ignored questions on every history replay after reconnect',async()=>{
+    getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();
+    const owner=getDb().prepare("SELECT id FROM users WHERE username='owner'").get() as {id:string};
+    setIgnoredQuestions(owner.id,'native',['old-question']);
+    vi.spyOn(conversation,'observeCodexConversation').mockReturnValue(Object.assign(vi.fn(),{respond:vi.fn()}));
+    vi.spyOn(fileStream,'observeConversationFile').mockImplementation((_binding,emit)=>{
+      queueMicrotask(()=>emit({type:'history',messages:[],runtime:{source:'codex_rollout',session_id:'native',state:'idle',observed_at:new Date().toISOString(),last_activity_at:null,reason:'native',pending_question_count:1,pending_questions:[{id:'old',timestamp:null,questions:[{id:'old-question',title:'Old question',options:null}]}]}}));
+      return vi.fn();
+    });
+    for(let reconnect=0;reconnect<2;reconnect++){
+      const received:any[]=[];
+      const socket=await app.injectWS('/api/sessions/own/conversation/stream',{headers:{cookie}},{onInit:ws=>ws.on('message',bytes=>received.push(JSON.parse(bytes.toString())))});
+      try{await vi.waitFor(()=>expect(received.find(frame=>frame.type==='history')?.runtime).toMatchObject({pending_question_count:0,pending_questions:[],ignored_question_ids:['old-question']}));}
+      finally{await new Promise<void>(resolve=>{socket.once('close',()=>resolve());socket.close();});}
+    }
+  });
   it('reattaches before sending when the server restarted after the last browser snapshot',async()=>{
     vi.mocked(manager.isSessionActive).mockReturnValue(false);getDb().prepare("UPDATE sessions SET status='detached' WHERE id='own'").run();
     const reconnect=vi.spyOn(manager,'reconnectSession').mockResolvedValue(true);

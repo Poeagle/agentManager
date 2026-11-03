@@ -17,10 +17,11 @@ import { getOrCreateTracker, getTracker, removeTracker, recoverFromBuffer } from
 import { encodeDir } from './claude-history.js';
 import { inaccessibleProjectPaths, isAdmin } from '../auth.js';
 import { tmuxCursorRestoreSequence } from '../lib/terminal-cursor.js';
-import { withAllPermissions,shellSingleQuote } from './cli-command.js';
+import { withAllPermissions,shellSingleQuote, withSharedResourceInstructions } from './cli-command.js';
+import { sharedResourceLaunch } from './shared-resources/store.js';
 import {compactCodexConversation,prepareFreshCodexConversation,releaseCodexConversation} from './conversation-actions.js';
 import {snapshotConversation,activateFreshConversation,restoreConversationSnapshot} from './conversation-history.js';
-import {createStreamingCodexThread,interruptStreamingCodexThread} from './conversation-stream.js';
+import {createStreamingCodexThread,interruptStreamingCodexThread,configureStreamingSharedResources} from './conversation-stream.js';
 import {
   type CodexRolloutCandidate,
   cliTypeFromArgv,
@@ -1998,7 +1999,8 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
   if (activeSessions.has(sessionId)) return;
   const creator = getDb().prepare('SELECT created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as { created_by_user_id: string | null } | undefined;
   const streamSocket=cliType==='codex'?codexStreamSocketForUser(creator?.created_by_user_id):null;
-  const reservedCodexId=streamSocket ? await createStreamingCodexThread(projectPath,task) : undefined;
+  const shared = sharedResourceLaunch(creator?.created_by_user_id, projectPath);
+  const reservedCodexId=streamSocket ? await createStreamingCodexThread(projectPath,task,shared?.instructions) : undefined;
   if(reservedCodexId) getDb().prepare('UPDATE sessions SET codex_session_id=? WHERE id=?').run(reservedCodexId,sessionId);
   const preSpawnFiles = cliType === 'claude' ? snapshotClaudeSessionFiles(projectPath) : undefined;
 
@@ -2031,7 +2033,7 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
     rows,
     useTmux: config.useTmux,
     useDtach: config.useDtach,
-    sessionCommand,
+    sessionCommand: streamSocket ? sessionCommand : withSharedResourceInstructions(sessionCommand, cliType, shared?.instructions),
     cliType,
     assignSessionId,
     codexBindingPath: bindingPath,
@@ -3106,6 +3108,8 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
   const streamSocket=sessionCliType==='codex'?codexStreamSocketForUser(staleSession.created_by_user_id):null;
   const nativeSessionId = nativeConversationId(staleSession);
   if (!nativeSessionId) throw new Error(`No ${sessionCliType} conversation id is stored for ${sessionId}`);
+  const shared = sharedResourceLaunch(staleSession.created_by_user_id, projectPath);
+  if (streamSocket && shared) await configureStreamingSharedResources(nativeSessionId, shared.instructions);
   const task = staleSession.task;
 
   // Per-session circuit breaker: don't resume sessions that keep crashing.
@@ -3159,7 +3163,7 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
     rows: active.rows,
     useTmux: config.useTmux,
     useDtach: config.useDtach,
-    sessionCommand,
+    sessionCommand: streamSocket ? sessionCommand : withSharedResourceInstructions(sessionCommand, sessionCliType, shared?.instructions),
     cliType: sessionCliType,
     resumeSessionId: nativeSessionId,
     codexBindingPath: sessionCliType === 'codex' ? codexBindingPath(sessionId) : undefined,
@@ -3277,7 +3281,7 @@ export function newSessionConversation(sessionId:string):Promise<SessionReloadRe
     const binding=(id:string)=>{const path=codexBindingPath(sessionId),temp=`${path}.new`;fsWriteFileSync(temp,JSON.stringify({session_id:id,source:'new-conversation'}));renameSync(temp,path);};
     try {
       const {prepareCodexReload}=await import('./codex-version.js');await prepareCodexReload(true);
-      fresh=await prepareFreshCodexConversation(session.codex_session_id,project.path);
+      fresh=await prepareFreshCodexConversation(session.codex_session_id,project.path,sharedResourceLaunch(session.created_by_user_id, project.path)?.instructions);
       if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');
       history=snapshotConversation(sessionId);
       const worker=activeSessions.get(sessionId)?.worker;
@@ -3390,7 +3394,7 @@ export async function resumeClaudeSession(projectPath: string, projectId: string
   active.cliType = 'claude';
   getOrCreateTracker(id);
 
-  const claudeCmd = projectCliCommand('session_claude_command', 'claude');
+  const claudeCmd = withSharedResourceInstructions(projectCliCommand('session_claude_command', 'claude'), 'claude', sharedResourceLaunch(createdByUserId, projectPath)?.instructions);
   // Pass the resume uuid via resumeSessionId (NOT baked into sessionCommand): the worker
   // builds `claude --resume <uuid>` with NO positional prompt, so the replayed
   // conversation waits for input instead of auto-submitting `task`.

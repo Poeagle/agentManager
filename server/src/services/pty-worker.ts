@@ -144,6 +144,7 @@ export function buildSandboxCommand(
 ): { program: string; args: string[] } {
   if (!sandboxRequired) return { program, args };
   const properties = inaccessiblePaths.flatMap((path) => ['-p', `InaccessiblePaths=${path}`]);
+
   return {
     program: 'systemd-run',
     args: [

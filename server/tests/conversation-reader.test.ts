@@ -26,6 +26,16 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app.close();vi.unstubAllEnvs();cleanup();});
 describe('public conversation pages',()=>{
+  it('shows only an actual shared-resource developer notice while hiding other developer context and tool lookalikes',async()=>{
+    const notice='<octoally_shared_resources>\n凭据文件：/work/.env\n通过本地程序按需读取凭据。\n</octoally_shared_resources>';
+    const developer=(text:string)=>line('response_item',{type:'message',role:'developer',content:[{type:'input_text',text}]});
+    writeFileSync(file,user('原问题')+developer('private developer instructions')+line('response_item',{type:'function_call_output',output:notice})+developer(notice)+final('答复'));
+    const result=await readConversation(binding);
+    expect(result.messages.map(message=>message.text)).toEqual(['原问题',notice,'答复']);
+    expect(JSON.stringify(result)).not.toContain('private developer instructions');
+    const page=await app.inject({url:'/api/sessions/chat/conversation',headers:{cookie}});
+    expect(page.json().messages.filter((message:{text:string})=>message.text===notice)).toHaveLength(1);
+  });
   it('restores actual async question items as structured messages and keeps one stable identity',async()=>{
     const questions=[{title:'免费旅行，你最想去哪里？',options:['太空','深海','森林']}];
     const item={type:'AgentMessage',id:'call-question',delivery:'async',phase:'final_answer',questions,content:[{type:'Text',text:'免费旅行，你最想去哪里？\n- 太空\n- 深海\n- 森林'}]};
