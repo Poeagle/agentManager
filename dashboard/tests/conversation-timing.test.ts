@@ -29,4 +29,17 @@ describe('conversation elapsed time',()=>{
     expect(elapsedBetween(null,Date.now())).toBeNull();expect(elapsedBetween('invalid',Date.now())).toBeNull();
     expect(elapsedBetween('2026-10-30','2026-10-29')).toBeNull();expect(formatElapsed(3661000)).toBe('1时1分1秒');
   });
+  it('keeps conclusion boundaries across follow-ups, native turns and idle time',()=>{
+    const message=(id:string,role:'user'|'assistant',phase:'commentary'|'final'|undefined,second:number,turn_id='one'):ConversationMessage=>({id,role,phase,turn_id,timestamp:new Date(Date.UTC(2026,10,3,0,0,second)).toISOString(),text:id});
+    const messages=[message('u','user',undefined,0),message('extra','user',undefined,5),message('first','assistant','final',10),message('next','user',undefined,40,'two'),message('progress','assistant','commentary',45,'two'),message('second','assistant','final',50,'two'),message('more','user',undefined,55,'two'),message('third','assistant','final',60,'two')];
+    const timings=conversationTimings(messages,Date.now(),false);
+    expect(timings.get('first')?.label).toBe('本轮耗时 10秒');expect(timings.get('second')?.label).toBe('本轮耗时 40秒');expect(timings.get('third')?.label).toBe('本轮耗时 10秒');
+  });
+  it('uses server boundaries even when the previous conclusion is on an unloaded page',()=>{
+    const statistics={sequence:1,turn_id:'two',tokens:null,requests:1,tool_calls:0,tool_rounds:0,complete:true,conclusion:{tokens:null,requests:1,tool_calls:0,tool_rounds:0,complete:true,shared_messages:1,start_at:'2026-11-03T00:00:00Z',end_at:'2026-11-03T00:02:00Z',elapsed_ms:120000}};
+    const message:ConversationMessage={id:'final',role:'assistant',phase:'final',timestamp:statistics.conclusion.end_at,text:'done',statistics};
+    expect(conversationTimings([message],Date.now(),false).get('final')?.label).toBe('本轮耗时 2分0秒');
+    message.statistics={...statistics,conclusion:{...statistics.conclusion,start_at:null,elapsed_ms:null}};
+    expect(conversationTimings([{id:'u',role:'user',timestamp:'2026-11-03T00:01:00Z',text:'follow-up'},message],Date.now(),false).has('final')).toBe(false);
+  });
 });

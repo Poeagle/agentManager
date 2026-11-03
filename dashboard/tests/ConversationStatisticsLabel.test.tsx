@@ -7,8 +7,8 @@ describe('English message metadata',()=>{
  it('shows progress interval costs',()=>{
   render(<ConversationStatisticsLabel interval statistics={{...base,interval} as typeof base}/>);expect(screen.getByText('step · token: 200 · tools: 2 calls / 1 round')).toBeVisible();expect(screen.getByText(/step/)).toHaveAttribute('title',expect.stringContaining('since the previous progress request'));
  });
- it('keeps final answers labelled as whole-turn totals',()=>{
-  render(<ConversationStatisticsLabel statistics={{...base,interval} as typeof base}/>);expect(screen.getByText('turn · token: 1K · tools: 8 calls / 4 rounds')).toBeVisible();
+ it('uses the conclusion interval instead of the native turn totals',()=>{
+  render(<ConversationStatisticsLabel statistics={{...base,interval,conclusion:{...interval,start_at:null,end_at:null,elapsed_ms:null}}}/>);expect(screen.getByText('summary · token: 200 · tools: 2 calls / 1 round')).toHaveAttribute('title',expect.stringContaining('since the previous conclusion completed'));
  });
  it('does not split a shared model request',()=>{
   render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,shared_messages:2}} as typeof base}/>);const label=screen.getByText('step · token: shared · tools: shared');expect(label).toHaveAttribute('title',expect.stringContaining('2 updates share the same model request'));expect(label).toHaveAttribute('title',expect.stringContaining('200 tokens'));

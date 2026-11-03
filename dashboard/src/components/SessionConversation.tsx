@@ -62,7 +62,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,on
       {message.queued&&<span className="session-chat-queued" role="status">Queued · waiting</span>}
       {message.timestamp && Number.isFinite(Date.parse(message.timestamp))?<time aria-label={compact?'进展完成时间':undefined} dateTime={message.timestamp} title={metadataTimestampTitle(message,compact)}>{formatConversationTimestamp(message.timestamp)}</time>:compact?<span className="session-chat-progress-time-unknown">Time pending</span>:null}
       {message.role==='assistant'&&message.statistics&&<ConversationStatisticsLabel statistics={message.statistics} interval={message.phase==='commentary'}/> }
-      {(durationLabel||compact) && <span className="session-chat-message-duration" title={durationLabel?metadataDurationTitle(message.phase):'Completion timing is unavailable for this interval.'}>{durationLabel?englishMetadataDuration(durationLabel):'Elapsed: —'}</span>}
+      {(durationLabel||compact||message.phase==='final') && <span className="session-chat-message-duration" title={durationLabel?metadataDurationTitle(message.phase):'Completion timing is unavailable for this interval.'}>{durationLabel?englishMetadataDuration(durationLabel):message.phase==='final'?'Total: —':'Elapsed: —'}</span>}
       {compact&&streaming&&<span className="session-chat-progress-updating">Streaming</span>}
       {!compact && <button type="button" onClick={()=>void copy()} aria-label={`复制${message.role==='user'?'你的消息':'Agent 回复'}`} title={copied?'Copied':'Copy message'}>{copied?<Check size={13}/>:<Copy size={13}/>}</button>}
     </span>);

@@ -1,6 +1,6 @@
 import {test,expect} from '@playwright/test';
 import {createRequire} from 'node:module';
-import {mkdirSync,writeFileSync} from 'node:fs';
+import {mkdirSync,writeFileSync,appendFileSync} from 'node:fs';
 import {join} from 'node:path';
 const require=createRequire(import.meta.url),Database=require('../server/node_modules/better-sqlite3');
 test('progress badges and folding keep metadata separate from the message content',async({page},info)=>{
@@ -8,7 +8,7 @@ test('progress badges and folding keep metadata separate from the message conten
  mkdirSync(join(docs,'nested'),{recursive:true});mkdirSync(join(docs,'empty'));mkdirSync(join(docs,'reports.md'));writeFileSync(join(docs,'nested','README.md'),'# 从目录打开的文档\n\n目录树中的文件可以直接预览。');writeFileSync(join(docs,'index.html'),'<!doctype html><html><body><h1>目录内网页</h1></body></html>');
  const logs=join(root,'home/.codex/sessions');mkdirSync(logs,{recursive:true});
  const rec=(type:string,payload:unknown)=>JSON.stringify({timestamp:new Date().toISOString(),type,payload})+'\n';
- const msg=(id:string,text:string,phase='commentary')=>rec('response_item',{type:'message',id,role:'assistant',phase,content:[{type:'output_text',text}],internal_chat_message_metadata_passthrough:{turn_id:'turn'}});
+ const msg=(id:string,text:string,phase='commentary',turn_id='turn')=>rec('response_item',{type:'message',id,role:'assistant',phase,content:[{type:'output_text',text}],internal_chat_message_metadata_passthrough:{turn_id}});
  const usage=(total:number,last:number)=>rec('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{total_tokens:last}}});
  const call=(id:string)=>rec('response_item',{type:'function_call',call_id:id,name:'exec',arguments:'{}'});
  writeFileSync(join(logs,`rollout-${native}.jsonl`),rec('event_msg',{type:'task_started',turn_id:'turn'})+rec('event_msg',{type:'user_message',message:'Check interval usage',turn_id:'turn'})+msg('one','First progress')+call('a')+usage(100,100)+msg('two','Second progress')+call('b')+call('c')+usage(300,200)+msg('final','Finished','final_answer')+usage(600,300)+rec('event_msg',{type:'task_complete',turn_id:'turn',last_agent_message:'Finished'}));
@@ -21,7 +21,7 @@ test('progress badges and folding keep metadata separate from the message conten
   const toggle=chat.getByLabel('展开进展（2 条）');await expect(toggle).toBeVisible();await expect(chat.getByText('First progress',{exact:true})).toBeHidden();await expect(chat.getByText('Finished',{exact:true})).toBeVisible();await toggle.click();
   await expect(chat.getByText('step · token: 100 · tools: 1 call / 1 round',{exact:true})).toBeVisible();
   await expect(chat.getByText('step · token: 200 · tools: 2 calls / 1 round',{exact:true})).toBeVisible();
-  await expect(chat.getByText('turn · token: 600 · tools: 3 calls / 2 rounds',{exact:true})).toBeVisible();
+  await expect(chat.getByText('summary · token: 600 · tools: 3 calls / 2 rounds',{exact:true})).toBeVisible();
   expect(await chat.locator('.session-chat-message-statistics').first().getAttribute('title')).toContain('since the previous progress request');
   await expect(chat.getByRole('region',{name:'Codex 进展'}).locator('.session-chat-kind')).toHaveText('进展');
   await expect(chat.locator('.session-chat-message[data-phase="final"] .session-chat-kind')).toHaveText('结论');
@@ -39,5 +39,16 @@ test('progress badges and folding keep metadata separate from the message conten
   await expect(page.getByRole('button',{name:'对话',exact:true}).first()).toBeVisible();
   await page.screenshot({path:info.outputPath('progress-interval-english.png')});
   await page.setViewportSize({width:390,height:844});await checkRows();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:info.outputPath('progress-cards-mobile.png')});
+  // The new native turn has only 50 tokens. Include the interrupted work from
+  // the preceding turn, but exclude the already completed first conclusion.
+  const log=join(logs,`rollout-${native}.jsonl`);
+  const {readFileSync}=await import('node:fs');const firstFinal=readFileSync(log,'utf8').trim().split('\n').map(line=>JSON.parse(line)).find(row=>row.payload?.id==='final');
+  const secondTime=new Date(Date.parse(firstFinal.timestamp)+60000).toISOString();
+  const secondFinal=JSON.parse(msg('second-final','Second conclusion','final_answer','retry'));secondFinal.timestamp=secondTime;
+  appendFileSync(log,rec('event_msg',{type:'task_started',turn_id:'interrupted'})+call('retry-a')+usage(700,100)+rec('event_msg',{type:'task_complete',turn_id:'interrupted'})+rec('event_msg',{type:'task_started',turn_id:'retry'})+call('retry-b')+JSON.stringify(secondFinal)+'\n'+usage(750,50)+rec('event_msg',{type:'task_complete',turn_id:'retry',last_agent_message:'Second conclusion'}));
+  const second=chat.locator('.session-chat-message[data-phase="final"]').filter({hasText:'Second conclusion'});
+  await expect(second.getByText('summary · token: 150 · tools: 2 calls / 2 rounds',{exact:true})).toBeVisible();
+  await expect(second.getByText('Total: 1m 0s',{exact:true})).toBeVisible();
+  await page.reload();await expect(second.getByText('summary · token: 150 · tools: 2 calls / 2 rounds',{exact:true})).toBeVisible();await expect(second.getByText('Total: 1m 0s',{exact:true})).toBeVisible();
  }finally{await page.request.delete(`/api/sessions/${session.id}`).catch(()=>{});}
 });

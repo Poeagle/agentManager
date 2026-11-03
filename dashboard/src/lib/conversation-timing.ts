@@ -24,15 +24,17 @@ export function conversationTimings(messages: ConversationMessage[], _now: numbe
   messages=messages.filter(message=>message.role!=='user'||!automaticConversationContext(message.text));
   const result=new Map<string,{label:string;title:string}>();
   let userTime:string|null=null,previousCompletion:string|null=null;
+  let conclusionStart:string|null=null;
   let userTurn:string|undefined,previousTurn:string|undefined;
   for(const message of messages) {
-    if(message.role==='user') {userTime=message.timestamp;userTurn=message.turn_id;previousCompletion=null;previousTurn=undefined;continue;}
+    if(message.role==='user') {conclusionStart ||= message.timestamp;userTime=message.timestamp;userTurn=message.turn_id;previousCompletion=null;previousTurn=undefined;continue;}
     if(message.async_questions?.length||message.streaming)continue;
     if(message.phase==='error'){previousCompletion=null;previousTurn=undefined;continue;}
     if(message.phase==='final') {
-      if(userTurn && message.turn_id && userTurn!==message.turn_id)continue;
-      const elapsed=elapsedBetween(userTime,message.timestamp);
-      if(elapsed!==null) result.set(message.id,{label:`本轮耗时 ${formatElapsed(elapsed)}`,title:'最近一条用户消息到本条答复完成的时间差，包含工具执行和等待时间'});
+      const recorded=message.statistics?.conclusion;
+      const elapsed=recorded?recorded.elapsed_ms:elapsedBetween(conclusionStart,message.timestamp);
+      if(elapsed!==null) result.set(message.id,{label:`本轮耗时 ${formatElapsed(elapsed)}`,title:'上一次结论完成到本次结论完成的时间差，含工具执行、重试和等待输入；首次从会话首次任务开始计算'});
+      conclusionStart=message.timestamp;
     } else if(message.phase==='commentary') {
       const samePrevious=previousCompletion&&(!previousTurn||!message.turn_id||previousTurn===message.turn_id);
       const sameUser=!userTurn||!message.turn_id||userTurn===message.turn_id;
