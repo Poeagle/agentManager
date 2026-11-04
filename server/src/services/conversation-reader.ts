@@ -1,13 +1,15 @@
-import {conversationAsyncQuestions,conversationQuestionReply,type ConversationAsyncQuestion,type ConversationQuestionReply} from './conversation-interactions.js';
+import {getAgent,agentContext,agentForSession} from './agents/index.js';
+import {type ConversationAsyncQuestion,type ConversationQuestionReply} from './conversation-interactions.js';
 import {open} from 'fs/promises';
 import {createHash} from 'crypto';
-import {extractAgentMessages,nativeConversationFile,type PromptContextSession} from './prompt-context.js';
+import {nativeConversationFile,type PromptContextSession} from './prompt-context.js';
 import type {CliType} from './session-identity.js';
-import {conversationImagePaths,type ConversationAttachment} from './conversation-attachments.js';
-import {conversationErrorMessage} from './conversation-error.js';
-import {readConversationStatistics,type ConversationStatistics} from './conversation-statistics.js';
+import {type ConversationAttachment} from './conversation-attachments.js';
 
-export interface ConversationMessage {id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;statistics?:ConversationStatistics;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];image_paths?:string[];async_questions?:ConversationAsyncQuestion[];question_replies?:ConversationQuestionReply[]}
+import type {AgentStatistics as ConversationStatistics} from './agents/types.js';
+
+export type ConversationMessage=import('./agents/types.js').AgentMessage;
+
 interface IndexedMessage extends Omit<ConversationMessage,'text'> {offset:number;length:number;hash:string;recordType:string;nativeItem:boolean;questionSignature?:string;questionCallId?:string}
 interface NativeQuestionCall {offset:number;id:string;turnId?:string;signature:string}
 function questionSignature(questions:ConversationAsyncQuestion[]) {return createHash('sha256').update(JSON.stringify(questions.map(q=>({title:q.title,options:q.options})))).digest('hex');}
@@ -15,15 +17,7 @@ interface Index {inode:number;mtime:number;start:number;offset:number;partial:Bu
 const WINDOW=2*1024*1024;
 const MAX_RECORD=512*1024;
 const MAX_INPUT_RECORD=16*1024*1024;
-function inputRecordPrefix(buffer:Buffer,kind:CliType) {
-  const header=buffer.subarray(0,4096).toString('utf8');
-  if(kind==='codex') {
-    const position=header.indexOf('"payload"');const payload=header.slice(position);
-    return position>=0 && /^"payload"\s*:\s*\{\s*"type"\s*:\s*"message"/.test(payload) && /"role"\s*:\s*"([^"]+)"/.exec(payload)?.[1]==='user';
-  }
-  return /"type"\s*:\s*"([^"]+)"/.exec(header)?.[1]==='user' && !/"type"\s*:\s*"tool_result"/.test(header);
-}
-function recordLimit(buffer:Buffer,kind:CliType) {return inputRecordPrefix(buffer,kind)?MAX_INPUT_RECORD:MAX_RECORD;}
+function recordLimit(buffer:Buffer,kind:CliType){return getAgent(kind).history.file!.recordLimit(buffer);}
 async function previousWindow(handle:Awaited<ReturnType<typeof open>>,end:number) {
   let length=Math.min(WINDOW,end);
   while(true) {
@@ -40,42 +34,8 @@ export function conversationMessageId(turnId:string,role:string,itemId?:string) 
   return createHash('sha256').update(`${turnId}:${role}${itemId?`:${itemId}`:''}`).digest('hex').slice(0,32);
 }
 
-function publicMessage(line:Buffer,kind:CliType,questionCallId?:string) {
-  if(line.length>recordLimit(line,kind)) return null;
-  let text=line.toString('utf8');
-  if(line.length>MAX_RECORD)text=text.replace(/"image_url"\s*:\s*"data:[^"]*"/g,'"image_url":""');
-  // Do not parse or retain tool results/reasoning. The extractor also checks
-  // the actual JSON structure so quoted records in tool output cannot leak.
-  const header=text.slice(0,400);
-  const agentItem=/"type"\s*:\s*"item_completed"/.test(header)&&/"type"\s*:\s*"AgentMessage"/.test(header);
-  if(!agentItem && !/"(?:type|role)"\s*:\s*"(?:user|assistant|message|user_message|agent_message|task_complete|error)"/.test(text.slice(0,400))) return null;
-  try {
-    const entry=JSON.parse(text);
-    const turnId=entry.payload?.turn_id || entry.payload?.internal_chat_message_metadata_passthrough?.turn_id;
-    const failure=kind==='codex' && entry.type==='event_msg' && ['task_complete','error'].includes(entry.payload?.type)
-      ? conversationErrorMessage(typeof turnId==='string'?turnId:`event:${entry.timestamp}`,entry.payload.error??(entry.payload.type==='error'?entry.payload:null),entry.payload.will_retry===true || entry.payload.willRetry===true,typeof entry.timestamp==='string'?entry.timestamp:null):null;
-    const asyncItem=kind==='codex' && entry.type==='event_msg' && entry.payload?.type==='item_completed' && entry.payload.item?.type==='AgentMessage'?entry.payload.item
-      :kind==='codex' && entry.type==='response_item' && entry.payload?.type==='message' && entry.payload.role==='assistant'?entry.payload:null;
-    const nativeAsyncItem=asyncItem??(kind==='codex'&&entry.type==='event_msg'&&entry.payload?.type==='agent_message'?entry.payload:null);
-    const asyncQuestions=conversationAsyncQuestions(questionCallId?{...nativeAsyncItem,id:questionCallId}:nativeAsyncItem);
-    const asyncMessage=asyncQuestions?{role:'assistant' as const,phase:'final' as const,text:(typeof nativeAsyncItem.message==='string'?nativeAsyncItem.message:(nativeAsyncItem.content||[]).filter((part:any)=>['Text','output_text'].includes(part.type)&&typeof part.text==='string').map((part:any)=>part.text).join('\n')).slice(0,128*1024)||asyncQuestions.map(q=>q.title).join('\n'),timestamp:typeof entry.timestamp==='string'?entry.timestamp:null}:null;
-    // Show only our explicit, credential-free resource notice. Other developer
-    // instructions remain outside the public transcript. This is presentation
-    // only: no user message is submitted to the native thread.
-    // thread/start can coalesce developerInstructions with permissions and
-    // other private instructions as separate blocks in one native message.
-    // Select only the platform's complete wrapper, never join those blocks.
-    const developerText=kind==='codex'&&entry.type==='response_item'&&entry.payload?.type==='message'&&entry.payload.role==='developer'
-      ? (entry.payload.content||[]).filter((part:any)=>part.type==='input_text'&&typeof part.text==='string').map((part:any)=>part.text.trim()).find((text:string)=>/^<octoally_shared_resources>\n[\s\S]*\n<\/octoally_shared_resources>$/.test(text)):undefined;
-    const shared=developerText
-      ? {role:'user' as const,phase:'user' as const,text:developerText,timestamp:typeof entry.timestamp==='string'?entry.timestamp:null}:null;
-    const extracted=shared||failure||asyncMessage||extractAgentMessages([entry],kind,128*1024).find(message=>message.role==='user'||message.role==='assistant');
-    const reply=extracted?.role==='user'?conversationQuestionReply(extracted.text):undefined;
-    const message=reply?{...extracted!,text:reply.text}:extracted;
-    const itemId=asyncQuestions&&typeof nativeAsyncItem?.id==='string'?nativeAsyncItem.id:kind==='codex' && entry.type==='response_item' && typeof entry.payload?.id==='string'?entry.payload.id:undefined;
-    return message ? {message,failure,itemId,asyncQuestions,questionReplies:reply?.answers,imagePaths:message.role==='user'?conversationImagePaths(entry.payload?.content):[],turnId:typeof turnId==='string'?turnId:undefined,recordType:asyncQuestions?'async_question':entry.type==='event_msg' ? entry.payload?.type : entry.type} : null;
-  } catch {return null;}
-}
+function publicMessage(line:Buffer,kind:CliType,questionCallId?:string){return getAgent(kind).history.file!.project(line,questionCallId);}
+
 function scan(buffer:Buffer,base:number,kind:CliType,questionCalls:NativeQuestionCall[]):IndexedMessage[] {
   const result:IndexedMessage[]=[];
   let start=0;
@@ -84,20 +44,14 @@ function scan(buffer:Buffer,base:number,kind:CliType,questionCalls:NativeQuestio
     // Older native rollouts put async metadata on agent_message without an ID.
     // Bind it to the actual preceding request call, never infer from prose or
     // parse quoted tool results as interactive input.
-    if(kind==='codex'&&record.length<=MAX_RECORD&&/"name"\s*:\s*"request_user_input_async"/.test(record.subarray(0,800).toString())) {
-      try {const entry=JSON.parse(record.toString()),p=entry.payload;
-        if(p?.type==='function_call'&&p.name==='request_user_input_async'&&typeof p.call_id==='string'&&p.call_id.length<=200&&typeof p.arguments==='string') {
-          const questions=conversationAsyncQuestions({...JSON.parse(p.arguments),delivery:'async',id:p.call_id});
-          if(questions&&!questionCalls.some(call=>call.offset===base+start))questionCalls.push({offset:base+start,id:p.call_id,turnId:typeof p.internal_chat_message_metadata_passthrough?.turn_id==='string'?p.internal_chat_message_metadata_passthrough.turn_id:undefined,signature:questionSignature(questions)});
-        }
-      }catch{/* Other native records stay outside the public conversation. */}
-    }
+    const call=getAgent(kind).history.file!.questionCall(record);
+    if(call&&!questionCalls.some(item=>item.offset===base+start))questionCalls.push({...call,offset:base+start});
     const parsed=publicMessage(record,kind);
     if(parsed) {
       const {message,failure,recordType,turnId,itemId}=parsed;
       const hash=createHash('sha256').update(message.text).digest('hex');
       const offset=base+start;
-      result.push({id:failure?.id || (turnId && (message.role==='assistant' || itemId)?conversationMessageId(turnId,message.role,itemId || (recordType==='task_complete'?undefined:String(offset))):createHash('sha256').update(`${offset}:${message.role}:${hash}`).digest('hex').slice(0,32)),role:message.role,timestamp:message.timestamp,turn_id:turnId,...(message.role==='assistant'?{phase:message.phase==='error'?'error' as const:message.phase==='final'?'final' as const:'commentary' as const}:{}),...(failure?{error:failure.error}:{}),offset,length:end-start,hash,recordType,nativeItem:!!itemId,...(parsed.asyncQuestions?{questionSignature:questionSignature(parsed.asyncQuestions)}:{})});
+      result.push({id:failure?.id || (turnId && (message.role==='assistant' || itemId)?conversationMessageId(turnId,message.role,itemId || (recordType==='completion_echo'?undefined:String(offset))):createHash('sha256').update(`${offset}:${message.role}:${hash}`).digest('hex').slice(0,32)),role:message.role,timestamp:message.timestamp,turn_id:turnId,...(message.role==='assistant'?{phase:message.phase==='error'?'error' as const:message.phase==='final'?'final' as const:'commentary' as const}:{}),...(failure?{error:failure.error}:{}),offset,length:end-start,hash,recordType,nativeItem:!!itemId,...(parsed.asyncQuestions?{questionSignature:questionSignature(parsed.asyncQuestions)}:{})});
     }
     start=end+1;
   }
@@ -126,7 +80,7 @@ function dedupe(messages:IndexedMessage[]):IndexedMessage[] {
       && (!previous.turn_id || !message.turn_id || previous.turn_id===message.turn_id)
       && ((message.role==='user' && previous.recordType!==message.recordType)
         || (message.role==='assistant' && previous.phase!=='error' && previous.recordType!==message.recordType))) {
-      if(message.recordType==='async_question' || (message.recordType==='response_item' && message.nativeItem && previous.recordType!=='async_question')) result[result.length-1]=message;
+      if(message.recordType==='async_question' || (message.recordType==='native_message' && message.nativeItem && previous.recordType!=='async_question')) result[result.length-1]=message;
       continue;
     }
     result.push(message);
@@ -137,6 +91,7 @@ function dedupe(messages:IndexedMessage[]):IndexedMessage[] {
 /** A bounded incremental byte index. Cached metadata never contains message
  * bodies or tool output; only the requested page's public text is read. */
 export async function readConversation(session:PromptContextSession,query:{after?:string;before?:string;limit?:number}={}) {
+  const nativePage=await agentForSession(session).history.read(agentContext(session),query);if(nativePage)return nativePage;
   const file=await nativeConversationFile(session);
   const empty={messages:[] as ConversationMessage[],statistics:[] as ConversationStatistics[],has_more:false,reset:false,available:false,generation:null as string|null};
   if(!file) return empty;
@@ -210,7 +165,7 @@ export async function readConversation(session:PromptContextSession,query:{after
         selected=after<0 ? index.messages.slice(-limit) : index.messages.slice(after+1,after+1+limit);
       } else {selected=index.messages.slice(Math.max(0,before-limit),before<0?undefined:before);}
       const messages:ConversationMessage[]=[];
-      const statistics=file.kind==='codex'?await readConversationStatistics(file.path).catch(()=>[]):[];
+      const statistics=await getAgent(file.kind).statistics.read(agentContext(session),file.path).catch(()=>[]);
       const byOffset=new Map(statistics.map(item=>[item.sequence,item]));
       for(const item of selected) {
         const buffer=Buffer.alloc(item.length);await handle.read(buffer,0,buffer.length,item.offset);

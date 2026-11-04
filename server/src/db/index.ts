@@ -1,12 +1,12 @@
 import Database from 'better-sqlite3';
-import { dirname, join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
-import { config } from '../config.js';
-import { migrateRbac } from '../services/rbac.js';
-import { migratePlatformAi } from '../services/platform-ai/schema.js';
+import {dirname,join} from 'path';
+import {existsSync,mkdirSync} from 'fs';
+import {config} from '../config.js';
+import {migrateRbac} from '../services/rbac.js';
+import {migratePlatformAi} from '../services/platform-ai/schema.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 22;
+const SCHEMA_VERSION = 23;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -264,6 +264,16 @@ function migrateLegacySchema(): void {
   addColumn('sessions', 'pre_popout_cols', 'INTEGER');
   addColumn('sessions', 'cli_type', "TEXT DEFAULT 'claude'");
   addColumn('sessions', 'codex_session_id', 'TEXT');
+  addColumn('sessions','agent_id','TEXT');
+  addColumn('sessions','native_session_id','TEXT');
+  db.exec(`UPDATE sessions SET agent_id=COALESCE(agent_id,cli_type,'claude'),native_session_id=COALESCE(native_session_id,CASE cli_type WHEN 'codex' THEN codex_session_id WHEN 'claude' THEN claude_session_id END) WHERE agent_id IS NULL;
+    CREATE TRIGGER IF NOT EXISTS sessions_agent_identity_insert AFTER INSERT ON sessions BEGIN
+      UPDATE sessions SET agent_id=COALESCE(NEW.agent_id,NEW.cli_type,'claude'),native_session_id=COALESCE(NEW.native_session_id,CASE NEW.cli_type WHEN 'codex' THEN NEW.codex_session_id WHEN 'claude' THEN NEW.claude_session_id END) WHERE id=NEW.id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS sessions_agent_identity_legacy AFTER UPDATE OF cli_type,codex_session_id,claude_session_id ON sessions BEGIN
+      UPDATE sessions SET agent_id=COALESCE(NEW.cli_type,'claude'),native_session_id=CASE NEW.cli_type WHEN 'codex' THEN NEW.codex_session_id WHEN 'claude' THEN NEW.claude_session_id ELSE NEW.native_session_id END WHERE id=NEW.id;
+    END;`);
+
   addColumn('sessions', 'created_by_user_id', 'TEXT REFERENCES users(id)');
   addColumn('sessions', 'mode', "TEXT DEFAULT 'session'");
   addColumn('users', 'max_tabs', 'INTEGER NOT NULL DEFAULT 10');

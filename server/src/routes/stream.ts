@@ -1,10 +1,12 @@
-import { FastifyPluginAsync } from 'fastify';
-import { subscribe } from '../services/event-store.js';
-import { isAdmin, readSessionCookie, userOwnsProject, userOwnsSession,userCanUseSessionTool } from '../auth.js';
+import {nativeConversationId} from '../services/session-identity.js';
+import type {AgentSession} from '../services/agents/types.js';
+import {FastifyPluginAsync} from 'fastify';
+import {subscribe} from '../services/event-store.js';
+import {isAdmin,readSessionCookie,userOwnsProject,userOwnsSession,userCanUseSessionTool} from '../auth.js';
 import {getDb} from '../db/index.js';
 import {personalQuestionRuntime} from '../services/question-attention.js';
-import { registerUserConnection } from '../services/user-connections.js';
-import { userHasPermission } from '../services/rbac.js';
+import {registerUserConnection} from '../services/user-connections.js';
+import {userHasPermission} from '../services/rbac.js';
 
 /**
  * WebSocket stream for real-time events to the dashboard.
@@ -17,9 +19,9 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
     // Subscribe to events
     const unsubscribe = subscribe((event: any) => {
       if(event.type==='session.runtime'){
-        const row=getDb().prepare('SELECT codex_session_id,mode FROM sessions WHERE id=?').get(event.session_id) as {codex_session_id:string;mode:string}|undefined;
-        if(!row||!userCanUseSessionTool(userId,event.session_id,'codex',row.mode==='terminal'?'terminal':'session'))return;
-        try{const {runtime}=JSON.parse(event.data);if(runtime?.session_id!==row.codex_session_id)return;
+        const row=getDb().prepare('SELECT * FROM sessions WHERE id=?').get(event.session_id) as (AgentSession&{mode:string})|undefined;
+        if(!row||!userCanUseSessionTool(userId,event.session_id,row.cli_type||'claude',row.mode==='terminal'?'terminal':'session'))return;
+        try{const {runtime}=JSON.parse(event.data);if(runtime?.session_id!==nativeConversationId(row))return;
           socket.send(JSON.stringify({...event,data:JSON.stringify({runtime:personalQuestionRuntime(runtime,userId)})}));
         }catch{/* Ignore malformed or stale bindings. */}return;
       }

@@ -35,7 +35,7 @@ export interface ProjectNotificationSettings {
 export interface AiConversation { id: string; title: string; channel_id: string | null; channel_name?: string; updated_at?: string }
 export interface AiAttachment {id: string; status: string; mime: string; bytes: number; error: string | null}
 export interface AiMessage { id: string; role: 'user' | 'assistant' | 'notice'; content: string; status: string; error: string | null; created_at: string; progress?: string; partial_content?: string; attachments?: AiAttachment[] }
-export interface WorkAgent { cli_type: 'codex' | 'claude'; label: string; status: 'available' | 'unavailable' | 'unknown'; reason: string }
+export interface WorkAgent { cli_type: string; label: string; status: 'available' | 'unavailable' | 'unknown'; reason: string }
 export interface AiTask { id: string; conversation_id: string; session_id: string; project_id: string | null; requirement: string; status: string; summary: string; evidence: string; updated_at: string }
 export interface AiDelivery { id: string; conversation_id: string; status: string; attempts: number; error: string | null; created_at: string; channel_name?: string | null }
 export interface ChannelInput { name: string; kind: ChannelKind; enabled: boolean; config: Record<string, string>; secrets: Record<string, string> }

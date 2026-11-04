@@ -1,27 +1,9 @@
-import { FastifyPluginAsync } from 'fastify';
-import {
-  attachTerminal,
-  writeToSession,
-  resizeSession,
-  reconnectSession,
-  getPendingSpawn,
-  consumePendingSpawn,
-  spawnSession,
-  spawnTerminal,
-  spawnAdopt,
-  sendReplay,
-  sendIncrementalReplay,
-  terminalGeometryMatches,
-  recoverSessionOnAttach,
-  getSession,
-  isSessionActive,
-  isValidTerminalDimensions,
-  subscribeSessionLifecycle,
-  waitForSessionLifecycle,
-} from '../services/session-manager.js';
-import { getDb } from '../db/index.js';
-import { readSessionCookie, userCanUseSessionTool } from '../auth.js';
-import { registerUserConnection } from '../services/user-connections.js';
+import {getAgent} from '../services/agents/index.js';
+import {FastifyPluginAsync} from 'fastify';
+import {attachTerminal,writeToSession,resizeSession,reconnectSession,getPendingSpawn,consumePendingSpawn,spawnSession,spawnTerminal,spawnAdopt,sendReplay,sendIncrementalReplay,terminalGeometryMatches,recoverSessionOnAttach,getSession,isSessionActive,isValidTerminalDimensions,subscribeSessionLifecycle,waitForSessionLifecycle,} from '../services/session-manager.js';
+import {getDb} from '../db/index.js';
+import {readSessionCookie,userCanUseSessionTool} from '../auth.js';
+import {registerUserConnection} from '../services/user-connections.js';
 
 const MAX_TERMINAL_INPUT_BYTES = 256 * 1024;
 const PROMPT_REPLACEMENT_WRAPPER_BYTES = 14;
@@ -180,8 +162,8 @@ function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' 
   return 'session';
 }
 
-function normalizeCliType(cliType: string | null | undefined): 'claude' | 'codex' {
-  return cliType === 'codex' ? 'codex' : 'claude';
+function normalizeCliType(cliType: string | null | undefined): string {
+  return getAgent(cliType||'claude').descriptor.id;
 }
 
 function canAccessSession(req: { user?: { id?: string } } | undefined, sessionId: string): boolean {

@@ -4,7 +4,7 @@ import {mkdtempSync,rmSync} from 'fs';
 import {tmpdir} from 'os';
 import {join} from 'path';
 import {WebSocketServer,type WebSocket} from 'ws';
-import {createStreamingCodexThread,interruptStreamingCodexThread,configureStreamingSharedResources,submitStreamingCodexInput,observeCodexConversation,type ConversationStreamFrame} from '../src/services/conversation-stream.js';
+import {createStreamingCodexThread,interruptStreamingCodexThread,configureStreamingSharedResources,submitStreamingCodexInput,observeCodexConversation,type ConversationStreamFrame} from '../src/services/agents/codex/stream.js';
 import {conversationMessageId} from '../src/services/conversation-reader.js';
 
 let server:Server,wss:WebSocketServer,peer:WebSocket,dir:string,stop:(()=>void)|undefined;

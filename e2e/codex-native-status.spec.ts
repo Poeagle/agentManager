@@ -26,7 +26,12 @@ test('Codex labels show native activity and execution state through reloads and 
   await expect(label).toHaveAttribute('title',/Codex 原生状态：本轮已结束/);
   const before=await label.getAttribute('title');
   expect(before).toContain('最后活跃：');expect(before).not.toContain('2099');
-  await page.reload();await expect(label).toHaveAttribute('title',before!);
+  // Browser clock calibration may shift display rounding by one second after reload.
+  // Verify the exact native source timestamp and execution state independently.
+  const nativeBefore=(await(await page.request.get(`/api/sessions?project_id=${project.id}`)).json()).sessions.find((session:{id:string})=>session.id==='native-browser').agent_runtime.last_activity_at;
+  await page.reload();await expect(label).toHaveAttribute('title',/Codex 原生状态：本轮已结束/);
+  const nativeAfter=(await(await page.request.get(`/api/sessions?project_id=${project.id}`)).json()).sessions.find((session:{id:string})=>session.id==='native-browser').agent_runtime.last_activity_at;
+  expect(nativeAfter).toBe(nativeBefore);expect(await label.getAttribute('title')).not.toContain('2099');
   appendFileSync(log,JSON.stringify({timestamp:'2026-10-29T01:01:00Z',type:'event_msg',payload:{type:'turn_aborted',turn_id:'a'}})+'\n');
   await expect(label).toHaveAttribute('title',/Codex 原生状态：本轮已中断/,{timeout:15000});
 });

@@ -10,7 +10,7 @@ import {authHook,createUser,createSession,setProjectToolAccess} from '../src/aut
 import {getDb} from '../src/db/index.js';
 import {agentRoutes} from '../src/routes/agent.js';
 import * as manager from '../src/services/session-manager.js';
-import {readConversationTelemetry,readModelPreference,saveModelPreference} from '../src/services/conversation-controls.js';
+import {readConversationTelemetry,readModelPreference,saveModelPreference} from '../src/services/agents/codex/controls.js';
 import {setRoleGrants,setUserRoles} from '../src/services/rbac.js';
 
 const native='019ff001-9999-7999-8999-999999999999';

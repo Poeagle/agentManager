@@ -1,8 +1,8 @@
+import {agentDescriptors} from './agents/index.js';
 /** Client choices exposed by project authorization and Session launchers. */
-export const SESSION_CLIENTS = [
-  { id: 'claude', label: 'Claude' },
-  { id: 'codex', label: 'Codex' },
-] as const;
+export function sessionClients(){return agentDescriptors().sort((a,b)=>(a.presentation.order??100)-(b.presentation.order??100)).filter(agent=>agent.capabilities.launch).map(({id,label})=>({id,label}));}
+/** Legacy export; new callers use the live registry. */
+export const SESSION_CLIENTS=sessionClients();
 
 export function parseSessionClients(value: string): string[] {
   try {

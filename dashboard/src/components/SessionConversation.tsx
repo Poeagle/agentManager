@@ -1,3 +1,4 @@
+import {sessionAgent,agentNativeId,agentSupports} from '../lib/agents';
 import {ConversationStatisticsLabel,englishMetadataDuration,metadataDurationTitle,metadataTimestampTitle} from './ConversationStatisticsLabel';
 import {ConversationRetryStatus,type ConversationRetry} from './ConversationRetryStatus';
 import {ConversationPromptEnhancer} from './ConversationPromptEnhancer';
@@ -42,7 +43,7 @@ function ProgressSection({agentName,count,active,children}:{agentName:string;cou
   </section>;
 }
 
-const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,onCancelRetry,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate,durationLabel,onRaw}:{durationLabel?:string;durationTitle?:string;retrying?:boolean;autoRetry?:ConversationRetry;onCancelRetry?:()=>Promise<void>;onRaw:()=>void;message:ConversationMessage;streaming:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void}) {
+const Bubble=memo(function Bubble({message,streaming,allowRaw=true,retrying=false,autoRetry,onCancelRetry,compact=false,agentName,projectPath,projectId,onOpenFile,onNavigate,durationLabel,onRaw}:{allowRaw?:boolean;durationLabel?:string;durationTitle?:string;retrying?:boolean;autoRetry?:ConversationRetry;onCancelRetry?:()=>Promise<void>;onRaw:()=>void;message:ConversationMessage;streaming:boolean;compact?:boolean;agentName:string;projectPath?:string;projectId:string|null;onOpenFile?:(path:string)=>void;onNavigate:()=>void}) {
   const timeZone=useDisplayClock();
   const [copied,setCopied]=useState(false);
   const visibleText=questionReplyDisplayText(message);
@@ -73,7 +74,7 @@ const Bubble=memo(function Bubble({message,streaming,retrying=false,autoRetry,on
     <div className="session-chat-error-heading"><AlertTriangle size={16}/><strong>{autoRetry?autoRetry.status==='cancelled'?'模型繁忙 · 重试已取消':autoRetry.status==='succeeded'?'模型繁忙 · 已恢复':autoRetry.status==='exhausted'?'模型繁忙 · 重试已达上限':autoRetry.status==='unknown'?'模型繁忙 · 重试待确认':'模型繁忙 · 自动恢复':message.error?.will_retry?retrying?'执行遇到错误，正在自动重试':'重试已结束':'本轮执行出错'}</strong>{message.timestamp && <time dateTime={message.timestamp} title={`原生消息记录时间：${formatConversationTimestamp(message.timestamp)}（浏览器时间 · ${timeZone}）；不代表阶段开始时间`}>{formatConversationTimestamp(message.timestamp)}</time>}</div>
     <p className="session-chat-error-original">{message.text}</p>
     {autoRetry?<ConversationRetryStatus retry={autoRetry} onCancel={onCancelRetry}/>:<p>{message.error?.will_retry?retrying?'Agent 正在自动重试，无需重复发送。':'该次重试过程已结束。':message.error?.code==='server_overloaded' || /at capacity/i.test(message.text)?'当前模型繁忙，本轮已停止。可稍后重试，或在原始终端切换模型。':'本轮已停止。请根据错误信息处理后再试。'}</p>}
-    <div className="session-chat-error-actions"><button type="button" onClick={onRaw}>查看原始终端</button><button type="button" onClick={()=>void copy()}>{copied?'已复制':'复制错误信息'}</button></div>
+    <div className="session-chat-error-actions">{allowRaw&&<button type="button" onClick={onRaw}>查看原始终端</button>}<button type="button" onClick={()=>void copy()}>{copied?'已复制':'复制错误信息'}</button></div>
   </article>;
   return <article className={`session-chat-message ${message.role}`} data-phase={message.phase} data-streaming={streaming} data-chat-message-id={message.id}>
     {message.role==='assistant' && !compact && <div className={`session-chat-agent${headerMetadata?' session-chat-final-heading':''}`}><Sparkles size={16}/><span>{agentName}</span>{message.phase==='final' && <span className="session-chat-kind">结论</span>}{streaming && <span className="session-chat-writing">正在输出</span>}{headerMetadata&&<div className="session-chat-metadata-row session-chat-final-meta">{metadata}</div>}</div>}
@@ -85,22 +86,23 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   session:Session;active:boolean;onRaw:()=>void;onResume?:()=>void;onNewConversation?:()=>Promise<void>;onClose?:()=>void;resuming?:boolean;resumeFailed?:boolean;
   userId?:string;projectPath?:string;onOpenFile?:(path:string)=>void;
 }) {
-  const compaction=useConversationCompaction(session.id,session.codex_session_id);
+  const compaction=useConversationCompaction(session.id,agentNativeId(session));
   const permissions=usePermissions();
   const queryClient=useQueryClient();
   const canRead=hasPermission(permissions.data,'agent_api');
   const canSend=hasPermission(permissions.data,'agent_api','write');
+  const canAttach=agentSupports(session,'attachments');
   const [messages,setMessages]=useState<TimelineMessage[]>([]);
   const [autoRetries,setAutoRetries]=useState<Record<string,ConversationRetry>>({});
-  useEffect(()=>setAutoRetries({}),[session.id,session.codex_session_id]);
+  useEffect(()=>setAutoRetries({}),[session.id,agentNativeId(session)]);
   const [statistics,setStatistics]=useState<ConversationStatistics[]>([]);
   const [page,setPage]=useState<ConversationPage|null>(null);
   useEffect(()=>{
     const update=(event:Event)=>{const detail=(event as CustomEvent<{sessionId:string;runtime:NonNullable<Session['agent_runtime']>}>).detail;
-      if(detail.sessionId!==session.id||detail.runtime.session_id!==session.codex_session_id)return;
+      if(detail.sessionId!==session.id||detail.runtime.session_id!==agentNativeId(session))return;
       setPage(previous=>previous&&(!previous.runtime?.observed_at||Date.parse(previous.runtime.observed_at)<=Date.parse(detail.runtime.observed_at))?{...previous,runtime:detail.runtime}:previous);
     };window.addEventListener('agentmanager:session-runtime',update);return()=>window.removeEventListener('agentmanager:session-runtime',update);
-  },[session.id,session.codex_session_id]);
+  },[session.id,agentNativeId(session)]);
   const [hasMore,setHasMore]=useState(false);
   const [loading,setLoading]=useState(true);
   const [older,setOlder]=useState(false);
@@ -133,8 +135,8 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   // was missed, do not keep a connected socket's old busy flag indefinitely.
   useEffect(()=>{
     const runtime=page?.runtime;
-    if(liveBusy&&runtime&&runtime.session_id===session.codex_session_id&&runtime.completed_turn_id===liveProgress.turn_id&&['idle','interrupted','failed'].includes(runtime.state)&&Date.parse(runtime.last_activity_at||'')>Date.parse(liveProgress.started_at||''))setLiveBusy(false);
-  },[page?.runtime?.state,page?.runtime?.last_activity_at,page?.runtime?.session_id,page?.runtime?.completed_turn_id,session.codex_session_id,liveBusy,liveProgress.started_at,liveProgress.turn_id]);
+    if(liveBusy&&runtime&&runtime.session_id===agentNativeId(session)&&runtime.completed_turn_id===liveProgress.turn_id&&['idle','interrupted','failed'].includes(runtime.state)&&Date.parse(runtime.last_activity_at||'')>Date.parse(liveProgress.started_at||''))setLiveBusy(false);
+  },[page?.runtime?.state,page?.runtime?.last_activity_at,page?.runtime?.session_id,page?.runtime?.completed_turn_id,agentNativeId(session),liveBusy,liveProgress.started_at,liveProgress.turn_id]);
   const [now,setNow]=useState(estimatedServerNow);
   const cursor=useRef<string|undefined>(undefined);
   const generation=useRef<string|null>(null);
@@ -164,7 +166,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     setMessages([]);setStatistics([]);setPage(null);setRequests([]);setHasMore(false);setLoading(true);setLiveBusy(false);
     setLiveProgress({turn_id:null,started_at:null,stage:'idle'});setMinimizedQuestion(null);setUnread(false);setError('');
     for(const answer of pendingAnswers.current.values()){clearTimeout(answer.timer);answer.reject(Error('会话已切换'));}pendingAnswers.current.clear();
-  },[session.codex_session_id,session.claude_session_id]);
+  },[agentNativeId(session),session.claude_session_id]);
   const ended=['completed','failed','cancelled'].includes(session.status);
   const reconnectable=!!page&&!page.session_active&&!ended&&['running','detached'].includes(page.session_status);
   async function reconnect() {
@@ -227,10 +229,10 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     };
     void poll();
     return ()=>{controller.abort();clearTimeout(timer);};
-  },[active,canRead,session.id,session.status,session.codex_session_id,session.claude_session_id,refresh]);
+  },[active,canRead,session.id,session.status,agentNativeId(session),session.claude_session_id,refresh]);
 
   useEffect(()=>{
-    if(!active || !canRead || session.cli_type!=='codex' || !page?.native_id || page.native_id!==session.codex_session_id || ended) return;
+    if(!active || !canRead || !agentSupports(session,'stream') || !page?.native_id || page.native_id!==agentNativeId(session) || ended) return;
     let disposed=false;const settledIds=new Set<string>();let socket:WebSocket;let retry:ReturnType<typeof setTimeout>;
     const connect=()=>{
       if(disposed) return;
@@ -240,9 +242,9 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
       socket.onmessage=event=>{
         if(disposed) return;
         let frame:{type:string;model?:string;effort?:string|null;native_id?:string;usage?:ConversationUsageUpdate['usage'];statistics?:ConversationStatistics[];retry?:ConversationRetry;observed_at?:string;messages?:ConversationMessage[];runtime?:ConversationPage['runtime'];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string;compaction?:NativeCompaction|null}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
-        if(frame.type==='retry'&&frame.retry&&frame.retry.native_id===session.codex_session_id){const retry=frame.retry;setAutoRetries(previous=>({...previous,[retry.root_turn_id]:retry}));return;}
+        if(frame.type==='retry'&&frame.retry&&frame.retry.native_id===agentNativeId(session)){const retry=frame.retry;setAutoRetries(previous=>({...previous,[retry.root_turn_id]:retry}));return;}
         if(frame.type==='usage') {
-          if(typeof frame.native_id==='string'&&frame.native_id===session.codex_session_id&&frame.usage&&frame.observed_at&&Number.isFinite(Date.parse(frame.observed_at))) {
+          if(typeof frame.native_id==='string'&&frame.native_id===agentNativeId(session)&&frame.usage&&frame.observed_at&&Number.isFinite(Date.parse(frame.observed_at))) {
             const update:ConversationUsageUpdate={native_id:frame.native_id,usage:frame.usage,observed_at:frame.observed_at};
             const previous=queryClient.getQueryData<ConversationUsageUpdate>(['conversation-usage',session.id]);
             if(previous?.native_id===update.native_id&&Date.parse(previous.observed_at)>Date.parse(update.observed_at))return;
@@ -251,11 +253,11 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
           }
           return;
         }
-        if(frame.type==='statistics'&&frame.native_id===session.codex_session_id&&Array.isArray(frame.statistics)){setStatistics(previous=>{const merged=new Map(previous.map(item=>[item.sequence,item]));for(const item of frame.statistics!)merged.set(item.sequence,item);return [...merged.values()].slice(-80);});return;}
+        if(frame.type==='statistics'&&frame.native_id===agentNativeId(session)&&Array.isArray(frame.statistics)){setStatistics(previous=>{const merged=new Map(previous.map(item=>[item.sequence,item]));for(const item of frame.statistics!)merged.set(item.sequence,item);return [...merged.values()].slice(-80);});return;}
         if(frame.type==='settings'&&typeof frame.model==='string'){queryClient.setQueryData<ConversationControlsData>(['conversation-controls',session.id],previous=>previous?{...previous,model:frame.model!,effort:frame.effort??null,pending:null}:previous);return;}
         if(frame.type==='interaction_result' && frame.request_id) {const pending=pendingAnswers.current.get(frame.request_id);if(pending){clearTimeout(pending.timer);pendingAnswers.current.delete(frame.request_id);if(frame.ok)pending.resolve();else pending.reject(new Error(frame.error||'提交失败'));}return;}
         if(frame.type==='queue'&&Array.isArray(frame.messages)){const clients=new Set(frame.messages.map(item=>item.client_id));setMessages(previous=>mergeConversationTimeline(previous.filter(item=>!item.queued||clients.has(item.client_id)),frame.messages!));return;}
-        if(frame.type==='history'&&Array.isArray(frame.messages)){pushAvailable.current=true;setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));setPage(previous=>previous?{...previous,runtime:frame.runtime&&!(Date.parse(previous.runtime?.observed_at||'')>Date.parse(frame.runtime.observed_at))?frame.runtime:previous.runtime}:previous);if(frame.messages.length){if(pinned.current)requestAnimationFrame(()=>{if(!disposed)scrollBottom();});else setUnread(true);}return;}
+        if(frame.type==='history'&&Array.isArray(frame.messages)){if(frame.messages.some(message=>message.role==='assistant'&&!message.streaming)&&queryClient.getQueryData<ConversationControlsData>(['conversation-controls',session.id])?.pending_status==='submitted')void queryClient.invalidateQueries({queryKey:['conversation-controls',session.id]});if(frame.runtime&&'compaction' in frame.runtime)compaction.observe(frame.runtime.compaction??null,frame.runtime.state==='running');pushAvailable.current=true;setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));setPage(previous=>previous?{...previous,runtime:frame.runtime&&!(Date.parse(previous.runtime?.observed_at||'')>Date.parse(frame.runtime.observed_at))?frame.runtime:previous.runtime}:previous);if(frame.messages.length){if(pinned.current)requestAnimationFrame(()=>{if(!disposed)scrollBottom();});else setUnread(true);}return;}
         if(frame.type==='unavailable') {pushAvailable.current=false;setLiveState('unavailable');setLiveBusy(false);compaction.disconnected();return;}
         if(frame.type!=='snapshot' || !Array.isArray(frame.messages)) return;
         pushAvailable.current=true;setLiveState('connected');setLiveBusy(!!frame.busy);
@@ -292,7 +294,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   }
 
   const interaction=page?.interaction;
-  const nativeStateKnown=session.cli_type==='codex' && !!page?.runtime && page.runtime.state!=='unknown';
+  const nativeStateKnown=agentSupports(session,'runtime') && !!page?.runtime && page.runtime.state!=='unknown';
   const needsAction=(!nativeStateKnown || page?.runtime?.state==='waiting_for_input') && !!interaction && interaction.processState==='waiting_for_input' && (interaction.isPermission || interaction.promptType==='choice' || interaction.promptType==='confirmation');
   const waiting=requests.length?requests.some(request=>request.blocking):needsAction || page?.runtime?.state==='waiting_for_input';
   function answerRequest(id:string,answer:unknown):Promise<void> {
@@ -315,7 +317,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     if(terminalDraft){const message='原始终端还有未发送内容，请先发送或清空后再从对话发送。';if(fromQuestion)throw new Error(message);setSendError(message);return;}
     if(new TextEncoder().encode(text).byteLength>64*1024) {if(fromQuestion)throw new Error('回答超过 64 KB，请缩短后发送');setSendError('消息超过 64 KB，请缩短后发送。');return;}
     sendingRef.current=true;setSending(true);setSendError('');
-    const fingerprint=JSON.stringify([session.codex_session_id,session.claude_session_id,text,attached]);
+    const fingerprint=JSON.stringify([agentNativeId(session),session.claude_session_id,text,attached]);
     const clientId=submissionIdentity.current?.fingerprint===fingerprint?submissionIdentity.current.id:conversationClientId();submissionIdentity.current={fingerprint,id:clientId};
     const parsedReply=decodeQuestionReply(text);
     const timestamp=new Date(estimatedServerNow()).toISOString(),visibleText=parsedReply?.text??(text.trim()?text:attached.length?'请查看附件。':text),attachedIds=fromQuestion?[]:attachments.items.map(item=>item.id);
@@ -347,7 +349,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
       if(fromQuestion){setSendError(failure instanceof Error?failure.message:'回答提交失败');throw failure;}
       if(draftVersion.current===version&&!draftRef.current&&!attachments.hasDraft()) {changeDraft(text);attachments.restore(savedAttachments);}
       else setFailedDrafts(previous=>[...previous,{clientId,fingerprint,text,attachments:savedAttachments}]);
-      setSendError(failure instanceof ApiError&&['rejected','unknown'].includes(failure.submission||'')?failure.message:`${failure instanceof Error?failure.message:'发送失败'}。请查看原始终端确认后再重试。`);
+      setSendError(failure instanceof ApiError&&['rejected','unknown'].includes(failure.submission||'')?failure.message:`${failure instanceof Error?failure.message:'发送失败'}。${sessionAgent(session).sessionHost==='managed'?'请核对会话记录后再重试。':'请查看原始终端确认后再重试。'}`);
     }
     finally {sendingRef.current=false;setSending(false);}
   }
@@ -357,7 +359,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     submissionIdentity.current={id:saved.clientId,fingerprint:saved.fingerprint};
     setFailedDrafts(previous=>previous.filter(item=>item.clientId!==saved.clientId));
   }
-  const agentName=session.cli_type==='codex'?'Codex':'Claude';
+  const agentName=sessionAgent(session).label;
   const lastUserTime=messages[lastUserIndex]?.timestamp;
   const currentAnswer=messages.some((message,index)=>index>lastUserIndex && message.role==='assistant' && message.phase!=='error' && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id || message.streaming));
   const currentTurn=liveProgress.turn_id||messages[lastUserIndex]?.turn_id;
@@ -388,7 +390,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     finally{setIgnoringQuestions(false);}
   }
   async function cancelRetry(){const response=await fetch(`/api/sessions/${encodeURIComponent(session.id)}/conversation/retry/cancel`,{method:'POST'});if(!response.ok)throw new Error('停止重试失败，请重试');}
-  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} state={questionReplyState(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1),page?.runtime?.submitted_question_ids)} answers={questionAnswers(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1))} onAnswer={()=>{setSelectedQuestion(message.id);setMinimizedQuestion(null);}}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} autoRetry={Object.values(autoRetries).find(retry=>retry.failed_turn_ids.includes(message.turn_id||''))} onCancelRetry={canSend?cancelRetry:undefined} compact={compact} durationLabel={timings.get(message.id)?.label} durationTitle={timings.get(message.id)?.title} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw}/>;
+  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} state={questionReplyState(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1),page?.runtime?.submitted_question_ids)} answers={questionAnswers(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1))} onAnswer={()=>{setSelectedQuestion(message.id);setMinimizedQuestion(null);}}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} autoRetry={Object.values(autoRetries).find(retry=>retry.failed_turn_ids.includes(message.turn_id||''))} onCancelRetry={canSend?cancelRetry:undefined} compact={compact} durationLabel={timings.get(message.id)?.label} durationTitle={timings.get(message.id)?.title} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw} allowRaw={sessionAgent(session).sessionHost!=='managed'}/>;
   return <ConversationImagePreviewRoot active={active} onOpen={navigate}><section ref={readingRoot} className="session-chat" aria-label="会话对话">
     <ConversationPromptEnhancer sessionId={session.id} active={active} canEdit={canSend&&!ended&&!waiting} value={draft} onApply={changeDraft}/>
     <div className="session-chat-reading">
@@ -396,14 +398,14 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
       <div className="session-chat-feed">
         {hasMore && <button className="session-chat-older" disabled={older} onClick={()=>void loadOlder()}>{older?'正在读取…':'加载更早的对话'}</button>}
         {loading && canRead && <p className="session-chat-empty"><Loader2 size={16} className="animate-spin"/>正在读取对话…</p>}
-        {!canRead && !permissions.isPending && <p className="session-chat-empty">当前账号没有读取对话的权限，可切换原始终端。</p>}
+        {!canRead && !permissions.isPending && <p className="session-chat-empty">当前账号没有读取对话的权限。</p>}
         {groups.map(group=>group.kind==='message'?bubble(group.message):<ProgressSection key={`progress-${group.id}`} agentName={agentName} count={group.messages.length} active={busy&&groups.at(-1)===group}>
           {group.messages.map((message,index)=><div key={message.id} className="session-chat-progress-entry" data-active={message.id===streamingId}>
             <span className="session-chat-progress-number" aria-label={`进展序号 ${index+1}`}>{index+1}</span>{bubble(message,true)}
           </div>)}
         </ProgressSection>)}
         {waitingForText && <div className="session-chat-thinking" role="status"><Sparkles size={16}/><div><span>{continuingAfterFollowup?sending?'正在提交追问…':`追问已提交，${agentName} 正在继续执行`:liveProgress.stage==='tools'?`${agentName} 正在执行任务`:`等待 ${agentName} 返回正文`}</span><time className="session-chat-elapsed">{elapsed} 秒</time><p>{continuingAfterFollowup?'当前任务仍在进行，新进展到达后会自动追加。':liveProgress.stage==='tools'?'正在执行任务，新进展到达后会立即显示。':'尚未收到正文，收到后会立即逐段显示。'}</p></div></div>}
-        {!loading && canRead && !messages.length && <div className="session-chat-empty"><p>这里显示你的消息、Agent 的进展说明和回答。</p><p>{page?.available?'还没有对话记录。':'尚未读取到绑定的原生对话记录。'}<button onClick={onRaw}>查看原始终端</button></p></div>}
+        {!loading && canRead && !messages.length && <div className="session-chat-empty"><p>这里显示你的消息、Agent 的进展说明和回答。</p><p>{page?.available?'还没有对话记录。':'尚未读取到绑定的原生对话记录。'}{sessionAgent(session).sessionHost!=='managed'&&<button onClick={onRaw}>查看原始终端</button>}</p></div>}
         {error && <p role="alert" className="session-chat-error">{error}<button onClick={()=>setRefresh(value=>value+1)}>重试</button></p>}
         <div ref={bottom}/>
       </div>
@@ -431,14 +433,14 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
       {reconnectError && <p role="alert" className="session-chat-error">{reconnectError}</p>}
       {pendingQuestion&&<div className="session-chat-question-seat">{questionActive?<ConversationAsyncQuestion key={pendingQuestion.id} message={pendingQuestion} agentName={agentName} storageKey={`agentmanager-question:${userId}:${session.id}:${pendingQuestion.id}`} connected={active&&!!page?.session_active&&!ended} canAnswer={canSend} onReply={send} onRaw={onRaw} onMinimize={()=>setMinimizedQuestion(pendingQuestion.id)}/>:<button type="button" className="session-chat-question-reminder" onClick={()=>setMinimizedQuestion(null)}>待回答 · {pendingQuestion.async_questions?.[0].title}<span>回答问题</span></button>}</div>}
       <form hidden={questionActive} onSubmit={event=>{event.preventDefault();void send();}}
-        onDragOver={event=>{if(Array.from(event.dataTransfer.types).includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=canSend&&!ended&&!sending?'copy':'none';}}}
-        onDrop={event=>{if(!Array.from(event.dataTransfer.types).includes('Files'))return;event.preventDefault();event.stopPropagation();if(canSend&&!ended&&!sending)attachments.enqueueTransfer(event.dataTransfer);}}>
-        <ConversationComposerEditor snapshotRef={attachmentPositions} value={draft} items={attachments.items} disabled={!canSend||ended||waiting} placeholder={waiting?'请先处理上方交互':'输入消息，Enter 发送，Shift+Enter 换行'} projectId={session.project_id} projectPath={projectPath} onChange={changeDraft} onRemove={attachments.remove} onFiles={attachments.enqueue} onSubmit={()=>void send()}/>
+        onDragOver={event=>{if(Array.from(event.dataTransfer.types).includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=canAttach&&canSend&&!ended&&!sending?'copy':'none';}}}
+        onDrop={event=>{if(!Array.from(event.dataTransfer.types).includes('Files'))return;event.preventDefault();event.stopPropagation();if(canAttach&&canSend&&!ended&&!sending)attachments.enqueueTransfer(event.dataTransfer);}}>
+        <ConversationComposerEditor snapshotRef={attachmentPositions} value={draft} items={attachments.items} disabled={!canSend||ended||waiting} placeholder={waiting?'请先处理上方交互':'输入消息，Enter 发送，Shift+Enter 换行'} projectId={session.project_id} projectPath={projectPath} onChange={changeDraft} onRemove={attachments.remove} onFiles={canAttach?attachments.enqueue:()=>setSendError('此 Agent 不支持附件')} onSubmit={()=>void send()}/>
         {attachments.error&&<p role="alert" className="session-chat-error">{attachments.error}</p>}
 
-        <div className="session-chat-input-tools"><ConversationAttachmentPicker disabled={!canSend||ended||sending} onFiles={attachments.enqueue}/><span>Enter 发送 · Shift+Enter 换行</span><div className="session-chat-send-actions"><button type="button" className="session-chat-enhance" aria-label="优化当前输入" title="增强提示词" disabled={!canSend||ended||waiting||sending||!draft.trim()} onClick={()=>window.dispatchEvent(new CustomEvent('agentmanager:enhance-native-prompt',{detail:{sessionId:session.id}}))}><Sparkles size={17}/></button><button type="submit" aria-label="发送消息" disabled={sending||attachments.uploading||attachments.failed||!canSend||(!draft.trim()&&!attachments.items.length)||!page?.session_active||ended||waiting}>{sending?<Loader2 size={17} className="animate-spin"/>:<ArrowUp size={18}/>}</button></div></div>
+        <div className="session-chat-input-tools"><ConversationAttachmentPicker disabled={!canAttach||!canSend||ended||sending} onFiles={attachments.enqueue}/><span>Enter 发送 · Shift+Enter 换行</span><div className="session-chat-send-actions"><button type="button" className="session-chat-enhance" aria-label="优化当前输入" title="增强提示词" disabled={!canSend||ended||waiting||sending||!draft.trim()} onClick={()=>window.dispatchEvent(new CustomEvent('agentmanager:enhance-native-prompt',{detail:{sessionId:session.id}}))}><Sparkles size={17}/></button><button type="submit" aria-label="发送消息" disabled={sending||attachments.uploading||attachments.failed||!canSend||(!draft.trim()&&!attachments.items.length)||!page?.session_active||ended||waiting}>{sending?<Loader2 size={17} className="animate-spin"/>:<ArrowUp size={18}/>}</button></div></div>
       </form>
-      {session.cli_type==='codex'&&!!page?.native_id&&canRead&&<ConversationControls sessionId={session.id} active={active} busy={busy||sending||resuming} compacting={compaction.running} onCompact={compaction.start} onNewConversation={onNewConversation}/>}
+      {agentSupports(session,'controls')&&!!page?.native_id&&canRead&&<ConversationControls sessionId={session.id} active={active} busy={busy||sending||resuming} compacting={compaction.running} onCompact={compaction.start} onNewConversation={onNewConversation}/>}
     </footer>
   </section></ConversationImagePreviewRoot>;
 }

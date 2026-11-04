@@ -1,3 +1,5 @@
+import {storeAgentNativeId} from './agents/identity-store.js';
+import type {AgentSession} from './agents/types.js';
 import {nanoid} from 'nanoid';
 import {getDb} from '../db/index.js';
 
@@ -22,10 +24,11 @@ export function snapshotConversation(sessionId:string) {
 
 export function activateFreshConversation(sessionId:string,historyId:string,nativeId:string) {
   const db=getDb();db.transaction(()=>{
+    const session=db.prepare('SELECT * FROM sessions WHERE id=?').get(sessionId) as AgentSession&{id:string};storeAgentNativeId(session,nativeId);
     db.prepare('UPDATE conversation_attachments SET session_id=? WHERE session_id=?').run(historyId,sessionId);
     db.prepare('UPDATE events SET session_id=? WHERE session_id=?').run(historyId,sessionId);
     moveHistoricalLinks(sessionId,historyId);
-    db.prepare("UPDATE sessions SET task='新会话',codex_session_id=?,claude_session_id=NULL,status='cancelled',pid=NULL,external_socket=NULL,started_at=NULL,completed_at=NULL,exit_code=NULL,created_at=datetime('now'),updated_at=datetime('now') WHERE id=?").run(nativeId,sessionId);
+    db.prepare("UPDATE sessions SET task='新会话',status='cancelled',pid=NULL,external_socket=NULL,started_at=NULL,completed_at=NULL,exit_code=NULL,created_at=datetime('now'),updated_at=datetime('now') WHERE id=?").run(sessionId);
   })();
 }
 
@@ -35,7 +38,8 @@ export function restoreConversationSnapshot(sessionId:string,historyId:string) {
     db.prepare('UPDATE conversation_attachments SET session_id=? WHERE session_id=?').run(sessionId,historyId);
     db.prepare('UPDATE events SET session_id=? WHERE session_id=?').run(sessionId,historyId);
     moveHistoricalLinks(historyId,sessionId);
-    db.prepare('UPDATE sessions SET task=(SELECT task FROM sessions WHERE id=?),codex_session_id=(SELECT codex_session_id FROM sessions WHERE id=?),created_at=(SELECT created_at FROM sessions WHERE id=?),status=\'cancelled\',pid=NULL WHERE id=?').run(historyId,historyId,historyId,sessionId);
+    const columns=['task','agent_id','native_session_id','cli_type','codex_session_id','claude_session_id','created_at'];
+    db.prepare(`UPDATE sessions SET ${columns.map(column=>`${column}=(SELECT ${column} FROM sessions WHERE id=?)`).join(',')},status='cancelled',pid=NULL WHERE id=?`).run(...columns.map(()=>historyId),sessionId);
     db.prepare('DELETE FROM pty_output WHERE session_id=?').run(historyId);
     db.prepare('DELETE FROM sessions WHERE id=?').run(historyId);
   })();

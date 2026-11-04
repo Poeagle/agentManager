@@ -4,52 +4,46 @@ process.env.UV_THREADPOOL_SIZE = '16';
 // Enrich PATH for desktop-launched environments (task manager, dock, app menu).
 // Interactive shells load nvm/fnm/volta via .bashrc/.zshrc, but desktop-launched
 // processes inherit the bare session environment which typically lacks these.
-import { enrichProcessPath } from './utils/enrich-path.js';
+import {enrichProcessPath} from './utils/enrich-path.js';
 enrichProcessPath();
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
-import { closeDb, initDb, getDb } from './db/index.js';
-import { eventRoutes } from './routes/events.js';
-import { sessionRoutes } from './routes/sessions.js';
-import { taskRoutes } from './routes/tasks.js';
-import { streamRoutes } from './routes/stream.js';
-import { projectRoutes, initProjects } from './routes/projects.js';
-import { terminalRoutes } from './routes/terminal.js';
-import { fileRoutes } from './routes/files.js';
-import { gitRoutes } from './routes/git.js';
-import { agentRoutes } from './routes/agent.js';
-import { settingsRoutes } from './routes/settings.js';
-import { sharedResourceRoutes } from './routes/shared-resources.js';
-import { promptEnhancerRoutes } from './routes/prompt-enhancer.js';
-import { platformAiRoutes } from './routes/platform-ai.js';
-import { installPlatformApiRegistry } from './services/platform-ai/api-registry.js';
-import { skillsRoutes } from './routes/skills.js';
-import { userStateRoutes } from './routes/user-state.js';
-import { scheduledTaskRoutes } from './routes/scheduled-tasks.js';
-import { startScheduledTaskScheduler, stopScheduledTaskScheduler } from './services/scheduled-task-runner.js';
-import { memorySessionReaper } from './services/memory-session-reaper.js';
-import { serverResourceSampler } from './services/server-resources.js';
-import { sweepAllPastes } from './services/paste-cleanup.js';
-import {
-  killAllSessions,
-  cleanupStaleRunningSessions,
-  autoReconnectDetachedSessions,
-  flushPendingPtyOutputWithRetry,
-  getReconnectStatus,
-  startPendingSessionWatchdog,
-} from './services/session-manager.js';
-import { shutdownCodexQuotaReader } from './services/codex-quota.js';
-import { config } from './config.js';
-import { authHook, isAdmin as isAdminUser } from './auth.js';
-import { authRoutes } from './routes/auth.js';
-import { userRoutes } from './routes/users.js';
-import { rbacRoutes } from './routes/rbac.js';
-import { appendFile, writeFile } from 'fs/promises';
+import {resolve,dirname} from 'path';
+import {fileURLToPath} from 'url';
+import {closeDb,initDb,getDb} from './db/index.js';
+import {eventRoutes} from './routes/events.js';
+import {sessionRoutes} from './routes/sessions.js';
+import {taskRoutes} from './routes/tasks.js';
+import {streamRoutes} from './routes/stream.js';
+import {projectRoutes,initProjects} from './routes/projects.js';
+import {terminalRoutes} from './routes/terminal.js';
+import {fileRoutes} from './routes/files.js';
+import {gitRoutes} from './routes/git.js';
+import {agentRoutes} from './routes/agent.js';
+import {settingsRoutes} from './routes/settings.js';
+import {sharedResourceRoutes} from './routes/shared-resources.js';
+import {promptEnhancerRoutes} from './routes/prompt-enhancer.js';
+import {platformAiRoutes} from './routes/platform-ai.js';
+import {installPlatformApiRegistry} from './services/platform-ai/api-registry.js';
+import {skillsRoutes} from './routes/skills.js';
+import {userStateRoutes} from './routes/user-state.js';
+import {scheduledTaskRoutes} from './routes/scheduled-tasks.js';
+import {startScheduledTaskScheduler,stopScheduledTaskScheduler} from './services/scheduled-task-runner.js';
+import {memorySessionReaper} from './services/memory-session-reaper.js';
+import {serverResourceSampler} from './services/server-resources.js';
+import {sweepAllPastes} from './services/paste-cleanup.js';
+import {killAllSessions,cleanupStaleRunningSessions,autoReconnectDetachedSessions,flushPendingPtyOutputWithRetry,getReconnectStatus,startPendingSessionWatchdog,} from './services/session-manager.js';
+import {agentDescriptors,getAgent} from './services/agents/index.js';
+import {detachManagedAgents} from './services/agents/host.js';
+import {config} from './config.js';
+import {authHook,isAdmin as isAdminUser} from './auth.js';
+import {authRoutes} from './routes/auth.js';
+import {userRoutes} from './routes/users.js';
+import {rbacRoutes} from './routes/rbac.js';
+import {appendFile,writeFile} from 'fs/promises';
 const timingLogPath = process.env.AGENTMANAGER_TIMING_LOG;
 const tlog = (message: string) => {
   if (!timingLogPath) return;
@@ -360,7 +354,7 @@ async function shutdown(exitCode = 0): Promise<void> {
   } catch (error) { recordFailure('PTY flush', error); }
   try { stopScheduledTaskScheduler(); } catch (error) { recordFailure('scheduler stop', error); }
   try { killAllSessions(); } catch (error) { recordFailure('session detach', error); }
-  try { shutdownCodexQuotaReader(); } catch (error) { recordFailure('quota reader stop', error); }
+  try { detachManagedAgents();for(const descriptor of agentDescriptors())await getAgent(descriptor.id).quota.shutdown?.(); } catch (error) { recordFailure('quota reader stop', error); }
   if (closeServer) await closeServer;
   try { getDb().pragma('wal_checkpoint(TRUNCATE)'); } catch (error) { recordFailure('database checkpoint', error); }
   try { closeDb(); } catch (error) { recordFailure('database close', error); }

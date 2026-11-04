@@ -2,7 +2,7 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {appendFileSync,mkdirSync,mkdtempSync,rmSync,writeFileSync,utimesSync} from 'fs';
 import {tmpdir} from 'os';
 import {join} from 'path';
-import {readCodexRuntime} from '../src/services/codex-runtime.js';
+import {readCodexRuntime} from '../src/services/agents/codex/runtime.js';
 import Fastify from 'fastify';
 import {authHook,createSession,createUser} from '../src/auth.js';
 import {getDb} from '../src/db/index.js';

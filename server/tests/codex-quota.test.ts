@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { codexWeeklyQuotaFromResponse } from '../src/services/codex-quota.js';
+import { codexWeeklyQuotaFromResponse } from '../src/services/agents/codex/quota.js';
 
 describe('Codex weekly quota parsing', () => {
   it('selects the seven-day window and converts used percentage to remaining percentage', () => {

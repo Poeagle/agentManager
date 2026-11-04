@@ -1,3 +1,4 @@
+import type {AgentFeature} from '../lib/agents';
 import {useEffect,useRef,useState} from 'react';
 import {useQuery,useQueryClient} from '@tanstack/react-query';
 import {ChevronDown,Info,RefreshCw,Minimize2,Plus,Loader2} from 'lucide-react';
@@ -33,14 +34,15 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const model=data?.models.find(m=>m.model===selected.model),usage=data?.usage;
   const context=usage?.window&&usage.last.total_tokens!=null?Math.min(100,Math.round(100*usage.last.total_tokens/usage.window)):null;
   const weekly=data?.limits.find(limit=>limit.minutes>=6*24*60);
+  const canEdit=(feature:AgentFeature)=>data?.can_edit_features?.[feature]??data?.can_edit??false;
   const compactReason=compacting?'上下文正在压缩中，请等待完成':!data?.can_edit?'此会话尚未接入实时控制，请先重载标签页':busy?'当前任务完成后可压缩':saving?'正在保存设置':operation?'正在处理会话操作':'压缩当前会话上下文，保留对话记录';
   async function save(value:{model:string;effort:string}|null) {
     if(saving)return;setSaving(true);setApplied(false);setError('');
-    try {const result=await api.agent.setControls(sessionId,value);queryClient.setQueryData<ConversationControlsData>(['conversation-controls',sessionId],previous=>previous?{...previous,pending:result.pending,...result.model?{model:result.model,effort:result.effort||null}:{}}:previous);setApplied(!!value);}
+    try {const result=await api.agent.setControls(sessionId,value);queryClient.setQueryData<ConversationControlsData>(['conversation-controls',sessionId],previous=>previous?{...previous,pending:result.pending,pending_status:result.pending_status,...!result.pending&&result.model?{model:result.model,effort:result.effort||null}:{}}:previous);setApplied(!!value&&!result.pending);}
     catch(failure){setError(failure instanceof Error?failure.message:'设置失败，请重试');}
     finally{setSaving(false);}
   }
-  useEffect(()=>{const pending=data?.pending;if(!active||!pending||!data?.can_edit)return;const key=JSON.stringify([sessionId,pending]);if(migrated.current===key)return;migrated.current=key;void save(pending);},[active,sessionId,data?.pending?.model,data?.pending?.effort,data?.can_edit]);
+  useEffect(()=>{const pending=data?.pending;if(!active||!pending||!data?.can_edit||data.pending_status==='submitted')return;const key=JSON.stringify([sessionId,pending]);if(migrated.current===key)return;migrated.current=key;void save(pending);},[active,sessionId,data?.pending?.model,data?.pending?.effort,data?.pending_status,data?.can_edit]);
   useEffect(()=>{if(!applied)return;const timer=setTimeout(()=>setApplied(false),4000);return()=>clearTimeout(timer);},[applied]);
   return <div className="conversation-controls-wrap">
     <div className="conversation-controls" aria-label="模型和会话信息">
@@ -48,21 +50,21 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         <label className="conversation-control-select"><span>模型</span><select aria-label="选择模型" value={selected.model} disabled={!data.can_edit||saving} title={model?.description||(!data.can_edit?'此会话暂不可切换模型，可查看原始终端':undefined)} onChange={event=>{const next=data.models.find(m=>m.model===event.target.value);if(next)void save({model:next.model,effort:next.efforts.some(e=>e.value===selected.effort)?selected.effort:next.defaultEffort});}}>
           {!model&&<option value={selected.model}>{selected.model||'未提供'}</option>}{data.models.map(m=><option key={m.model} value={m.model}>{m.name}</option>)}
         </select><ChevronDown size={12}/></label>
-        <label className="conversation-control-select"><span>强度</span><select aria-label="选择推理强度" value={selected.effort} disabled={!data.can_edit||!model||saving} onChange={event=>void save({model:selected.model,effort:event.target.value})}>
+        <label className="conversation-control-select"><span>强度</span><select aria-label="选择推理强度" value={selected.effort} disabled={!canEdit('effort')||!model||saving} onChange={event=>void save({model:selected.model,effort:event.target.value})}>
           {!model?.efforts.some(e=>e.value===selected.effort)&&<option value={selected.effort}>{selected.effort||'未提供'}</option>}{model?.efforts.map(e=><option key={e.value} value={e.value}>{effortNames[e.value]||e.value}（{e.value}）</option>)}
         </select><ChevronDown size={12}/></label>
-        {data.pending&&<span className="conversation-control-pending">之前的选择待同步 <button type="button" disabled={saving} onClick={()=>void save(data.pending)}>应用</button><button type="button" disabled={saving} onClick={()=>void save(null)}>取消</button></span>}
+        {data.pending&&<span className="conversation-control-pending">{data.pending_status==='submitted'?'已提交，等待原生模型确认':'之前的选择待同步'} {data.pending_status!=='submitted'&&<button type="button" disabled={saving} onClick={()=>void save(data.pending)}>应用</button>}<button type="button" disabled={saving} onClick={()=>void save(null)}>取消</button></span>}
         {applied&&!data.pending&&<span className="conversation-control-pending" role="status">已应用</span>}
         {context!==null&&<span className="conversation-control-context" title="最近一次模型请求的 Token 数占上下文窗口的比例，下一次请求可能变化。"><i><b style={{width:`${context}%`}}/></i>上下文 {context}%</span>}
-        <button type="button" disabled={!data.can_edit||busy||compacting||saving||!!operation} title={compactReason} onClick={()=>void perform('compact')}>{compacting||operation==='compact'?<Loader2 size={12} className="animate-spin"/>:<Minimize2 size={12}/>} {compacting||operation==='compact'?'压缩中…':'压缩'}</button>
-        {onNewConversation&&<button type="button" disabled={!data.can_edit||saving||!!operation} title="在当前标签页新开会话，保留旧记录并停止旧会话" onClick={()=>{let rawDraft=false;window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId,respond:(value:boolean)=>{rawDraft ||= value;}}}));if(rawDraft){setError('原始终端还有未发送内容，请先发送或清空。');return;}setError('');setNewOpen(true);}}><Plus size={12}/>{operation==='new'?'新开中…':'新开'}</button>}
+        <button type="button" disabled={!canEdit('compact')||busy||compacting||saving||!!operation} title={compactReason} onClick={()=>void perform('compact')}>{compacting||operation==='compact'?<Loader2 size={12} className="animate-spin"/>:<Minimize2 size={12}/>} {compacting||operation==='compact'?'压缩中…':'压缩'}</button>
+        {onNewConversation&&<button type="button" disabled={!canEdit('newConversation')||saving||!!operation} title="在当前标签页新开会话，保留旧记录并停止旧会话" onClick={()=>{let rawDraft=false;window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId,respond:(value:boolean)=>{rawDraft ||= value;}}}));if(rawDraft){setError('原始终端还有未发送内容，请先发送或清空。');return;}setError('');setNewOpen(true);}}><Plus size={12}/>{operation==='new'?'新开中…':'新开'}</button>}
         {weekly&&<span title={weekly.resets_at?`重置时间：${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>周额度剩余 {Math.round(100-weekly.used_percent)}%</span>}
         <span className="conversation-control-environment" aria-label="会话运行信息">
           {data.cwd&&<span className="conversation-control-directory" title={`工作目录：${data.cwd}`}>{data.cwd}</span>}
           {data.git&&<><span title="当前 Git 分支">{data.git.branch}</span><span title="工作区状态，每 5 分钟刷新，也可手动刷新">{data.git.changes?`${data.git.changes} 项变更`:'无变更'}</span></>}
           <span title="会话运行状态">{compacting?'压缩中':busy?'执行中':data.loaded?'等待输入':'未接入实时控制'}</span>
           {data.permission&&<span title="当前会话访问权限">{permissions[data.permission]||data.permission}</span>}
-          {data.engine_version&&<span title="当前连接的 Codex 服务版本">Codex {data.engine_version}</span>}
+          {data.engine_version&&<span title={`当前连接的 ${data.agent?.label||'Agent'} 服务版本`}>{data.agent?.label||'Agent'} {data.engine_version}</span>}
           {usage?.window!=null&&<span title={`上下文窗口容量：${usage.window.toLocaleString()} Token`}>窗口 {compact(usage.window)}</span>}
           {usage?.total.total_tokens!=null&&<span title={`会话累计用量：${usage.total.total_tokens.toLocaleString()} Token，包含重复上下文输入和缓存命中；不是当前上下文占用或金额`}>累计 {compact(usage.total.total_tokens)} Token</span>}
           {usage?.total.input_tokens!=null&&<span title={`会话累计输入：${usage.total.input_tokens.toLocaleString()} Token，包含缓存命中`}>输入 {compact(usage.total.input_tokens)}</span>}
@@ -83,9 +85,9 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   </div>;
 }
 function ControlDetails({data,onClose,onRefresh,refreshing}:{data:ConversationControlsData;onClose:()=>void;onRefresh:()=>void;refreshing:boolean}) {
-  const fields=[['当前模型',data.model],['当前推理强度',data.effort?`${effortNames[data.effort]||data.effort}（${data.effort}）`:null],['模型服务',data.provider],['访问权限',data.permission?permissions[data.permission]||data.permission:null],['执行确认',data.approval==='never'?'无需逐次确认':data.approval],['服务层级',data.service_tier],['工作目录',data.cwd],['当前分支',data.git?.branch],['工作区状态',data.git?data.git.changes?`${data.git.changes} 项变更`:'无变更':null],['会话状态',data.state==='active'?'执行中':data.state==='idle'?'等待输入':data.state==='notLoaded'?'未接入实时控制':data.state],['当前运行的 Codex 服务版本',data.engine_version]];
+  const fields=[['当前模型',data.model],['当前推理强度',data.effort?`${effortNames[data.effort]||data.effort}（${data.effort}）`:null],['模型服务',data.provider],['访问权限',data.permission?permissions[data.permission]||data.permission:null],['执行确认',data.approval==='never'?'无需逐次确认':data.approval],['服务层级',data.service_tier],['工作目录',data.cwd],['当前分支',data.git?.branch],['工作区状态',data.git?data.git.changes?`${data.git.changes} 项变更`:'无变更':null],['会话状态',data.state==='active'?'执行中':data.state==='idle'?'等待输入':data.state==='notLoaded'?'未接入实时控制':data.state],[`当前运行的 ${data.agent?.label||'Agent'} 服务版本`,data.engine_version]];
   return <Dialog title="会话详情" size="lg" onClose={onClose} actions={<button className="conversation-preview-dock" type="button" onClick={onRefresh} disabled={refreshing}><RefreshCw size={14} className={refreshing?'animate-spin':''}/>刷新</button>}>
-    {data.pending&&<p className="conversation-controls-note">之前保存的选择正在同步：{data.pending.model} · {data.pending.effort}。</p>}
+    {data.pending&&<p className="conversation-controls-note">{data.pending_status==='submitted'?'等待原生请求确认：':'之前保存的选择正在同步：'}{data.pending.model} · {data.pending.effort}。</p>}
     {data.warning&&<p role="status" className="conversation-controls-note">{data.warning}</p>}
     {!data.can_edit&&<p className="conversation-controls-note">当前显示只读信息。可在原始终端查看或修改该会话支持的设置。</p>}
     <ConversationUsagePanel usage={data.usage} observedAt={data.usage_observed_at}/>

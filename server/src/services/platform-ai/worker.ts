@@ -1,26 +1,27 @@
+import {agentForSession,agentDescriptors} from '../agents/index.js';
 import {quickQuery,configuredModelReply,projectListReply} from './quick-queries.js';
-import { compactConversation, completedConversation } from './context.js';
-import { reconcileScheduledObservations } from './scheduled-observation.js';
-import type { FastifyInstance } from 'fastify';
-import { createHash } from 'crypto';
-import { nanoid } from 'nanoid';
-import { z } from 'zod';
-import { getDb } from '../../db/index.js';
-import { userCanUseSessionTool } from '../../auth.js';
-import { getTracker } from '../session-state.js';
-import { readAiConfig, publicFailure, type AiConfig } from './config.js';
-import { ChannelError, deliverMessage, getChannel } from './channels.js';
-import { callModel, ModelRequestError, PLATFORM_SYSTEM_PROMPT, type ModelMessage, type ToolCall } from './model.js';
-import { messageAttachments, prepareImages } from './attachments.js';
-import { boundedToolResult, executePlatformTool, isMutatingTool, operationKey, platformApi, PlatformApiError, PLATFORM_TOOLS } from './tools.js';
-import { userHasPermission } from '../rbac.js';
-import { assertLiveUser, claimMessage, enqueueNotice, getConversation, trackTask, type Conversation, type InboxMessage, type TrackedTask } from './store.js';
-import { publishMessage, refreshConversation } from './live.js';
-import { subscribe, type Event as PlatformEvent } from '../event-store.js';
-import { getSession } from '../session-manager.js';
-import { sessionPresenter } from '../session-labels.js';
-import type { AgentTextMessage } from '../prompt-context.js';
-import { authorizeProjectNotice, ProjectNotifications } from './project-notifications.js';
+import {compactConversation,completedConversation} from './context.js';
+import {reconcileScheduledObservations} from './scheduled-observation.js';
+import type {FastifyInstance} from 'fastify';
+import {createHash} from 'crypto';
+import {nanoid} from 'nanoid';
+import {z} from 'zod';
+import {getDb} from '../../db/index.js';
+import {userCanUseSessionTool} from '../../auth.js';
+import {getTracker} from '../session-state.js';
+import {readAiConfig,publicFailure,type AiConfig} from './config.js';
+import {ChannelError,deliverMessage,getChannel} from './channels.js';
+import {callModel,ModelRequestError,PLATFORM_SYSTEM_PROMPT,type ModelMessage,type ToolCall} from './model.js';
+import {messageAttachments,prepareImages} from './attachments.js';
+import {boundedToolResult,executePlatformTool,isMutatingTool,operationKey,platformApi,PlatformApiError,PLATFORM_TOOLS} from './tools.js';
+import {userHasPermission} from '../rbac.js';
+import {assertLiveUser,claimMessage,enqueueNotice,getConversation,trackTask,type Conversation,type InboxMessage,type TrackedTask} from './store.js';
+import {publishMessage,refreshConversation} from './live.js';
+import {subscribe,type Event as PlatformEvent} from '../event-store.js';
+import {getSession} from '../session-manager.js';
+import {sessionPresenter} from '../session-labels.js';
+import type {AgentTextMessage} from '../prompt-context.js';
+import {authorizeProjectNotice,ProjectNotifications} from './project-notifications.js';
 
 const OBSERVATION_FALLBACK_MS = 5 * 60 * 1000;
 
@@ -448,9 +449,9 @@ export class PlatformAiWorker {
       const replies = (nextUser < 0 ? current : current.slice(0, nextUser)).filter(message => message.role === 'assistant');
       const latestFinal = task.source_ref ? [...replies].reverse().find(message => message.phase === 'final')?.text || '' : '';
       const nativeFinal = latestFinal || (task.source_ref ? await readFinal() : '');
-      const missingCommand = ended ? output.match(/(?:^|\n)([^\n]*(?:command not found: (?:claude|codex)|(?:claude|codex): command not found)[^\n]*)/i)?.[1] : undefined;
+      const missingCommand = ended ? output.split('\n').find((line:string)=>agentDescriptors().some(agent=>line.includes(`command not found: ${agent.id}`)||line.includes(`${agent.id}: command not found`))) : undefined;
       if (missingCommand && !nativeFinal) {
-        this.saveAssessment(task, {status: 'failed', summary: `${session.cli_type === 'codex' ? 'Codex' : 'Claude'} 启动失败：系统找不到启动命令，本次需求未执行。请选择已探测可用的 Agent 后重新下发。`, evidence: missingCommand.trim()}, now, true);
+        this.saveAssessment(task, {status: 'failed', summary: `${agentForSession(session).descriptor.label} 启动失败：系统找不到启动命令，本次需求未执行。请选择已探测可用的 Agent 后重新下发。`, evidence: missingCommand.trim()}, now, true);
         return;
       }
       if (['failed', 'cancelled'].includes(session.status) && !nativeFinal) {
@@ -549,7 +550,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         const task = item.dedupe_key.startsWith('task:') ? getDb().prepare('SELECT session_id FROM platform_ai_tasks WHERE id=?').get(item.dedupe_key.split(':')[1]) as {session_id: string} | undefined : undefined;
         if (task) {
           const session = getDb().prepare('SELECT mode,cli_type FROM sessions WHERE id=?').get(task.session_id) as {mode: string; cli_type: string} | undefined;
-          if (!session || !userCanUseSessionTool(conversation.user_id, task.session_id, session.cli_type === 'codex' ? 'codex' : 'claude', session.mode === 'terminal' ? 'terminal' : 'session')) throw new ChannelError('任务访问权限已失效', 403, true);
+          if (!session || !userCanUseSessionTool(conversation.user_id, task.session_id, agentForSession(session).descriptor.id, session.mode === 'terminal' ? 'terminal' : 'session')) throw new ChannelError('任务访问权限已失效', 403, true);
         }
         const destination = item.destination_channel_id || conversation.channel_id;
         const channel = getChannel(destination);

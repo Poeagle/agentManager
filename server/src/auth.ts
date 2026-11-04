@@ -5,18 +5,18 @@
  * Soft multi-tenant model: this enforces *who is logged in*. Per-row data
  * ownership/filtering lives in the route handlers (see projects.owner_id).
  */
-import { createHmac, randomBytes, scrypt, scryptSync, timingSafeEqual } from 'crypto';
-import { chmodSync, readFileSync, realpathSync, writeFileSync } from 'fs';
-import { dirname, join, resolve, sep } from 'path';
-import { nanoid } from 'nanoid';
-import type { FastifyRequest, FastifyReply } from 'fastify';
-import { getDb } from './db/index.js';
-import { config } from './config.js';
-import { runtimeNames } from './services/runtime-namespace.js';
-import { userHasPermission } from './services/rbac.js';
-import { SESSION_CLIENTS, parseSessionClients } from './services/session-clients.js';
+import {createHmac,randomBytes,scrypt,scryptSync,timingSafeEqual} from 'crypto';
+import {chmodSync,readFileSync,realpathSync,writeFileSync} from 'fs';
+import {dirname,join,resolve,sep} from 'path';
+import {nanoid} from 'nanoid';
+import type {FastifyRequest,FastifyReply} from 'fastify';
+import {getDb} from './db/index.js';
+import {config} from './config.js';
+import {runtimeNames} from './services/runtime-namespace.js';
+import {userHasPermission} from './services/rbac.js';
+import {sessionClients,parseSessionClients} from './services/session-clients.js';
 import {requestLoginMetadata,type LoginMetadata} from './services/login-metadata.js';
-import { privateResourcePath } from './services/shared-resources/path-guard.js';
+import {privateResourcePath} from './services/shared-resources/path-guard.js';
 
 export interface User {
   id: string;
@@ -384,7 +384,7 @@ export function getProjectToolAccess(userId: string, projectId: string | null | 
       project_id: projectId,
       canSession: true,
       canTerminal: true,
-      sessionClients: SESSION_CLIENTS.map((client) => client.id),
+      sessionClients: sessionClients().map((client) => client.id),
     };
   }
 
@@ -400,7 +400,7 @@ export function getProjectToolAccess(userId: string, projectId: string | null | 
       project_id: projectId,
       canSession: true,
       canTerminal: true,
-      sessionClients: SESSION_CLIENTS.map((client) => client.id),
+      sessionClients: sessionClients().map((client) => client.id),
     };
   }
 
@@ -500,14 +500,14 @@ export function userCanUseToolForProject(
   userId: string,
   projectId: string | null | undefined,
   toolMode: 'session' | 'terminal',
-  cliType: 'claude' | 'codex' = 'claude',
+  cliType: string = 'claude',
 ): boolean {
   const access = getProjectToolAccess(userId, projectId);
   if (!access) return false;
   return toolMode === 'terminal' ? access.canTerminal : access.canSession && access.sessionClients.includes(cliType);
 }
 
-export function userCanUseSessionTool(userId: string, sessionId: string, cliType: 'claude' | 'codex', toolMode: 'session' | 'terminal'): boolean {
+export function userCanUseSessionTool(userId: string, sessionId: string, cliType: string, toolMode: 'session' | 'terminal'): boolean {
   const row = getDb().prepare('SELECT project_id, mode, created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as
     | { project_id: string | null; mode: string | null; created_by_user_id: string | null }
     | undefined;

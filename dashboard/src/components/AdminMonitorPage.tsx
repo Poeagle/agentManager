@@ -1,3 +1,4 @@
+import {sessionAgent} from '../lib/agents';
 import { TableActionButton, TableActions } from './table/TableActions';
 import {loginDevice} from '../lib/login-device';
 import {formatConversationTimestamp} from '../lib/conversation-timing';
@@ -97,7 +98,7 @@ function statusMeta(status: string) {
 
 function sessionType(session: AdminMonitorSession): string {
   if (session.mode === 'terminal') return '终端';
-  return session.cli_type === 'codex' ? 'Codex 会话' : 'Claude 会话';
+  return `${sessionAgent(session).label} 会话`;
 }
 
 function tabIcon() {

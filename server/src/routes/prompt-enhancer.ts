@@ -358,7 +358,7 @@ export const promptEnhancerRoutes: FastifyPluginAsync = async (app) => {
     if (typeof prompt !== 'string' || !prompt.trim()) return reply.status(400).send({ error: 'prompt is required' });
     if (prompt.length > MAX_PROMPT_CHARS) return reply.status(400).send({ error: `prompt must be at most ${MAX_PROMPT_CHARS} characters` });
     const session = getDb().prepare(`
-      SELECT s.created_by_user_id, s.cli_type, s.claude_session_id, s.codex_session_id,
+      SELECT s.created_by_user_id, s.cli_type,s.agent_id,s.native_session_id, s.claude_session_id, s.codex_session_id,
         p.path AS project_path
       FROM sessions s
       LEFT JOIN projects p ON p.id = s.project_id

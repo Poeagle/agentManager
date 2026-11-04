@@ -5,7 +5,7 @@ import {tmpdir} from 'os';
 import {join} from 'path';
 import {WebSocketServer} from 'ws';
 import {inspectRetryThread,startRetryTurn} from '../src/services/conversation-retry.js';
-import {observeCodexConversation} from '../src/services/conversation-stream.js';
+import {observeCodexConversation} from '../src/services/agents/codex/stream.js';
 let server:Server,wss:WebSocketServer,dir:string,requests:Array<{method:string;params:any}>,state:string,turn:any,queued:boolean,stop:(()=>void)|undefined;
 beforeEach(async()=>{
  dir=mkdtempSync(join(tmpdir(),'retry-native-'));const path=join(dir,'socket');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',path);requests=[];state='idle';queued=false;turn={id:'failed',status:'failed',error:{message:'Selected model is at capacity.'},items:[]};server=createServer();wss=new WebSocketServer({server});

@@ -1,3 +1,4 @@
+import {sessionAgent,agentNativeId} from './agents';
 import {replaceEqualDeep,type QueryClient} from '@tanstack/react-query';
 import type {Session} from './api';
 /** A slow list response must not roll back a newer pushed runtime. */
@@ -7,12 +8,12 @@ export function mergeSessionRuntimeLists(previous:unknown,incoming:unknown):unkn
  const byId=new Map(old.sessions.map(session=>[session.id,session]));
  return replaceEqualDeep(previous,{...next,sessions:next.sessions.map(session=>{
   const prior=byId.get(session.id);
-  return prior?.codex_session_id===session.codex_session_id&&Date.parse(prior?.agent_runtime?.observed_at||'')>Date.parse(session.agent_runtime?.observed_at||'')?{...session,agent_runtime:prior!.agent_runtime,last_activity_at:prior!.last_activity_at}:session;
+  return !!prior&&sessionAgent(prior).id===sessionAgent(session).id&&agentNativeId(prior)===agentNativeId(session)&&Date.parse(prior?.agent_runtime?.observed_at||'')>Date.parse(session.agent_runtime?.observed_at||'')?{...session,agent_runtime:prior!.agent_runtime,last_activity_at:prior!.last_activity_at}:session;
  })});
 }
 export function cacheSessionRuntime(client:QueryClient,id:string,runtime:NonNullable<Session['agent_runtime']>){
   const update=(previous:{sessions:Session[]}|undefined)=>previous?{...previous,sessions:previous.sessions.map(session=>{
-    if(session.id!==id||session.codex_session_id!==runtime.session_id||Date.parse(session.agent_runtime?.observed_at||'')>Date.parse(runtime.observed_at))return session;
+    if(session.id!==id||agentNativeId(session)!==runtime.session_id||Date.parse(session.agent_runtime?.observed_at||'')>Date.parse(runtime.observed_at))return session;
     return {...session,agent_runtime:runtime,last_activity_at:runtime.last_activity_at};
   })}:previous;
   client.setQueriesData({queryKey:['sessions']},update);

@@ -1,3 +1,4 @@
+import {sessionAgent} from '../src/lib/agents';
 import {useEffect} from 'react';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {act,fireEvent,render,screen,waitFor} from '@testing-library/react';
@@ -23,6 +24,12 @@ afterEach(()=>{client.clear();vi.unstubAllGlobals();});
 function typeDraft(node:HTMLElement,value:string){node.textContent=value;fireEvent.input(node);}
 function mount(onReload?:()=>Promise<void>) {return render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active onReload={onReload} renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);}
 describe('chat/raw terminal display',()=>{
+  it('renders a service-backed agent without mounting a terminal or showing terminal controls',async()=>{
+    const remote={...session,cli_type:'remote_agent',native_session_id:'opaque/session',agent:{...sessionAgent(session),id:'remote_agent',label:'Remote Agent',sessionHost:'managed' as const}};page.native_id='opaque/session';
+    const terminal=vi.fn(()=>null);render(<QueryClientProvider client={client}><SessionWorkspacePane session={remote} userId="u" active renderTerminal={terminal}/></QueryClientProvider>);
+    await screen.findByText('检查已完成。');expect(screen.queryByRole('button',{name:'原始终端',exact:true})).not.toBeInTheDocument();expect(terminal).not.toHaveBeenCalled();
+  });
+
   it('shows progress completion time and statistics only after the message finishes',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
     vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});

@@ -1,3 +1,4 @@
+import {nativeConversationId} from './session-identity.js';
 import {createHash} from 'node:crypto';
 import {stat} from 'node:fs/promises';
 import {getDb} from '../db/index.js';
@@ -10,7 +11,7 @@ function inputHash(text:string){return createHash('sha256').update(text.replace(
  * fingerprint and file boundary before writing, then bind the new native user
  * record once. No extra log scan, prompt copy or model message is needed. */
 export async function rememberConversationInput(sessionId:string,binding:PromptContextSession,clientId:string,text:string){
-  const nativeId=binding.cli_type==='codex'?binding.codex_session_id:binding.claude_session_id;
+  const nativeId=nativeConversationId(binding);
   if(!nativeId)return;
   const file=await nativeConversationFile(binding);if(!file)return;
   const boundary=(await stat(file.path)).size,db=getDb();

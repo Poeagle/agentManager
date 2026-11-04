@@ -1,3 +1,4 @@
+import {agentSupports} from './agents';
 // Session status "signal lights" shown on session tabs (and aggregated on
 // project tabs). Maps the server's live process-state + persistent lifecycle
 // status onto a colored dot:
@@ -64,7 +65,7 @@ export function LiveSessionSignalDot({
 }) {
   const live = useStreamStore((s) => s.liveStates[session.id]);
   const terminal = session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled';
-  const signal = session.cli_type === 'codex' ? signalForSession(session, {}) : sessionSignal(session.status, terminal ? undefined : (live ?? liveFromSession(session)));
+  const signal = agentSupports(session,'runtime') ? signalForSession(session, {}) : sessionSignal(session.status, terminal ? undefined : (live ?? liveFromSession(session)));
   return <SessionSignalDot signal={signal} active={active} size={size} />;
 }
 

@@ -1,3 +1,4 @@
+vi.mock('../src/lib/api',async()=>{const actual=await vi.importActual<typeof import('../src/lib/api')>('../src/lib/api');return {...actual,fetchJSON:vi.fn(async(url:string)=>({path:new URL(url,'http://test').searchParams.get('path'),type:'file'}))};});
 import {fireEvent,render,screen,within} from '@testing-library/react';
 import {describe,expect,it,vi} from 'vitest';
 import {ConversationMessageAttachments} from '../src/components/ConversationAttachments';

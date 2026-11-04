@@ -1,3 +1,4 @@
+import {sessionAgent} from '../src/lib/agents';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,9 +23,9 @@ const session = { id: 'send-session', project_id: 'project', status: 'running', 
 function deferred<T>() { let resolve!: (value: T) => void, reject!: (reason: Error) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 type SendResult = Awaited<ReturnType<typeof api.agent.sendInput>>;
 function input(value: string) { const editor = screen.getByRole('textbox', { name: '发送给当前 Agent 的消息' }); editor.textContent = value; fireEvent.input(editor); return editor; }
-async function mount() {
+async function mount(target:Session=session) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={client}><SessionConversation session={session} active onRaw={() => {}} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><SessionConversation session={target} active onRaw={() => {}} /></QueryClientProvider>);
   await waitFor(() => expect(Socket.latest?.onmessage).toBeTruthy());
   act(() => Socket.latest.emit({ type: 'snapshot', messages: [], busy: false, stage: 'idle' }));
   await waitFor(() => expect(screen.getByText('事件通道已连接')).toBeInTheDocument());
@@ -38,6 +39,13 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('keeps dialogue usable while disabling unsupported attachment operations for another provider',async()=>{
+    const descriptor=sessionAgent(session),target={...session,cli_type:'remote',agent_id:'remote',native_session_id:'native',agent:{...descriptor,id:'remote',label:'Remote',capabilities:{...descriptor.capabilities,attachments:false}}};
+    const upload=vi.spyOn(api.sessions,'pasteFile').mockResolvedValue({path:'/project/note.txt'});await mount(target);
+    expect(screen.getByRole('button',{name:'上传图片或文件'})).toBeDisabled();expect(screen.getByRole('button',{name:'上传目录'})).toBeDisabled();
+    const editor=input('仍然可以输入文字');fireEvent.paste(editor,{clipboardData:{files:[new File(['note'],'note.txt')],getData:()=>''}});
+    expect(await screen.findByRole('alert')).toHaveTextContent('此 Agent 不支持附件');expect(upload).not.toHaveBeenCalled();expect(editor.textContent).toBe('仍然可以输入文字');
+  });
   it('clears the composer before a delayed HTTP acknowledgement, without clearing a newer draft', async () => {
     const send = deferred<SendResult>(); vi.spyOn(api.agent, 'sendInput').mockReturnValue(send.promise);
     await mount();

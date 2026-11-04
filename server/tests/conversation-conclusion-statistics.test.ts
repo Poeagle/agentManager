@@ -1,7 +1,7 @@
 import {afterEach,beforeEach,describe,expect,it} from 'vitest';
 import {mkdtempSync,writeFileSync,appendFileSync,copyFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';import {join} from 'node:path';
-import {readConversationStatistics} from '../src/services/conversation-statistics.js';
+import {readConversationStatistics} from '../src/services/agents/codex/statistics.js';
 let directory:string,file:string;
 const time=(seconds:number)=>new Date(Date.UTC(2026,10,3,0,0,seconds)).toISOString();
 const row=(seconds:number,type:string,payload:unknown)=>JSON.stringify({timestamp:time(seconds),type,payload})+'\n';

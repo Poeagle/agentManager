@@ -1,38 +1,32 @@
-import { runtimeNames } from './runtime-namespace.js';
-import { fork, execFile, execFileSync, spawn, type ChildProcess } from 'child_process';
-import { promisify } from 'util';
-import { createRequire } from 'module';
-import { readFile, readdirSync, readFileSync, writeFileSync as fsWriteFileSync, existsSync, appendFileSync, unlinkSync, mkdirSync, openSync, readSync, closeSync, readlinkSync, renameSync, statSync, type Dirent } from 'fs';
-import { join, dirname, resolve } from 'path';
-import { homedir } from 'os';
-import { fileURLToPath } from 'url';
-import { randomUUID } from 'crypto';
-import { getDb } from '../db/index.js';
-import { insertEvent, broadcastEphemeral } from './event-store.js';
-import { config } from '../config.js';
-import { getSetting } from '../routes/settings.js';
-import { nanoid } from 'nanoid';
-import type { WebSocket } from 'ws';
-import { getOrCreateTracker, getTracker, removeTracker, recoverFromBuffer } from './session-state.js';
-import { encodeDir } from './claude-history.js';
-import { inaccessibleProjectPaths, isAdmin } from '../auth.js';
-import { tmuxCursorRestoreSequence } from '../lib/terminal-cursor.js';
-import { withAllPermissions,shellSingleQuote, withSharedResourceInstructions } from './cli-command.js';
-import { sharedResourceLaunch } from './shared-resources/store.js';
-import {compactCodexConversation,prepareFreshCodexConversation,releaseCodexConversation} from './conversation-actions.js';
+import {isManagedAgentActive,attachManagedAgent,detachManagedAgent} from './agents/host.js';
+import {storeAgentNativeId} from './agents/identity-store.js';
+import {agentForSession,getAgent,agentDescriptors} from './agents/index.js';
+import {sessionAgentContext,presentAgentSession} from './agents/session.js';
+import {runtimeNames} from './runtime-namespace.js';
+import {fork,execFile,execFileSync,spawn,type ChildProcess} from 'child_process';
+import {promisify} from 'util';
+import {createRequire} from 'module';
+import {readFile,readdirSync,readFileSync,writeFileSync as fsWriteFileSync,existsSync,appendFileSync,unlinkSync} from 'fs';
+import {join,dirname,resolve} from 'path';
+import {homedir} from 'os';
+import {fileURLToPath} from 'url';
+import {getDb} from '../db/index.js';
+import {insertEvent,broadcastEphemeral} from './event-store.js';
+import {config} from '../config.js';
+import {getSetting} from '../routes/settings.js';
+import {nanoid} from 'nanoid';
+import type {WebSocket} from 'ws';
+import {getOrCreateTracker,getTracker,removeTracker,recoverFromBuffer} from './session-state.js';
+import {inaccessibleProjectPaths,isAdmin} from '../auth.js';
+import {tmuxCursorRestoreSequence} from '../lib/terminal-cursor.js';
+import {withSharedResourceInstructions} from './cli-command.js';
+import {sharedResourceLaunch} from './shared-resources/store.js';
+
 import {snapshotConversation,activateFreshConversation,restoreConversationSnapshot} from './conversation-history.js';
-import {createStreamingCodexThread,interruptStreamingCodexThread,configureStreamingSharedResources,withCodexConnection} from './conversation-stream.js';
-import {readCodexRuntime} from './codex-runtime.js';
-import {
-  type CodexRolloutCandidate,
-  cliTypeFromArgv,
-  codexRolloutCandidateFromPrefix,
-  codexSessionIdFromOpenTargets,
-  explicitClaudeSessionId,
-  nativeConversationId,
-  selectCodexRolloutCandidate,
-  selectClaudeSessionCandidate,
-} from './session-identity.js';
+
+
+import {cliTypeFromArgv,nativeConversationId} from './session-identity.js';
+import {procTree,procArgs} from './agents/process.js';
 
 const nodeRequire = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = nodeRequire('@xterm/headless') as { Terminal: any };
@@ -158,7 +152,8 @@ export interface Session {
   created_by_user_id: string | null;
   claude_session_id: string | null;
   codex_session_id: string | null;
-  cli_type?: 'claude' | 'codex';
+  cli_type?: string;
+  agent_id?:string|null;native_session_id?:string|null;agent?:import('./agents/types.js').AgentDescriptor;
   started_at: string | null;
   completed_at: string | null;
   exit_code: number | null;
@@ -179,7 +174,7 @@ interface ActiveSession {
   cols: number; // last known terminal column width
   rows: number; // last known terminal row height
   task: string; // 'Terminal' for plain shells, task description for session
-  cliType?: 'claude' | 'codex'; // CLI type — Codex needs special capture handling
+  cliType?: string; // Registered terminal agent identifier
   externalSocket?: string; // external dtach socket (adopted sessions)
   replayBuffer: string[];  // ring buffer of recent output chunks for instant replay
   replayBytes: number;     // total bytes in replayBuffer
@@ -362,7 +357,7 @@ interface PendingSpawn {
   mode: 'session' | 'terminal' | 'adopt';
   projectId?: string;
   socketPath?: string;  // for adopt mode
-  cliType?: 'claude' | 'codex';
+  cliType?: string;
 }
 const pendingSpawns = new Map<string, PendingSpawn>();
 
@@ -407,159 +402,7 @@ export function subscribeSessionLifecycle(
   };
 }
 
-/* Durable Codex identity bridge. Fresh Codex TUI sessions choose their own
- * UUID, so a per-launch SessionStart hook writes it here. Keeping the binding
- * next to the SQLite DB means it survives both process and machine restarts. */
-const CODEX_BINDINGS_DIR = join(dirname(config.dbPath), 'codex-bindings');
-const CODEX_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function codexBindingPath(sessionId: string): string {
-  mkdirSync(CODEX_BINDINGS_DIR, { recursive: true });
-  return join(CODEX_BINDINGS_DIR, `${sessionId}.json`);
-}
-
-/** Read a hook-written binding and persist it into the canonical session row. */
-function ingestCodexSessionBinding(sessionId: string): string | null {
-  try {
-    const parsed = JSON.parse(readFileSync(codexBindingPath(sessionId), 'utf8')) as { session_id?: unknown };
-    const nativeId = typeof parsed.session_id === 'string' ? parsed.session_id : '';
-    if (!CODEX_SESSION_ID_RE.test(nativeId)) return null;
-    const row = getDb().prepare('SELECT cli_type, codex_session_id FROM sessions WHERE id = ?').get(sessionId) as {
-      cli_type: string | null;
-      codex_session_id: string | null;
-    } | undefined;
-    if (!row || row.cli_type !== 'codex') return null;
-    // A SessionStart hook also runs on resume. It must confirm the same UUID,
-    // never silently rebind an existing tab to a different Codex conversation.
-    if (row.codex_session_id && row.codex_session_id !== nativeId) {
-      console.warn(`  Ignoring conflicting Codex binding for ${sessionId}: ${nativeId}`);
-      return null;
-    }
-    if (!row.codex_session_id) {
-      getDb().prepare('UPDATE sessions SET codex_session_id = ?, updated_at = datetime(\'now\') WHERE id = ?')
-        .run(nativeId, sessionId);
-      console.log(`  Captured Codex conversation ${nativeId} for session ${sessionId}`);
-    }
-    return nativeId;
-  } catch {
-    return null;
-  }
-}
-
-/** Pick up bindings that were written just before the server crashed/rebooted. */
-function ingestAllCodexSessionBindings(): void {
-  try {
-    mkdirSync(CODEX_BINDINGS_DIR, { recursive: true });
-    for (const name of readdirSync(CODEX_BINDINGS_DIR)) {
-      const match = /^([A-Za-z0-9_-]{6,64})\.json$/.exec(name);
-      if (match) ingestCodexSessionBinding(match[1]);
-    }
-  } catch { /* non-fatal */ }
-}
-
-function readFilePrefix(path: string, maxBytes = 512 * 1024): string {
-  let fd: number | null = null;
-  try {
-    fd = openSync(path, 'r');
-    const buffer = Buffer.allocUnsafe(maxBytes);
-    const bytes = readSync(fd, buffer, 0, maxBytes, 0);
-    return buffer.subarray(0, bytes).toString('utf8');
-  } catch {
-    return '';
-  } finally {
-    if (fd !== null) try { closeSync(fd); } catch { /* ignore */ }
-  }
-}
-
-function collectCodexRollouts(dir: string, result: CodexRolloutCandidate[]): void {
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      collectCodexRollouts(path, result);
-      continue;
-    }
-    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
-    const idMatch = /([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.jsonl$/i.exec(entry.name);
-    if (!idMatch) continue;
-    const candidate = codexRolloutCandidateFromPrefix(readFilePrefix(path), idMatch[1]);
-    if (candidate) result.push(candidate);
-  }
-}
-
-/**
- * Upgrade path for Codex tabs created before native UUID capture existed.
- * Bind only a unique path/time (and, when necessary, first-prompt) match. An
- * ambiguous legacy session is deliberately left unbound instead of risking a
- * tab opening the wrong conversation.
- */
-function backfillLegacyCodexSessionIds(): Set<string> {
-  const db = getDb();
-  const unbound = db.prepare(`
-    SELECT s.id, s.task, s.created_at, p.path AS project_path
-    FROM sessions s JOIN projects p ON p.id = s.project_id
-    WHERE s.codex_session_id IS NULL
-      AND s.claude_session_id IS NULL
-      AND (s.cli_type = 'codex' OR s.task = 'Terminal')
-  `).all() as Array<{ id: string; task: string; created_at: string; project_path: string }>;
-  if (unbound.length === 0) return new Set();
-
-  const rollouts: CodexRolloutCandidate[] = [];
-  const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
-  collectCodexRollouts(join(codexHome, 'sessions'), rollouts);
-  if (rollouts.length === 0) return new Set();
-
-  const used = new Set(
-    (db.prepare('SELECT codex_session_id FROM sessions WHERE codex_session_id IS NOT NULL').all() as Array<{ codex_session_id: string }>)
-      .map((row) => row.codex_session_id),
-  );
-  let captured = 0;
-  let ambiguous = 0;
-  const capturedIds = new Set<string>();
-  for (const session of unbound) {
-    const createdAt = Date.parse(`${session.created_at.replace(' ', 'T')}Z`);
-    if (!Number.isFinite(createdAt)) continue;
-    const expectedPrompt = session.task === 'Terminal'
-      ? ''
-      : session.task.startsWith('Agent (') && session.task.includes('): ')
-        ? session.task.slice(session.task.indexOf('): ') + 3)
-        : session.task;
-    const nativeId = selectCodexRolloutCandidate(createdAt, session.project_path, rollouts, used, expectedPrompt);
-    if (!nativeId) {
-      const possibleMatches = rollouts.filter((rollout) =>
-        !used.has(rollout.id)
-        && rollout.cwd === session.project_path
-        && Math.abs(rollout.startedAt - createdAt) <= 5 * 60 * 1000,
-      );
-      if (possibleMatches.length > 1) ambiguous++;
-      continue;
-    }
-    db.prepare(`
-      UPDATE sessions SET cli_type = 'codex', codex_session_id = ?, claude_session_id = NULL,
-        updated_at = datetime('now')
-      WHERE id = ? AND codex_session_id IS NULL AND claude_session_id IS NULL
-    `)
-      .run(nativeId, session.id);
-    used.add(nativeId);
-    capturedIds.add(session.id);
-    captured++;
-  }
-  if (captured > 0) console.log(`  Backfilled ${captured} legacy Codex conversation binding(s)`);
-  if (ambiguous > 0) console.warn(`  Left ${ambiguous} legacy Codex session(s) unbound because multiple conversations matched`);
-  return capturedIds;
-}
-
-/** Poll briefly after launch so the mapping reaches SQLite immediately. */
-function watchCodexSessionBinding(sessionId: string, attempts = 150): void {
-  if (ingestCodexSessionBinding(sessionId) || attempts <= 0) return;
-  const timer = setTimeout(() => watchCodexSessionBinding(sessionId, attempts - 1), 200);
-  timer.unref();
-}
+export {codexBindingPath,watchCodexSessionBinding} from './agents/codex/binding.js';
 
 /* ================================================================
    Plain-terminal CLI identity detection
@@ -571,48 +414,15 @@ function watchCodexSessionBinding(sessionId: string, attempts = 150): void {
    ================================================================ */
 
 interface DetectedCliIdentity {
-  cliType: 'claude' | 'codex';
+  cliType: string;
   nativeId: string;
   pid: number;
 }
 
 const terminalCliMonitorTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const terminalCliMonitorIdentities = new Map<string, DetectedCliIdentity>();
-const terminalCliRolloutScans = new Map<string, { pid: number; scannedAt: number }>();
-let clockTicksPerSecond: number | null = null;
 
-function procChildren(pid: number): number[] {
-  try {
-    return readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8')
-      .trim().split(/\s+/).filter(Boolean).map(Number).filter(Number.isFinite);
-  } catch {
-    return [];
-  }
-}
-
-function procTree(rootPid: number, limit = 128): number[] {
-  const result: number[] = [];
-  const queue = [rootPid];
-  const seen = new Set<number>();
-  while (queue.length > 0 && result.length < limit) {
-    const pid = queue.shift()!;
-    if (!Number.isFinite(pid) || pid <= 0 || seen.has(pid)) continue;
-    seen.add(pid);
-    result.push(pid);
-    queue.push(...procChildren(pid));
-  }
-  return result;
-}
-
-function procArgs(pid: number): string[] {
-  try {
-    return readFileSync(`/proc/${pid}/cmdline`).toString().split('\0').filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function findCliProcess(rootPid: number): { pid: number; cliType: 'claude' | 'codex'; args: string[] } | null {
+function findCliProcess(rootPid: number): { pid: number; cliType: string; args: string[] } | null {
   // Breadth-first order chooses the top-level CLI, not one of its descendants
   // such as codex-code-mode-host.
   for (const pid of procTree(rootPid)) {
@@ -621,116 +431,6 @@ function findCliProcess(rootPid: number): { pid: number; cliType: 'claude' | 'co
     if (cliType) return { pid, cliType, args };
   }
   return null;
-}
-
-function codexIdFromOpenRollout(cliPid: number): string | null {
-  const targets: string[] = [];
-  // The Codex TUI keeps its active rollout JSONL open. Search the CLI and its
-  // descendants in case a release moves the writer into a child process.
-  for (const pid of procTree(cliPid, 64)) {
-    let fds: string[] = [];
-    try { fds = readdirSync(`/proc/${pid}/fd`); } catch { continue; }
-    for (const fd of fds) {
-      try {
-        targets.push(readlinkSync(`/proc/${pid}/fd/${fd}`));
-      } catch { /* fd closed during inspection */ }
-    }
-  }
-  return codexSessionIdFromOpenTargets(targets);
-}
-
-function processStartedAt(pid: number): number | null {
-  try {
-    if (!clockTicksPerSecond) {
-      clockTicksPerSecond = parseInt(execFileSync('getconf', ['CLK_TCK'], { encoding: 'utf8' }).trim(), 10) || 100;
-    }
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const closeParen = stat.lastIndexOf(')');
-    if (closeParen < 0) return null;
-    // Fields after comm start at proc field 3; starttime is field 22 => index 19.
-    const fields = stat.slice(closeParen + 2).trim().split(/\s+/);
-    const startTicks = Number(fields[19]);
-    const uptimeSeconds = Number(readFileSync('/proc/uptime', 'utf8').split(/\s+/)[0]);
-    if (!Number.isFinite(startTicks) || !Number.isFinite(uptimeSeconds)) return null;
-    return Date.now() - (uptimeSeconds - startTicks / clockTicksPerSecond) * 1000;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Fallback for Codex releases/process layouts that don't keep the rollout file
- * open. Search only the launch day's nearby directories, then require a unique
- * cwd + process-start match before binding the Terminal to a conversation.
- */
-function codexIdFromProjectRollout(cliPid: number, projectPath: string, appSessionId: string): string | null {
-  const now = Date.now();
-  const previous = terminalCliRolloutScans.get(appSessionId);
-  if (previous?.pid === cliPid && now - previous.scannedAt < 2_000) return null;
-  terminalCliRolloutScans.set(appSessionId, { pid: cliPid, scannedAt: now });
-
-  const startedAt = processStartedAt(cliPid);
-  if (!startedAt) return null;
-  const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
-  const sessionRoot = join(codexHome, 'sessions');
-  const rollouts: CodexRolloutCandidate[] = [];
-  const visited = new Set<string>();
-  for (const offset of [-24 * 60 * 60 * 1000, 0, 24 * 60 * 60 * 1000]) {
-    const date = new Date(startedAt + offset);
-    const dir = join(
-      sessionRoot,
-      String(date.getUTCFullYear()),
-      String(date.getUTCMonth() + 1).padStart(2, '0'),
-      String(date.getUTCDate()).padStart(2, '0'),
-    );
-    if (visited.has(dir)) continue;
-    visited.add(dir);
-    collectCodexRollouts(dir, rollouts);
-  }
-  if (rollouts.length === 0) return null;
-  const used = new Set(
-    (getDb().prepare(`
-      SELECT codex_session_id FROM sessions
-      WHERE id != ? AND codex_session_id IS NOT NULL
-    `).all(appSessionId) as Array<{ codex_session_id: string }>).map((row) => row.codex_session_id),
-  );
-  return selectCodexRolloutCandidate(startedAt, projectPath, rollouts, used, '', 30_000);
-}
-
-function claudeIdFromProjectLog(cliPid: number, args: string[], projectPath: string, appSessionId: string): string | null {
-  const explicit = explicitClaudeSessionId(args);
-  if (explicit) return explicit;
-
-  const startedAt = processStartedAt(cliPid);
-  if (!startedAt) return null;
-  const dir = join(homedir(), '.claude', 'projects', encodeDir(projectPath));
-  let files: string[] = [];
-  try {
-    files = readdirSync(dir).filter((name) => UUID_RE.test(name.replace(/\.jsonl$/, '')) && name.endsWith('.jsonl'));
-  } catch {
-    return null;
-  }
-
-  const used = new Set(
-    (getDb().prepare(`
-      SELECT claude_session_id FROM sessions
-      WHERE id != ? AND claude_session_id IS NOT NULL
-    `).all(appSessionId) as Array<{ claude_session_id: string }>).map((row) => row.claude_session_id),
-  );
-  const candidates: Array<{ id: string; startedAt: number }> = [];
-  for (const file of files) {
-    const id = file.slice(0, -'.jsonl'.length);
-    if (used.has(id)) continue;
-    const path = join(dir, file);
-    const prefix = readFilePrefix(path, 64 * 1024);
-    const timestamp = /"timestamp":"([^"]+)"/.exec(prefix)?.[1];
-    let fileStartedAt = timestamp ? Date.parse(timestamp) : NaN;
-    if (!Number.isFinite(fileStartedAt)) {
-      try { fileStartedAt = statSync(path).birthtimeMs || statSync(path).ctimeMs; } catch { continue; }
-    }
-    candidates.push({ id, startedAt: fileStartedAt });
-  }
-  return selectClaudeSessionCandidate(startedAt, candidates, used);
 }
 
 async function terminalRootPid(sessionId: string): Promise<number | null> {
@@ -769,7 +469,7 @@ export async function getSessionProcessRootPid(sessionId: string): Promise<numbe
 }
 
 /** Fresh process check before routing natural-language input to a terminal tab. */
-export async function getLiveWorkAgent(sessionId: string): Promise<'claude' | 'codex' | null> {
+export async function getLiveWorkAgent(sessionId: string): Promise<string | null> {
   if (!isSessionActive(sessionId)) return null;
   const rootPid = await terminalRootPid(sessionId);
   return rootPid ? findCliProcess(rootPid)?.cliType || null : null;
@@ -778,32 +478,16 @@ export async function getLiveWorkAgent(sessionId: string): Promise<'claude' | 'c
 function persistTerminalCliIdentity(sessionId: string, identity: DetectedCliIdentity): void {
   const db = getDb();
   const row = db.prepare(`
-    SELECT task, project_id, cli_type, claude_session_id, codex_session_id
-    FROM sessions WHERE id = ?
-  `).get(sessionId) as Pick<Session, 'task' | 'project_id' | 'cli_type' | 'claude_session_id' | 'codex_session_id'> | undefined;
+    SELECT * FROM sessions WHERE id = ?
+  `).get(sessionId) as Session | undefined;
   if (!row || row.task !== 'Terminal') return;
   const oldNativeId = nativeConversationId(row);
   if (row.cli_type === identity.cliType && oldNativeId === identity.nativeId) return;
 
-  if (identity.cliType === 'codex') {
-    db.prepare(`
-      UPDATE sessions SET cli_type = 'codex', codex_session_id = ?, claude_session_id = NULL,
-        updated_at = datetime('now') WHERE id = ? AND task = 'Terminal'
-    `).run(identity.nativeId, sessionId);
-    // Mirror hook-created bindings so a DB restart can ingest the identity even
-    // if it happened immediately after this write.
-    try {
-      const target = codexBindingPath(sessionId);
-      const temp = `${target}.${process.pid}.tmp`;
-      fsWriteFileSync(temp, JSON.stringify({ session_id: identity.nativeId, source: 'terminal-process', captured_at: new Date().toISOString() }));
-      renameSync(temp, target);
-    } catch { /* DB remains canonical */ }
-  } else {
-    db.prepare(`
-      UPDATE sessions SET cli_type = 'claude', claude_session_id = ?, codex_session_id = NULL,
-        updated_at = datetime('now') WHERE id = ? AND task = 'Terminal'
-    `).run(identity.nativeId, sessionId);
-  }
+  const adapter=getAgent(identity.cliType);
+  const context=sessionAgentContext({...row,id:sessionId,agent_id:identity.cliType,cli_type:identity.cliType});
+  storeAgentNativeId(context.session as import('./agents/types.js').AgentSession&{id:string},identity.nativeId);
+  void adapter.lifecycle.bind(context,identity.nativeId).catch(()=>{});
 
   const active = activeSessions.get(sessionId);
   if (active) active.cliType = identity.cliType;
@@ -826,9 +510,8 @@ async function inspectTerminalCli(sessionId: string, projectPath: string): Promi
   }
   const previous = terminalCliMonitorIdentities.get(sessionId);
   if (previous?.pid === cli.pid && previous.cliType === cli.cliType) return;
-  const nativeId = cli.cliType === 'codex'
-    ? codexIdFromOpenRollout(cli.pid) || codexIdFromProjectRollout(cli.pid, projectPath, sessionId)
-    : claudeIdFromProjectLog(cli.pid, cli.args, projectPath, sessionId);
+  const context=sessionAgentContext({...getSession(sessionId)!,agent_id:cli.cliType,cli_type:cli.cliType},{projectPath});
+  const nativeId=await getAgent(cli.cliType).identity.discoverTerminal?.(context,cli.pid,cli.args);
   if (!nativeId) return;
   const identity = { ...cli, nativeId };
   persistTerminalCliIdentity(sessionId, identity);
@@ -840,7 +523,6 @@ function stopTerminalCliMonitor(sessionId: string): void {
   if (timer) clearTimeout(timer);
   terminalCliMonitorTimers.delete(sessionId);
   terminalCliMonitorIdentities.delete(sessionId);
-  terminalCliRolloutScans.delete(sessionId);
 }
 
 function startTerminalCliMonitor(sessionId: string, projectPath: string): void {
@@ -1528,21 +1210,7 @@ function dtachListAgentmanagerSessions(): string[] {
    Worker lifecycle — fork a child process per session
    ================================================================ */
 
-/** Snapshot existing .jsonl UUIDs in a Claude project dir (for diffing after spawn) */
-function snapshotClaudeSessionFiles(projectPath: string): Set<string> {
-  const claudeProjectDir = join(homedir(), '.claude', 'projects', encodeDir(projectPath));
-  try {
-    return new Set(
-      readdirSync(claudeProjectDir)
-        .filter(f => f.endsWith('.jsonl') && !f.includes('-topic-'))
-        .map(f => f.replace('.jsonl', ''))
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export {snapshotClaudeSessionFiles} from './agents/claude/identity.js';
 
 // Trackers that already have a dashboard-stream broadcast listener attached, so
 // reconnects (which reuse the same tracker) don't stack duplicate listeners.
@@ -1668,57 +1336,9 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
 
   activeSessions.set(sessionId, active);
 
-  // Track Claude session UUID — persist to DB once found
-  let uuidPersisted = false;
-
-  function persistUuid(uuid: string): void {
-    if (uuidPersisted) return;
-    uuidPersisted = true;
-    try {
-      const db = getDb();
-      db.prepare('UPDATE sessions SET claude_session_id = ? WHERE id = ? AND claude_session_id IS NULL')
-        .run(uuid, sessionId);
-      console.log(`  Captured Claude session UUID ${uuid} for session ${sessionId}`);
-    } catch { /* ignore */ }
-
-    if (projectPath) {
-      const sanitized = encodeDir(projectPath);
-      const jsonlPath = join(homedir(), '.claude', 'projects', sanitized, uuid + '.jsonl');
-      tracker.setJsonlFile(jsonlPath);
-      console.log(`  JSONL output file: ${jsonlPath}`);
-    }
-  }
-
-  // Fallback: diff ~/.claude/projects/<path>/ against pre-spawn snapshot
-  if (projectPath && preSpawnFiles) {
-    const claudeProjectDir = join(homedir(), '.claude', 'projects', encodeDir(projectPath));
-    let fileScanDone = false;
-    const unsub = tracker.onStateChange(async (state) => {
-      if (fileScanDone || uuidPersisted) { fileScanDone = true; return; }
-      if (state.processState === 'waiting_for_input' || state.processState === 'idle') {
-        fileScanDone = true;
-        unsub();
-        try {
-          const { readdir, stat: statAsync } = await import('fs/promises');
-          const allFiles = await readdir(claudeProjectDir);
-          const currentFiles = allFiles
-            .filter(f => f.endsWith('.jsonl') && !f.includes('-topic-'))
-            .map(f => f.replace('.jsonl', ''));
-          const newFiles = currentFiles.filter(f => !preSpawnFiles.has(f) && UUID_RE.test(f));
-          if (newFiles.length === 1) {
-            persistUuid(newFiles[0]);
-          } else if (newFiles.length > 1) {
-            const sorted = await Promise.all(newFiles.map(async f => {
-              const st = await statAsync(join(claudeProjectDir, f + '.jsonl'));
-              return { uuid: f, mtime: st.mtimeMs };
-            }));
-            sorted.sort((a, b) => b.mtime - a.mtime);
-            persistUuid(sorted[0].uuid);
-          }
-        } catch { /* dir may not exist yet */ }
-      }
-    });
-  }
+  const identityContext=sessionAgentContext({...getSession(sessionId)!,project_path:projectPath});
+  const identityPort=agentForSession(identityContext.session).identity;
+  identityPort.watchTerminal?.(identityContext,preSpawnFiles);
 
   // Handle IPC messages from the worker
   worker.on('message', (msg: any) => {
@@ -1745,9 +1365,7 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
         if (msg.track) {
           tracker.onData(msg.data);
           dashboardActivityBroadcasters.get(tracker)?.(tracker.state.lastActivity);
-          if (!uuidPersisted && active.cliType !== 'codex' && tracker.claudeSessionId) {
-            persistUuid(tracker.claudeSessionId);
-          }
+          identityPort.captureTerminal?.(identityContext);
         }
 
         if (msg.display !== false) {
@@ -1949,7 +1567,7 @@ export function createSession(
   _projectPath: string,
   task: string,
   projectId?: string,
-  cliType: 'claude' | 'codex' = 'claude',
+  cliType: string = 'claude',
   createdByUserId?: string,
   mode: 'session' | 'terminal' = 'session',
 ): Session {
@@ -1964,46 +1582,24 @@ export function createSession(
   return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
 }
 
-/**
- * Assign a Claude conversation id up front and persist it immediately, so the
- * tmux↔conversation mapping is deterministic and the session is resumable even
- * if output-based capture never fires. Passed to the worker as `assignSessionId`
- * (→ `claude --session-id <uuid>`). Only for fresh Claude launches. The later
- * capture path is a no-op here since it only writes when claude_session_id IS NULL.
- */
-function assignClaudeSessionId(sessionId: string): string {
-  const uuid = randomUUID();
-  try {
-    getDb().prepare('UPDATE sessions SET claude_session_id = ? WHERE id = ? AND claude_session_id IS NULL').run(uuid, sessionId);
-  } catch { /* non-fatal — capture path can still fill it in */ }
-  return uuid;
-}
-
 /** Resolve the configured command and always launch AI CLIs without approval gates. */
-function projectCliCommand(settingKey: string, cliType: 'claude' | 'codex',projectPath?:string,streamSocket?:string|null): string {
+function projectCliCommand(settingKey: string, cliType: string,projectPath?:string,streamSocket?:string|null): string {
   const command = getSetting(settingKey) || cliType;
-  const cwd=cliType==='codex' && streamSocket && projectPath ? ` --cd ${shellSingleQuote(projectPath)}` : '';
-  // The remote engine owns permissions. Its terminal client rejects local
-  // permission overrides on resume; thread/start already sets the policy.
-  if(cwd) return command.replace(/(?:^|\s)(?:--dangerously-bypass-approvals-and-sandbox|--yolo)(?=\s|$)/g,' ').trim()+cwd;
-  return withAllPermissions(command, cliType)+cwd;
+  return getAgent(cliType).commands.configure(command,projectPath,streamSocket);
 }
 
-/** Shared full-access engines are only suitable for administrator sessions.
- * Members keep the original per-worker sandbox and embedded CLI transport. */
-function codexStreamSocketForUser(userId:string|null|undefined):string|null {
-  return process.env.AGENTMANAGER_CODEX_STREAM_SOCKET && (!userId || isAdmin(userId))
-    ? process.env.AGENTMANAGER_CODEX_STREAM_SOCKET : null;
-}
-
-async function spawnSessionUnlocked(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
-  if (activeSessions.has(sessionId)) return;
+async function spawnSessionUnlocked(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: string = 'claude'): Promise<void> {
+  if (activeSessions.has(sessionId)||isManagedAgentActive(sessionId)) return;
   const creator = getDb().prepare('SELECT created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as { created_by_user_id: string | null } | undefined;
-  const streamSocket=cliType==='codex'?codexStreamSocketForUser(creator?.created_by_user_id):null;
-  const shared = sharedResourceLaunch(creator?.created_by_user_id, projectPath);
-  const reservedCodexId=streamSocket ? await createStreamingCodexThread(projectPath,task,shared?.instructions) : undefined;
-  if(reservedCodexId) getDb().prepare('UPDATE sessions SET codex_session_id=? WHERE id=?').run(reservedCodexId,sessionId);
-  const preSpawnFiles = cliType === 'claude' ? snapshotClaudeSessionFiles(projectPath) : undefined;
+  const adapter=getAgent(cliType),shared=adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(creator?.created_by_user_id,projectPath):null;
+  const context=sessionAgentContext({...getSession(sessionId)!,cli_type:cliType,agent_id:cliType},{projectPath,sharedAccess:!creator?.created_by_user_id||isAdmin(creator.created_by_user_id)});
+  const launch=await adapter.launch.prepare(context,task,shared?.instructions),streamSocket=launch.streamSocket;
+  if(launch.nativeId)storeAgentNativeId({...context.session,id:sessionId},launch.nativeId);
+  const preSpawnFiles=launch.preSpawnFiles;
+  if(adapter.descriptor.sessionHost==='managed'){
+    if(!launch.nativeId)throw Error('Agent service did not return a native identity');
+    attachManagedAgent(getSession(sessionId)!);insertEvent({session_id:sessionId,type:'session_start',data:{task,projectPath,cliType}});return;
+  }
 
   const worker = await forkWorker();
   rejectCancelledLifecycle(sessionId, worker);
@@ -2014,14 +1610,16 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
   active.cliType = cliType;
 
   const sessionCommand = projectCliCommand(
-    cliType === 'codex' ? 'session_codex_command' : 'session_claude_command',
+    `session_${cliType}_command`,
     cliType,
     projectPath,
     streamSocket,
   );
 
-  const assignSessionId = cliType === 'claude' ? assignClaudeSessionId(sessionId) : reservedCodexId;
-  const bindingPath = cliType === 'codex' ? codexBindingPath(sessionId) : undefined;
+  const assignSessionId=launch.nativeId,bindingPath=launch.bindingPath;
+
+  const preparedCommand=streamSocket?sessionCommand:withSharedResourceInstructions(sessionCommand,cliType,shared?.instructions);
+  const agentCommand=adapter.commands.build({task,direct:config.useTmux,command:preparedCommand,assignId:assignSessionId,bindingPath,streamSocket});
 
   // Tell the worker to spawn the session
   worker.send({
@@ -2034,16 +1632,17 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
     rows,
     useTmux: config.useTmux,
     useDtach: config.useDtach,
-    sessionCommand: streamSocket ? sessionCommand : withSharedResourceInstructions(sessionCommand, cliType, shared?.instructions),
+    sessionCommand:preparedCommand,
+    agentCommand,
     cliType,
     assignSessionId,
-    codexBindingPath: bindingPath,
-    codexStreamSocket:streamSocket,
+    bindingPath: bindingPath,
+    streamSocket:streamSocket,
     ...workerSandboxPolicy(creator?.created_by_user_id),
   });
   await active.lifecycleReady;
 
-  if (cliType === 'codex') watchCodexSessionBinding(sessionId);
+  await adapter.launch.ready(context);
 
   insertEvent({
     session_id: sessionId,
@@ -2054,7 +1653,7 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
   pushSystemEvent(`[AgentManager] Session ${sessionId} started: ${task.slice(0, 60)}`);
 }
 
-export function spawnSession(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
+export function spawnSession(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: string = 'claude'): Promise<void> {
   return runSessionLifecycle(
     sessionId,
     () => spawnSessionUnlocked(sessionId, projectPath, task, cols, rows, cliType),
@@ -2141,7 +1740,7 @@ async function reconnectSessionUnlocked(sessionId: string, opts?: { skipPipePane
     active.cols = session.terminal_cols || 120;
     active.rows = session.terminal_rows || 40;
     active.task = session.task || '';
-    active.cliType = ((session as any).cli_type === 'codex' ? 'codex' : 'claude') as 'claude' | 'codex';
+    active.cliType = agentForSession(session as Session).descriptor.id;
 
     // Restore externalSocket for adopted sessions (persisted in DB column)
     if ((session as any).external_socket) {
@@ -2631,9 +2230,8 @@ function killPidTree(pid: number): void {
 export async function killSession(sessionId: string, options?:{preserveLifecycle?:boolean}): Promise<boolean> {
   const session = getSession(sessionId);
   if (!session) return false;
-  if(process.env.AGENTMANAGER_CODEX_STREAM_SOCKET && session.cli_type==='codex' && session.codex_session_id) {
-    await interruptStreamingCodexThread(session.codex_session_id);
-  }
+  if(nativeConversationId(session))await agentForSession(session).lifecycle.interrupt(sessionAgentContext(session));
+  detachManagedAgent(sessionId);
   const active = activeSessions.get(sessionId);
   console.log(`[KILL] Killing session ${sessionId} (active=${!!active})`);
   // A pending REST-created session may not have connected its first websocket
@@ -2736,7 +2334,7 @@ export async function killSession(sessionId: string, options?:{preserveLifecycle
 
 export function getSession(id: string): Session | null {
   const db = getDb();
-  return (db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session) || null;
+  const session=db.prepare('SELECT * FROM sessions WHERE id=?').get(id) as Session|undefined;return session?{...session,...presentAgentSession(session)}:null;
 }
 
 export function listSessions(status?: string): Session[] {
@@ -2784,7 +2382,7 @@ export function listSessionsForUser(userId: string, status?: string, projectId?:
 }
 
 export function isSessionActive(sessionId: string): boolean {
-  return activeSessions.get(sessionId)?.businessReady === true;
+  return isManagedAgentActive(sessionId)||activeSessions.get(sessionId)?.businessReady === true;
 }
 
 export function getActiveSession(sessionId: string): ActiveSession | undefined {
@@ -2868,8 +2466,8 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
   // A Codex SessionStart hook may have persisted its UUID milliseconds before
   // the server died. Ingest those durable files before deciding which stale
   // sessions are resumable.
-  ingestAllCodexSessionBindings();
-  backfillLegacyCodexSessionIds();
+  for(const descriptor of agentDescriptors())getAgent(descriptor.id).identity.recover?.();
+  for(const session of db.prepare("SELECT * FROM sessions WHERE status IN ('running','detached')").all() as Session[])if(agentForSession(session).descriptor.sessionHost==='managed'&&nativeConversationId(session))try{attachManagedAgent(session);}catch{/* Persisted identity remains available for explicit reconnect. */}
 
   if (config.useDtach || config.useTmux) {
     const stale = db.prepare(`
@@ -2878,6 +2476,7 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
       WHERE s.status IN ('running', 'pending', 'launching', 'detached')
       OR (s.status = 'failed' AND (s.completed_at IS NULL OR s.completed_at > datetime('now', '-1 hour')))
     `).all() as Array<Session & { project_path: string | null }>;
+    const terminals=stale.filter(session=>agentForSession(session).descriptor.sessionHost==='terminal');
 
     if (stale.length === 0) { tlog(`[CLEANUP] no stale sessions, done in ${Date.now() - t0}ms`); return; }
 
@@ -2889,7 +2488,7 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
     let cleaned = 0;
     const cleanedIds: string[] = [];
 
-    for (const row of stale) {
+    for (const row of terminals) {
       const { id } = row;
       const inTmux = aliveTmux.has(id);
       const inDtach = aliveDtach.has(id);
@@ -2928,11 +2527,12 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
       SELECT * FROM sessions WHERE status IN ('running', 'pending', 'launching', 'detached')
     `).all() as Session[];
 
-    for (const { id, pid } of stale) {
+    const terminals=stale.filter(session=>agentForSession(session).descriptor.sessionHost==='terminal');
+    for (const { id, pid } of terminals) {
       if (pid) killOrphanedProcess(pid, id);
     }
 
-    for (const session of stale) {
+    for (const session of terminals) {
       await captureFinalSnapshot(session.id);
       db.prepare(`
         UPDATE sessions SET status = 'failed', exit_code = -1,
@@ -3100,17 +2700,16 @@ export async function autoReconnectDetachedSessions(): Promise<void> {
 /** Resume a crashed session by launching the CLI directly on its exact native
  * conversation. The AgentManager session id stays unchanged, so every project
  * tab continues to point at the same durable row before and after recovery. */
-async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: string, skipCircuitBreaker = false): Promise<void> {
+async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: string, skipCircuitBreaker = false, fresh = false): Promise<void> {
   const db = getDb();
   const sessionId = staleSession.id;
   await waitForSessionReplayFinalization(sessionId);
   if (activeSessions.has(sessionId)) return;
-  const sessionCliType = staleSession.cli_type === 'codex' ? 'codex' as const : 'claude' as const;
-  const streamSocket=sessionCliType==='codex'?codexStreamSocketForUser(staleSession.created_by_user_id):null;
-  const nativeSessionId = nativeConversationId(staleSession);
-  if (!nativeSessionId) throw new Error(`No ${sessionCliType} conversation id is stored for ${sessionId}`);
-  const shared = sharedResourceLaunch(staleSession.created_by_user_id, projectPath);
-  if (streamSocket && shared) await configureStreamingSharedResources(nativeSessionId, shared.instructions);
+  const sessionCliType=agentForSession(staleSession).descriptor.id;
+  const nativeSessionId=nativeConversationId(staleSession);if(!nativeSessionId)throw Error(`No native conversation id is stored for ${sessionId}`);
+  const adapter=agentForSession(staleSession),shared=adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(staleSession.created_by_user_id,projectPath):null;
+  const context=sessionAgentContext(staleSession,{projectPath,sharedAccess:!staleSession.created_by_user_id||isAdmin(staleSession.created_by_user_id)});
+  const launch=await adapter.launch.prepare(context,'',shared?.instructions,true),streamSocket=launch.streamSocket;
   const task = staleSession.task;
 
   // Per-session circuit breaker: don't resume sessions that keep crashing.
@@ -3131,7 +2730,8 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
 
   console.log(`  Recovering crashed session ${sessionId} (${sessionCliType} conversation ${nativeSessionId}, attempt ${resumeCount + 1}/${MAX_SESSION_RESUMES})`);
 
-  const preSpawnFiles = sessionCliType === 'claude' ? snapshotClaudeSessionFiles(projectPath) : undefined;
+  if(adapter.descriptor.sessionHost==='managed'){if(launch.nativeId&&launch.nativeId!==nativeSessionId)throw Error('Agent resume changed the native identity');attachManagedAgent(getSession(sessionId)!);return;}
+  const preSpawnFiles=launch.preSpawnFiles;
   const worker = await forkWorker();
   rejectCancelledLifecycle(sessionId, worker);
   const active = wireWorker(sessionId, worker, projectPath, preSpawnFiles);
@@ -3149,33 +2749,37 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
 
   active.cliType = sessionCliType;
   const sessionCommand = projectCliCommand(
-    sessionCliType === 'codex' ? 'session_codex_command' : 'session_claude_command',
+    `session_${sessionCliType}_command`,
     sessionCliType,
     projectPath,
     streamSocket,
   );
+  const preparedCommand=streamSocket?sessionCommand:withSharedResourceInstructions(sessionCommand,sessionCliType,shared?.instructions);
+  const agentCommand=adapter.commands.build({task:fresh?'':task,direct:config.useTmux,command:preparedCommand,resumeId:fresh&&launch.freshMode!=='resume'?undefined:nativeSessionId,assignId:fresh&&launch.freshMode!=='resume'?nativeSessionId:undefined,bindingPath:launch.bindingPath,streamSocket});
   worker.send({
     type: 'spawn',
     sessionId,
     projectPath,
-    task,
+    task:fresh?'':task,
     mode: 'session',
     cols: active.cols,
     rows: active.rows,
     useTmux: config.useTmux,
     useDtach: config.useDtach,
-    sessionCommand: streamSocket ? sessionCommand : withSharedResourceInstructions(sessionCommand, sessionCliType, shared?.instructions),
+    sessionCommand:preparedCommand,
+    agentCommand,
     cliType: sessionCliType,
-    resumeSessionId: nativeSessionId,
-    codexBindingPath: sessionCliType === 'codex' ? codexBindingPath(sessionId) : undefined,
-    codexStreamSocket:streamSocket,
+    resumeSessionId:fresh&&launch.freshMode!=='resume'?undefined:nativeSessionId,
+    assignSessionId:fresh&&launch.freshMode!=='resume'?nativeSessionId:undefined,
+    bindingPath:launch.bindingPath,
+    streamSocket:streamSocket,
     ...workerSandboxPolicy(staleSession.created_by_user_id),
   });
   await active.lifecycleReady;
 
   if (task === 'Terminal') startTerminalCliMonitor(sessionId, projectPath);
 
-  if (sessionCliType === 'codex') watchCodexSessionBinding(sessionId);
+  await adapter.launch.ready(context);
 
   insertEvent({
     session_id: sessionId,
@@ -3186,10 +2790,10 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
   pushSystemEvent(`[AgentManager] Session ${sessionId} resumed after crash: ${task.slice(0, 60)}`);
 }
 
-export function resumeCrashedSession(staleSession: Session, projectPath: string, skipCircuitBreaker = false): Promise<void> {
+export function resumeCrashedSession(staleSession: Session, projectPath: string, skipCircuitBreaker = false, fresh = false): Promise<void> {
   return runSessionLifecycle(
     staleSession.id,
-    () => resumeCrashedSessionUnlocked(staleSession, projectPath, skipCircuitBreaker),
+    () => resumeCrashedSessionUnlocked(staleSession, projectPath, skipCircuitBreaker, fresh),
     () => undefined,
   );
 }
@@ -3201,7 +2805,8 @@ export async function resumeSessionById(sessionId: string, skipCircuitBreaker = 
   if (activeSessions.has(sessionId) || ['running', 'detached', 'pending', 'released'].includes(session.status)) {
     return { ok: false, error: 'Session is still active' };
   }
-  const cliType = session.cli_type === 'codex' ? 'Codex' : 'Claude';
+  if(!agentForSession(session).descriptor.capabilities.resume)return {ok:false,error:'此 Agent 不支持恢复会话'};
+  const cliType = agentForSession(session).descriptor.label;
   if (!nativeConversationId(session)) return { ok: false, error: `No ${cliType} conversation id was captured — this session cannot be resumed` };
   if (!session.project_id) return { ok: false, error: 'Session has no associated project' };
   const proj = getDb().prepare('SELECT path FROM projects WHERE id = ?').get(session.project_id) as { path: string } | undefined;
@@ -3224,19 +2829,19 @@ export async function waitForStoppedSessionLifecycle(sessionId:string):Promise<v
  * saved conversation and UI identity, and wait for the old wrapper to die. */
 type SessionReloadResult={ok:boolean;error?:string;client_version?:string};
 const sessionReloads=new Map<string,Promise<SessionReloadResult>>();
-export function reloadCodexSessionById(sessionId:string,options:{idleOnly?:boolean}={}):Promise<SessionReloadResult> {
+export function reloadAgentSessionById(sessionId:string,options:{idleOnly?:boolean}={}):Promise<SessionReloadResult> {
   const pending=sessionReloads.get(sessionId);if(pending)return pending;
   if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'会话正在启动或连接，请稍后重载'});
   const operation=runSessionLifecycle<SessionReloadResult>(sessionId,async()=>{
     const session=getSession(sessionId);
-    if(!session||session.cli_type!=='codex'||!nativeConversationId(session))return {ok:false,error:'此标签页没有可重载的 Codex 会话'};
+    if(!session||!nativeConversationId(session)||!agentForSession(session).descriptor.capabilities.reload)return {ok:false,error:'此标签页没有可重载的原生会话'};
+    const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:!session.created_by_user_id||isAdmin(session.created_by_user_id)});
     const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
     if(!project?.path)return {ok:false,error:'找不到会话项目目录，原会话已保留'};
     try {
-      const {prepareCodexReload}=await import('./codex-version.js');
-      const version=await prepareCodexReload(!!codexStreamSocketForUser(session.created_by_user_id));
+      const version=await adapter.lifecycle.preflight(context);
       if(cancelledSessionLifecycles.has(sessionId))throw Error('重载已取消');
-      if(options.idleOnly&&(await readCodexRuntime(session.codex_session_id)).state!=='idle')return {ok:false,error:'会话仍在执行或等待交互，已保留当前任务，请完成后再接入实时输出'};
+      if(options.idleOnly&&(await adapter.runtime.read(context)).state!=='idle')return {ok:false,error:'会话仍在执行或等待交互，已保留当前任务，请完成后再接入实时输出'};
       const worker=activeSessions.get(sessionId)?.worker;
       let exited=!worker||worker.exitCode!==null||worker.signalCode!==null;
       const onExit=()=>{exited=true;};worker?.once('exit',onExit);
@@ -3253,41 +2858,30 @@ export function reloadCodexSessionById(sessionId:string,options:{idleOnly?:boole
       }finally{worker?.off('exit',onExit);}
       if(cancelledSessionLifecycles.has(sessionId)||!getSession(sessionId))throw Error('重载已取消');
       await resumeCrashedSessionUnlocked(getSession(sessionId)!,project.path,true);
-      insertEvent({session_id:sessionId,type:'session_reload',data:{nativeSessionId:session.codex_session_id,clientVersion:version}});
-      return {ok:true,client_version:version};
+      insertEvent({session_id:sessionId,type:'session_reload',data:{nativeSessionId:nativeConversationId(session),clientVersion:version}});
+      return {ok:true,...version?{client_version:version}:{}};
     }catch(error){return {ok:false,error:error instanceof Error?error.message:'重载失败，历史已保留，请重试'};}
   },()=>({ok:false,error:'会话正在启动或连接，请稍后重载'}));
   sessionReloads.set(sessionId,operation);
   return operation.finally(()=>{if(sessionReloads.get(sessionId)===operation)sessionReloads.delete(sessionId);});
 }
 
+export const reloadCodexSessionById=reloadAgentSessionById;
+
 /** A terminal-only legacy engine writes text only on completion. Upgrade it
  * after an explicit chat send, before submitting that input, while idle. The
  * caller has already received notLoaded from the shared engine, so no user
  * input has been accepted there. Never load the same thread in two engines. */
-export class CodexStreamingUpgradeError extends Error {}
-export async function ensureCodexConversationStreaming(sessionId:string):Promise<boolean>{
-  const session=getSession(sessionId);
-  if(!session||session.cli_type!=='codex'||!session.codex_session_id||!codexStreamSocketForUser(session.created_by_user_id))return false;
-  if((await readCodexRuntime(session.codex_session_id)).state!=='idle')return false;
-  const result=await reloadCodexSessionById(sessionId,{idleOnly:true});
-  if(!result.ok)throw new CodexStreamingUpgradeError(result.error||'接入实时输出失败，消息尚未提交');
-  try{await withCodexConnection(async request=>{
-    // The wrapper may become ready before its terminal client attaches. The
-    // legacy engine has exited, so resuming this exact thread is now safe.
-    const current=await request('thread/read',{threadId:session.codex_session_id});
-    if(current.thread?.status?.type==='notLoaded')await request('thread/resume',{threadId:session.codex_session_id,excludeTurns:true});
-  });}catch{throw new CodexStreamingUpgradeError('实时输出通道尚未连接，消息尚未提交，请稍后重试');}
-  return true;
-}
+export {CodexStreamingUpgradeError,ensureCodexConversationStreaming} from './agents/codex/upgrade.js';
 
 /** Explicit operations on this tab only; share the existing lifecycle lock. */
 export function compactSessionConversation(sessionId:string):Promise<SessionReloadResult> {
   if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'});
   return runSessionLifecycle(sessionId,async()=>{
     const session=getSession(sessionId);
-    if(!session?.codex_session_id||!codexStreamSocketForUser(session.created_by_user_id))return {ok:false,error:'请先重载此 Codex 标签页以接入实时控制'};
-    try {await compactCodexConversation(session.codex_session_id);return {ok:true};}
+    if(!session||!nativeConversationId(session))return {ok:false,error:'请先连接原生会话'};
+    const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:!session.created_by_user_id||isAdmin(session.created_by_user_id)});
+    try {await adapter.lifecycle.compact(context);return {ok:true};}
     catch(error){return {ok:false,error:error instanceof Error?error.message:'压缩失败，请重试'};}
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
 }
@@ -3296,14 +2890,15 @@ export function newSessionConversation(sessionId:string):Promise<SessionReloadRe
   if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'});
   return runSessionLifecycle(sessionId,async()=>{
     const session=getSession(sessionId);
-    if(!session?.codex_session_id||!codexStreamSocketForUser(session.created_by_user_id))return {ok:false,error:'请先重载此 Codex 标签页以接入实时控制'};
+    if(!session||!nativeConversationId(session))return {ok:false,error:'请先连接原生会话'};
+    const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:!session.created_by_user_id||isAdmin(session.created_by_user_id)});
     const project=getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined;
     if(!project?.path)return {ok:false,error:'找不到项目目录，原会话已保留'};
     let fresh:string|undefined,history:string|undefined,activated=false,stopped=false;
-    const binding=(id:string)=>{const path=codexBindingPath(sessionId),temp=`${path}.new`;fsWriteFileSync(temp,JSON.stringify({session_id:id,source:'new-conversation'}));renameSync(temp,path);};
+    const binding=(id:string)=>adapter.lifecycle.bind(context,id);
     try {
-      const {prepareCodexReload}=await import('./codex-version.js');await prepareCodexReload(true);
-      fresh=await prepareFreshCodexConversation(session.codex_session_id,project.path,sharedResourceLaunch(session.created_by_user_id, project.path)?.instructions);
+      await adapter.lifecycle.preflight(context);
+      fresh=await adapter.lifecycle.prepareFresh({...context,projectPath:project.path},adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(session.created_by_user_id, project.path)?.instructions:undefined);
       if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');
       history=snapshotConversation(sessionId);
       const worker=activeSessions.get(sessionId)?.worker;
@@ -3317,12 +2912,12 @@ export function newSessionConversation(sessionId:string):Promise<SessionReloadRe
       if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');
       await waitForSessionReplayFinalization(sessionId);
       getDb().prepare('DELETE FROM session_snapshots WHERE session_id=?').run(sessionId);
-      activateFreshConversation(sessionId,history,fresh);activated=true;binding(fresh);
-      await resumeCrashedSessionUnlocked(getSession(sessionId)!,project.path,true);
+      activateFreshConversation(sessionId,history,fresh);activated=true;await binding(fresh);
+      await resumeCrashedSessionUnlocked(getSession(sessionId)!,project.path,true,true);
       // Release only the old thread. Never restart the shared server or archive
       // a user thread and its descendants to reclaim one tab.
       let warning:string|undefined;
-      try{await releaseCodexConversation(session.codex_session_id);}catch{warning='新会话已打开，旧会话后台终端回收未确认，请在历史中检查。';}
+      try{await adapter.lifecycle.release(context);}catch{warning='新会话已打开，旧会话后台终端回收未确认，请在历史中检查。';}
       insertEvent({session_id:sessionId,type:'conversation_new',data:{previousSessionId:history,nativeSessionId:fresh}});
       return {ok:true,history_id:history,...warning?{warning}:{}};
     } catch(error) {
@@ -3336,13 +2931,13 @@ export function newSessionConversation(sessionId:string):Promise<SessionReloadRe
             await new Promise(resolve=>setTimeout(resolve,100));
           }
           await waitForSessionReplayFinalization(sessionId);
-          restoreConversationSnapshot(sessionId,history);binding(session.codex_session_id);
+          restoreConversationSnapshot(sessionId,history);await binding(nativeConversationId(session)!);
         }
         // Keep the history snapshot on pre-activation failure, including a
         // concurrent Close. Never undo an explicit user cancellation.
         if(stopped&&!cancelledSessionLifecycles.has(sessionId))await resumeCrashedSessionUnlocked(getSession(sessionId)!,project.path,true).catch(()=>{});
       }
-      if(fresh)await releaseCodexConversation(fresh).catch(()=>{});
+      if(fresh)await adapter.lifecycle.release({...context,nativeId:fresh}).catch(()=>{});
       return {ok:false,error:error instanceof Error?error.message:'新开失败，原会话历史已保留'};
     }
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
@@ -3353,6 +2948,7 @@ export function newSessionConversation(sessionId:string):Promise<SessionReloadRe
  * Never create a new CLI process from an automatic browser connection.
  */
 export function recoverSessionOnAttach(sessionId: string): Promise<boolean> {
+  const remote=getSession(sessionId);if(remote&&['running','detached'].includes(remote.status)&&agentForSession(remote).descriptor.sessionHost==='managed'&&nativeConversationId(remote)){attachManagedAgent(remote);return Promise.resolve(true);}
   if (isSessionActive(sessionId)) return Promise.resolve(true);
   const existing = sessionRecoveryPromises.get(sessionId);
   if (existing) return existing;
@@ -3393,54 +2989,18 @@ export function recoverSessionOnAttach(sessionId: string): Promise<boolean> {
   return recovery;
 }
 
-/**
- * Resume a Claude conversation log (uuid) as a fresh AgentManager session by
- * launching `claude --resume <uuid>` directly. Claude loads and replays the
- * full prior conversation and waits for input — nothing is auto-submitted.
- * Returns the new session.
- */
-export async function resumeClaudeSession(projectPath: string, projectId: string | null, claudeUuid: string, task: string, createdByUserId?: string): Promise<Session> {
-  const db = getDb();
-  const id = nanoid(12);
-  // Keep claude_session_id = uuid: `--resume` continues writing to the SAME log,
-  // so this row stays linked to that conversation.
-  db.prepare(`
-    INSERT INTO sessions (id, project_id, task, status, cli_type, claude_session_id, created_by_user_id)
-    VALUES (?, ?, ?, 'running', 'claude', ?, ?)
-  `).run(id, projectId || null, task || 'Resumed session', claudeUuid, createdByUserId || null);
-
-  const preSpawnFiles = snapshotClaudeSessionFiles(projectPath);
-  const worker = await forkWorker();
-  rejectCancelledLifecycle(id, worker);
-  const active = wireWorker(id, worker, projectPath, preSpawnFiles);
-  active.cliType = 'claude';
-  getOrCreateTracker(id);
-
-  const claudeCmd = withSharedResourceInstructions(projectCliCommand('session_claude_command', 'claude'), 'claude', sharedResourceLaunch(createdByUserId, projectPath)?.instructions);
-  // Pass the resume uuid via resumeSessionId (NOT baked into sessionCommand): the worker
-  // builds `claude --resume <uuid>` with NO positional prompt, so the replayed
-  // conversation waits for input instead of auto-submitting `task`.
-  worker.send({
-    type: 'spawn',
-    sessionId: id,
-    projectPath,
-    task: task || 'Resumed session',
-    mode: 'session',
-    cols: 120,
-    rows: 40,
-    useTmux: config.useTmux,
-    useDtach: config.useDtach,
-    sessionCommand: claudeCmd,
-    resumeSessionId: claudeUuid,
-    cliType: 'claude',
-    ...workerSandboxPolicy(createdByUserId),
-  });
-  await active.lifecycleReady;
-
-  insertEvent({ session_id: id, type: 'session_resume', data: { task, projectPath, claudeSessionId: claudeUuid, via: '--resume' } });
-  pushSystemEvent(`[AgentManager] Resumed Claude session ${claudeUuid} as ${id}`);
-  return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
+/** Import an existing native conversation as a platform session. No prompt is submitted. */
+export async function resumeAgentConversation(projectPath:string,projectId:string|null,agentId:string,nativeId:string,task:string,createdByUserId?:string):Promise<Session>{
+ const adapter=getAgent(agentId);if(!adapter.descriptor.capabilities.resume)throw Error('Agent does not support resume');
+ const context={session:{agent_id:agentId,cli_type:agentId},nativeId,projectPath};await adapter.lifecycle.preflight(context);
+ const db=getDb(),id=nanoid(12);
+ db.prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,native_session_id,created_by_user_id) VALUES(?,?,?,'completed',?,?,?)").run(id,projectId||null,task||'Resumed session',agentId,nativeId,createdByUserId||null);
+ const session=getSession(id)!;storeAgentNativeId(session,nativeId);
+ try{await resumeCrashedSession(session,projectPath,true);}catch(error){db.prepare("UPDATE sessions SET status='failed' WHERE id=?").run(id);throw error;}
+ return getSession(id)!;
 }
+/** Compatibility entry point for the existing Claude history route. */
+export function resumeClaudeSession(projectPath:string,projectId:string|null,nativeId:string,task:string,createdByUserId?:string):Promise<Session>{return resumeAgentConversation(projectPath,projectId,'claude',nativeId,task,createdByUserId);}
 
 /**
  * Permanently delete an ended session: its DB row, events, any leftover PTY
@@ -3455,22 +3015,12 @@ export function purgeSessionRecord(sessionId: string): { ok: boolean; error?: st
     return { ok: false, error: 'Stop the session before deleting it' };
   }
 
-  // Remove the Claude JSONL conversation file, if we can locate it.
-  try {
-    if (session.claude_session_id && session.project_id) {
-      const proj = db.prepare('SELECT path FROM projects WHERE id = ?').get(session.project_id) as { path: string } | undefined;
-      if (proj?.path) {
-        const jsonl = join(homedir(), '.claude', 'projects', encodeDir(proj.path), `${session.claude_session_id}.jsonl`);
-        if (existsSync(jsonl)) unlinkSync(jsonl);
-      }
-    }
-  } catch { /* non-fatal */ }
+  try{agentForSession(session).identity.purge?.(sessionAgentContext(session));}catch{/* non-fatal */}
 
   try { db.prepare('DELETE FROM pty_output WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
   try { db.prepare('DELETE FROM session_snapshots WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
   try { db.prepare('DELETE FROM events WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
   db.prepare('DELETE FROM user_ui_state WHERE key = ?').run(`session-control:${sessionId}`);
-  try { unlinkSync(join(CODEX_BINDINGS_DIR, `${sessionId}.json`)); } catch { /* ignore */ }
   db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
   return { ok: true };
 }
@@ -3494,7 +3044,7 @@ export interface DiscoverableSession {
   projectPath: string;
   task: string;
   startedAt: string;
-  cliType?: 'claude' | 'codex';
+  cliType?: string;
 }
 
 async function fuserPidsAsync(sockPath: string): Promise<number[]> {
@@ -3596,7 +3146,7 @@ export async function discoverExternalSessions(projectPath?: string): Promise<Di
         projectPath: s.project_path,
         task: s.task,
         startedAt: s.created_at,
-        cliType: (s.cli_type === 'codex' ? 'codex' : 'claude') as 'claude' | 'codex',
+        cliType: agentForSession(s).descriptor.id,
       });
     }
   } catch { /* db read failed */ }

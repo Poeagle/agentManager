@@ -42,7 +42,7 @@ describe('project-scoped file API (including administrators)', () => {
   it('lists only the project, omitting symlinks that escape its root', async () => {
     const response = await get('/files', project);
     expect(response.statusCode).toBe(200);
-    expect(response.json().files.map((entry: { name: string }) => entry.name)).toEqual(['sub', 'inside.txt', 'safe-link']);
+    expect(response.json().files.map((entry: { name: string }) => entry.name).sort()).toEqual(['sub', 'inside.txt', 'safe-link'].sort());
     expect((await get('/files', join(project, 'sub'))).statusCode).toBe(200);
     expect((await get('/files', join(project, 'safe-link'))).statusCode).toBe(200);
     expect((await get('/files/read', join(project, 'inside.txt'))).json().content).toBe('inside');

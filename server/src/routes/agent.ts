@@ -1,37 +1,41 @@
+import {withTerminalInput} from '../services/agents/terminal-input.js';
+import {observeAgentConversation} from '../services/agents/host.js';
+import {readModelPreference,saveModelPreference,modelPreferenceSubmittedAt} from '../services/agents/model-preferences.js';
+import {agentForSession,agentDescriptors,getAgent} from '../services/agents/index.js';
+import {sessionAgentContext,readAgentRuntime,presentAgentSession} from '../services/agents/session.js';
+import {nativeConversationId} from '../services/session-identity.js';
 import {rememberConversationInput,linkConversationInputs} from '../services/conversation-input-links.js';
-import {scheduleCodexStreamingUpgrade,stopCodexStreamingUpgrades} from '../services/codex-streaming-upgrade.js';
-import { FastifyPluginAsync } from 'fastify';
-import { createRequire } from 'module';
+import {FastifyPluginAsync} from 'fastify';
+import {createRequire} from 'module';
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as { Terminal: any };
-import { isSessionActive, writeToSession, querySessionOutputSince, getSession, getSessionSnapshot,ensureCodexConversationStreaming,CodexStreamingUpgradeError } from '../services/session-manager.js';
-import { RESIZE_MARKER } from '../services/session-manager.js';
+import {isSessionActive,writeToSession,querySessionOutputSince,getSession,getSessionSnapshot} from '../services/session-manager.js';
+import {RESIZE_MARKER} from '../services/session-manager.js';
 import {attachExistingSession} from '../services/session-attachment.js';
-import { getTracker, getOrCreateTracker } from '../services/session-state.js';
-import type { SessionState } from '../services/session-state.js';
-import { getSessionUser,readSessionCookie, sessionCookieName, userCanUseSessionTool,isAdmin } from '../auth.js';
-import { registerUserConnection } from '../services/user-connections.js';
-import { requirePermission,userHasPermission } from '../services/rbac.js';
-import { getDb } from '../db/index.js';
-import { loadRecentAgentMessages, loadRecentPromptContext } from '../services/prompt-context.js';
-import { sessionPresenter } from '../services/session-labels.js';
+import {getTracker,getOrCreateTracker} from '../services/session-state.js';
+import type {SessionState} from '../services/session-state.js';
+import {getSessionUser,readSessionCookie,sessionCookieName,userCanUseSessionTool,isAdmin} from '../auth.js';
+import {registerUserConnection} from '../services/user-connections.js';
+import {requirePermission,userHasPermission} from '../services/rbac.js';
+import {getDb} from '../db/index.js';
+import {loadRecentAgentMessages,loadRecentPromptContext} from '../services/prompt-context.js';
+import {sessionPresenter} from '../services/session-labels.js';
 import {randomUUID} from 'crypto';
 import {readConversation} from '../services/conversation-reader.js';
-import {readCodexRuntime} from '../services/codex-runtime.js';
+
 import {personalQuestionRuntime} from '../services/question-attention.js';
 import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,validateConversationAttachments} from '../services/conversation-attachments.js';
 import {observeConversationFile} from '../services/conversation-file-stream.js';
 import {ConversationRetryManager} from '../services/conversation-retry.js';
-import {observeCodexConversation,submitStreamingCodexInput,CodexRpcError} from '../services/conversation-stream.js';
-import {readConversationControls,readModelPreference,validateModelPreference,saveModelPreference,applyCodexModelSettings} from '../services/conversation-controls.js';
+
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
   if (mode === 'terminal') return mode;
   return 'session';
 }
 
-function normalizeCliType(cliType: string | null | undefined): 'claude' | 'codex' {
-  return cliType === 'codex' ? 'codex' : 'claude';
+function normalizeCliType(cliType: string | null | undefined): string {
+  return getAgent(cliType||'claude').descriptor.id;
 }
 
 function canAccessAgentSession(userId: string, sessionId: string): boolean {
@@ -95,9 +99,9 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version: '2.8.0',
-    updatedAt: '2026-10-21',
-    scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, Codex quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
+    version:'2.9.0',
+    updatedAt:'2026-11-04',
+    scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
       type: 'HttpOnly session cookie',
@@ -241,7 +245,7 @@ export function getAgentApiContract() {
           project_path: { type: 'string', required: true, description: 'Must match the registered project path.' },
           task: { type: 'string', required: false, description: 'Required for Session mode; ignored for terminal mode.' },
           mode: { type: 'session | terminal', required: false, default: 'session' },
-          cli_type: { type: 'claude | codex', required: false, default: 'claude', description: 'Used by Session mode.' },
+          cli_type: { type:'registered Agent ID', required: false, default: 'claude', description: 'Used by Session mode.' },
         },
         response: { ok: 'true', session: 'Created session; use session.id for control endpoints.' },
         errors: { 400: 'Missing required fields', 401: 'Not authenticated', 403: 'Project or requested tool combination is not permitted', 429: 'Active tab/session limit reached' },
@@ -258,7 +262,7 @@ export function getAgentApiContract() {
         category: 'Sessions',
         method: 'POST',
         path: '/api/sessions/:id/resume',
-        description: 'Resume an ended Claude or Codex conversation in place while preserving the AgentManager session id.',
+        description: 'Resume an ended native conversation in place while preserving the AgentManager session id.',
         response: { ok: 'true', session: 'Resumed Session' },
       },
       {
@@ -328,7 +332,7 @@ export function getAgentApiContract() {
         description: 'Submit a follow-up immediately, including while busy or another execute request is waiting. Uses bracketed paste plus Enter, like typing in the dashboard. Does not cancel the current operation, reset output, or wait for an agent reply. Session ownership and project write access are required.',
         request: {
           input: {type:'string',required:true,description:'Text, at most 64 KiB; may be empty when attachments are present.'},
-          source: {type:'string',required:false,description:'Use conversation to submit directly to the bound live Codex engine when available.'},
+          source: {type:'string',required:false,description:'Use conversation to submit directly to the bound native engine when available.'},
           client_id: {type:'string',required:false,description:'Client correlation ID for matching the native user-message echo.'},
           attachments: {type:'array',required:false,description:'Up to 8 {kind: image|file, name, path} references returned by this session’s paste-image/paste-file endpoints. Images total at most 10 MiB, each file at most 35 MiB, all attachments at most 50 MiB.'},
         },
@@ -430,17 +434,17 @@ export function getAgentApiContract() {
           target_type: { type: 'existing | new', required: true },
           target_session_id: { type: 'string | null', required: false, description: 'Required for an existing target and must be the user\'s open tab.' },
           new_mode: { type: 'session | terminal', required: false },
-          new_cli_type: { type: 'claude | codex', required: false },
+          new_cli_type: { type:'registered Agent ID', required: false },
           inactive_policy: { type: 'resume | fail', required: false, default: 'resume' },
           stop_at: { type: 'ISO timestamp | null', required: false },
           daily_stop_time: { type: 'HH:mm | null', required: false },
           daily_start_time: { type: 'HH:mm | null', required: false, description: 'Interval schedules only; set together with daily_end_time. The start is included and anchors each daily interval.' },
           daily_end_time: { type: 'HH:mm | null', required: false, description: 'Daily execution window end (exclusive); an earlier clock time means next day. Outside the window, sending pauses and automatically continues next window.' },
           start_conditions: { type: 'ConditionGroup | null', required: false, description: 'Recursive { operator: and|or, conditions: [Condition|ConditionGroup] }. Start leaves: time_after (HH:mm), time_range ({start,end}, end exclusive, overnight supported), weekday (workday=Mon–Fri or weekend=Sat/Sun), target_idle (boolean, existing target only). Up to 4 levels, 20 children/group, 50 total nodes.' },
-          daily_stop_conditions: { type: 'ConditionGroup | null', required: false, description: 'Same recursive groups; also supports quota_below (Codex remaining percent), successes_today and failures_today (counts). Once true, pause sending until the next local day, then re-evaluate. Unknown state prevents dispatch; the session is not killed.' },
+          daily_stop_conditions: { type: 'ConditionGroup | null', required: false, description: 'Same recursive groups; also supports quota_below (remaining percent from a quota-capable agent), successes_today and failures_today (counts). Once true, pause sending until the next local day, then re-evaluate. Unknown state prevents dispatch; the session is not killed.' },
           condition_unmet_policy: { type: 'skip | wait', required: false, default: 'skip', description: 'skip: do not backfill when idle; check next fixed occurrence. wait is retained for API compatibility. Manual dispatch also obeys guards.' },
           max_successful_runs: { type: 'integer | null', required: false },
-          quota_remaining_below: { type: 'integer 1..100 | null', required: false, description: 'Codex Session/Agent only.' },
+          quota_remaining_below: { type: 'integer 1..100 | null', required: false, description: 'Requires an agent with quota capability.' },
           max_consecutive_failures: { type: 'integer | null', required: false },
           stop_on_target_unavailable: { type: 'boolean', required: false, description: 'Existing target only.' },
           enabled: { type: 'boolean', required: false, default: true },
@@ -463,6 +467,18 @@ export function getAgentApiContract() {
         method: 'POST',
         path: '/api/scheduled-tasks/:id/run',
         description: 'Run an owned scheduled task immediately and return its run record.',
+      },
+      {
+        category:'Agents',method:'GET',path:'/api/agent/providers',
+        description:'List registered agents with host type, presentation and supported feature capabilities.',
+      },
+      {
+        category:'Agents',method:'GET',path:'/api/agent-quota/:agent',
+        description:'Read the account quota of a registered agent with quota capability.',
+      },
+      {
+        category:'Agents',method:'GET',path:'/api/scheduled-tasks/agent-quota?project_id=:projectId&agent_id=:agentId',
+        description:'Read quota after checking project ownership and permission to use the selected agent.',
       },
       {
         category: 'Quota',
@@ -504,7 +520,7 @@ export function getAgentApiContract() {
         forSlowCommands: { timeout: 120000, quiescenceMs: 5000 },
       },
       crashRecovery: {
-        description: 'AgentManager automatically resumes crashed Claude or Codex sessions that have a captured native conversation ID.',
+        description: 'AgentManager automatically resumes crashed native sessions that have a captured native conversation ID.',
         agentAction: 'After a server restart, poll GET /api/sessions?status=running to discover auto-resumed sessions. Your session IDs remain stable.',
       },
     },
@@ -512,40 +528,50 @@ export function getAgentApiContract() {
 }
 
 export const agentRoutes: FastifyPluginAsync = async (app) => {
-  app.addHook('onClose',async()=>stopCodexStreamingUpgrades());
-  const retries=new ConversationRetryManager(getDb(),{allowed:(id,userId,nativeId)=>{
+  app.addHook('onClose',async()=>{for(const descriptor of agentDescriptors())await getAgent(descriptor.id).stream.shutdown?.();});
+  const retryAgent=(nativeId:string)=>{
+    const rows=getDb().prepare('SELECT * FROM sessions WHERE native_session_id=? OR codex_session_id=? OR claude_session_id=?').all(nativeId,nativeId,nativeId) as import('../services/session-manager.js').Session[];
+    const providers=new Set(rows.map(row=>agentForSession(row).descriptor.id));if(providers.size!==1||!rows.length)throw Error('重试目标不明确');
+    const session=rows[0];return {adapter:agentForSession(session),context:sessionAgentContext(session)};
+  };
+  const retries=new ConversationRetryManager(getDb(),{inspect:native=>retryAgent(native).adapter.retry.inspect(native),start:(native,failed,client)=>retryAgent(native).adapter.retry.start(native,failed,client),observe:(native,emit,onFailure)=>{const {adapter,context}=retryAgent(native);return adapter.stream.observe(context,emit,onFailure);},allowed:(id,userId,nativeId)=>{
     const session=getSession(id);
-    return !!session&&session.cli_type==='codex'&&session.codex_session_id===nativeId&&session.status==='running'&&canAccessAgentSession(userId,id)&&userHasPermission(userId,'agent_api','write');
+    return !!session&&agentForSession(session).descriptor.capabilities.retry&&nativeConversationId(session)===nativeId&&session.status==='running'&&canAccessAgentSession(userId,id)&&userHasPermission(userId,'agent_api','write');
   }});
   app.addHook('onClose',async()=>retries.close());
-  app.addHook('onListen',async()=>{if(process.env.AGENTMANAGER_CODEX_STREAM_SOCKET)for(const session of getDb().prepare("SELECT id,created_by_user_id,codex_session_id FROM sessions WHERE status='running' AND cli_type='codex' AND codex_session_id IS NOT NULL AND created_by_user_id IS NOT NULL").all() as {id:string;created_by_user_id:string;codex_session_id:string}[])retries.monitor(session.id,session.created_by_user_id,session.codex_session_id);});
+  app.addHook('onListen',async()=>{for(const session of getDb().prepare("SELECT * FROM sessions WHERE status='running' AND created_by_user_id IS NOT NULL").all() as import('../services/session-manager.js').Session[])if(agentForSession(session).descriptor.capabilities.retry&&nativeConversationId(session))retries.monitor(session.id,session.created_by_user_id!,nativeConversationId(session)!);});
   app.addHook('preHandler', async (req, reply) => {
     requirePermission(req, reply, 'agent_api', req.method === 'GET' && !req.routeOptions.url?.endsWith('/agent') ? 'read' : 'write');
   });
-  app.get('/agent/capabilities', async () => getAgentApiContract());
+  app.get('/agent/capabilities', async () => ({...getAgentApiContract(),agents:agentDescriptors()}));
+  app.get('/agent/providers',async()=>({agents:agentDescriptors()}));
+  app.get<{Params:{agent:string}}>('/agent/providers/:agent/quota',async(req,reply)=>{if(!isAdmin(req.user!.id))return reply.code(403).send({error:'无权读取主机账号额度'});return {quota:await getAgent(req.params.agent).quota.read()};});
 
   app.get<{Params:{id:string};Querystring:{refresh?:string}}>('/sessions/:id/controls',async(req,reply)=>{
     const session=getSession(req.params.id);
     if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
-    if(session.cli_type!=='codex'||!session.codex_session_id)return reply.code(409).send({error:'当前会话未绑定 Codex'});
+    const adapter=agentForSession(session),context=sessionAgentContext(session);if(!context.nativeId)return reply.code(409).send({error:'当前会话尚未绑定原生会话'});
     const shared=req.user!.role==='admin'&&(!session.created_by_user_id||isAdmin(session.created_by_user_id));
     if(req.query.refresh!==undefined&&req.query.refresh!=='true')return reply.code(400).send({error:'Invalid refresh flag'});
-    const data=await readConversationControls(session.codex_session_id,shared,req.query.refresh==='true');
+    const data=await adapter.controls.read({...context,sharedAccess:shared,force:req.query.refresh==='true'});
+    let pending=readModelPreference(req.user!.id,session.id);const submittedAt=modelPreferenceSubmittedAt(req.user!.id,session.id);
+    if(pending&&submittedAt&&adapter.controls.confirmed?.(context,pending,data,submittedAt)){saveModelPreference(req.user!.id,session.id,null);pending=null;}
     const owned=!session.created_by_user_id||session.created_by_user_id===req.user!.id;
-    return reply.header('Cache-Control','private, no-store').send({...data,pending:readModelPreference(req.user!.id,session.id),
-      can_edit:shared&&owned&&data.loaded&&data.models.length>0&&isSessionActive(session.id)&&userHasPermission(req.user!.id,'agent_api','write')});
+    return reply.header('Cache-Control','private, no-store').send({...data,agent:adapter.descriptor,can_edit_features:Object.fromEntries(Object.entries(adapter.descriptor.capabilities).map(([feature,supported])=>[feature,supported&&shared&&owned&&data.loaded&&isSessionActive(session.id)&&userHasPermission(req.user!.id,'agent_api','write')])),pending,pending_status:pending?(submittedAt?'submitted':'saved'):null,
+      can_edit:adapter.descriptor.capabilities.model&&shared&&owned&&data.loaded&&data.models.length>0&&isSessionActive(session.id)&&userHasPermission(req.user!.id,'agent_api','write')});
   });
   app.put<{Params:{id:string};Body:unknown}>('/sessions/:id/controls',async(req,reply)=>{
     const session=getSession(req.params.id);
     if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
     if(req.user!.role!=='admin'||session.created_by_user_id&&session.created_by_user_id!==req.user!.id)return reply.code(403).send({error:'只能修改自己的会话设置'});
-    if(session.cli_type!=='codex'||!session.codex_session_id||!isSessionActive(session.id))return reply.code(409).send({error:'当前会话不可修改，请先恢复会话'});
+    const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:true});
+    if(!context.nativeId||!adapter.descriptor.capabilities.model||!isSessionActive(session.id))return reply.code(409).send({error:'当前会话不可修改，请先恢复会话'});
     if(req.body===null){saveModelPreference(req.user!.id,session.id,null);return {ok:true,pending:null};}
     try {
-      const data=await readConversationControls(session.codex_session_id,true);
+      const data=await adapter.controls.read(context);
       if(!data.loaded)return reply.code(409).send({error:'此会话暂不支持在对话中切换，请在原始终端设置'});
-      const value=await validateModelPreference(req.body);
-      try {const applied=await applyCodexModelSettings(session.codex_session_id,value);saveModelPreference(req.user!.id,session.id,null);return {ok:true,pending:null,...applied};}
+      const value=await adapter.controls.validate(context,req.body);
+      try {const applied=await adapter.controls.apply(context,value);const pending=applied.pending===true?value:null;saveModelPreference(req.user!.id,session.id,pending,pending?new Date().toISOString():undefined);return {ok:true,...applied,pending,pending_status:pending?'submitted':null};}
       catch(error){return reply.code(503).send({error:error instanceof Error?error.message:'设置失败，请刷新确认'});}
     }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'设置失败，请重试'});}
   });
@@ -558,10 +584,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const clientId=req.body?.client_id;
     if(clientId!==undefined && (typeof clientId!=='string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(clientId))) return reply.code(400).send({error:'Invalid client_id'});
     let attachments;try{attachments=await validateConversationAttachments(id,req.body?.attachments);}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'附件不可用'});}
+    const target=getSession(id);if(req.body?.source==='conversation'&&attachments.length&&target&&!agentForSession(target).descriptor.capabilities.attachments)return reply.code(409).send({error:'此 Agent 不支持附件',submission:'rejected'});
     // The server can restart after the browser's last ready snapshot. Reattach
     // the existing wrapper before submission; never replay an ambiguous send.
     if(!await attachExistingSession(id))return reply.code(409).send({error:'会话连接尚未就绪，请重新连接；进程已退出时需恢复会话。',submission:'rejected'});
-    const current=getSession(id);if(current?.codex_session_id)retries.cancel(id,current.codex_session_id,'new_input');
+    const current=getSession(id);if(current&&nativeConversationId(current))retries.cancel(id,nativeConversationId(current)!,'new_input');
     const preparedInput=formatConversationInput(input,attachments,true);
     const attachmentClientId=typeof clientId==='string'?clientId:randomUUID();
     // Serialize only the brief paste/Enter pair, never the agent's execution.
@@ -569,31 +596,29 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const prior = pendingInputs.get(id) || Promise.resolve();
     const submission = prior.catch(() => {}).then(async () => {
       const session=getSession(id);
-      if(req.body?.source==='conversation' && process.env.AGENTMANAGER_CODEX_STREAM_SOCKET && session?.cli_type==='codex' && session.codex_session_id) {
+      if(req.body?.source==='conversation'&&session&&nativeConversationId(session)) {
         if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,true);
-        const submit=()=>attachments.length?submitStreamingCodexInput(session.codex_session_id!,input,attachmentClientId,attachments):clientId?submitStreamingCodexInput(session.codex_session_id!,input,clientId):submitStreamingCodexInput(session.codex_session_id!,input);
-        let native=await submit();
-        // false means notLoaded, before turn/start. Upgrade only an idle,
-        // eligible legacy wrapper, then submit the same client identity once.
-        if(!native&&await ensureCodexConversationStreaming(id))native=await submit();
-        if(native)return native==='queued'?'queued':'submitted';
+        const adapter=agentForSession(session),native=await adapter.input.submit(sessionAgentContext(session),input,typeof clientId==='string'?clientId:attachments.length?attachmentClientId:undefined,attachments);
+        if(native)return native==='queued'?'queued':'submitted';if(adapter.descriptor.sessionHost==='managed')throw Object.assign(Error('Agent 服务未接受输入，消息尚未提交'),{submission:'rejected'});
       }
       if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);
       if(req.body?.source==='conversation'&&typeof clientId==='string'&&session){
         const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
-        await rememberConversationInput(id,{cli_type:session.cli_type==='codex'?'codex':'claude',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},clientId,preparedInput).catch(()=>{});
+        await rememberConversationInput(id,{...session,cli_type:session.cli_type||'claude',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},clientId,preparedInput).catch(()=>{});
       }
+      await withTerminalInput(id,async()=>{
       if (!writeToSession(id,preparedInput,true)) throw new Error('Session input is unavailable');
       await new Promise(resolve => setTimeout(resolve,50));
       if (!writeToSession(id,'\r',false)) throw new Error('Input was pasted but submission could not be confirmed');
-      if(req.body?.source==='conversation'&&session?.cli_type==='codex')void scheduleCodexStreamingUpgrade(id).catch(()=>{});
+      });
+      if(req.body?.source==='conversation'&&session)void agentForSession(session).input.afterTerminalSubmit(sessionAgentContext(session)).catch(()=>{});
     });
     pendingInputs.set(id,submission);
     try {
       const status=await submission;
       return reply.code(202).send({id,status:status==='queued'?'queued':'submitted'});
     } catch(error) {
-      if(error instanceof CodexRpcError||error instanceof CodexStreamingUpgradeError)return reply.code(409).send({error:error.message,submission:'rejected'});
+      if(error instanceof Error&&(error as Error&{submission?:string}).submission==='rejected')return reply.code(409).send({error:error.message,submission:'rejected'});
       return reply.code(503).send({error:'暂未确认消息是否提交，请在原始终端核对后再重试',submission:'unknown'});
     } finally {
       if (pendingInputs.get(id) === submission) pendingInputs.delete(id);
@@ -604,7 +629,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const session=getSession(req.params.id);
     if(!session||session.created_by_user_id!==req.user!.id||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
     if(!requirePermission(req,reply,'agent_api','write'))return reply;
-    if(!await scheduleCodexStreamingUpgrade(session.id))return reply.code(409).send({error:'此会话暂不支持接入实时输出'});
+    if(!await agentForSession(session).stream.enable?.(sessionAgentContext(session)))return reply.code(409).send({error:'此会话暂不支持接入实时输出'});
     return {ok:true,scheduled:true};
   });
 
@@ -712,7 +737,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   app.post<{Params:{id:string}}>('/sessions/:id/conversation/retry/cancel',async(req,reply)=>{
     const session=getSession(req.params.id);
     if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
-    if(session.codex_session_id)retries.cancel(session.id,session.codex_session_id);
+    if(nativeConversationId(session))retries.cancel(session.id,nativeConversationId(session)!);
     return {ok:true};
   });
 
@@ -721,9 +746,10 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     if(!req.user || !canAccessAgentSession(req.user.id,id)) {socket.close(1008,'Session not found');return;}
     if(!registerUserConnection(req.user.id,readSessionCookie(req),socket)) return;
     const session=getSession(id);
-    if(session?.cli_type!=='codex'||!session.codex_session_id) {
+    if(!session||!nativeConversationId(session)||!agentForSession(session).descriptor.capabilities.stream) {
       socket.send(JSON.stringify({type:'unavailable',reason:'等待原生实时会话连接'}));socket.close(1000);return;
     }
+    const adapter=agentForSession(session),context=sessionAgentContext(session),nativeId=nativeConversationId(session)!;
     let lastUsageFingerprint:string|undefined;
     const send=(frame:any)=>{
       if(!canAccessAgentSession(req.user!.id,id)) {socket.close(1008);return;}
@@ -735,16 +761,16 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         if(fingerprint===lastUsageFingerprint)return;
         lastUsageFingerprint=fingerprint;
       }
-      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(['snapshot','history','queue'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,linkConversationInputs(id,session.codex_session_id,frame.messages))}:frame));
+      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(['snapshot','history','queue'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,linkConversationInputs(id,nativeId,frame.messages))}:frame));
       else if(socket.readyState===1) socket.close(1013,'Slow conversation client');
     };
-    retries.monitor(id,req.user!.id,session.codex_session_id);
-    const stopRetry=retries.subscribe(id,session.codex_session_id,send);
-    const stopFile=observeConversationFile({cli_type:'codex',codex_session_id:session.codex_session_id,claude_session_id:null,project_path:null},send);
-    const stop=observeCodexConversation(session.codex_session_id,frame=>{
+    if(adapter.descriptor.capabilities.retry)retries.monitor(id,req.user!.id,nativeId);
+    const stopRetry=adapter.descriptor.capabilities.retry?retries.subscribe(id,nativeId,send):()=>{};
+    const stopFile=observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},send);
+    const stop=observeAgentConversation(session,frame=>{
       send(frame);
       if(frame.type==='unavailable'&&frame.reconnect&&socket.readyState===1)socket.close(1012,'Native connection lost');
-    },(turnId,error,willRetry)=>retries.failure(id,req.user!.id,session.codex_session_id!,turnId,error,willRetry));
+    },(turnId,error,willRetry)=>retries.failure(id,req.user!.id,nativeId,turnId,error,willRetry));
     socket.on('message',bytes=>{
       let frame:any;try{const raw=bytes.toString();if(Buffer.byteLength(raw)>64*1024){socket.close(1009,'Interaction response too large');return;}frame=JSON.parse(raw);}catch{return;}
       if(frame?.type!=='interaction_response'||typeof frame.request_id!=='string')return;
@@ -767,12 +793,12 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const session=getSession(id);
     if(!session) return reply.code(404).send({error:'Session not found'});
     const project=session.project_id ? getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined : undefined;
-    const page=await readConversation({cli_type:session.cli_type==='codex'?'codex':'claude',codex_session_id:session.codex_session_id,claude_session_id:session.claude_session_id,project_path:project?.path||null},
+    const page=await readConversation({...session,cli_type:session.cli_type||'claude',codex_session_id:session.codex_session_id,claude_session_id:session.claude_session_id,project_path:project?.path||null},
       {after:req.query.after,before:req.query.before,limit:Number(req.query.limit)||40});
     const state=getTracker(id)?.state;
-    const runtime=session.cli_type==='codex' ? personalQuestionRuntime(await readCodexRuntime(session.codex_session_id),req.user!.id) : null;
-    return reply.header('Cache-Control','private, no-store').send({...page,messages:decorateConversationAttachments(id,linkConversationInputs(id,session.cli_type==='codex'?session.codex_session_id:session.claude_session_id,page.messages)),session_id:id,session_status:session.status,session_active:isSessionActive(id),
-      native_id:session.cli_type==='codex'?session.codex_session_id:session.claude_session_id,runtime,
+    const runtime=personalQuestionRuntime(await readAgentRuntime(session),req.user!.id);
+    return reply.header('Cache-Control','private, no-store').send({...page,...presentAgentSession(session),messages:decorateConversationAttachments(id,linkConversationInputs(id,nativeConversationId(session),page.messages)),session_id:id,session_status:session.status,session_active:isSessionActive(id),
+      native_id:nativeConversationId(session),runtime,
       interaction:state ? {processState:state.processState,promptType:state.promptType,isPermission:state.isPermission,choices:state.choices} : null});
   });
 
@@ -781,7 +807,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const session = getSession(req.params.id);
     if (!session) return reply.status(404).send({error: 'Session not found'});
     const project = session.project_id ? getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path: string} | undefined : undefined;
-    const messages = await loadRecentAgentMessages({cli_type: session.cli_type === 'codex' ? 'codex' : 'claude', codex_session_id: session.codex_session_id || null,
+    const messages = await loadRecentAgentMessages({...session,cli_type: session.cli_type || 'claude', codex_session_id: session.codex_session_id || null,
       claude_session_id: session.claude_session_id || null, project_path: project?.path || null});
     return {session_id: session.id, ...sessionPresenter(req.user!.id)(session), messages, available: messages.length > 0};
   });
@@ -792,7 +818,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     if (!session) return reply.status(404).send({ error: 'Session not found' });
     const project = session.project_id ? getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path: string} | undefined : undefined;
     const turns = await loadRecentPromptContext({
-      cli_type: session.cli_type === 'codex' ? 'codex' : 'claude',
+      ...session,cli_type: session.cli_type || 'claude',
       codex_session_id: session.codex_session_id || null,
       claude_session_id: session.claude_session_id || null,
       project_path: project?.path || null,

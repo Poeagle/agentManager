@@ -7,7 +7,7 @@ import {agentRoutes} from '../src/routes/agent.js';
 import {setRoleGrants,setUserRoles} from '../src/services/rbac.js';
 import * as manager from '../src/services/session-manager.js';
 import * as state from '../src/services/session-state.js';
-import * as conversation from '../src/services/conversation-stream.js';
+import * as conversation from '../src/services/agents/codex/stream.js';
 import * as fileStream from '../src/services/conversation-file-stream.js';
 import {setIgnoredQuestions} from '../src/services/question-attention.js';
 import {createTestDatabase} from './helpers/database.js';

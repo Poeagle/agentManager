@@ -1,9 +1,11 @@
-import { access, open, readdir, stat } from 'fs/promises';
-import { homedir } from 'os';
-import { join } from 'path';
-import { createHash } from 'crypto';
-import { resolveClaudeDir } from './claude-history.js';
-import { NATIVE_SESSION_ID_RE, type CliType } from './session-identity.js';
+import {clipped} from './agents/history-text.js';
+import {getAgent,agentForSession,agentContext} from './agents/index.js';
+import {access,open,readdir,stat} from 'fs/promises';
+import {homedir} from 'os';
+import {join} from 'path';
+
+
+import {NATIVE_SESSION_ID_RE,type CliType} from './session-identity.js';
 
 export interface PromptContextTurn {
   user: string;
@@ -18,53 +20,11 @@ export interface AgentTextMessage {
   task_reference?: string | null;
 }
 
-function isCodexContinuation(text: string): boolean {
-  return /^<codex_internal_context\b[^>]*>[\s\S]*<\/codex_internal_context>$/.test(text);
-}
-
-/** Public conversation text only: never tool arguments/results or reasoning. */
-export function extractAgentMessages(entries: Iterable<unknown>, kind: CliType, messageLimit = 8000): AgentTextMessage[] {
-  const messages: AgentTextMessage[] = [];
-  let taskReference: string | null = null;
-  const append = (role: AgentTextMessage['role'], phase: AgentTextMessage['phase'], text: string, timestamp: unknown) => {
-    if (!text || /^<environment_context>[\s\S]*<\/environment_context>$/.test(text)) return;
-    // Goal/automation continuation is internal scheduling metadata, not a new
-    // human request. Keep the original task association across these turns.
-    if (role === 'user' && kind === 'codex' && isCodexContinuation(text)) return;
-    const last = messages.at(-1);
-    if (last?.role === role && last.text === text) {
-      if (phase === 'final') last.phase = phase;
-      return;
-    }
-    if (role === 'user') taskReference = /\[Platform task reference: ([A-Za-z0-9_-]+)\]/.exec(text)?.[1]
-      || 'native:' + createHash('sha256').update(JSON.stringify([timestamp || null,text])).digest('hex').slice(0,40);
-    messages.push({role, phase, text: clipped(text, messageLimit), timestamp: typeof timestamp === 'string' ? timestamp : null, task_reference: taskReference});
-  };
-  for (const entry of entries) {
-    if (!isRecord(entry)) continue;
-    if (kind === 'codex' && isRecord(entry.payload)) {
-      const p = entry.payload;
-      if (entry.type === 'response_item' && p.type === 'message') {
-        if (p.role === 'user') append('user', 'user', codexUserText(p.content), entry.timestamp);
-        if (p.role === 'assistant') append('assistant', p.phase === 'final_answer' ? 'final' : 'commentary', contentText(p.content, 'output_text'), entry.timestamp);
-      } else if (entry.type === 'event_msg') {
-        if (p.type === 'user_message') append('user', 'user', cleanText(p.message), entry.timestamp);
-        if (p.type === 'agent_message') append('assistant', p.phase === 'final_answer' ? 'final' : 'commentary', cleanText(p.message), entry.timestamp);
-        if (p.type === 'task_complete') append('assistant', 'final', cleanText(p.last_agent_message), entry.timestamp);
-      }
-    } else if (kind === 'claude' && entry.isSidechain !== true && entry.isMeta !== true && isRecord(entry.message)) {
-      const m = entry.message;
-      if (entry.type === 'user' && m.role === 'user') {
-        const origin = isRecord(entry.origin) ? entry.origin : null;
-        if (!origin || !origin.kind || origin.kind === 'human') append('user', 'user', contentText(m.content, 'text'), entry.timestamp);
-      }
-      if (entry.type === 'assistant' && m.role === 'assistant') append('assistant', m.stop_reason === 'end_turn' ? 'final' : 'commentary', contentText(m.content, 'text'), entry.timestamp);
-    }
-  }
-  return messages;
-}
+/** Compatibility wrapper. Native decoders live with their providers. */
+export function decodeNativeAgentMessages(entries:Iterable<unknown>,kind:CliType,limit=8000){return getAgent(kind).history.file!.decode(entries,limit);}
 
 export interface PromptContextSession {
+  agent_id?:string|null;native_session_id?:string|null;
   cli_type: CliType | null;
   claude_session_id: string | null;
   codex_session_id: string | null;
@@ -76,47 +36,6 @@ export const MAX_PROMPT_CONTEXT_CHARS = 16_000;
 const MAX_CONTEXT_MESSAGE_CHARS = 8_000;
 const CONTEXT_TAIL_BUDGETS = [4, 32, 128].map((megabytes) => megabytes * 1024 * 1024);
 const codexRolloutCache = new Map<string, string>();
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function cleanText(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function contentText(content: unknown, blockType: 'text' | 'input_text' | 'output_text'): string {
-  if (typeof content === 'string') return content.trim();
-  if (!Array.isArray(content)) return '';
-  return content
-    .filter(isRecord)
-    .filter((block) => block.type === blockType && typeof block.text === 'string')
-    .map((block) => (block.text as string).trim())
-    .filter(Boolean)
-    .join('\n')
-    .trim();
-}
-
-/** Codex persists local images between generated input_text wrappers. Their
- * paths are already represented by attachments; they are not a second prompt. */
-function codexUserText(content:unknown):string {
-  if(!Array.isArray(content))return contentText(content,'input_text');
-  return contentText(content.filter((block,index)=>{
-    if(!isRecord(block)||block.type!=='input_text'||typeof block.text!=='string')return true;
-    const text=block.text.trim();
-    if(/^<image name=\[Image #\d+\] path=[\s\S]*>$/.test(text) && isRecord(content[index+1]) && content[index+1].type==='input_image')return false;
-    if(text==='</image>' && isRecord(content[index-1]) && content[index-1].type==='input_image')return false;
-    return true;
-  }),'input_text');
-}
-
-function clipped(text: string, limit = MAX_CONTEXT_MESSAGE_CHARS): string {
-  if (text.length <= limit) return text;
-  const marker = '\n…[上下文已截断]…\n';
-  const remaining = Math.max(0, limit - marker.length);
-  const head = Math.ceil(remaining * 0.6);
-  return `${text.slice(0, head)}${marker}${text.slice(-(remaining - head))}`;
-}
 
 /** Keep newest complete turns within a fixed request budget. */
 export function limitPromptContext(turns: PromptContextTurn[], rounds: number): PromptContextTurn[] {
@@ -149,106 +68,8 @@ export function limitPromptContext(turns: PromptContextTurn[], rounds: number): 
  * prompts are accepted, and only assistant messages explicitly ending a turn
  * become context conclusions.
  */
-export function extractClaudePromptContext(entries: Iterable<unknown>, rounds: number): PromptContextTurn[] {
-  const turns: PromptContextTurn[] = [];
-  let user = '';
-  let finalAnswer = '';
-  let turnCompleted = false;
-
-  const commit = () => {
-    if (user && finalAnswer && turnCompleted) turns.push({ user, assistant: finalAnswer });
-    user = '';
-    finalAnswer = '';
-    turnCompleted = false;
-  };
-
-  for (const value of entries) {
-    if (!isRecord(value) || value.isSidechain === true || value.isMeta === true) continue;
-    const message = isRecord(value.message) ? value.message : null;
-
-    if (value.type === 'user' && message?.role === 'user') {
-      const origin = isRecord(value.origin) ? value.origin : null;
-      if (origin && typeof origin.kind === 'string' && origin.kind !== 'human') continue;
-      const text = contentText(message.content, 'text');
-      // Array-valued tool_result records contain no direct text blocks and are
-      // ignored; a real next prompt closes the preceding completed turn.
-      if (!text) continue;
-      commit();
-      user = text;
-      continue;
-    }
-
-    if (value.type === 'assistant' && message?.role === 'assistant' && user) {
-      const text = contentText(message.content, 'text');
-      if (text) {
-        finalAnswer = text;
-        if (message.stop_reason === 'end_turn') turnCompleted = true;
-      }
-      continue;
-    }
-
-    if (value.type === 'system' && value.subtype === 'turn_duration' && user && finalAnswer) {
-      turnCompleted = true;
-      commit();
-    }
-  }
-  commit();
-  return limitPromptContext(turns, rounds);
-}
-
-/** Codex exposes the exact human prompt and exact final answer as turn events. */
-export function extractCodexPromptContext(entries: Iterable<unknown>, rounds: number): PromptContextTurn[] {
-  const turns: PromptContextTurn[] = [];
-  let user = '';
-  let lastHuman = '';
-  let finalAnswer = '';
-
-  const commit = () => {
-    if (user && finalAnswer) turns.push({ user, assistant: finalAnswer });
-    user = '';
-    finalAnswer = '';
-  };
-
-  for (const value of entries) {
-    if (!isRecord(value) || !isRecord(value.payload)) continue;
-    const payload = value.payload;
-
-    if ((value.type === 'event_msg' && payload.type === 'user_message')
-      || (value.type === 'response_item' && payload.type === 'message' && payload.role === 'user')) {
-      const text = value.type === 'event_msg' ? cleanText(payload.message) : contentText(payload.content, 'input_text');
-      if (!text) continue;
-      if (/^<environment_context>[\s\S]*<\/environment_context>$/.test(text)) continue;
-      if (isCodexContinuation(text)) {
-        if (!user) user = lastHuman;
-        continue;
-      }
-      // Some releases record the same prompt in both event and response forms.
-      if (text === user && !finalAnswer) continue;
-      // A new human message means any preceding turn without a final answer was
-      // interrupted; it must not leak commentary into enhancement context.
-      commit();
-      user = text;
-      lastHuman = text;
-      continue;
-    }
-
-    if (value.type === 'response_item' && payload.type === 'message'
-      && payload.role === 'assistant' && payload.phase === 'final_answer' && user) {
-      const text = contentText(payload.content, 'output_text');
-      if (text) finalAnswer = text;
-      continue;
-    }
-
-    if (value.type === 'event_msg' && payload.type === 'task_complete' && user) {
-      const exactFinal = cleanText(payload.last_agent_message);
-      if (exactFinal) finalAnswer = exactFinal;
-      commit();
-    }
-  }
-  // Newer Codex logs tag final_answer before the task_complete event is flushed.
-  commit();
-  return limitPromptContext(turns, rounds);
-}
+export {extractClaudePromptContext} from './agents/claude/prompt-context.js';
+export {extractCodexPromptContext} from './agents/codex/prompt-context.js';
 
 async function relevantTailEntries(filePath: string, kind: CliType, maxBytes: number): Promise<{ entries: unknown[]; reachedStart: boolean }> {
   const entries: unknown[] = [];
@@ -264,9 +85,7 @@ async function relevantTailEntries(filePath: string, kind: CliType, maxBytes: nu
     // tool result. Discard it instead of attempting to parse a partial record.
     if (offset > 0) lines.shift();
     for (const line of lines) {
-      const relevant = kind === 'claude'
-        ? /"type"\s*:\s*"(?:user|assistant|system)"/.test(line)
-        : /"type"\s*:\s*"(?:user_message|agent_message|task_complete|message)"/.test(line);
+      const relevant=getAgent(kind).history.file!.relevant(line);
       if (!relevant) continue;
       try { entries.push(JSON.parse(line)); } catch { /* partial line while CLI is writing */ }
     }
@@ -280,9 +99,7 @@ export async function loadPromptContextFromFile(filePath: string, kind: CliType,
   let latest: PromptContextTurn[] = [];
   for (const budget of CONTEXT_TAIL_BUDGETS) {
     const { entries, reachedStart } = await relevantTailEntries(filePath, kind, budget);
-    latest = kind === 'codex'
-      ? extractCodexPromptContext(entries, rounds)
-      : extractClaudePromptContext(entries, rounds);
+    latest=getAgent(kind).history.file!.turns(entries,rounds);
     if (latest.length >= rounds || reachedStart) return latest;
   }
   return latest;
@@ -317,16 +134,9 @@ export async function findCodexRollout(sessionId: string): Promise<string | null
 
 export async function loadRecentAgentMessages(session: PromptContextSession): Promise<AgentTextMessage[]> {
   try {
-    let file: string | null = null;
-    let kind: CliType = 'claude';
-    if (session.cli_type === 'codex' && session.codex_session_id && NATIVE_SESSION_ID_RE.test(session.codex_session_id)) {
-      kind = 'codex';
-      file = await findCodexRollout(session.codex_session_id);
-    } else if (session.claude_session_id && session.project_path && NATIVE_SESSION_ID_RE.test(session.claude_session_id)) {
-      const dir = resolveClaudeDir(session.project_path);
-      if (dir) file = join(dir, `${session.claude_session_id}.jsonl`);
-    }
-    if (!file) return [];
+    const native=await nativeConversationFile(session);
+    if(!native){const page=await agentForSession(session).history.read(agentContext(session),{limit:30});return (page?.messages||[]).map(message=>({role:message.role,phase:message.role==='user'?'user' as const:message.phase==='commentary'?'commentary' as const:'final' as const,text:message.text.slice(-MAX_PROMPT_CONTEXT_CHARS),timestamp:message.timestamp}));}
+    const file=native.path,kind=native.kind;
     let messages: AgentTextMessage[] = [];
     for (const budget of CONTEXT_TAIL_BUDGETS) {
       const {entries,reachedStart} = await relevantTailEntries(file, kind, budget);
@@ -347,16 +157,7 @@ export async function loadRecentAgentMessages(session: PromptContextSession): Pr
   }
 }
 
-export async function nativeConversationFile(session: PromptContextSession): Promise<{path:string;kind:CliType} | null> {
-  if(session.cli_type==='codex') {
-    if(!session.codex_session_id || !NATIVE_SESSION_ID_RE.test(session.codex_session_id)) return null;
-    const path=await findCodexRollout(session.codex_session_id);
-    return path ? {path,kind:'codex'} : null;
-  }
-  if(!session.claude_session_id || !session.project_path || !NATIVE_SESSION_ID_RE.test(session.claude_session_id)) return null;
-  const directory=resolveClaudeDir(session.project_path);
-  return directory ? {path:join(directory,`${session.claude_session_id}.jsonl`),kind:'claude'} : null;
-}
+export async function nativeConversationFile(session:PromptContextSession):Promise<{path:string;kind:CliType}|null>{const adapter=agentForSession(session),context=agentContext(session);if(!context.nativeId)return null;const path=await adapter.history.file?.locate(context);return path?{path,kind:adapter.descriptor.id}:null;}
 
 /** Resolve the tab's bound native history and return only completed user/final pairs. */
 export async function loadRecentPromptContext(
@@ -365,22 +166,16 @@ export async function loadRecentPromptContext(
 ): Promise<PromptContextTurn[]> {
   if (!Number.isInteger(rounds) || rounds <= 0) return [];
   try {
-    if (session.cli_type === 'codex' && session.codex_session_id
-      && NATIVE_SESSION_ID_RE.test(session.codex_session_id)) {
-      const file = await findCodexRollout(session.codex_session_id);
-      if (!file) return [];
-      return loadPromptContextFromFile(file, 'codex', rounds);
-    }
-
-    if (session.claude_session_id && session.project_path
-      && NATIVE_SESSION_ID_RE.test(session.claude_session_id)) {
-      const dir = resolveClaudeDir(session.project_path);
-      if (!dir) return [];
-      return loadPromptContextFromFile(join(dir, `${session.claude_session_id}.jsonl`), 'claude', rounds);
-    }
+    const adapter=agentForSession(session),context=agentContext(session);if(adapter.history.context)return adapter.history.context(context,rounds);
+    const native=await nativeConversationFile(session);if(native)return loadPromptContextFromFile(native.path,native.kind,rounds);
+    const page=await adapter.history.read(context,{limit:Math.min(80,rounds*6)}),turns:PromptContextTurn[]=[];let user='';
+    for(const message of page?.messages||[]){if(message.role==='user')user=message.text;else if(message.phase==='final'&&user){turns.push({user,assistant:message.text});user='';}}
+    return limitPromptContext(turns,rounds);
   } catch {
     // Missing, rotated, or concurrently-written history must never prevent the
     // user from enhancing the current draft without context.
   }
   return [];
 }
+
+export function extractAgentMessages(entries:Iterable<unknown>,kind:CliType,messageLimit=8000):AgentTextMessage[]{return getAgent(kind).history.file!.decode(entries,messageLimit);}

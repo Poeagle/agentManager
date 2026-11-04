@@ -1,4 +1,4 @@
-import { runtimeNames } from './runtime-namespace.js';
+import {runtimeNames} from './runtime-namespace.js';
 /**
  * PTY Worker — runs as a separate child process per session.
  *
@@ -11,13 +11,12 @@ import { runtimeNames } from './runtime-namespace.js';
  */
 
 import * as pty from 'node-pty-prebuilt-multiarch';
-import { execFile, execFileSync } from 'child_process';
-import { promisify } from 'util';
-import { existsSync, unlinkSync, mkdirSync, createReadStream, readFileSync, readdirSync, statSync, appendFileSync } from 'fs';
-import { join } from 'path';
-import { homedir, tmpdir } from 'os';
-import type { ReadStream } from 'fs';
-import { buildSessionCommand } from './cli-command.js';
+import {execFile,execFileSync} from 'child_process';
+import {promisify} from 'util';
+import {existsSync,unlinkSync,mkdirSync,createReadStream,appendFileSync} from 'fs';
+import {join} from 'path';
+import {tmpdir} from 'os';
+import type {ReadStream} from 'fs';
 
 const execFileAsync = promisify(execFile);
 
@@ -65,7 +64,9 @@ interface SpawnMessage {
   task: string;
   mode: 'session' | 'terminal';
   sessionCommand?: string;
-  cliType?: 'claude' | 'codex';
+  /** Built by the owning adapter in the parent; workers do not load provider code. */
+  agentCommand?:string;
+  cliType?: string;
   /** When set, resume this CLI's native conversation instead of launching a
    *  new one: Claude uses `--resume`, Codex uses `resume <uuid>`. */
   resumeSessionId?: string;
@@ -74,8 +75,10 @@ interface SpawnMessage {
   assignSessionId?: string;
   /** Durable file written by Codex's SessionStart hook. Its payload contains
    *  the native Codex conversation UUID for this AgentManager session. */
-  codexBindingPath?: string;
+  bindingPath?:string;
+  codexBindingPath?: string; // Compatibility with a server from before the port migration.
   /** null keeps restricted sessions in their own filesystem sandbox. */
+  streamSocket?:string|null;
   codexStreamSocket?: string | null;
   cols: number;
   rows: number;
@@ -574,9 +577,9 @@ async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
         ptyProcess = spawnDirect(msg, shell, ['-i']);
       }
     } else {
-      // session mode
+      // Old parent processes may still send the earlier message shape.
+      const command=msg.agentCommand??(await import('./cli-command.js')).buildSessionCommand(msg.task,msg.useTmux,sessionCmd,cliType,msg.resumeSessionId,msg.assignSessionId,msg.bindingPath??msg.codexBindingPath,msg.streamSocket??msg.codexStreamSocket);
       if (msg.useTmux) {
-        const command = buildSessionCommand(msg.task, true, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath, msg.codexStreamSocket);
         await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command, msg.inaccessiblePaths, msg.sandboxRequired);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
@@ -589,7 +592,6 @@ async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
           env: sessionEnv(),
         });
       } else if (msg.useDtach) {
-        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath, msg.codexStreamSocket);
         await dtachCreate(msg.sessionId, msg.projectPath, command, msg.inaccessiblePaths, msg.sandboxRequired);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
@@ -597,7 +599,6 @@ async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
           env: sessionEnv(),
         });
       } else {
-        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType, msg.resumeSessionId, msg.assignSessionId, msg.codexBindingPath, msg.codexStreamSocket);
         ptyProcess = spawnDirect(msg, shell, ['-i', '-c', command]);
       }
     }

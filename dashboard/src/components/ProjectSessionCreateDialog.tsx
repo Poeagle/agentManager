@@ -9,7 +9,7 @@ export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated,
 }) {
   const client = useQueryClient();
   const mutation = useMutation({
-    mutationFn: ({ mode, cli }: { mode: 'session' | 'terminal'; cli?: 'claude' | 'codex' }) => {
+    mutationFn: ({ mode, cli }: { mode: 'session' | 'terminal'; cli?: string }) => {
       if (!projectOpenModes(project).some((option) => option.mode === mode && option.cli === cli)) throw new Error('该打开方式未获授权');
       const prompt = 'Start up and ask me what I want you to do and NOTHING ELSE';
       const instructions = project.session_prompt?.trim();

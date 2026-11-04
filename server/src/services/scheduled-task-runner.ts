@@ -1,12 +1,14 @@
-import { captureScheduledBaseline, PlatformAiScheduleBusyError, scheduledObservationPrompt } from './platform-ai/scheduled-observation.js';
-import { nanoid } from 'nanoid';
-import { getDb } from '../db/index.js';
-import { getUserTabUsage, userCanUseToolForProject } from '../auth.js';
+import {getAgent,agentForSession} from './agents/index.js';
+import {taskAgent,targetSupportsQuota} from './agents/scheduling.js';
+import {captureScheduledBaseline,PlatformAiScheduleBusyError,scheduledObservationPrompt} from './platform-ai/scheduled-observation.js';
+import {nanoid} from 'nanoid';
+import {getDb} from '../db/index.js';
+import {getUserTabUsage,userCanUseToolForProject} from '../auth.js';
 import * as sessionManager from './session-manager.js';
-import { isWithinDailyWindow, nextScheduledAt, type ScheduleKind } from './schedule.js';
-import { readCodexWeeklyQuota } from './codex-quota.js';
-import { getTracker } from './session-state.js';
-import { evaluateTaskConditions, flattenTaskConditions, localDateKey, nextConditionDay, parseTaskConditions, type ConditionContext } from './scheduled-task-conditions.js';
+import {isWithinDailyWindow,nextScheduledAt,type ScheduleKind} from './schedule.js';
+
+import {getTracker} from './session-state.js';
+import {evaluateTaskConditions,flattenTaskConditions,localDateKey,nextConditionDay,parseTaskConditions,type ConditionContext} from './scheduled-task-conditions.js';
 
 export type ScheduledTargetType = 'existing' | 'new';
 export type ScheduledNewMode = 'session' | 'terminal';
@@ -24,7 +26,7 @@ export interface ScheduledTaskRow {
   target_type: ScheduledTargetType;
   target_session_id: string | null;
   new_mode: ScheduledNewMode | null;
-  new_cli_type: 'claude' | 'codex' | null;
+  new_cli_type: string | null;
   inactive_policy: ScheduledInactivePolicy;
   enabled: number;
   next_run_at: string | null;
@@ -79,7 +81,7 @@ async function conditionContext(task: ScheduledTaskRow, now: number): Promise<Co
   let quotaRemaining: number | null = null;
   if (conditions.some((condition) => condition.type === 'quota_below')) {
     try {
-      const quota = await readCodexWeeklyQuota();
+      const quota = await taskAgent(task).quota.read();
       if (!quota.stale) quotaRemaining = quota.remainingPercent;
     } catch { /* unknown guard state blocks dispatch, rather than stopping forever */ }
   }
@@ -167,15 +169,6 @@ function stopTask(taskId: string, reason: string, now = new Date().toISOString()
   `).run(now, reason, taskId);
 }
 
-function isCodexTarget(task: ScheduledTaskRow): boolean {
-  if (task.target_type === 'new') {
-    return task.new_mode !== 'terminal' && task.new_cli_type === 'codex';
-  }
-  if (!task.target_session_id) return false;
-  const session = getDb().prepare('SELECT mode, cli_type FROM sessions WHERE id = ?')
-    .get(task.target_session_id) as { mode: string | null; cli_type: string | null } | undefined;
-  return !!session && session.mode !== 'terminal' && session.cli_type === 'codex';
-}
 
 async function stopReasonBeforeRun(task: ScheduledTaskRow, now = Date.now()): Promise<string | null> {
   if (task.stop_at && Date.parse(task.stop_at) <= now) {
@@ -191,9 +184,9 @@ async function stopReasonBeforeRun(task: ScheduledTaskRow, now = Date.now()): Pr
     return `已连续失败 ${task.consecutive_failures} 次`;
   }
   if (task.quota_remaining_below != null) {
-    if (!isCodexTarget(task)) throw new Error('额度停止条件仅适用于 Codex Session 或 Agent');
-    const quota = await readCodexWeeklyQuota();
-    if (quota.stale) throw new Error('Codex 额度暂不可用，未使用过期额度执行任务');
+    if (!targetSupportsQuota(task)) throw new Error('所选 Agent 不支持额度条件');
+    const quota = await taskAgent(task).quota.read();
+    if (quota.stale) throw new Error('Agent 额度暂不可用，未使用过期额度执行任务');
     getDb().prepare(`
       UPDATE scheduled_tasks SET last_quota_remaining = ?, updated_at = datetime('now') WHERE id = ?
     `).run(quota.remainingPercent, task.id);
@@ -226,7 +219,7 @@ async function createScheduledSession(task: ScheduledTaskRow, projectPath: strin
   await assertStartConditions(task);
   assertExecutionWindow(task);
   const mode = task.new_mode ?? 'session';
-  const cliType = task.new_cli_type === 'codex' ? 'codex' : 'claude';
+  const cliType = getAgent(task.new_cli_type||'claude').descriptor.id;
   if (!userCanUseToolForProject(task.user_id, task.project_id, mode, mode === 'terminal' ? 'claude' : cliType)) {
     throw new Error('用户已无权在该项目创建此类标签页');
   }
@@ -300,7 +293,7 @@ async function sendToExistingSession(task: ScheduledTaskRow): Promise<string> {
     throw new TargetUnavailableError('目标标签页不存在或不属于任务创建者');
   }
   const mode = session.mode === 'terminal' ? 'terminal' : 'session';
-  const cliType = session.cli_type === 'codex' ? 'codex' : 'claude';
+  const cliType = agentForSession(session).descriptor.id;
   if (!userCanUseToolForProject(task.user_id, task.project_id, mode, mode === 'terminal' ? 'claude' : cliType)) {
     throw new Error('用户已无权操作该目标标签页');
   }

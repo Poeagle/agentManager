@@ -1,22 +1,26 @@
-import { FastifyPluginAsync } from 'fastify';
-import { createRequire } from 'module';
+import {detachManagedAgents} from '../services/agents/host.js';
+import {agentForSession,getAgent} from '../services/agents/index.js';
+import {readAgentRuntime,presentAgentSession} from '../services/agents/session.js';
+import {nativeConversationId} from '../services/session-identity.js';
+import {FastifyPluginAsync} from 'fastify';
+import {createRequire} from 'module';
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as { Terminal: any };
 const { SerializeAddon } = require('@xterm/addon-serialize') as { SerializeAddon: any };
 import * as sessionManager from '../services/session-manager.js';
-import { RESIZE_MARKER, registerPendingSpawn } from '../services/session-manager.js';
-import { getTracker } from '../services/session-state.js';
-import { getDb } from '../db/index.js';
-import { getUserTabUsage, isAdmin, userCanUseSessionTool, userCanUseToolForProject, userOwnsProject, userOwnsProjectPath, userProjectIds } from '../auth.js';
-import { listClaudeSessions, deleteClaudeSession } from '../services/claude-history.js';
-import { strip } from '../lib/ansi.js';
-import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'fs';
-import { isAbsolute, join, relative, sep } from 'path';
-import { prunePastesDir } from '../services/paste-cleanup.js';
-import { sessionPresenter } from '../services/session-labels.js';
+import {RESIZE_MARKER,registerPendingSpawn} from '../services/session-manager.js';
+import {getTracker} from '../services/session-state.js';
+import {getDb} from '../db/index.js';
+import {getUserTabUsage,isAdmin,userCanUseSessionTool,userCanUseToolForProject,userOwnsProject,userOwnsProjectPath,userProjectIds} from '../auth.js';
+import {listClaudeSessions,deleteClaudeSession} from '../services/claude-history.js';
+
+import {randomUUID} from 'crypto';
+import {existsSync,mkdirSync,realpathSync,writeFileSync} from 'fs';
+import {isAbsolute,join,relative,sep} from 'path';
+import {prunePastesDir} from '../services/paste-cleanup.js';
+import {sessionPresenter} from '../services/session-labels.js';
 import {readConversationPreview,humanSessionTask} from '../services/conversation-preview.js';
-import { readCodexRuntime } from '../services/codex-runtime.js';
+
 import {personalQuestionRuntime,setIgnoredQuestions} from '../services/question-attention.js';
 import {watchSessionRuntime,stopSessionRuntimeWatches} from '../services/session-runtime-watch.js';
 import {broadcastEphemeral} from '../services/event-store.js';
@@ -72,8 +76,8 @@ function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' 
   return 'session';
 }
 
-function normalizeCliType(cliType: string | null | undefined): 'claude' | 'codex' {
-  return cliType === 'codex' ? 'codex' : 'claude';
+function normalizeCliType(cliType: string | null | undefined): string {
+  return getAgent(cliType||'claude').descriptor.id;
 }
 
 function canAccessSessionByRow(userId: string, row: {
@@ -89,7 +93,7 @@ function canAccessSessionByRow(userId: string, row: {
   return userCanUseToolForProject(userId, row.project_id, normalizeMode(row.mode), normalizeCliType(row.cli_type));
 }
 
-function canAccessSessionById(userId: string, sessionId: string, mode: 'session' | 'terminal', cliType: 'claude' | 'codex'): boolean {
+function canAccessSessionById(userId: string, sessionId: string, mode: 'session' | 'terminal', cliType: string): boolean {
   return userCanUseSessionTool(userId, sessionId, cliType, mode);
 }
 
@@ -100,7 +104,7 @@ function sqliteUtcToIso(value: string | null | undefined): string | null {
 }
 
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
-  app.addHook('onClose',async()=>stopSessionRuntimeWatches());
+  app.addHook('onClose',async()=>{stopSessionRuntimeWatches();detachManagedAgents();});
   // List sessions
   app.get<{
     Querystring: { status?: string; project_id?: string };
@@ -134,18 +138,15 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       .map(async (s: any) => {
         const st = getTracker(s.id)?.state;
         const preview=await readConversationPreview(s);
-        const native = s.cli_type === 'codex' ? personalQuestionRuntime(await readCodexRuntime(s.codex_session_id),req.user!.id) : null;
+        const native = nativeConversationId(s)?personalQuestionRuntime(await readAgentRuntime(s,true),req.user!.id):null;
         if(native&&['running','pending','launching','detached','released'].includes(s.status))await watchSessionRuntime(s);
-        if (native?.source==='codex_rollout' && ['running','waiting_for_input'].includes(native.state)
-          && await sessionManager.getLiveWorkAgent(s.id) !== 'codex') {
-          native.state='unknown'; native.reason='原生记录中的执行尚未结束，但未确认到对应 Codex 进程，当前状态待确认';
-        }
+
         const lastActivityAt = st?.lastActivity
           ? new Date(st.lastActivity).toISOString()
           : sqliteUtcToIso(outputActivity.get(s.id)?.createdAt ?? s.updated_at ?? s.completed_at ?? s.started_at ?? s.created_at);
         return {
           ...s,
-          ...present(s),
+          ...present(s),...presentAgentSession(s),
           last_activity_at: native ? native.last_activity_at : lastActivityAt,
           ...(native ? {agent_runtime:native} : {}),
           content_summary: preview?.text||humanSessionTask(s.task),
@@ -207,11 +208,11 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     if(!requirePermission(req,reply,'agent_api','write'))return reply;
     const ids=req.body?.question_ids;
     if(!Array.isArray(ids)||!ids.length||ids.length>500||ids.some(id=>typeof id!=='string'||id.length>2048)||req.body.ignored!==undefined&&typeof req.body.ignored!=='boolean')return reply.code(400).send({error:'问题标识无效'});
-    if(session.cli_type!=='codex'||!session.codex_session_id)return reply.code(400).send({error:'当前会话不支持问题提醒'});
-    const runtime=await readCodexRuntime(session.codex_session_id);
+    if(!agentForSession(session).descriptor.capabilities.questions||!nativeConversationId(session))return reply.code(400).send({error:'当前 Agent 不支持问题提醒'});
+    const runtime=await readAgentRuntime(session);
     const available=new Set(runtime.pending_questions?.flatMap(group=>group.questions.flatMap(q=>q.id?[q.id]:[])));
     if(ids.some(id=>!available.has(id)))return reply.code(409).send({error:'问题状态已更新，请刷新后重试'});
-    const ignored=setIgnoredQuestions(req.user!.id,session.codex_session_id,ids,req.body.ignored!==false);
+    const ignored=setIgnoredQuestions(req.user!.id,nativeConversationId(session)!,ids,req.body.ignored!==false);
     broadcastEphemeral({type:'session.runtime',session_id:session.id,...session.project_id?{project_id:session.project_id}:{},data:{runtime:{...runtime,observed_at:new Date().toISOString()}}});
     return {ok:true,ignored_question_ids:ignored};
   });
@@ -292,7 +293,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const session=sessionManager.getSession(req.params.id);
     if(!session||session.created_by_user_id!==req.user!.id||!canAccessSessionByRow(req.user!.id,session))return reply.code(404).send({error:'Session not found'});
     if(!requirePermission(req,reply,'agent_api','write'))return reply;
-    const result=await sessionManager.reloadCodexSessionById(session.id);
+    const result=await sessionManager.reloadAgentSessionById(session.id);
     if(!result.ok)return reply.code(409).send({error:result.error});
     return {...result,session:sessionManager.getSession(session.id)};
   });
@@ -454,13 +455,14 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       task: string;
       project_id?: string;
       mode?: 'session' | 'terminal';
-      cli_type?: 'claude' | 'codex';
+      cli_type?: string;
     };
   }>('/sessions', async (req, reply) => {
     const { project_path, task, project_id, mode, cli_type } = req.body as any;
-    const cliType = cli_type === 'codex' ? 'codex' : 'claude';
+    const cliType = getAgent(cli_type||'claude').descriptor.id;
     if (mode !== undefined && mode !== 'session' && mode !== 'terminal') return reply.status(400).send({ error: 'mode must be session or terminal' });
     const requestedMode = mode === 'terminal' ? 'terminal' : 'session';
+    if(requestedMode==='session'&&!getAgent(cliType).descriptor.capabilities.launch)return reply.code(409).send({error:'此 Agent 不支持创建会话'});
     const usage = getUserTabUsage(req.user!.id);
     if (!usage.allowed) return reply.status(429).send({ error: `已达到活动标签页上限（${usage.limit}）` });
 
@@ -497,9 +499,10 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const session = sessionManager.createSession(canonicalProjectPath, task, resolvedProjectId, cliType, req.user!.id, 'session');
-    registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task, mode: 'session', projectId: resolvedProjectId, cliType });
+    if(getAgent(cliType).descriptor.sessionHost==='managed')await sessionManager.spawnSession(session.id,canonicalProjectPath,task,120,40,cliType);
+    else registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task, mode: 'session', projectId: resolvedProjectId, cliType });
 
-    return { ok: true, session };
+    return {ok:true,session:sessionManager.getSession(session.id)};
   });
 
   // Kill a session — never blocks longer than 3s

@@ -1,22 +1,25 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import { getSetting } from '../../routes/settings.js';
+import {agentDescriptors,getAgent} from '../agents/index.js';
+import {execFile} from 'child_process';
+import {promisify} from 'util';
+import {getSetting} from '../../routes/settings.js';
 
 const execFileAsync = promisify(execFile);
 export interface WorkAgent {
-  cli_type: 'codex' | 'claude'; label: string;
+  cli_type: string; label: string;
   status: 'available' | 'unavailable' | 'unknown'; reason: string;
 }
 const cache = new Map<string, {expires: number; value: Promise<WorkAgent>}>();
 
 export async function detectWorkAgent(cli: WorkAgent['cli_type'], cwd?: string, fresh = false): Promise<WorkAgent> {
+  const descriptor=getAgent(cli).descriptor;
+  if(descriptor.sessionHost==='managed')return {cli_type:cli,label:descriptor.label,status:'unknown',reason:'通过服务或 SDK 连接；启动时验证连接和访问权限'};
   const command = getSetting(`session_${cli}_command`).trim() || cli;
   const shell = process.env.SHELL || '/bin/bash';
   const key = JSON.stringify([cli, command, shell, cwd, process.env.PATH]);
   const previous = cache.get(key);
   if (!fresh && previous && previous.expires > Date.now()) return previous.value;
   const value = (async (): Promise<WorkAgent> => {
-    const label = cli === 'codex' ? 'Codex' : 'Claude';
+    const label=getAgent(cli).descriptor.label;
     // Inspect the executable, never run the configured command, CLI or a development task.
     const first = command.match(/^(?:'([^']+)'|"([^"$`]+)"|([^\s'"\\$`;&|<>()]+))(?=\s|$)/);
     const executable = first?.[1] || first?.[2] || first?.[3];
@@ -40,5 +43,5 @@ export async function detectWorkAgent(cli: WorkAgent['cli_type'], cwd?: string, 
 }
 
 export async function detectWorkAgents(cwd?: string): Promise<WorkAgent[]> {
-  return Promise.all([detectWorkAgent('codex', cwd), detectWorkAgent('claude', cwd)]);
+  return Promise.all(agentDescriptors().filter(agent=>agent.capabilities.launch).map(agent=>detectWorkAgent(agent.id,cwd)));
 }

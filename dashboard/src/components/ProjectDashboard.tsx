@@ -41,7 +41,7 @@ import { ProjectSessionTable } from './ProjectSessionTable';
 import { Dialog } from './Dialog';
 
 interface ProjectDashboardProps {
-  onOpenProject: (projectId: string, projectName: string, quickLaunch?: 'session' | 'terminal', cliType?: 'claude' | 'codex') => void;
+  onOpenProject: (projectId: string, projectName: string, quickLaunch?: 'session' | 'terminal', cliType?: string) => void;
   onOpenSession?: (projectId: string, sessionId: string) => void;
   projectOrder: string[];
   onProjectOrderChange: (order: string[]) => void;

@@ -1,6 +1,6 @@
 import {afterEach,beforeEach,describe,expect,it} from 'vitest';
 import {mkdtempSync,writeFileSync,appendFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
-import {readConversationStatistics} from '../src/services/conversation-statistics.js';
+import {readConversationStatistics} from '../src/services/agents/codex/statistics.js';
 let dir:string,file:string;
 const row=(type:string,payload:unknown)=>JSON.stringify({type,payload})+'\n';
 const start=(id='one')=>row('event_msg',{type:'task_started',turn_id:id});

@@ -1,7 +1,7 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-vi.mock('../src/services/codex-version.js',()=>({prepareCodexReload:vi.fn().mockResolvedValue('0.166.0')}));
-vi.mock('../src/services/conversation-actions.js',()=>({prepareFreshCodexConversation:vi.fn().mockResolvedValue('019ff001-3333-7333-8333-333333333333'),releaseCodexConversation:vi.fn().mockResolvedValue(undefined),compactCodexConversation:vi.fn().mockResolvedValue(undefined)}));
-vi.mock('../src/services/conversation-stream.js',()=>({interruptStreamingCodexThread:vi.fn().mockResolvedValue(undefined)}));
+vi.mock('../src/services/agents/codex/version.js',()=>({prepareCodexReload:vi.fn().mockResolvedValue('0.166.0')}));
+vi.mock('../src/services/agents/codex/actions.js',()=>({prepareFreshCodexConversation:vi.fn().mockResolvedValue('019ff001-3333-7333-8333-333333333333'),releaseCodexConversation:vi.fn().mockResolvedValue(undefined),compactCodexConversation:vi.fn().mockResolvedValue(undefined)}));
+vi.mock('../src/services/agents/codex/stream.js',()=>({interruptStreamingCodexThread:vi.fn().mockResolvedValue(undefined)}));
 vi.mock('child_process',async original=>{
  const actual=await original<typeof import('child_process')>(),{EventEmitter}=await import('events');
  return {...actual,fork:vi.fn(()=>{const worker:any=new EventEmitter();worker.connected=true;worker.exitCode=null;worker.signalCode=null;worker.kill=vi.fn(()=>{worker.connected=false;worker.exitCode=0;queueMicrotask(()=>worker.emit('exit',0));});worker.send=vi.fn((message:any)=>{if(message.type==='spawn')queueMicrotask(()=>worker.emit('message',{type:'ready',pid:90000001}));if(message.type==='kill')worker.kill();});queueMicrotask(()=>worker.emit('message',{type:'worker-ready'}));return worker;})};
@@ -11,8 +11,8 @@ import {getDb} from '../src/db/index.js';
 import {config} from '../src/config.js';
 import {createTestDatabase} from './helpers/database.js';
 import {newSessionConversation,getSession,killSession,compactSessionConversation} from '../src/services/session-manager.js';
-import {prepareFreshCodexConversation,releaseCodexConversation,compactCodexConversation} from '../src/services/conversation-actions.js';
-import {prepareCodexReload} from '../src/services/codex-version.js';
+import {prepareFreshCodexConversation,releaseCodexConversation,compactCodexConversation} from '../src/services/agents/codex/actions.js';
+import {prepareCodexReload} from '../src/services/agents/codex/version.js';
 let cleanup:()=>void;
 const saved={useTmux:config.useTmux,useDtach:config.useDtach},native='019ff001-3434-7434-8434-343434343434';
 beforeEach(()=>{vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});vi.clearAllMocks();const db=createTestDatabase();cleanup=db.cleanup;config.useTmux=false;config.useDtach=false;vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/fake');getDb().prepare("INSERT INTO projects(id,name,path) VALUES('new-project','New',?)").run(db.dir);getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id) VALUES('new-test','new-project','Do not submit old task','running','session','codex',?)").run(native);getDb().prepare("INSERT INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments) VALUES('new-test','attachment','k','text','[]')").run();getDb().prepare("INSERT INTO pty_output(session_id,seq,data) VALUES('new-test',1,'old output')").run();});

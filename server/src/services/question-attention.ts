@@ -1,5 +1,5 @@
 import {getDb} from '../db/index.js';
-import type {CodexRuntime} from './codex-runtime.js';
+import type {AgentRuntime as CodexRuntime} from './agents/types.js';
 
 // A personal reminder preference, separate from native answers and execution.
 export function ignoredQuestionIds(userId:string,nativeId:string|null|undefined):string[] {

@@ -1,3 +1,4 @@
+import {sessionAgent,type AgentDescriptor} from '../lib/agents';
 import {readFileAsDataUrl} from '../lib/file-data-url';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -151,8 +152,9 @@ interface TerminalProps {
   passiveResize?: boolean;
   /** Hide the xterm.js cursor. Used for sessions where the CLI renders its own cursor. */
   hideCursor?: boolean;
-  /** CLI type — Codex sessions need capture-pane refresh on tab switch/resize */
-  cliType?: 'claude' | 'codex';
+  /** Native terminal behavior comes from the registered agent descriptor. */
+  agent?:AgentDescriptor;
+  cliType?: string;
   onExit?: (exitCode: number) => void;
   /** Fires after the terminal protocol handshake, rather than socket open. */
   onReady?: (sessionId: string) => void;
@@ -160,7 +162,7 @@ interface TerminalProps {
   onReconnect?: () => void;
 }
 
-export function Terminal({ sessionId, visible = true, suspended = false, passiveResize = false, hideCursor = false, cliType, onExit, onReady, onConnectionError, onReconnect }: TerminalProps) {
+export function Terminal({ sessionId, visible = true, suspended = false, passiveResize = false, hideCursor = false, cliType, agent, onExit, onReady, onConnectionError, onReconnect }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -212,8 +214,8 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   passiveResizeRef.current = passiveResize;
   const hideCursorRef = useRef(hideCursor);
   hideCursorRef.current = hideCursor;
-  const cliTypeRef = useRef(cliType);
-  cliTypeRef.current = cliType;
+  const terminalBehaviorRef=useRef(agent?.terminal);
+  terminalBehaviorRef.current=agent?.terminal??(cliType?sessionAgent({cli_type:cliType}).terminal:undefined);
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
   const onReadyRef = useRef(onReady);
@@ -260,7 +262,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       return;
     }
 
-    if (cliTypeRef.current === 'codex') {
+    if (terminalBehaviorRef.current?.repaintOnResize) {
       // Codex doesn't redraw on SIGWINCH. Send resize so tmux pane matches
       // our width, then clear and request a capture-pane refresh.
       sendCurrentSize();
@@ -428,7 +430,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
           type: 'replace-input',
           requestId,
           data,
-          clearMode: cliTypeRef.current === 'codex' || cliTypeRef.current === 'claude' ? 'composer' : 'shell',
+          clearMode: terminalBehaviorRef.current?.composer ? 'composer' : 'shell',
           ...(composerLineCount === undefined ? {} : { composerLineCount }),
         }));
       } catch {
@@ -471,7 +473,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
 
     const captureNativePrompt = () => {
       const snapshot = nativePromptRef.current.snapshot();
-      if (cliTypeRef.current !== 'codex' && cliTypeRef.current !== 'claude') return snapshot;
+      if (!terminalBehaviorRef.current?.composer) return snapshot;
 
       const buffer = term.buffer?.active;
       const currentRow = buffer && Number.isInteger(buffer.baseY) && Number.isInteger(buffer.cursorY)
@@ -557,7 +559,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       // The terminal composer only clears one logical line per Ctrl+A/Ctrl+K.
       // Carry the complete draft's line count so a full selection is also a
       // full deletion before the user types or pastes a replacement.
-      const composerLineCount = cliTypeRef.current === 'codex' || cliTypeRef.current === 'claude'
+      const composerLineCount = terminalBehaviorRef.current?.composer
         ? Math.max(1, selection.text.split('\n').length)
         : undefined;
       void replacePromptInputRef.current(replacement, composerLineCount).then((result) => {
@@ -1109,7 +1111,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       // only a transitional stream at the old pane width; clear it before the
       // real-size snapshot arrives so its final newline cannot leave xterm's
       // cursor stranded in the lower-right corner.
-      if (initial && (hideCursorRef.current || cliTypeRef.current === 'codex')) {
+      if (initial && (hideCursorRef.current || terminalBehaviorRef.current?.repaintOnResize)) {
         term.reset();
       }
       if (term.cols !== lastCols || term.rows !== lastRows) {
@@ -1251,7 +1253,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
             // Codex needs a viewport snapshot after an actual geometry change,
             // but a same-size warm tab switch can repaint entirely from xterm's
             // retained local buffer with no server round-trip.
-            if (cliTypeRef.current === 'codex' && geometryChanged) {
+            if (terminalBehaviorRef.current?.repaintOnResize && geometryChanged) {
               if (displayRefreshTimer.current) clearTimeout(displayRefreshTimer.current);
               displayRefreshTimer.current = setTimeout(() => {
                 displayRefreshTimer.current = null;

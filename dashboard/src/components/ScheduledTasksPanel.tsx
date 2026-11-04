@@ -1,3 +1,6 @@
+import {agentSupports,builtinAgentDescriptors} from '../lib/agents';
+import {AgentIcon} from './AgentIcon';
+
 import { TableActions, TableActionButton } from './table/TableActions';
 import { useTableModel } from './table/use-table-model';
 import { DataTable } from './table/DataTable';
@@ -28,7 +31,6 @@ import {
   type Session,
 } from '../lib/api';
 import type { TerminalInstance } from '../lib/project-session-state';
-import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { ScheduleConditionsEditor } from './ScheduleConditionsEditor';
 import './ScheduledTasksPanel.css';
 
@@ -87,7 +89,7 @@ interface EditorState {
   targetType: 'existing' | 'new';
   targetSessionId: string;
   newMode: ScheduledNewMode;
-  newCliType: 'claude' | 'codex';
+  newCliType: string;
   inactivePolicy: 'resume' | 'fail';
   stopConditions: StopCondition[];
   enabled: boolean;
@@ -258,14 +260,15 @@ export function ScheduledTasksPanel({
       })
   ), [projectId, sessionTabs, sessionsQuery.data?.sessions, tabNames]);
   const selectedTargetSession = projectSessions.find((session) => session.id === editor.targetSessionId);
-  const usesCodexQuota = editor.targetType === 'new'
-    ? editor.newMode !== 'terminal' && editor.newCliType === 'codex'
-    : selectedTargetSession?.mode !== 'terminal' && selectedTargetSession?.cli_type === 'codex';
+  const project=queryClient.getQueryData<{projects:import('../lib/api').Project[]}>(['projects'])?.projects.find(project=>project.id===projectId);
+  const providers=(project?.agent_catalog??builtinAgentDescriptors()).filter(agent=>agent.capabilities.launch&&(!project?.tool_access||project.tool_access.session_clients.includes(agent.id)));
+  const quotaProvider=editor.targetType==='new'?providers.find(agent=>agent.id===editor.newCliType):selectedTargetSession?.agent;
+  const usesAgentQuota=editor.targetType==='new'?editor.newMode!=='terminal'&&!!quotaProvider?.capabilities.quota:!!selectedTargetSession&&selectedTargetSession.mode!=='terminal'&&agentSupports(selectedTargetSession,'quota');
   const quotaQuery = useQuery({
-    queryKey: ['codex-weekly-quota', projectId],
-    queryFn: () => api.scheduledTasks.codexQuota(projectId),
-    enabled: page === 'edit' && usesCodexQuota,
-    refetchInterval: usesCodexQuota ? 60_000 : false,
+    queryKey: ['agent-weekly-quota',projectId,editor.targetType==='new'?editor.newCliType:selectedTargetSession?.agent_id||selectedTargetSession?.cli_type],
+    queryFn: () => api.scheduledTasks.agentQuota(projectId,editor.targetType==='new'?editor.newCliType:selectedTargetSession?.agent_id||selectedTargetSession?.cli_type||''),
+    enabled: page === 'edit' && usesAgentQuota,
+    refetchInterval: usesAgentQuota ? 60_000 : false,
     staleTime: 30_000,
     retry: false,
   });
@@ -313,7 +316,7 @@ export function ScheduledTasksPanel({
         : null;
       let quotaRemainingBelow: number | null = null;
       if (conditions.has('quota_floor')) {
-        if (!usesCodexQuota) throw new Error('Codex 周额度条件只能用于 Codex Session');
+        if (!usesAgentQuota) throw new Error('Codex 周额度条件只能用于 Codex Session');
         quotaRemainingBelow = parseOptionalInteger(conditions.get('quota_floor')!, 'Codex 周额度下限', 100);
       }
       let stopAt: string | null = null;
@@ -402,7 +405,7 @@ export function ScheduledTasksPanel({
   const addStopCondition = () => {
     const used = new Set(editor.stopConditions.map((condition) => condition.type));
     const available = STOP_CONDITION_OPTIONS.find((option) => !used.has(option.value)
-      && (option.value !== 'quota_floor' || usesCodexQuota)
+      && (option.value !== 'quota_floor' || usesAgentQuota)
       && (option.value !== 'target_unavailable' || editor.targetType === 'existing'));
     if (!available) return;
     setEditor((current) => ({ ...current, stopConditions: [...current.stopConditions, newStopCondition(available.value)] }));
@@ -583,7 +586,7 @@ export function ScheduledTasksPanel({
                         ['session', Zap, 'Session'], ['terminal', TerminalSquare, 'Terminal'],
                       ] as Array<[ScheduledNewMode, typeof Zap, string]>).map(([mode, Icon, label]) => <button key={mode} onClick={() => setEditor({ ...editor, newMode: mode })} className="flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-xs" style={{ borderColor: editor.newMode === mode ? 'var(--accent)' : 'var(--border)', color: editor.newMode === mode ? 'var(--accent)' : 'var(--text-secondary)' }}><Icon className="h-3.5 w-3.5" />{label}</button>)}
                     </div>
-                    {editor.newMode !== 'terminal' && <div className="grid grid-cols-2 gap-2"><button onClick={() => setEditor({ ...editor, newCliType: 'claude' })} className="flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs" style={{ borderColor: editor.newCliType === 'claude' ? 'var(--accent)' : 'var(--border)', color: editor.newCliType === 'claude' ? 'var(--text-primary)' : 'var(--text-secondary)' }}><ClaudeIcon className="h-4 w-4" />Claude</button><button onClick={() => setEditor({ ...editor, newCliType: 'codex' })} className="flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs" style={{ borderColor: editor.newCliType === 'codex' ? 'var(--accent)' : 'var(--border)', color: editor.newCliType === 'codex' ? 'var(--text-primary)' : 'var(--text-secondary)' }}><CodexIcon className="h-4 w-4" />Codex</button></div>}
+                    {editor.newMode!=='terminal'&&<div className="grid grid-cols-2 gap-2">{providers.map(agent=><button key={agent.id} onClick={()=>setEditor({...editor,newCliType:agent.id})} className="flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs" style={{borderColor:editor.newCliType===agent.id?'var(--accent)':'var(--border)',color:editor.newCliType===agent.id?'var(--text-primary)':'var(--text-secondary)'}}><AgentIcon session={{agent}} className="h-4 w-4"/>{agent.label}</button>)}</div>}
                     {editor.newMode === 'terminal' && <p className="rounded-lg px-3 py-2 text-[10px] leading-relaxed" style={{ background: 'color-mix(in srgb, #f59e0b 9%, transparent)', color: '#f59e0b' }}>Terminal 会把提示词作为终端输入提交；如果标签页处于 Shell，这段文字会被当作命令执行。</p>}
                   </div>
                 )}
@@ -591,8 +594,8 @@ export function ScheduledTasksPanel({
 
               <section aria-label="执行配置" className="space-y-2">
                 <div className="condition-workspace">
-                  <ScheduleConditionsEditor phase="start" group={editor.startConditions} onChange={(startConditions) => setEditor({ ...editor, startConditions })} existingTarget={editor.targetType === 'existing'} usesCodex={usesCodexQuota} />
-                  <ScheduleConditionsEditor phase="stop" group={editor.dailyStopConditions} onChange={(dailyStopConditions) => setEditor({ ...editor, dailyStopConditions })} existingTarget={editor.targetType === 'existing'} usesCodex={usesCodexQuota} />
+                  <ScheduleConditionsEditor phase="start" group={editor.startConditions} onChange={(startConditions) => setEditor({ ...editor, startConditions })} existingTarget={editor.targetType === 'existing'} usesCodex={usesAgentQuota} />
+                  <ScheduleConditionsEditor phase="stop" group={editor.dailyStopConditions} onChange={(dailyStopConditions) => setEditor({ ...editor, dailyStopConditions })} existingTarget={editor.targetType === 'existing'} usesCodex={usesAgentQuota} />
                 </div>
               </section>
 
@@ -622,7 +625,7 @@ export function ScheduledTasksPanel({
                         <div key={condition.id} className="grid grid-cols-[minmax(138px,0.9fr)_minmax(150px,1.1fr)_32px] items-center gap-2 rounded-lg border p-2" style={{ borderColor: 'var(--border)', background: 'var(--bg-primary)' }}>
                           <select aria-label={`停止条件 ${index + 1}`} value={condition.type} onChange={(event) => updateStopCondition(condition.id, { type: event.target.value as StopConditionType })} className={fieldClass} style={fieldStyle}>
                             {STOP_CONDITION_OPTIONS.map((option) => (
-                              <option key={option.value} value={option.value} disabled={usedTypes.has(option.value) || (option.value === 'quota_floor' && !usesCodexQuota) || (option.value === 'target_unavailable' && editor.targetType !== 'existing')}>
+                              <option key={option.value} value={option.value} disabled={usedTypes.has(option.value) || (option.value === 'quota_floor' && !usesAgentQuota) || (option.value === 'target_unavailable' && editor.targetType !== 'existing')}>
                                 {option.label}
                               </option>
                             ))}
@@ -639,7 +642,7 @@ export function ScheduledTasksPanel({
                   </div>
                 )}
 
-                {editor.stopConditions.some((condition) => condition.type === 'quota_floor') && usesCodexQuota && (
+                {editor.stopConditions.some((condition) => condition.type === 'quota_floor') && usesAgentQuota && (
                   <div className="mt-2 flex items-center gap-3 rounded-lg border px-3 py-2" style={{ borderColor: 'color-mix(in srgb, var(--accent) 25%, var(--border))', background: 'color-mix(in srgb, var(--accent) 5%, transparent)' }}>
                     <Gauge className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--accent)' }} />
                     {quotaQuery.isLoading ? <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>正在读取 Codex 周额度…</span> : quotaQuery.data?.quota ? <><span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>当前剩余</span><strong className="font-mono text-xs tabular-nums" style={{ color: quotaQuery.data.quota.remainingPercent < 20 ? 'var(--error)' : 'var(--accent)' }}>{quotaQuery.data.quota.remainingPercent}%</strong><span className="ml-auto text-[9px]" style={{ color: 'var(--text-muted)' }}>重置 {formatEpochSeconds(quotaQuery.data.quota.resetsAt)}</span></> : <span className="text-[10px]" style={{ color: 'var(--error)' }}>{quotaQuery.error instanceof Error ? quotaQuery.error.message : '无法读取额度'}</span>}

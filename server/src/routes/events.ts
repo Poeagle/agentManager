@@ -1,14 +1,9 @@
-import type { FastifyPluginAsync } from 'fastify';
-import { insertEvent, getEvents } from '../services/event-store.js';
-import { getDb } from '../db/index.js';
-import {
-  eventHookSecretMatches,
-  isAdmin,
-  userProjectIds,
-  userCanUseSessionTool,
-  userOwnsSession,
-} from '../auth.js';
-import { config } from '../config.js';
+import {getAgent} from '../services/agents/index.js';
+import type {FastifyPluginAsync} from 'fastify';
+import {insertEvent,getEvents} from '../services/event-store.js';
+import {getDb} from '../db/index.js';
+import {eventHookSecretMatches,isAdmin,userProjectIds,userCanUseSessionTool,userOwnsSession,} from '../auth.js';
+import {config} from '../config.js';
 
 const HOOK_SECRET_HEADER = 'x-agentmanager-hook-secret';
 const MAX_EVENT_DATA_BYTES = 64 * 1024;
@@ -57,8 +52,8 @@ function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' 
   return 'session';
 }
 
-function normalizeCliType(cliType: string | null | undefined): 'claude' | 'codex' {
-  return cliType === 'codex' ? 'codex' : 'claude';
+function normalizeCliType(cliType: string | null | undefined): string {
+  return getAgent(cliType||'claude').descriptor.id;
 }
 
 /**

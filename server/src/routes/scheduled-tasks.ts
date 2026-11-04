@@ -1,17 +1,13 @@
-import { FastifyPluginAsync } from 'fastify';
-import { nanoid } from 'nanoid';
-import { getDb } from '../db/index.js';
-import { userCanUseToolForProject, userOwnsProject } from '../auth.js';
-import { nextScheduledAt, validateSchedule, validateDailyWindow, type ScheduleKind } from '../services/schedule.js';
-import { readCodexWeeklyQuota } from '../services/codex-quota.js';
-import { flattenTaskConditions, parseTaskConditions, validateTaskConditions, type TaskConditionGroup } from '../services/scheduled-task-conditions.js';
-import {
-  runScheduledTask,
-  type ScheduledInactivePolicy,
-  type ScheduledNewMode,
-  type ScheduledTargetType,
-  type ScheduledTaskRow,
-} from '../services/scheduled-task-runner.js';
+import {agentDescriptors,getAgent} from '../services/agents/index.js';
+import {targetSupportsQuota} from '../services/agents/scheduling.js';
+import {FastifyPluginAsync} from 'fastify';
+import {nanoid} from 'nanoid';
+import {getDb} from '../db/index.js';
+import {userCanUseToolForProject,userOwnsProject} from '../auth.js';
+import {nextScheduledAt,validateSchedule,validateDailyWindow,type ScheduleKind} from '../services/schedule.js';
+import {readCodexWeeklyQuota} from '../services/agents/codex/quota.js';
+import {flattenTaskConditions,parseTaskConditions,validateTaskConditions,type TaskConditionGroup} from '../services/scheduled-task-conditions.js';
+import {runScheduledTask,type ScheduledInactivePolicy,type ScheduledNewMode,type ScheduledTargetType,type ScheduledTaskRow,} from '../services/scheduled-task-runner.js';
 
 interface ScheduledTaskInput {
   project_id: string;
@@ -23,7 +19,7 @@ interface ScheduledTaskInput {
   target_type: ScheduledTargetType;
   target_session_id?: string | null;
   new_mode?: ScheduledNewMode | null;
-  new_cli_type?: 'claude' | 'codex' | null;
+  new_cli_type?: string | null;
   inactive_policy?: ScheduledInactivePolicy;
   stop_at?: string | null;
   daily_stop_time?: string | null;
@@ -42,7 +38,7 @@ interface ScheduledTaskInput {
 const scheduleKinds = new Set(['interval', 'daily', 'weekly', 'cron']);
 const targetTypes = new Set(['existing', 'new']);
 const newModes = new Set(['session', 'terminal']);
-const cliTypes = new Set(['claude', 'codex']);
+
 
 function validateRawInput(raw: unknown): string | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return '请求内容必须是对象';
@@ -86,22 +82,15 @@ function validateTarget(userId: string, input: ScheduledTaskInput): string | nul
   }
 
   const mode = input.new_mode ?? 'session';
-  const cliType = input.new_cli_type === 'codex' ? 'codex' : 'claude';
+  const cliType = input.new_cli_type||'claude';
   if (!newModes.has(mode)) return '新标签页类型无效';
-  if (input.new_cli_type && !cliTypes.has(input.new_cli_type)) return 'CLI 类型无效';
+  if (input.new_cli_type && !agentDescriptors().some(agent=>agent.id===input.new_cli_type)) return 'CLI 类型无效';
   if (!userCanUseToolForProject(userId, input.project_id, mode, mode === 'terminal' ? 'claude' : cliType)) {
     return '无权在该项目创建此类标签页';
   }
   return null;
 }
 
-function targetUsesCodex(input: ScheduledTaskInput): boolean {
-  if (input.target_type === 'new') return input.new_mode !== 'terminal' && input.new_cli_type === 'codex';
-  if (!input.target_session_id) return false;
-  const session = getDb().prepare('SELECT mode, cli_type FROM sessions WHERE id = ?')
-    .get(input.target_session_id) as { mode: string | null; cli_type: string | null } | undefined;
-  return !!session && session.mode !== 'terminal' && session.cli_type === 'codex';
-}
 
 function normalizeInput(raw: Partial<ScheduledTaskInput>, base?: ScheduledTaskRow): ScheduledTaskInput {
   return {
@@ -149,7 +138,7 @@ function validateInput(userId: string, input: ScheduledTaskInput): string | null
   }
   const targetError = validateTarget(userId, input);
   if (targetError) return targetError;
-  if (flattenTaskConditions(input.daily_stop_conditions ?? null).some((condition) => condition.type === 'quota_below') && !targetUsesCodex(input)) return 'Codex 额度条件仅适用于 Codex Session 或 Agent';
+  if (flattenTaskConditions(input.daily_stop_conditions ?? null).some((condition) => condition.type === 'quota_below') && !targetSupportsQuota(input)) return '所选 Agent 不支持额度条件';
   if (input.stop_at != null) {
     const stopAt = Date.parse(input.stop_at);
     if (!Number.isFinite(stopAt)) return '截止时间无效';
@@ -172,7 +161,7 @@ function validateInput(userId: string, input: ScheduledTaskInput): string | null
     if (!Number.isInteger(input.quota_remaining_below) || input.quota_remaining_below < 1 || input.quota_remaining_below > 100) {
       return 'Codex 周额度下限必须为 1–100 的整数';
     }
-    if (!targetUsesCodex(input)) return 'Codex 周额度停止条件仅适用于 Codex Session 或 Agent';
+    if (!targetSupportsQuota(input)) return '所选 Agent 不支持额度条件';
   }
   if (input.stop_on_target_unavailable && input.target_type !== 'existing') {
     return '目标标签页不可用停止条件仅适用于现有标签页';
@@ -181,6 +170,7 @@ function validateInput(userId: string, input: ScheduledTaskInput): string | null
 }
 
 export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
+  app.get<{Params:{agent:string};Querystring:{refresh?:string}}>('/agent-quota/:agent',async(req)=>({quota:await getAgent(req.params.agent).quota.read(req.query.refresh==='true')}));
   app.get<{ Querystring: { refresh?: string } }>('/codex-quota', async (req, reply) => {
     try {
       return { quota: await readCodexWeeklyQuota({ force: req.query.refresh === 'true' }) };
@@ -189,6 +179,11 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.get<{Querystring:{project_id?:string;agent_id?:string}}>('/scheduled-tasks/agent-quota',async(req,reply)=>{
+    const {project_id:project,agent_id:agent}=req.query;if(!project||!agent||!userOwnsProject(req.user!.id,project))return reply.code(404).send({error:'项目不存在或无权访问'});
+    if(!userCanUseToolForProject(req.user!.id,project,'session',agent))return reply.code(403).send({error:'当前项目未授权使用此 Agent'});
+    return {quota:await getAgent(agent).quota.read()};
+  });
   app.get<{ Querystring: { project_id?: string } }>('/scheduled-tasks/codex-quota', async (req, reply) => {
     const projectId = req.query.project_id;
     if (!projectId || !userOwnsProject(req.user!.id, projectId)) {

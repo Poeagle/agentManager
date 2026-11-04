@@ -1,15 +1,16 @@
-import { FastifyPluginAsync } from 'fastify';
-import { getDb } from '../db/index.js';
-import { nanoid } from 'nanoid';
-import { readdir, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'fs/promises';
-import { dirname, join, resolve, basename } from 'path';
-import { homedir } from 'os';
-import { existsSync } from 'fs';
-import { getProjectToolAccess, isAdmin as isAdminUser, setProjectToolAccess, removeProjectUserAccess, userOwnsProject, userProjectIds, userCanCreateProjects } from '../auth.js';
-import { userHasPermission } from '../services/rbac.js';
-import { SESSION_CLIENTS, parseSessionClients } from '../services/session-clients.js';
-import { killSession } from '../services/session-manager.js';
-import { config } from '../config.js';
+import {agentDescriptors} from '../services/agents/index.js';
+import {FastifyPluginAsync} from 'fastify';
+import {getDb} from '../db/index.js';
+import {nanoid} from 'nanoid';
+import {readdir,mkdir,readFile,realpath,rename,rm,stat,writeFile} from 'fs/promises';
+import {dirname,join,resolve,basename} from 'path';
+import {homedir} from 'os';
+
+import {getProjectToolAccess,isAdmin as isAdminUser,setProjectToolAccess,removeProjectUserAccess,userOwnsProject,userProjectIds,userCanCreateProjects} from '../auth.js';
+import {userHasPermission} from '../services/rbac.js';
+import {sessionClients,parseSessionClients} from '../services/session-clients.js';
+import {killSession} from '../services/session-manager.js';
+import {config} from '../config.js';
 
 export interface Project {
   id: string;
@@ -183,7 +184,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     const projects = isAdmin
       ? db.prepare('SELECT * FROM projects ORDER BY name COLLATE NOCASE').all()
       : db.prepare(`SELECT * FROM projects WHERE id IN (${allowedProjectIds.map(() => '?').join(',')}) ORDER BY name COLLATE NOCASE`).all(...allowedProjectIds);
-    return {
+    return {agents:agentDescriptors(),
       projects: (projects as Project[]).map((project) => {
         const access = getProjectToolAccess(req.user!.id, project.id);
         return {
@@ -237,7 +238,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
       userId: req.user!.id,
       canSession: true,
       canTerminal: true,
-      sessionClients: SESSION_CLIENTS.map((client) => client.id),
+      sessionClients: sessionClients().map((client) => client.id),
       grantedBy: req.user!.id,
     });
     // A new registered project must immediately become invisible inside every
@@ -353,7 +354,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
       owner_id: project.owner_id,
     }));
 
-    return { access, clients: SESSION_CLIENTS };
+    return { access, clients: sessionClients() };
   });
 
   // Update/create a project's user grant
@@ -382,7 +383,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
       }
     }
 
-    if (!Array.isArray(body.session_clients) || !body.session_clients.every((id) => SESSION_CLIENTS.some((client) => client.id === id))
+    if (!Array.isArray(body.session_clients) || !body.session_clients.every((id) => sessionClients().some((client) => client.id === id))
       || (body.can_session && body.session_clients.length === 0)) {
       return reply.status(400).send({ error: 'Session 必须选择至少一个有效客户端' });
     }

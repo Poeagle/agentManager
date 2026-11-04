@@ -12,7 +12,7 @@ vi.mock('../src/lib/api', async () => {
     api: {
       ...actual.api,
       scheduledTasks: {
-        list: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), run: vi.fn(), runs: vi.fn(), codexQuota: vi.fn(),
+        list: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), run: vi.fn(), runs: vi.fn(), agentQuota: vi.fn(),
       },
       sessions: { ...actual.api.sessions, list: vi.fn() },
     },
@@ -78,7 +78,7 @@ beforeEach(() => {
       session_id: session.id, error: null, started_at: '2026-08-13T01:00:00Z', completed_at: '2026-08-13T01:00:01Z',
     },
   });
-  vi.mocked(api.scheduledTasks.codexQuota).mockResolvedValue({
+  vi.mocked(api.scheduledTasks.agentQuota).mockResolvedValue({
     quota: {
       usedPercent: 35, remainingPercent: 65, windowDurationMins: 10080,
       resetsAt: 1787196804, planType: 'pro', checkedAt: '2026-08-13T08:00:00Z',

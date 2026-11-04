@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const spawn = vi.hoisted(() => vi.fn());
 vi.mock('child_process', () => ({ spawn }));
 
-type Service = typeof import('../src/services/codex-quota.js');
+type Service = typeof import('../src/services/agents/codex/quota.js');
 let service: Service;
 let children: FakeCodex[];
 class FakeCodex extends EventEmitter {
@@ -33,7 +33,7 @@ class FakeCodex extends EventEmitter {
 beforeEach(async () => {
   vi.useFakeTimers(); vi.resetModules(); children = []; spawn.mockReset();
   spawn.mockImplementation(() => { const child = new FakeCodex(); children.push(child); return child; });
-  service = await import('../src/services/codex-quota.js');
+  service = await import('../src/services/agents/codex/quota.js');
 });
 afterEach(async () => { service.shutdownCodexQuotaReader(); await vi.advanceTimersByTimeAsync(0); vi.useRealTimers(); });
 

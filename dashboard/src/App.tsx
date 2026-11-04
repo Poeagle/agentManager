@@ -1,3 +1,4 @@
+import {agentSupports} from './lib/agents';
 import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { connectStream, useStreamStore, setQueryClient } from './lib/websocket';
@@ -16,7 +17,7 @@ import { ProjectTabLabel } from './lib/session-activity';
 import './workspace-chrome.css';
 import { ExportTransferOverlay } from './components/ExportTransferOverlay';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { CodexQuotaIndicator } from './components/CodexQuotaIndicator';
+import {AgentQuotaIndicators} from './components/AgentQuotaIndicator';
 import { ServerResourceIndicator } from './components/ServerResourceIndicator';
 import {mergeSessionRuntimeLists} from './lib/session-runtime-cache';
 import { moveItemByKey, orderItemsByKeys } from './lib/reorder';
@@ -144,7 +145,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   const { data: sessionsData } = useQuery({
     queryKey: ['sessions'],
     queryFn: () => api.sessions.list(),
-    refetchInterval: (query) => query.state.data?.sessions.some((session) => session.cli_type === 'codex') ? 5000 : 60_000,
+    refetchInterval: (query) => query.state.data?.sessions.some((session) => agentSupports(session,'runtime')) ? 5000 : 60_000,
   });
 
 
@@ -289,7 +290,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     projectId: string,
     projectName: string,
     quickLaunch?: 'session' | 'terminal',
-    cliType?: 'claude' | 'codex',
+    cliType?: string,
   ) => {
     setPlatformSection(null);
     if (quickLaunch) {
@@ -303,7 +304,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       : [...prev, { projectId, projectName }]);
     setActiveTab(`project-${projectId}`);
     if (quickLaunch) {
-      const suffix = cliType && cliType !== 'claude' ? `_${cliType}` : '';
+      const suffix = cliType ? `_${cliType}` : '';
       setFocusSessionId(`__voice_create_${quickLaunch}${suffix}`);
     }
   }, [projects]);
@@ -404,7 +405,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           </h1>
         </div>
         <div className="workspace-header-tools flex min-w-0 items-center overflow-x-auto [scrollbar-width:none] [&>*]:shrink-0">
-          <CodexQuotaIndicator />
+          <AgentQuotaIndicators agents={projectsData?.agents}/>
           {hasPermission(permissionsQuery.data, 'monitor') && <ServerResourceIndicator />}
           <button
             onClick={() => setPlatformSection(hasPermission(permissionsQuery.data, 'monitor') ? 'monitor' : 'account')}

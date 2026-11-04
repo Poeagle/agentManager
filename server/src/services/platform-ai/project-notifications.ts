@@ -1,19 +1,20 @@
-import type { FastifyInstance } from 'fastify';
-import { createHash } from 'crypto';
-import { nanoid } from 'nanoid';
-import { z } from 'zod';
-import { getDb } from '../../db/index.js';
-import { findUserById, userCanUseSessionTool, userOwnsProject, userProjectIds } from '../../auth.js';
-import { userHasPermission } from '../rbac.js';
-import { sessionPresenter } from '../session-labels.js';
-import { getSession } from '../session-manager.js';
-import { getTracker } from '../session-state.js';
-import type { AgentTextMessage } from '../prompt-context.js';
-import { ChannelError } from './channels.js';
-import { type AiConfig, publicFailure } from './config.js';
-import { callModel } from './model.js';
-import { platformApi } from './tools.js';
-import { refreshConversation } from './live.js';
+import {agentForSession} from '../agents/index.js';
+import type {FastifyInstance} from 'fastify';
+import {createHash} from 'crypto';
+import {nanoid} from 'nanoid';
+import {z} from 'zod';
+import {getDb} from '../../db/index.js';
+import {findUserById,userCanUseSessionTool,userOwnsProject,userProjectIds} from '../../auth.js';
+import {userHasPermission} from '../rbac.js';
+import {sessionPresenter} from '../session-labels.js';
+import {getSession} from '../session-manager.js';
+import {getTracker} from '../session-state.js';
+import type {AgentTextMessage} from '../prompt-context.js';
+import {ChannelError} from './channels.js';
+import {type AiConfig,publicFailure} from './config.js';
+import {callModel} from './model.js';
+import {platformApi} from './tools.js';
+import {refreshConversation} from './live.js';
 
 export interface NotificationRecipient {
   id: string; name: string; channel_id: string; external_user_id: string; chat_id: string; group: boolean;
@@ -108,7 +109,7 @@ export function canNotifyProject(rule: ProjectNotificationRule, sessionId: strin
   const session = getSession(sessionId);
   return !!(rule.enabled && user && !user.disabled && userHasPermission(user.id, 'agent_api') && session
     && session.project_id === rule.project_id && session.created_by_user_id === rule.user_id
-    && userCanUseSessionTool(user.id, sessionId, session.cli_type === 'codex' ? 'codex' : 'claude', session.mode === 'terminal' ? 'terminal' : 'session'));
+    && userCanUseSessionTool(user.id, sessionId, agentForSession(session).descriptor.id, session.mode === 'terminal' ? 'terminal' : 'session'));
 }
 
 /** Recheck pending delivery authorization, including revocation after enqueue. */

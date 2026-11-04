@@ -2,7 +2,7 @@ import {estimatedServerNow} from './display-clock';
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {api,type ConversationControlsData} from './api';
-export interface NativeCompaction {id:string;status:'running'|'completed'|'failed'|'interrupted';started_at:string|null;completed_at:string|null;duration_ms:number|null}
+export type NativeCompaction=import('./agents').AgentCompaction;
 export interface CompactionPresentation extends Omit<NativeCompaction,'status'> {status:NativeCompaction['status']|'pending'|'unknown';before:number|null;after:number|null;error?:string}
 const percent=(usage:ConversationControlsData['usage'])=>usage?.window&&usage.last.total_tokens!=null?Math.min(100,Math.round(100*usage.last.total_tokens/usage.window)):null;
 const COMPLETION_MS=3000;

@@ -7,7 +7,7 @@ import { Dialog } from './Dialog';
 
 export function ProjectOpenDialog({ project, onClose, onOpen, busy = false, error, title = '打开项目' }: {
   project: Project; onClose: () => void;
-  onOpen: (mode: 'session' | 'terminal', cli?: 'claude' | 'codex') => void;
+  onOpen: (mode: 'session' | 'terminal', cli?: string) => void;
   busy?: boolean; error?: string; title?: string;
 }) {
   const options = projectOpenModes(project);

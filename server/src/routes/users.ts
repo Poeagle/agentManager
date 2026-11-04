@@ -266,7 +266,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
         FROM sessions s
         WHERE s.created_by_user_id IS NOT NULL OR s.id IN (${tabSessionPlaceholders})
       )
-      SELECT id, project_id, task, status, mode, cli_type, claude_session_id, codex_session_id, pid, terminal_cols,
+      SELECT id, project_id, task, status, mode, cli_type, agent_id,native_session_id,claude_session_id, codex_session_id, pid, terminal_cols,
              created_by_user_id, started_at, completed_at, created_at, updated_at
       FROM ranked
       WHERE status IN ('pending', 'launching', 'running', 'detached', 'released')

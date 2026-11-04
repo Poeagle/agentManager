@@ -1,13 +1,14 @@
+import {normalizeCodexRetry} from '../src/services/agents/codex/retry.js';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import Database from 'better-sqlite3';
-import {ConversationRetryManager,retryableConversationError,type ConversationRetryFrame} from '../src/services/conversation-retry.js';
-import type {ConversationStreamFrame,observeCodexConversation} from '../src/services/conversation-stream.js';
+import {ConversationRetryManager,retryableConversationError,type ConversationRetryFrame,type RetryDependencies} from '../src/services/conversation-retry.js';
+import type {ConversationStreamFrame,observeCodexConversation} from '../src/services/agents/codex/stream.js';
 const capacity={message:'Selected model is at capacity. Please try a different model.',codexErrorInfo:'ServerOverloaded'};
 let db:Database.Database,manager:ConversationRetryManager,allowed:boolean;
 let native:{state:string;turn:any;queued:boolean};
 let emit:((frame:ConversationStreamFrame)=>void),failed:((turnId:string,error:unknown,willRetry:boolean)=>void)|undefined;
 let start:ReturnType<typeof vi.fn>,frames:ConversationRetryFrame[],stops:ReturnType<typeof vi.fn>,inspect:ReturnType<typeof vi.fn>;
-function create(){return new ConversationRetryManager(db,{allowed:()=>allowed,inspect,start,observe:((_id,callback,onFailure)=>{emit=callback;failed=onFailure;return Object.assign(stops,{respond:vi.fn()});}) as typeof observeCodexConversation});}
+function create(retryable?:RetryDependencies['retryable']){return new ConversationRetryManager(db,{retryable,allowed:()=>allowed,inspect,start,observe:((_id,callback,onFailure)=>{emit=callback;failed=onFailure;return Object.assign(stops,{respond:vi.fn()});}) as typeof observeCodexConversation});}
 const failure=()=>manager.failure('session','user','native','initial',capacity,false);
 const status=()=>frames.at(-1)?.retry;
 const readJob=()=>JSON.parse((db.prepare('SELECT data FROM conversation_retries ORDER BY rowid DESC LIMIT 1').get() as {data:string}).data);
@@ -17,11 +18,16 @@ function snapshot(){emit({type:'snapshot',turn_id:native.turn.id,started_at:null
 beforeEach(()=>{
  vi.useFakeTimers();db=new Database(':memory:');allowed=true;frames=[];stops=vi.fn();
  native={state:'idle',turn:{id:'initial',status:'failed',error:capacity,items:[]},queued:false};
- inspect=vi.fn(async()=>structuredClone(native));start=vi.fn(async(_id,_failed,clientId)=>{native={state:'active',turn:{id:`retry-${start.mock.calls.length}`,status:'inProgress',items:[{type:'userMessage',clientId}]},queued:false};return native.turn.id;});
+ inspect=vi.fn(async()=>normalizeCodexRetry(structuredClone(native)));start=vi.fn(async(_id,_failed,clientId)=>{native={state:'active',turn:{id:`retry-${start.mock.calls.length}`,status:'inProgress',items:[{type:'userMessage',clientId}]},queued:false};return native.turn.id;});
  manager=create();manager.subscribe('session','native',frame=>frames.push(structuredClone(frame)));
 });
 afterEach(()=>{manager.close();db.close();vi.useRealTimers();});
 describe('bounded durable conversation retries',()=>{
+ it('accepts provider-specific retry classification without requiring a native vendor error format',()=>{
+  manager.close();manager=create((_native,error)=>(error as {temporary?:boolean}).temporary===true);manager.subscribe('session','native',frame=>frames.push(structuredClone(frame)));
+  manager.failure('session','user','native','initial',{message:'暂时繁忙',temporary:true},false);
+  expect(status()).toMatchObject({status:'waiting',attempt:0});expect(start).not.toHaveBeenCalled();
+ });
  it('does not mistake an async final-phase question for a final answer before or during retries',async()=>{
   const question={type:'agentMessage',phase:'final_answer',delivery:'async',questions:[{title:'哪个目录？',options:['A','B']}],text:'哪个目录？'};
   native.turn.items=[question];failure();await vi.advanceTimersByTimeAsync(10000);

@@ -6,7 +6,7 @@ import {watchSessionRuntime,stopSessionRuntimeWatches} from '../src/services/ses
 import {subscribe} from '../src/services/event-store.js';
 import * as manager from '../src/services/session-manager.js';
 import * as promptContext from '../src/services/prompt-context.js';
-import {setLiveCodexRuntime,clearLiveCodexRuntime,rememberCodexQuestionReply,syncQueuedCodexQuestionReplies} from '../src/services/codex-runtime-signals.js';
+import {setLiveCodexRuntime,clearLiveCodexRuntime,rememberCodexQuestionReply,syncQueuedCodexQuestionReplies} from '../src/services/agents/codex/runtime-signals.js';
 const native='019ff001-4545-7454-8454-454545454545';
 let dir:string,file:string,unsubscribe:()=>void,events:any[];
 const record=(type:string,second:number,extra={})=>JSON.stringify({type:'event_msg',timestamp:`2026-11-03T00:00:${String(second).padStart(2,'0')}Z`,payload:{type,...extra}})+'\n';

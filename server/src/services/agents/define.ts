@@ -1,0 +1,17 @@
+import { UnsupportedAgentFeature, type AgentAdapter, type AgentDefinition, type AgentFeature } from './types.js';
+/** Normalize optional ports once at registration. This is an explicit failure
+ * policy, not an implementation of another provider's protocol. */
+export function resolveAgent(definition: AgentDefinition): AgentAdapter {
+    const id = definition.descriptor.id, unsupported = (feature: AgentFeature): never => { throw new UnsupportedAgentFeature(id, feature); };
+    return {
+        descriptor: definition.descriptor, identity: definition.identity ?? { read: session => session.native_session_id ?? null },
+        history: { read: async () => null, ...definition.history }, runtime: { subscribe: () => () => { }, ...definition.runtime },
+        input: { afterTerminalSubmit: async () => { }, ...definition.input }, stream: definition.stream,
+        controls: { read: async () => unsupported('controls'), validate: async () => unsupported('model'), apply: async () => unsupported('model'), ...definition.controls },
+        telemetry: definition.telemetry ?? { read: async () => ({ usage: null, observed_at: null }) }, statistics: definition.statistics ?? { read: async () => [] },
+        quota: definition.quota ?? { read: async () => unsupported('quota') }, retry: definition.retry ?? { retryable:()=>false,inspect: async () => unsupported('retry'), start: async () => unsupported('retry') },
+        lifecycle: { preflight: async () => null, bind: async () => { }, compact: async () => unsupported('compact'), prepareFresh: async () => unsupported('newConversation'), release: async () => { }, interrupt: async () => { }, ...definition.lifecycle },
+        launch: { prepare: async () => unsupported('launch'), ready: async () => { }, ...definition.launch },
+        commands: { configure: command => command, build: () => unsupported('launch'), permissions: command => command, sharedResources: () => unsupported('sharedResources'), ...definition.commands },
+    };
+}

@@ -18,7 +18,7 @@ const quota = vi.hoisted(() => ({
 const tracker = vi.hoisted(() => ({ getTracker: vi.fn() }));
 
 vi.mock('../src/services/session-manager.js', () => manager);
-vi.mock('../src/services/codex-quota.js', () => quota);
+vi.mock('../src/services/agents/codex/quota.js', () => quota);
 vi.mock('../src/services/session-state.js', () => tracker);
 
 import { authHook, createSession as createAuthSession, createUser, setProjectToolAccess } from '../src/auth.js';
@@ -339,7 +339,7 @@ describe('scheduled task API', () => {
       },
     });
     expect(rejected.statusCode).toBe(400);
-    expect(rejected.json().error).toMatch(/仅适用于 Codex/);
+    expect(rejected.json().error).toMatch(/不支持额度条件/);
   });
 
   it('rejects another user\'s tab and sends a manual run only to the owner tab', async () => {

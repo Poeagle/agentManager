@@ -1,3 +1,4 @@
+import {agentSupports} from './agents';
 import type { Session } from './api';
 
 export function timestampMs(value: string | number | null | undefined): number | null {
@@ -8,7 +9,7 @@ export function timestampMs(value: string | number | null | undefined): number |
 }
 
 export function sessionActivityMs(session: Session, liveAt?: number): number | null {
-  if (session.cli_type === 'codex') return timestampMs(session.agent_runtime?.last_activity_at);
+  if (agentSupports(session,'runtime')) return timestampMs(session.agent_runtime?.last_activity_at);
   const durable = timestampMs(
     session.last_activity_at
       ?? session.updated_at

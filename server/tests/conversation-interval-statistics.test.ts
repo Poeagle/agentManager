@@ -1,7 +1,7 @@
 import {afterEach,beforeEach,describe,expect,it} from 'vitest';
 import {mkdtempSync,writeFileSync,rmSync} from 'fs';
 import {tmpdir} from 'os';import {join} from 'path';
-import {readConversationStatistics} from '../src/services/conversation-statistics.js';
+import {readConversationStatistics} from '../src/services/agents/codex/statistics.js';
 let dir:string,file:string;
 const row=(type:string,payload:unknown)=>JSON.stringify({type,payload})+'\n';
 const start=(id='turn')=>row('event_msg',{type:'task_started',turn_id:id});

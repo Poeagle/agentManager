@@ -73,7 +73,8 @@ test('Resume shows failure, immediate retry feedback, and progress until termina
 
   // Simulate a native CLI's delayed restore without launching Claude/Codex or
   // touching the user's real sessions. The full UI and xterm handshake run.
-  let row = { ...session, status: 'completed', cli_type: 'codex', codex_session_id: 'test-conversation' };
+  const {agents}=await(await page.request.get('/api/agent/providers')).json();
+  let row = { ...session, status: 'completed', cli_type: 'codex', agent_id:'codex',native_session_id:'test-conversation',agent:agents.find((agent:{id:string})=>agent.id==='codex'),codex_session_id: 'test-conversation',claude_session_id:null };
   let requests = 0;
   let connections = 0;
   let handshakes = 0;

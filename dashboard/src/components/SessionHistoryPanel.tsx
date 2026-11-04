@@ -1,10 +1,11 @@
+import {AgentIcon} from './AgentIcon';
+import {sessionAgent} from '../lib/agents';
 import { tableTime, useTableModel } from './table/use-table-model';
 import { DataTable, TableExpandButton, TableDetailRow } from './table/DataTable';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Clock, Loader2, Monitor, RefreshCw, Trash2 } from 'lucide-react';
+import { Clock, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 import { api, type Session } from '../lib/api';
-import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { TableActionButton, TableActions } from './table/TableActions';
 import {ConversationMarkdown} from './ConversationMarkdown';
 import {formatConversationTimestamp} from '../lib/conversation-timing';
@@ -24,9 +25,7 @@ function fmtDateTime(value: string | null | undefined): string {
 
 function sessionKind(session: Session): string {
   if (session.mode === 'terminal' || session.task === 'Terminal') return '终端会话';
-  if (session.cli_type === 'codex') return 'Codex';
-  if (session.cli_type === 'claude') return 'Claude';
-  return '会话';
+  return sessionAgent(session).label;
 }
 
 function sessionTitle(session: Session, displayName?: string): string {
@@ -41,11 +40,7 @@ function sessionActivity(session: Session): string | null | undefined {
   return session.last_activity_at || session.completed_at || session.started_at || session.created_at;
 }
 
-function SessionIcon({ session }: { session: Session }) {
-  if (session.cli_type === 'codex') return <CodexIcon className="h-3.5 w-3.5 shrink-0" style={{ color: '#60a5fa' }} />;
-  if (session.cli_type === 'claude') return <ClaudeIcon className="h-3.5 w-3.5 shrink-0" style={{ color: '#D97757' }} />;
-  return <Monitor className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--text-secondary)' }} />;
-}
+function SessionIcon({session}:{session:Session}) {return <AgentIcon session={session} className="h-3.5 w-3.5 shrink-0"/>;}
 
 function SessionDetails({ session,projectPath }: { session: Session;projectPath?:string }) {
   const { data, isLoading, isError } = useQuery({

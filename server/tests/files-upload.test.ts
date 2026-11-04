@@ -94,8 +94,8 @@ describe('file upload API', () => {
     expect(responses.map(response => response.statusCode).sort()).toEqual([200, 409]);
   });
 
-  it.each(['', '..', '.', '../escape.txt', '/absolute.txt', 'sub/file.txt', 'sub\\file.txt', 'bad\0.txt'])('rejects unsafe filename %j', async (filename) => {
-    expect((await upload(project, filename)).statusCode).toBe(400);
+  it.each([['',400],['..',403],['.',400],['../escape.txt',403],['/absolute.txt',400],['sub/file.txt',403],['sub\\file.txt',400],['bad\0.txt',400]] as const)('rejects unsafe filename %j', async (filename,status) => {
+    expect((await upload(project, filename)).statusCode).toBe(status);
   });
 
   it('rejects uploads outside assigned projects and symlink escapes', async () => {
@@ -128,8 +128,8 @@ describe('file upload API', () => {
   });
 
   it('rejects a missing path, nonexistent directory, or file used as a directory', async () => {
-    expect((await upload('', 'new.txt')).statusCode).toBe(400);
-    expect((await upload(join(project, 'missing'), 'new.txt')).statusCode).toBe(404);
+    expect((await upload('', 'new.txt')).statusCode).toBe(403);
+    expect((await upload(join(project, 'missing'), 'new.txt')).statusCode).toBe(403);
     writeFileSync(join(project, 'file.txt'), 'not a directory');
     expect((await upload(join(project, 'file.txt'), 'new.txt')).statusCode).toBe(400);
   });

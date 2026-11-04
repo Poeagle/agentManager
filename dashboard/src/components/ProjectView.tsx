@@ -1,8 +1,9 @@
+import {AgentIcon} from './AgentIcon';
+import {sessionAgent,agentNativeId,agentSupports} from '../lib/agents';
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Trash2 } from 'lucide-react';
-import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { Terminal } from './Terminal';
 import { SessionWorkspacePane } from './SessionWorkspacePane';
 import { FileExplorer, type FileRefreshRequest } from './FileExplorer';
@@ -146,7 +147,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const { data: projectHistoryData, isSuccess: projectHistoryLoaded } = useQuery({
     queryKey: ['project-sessions', projectId],
     queryFn: () => api.sessions.list(undefined, projectId),
-    refetchInterval:(query)=>active && query.state.data?.sessions.some(session=>session.cli_type==='codex') ? 5000 : false,
+    refetchInterval:(query)=>active && query.state.data?.sessions.some(session=>agentSupports(session,'runtime')) ? 5000 : false,
   });
   const projectSessions = useMemo(
     () => [...new Map([...(projectHistoryData?.sessions||[]),...(sessionsData?.sessions||[])].map(session=>[session.id,session])).values()].filter(
@@ -554,10 +555,10 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     if (!focusSessionId) return;
 
     // Voice command / quick-launch: create new terminal or session (optionally with cli type)
-    const createMatch = focusSessionId.match(/^__voice_create_(terminal|session)(?:_(claude|codex))?$/);
+    const createMatch = focusSessionId.match(/^__voice_create_(terminal|session)(?:_([a-z][a-z0-9_-]{0,63}))?$/);
     if (createMatch) {
       const type = createMatch[1] as 'terminal' | 'session';
-      const cliType = (createMatch[2] as 'claude' | 'codex' | undefined) || 'claude';
+      const cliType = (createMatch[2] as string | undefined) || 'claude';
       console.log(`[QuickLaunch] Creating new ${type} (${cliType})`);
       if (type === 'terminal') {
         api.sessions.create({ project_path: projectPath, mode: 'terminal', project_id: projectId })
@@ -1047,9 +1048,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       // the same id and reloads the native Claude/Codex conversation. Once it's running again,
       // the tab re-renders from the ended (HistoryViewer) view to a live Terminal.
       if (oldSession && ['completed', 'failed', 'cancelled'].includes(oldSession.status)) {
-        const resumable = oldSession.cli_type === 'codex'
-          ? !!oldSession.codex_session_id
-          : !!oldSession.claude_session_id;
+        const resumable=agentSupports(oldSession,'resume')&&!!agentNativeId(oldSession);
         if (resumable) {
           await sessionResume.resume(oldId);
           setActiveTerminalId(oldId);
@@ -1200,16 +1199,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                   const sigSession = allSessionLookup.get(inst.id);
                   const tabKind = session ? sessionTabKind(session) : 'session';
                   const isTerminal = tabKind === 'terminal';
-                  const isCodex = session?.cli_type === 'codex';
-                  const tabIcon = isTerminal ? (
-                    <TerminalSquare className="workspace-tab-icon w-3 h-3 shrink-0" style={{ color: '#f59e0b' }} />
-                  ) : (
-                    isCodex ? (
-                      <CodexIcon className="workspace-tab-icon w-3 h-3 shrink-0" style={{ color: '#7A9DFF' }} />
-                    ) : (
-                      <ClaudeIcon className="workspace-tab-icon w-3 h-3 shrink-0" style={{ color: '#D97757' }} />
-                    )
-                  );
+                  const tabIcon=isTerminal?<TerminalSquare className="workspace-tab-icon w-3 h-3 shrink-0" style={{color:'#f59e0b'}}/>:<AgentIcon session={session||{}} className="workspace-tab-icon w-3 h-3 shrink-0"/>;
                   return (
                     <div
                       key={inst.id}
@@ -1285,7 +1275,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                           title="双击重命名"
                         >
                           {tabIcon}
-                          <SessionTabLabel session={sigSession} label={inst.customLabel?.trim() || inst.label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${isCodex ? 'Codex' : 'Claude'}`} />
+                          <SessionTabLabel session={sigSession} label={inst.customLabel?.trim() || inst.label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session||{}).label}`} />
                         </button>
                       )}
                       <button
@@ -1379,10 +1369,9 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                           </div>
                           {hiddenSessions.map((s) => {
                             const isTerminal = s.task === 'Terminal';
-                            const isCodex = s.cli_type === 'codex';
-                            const cliLabel = isCodex ? 'Codex' : 'Claude';
+                            const cliLabel=sessionAgent(s).label;
                             const typeLabel = isTerminal ? 'Terminal' : `${cliLabel} Session`;
-                            const typeColor = isTerminal ? '#f59e0b' : isCodex ? '#10b981' : '#60a5fa';
+                            const typeColor = isTerminal?'#f59e0b':sessionAgent(s).presentation.color;
                             return (
                               <button
                                 key={s.id}
@@ -1430,9 +1419,10 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                       ) : (
                         discoverableSessions.map((s) => {
                           const isTerminal = !s.task || s.task === 'Terminal';
-                          const cliLabel = s.cliType === 'codex' ? 'Codex' : s.cliType === 'claude' ? 'Claude' : '';
+                          const descriptor=project?.agent_catalog?.find(agent=>agent.id===s.cliType)??sessionAgent({cli_type:s.cliType});
+                          const cliLabel=descriptor.label;
                           const typeLabel = isTerminal ? 'Terminal' : `${cliLabel ? cliLabel + ' ' : ''}Session`;
-                          const typeColor = isTerminal ? '#f59e0b' : s.cliType === 'codex' ? '#7A9DFF' : '#60a5fa';
+                          const typeColor=isTerminal?'#f59e0b':descriptor.presentation.color;
                           return (
                             <button
                               key={s.socketPath}
@@ -1484,10 +1474,9 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                           </div>
                           {endedSessions.map((s) => {
                             const isTerminal = s.task === 'Terminal';
-                            const isCodex = s.cli_type === 'codex';
-                            const cliLabel = isCodex ? 'Codex' : 'Claude';
+                            const cliLabel=sessionAgent(s).label;
                             const typeLabel = isTerminal ? 'Terminal' : `${cliLabel} Session`;
-                            const typeColor = isTerminal ? '#f59e0b' : isCodex ? '#10b981' : '#60a5fa';
+                            const typeColor = isTerminal?'#f59e0b':sessionAgent(s).presentation.color;
                             const when = s.completed_at || s.created_at;
                             return (
                               <div key={s.id} className="flex items-center group/ended hover:bg-[var(--bg-tertiary)] transition-colors">
@@ -1568,9 +1557,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                     || endedSession.status === 'failed'
                     || endedSession.status === 'cancelled'
                   );
-                  const canResume = isEnded && (endedSession!.cli_type === 'codex'
-                    ? !!endedSession!.codex_session_id
-                    : !!endedSession!.claude_session_id);
+                  const canResume=isEnded&&agentSupports(endedSession!,'resume')&&!!agentNativeId(endedSession!);
 
                   const renderTerminal = (rawVisible: boolean, chatSuspended: boolean, markReady: () => void) => (
                     (isEnded || resumeState?.phase === 'starting') ? (
@@ -1591,7 +1578,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                           visible={rawVisible}
                           suspended={terminalsSuspended || !warmTerminalIds.has(term.id) || chatSuspended}
                           hideCursor={projectSessions.find((session) => session.id === term.id)?.task !== 'Terminal' && projectSessions.some((session) => session.id === term.id)}
-                          cliType={sessionLookup.get(term.id)?.cli_type as 'claude' | 'codex' | undefined}
+                          cliType={sessionLookup.get(term.id)?.cli_type as string | undefined}
+                          agent={sessionLookup.get(term.id)?.agent}
                           onExit={() => {
                             sessionResume.terminalExited(term.id);
                             // The terminal socket reports its exit immediately, while the
@@ -1624,8 +1612,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         projectPath={projectPath} onOpenFile={handleOpenInExplorer}
                         renderTerminal={renderTerminal} resuming={resuming} resumeFailed={resumeState?.phase==='error'}
                         onResume={canResume || resuming ? () => { void sessionResume.resume(term.id); } : undefined}
-                        onNewConversation={endedSession.cli_type==='codex'&&endedSession.codex_session_id?async()=>{await sessionResume.newConversation(term.id);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
-                        onReload={endedSession.cli_type==='codex'&&endedSession.codex_session_id?async()=>{await sessionResume.reload(term.id);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
+                        onNewConversation={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async()=>{await sessionResume.newConversation(term.id);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
+                        onReload={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async()=>{await sessionResume.reload(term.id);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
                         onClose={isEnded ? () => closeEndedSession(term.id) : undefined}
                       /> : <div className="p-3 text-xs" style={{color:'var(--text-secondary)'}}>正在读取会话信息…</div>)}
                       {shouldMount && resumeState && <SessionResumeFeedback state={resumeState} />}
