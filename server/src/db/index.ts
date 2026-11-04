@@ -59,6 +59,8 @@ function createCurrentSchema(): void {
       claude_session_id TEXT,
       codex_session_id TEXT,
       cli_type TEXT DEFAULT 'claude',
+      agent_id TEXT,
+      native_session_id TEXT,
       terminal_cols INTEGER DEFAULT 120,
       terminal_rows INTEGER DEFAULT 40,
       external_socket TEXT,
@@ -257,16 +259,15 @@ function createCurrentIndexes(): void {
   `);
 }
 
-function migrateLegacySchema(): void {
-  addColumn('sessions', 'claude_session_id', 'TEXT');
-  addColumn('sessions', 'terminal_cols', 'INTEGER DEFAULT 120');
-  addColumn('sessions', 'external_socket', 'TEXT');
-  addColumn('sessions', 'pre_popout_cols', 'INTEGER');
-  addColumn('sessions', 'cli_type', "TEXT DEFAULT 'claude'");
-  addColumn('sessions', 'codex_session_id', 'TEXT');
+/** Reconcile actual columns on every startup, including databases stamped v23
+ * by the earlier incomplete upgrade. This must not live in the v0-only path. */
+function reconcileAgentIdentity(): void {
+  addColumn('sessions','cli_type',"TEXT DEFAULT 'claude'");
+  addColumn('sessions','codex_session_id','TEXT');
+  addColumn('sessions','claude_session_id','TEXT');
   addColumn('sessions','agent_id','TEXT');
   addColumn('sessions','native_session_id','TEXT');
-  db.exec(`UPDATE sessions SET agent_id=COALESCE(agent_id,cli_type,'claude'),native_session_id=COALESCE(native_session_id,CASE cli_type WHEN 'codex' THEN codex_session_id WHEN 'claude' THEN claude_session_id END) WHERE agent_id IS NULL;
+  db.exec(`UPDATE sessions SET agent_id=COALESCE(agent_id,cli_type,'claude'),native_session_id=COALESCE(native_session_id,CASE cli_type WHEN 'codex' THEN codex_session_id WHEN 'claude' THEN claude_session_id END) WHERE agent_id IS NULL OR (native_session_id IS NULL AND (cli_type='codex' AND codex_session_id IS NOT NULL OR cli_type='claude' AND claude_session_id IS NOT NULL));
     CREATE TRIGGER IF NOT EXISTS sessions_agent_identity_insert AFTER INSERT ON sessions BEGIN
       UPDATE sessions SET agent_id=COALESCE(NEW.agent_id,NEW.cli_type,'claude'),native_session_id=COALESCE(NEW.native_session_id,CASE NEW.cli_type WHEN 'codex' THEN NEW.codex_session_id WHEN 'claude' THEN NEW.claude_session_id END) WHERE id=NEW.id;
     END;
@@ -274,6 +275,22 @@ function migrateLegacySchema(): void {
       UPDATE sessions SET agent_id=COALESCE(NEW.cli_type,'claude'),native_session_id=CASE NEW.cli_type WHEN 'codex' THEN NEW.codex_session_id WHEN 'claude' THEN NEW.claude_session_id ELSE NEW.native_session_id END WHERE id=NEW.id;
     END;`);
 
+}
+
+function needsAgentIdentityRepair(): boolean {
+  const columns=tableColumns('sessions');
+  if(!columns.has('agent_id')||!columns.has('native_session_id'))return true;
+  const result=db.prepare("SELECT count(*) n FROM sqlite_master WHERE type='trigger' AND name IN ('sessions_agent_identity_insert','sessions_agent_identity_legacy')").get() as {n:number};
+  return result.n!==2;
+}
+
+function migrateLegacySchema(): void {
+  addColumn('sessions', 'claude_session_id', 'TEXT');
+  addColumn('sessions', 'terminal_cols', 'INTEGER DEFAULT 120');
+  addColumn('sessions', 'external_socket', 'TEXT');
+  addColumn('sessions', 'pre_popout_cols', 'INTEGER');
+  addColumn('sessions', 'cli_type', "TEXT DEFAULT 'claude'");
+  addColumn('sessions', 'codex_session_id', 'TEXT');
   addColumn('sessions', 'created_by_user_id', 'TEXT REFERENCES users(id)');
   addColumn('sessions', 'mode', "TEXT DEFAULT 'session'");
   addColumn('users', 'max_tabs', 'INTEGER NOT NULL DEFAULT 10');
@@ -414,6 +431,7 @@ function runMigrations(): void {
     addColumn('user_shared_resources', 'instructions', "TEXT NOT NULL DEFAULT ''");
     if (current < 11) migrateWorkspacePermissions();
     if (current < 1) migrateLegacySchema();
+    reconcileAgentIdentity();
     if (current < 2) migrateTerminalDimensionsAndOutputKeys();
     if (current < 3) migrateLegacySessionOwnership();
     if (current < 5) migrateScheduledTaskStopConditions();
@@ -489,9 +507,9 @@ export function initDb(): void {
 
   try {
     const currentVersion = db.pragma('user_version', { simple: true }) as number;
-    const needsProjectPermissionRepair = currentVersion === SCHEMA_VERSION
-      && !tableColumns('users').has('can_create_projects');
-    if (databaseExisted && (currentVersion < SCHEMA_VERSION || needsProjectPermissionRepair)) {
+    const needsSchemaRepair = currentVersion === SCHEMA_VERSION
+      && (!tableColumns('users').has('can_create_projects') || needsAgentIdentityRepair());
+    if (databaseExisted && (currentVersion < SCHEMA_VERSION || needsSchemaRepair)) {
       const backupPath = backupBeforeMigration();
       console.log(`📦 Database backup created before migration: ${backupPath}`);
     }

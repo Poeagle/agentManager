@@ -12,6 +12,24 @@ let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
 
 describe('database schema and durable session identity', () => {
+  it.each([22,23])('repairs actual legacy identity columns at version %s while preserving the native conversation and login',version=>{
+    const fixture=createTestDatabase();cleanup=fixture.cleanup;
+    const user=createUser({username:'identity-upgrade-owner',password:'password1'}),token=createSession(user.id);
+    const db=getDb(),native='019ff001-3434-7434-8434-343434343434';
+    db.prepare("INSERT INTO projects(id,name,path) VALUES('identity-project','Keep',?)").run(fixture.dir);
+    db.prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,codex_session_id,created_by_user_id) VALUES('legacy-identity','identity-project','Keep task','running','codex',?,?)").run(native,user.id);
+    db.prepare("INSERT INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments) VALUES('legacy-identity','keep-attachment','key','keep','[]')").run();
+    db.exec('DROP TRIGGER sessions_agent_identity_insert; DROP TRIGGER sessions_agent_identity_legacy; ALTER TABLE sessions DROP COLUMN agent_id; ALTER TABLE sessions DROP COLUMN native_session_id;');
+    db.pragma(`user_version = ${version}`);closeDb();initDb();
+    expect(getSessionUser(token)?.id).toBe(user.id);
+    expect(getDb().prepare("SELECT id,task,status,cli_type,codex_session_id,agent_id,native_session_id FROM sessions WHERE id='legacy-identity'").get()).toEqual({id:'legacy-identity',task:'Keep task',status:'running',cli_type:'codex',codex_session_id:native,agent_id:'codex',native_session_id:native});
+    expect(getDb().prepare("SELECT count(*) n FROM conversation_attachments WHERE session_id='legacy-identity'").get()).toEqual({n:1});
+    expect(getDb().prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'sessions_agent_identity_%'").all()).toHaveLength(2);
+    const backups=readdirSync(fixture.dir).filter(name=>name.includes('.pre-v23-'));expect(backups.length).toBeGreaterThan(0);
+    getDb().prepare("UPDATE sessions SET codex_session_id=? WHERE id='legacy-identity'").run('019ff001-5656-7565-8565-565656565656');
+    expect(getDb().prepare("SELECT native_session_id FROM sessions WHERE id='legacy-identity'").get()).toEqual({native_session_id:'019ff001-5656-7565-8565-565656565656'});
+    closeDb();initDb();expect(readdirSync(fixture.dir).filter(name=>name.includes('.pre-v23-'))).toEqual(backups);
+  });
   it('adds separate attachment storage to v18 while keeping sessions and login valid',()=>{
     const fixture=createTestDatabase();cleanup=fixture.cleanup;
     const user=createUser({username:'attachment-owner',password:'password1'}),token=createSession(user.id);
