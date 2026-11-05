@@ -898,7 +898,7 @@ function GitInfoBadge({ projectPath }: { projectPath: string }) {
 
   return (
     <>
-      <TableActionButton ref={buttonRef} onClick={() => setDropdownOpen(!dropdownOpen)}  title={`${owner ? `${owner}/${repo} · ` : ''}${gitStatus.branch}`}>
+      <TableActionButton ref={buttonRef} onClick={() => setDropdownOpen(!dropdownOpen)} style={{maxWidth:'100%'}} title={`${owner ? `${owner}/${repo} · ` : ''}${gitStatus.branch}`}>
         <GitBranch className="h-3 w-3 shrink-0" style={{ color: 'var(--success)' }} />
         <span className="truncate">{gitStatus.branch}</span><ChevronDown className="ml-auto h-3 w-3 shrink-0" />
       </TableActionButton>
@@ -1291,7 +1291,8 @@ export function ProjectDashboard({ onOpenProject, onOpenSession, projectOrder, o
   })) });
   const gitById = new Map(allProjects.map((project, index) => [project.id, gitQueries[index]?.data]));
   const projectTable = useTableModel(projects, [
-    { key: 'name', title: '项目', value: (project) => `${project.name} ${project.description ?? ''}`.trim() },
+    { key: 'name', title: '项目', value: (project) => project.name },
+    { key: 'description', title: '描述', value: (project) => project.description ?? '' },
     { key: 'owner', title: '所属用户', value: (project) => project.owner ? `${project.owner.display_name || project.owner.username} @${project.owner.username}` : '未分配' },
     { key: 'path', title: '路径', value: (project) => project.path },
     { key: 'git', title: 'Git', value: (project) => projectOpenModes(project).length === 0 ? '未授权'
@@ -1395,7 +1396,7 @@ export function ProjectDashboard({ onOpenProject, onOpenSession, projectOrder, o
             {projectTable.active && <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
               <span>{projectTable.rows.length} / {projects.length} 个项目</span><TableActionButton  onClick={projectTable.reset}>清除排序和筛选</TableActionButton>
             </div>}
-            <DataTable label="项目列表" model={projectTable} minWidth={1100} expandable actions columnWidths={['w-56', 'w-40', '', 'w-56', 'w-32']}
+            <DataTable label="项目列表" model={projectTable} minWidth={1600} expandable actions columnWidths={['w-[360px]', 'w-[280px]', 'w-[160px]', '', 'w-[224px]', 'w-[140px]']}
               loading={loadingProjects} error={projectsError?.message} onRetry={() => { void queryClient.invalidateQueries({ queryKey: ['projects'] }); }}
               empty={projectTable.rows.length === 0} emptyMessage={searchQuery || projectTable.active ? '没有匹配的项目' : canCreateProjects ? '暂无项目，添加项目目录后即可开始。' : '你目前没有被分配任何项目，请联系管理员。'}>{projectTable.rows.map((project) => {
                   const expanded = expandedProjects.has(project.id);
@@ -1404,15 +1405,16 @@ export function ProjectDashboard({ onOpenProject, onOpenSession, projectOrder, o
                     onDragOver={(event) => { if (canReorderProjects && draggingProjectId && draggingProjectId !== project.id) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setProjectDropTargetId(project.id); } }}
                     onDrop={(event) => { event.preventDefault(); if (canReorderProjects && draggingProjectId && draggingProjectId !== project.id) onProjectOrderChange(moveItemByKey(orderedProjects, draggingProjectId, project.id, (item) => item.id).map((item) => item.id)); setDraggingProjectId(null); setProjectDropTargetId(null); }}>
                     <td><TableExpandButton expanded={expanded} label={`项目 ${project.name} 的会话`} onClick={() => setExpandedProjects((current) => { const next = new Set(current); if (next.has(project.id)) next.delete(project.id); else next.add(project.id); return next; })} /></td>
-                    <td><div className="flex items-center gap-2">
-                      {canReorderProjects && <span draggable title="拖动调整项目顺序" aria-label={`拖动 ${project.name} 排序`} className="cursor-grab"
+                    <td><div className="flex min-w-0 items-center gap-2">
+                      {canReorderProjects && <span draggable title="拖动调整项目顺序" aria-label={`拖动 ${project.name} 排序`} className="shrink-0 cursor-grab"
                         onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', project.id); setDraggingProjectId(project.id); }}
                         onDragEnd={() => { setDraggingProjectId(null); setProjectDropTargetId(null); }}><GripVertical className="h-3 w-3" /></span>}
-                      <button className="flex max-w-52 items-center gap-2 text-left font-medium" onClick={() => onOpenProject(project.id, project.name)}><Folder className="h-3.5 w-3.5 shrink-0" style={{ color: project.color || 'var(--accent)' }} /><span className="truncate">{project.name}</span></button>
-                    </div>{project.description && <div className="mt-1 max-w-56 truncate text-[11px]" style={{ color: 'var(--text-secondary)' }} title={project.description}>{project.description}</div>}</td>
-                    <td className="whitespace-nowrap">{project.owner ? <><span>{project.owner.display_name || project.owner.username}</span><span className="ml-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>@{project.owner.username}</span></> : '未分配'}</td>
-                    <td><div className="max-w-96 truncate" title={project.path}>{project.path}</div></td>
-                    <td className="w-56">{projectOpenModes(project).length ? <GitInfoBadge projectPath={project.path} /> : '未授权'}</td>
+                      <button className="flex min-w-0 items-center gap-2 text-left font-medium" title={project.name} onClick={() => onOpenProject(project.id, project.name)}><Folder className="h-3.5 w-3.5 shrink-0" style={{ color: project.color || 'var(--accent)' }} /><span className="min-w-0 break-words [overflow-wrap:anywhere]">{project.name}</span></button>
+                    </div></td>
+                    <td><div className="line-clamp-2 break-words" style={{color:'var(--text-secondary)'}} title={project.description || undefined}>{project.description || '—'}</div></td>
+                    <td><div className="truncate" title={project.owner ? `${project.owner.display_name || project.owner.username} @${project.owner.username}` : undefined}>{project.owner ? <><span>{project.owner.display_name || project.owner.username}</span><span className="ml-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>@{project.owner.username}</span></> : '未分配'}</div></td>
+                    <td><div className="truncate" title={project.path}>{project.path}</div></td>
+                    <td>{projectOpenModes(project).length ? <GitInfoBadge projectPath={project.path} /> : '未授权'}</td>
                     <td>{activeSessionsByProject[project.id]?.total ?? 0}</td>
                     <td><TableActions>
                       <TableActionButton  aria-label={`打开项目 ${project.name}`} disabled={projectOpenModes(project).length === 0} onClick={() => { setOpenProject(project); }}>打开</TableActionButton>
@@ -1423,7 +1425,7 @@ export function ProjectDashboard({ onOpenProject, onOpenSession, projectOrder, o
                         ] : []),
                       ]} />
                     </TableActions></td>
-                  </tr>{expanded && <TableDetailRow columnCount={7}><ProjectSessionTable projectId={project.id}
+                  </tr>{expanded && <TableDetailRow columnCount={8}><ProjectSessionTable projectId={project.id}
                     onOpen={(sessionId) => { if (onOpenSession) onOpenSession(project.id, sessionId); else onOpenProject(project.id, project.name); }} /></TableDetailRow>}</Fragment>;
                 })}
                 </DataTable>

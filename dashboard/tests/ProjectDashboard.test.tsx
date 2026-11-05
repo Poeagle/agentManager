@@ -50,6 +50,29 @@ async function mount() {
 }
 
 describe('project table interactions', () => {
+  it('keeps project descriptions in their own sortable and filterable column', async () => {
+    vi.mocked(api.projects.list).mockResolvedValue({ projects: [
+      { ...projects[0], description: 'pyswordfish 调度' },
+      { ...projects[1], description: '行情数据' },
+      projects[2],
+    ] });
+    const user=userEvent.setup();await mount();
+    const table=screen.getByRole('table',{name:'项目列表'});
+    const row=within(table).getByRole('button',{name:'打开项目 Zulu'}).closest('tr')!;
+    const cells=within(row).getAllByRole('cell');
+    expect(cells[1]).toHaveTextContent('Zulu');expect(cells[1]).not.toHaveTextContent('pyswordfish');
+    expect(cells[2]).toHaveTextContent('pyswordfish 调度');
+    await user.click(within(table).getByRole('button',{name:'筛选描述'}));
+    const filter=screen.getByRole('dialog',{name:'描述筛选'});
+    await user.click(within(filter).getByRole('checkbox',{name:'pyswordfish 调度'}));
+    await user.click(within(filter).getByRole('button',{name:'筛选',exact:true}));
+    expect(within(table).getByRole('button',{name:'打开项目 Zulu'})).toBeVisible();
+    expect(within(table).queryByRole('button',{name:'打开项目 Alpha'})).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button',{name:'清除排序和筛选'}));
+    await user.click(within(table).getByRole('button',{name:'展开项目 Zulu 的会话'}));
+    const detail=await screen.findByRole('table',{name:'项目会话'});
+    expect(detail.closest('td')).toHaveAttribute('colspan','8');
+  });
   it('opens project creation in a dialog and preserves the expanded list when cancelled', async () => {
     const user = userEvent.setup();
     await mount();
