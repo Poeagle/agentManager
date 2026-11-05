@@ -37,7 +37,7 @@ declare module 'fastify' {
 }
 
 export function sessionCookieName(): string { return runtimeNames().sessionCookie; }
-const SESSION_TTL_DAYS = 30;
+export const SESSION_TTL_DAYS = 30;
 const SESSION_TTL_SECONDS = SESSION_TTL_DAYS * 24 * 60 * 60;
 export const MIN_PASSWORD_LENGTH = 6;
 export const MAX_PASSWORD_LENGTH = 256;
@@ -244,7 +244,7 @@ export function getSessionUser(token: string,metadata?:LoginMetadata): User | un
     .prepare('SELECT user_id, expires_at FROM auth_sessions WHERE token = ?')
     .get(token) as { user_id: string; expires_at: string } | undefined;
   if (!row) return undefined;
-  if (new Date(row.expires_at + 'Z').getTime() < Date.now()) {
+  if (new Date(row.expires_at + 'Z').getTime() <= Date.now()) {
     db.prepare('DELETE FROM auth_sessions WHERE token = ?').run(token);
     return undefined;
   }
@@ -259,6 +259,12 @@ export function getSessionUser(token: string,metadata?:LoginMetadata): User | un
 
 export function destroySession(token: string): void {
   getDb().prepare('DELETE FROM auth_sessions WHERE token = ?').run(token);
+}
+
+/** Expired credentials are not a login audit trail. Reclaim them even when
+ * the browser never returns to present the old cookie again. */
+export function purgeExpiredAuthSessions():number {
+  return getDb().prepare("DELETE FROM auth_sessions WHERE expires_at <= datetime('now')").run().changes;
 }
 
 /** Invalidate every session for a user (e.g. on disable / password reset). */

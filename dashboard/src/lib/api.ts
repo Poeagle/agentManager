@@ -793,6 +793,7 @@ export interface AdminMonitorLogin {
 
 export interface AdminMonitorResponse {
   generated_at: string;
+  login_session_policy?:{idle_ttl_days:number};
   server_resources: {
     sampled_at: string;
     hostname: string;

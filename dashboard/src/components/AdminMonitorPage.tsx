@@ -30,6 +30,7 @@ import {
   type AdminMonitorSession,
   type AdminMonitorTab,
   type AdminMonitorUser,
+  type AdminMonitorLogin,
 } from '../lib/api';
 import { useServerResources } from '../lib/use-server-resources';
 
@@ -241,6 +242,7 @@ export function AdminMonitorPage({ onBack, onOpenSession, canWrite = true, canDe
                   onToggleProject={(key) => toggleSet(setExpandedProjects, key)}
                   referenceTime={referenceTime}
                   showHistory={showHistory}
+                  loginIdleDays={data?.login_session_policy?.idle_ttl_days}
                   onOpenSession={onOpenSession}
                   onChanged={() => refetch()}
                 />
@@ -260,7 +262,7 @@ function StatusGuide() {
         <div className="text-sm font-semibold">如何理解状态</div>
         <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>生命周期说明会话是否还存在；工作状态说明正在运行的 Agent 此刻在做什么，两者会同时出现。</p>
         <p className="mt-2 text-xs" style={{color:'var(--text-secondary)'}}>连接状态仅依据网页实时连接：连接存活且 75 秒内收到握手或心跳为在线；连接仍在但心跳超时为连接异常；没有连接为离线。心跳每 25 秒一次，本表每 5 秒刷新。浏览器离线不代表后台任务已停止。</p>
-        <p className="mt-2 text-xs" style={{color:'var(--text-secondary)'}}>最近活动是认证请求或连接心跳时间，不是登录时间。展开用户可查看各有效登录的登录时间、登录 IP、最近访问 IP 和设备。IP 是服务端实际观测到的来源，可能是代理地址；设备由客户端报告，未采集的数据标记“未记录”。</p>
+        <p className="mt-2 text-xs" style={{color:'var(--text-secondary)'}}>最近活动是认证请求或连接心跳时间，不是登录时间。展开用户默认只查看在线登录；可选择查看尚未到期的未连接登录。登录凭据到期后会自动清理。IP 是服务端实际观测到的来源，可能是代理地址；设备由客户端报告，未采集的数据标记“未记录”。</p>
       </div>
       <div className="grid gap-px lg:grid-cols-2" style={{ background: 'var(--border)' }}>
         <GuideGroup title="会话生命周期" items={STATUS_META} />
@@ -273,9 +275,12 @@ function StatusGuide() {
 function presenceLabel(user:AdminMonitorUser) {
   return user.disabled?'已禁用':user.presence?.state==='online'?'在线':user.presence?.state==='unresponsive'?'连接异常':user.presence?.state==='offline'?'离线':'未知';
 }
+const isOnlineLogin=(login:AdminMonitorLogin)=>login.presence.state==='online'&&login.presence.connections>0;
 
-function LoginSessions({user}:{user:AdminMonitorUser}) {
-  const rows=user.login_sessions||[];
+function LoginSessions({user,idleDays}:{user:AdminMonitorUser;idleDays?:number}) {
+  const [showDisconnected,setShowDisconnected]=useState(false);
+  const logins=user.login_sessions||[],online=logins.filter(isOnlineLogin);
+  const rows=showDisconnected?logins:online,disconnected=logins.length-online.length;
   const table=useTableModel(rows,[
     {key:'login',title:'登录时间',value:item=>item.login_at,kind:'date',format:value=>absoluteTime(value==null?null:String(value))},
     {key:'login_ip',title:'登录 IP',value:item=>item.login_ip||'未记录'},
@@ -286,10 +291,11 @@ function LoginSessions({user}:{user:AdminMonitorUser}) {
     {key:'activity',title:'最近活动',value:item=>item.last_seen_at,kind:'date',format:value=>absoluteTime(value==null?null:String(value))},
   ]);
   return <section className="mb-3" aria-label={`${user.username} 的登录连接`}>
-    <p className="mb-2 text-xs" style={{color:'var(--text-secondary)'}}>有效登录 · {rows.length} 个（登录时间与最近活动分别记录）</p>
-    <DataTable label={`${user.username} 的登录连接`} model={table} minWidth={1000} empty={!rows.length} emptyMessage="没有有效登录记录。">{table.rows.map((item,index)=><tr key={index}>
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-3 text-xs" style={{color:'var(--text-secondary)'}}><p>在线登录 · {online.length} 个（{online.reduce((sum,item)=>sum+item.presence.connections,0)} 个网页连接）</p>{disconnected>0&&<label className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap"><input type="checkbox" checked={showDisconnected} onChange={event=>setShowDisconnected(event.target.checked)}/>显示未连接登录（{disconnected} 个）</label>}</div>
+    <DataTable label={`${user.username} 的登录连接`} model={table} minWidth={1000} empty={!rows.length} emptyMessage={showDisconnected?'没有尚未到期的登录记录。':'当前没有在线连接。'}>{table.rows.map((item,index)=><tr key={index}>
       <td className="whitespace-nowrap">{absoluteTime(item.login_at)}</td><td className="font-mono text-xs">{item.login_ip||'未记录'}</td><td className="font-mono text-xs">{item.last_ip||'未记录'}</td><td title={item.user_agent||'未记录'}>{loginDevice(item.user_agent)}</td><td className="whitespace-nowrap">{item.presence.state==='online'?`在线 · ${item.presence.connections} 个连接`:item.presence.state==='unresponsive'?'心跳超时':'未连接'}</td><td className="whitespace-nowrap">{absoluteTime(item.presence.last_heartbeat_at)}</td><td className="whitespace-nowrap">{absoluteTime(item.last_seen_at)}</td>
     </tr>)}</DataTable>
+    <p className="mt-2 text-xs" style={{color:'var(--text-muted)'}}>未连接不等于登录失效。{idleDays?`登录连续 ${idleDays} 天没有认证请求或连接心跳会到期，过期记录会自动清理。`:'登录凭据到期后会自动清理。'}后台任务与登录记录分开管理。</p>
   </section>;
 }
 
@@ -309,11 +315,12 @@ function GuideGroup({ title, items }: { title: string; items: Record<string, { l
   );
 }
 
-function UserTree({ user, projects, collapsed, onToggle, expandedProjects, onToggleProject, referenceTime, showHistory, onOpenSession, onChanged }: {
+function UserTree({ user, projects, collapsed, onToggle, expandedProjects, onToggleProject, referenceTime, showHistory, onOpenSession, onChanged,loginIdleDays }: {
   user: AdminMonitorUser; projects: Array<{ project: AdminMonitorProject; sessions: AdminMonitorSession[] }>;
   collapsed: boolean; onToggle: () => void; expandedProjects: Set<string>; onToggleProject: (key: string) => void;
-  referenceTime: number; showHistory: boolean; onOpenSession: (projectId: string, sessionId: string) => void; onChanged: () => Promise<unknown>;
+  referenceTime: number; showHistory: boolean; onOpenSession: (projectId: string, sessionId: string) => void; onChanged: () => Promise<unknown>;loginIdleDays?:number;
 }) {
+  const onlineLogins=(user.login_sessions||[]).filter(isOnlineLogin).length;
   const projectsTable = useTableModel(projects, [
     { key: 'project', title: '项目', value: ({ project }) => project.custom_name || project.name },
     { key: 'path', title: '路径', value: ({ project }) => project.path },
@@ -330,11 +337,11 @@ function UserTree({ user, projects, collapsed, onToggle, expandedProjects, onTog
       <td title={user.presence?`网页连接 ${user.presence.connections} 个；最后心跳：${absoluteTime(user.presence.last_heartbeat_at)}。浏览器连接状态与后台任务分开统计。`:'尚未取得连接状态'}><span className="inline-flex items-center gap-1.5 whitespace-nowrap"><span className="h-1.5 w-1.5 rounded-full" style={{ background: user.disabled ? 'var(--error)' : user.presence?.state==='online' ? 'var(--success)' : user.presence?.state==='unresponsive'?'var(--warning,#d97706)':'var(--text-muted)' }} />{presenceLabel(user)}</span></td>
       <td>{user.open_projects}</td><td>{tabCount}</td><td>{user.active_sessions}{user.role === 'member' ? ` / ${user.max_tabs ?? 10}` : ''}</td><td className="whitespace-nowrap">{formatBytes(user.memory_bytes)}</td>
       <td className="whitespace-nowrap font-mono text-xs">{user.login_sessions?.[0]?.last_ip||'未记录'}</td>
-      <td className="whitespace-nowrap" title={user.login_sessions?.[0]?.user_agent||'未记录客户端信息'}>{loginDevice(user.login_sessions?.[0]?.user_agent)}{(user.login_sessions?.length||0)>1&&<span className="ml-1 text-xs" style={{color:'var(--text-secondary)'}}>（{user.login_sessions!.length} 个登录）</span>}</td>
+      <td className="whitespace-nowrap" title={user.login_sessions?.[0]?.user_agent||'未记录客户端信息'}>{loginDevice(user.login_sessions?.[0]?.user_agent)}{onlineLogins>0&&<span className="ml-1 text-xs" style={{color:'var(--text-secondary)'}}>（{onlineLogins} 个在线登录）</span>}</td>
       <td className="whitespace-nowrap" title={absoluteTime(user.last_seen_at)}>{absoluteTime(user.last_seen_at)}</td>
     </tr>
     {!collapsed && <TableDetailRow columnCount={10}>
-      <LoginSessions user={user}/>
+      <LoginSessions user={user} idleDays={loginIdleDays}/>
       <DataTable label={`${user.username} 的项目`} model={projectsTable} minWidth={850} expandable columnWidths={['w-48', '', 'w-24', 'w-32', 'w-32', 'w-28']}
         empty={projectsTable.rows.length === 0} emptyMessage={showHistory ? '暂无项目或会话记录。' : '当前没有打开的项目。'}>{projectsTable.rows.map((entry) => {
         const { project, sessions } = entry;

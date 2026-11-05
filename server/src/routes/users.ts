@@ -7,7 +7,7 @@ import { getDb } from '../db/index.js';
 import {
   listUsers, createUserAsync, findUserById, findUserByUsername,
   setUserPasswordAsync, destroyUserSessions, verifyPasswordAsync,
-  passwordLengthError, createSession as createAuthSession, setSessionCookie,
+  passwordLengthError, createSession as createAuthSession, setSessionCookie,SESSION_TTL_DAYS,
 } from '../auth.js';
 import { getTracker, inferQuiescentSessionState } from '../services/session-state.js';
 import { getSessionProcessRootPid, killSession } from '../services/session-manager.js';
@@ -388,11 +388,12 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
         if (aActive !== bActive) return aActive ? -1 : 1;
         return a.name.localeCompare(b.name);
       });
+      const presence=userPresence(user.id);
       return {
         ...user,
-        online: userPresence(user.id).state==='online',
-        presence: userPresence(user.id),
-        login_sessions:loginRows.filter(login=>login.user_id===user.id).map(({token,user_id,...login})=>({...login,presence:userPresence(user.id,token)})),
+        online: presence.state==='online',
+        presence,
+        login_sessions:loginRows.filter(login=>login.user_id===user.id).map(({token,user_id,...login})=>({...login,presence:userPresence(user.id,token)})).sort((a,b)=>Number(b.presence.state==='online')-Number(a.presence.state==='online')),
         active_sessions: userSessions.filter((session) => activeStatuses.has(session.status)).length,
         open_projects: monitorProjects.filter((project) => project.is_open).length,
         memory_bytes: userSessions.reduce((total, session) => total + (session.memory_bytes ?? 0), 0),
@@ -402,6 +403,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
 
     return {
       generated_at: new Date().toISOString(),
+      login_session_policy:{idle_ttl_days:SESSION_TTL_DAYS},
       server_resources: await serverResourcesPromise,
       active_users: monitorUsers.filter((user) => user.active_sessions > 0).length,
       active_sessions: monitorUsers.reduce((total, user) => total + user.active_sessions, 0),

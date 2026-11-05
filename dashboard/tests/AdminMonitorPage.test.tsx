@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen,within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdminMonitorPage } from '../src/components/AdminMonitorPage';
@@ -113,6 +113,20 @@ beforeEach(() => {
 });
 
 describe('administrator monitor page', () => {
+  it('shows only online logins by default and lets administrators inspect unconnected unexpired logins',async()=>{
+    const online=response.users[0].login_sessions![0],offline={...online,login_ip:'192.0.2.20',last_ip:'192.0.2.20',presence:{state:'offline' as const,connections:0,last_heartbeat_at:null}},stale={...online,login_ip:'192.0.2.30',last_ip:'192.0.2.30',presence:{state:'unresponsive' as const,connections:0,last_heartbeat_at:'2026-07-31T10:00:00Z'}};
+    vi.mocked(api.admin.monitor).mockResolvedValue({...response,login_session_policy:{idle_ttl_days:30},users:[{...response.users[0],login_sessions:[online,offline,stale]}]});
+    const client=new QueryClient({defaultOptions:{queries:{retry:false}}}),user=userEvent.setup();render(<QueryClientProvider client={client}><AdminMonitorPage onBack={vi.fn()} onOpenSession={vi.fn()}/></QueryClientProvider>);
+    await user.click(await screen.findByRole('button',{name:'展开用户 operator'}));const table=within(screen.getByRole('table',{name:'operator 的登录连接'}));
+    expect(screen.getByText('在线登录 · 1 个（1 个网页连接）')).toBeVisible();expect(table.queryByText('192.0.2.20')).not.toBeInTheDocument();expect(table.queryByText('心跳超时')).not.toBeInTheDocument();expect(screen.getByText(/登录连续 30 天/)).toBeVisible();
+    await user.click(screen.getByRole('checkbox',{name:'显示未连接登录（2 个）'}));expect(table.getAllByText('192.0.2.20')).toHaveLength(2);expect(table.getByText('心跳超时')).toBeVisible();
+    await user.click(screen.getByRole('checkbox',{name:'显示未连接登录（2 个）'}));expect(table.queryByText('192.0.2.20')).not.toBeInTheDocument();
+  });
+  it('reports no online connection when only valid disconnected logins remain',async()=>{
+    const login={...response.users[0].login_sessions![0],presence:{state:'offline' as const,connections:0,last_heartbeat_at:null}};
+    vi.mocked(api.admin.monitor).mockResolvedValue({...response,users:[{...response.users[0],presence:login.presence,login_sessions:[login]}]});const client=new QueryClient({defaultOptions:{queries:{retry:false}}}),user=userEvent.setup();render(<QueryClientProvider client={client}><AdminMonitorPage onBack={vi.fn()} onOpenSession={vi.fn()}/></QueryClientProvider>);
+    await user.click(await screen.findByRole('button',{name:'展开用户 operator'}));expect(screen.getByText('当前没有在线连接。')).toBeVisible();expect(screen.queryByText('有效登录 · 1 个')).not.toBeInTheDocument();
+  });
   it('does not infer browser connectivity from activity, and distinguishes stale heartbeats',async()=>{
     vi.mocked(api.admin.monitor).mockResolvedValue({...response,users:[{...response.users[0],online:false,presence:{state:'unresponsive',connections:0,last_heartbeat_at:'2026-07-31T11:58:00Z'},login_sessions:[]}]});
     const client=new QueryClient({defaultOptions:{queries:{retry:false}}});render(<QueryClientProvider client={client}><AdminMonitorPage onBack={vi.fn()} onOpenSession={vi.fn()}/></QueryClientProvider>);

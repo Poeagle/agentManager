@@ -7,6 +7,7 @@ import {
 import { config } from '../config.js';
 import { revokeTokenConnections } from '../services/user-connections.js';
 import {requestLoginMetadata} from '../services/login-metadata.js';
+import {startAuthSessionCleanup} from '../services/auth-session-cleanup.js';
 
 interface LoginAttemptBucket {
   failures: number[];
@@ -98,6 +99,9 @@ function sendRateLimited(reply: FastifyReply, blockedUntil: number) {
 }
 
 export const authRoutes: FastifyPluginAsync = async (app) => {
+  let stopCleanup:(()=>void)|undefined;
+  app.addHook('onReady',async()=>{stopCleanup=startAuthSessionCleanup(error=>app.log.warn({err:error},'Expired login cleanup failed'));});
+  app.addHook('onClose',async()=>{stopCleanup?.();});
   // Public: does the app need first-run setup, and am I logged in?
   app.get('/auth/status', async (req) => {
     return {
