@@ -16,7 +16,7 @@ import {memo,useCallback,useEffect,useMemo,useRef,useState,type ReactNode} from 
 import {useQueryClient} from '@tanstack/react-query';
 import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles,ChevronDown} from 'lucide-react';
 import {api,ApiError,type ConversationMessage,type ConversationPage,type ConversationControlsData,type ConversationUsageUpdate,type ConversationStatistics,type Session} from '../lib/api';
-import {decodeQuestionReply,questionAnswers,questionReplyState,pendingConversationQuestions,questionReplyDisplayText} from '../lib/conversation-question-reply';
+import {decodeQuestionReply,createConversationQuestionCache,questionReplyDisplayText} from '../lib/conversation-question-reply';
 import {parseConversationInput,type ConversationAttachment} from '../lib/conversation-attachments';
 import {ConversationAttachmentPicker,ConversationMessageAttachments,useConversationAttachments,type DraftAttachment} from './ConversationAttachments';
 import {ConversationMarkdown} from './ConversationMarkdown';
@@ -118,6 +118,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const draftVersion=useRef(0);
   const [minimizedQuestion,setMinimizedQuestion]=useState<string|null>(null);
   const [selectedQuestion,setSelectedQuestion]=useState<string|null>(null);
+  const openQuestion=useCallback((id:string)=>{setSelectedQuestion(id);setMinimizedQuestion(null);},[]);
   const [ignoringQuestions,setIgnoringQuestions]=useState(false);
   const [ignoreError,setIgnoreError]=useState('');
   const attachments=useConversationAttachments(session.id);
@@ -410,7 +411,9 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     ? messages.reduce<string|null>((id,message,index)=>index>lastUserIndex && message.role==='assistant' && message.streaming && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id)?message.id:id,null):null;
   const groups=groupConversationProgress(displayed);
   const timings=conversationTimings(displayed.filter(message=>!message.queued),now,busy,liveProgress.turn_id);
-  const pendingQuestions=pendingConversationQuestions(messages,page?.runtime?.pending_questions,[...ignoredIds,...(page?.runtime?.submitted_question_ids||[])]);
+  const questionCache=useMemo(()=>createConversationQuestionCache(),[session.id,agentNativeId(session)]);
+  const questionIndex=questionCache.read(messages),submittedKey=JSON.stringify(page?.runtime?.submitted_question_ids||[]);
+  const pendingQuestions=useMemo(()=>questionIndex.pending(page?.runtime?.pending_questions,[...ignoredIds,...JSON.parse(submittedKey)]),[questionIndex,page?.runtime?.pending_questions,ignoredIds,submittedKey]);
   const pendingQuestion=pendingQuestions.find(message=>message.id===selectedQuestion)||pendingQuestions.at(-1)||null;
   const questionActive=!!pendingQuestion&&minimizedQuestion!==pendingQuestion.id;
   async function ignoreQuestions(ids:string[],ignored=true) {
@@ -426,7 +429,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     finally{setIgnoringQuestions(false);}
   }
   const cancelRetry=useCallback(async()=>{const response=await fetch(`/api/sessions/${encodeURIComponent(session.id)}/conversation/retry/cancel`,{method:'POST'});if(!response.ok)throw new Error('停止重试失败，请重试');},[session.id]);
-  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} state={questionReplyState(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1),page?.runtime?.submitted_question_ids)} answers={questionAnswers(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1))} onAnswer={()=>{setSelectedQuestion(message.id);setMinimizedQuestion(null);}}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} autoRetry={Object.values(autoRetries).find(retry=>retry.failed_turn_ids.includes(message.turn_id||''))} onCancelRetry={canSend?cancelRetry:undefined} compact={compact} durationLabel={timings.get(message.id)?.label} durationTitle={timings.get(message.id)?.title} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw} allowRaw={sessionAgent(session).sessionHost!=='managed'}/>;
+  const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} state={questionIndex.state(message,page?.runtime?.submitted_question_ids)} answers={questionIndex.answers(message)} onAnswer={openQuestion}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} autoRetry={Object.values(autoRetries).find(retry=>retry.failed_turn_ids.includes(message.turn_id||''))} onCancelRetry={canSend?cancelRetry:undefined} compact={compact} durationLabel={timings.get(message.id)?.label} durationTitle={timings.get(message.id)?.title} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw} allowRaw={sessionAgent(session).sessionHost!=='managed'}/>;
   return <ConversationImagePreviewRoot active={active} onOpen={navigate}><section ref={readingRoot} className="session-chat" aria-label="会话对话">
     <ConversationPromptEnhancer sessionId={session.id} active={active} canEdit={canSend&&!ended&&!waiting} value={draft} onApply={changeDraft}/>
     <div className="session-chat-reading">

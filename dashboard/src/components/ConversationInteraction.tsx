@@ -5,7 +5,7 @@ import {ConversationQuestionEditor,type QuestionAttachmentContext,type QuestionA
 import type {DraftAttachment} from './ConversationAttachments';
 import type {ConversationAttachment} from '../lib/conversation-attachments';
 import {formatConversationTimestamp} from '../lib/conversation-timing';
-import {useCallback,useRef,useState} from 'react';
+import {memo,useCallback,useRef,useState} from 'react';
 import {Check,Loader2,MessageCircleQuestion,ShieldCheck} from 'lucide-react';
 
 export interface ConversationInteractionRequest {
@@ -17,9 +17,10 @@ function readyAttachments(items:unknown):DraftAttachment[]{
   if(!Array.isArray(items))return [];
   return items.slice(0,8).flatMap((item,index)=>{
     if(item?.status!=='ready'||typeof item.path!=='string'||!item.path.startsWith('/')||typeof item.name!=='string'||!['image','file'].includes(item.kind))return [];
-    return [{id:typeof item.id==='string'?item.id:`saved-${index}`,name:item.name,kind:item.kind,path:item.path,size:Number.isFinite(item.size)?Math.max(0,item.size):0,status:'ready' as const}];
+    return [{id:typeof item.id==='string'?item.id:`saved-${index}`,name:item.name,kind:item.kind,path:item.path,size:Number.isFinite(item.size)?Math.max(0,item.size):0,status:'ready' as const,...Number.isSafeInteger(item.offset)&&item.offset>=0?{offset:item.offset}:{}}];
   });
 }
+function sameAttachments(a:DraftAttachment[]=[],b:DraftAttachment[]=[]){return a.length===b.length&&a.every((item,index)=>{const next=b[index];return item.id===next.id&&item.name===next.name&&item.kind===next.kind&&item.path===next.path&&item.size===next.size&&item.status===next.status&&item.offset===next.offset;});}
 export function ConversationInteraction({request,storageKey,connected,canAnswer,onAnswer,onRaw,inline=false,resolvedLabel,onMinimize,attachmentContext,attachmentHint='附件将以文件引用随回答发送'}:{
   request:ConversationInteractionRequest;storageKey:string;connected:boolean;canAnswer:boolean;
   onAnswer:(id:string,answer:unknown,attachments?:QuestionAttachmentMap)=>Promise<void>;onRaw:()=>void;inline?:boolean;resolvedLabel?:string;onMinimize?:()=>void;attachmentContext?:QuestionAttachmentContext;attachmentHint?:string;
@@ -37,17 +38,18 @@ export function ConversationInteraction({request,storageKey,connected,canAnswer,
   const update=useCallback((id:string,value:Partial<Draft>)=>{
     setDrafts(previous=>{
       const next={...previous,[id]:{...(previous[id]??{choice:'',custom:''}),...value}};
-      try {sessionStorage.setItem(storageKey,JSON.stringify(Object.fromEntries((latestRequest.current.questions||[]).filter(q=>!q.isSecret&&next[q.id]).map(q=>[q.id,next[q.id]]))));}catch{/* The in-memory draft remains usable. */}
+      if((previous[id]?.choice||'')===next[id].choice&&(previous[id]?.custom||'')===next[id].custom&&sameAttachments(previous[id]?.attachments,next[id].attachments))return previous;
+      if(!latestRequest.current.questions?.find(q=>q.id===id)?.isSecret)try {sessionStorage.setItem(storageKey,JSON.stringify(Object.fromEntries((latestRequest.current.questions||[]).filter(q=>!q.isSecret&&next[q.id]).map(q=>[q.id,next[q.id]]))));}catch{/* The in-memory draft remains usable. */}
       return next;
     });setError('');
   },[storageKey]);
   const onAttachments=useCallback((id:string,state:QuestionAttachmentState|null)=>{
-    setFiles(previous=>{if(!state){if(!previous[id])return previous;const next={...previous};delete next[id];return next;}return {...previous,[id]:state};});
+    setFiles(previous=>{if(!state){if(!previous[id])return previous;const next={...previous};delete next[id];return next;}if(previous[id]&&sameAttachments(previous[id].items,state.items))return previous;return {...previous,[id]:state};});
     if(state)update(id,{attachments:readyAttachments(state.items)});
   },[update]);
   const customQuestion=(id:string)=>!request.questions?.find(q=>q.id===id)?.options?.length||drafts[id]?.choice==='custom';
   const activeFiles=(request.questions||[]).flatMap(q=>customQuestion(q.id)?files[q.id]?.items||[]:[]);
-  const uploading=activeFiles.some(item=>item.status==='uploading'||item.status==='packing'),failed=activeFiles.some(item=>item.status==='error');
+  const uploading=activeFiles.some(item=>['queued','uploading','packing'].includes(item.status)),failed=activeFiles.some(item=>item.status==='error');
   const limitError=activeFiles.length>8?'本次回答合计最多支持 8 个附件':activeFiles.reduce((sum,item)=>sum+item.size,0)>50*1024*1024?'本次回答的附件合计最多 50 MB':activeFiles.filter(item=>item.kind==='image').reduce((sum,item)=>sum+item.size,0)>10*1024*1024?'本次回答的图片合计最多 10 MB':'';
   function validateFiles(selected:File[]){const plain=selected.filter(file=>!file.webkitRelativePath),directories=new Set(selected.filter(file=>file.webkitRelativePath).map(file=>file.webkitRelativePath.split('/')[0]));
     if(activeFiles.length+plain.length+directories.size>8)return '本次回答合计最多支持 8 个附件';
@@ -72,7 +74,7 @@ export function ConversationInteraction({request,storageKey,connected,canAnswer,
           return <fieldset key={question.id} disabled={disabled}><legend><span className="conversation-question-index">{index+1}</span>{question.header&&<span>{question.header} · </span>}{question.question}</legend>
             {question.options?.map((option,i)=><label key={option.label} className="conversation-question-option" data-selected={draft.choice===option.label}><input type="radio" name={`${storageKey}:${question.id}`} checked={draft.choice===option.label} onChange={()=>update(question.id,{...draft,choice:option.label})}/><span><b>{i+1}. {option.label}</b>{option.description&&<small>{option.description}</small>}</span></label>)}
             {!!question.options?.length&&question.isOther&&<label className="conversation-question-option" data-selected={custom}><input type="radio" name={`${storageKey}:${question.id}`} checked={draft.choice==='custom'} onChange={()=>update(question.id,{...draft,choice:'custom'})}/><span>其他回答</span></label>}
-            {custom&&(question.isOther||!question.options?.length)&&<div className="conversation-question-custom"><span>{question.isSecret?'私密回答':'你的回答'}</span>{question.isSecret?<input type="password" autoComplete="off" aria-label={question.question} value={draft.custom} onChange={event=>update(question.id,{choice:'custom',custom:event.target.value})}/>:attachmentContext?<ConversationQuestionEditor id={question.id} label={question.question} value={draft.custom} initial={draft.attachments} disabled={disabled} context={attachmentContext} onChange={text=>update(question.id,{choice:'custom',custom:text})} onAttachments={onAttachments} validateFiles={validateFiles} onSubmit={()=>form.current?.requestSubmit()}/>:<textarea rows={2} aria-label={question.question} value={draft.custom} onChange={event=>update(question.id,{choice:'custom',custom:event.target.value})}/>}</div>}
+            {custom&&(question.isOther||!question.options?.length)&&<div className="conversation-question-custom"><span>{question.isSecret?'私密回答':'你的回答'}</span>{question.isSecret?<input type="password" autoComplete="off" aria-label={question.question} value={draft.custom} onChange={event=>update(question.id,{choice:'custom',custom:event.target.value})}/>:attachmentContext?<ConversationQuestionEditor id={question.id} label={question.question} value={draft.custom} initial={draft.attachments} disabled={disabled} context={attachmentContext} onChange={(text,items)=>update(question.id,{choice:'custom',custom:text,attachments:readyAttachments(items)})} onAttachments={onAttachments} validateFiles={validateFiles} onSubmit={()=>form.current?.requestSubmit()}/>:<textarea rows={2} aria-label={question.question} value={draft.custom} onChange={event=>update(question.id,{choice:'custom',custom:event.target.value})}/>}</div>}
           </fieldset>;
         })}
       </div>
@@ -109,7 +111,7 @@ export function ConversationAsyncQuestion({message,agentName,storageKey,connecte
     }}/>;
 }
 
-export function ConversationQuestionSummary({message,answers,state,onAnswer}:{message:ConversationMessage;answers:string[]|null;state?:'pending'|'sending'|'submitted'|'queued'|'answered';continued?:boolean;onAnswer:()=>void}) {
+export const ConversationQuestionSummary=memo(function ConversationQuestionSummary({message,answers,state,onAnswer}:{message:ConversationMessage;answers:string[]|null;state?:'pending'|'sending'|'submitted'|'queued'|'answered';continued?:boolean;onAnswer:(id:string)=>void}) {
   useDisplayClock();
   const questions=message.async_questions||[];
   const status=state??(answers!==null?'answered':'pending'),settled=status!=='pending';
@@ -120,8 +122,8 @@ export function ConversationQuestionSummary({message,answers,state,onAnswer}:{me
       <dl>{questions.map((q,index)=><div key={q.id||index}><dt>{q.title}</dt><dd>{q.options?.length?q.options.join(' · '):settled?'文字回答':'自由回答'}</dd></div>)}</dl>
       {status==='queued'&&<p>回答已进入原生队列，等待 Agent 接收；上下文压缩期间需等待压缩结束，无需重复提交。</p>}
       {status==='submitted'&&<p>原生服务已接受提交，正在等待回答进入会话记录，无需重复提交。</p>}
-      {!settled&&<button type="button" onClick={onAnswer}>回答问题</button>}
+      {!settled&&<button type="button" onClick={()=>onAnswer(message.id)}>回答问题</button>}
     </details>
     {message.timestamp&&<div className="session-chat-message-meta"><time dateTime={message.timestamp}>{formatConversationTimestamp(message.timestamp)}</time></div>}
   </article>;
-}
+});

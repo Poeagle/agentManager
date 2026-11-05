@@ -1,7 +1,24 @@
 import {describe,expect,it} from 'vitest';
-import {decodeQuestionReply,encodeQuestionReply,questionAnswers,questionReplyState,pendingConversationQuestions,questionReplyDisplayText} from '../src/lib/conversation-question-reply';
+import {decodeQuestionReply,encodeQuestionReply,questionAnswers,questionReplyState,pendingConversationQuestions,questionReplyDisplayText,createConversationQuestionCache,indexConversationQuestions} from '../src/lib/conversation-question-reply';
 import type {ConversationMessage} from '../src/lib/api';
 describe('native asynchronous answers',()=>{
+  it('reuses a long history question index during text streaming and updates it when an answer arrives',()=>{
+    const cache=createConversationQuestionCache(),questions=Array.from({length:500},(_,i)=>({id:`q-${i}`,role:'assistant' as const,text:'Which?',timestamp:null,async_questions:[{id:`native-${i}`,title:'Which?',options:null}]}));
+    const stream={id:'live',role:'assistant' as const,text:'A',timestamp:null,streaming:true},first=cache.read([...questions,stream]);expect(first.pending()).toHaveLength(500);
+    const second=cache.read([...questions,{...stream,text:'AB'}]);expect(second).toBe(first);
+    const reply={id:'reply',role:'user' as const,text:'OK',timestamp:null,question_replies:[{question_id:'native-0',question:'Which?',answer:'OK'}]};
+    const third=cache.read([reply,...questions,{...stream,text:'ABC'}]);expect(third).not.toBe(first);expect(third.answers(questions[0])).toEqual(['OK']);expect(third.state(questions[0])).toBe('answered');expect(third.pending()).toHaveLength(499);
+  });
+  it('prefers a durable answer over an older queued echo and keeps other questions pending',()=>{
+    const question={id:'question',role:'assistant' as const,text:'',timestamp:null,async_questions:[{id:'one',title:'A',options:null},{id:'two',title:'B',options:null}]};
+    const reply={id:'reply',role:'user' as const,text:'A',timestamp:null,question_replies:[{question_id:'one',question:'A',answer:'confirmed'}]};
+    const index=indexConversationQuestions([question,reply,{...reply,id:'old-queue',queued:true,question_replies:[{...reply.question_replies[0],answer:'stale'}]}]);
+    const one={...question,async_questions:question.async_questions.slice(0,1)};expect(index.answers(one)).toEqual(['confirmed']);expect(index.state(one)).toBe('answered');expect(index.pending()[0].async_questions?.map(q=>q.id)).toEqual(['two']);
+  });
+  it('deduplicates only overlapping question IDs instead of dropping a whole partially loaded group',()=>{
+    const q={id:'loaded',role:'assistant' as const,text:'A',timestamp:null,async_questions:[{id:'one',title:'A',options:null}]};
+    expect(pendingConversationQuestions([q],[{id:'group',timestamp:null,questions:[...q.async_questions,{id:'two',title:'B',options:null}]}]).flatMap(message=>message.async_questions?.map(q=>q.id))).toEqual(['one','two']);
+  });
   it('distinguishes submitting, acknowledged, queued and actually received answers',()=>{
     const question:ConversationMessage={id:'q',role:'assistant',text:'Which?',timestamp:null,async_questions:[{id:'native-q',title:'Which?',options:null}]};
     const reply={id:'r',role:'user' as const,text:'A',timestamp:null,question_replies:[{question_id:'native-q',question:'Which?',answer:'A'}]};

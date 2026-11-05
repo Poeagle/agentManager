@@ -19,7 +19,7 @@ describe('human interaction cards',()=>{
   });
   it('does not persist secrets, disables disconnected and readonly controls, and reports failures',async()=>{
     const secret={...request,questions:[{...request.questions![1],isSecret:true}]};const first=mount(secret,vi.fn(),false);const input=screen.getByLabelText('补充说明');expect(input).toBeDisabled();expect(input).toHaveAttribute('type','password');first.unmount();
-    const answer=vi.fn().mockRejectedValue(new Error('请求已失效'));const second=mount(secret,answer);fireEvent.change(screen.getByLabelText('补充说明'),{target:{value:'private-key'}});expect(sessionStorage.getItem('question-test')).not.toContain('private-key');
+    const answer=vi.fn().mockRejectedValue(new Error('请求已失效'));const second=mount(secret,answer);fireEvent.change(screen.getByLabelText('补充说明'),{target:{value:'private-key'}});expect(sessionStorage.getItem('question-test')||'').not.toContain('private-key');
     await act(async()=>fireEvent.click(screen.getByRole('button',{name:'提交回答'})));expect(screen.getByRole('alert')).toHaveTextContent('请求已失效');second.unmount();
     mount(request,vi.fn(),true,false);expect(screen.getByText('当前账号只读')).toBeVisible();for(const radio of screen.getAllByRole('radio'))expect(radio).toBeDisabled();
   });

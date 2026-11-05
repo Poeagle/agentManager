@@ -319,7 +319,14 @@
 .session-chat-editor {white-space:pre-wrap;overflow-wrap:anywhere;overflow-y:auto;cursor:text;}
 .session-chat-editor:empty:before {content:attr(data-placeholder);color:var(--text-muted);pointer-events:none;}
 .session-chat-editor[aria-disabled="true"] {opacity:.65;cursor:default;}
-.session-chat-inline-attachment {color:var(--accent);cursor:zoom-in;white-space:nowrap;margin:0 4px;font-size:inherit;}
+.session-chat-inline-attachment {display:inline-flex;align-items:center;vertical-align:baseline;gap:2px;color:var(--accent);white-space:nowrap;margin:0 4px;font-size:inherit;}
+.session-chat-inline-attachment button{color:inherit;font:inherit;border:0;background:transparent;border-radius:4px;cursor:pointer;vertical-align:baseline}
+.session-chat-inline-attachment-preview{padding:0;cursor:zoom-in!important}
+.session-chat-inline-attachment-remove{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0}
+.session-chat-inline-attachment-remove::before{content:'×';font-size:17px;line-height:1}
+.session-chat-inline-attachment-remove:hover:not(:disabled){color:var(--error);background:color-mix(in srgb,var(--error) 10%,transparent)}
+.session-chat-inline-attachment button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.session-chat-inline-attachment-remove:disabled{opacity:.4;cursor:default}
 .session-chat-inline-attachment:focus-visible {outline:2px solid var(--accent);outline-offset:2px;border-radius:2px;}
 .session-chat-inline-attachment[data-status="error"] {color:var(--error);}
 .conversation-inline-meta {display:inline-flex;max-width:100%;margin-left:10px;vertical-align:baseline;}

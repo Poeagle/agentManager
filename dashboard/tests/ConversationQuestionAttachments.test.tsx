@@ -3,6 +3,8 @@ import {beforeEach,describe,expect,it,vi} from 'vitest';
 import {ConversationAsyncQuestion} from '../src/components/ConversationInteraction';
 import {api,type ConversationMessage} from '../src/lib/api';
 import {decodeQuestionReply} from '../src/lib/conversation-question-reply';
+import {packDirectory} from '../src/lib/directory-upload';
+vi.mock('../src/lib/directory-upload',async()=>({...await vi.importActual('../src/lib/directory-upload'),packDirectory:vi.fn()}));
 const question:ConversationMessage={id:'ask',role:'assistant',text:'',timestamp:null,async_questions:[{id:'native-question',title:'补充截图或日志',options:null}]};
 const context={sessionId:'session',projectId:'project',projectPath:'/project',enabled:true};
 function mount(reply=vi.fn().mockResolvedValue(undefined),message=question,enabled=true,canAnswer=true){return render(<ConversationAsyncQuestion message={message} agentName="Agent" storageKey="attachment-question" connected canAnswer={canAnswer} attachmentContext={{...context,enabled}} onReply={reply} onRaw={()=>{}} onMinimize={()=>{}}/>);}
@@ -10,6 +12,36 @@ const file=(name='report.txt')=>new File(['log'],name,{type:'text/plain'});
 function paste(files:File[],label='补充截图或日志'){fireEvent.paste(screen.getByRole('textbox',{name:label}),{clipboardData:{files,getData:()=>''}});}
 beforeEach(()=>{sessionStorage.clear();vi.spyOn(api.sessions,'pasteFile').mockImplementation(async(_id,_data,name)=>({path:'/project/.agentmanager/pastes/'+name}));vi.spyOn(api.sessions,'pasteImage').mockResolvedValue({path:'/project/.agentmanager/pastes/screenshot.png'});});
 describe('question reply attachments',()=>{
+ it('does not rewrite the saved draft for directory progress-only updates',async()=>{
+  let progress!:(percent:number)=>void,finish!:(file:File)=>void;
+  vi.mocked(packDirectory).mockImplementation(async(_name,_entries,_signal,changed)=>{progress=changed;return new Promise<File>(resolve=>{finish=resolve;});});
+  mount();const save=vi.spyOn(Storage.prototype,'setItem'),source=file();Object.defineProperty(source,'webkitRelativePath',{value:'data/report.txt'});
+  fireEvent.change(screen.getByLabelText('选择回答目录'),{target:{files:[source]}});await waitFor(()=>expect(packDirectory).toHaveBeenCalledOnce());
+  const before=save.mock.calls.filter(([key])=>key==='attachment-question').length;
+  try {
+   for(let i=1;i<=30;i++)act(()=>progress(i));
+   expect(save.mock.calls.filter(([key])=>key==='attachment-question')).toHaveLength(before);
+  }finally{await act(async()=>finish(new File(['zip'],'data.zip',{type:'application/zip'})));}
+  await waitFor(()=>expect(screen.getByRole('button',{name:'预览待发送文件 data.zip'})).toHaveAttribute('data-status','ready'));
+  expect(save.mock.calls.filter(([key])=>key==='attachment-question')).toHaveLength(before+1);expect(sessionStorage.getItem('attachment-question')).toContain('data.zip');
+ });
+ it('shares upload work across answer fields and canceling an active upload releases the next field',async()=>{
+  vi.mocked(api.sessions.pasteFile).mockImplementation(async(_id,_data,name,signal)=>{
+   if(name==='first.txt')await new Promise<void>((_resolve,reject)=>signal?.addEventListener('abort',()=>reject(new DOMException('canceled','AbortError')),{once:true}));
+   return {path:'/project/.agentmanager/pastes/'+name};
+  });
+  mount(vi.fn(),{...question,async_questions:[{id:'one',title:'问题一',options:null},{id:'two',title:'问题二',options:null}]});
+  paste([file('first.txt')],'问题一');paste([file('second.txt')],'问题二');await waitFor(()=>expect(api.sessions.pasteFile).toHaveBeenCalledOnce());
+  expect(screen.getByRole('button',{name:'预览待发送文件 second.txt'})).toHaveTextContent('排队中');fireEvent.click(screen.getByRole('button',{name:'移除附件 first.txt'}));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'预览待发送文件 second.txt'})).toHaveAttribute('data-status','ready'));expect(api.sessions.pasteFile).toHaveBeenCalledTimes(2);expect(screen.queryByRole('button',{name:'移除附件 first.txt'})).not.toBeInTheDocument();
+ });
+ it('restores the attachment position inside a text answer after reopening the question',async()=>{
+  const view=mount();const editor=screen.getByRole('textbox',{name:'补充截图或日志'});editor.textContent='前文后文';fireEvent.input(editor);
+  const range=document.createRange();range.setStart(editor.firstChild!,2);range.collapse(true);const selection=window.getSelection()!;selection.removeAllRanges();selection.addRange(range);fireEvent.mouseUp(editor);paste([file()]);
+  await waitFor(()=>expect(screen.getByRole('button',{name:'预览待发送文件 report.txt'})).toHaveAttribute('data-status','ready'));
+  expect(editor.textContent?.replaceAll('\u200b','')).toBe('前文文件 1后文');view.unmount();mount();const restored=screen.getByRole('textbox',{name:'补充截图或日志'});
+  expect(restored.textContent?.replaceAll('\u200b','')).toBe('前文文件 1后文');expect(api.sessions.pasteFile).toHaveBeenCalledOnce();
+ });
  it('pastes images and files, waits for uploads and submits them in the same answer',async()=>{
   let finish!:(value:{path:string})=>void;vi.mocked(api.sessions.pasteImage).mockReturnValue(new Promise(resolve=>{finish=resolve;}));const reply=vi.fn().mockResolvedValue(undefined);mount(reply);
   paste([new File(['png'],'screenshot.png',{type:'image/png'}),file()]);

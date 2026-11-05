@@ -20,13 +20,11 @@ export function decodeQuestionReply(text:string):{text:string;answers:QuestionRe
     return {answers,text:'回复你的提问：\n'+answers.map((q,index)=>`${index+1}. ${q.question}\n我的回答：${q.answer}`).join('\n\n')};
   }catch{return;}
 }
-/** Recognize replies sent by the previous web version, for compact history. */
-export function questionAnswers(message:ConversationMessage,later:ConversationMessage[]):string[]|null {
+/** Legacy answers have no IDs; only later, explicitly formatted user messages
+ * can match them. Structured native IDs remain authoritative across replay. */
+function legacyAnswers(message:ConversationMessage,later:TimelineMessage[]):string[]|null {
   const questions=message.async_questions||[];
-  const native=later.flatMap(item=>item.question_replies||[]);
-  if(questions.length&&questions.every(q=>q.id&&native.some(reply=>reply.question_id===q.id)))return questions.map(q=>native.find(reply=>reply.question_id===q.id)!.answer);
   for(const item of later) {
-    if(item.role!=='user'||!item.text.startsWith('回复你的提问：\n'))continue;
     const answers=questions.map((q,index)=>{
       const marker=`${index+1}. ${q.title}\n我的回答：`,start=item.text.indexOf(marker);
       if(start<0)return null;
@@ -37,27 +35,58 @@ export function questionAnswers(message:ConversationMessage,later:ConversationMe
   }
   return null;
 }
-
-export function questionReplyState(message:ConversationMessage,later:TimelineMessage[],submittedIds:string[]=[]):'pending'|'sending'|'submitted'|'queued'|'answered' {
- if(questionAnswers(message,later)===null)return message.async_questions?.length&&message.async_questions.every(question=>question.id&&submittedIds.includes(question.id))?'submitted':'pending';
- const ids=new Set(message.async_questions?.map(question=>question.id));
- const replies=later.filter(item=>item.role==='user'&&item.question_replies?.some(answer=>ids.has(answer.question_id)));
- if(replies.some(item=>item.queued))return 'queued';
- if(replies.some(item=>item.optimistic&&!item.optimistic.accepted))return 'sending';
- if(replies.some(item=>item.optimistic))return 'submitted';
- return 'answered';
-}
-
-/** Include unanswered questions outside the loaded history page. A new user
- * message or a completed turn does not implicitly answer an earlier question. */
-export function pendingConversationQuestions(messages:ConversationMessage[],groups:Array<{id:string;questions:NonNullable<ConversationMessage['async_questions']>;timestamp:string|null;turn_id?:string}> = [],ignoredIds:string[]=[]):ConversationMessage[] {
-  const pending=messages.filter((message,index)=>message.async_questions?.length&&questionAnswers(message,messages.slice(index+1))===null);
-  for(const group of groups) {
-    if(pending.some(message=>message.async_questions?.some(question=>group.questions.some(item=>item.id===question.id))))continue;
-    const message:ConversationMessage={id:`pending-question-${group.id}`,role:'assistant',phase:'final',text:group.questions.map(question=>question.title).join('\n'),timestamp:group.timestamp,turn_id:group.turn_id,async_questions:group.questions};
-    if(questionAnswers(message,messages)===null)pending.push(message);
+export type QuestionState='pending'|'sending'|'submitted'|'queued'|'answered';
+type PendingGroup={id:string;questions:NonNullable<ConversationMessage['async_questions']>;timestamp:string|null;turn_id?:string};
+/** One metadata index serves question cards, pending attention and answer state.
+ * Body-only deltas never require rescanning every answer for every question. */
+export function indexConversationQuestions(messages:TimelineMessage[]) {
+  const replies=new Map<string,{answer:string;rank:number}>(),questions:TimelineMessage[]=[],positions=new Map<string,number>(),legacy:Array<{index:number;message:TimelineMessage}>=[];
+  messages.forEach((message,index)=>{
+    positions.set(message.id,index);
+    if(message.async_questions?.length)questions.push(message);
+    if(message.role!=='user')return;
+    const rank=!message.queued&&!message.optimistic?3:message.queued?1:message.optimistic?.accepted?2:0;
+    for(const reply of message.question_replies||[]){const previous=replies.get(reply.question_id);if(!previous||rank>=previous.rank)replies.set(reply.question_id,{answer:reply.answer,rank});}
+    if(!message.question_replies?.length&&message.text.startsWith('回复你的提问：\n'))legacy.push({index,message});
+  });
+  const cached=new WeakMap<ConversationMessage,string[]|null>();
+  function answers(message:ConversationMessage):string[]|null {
+    if(cached.has(message))return cached.get(message)!;
+    const set=message.async_questions||[];
+    const result=set.length&&set.every(question=>question.id&&replies.has(question.id))?set.map(question=>replies.get(question.id!)!.answer)
+      :legacyAnswers(message,legacy.filter(item=>item.index>(positions.get(message.id)??-1)).map(item=>item.message));
+    cached.set(message,result);return result;
   }
-  const ignored=new Set(ignoredIds);
-  const answered=new Set(messages.flatMap(message=>message.question_replies?.map(reply=>reply.question_id)||[]));
-  return pending.map(message=>({...message,async_questions:message.async_questions?.filter(q=>!q.id||!ignored.has(q.id)&&!answered.has(q.id))})).filter(message=>message.async_questions?.length).sort((a,b)=>Date.parse(a.timestamp||'')-Date.parse(b.timestamp||''));
+  function state(message:ConversationMessage,submittedIds:string[]=[]):QuestionState {
+    const set=message.async_questions||[];
+    if(answers(message)===null)return set.length&&set.every(question=>question.id&&submittedIds.includes(question.id))?'submitted':'pending';
+    const rank=Math.min(3,...set.map(question=>replies.get(question.id||'')?.rank??3));
+    return rank===0?'sending':rank===1?'queued':rank===2?'submitted':'answered';
+  }
+  function pending(groups:PendingGroup[]=[],ignoredIds:string[]=[]):ConversationMessage[]{
+    const ignored=new Set(ignoredIds),seen=new Set<string>(),result:ConversationMessage[]=[];
+    function add(message:ConversationMessage){
+      if(answers(message)!==null)return;
+      const remaining=message.async_questions?.filter(question=>!question.id||!ignored.has(question.id)&&!replies.has(question.id)&&!seen.has(question.id));
+      if(!remaining?.length)return;
+      for(const question of remaining)if(question.id)seen.add(question.id);
+      result.push(remaining.length===message.async_questions?.length?message:{...message,async_questions:remaining});
+    }
+    for(const question of questions)add(question);
+    for(const group of groups)add({id:`pending-question-${group.id}`,role:'assistant',phase:'final',text:group.questions.map(question=>question.title).join('\n'),timestamp:group.timestamp,turn_id:group.turn_id,async_questions:group.questions});
+    return result.sort((a,b)=>Date.parse(a.timestamp||'')-Date.parse(b.timestamp||''));
+  }
+  return {answers,state,pending};
 }
+/** Retain the index across streaming text changes and one-second UI clocks. */
+export function createConversationQuestionCache(){
+  let previous:TimelineMessage[]=[],index:ReturnType<typeof indexConversationQuestions>|undefined;
+  return {read(messages:TimelineMessage[]){
+    const relevant=messages.filter(message=>message.async_questions?.length||message.role==='user'&&(message.question_replies?.length||message.text.startsWith('回复你的提问：\n')));
+    if(!index||relevant.length!==previous.length||relevant.some((message,i)=>message!==previous[i])){previous=relevant;index=indexConversationQuestions(relevant);}
+    return index;
+  }};
+}
+export function questionAnswers(message:ConversationMessage,later:ConversationMessage[]):string[]|null{return indexConversationQuestions(later).answers(message);}
+export function questionReplyState(message:ConversationMessage,later:TimelineMessage[],submittedIds:string[]=[]):QuestionState{return indexConversationQuestions(later).state(message,submittedIds);}
+export function pendingConversationQuestions(messages:ConversationMessage[],groups:PendingGroup[]=[],ignoredIds:string[]=[]):ConversationMessage[]{return indexConversationQuestions(messages).pending(groups,ignoredIds);}

@@ -219,6 +219,11 @@ submitted together without clearing a separate composer draft. The entire answer
 group shares the usual 8-file, 10 MB image and 50 MB total limits. Async replies
 use native attachment input. Text-only blocking question protocols receive
 validated file references; adapters with richer protocols may map them directly.
+The main composer and question fields share one upload/packing queue per session.
+Queued attachments show their status and offer an explicit remove/cancel button.
+Answer drafts retain inline attachment positions; packing progress alone does not
+rewrite saved drafts. Question summaries share an ID index that is reused during
+text-only streaming, and confirmed native answers outrank stale queued echoes.
 
 New Codex conversations with valid native metadata show green **Ready** until
 their first turn. Unanswered asynchronous questions show yellow attention even

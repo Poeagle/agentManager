@@ -4,13 +4,14 @@ import {Paperclip,FolderOpen} from 'lucide-react';
 import {api} from '../lib/api';
 import {readFileAsDataUrl} from '../lib/file-data-url';
 import {conversationClientId} from '../lib/conversation-timeline';
+import {scheduleConversationUpload} from '../lib/conversation-upload-queue';
 import type {ConversationAttachment} from '../lib/conversation-attachments';
 import {packDirectory,readDroppedDirectory,type DirectoryFile,type DroppedEntry} from '../lib/directory-upload';
 
-export interface DraftAttachment {id:string;name:string;kind:'image'|'file';size:number;path?:string;thumbnail?:string;status:'packing'|'uploading'|'ready'|'error';error?:string;offset?:number;progress?:number}
+export interface DraftAttachment {id:string;name:string;kind:'image'|'file';size:number;path?:string;thumbnail?:string;status:'queued'|'packing'|'uploading'|'ready'|'error';error?:string;offset?:number;progress?:number}
 export function useConversationAttachments(sessionId:string,initial:DraftAttachment[]=[]) {
   const [items,setItems]=useState<DraftAttachment[]>(initial),[error,setError]=useState('');
-  const current=useRef(items),alive=useRef(true),queue=useRef(Promise.resolve());
+  const current=useRef(items),alive=useRef(true);
   const controllers=useRef(new Map<string,AbortController>()),urls=useRef(new Set<string>());
   const retries=useRef(new Map<string,()=>void>());
   useEffect(()=>{
@@ -38,10 +39,11 @@ export function useConversationAttachments(sessionId:string,initial:DraftAttachm
       const id=conversationClientId(),controller=new AbortController();controllers.current.set(id,controller);
       retries.current.set(id,()=>enqueue([file]));
       const thumbnail=image && typeof URL.createObjectURL==='function'?URL.createObjectURL(file):undefined;if(thumbnail)urls.current.add(thumbnail);
-      publish([...current.current,{id,name,kind:image?'image':'file',size:file.size,thumbnail,status:'uploading'}]);
-      queue.current=queue.current.catch(()=>{}).then(async()=>{
+      publish([...current.current,{id,name,kind:image?'image':'file',size:file.size,thumbnail,status:'queued'}]);
+      void scheduleConversationUpload(sessionId,async()=>{
         if(controller.signal.aborted)return;
         try {
+          patch(id,{status:'uploading'});
           const data=await readFileAsDataUrl(file,controller.signal);
           const uploaded=image?await api.sessions.pasteImage(sessionId,data,controller.signal):await api.sessions.pasteFile(sessionId,data,name,controller.signal);
           if(!controller.signal.aborted && alive.current){patch(id,{status:'ready',path:uploaded.path});retries.current.delete(id);}
@@ -54,10 +56,11 @@ export function useConversationAttachments(sessionId:string,initial:DraftAttachm
     setError('');if(current.current.length>=8){setError('每条消息最多支持 8 个附件');return;}
     const id=conversationClientId(),controller=new AbortController();controllers.current.set(id,controller);
     retries.current.set(id,()=>enqueueDirectory(name,read));
-    publish([...current.current,{id,name:name+'.zip',kind:'file',size:0,status:'packing',progress:0}]);
-    queue.current=queue.current.catch(()=>{}).then(async()=>{
+    publish([...current.current,{id,name:name+'.zip',kind:'file',size:0,status:'queued',progress:0}]);
+    void scheduleConversationUpload(sessionId,async()=>{
       if(controller.signal.aborted)return;
       try{
+        patch(id,{status:'packing',progress:0});
         const entries=await read(controller.signal);controller.signal.throwIfAborted();
         const file=await packDirectory(name,entries,controller.signal,progress=>{if(!controller.signal.aborted&&alive.current)patch(id,{progress});});
         if(file.size>35*1024*1024||current.current.filter(item=>item.id!==id).reduce((sum,item)=>sum+item.size,0)+file.size>50*1024*1024)throw Error('单个 ZIP 最多 35 MB，附件合计最多 50 MB');
@@ -79,7 +82,7 @@ export function useConversationAttachments(sessionId:string,initial:DraftAttachm
   function restore(saved:DraftAttachment[]) {publish([...saved.filter(item=>!current.current.some(value=>value.id===item.id)),...current.current]);}
   function release(saved:DraftAttachment[]) {for(const item of saved)if(item.thumbnail&&!current.current.some(value=>value.id===item.id)){URL.revokeObjectURL(item.thumbnail);urls.current.delete(item.thumbnail);}}
   function retry(id:string,offset?:number){const index=current.current.findIndex(item=>item.id===id&&item.status==='error'),task=retries.current.get(id);if(index<0||!task)return;const previous=current.current[index],known=new Set(current.current.map(item=>item.id));remove(id);task();const replacement=current.current.find(item=>!known.has(item.id));if(replacement){const next=current.current.filter(item=>item.id!==replacement.id);next.splice(index,0,{...replacement,offset:offset??previous.offset});publish(next);}}
-  return {items,error,enqueue,enqueueTransfer,remove,retry,take,restore,release,hasDraft:()=>current.current.length>0,clear:(ids:string[])=>{for(const id of ids)remove(id);},uploading:items.some(item=>item.status==='uploading'||item.status==='packing'),failed:items.some(item=>item.status==='error'),values:()=>current.current.filter(item=>item.status==='ready' && item.path).map(item=>({kind:item.kind,name:item.name,path:item.path!})) as ConversationAttachment[]};
+  return {items,error,enqueue,enqueueTransfer,remove,retry,take,restore,release,hasDraft:()=>current.current.length>0,clear:(ids:string[])=>{for(const id of ids)remove(id);},uploading:items.some(item=>['queued','uploading','packing'].includes(item.status)),failed:items.some(item=>item.status==='error'),values:()=>current.current.filter(item=>item.status==='ready' && item.path).map(item=>({kind:item.kind,name:item.name,path:item.path!})) as ConversationAttachment[]};
 }
 
 export function ConversationAttachmentPicker({disabled,onFiles,label='对话'}:{label?:string;disabled:boolean;onFiles:(files:File[])=>void}) {
