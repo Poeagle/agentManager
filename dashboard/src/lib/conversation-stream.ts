@@ -17,12 +17,13 @@ export class ConversationStreamCursor {
  }
 }
 export function applyConversationPatches(previous:TimelineMessage[],patches:ConversationPatch[]):{messages:TimelineMessage[];needsSync:boolean}{
- let messages=previous,needsSync=false;
+ let messages=previous,needsSync=false,index:Map<string,number>|undefined,copied=false;
  for(const patch of patches){
-  if(patch.upserts.length)messages=mergeConversationTimeline(messages,patch.upserts);
-  const index=new Map<string,number>();messages.forEach((message,i)=>{index.set(message.id,i);for(const alias of message.aliases||[])index.set(alias,i);});
-  let copied=false;
+  if(patch.upserts.length){messages=mergeConversationTimeline(messages,patch.upserts);index=undefined;copied=true;}
+  if(!patch.deltas.length)continue;
+  if(!index){index=new Map();messages.forEach((message,i)=>{index!.set(message.id,i);for(const alias of message.aliases||[])index!.set(alias,i);});}
   for(const delta of patch.deltas){const i=index.get(delta.id);if(i===undefined){needsSync=true;continue;}const message=messages[i];
+   if(!delta.text.length)continue;
    if(message.text.length!==delta.offset){if(delta.offset<message.text.length&&message.text.slice(delta.offset,delta.offset+delta.text.length)===delta.text)continue;needsSync=true;continue;}
    if(!copied){messages=[...messages];copied=true;}messages[i]={...message,text:message.text+delta.text,streaming:true};
   }

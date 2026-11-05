@@ -28,20 +28,30 @@ test('renders each native delta before the item completes and keeps one progress
   // Keep the rollout unchanged while a reply waits through compaction. The
   // existing RPC stream must drive the tab state and distinguish queueing.
   const log=join(logs,`rollout-${native}.jsonl`),call='async-question',question='使用哪个测试邮箱？';
+  await chat.getByRole('textbox',{name:'发送给当前 Agent 的消息'}).fill('保留主输入框草稿');
   const questionItemId=JSON.stringify(['request_user_input_async',call,0]);
   const record=(payload:unknown,type='event_msg')=>JSON.stringify({timestamp:new Date().toISOString(),type,payload})+'\n';
   appendFileSync(log,record({type:'task_started',turn_id:'question-turn'})+record({type:'item_completed',turn_id:'question-turn',item:{type:'AgentMessage',id:call,delivery:'async',questions:[{title:question,options:null}]}}));
   emit('turn/started',{threadId,turn:{id:'question-turn'}});
   await expect(page.getByTitle('有 1 个问题待回答 · Agent 仍在执行').first()).toBeVisible({timeout:1500});
   nativeItems=[{id:'compact',type:'contextCompaction',status:'inProgress'}];emit('item/started',{threadId,turnId:'question-turn',item:nativeItems[0]});
-  await chat.getByRole('textbox',{name:question,exact:true}).fill('复用现有测试邮箱');await chat.getByRole('button',{name:'提交回答',exact:true}).click();
+  const answer=chat.getByRole('textbox',{name:question,exact:true});await answer.fill('复用现有测试邮箱');
+  await answer.evaluate(element=>{
+   const transfer=new DataTransfer(),png=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9hZsEAAAAASUVORK5CYII='),value=>value.charCodeAt(0));
+   transfer.items.add(new File([png],'answer-shot.png',{type:'image/png'}));transfer.items.add(new File(['answer evidence'],'answer-log.txt',{type:'text/plain'}));
+   element.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));
+  });
+  const ready=chat.locator('.session-chat-question-seat [data-attachment-id][data-status="ready"]');await expect(ready).toHaveCount(2);
+  await chat.getByRole('button',{name:'稍后回答',exact:true}).click();await expect(chat.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveText('保留主输入框草稿');await chat.locator('.session-chat-question-reminder').click();await expect(ready).toHaveCount(2);
+  await page.screenshot({path:info.outputPath('question-attachments-desktop.png')});await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:info.outputPath('question-attachments-mobile.png')});await page.setViewportSize({width:1280,height:720});
+  await chat.getByRole('button',{name:'提交回答',exact:true}).click();
   await expect(chat.getByText('回答已排队',{exact:true})).toBeVisible({timeout:1500});
   const queuedDot=page.getByTitle('Codex 运行中 · 回答已排队，等待接收').first();await expect(queuedDot).toBeVisible({timeout:1500});await expect(queuedDot).toHaveCSS('background-color','rgb(59, 130, 246)');
-  expect(queue).toHaveLength(1);await expect(chat.getByText('已回答',{exact:true})).toHaveCount(0);
+  expect(queue).toHaveLength(1);expect(queue[0].input.some((item:any)=>item.type==='localImage')).toBe(true);expect(queue[0].input[0].text).toContain('answer-log.txt');await expect(chat.getByText('已回答',{exact:true})).toHaveCount(0);
   await page.reload();await expect(chat.getByText('回答已排队',{exact:true})).toBeVisible();
-  const queued=queue[0],reply='<send_user_message_question_reply>\n'+JSON.stringify([{questionItemId,question,answer:'复用现有测试邮箱'}])+'\n</send_user_message_question_reply>';
-  queue=[];appendFileSync(log,record({type:'message',role:'user',content:[{type:'input_text',text:reply}],internal_chat_message_metadata_passthrough:{turn_id:'question-turn'}},'response_item'));
-  emit('item/completed',{threadId,turnId:'question-turn',item:{type:'userMessage',id:'reply',clientId:queued.clientUserMessageId,content:[{type:'text',text:reply}]}});emit('thread/queue/changed',{threadId});
+  const queued=queue[0];
+  queue=[];appendFileSync(log,record({type:'message',role:'user',content:[{type:'input_text',text:queued.input[0].text},...queued.input.slice(1)],internal_chat_message_metadata_passthrough:{turn_id:'question-turn'}},'response_item'));
+  emit('item/completed',{threadId,turnId:'question-turn',item:{type:'userMessage',id:'reply',clientId:queued.clientUserMessageId,content:queued.input}});emit('thread/queue/changed',{threadId});
   await expect(chat.getByText('已回答',{exact:true})).toBeVisible({timeout:1500});
   emit('turn/completed',{threadId,turn:{id:'question-turn',status:'completed'}});
   await expect(page.getByTitle('Codex 本轮已结束 · 等待输入').first()).toBeVisible({timeout:1500});expect(submitted).toHaveLength(1);

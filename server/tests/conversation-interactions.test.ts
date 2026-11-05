@@ -1,7 +1,20 @@
 import {describe,expect,it} from 'vitest';
 import {nativeInteraction,nativeInteractionAnswer,conversationAsyncQuestions,conversationQuestionReply} from '../src/services/conversation-interactions.js';
+import {nativeConversationInput} from '../src/services/conversation-attachments.js';
 const request=(method:string,params:any)=>({id:'request',method,params:{threadId:'thread',turnId:'turn',...params}});
 describe('structured human requests',()=>{
+  it('keeps attachment-bearing async replies recognizable in native echoes and durable history',()=>{
+    const envelope='<send_user_message_question_reply>\n'+JSON.stringify([{questionItemId:'q',question:'截图？',answer:'请看附件'}])+'\n</send_user_message_question_reply>';
+    const input=nativeConversationInput(envelope,[{kind:'image',name:'shot.png',path:'/project/.agentmanager/pastes/shot.png'},{kind:'file',name:'report.txt',path:'/project/.agentmanager/pastes/report.txt'}]);
+    expect(conversationQuestionReply(input[0].text)?.answers).toEqual([{question_id:'q',question:'截图？',answer:'请看附件'}]);
+    expect(conversationQuestionReply(envelope+'\n[Image #1]\n任意额外正文')).toBeUndefined();
+  });
+  it('maps question attachments to references for a text-only native question protocol',()=>{
+    const params={questions:[{id:'q',question:'证据',isOther:true,options:null}]},card=nativeInteraction(request('item/tool/requestUserInput',params),'thread')!;
+    const attached={q:[{kind:'image',name:'截图.png',path:'/project/.agentmanager/pastes/image.png'}]};
+    expect(nativeInteractionAnswer(card,params,{answers:{q:{answers:['请看附件']}},attachments:attached})).toEqual({answers:{q:{answers:['请看附件\n\n附件：\n- 截图.png: /project/.agentmanager/pastes/image.png']}}});
+    expect(()=>nativeInteractionAnswer(card,params,{answers:{q:{answers:['请看附件']}},attachments:{other:attached.q}})).toThrow('不属于');
+  });
   it('exports native IDs and decodes only complete question reply envelopes',()=>{
     const q=conversationAsyncQuestions({id:'call-test',delivery:'async',questions:[{title:'去哪？',options:['A','B']}]})!;
     expect(q[0].id).toBe(JSON.stringify(['request_user_input_async','call-test',0]));

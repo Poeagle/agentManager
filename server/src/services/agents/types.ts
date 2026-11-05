@@ -285,8 +285,15 @@ export interface AgentInputPort {
     submit(context: AgentContext, text: string, clientId?: string, attachments?: ConversationAttachment[]): Promise<boolean | 'queued'>;
     afterTerminalSubmit(context: AgentContext): Promise<void>;
 }
+export interface AgentQuestionAnswer {
+    answers:Record<string,{answers:string[]}>;
+    attachments?:Record<string,ConversationAttachment[]>;
+}
 export interface AgentConnection {
     (): void;
+    /** Question replies use {answers, attachments?}, grouped by question ID.
+     * The API validates uploads; each provider maps them to its native format.
+     * A promise resolves only after native acceptance, never on a queued UI write. */
     respond(id: string, answer: unknown): unknown;
 }
 export interface AgentStreamPort {

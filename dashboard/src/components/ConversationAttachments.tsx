@@ -8,18 +8,20 @@ import type {ConversationAttachment} from '../lib/conversation-attachments';
 import {packDirectory,readDroppedDirectory,type DirectoryFile,type DroppedEntry} from '../lib/directory-upload';
 
 export interface DraftAttachment {id:string;name:string;kind:'image'|'file';size:number;path?:string;thumbnail?:string;status:'packing'|'uploading'|'ready'|'error';error?:string;offset?:number;progress?:number}
-export function useConversationAttachments(sessionId:string) {
-  const [items,setItems]=useState<DraftAttachment[]>([]),[error,setError]=useState('');
+export function useConversationAttachments(sessionId:string,initial:DraftAttachment[]=[]) {
+  const [items,setItems]=useState<DraftAttachment[]>(initial),[error,setError]=useState('');
   const current=useRef(items),alive=useRef(true),queue=useRef(Promise.resolve());
   const controllers=useRef(new Map<string,AbortController>()),urls=useRef(new Set<string>());
+  const retries=useRef(new Map<string,()=>void>());
   useEffect(()=>{
-    alive.current=true;const active=controllers.current,previews=urls.current;
-    return()=>{alive.current=false;for(const controller of active.values())controller.abort();active.clear();for(const url of previews)URL.revokeObjectURL(url);previews.clear();};
+    alive.current=true;const active=controllers.current,previews=urls.current,tasks=retries.current;
+    return()=>{alive.current=false;for(const controller of active.values())controller.abort();active.clear();tasks.clear();for(const url of previews)URL.revokeObjectURL(url);previews.clear();};
   },[sessionId]);
   function publish(next:DraftAttachment[]) {current.current=next;if(alive.current)setItems(next);}
   function patch(id:string,change:Partial<DraftAttachment>) {publish(current.current.map(item=>item.id===id?{...item,...change}:item));}
   function remove(id:string) {
     controllers.current.get(id)?.abort();controllers.current.delete(id);
+    retries.current.delete(id);
     const item=current.current.find(item=>item.id===id);if(item?.thumbnail){URL.revokeObjectURL(item.thumbnail);urls.current.delete(item.thumbnail);}
     publish(current.current.filter(item=>item.id!==id));
   }
@@ -34,6 +36,7 @@ export function useConversationAttachments(sessionId:string) {
       if(current.current.length>=8){setError('每条消息最多支持 8 个附件');break;}
       if(file.size>(image?10:35)*1024*1024 || total+file.size>50*1024*1024 || image && images+file.size>10*1024*1024){setError('图片总大小最多 10 MB，单个文件最多 35 MB，附件合计最多 50 MB');continue;}
       const id=conversationClientId(),controller=new AbortController();controllers.current.set(id,controller);
+      retries.current.set(id,()=>enqueue([file]));
       const thumbnail=image && typeof URL.createObjectURL==='function'?URL.createObjectURL(file):undefined;if(thumbnail)urls.current.add(thumbnail);
       publish([...current.current,{id,name,kind:image?'image':'file',size:file.size,thumbnail,status:'uploading'}]);
       queue.current=queue.current.catch(()=>{}).then(async()=>{
@@ -41,7 +44,7 @@ export function useConversationAttachments(sessionId:string) {
         try {
           const data=await readFileAsDataUrl(file,controller.signal);
           const uploaded=image?await api.sessions.pasteImage(sessionId,data,controller.signal):await api.sessions.pasteFile(sessionId,data,name,controller.signal);
-          if(!controller.signal.aborted && alive.current)patch(id,{status:'ready',path:uploaded.path});
+          if(!controller.signal.aborted && alive.current){patch(id,{status:'ready',path:uploaded.path});retries.current.delete(id);}
         }catch(failure){if(!controller.signal.aborted && alive.current)patch(id,{status:'error',error:failure instanceof Error?failure.message:'上传失败'});}
         finally {controllers.current.delete(id);}
       });
@@ -50,6 +53,7 @@ export function useConversationAttachments(sessionId:string) {
   function enqueueDirectory(name:string,read:(signal:AbortSignal)=>Promise<DirectoryFile[]>){
     setError('');if(current.current.length>=8){setError('每条消息最多支持 8 个附件');return;}
     const id=conversationClientId(),controller=new AbortController();controllers.current.set(id,controller);
+    retries.current.set(id,()=>enqueueDirectory(name,read));
     publish([...current.current,{id,name:name+'.zip',kind:'file',size:0,status:'packing',progress:0}]);
     queue.current=queue.current.catch(()=>{}).then(async()=>{
       if(controller.signal.aborted)return;
@@ -59,7 +63,7 @@ export function useConversationAttachments(sessionId:string) {
         if(file.size>35*1024*1024||current.current.filter(item=>item.id!==id).reduce((sum,item)=>sum+item.size,0)+file.size>50*1024*1024)throw Error('单个 ZIP 最多 35 MB，附件合计最多 50 MB');
         patch(id,{status:'uploading',size:file.size});
         const data=await readFileAsDataUrl(file,controller.signal),uploaded=await api.sessions.pasteFile(sessionId,data,file.name,controller.signal);
-        if(!controller.signal.aborted&&alive.current)patch(id,{status:'ready',path:uploaded.path});
+        if(!controller.signal.aborted&&alive.current){patch(id,{status:'ready',path:uploaded.path});retries.current.delete(id);}
       }catch(error){if(!controller.signal.aborted&&alive.current)patch(id,{status:'error',error:error instanceof Error?error.message:'目录打包或上传失败'});}
       finally{controllers.current.delete(id);}
     });
@@ -74,12 +78,13 @@ export function useConversationAttachments(sessionId:string) {
   function take(ids:string[]) {const selected=current.current.filter(item=>ids.includes(item.id));publish(current.current.filter(item=>!ids.includes(item.id)));return selected;}
   function restore(saved:DraftAttachment[]) {publish([...saved.filter(item=>!current.current.some(value=>value.id===item.id)),...current.current]);}
   function release(saved:DraftAttachment[]) {for(const item of saved)if(item.thumbnail&&!current.current.some(value=>value.id===item.id)){URL.revokeObjectURL(item.thumbnail);urls.current.delete(item.thumbnail);}}
-  return {items,error,enqueue,enqueueTransfer,remove,take,restore,release,hasDraft:()=>current.current.length>0,clear:(ids:string[])=>{for(const id of ids)remove(id);},uploading:items.some(item=>item.status==='uploading'||item.status==='packing'),failed:items.some(item=>item.status==='error'),values:()=>current.current.filter(item=>item.status==='ready' && item.path).map(item=>({kind:item.kind,name:item.name,path:item.path!})) as ConversationAttachment[]};
+  function retry(id:string,offset?:number){const index=current.current.findIndex(item=>item.id===id&&item.status==='error'),task=retries.current.get(id);if(index<0||!task)return;const previous=current.current[index],known=new Set(current.current.map(item=>item.id));remove(id);task();const replacement=current.current.find(item=>!known.has(item.id));if(replacement){const next=current.current.filter(item=>item.id!==replacement.id);next.splice(index,0,{...replacement,offset:offset??previous.offset});publish(next);}}
+  return {items,error,enqueue,enqueueTransfer,remove,retry,take,restore,release,hasDraft:()=>current.current.length>0,clear:(ids:string[])=>{for(const id of ids)remove(id);},uploading:items.some(item=>item.status==='uploading'||item.status==='packing'),failed:items.some(item=>item.status==='error'),values:()=>current.current.filter(item=>item.status==='ready' && item.path).map(item=>({kind:item.kind,name:item.name,path:item.path!})) as ConversationAttachment[]};
 }
 
-export function ConversationAttachmentPicker({disabled,onFiles}:{disabled:boolean;onFiles:(files:File[])=>void}) {
+export function ConversationAttachmentPicker({disabled,onFiles,label='对话'}:{label?:string;disabled:boolean;onFiles:(files:File[])=>void}) {
   const input=useRef<HTMLInputElement>(null),directory=useRef<HTMLInputElement>(null);
-  return <><input ref={input} type="file" multiple hidden aria-label="选择对话附件" disabled={disabled} onChange={event=>{onFiles(Array.from(event.target.files||[]));event.target.value='';}}/><input ref={directory} type="file" multiple hidden {...{webkitdirectory:''}} aria-label="选择对话目录" disabled={disabled} onChange={event=>{onFiles(Array.from(event.target.files||[]));event.target.value='';}}/><button type="button" className="session-chat-attach" aria-label="上传图片或文件" title="上传图片或文件，也可粘贴截图、拖入目录" disabled={disabled} onClick={()=>input.current?.click()}><Paperclip size={17}/></button><button type="button" className="session-chat-attach" aria-label="上传目录" title="选择目录，平台自动打包为 ZIP" disabled={disabled} onClick={()=>directory.current?.click()}><FolderOpen size={17}/></button></>;
+  return <><input ref={input} type="file" multiple hidden aria-label={`选择${label}附件`} disabled={disabled} onChange={event=>{onFiles(Array.from(event.target.files||[]));event.target.value='';}}/><input ref={directory} type="file" multiple hidden {...{webkitdirectory:''}} aria-label={`选择${label}目录`} disabled={disabled} onChange={event=>{onFiles(Array.from(event.target.files||[]));event.target.value='';}}/><button type="button" className="session-chat-attach" aria-label="上传图片或文件" title="上传图片或文件，也可粘贴截图、拖入目录" disabled={disabled} onClick={()=>input.current?.click()}><Paperclip size={17}/></button><button type="button" className="session-chat-attach" aria-label="上传目录" title="选择目录，平台自动打包为 ZIP" disabled={disabled} onClick={()=>directory.current?.click()}><FolderOpen size={17}/></button></>;
 }
 
 export function ConversationMessageAttachments({items,projectId,onOpenFile,projectPath,text}:{text?:string;items:ConversationAttachment[];projectId:string|null;projectPath?:string;onOpenFile?:(path:string)=>void}) {

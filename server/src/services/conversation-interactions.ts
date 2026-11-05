@@ -1,3 +1,4 @@
+import {formatConversationInput,type ConversationAnswerAttachments} from './conversation-attachments.js';
 /** Only native, explicitly identified human requests become interactive cards. */
 export interface ConversationQuestion {
   id:string;header:string;question:string;isOther:boolean;isSecret:boolean;
@@ -42,13 +43,18 @@ export function nativeInteractionAnswer(request:ConversationInteraction,params:a
     return {decision:value.decision};
   }
   if(!object(value.answers)||Object.keys(value.answers).length!==request.questions!.length)throw new Error('请回答全部问题');
+  const attached=value.attachments as ConversationAnswerAttachments|undefined;
+  if(attached&&(!object(attached)||Object.keys(attached).some(id=>!request.questions!.some(q=>q.id===id))))throw Error('回答附件不属于当前问题');
   const answers:Record<string,{answers:string[]}>=Object.create(null);
   for(const question of request.questions!) {
     const answer=value.answers[question.id];
     if(!object(answer)||!Array.isArray(answer.answers)||answer.answers.length!==1||typeof answer.answers[0]!=='string'||!answer.answers[0].trim()||Buffer.byteLength(answer.answers[0])>16000)throw new Error('请回答全部问题，每条回答不超过 16 KB');
     const selected=answer.answers[0];
     if(question.options?.length && !question.isOther && !question.options.some(option=>option.label===selected))throw new Error('请选择提供的选项');
-    answers[question.id]={answers:[selected]};
+    const files=attached?.[question.id]||[];
+    if(files.length&&(question.isSecret||question.options?.length&&!question.isOther))throw Error('此问题不支持附件，请使用自由回答');
+    const text=formatConversationInput(selected,files,true);if(Buffer.byteLength(text)>16000)throw Error('回答及附件引用超过 16 KB，请减少内容');
+    answers[question.id]={answers:[text]};
   }
   return {answers};
 }
@@ -75,7 +81,13 @@ export function conversationQuestionReply(text:string):{text:string;answers:Conv
   let value=text.trim();
   if(value.startsWith('# Context from my IDE setup:\n')) {const marker='\n## My request for Codex:\n',offset=value.lastIndexOf(marker);if(offset<0)return;value=value.slice(offset+marker.length).trim();}
   const start='<send_user_message_question_reply>',end='</send_user_message_question_reply>';
-  if(!value.startsWith(start)||!value.endsWith(end))return;
+  if(!value.startsWith(start))return;
+  const boundary=value.lastIndexOf(end);if(boundary<start.length)return;
+  // Native image spans and file references are appended to the user input.
+  // Keep resolving the original question, but reject arbitrary trailing text.
+  const suffix=value.slice(boundary+end.length).trim();
+  if(suffix&&!/^(?:\[Image #\d+\]\s*)*(?:附件：\n(?:- [^\r\n]+: \/[^\r\n]+(?:\n|$)){1,8})?$/.test(suffix))return;
+  value=value.slice(0,boundary+end.length);
   try {
     const parsed=JSON.parse(value.slice(start.length,-end.length)),items=Array.isArray(parsed)?parsed:[parsed];
     if(!items.length||items.length>20)return;

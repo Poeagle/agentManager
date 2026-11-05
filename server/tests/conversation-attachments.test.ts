@@ -3,7 +3,7 @@ import {mkdirSync,writeFileSync,truncateSync,symlinkSync} from 'fs';
 import {join} from 'path';
 import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
-import {conversationImagePaths,decorateConversationAttachments,rememberConversationAttachments,nativeConversationInput,formatConversationInput,validateConversationAttachments} from '../src/services/conversation-attachments.js';
+import {conversationImagePaths,decorateConversationAttachments,rememberConversationAttachments,nativeConversationInput,formatConversationInput,validateConversationAttachments,validateConversationAnswerAttachments} from '../src/services/conversation-attachments.js';
 let cleanup:()=>void,root:string,directory:string;
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9hZsEAAAAASUVORK5CYII=','base64');
 beforeEach(()=>{
@@ -13,6 +13,12 @@ beforeEach(()=>{
 });
 afterEach(()=>cleanup());
 describe('conversation attachment validation',()=>{
+  it('validates answer attachments across question groups with the same path and total-count rules',async()=>{
+    const file={kind:'file',name:'report.txt',path:join(directory,'note.txt')};
+    expect(await validateConversationAnswerAttachments('s',{question:[file]})).toEqual({question:[file]});
+    await expect(validateConversationAnswerAttachments('s',{one:Array(5).fill(file),two:Array(4).fill(file)})).rejects.toThrow('最多支持 8');
+    await expect(validateConversationAnswerAttachments('s',{question:[{...file,path:'/etc/passwd'}]})).rejects.toThrow('附件不可用');
+  });
   it('accepts uploaded image and file paths and preserves an attachment-only message',async()=>{
     const items=await validateConversationAttachments('s',[{kind:'image',name:'截图.png',path:join(directory,'image.png')},{kind:'file',name:'note.txt',path:join(directory,'note.txt')}]);
     expect(items).toHaveLength(2);expect(formatConversationInput('',items)).toContain('请查看附件。');expect(formatConversationInput('看附件',items)).toContain('note.txt');expect(formatConversationInput('plain',[])).toBe('plain');

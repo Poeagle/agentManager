@@ -48,6 +48,35 @@ describe('immediate session input',()=>{
       finally{await new Promise<void>(resolve=>{socket.once('close',()=>resolve());socket.close();});}
     }
   });
+  it('preserves native event sequence numbers when file and native usage counters coincide',async()=>{
+    getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();
+    let nativeEmit!:(frame:any)=>void,fileEmit!:(frame:any)=>void;
+    vi.spyOn(conversation,'observeCodexConversation').mockImplementation((_native,emit)=>{nativeEmit=emit;return Object.assign(vi.fn(),{respond:vi.fn()});});
+    vi.spyOn(fileStream,'observeConversationFile').mockImplementation((_binding,emit)=>{fileEmit=emit;return vi.fn();});
+    const received:any[]=[],socket=await app.injectWS('/api/sessions/own/conversation/stream?protocol=2',{headers:{cookie}},{onInit:ws=>ws.on('message',bytes=>received.push(JSON.parse(bytes.toString())))});
+    try {
+      await vi.waitFor(()=>expect(nativeEmit).toBeTypeOf('function'));
+      const state={type:'snapshot',messages:[],interactions:[],activities:[],compaction:null,busy:true,connected:true,turn_id:'turn',started_at:null,completed_at:null,stage:'answering'};
+      nativeEmit(state);
+      const usage={type:'usage',native_id:'native',usage:{total:null,last:null,window:40000},observed_at:new Date().toISOString()};
+      fileEmit(usage);nativeEmit(usage);nativeEmit({type:'patch',upserts:[],deltas:[],state:{...state,busy:false,stage:'idle'}});fileEmit(usage);
+      await vi.waitFor(()=>expect(received.some(frame=>frame.type==='patch')).toBe(true));
+      expect(received.filter(frame=>frame.stream_id).map(frame=>frame.stream_seq)).toEqual([1,2,3]);
+      expect(received.filter(frame=>frame.type==='usage'&&!frame.stream_id)).toHaveLength(1);
+    }finally{await new Promise<void>(resolve=>{socket.once('close',()=>resolve());socket.close();});}
+  });
+  it('acknowledges an async provider response only after acceptance and reports rejection',async()=>{
+    getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();
+    let resolve!:()=>void;const respond=vi.fn().mockImplementationOnce(()=>new Promise<void>(done=>{resolve=done;})).mockRejectedValueOnce(new Error('Agent 拒绝回答'));
+    vi.spyOn(conversation,'observeCodexConversation').mockReturnValue(Object.assign(vi.fn(),{respond}));vi.spyOn(fileStream,'observeConversationFile').mockReturnValue(vi.fn());
+    const received:any[]=[],socket=await app.injectWS('/api/sessions/own/conversation/stream',{headers:{cookie}},{onInit:ws=>ws.on('message',bytes=>received.push(JSON.parse(bytes.toString())))});
+    try {
+      await vi.waitFor(()=>expect(conversation.observeCodexConversation).toHaveBeenCalled());socket.send(JSON.stringify({type:'interaction_response',request_id:'q',answer:{answers:{q:{answers:['answer']}}}}));
+      await vi.waitFor(()=>expect(respond).toHaveBeenCalledOnce());expect(received.filter(frame=>frame.type==='interaction_result')).toEqual([]);
+      resolve();await vi.waitFor(()=>expect(received.at(-1)).toMatchObject({ok:true,request_id:'q'}));
+      socket.send(JSON.stringify({type:'interaction_response',request_id:'next',answer:{}}));await vi.waitFor(()=>expect(received.at(-1)).toMatchObject({ok:false,request_id:'next',error:'Agent 拒绝回答'}));
+    }finally{await new Promise<void>(done=>{socket.once('close',()=>done());socket.close();});}
+  });
   it('reattaches before sending when the server restarted after the last browser snapshot',async()=>{
     vi.mocked(manager.isSessionActive).mockReturnValue(false);getDb().prepare("UPDATE sessions SET status='detached' WHERE id='own'").run();
     const reconnect=vi.spyOn(manager,'reconnectSession').mockResolvedValue(true);

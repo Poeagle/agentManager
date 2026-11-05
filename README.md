@@ -212,6 +212,14 @@ Browser and native connections use heartbeats; online and visibility changes
 also recover stale connections. Healthy file observers do not poll; missing or
 failed observers retry with backoff independently of native lifecycle events.
 
+Question answer fields support pasted images/files, attachment previews and
+upload retries through the same uploader as the main composer. Uploaded drafts
+survive minimizing the question or reloading; an answer and its attachments are
+submitted together without clearing a separate composer draft. The entire answer
+group shares the usual 8-file, 10 MB image and 50 MB total limits. Async replies
+use native attachment input. Text-only blocking question protocols receive
+validated file references; adapters with richer protocols may map them directly.
+
 New Codex conversations with valid native metadata show green **Ready** until
 their first turn. Unanswered asynchronous questions show yellow attention even
 after a turn ends, or while the agent continues working. **Ignore all** removes

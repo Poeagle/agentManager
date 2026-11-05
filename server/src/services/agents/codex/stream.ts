@@ -1,4 +1,5 @@
 import {readCodexBaseline,markOversizedBaseline} from './baseline.js';
+import {readCodexQueue} from './queue.js';
 import WebSocket from 'ws';
 import {nativeInteraction,nativeInteractionAnswer,conversationAsyncQuestions,conversationQuestionReply,type ConversationInteraction} from '../../conversation-interactions.js';
 import {homedir} from 'os';
@@ -110,7 +111,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
     if(current.thread?.status?.type==='notLoaded')return false;
     const input=nativeConversationInput(text,attachments);
     const queue=async()=>{
-      const existing=await request('thread/queue/list',{threadId,limit:100});
+      const existing=await readCodexQueue(request,threadId);
       if(existing.data?.some((entry:any)=>entry.clientUserMessageId===identity))return 'queued' as const;
       await request('thread/queue/add',{threadId,clientUserMessageId:identity,input});
       return 'queued' as const;
@@ -155,6 +156,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   let lastUsageFingerprint:string|undefined;
   let full=true,lastState='';const publicItems=new Map<string,string>();const dirty=new Set<string>(),deltas=new Map<string,{id:string;offset:number;text:string}>();
   function snapshot() {
+    clearTimeout(flush);
     flush=undefined;
     if(!closed&&(busy||finishedState!=='unknown'))setLiveCodexRuntime(threadId,runtimeSource,[...interactions.values()].some(entry=>entry.card.blocking&&!entry.card.submitted)?'waiting_for_input':busy?'running':finishedState);
     if(closed)return;
@@ -209,12 +211,13 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(activities.size>8)activities.delete(activities.keys().next().value!);
     changed();
   }
-  let queueRevision=0;
+  let queueReading=false,queueAgain=false;
   async function readQueue(){
-    const version=++queueRevision;
+    if(queueReading){queueAgain=true;return;}queueReading=true;
+    try{do{queueAgain=false;
     try{
-      const result=await request('thread/queue/list',{threadId,limit:100});
-      if(closed||version!==queueRevision)return;
+      const result=await readCodexQueue(request,threadId);
+      if(closed)return;if(queueAgain)continue;
       const messages:ConversationMessage[]=(result.data||[]).filter((item:any)=>typeof item.clientUserMessageId==='string'&&Array.isArray(item.input)).map((item:any)=>{
         const rawText=extractAgentMessages([{type:'response_item',payload:{type:'message',role:'user',content:item.input.filter((part:any)=>part.type==='text').map((part:any)=>({type:'input_text',text:part.text}))}}],'codex',128*1024)[0]?.text||'';
         const reply=conversationQuestionReply(rawText);
@@ -223,6 +226,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       });
       syncQueuedCodexQuestionReplies(threadId,messages);emit({type:'queue',messages});
     }catch{/* Older native servers may not expose queued submissions. */}
+    }while(queueAgain&&!closed);}finally{queueReading=false;}
   }
   function acceptItem(item:any,turnId:string,streaming:boolean,timestamp?:number|null) {
     if(!['agentMessage','userMessage'].includes(item?.type)||typeof item.id!=='string'||typeof turnId!=='string') return;
@@ -260,22 +264,31 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       const baseline=await readCodexBaseline(request,threadId);
       if(closed) return;
       for(const turn of baseline.data||[]) {
-        if(revision!==baselineRevision && ((turnId && turnId!==turn.id) || (busy && turn.status!=='inProgress'))) continue;
+        const newer=revision!==baselineRevision;
+        if(newer&&turnId&&turnId!==turn.id)continue;
         const sameTurn=turnId===turn.id;
-        busy=turn.status==='inProgress';
-        if(!busy)finishedState=turn.status==='failed'?'failed':turn.status==='interrupted'?'interrupted':'idle';
-        turnId=turn.id;startedAt=typeof turn.startedAt==='number'?new Date(turn.startedAt*1000).toISOString():null;
-        completedAt=typeof turn.completedAt==='number'?new Date(turn.completedAt*1000).toISOString():null;
-        if(!busy)stage='idle';else if(!sameTurn || stage==='idle')stage='waiting';
-        if(busy) for(const item of turn.items||[]) {
-          acceptActivity(item.type==='contextCompaction'&&(turn.items||[]).length===1&&typeof turn.startedAt==='number'?{...item,startedAtMs:turn.startedAt*1000}:item,['completed','failed','declined'].includes(item.status) || typeof item.completedAtMs==='number' || item.type==='contextCompaction'&&item!==(turn.items||[]).at(-1),true);
-          const streaming=item===(turn.items||[]).at(-1) && item.type==='agentMessage' && !item.completedAtMs;
+        if(!newer){
+          busy=turn.status==='inProgress';
+          if(!busy)finishedState=turn.status==='failed'?'failed':turn.status==='interrupted'?'interrupted':'idle';
+          turnId=turn.id;startedAt=typeof turn.startedAt==='number'?new Date(turn.startedAt*1000).toISOString():null;
+          completedAt=typeof turn.completedAt==='number'?new Date(turn.completedAt*1000).toISOString():null;
+          if(!busy)stage='idle';else if(!sameTurn || stage==='idle')stage='waiting';
+        }
+        // A recovery response is an older prefix. It may fill missing items,
+        // but cannot replace text, activities or completion already seen live.
+        if(busy||newer) for(const item of turn.items||[]) {
+          if(newer&&(items.has(item.id)||activities.has(item.id)))continue;
+          if(!newer){
+            acceptActivity(item.type==='contextCompaction'&&(turn.items||[]).length===1&&typeof turn.startedAt==='number'?{...item,startedAtMs:turn.startedAt*1000}:item,['completed','failed','declined'].includes(item.status) || typeof item.completedAtMs==='number' || item.type==='contextCompaction'&&item!==(turn.items||[]).at(-1),true);
+          }
+          const streaming=!newer&&item===(turn.items||[]).at(-1) && item.type==='agentMessage' && !item.completedAtMs;
           acceptItem(item,turn.id,streaming,!streaming&&item.type==='agentMessage'?(typeof item.completedAtMs==='number'?item.completedAtMs:null):typeof item.startedAtMs==='number'?item.startedAtMs:typeof item.completedAtMs==='number'?item.completedAtMs:null);
+          if(newer)continue;
           if(item.type==='agentMessage' && item.text?.length) stage=streaming?'answering':item.phase==='final_answer'?'finishing':'tools';
           else if(['commandExecution','mcpToolCall','dynamicToolCall','fileChange','webSearch','contextCompaction'].includes(item.type))stage='tools';
         }
-        if(!busy)for(const item of turn.items||[])if(item.type==='contextCompaction'){acceptActivity(item,true,true);if(compaction&&turn.status==='interrupted')compaction={...compaction,status:'interrupted'};}
-        if(turn.error)reportError(turn.id,turn.error,false,typeof turn.completedAt==='number'?new Date(turn.completedAt*1000).toISOString():null);
+        if(!busy&&!newer)for(const item of turn.items||[])if(item.type==='contextCompaction'){acceptActivity(item,true,true);if(compaction&&turn.status==='interrupted')compaction={...compaction,status:'interrupted'};}
+        if(turn.error&&!newer)reportError(turn.id,turn.error,false,typeof turn.completedAt==='number'?new Date(turn.completedAt*1000).toISOString():null);
         // The baseline is an ordered prefix; fresh events may already have
         // inserted later items while the request was in flight.
         const ordered=new Map<string,{message:ConversationMessage;phase:string|null}>();
@@ -339,6 +352,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       if(!items.has(data.itemId)&&typeof data.turnId==='string')acceptItem({type:'agentMessage',id:data.itemId,text:''},data.turnId,true);
       const item=items.get(data.itemId);
       if(item){const offset=item.message.text.length,text=data.delta.slice(0,Math.max(0,128*1024-offset));
+        if(!text.length)return;
         item.message={...item.message,text:item.message.text+text,streaming:true};
         if(offset===0)dirty.add(item.message.id); // Empty starts are omitted from public frames; seed the first visible text.
         const pending=deltas.get(item.message.id);deltas.set(item.message.id,{id:item.message.id,offset:pending?.offset??offset,text:(pending?.text||'')+text});

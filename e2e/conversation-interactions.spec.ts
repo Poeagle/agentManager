@@ -32,12 +32,13 @@ test('native questions and approvals survive refresh and submit through the actu
     await page.goto('/');const card=page.getByRole('region',{name:'Agent 需要你的回答'}).filter({visible:true});const submit=card.getByRole('button',{name:'提交回答'});
     await expect(card).toBeVisible();await expect(submit).toBeDisabled();await expect(page.getByRole('textbox',{name:'发送给当前 Agent 的消息'}).filter({visible:true})).toBeDisabled();
     await card.getByRole('radio',{name:/试用/}).check();await card.getByRole('textbox',{name:'补充说明'}).fill('刷新后仍保留');
-    const beforeDisconnect=resumes;for(const client of wss.clients)client.terminate();await expect.poll(()=>resumes).toBeGreaterThan(beforeDisconnect);await expect(card.getByRole('textbox',{name:'补充说明'})).toHaveValue('刷新后仍保留');
-    await page.reload();await expect(card.getByRole('radio',{name:/试用/})).toBeChecked();await expect(card.getByRole('textbox',{name:'补充说明'})).toHaveValue('刷新后仍保留');
+    const beforeDisconnect=resumes;for(const client of wss.clients)client.terminate();await expect.poll(()=>resumes).toBeGreaterThan(beforeDisconnect);await expect(card.getByRole('textbox',{name:'补充说明'})).toHaveText('刷新后仍保留');
+    await page.reload();await expect(card.getByRole('radio',{name:/试用/})).toBeChecked();await expect(card.getByRole('textbox',{name:'补充说明'})).toHaveText('刷新后仍保留');
+    await card.getByLabel('选择回答附件').setInputFiles({name:'evidence.txt',mimeType:'text/plain',buffer:Buffer.from('test evidence')});await expect(card.locator('[data-attachment-id][data-status="ready"]')).toHaveCount(1);
     await expect(submit).toBeInViewport();
     await page.setViewportSize({width:390,height:844});await expect(submit).toBeInViewport();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:testInfo.outputPath('native-question-mobile.png')});await page.setViewportSize({width:1280,height:720});
     await page.screenshot({path:testInfo.outputPath('native-question.png')});
-    await submit.click();await expect(card).toHaveCount(0);expect(answers).toEqual([{id:3,result:{answers:{scope:{answers:['试用（推荐）']},note:{answers:['刷新后仍保留']}}}}]);
+    await submit.click();await expect(card).toHaveCount(0);expect(answers).toEqual([{id:3,result:{answers:{scope:{answers:['试用（推荐）']},note:{answers:[expect.stringMatching(/^刷新后仍保留\n\n附件：\n- evidence\.txt: .*\/\.agentmanager\/pastes\//)]}}}}]);
     // Already answered native requests disappear again after browser refresh.
     await page.reload();await expect(page.getByText('事件通道已连接').filter({visible:true})).toBeVisible();await expect(card).toHaveCount(0);
     pending={id:'permission',method:'item/commandExecution/requestApproval',params:{threadId:native,turnId:'turn',itemId:'exec',reason:'验证构建结果',command:'npm run build',cwd:'/preview'}};

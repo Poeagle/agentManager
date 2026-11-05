@@ -6,7 +6,7 @@ import {join} from 'path';
 const require=createRequire(import.meta.url),{WebSocketServer}=require('../server/node_modules/ws'),Database=require('../server/node_modules/better-sqlite3');
 
 for(const format of ['item_completed','agent_message'] as const) test(`Codex async ${format} becomes a choice card and collapses after its native answer`,async({page},testInfo)=>{
-  const root=join(process.cwd(),'.test-data/e2e'),native='019ff001-5555-7555-8555-555555555555';
+  const root=join(process.cwd(),'.test-data/e2e'),native=format==='item_completed'?'019ff001-5555-7555-8555-555555555555':'019ff001-5555-7555-8555-555555555556';
   const logDir=join(root,'home/.codex/sessions');mkdirSync(logDir,{recursive:true});const log=join(logDir,`rollout-${native}.jsonl`);
   const record=(type:string,payload:unknown)=>JSON.stringify({type,timestamp:new Date().toISOString(),payload})+'\n';
   // This is the exact item shape emitted by the real request_user_input_async

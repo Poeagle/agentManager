@@ -24,7 +24,7 @@ import {randomUUID} from 'crypto';
 import {readConversation} from '../services/conversation-reader.js';
 
 import {personalQuestionRuntime} from '../services/question-attention.js';
-import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,validateConversationAttachments} from '../services/conversation-attachments.js';
+import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,validateConversationAttachments,validateConversationAnswerAttachments} from '../services/conversation-attachments.js';
 import {observeConversationFile} from '../services/conversation-file-stream.js';
 import {ConversationRetryManager} from '../services/conversation-retry.js';
 
@@ -758,7 +758,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       if(frame.type==='history'&&frame.runtime)frame={...frame,runtime:personalQuestionRuntime(frame.runtime,req.user!.id)};
       if(frame.type==='usage') {
         const fingerprint=JSON.stringify([frame.native_id,frame.usage]);
-        if(fingerprint===lastUsageFingerprint)return;
+        // Tagged events form a contiguous delivery sequence. Dropping a native
+        // duplicate here makes the browser reconnect as if text had been lost.
+        if(fingerprint===lastUsageFingerprint&&!frame.stream_id)return;
         lastUsageFingerprint=fingerprint;
       }
       if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(frame.type==='patch'?{...frame,upserts:decorateConversationAttachments(id,linkConversationInputs(id,nativeId,frame.upserts))}:['snapshot','history','queue'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,linkConversationInputs(id,nativeId,frame.messages))}:frame));
@@ -771,13 +773,19 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       send(frame);
       if(frame.type==='unavailable'&&frame.reconnect&&socket.readyState===1)socket.close(1012,'Native connection lost');
     },(turnId,error,willRetry)=>retries.failure(id,req.user!.id,nativeId,turnId,error,willRetry),req.query.protocol==='2'?'incremental':'snapshot');
-    socket.on('message',bytes=>{
+    socket.on('message',async bytes=>{
       let frame:any;try{const raw=bytes.toString();if(Buffer.byteLength(raw)>64*1024){socket.close(1009,'Interaction response too large');return;}frame=JSON.parse(raw);}catch{return;}
       if(frame?.type!=='interaction_response'||typeof frame.request_id!=='string')return;
       let error:string|undefined;
       try {
-        if(getSessionUser(readSessionCookie(req)||'')?.id!==req.user!.id||!canAccessAgentSession(req.user!.id,id)||!userHasPermission(req.user!.id,'agent_api','write'))throw new Error('当前账号没有处理该会话交互的权限');
-        stop.respond(frame.request_id,frame.answer);
+        const authorize=()=>{if(getSessionUser(readSessionCookie(req)||'')?.id!==req.user!.id||!canAccessAgentSession(req.user!.id,id)||!userHasPermission(req.user!.id,'agent_api','write'))throw new Error('当前账号没有处理该会话交互的权限');};
+        authorize();let answer=frame.answer;
+        if(frame.attachments!==undefined){
+          if(!adapter.descriptor.capabilities.attachments)throw Error('此 Agent 不支持附件');
+          const attachments=await validateConversationAnswerAttachments(id,frame.attachments);authorize();
+          if(!answer||typeof answer!=='object'||Array.isArray(answer))throw Error('回答格式无效');answer={...answer,attachments};
+        }
+        await stop.respond(frame.request_id,answer);
       }catch(failure){error=failure instanceof Error?failure.message:'交互提交失败';}
       if(socket.readyState===1)socket.send(JSON.stringify({type:'interaction_result',request_id:frame.request_id,ok:!error,...(error?{error}:{})}));
     });

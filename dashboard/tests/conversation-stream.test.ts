@@ -17,4 +17,10 @@ describe('conversation incremental delivery',()=>{
   const draft:TimelineMessage={id:'local',role:'user',text:'unsent',timestamp:null,optimistic:{afterSequence:1}};
   const result=applyConversationPatches([draft],[{type:'patch',upserts:[],deltas:[{id:'unknown',offset:20,text:'tail'}]}]);expect(result.needsSync).toBe(true);expect(result.messages).toEqual([draft]);
  });
+ it('rebuilds indexes only across structural updates, preserving aliases and completed items through a batch',()=>{
+  const old:TimelineMessage={id:'old',role:'assistant',text:'unchanged',timestamp:null},live:TimelineMessage={id:'persisted',aliases:['native'],role:'assistant',text:'A',timestamp:null,streaming:true};
+  const result=applyConversationPatches([old,live],[{type:'patch',upserts:[],deltas:[{id:'native',offset:1,text:'B'}]},{type:'patch',upserts:[{id:'new',role:'assistant',text:'X',timestamp:null,streaming:true}],deltas:[]},{type:'patch',upserts:[],deltas:[{id:'new',offset:1,text:'Y'},{id:'native',offset:2,text:'C'}]}]);
+  expect(result.needsSync).toBe(false);expect(result.messages.map(item=>item.text)).toEqual(['unchanged','ABC','XY']);expect(result.messages[0]).toBe(old);
+  const empty=applyConversationPatches([old],[{type:'patch',upserts:[],deltas:[{id:'old',offset:9,text:''}]}]);expect(empty.messages).toBeDefined();expect(empty.messages[0]).toBe(old);
+ });
 });

@@ -11,12 +11,13 @@ import {ConversationControls} from './ConversationControls';
 import {ConversationAutomaticContext} from './ConversationAutomaticContext';
 import {automaticConversationContext} from '../lib/conversation-context';
 import {ConversationInteraction,ConversationAsyncQuestion,ConversationQuestionSummary,type ConversationInteractionRequest} from './ConversationInteraction';
+import type {QuestionAttachmentMap} from './ConversationQuestionEditor';
 import {memo,useCallback,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {AlertTriangle,ArrowDown,ArrowUp,Check,Copy,Loader2,Sparkles,ChevronDown} from 'lucide-react';
 import {api,ApiError,type ConversationMessage,type ConversationPage,type ConversationControlsData,type ConversationUsageUpdate,type ConversationStatistics,type Session} from '../lib/api';
 import {decodeQuestionReply,questionAnswers,questionReplyState,pendingConversationQuestions,questionReplyDisplayText} from '../lib/conversation-question-reply';
-import {parseConversationInput} from '../lib/conversation-attachments';
+import {parseConversationInput,type ConversationAttachment} from '../lib/conversation-attachments';
 import {ConversationAttachmentPicker,ConversationMessageAttachments,useConversationAttachments,type DraftAttachment} from './ConversationAttachments';
 import {ConversationMarkdown} from './ConversationMarkdown';
 import {ConversationWidthHandles,ConversationNavigator} from './ConversationReadingTools';
@@ -165,11 +166,12 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   useEffect(()=>{
     cursor.current=undefined;generation.current=null;pushAvailable.current=false;
     reconnectAttempted.current=false;setReconnectError('');
-    setMessages([]);setStatistics([]);setPage(null);setRequests([]);setHasMore(false);setLoading(true);setLiveBusy(false);
+    setMessages([]);setStatistics([]);setPage(null);setRequests([]);setHasMore(false);setLoading(true);setLiveBusy(false);setLiveState('connecting');setLiveRetrying(false);setLiveReason('');
     setLiveProgress({turn_id:null,started_at:null,stage:'idle'});setMinimizedQuestion(null);setUnread(false);setError('');
     for(const answer of pendingAnswers.current.values()){clearTimeout(answer.timer);answer.reject(Error('会话已切换'));}pendingAnswers.current.clear();
   },[agentNativeId(session),session.claude_session_id]);
   const ended=['completed','failed','cancelled'].includes(session.status);
+  const observingStream=active&&canRead&&!ended&&agentSupports(session,'stream')&&!!page?.native_id&&page.native_id===agentNativeId(session);
   const reconnectable=!!page&&!page.session_active&&!ended&&['running','detached'].includes(page.session_status);
   async function reconnect() {
     if(reconnectLock.current)return;
@@ -235,7 +237,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
 
   useEffect(()=>{
     if(!active || !canRead || !agentSupports(session,'stream') || !page?.native_id || page.native_id!==agentNativeId(session) || ended) return;
-    let disposed=false;const settledIds=new Set<string>();let socket:WebSocket;let retry:ReturnType<typeof setTimeout>;let raf:number|undefined;let pending:ConversationPatch[]=[];let pendingBytes=0,lastMessageAt=Date.now();let delivery=new ConversationStreamCursor(),resyncScheduled=false,failures=0;
+    let disposed=false;const settledIds=new Set<string>();let socket:WebSocket;let retry:ReturnType<typeof setTimeout>;let raf:number|undefined;let pending:ConversationPatch[]=[];let pendingBytes=0,lastMessageAt=performance.now();let delivery=new ConversationStreamCursor(),resyncScheduled=false,failures=0;
     const flushPatches=()=>{if(raf!==undefined)cancelAnimationFrame(raf);raf=undefined;if(!pending.length||disposed)return;const batch=pending;pending=[];pendingBytes=0;
       setMessages(previous=>{const result=applyConversationPatches(previous,batch);timelineRef.current=result.messages;if(result.needsSync&&!resyncScheduled){resyncScheduled=true;queueMicrotask(()=>{if(!disposed){setRefresh(value=>value+1);ensureFresh(true);}});}return result.messages;});
       if(pinned.current)requestAnimationFrame(()=>{if(!disposed)scrollBottom();});else setUnread(true);
@@ -248,13 +250,13 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     };
     const connect=()=>{
       if(disposed) return;
-      setLiveState('connecting');lastMessageAt=Date.now();delivery=new ConversationStreamCursor();resyncScheduled=false;
+      setLiveState('connecting');lastMessageAt=performance.now();delivery=new ConversationStreamCursor();resyncScheduled=false;
       socket=new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/api/sessions/${encodeURIComponent(session.id)}/conversation/stream?protocol=2`);
       const current=socket;liveSocket.current=current;
-      current.onopen=()=>{if(!disposed&&liveSocket.current===current){lastMessageAt=Date.now();setRefresh(value=>value+1);}};
+      current.onopen=()=>{if(!disposed&&liveSocket.current===current){lastMessageAt=performance.now();setRefresh(value=>value+1);}};
       setConnectionGeneration(value=>value+1);
       socket.onmessage=event=>{
-        if(disposed||liveSocket.current!==current)return;lastMessageAt=Date.now();
+        if(disposed||liveSocket.current!==current)return;lastMessageAt=performance.now();
         let frame:{type:string;stream_id?:string;stream_seq?:number;baseline?:boolean;retrying?:boolean;reason?:string;upserts?:ConversationMessage[];deltas?:ConversationPatch['deltas'];state?:Parameters<typeof observeState>[0];model?:string;effort?:string|null;native_id?:string;usage?:ConversationUsageUpdate['usage'];statistics?:ConversationStatistics[];retry?:ConversationRetry;observed_at?:string;messages?:ConversationMessage[];runtime?:ConversationPage['runtime'];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string;compaction?:NativeCompaction|null}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
         if(frame.type==='heartbeat')return;
         const order=delivery.observe(frame);if(order==='ignore')return;if(order==='resync'){setRefresh(value=>value+1);ensureFresh(true);return;}
@@ -295,10 +297,10 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
           if(settled.length) setRefresh(value=>value+1);
         }
       };
-      socket.onclose=()=>{if(!disposed&&liveSocket.current===current){flushPatches();pushAvailable.current=false;liveSocket.current=null;for(const pending of pendingAnswers.current.values()){clearTimeout(pending.timer);pending.reject(new Error('连接已断开，请重连核对请求状态'));}pendingAnswers.current.clear();setLiveState('unavailable');setLiveBusy(false);compaction.disconnected();retry=setTimeout(connect,Math.min(15000,500*2**Math.min(failures++,5))+Math.floor(Math.random()*250));}};
+      socket.onclose=()=>{if(!disposed&&liveSocket.current===current){flushPatches();pushAvailable.current=false;liveSocket.current=null;for(const pending of pendingAnswers.current.values()){clearTimeout(pending.timer);pending.reject(new Error('连接已断开，请重连核对请求状态'));}pendingAnswers.current.clear();setLiveState('unavailable');setLiveRetrying(true);setLiveReason('连接中断，正在自动重连并补齐消息');setLiveBusy(false);compaction.disconnected();retry=setTimeout(connect,Math.min(15000,500*2**Math.min(failures++,5))+Math.floor(Math.random()*250));}};
       socket.onerror=()=>current.close();
     };
-    const ensureFresh=(force=false)=>{if(disposed)return;const current=liveSocket.current;if(force||Date.now()-lastMessageAt>60000){flushPatches();liveSocket.current=null;current?.close();for(const answer of pendingAnswers.current.values()){clearTimeout(answer.timer);answer.reject(new Error('连接正在恢复，请重连核对请求状态'));}pendingAnswers.current.clear();clearTimeout(retry);failures=0;connect();}};
+    const ensureFresh=(force=false)=>{if(disposed)return;const current=liveSocket.current;if(force||performance.now()-lastMessageAt>60000){flushPatches();liveSocket.current=null;current?.close();for(const answer of pendingAnswers.current.values()){clearTimeout(answer.timer);answer.reject(new Error('连接正在恢复，请重连核对请求状态'));}pendingAnswers.current.clear();clearTimeout(retry);failures=0;connect();}};
     const online=()=>ensureFresh(true),visible=()=>{if(document.visibilityState==='visible')ensureFresh();};
     const watchdog=setInterval(()=>ensureFresh(),10000);window.addEventListener('online',online);document.addEventListener('visibilitychange',visible);
     connect();
@@ -322,20 +324,20 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const nativeStateKnown=agentSupports(session,'runtime') && !!page?.runtime && page.runtime.state!=='unknown';
   const needsAction=(!nativeStateKnown || page?.runtime?.state==='waiting_for_input') && !!interaction && interaction.processState==='waiting_for_input' && (interaction.isPermission || interaction.promptType==='choice' || interaction.promptType==='confirmation');
   const waiting=requests.length?requests.some(request=>request.blocking):needsAction || page?.runtime?.state==='waiting_for_input';
-  function answerRequest(id:string,answer:unknown):Promise<void> {
+  function answerRequest(id:string,answer:unknown,attachments?:QuestionAttachmentMap):Promise<void> {
     const socket=liveSocket.current;
     if(!canSend||!socket||socket.readyState!==1)return Promise.reject(new Error('当前连接不可提交，请重新连接后处理'));
     if(pendingAnswers.current.has(id))return Promise.reject(new Error('该回答正在提交'));
     return new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>{pendingAnswers.current.delete(id);reject(new Error('未收到提交确认，请重连核对请求状态后再处理'));},10000);
       pendingAnswers.current.set(id,{resolve,reject,timer});
-      try {socket.send(JSON.stringify({type:'interaction_response',request_id:id,answer}));}catch {clearTimeout(timer);pendingAnswers.current.delete(id);reject(new Error('连接已断开'));}
+      try {socket.send(JSON.stringify({type:'interaction_response',request_id:id,answer,...attachments?{attachments}:{}}));}catch {clearTimeout(timer);pendingAnswers.current.delete(id);reject(new Error('连接已断开'));}
     });
   }
-  async function send(questionReply?:string) {
+  async function send(questionReply?:string,questionAttachments:ConversationAttachment[]=[]) {
     const fromQuestion=questionReply!==undefined;
     const text=questionReply??draftRef.current;
-    const positions=attachmentPositions.current?.();const attached=fromQuestion?[]:attachments.values().map((item,index)=>({...item,offset:positions?.get(attachments.items.filter(entry=>entry.status==='ready'&&entry.path)[index]?.id)??text.length}));
+    const positions=attachmentPositions.current?.();const attached=fromQuestion?questionAttachments:attachments.values().map((item,index)=>({...item,offset:positions?.get(attachments.items.filter(entry=>entry.status==='ready'&&entry.path)[index]?.id)??text.length}));
     if((!text.trim() && !attached.length) || !fromQuestion&&(attachments.uploading || attachments.failed) || sendingRef.current || !canSend || !page?.session_active || ended || waiting) {if(fromQuestion)throw new Error('当前无法提交回答，请等待会话就绪或完成其他交互');return;}
     let terminalDraft=false;
     window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId:session.id,respond:(value:boolean)=>{terminalDraft ||= value;}}}));
@@ -423,7 +425,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     }catch(error){setIgnoreError(error instanceof Error?error.message:'忽略失败，请重试');}
     finally{setIgnoringQuestions(false);}
   }
-  async function cancelRetry(){const response=await fetch(`/api/sessions/${encodeURIComponent(session.id)}/conversation/retry/cancel`,{method:'POST'});if(!response.ok)throw new Error('停止重试失败，请重试');}
+  const cancelRetry=useCallback(async()=>{const response=await fetch(`/api/sessions/${encodeURIComponent(session.id)}/conversation/retry/cancel`,{method:'POST'});if(!response.ok)throw new Error('停止重试失败，请重试');},[session.id]);
   const bubble=(message:ConversationMessage,compact=false)=>message.async_questions?.length?<ConversationQuestionSummary key={message.id} message={message} state={questionReplyState(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1),page?.runtime?.submitted_question_ids)} answers={questionAnswers(message,messages.slice(messages.findIndex(item=>item.id===message.id)+1))} onAnswer={()=>{setSelectedQuestion(message.id);setMinimizedQuestion(null);}}/>:<Bubble key={message.id} message={message} streaming={message.id===streamingId} retrying={message.id===activeError?.id && !!busy && !!message.error?.will_retry} autoRetry={Object.values(autoRetries).find(retry=>retry.failed_turn_ids.includes(message.turn_id||''))} onCancelRetry={canSend?cancelRetry:undefined} compact={compact} durationLabel={timings.get(message.id)?.label} durationTitle={timings.get(message.id)?.title} agentName={agentName} projectPath={projectPath} projectId={session.project_id} onOpenFile={onOpenFile} onNavigate={navigate} onRaw={onRaw} allowRaw={sessionAgent(session).sessionHost!=='managed'}/>;
   return <ConversationImagePreviewRoot active={active} onOpen={navigate}><section ref={readingRoot} className="session-chat" aria-label="会话对话">
     <ConversationPromptEnhancer sessionId={session.id} active={active} canEdit={canSend&&!ended&&!waiting} value={draft} onApply={changeDraft}/>
@@ -448,15 +450,16 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
     {canRead && <ConversationNavigator messages={displayed} scroll={list} active={active} hasMore={hasMore} loadingOlder={older} onLoadOlder={()=>void loadOlder()} onNavigate={navigate}/>}
     </div>
     {unread && <button className="session-chat-new" onClick={scrollBottom}><ArrowDown size={14}/>有新消息</button>}
-    {requests.length>0&&<div className="conversation-interactions">{requests.length>1&&<p className="conversation-interaction-queue">还有 {requests.length-1} 项待处理</p>}{requests.slice(0,1).map(request=><ConversationInteraction key={`${connectionGeneration}:${request.id}`} request={request} storageKey={`agentmanager-question:${userId}:${session.id}:${request.id}`} connected={active&&liveState==='connected'} canAnswer={canSend&&!ended} onAnswer={answerRequest} onRaw={onRaw}/>)}</div>}
+    {requests.length>0&&<div className="conversation-interactions">{requests.length>1&&<p className="conversation-interaction-queue">还有 {requests.length-1} 项待处理</p>}{requests.slice(0,1).map(request=><ConversationInteraction key={`${connectionGeneration}:${request.id}`} request={request} storageKey={`agentmanager-question:${userId}:${session.id}:${request.id}`} connected={active&&liveState==='connected'} canAnswer={canSend&&!ended} attachmentContext={{sessionId:session.id,projectId:session.project_id,projectPath,enabled:canAttach}} onAnswer={answerRequest} onRaw={onRaw}/>)}</div>}
     {waiting && !requests.length && <div className="session-chat-action" role="status"><strong>{interaction?.isPermission?'Agent 需要授权':'Agent 需要你确认或选择'}</strong>
       {interaction?.choices?.length ? <p>{interaction.choices.join(' / ')}</p>:null}<button onClick={onRaw}>切到原始终端处理</button></div>}
     <footer className="session-chat-composer">
       <div className="session-chat-status" role="status"><span className={`session-chat-connection ${liveState}`} data-attention={!!pendingQuestion||waiting} aria-hidden="true"/>
         {compaction.state?<ConversationCompactionStatus state={compaction.state} now={now}/>:<ConversationActivityLine key={`${session.id}:${liveState}:${liveProgress.turn_id||''}`} activities={liveState==='connected'&&!reconnectable&&liveProgress.stage==='tools'?liveProgress.activities||[]:[]} busy={busy&&!reconnectable&&!ended&&!waiting&&!activeError} now={now} totalElapsed={elapsedBetween(started,now)}
           fallback={reconnecting?'正在恢复会话连接…':reconnectable?'会话连接已断开':activeError?activeError.error?.will_retry?busy?'执行遇到错误，正在自动重试…':'重试已结束':'本轮执行失败，可处理后重试':ended?'会话已结束':waiting?'等待你处理':pendingQuestion&&!busy?'有问题待回答 · 本轮已结束':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}/>}
-        {liveState==='connected' && <span className="session-chat-live-label">事件通道已连接</span>}
-        {liveState==='unavailable' && <span className="session-chat-live-label" title={liveReason}>{liveRetrying?'实时连接恢复中…':'尚未接入实时输出'}</span>}
+        {observingStream&&liveState==='connected' && <span className="session-chat-live-label">事件通道已连接</span>}
+        {observingStream&&liveState==='connecting' && <span className="session-chat-live-label" data-state="connecting" role="status">{liveRetrying?'实时连接恢复中…':'正在连接实时输出…'}</span>}
+        {observingStream&&liveState==='unavailable' && <span className="session-chat-live-label" data-state={liveRetrying?'retrying':'unavailable'} title={liveReason}>{liveRetrying?'实时连接恢复中…':'尚未接入实时输出'}</span>}
         {ended && onResume && <button onClick={onResume} disabled={resuming}>{resuming?'正在恢复…':resumeFailed?'重试恢复会话':'恢复会话'}</button>}{ended && onClose && <button onClick={onClose}>关闭会话</button>}
         {reconnectable&&canSend&&<button type="button" disabled={reconnecting} onClick={()=>void reconnect()}>{reconnecting?'正在重新连接…':'重新连接'}</button>}
       </div>
@@ -465,11 +468,11 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
       {sendError && <p role="alert" className="session-chat-error">{sendError}</p>}
       {failedDrafts.map(saved=><div key={saved.clientId} className="session-chat-error"><p>未发送内容已保留：{saved.text.slice(0,120)}{saved.attachments.length>0&&`（${saved.attachments.length} 个附件）`}</p><button type="button" disabled={sending||!!draft||attachments.items.length>0} title="请先发送或清空当前草稿，再恢复未发送内容" onClick={()=>restoreFailedDraft(saved)}>恢复未发送内容</button><button type="button" onClick={()=>{attachments.release(saved.attachments);setFailedDrafts(previous=>previous.filter(item=>item.clientId!==saved.clientId));}}>丢弃</button></div>)}
       {reconnectError && <p role="alert" className="session-chat-error">{reconnectError}</p>}
-      {pendingQuestion&&<div className="session-chat-question-seat">{questionActive?<ConversationAsyncQuestion key={pendingQuestion.id} message={pendingQuestion} agentName={agentName} storageKey={`agentmanager-question:${userId}:${session.id}:${pendingQuestion.id}`} connected={active&&!!page?.session_active&&!ended} canAnswer={canSend} onReply={send} onRaw={onRaw} onMinimize={()=>setMinimizedQuestion(pendingQuestion.id)}/>:<button type="button" className="session-chat-question-reminder" onClick={()=>setMinimizedQuestion(null)}>待回答 · {pendingQuestion.async_questions?.[0].title}<span>回答问题</span></button>}</div>}
+      {pendingQuestion&&<div className="session-chat-question-seat"><div hidden={!questionActive}><ConversationAsyncQuestion key={pendingQuestion.id} message={pendingQuestion} agentName={agentName} storageKey={`agentmanager-question:${userId}:${session.id}:${pendingQuestion.id}`} connected={active&&!!page?.session_active&&!ended} canAnswer={canSend} attachmentContext={{sessionId:session.id,projectId:session.project_id,projectPath,enabled:canAttach}} onReply={send} onRaw={onRaw} onMinimize={()=>setMinimizedQuestion(pendingQuestion.id)}/></div>{!questionActive&&<button type="button" className="session-chat-question-reminder" onClick={()=>setMinimizedQuestion(null)}>待回答 · {pendingQuestion.async_questions?.[0].title}<span>回答问题</span></button>}</div>}
       <form hidden={questionActive} onSubmit={event=>{event.preventDefault();void send();}}
         onDragOver={event=>{if(Array.from(event.dataTransfer.types).includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=canAttach&&canSend&&!ended&&!sending?'copy':'none';}}}
         onDrop={event=>{if(!Array.from(event.dataTransfer.types).includes('Files'))return;event.preventDefault();event.stopPropagation();if(canAttach&&canSend&&!ended&&!sending)attachments.enqueueTransfer(event.dataTransfer);}}>
-        <ConversationComposerEditor snapshotRef={attachmentPositions} value={draft} items={attachments.items} disabled={!canSend||ended||waiting} placeholder={waiting?'请先处理上方交互':'输入消息，Enter 发送，Shift+Enter 换行'} projectId={session.project_id} projectPath={projectPath} onChange={changeDraft} onRemove={attachments.remove} onFiles={canAttach?attachments.enqueue:()=>setSendError('此 Agent 不支持附件')} onSubmit={()=>void send()}/>
+        <ConversationComposerEditor snapshotRef={attachmentPositions} value={draft} items={attachments.items} disabled={!canSend||ended||waiting} placeholder={waiting?'请先处理上方交互':'输入消息，Enter 发送，Shift+Enter 换行'} projectId={session.project_id} projectPath={projectPath} onChange={changeDraft} onRemove={attachments.remove} onRetry={attachments.retry} onFiles={canAttach?attachments.enqueue:()=>setSendError('此 Agent 不支持附件')} onSubmit={()=>void send()}/>
         {attachments.error&&<p role="alert" className="session-chat-error">{attachments.error}</p>}
 
         <div className="session-chat-input-tools"><ConversationAttachmentPicker disabled={!canAttach||!canSend||ended||sending} onFiles={attachments.enqueue}/><span>Enter 发送 · Shift+Enter 换行</span><div className="session-chat-send-actions"><button type="button" className="session-chat-enhance" aria-label="优化当前输入" title="增强提示词" disabled={!canSend||ended||waiting||sending||!draft.trim()} onClick={()=>window.dispatchEvent(new CustomEvent('agentmanager:enhance-native-prompt',{detail:{sessionId:session.id}}))}><Sparkles size={17}/></button><button type="submit" aria-label="发送消息" disabled={sending||attachments.uploading||attachments.failed||!canSend||(!draft.trim()&&!attachments.items.length)||!page?.session_active||ended||waiting}>{sending?<Loader2 size={17} className="animate-spin"/>:<ArrowUp size={18}/>}</button></div></div>

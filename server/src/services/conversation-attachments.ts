@@ -4,6 +4,15 @@ import {getDb} from '../db/index.js';
 import {createHash} from 'crypto';
 
 export interface ConversationAttachment {kind:'image'|'file';name:string;path:string;offset?:number}
+export type ConversationAnswerAttachments=Record<string,ConversationAttachment[]>;
+/** Validate a whole answer group together so per-field uploads cannot bypass
+ * the existing message-wide file count, image and size budgets. */
+export async function validateConversationAnswerAttachments(sessionId:string,value:unknown):Promise<ConversationAnswerAttachments>{
+  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('回答附件格式无效');
+  const groups=Object.entries(value);if(groups.length>20||groups.some(([id,files])=>!id||id.length>512||!Array.isArray(files)))throw Error('回答附件格式无效');
+  const normalized=await validateConversationAttachments(sessionId,groups.flatMap(([,files])=>files));let offset=0;
+  return Object.fromEntries(groups.map(([id,files])=>{const result=normalized.slice(offset,offset+files.length);offset+=files.length;return [id,result];}));
+}
 const MIB=1024*1024;
 export function formatConversationInput(text:string,attachments:ConversationAttachment[],includeImagePaths=false) {
   if(!attachments.length)return text;

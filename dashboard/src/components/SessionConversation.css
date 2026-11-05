@@ -70,6 +70,17 @@
 .session-chat-status {display:flex;align-items:center;gap:6px;min-height:23px;margin-bottom:5px;color:var(--text-muted);font-size:11px;}
 .session-chat-status button {margin-left:5px;color:var(--accent);}
 .session-chat-live-label {margin-left:auto;color:var(--text-muted);}
+.conversation-question-editor{border:1px solid var(--border);border-radius:8px;background:var(--bg-primary);margin-top:5px;overflow:hidden}
+.conversation-question-editor .session-chat-editor{min-height:70px;max-height:220px;padding:10px 12px;outline:none}
+.conversation-question-editor:focus-within{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.conversation-question-editor-tools{display:flex;align-items:center;gap:8px;padding:5px 10px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted)}
+.conversation-question-editor-tools .session-chat-attach{display:inline-flex;align-items:center;padding:4px}
+.conversation-question-attachment-hint{font-size:11px;color:var(--text-muted);padding:0 14px;margin:6px 0}
+.conversation-question-editor .session-chat-error{padding:0 10px}
+.conversation-question-editor .session-chat-error button{color:var(--accent);margin-left:8px}
+.session-chat-pending-attention button{flex-shrink:0;white-space:nowrap}
+.session-chat-live-label[data-state="retrying"]{color:#b7791f}
+@media(max-width:600px){.session-chat-status .session-chat-live-label[data-state="connecting"],.session-chat-status .session-chat-live-label[data-state="retrying"]{display:inline-flex;white-space:nowrap}}
 .session-chat-connection {height:5px;width:5px;border-radius:50%;background:var(--text-muted);}
 .session-chat-connection.connected {background:#22a879;}
 .session-chat-connection[data-attention="true"] {background:#eab308;}

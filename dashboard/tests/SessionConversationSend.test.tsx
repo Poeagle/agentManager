@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, ApiError, type ConversationPage, type Session } from '../src/lib/api';
 import { SessionConversation } from '../src/components/SessionConversation';
+import * as metadata from '../src/components/ConversationStatisticsLabel';
 
 vi.mock('../src/lib/permissions', () => ({ usePermissions: () => ({ data: {}, isPending: false }), hasPermission: () => true }));
 vi.mock('../src/lib/use-conversation-compaction', () => ({ useConversationCompaction: () => ({ state: null, running: false, start: vi.fn(), usage: vi.fn(), observe: vi.fn(), disconnected: vi.fn() }) }));
@@ -39,6 +40,15 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('does not rerender completed message metadata when only the current answer changes',async()=>{
+    const title=vi.spyOn(metadata,'metadataTimestampTitle');await mount();
+    const old={id:'old-answer',role:'assistant',turn_id:'previous',phase:'final',text:'已完成的结论',timestamp:'2026-11-05T01:00:00Z',streaming:false};
+    const live={id:'live-answer',role:'assistant',turn_id:'current',phase:'commentary',text:'当前正文',timestamp:null,streaming:true};
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[old,live],busy:true,stage:'answering',turn_id:'current'}));await screen.findByText('当前正文');
+    const before=title.mock.calls.filter(([message])=>message.id===old.id).length;expect(before).toBeGreaterThan(0);
+    act(()=>Socket.latest.emit({type:'patch',upserts:[],deltas:[{id:live.id,offset:4,text:'继续输出'}]}));
+    await screen.findByText('当前正文继续输出');expect(title.mock.calls.filter(([message])=>message.id===old.id)).toHaveLength(before);
+  });
   it('recovers stale and half-open streams on browser resume without losing drafts or resending input',async()=>{
     const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();
     const editor=input('未发送的草稿'),first=Socket.latest;first.readyState=0;
@@ -49,7 +59,7 @@ describe('conversation send transaction', () => {
     // cannot overwrite the replacement's state or restore stale messages.
     act(()=>first.emit({type:'snapshot',messages:[{id:'stale',role:'assistant',text:'stale text'}],busy:false,stage:'idle'}));
     expect(screen.queryByText('stale text')).not.toBeInTheDocument();
-    const now=Date.now();vi.spyOn(Date,'now').mockReturnValue(now+61000);vi.spyOn(document,'visibilityState','get').mockReturnValue('visible');
+    const now=performance.now();vi.spyOn(performance,'now').mockReturnValue(now+61000);vi.spyOn(document,'visibilityState','get').mockReturnValue('visible');
     act(()=>document.dispatchEvent(new Event('visibilitychange')));expect(Socket.latest).not.toBe(second);
     expect(editor).toHaveTextContent('未发送的草稿');expect(submit).not.toHaveBeenCalled();
   });
