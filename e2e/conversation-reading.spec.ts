@@ -23,7 +23,7 @@ test('conversation shares its tab row, resizes, previews and navigates rich stre
   const require=createRequire(import.meta.url),Database=require('../server/node_modules/better-sqlite3');const db=new Database(join(root,'agentmanager.db'));
   try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',native,session.id);}finally{db.close();}
   let push:((data:string)=>void)|undefined;
-  await page.routeWebSocket('**/conversation/stream',socket=>{push=data=>socket.send(data);socket.send(JSON.stringify({type:'snapshot',messages:[],busy:false,stage:'idle'}));});
+  await page.routeWebSocket('**/conversation/stream*',socket=>{push=data=>socket.send(data);socket.send(JSON.stringify({type:'snapshot',messages:[],busy:false,stage:'idle'}));});
   await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});
   await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'阅读测试'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});

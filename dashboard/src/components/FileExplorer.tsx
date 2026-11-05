@@ -1934,6 +1934,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
                     )}
                   </button>
                 )}
+                <button type="button" disabled={exportInProgress} className="flex items-center gap-1 px-2 py-0.5 rounded text-xs hover:opacity-75 disabled:opacity-40" title="下载服务器上的原文件" onClick={()=>void startExportTransfer({path:activeTab.path,name:activeTab.name,isDirectory:false,...projectId?{projectId}:{}})}><Download className="w-3 h-3"/>下载原文件</button>
                 <span>{formatSize(activeTab.size)}</span>
               </div>
             </div>

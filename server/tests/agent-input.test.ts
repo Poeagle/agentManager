@@ -76,10 +76,10 @@ describe('immediate session input',()=>{
     const socket=await app.injectWS('/api/sessions/own/conversation/stream',{headers:{cookie}},{onInit:ws=>ws.on('message',bytes=>received.push(JSON.parse(bytes.toString())))});
     const send=()=>socket.send(JSON.stringify({type:'interaction_response',request_id:'7',answer:{decision:'accept'}}));
     try {
-      send();await vi.waitFor(()=>expect(received.at(-1)).toMatchObject({type:'interaction_result',ok:false}));expect(respond).not.toHaveBeenCalled();
-      setRoleGrants('read-chat',{agent_api:'write'});received.length=0;send();await vi.waitFor(()=>expect(received.at(-1)).toMatchObject({ok:true}));expect(respond).toHaveBeenCalledOnce();
-      getDb().prepare("UPDATE sessions SET created_by_user_id=(SELECT id FROM users WHERE username='other') WHERE id='own'").run();received.length=0;send();await vi.waitFor(()=>expect(received.at(-1)).toMatchObject({ok:false}));expect(respond).toHaveBeenCalledOnce();
-      getDb().prepare("UPDATE sessions SET created_by_user_id=? WHERE id='own'").run(user.id);getDb().prepare('DELETE FROM auth_sessions WHERE user_id=?').run(user.id);received.length=0;send();await vi.waitFor(()=>expect(received.at(-1)).toMatchObject({ok:false}));expect(respond).toHaveBeenCalledOnce();
+      send();await vi.waitFor(()=>expect(received.findLast(frame=>frame.type==='interaction_result')).toMatchObject({type:'interaction_result',ok:false}));expect(respond).not.toHaveBeenCalled();
+      setRoleGrants('read-chat',{agent_api:'write'});received.length=0;send();await vi.waitFor(()=>expect(received.findLast(frame=>frame.type==='interaction_result')).toMatchObject({ok:true}));expect(respond).toHaveBeenCalledOnce();
+      getDb().prepare("UPDATE sessions SET created_by_user_id=(SELECT id FROM users WHERE username='other') WHERE id='own'").run();received.length=0;send();await vi.waitFor(()=>expect(received.findLast(frame=>frame.type==='interaction_result')).toMatchObject({ok:false}));expect(respond).toHaveBeenCalledOnce();
+      getDb().prepare("UPDATE sessions SET created_by_user_id=? WHERE id='own'").run(user.id);getDb().prepare('DELETE FROM auth_sessions WHERE user_id=?').run(user.id);received.length=0;send();await vi.waitFor(()=>expect(received.findLast(frame=>frame.type==='interaction_result')).toMatchObject({ok:false}));expect(respond).toHaveBeenCalledOnce();
     }finally {await new Promise<void>(resolve=>{socket.once('close',()=>resolve());socket.close();});}
     expect(manager.writeToSession).not.toHaveBeenCalled();
   });

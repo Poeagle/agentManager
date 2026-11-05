@@ -1,3 +1,4 @@
+import {readCodexBaseline,markOversizedBaseline} from './baseline.js';
 import WebSocket from 'ws';
 import {nativeInteraction,nativeInteractionAnswer,conversationAsyncQuestions,conversationQuestionReply,type ConversationInteraction} from '../../conversation-interactions.js';
 import {homedir} from 'os';
@@ -135,7 +136,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
 }
 
 /** Observe an already loaded Codex thread. Never start a thread or a turn. */
-export function observeCodexConversation(threadId:string,emit:(frame:ConversationStreamFrame)=>void,onFailure?:(turnId:string,error:unknown,willRetry:boolean)=>void) {
+export function observeCodexConversation(threadId:string,emit:(frame:ConversationStreamFrame)=>void,onFailure?:(turnId:string,error:unknown,willRetry:boolean)=>void,options:{incremental?:boolean}={}) {
   const path=process.env.AGENTMANAGER_CODEX_STREAM_SOCKET
     || join(process.env.CODEX_HOME||join(homedir(),'.codex'),'app-server-control','app-server-control.sock');
   const socket=new WebSocket(`ws+unix://${path}:/`,{maxPayload:2*1024*1024,handshakeTimeout:4000});
@@ -152,18 +153,28 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   let retry:ReturnType<typeof setTimeout>|undefined;
   let flush:ReturnType<typeof setTimeout>|undefined;
   let lastUsageFingerprint:string|undefined;
+  let full=true,lastState='';const publicItems=new Map<string,string>();const dirty=new Set<string>(),deltas=new Map<string,{id:string;offset:number;text:string}>();
   function snapshot() {
     flush=undefined;
     if(!closed&&(busy||finishedState!=='unknown'))setLiveCodexRuntime(threadId,runtimeSource,[...interactions.values()].some(entry=>entry.card.blocking&&!entry.card.submitted)?'waiting_for_input':busy?'running':finishedState);
-    if(!closed) emit({type:'snapshot',interactions:[...interactions.values()].map(entry=>entry.card),messages:[...items.values()].filter(item=>item.message.text.length>0).map(item=>item.message),activities:[...activities.values()],compaction,busy,connected:true,turn_id:turnId,started_at:startedAt,completed_at:completedAt,stage});
+    if(closed)return;
+    const state={interactions:[...interactions.values()].map(entry=>entry.card),activities:[...activities.values()],compaction,busy,connected:true as const,turn_id:turnId,started_at:startedAt,completed_at:completedAt,stage};
+    const fingerprint=JSON.stringify(state);
+    if(!options.incremental||full){emit({type:'snapshot',...state,messages:[...items.values()].filter(item=>item.message.text.length>0).map(item=>item.message)});full=false;}
+    else{
+      const upserts=[...dirty].map(id=>items.get(publicItems.get(id)!)?.message).filter((message):message is ConversationMessage=>!!message&&message.text.length>0);
+      const appended=[...deltas.values()].filter(delta=>!dirty.has(delta.id));
+      if(upserts.length||appended.length||lastState!==fingerprint)emit({type:'patch',upserts,deltas:appended,...lastState!==fingerprint?{state}:{}});
+    }
+    dirty.clear();deltas.clear();lastState=fingerprint;
   }
-  function changed() {if(!flush) flush=setTimeout(snapshot,10);}
+  function changed(immediate=false){if(immediate){clearTimeout(flush);snapshot();}else if(!flush)flush=setTimeout(snapshot,25);}
   function applyNativeState(state:unknown) {
     if(!['idle','active','systemError'].includes(String(state)))return;
     busy=state==='active';
     if(state==='systemError')finishedState='failed';else if(state==='idle'&&finishedState==='unknown')finishedState='idle';
-    if(!busy){if(compaction?.status==='running')compaction={...compaction,status:state==='systemError'?'failed':'interrupted',completed_at:new Date().toISOString()};stage='idle';for(const item of items.values())item.message={...item.message,...item.message.streaming?{timestamp:null}:{},streaming:false};}
-    changed();
+    if(!busy){if(compaction?.status==='running')compaction={...compaction,status:state==='systemError'?'failed':'interrupted',completed_at:new Date().toISOString()};stage='idle';for(const item of items.values())if(item.message.streaming){item.message={...item.message,timestamp:null,streaming:false};dirty.add(item.message.id);}}
+    changed(true);
   }
   async function syncNativeState() {
     const before=revision;
@@ -183,12 +194,12 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   function reportError(id:string,error:unknown,willRetry:boolean,timestamp:string|null,live=false) {
     const message=conversationErrorMessage(id,error,willRetry,timestamp);if(!message)return;
     if(live)onFailure?.(id,error,willRetry);
-    items.delete(`error:${message.id}`);items.set(`error:${message.id}`,{message,phase:'error'});
+    items.delete(`error:${message.id}`);items.set(`error:${message.id}`,{message,phase:'error'});dirty.add(message.id);publicItems.set(message.id,`error:${message.id}`);
     if(!willRetry)interactions.clear();
     if(!willRetry&&compaction?.status==='running')compaction={...compaction,status:'failed',completed_at:timestamp};
     busy=willRetry;finishedState=willRetry?'unknown':'failed';stage=willRetry?'waiting':'idle';
-    for(const item of items.values())if(item.message.streaming)item.message={...item.message,timestamp,streaming:false};
-    changed();
+    for(const item of items.values())if(item.message.streaming){item.message={...item.message,timestamp,streaming:false};dirty.add(item.message.id);}
+    changed(true);
   }
   function acceptActivity(item:any,completed:boolean,baseline=false) {
     const activity=conversationActivity(item,completed,activities.get(item?.id),baseline?null:Date.now());
@@ -231,6 +242,8 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       ...(role==='user'?{image_paths:conversationImagePaths(item.content)}:{}),
       text:text.slice(0,128*1024),timestamp:role==='assistant'&&!streaming?(timestamp===null?null:new Date(timestamp??Date.now()).toISOString()):previous?.message.timestamp || (timestamp===null?null:new Date(timestamp??Date.now()).toISOString()),streaming:role==='assistant' && streaming,
     }});
+    const publicId=conversationMessageId(turnId,role,item.id);dirty.add(publicId);publicItems.set(publicId,item.id);
+    if(items.size>256){const oldest=[...items.entries()].find(([,value])=>!value.message.streaming);if(oldest){items.delete(oldest[0]);publicItems.delete(oldest[1].message.id);dirty.delete(oldest[1].message.id);deltas.delete(oldest[1].message.id);}}
     changed();
   }
   async function attach() {
@@ -244,7 +257,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       if(closed) return;
       void readQueue();
       const baselineRevision=revision;
-      const baseline=await request('thread/turns/list',{threadId,limit:1,itemsView:'full'});
+      const baseline=await readCodexBaseline(request,threadId);
       if(closed) return;
       for(const turn of baseline.data||[]) {
         if(revision!==baselineRevision && ((turnId && turnId!==turn.id) || (busy && turn.status!=='inProgress'))) continue;
@@ -272,12 +285,12 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       }
       snapshot();
       void syncNativeState();
-    } catch {unavailable();if(!closed && socket.readyState===WebSocket.OPEN) retry=setTimeout(()=>void attach(),3000);}
+    } catch {if(!closed){unavailable(true);socket.close();}}
   }
   socket.on('open',()=>{
     void request('initialize',{clientInfo:{name:'octoally-conversation',version:'1.0.0'},capabilities:{experimentalApi:true}}).then(()=>{
       if(closed) return;socket.send(JSON.stringify({method:'initialized'}));return attach();
-    }).catch(()=>unavailable());
+    }).catch(()=>{unavailable(true);socket.close();});
   });
   socket.on('message',bytes=>{
     let frame:any;try{frame=JSON.parse(bytes.toString());}catch{return;}
@@ -305,13 +318,13 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(!['turn/started','item/started','item/completed','item/agentMessage/delta','turn/completed','error'].includes(frame.method))return;
     revision++;
     if(frame.method==='turn/started') {
-      // A queued next turn can start before the 10 ms batch is emitted. Flush
+      // A queued next turn can start before the text batch is emitted. Flush
       // the prior turn first so its accepted user message cannot disappear.
       if(flush){clearTimeout(flush);snapshot();}
-      items.clear();activities.clear();compaction=null;interactions.clear();busy=true;completedAt=null;turnId=data.turn?.id||null;
+      items.clear();publicItems.clear();dirty.clear();deltas.clear();full=true;activities.clear();compaction=null;interactions.clear();busy=true;completedAt=null;turnId=data.turn?.id||null;
       finishedState='unknown';
       startedAt=typeof data.turn?.startedAt==='number'?new Date(data.turn.startedAt*1000).toISOString():new Date().toISOString();
-      stage='waiting';changed();
+      stage='waiting';changed(true);
     }
     else if(frame.method==='item/started'||frame.method==='item/completed') {
       if(data.item?.type==='contextCompaction'&&frame.method==='item/started'){busy=true;stage='tools';}
@@ -322,8 +335,14 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       if(frame.method==='item/completed'&&data.item?.type==='contextCompaction')void syncNativeState();
     }
     else if(frame.method==='item/agentMessage/delta') {
+      if(typeof data.itemId!=='string'||typeof data.delta!=='string')return;
+      if(!items.has(data.itemId)&&typeof data.turnId==='string')acceptItem({type:'agentMessage',id:data.itemId,text:''},data.turnId,true);
       const item=items.get(data.itemId);
-      if(item && typeof data.delta==='string') {item.message={...item.message,text:(item.message.text+data.delta).slice(0,128*1024),streaming:true};if(data.delta.length)stage='answering';changed();}
+      if(item){const offset=item.message.text.length,text=data.delta.slice(0,Math.max(0,128*1024-offset));
+        item.message={...item.message,text:item.message.text+text,streaming:true};
+        if(offset===0)dirty.add(item.message.id); // Empty starts are omitted from public frames; seed the first visible text.
+        const pending=deltas.get(item.message.id);deltas.set(item.message.id,{id:item.message.id,offset:pending?.offset??offset,text:(pending?.text||'')+text});
+        if(text.length)stage='answering';changed();}
     } else if(frame.method==='error') {
       if(typeof data.turnId==='string' && (!turnId || turnId===data.turnId))reportError(data.turnId,data.error,data.willRetry===true,new Date().toISOString(),true);
     } else if(frame.method==='turn/completed') {
@@ -332,15 +351,18 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       // A completed compaction is its own step. Later turn completion must not
       // extend its duration or make an old completion look newly finished.
       if(compaction?.status==='running'){const status=data.turn?.status==='interrupted'?'interrupted':data.turn?.status==='failed'?'failed':'completed';compaction={...compaction,status,completed_at:completedAt,duration_ms:compaction.started_at?Math.max(0,Date.parse(completedAt!)-Date.parse(compaction.started_at)):compaction.duration_ms};}
-      interactions.clear();busy=false;stage='idle';for(const item of items.values()) item.message={...item.message,...item.message.streaming?{timestamp:completedAt}:{},streaming:false};
+      interactions.clear();busy=false;stage='idle';for(const item of items.values())if(item.message.streaming){item.message={...item.message,timestamp:completedAt,streaming:false};dirty.add(item.message.id);}
       finishedState=data.turn?.status==='failed'?'failed':data.turn?.status==='interrupted'?'interrupted':'idle';
       if(data.turn?.error)reportError(data.turn.id,data.turn.error,false,typeof data.turn.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString(),true);
-      changed();
+      changed(true);
     }
+    if(frame.method==='item/completed'||frame.method==='item/started')changed(true);
   });
   const lost=()=>{if(closed)return;clearTimeout(retry);clearTimeout(flush);for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('事件连接已关闭'));}pending.clear();unavailable(true);closed=true;clearLiveCodexRuntime(threadId,runtimeSource);};
-  socket.on('error',lost);socket.on('close',lost);
-  const stop=()=>{
+  socket.on('error',(error:any)=>{if(error?.code==='WS_ERR_UNSUPPORTED_MESSAGE_LENGTH')markOversizedBaseline(threadId);lost();});socket.on('close',code=>{if(code===1009)markOversizedBaseline(threadId);lost();});
+  let alive=true;socket.on('pong',()=>{alive=true;});const heartbeat=setInterval(()=>{if(closed)return;if(!alive){socket.terminate();return;}if(socket.readyState===WebSocket.OPEN){alive=false;socket.ping();}},25000);heartbeat.unref?.();
+  socket.once('close',()=>clearInterval(heartbeat));
+  const stop=()=>{clearInterval(heartbeat);
     closed=true;clearTimeout(retry);clearTimeout(flush);clearLiveCodexRuntime(threadId,runtimeSource);
     for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('事件订阅已结束'));}pending.clear();
     if(socket.readyState===WebSocket.CONNECTING) socket.terminate();else socket.close();

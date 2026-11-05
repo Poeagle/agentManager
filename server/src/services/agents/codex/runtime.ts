@@ -54,7 +54,7 @@ function applyRecord(cursor: RuntimeCursor, entry: any, sessionId: string): void
 }
 
 export async function readCodexRuntime(sessionId: string | null | undefined): Promise<CodexRuntime> {
-  const unavailable = (reason: string): CodexRuntime => ({source:'codex_rollout',session_id:sessionId || null,state:'unknown',last_activity_at:null,observed_at:new Date().toISOString(),reason});
+  const unavailable = (reason: string): CodexRuntime => projectCodexRuntime({source:'codex_rollout',session_id:sessionId || null,state:'unknown',last_activity_at:null,observed_at:new Date().toISOString(),reason});
   if (!sessionId) return unavailable('尚未绑定 Codex 原生会话');
   const filePath = await findCodexRollout(sessionId);
   if (!filePath) return unavailable('未找到绑定的 Codex 原生记录');

@@ -67,3 +67,13 @@ it('keeps a fresh thread ready when the native subscription reports idle',async(
  setLiveCodexRuntime(native,'fresh','idle');
  await vi.waitFor(()=>expect(events.at(-1)?.runtime).toMatchObject({source:'codex_stream',state:'ready'}));clearLiveCodexRuntime(native,'fresh');
 });
+it('subscribes to native lifecycle before the rollout file exists and attaches when it appears',async()=>{
+ await watchSessionRuntime({id:'missing',project_id:'p',codex_session_id:native});
+ await vi.waitFor(()=>expect(events.at(-1)?.runtime.state).toBe('unknown'));
+ setLiveCodexRuntime(native,'missing-file','running');
+ try {
+  await vi.waitFor(()=>expect(events.at(-1)?.runtime).toMatchObject({source:'codex_stream',state:'running'}),{timeout:1000,interval:10});
+  clearLiveCodexRuntime(native,'missing-file');writeFileSync(file,record('task_complete',5));
+  await vi.waitFor(()=>expect(events.at(-1)?.runtime).toMatchObject({source:'codex_rollout',state:'idle'}),{timeout:1500,interval:20});
+ }finally{clearLiveCodexRuntime(native,'missing-file');}
+});

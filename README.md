@@ -194,12 +194,23 @@ Codex tab activity and status use the exact bound native rollout conversation.
 Native task, message and tool events advance its activity clock; terminal redraws,
 tab changes and reconnects do not. Status distinguishes running, waiting for input,
 turn ended, interrupted and unknown. A finished turn is not proof of business task
-completion. Missing native logs or an unconfirmed running Codex process show an
-unknown state instead of inferring activity from the terminal. Visible dashboards
+completion. Native stream events remain usable before the log exists. Without
+either native events or confirmed history, activity remains unknown. Visible dashboards
 receive native status and pending-question changes through the live event
 stream; approximately five-second polling remains as a fallback. One native-file
 observer is shared per active session, burst writes are coalesced, and unchanged
 status is not broadcast. Idle-history question metadata is reused from cache.
+
+Conversation viewers and retry monitors share one native subscription per agent,
+native conversation and credential scope. The versioned chat stream sends an
+initial snapshot followed by text deltas; browsers batch text updates per frame.
+Status and completion updates flush immediately. Native initialization failures
+reconnect with exponential backoff, without replaying user input. Recovery reads
+recent item pages instead of entire turns and falls back to metadata if a native
+response exceeds the payload limit. History remains available through pagination.
+Browser and native connections use heartbeats; online and visibility changes
+also recover stale connections. Healthy file observers do not poll; missing or
+failed observers retry with backoff independently of native lifecycle events.
 
 New Codex conversations with valid native metadata show green **Ready** until
 their first turn. Unanswered asynchronous questions show yellow attention even
@@ -211,6 +222,8 @@ the agent. Later questions retain their own reminders.
 Chat image previews offer downloads as PNG, JPEG, WebP or the original file;
 Mermaid and other SVG images additionally offer SVG. Downloads use original
 image dimensions, independently of the preview zoom.
+File previews also offer **下载原文件**, including files opened from directory
+previews and docked viewers, using the existing authorized export transfer.
 
 The activity row follows the latest running tool immediately. Compaction
 completion appears for at most three seconds, yields when work resumes, and

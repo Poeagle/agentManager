@@ -58,7 +58,7 @@ export class ConversationRetryManager {
     const provider=(nativeId:string)=>{const sessions=db.prepare('SELECT * FROM sessions WHERE native_session_id=? OR codex_session_id=? OR claude_session_id=?').all(nativeId,nativeId,nativeId) as import('./agents/types.js').AgentSession[];
       if(!sessions.length||new Set(sessions.map(session=>agentForSession(session).descriptor.id)).size!==1)throw Error('重试目标不明确');const session=sessions[0];return {adapter:agentForSession(session),context:sessionAgentContext(session)};};
     this.retryable=deps.retryable??(deps.inspect?(_native,error)=>retryableConversationError(error):(native,error)=>provider(native).adapter.retry.retryable(error));
-    this.inspect=deps.inspect??(native=>provider(native).adapter.retry.inspect(native));this.start=deps.start??((native,failed,client)=>provider(native).adapter.retry.start(native,failed,client));this.observe=deps.observe??((native,emit,onFailure)=>{const {adapter,context}=provider(native);return adapter.stream.observe(context,emit,onFailure);});
+    this.inspect=deps.inspect??(native=>provider(native).adapter.retry.inspect(native));this.start=deps.start??((native,failed,client)=>provider(native).adapter.retry.start(native,failed,client));this.observe=deps.observe??((native,emit,onFailure)=>{const {adapter,context}=provider(native);return adapter.stream.observe({...context,streamFormat:'state'},emit,onFailure);});
     for(const row of db.prepare('SELECT data FROM conversation_retries ORDER BY updated_at').all() as {data:string}[]) {
       try {const job=JSON.parse(row.data) as ConversationRetry;
         if(!['waiting','submitting','running'].includes(job.status))continue;
@@ -75,7 +75,7 @@ export class ConversationRetryManager {
     if(existing){clearTimeout(existing.timer);existing.stop();this.monitors.delete(sessionId);}
     const stop=this.observe(nativeId,frame=>{
       const entry=this.monitors.get(sessionId);if(!entry||entry.nativeId!==nativeId)return;
-      if(!this.deps.allowed(sessionId,userId,nativeId)||frame.type==='unavailable'){
+      if(!this.deps.allowed(sessionId,userId,nativeId)||frame.type==='unavailable'&&!frame.retrying){
         queueMicrotask(()=>entry.stop());this.monitors.delete(sessionId);
         if(frame.type==='unavailable'&&frame.reconnect&&!this.stopped){
           entry.timer=setTimeout(()=>{this.monitors.delete(sessionId);this.monitor(sessionId,userId,nativeId);},2500);

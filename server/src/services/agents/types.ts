@@ -34,6 +34,8 @@ export interface AgentSession {
     status?: string;
 }
 export interface AgentContext {
+    /** State subscribers skip token-only updates; legacy snapshot consumers remain supported. */
+    streamFormat?:'incremental'|'snapshot'|'state';
     session: AgentSession;
     nativeId: string | null;
     projectPath: string | null;
@@ -288,6 +290,8 @@ export interface AgentConnection {
     respond(id: string, answer: unknown): unknown;
 }
 export interface AgentStreamPort {
+    /** Optional credential/endpoint isolation key; defaults to platform owner and project. */
+    scope?(context:AgentContext):string;
     enable?(context: AgentContext): Promise<boolean>;
     shutdown?(): void | Promise<void>;
     observe(context: AgentContext, emit: (frame: AgentStreamFrame) => void, onFailure?: (turnId: string, error: unknown, willRetry: boolean) => void): AgentConnection;

@@ -43,7 +43,7 @@ export function registerAgent(definition: AgentDefinition): () => void {
         required(definition.commands?.build, 'commands.build');
     adapters.set(id, adapter);
     return () => { if (adapters.get(id) === adapter)
-        adapters.delete(id); };
+        {adapters.delete(id);void adapter.stream.shutdown?.();} };
 }
 export function getAgent(id: string): AgentAdapter { const adapter = adapters.get(id); if (!adapter)
     throw Object.assign(Error(`Unknown agent: ${id}`), { statusCode: 400 }); return adapter; }

@@ -53,7 +53,7 @@ export const codexAdapter: AgentAdapter = {
                 respond(id: string, answer: unknown): unknown;
             }) | undefined;
             void import('./stream.js').then(module => { if (!stopped)
-                stop = module.observeCodexConversation(requireNative(context), emit, onFailure); });
+                stop = module.observeCodexConversation(requireNative(context), emit, onFailure,{incremental:true}); });
             return Object.assign(() => { stopped = true; stop?.(); }, { respond: (id: string, answer: unknown) => { if (!stop)
                     throw Error('实时连接尚未就绪'); return stop.respond(id, answer); } });
         } },

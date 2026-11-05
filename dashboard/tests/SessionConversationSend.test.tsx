@@ -39,6 +39,26 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('recovers stale and half-open streams on browser resume without losing drafts or resending input',async()=>{
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();
+    const editor=input('未发送的草稿'),first=Socket.latest;first.readyState=0;
+    act(()=>window.dispatchEvent(new Event('online')));
+    expect(Socket.latest).not.toBe(first);const second=Socket.latest;
+    act(()=>second.emit({type:'snapshot',stream_id:'shared',stream_seq:1,messages:[],busy:false,stage:'idle'}));
+    // Old sockets may finish their close handshake much later. Their events
+    // cannot overwrite the replacement's state or restore stale messages.
+    act(()=>first.emit({type:'snapshot',messages:[{id:'stale',role:'assistant',text:'stale text'}],busy:false,stage:'idle'}));
+    expect(screen.queryByText('stale text')).not.toBeInTheDocument();
+    const now=Date.now();vi.spyOn(Date,'now').mockReturnValue(now+61000);vi.spyOn(document,'visibilityState','get').mockReturnValue('visible');
+    act(()=>document.dispatchEvent(new Event('visibilitychange')));expect(Socket.latest).not.toBe(second);
+    expect(editor).toHaveTextContent('未发送的草稿');expect(submit).not.toHaveBeenCalled();
+  });
+  it('resynchronizes a missing delta sequence immediately without replaying a submitted message',async()=>{
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();const first=Socket.latest;
+    act(()=>first.emit({type:'snapshot',stream_id:'shared',stream_seq:1,messages:[],busy:false,stage:'idle'}));
+    act(()=>first.emit({type:'patch',stream_id:'shared',stream_seq:3,upserts:[],deltas:[{id:'missing',offset:5,text:'tail'}]}));
+    expect(Socket.latest).not.toBe(first);expect(submit).not.toHaveBeenCalled();
+  });
   it('keeps dialogue usable while disabling unsupported attachment operations for another provider',async()=>{
     const descriptor=sessionAgent(session),target={...session,cli_type:'remote',agent_id:'remote',native_session_id:'native',agent:{...descriptor,id:'remote',label:'Remote',capabilities:{...descriptor.capabilities,attachments:false}}};
     const upload=vi.spyOn(api.sessions,'pasteFile').mockResolvedValue({path:'/project/note.txt'});await mount(target);

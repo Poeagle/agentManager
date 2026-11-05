@@ -2,6 +2,8 @@ import {fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
 import {ConversationFilePreview} from '../src/components/ConversationFilePreview';
 import {api,ApiError,fetchJSON} from '../src/lib/api';
+import {startExportTransfer} from '../src/lib/export-transfer';
+vi.mock('../src/lib/export-transfer',async()=>({...await vi.importActual('../src/lib/export-transfer'),startExportTransfer:vi.fn()}));
 vi.mock('../src/lib/api',async()=>{
  const actual=await vi.importActual<typeof import('../src/lib/api')>('../src/lib/api');
  return {...actual,fetchJSON:vi.fn(),api:{...actual.api,files:{...actual.api.files,list:vi.fn(),read:vi.fn()}}};
@@ -21,6 +23,7 @@ describe('directory conversation previews',()=>{
   const folder=await screen.findByText('nested');expect(screen.getByRole('dialog',{name:'目录预览 · reports'})).toBeVisible();expect(api.files.read).not.toHaveBeenCalled();expect(api.files.list).toHaveBeenCalledTimes(1);
   fireEvent.click(folder);const readme=await screen.findByText('README.md');expect(api.files.list).toHaveBeenCalledWith('/project/reports/nested',true,'project-1');fireEvent.click(readme);
   expect(await screen.findByRole('heading',{name:'目录中的说明'},{timeout:3000})).toBeVisible();expect(api.files.read).toHaveBeenCalledExactlyOnceWith('/project/reports/nested/README.md','project-1');expect(screen.queryByRole('button',{name:'上传文件',exact:true})).not.toBeInTheDocument();expect(screen.queryByText('Path is not a file')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'下载原文件'}));expect(startExportTransfer).toHaveBeenCalledExactlyOnceWith({path:'/project/reports/nested/README.md',name:'README.md',isDirectory:false,projectId:'project-1'});
   fireEvent.click(screen.getByTitle('Close'));expect(screen.getByRole('dialog',{name:'目录预览 · reports'})).toBeVisible();expect(screen.getByText('nested')).toBeVisible();
  });
  it('shows empty directories without a download error',async()=>{

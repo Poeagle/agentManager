@@ -38,6 +38,10 @@ describe('bounded durable conversation retries',()=>{
  it('detects future errors in a server monitor without a browser subscription',async()=>{
   manager.monitor('session','user','native');failed!('initial',capacity,false);await vi.advanceTimersByTimeAsync(10000);expect(start).toHaveBeenCalledTimes(1);
  });
+ it('retains the monitor lease while the shared native connection recovers',async()=>{
+  manager.monitor('session','user','native');emit({type:'unavailable',reason:'recovering',retrying:true,reconnect:false});await settle();
+  expect(stops).not.toHaveBeenCalled();failed!('initial',capacity,false);await vi.advanceTimersByTimeAsync(10000);expect(start).toHaveBeenCalledTimes(1);
+ });
  it('waits 10/20/40 seconds and stops after exactly three retries despite repeated failure events',async()=>{
   failure();failure();expect(status()).toMatchObject({attempt:0,status:'waiting'});await vi.advanceTimersByTimeAsync(9999);expect(start).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(1);expect(start).toHaveBeenCalledTimes(1);expect(status()).toMatchObject({attempt:1,status:'running'});

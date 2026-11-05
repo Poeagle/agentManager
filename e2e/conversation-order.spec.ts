@@ -20,7 +20,7 @@ test('sending, early native echoes, late history and reload preserve causal mess
   await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'顺序测试'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
   let push!:(data:string)=>void;
-  await page.routeWebSocket('**/conversation/stream',socket=>{push=data=>socket.send(data);push(JSON.stringify({type:'snapshot',messages:[],busy:false,stage:'idle'}));});
+  await page.routeWebSocket('**/conversation/stream*',socket=>{push=data=>socket.send(data);push(JSON.stringify({type:'snapshot',messages:[],busy:false,stage:'idle'}));});
   let release!:()=>void;let submitted:{input:string;client_id:string}|undefined;
   await page.route(`**/api/sessions/${session.id}/input`,async route=>{
     submitted=route.request().postDataJSON();await new Promise<void>(resolve=>{release=resolve;});

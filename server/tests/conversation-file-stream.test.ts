@@ -4,6 +4,7 @@ import {tmpdir} from 'os';
 import {join} from 'path';
 import {observeConversationFile,type ConversationHistoryFrame,type ConversationStatisticsFrame} from '../src/services/conversation-file-stream.js';
 import type {ConversationUsageFrame} from '../src/services/conversation-usage.js';
+import {rememberCodexQuestionReply,syncQueuedCodexQuestionReplies} from '../src/services/agents/codex/runtime-signals.js';
 let close:(()=>void)|undefined,dir:string|undefined;
 afterEach(()=>{close?.();vi.unstubAllEnvs();if(dir)rmSync(dir,{recursive:true,force:true});});
 it('pushes new public legacy conversation records on file writes and stops when closed',async()=>{
@@ -28,4 +29,22 @@ it('pushes compaction usage changes even without new conversation text and does 
  appendFileSync(file,JSON.stringify({type:'response_item',payload:{type:'function_call_output',output:'PRIVATE_OUTPUT'}})+'\n');
  await new Promise(resolve=>setTimeout(resolve,120));expect(frames.filter(frame=>frame.type==='usage')).toHaveLength(2);
  expect(JSON.stringify(frames)).not.toMatch(/PRIVATE_SUMMARY|PRIVATE_OUTPUT/);
+});
+it('shares file parsing and updates question metadata while the execution state remains running',async()=>{
+ dir=mkdtempSync(join(tmpdir(),'conversation-file-runtime-'));vi.stubEnv('CODEX_HOME',dir);mkdirSync(join(dir,'sessions'));
+ const native='019ff001-9999-7999-8999-999999999999',file=join(dir,'sessions',`rollout-${native}.jsonl`),binding={cli_type:'codex',codex_session_id:native,claude_session_id:null,project_path:dir};
+ const record=(payload:unknown)=>JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload})+'\n';
+ writeFileSync(file,record({type:'task_started',turn_id:'work'})+record({type:'item_completed',item:{type:'AgentMessage',id:'ask',delivery:'async',questions:[{title:'Which?',options:null}]}}));
+ const first:any[]=[],second:any[]=[];close=observeConversationFile(binding,frame=>first.push(frame));
+ await vi.waitFor(()=>expect(first.find(frame=>frame.type==='history')?.runtime).toMatchObject({state:'running',pending_question_count:1}));
+ const stopSecond=observeConversationFile(binding,frame=>second.push(frame));
+ try {
+  expect(second[0]).toBe(first[0]);
+  const questionItemId=JSON.stringify(['request_user_input_async','ask',0]);
+  rememberCodexQuestionReply(native,'client','<send_user_message_question_reply>\n'+JSON.stringify([{questionItemId,question:'Which?',answer:'PRIVATE_ANSWER'}])+'\n</send_user_message_question_reply>',true);
+  await vi.waitFor(()=>expect(second.filter(frame=>frame.type==='history').at(-1)?.runtime).toMatchObject({state:'running',pending_question_count:0,queued_answer_count:1}));
+  expect(JSON.stringify(second)).not.toContain('PRIVATE_ANSWER');close();const count=first.length;
+  appendFileSync(file,record({type:'agent_message',message:'remaining viewer'}));
+  await vi.waitFor(()=>expect(second.flatMap(frame=>frame.messages||[]).some(message=>message.text==='remaining viewer')).toBe(true));expect(first).toHaveLength(count);
+ }finally{stopSecond();syncQueuedCodexQuestionReplies(native,[]);}
 });

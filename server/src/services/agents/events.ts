@@ -9,7 +9,7 @@ export interface AgentCompaction {
     completed_at: string | null;
     duration_ms: number | null;
 }
-export type AgentStreamFrame = {
+type AgentStreamEvent = {
     type: 'queue';
     messages: ConversationMessage[];
 } | ConversationUsageFrame | {
@@ -32,4 +32,9 @@ export type AgentStreamFrame = {
     type: 'unavailable';
     reason: string;
     reconnect?: boolean;
+    retrying?:boolean;
 };
+
+export type AgentStreamSnapshot=Extract<AgentStreamEvent,{type:'snapshot'}>;
+export interface AgentStreamPatch {type:'patch';upserts:ConversationMessage[];deltas:Array<{id:string;offset:number;text:string}>;state?:Omit<AgentStreamSnapshot,'type'|'messages'>}
+export type AgentStreamFrame=(AgentStreamEvent|AgentStreamPatch)&{stream_id?:string;stream_seq?:number;baseline?:boolean};

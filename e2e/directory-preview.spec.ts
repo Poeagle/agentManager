@@ -1,6 +1,6 @@
 import {test,expect} from '@playwright/test';
 import {createRequire} from 'node:module';
-import {mkdirSync,writeFileSync} from 'node:fs';
+import {mkdirSync,writeFileSync,readFileSync} from 'node:fs';
 import {join} from 'node:path';
 const require=createRequire(import.meta.url),Database=require('../server/node_modules/better-sqlite3');
 test('directory links open a navigable readonly tree with file previews and retain state when docked',async({page},info)=>{
@@ -13,7 +13,9 @@ test('directory links open a navigable readonly tree with file previews and reta
  await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'目录预览'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
  const readDirectories:string[]=[];page.on('request',request=>{const url=new URL(request.url());if(url.pathname==='/api/files/read'&&[docs,join(docs,'nested')].includes(url.searchParams.get('path')||''))readDirectories.push(url.toString());});
  try{
+  await page.addInitScript(()=>Object.defineProperty(window,'showSaveFilePicker',{value:undefined,configurable:true}));
   await page.setViewportSize({width:1600,height:950});await page.goto('/');await page.getByRole('link',{name:'浏览目录',exact:true}).click();const modal=page.getByRole('dialog',{name:'目录预览 · docs'});await expect(modal).toBeVisible();await modal.getByRole('button',{name:'nested',exact:true}).click();await modal.getByRole('button',{name:'README.md',exact:true}).click();await expect(modal.getByRole('heading',{name:'从目录打开的文档'})).toBeVisible();expect(readDirectories).toEqual([]);await expect(modal.getByRole('button',{name:'上传文件',exact:true})).toHaveCount(0);
+  const downloadEvent=page.waitForEvent('download');await modal.getByRole('button',{name:'下载原文件',exact:true}).click();const download=await downloadEvent;expect(download.suggestedFilename()).toBe('README.md');expect(readFileSync((await download.path())!)).toEqual(readFileSync(join(docs,'nested','README.md')));
   const handle=modal.getByRole('separator',{name:'调整文件树宽度'}),position=await handle.boundingBox(),tree=modal.getByLabel('文件上传区域'),before=await tree.boundingBox();await page.mouse.move(position!.x+2,position!.y+100);await page.mouse.down();await page.mouse.move(position!.x+70,position!.y+100,{steps:6});await page.mouse.up();expect((await tree.boundingBox())!.width).toBeGreaterThan(before!.width+40);
   await page.screenshot({path:info.outputPath('directory-tree-preview.png')});await modal.getByRole('button',{name:'显示到侧边'}).click();const side=page.getByRole('complementary',{name:'目录预览 · docs'});await expect(side.getByRole('heading',{name:'从目录打开的文档'})).toBeVisible();await expect(side.getByRole('button',{name:'nested',exact:true})).toBeVisible();await side.getByRole('button',{name:'居中显示'}).click();await expect(modal.getByRole('heading',{name:'从目录打开的文档'})).toBeVisible();
   await modal.getByRole('button',{name:'index.html',exact:true}).click();await expect(page.frameLocator('iframe[title="网页预览 · index.html"]').getByRole('heading',{name:'目录内网页'})).toBeVisible();await modal.getByRole('button',{name:'关闭目录预览 · docs'}).click();

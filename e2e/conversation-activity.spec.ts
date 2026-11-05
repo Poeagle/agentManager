@@ -20,14 +20,14 @@ test('one-line tool activity scrolls, keeps real timers and never enters public 
   let push:((value:unknown)=>void)|undefined;
   const activity=(id:string,label:string)=>({id,label,status:'running',started_at:stamp(-5000),completed_at:null,duration_ms:null});
   const frame=(activities:unknown[],busy=true)=>({type:'snapshot',messages:[],activities,busy,stage:busy?'tools':'idle',turn_id:'turn',started_at:stamp(-180000)});
-  await page.routeWebSocket('**/conversation/stream',socket=>{push=value=>socket.send(JSON.stringify(value));socket.send(JSON.stringify(frame([activity('one','运行命令 · npm run build')])));});
+  await page.routeWebSocket('**/conversation/stream*',socket=>{push=value=>socket.send(JSON.stringify(value));socket.send(JSON.stringify(frame([activity('one','运行命令 · npm run build')])));});
   await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});
   await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'部署状态'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
   const ticker=chat.getByTestId('conversation-activity-line');
   await expect(ticker).toContainText('运行命令 · npm run build');await expect(ticker).toContainText('本轮 3分');
-  await expect(chat.getByText('耗时 1分46秒',{exact:true})).toBeVisible();
+  await expect(chat.getByText('Elapsed: 1m 46s',{exact:true})).toBeVisible();
   expect((await ticker.boundingBox())!.height).toBeLessThan(26);
   const long='调用工具 · tools / exec_command · '+Array.from({length:18},()=> '只在状态栏显示的工具活动').join(' ');
   push?.(frame([activity('one','运行命令 · npm run build'),activity('two',long)]));

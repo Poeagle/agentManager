@@ -534,7 +534,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const providers=new Set(rows.map(row=>agentForSession(row).descriptor.id));if(providers.size!==1||!rows.length)throw Error('重试目标不明确');
     const session=rows[0];return {adapter:agentForSession(session),context:sessionAgentContext(session)};
   };
-  const retries=new ConversationRetryManager(getDb(),{inspect:native=>retryAgent(native).adapter.retry.inspect(native),start:(native,failed,client)=>retryAgent(native).adapter.retry.start(native,failed,client),observe:(native,emit,onFailure)=>{const {adapter,context}=retryAgent(native);return adapter.stream.observe(context,emit,onFailure);},allowed:(id,userId,nativeId)=>{
+  const retries=new ConversationRetryManager(getDb(),{inspect:native=>retryAgent(native).adapter.retry.inspect(native),start:(native,failed,client)=>retryAgent(native).adapter.retry.start(native,failed,client),observe:(native,emit,onFailure)=>{const {adapter,context}=retryAgent(native);return adapter.stream.observe({...context,streamFormat:'state'},emit,onFailure);},allowed:(id,userId,nativeId)=>{
     const session=getSession(id);
     return !!session&&agentForSession(session).descriptor.capabilities.retry&&nativeConversationId(session)===nativeId&&session.status==='running'&&canAccessAgentSession(userId,id)&&userHasPermission(userId,'agent_api','write');
   }});
@@ -741,7 +741,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     return {ok:true};
   });
 
-  app.get<{Params:{id:string}}>('/sessions/:id/conversation/stream',{websocket:true},(socket,req)=>{
+  app.get<{Params:{id:string};Querystring:{protocol?:string}}>('/sessions/:id/conversation/stream',{websocket:true},(socket,req)=>{
     const id=req.params.id;
     if(!req.user || !canAccessAgentSession(req.user.id,id)) {socket.close(1008,'Session not found');return;}
     if(!registerUserConnection(req.user.id,readSessionCookie(req),socket)) return;
@@ -761,7 +761,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         if(fingerprint===lastUsageFingerprint)return;
         lastUsageFingerprint=fingerprint;
       }
-      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(['snapshot','history','queue'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,linkConversationInputs(id,nativeId,frame.messages))}:frame));
+      if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(frame.type==='patch'?{...frame,upserts:decorateConversationAttachments(id,linkConversationInputs(id,nativeId,frame.upserts))}:['snapshot','history','queue'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,linkConversationInputs(id,nativeId,frame.messages))}:frame));
       else if(socket.readyState===1) socket.close(1013,'Slow conversation client');
     };
     if(adapter.descriptor.capabilities.retry)retries.monitor(id,req.user!.id,nativeId);
@@ -770,7 +770,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const stop=observeAgentConversation(session,frame=>{
       send(frame);
       if(frame.type==='unavailable'&&frame.reconnect&&socket.readyState===1)socket.close(1012,'Native connection lost');
-    },(turnId,error,willRetry)=>retries.failure(id,req.user!.id,nativeId,turnId,error,willRetry));
+    },(turnId,error,willRetry)=>retries.failure(id,req.user!.id,nativeId,turnId,error,willRetry),req.query.protocol==='2'?'incremental':'snapshot');
     socket.on('message',bytes=>{
       let frame:any;try{const raw=bytes.toString();if(Buffer.byteLength(raw)>64*1024){socket.close(1009,'Interaction response too large');return;}frame=JSON.parse(raw);}catch{return;}
       if(frame?.type!=='interaction_response'||typeof frame.request_id!=='string')return;
@@ -781,7 +781,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       }catch(failure){error=failure instanceof Error?failure.message:'交互提交失败';}
       if(socket.readyState===1)socket.send(JSON.stringify({type:'interaction_result',request_id:frame.request_id,ok:!error,...(error?{error}:{})}));
     });
-    const heartbeat=setInterval(()=>{if(socket.readyState===1) socket.ping();},25000);
+    let alive=true;socket.on('pong',()=>{alive=true;});
+    const heartbeat=setInterval(()=>{if(socket.readyState!==1)return;if(!alive){socket.terminate();return;}alive=false;socket.ping();socket.send(JSON.stringify({type:'heartbeat'}));},25000);
     socket.once('close',()=>{clearInterval(heartbeat);stopFile?.();stop();stopRetry();});
   });
 

@@ -1,3 +1,4 @@
+import {ConversationStreamCursor,applyConversationPatches,type ConversationPatch} from '../lib/conversation-stream';
 import {sessionAgent,agentNativeId,agentSupports} from '../lib/agents';
 import {ConversationStatisticsLabel,englishMetadataDuration,metadataDurationTitle,metadataTimestampTitle} from './ConversationStatisticsLabel';
 import {ConversationRetryStatus,type ConversationRetry} from './ConversationRetryStatus';
@@ -123,6 +124,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const [sending,setSending]=useState(false);
   const [unread,setUnread]=useState(false);
   const [refresh,setRefresh]=useState(0);
+  const [liveRetrying,setLiveRetrying]=useState(false),[liveReason,setLiveReason]=useState('');
   const [liveState,setLiveState]=useState<'connecting'|'connected'|'unavailable'>('connecting');
   const [connectionGeneration,setConnectionGeneration]=useState(0);
   const [requests,setRequests]=useState<ConversationInteractionRequest[]>([]);
@@ -233,15 +235,38 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
 
   useEffect(()=>{
     if(!active || !canRead || !agentSupports(session,'stream') || !page?.native_id || page.native_id!==agentNativeId(session) || ended) return;
-    let disposed=false;const settledIds=new Set<string>();let socket:WebSocket;let retry:ReturnType<typeof setTimeout>;
+    let disposed=false;const settledIds=new Set<string>();let socket:WebSocket;let retry:ReturnType<typeof setTimeout>;let raf:number|undefined;let pending:ConversationPatch[]=[];let pendingBytes=0,lastMessageAt=Date.now();let delivery=new ConversationStreamCursor(),resyncScheduled=false,failures=0;
+    const flushPatches=()=>{if(raf!==undefined)cancelAnimationFrame(raf);raf=undefined;if(!pending.length||disposed)return;const batch=pending;pending=[];pendingBytes=0;
+      setMessages(previous=>{const result=applyConversationPatches(previous,batch);timelineRef.current=result.messages;if(result.needsSync&&!resyncScheduled){resyncScheduled=true;queueMicrotask(()=>{if(!disposed){setRefresh(value=>value+1);ensureFresh(true);}});}return result.messages;});
+      if(pinned.current)requestAnimationFrame(()=>{if(!disposed)scrollBottom();});else setUnread(true);
+    };
+    const observeState=(frame:Partial<LiveProgress>&{busy?:boolean;interactions?:ConversationInteractionRequest[];compaction?:NativeCompaction|null;messages?:ConversationMessage[]})=>{
+      setLiveState('connected');setLiveRetrying(false);setLiveBusy(!!frame.busy);
+      if('compaction' in frame){const completion=frame.compaction?.completed_at?Date.parse(frame.compaction.completed_at):Infinity;const resumed=!!frame.busy&&(frame.activities?.some(item=>item.id!==frame.compaction?.id&&item.started_at&&Date.parse(item.started_at)>=completion)||frame.messages?.some(item=>item.role==='assistant'&&item.streaming&&item.timestamp&&Date.parse(item.timestamp)>=completion));compaction.observe(frame.compaction??null,!!frame.busy,!!resumed);}
+      setRequests(Array.isArray(frame.interactions)?frame.interactions:[]);
+      if(frame.stage)setLiveProgress({turn_id:frame.turn_id||null,started_at:frame.started_at||null,completed_at:frame.completed_at||null,activities:Array.isArray(frame.activities)?frame.activities:[],stage:frame.stage});
+    };
     const connect=()=>{
       if(disposed) return;
-      setLiveState('connecting');
-      socket=new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/api/sessions/${encodeURIComponent(session.id)}/conversation/stream`);
-      liveSocket.current=socket;setConnectionGeneration(value=>value+1);
+      setLiveState('connecting');lastMessageAt=Date.now();delivery=new ConversationStreamCursor();resyncScheduled=false;
+      socket=new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/api/sessions/${encodeURIComponent(session.id)}/conversation/stream?protocol=2`);
+      const current=socket;liveSocket.current=current;
+      current.onopen=()=>{if(!disposed&&liveSocket.current===current){lastMessageAt=Date.now();setRefresh(value=>value+1);}};
+      setConnectionGeneration(value=>value+1);
       socket.onmessage=event=>{
-        if(disposed) return;
-        let frame:{type:string;model?:string;effort?:string|null;native_id?:string;usage?:ConversationUsageUpdate['usage'];statistics?:ConversationStatistics[];retry?:ConversationRetry;observed_at?:string;messages?:ConversationMessage[];runtime?:ConversationPage['runtime'];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string;compaction?:NativeCompaction|null}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
+        if(disposed||liveSocket.current!==current)return;lastMessageAt=Date.now();
+        let frame:{type:string;stream_id?:string;stream_seq?:number;baseline?:boolean;retrying?:boolean;reason?:string;upserts?:ConversationMessage[];deltas?:ConversationPatch['deltas'];state?:Parameters<typeof observeState>[0];model?:string;effort?:string|null;native_id?:string;usage?:ConversationUsageUpdate['usage'];statistics?:ConversationStatistics[];retry?:ConversationRetry;observed_at?:string;messages?:ConversationMessage[];runtime?:ConversationPage['runtime'];busy?:boolean;interactions?:ConversationInteractionRequest[];request_id?:string;ok?:boolean;error?:string;compaction?:NativeCompaction|null}&Partial<LiveProgress>;try{frame=JSON.parse(event.data);}catch{return;}
+        if(frame.type==='heartbeat')return;
+        const order=delivery.observe(frame);if(order==='ignore')return;if(order==='resync'){setRefresh(value=>value+1);ensureFresh(true);return;}
+        if(frame.type==='snapshot'||frame.type==='patch')failures=0;
+        if(frame.type==='patch'&&Array.isArray(frame.upserts)&&Array.isArray(frame.deltas)){
+          pending.push({type:'patch',upserts:frame.upserts,deltas:frame.deltas});pendingBytes+=frame.deltas.reduce((sum,delta)=>sum+delta.text.length,0);
+          if(frame.state||frame.upserts.length||pendingBytes>=64*1024)flushPatches();else if(raf===undefined)raf=requestAnimationFrame(flushPatches);
+          if(frame.state)observeState({...frame.state,messages:frame.upserts});
+          pushAvailable.current=true;setLiveState('connected');setLiveRetrying(false);
+          const settled=frame.upserts.filter(item=>item.role==='assistant'&&!item.streaming&&!settledIds.has(item.id));for(const item of settled)settledIds.add(item.id);if(settled.length)setRefresh(value=>value+1);return;
+        }
+        flushPatches();
         if(frame.type==='retry'&&frame.retry&&frame.retry.native_id===agentNativeId(session)){const retry=frame.retry;setAutoRetries(previous=>({...previous,[retry.root_turn_id]:retry}));return;}
         if(frame.type==='usage') {
           if(typeof frame.native_id==='string'&&frame.native_id===agentNativeId(session)&&frame.usage&&frame.observed_at&&Number.isFinite(Date.parse(frame.observed_at))) {
@@ -258,12 +283,9 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
         if(frame.type==='interaction_result' && frame.request_id) {const pending=pendingAnswers.current.get(frame.request_id);if(pending){clearTimeout(pending.timer);pendingAnswers.current.delete(frame.request_id);if(frame.ok)pending.resolve();else pending.reject(new Error(frame.error||'提交失败'));}return;}
         if(frame.type==='queue'&&Array.isArray(frame.messages)){const clients=new Set(frame.messages.map(item=>item.client_id));setMessages(previous=>mergeConversationTimeline(previous.filter(item=>!item.queued||clients.has(item.client_id)),frame.messages!));return;}
         if(frame.type==='history'&&Array.isArray(frame.messages)){if(frame.messages.some(message=>message.role==='assistant'&&!message.streaming)&&queryClient.getQueryData<ConversationControlsData>(['conversation-controls',session.id])?.pending_status==='submitted')void queryClient.invalidateQueries({queryKey:['conversation-controls',session.id]});if(frame.runtime&&'compaction' in frame.runtime)compaction.observe(frame.runtime.compaction??null,frame.runtime.state==='running');pushAvailable.current=true;setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));setPage(previous=>previous?{...previous,runtime:frame.runtime&&!(Date.parse(previous.runtime?.observed_at||'')>Date.parse(frame.runtime.observed_at))?frame.runtime:previous.runtime}:previous);if(frame.messages.length){if(pinned.current)requestAnimationFrame(()=>{if(!disposed)scrollBottom();});else setUnread(true);}return;}
-        if(frame.type==='unavailable') {pushAvailable.current=false;setLiveState('unavailable');setLiveBusy(false);compaction.disconnected();return;}
+        if(frame.type==='unavailable') {pushAvailable.current=false;setLiveRetrying(!!frame.retrying);setLiveReason(frame.reason||'实时连接暂不可用');setLiveState('unavailable');setLiveBusy(false);compaction.disconnected();return;}
         if(frame.type!=='snapshot' || !Array.isArray(frame.messages)) return;
-        pushAvailable.current=true;setLiveState('connected');setLiveBusy(!!frame.busy);
-        if('compaction' in frame){const completion=frame.compaction?.completed_at?Date.parse(frame.compaction.completed_at):Infinity;const resumed=!!frame.busy&&(frame.activities?.some(item=>item.id!==frame.compaction?.id&&item.started_at&&Date.parse(item.started_at)>=completion)||frame.messages.some(item=>item.role==='assistant'&&item.streaming&&item.timestamp&&Date.parse(item.timestamp)>=completion));compaction.observe(frame.compaction??null,!!frame.busy,!!resumed);}
-        setRequests(Array.isArray(frame.interactions)?frame.interactions:[]);
-        if(frame.stage) setLiveProgress({turn_id:frame.turn_id||null,started_at:frame.started_at||null,completed_at:frame.completed_at||null,activities:Array.isArray(frame.activities)?frame.activities:[],stage:frame.stage});
+        pushAvailable.current=true;observeState(frame);
         const incoming=frame.messages;
         setMessages(previous=>mergeConversationTimeline(previous,incoming));
         if(incoming.length) {
@@ -273,11 +295,14 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
           if(settled.length) setRefresh(value=>value+1);
         }
       };
-      socket.onclose=()=>{if(!disposed){pushAvailable.current=false;liveSocket.current=null;for(const pending of pendingAnswers.current.values()){clearTimeout(pending.timer);pending.reject(new Error('连接已断开，请重连核对请求状态'));}pendingAnswers.current.clear();setLiveState('unavailable');setLiveBusy(false);compaction.disconnected();retry=setTimeout(connect,2500);}};
-      socket.onerror=()=>socket.close();
+      socket.onclose=()=>{if(!disposed&&liveSocket.current===current){flushPatches();pushAvailable.current=false;liveSocket.current=null;for(const pending of pendingAnswers.current.values()){clearTimeout(pending.timer);pending.reject(new Error('连接已断开，请重连核对请求状态'));}pendingAnswers.current.clear();setLiveState('unavailable');setLiveBusy(false);compaction.disconnected();retry=setTimeout(connect,Math.min(15000,500*2**Math.min(failures++,5))+Math.floor(Math.random()*250));}};
+      socket.onerror=()=>current.close();
     };
+    const ensureFresh=(force=false)=>{if(disposed)return;const current=liveSocket.current;if(force||Date.now()-lastMessageAt>60000){flushPatches();liveSocket.current=null;current?.close();for(const answer of pendingAnswers.current.values()){clearTimeout(answer.timer);answer.reject(new Error('连接正在恢复，请重连核对请求状态'));}pendingAnswers.current.clear();clearTimeout(retry);failures=0;connect();}};
+    const online=()=>ensureFresh(true),visible=()=>{if(document.visibilityState==='visible')ensureFresh();};
+    const watchdog=setInterval(()=>ensureFresh(),10000);window.addEventListener('online',online);document.addEventListener('visibilitychange',visible);
     connect();
-    return ()=>{disposed=true;clearTimeout(retry);socket?.close();pushAvailable.current=false;liveSocket.current=null;for(const pending of pendingAnswers.current.values()){clearTimeout(pending.timer);pending.reject(new Error('连接已关闭，请重新连接后确认请求状态'));}pendingAnswers.current.clear();};
+    return ()=>{disposed=true;if(raf!==undefined)cancelAnimationFrame(raf);pending=[];clearInterval(watchdog);window.removeEventListener('online',online);document.removeEventListener('visibilitychange',visible);clearTimeout(retry);socket?.close();pushAvailable.current=false;liveSocket.current=null;for(const pending of pendingAnswers.current.values()){clearTimeout(pending.timer);pending.reject(new Error('连接已关闭，请重新连接后确认请求状态'));}pendingAnswers.current.clear();};
   },[active,canRead,session.id,session.cli_type,page?.native_id,ended]);
 
   async function loadOlder() {
@@ -369,7 +394,16 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const waitingForText=!compaction.running && busy && !currentAnswer && !activeError && !waiting;
   const ignoredKey=JSON.stringify(page?.runtime?.ignored_question_ids||[]);
   const ignoredIds=useMemo(()=>JSON.parse(ignoredKey) as string[],[ignoredKey]);
-  const displayed=useMemo(()=>messages.map(message=>message.async_questions?.length?{...message,async_questions:message.async_questions.filter(q=>!q.id||!ignoredIds.includes(q.id))}:message).filter(message=>!message.async_questions||message.async_questions.length).map(message=>{const stats=statistics.find(item=>item.turn_id===message.turn_id&&(item.message_id===message.id||item.message_id&&message.aliases?.includes(item.message_id)||message.sequence===item.sequence));return stats?{...message,statistics:stats}:message;}),[messages,statistics,ignoredIds]);
+  const statisticsIndex=useMemo(()=>{const byId=new Map<string,ConversationStatistics>();for(const item of statistics){if(item.message_id)byId.set(item.message_id,item);byId.set(`${item.turn_id}:${item.sequence}`,item);}return byId;},[statistics]);
+  const projected=useRef(new WeakMap<ConversationMessage,{ignored:string;stats:ConversationStatistics|undefined;value:ConversationMessage|null}>());
+  const displayed=useMemo(()=>messages.flatMap(message=>{
+    const stats=statisticsIndex.get(message.id)||message.aliases?.map(id=>statisticsIndex.get(id)).find(Boolean)||statisticsIndex.get(`${message.turn_id}:${message.sequence}`);
+    const ignored=message.async_questions?.length?ignoredKey:'',cached=projected.current.get(message);
+    if(cached&&cached.ignored===ignored&&cached.stats===stats)return cached.value?[cached.value]:[];
+    const questions=message.async_questions?.filter(q=>!q.id||!ignoredIds.includes(q.id));
+    const value=questions&&!questions.length?null:stats||questions?{...message,...questions?{async_questions:questions}:{},...stats?{statistics:stats}:{}}:message;
+    projected.current.set(message,{ignored,stats,value});return value?[value]:[];
+  }),[messages,statisticsIndex,ignoredIds,ignoredKey]);
   const streamingId=!activeError && liveState==='connected' && busy && !['tools','finishing'].includes(liveProgress.stage)
     ? messages.reduce<string|null>((id,message,index)=>index>lastUserIndex && message.role==='assistant' && message.streaming && (!liveProgress.turn_id || message.turn_id===liveProgress.turn_id)?message.id:id,null):null;
   const groups=groupConversationProgress(displayed);
@@ -422,7 +456,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
         {compaction.state?<ConversationCompactionStatus state={compaction.state} now={now}/>:<ConversationActivityLine key={`${session.id}:${liveState}:${liveProgress.turn_id||''}`} activities={liveState==='connected'&&!reconnectable&&liveProgress.stage==='tools'?liveProgress.activities||[]:[]} busy={busy&&!reconnectable&&!ended&&!waiting&&!activeError} now={now} totalElapsed={elapsedBetween(started,now)}
           fallback={reconnecting?'正在恢复会话连接…':reconnectable?'会话连接已断开':activeError?activeError.error?.will_retry?busy?'执行遇到错误，正在自动重试…':'重试已结束':'本轮执行失败，可处理后重试':ended?'会话已结束':waiting?'等待你处理':pendingQuestion&&!busy?'有问题待回答 · 本轮已结束':continuingAfterFollowup?sending?'正在提交追问…':'追问已提交，任务继续执行中…':busy?liveProgress.stage==='tools'?'正在执行任务…':waitingForText?'等待正文…':liveProgress.stage==='finishing'?'正在完成本轮…':streamingId?'正文接收中…':'正在处理…':page?.session_active?'可以继续发送消息':'等待会话就绪'}/>}
         {liveState==='connected' && <span className="session-chat-live-label">事件通道已连接</span>}
-        {liveState==='unavailable' && <span className="session-chat-live-label" title="当前终端会话未提供实时正文事件，只能同步已完成的消息。">尚未接入实时输出</span>}
+        {liveState==='unavailable' && <span className="session-chat-live-label" title={liveReason}>{liveRetrying?'实时连接恢复中…':'尚未接入实时输出'}</span>}
         {ended && onResume && <button onClick={onResume} disabled={resuming}>{resuming?'正在恢复…':resumeFailed?'重试恢复会话':'恢复会话'}</button>}{ended && onClose && <button onClick={onClose}>关闭会话</button>}
         {reconnectable&&canSend&&<button type="button" disabled={reconnecting} onClick={()=>void reconnect()}>{reconnecting?'正在重新连接…':'重新连接'}</button>}
       </div>

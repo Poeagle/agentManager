@@ -10,7 +10,7 @@ test('a detached chat reconnects independently of the raw terminal and preserves
  const {project}=await(await page.request.post('/api/projects',{data:{name:'会话重连验证',path}})).json();
  const {session}=await(await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:path,mode:'terminal'}})).json();
  const native='019ff001-7373-7373-8373-737373737373',dir=join(root,'home/.codex/sessions');mkdirSync(dir,{recursive:true});
- writeFileSync(join(dir,`rollout-${native}.jsonl`),JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'agent_message',message:'原会话历史保持不变。'}})+'\n');
+ writeFileSync(join(dir,`rollout-${native}.jsonl`),JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_complete',last_agent_message:'原会话历史保持不变。'}})+'\n');
  const require=createRequire(import.meta.url),Database=require('../server/node_modules/better-sqlite3'),db=new Database(join(root,'agentmanager.db'));
  try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',native,session.id);}finally{db.close();}
  await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});
@@ -19,7 +19,7 @@ test('a detached chat reconnects independently of the raw terminal and preserves
  let disconnected=true,reconnects=0;const sent:Array<{input:string}>=[];
  await page.route(`**/api/sessions/${session.id}/input`,async route=>{sent.push(route.request().postDataJSON());await route.fulfill({status:202,json:{status:'submitted'}});});
  await page.route(`**/api/sessions/${session.id}/conversation?*`,async route=>{const response=await route.fetch();const data=await response.json();await route.fulfill({response,json:disconnected?{...data,session_active:false,session_status:'detached'}:data});});
- await page.routeWebSocket('**/conversation/stream',socket=>socket.send(JSON.stringify({type:'snapshot',messages:[],busy:false,stage:'idle'})));
+ await page.routeWebSocket('**/conversation/stream*',socket=>socket.send(JSON.stringify({type:'snapshot',messages:[],busy:false,stage:'idle'})));
  await page.route(`**/api/sessions/${session.id}/reconnect`,async route=>{reconnects++;if(reconnects===1){await route.fulfill({status:409,json:{error:'现有终端连接暂不可用，请重新连接。'}});return;}const response=await route.fetch();if(response.ok())disconnected=false;await route.fulfill({response});});
  try {
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
