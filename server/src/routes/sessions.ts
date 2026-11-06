@@ -304,7 +304,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     if(!requirePermission(req,reply,'agent_api','write'))return reply;
     if(req.user!.role!=='admin')return reply.code(403).send({error:'当前账号不可操作共享 Codex 服务'});
     const result=await (action==='compact'?sessionManager.compactSessionConversation(session.id):sessionManager.newSessionConversation(session.id,req.body?.preference));
-    if(!result.ok)return reply.code(409).send({error:result.error});
+    if(!result.ok)return reply.code(result.submission==='unknown'?503:409).send({error:result.error,...result.submission?{submission:result.submission}:{}});
     return {...result,session:sessionManager.getSession(session.id)};
   });
 

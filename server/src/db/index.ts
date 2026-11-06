@@ -163,6 +163,11 @@ function createCurrentSchema(): void {
       last_heartbeat_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS agent_queued_inputs (
+      agent_id TEXT NOT NULL, scope_key TEXT NOT NULL, native_id TEXT NOT NULL,
+      client_id TEXT NOT NULL, PRIMARY KEY(agent_id,scope_key,native_id,client_id)
+    );
+
     CREATE TABLE IF NOT EXISTS user_ui_state (
       user_id TEXT NOT NULL,
       key TEXT NOT NULL,

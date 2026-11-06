@@ -189,7 +189,7 @@ describe('immediate session input',()=>{
   });
   it('does not acknowledge a failed write as submitted',async()=>{
     vi.mocked(manager.writeToSession).mockReturnValue(false);
-    expect((await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'follow-up'}})).statusCode).toBe(503);
+    expect((await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'follow-up'}})).statusCode).toBe(409);
     expect(manager.writeToSession).toHaveBeenCalledTimes(1);
   });
 });

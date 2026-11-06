@@ -164,8 +164,10 @@ export async function readConversationControls(threadId:string,sharedAccess:bool
   if(!sharedAccess)limits=[];
   const cwd=typeof native?.cwd==='string'?native.cwd:null;
   const git=await readGitInfo(cwd,force);
+  const installed=await installedCodexVersion(force).catch(()=>null);
+  if(!warning&&engineVersion&&installed&&engineVersion!==installed)warning=`客户端 ${installed} · 共享引擎 ${engineVersion}。重连保留当前引擎，不会重启其他会话。`;
   return {model:typeof native?.model==='string'?native.model:telemetry.model,effort:typeof native?.reasoningEffort==='string'?native.reasoningEffort:telemetry.effort,
-    provider:typeof native?.modelProvider==='string'?native.modelProvider:null,cwd,cli_version:typeof native?.cliVersion==='string'?native.cliVersion:null,engine_version:engineVersion,installed_cli_version:await installedCodexVersion(force).catch(()=>null),git,state:typeof native?.status?.type==='string'?native.status.type:null,
+    provider:typeof native?.modelProvider==='string'?native.modelProvider:null,cwd,cli_version:typeof native?.cliVersion==='string'?native.cliVersion:null,engine_version:engineVersion,installed_cli_version:installed,git,state:typeof native?.status?.type==='string'?native.status.type:null,
     permission:telemetry.permission,approval:telemetry.approval,service_tier:codexSettings(threadId)?codexSettings(threadId)!.tier:telemetry.service_tier,usage:telemetry.usage,limits,usage_observed_at:telemetry.observed_at,
     models,loaded,warning,supports_model_recovery:true,supports_fresh_model:true,native_id:threadId,checked_at:new Date().toISOString()};
 }

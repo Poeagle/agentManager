@@ -27,14 +27,16 @@ sequenceDiagram
     B->>B: 显示临时消息，立即清空输入框
     B->>P: POST /api/sessions/:id/input
     P->>P: 校验账号、会话归属、正文和附件
-    P->>P: 确认现有会话连接，串行处理短提交
-    P->>C: 初始化提交连接，thread/read
-    opt 当前线程忙碌
-        P->>C: 读取当前 turn，检查重复输入和压缩状态
+    P->>P: 串行处理短提交，复用已有实时轮次及接收回执
+    P->>C: 初始化提交连接
+    opt 尚无实时轮次信息
+        P->>C: thread/read，必要时读取一轮 summary（不读 full）
     end
-    alt 可以直接提交
+    alt 当前用户轮次仍在执行
+        P->>C: turn/steer，携带 expectedTurnId 和 clientUserMessageId
+    else 当前没有活动轮次
         P->>C: turn/start，携带输入和 clientUserMessageId
-    else 压缩中或原生明确拒绝繁忙提交
+    else 原生明确拒绝在手动压缩轮次追加
         P->>C: thread/queue/list，检查重复排队
         P->>C: 必要时 thread/queue/add
     end
@@ -51,9 +53,9 @@ sequenceDiagram
 
 1. 附件在发送前上传到项目的附件目录；发送时使用已上传的路径和展示元数据。图片转换为原生 `localImage` 输入，普通文件提供可读取的文件路径。
 2. 浏览器生成一次提交的 `client_id`，立即插入临时消息并清空已提交的草稿。HTTP 尚未返回时，可以继续编辑下一份草稿。
-3. 后端检查登录和写权限、会话访问范围、正文大小及附件路径，尝试重新连接已有会话。连接不可恢复时返回明确失败，保留历史。
+3. 后端检查登录和写权限、会话访问范围、正文大小及附件路径。原生输入独立于终端附着；只有需要退回终端输入时才重连已有终端。
 4. 同一标签页的短提交过程串行执行，避免同时粘贴或提交互相交错；不会锁住整个 Agent 执行周期。
-5. 已接入原生服务时，普通聊天直接调用原生 RPC。忙碌时先核对当前 turn：如果同一 `client_id` 已存在，则复用受理结果；压缩中或遭到明确的繁忙拒绝时进入原生队列。其他错误不会一律转成排队。
+5. 已接入原生服务时，普通聊天直接调用原生 RPC。有实时订阅时直接复用活动轮次和用户回执；否则只读一轮摘要，禁止为输入准备读取完整工具记录。活动轮次使用 `turn/steer` 实时追加；原轮次刚结束的明确拒绝可以改用原子的 `turn/start`。只有原生明确不可追加（例如手动压缩）才进入原生队列。其他错误不会一律转成排队。
 6. `submitted` 表示输入已受理，`queued` 表示原生队列已接收。两者都不表示任务已完成。
 
 **受理到最终答复。**
@@ -67,7 +69,7 @@ sequenceDiagram
     participant M as 所选模型服务
     participant T as 工具与外部资源
     opt 输入已经排队
-        C->>C: 可处理时消费原生队列
+        P->>C: 原生空闲事件后，thread/queue/start 原子消费平台排队项
         C-->>P: 队列变化和用户消息回显
         P-->>B: 更新排队标记和消息身份
     end
@@ -180,3 +182,10 @@ sequenceDiagram
 - 原生提交、排队和事件转换：[conversation-stream.ts](../server/src/services/conversation-stream.ts)。
 - 日志补齐：[conversation-file-stream.ts](../server/src/services/conversation-file-stream.ts)、[conversation-reader.ts](../server/src/services/conversation-reader.ts)。
 - 标签页状态推送：[session-runtime-watch.ts](../server/src/services/session-runtime-watch.ts)、[stream.ts](../server/src/routes/stream.ts)。
+
+
+发送前读取/连接失败表示“尚未发送”，恢复草稿并允许重试；写操作发出后失去回执才表示“结果待确认”，不自动重发。晚到的原生用户回显会更新消息并清除未确认提示，保留用户后来编辑的草稿。
+
+手动压缩允许加载中的原生 `idle` / `systemError` 状态，由原生 RPC 决定接收；请求尚未启动与执行过程中失败分别显示。已观察到原生压缩开始后，晚到的 HTTP 失败不能覆盖其运行状态。
+
+客户端与引擎版本不同不会单独阻止重连；预检检查真实握手和配置读取。重连只替换当前客户端，不重启其他任务共用的引擎，也不声称已升级引擎。

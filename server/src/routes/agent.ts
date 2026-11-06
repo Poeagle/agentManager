@@ -1,3 +1,4 @@
+import {AgentSubmissionError} from '../services/agents/submission.js';
 import {sendAgentQuota} from '../services/agents/quota-response.js';
 import {withTerminalInput} from '../services/agents/terminal-input.js';
 import {observeAgentConversation} from '../services/agents/host.js';
@@ -601,7 +602,10 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const target=getSession(id);if(req.body?.source==='conversation'&&attachments.length&&target&&!agentForSession(target).descriptor.capabilities.attachments)return reply.code(409).send({error:'此 Agent 不支持附件',submission:'rejected'});
     // The server can restart after the browser's last ready snapshot. Reattach
     // the existing wrapper before submission; never replay an ambiguous send.
-    if(!await attachExistingSession(id))return reply.code(409).send({error:'会话连接尚未就绪，请重新连接；进程已退出时需恢复会话。',submission:'rejected'});
+    // Native input has its own connection and must not wait for a terminal
+    // client attachment. PTY reattachment is only needed by the fallback below.
+    const nativeCandidate=req.body?.source==='conversation'&&!!target&&!!nativeConversationId(target);
+    if(!nativeCandidate&&!await attachExistingSession(id))return reply.code(409).send({error:'会话连接尚未就绪，请重新连接；进程已退出时需恢复会话。',submission:'rejected'});
     const current=getSession(id);if(current&&nativeConversationId(current))retries.cancel(id,nativeConversationId(current)!,'new_input');
     const preparedInput=formatConversationInput(input,attachments,true);
     const attachmentClientId=typeof clientId==='string'?clientId:randomUUID();
@@ -615,13 +619,14 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         const adapter=agentForSession(session),native=await adapter.input.submit(sessionAgentContext(session),input,typeof clientId==='string'?clientId:attachments.length?attachmentClientId:undefined,attachments);
         if(native)return native==='queued'?'queued':'submitted';if(adapter.descriptor.sessionHost==='managed')throw Object.assign(Error('Agent 服务未接受输入，消息尚未提交'),{submission:'rejected'});
       }
+      if(nativeCandidate&&!await attachExistingSession(id))throw new AgentSubmissionError('消息尚未发送：终端连接未就绪，请重连后重试','rejected');
       if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);
       if(req.body?.source==='conversation'&&typeof clientId==='string'&&session){
         const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
         await rememberConversationInput(id,{...session,cli_type:session.cli_type||'claude',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},clientId,preparedInput).catch(()=>{});
       }
       await withTerminalInput(id,async()=>{
-      if (!writeToSession(id,preparedInput,true)) throw new Error('Session input is unavailable');
+      if (!writeToSession(id,preparedInput,true)) throw new AgentSubmissionError('消息尚未发送：终端未接收输入，请重连后重试','rejected');
       await new Promise(resolve => setTimeout(resolve,50));
       if (!writeToSession(id,'\r',false)) throw new Error('Input was pasted but submission could not be confirmed');
       });
@@ -633,7 +638,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(202).send({id,status:status==='queued'?'queued':'submitted'});
     } catch(error) {
       if(error instanceof Error&&(error as Error&{submission?:string}).submission==='rejected')return reply.code(409).send({error:error.message,submission:'rejected'});
-      return reply.code(503).send({error:'暂未确认消息是否提交，请在原始终端核对后再重试',submission:'unknown'});
+      req.log.warn({session_id:id,submission:'unknown'},'Agent input dispatched without a confirmed receipt');
+      return reply.code(503).send({error:'消息接收结果暂未确认，连接恢复后会自动核对；请勿重复提交',submission:'unknown'});
     } finally {
       if (pendingInputs.get(id) === submission) pendingInputs.delete(id);
     }

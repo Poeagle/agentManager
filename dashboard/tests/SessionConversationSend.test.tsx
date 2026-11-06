@@ -120,6 +120,12 @@ describe('conversation send transaction', () => {
     expect(editor.textContent).toBe(''); expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(document.querySelectorAll('.session-chat-message.user')).toHaveLength(1);
   });
+  it('clears an uncertain delivery warning when the native receipt arrives later without resending',async()=>{
+    const send=deferred<SendResult>(),submit=vi.spyOn(api.agent,'sendInput').mockReturnValue(send.promise);await mount();const editor=input('等待回执');fireEvent.keyDown(editor,{key:'Enter'});
+    await act(async()=>send.reject(new ApiError('发送结果待确认',503,'unknown')));expect(screen.getByRole('alert')).toHaveTextContent('发送结果待确认');
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[{id:'late-native',client_id:submit.mock.calls[0][2],role:'user',text:'等待回执'}],busy:true,stage:'tools'}));
+    await waitFor(()=>expect(screen.queryByRole('alert')).not.toBeInTheDocument());expect(submit).toHaveBeenCalledOnce();expect(editor).toHaveTextContent('等待回执');
+  });
   it('clears attachments immediately and restores their original inline positions without reuploading', async () => {
     const send = deferred<SendResult>(); const submit = vi.spyOn(api.agent, 'sendInput').mockReturnValue(send.promise);
     const upload = vi.spyOn(api.sessions, 'pasteFile').mockResolvedValue({ path: '/project/note.txt' }); await mount();

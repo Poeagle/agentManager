@@ -17,9 +17,12 @@ export async function installedCodexVersion(force=false):Promise<string> {
 export async function prepareCodexReload(shared:boolean) {
   const installed=await installedCodexVersion(true);
   if(shared&&currentCodexEngine().socket) {
-    const engine=await withCodexConnection(async(_request,server)=>codexVersion(server.userAgent));
+    const engine=await withCodexConnection(async(request,server)=>{await request('config/read',{});return codexVersion(server.userAgent);});
     if(!engine)throw Error('无法确认 Codex 服务版本，原会话已保留，请稍后重试');
-    if(engine!==installed)throw Error(`Codex 服务运行 ${engine}，已安装 ${installed}。请先升级共享 Codex 服务；原会话已保留。重载单个标签页不会重启其他会话共用的服务。`);
+    // A successful native handshake/read permits reconnecting this client.
+    // Version differences describe deployment state, not a reason to restart
+    // an engine that owns other active tasks. Actual protocol failures abort
+    // this preflight before the terminal is touched.
   }
   return installed;
 }

@@ -7,7 +7,7 @@ export async function inspectRetryThread(nativeId: string): Promise<{state:strin
         if (state === 'notLoaded')
             return { state, turn: null, queued: false };
         const [turns, queue] = await Promise.all([
-            request('thread/turns/list', { threadId: nativeId, limit: 1, itemsView: 'full' }),
+            request('thread/turns/list', { threadId: nativeId, limit: 1, itemsView: 'summary' }),
             request('thread/queue/list', { threadId: nativeId, limit: 1 }),
         ]);
         return { state, turn: turns.data?.[0] ?? null, queued: !!queue.data?.length };
@@ -18,7 +18,7 @@ export async function inspectRetryThread(nativeId: string): Promise<{state:strin
 export async function startRetryTurn(nativeId: string, failedTurnId: string, clientId: string): Promise<string> {
     return withCodexConnection(async (request) => {
         const current = await request('thread/read', { threadId: nativeId });
-        const turns = await request('thread/turns/list', { threadId: nativeId, limit: 1, itemsView: 'full' });
+        const turns = await request('thread/turns/list', { threadId: nativeId, limit: 1, itemsView: 'summary' });
         const queue = await request('thread/queue/list', { threadId: nativeId, limit: 1 });
         const reason = disqualified(normalizeCodexRetry({ state: current.thread?.status?.type, turn: turns.data?.[0], queued: !!queue.data?.length }), failedTurnId);
         if (reason)

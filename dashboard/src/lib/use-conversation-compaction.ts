@@ -3,7 +3,7 @@ import {useCallback,useEffect,useRef,useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {api,type ConversationControlsData} from './api';
 export type NativeCompaction=import('./agents').AgentCompaction;
-export interface CompactionPresentation extends Omit<NativeCompaction,'status'> {status:NativeCompaction['status']|'pending'|'unknown';before:number|null;after:number|null;error?:string}
+export interface CompactionPresentation extends Omit<NativeCompaction,'status'> {status:NativeCompaction['status']|'pending'|'unknown'|'rejected';before:number|null;after:number|null;error?:string}
 const percent=(usage:ConversationControlsData['usage'])=>usage?.window&&usage.last.total_tokens!=null?Math.min(100,Math.round(100*usage.last.total_tokens/usage.window)):null;
 const COMPLETION_MS=3000;
 export function useConversationCompaction(sessionId:string,nativeId:string|null|undefined){
@@ -14,7 +14,12 @@ export function useConversationCompaction(sessionId:string,nativeId:string|null|
  const start=useCallback(async()=>{
   if(current.current&&['pending','running'].includes(current.current.status))return;
   const now=new Date(estimatedServerNow()).toISOString();const pending:CompactionPresentation={id:`pending:${now}`,status:'pending',started_at:now,completed_at:null,duration_ms:null,before:percent(client.getQueryData<ConversationControlsData>(key)?.usage??null),after:null};current.current=pending;setState(pending);
-  try{await api.sessions.compactConversation(sessionId);}catch(error){setState(previous=>previous?{...previous,status:'failed',error:error instanceof Error?error.message:'压缩请求失败，请重试'}:previous);throw error;}
+  try{await api.sessions.compactConversation(sessionId);}catch(error){
+   // A native running/completed receipt outranks a late HTTP failure.
+   if(current.current?.id!==pending.id)return;
+   const message=error instanceof Error?error.message:'压缩请求未启动';
+   setState(previous=>previous?.id===pending.id?{...previous,status:(error as {submission?:string})?.submission==='unknown'?'unknown':'rejected',error:message}:previous);throw error;
+  }
  },[client,sessionId]);
  const observe=useCallback((native:NativeCompaction|null,busy=false,resumed=false)=>{
   setState(previous=>{

@@ -264,6 +264,8 @@ Queued inputs show a **取消排队** action when the Agent advertises `cancelQu
 
 Fast mode is a `serviceTier` capability advertised by each Agent. The selector uses the native model catalog’s Fast tier id, confirms native settings after changes, and sends explicit `default` when disabled (clearing a setting can restore a catalog default). This affects subsequent model requests and never submits a user turn. Models that do not advertise a Fast tier show a disabled control.
 
+Running conversations accept follow-ups through native `turn/steer`; existing subscriptions supply the active turn/receipt metadata, avoiding history reads on the common path. Cold submissions use a summary, never full tool history. Inputs temporarily queued during non-steerable compaction are atomically started when the engine becomes idle. Version differences alone do not block reconnects; handshake failures still stop preflight before any client is replaced.
+
 Model and effort controls remain available for failed or unloaded administrator
 sessions. A saved recovery choice is applied on explicit Resume/Reload, before
 context injection and without resending the failed user message. Unavailable

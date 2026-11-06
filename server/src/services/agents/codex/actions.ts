@@ -1,3 +1,4 @@
+import {submissionFailure,AgentSubmissionError} from '../submission.js';
 import {runInCodexEngine,engineForProvider} from './engine-context.js';
 import {validateModelPreference,readCodexModels} from './controls.js';
 import type {ModelPreference} from '../types.js';
@@ -5,11 +6,15 @@ import {withCodexConnection,rememberStreamingSharedResources} from './stream.js'
 
 /** Native RPCs only: no PTY keystrokes and no synthetic model turn. */
 export async function compactCodexConversation(threadId:string) {
+  let dispatched=false;
   await withCodexConnection(async request=>{
     const {thread}=await request('thread/read',{threadId});
-    if(thread?.status?.type!=='idle')throw Error('请等待当前任务完成后再压缩会话');
-    await request('thread/compact/start',{threadId});
-  });
+    if(thread?.status?.type==='active')throw new AgentSubmissionError('当前任务仍在运行，请在本轮结束后压缩','rejected');
+    if(!thread||thread.status?.type==='notLoaded')throw new AgentSubmissionError('会话未连接，压缩尚未启动，请先重连','rejected');
+    // A failed/blocked native turn can leave systemError while the loaded
+    // engine accepts /compact. Native RPC remains the authority for admission.
+    dispatched=true;await request('thread/compact/start',{threadId});
+  }).catch(error=>{throw submissionFailure(error,dispatched);});
 }
 
 /** Persist an otherwise empty thread without generating a reply. The native

@@ -149,6 +149,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const pinned=useRef(true);
   const sendingRef=useRef(false);
   const submissionIdentity=useRef<{fingerprint:string;id:string}|null>(null);
+  useEffect(()=>{const pending=submissionIdentity.current;if(pending&&messages.some(message=>message.role==='user'&&message.client_id===pending.id&&!message.optimistic))setSendError('');},[messages]);
   const draftRef=useRef(draft);draftRef.current=draft;
   const changeDraft=useCallback((text:string)=>{draftVersion.current++;draftRef.current=text;setDraft(text);},[]);
   const bottom=useRef<HTMLDivElement>(null);

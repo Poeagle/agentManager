@@ -9,7 +9,7 @@ import {conversationMessageId} from '../src/services/conversation-reader.js';
 
 let server:Server,wss:WebSocketServer,peer:WebSocket,dir:string,stop:(()=>void)|undefined;
 let submissions:any[],requests:string[],frames:ConversationStreamFrame[],loaded:boolean;
-let active=false;
+let active=false,oversizedSummary=false,dropDispatch=false;
 let humanRequests:any[]=[],humanResponses:any[]=[];
 let baselineItems:any[]=[];
 let baselineFailure:any=null;
@@ -17,14 +17,16 @@ let queueEntries:any[]=[],turnStartFailure:string|null=null;
 let requestParams: Array<{method:string;params:any}> = [];
 beforeEach(async()=>{
   dir=mkdtempSync(join(tmpdir(),'chat-stream-'));const path=join(dir,'sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',path);
-  server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;baselineItems=[];baselineFailure=null;queueEntries=[];turnStartFailure=null;humanRequests=[];humanResponses=[];
+  server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;baselineItems=[];baselineFailure=null;queueEntries=[];turnStartFailure=null;humanRequests=[];humanResponses=[];requestParams=[];oversizedSummary=false;dropDispatch=false;
   wss.on('connection',socket=>{
     peer=socket;socket.on('message',bytes=>{
-      const frame=JSON.parse(bytes.toString());const {id,method,params}=frame;if(!method){humanResponses.push(frame);return;}requests.push(method);requestParams.push({method,params});if(method==='thread/resume')for(const request of humanRequests)socket.send(JSON.stringify(request));if(method==='turn/start')submissions.push(params);if(!id) return;
-      if(method==='turn/start'&&turnStartFailure){socket.send(JSON.stringify({id,error:{message:turnStartFailure,code:-32600}}));return;}
+      const frame=JSON.parse(bytes.toString());const {id,method,params}=frame;if(!method){humanResponses.push(frame);return;}requests.push(method);requestParams.push({method,params});if(method==='thread/resume')for(const request of humanRequests)socket.send(JSON.stringify(request));if(method==='turn/start'||method==='turn/steer')submissions.push(params);if(!id) return;
+      if(method==='turn/steer'&&active&&baselineItems.some(item=>item.type==='contextCompaction'&&item.status!=='completed')){socket.send(JSON.stringify({id,error:{message:'cannot steer a compact turn',code:-32600}}));return;}
+      if((method==='turn/start'||method==='turn/steer')&&turnStartFailure){socket.send(JSON.stringify({id,error:{message:turnStartFailure,code:-32600}}));return;}
+      if((method==='turn/start'||method==='turn/steer')&&dropDispatch){socket.terminate();return;}
       if(method==='thread/queue/add')queueEntries.push({id:`queued-${queueEntries.length}`,clientUserMessageId:params.clientUserMessageId,input:params.input});
       if(method==='thread/queue/add'||method==='thread/queue/list'){socket.send(JSON.stringify({id,result:method==='thread/queue/add'?{queuedSubmission:queueEntries.at(-1)}:{data:queueEntries}}));return;}
-      const result=method==='thread/start'?{thread:{id:'019ff001-8888-7888-8888-888888888888'}}:method==='thread/read'?{thread:{status:{type:active?'active':loaded?'idle':'notLoaded'}}}:method==='thread/turns/list'?{data:active?[{id:'turn',status:'inProgress',items:baselineItems}]:baselineFailure?[{id:'turn',status:'failed',error:baselineFailure,completedAt:1793340000,items:[]}]:[]}:{};
+      const result=method==='turn/steer'?{turnId:params.expectedTurnId}:method==='thread/start'?{thread:{id:'019ff001-8888-7888-8888-888888888888'}}:method==='thread/read'?{thread:{status:{type:active?'active':loaded?'idle':'notLoaded'}}}:method==='thread/turns/list'?{data:active?[{id:'turn',status:'inProgress',items:params.itemsView==='summary'&&!oversizedSummary?baselineItems.map(item=>{const {aggregatedOutput,...summary}=item;return summary;}):baselineItems}]:baselineFailure?[{id:'turn',status:'failed',error:baselineFailure,completedAt:1793340000,items:[]}]:[]}:{};
       socket.send(JSON.stringify({id,result}));
     });
   });
@@ -74,6 +76,25 @@ describe('native Codex conversation streaming',()=>{
   it('handles the compaction-start race through the queue but never retries an unrelated rejection as another input',async()=>{
     turnStartFailure='Thread is busy compacting context';expect(await submitStreamingCodexInput('thread','one','race-client')).toBe('queued');expect(queueEntries).toHaveLength(1);
     turnStartFailure='Model access rejected';await expect(submitStreamingCodexInput('thread','two','rejected-client')).rejects.toThrow('Model access rejected');expect(queueEntries).toHaveLength(1);
+  });
+  it('steers running work immediately using a summary, without hydrating large tool output or queueing',async()=>{
+    active=true;baselineItems=[{type:'userMessage',id:'old',clientId:'previous',content:[]},{type:'commandExecution',id:'huge',aggregatedOutput:'x'.repeat(3*1024*1024)}];
+    expect(await submitStreamingCodexInput('thread','insert now','steer-client')).toBe(true);
+    expect(requestParams.find(p=>p.method==='thread/turns/list')?.params.itemsView).toBe('summary');
+    expect(requestParams.find(p=>p.method==='turn/steer')?.params).toMatchObject({expectedTurnId:'turn',clientUserMessageId:'steer-client',input:[{text:'insert now'}]});
+    expect(requests).not.toContain('thread/queue/add');expect(requests).not.toContain('turn/start');
+  });
+  it('uses the existing live turn receipt to insert without reading any history',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(frames.some(frame=>frame.type==='snapshot')).toBe(true));
+    send('turn/started',{threadId:'thread',turn:{id:'running-now',status:'inProgress'}});await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:true,turn_id:'running-now'}));
+    requestParams=[];requests=[];expect(await submitStreamingCodexInput('thread','right now','live-insert')).toBe(true);
+    expect(requestParams.find(p=>p.method==='turn/steer')?.params.expectedTurnId).toBe('running-now');expect(requests).not.toContain('thread/turns/list');expect(requests).not.toContain('thread/read');
+  });
+  it('reports a preparation disconnect as unsent and a post-dispatch disconnect as unknown',async()=>{
+    active=true;oversizedSummary=true;baselineItems=[{type:'commandExecution',id:'large',aggregatedOutput:'x'.repeat(3*1024*1024)}];
+    await expect(submitStreamingCodexInput('thread','not sent','prep-client')).rejects.toMatchObject({submission:'rejected'});expect(submissions).toHaveLength(0);
+    oversizedSummary=false;baselineItems=[];dropDispatch=true;
+    await expect(submitStreamingCodexInput('thread','ambiguous','dispatch-client')).rejects.toMatchObject({submission:'unknown'});expect(submissions).toHaveLength(1);expect(requests).not.toContain('thread/queue/add');
   });
   it('streams compaction start, real token usage and completion without model text or extra requests',async()=>{
     stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));

@@ -2828,7 +2828,7 @@ export async function waitForStoppedSessionLifecycle(sessionId:string):Promise<v
 
 /** Explicitly replace only this tab's terminal client. Keep the native thread,
  * saved conversation and UI identity, and wait for the old wrapper to die. */
-type SessionReloadResult={ok:boolean;error?:string;client_version?:string};
+type SessionReloadResult={ok:boolean;error?:string;client_version?:string;submission?:'rejected'|'unknown'};
 const sessionReloads=new Map<string,Promise<SessionReloadResult>>();
 export function reloadAgentSessionById(sessionId:string,options:{idleOnly?:boolean}={}):Promise<SessionReloadResult> {
   const pending=sessionReloads.get(sessionId);if(pending)return pending;
@@ -2883,7 +2883,7 @@ export function compactSessionConversation(sessionId:string):Promise<SessionRelo
     if(!session||!nativeConversationId(session))return {ok:false,error:'请先连接原生会话'};
     const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:!session.created_by_user_id||isAdmin(session.created_by_user_id)});
     try {await adapter.lifecycle.compact(context);return {ok:true};}
-    catch(error){return {ok:false,error:error instanceof Error?error.message:'压缩失败，请重试'};}
+    catch(error){return {ok:false,error:error instanceof Error?error.message:'压缩请求失败',submission:(error as {submission?:'rejected'|'unknown'})?.submission||'rejected'};}
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
 }
 

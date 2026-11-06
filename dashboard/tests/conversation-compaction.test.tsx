@@ -18,7 +18,7 @@ it('shows terminal initiated compaction and keeps disconnects and interruptions 
  const {result}=mount();const native={id:'remote',status:'running' as const,started_at:null,completed_at:null,duration_ms:null};act(()=>result.current.observe(native));expect(result.current.running).toBe(true);act(()=>result.current.disconnected());expect(result.current.state?.status).toBe('unknown');act(()=>result.current.observe(native));expect(result.current.running).toBe(true);act(()=>result.current.observe({...native,status:'interrupted'}));render(<ConversationCompactionStatus state={result.current.state!} now={Date.now()}/>);expect(screen.getByText('上下文压缩已中断')).toBeVisible();expect(screen.queryByText('上下文压缩完成')).not.toBeInTheDocument();
 });
 it('keeps request failures visible instead of claiming compression started',async()=>{
- vi.mocked(api.sessions.compactConversation).mockRejectedValueOnce(Error('请等待当前任务完成后再压缩会话'));const {result}=mount();await act(async()=>{await expect(result.current.start()).rejects.toThrow('当前任务');});expect(result.current.state).toMatchObject({status:'failed',error:'请等待当前任务完成后再压缩会话'});expect(result.current.running).toBe(false);
+ vi.mocked(api.sessions.compactConversation).mockRejectedValueOnce(Error('请等待当前任务完成后再压缩会话'));const {result}=mount();await act(async()=>{await expect(result.current.start()).rejects.toThrow('当前任务');});expect(result.current.state).toMatchObject({status:'rejected',error:'请等待当前任务完成后再压缩会话'});expect(result.current.running).toBe(false);
 });
 it('expires completion after three seconds and never resurrects it from repeated snapshots',()=>{
  vi.useFakeTimers();const {result}=mount(),now=Date.now(),native={id:'once',status:'completed' as const,started_at:new Date(now-10000).toISOString(),completed_at:new Date(now).toISOString(),duration_ms:10000};
@@ -35,4 +35,13 @@ it('immediately yields to resumed work and ignores old completion on reconnect',
  act(()=>result.current.observe({...native,id:'new-turn'}));expect(result.current.state?.status).toBe('completed');
  act(()=>result.current.observe(null,true));expect(result.current.state).toBeNull();
  act(()=>result.current.observe({...native,id:'new-turn'}));expect(result.current.state).toBeNull();
+});
+
+it('keeps a native running receipt when the HTTP response arrives late with an error',async()=>{
+ let reject!:(e:Error)=>void;vi.mocked(api.sessions.compactConversation).mockImplementationOnce(()=>new Promise((_,fail)=>{reject=fail;}));const {result}=mount();let work!:Promise<void>;
+ act(()=>{work=result.current.start();});act(()=>result.current.observe({id:'native-now',status:'running',started_at:new Date().toISOString(),completed_at:null,duration_ms:null}));
+ await act(async()=>{reject(Error('late transport error'));await work;});expect(result.current.state?.status).toBe('running');
+});
+it('shows an unknown dispatch separately from a rejected request',async()=>{
+ vi.mocked(api.sessions.compactConversation).mockRejectedValueOnce(Object.assign(Error('connection lost'),{submission:'unknown'}));const {result}=mount();await act(async()=>{await expect(result.current.start()).rejects.toThrow();});expect(result.current.state?.status).toBe('unknown');
 });
