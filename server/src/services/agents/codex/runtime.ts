@@ -1,6 +1,6 @@
 import {open} from 'fs/promises';
 import {findCodexRollout} from '../../prompt-context.js';
-import {readPendingQuestions,type PendingQuestionGroup} from '../../conversation-pending-questions.js';
+import {readPendingQuestions,type PendingQuestionGroup} from './pending-questions.js';
 import {projectCodexRuntime} from './runtime-signals.js';
 
 export type CodexState = 'ready' | 'running' | 'idle' | 'waiting_for_input' | 'interrupted' | 'failed' | 'unknown';

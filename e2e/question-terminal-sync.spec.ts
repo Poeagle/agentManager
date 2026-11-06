@@ -28,7 +28,7 @@ socket.on('message',bytes=>{const frame=JSON.parse(bytes.toString());if(frame.id
   if(frame.method==='thread/turns/list')result={data:[{id:'question-turn',status:'completed',items}]};if(frame.method==='thread/queue/list')result={data:[]};
   if(frame.method==='turn/start'){
    submissions.push(frame.params);const answer={type:'userMessage',id:`answer-${submissions.length}`,clientId:frame.params.clientUserMessageId,content:frame.params.input};items.push(answer);
-   appendFileSync(log,record('response_item',{type:'message',id:answer.id,role:'user',internal_chat_message_metadata_passthrough:{turn_id:`answer-turn-${submissions.length}`},content:frame.params.input.map((part:any)=>part.type==='text'?{type:'input_text',text:part.text}:{type:'input_image',image_url:'fixture-image'})}));
+   appendFileSync(log,record('response_item',{type:'message',id:answer.id,role:'user',internal_chat_message_metadata_passthrough:{turn_id:`answer-turn-${submissions.length}`},content:frame.params.input.flatMap((part:any)=>part.type==='text'?[{type:'input_text',text:part.text}]:[{type:'input_text',text:`<image name=[Image #1] path="${part.path}">`},{type:'input_image',image_url:'data:image/png;base64,AAAA'},{type:'input_text',text:'</image>'}])}));
    for(const client of wss.clients)client.send(JSON.stringify({method:'item/completed',params:{threadId:native,turnId:`answer-turn-${submissions.length}`,item:answer}}));
   }
   socket.send(JSON.stringify({id:frame.id,result}));
@@ -48,6 +48,8 @@ socket.on('message',bytes=>{const frame=JSON.parse(bytes.toString());if(frame.id
   await expect(card.getByRole('textbox',{name:'还需要回答的另一个问题',exact:true})).toBeVisible();await page.getByRole('button',{name:'原始终端',exact:true}).click();await expect(page.locator('.xterm').filter({visible:true})).toBeVisible();await page.screenshot({path:info.outputPath('terminal-one-unanswered-question.png')});await page.getByRole('button',{name:'对话',exact:true}).click();await page.reload();await expect(page.locator('.session-chat-question-summary')).toContainText(['待回答','已回答']);
   const previousPid=state().pid;expect((await page.request.post(`/api/sessions/${id}/reload`)).ok()).toBeTruthy();await expect.poll(()=>state()?.pid).not.toBe(previousPid);await expect.poll(()=>state()?.pending).toEqual([JSON.stringify(['request_user_input_async','other',0])]);expect(submissions).toHaveLength(1);
   await page.reload();await card.getByRole('textbox',{name:'还需要回答的另一个问题',exact:true}).fill('继续验证');await card.getByRole('button',{name:'提交回答',exact:true}).click();await expect.poll(()=>state()?.pending).toEqual([]);expect(submissions).toHaveLength(2);
+  await expect.poll(async()=>{const response=await page.request.get('/api/sessions');return (await response.json()).sessions.find((session:any)=>session.id===id).agent_runtime.pending_question_count;}).toBe(0);
+  await expect(page.getByTitle('Codex 本轮已结束 · 等待输入',{exact:true}).first()).toBeVisible();
   await page.getByRole('button',{name:'原始终端',exact:true}).click();await expect(page.locator('.xterm').filter({visible:true})).toBeVisible();await page.screenshot({path:info.outputPath('terminal-no-pending-questions.png')});
  }finally{if(id)await page.request.delete(`/api/sessions/${id}`,{timeout:3000}).catch(()=>{});await page.request.put('/api/settings',{data:{settings:{session_codex_command:'codex'}},timeout:3000}).catch(()=>{});for(const client of wss.clients)client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });

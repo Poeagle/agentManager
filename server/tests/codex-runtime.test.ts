@@ -9,7 +9,8 @@ import {getDb} from '../src/db/index.js';
 import {sessionRoutes} from '../src/routes/sessions.js';
 import {createTestDatabase} from './helpers/database.js';
 import * as manager from '../src/services/session-manager.js';
-import * as questionIndex from '../src/services/conversation-pending-questions.js';
+import * as questionIndex from '../src/services/agents/codex/pending-questions.js';
+import {readConversation} from '../src/services/conversation-reader.js';
 
 const id='019ff001-1111-7111-8111-111111111111';
 let dir:string; let file:string;
@@ -78,6 +79,26 @@ describe('Codex native execution status',()=>{
     expect((await readCodexRuntime(id)).pending_question_count).toBe(1);
     appendFileSync(file,JSON.stringify({type:'response_item',timestamp:'2026-10-29T10:00:03Z',payload:{type:'message',role:'user',content:[{type:'input_text',text:broken},{type:'input_image',image_url:'fixture'}]}})+'\n');
     expect((await readCodexRuntime(id)).pending_question_count).toBe(0);
+  });
+  it('uses the same public text as the conversation when native images have surrounding text wrappers',async()=>{
+    const call='wrapped-image-question',questionItemId=JSON.stringify(['request_user_input_async',call,0]);
+    const answer='<send_user_message_question_reply>'+JSON.stringify([{questionItemId,question:'查看截图？',answer:'已确认'}])+'</send_user_message_question_reply>[Image #1]';
+    const content=[{type:'input_text',text:answer},{type:'input_text',text:'<image name=[Image #1] path="/project/screenshot.png">'},{type:'input_image',image_url:'data:image/png;base64,AAAA'},{type:'input_text',text:'</image>'}];
+    writeFileSync(file,event('item_completed',1,{item:{type:'AgentMessage',id:call,delivery:'async',questions:[{title:'查看截图？',options:null}]}})+event('task_complete',2)+JSON.stringify({type:'response_item',timestamp:'2026-10-29T10:00:03Z',payload:{type:'message',role:'user',content}})+'\n');
+    const conversation=await readConversation({cli_type:'codex',codex_session_id:id,project_path:'/project'});
+    expect(conversation.messages.at(-1)?.question_replies).toEqual([{question_id:questionItemId,question:'查看截图？',answer:'已确认'}]);
+    expect((await readCodexRuntime(id)).pending_question_count).toBe(0);
+    appendFileSync(file,event('item_completed',4,{item:{type:'AgentMessage',id:'new-unanswered',delivery:'async',questions:[{title:'另一个问题',options:null}]}}));
+    expect((await readCodexRuntime(id)).pending_questions?.map(group=>group.id)).toEqual(['new-unanswered']);
+  });
+  it('recognizes a large image answer across partial appends without retaining image data in runtime state',async()=>{
+    const call='large-image-question',questionItemId=JSON.stringify(['request_user_input_async',call,0]);
+    const answer='<send_user_message_question_reply>'+JSON.stringify([{questionItemId,question:'查看大图？',answer:'确认'}])+'</send_user_message_question_reply>';
+    writeFileSync(file,event('item_completed',1,{item:{type:'AgentMessage',id:call,delivery:'async',questions:[{title:'查看大图？',options:null}]}})+event('task_complete',2));
+    expect((await readCodexRuntime(id)).pending_question_count).toBe(1);
+    const record=JSON.stringify({type:'response_item',timestamp:'2026-10-29T10:00:03Z',payload:{type:'message',role:'user',content:[{type:'input_text',text:answer},{type:'input_text',text:'<image name=[Image #1] path="/project/large.png">'},{type:'input_image',image_url:'data:image/png;base64,'+'A'.repeat(700*1024)},{type:'input_text',text:'</image>'}]}})+'\n';
+    appendFileSync(file,record.slice(0,-20));expect((await readCodexRuntime(id)).pending_question_count).toBe(1);
+    appendFileSync(file,record.slice(-20));const runtime=await readCodexRuntime(id);expect(runtime.pending_question_count).toBe(0);expect(JSON.stringify(runtime).length).toBeLessThan(2000);
   });
   it('finds an unanswered question outside both the runtime tail and current chat page without retaining a large tool result',async()=>{
     const questions=[{title:'更早的提问',options:null}];
