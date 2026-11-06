@@ -48,7 +48,7 @@ function consume(state:State,line:Buffer,sequence:number){
   if(line.length>256*1024){incomplete(state);return;}
   let record:any;try{record=JSON.parse(line.toString());}catch{incomplete(state);return;}
   const p=record.payload;if(!p)return;
-  const id=p.turn_id||p.internal_chat_message_metadata_passthrough?.turn_id;
+  const id=p.turn_id||p.internal_chat_message_metadata_passthrough?.turn_id||(record.type==='response_item'?state.turn?.id:undefined);
   if(record.type==='event_msg'&&p.type==='task_started'&&typeof id==='string'){
     if(state.conclusion.initial)state.conclusion.start ||= timestamp(record.timestamp);
     if(state.turn?.id!==id){finish(state,false);state.turn=turn(id,true);}return;

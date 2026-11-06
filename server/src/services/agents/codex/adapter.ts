@@ -5,7 +5,7 @@ import { discoverCodexTerminal } from './terminal.js';
 import { ingestAllCodexSessionBindings, backfillLegacyCodexSessionIds } from './binding.js';
 import { extractCodexPromptContext } from './prompt-context.js';
 import { decodeCodexText } from './text.js';
-import { parseCodexMessage, codexRecordLimit, codexQuestionCall } from './history.js';
+import { parseCodexMessage, codexRecordLimit, codexQuestionCall,codexTurnBoundary } from './history.js';
 import { subscribeCodexRuntimeSignals } from './runtime-signals.js';
 import { shellSingleQuote } from '../shell.js';
 import { codexCommand, codexPermissions, codexResources } from './commands.js';
@@ -18,7 +18,7 @@ export const codexAdapter: AgentAdapter = {
                 unlinkSync(codexBindingFile(context.session.id));
             }
             catch { } }, discoverTerminal: discoverCodexTerminal, recover: () => { ingestAllCodexSessionBindings(); backfillLegacyCodexSessionIds(); } },
-    history: { file: { turns: extractCodexPromptContext, relevant: line => /"type"\s*:\s*"(?:user_message|agent_message|task_complete|message)"/.test(line), locate: context => context.nativeId ? findCodexRollout(context.nativeId) : Promise.resolve(null), decode: decodeCodexText, project: parseCodexMessage, recordLimit: codexRecordLimit, questionCall: codexQuestionCall }, read: async () => null },
+    history: { file: { turns: extractCodexPromptContext, relevant: line => /"type"\s*:\s*"(?:user_message|agent_message|task_complete|message)"/.test(line), locate: context => context.nativeId ? findCodexRollout(context.nativeId) : Promise.resolve(null), decode: decodeCodexText, project: parseCodexMessage, recordLimit: codexRecordLimit, questionCall: codexQuestionCall,turnBoundary:codexTurnBoundary }, read: async () => null },
     runtime: { subscribe: (context, changed) => subscribeCodexRuntimeSignals(id => { if (id === context.nativeId)
             changed(); }), read: async (context) => {
             const runtime = await (await import('./runtime.js')).readCodexRuntime(context.nativeId);

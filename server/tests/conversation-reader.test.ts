@@ -26,6 +26,28 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app.close();vi.unstubAllEnvs();cleanup();});
 describe('public conversation pages',()=>{
+  it('binds legacy rollout messages to lifecycle turns so live and durable replies have one identity',async()=>{
+    const answer=(id:string,text:string)=>line('response_item',{type:'message',id,role:'assistant',phase:'final_answer',content:[{type:'output_text',text}]});
+    const start=(turn:string)=>line('event_msg',{type:'task_started',turn_id:turn});
+    const complete=(turn:string,text:string)=>line('event_msg',{type:'task_complete',turn_id:turn,last_agent_message:text});
+    writeFileSync(file,start('mac-one')+user('你好？')+answer('answer-one','你好！想让我帮你做什么？')+complete('mac-one','你好！想让我帮你做什么？'));
+    const first=await readConversation(binding),reply=first.messages.at(-1)!;
+    expect(first.messages.filter(m=>m.role==='assistant')).toHaveLength(1);expect(reply).toMatchObject({id:conversationMessageId('mac-one','assistant','answer-one'),turn_id:'mac-one'});
+    appendFileSync(file,start('mac-two')+user('再说一次')+answer('answer-two','你好！想让我帮你做什么？'));
+    const delta=await readConversation(binding,{after:reply.id});expect(delta.reset).toBe(false);expect(delta.messages.at(-1)).toMatchObject({id:conversationMessageId('mac-two','assistant','answer-two'),turn_id:'mac-two'});
+    appendFileSync(file,complete('mac-two','你好！想让我帮你做什么？'));
+    expect((await readConversation(binding,{after:delta.messages.at(-1)!.id})).messages).toEqual([]);
+    expect((await readConversation(binding)).messages.filter(m=>m.role==='assistant')).toHaveLength(2);
+  });
+  it('keeps explicit item identities inside one inferred turn and ignores quoted lifecycle records',async()=>{
+    const native=(item:string)=>line('response_item',{type:'message',id:item,role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'相同内容'}]});
+    writeFileSync(file,line('turn_context',{turn_id:'context-turn'})+user('问题')+native('first')+line('response_item',{type:'function_call_output',output:JSON.stringify({type:'task_started',turn_id:'FAKE'})})+native('second')+line('event_msg',{type:'task_complete',turn_id:'context-turn',last_agent_message:'相同内容'}));
+    const result=await readConversation(binding);expect(result.messages.filter(m=>m.role==='assistant').map(m=>m.id)).toEqual([conversationMessageId('context-turn','assistant','first'),conversationMessageId('context-turn','assistant','second')]);expect(JSON.stringify(result)).not.toContain('FAKE');
+  });
+  it('uses a closing turn boundary for a cold tail without rescanning a giant tool record',async()=>{
+    writeFileSync(file,line('event_msg',{type:'task_started',turn_id:'cold-turn'})+user('问题')+line('response_item',{type:'function_call_output',output:'x'.repeat(3*1024*1024)})+line('response_item',{type:'message',id:'tail-answer',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'冷加载回答'}]})+line('event_msg',{type:'task_complete',turn_id:'cold-turn',last_agent_message:'冷加载回答'}));
+    const result=await readConversation(binding,{limit:1});expect(result.messages).toHaveLength(1);expect(result.messages[0]).toMatchObject({id:conversationMessageId('cold-turn','assistant','tail-answer'),turn_id:'cold-turn',text:'冷加载回答'});
+  });
   it('shows startup shared context coalesced with other developer blocks without exposing those instructions',async()=>{
     const notice='<octoally_shared_resources>\n凭据文件：/work/.env\n通过本地程序按需读取凭据。\n</octoally_shared_resources>';
     writeFileSync(file,line('response_item',{type:'message',id:'startup-developer',role:'developer',internal_chat_message_metadata_passthrough:{turn_id:'startup-turn'},content:[

@@ -1,4 +1,5 @@
 import {runtimeNames} from './runtime-namespace.js';
+import {sessionEnvironment as sessionEnv,tmuxClientArgs} from '../lib/terminal-environment.js';
 /**
  * PTY Worker — runs as a separate child process per session.
  *
@@ -19,33 +20,6 @@ import {tmpdir} from 'os';
 import type {ReadStream} from 'fs';
 
 const execFileAsync = promisify(execFile);
-
-/** Build a clean env for user-facing sessions: strip server-specific vars so
- *  they don't leak into user terminals / Claude Code / dev servers.
- *  - NODE_ENV: prevents server's production mode from contaminating user shells
- *  - PORT / AGENTMANAGER_*_PORT: prevents sandbox port assignments from overriding
- *    child project .env files (dotenv won't override existing env vars) */
-function sessionEnv(): Record<string, string> {
-  const allowedKeys = [
-    'HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH',
-    'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
-    'COLORTERM', 'TMPDIR',
-    'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'XDG_RUNTIME_DIR',
-    'NVM_BIN', 'NVM_DIR', 'FNM_DIR', 'PNPM_HOME', 'VOLTA_HOME', 'BUN_INSTALL',
-    'EDITOR', 'VISUAL', 'PAGER',
-  ] as const;
-  const env: Record<string, string> = {};
-  for (const key of allowedKeys) {
-    const value = process.env[key];
-    if (value !== undefined) env[key] = value;
-  }
-  return {
-    ...env,
-    TERM: 'xterm-256color',
-    AGENTMANAGER_SESSION: '1',
-    HEADLESS_WORKERS_DISABLED: '1',
-  };
-}
 
 const TIMING_LOG = process.env.AGENTMANAGER_TIMING_LOG?.trim() || null;
 function tlog(s: string): void {
@@ -127,7 +101,7 @@ type ParentMessage =
 
 const runtime = runtimeNames();
 const TMUX_SERVER = runtime.tmuxServer;
-const tmuxBaseArgs = ['-L', TMUX_SERVER];
+const tmuxBaseArgs = tmuxClientArgs(TMUX_SERVER);
 
 function tmuxSessionName(sessionId: string): string {
   return `of-${sessionId}`;
@@ -175,7 +149,7 @@ function findTmuxServer(sessionId: string): string | null {
   const name = tmuxSessionName(sessionId);
   for (const server of [TMUX_SERVER]) {
     try {
-      execFileSync('tmux', ['-L', server, 'has-session', '-t', name], { stdio: 'ignore' });
+      execFileSync('tmux', [...tmuxClientArgs(server), 'has-session', '-t', name], { stdio: 'ignore' });
       return server;
     } catch { /* try next */ }
   }
@@ -244,7 +218,7 @@ async function tmuxKill(sessionId: string): Promise<void> {
   // Kill on whichever server hosts it (may be legacy)
   for (const server of [TMUX_SERVER]) {
     try {
-      await execFileAsync('tmux', ['-L', server, 'kill-session', '-t', name]);
+      await execFileAsync('tmux', [...tmuxClientArgs(server), 'kill-session', '-t', name]);
       await stopSandbox(sessionId);
       return;
     } catch { /* try next */ }
@@ -322,7 +296,7 @@ mkdirSync(PIPE_PANE_DIR, { recursive: true });
 
 function setupPipePane(sessionId: string, server?: string): { stream: ReadStream; fifoPath: string } | null {
   const name = tmuxSessionName(sessionId);
-  const serverArgs = ['-L', server || TMUX_SERVER];
+  const serverArgs = tmuxClientArgs(server || TMUX_SERVER);
   const fifoPath = join(PIPE_PANE_DIR, `${sessionId}.fifo`);
 
   try {
@@ -341,7 +315,7 @@ function setupPipePane(sessionId: string, server?: string): { stream: ReadStream
 function cleanupPipePane(sessionId: string, fifoPath?: string): void {
   const name = tmuxSessionName(sessionId);
   const server = findTmuxServer(sessionId) || TMUX_SERVER;
-  try { execFileSync('tmux', ['-L', server, 'pipe-pane', '-t', name]); } catch { /* ignore */ }
+  try { execFileSync('tmux', [...tmuxClientArgs(server), 'pipe-pane', '-t', name]); } catch { /* ignore */ }
   const path = fifoPath || join(PIPE_PANE_DIR, `${sessionId}.fifo`);
   try { unlinkSync(path); } catch { /* ignore */ }
 }
@@ -631,7 +605,7 @@ async function handleReconnect(msg: ReconnectMessage): Promise<LifecycleReady> {
     if (hasTmuxSession) {
       const t2 = Date.now();
       const actualServer = findTmuxServer(msg.sessionId) || TMUX_SERVER;
-      const serverArgs = ['-L', actualServer];
+      const serverArgs = tmuxClientArgs(actualServer);
       const pp = setupPipePane(msg.sessionId, actualServer);
       log(`[PTY-WORKER] ${msg.sessionId}: pipe_pane=${Date.now()-t2}ms (server=${actualServer})`);
       if (pp) {

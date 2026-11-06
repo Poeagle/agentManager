@@ -9,6 +9,10 @@ const call=(id:string,type='function_call')=>row('response_item',{type,call_id:i
 const usage=(total:number,last:number)=>row('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{total_tokens:last,input_tokens:last-10,cached_input_tokens:20,output_tokens:10,reasoning_output_tokens:3},PRIVATE:'DO_NOT_EXPOSE'}});
 beforeEach(()=>{dir=mkdtempSync(join(tmpdir(),'conversation-statistics-'));file=join(dir,'rollout.jsonl');});afterEach(()=>rmSync(dir,{recursive:true,force:true}));
 describe('bounded native conversation statistics',()=>{
+ it('uses lifecycle identity when a legacy assistant item omits per-message turn metadata',async()=>{
+  writeFileSync(file,start('legacy')+row('response_item',{type:'message',id:'legacy-answer',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'visible'}]})+usage(100,100)+row('event_msg',{type:'task_complete',turn_id:'legacy'}));
+  const snapshots=await readConversationStatistics(file);expect(snapshots).toHaveLength(1);expect(snapshots[0]).toMatchObject({turn_id:'legacy',complete:true,requests:1,tokens:{total_tokens:100}});expect(snapshots[0].message_id).toHaveLength(32);
+ });
  it('freezes cumulative progress snapshots and counts parallel calls as one round without double counting',async()=>{
   writeFileSync(file,start()+message('progress')+call('a')+call('a')+call('b','custom_tool_call')+usage(1000,100));
   let snapshots=await readConversationStatistics(file);expect(snapshots).toHaveLength(1);expect(snapshots[0]).toMatchObject({complete:true,requests:1,tool_calls:2,tool_rounds:1,tokens:{total_tokens:100,input_tokens:90,cached_input_tokens:20,output_tokens:10,reasoning_output_tokens:3}});

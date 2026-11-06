@@ -19,6 +19,7 @@ import type {WebSocket} from 'ws';
 import {getOrCreateTracker,getTracker,removeTracker,recoverFromBuffer} from './session-state.js';
 import {inaccessibleProjectPaths,isAdmin} from '../auth.js';
 import {tmuxCursorRestoreSequence} from '../lib/terminal-cursor.js';
+import {tmuxClientArgs} from '../lib/terminal-environment.js';
 import {withSharedResourceInstructions} from './cli-command.js';
 import {sharedResourceLaunch} from './shared-resources/store.js';
 
@@ -1100,7 +1101,7 @@ export function querySessionOutputSince(
 
 const runtime = runtimeNames();
 const TMUX_SERVER = runtime.tmuxServer;
-const tmuxBaseArgs = ['-L', TMUX_SERVER];
+const tmuxBaseArgs = tmuxClientArgs(TMUX_SERVER);
 
 function tmuxSessionName(sessionId: string): string {
   return `of-${sessionId}`;
@@ -1111,8 +1112,8 @@ function tmuxArgsForSession(sessionId: string): string[] {
   const name = tmuxSessionName(sessionId);
   for (const server of [TMUX_SERVER]) {
     try {
-      execFileSync('tmux', ['-L', server, 'has-session', '-t', name], { stdio: 'ignore' });
-      return ['-L', server];
+      execFileSync('tmux', [...tmuxClientArgs(server), 'has-session', '-t', name], { stdio: 'ignore' });
+      return tmuxClientArgs(server);
     } catch { /* try next */ }
   }
   return tmuxBaseArgs;
@@ -1123,7 +1124,7 @@ async function tmuxExistsAsync(sessionId: string): Promise<boolean> {
   const name = tmuxSessionName(sessionId);
   for (const server of [TMUX_SERVER]) {
     try {
-      await execFileAsync('tmux', ['-L', server, 'has-session', '-t', name]);
+      await execFileAsync('tmux', [...tmuxClientArgs(server), 'has-session', '-t', name]);
       return true;
     } catch { /* try next */ }
   }
@@ -1135,7 +1136,7 @@ function tmuxListAgentmanagerSessionIds(): string[] {
   const ids = new Set<string>();
   for (const server of [TMUX_SERVER]) {
     try {
-      const output = execFileSync('tmux', ['-L', server, 'list-sessions', '-F', '#{session_name}'], { encoding: 'utf8' });
+      const output = execFileSync('tmux', [...tmuxClientArgs(server), 'list-sessions', '-F', '#{session_name}'], { encoding: 'utf8' });
       output
         .trim()
         .split('\n')

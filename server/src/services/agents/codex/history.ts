@@ -4,6 +4,15 @@ import { conversationErrorMessage } from '../../conversation-error.js';
 import { conversationImagePaths } from '../../conversation-attachments.js';
 import { decodeCodexText } from './text.js';
 const MAX_RECORD = 512 * 1024;
+export function codexTurnBoundary(record: Buffer): {kind:'start'|'end';turnId:string} | null {
+    if (record.length > MAX_RECORD || !/"type"\s*:\s*"(?:task_started|task_complete|turn_aborted|turn_context)"/.test(record.subarray(0,400).toString('utf8'))) return null;
+    try {
+        const entry=JSON.parse(record.toString('utf8')),p=entry.payload;
+        const kind=entry.type==='turn_context'||entry.type==='event_msg'&&p?.type==='task_started'?'start'
+            :entry.type==='event_msg'&&['task_complete','turn_aborted'].includes(p?.type)?'end':null;
+        return kind&&typeof p?.turn_id==='string'?{kind,turnId:p.turn_id}:null;
+    } catch { return null; }
+}
 export function codexRecordLimit(buffer: Buffer) { const header = buffer.subarray(0, 4096).toString('utf8'), position = header.indexOf('"payload"'), payload = header.slice(position); return position >= 0 && /^"payload"\s*:\s*\{\s*"type"\s*:\s*"message"/.test(payload) && /"role"\s*:\s*"([^"]+)"/.exec(payload)?.[1] === 'user' ? 16 * 1024 * 1024 : MAX_RECORD; }
 export function codexQuestionCall(record: Buffer) {
     if (record.length > MAX_RECORD || !/"name"\s*:\s*"request_user_input_async"/.test(record.subarray(0, 800).toString()))

@@ -219,6 +219,9 @@ export interface AgentFileHistoryPort {
     locate(context: AgentContext): Promise<string | null>;
     decode(entries: Iterable<unknown>, limit?: number): AgentTextMessage[];
     project(record: Buffer, questionCallId?: string): AgentHistoryRecord | null;
+    /** Some native formats store the turn identity on surrounding lifecycle
+     * records rather than repeating it on every public message. */
+    turnBoundary?(record: Buffer): { kind: 'start' | 'end'; turnId: string } | null;
     recordLimit(prefix: Buffer): number;
     questionCall(record: Buffer): {
         id: string;

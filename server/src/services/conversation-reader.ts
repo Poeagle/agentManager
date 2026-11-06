@@ -10,10 +10,11 @@ import type {AgentStatistics as ConversationStatistics} from './agents/types.js'
 
 export type ConversationMessage=import('./agents/types.js').AgentMessage;
 
-interface IndexedMessage extends Omit<ConversationMessage,'text'> {offset:number;length:number;hash:string;recordType:string;nativeItem:boolean;questionSignature?:string;questionCallId?:string}
+interface IndexedMessage extends Omit<ConversationMessage,'text'> {offset:number;length:number;hash:string;recordType:string;nativeItem:boolean;itemId?:string;declaredTurnId?:string;questionSignature?:string;questionCallId?:string}
 interface NativeQuestionCall {offset:number;id:string;turnId?:string;signature:string}
+interface TurnBoundary {offset:number;kind:'start'|'end';turnId:string}
 function questionSignature(questions:ConversationAsyncQuestion[]) {return createHash('sha256').update(JSON.stringify(questions.map(q=>({title:q.title,options:q.options})))).digest('hex');}
-interface Index {inode:number;mtime:number;start:number;offset:number;partial:Buffer;messages:IndexedMessage[];generation:string;skipPartial:boolean;anchor:Buffer;questionCalls:NativeQuestionCall[]}
+interface Index {inode:number;mtime:number;start:number;offset:number;partial:Buffer;messages:IndexedMessage[];generation:string;skipPartial:boolean;anchor:Buffer;questionCalls:NativeQuestionCall[];turnBoundaries:TurnBoundary[]}
 const WINDOW=2*1024*1024;
 const MAX_RECORD=512*1024;
 const MAX_INPUT_RECORD=16*1024*1024;
@@ -36,26 +37,46 @@ export function conversationMessageId(turnId:string,role:string,itemId?:string) 
 
 function publicMessage(line:Buffer,kind:CliType,questionCallId?:string){return getAgent(kind).history.file!.project(line,questionCallId);}
 
-function scan(buffer:Buffer,base:number,kind:CliType,questionCalls:NativeQuestionCall[]):IndexedMessage[] {
-  const result:IndexedMessage[]=[];
+function scan(buffer:Buffer,base:number,kind:CliType,questionCalls:NativeQuestionCall[],turnBoundaries:TurnBoundary[]):IndexedMessage[] {
+  const result:IndexedMessage[]=[],codec=getAgent(kind).history.file!;
+  const boundaryOffsets=new Set(turnBoundaries.map(item=>item.offset));
   let start=0;
   for(let end=buffer.indexOf(10);end>=0;end=buffer.indexOf(10,start)) {
     const record=buffer.subarray(start,end);
+    const boundary=codec.turnBoundary?.(record);
+    if(boundary&&!boundaryOffsets.has(base+start)){turnBoundaries.push({...boundary,offset:base+start});boundaryOffsets.add(base+start);}
     // Older native rollouts put async metadata on agent_message without an ID.
     // Bind it to the actual preceding request call, never infer from prose or
     // parse quoted tool results as interactive input.
-    const call=getAgent(kind).history.file!.questionCall(record);
+    const call=codec.questionCall(record);
     if(call&&!questionCalls.some(item=>item.offset===base+start))questionCalls.push({...call,offset:base+start});
-    const parsed=publicMessage(record,kind);
+    const parsed=codec.project(record);
     if(parsed) {
       const {message,failure,recordType,turnId,itemId}=parsed;
       const hash=createHash('sha256').update(message.text).digest('hex');
       const offset=base+start;
-      result.push({id:failure?.id || (turnId && (message.role==='assistant' || itemId)?conversationMessageId(turnId,message.role,itemId || (recordType==='completion_echo'?undefined:String(offset))):createHash('sha256').update(`${offset}:${message.role}:${hash}`).digest('hex').slice(0,32)),role:message.role,timestamp:message.timestamp,turn_id:turnId,...(message.role==='assistant'?{phase:message.phase==='error'?'error' as const:message.phase==='final'?'final' as const:'commentary' as const}:{}),...(failure?{error:failure.error}:{}),offset,length:end-start,hash,recordType,nativeItem:!!itemId,...(parsed.asyncQuestions?{questionSignature:questionSignature(parsed.asyncQuestions)}:{})});
+      result.push({id:failure?.id || (turnId && (message.role==='assistant' || itemId)?conversationMessageId(turnId,message.role,itemId || (recordType==='completion_echo'?undefined:String(offset))):createHash('sha256').update(`${offset}:${message.role}:${hash}`).digest('hex').slice(0,32)),role:message.role,timestamp:message.timestamp,turn_id:turnId,...(message.role==='assistant'?{phase:message.phase==='error'?'error' as const:message.phase==='final'?'final' as const:'commentary' as const}:{}),...(failure?{error:failure.error}:{}),offset,length:end-start,hash,recordType,nativeItem:!!itemId,itemId,declaredTurnId:turnId,...(parsed.asyncQuestions?{questionSignature:questionSignature(parsed.asyncQuestions)}:{})});
     }
     start=end+1;
   }
   return result;
+}
+function bindTurnBoundaries(messages:IndexedMessage[],boundaries:TurnBoundary[]) {
+  boundaries.sort((a,b)=>a.offset-b.offset);
+  let cursor=0,active:string|undefined;
+  for(const message of messages) {
+    while(cursor<boundaries.length&&boundaries[cursor].offset<=message.offset){const boundary=boundaries[cursor++];active=boundary.kind==='start'?boundary.turnId:undefined;}
+    const at=boundaries[cursor-1];
+    if(message.declaredTurnId&&!(at?.kind==='end'&&at.offset===message.offset))active=message.declaredTurnId;
+    // A bounded cold window may start inside a completed turn. Its closing
+    // boundary still identifies that prefix without reading the whole rollout.
+    const next=boundaries[cursor];
+    if(!message.turn_id){
+      message.turn_id=active || (next?.kind==='end'?next.turnId:undefined);
+      if(message.turn_id&&message.phase!=='error'&&(message.role==='assistant'||message.itemId))message.id=conversationMessageId(message.turn_id,message.role,message.questionCallId||message.itemId||(message.recordType==='completion_echo'?undefined:String(message.offset)));
+    }
+  }
+  return messages;
 }
 function bindQuestionCalls(messages:IndexedMessage[],calls:NativeQuestionCall[]) {
   calls.sort((a,b)=>a.offset-b.offset);
@@ -111,8 +132,8 @@ export async function readConversation(session:PromptContextSession,query:{after
         const {start,buffer,skip,nextStart}=await previousWindow(handle,stats.size);
         const data=buffer.subarray(skip);
         const end=data.lastIndexOf(10)+1;
-        const questionCalls:NativeQuestionCall[]=[];
-        index={inode:stats.ino,mtime:stats.mtimeMs,start:nextStart,offset:stats.size,partial:Buffer.from(data.subarray(end)),messages:scan(data.subarray(0,end),start+skip,file.kind,questionCalls),generation:`${stats.ino}:${stats.birthtimeMs}`,skipPartial:false,anchor:Buffer.alloc(0),questionCalls};
+        const questionCalls:NativeQuestionCall[]=[],turnBoundaries:TurnBoundary[]=[];
+        index={inode:stats.ino,mtime:stats.mtimeMs,start:nextStart,offset:stats.size,partial:Buffer.from(data.subarray(end)),messages:scan(data.subarray(0,end),start+skip,file.kind,questionCalls,turnBoundaries),generation:`${stats.ino}:${stats.birthtimeMs}`,skipPartial:false,anchor:Buffer.alloc(0),questionCalls,turnBoundaries};
         if(index.partial.length>recordLimit(index.partial,file.kind)){index.partial=Buffer.alloc(0);index.skipPartial=true;}
         if(indexes.size>=32 && !indexes.has(file.path)) indexes.delete(indexes.keys().next().value!);
         indexes.set(file.path,index);
@@ -130,7 +151,7 @@ export async function readConversation(session:PromptContextSession,query:{after
             base+=newline+1;data=data.subarray(newline+1);index.skipPartial=false;
           }
           const end=data.lastIndexOf(10)+1;
-          index.messages.push(...scan(data.subarray(0,end),base,file.kind,index.questionCalls));
+          index.messages.push(...scan(data.subarray(0,end),base,file.kind,index.questionCalls,index.turnBoundaries));
           index.partial=Buffer.from(data.subarray(end));
           if(index.partial.length>recordLimit(index.partial,file.kind)) {index.partial=Buffer.alloc(0);index.skipPartial=true;}
           index.offset+=bytesRead;
@@ -138,10 +159,11 @@ export async function readConversation(session:PromptContextSession,query:{after
         index.mtime=stats.mtimeMs;
       }
       index.anchor=Buffer.alloc(Math.min(128,index.offset));await handle.read(index.anchor,0,index.anchor.length,index.offset-index.anchor.length);
-      index.messages=dedupe(bindQuestionCalls(index.messages,index.questionCalls));
+      const bind=(messages:IndexedMessage[])=>dedupe(bindQuestionCalls(bindTurnBoundaries(messages,index!.turnBoundaries),index!.questionCalls));
+      index.messages=bind(index.messages);
       const prependWindow=async()=>{
         const {start,buffer,skip,nextStart}=await previousWindow(handle,index!.start);
-        index!.messages=dedupe(bindQuestionCalls([...scan(buffer.subarray(skip),start+skip,file.kind,index!.questionCalls),...index!.messages],index!.questionCalls));
+        index!.messages=bind([...scan(buffer.subarray(skip),start+skip,file.kind,index!.questionCalls,index!.turnBoundaries),...index!.messages]);
         index!.start=nextStart;
       };
       // A cold window can begin between an async request and its message.
