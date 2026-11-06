@@ -30,7 +30,7 @@ export function codexQuestionCall(record: Buffer) {
         return null;
     }
 }
-export function parseCodexMessage(line: Buffer, questionCallId?: string) {
+export function parseCodexMessage(line: Buffer, questionCallId?: string, context?: {nativeId?: string | null}) {
     if (line.length > codexRecordLimit(line))
         return null;
     let text = line.toString('utf8');
@@ -44,7 +44,10 @@ export function parseCodexMessage(line: Buffer, questionCallId?: string) {
         return null;
     try {
         const entry = JSON.parse(text);
-        const turnId = entry.payload?.turn_id || entry.payload?.internal_chat_message_metadata_passthrough?.turn_id;
+        const declared = entry.payload?.turn_id || entry.payload?.internal_chat_message_metadata_passthrough?.turn_id;
+        // Some native event echoes incorrectly store the thread UUID as turn_id.
+        // Discard that alias so lifecycle boundaries supply the real turn.
+        const turnId = declared === context?.nativeId ? undefined : declared;
         const failure = entry.type === 'event_msg' && ['task_complete', 'error'].includes(entry.payload?.type)
             ? conversationErrorMessage(typeof turnId === 'string' ? turnId : `event:${entry.timestamp}`, entry.payload.error ?? (entry.payload.type === 'error' ? entry.payload : null), entry.payload.will_retry === true || entry.payload.willRetry === true, typeof entry.timestamp === 'string' ? entry.timestamp : null) : null;
         const asyncItem = entry.type === 'event_msg' && entry.payload?.type === 'item_completed' && entry.payload.item?.type === 'AgentMessage' ? entry.payload.item

@@ -7,7 +7,7 @@ export function readModelPreference(userId: string, sessionId: string): ModelPre
     } | undefined;
     try {
         const value = JSON.parse(row?.value || 'null');
-        return value && typeof value.model === 'string' && typeof value.effort === 'string' ? { model: value.model, effort: value.effort } : null;
+        return value && typeof value.model === 'string' && typeof value.effort === 'string' ? { model: value.model, effort: value.effort, ...(typeof value.provider === 'string' ? {provider:value.provider} : {}), ...(typeof value.service_tier === 'string' ? {service_tier:value.service_tier} : {}) } : null;
     }
     catch {
         return null;

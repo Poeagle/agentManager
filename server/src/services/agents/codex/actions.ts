@@ -1,3 +1,6 @@
+import {runInCodexEngine,engineForProvider} from './engine-context.js';
+import {validateModelPreference,readCodexModels} from './controls.js';
+import type {ModelPreference} from '../types.js';
 import {withCodexConnection,rememberStreamingSharedResources} from './stream.js';
 
 /** Native RPCs only: no PTY keystrokes and no synthetic model turn. */
@@ -11,31 +14,36 @@ export async function compactCodexConversation(threadId:string) {
 
 /** Persist an otherwise empty thread without generating a reply. The native
  * client cannot resume an empty thread until its rollout has been flushed. */
-export async function prepareFreshCodexConversation(threadId:string,cwd:string,sharedInstructions?:string) {
+export async function prepareFreshCodexConversation(threadId:string,cwd:string,sharedInstructions?:string,preference?:ModelPreference) {
   return withCodexConnection(async request=>{
     const current=await request('thread/read',{threadId});
-    if(!current.thread||current.thread.status?.type==='notLoaded')throw Error('请先重载标签页以接入实时控制');
+    if(!current.thread)throw Error('原生会话不存在，历史已保留');
+    const chosen=preference?await validateModelPreference(preference):undefined;
+    if(!chosen&&!(await readCodexModels()).some(m=>m.model===current.thread.model&&(!m.provider||m.provider===current.thread.modelProvider)))throw Error('原模型当前不可用，请先选择新会话的模型');
     const settings=await request('thread/resume',{threadId,excludeTurns:true});
+    const serviceTier=chosen?.service_tier??(chosen?.provider&&chosen.provider!==current.thread.modelProvider?'default':settings.serviceTier);
     const sandbox=({readOnly:'read-only',workspaceWrite:'workspace-write',dangerFullAccess:'danger-full-access'} as Record<string,string>)[settings.sandbox?.type];
     if(!['read-only','workspace-write','danger-full-access'].includes(sandbox)||!settings.approvalPolicy)throw Error('无法确认原会话权限，原会话已保留');
     if(sandbox==='read-only'&&settings.sandbox.networkAccess===true)throw Error('此只读会话有自定义网络权限，请在原始终端新开会话');
-    const result=await request('thread/start',{
-      cwd,model:current.thread.model,modelProvider:current.thread.modelProvider,
+    return runInCodexEngine(engineForProvider(chosen?.provider||current.thread.modelProvider),()=>withCodexConnection(async target=>{
+    const result=await target('thread/start',{
+      cwd,model:chosen?.model||current.thread.model,modelProvider:chosen?.provider||current.thread.modelProvider,
       ...(sharedInstructions?{developerInstructions:sharedInstructions}:{}),
-      approvalPolicy:settings.approvalPolicy,sandbox,...settings.approvalsReviewer?{approvalsReviewer:settings.approvalsReviewer}:{},...settings.serviceTier?{serviceTier:settings.serviceTier}:{},
+      approvalPolicy:settings.approvalPolicy,sandbox,...settings.approvalsReviewer?{approvalsReviewer:settings.approvalsReviewer}:{},...serviceTier?{serviceTier}:{},
       ...(settings.runtimeWorkspaceRoots?{runtimeWorkspaceRoots:settings.runtimeWorkspaceRoots}:{}),
-      config:{...(current.thread.reasoningEffort?{model_reasoning_effort:current.thread.reasoningEffort}:{}),
+      config:{...((chosen?.effort||current.thread.reasoningEffort)?{model_reasoning_effort:chosen?.effort||current.thread.reasoningEffort}:{}),
         ...(sandbox==='workspace-write'?{sandbox_workspace_write:{writable_roots:settings.sandbox.writableRoots||[],network_access:settings.sandbox.networkAccess===true,exclude_tmpdir_env_var:settings.sandbox.excludeTmpdirEnvVar===true,exclude_slash_tmp:settings.sandbox.excludeSlashTmp===true}}:{})},
     });
     const id=result.thread?.id;
     if(typeof id!=='string'||!/^[a-f0-9-]{36}$/i.test(id)||id===threadId)throw Error('新会话未创建，原会话已保留');
     try {
-      await request('thread/inject_items',{threadId:id,items:[{type:'message',role:'developer',content:[{type:'input_text',text:'A fresh conversation was opened in this platform tab. Wait for the user to provide a task. Previous conversation history has not been carried over.'}]}]});
-      const verified=await request('thread/resume',{threadId:id,excludeTurns:true});
+      await target('thread/inject_items',{threadId:id,items:[{type:'message',role:'developer',content:[{type:'input_text',text:'A fresh conversation was opened in this platform tab. Wait for the user to provide a task. Previous conversation history has not been carried over.'}]}]});
+      const verified=await target('thread/resume',{threadId:id,excludeTurns:true});
       if(verified.thread?.id!==id||verified.thread?.status?.type==='notLoaded')throw Error('新会话尚不可恢复');
       if(sharedInstructions)rememberStreamingSharedResources(id,sharedInstructions);
       return id;
-    } catch(error){await request('thread/archive',{threadId:id}).catch(()=>{});throw error;}
+    } catch(error){await target('thread/archive',{threadId:id}).catch(()=>{});throw error;}
+    }));
   });
 }
 

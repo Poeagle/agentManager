@@ -84,6 +84,7 @@ function detectPrompt(text: string): { type: PromptType; choices: string[] | nul
   // Only look at the tail of output for prompt detection
   const tail = text.slice(-2000);
   const isPermission = PERMISSION_PATTERN.test(tail);
+  const startupConflict = /background server has incompatible feature settings/i.test(tail);
 
   // Numbered options — tolerant of TUI box borders / selection cursor. Claude
   // and Codex render permission/choice prompts as a boxed list:
@@ -111,7 +112,7 @@ function detectPrompt(text: string): { type: PromptType; choices: string[] | nul
       if (!byNum.has(n)) byNum.set(n, optText);
     }
   }
-  if (hasOne && hasTwo && (hasCursor || isPermission)) {
+  if (hasOne && hasTwo && (hasCursor || isPermission || startupConflict)) {
     const choices = [...byNum.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t);
     return { type: 'choice', choices, isPermission };
   }

@@ -12,7 +12,7 @@ import {hasPermission,usePermissions} from '../lib/permissions';
 export function SessionWorkspacePane({session,userId,active,renderTerminal,onResume,onReload,onNewConversation,onClose,resuming,resumeFailed,controlsHost,projectPath,onOpenFile}: {
   session:Session;userId:string;active:boolean;
   renderTerminal:(visible:boolean,suspend:boolean,onReady:()=>void)=>ReactNode;
-  onResume?:()=>void;onReload?:()=>Promise<void>;onNewConversation?:()=>Promise<void>;onClose?:()=>void;resuming?:boolean;resumeFailed?:boolean;
+  onResume?:()=>void;onReload?:()=>Promise<void>;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<void>;onClose?:()=>void;resuming?:boolean;resumeFailed?:boolean;
   controlsHost?:HTMLElement|null;
   projectPath?:string;onOpenFile?:(path:string)=>void;
 }) {

@@ -1,3 +1,4 @@
+import {currentCodexEngine} from './engine-context.js';
 import {execFile} from 'child_process';
 import {promisify} from 'util';
 import {withCodexConnection} from './stream.js';
@@ -15,7 +16,7 @@ export async function installedCodexVersion(force=false):Promise<string> {
  * shared engine or claim a client reconnect upgraded an old engine. */
 export async function prepareCodexReload(shared:boolean) {
   const installed=await installedCodexVersion(true);
-  if(shared&&process.env.AGENTMANAGER_CODEX_STREAM_SOCKET) {
+  if(shared&&currentCodexEngine().socket) {
     const engine=await withCodexConnection(async(_request,server)=>codexVersion(server.userAgent));
     if(!engine)throw Error('无法确认 Codex 服务版本，原会话已保留，请稍后重试');
     if(engine!==installed)throw Error(`Codex 服务运行 ${engine}，已安装 ${installed}。请先升级共享 Codex 服务；原会话已保留。重载单个标签页不会重启其他会话共用的服务。`);

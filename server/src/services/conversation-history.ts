@@ -28,6 +28,7 @@ export function activateFreshConversation(sessionId:string,historyId:string,nati
     db.prepare('UPDATE conversation_attachments SET session_id=? WHERE session_id=?').run(historyId,sessionId);
     db.prepare('UPDATE events SET session_id=? WHERE session_id=?').run(historyId,sessionId);
     moveHistoricalLinks(sessionId,historyId);
+    db.prepare('UPDATE user_ui_state SET key=? WHERE key=?').run(`session-control:${historyId}`,`session-control:${sessionId}`);
     db.prepare("UPDATE sessions SET task='新会话',status='cancelled',pid=NULL,external_socket=NULL,started_at=NULL,completed_at=NULL,exit_code=NULL,created_at=datetime('now'),updated_at=datetime('now') WHERE id=?").run(sessionId);
   })();
 }
@@ -38,6 +39,8 @@ export function restoreConversationSnapshot(sessionId:string,historyId:string) {
     db.prepare('UPDATE conversation_attachments SET session_id=? WHERE session_id=?').run(sessionId,historyId);
     db.prepare('UPDATE events SET session_id=? WHERE session_id=?').run(sessionId,historyId);
     moveHistoricalLinks(historyId,sessionId);
+    db.prepare('DELETE FROM user_ui_state WHERE key=?').run(`session-control:${sessionId}`);
+    db.prepare('UPDATE user_ui_state SET key=? WHERE key=?').run(`session-control:${sessionId}`,`session-control:${historyId}`);
     const columns=['task','agent_id','native_session_id','cli_type','codex_session_id','claude_session_id','created_at'];
     db.prepare(`UPDATE sessions SET ${columns.map(column=>`${column}=(SELECT ${column} FROM sessions WHERE id=?)`).join(',')},status='cancelled',pid=NULL WHERE id=?`).run(...columns.map(()=>historyId),sessionId);
     db.prepare('DELETE FROM pty_output WHERE session_id=?').run(historyId);

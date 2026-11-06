@@ -1,3 +1,4 @@
+import { requirePermission } from '../services/rbac.js';
 import type { FastifyPluginAsync } from 'fastify';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { join, dirname } from 'path';
@@ -77,8 +78,9 @@ async function readSettings(projectPath: string): Promise<ClaudeSettings> {
   try {
     const content = await readFile(getSettingsPath(projectPath), 'utf-8');
     return JSON.parse(content);
-  } catch {
-    return {};
+  } catch(error) {
+    if((error as NodeJS.ErrnoException).code === 'ENOENT')return {};
+    throw Error('无法读取现有 hook 设置，请修正文件后重试；现有文件未修改');
   }
 }
 
@@ -120,9 +122,11 @@ function installHook(settings: ClaudeSettings, projectPath: string): ClaudeSetti
 function uninstallHook(settings: ClaudeSettings): ClaudeSettings {
   if (!settings.hooks?.PostToolUse) return settings;
 
-  settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter(
-    (entry) => !entry.hooks?.some((h) => HOOK_MARKERS.some((m) => h.command?.includes(m)))
-  );
+  settings.hooks.PostToolUse = settings.hooks.PostToolUse.flatMap(entry => {
+    if(!entry.hooks?.some(h=>HOOK_MARKERS.some(marker=>h.command?.includes(marker))))return [entry];
+    const hooks=entry.hooks.filter(h=>!HOOK_MARKERS.some(marker=>h.command?.includes(marker)));
+    return hooks.length?[{...entry,hooks}]:[];
+  });
 
   // Clean up empty arrays
   if (settings.hooks.PostToolUse.length === 0) {
@@ -137,6 +141,7 @@ function uninstallHook(settings: ClaudeSettings): ClaudeSettings {
 
 export const hooksRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', async (req, reply) => {
+    if (!requirePermission(req, reply, 'agent_api', req.method === 'GET' ? 'read' : 'write')) return reply;
     const query = (req.query || {}) as Record<string, unknown>;
     const body = (req.body || {}) as Record<string, unknown>;
     const path = typeof query.path === 'string' ? query.path : typeof body.path === 'string' ? body.path : null;

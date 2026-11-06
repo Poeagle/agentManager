@@ -95,3 +95,10 @@ export async function readCodexRuntime(sessionId: string | null | undefined): Pr
   inFlight.set(filePath,work);
   return work;
 }
+
+/** A native startup menu exists before any rollout/turn, so native history
+ * alone cannot report that execution is blocked. No polling or terminal reads. */
+export function codexStartupConflict(choices:string[]|null):boolean {
+ return !!choices?.some(choice=>/run without (?:the )?(?:daemon|background server)/i.test(choice))
+  && !!choices.some(choice=>/restart (?:the )?(?:daemon|background server)/i.test(choice));
+}

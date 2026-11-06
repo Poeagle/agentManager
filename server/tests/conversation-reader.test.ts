@@ -26,6 +26,15 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app.close();vi.unstubAllEnvs();cleanup();});
 describe('public conversation pages',()=>{
+  it('rejects a thread UUID masquerading as a turn ID and merges event echoes within the real turn',async()=>{
+    const start=(turn:string)=>line('event_msg',{type:'task_started',turn_id:turn});
+    const answer=(turn:string,item:string)=>line('response_item',{type:'message',id:item,role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:turn},content:[{type:'output_text',text:'same answer'}]});
+    const echo=line('event_msg',{type:'agent_message',turn_id:id,message:'same answer',phase:'final_answer'});
+    writeFileSync(file,start('real-one')+answer('real-one','item-one')+echo+line('event_msg',{type:'task_complete',turn_id:'real-one'}));
+    expect((await readConversation(binding)).messages).toMatchObject([{turn_id:'real-one',text:'same answer'}]);
+    appendFileSync(file,start('real-two')+answer('real-two','item-two')+echo);
+    const messages=(await readConversation(binding)).messages;expect(messages).toHaveLength(2);expect(messages.map(m=>m.turn_id)).toEqual(['real-one','real-two']);
+  });
   it('binds legacy rollout messages to lifecycle turns so live and durable replies have one identity',async()=>{
     const answer=(id:string,text:string)=>line('response_item',{type:'message',id,role:'assistant',phase:'final_answer',content:[{type:'output_text',text}]});
     const start=(turn:string)=>line('event_msg',{type:'task_started',turn_id:turn});

@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import { mkdirSync, readFileSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { authHook, createSession, createUser, getEventHookSecret } from '../src/auth.js';
@@ -104,6 +104,14 @@ describe('event hook security', () => {
     expect(second.statusCode).toBe(200);
     expect(limited.statusCode).toBe(429);
     expect((getDb().prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(2);
+  });
+
+  it('preserves unrelated commands when uninstalling a mixed hook entry and refuses to overwrite malformed settings',async()=>{
+    mkdirSync(join(projectPath,'.claude'),{recursive:true});const path=join(projectPath,'.claude','settings.json');
+    writeFileSync(path,JSON.stringify({hooks:{PostToolUse:[{matcher:'Read',hooks:[{type:'command',command:'echo keep'},{type:'command',command:'echo old # agentmanager-events-hook'}]}]}}));
+    const result=await app.inject({method:'POST',url:'/api/hooks/events',headers:{cookie:ownerCookie},payload:{path:projectPath,action:'uninstall'}});expect(result.statusCode).toBe(200);
+    expect(JSON.parse(readFileSync(path,'utf8')).hooks.PostToolUse).toEqual([{matcher:'Read',hooks:[{type:'command',command:'echo keep'}]}]);
+    writeFileSync(path,'{invalid json');const failed=await app.inject({method:'POST',url:'/api/hooks/events',headers:{cookie:ownerCookie},payload:{path:projectPath,action:'install'}});expect(failed.statusCode).toBe(500);expect(readFileSync(path,'utf8')).toBe('{invalid json');
   });
 
   it('installs a shell-safe hook that sends the project secret header', async () => {

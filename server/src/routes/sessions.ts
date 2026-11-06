@@ -298,12 +298,12 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return {...result,session:sessionManager.getSession(session.id)};
   });
 
-  for(const action of ['compact','new-conversation'] as const)app.post<{Params:{id:string}}>(`/sessions/:id/${action}`,async(req,reply)=>{
+  for(const action of ['compact','new-conversation'] as const)app.post<{Params:{id:string};Body?:{preference?:import('../services/agents/types.js').ModelPreference}}>(`/sessions/:id/${action}`,async(req,reply)=>{
     const session=sessionManager.getSession(req.params.id);
     if(!session||session.created_by_user_id!==req.user!.id||!canAccessSessionByRow(req.user!.id,session))return reply.code(404).send({error:'Session not found'});
     if(!requirePermission(req,reply,'agent_api','write'))return reply;
     if(req.user!.role!=='admin')return reply.code(403).send({error:'当前账号不可操作共享 Codex 服务'});
-    const result=await (action==='compact'?sessionManager.compactSessionConversation(session.id):sessionManager.newSessionConversation(session.id));
+    const result=await (action==='compact'?sessionManager.compactSessionConversation(session.id):sessionManager.newSessionConversation(session.id,req.body?.preference));
     if(!result.ok)return reply.code(409).send({error:result.error});
     return {...result,session:sessionManager.getSession(session.id)};
   });

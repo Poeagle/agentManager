@@ -66,6 +66,12 @@ describe('native stream recovery and incremental transport',()=>{
   const late:AgentStreamFrame[]=[];stops.push(getAgent('codex').stream.observe({...agentContext({id:'late',cli_type:'codex',codex_session_id:native,created_by_user_id:'owner',project_path:dir}),streamFormat:'incremental'},frame=>late.push(frame)));
   expect(late.find(frame=>frame.type==='snapshot')).toMatchObject({busy:false,stage:'idle',messages:[{text:'new answer',phase:'final',streaming:false}]});
  });
+ it('fills a missing running activity when live events race a reconnect baseline',async()=>{
+  holdItems=true;pageItems=[{type:'commandExecution',id:'still-running',command:'long operation',status:'inProgress',startedAtMs:Date.now()}];observe();
+  await vi.waitFor(()=>expect(releaseItems).toBeTypeOf('function'));
+  send('turn/started',{turn:{id:'turn'}});send('item/started',{item:{type:'reasoning',id:'reasoning-event'}});
+  releaseItems!();await vi.waitFor(()=>expect(frames.some(frame=>frame.type==='snapshot'&&frame.activities.some(activity=>activity.id==='still-running'&&activity.status==='running')||frame.type==='patch'&&frame.state?.activities?.some(activity=>activity.id==='still-running'&&activity.status==='running'))).toBe(true));
+ });
  it('recovers when initialize never answers, even while the native socket stays open',async()=>{
   stallFirst=true;observe();await vi.waitFor(()=>expect(initializes).toBe(1));
   await vi.waitFor(()=>expect(frames.some(frame=>frame.type==='snapshot')).toBe(true),{timeout:8000,interval:50});

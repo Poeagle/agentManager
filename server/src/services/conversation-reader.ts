@@ -37,7 +37,7 @@ export function conversationMessageId(turnId:string,role:string,itemId?:string) 
 
 function publicMessage(line:Buffer,kind:CliType,questionCallId?:string){return getAgent(kind).history.file!.project(line,questionCallId);}
 
-function scan(buffer:Buffer,base:number,kind:CliType,questionCalls:NativeQuestionCall[],turnBoundaries:TurnBoundary[]):IndexedMessage[] {
+function scan(buffer:Buffer,base:number,kind:CliType,questionCalls:NativeQuestionCall[],turnBoundaries:TurnBoundary[],context?:{nativeId?:string|null}):IndexedMessage[] {
   const result:IndexedMessage[]=[],codec=getAgent(kind).history.file!;
   const boundaryOffsets=new Set(turnBoundaries.map(item=>item.offset));
   let start=0;
@@ -50,7 +50,7 @@ function scan(buffer:Buffer,base:number,kind:CliType,questionCalls:NativeQuestio
     // parse quoted tool results as interactive input.
     const call=codec.questionCall(record);
     if(call&&!questionCalls.some(item=>item.offset===base+start))questionCalls.push({...call,offset:base+start});
-    const parsed=codec.project(record);
+    const parsed=codec.project(record,undefined,context);
     if(parsed) {
       const {message,failure,recordType,turnId,itemId}=parsed;
       const hash=createHash('sha256').update(message.text).digest('hex');
@@ -133,7 +133,7 @@ export async function readConversation(session:PromptContextSession,query:{after
         const data=buffer.subarray(skip);
         const end=data.lastIndexOf(10)+1;
         const questionCalls:NativeQuestionCall[]=[],turnBoundaries:TurnBoundary[]=[];
-        index={inode:stats.ino,mtime:stats.mtimeMs,start:nextStart,offset:stats.size,partial:Buffer.from(data.subarray(end)),messages:scan(data.subarray(0,end),start+skip,file.kind,questionCalls,turnBoundaries),generation:`${stats.ino}:${stats.birthtimeMs}`,skipPartial:false,anchor:Buffer.alloc(0),questionCalls,turnBoundaries};
+        index={inode:stats.ino,mtime:stats.mtimeMs,start:nextStart,offset:stats.size,partial:Buffer.from(data.subarray(end)),messages:scan(data.subarray(0,end),start+skip,file.kind,questionCalls,turnBoundaries,agentContext(session)),generation:`${stats.ino}:${stats.birthtimeMs}`,skipPartial:false,anchor:Buffer.alloc(0),questionCalls,turnBoundaries};
         if(index.partial.length>recordLimit(index.partial,file.kind)){index.partial=Buffer.alloc(0);index.skipPartial=true;}
         if(indexes.size>=32 && !indexes.has(file.path)) indexes.delete(indexes.keys().next().value!);
         indexes.set(file.path,index);
@@ -151,7 +151,7 @@ export async function readConversation(session:PromptContextSession,query:{after
             base+=newline+1;data=data.subarray(newline+1);index.skipPartial=false;
           }
           const end=data.lastIndexOf(10)+1;
-          index.messages.push(...scan(data.subarray(0,end),base,file.kind,index.questionCalls,index.turnBoundaries));
+          index.messages.push(...scan(data.subarray(0,end),base,file.kind,index.questionCalls,index.turnBoundaries,agentContext(session)));
           index.partial=Buffer.from(data.subarray(end));
           if(index.partial.length>recordLimit(index.partial,file.kind)) {index.partial=Buffer.alloc(0);index.skipPartial=true;}
           index.offset+=bytesRead;
@@ -163,7 +163,7 @@ export async function readConversation(session:PromptContextSession,query:{after
       index.messages=bind(index.messages);
       const prependWindow=async()=>{
         const {start,buffer,skip,nextStart}=await previousWindow(handle,index!.start);
-        index!.messages=bind([...scan(buffer.subarray(skip),start+skip,file.kind,index!.questionCalls,index!.turnBoundaries),...index!.messages]);
+        index!.messages=bind([...scan(buffer.subarray(skip),start+skip,file.kind,index!.questionCalls,index!.turnBoundaries,agentContext(session)),...index!.messages]);
         index!.start=nextStart;
       };
       // A cold window can begin between an async request and its message.

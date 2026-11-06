@@ -225,7 +225,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(automatic ? { automatic: true } : {}),
       }),
-    newConversation:(id:string)=>fetchJSON<{ok:boolean;session:Session;history_id:string;warning?:string}>(`/sessions/${encodeURIComponent(id)}/new-conversation`,{method:'POST'}),
+    newConversation:(id:string,preference?:AgentModelPreference)=>fetchJSON<{ok:boolean;session:Session;history_id:string;warning?:string}>(`/sessions/${encodeURIComponent(id)}/new-conversation`,{method:'POST',body:JSON.stringify({preference})}),
     compactConversation:(id:string)=>fetchJSON<{ok:boolean}>(`/sessions/${encodeURIComponent(id)}/compact`,{method:'POST'}),
     reload:(id:string)=>fetchJSON<{ok:boolean;session:Session;client_version?:string}>(`/sessions/${encodeURIComponent(id)}/reload`,{method:'POST'}),
     // Permanently delete an ended session from history (record + events + JSONL).
@@ -271,7 +271,7 @@ export const api = {
       }),
   },
   scheduledTasks: {
-    agentQuota:(projectId:string,agentId:string)=>fetchJSON<{quota:CodexWeeklyQuota}>(`/scheduled-tasks/agent-quota?project_id=${encodeURIComponent(projectId)}&agent_id=${encodeURIComponent(agentId)}`),
+    agentQuota:(projectId:string,agentId:string)=>fetchJSON<AgentQuotaResponse>(`/scheduled-tasks/agent-quota?project_id=${encodeURIComponent(projectId)}&agent_id=${encodeURIComponent(agentId)}`),
     list: (projectId?: string) => {
       const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
       return fetchJSON<{ tasks: ScheduledTask[] }>(`/scheduled-tasks${query}`);
@@ -293,11 +293,11 @@ export const api = {
     runs: (id: string) =>
       fetchJSON<{ runs: ScheduledTaskRun[] }>(`/scheduled-tasks/${id}/runs`),
     codexQuota: (projectId: string) =>
-      fetchJSON<{ quota: CodexWeeklyQuota }>(`/scheduled-tasks/codex-quota?project_id=${encodeURIComponent(projectId)}`),
+      fetchJSON<AgentQuotaResponse>(`/scheduled-tasks/codex-quota?project_id=${encodeURIComponent(projectId)}`),
   },
-  agentQuota:{read:(agentId:string,force=false)=>fetchJSON<{quota:AgentWeeklyQuota}>(`/agent-quota/${encodeURIComponent(agentId)}${force?'?refresh=true':''}`)},
+  agentQuota:{read:(agentId:string,force=false)=>fetchJSON<AgentQuotaResponse>(`/agent-quota/${encodeURIComponent(agentId)}${force?'?refresh=true':''}`)},
   codexQuota: {
-    read: (force = false) => fetchJSON<{ quota: CodexWeeklyQuota }>(`/codex-quota${force ? '?refresh=true' : ''}`),
+    read: (force = false) => fetchJSON<AgentQuotaResponse>(`/codex-quota${force ? '?refresh=true' : ''}`),
   },
   projects: {
     list: async () => {const data=await fetchJSON<{projects:Project[];agents?:AgentDescriptor[]}>('/projects');return {...data,projects:data.projects.map(project=>({...project,agent_catalog:data.agents}))};},
@@ -495,8 +495,9 @@ export const api = {
       }),
   },
   agent: {
+    cancelQueuedInput:(sessionId:string,clientId:string)=>fetchJSON<{ok:boolean}>(`/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(clientId)}`,{method:'DELETE'}),
     controls:(sessionId:string,refresh=false)=>fetchJSON<ConversationControlsData>(`/sessions/${encodeURIComponent(sessionId)}/controls${refresh?'?refresh=true':''}`),
-    setControls:(sessionId:string,value:{model:string;effort:string}|null)=>fetchJSON<{ok:boolean;pending:{model:string;effort:string}|null;pending_status?:'saved'|'submitted'|null;model?:string;effort?:string}>(`/sessions/${encodeURIComponent(sessionId)}/controls`,{method:'PUT',body:JSON.stringify(value)}),
+    setControls:(sessionId:string,value:AgentModelPreference|null)=>fetchJSON<{ok:boolean;pending:AgentModelPreference|null;pending_status?:'saved'|'submitted'|null;model?:string;effort?:string;provider?:string;service_tier?:string}>(`/sessions/${encodeURIComponent(sessionId)}/controls`,{method:'PUT',body:JSON.stringify(value)}),
     conversation:(sessionId:string,query:{after?:string;before?:string}={},signal?:AbortSignal)=>fetchJSON<ConversationPage>(`/sessions/${encodeURIComponent(sessionId)}/conversation?${new URLSearchParams(query)}`,{signal}),
     sendInput:(sessionId:string,input:string,clientId?:string,attachments?:ConversationAttachment[])=>fetchJSON<{status:string}>(`/sessions/${encodeURIComponent(sessionId)}/input`,{method:'POST',body:JSON.stringify({input,source:'conversation',client_id:clientId,attachments})}),
     capabilities: () => fetchJSON<AgentApiContract>('/agent/capabilities'),
@@ -712,6 +713,7 @@ export interface ScheduledTaskRun {
   completed_at: string | null;
 }
 
+export interface AgentQuotaResponse {quota:AgentWeeklyQuota|null;reason?:'not_applicable';message?:string}
 export interface AgentWeeklyQuota {
   stale?: boolean;
   usedPercent: number;
@@ -1042,14 +1044,16 @@ export interface ConversationConclusion extends ConversationInterval {start_at:s
 export interface ConversationStatistics {sequence:number;message_id?:string;turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;interval?:ConversationInterval;conclusion?:ConversationConclusion}
 export interface ConversationMessage {statistics?:ConversationStatistics;id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
 export interface ConversationUsageUpdate {native_id:string;usage:NonNullable<ConversationControlsData['usage']>;observed_at:string}
+export interface AgentModelPreference {service_tier?:string;model:string;effort:string;provider?:string}
 export interface ConversationControlsData {
+  supports_model_recovery?:boolean;supports_fresh_model?:boolean;
   agent?:AgentDescriptor;can_edit_features?:Partial<Record<import('./agents').AgentFeature,boolean>>;
   engine_version?:string|null;installed_cli_version?:string|null;git?:{branch:string;changes:number}|null;state?:string|null;
   model:string|null;effort:string|null;provider:string|null;cwd:string|null;cli_version:string|null;permission:string|null;approval:string|null;service_tier:string|null;
   usage:{total:Record<string,number|null>;last:Record<string,number|null>;window:number|null}|null;
   limits:Array<{used_percent:number;minutes:number;resets_at:number|null}>;
-  models:Array<{model:string;name:string;description:string;efforts:Array<{value:string;description:string}>;defaultEffort:string}>;
-  pending_status?:'saved'|'submitted'|null;can_edit:boolean;loaded:boolean;pending:{model:string;effort:string}|null;warning:string|null;native_id:string;checked_at:string;usage_observed_at:string|null;
+  models:Array<{default_service_tier?:string|null;service_tiers?:Array<{id:string;name:string;description:string}>;provider?:string;model:string;name:string;description:string;efforts:Array<{value:string;description:string}>;defaultEffort:string}>;
+  pending_status?:'saved'|'submitted'|null;can_edit:boolean;loaded:boolean;pending:AgentModelPreference|null;warning:string|null;native_id:string;checked_at:string;usage_observed_at:string|null;
 }
 export interface ConversationPage {
   messages:ConversationMessage[];statistics?:ConversationStatistics[];has_more:boolean;reset:boolean;available:boolean;generation:string|null;

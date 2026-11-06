@@ -21,7 +21,7 @@ it('immediately replaces a running step with its completion or a newer native st
  const first={id:'first',label:'旧步骤',status:'running' as const,started_at:null,completed_at:null,duration_ms:null};
  const view=render(<ConversationActivityLine activities={[first]} busy now={Date.now()} totalElapsed={0} fallback="任务进行中"/>);
  view.rerender(<ConversationActivityLine activities={[{...first,status:'completed',duration_ms:2}]} busy now={Date.now()} totalElapsed={0} fallback="任务进行中"/>);
- expect(screen.getByTestId('conversation-activity-line')).toHaveTextContent('已完成 · 旧步骤');
+ expect(screen.getByTestId('conversation-activity-line')).toHaveTextContent('执行中 · 最近完成 · 旧步骤');
  view.rerender(<ConversationActivityLine activities={[{...first,status:'completed'},{...first,id:'new',label:'最新步骤'}]} busy now={Date.now()} totalElapsed={0} fallback="任务进行中"/>);
- expect(screen.getByTestId('conversation-activity-line')).toHaveTextContent('最新步骤');expect(screen.queryByText('已完成 · 旧步骤')).toBeNull();
+ expect(screen.getByTestId('conversation-activity-line')).toHaveTextContent('最新步骤');expect(screen.queryByText('执行中 · 最近完成 · 旧步骤')).toBeNull();
 });

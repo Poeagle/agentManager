@@ -73,7 +73,7 @@ describe('native Codex conversation streaming',()=>{
   });
   it('handles the compaction-start race through the queue but never retries an unrelated rejection as another input',async()=>{
     turnStartFailure='Thread is busy compacting context';expect(await submitStreamingCodexInput('thread','one','race-client')).toBe('queued');expect(queueEntries).toHaveLength(1);
-    turnStartFailure='Model access rejected';await expect(submitStreamingCodexInput('thread','two','rejected-client')).rejects.toThrow('暂未接受');expect(queueEntries).toHaveLength(1);
+    turnStartFailure='Model access rejected';await expect(submitStreamingCodexInput('thread','two','rejected-client')).rejects.toThrow('Model access rejected');expect(queueEntries).toHaveLength(1);
   });
   it('streams compaction start, real token usage and completion without model text or extra requests',async()=>{
     stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));

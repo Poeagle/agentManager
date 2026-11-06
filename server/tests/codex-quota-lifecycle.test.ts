@@ -50,6 +50,11 @@ describe('shared Codex quota reader', () => {
     expect(children[0].kill).not.toHaveBeenCalled();
     expect(spawn.mock.calls[0][1]).toEqual(expect.arrayContaining(['plugins', 'apps', 'analytics.enabled=false']));
   });
+  it('classifies API key authentication as not applicable and caches it without respawning', async()=>{
+    spawn.mockImplementationOnce(()=>{const child=new FakeCodex();children.push(child);child.replyQuota=false;child.stdin.on('data',data=>{const m=JSON.parse(data.toString());if(m.method==='account/rateLimits/read')queueMicrotask(()=>child.stdout.write(JSON.stringify({id:m.id,error:{code:-32600,message:'chatgpt authentication required to read rate limits'}})+'\n'));});return child;});
+    await expect(service.readCodexWeeklyQuota()).rejects.toMatchObject({reason:'not_applicable'});
+    await expect(service.readCodexWeeklyQuota({force:true})).rejects.toMatchObject({reason:'not_applicable'});expect(spawn).toHaveBeenCalledOnce();
+  });
   it('manual refresh bypasses cached data without recreating the process', async () => {
     await service.readCodexWeeklyQuota();
     await service.readCodexWeeklyQuota({ force: true });

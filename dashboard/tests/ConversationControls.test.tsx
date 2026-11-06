@@ -50,6 +50,28 @@ describe('compact conversation controls',()=>{
   fireEvent.click(await screen.findByRole('button',{name:'压缩',exact:true}));await waitFor(()=>expect(api.sessions.compactConversation).toHaveBeenCalledWith('s'));expect(screen.queryByText('已开始压缩，进度会在当前会话中显示。')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'新开',exact:true}));expect(open).not.toHaveBeenCalled();const dialog=screen.getByRole('dialog',{name:'在当前标签页新开会话'});fireEvent.click(within(dialog).getByRole('button',{name:'停止旧会话并新开'}));await waitFor(()=>expect(open).toHaveBeenCalledTimes(1));await waitFor(()=>expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
  });
+ it('sets and cancels Fast with a native catalog tier rather than guessing a provider setting',async()=>{
+  data={...data,service_tier:'default',models:[{...data.models[0],service_tiers:[{id:'priority',name:'Fast',description:'Faster requests'}]},data.models[1]]};mount();
+  const enable=await screen.findByRole('button',{name:'开启 Fast 模式'});fireEvent.click(enable);await waitFor(()=>expect(api.agent.setControls).toHaveBeenLastCalledWith('s',{model:'model-a',effort:'high',service_tier:'priority'}));
+  const disable=await screen.findByRole('button',{name:'关闭 Fast 模式'});expect(disable).toHaveAttribute('aria-pressed','true');fireEvent.click(disable);await waitFor(()=>expect(api.agent.setControls).toHaveBeenLastCalledWith('s',{model:'model-a',effort:'high',service_tier:'default'}));
+  expect(await screen.findByRole('button',{name:'开启 Fast 模式'})).toHaveAttribute('aria-pressed','false');
+ });
+ it('recognizes a catalog default Fast tier and disables it explicitly',async()=>{
+  data={...data,service_tier:null,models:[{...data.models[0],default_service_tier:'priority',service_tiers:[{id:'priority',name:'Fast',description:'Faster requests'}]}]};mount();
+  fireEvent.click(await screen.findByRole('button',{name:'关闭 Fast 模式'}));await waitFor(()=>expect(api.agent.setControls).toHaveBeenLastCalledWith('s',{model:'model-a',effort:'high',service_tier:'default'}));expect(await screen.findByRole('button',{name:'开启 Fast 模式'})).toHaveAttribute('aria-pressed','false');
+ });
+ it('confirms a provider change with explicit new-thread model settings instead of applying it to the old thread',async()=>{
+  data={...data,supports_fresh_model:true,provider:'provider-a',models:[{...data.models[0],provider:'provider-a'},{...data.models[1],provider:'provider-b'}]};
+  const open=vi.fn().mockResolvedValue(undefined);vi.mocked(api.agent.setControls).mockClear();render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active onNewConversation={open}/></QueryClientProvider>);
+  const model=await screen.findByRole('combobox',{name:'选择模型'});fireEvent.change(model,{target:{value:JSON.stringify(['provider-b','model-b'])}});
+  expect(api.agent.setControls).not.toHaveBeenCalled();expect(open).not.toHaveBeenCalled();
+  const dialog=screen.getByRole('dialog',{name:'在当前标签页新开会话'});expect(within(dialog).getByRole('combobox',{name:'新会话模型'})).toHaveValue(JSON.stringify(['provider-b','model-b']));
+  fireEvent.click(within(dialog).getByRole('button',{name:'停止旧会话并新开'}));await waitFor(()=>expect(open).toHaveBeenCalledWith({provider:'provider-b',model:'model-b',effort:'low'}));
+ });
+ it('shows a saved recovery model without resubmitting settings automatically',async()=>{
+  data={...data,supports_model_recovery:true,loaded:false,pending:{model:'model-b',effort:'low'},pending_status:'saved'};vi.mocked(api.agent.setControls).mockClear();mount();
+  expect(await screen.findByText('恢复或重载时应用')).toBeVisible();expect(screen.getByRole('combobox',{name:'选择模型'})).toBeEnabled();expect(api.agent.setControls).not.toHaveBeenCalled();
+ });
  it('does not invent percentages or editable options for missing or read-only telemetry',async()=>{
   data={...data,can_edit:false,loaded:false,models:[],limits:[],usage:null,model:null,effort:null};mount();expect(await screen.findByRole('combobox',{name:'选择模型'})).toBeDisabled();expect(screen.queryByText(/上下文 \d/)).not.toBeInTheDocument();expect(screen.queryByText(/周额度剩余/)).not.toBeInTheDocument();
  });

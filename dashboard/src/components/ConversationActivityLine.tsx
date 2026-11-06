@@ -11,7 +11,7 @@ export function ConversationActivityLine({activities,busy,now,fallback,totalElap
   // The latest native step wins immediately; never replay a queue of stale
   // completed tools while newer work is already running.
   const item=busy?[...activities].reverse().find(item=>item.status==='running')||activities.at(-1)||null:null;
-  const label=item?`${item.status==='completed'?'已完成 · ':item.status==='failed'?'失败 · ':''}${item.label}`:fallback;
+  const label=item?`${item.status==='completed'?'执行中 · 最近完成 · ':item.status==='failed'?'执行中 · 最近失败 · ':''}${item.label}`:fallback;
   useEffect(()=>{
     const measure=()=>setTravel(Math.max(0,(text.current?.scrollWidth||0)-(viewport.current?.clientWidth||0)));
     measure();
@@ -26,7 +26,7 @@ export function ConversationActivityLine({activities,busy,now,fallback,totalElap
         <span ref={text} className="session-chat-activity-text" data-overflow={travel>0} style={{'--activity-travel':`${-travel}px`,'--activity-duration':`${Math.max(8,travel/30)}s`} as CSSProperties}>{label}</span>
       </span>
     </span>
-    {duration!==null && duration!==undefined && <time className="session-chat-activity-duration" title="当前步骤耗时">{formatElapsed(duration)}</time>}
+    {duration!==null && duration!==undefined && <time className="session-chat-activity-duration" title={item?.status==='running'?'当前步骤耗时':'最近步骤耗时'}>{formatElapsed(duration)}</time>}
     {busy && totalElapsed!==null && <time className="session-chat-round-duration" title="当前对话从用户发言起的累计时间">本轮 {formatElapsed(totalElapsed)}</time>}
   </span>;
 }

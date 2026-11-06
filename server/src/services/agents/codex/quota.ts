@@ -1,3 +1,4 @@
+import {AgentQuotaNotApplicable} from '../quota-response.js';
 import {spawn,type ChildProcessWithoutNullStreams} from 'child_process';
 
 interface RateLimitWindow {
@@ -107,7 +108,8 @@ async function getReader(): Promise<ChildProcessWithoutNullStreams> {
         if (!request) continue; // Ignore notifications and responses to cancelled requests.
         requests.delete(message.id);
         clearTimeout(request.timer);
-        if (message.error) request.reject(new Error('Codex 周额度不可用，请确认服务器上的 Codex 已登录'));
+        if (message.error) request.reject(/chatgpt authentication required to read rate limits/i.test(String(message.error.message))
+          ? new AgentQuotaNotApplicable() : new Error('Codex 周额度服务暂不可用'));
         else request.resolve(message.result);
       }
     });
@@ -169,6 +171,10 @@ export async function readCodexWeeklyQuota(options?: { force?: boolean }): Promi
       lastError = null;
       return value;
     } catch (error) {
+      if (error instanceof AgentQuotaNotApplicable) {
+        cached = null; lastError = error; retryAt = Date.now() + CACHE_MS;
+        stopReader(error); throw error;
+      }
       lastError = error instanceof Error ? error : new Error('Codex 周额度读取失败');
       retryAt = Date.now() + Math.min(CACHE_MS, 30_000 * 2 ** Math.min(failures++, 4));
       stopReader(lastError);

@@ -1,8 +1,9 @@
 import { shellSingleQuote } from '../shell.js';
 import type { AgentCommandOptions } from '../types.js';
-function withoutCodexPlugins(command: string, socket?: string | null): string {
+function codexTransport(command: string, socket?: string | null): string {
     const remote = socket && !/(?:^|\s)--remote(?:\s|=)/.test(command) ? ` --remote ${shellSingleQuote(`unix://${socket}`)}` : '';
-    return `${command}${remote} --disable plugins`;
+    // Embedded TUI shares the user daemon: changing its feature flags blocks startup.
+    return `${command}${remote}${socket ? ' --disable plugins' : ''}`;
 }
 function tomlBasicString(value: string): string {
     return `"${value
@@ -30,7 +31,7 @@ export function codexIdentityFlags(bindingPath?: string): string {
     ].join('');
     const hookCommand = `node -e ${shellSingleQuote(script)} ${shellSingleQuote(bindingPath)}`;
     const hookConfig = `hooks.SessionStart=[{matcher="startup|resume",hooks=[{type="command",command=${tomlBasicString(hookCommand)},timeout=5}]}]`;
-    return ` --enable hooks --dangerously-bypass-hook-trust -c ${shellSingleQuote(hookConfig)}`;
+    return ` --dangerously-bypass-hook-trust -c ${shellSingleQuote(hookConfig)}`;
 }
 export function codexPermissions(command: string) { return /(?:^|\s)(?:--dangerously-bypass-approvals-and-sandbox|--yolo)(?=\s|$)/.test(command) ? command : `${command} --dangerously-bypass-approvals-and-sandbox`; }
 export function codexResources(command: string, instructions: string) { return `${command} -c ${shellSingleQuote(`developer_instructions=${tomlBasicString(instructions)}`)}`; }
@@ -39,10 +40,10 @@ export function codexCommand(options: AgentCommandOptions) {
     const base = command || 'codex';
     let cmd: string;
     if (resumeId)
-        cmd = `${withoutCodexPlugins(base, streamSocket)} resume${streamSocket ? '' : codexIdentityFlags(bindingPath)} --no-alt-screen ${shellSingleQuote(resumeId)}`;
+        cmd = `${codexTransport(base, streamSocket)} resume${streamSocket ? '' : codexIdentityFlags(bindingPath)} --no-alt-screen ${shellSingleQuote(resumeId)}`;
     else if (assignId)
-        cmd = `${withoutCodexPlugins(base, streamSocket)} resume --no-alt-screen ${shellSingleQuote(assignId)}`;
+        cmd = `${codexTransport(base, streamSocket)} resume --no-alt-screen ${shellSingleQuote(assignId)}`;
     else
-        cmd = `${withoutCodexPlugins(base, streamSocket)}${codexIdentityFlags(bindingPath)} --no-alt-screen ${shellSingleQuote(task)}`;
+        cmd = `${codexTransport(base, streamSocket)}${codexIdentityFlags(bindingPath)} --no-alt-screen ${shellSingleQuote(task)}`;
     return direct ? `command bash -c ${shellSingleQuote(cmd)}` : cmd;
 }

@@ -1,3 +1,4 @@
+import {inCodexThread} from './engine-context.js';
 import {watch} from 'node:fs';
 import {basename,dirname} from 'node:path';
 import {isAdmin} from '../../../auth.js';
@@ -28,7 +29,7 @@ export async function scheduleCodexStreamingUpgrade(sessionId:string):Promise<bo
       const current=getSession(sessionId);
       if(!current||current.codex_session_id!==native||current.status!=='running'){stop();return;}
       if((await readCodexRuntime(native)).state!=='idle')return;
-      const loaded=await withCodexConnection(async request=>(await request('thread/read',{threadId:native})).thread?.status?.type);
+      const loaded=await inCodexThread(native!,()=>withCodexConnection(async request=>(await request('thread/read',{threadId:native})).thread?.status?.type));
       if(closed)return;
       if(loaded==='notLoaded'&&!await ensureCodexConversationStreaming(sessionId))return;
       stop();

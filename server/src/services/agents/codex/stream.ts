@@ -1,3 +1,5 @@
+import {rememberCodexSettings} from './settings-state.js';
+import {currentCodexEngine,rememberCodexThread} from './engine-context.js';
 import {readCodexBaseline,markOversizedBaseline} from './baseline.js';
 import {readCodexQueue} from './queue.js';
 import WebSocket from 'ws';
@@ -18,11 +20,18 @@ import type {CodexState} from './runtime.js';
 import type {AgentCompaction as ConversationCompaction,AgentStreamFrame as ConversationStreamFrame} from '../events.js';
 export type {AgentCompaction as ConversationCompaction,AgentStreamFrame as ConversationStreamFrame} from '../events.js';
 
-export class CodexRpcError extends Error {readonly submission='rejected';constructor(readonly nativeMessage:string){super('原生 Codex 暂未接受此操作，请稍后重试');}}
+/** Native public reason only; strip common credential forms and URL queries. */
+export function publicCodexRpcMessage(value:string):string {
+ return (value.replace(/(?:Bearer\s+)[^\s"']+/gi,'Bearer [redacted]')
+  .replace(/((?:api[_-]?key|token|password|authorization)\s*[:=]\s*)[^\s,;"']+/gi,'$1[redacted]')
+  .replace(/https?:\/\/[^\s"']+/g,url=>{try{const u=new URL(url);u.username='';u.password='';u.search='';u.hash='';return u.toString();}catch{return '[URL]';}})
+  .replace(/sk-[A-Za-z0-9_-]{12,}/g,'[redacted]').slice(0,1000)) || '原生 Codex 暂未接受此操作，请稍后重试';
+}
+export class CodexRpcError extends Error {readonly submission='rejected';constructor(readonly nativeMessage:string){super(publicCodexRpcMessage(nativeMessage));}}
 type CodexRequest = (method:string,params:unknown)=>Promise<any>;
 
 export async function withCodexConnection<T>(action:(request:CodexRequest,server:{userAgent:string|null})=>Promise<T>):Promise<T> {
-  const path=process.env.AGENTMANAGER_CODEX_STREAM_SOCKET;
+  const path=currentCodexEngine().socket;
   if(!path) throw new Error('Codex stream socket is not configured');
   const socket=new WebSocket(`ws+unix://${path}:/`,{maxPayload:2*1024*1024,handshakeTimeout:4000});
   const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
@@ -35,13 +44,13 @@ export async function withCodexConnection<T>(action:(request:CodexRequest,server
   socket.on('message',bytes=>{
     let frame:any;try{frame=JSON.parse(bytes.toString());}catch{return;}
     const waiting=!frame.method?pending.get(frame.id):undefined;if(!waiting)return;pending.delete(frame.id);clearTimeout(waiting.timer);
-    if(frame.error) waiting.reject(new CodexRpcError(typeof frame.error.message==='string'?frame.error.message.slice(0,1000):''));else waiting.resolve(frame.result);
+    if(frame.error) waiting.reject(new CodexRpcError(typeof frame.error.message==='string'?frame.error.message.slice(0,1000):''));else {if(frame.result?.thread)rememberCodexThread(frame.result.thread);waiting.resolve(frame.result);}
   });
   const rejectPending=()=>{for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('Codex 连接已关闭'));}pending.clear();};
   socket.on('close',rejectPending);socket.on('error',rejectPending);
   try {
     await opened;
-    const initialized=await request('initialize',{clientInfo:{name:'octoally-terminal',version:'1.0.0'},capabilities:{experimentalApi:true}});
+    const initialized=await request('initialize',{clientInfo:{name:'octoally-terminal',version:'1.0.0'},capabilities:{experimentalApi:true,optOutNotificationMethods:['item/commandExecution/outputDelta','item/fileChange/outputDelta','item/reasoning/textDelta','item/reasoning/summaryTextDelta','item/reasoning/summaryPartAdded']}});
     socket.send(JSON.stringify({method:'initialized'}));
     return await action(request,{userAgent:typeof initialized?.userAgent==='string'?initialized.userAgent:null});
   } finally {rejectPending();if(socket.readyState===WebSocket.CONNECTING)socket.terminate();else socket.close();}
@@ -51,6 +60,7 @@ export async function withCodexConnection<T>(action:(request:CodexRequest,server
  * without resubmitting input. An empty thread has no resumable rollout yet. */
 export async function createStreamingCodexThread(cwd:string,task:string,sharedInstructions?:string):Promise<string> {
   return withCodexConnection(async request=>{
+    await (await import('./controls.js')).assertCodexLaunchModel(request);
     const result=await request('thread/start',{cwd,approvalPolicy:'never',sandbox:'danger-full-access',...(sharedInstructions?{developerInstructions:sharedInstructions}:{})});
     const id=result.thread?.id;
     if(typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Codex 未返回原生会话标识');
@@ -64,13 +74,13 @@ export async function createStreamingCodexThread(cwd:string,task:string,sharedIn
 const sharedContextFingerprints = new Map<string, string>();
 const sharedContextUpdates=new Map<string,Promise<void>>();
 export function rememberStreamingSharedResources(threadId:string,instructions:string){
-  const key=`${process.env.AGENTMANAGER_CODEX_STREAM_SOCKET}:${threadId}`,hash=createHash('sha256').update(instructions).digest('hex');
+  const key=`${currentCodexEngine().socket}:${threadId}`,hash=createHash('sha256').update(instructions).digest('hex');
   sharedContextFingerprints.set(key,hash);
   if(sharedContextFingerprints.size>1000)sharedContextFingerprints.delete(sharedContextFingerprints.keys().next().value!);
   try{getDb().prepare(`INSERT INTO shared_resource_injections(scope_key,content_hash) VALUES(?,?) ON CONFLICT(scope_key) DO UPDATE SET content_hash=excluded.content_hash`).run(key,hash);}catch{/* The native context remains valid even when its local dedup journal is unavailable. */}
 }
 export async function configureStreamingSharedResources(threadId: string, instructions: string): Promise<void> {
-  const key = `${process.env.AGENTMANAGER_CODEX_STREAM_SOCKET}:${threadId}`;
+  const key = `${currentCodexEngine().socket}:${threadId}`;
   const fingerprint = createHash('sha256').update(instructions).digest('hex');
   const work=(sharedContextUpdates.get(key)||Promise.resolve()).catch(()=>{}).then(async()=>{
   let known=sharedContextFingerprints.get(key);
@@ -104,7 +114,7 @@ export async function interruptStreamingCodexThread(threadId:string) {
 type SubmissionResult=boolean|'queued';
 const acceptedInputs=new Map<string,{promise:Promise<SubmissionResult>;fingerprint:string}>();
 export function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[]=[]):Promise<SubmissionResult> {
-  const identity=clientId||randomUUID(),key=JSON.stringify([process.env.AGENTMANAGER_CODEX_STREAM_SOCKET,threadId,identity]),fingerprint=JSON.stringify([text,attachments]);
+  const identity=clientId||randomUUID(),key=JSON.stringify([currentCodexEngine().socket,threadId,identity]),fingerprint=JSON.stringify([text,attachments]);
   const existing=acceptedInputs.get(key);if(existing)return existing.fingerprint===fingerprint?existing.promise:Promise.reject(new CodexRpcError('Client input identity has different contents'));
   const operation=withCodexConnection(async request=>{
     const current=await request('thread/read',{threadId});
@@ -138,7 +148,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
 
 /** Observe an already loaded Codex thread. Never start a thread or a turn. */
 export function observeCodexConversation(threadId:string,emit:(frame:ConversationStreamFrame)=>void,onFailure?:(turnId:string,error:unknown,willRetry:boolean)=>void,options:{incremental?:boolean}={}) {
-  const path=process.env.AGENTMANAGER_CODEX_STREAM_SOCKET
+  const path=currentCodexEngine().socket
     || join(process.env.CODEX_HOME||join(homedir(),'.codex'),'app-server-control','app-server-control.sock');
   const socket=new WebSocket(`ws+unix://${path}:/`,{maxPayload:2*1024*1024,handshakeTimeout:4000});
   const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
@@ -257,7 +267,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       // Embedded CLI engines cannot be observed through a different daemon.
       // Do not load a second engine from their rollout just to obtain events.
       if(current.thread?.status?.type==='notLoaded') {unavailable();retry=setTimeout(()=>void attach(),2000);return;}
-      await request('thread/resume',{threadId,excludeTurns:true});
+      const settings=await request('thread/resume',{threadId,excludeTurns:true});rememberCodexSettings(threadId,settings);
       if(closed) return;
       void readQueue();
       const baselineRevision=revision;
@@ -278,7 +288,9 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
         // but cannot replace text, activities or completion already seen live.
         if(busy||newer) for(const item of turn.items||[]) {
           if(newer&&(items.has(item.id)||activities.has(item.id)))continue;
-          if(!newer){
+          if(!newer||busy){
+            // Recover missing activities even if unrelated live events arrived
+            // during the baseline read; known live items were excluded above.
             acceptActivity(item.type==='contextCompaction'&&(turn.items||[]).length===1&&typeof turn.startedAt==='number'?{...item,startedAtMs:turn.startedAt*1000}:item,['completed','failed','declined'].includes(item.status) || typeof item.completedAtMs==='number' || item.type==='contextCompaction'&&item!==(turn.items||[]).at(-1),true);
           }
           const streaming=!newer&&item===(turn.items||[]).at(-1) && item.type==='agentMessage' && !item.completedAtMs;
@@ -301,14 +313,14 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     } catch {if(!closed){unavailable(true);socket.close();}}
   }
   socket.on('open',()=>{
-    void request('initialize',{clientInfo:{name:'octoally-conversation',version:'1.0.0'},capabilities:{experimentalApi:true}}).then(()=>{
+    void request('initialize',{clientInfo:{name:'octoally-conversation',version:'1.0.0'},capabilities:{experimentalApi:true,optOutNotificationMethods:['item/commandExecution/outputDelta','item/fileChange/outputDelta','item/reasoning/textDelta','item/reasoning/summaryTextDelta','item/reasoning/summaryPartAdded']}}).then(()=>{
       if(closed) return;socket.send(JSON.stringify({method:'initialized'}));return attach();
     }).catch(()=>{unavailable(true);socket.close();});
   });
   socket.on('message',bytes=>{
     let frame:any;try{frame=JSON.parse(bytes.toString());}catch{return;}
     const waiting=!frame.method?pending.get(frame.id):undefined;
-    if(waiting) {pending.delete(frame.id);clearTimeout(waiting.timer);if(frame.error) waiting.reject(new Error('Codex 事件接口不可用'));else waiting.resolve(frame.result);return;}
+    if(waiting) {pending.delete(frame.id);clearTimeout(waiting.timer);if(frame.error) waiting.reject(new Error('Codex 事件接口不可用'));else {if(frame.result?.thread)rememberCodexThread(frame.result.thread);waiting.resolve(frame.result);}return;}
     const data=frame.params;
     if(data?.threadId!==threadId) return;
     if(frame.method==='thread/queue/changed'){void readQueue();return;}
@@ -323,7 +335,8 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(frame.method==='thread/status/changed') {revision++;applyNativeState(data.status?.type);return;}
     if(frame.method==='thread/compacted') {void syncNativeState();return;}
     if(frame.method==='thread/settings/updated'&&typeof data.threadSettings?.model==='string') {
-      if(!closed)emit({type:'settings',model:data.threadSettings.model,effort:data.threadSettings.effort??null});return;
+      rememberCodexSettings(threadId,data.threadSettings);
+      if(!closed)emit({type:'settings',model:data.threadSettings.model,effort:data.threadSettings.effort??null,...Object.hasOwn(data.threadSettings,'serviceTier')?{service_tier:data.threadSettings.serviceTier}:{}});return;
     }
     if(frame.method==='serverRequest/resolved') {interactions.delete(JSON.stringify(data.requestId));changed();return;}
     const card=nativeInteraction(frame,threadId);

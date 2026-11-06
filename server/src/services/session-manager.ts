@@ -2887,7 +2887,7 @@ export function compactSessionConversation(sessionId:string):Promise<SessionRelo
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
 }
 
-export function newSessionConversation(sessionId:string):Promise<SessionReloadResult&{history_id?:string}> {
+export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference):Promise<SessionReloadResult&{history_id?:string}> {
   if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'});
   return runSessionLifecycle(sessionId,async()=>{
     const session=getSession(sessionId);
@@ -2899,7 +2899,12 @@ export function newSessionConversation(sessionId:string):Promise<SessionReloadRe
     const binding=(id:string)=>adapter.lifecycle.bind(context,id);
     try {
       await adapter.lifecycle.preflight(context);
-      fresh=await adapter.lifecycle.prepareFresh({...context,projectPath:project.path},adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(session.created_by_user_id, project.path)?.instructions:undefined);
+      if(preference){
+        if(!(await adapter.controls.read(context)).supports_fresh_model)throw Error('此 Agent 尚不支持为新会话指定模型');
+        preference=await adapter.controls.validate(context,preference);
+      }
+      const instructions=adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(session.created_by_user_id, project.path)?.instructions:undefined;
+      fresh=await adapter.lifecycle.prepareFresh({...context,projectPath:project.path},instructions,preference);
       if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');
       history=snapshotConversation(sessionId);
       const worker=activeSessions.get(sessionId)?.worker;

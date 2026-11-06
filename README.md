@@ -251,15 +251,54 @@ actual dispatch count and persist a reason such as new input, a newer turn,
 changed access, or an actual final answer. Historical records without a reason
 are identified explicitly.
 
-Codex sessions launched by AgentManager use `--disable plugins`.
-Plugin-provided skills, MCP integrations and hooks are unavailable in these
-sessions. Existing processes keep their original settings until restarted;
-standalone Codex and VS Code are unaffected.
+Codex terminals attached to a platform-managed isolated engine use `--disable plugins`, matching that engine. Embedded Codex terminals preserve the user daemon’s plugin and hook feature settings; the platform does not restart the global daemon. An incompatible native startup menu is displayed as waiting for input, with an explanation in the conversation status. The recommended real-time deployment uses `AGENTMANAGER_CODEX_STREAM_SOCKET` (the isolated development launcher provisions this automatically).
 
 The quota indicator refreshes every five minutes while visible and shares a
 five-minute server cache across browsers. Manual refresh uses the same dedicated
 Codex reader. That reader disables plugins, apps and analytics, and backs off
 on failure while displaying the last successful quota as stale.
+
+### Codex model providers and recovery
+
+Queued inputs show a **取消排队** action when the Agent advertises `cancelQueuedInput`. Cancellation deletes only the selected pending native submission; it neither hides an already-executed message nor interrupts the active task.
+
+Fast mode is a `serviceTier` capability advertised by each Agent. The selector uses the native model catalog’s Fast tier id, confirms native settings after changes, and sends explicit `default` when disabled (clearing a setting can restore a catalog default). This affects subsequent model requests and never submits a user turn. Models that do not advertise a Fast tier show a disabled control.
+
+Model and effort controls remain available for failed or unloaded administrator
+sessions. A saved recovery choice is applied on explicit Resume/Reload, before
+context injection and without resending the failed user message. Unavailable
+persisted models require an explicit valid selection. New conversations check
+the configured model against the engine catalog before submitting a task.
+
+Codex 0.166 checks a thread’s provider against the engine configuration on input
+and resume; retaining a WebSocket does not bypass that check. To use multiple
+providers concurrently, run a separate `codex app-server --listen unix:///…`
+for each provider with `-c 'model_provider="provider-id"' --disable plugins`,
+then set `AGENTMANAGER_CODEX_PROVIDER_ENGINES` to explicit routes, for example:
+
+```json
+[
+  {"provider":"wanzhao","socket":"/private/agentmanager/wanzhao.sock","models":["gpt-5.6-sol"]},
+  {"provider":"xindu","socket":"/private/agentmanager/xindu.sock","models":["deepseek-v4-pro"]}
+]
+```
+
+Keep those sockets in an owner-only directory. `AGENTMANAGER_CODEX_STREAM_SOCKET`
+continues to identify the default engine. Include its route above too when its
+catalog mixes models from different providers. Model allowlists are explicit:
+the platform never infers credential routing from a model name or description.
+Each route is checked against the engine’s reported provider. Provider changes
+open a confirmation dialog with model/effort choices, create the replacement on
+the target engine, and retain the previous conversation. All control, input,
+retry, streaming and terminal connections use the bound engine. Existing thread
+routes are recovered from bounded native metadata after a platform restart.
+The platform does not install agents, start these additional engines, edit the
+user’s provider configuration, or silently migrate a thread’s provider.
+
+API-key/custom-provider authentication may not expose ChatGPT account quotas.
+Quota endpoints then return HTTP 200 with `quota: null` and
+`reason: "not_applicable"`; the indicator displays **不适用**. Actual quota-service
+failures return structured HTTP 503 and retain previous successful data as stale.
 
 ## Testing
 
@@ -303,7 +342,7 @@ restart. A single server sampler collects CPU, memory and disk every five
 seconds. The header, monitoring page and idle-session cleanup all consume the
 same timestamped snapshot. Samples are pushed to the dashboard over WebSocket;
 REST reads return the cached snapshot without triggering another collection.
-Memory uses available memory, including reclaimable Linux caches.
+Memory uses Linux `MemAvailable`, or on macOS an estimate from the free, inactive and speculative queues reported by `vm_stat` (using its reported page size). Purgeable pages overlap other queues and are not added twice; the [Apple vm_stat source](https://github.com/apple-oss-distributions/system_cmds/blob/main/vm_stat/vm_stat.c) documents the displayed queues. Collection is asynchronous and shared by the five-second sampler. If the platform cannot provide a reliable available-memory sample, the portable estimate is display-only and automatic memory cleanup is skipped.
 At or above the threshold it closes the longest-idle eligible session, then
 samples again on the next check before closing another. Input and output reset
 the idle time. Busy sessions, pending API executions, starting sessions and

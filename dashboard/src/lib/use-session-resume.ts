@@ -24,7 +24,7 @@ export function useSessionResume(projectId: string) {
     return () => { for (const timer of timers.values()) clearTimeout(timer); };
   }, []);
 
-  const run = useCallback(async (sessionId: string,action:'resume'|'reload'|'new') => {
+  const run = useCallback(async (sessionId: string,action:'resume'|'reload'|'new',preference?:import('./api').AgentModelPreference) => {
     // A ref guards double clicks before React has painted the disabled button.
     if (pending.current.has(sessionId)) return;
     pending.current.add(sessionId);
@@ -36,7 +36,7 @@ export function useSessionResume(projectId: string) {
     const startedAt = Date.now();
     setStates((current) => ({ ...current, [sessionId]: { phase: 'starting', startedAt,action } }));
     try {
-      const result = await (action==='new'?api.sessions.newConversation(sessionId):action==='reload'?api.sessions.reload(sessionId):api.sessions.resume(sessionId));
+      const result = await (action==='new'?api.sessions.newConversation(sessionId,preference):action==='reload'?api.sessions.reload(sessionId):api.sessions.resume(sessionId));
       const {session}=result;
       replacing.current.delete(sessionId);
       // Both queries feed ProjectView; an old ended row must not override the
@@ -116,6 +116,6 @@ export function useSessionResume(projectId: string) {
 
   const resume=useCallback((id:string)=>run(id,'resume'),[run]);
   const reload=useCallback((id:string)=>run(id,'reload'),[run]);
-  const newConversation=useCallback((id:string)=>run(id,'new'),[run]);
+  const newConversation=useCallback((id:string,preference?:import('./api').AgentModelPreference)=>run(id,'new',preference),[run]);
   return { states, resume,reload,newConversation, terminalReady, terminalExited, terminalFailed, forget };
 }

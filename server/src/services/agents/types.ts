@@ -3,7 +3,7 @@ import type { AgentStreamFrame } from './events.js';
 /** Provider identifiers are open strings; registering a provider does not
  * require changing a discriminated union in platform code. */
 export type AgentId = string;
-export const AGENT_FEATURES = ['history', 'runtime', 'input', 'stream', 'controls', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota'] as const;
+export const AGENT_FEATURES = ['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota'] as const;
 export type AgentFeature = typeof AGENT_FEATURES[number];
 export type AgentCapabilities = Record<AgentFeature, boolean>;
 export interface AgentDescriptor {
@@ -82,6 +82,8 @@ export interface AgentTextMessage {
     task_reference?: string | null;
 }
 export interface ModelPreference {
+    service_tier?: string;
+    provider?: string;
     model: string;
     effort: string;
 }
@@ -109,6 +111,9 @@ export interface AgentRuntime {
     }>;
 }
 export interface AgentModel {
+    default_service_tier?: string | null;
+    service_tiers?: Array<{id:string;name:string;description:string}>;
+    provider?: string;
     model: string;
     name: string;
     description: string;
@@ -143,6 +148,8 @@ export interface AgentStatistics {
     });
 }
 export interface AgentControls {
+    supports_model_recovery?: boolean;
+    supports_fresh_model?: boolean;
     model_observed_at?: string | null;
     model: string | null;
     effort: string | null;
@@ -218,7 +225,7 @@ export interface AgentHistoryRecord {
 export interface AgentFileHistoryPort {
     locate(context: AgentContext): Promise<string | null>;
     decode(entries: Iterable<unknown>, limit?: number): AgentTextMessage[];
-    project(record: Buffer, questionCallId?: string): AgentHistoryRecord | null;
+    project(record: Buffer, questionCallId?: string, context?: {nativeId?: string | null}): AgentHistoryRecord | null;
     /** Some native formats store the turn identity on surrounding lifecycle
      * records rather than repeating it on every public message. */
     turnBoundary?(record: Buffer): { kind: 'start' | 'end'; turnId: string } | null;
@@ -285,6 +292,7 @@ export interface AgentRetryPort {
 }
 export interface AgentControlResult extends ModelPreference {pending?:boolean}
 export interface AgentInputPort {
+    cancelQueued?(context:AgentContext,clientId:string):Promise<void>;
     submit(context: AgentContext, text: string, clientId?: string, attachments?: ConversationAttachment[]): Promise<boolean | 'queued'>;
     afterTerminalSubmit(context: AgentContext): Promise<void>;
 }
@@ -310,7 +318,7 @@ export interface AgentLifecyclePort {
     preflight(context: AgentContext): Promise<string | null>;
     bind(context: AgentContext, nativeId: string): Promise<void>;
     compact(context: AgentContext): Promise<void>;
-    prepareFresh(context: AgentContext, instructions?: string): Promise<string>;
+    prepareFresh(context: AgentContext, instructions?: string, preference?: ModelPreference): Promise<string>;
     release(context: AgentContext): Promise<void>;
     interrupt(context: AgentContext): Promise<void>;
 }

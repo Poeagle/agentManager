@@ -74,7 +74,7 @@ export class MemorySessionReaper {
     if (!settings.enabled) return null;
     const sample = resources ?? await serverResourceSampler.read();
     if (this.stopped || !this.isFresh(sample) || sample.sampled_at === this.lastCleanupSample
-      || sample.memory.usage_percent < settings.threshold) return null;
+      || sample.memory.reliable === false || sample.memory.usage_percent < settings.threshold) return null;
     const candidate = idleCandidates(settings.idleMs)[0];
     if (!candidate) return null;
 
@@ -90,7 +90,7 @@ export class MemorySessionReaper {
     if (!current.enabled) return null;
     const latest = serverResourceSampler.getLatest() ?? sample;
     const memory = latest.memory;
-    if (!this.isFresh(latest) || latest.sampled_at === this.lastCleanupSample || memory.usage_percent < current.threshold) return null;
+    if (!this.isFresh(latest) || latest.sampled_at === this.lastCleanupSample || memory.reliable === false || memory.usage_percent < current.threshold) return null;
     const stillOldest = idleCandidates(current.idleMs)[0];
     if (stillOldest?.id !== candidate.id || stillOldest.lastActivity !== candidate.lastActivity) return null;
     const idleMs = Date.now() - candidate.lastActivity;

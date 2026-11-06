@@ -1,3 +1,4 @@
+import {sendAgentQuota} from '../services/agents/quota-response.js';
 import {agentDescriptors,getAgent} from '../services/agents/index.js';
 import {targetSupportsQuota} from '../services/agents/scheduling.js';
 import {FastifyPluginAsync} from 'fastify';
@@ -170,19 +171,15 @@ function validateInput(userId: string, input: ScheduledTaskInput): string | null
 }
 
 export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
-  app.get<{Params:{agent:string};Querystring:{refresh?:string}}>('/agent-quota/:agent',async(req)=>({quota:await getAgent(req.params.agent).quota.read(req.query.refresh==='true')}));
+  app.get<{Params:{agent:string};Querystring:{refresh?:string}}>('/agent-quota/:agent',async(req,reply)=>sendAgentQuota(reply,()=>getAgent(req.params.agent).quota.read(req.query.refresh==='true')));
   app.get<{ Querystring: { refresh?: string } }>('/codex-quota', async (req, reply) => {
-    try {
-      return { quota: await readCodexWeeklyQuota({ force: req.query.refresh === 'true' }) };
-    } catch (error) {
-      return reply.status(503).send({ error: error instanceof Error ? error.message : 'Codex 周额度不可用' });
-    }
+    return sendAgentQuota(reply,()=>readCodexWeeklyQuota({force:req.query.refresh === 'true'}));
   });
 
   app.get<{Querystring:{project_id?:string;agent_id?:string}}>('/scheduled-tasks/agent-quota',async(req,reply)=>{
     const {project_id:project,agent_id:agent}=req.query;if(!project||!agent||!userOwnsProject(req.user!.id,project))return reply.code(404).send({error:'项目不存在或无权访问'});
     if(!userCanUseToolForProject(req.user!.id,project,'session',agent))return reply.code(403).send({error:'当前项目未授权使用此 Agent'});
-    return {quota:await getAgent(agent).quota.read()};
+    return sendAgentQuota(reply,()=>getAgent(agent).quota.read());
   });
   app.get<{ Querystring: { project_id?: string } }>('/scheduled-tasks/codex-quota', async (req, reply) => {
     const projectId = req.query.project_id;
@@ -191,11 +188,7 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
     }
     const canUseCodex = userCanUseToolForProject(req.user!.id, projectId, 'session', 'codex');
     if (!canUseCodex) return reply.status(403).send({ error: '当前项目未授权使用 Codex' });
-    try {
-      return { quota: await readCodexWeeklyQuota() };
-    } catch (error) {
-      return reply.status(503).send({ error: error instanceof Error ? error.message : 'Codex 周额度不可用' });
-    }
+    return sendAgentQuota(reply,()=>readCodexWeeklyQuota());
   });
 
   app.get<{ Querystring: { project_id?: string } }>('/scheduled-tasks', async (req, reply) => {

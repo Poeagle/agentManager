@@ -37,7 +37,7 @@ describe('CLI command construction', () => {
 
   it('resumes Codex with the exact UUID and durable identity hook', () => {
     const command = buildSessionCommand('old task', true, 'codex --yolo', 'codex', SESSION_ID, undefined, '/tmp/binding.json');
-    expect(command).toContain('codex --yolo --disable plugins resume');
+    expect(command).toContain('codex --yolo resume');
     expect(command).toContain(`--no-alt-screen`);
     expect(command).toContain(SESSION_ID);
     expect(command).toContain('/tmp/binding.json');
@@ -55,9 +55,10 @@ describe('CLI command construction', () => {
     expect(withAllPermissions('codex', 'codex')).toBe('codex --dangerously-bypass-approvals-and-sandbox');
     expect(withAllPermissions('codex --yolo', 'codex')).toBe('codex --yolo');
   });
-  it('disables plugins for new Codex sessions and every transport', () => {
+  it('preserves embedded daemon feature flags and only disables plugins on an isolated engine', () => {
     for (const direct of [true, false]) {
-      expect(buildSessionCommand('hello', direct, 'codex --model example', 'codex')).toContain('--disable plugins');
+      expect(buildSessionCommand('hello', direct, 'codex --model example', 'codex',undefined,undefined,undefined,null)).not.toContain('--disable plugins');
+      expect(buildSessionCommand('hello', direct, 'codex', 'codex',undefined,undefined,undefined,'/tmp/isolated.sock')).toContain('--disable plugins');
       expect(buildSessionCommand('hello', direct, 'codex', 'claude')).not.toContain('--disable plugins');
     }
   });

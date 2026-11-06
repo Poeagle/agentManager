@@ -1,3 +1,4 @@
+import {sendAgentQuota} from '../services/agents/quota-response.js';
 import {withTerminalInput} from '../services/agents/terminal-input.js';
 import {observeAgentConversation} from '../services/agents/host.js';
 import {readModelPreference,saveModelPreference,modelPreferenceSubmittedAt} from '../services/agents/model-preferences.js';
@@ -545,7 +546,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   });
   app.get('/agent/capabilities', async () => ({...getAgentApiContract(),agents:agentDescriptors()}));
   app.get('/agent/providers',async()=>({agents:agentDescriptors()}));
-  app.get<{Params:{agent:string}}>('/agent/providers/:agent/quota',async(req,reply)=>{if(!isAdmin(req.user!.id))return reply.code(403).send({error:'无权读取主机账号额度'});return {quota:await getAgent(req.params.agent).quota.read()};});
+  app.get<{Params:{agent:string}}>('/agent/providers/:agent/quota',async(req,reply)=>{if(!isAdmin(req.user!.id))return reply.code(403).send({error:'无权读取主机账号额度'});return sendAgentQuota(reply,()=>getAgent(req.params.agent).quota.read());});
 
   app.get<{Params:{id:string};Querystring:{refresh?:string}}>('/sessions/:id/controls',async(req,reply)=>{
     const session=getSession(req.params.id);
@@ -555,25 +556,38 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     if(req.query.refresh!==undefined&&req.query.refresh!=='true')return reply.code(400).send({error:'Invalid refresh flag'});
     const data=await adapter.controls.read({...context,sharedAccess:shared,force:req.query.refresh==='true'});
     let pending=readModelPreference(req.user!.id,session.id);const submittedAt=modelPreferenceSubmittedAt(req.user!.id,session.id);
-    if(pending&&submittedAt&&adapter.controls.confirmed?.(context,pending,data,submittedAt)){saveModelPreference(req.user!.id,session.id,null);pending=null;}
+    if(pending&&adapter.controls.confirmed?.(context,pending,data,submittedAt||'')){saveModelPreference(req.user!.id,session.id,null);pending=null;}
     const owned=!session.created_by_user_id||session.created_by_user_id===req.user!.id;
-    return reply.header('Cache-Control','private, no-store').send({...data,agent:adapter.descriptor,can_edit_features:Object.fromEntries(Object.entries(adapter.descriptor.capabilities).map(([feature,supported])=>[feature,supported&&shared&&owned&&data.loaded&&isSessionActive(session.id)&&userHasPermission(req.user!.id,'agent_api','write')])),pending,pending_status:pending?(submittedAt?'submitted':'saved'):null,
-      can_edit:adapter.descriptor.capabilities.model&&shared&&owned&&data.loaded&&data.models.length>0&&isSessionActive(session.id)&&userHasPermission(req.user!.id,'agent_api','write')});
+    return reply.header('Cache-Control','private, no-store').send({...data,agent:adapter.descriptor,can_edit_features:Object.fromEntries(Object.entries(adapter.descriptor.capabilities).map(([feature,supported])=>[feature,supported&&shared&&owned&&(['model','effort','newConversation'].includes(feature)?data.models.length>0&&(data.supports_model_recovery||data.loaded):data.loaded)&&userHasPermission(req.user!.id,'agent_api','write')])),pending,pending_status:pending?(submittedAt?'submitted':'saved'):null,
+      can_edit:adapter.descriptor.capabilities.model&&shared&&owned&&data.models.length>0&&(data.supports_model_recovery||data.loaded)&&userHasPermission(req.user!.id,'agent_api','write')});
   });
   app.put<{Params:{id:string};Body:unknown}>('/sessions/:id/controls',async(req,reply)=>{
     const session=getSession(req.params.id);
     if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
     if(req.user!.role!=='admin'||session.created_by_user_id&&session.created_by_user_id!==req.user!.id)return reply.code(403).send({error:'只能修改自己的会话设置'});
     const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:true});
-    if(!context.nativeId||!adapter.descriptor.capabilities.model||!isSessionActive(session.id))return reply.code(409).send({error:'当前会话不可修改，请先恢复会话'});
+    if(!context.nativeId||!adapter.descriptor.capabilities.model)return reply.code(409).send({error:'当前会话不可修改，请先恢复会话'});
     if(req.body===null){saveModelPreference(req.user!.id,session.id,null);return {ok:true,pending:null};}
     try {
       const data=await adapter.controls.read(context);
-      if(!data.loaded)return reply.code(409).send({error:'此会话暂不支持在对话中切换，请在原始终端设置'});
       const value=await adapter.controls.validate(context,req.body);
+      if(value.provider&&data.provider&&value.provider!==data.provider)return reply.code(409).send({error:'切换模型服务需要确认新开会话，原会话已保留'});
+      if(!data.loaded&&!data.supports_model_recovery)return reply.code(409).send({error:'当前 Agent 尚不支持保存恢复模型，请先恢复会话'});
+      if(!data.loaded){saveModelPreference(req.user!.id,session.id,value);return {ok:true,pending:value,pending_status:'saved'};}
       try {const applied=await adapter.controls.apply(context,value);const pending=applied.pending===true?value:null;saveModelPreference(req.user!.id,session.id,pending,pending?new Date().toISOString():undefined);return {ok:true,...applied,pending,pending_status:pending?'submitted':null};}
       catch(error){return reply.code(503).send({error:error instanceof Error?error.message:'设置失败，请刷新确认'});}
     }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'设置失败，请重试'});}
+  });
+
+  app.delete<{Params:{id:string;client:string}}>('/sessions/:id/queue/:client',async(req,reply)=>{
+    const session=getSession(req.params.id);
+    if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
+    if(session.created_by_user_id&&session.created_by_user_id!==req.user!.id)return reply.code(403).send({error:'只能取消自己会话的排队输入'});
+    const adapter=agentForSession(session),context=sessionAgentContext(session);
+    if(!context.nativeId||!adapter.descriptor.capabilities.cancelQueuedInput||!adapter.input.cancelQueued)return reply.code(409).send({error:'此 Agent 不支持取消排队输入'});
+    if(!req.params.client||req.params.client.length>200)return reply.code(400).send({error:'Invalid queued input identity'});
+    try{await adapter.input.cancelQueued(context,req.params.client);return {ok:true};}
+    catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'取消排队失败，请刷新队列'});}
   });
 
   app.post<{Params:{id:string};Body:{input?:unknown;source?:unknown;client_id?:unknown;attachments?:unknown}}>('/sessions/:id/input', async (req, reply) => {
@@ -973,7 +987,14 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
      ---------------------------------------------------------------- */
   app.get<{
     Params: { id: string };
-  }>('/sessions/:id/agent', { websocket: true }, (socket, req) => {
+  }>('/sessions/:id/agent', { websocket: true, preValidation: async (req,reply) => {
+    if(req.headers.upgrade?.toLowerCase() !== 'websocket') {
+      if(!requirePermission(req,reply,'agent_api','write'))return reply;
+      return canAccessAgentSession(req.user!.id,req.params.id)
+      ? reply.code(426).header('Upgrade','websocket').send({error:'WebSocket upgrade required'})
+      : reply.code(404).send({error:'Session not found'});
+    }
+  } }, (socket, req) => {
     const { id } = req.params;
 
     if (!registerUserConnection(req.user!.id, readSessionCookie(req), socket)) return;

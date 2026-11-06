@@ -71,6 +71,12 @@ describe('memory-pressure session cleanup', () => {
     cleanup();
   });
 
+  it('never closes sessions using an unreliable memory fallback', async () => {
+    session('oldest', 60); latest.memory.reliable = false;
+    expect(await reaper.check()).toBeNull();
+    expect(sessionManager.killSession).not.toHaveBeenCalled();
+  });
+
   it('closes the longest-idle session per sample, preserving its record and publishing the reason', async () => {
     session('newer', 20);
     session('oldest', 60);

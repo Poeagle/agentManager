@@ -1,3 +1,4 @@
+vi.mock('../src/services/agents/codex/controls.js',()=>({readModelPreference:vi.fn(()=>null),prepareCodexModelRecovery:vi.fn().mockResolvedValue(undefined)}));
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 vi.mock('../src/services/agents/codex/terminal-bridge.js',()=>({ensureCodexTerminalBridge:vi.fn(async(path:string)=>path)}));
 vi.mock('../src/services/agents/codex/version.js',()=>({prepareCodexReload:vi.fn().mockResolvedValue('0.166.0')}));

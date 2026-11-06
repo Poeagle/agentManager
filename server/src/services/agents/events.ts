@@ -14,6 +14,7 @@ type AgentStreamEvent = {
     messages: ConversationMessage[];
 } | ConversationUsageFrame | {
     type: 'settings';
+    service_tier?: string | null;
     model: string;
     effort: string | null;
 } | {

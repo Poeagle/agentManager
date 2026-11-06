@@ -48,18 +48,19 @@ async function readDiskUsage() {
 }
 
 async function collectServerResources() {
-  const [cpuUsagePercent, disk] = await Promise.all([readCpuUsagePercent(), readDiskUsage()]);
+  const [cpuUsagePercent, disk, memory] = await Promise.all([readCpuUsagePercent(), readDiskUsage(), readServerMemory()]);
   return {
     sampled_at: new Date().toISOString(),
     hostname: hostname(),
     uptime_seconds: Math.floor(uptime()),
     cpu: { usage_percent: cpuUsagePercent, core_count: cpus().length, load_average_1m: loadavg()[0] ?? 0 },
-    memory: readServerMemory(),
+    memory,
     disk,
   };
 }
 
-export type ServerResources = Awaited<ReturnType<typeof collectServerResources>>;
+type CollectedResources = Awaited<ReturnType<typeof collectServerResources>>;
+export type ServerResources = Omit<CollectedResources, 'memory'> & {memory: Omit<CollectedResources['memory'], 'reliable'> & {reliable?: boolean}};
 type ResourceListener = (resources: ServerResources) => void;
 
 /** One server-wide sampler. Reads return the current snapshot; only the timer

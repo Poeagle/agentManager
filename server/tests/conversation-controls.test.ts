@@ -15,19 +15,20 @@ import {setRoleGrants,setUserRoles} from '../src/services/rbac.js';
 
 const native='019ff001-9999-7999-8999-999999999999';
 let app:FastifyInstance,server:Server,wss:WebSocketServer,cleanup:()=>void,cookie:string,owner:string,dir:string,log:string;
-let inputs:any[],methods:string[],active:boolean,loaded:boolean,fail:boolean,noModels:boolean,model:string,effort:string;
+let inputs:any[],methods:string[],active:boolean,loaded:boolean,fail:boolean,noModels:boolean,model:string,effort:string,tier:string;
 const record=(type:string,payload:unknown)=>JSON.stringify({type,payload,timestamp:'2026-10-31T02:00:00Z'})+'\n';
 beforeEach(async()=>{
   const fixture=createTestDatabase();cleanup=fixture.cleanup;dir=fixture.dir;vi.stubEnv('CODEX_HOME',dir);const socket=join(dir,'controls.sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',socket);
   mkdirSync(join(dir,'sessions'));log=join(dir,'sessions',`rollout-${native}.jsonl`);
   writeFileSync(log,record('turn_context',{model:'model-a',effort:'high',approval_policy:'never',sandbox_policy:{type:'workspace-write',private:'PRIVATE CONFIG'},service_tier:'priority'})+record('event_msg',{type:'token_count',info:{total_token_usage:{input_tokens:1000000,cached_input_tokens:900000,output_tokens:12000,total_tokens:1012000},last_token_usage:{input_tokens:11000,cached_input_tokens:9000,output_tokens:1000,total_tokens:12000},model_context_window:40000},rate_limits:{primary:{used_percent:25,window_minutes:10080,resets_at:1900000000},credits:{balance:'PRIVATE BALANCE'}}})+record('response_item',{type:'function_call_output',output:'PRIVATE TOOL OUTPUT'}));
-  inputs=[];methods=[];active=false;loaded=true;fail=false;noModels=false;model='model-a';effort='high';server=createServer();wss=new WebSocketServer({server});
+  inputs=[];methods=[];active=false;loaded=true;fail=false;noModels=false;model='model-a';effort='high';tier='default';server=createServer();wss=new WebSocketServer({server});
   wss.on('connection',ws=>ws.on('message',bytes=>{const f=JSON.parse(bytes.toString());if(!f.method||!f.id)return;methods.push(f.method);let result:any={};
     if(f.method==='thread/read')result={thread:{id:native,status:{type:loaded?active?'active':'idle':'notLoaded'},model,reasoningEffort:effort,modelProvider:'openai',cwd:'/project',cliVersion:'0.test'}};
-    if(f.method==='model/list')result={data:[{model:'model-a',displayName:'Model A',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'},{model:'model-b',displayName:'Model B',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'}],defaultReasoningEffort:'low'},{model:'hidden',displayName:'Hidden',hidden:true,supportedReasoningEfforts:[{reasoningEffort:'low'}]}]};
+    if(f.method==='model/list')result={data:[{model:'model-a',displayName:'Model A',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high',serviceTiers:[{id:'priority',name:'Fast',description:'Faster requests'}]},{model:'model-b',displayName:'Model B',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'}],defaultReasoningEffort:'low'},{model:'hidden',displayName:'Hidden',hidden:true,supportedReasoningEfforts:[{reasoningEffort:'low'}]}]};
     if(f.method==='model/list'&&noModels)result={data:[]};
+    if(f.method==='thread/resume')result={serviceTier:tier};
     if(f.method==='account/rateLimits/read')result={rateLimits:{primary:{usedPercent:30,windowDurationMins:10080,resetsAt:1900000000},credits:{balance:'PRIVATE BALANCE'}}};
-    if(f.method==='thread/settings/update'){if(fail){ws.send(JSON.stringify({id:f.id,error:{message:'failed'}}));return;}model=f.params.model;effort=f.params.effort;}
+    if(f.method==='thread/settings/update'){if(fail){ws.send(JSON.stringify({id:f.id,error:{message:'failed'}}));return;}model=f.params.model;effort=f.params.effort;if(f.params.serviceTier!==undefined)tier=f.params.serviceTier;}
     if(f.method==='turn/start'){inputs.push(f.params);if(fail){ws.send(JSON.stringify({id:f.id,error:{message:'failed'}}));return;}if(f.params.model)model=f.params.model;if(f.params.effort)effort=f.params.effort;}
     ws.send(JSON.stringify({id:f.id,result}));
   }));await new Promise<void>(r=>server.listen(socket,r));
@@ -57,7 +58,7 @@ describe('native conversation controls',()=>{
   appendFileSync(log,next.slice(40));expect((await readConversationTelemetry(native)).usage?.last.total_tokens).toBe(2400);
  });
  it('returns actual dynamic model capabilities and allowlisted counters without tools, credentials or quota balances',async()=>{
-  const response=await get();expect(response.statusCode).toBe(200);expect(response.json()).toMatchObject({model:'model-a',effort:'high',can_edit:true,usage:{last:{total_tokens:12000},window:40000},limits:[{used_percent:30}]});expect(response.json().models.map((m:any)=>m.model)).toEqual(['model-a','model-b']);expect(response.body).not.toContain('PRIVATE');expect(methods).not.toContain('thread/resume');expect(methods).not.toContain('turn/start');
+  const response=await get();expect(response.statusCode).toBe(200);expect(response.json()).toMatchObject({model:'model-a',effort:'high',can_edit:true,usage:{last:{total_tokens:12000},window:40000},limits:[{used_percent:30}]});expect(response.json().models.map((m:any)=>m.model)).toEqual(['model-a','model-b']);expect(response.body).not.toContain('PRIVATE');expect(methods.filter(m=>m==='thread/resume')).toHaveLength(1);expect(methods).not.toContain('turn/start');
  });
  it('does not cache an empty model catalog as a successful result and recovers on the next read',async()=>{
   noModels=true;const first=await get();expect(first.json()).toMatchObject({can_edit:false,models:[]});noModels=false;const second=await get();expect(second.json()).toMatchObject({can_edit:true,models:[{model:'model-a'},{model:'model-b'}],limits:[{used_percent:30}]});expect(methods.filter(m=>m==='model/list')).toHaveLength(2);
@@ -65,6 +66,11 @@ describe('native conversation controls',()=>{
  it('applies settings immediately through the TUI settings-only RPC without submitting a user turn',async()=>{
   expect((await set({model:'model-b',effort:'medium'})).statusCode).toBe(200);expect(inputs).toHaveLength(0);expect(methods).toContain('thread/settings/update');expect((await get()).json()).toMatchObject({model:'model-b',effort:'medium',pending:null});expect(readModelPreference(owner,'s')).toBeNull();
   expect((await send()).statusCode).toBe(202);expect(inputs[0]).not.toHaveProperty('model');expect(manager.writeToSession).not.toHaveBeenCalled();
+ });
+ it('sets and cancels Fast using catalog tier IDs, verifies native receipts, and never submits a turn',async()=>{
+  const enabled=await set({model:'model-a',effort:'high',service_tier:'priority'});expect(enabled.statusCode).toBe(200);expect(enabled.json().service_tier).toBe('priority');expect((await get()).json().service_tier).toBe('priority');
+  const disabled=await set({model:'model-a',effort:'high',service_tier:'default'});expect(disabled.statusCode).toBe(200);expect((await get()).json().service_tier).toBe('default');
+  expect((await set({model:'model-b',effort:'low',service_tier:'priority'})).statusCode).toBe(400);expect(inputs).toHaveLength(0);expect(methods).not.toContain('turn/start');
  });
  it('updates settings while a task is active without interrupting it or waiting for another task',async()=>{
   active=true;expect((await set({model:'model-b',effort:'low'})).statusCode).toBe(200);expect(inputs).toHaveLength(0);expect(methods).not.toContain('turn/interrupt');expect((await get()).json()).toMatchObject({model:'model-b',effort:'low',pending:null});
@@ -79,8 +85,8 @@ describe('native conversation controls',()=>{
   for(const value of [{model:'model-b',effort:'high'},{model:'hidden',effort:'low'},{model:'model-a',effort:'high',approvalPolicy:'never'}])expect((await set(value)).statusCode).toBe(400);
   await set({model:'model-b',effort:'low'});const reset=await app.inject({method:'PUT',url:'/api/sessions/s/controls',headers:{cookie,'content-type':'application/json'},payload:'null'});expect(reset.statusCode).toBe(200);expect(readModelPreference(owner,'s')).toBeNull();
  });
- it('never loads an embedded engine or pretends it can change its model',async()=>{
-  loaded=false;const response=await get();expect(response.json()).toMatchObject({loaded:false,can_edit:false,model:'model-a'});expect(methods).not.toContain('model/list');expect((await set({model:'model-b',effort:'low'})).statusCode).toBe(409);
+ it('allows an unloaded session to save a recovery model without loading a second engine',async()=>{
+  loaded=false;const response=await get();expect(response.json()).toMatchObject({loaded:false,can_edit:true,model:'model-a'});const saved=await set({model:'model-b',effort:'low'});expect(saved.statusCode).toBe(200);expect(saved.json()).toMatchObject({pending:{model:'model-b',effort:'low'},pending_status:'saved'});expect(methods).not.toContain('thread/resume');expect(methods).not.toContain('thread/settings/update');expect(inputs).toHaveLength(0);
  });
  it('does not expose the host catalog or quotas to a member or allow a member to write engine settings',async()=>{
   getDb().prepare("UPDATE users SET role='member' WHERE id=?").run(owner);getDb().prepare("INSERT INTO rbac_roles(id,name) VALUES ('controls','Controls')").run();setRoleGrants('controls',{agent_api:'write'});setUserRoles(owner,['controls']);setProjectToolAccess({projectId:'p',userId:owner,canSession:true,canTerminal:true,sessionClients:['codex'],grantedBy:owner});

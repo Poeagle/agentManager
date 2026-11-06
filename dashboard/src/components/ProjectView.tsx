@@ -1612,7 +1612,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         projectPath={projectPath} onOpenFile={handleOpenInExplorer}
                         renderTerminal={renderTerminal} resuming={resuming} resumeFailed={resumeState?.phase==='error'}
                         onResume={canResume || resuming ? () => { void sessionResume.resume(term.id); } : undefined}
-                        onNewConversation={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async()=>{await sessionResume.newConversation(term.id);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
+                        onNewConversation={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async(preference)=>{await sessionResume.newConversation(term.id,preference);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
                         onReload={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async()=>{await sessionResume.reload(term.id);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
                         onClose={isEnded ? () => closeEndedSession(term.id) : undefined}
                       /> : <div className="p-3 text-xs" style={{color:'var(--text-secondary)'}}>正在读取会话信息…</div>)}

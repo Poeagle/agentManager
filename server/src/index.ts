@@ -1,3 +1,5 @@
+import {registerApiRoutes} from './routes/index.js';
+import { installApiFallback } from './http-fallback.js';
 // Increase libuv thread pool for async execFile / fs operations
 process.env.UV_THREADPOOL_SIZE = '16';
 
@@ -14,23 +16,8 @@ import fastifyWebsocket from '@fastify/websocket';
 import {resolve,dirname} from 'path';
 import {fileURLToPath} from 'url';
 import {closeDb,initDb,getDb} from './db/index.js';
-import {eventRoutes} from './routes/events.js';
-import {sessionRoutes} from './routes/sessions.js';
-import {taskRoutes} from './routes/tasks.js';
-import {streamRoutes} from './routes/stream.js';
-import {projectRoutes,initProjects} from './routes/projects.js';
-import {terminalRoutes} from './routes/terminal.js';
-import {fileRoutes} from './routes/files.js';
-import {gitRoutes} from './routes/git.js';
-import {agentRoutes} from './routes/agent.js';
-import {settingsRoutes} from './routes/settings.js';
-import {sharedResourceRoutes} from './routes/shared-resources.js';
-import {promptEnhancerRoutes} from './routes/prompt-enhancer.js';
-import {platformAiRoutes} from './routes/platform-ai.js';
+import {initProjects} from './routes/projects.js';
 import {installPlatformApiRegistry} from './services/platform-ai/api-registry.js';
-import {skillsRoutes} from './routes/skills.js';
-import {userStateRoutes} from './routes/user-state.js';
-import {scheduledTaskRoutes} from './routes/scheduled-tasks.js';
 import {startScheduledTaskScheduler,stopScheduledTaskScheduler} from './services/scheduled-task-runner.js';
 import {memorySessionReaper} from './services/memory-session-reaper.js';
 import {serverResourceSampler} from './services/server-resources.js';
@@ -40,9 +27,6 @@ import {agentDescriptors,getAgent} from './services/agents/index.js';
 import {detachManagedAgents} from './services/agents/host.js';
 import {config} from './config.js';
 import {authHook,isAdmin as isAdminUser} from './auth.js';
-import {authRoutes} from './routes/auth.js';
-import {userRoutes} from './routes/users.js';
-import {rbacRoutes} from './routes/rbac.js';
 import {appendFile,writeFile} from 'fs/promises';
 const timingLogPath = process.env.AGENTMANAGER_TIMING_LOG;
 const tlog = (message: string) => {
@@ -124,27 +108,8 @@ async function start() {
 
   // Auth: gate every /api/* behind login (public allowlist lives in authHook).
   app.addHook('onRequest', authHook);
-  await app.register(authRoutes, { prefix: '/api' });
-  await app.register(userRoutes, { prefix: '/api' });
-  await app.register(rbacRoutes, { prefix: '/api' });
-
-  // REST API routes
-  await app.register(eventRoutes, { prefix: '/api' });
-  await app.register(sessionRoutes, { prefix: '/api' });
-  await app.register(taskRoutes, { prefix: '/api' });
-  await app.register(streamRoutes, { prefix: '/api' });
-  await app.register(projectRoutes, { prefix: '/api' });
-  await app.register(terminalRoutes, { prefix: '/api' });
-  await app.register(fileRoutes, { prefix: '/api' });
-  await app.register(gitRoutes, { prefix: '/api' });
-  await app.register(agentRoutes, { prefix: '/api' });
-  await app.register(settingsRoutes, { prefix: '/api' });
-  await app.register(sharedResourceRoutes, { prefix: '/api' });
-  await app.register(promptEnhancerRoutes, { prefix: '/api' });
-  await app.register(platformAiRoutes, { prefix: '/api' });
-  await app.register(skillsRoutes, { prefix: '/api' });
-  await app.register(userStateRoutes, { prefix: '/api' });
-  await app.register(scheduledTaskRoutes, { prefix: '/api' });
+  installApiFallback(app);
+  await registerApiRoutes(app);
 
   // Version check via GitHub releases — used by dashboard and desktop app
   // Supports ?channel=stable|beta|alpha query param (default: stable)
@@ -305,7 +270,8 @@ async function start() {
     });
 
     // SPA fallback
-    app.setNotFoundHandler(async (_req, reply) => {
+    app.setNotFoundHandler(async (req, reply) => {
+      if (req.url.split('?')[0] === '/api' || req.url.startsWith('/api/')) return reply.code(404).send({ error: 'API route not found' });
       reply.header('Cache-Control', 'no-cache, no-store, must-revalidate');
       return reply.sendFile('index.html');
     });
