@@ -2,6 +2,7 @@ import {open,realpath,stat} from 'fs/promises';
 import {dirname,extname,isAbsolute,join,relative,sep} from 'path';
 import {getDb} from '../db/index.js';
 import {createHash} from 'crypto';
+import {conversationQuestionReply} from './conversation-question-reply.js';
 
 export interface ConversationAttachment {kind:'image'|'file';name:string;path:string;offset?:number}
 export type ConversationAnswerAttachments=Record<string,ConversationAttachment[]>;
@@ -24,7 +25,10 @@ export function formatConversationInput(text:string,attachments:ConversationAtta
  * Positions from the browser use UTF-16; the native spans use UTF-8 bytes. */
 export function nativeConversationInput(text:string,attachments:ConversationAttachment[]):[{type:'text';text:string;text_elements:{byteRange:{start:number;end:number};placeholder:string}[]},...{type:'localImage';path:string}[]] {
   const body=text.trim()?text:'请查看附件。';
-  const images=attachments.filter(item=>item.kind==='image').map((item,index)=>({item,index,offset:Math.min(body.length,Math.max(0,item.offset??body.length))})).sort((a,b)=>a.offset-b.offset||a.index-b.index);
+  // Question-editor offsets refer to the answer, not its JSON envelope. Image
+  // placeholders must never split that envelope or alter an answer's identity.
+  const questionReply=conversationQuestionReply(body);
+  const images=attachments.filter(item=>item.kind==='image').map((item,index)=>({item,index,offset:questionReply?body.length:Math.min(body.length,Math.max(0,item.offset??body.length))})).sort((a,b)=>a.offset-b.offset||a.index-b.index);
   let value='',cursor=0;
   const text_elements:{byteRange:{start:number;end:number};placeholder:string}[]=[];
   images.forEach(({offset,index})=>{
@@ -67,7 +71,9 @@ export function decorateConversationAttachments<T extends {role:string;text:stri
     if(message.role!=='user'||(!image_paths?.length && !message.client_id && !message.text.includes('\n\n附件：\n')))return visible as T;
     const row=getDb().prepare(`SELECT input_text,attachments FROM conversation_attachments WHERE session_id=? AND
       (client_id=? OR input_key=?) ORDER BY rowid DESC LIMIT 1`).get(sessionId,message.client_id||'',inputKey(message.text,image_paths||[])) as {input_text:string;attachments:string}|undefined;
-    return row?{...visible,text:row.input_text,attachments:JSON.parse(row.attachments)} as T:visible as T;
+    if(!row)return visible as T;
+    const reply=conversationQuestionReply(row.input_text);
+    return {...visible,text:reply?.text??row.input_text,attachments:JSON.parse(row.attachments),...(reply?{question_replies:reply.answers}:{})} as T;
   });
 }
 

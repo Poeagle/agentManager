@@ -70,6 +70,15 @@ describe('Codex native execution status',()=>{
     appendFileSync(file,record({type:'message',role:'user',content:[{type:'input_text',text:answer}]}));
     expect(await readCodexRuntime(id)).toMatchObject({state:'running',pending_question_count:0,pending_questions:[]});
   });
+  it('restores a confirmed historical image answer whose placeholder split the reply wrapper',async()=>{
+    const call='legacy-image-question',questionItemId=JSON.stringify(['request_user_input_async',call,0]);
+    const answer='<send_user_message_question_reply>'+JSON.stringify([{questionItemId,question:'查看截图？',answer:'请看图片'}])+'</send_user_message_question_reply>';
+    const broken=answer.slice(0,4)+'[Image #1]'+answer.slice(4);
+    writeFileSync(file,event('item_completed',1,{item:{type:'AgentMessage',id:call,delivery:'async',questions:[{title:'查看截图？',options:null}]}})+event('task_complete',2));
+    expect((await readCodexRuntime(id)).pending_question_count).toBe(1);
+    appendFileSync(file,JSON.stringify({type:'response_item',timestamp:'2026-10-29T10:00:03Z',payload:{type:'message',role:'user',content:[{type:'input_text',text:broken},{type:'input_image',image_url:'fixture'}]}})+'\n');
+    expect((await readCodexRuntime(id)).pending_question_count).toBe(0);
+  });
   it('finds an unanswered question outside both the runtime tail and current chat page without retaining a large tool result',async()=>{
     const questions=[{title:'更早的提问',options:null}];
     writeFileSync(file,event('item_completed',1,{item:{type:'AgentMessage',id:'old-question',delivery:'async',questions}})

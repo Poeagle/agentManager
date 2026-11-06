@@ -63,7 +63,7 @@ export function parseCodexMessage(line: Buffer, questionCallId?: string) {
         const shared = developerText
             ? { role: 'user' as const, phase: 'user' as const, text: developerText, timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null } : null;
         const extracted = shared || failure || asyncMessage || decodeCodexText([entry], 128 * 1024).find(message => message.role === 'user' || message.role === 'assistant');
-        const reply = extracted?.role === 'user' ? conversationQuestionReply(extracted.text) : undefined;
+        const reply = extracted?.role === 'user' ? conversationQuestionReply(extracted.text,Array.isArray(entry.payload?.content)&&entry.payload.content.some((part:any)=>part?.type==='input_image')) : undefined;
         const message = reply ? { ...extracted!, text: reply.text } : extracted;
         const itemId = asyncQuestions && typeof nativeAsyncItem?.id === 'string' ? nativeAsyncItem.id : entry.type === 'response_item' && typeof entry.payload?.id === 'string' ? entry.payload.id : undefined;
         return message ? { message, failure, itemId, asyncQuestions, questionReplies: reply?.answers, imagePaths: message.role === 'user' ? conversationImagePaths(entry.payload?.content) : [], turnId: typeof turnId === 'string' ? turnId : undefined, recordType: asyncQuestions ? 'async_question' : entry.type === 'event_msg' ? (entry.payload?.type === 'task_complete' ? 'completion_echo' : 'event_message') : 'native_message' } : null;

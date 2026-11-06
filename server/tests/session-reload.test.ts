@@ -1,4 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
+vi.mock('../src/services/agents/codex/terminal-bridge.js',()=>({ensureCodexTerminalBridge:vi.fn(async(path:string)=>path)}));
 vi.mock('../src/services/agents/codex/version.js',()=>({prepareCodexReload:vi.fn().mockResolvedValue('0.166.0')}));
 vi.mock('../src/services/agents/codex/runtime.js',()=>({readCodexRuntime:vi.fn().mockResolvedValue({state:'idle'})}));
 vi.mock('child_process',async original=>{

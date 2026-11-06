@@ -34,7 +34,7 @@ function apply(cursor: Cursor, bytes: Buffer, sessionId: string) {
     const human = entry.type === 'response_item' && p.type === 'message' && p.role === 'user'
       ? (p.content || []).filter((part: any) => part.type === 'input_text' && typeof part.text === 'string').map((part: any) => part.text).join('\n')
       : entry.type === 'event_msg' && p.type === 'user_message' && typeof p.message === 'string' ? p.message : null;
-    if (human) for (const answer of conversationQuestionReply(human)?.answers || []) cursor.answered.add(answer.question_id);
+    if (human) for (const answer of conversationQuestionReply(human,Array.isArray(p.content)&&p.content.some((part:any)=>part?.type==='input_image'))?.answers || []) cursor.answered.add(answer.question_id);
     for (const [id, group] of cursor.groups) {
       group.questions = group.questions.filter(question => !cursor.answered.has(question.id!));
       if (!group.questions.length) cursor.groups.delete(id);

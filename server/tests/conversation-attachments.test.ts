@@ -4,6 +4,7 @@ import {join} from 'path';
 import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
 import {conversationImagePaths,decorateConversationAttachments,rememberConversationAttachments,nativeConversationInput,formatConversationInput,validateConversationAttachments,validateConversationAnswerAttachments} from '../src/services/conversation-attachments.js';
+import {conversationQuestionReply} from '../src/services/conversation-question-reply.js';
 let cleanup:()=>void,root:string,directory:string;
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9hZsEAAAAASUVORK5CYII=','base64');
 beforeEach(()=>{
@@ -13,6 +14,13 @@ beforeEach(()=>{
 });
 afterEach(()=>cleanup());
 describe('conversation attachment validation',()=>{
+  it('keeps answer-editor image offsets outside the structured question reply envelope',()=>{
+    const id=JSON.stringify(['request_user_input_async','ask',0]),text='<send_user_message_question_reply>'+JSON.stringify([{questionItemId:id,question:'查看截图？',answer:'是的'}])+'</send_user_message_question_reply>';
+    for(const offset of [0,3,15,text.length]){
+      const input=nativeConversationInput(text,[{kind:'image',name:'image.png',path:join(directory,'image.png'),offset},{kind:'file',name:'note.txt',path:join(directory,'note.txt')}]);
+      expect(input[0].text.startsWith(text)).toBe(true);expect(conversationQuestionReply(input[0].text)?.answers).toEqual([{question_id:id,question:'查看截图？',answer:'是的'}]);expect(input[1]).toEqual({type:'localImage',path:join(directory,'image.png')});
+    }
+  });
   it('validates answer attachments across question groups with the same path and total-count rules',async()=>{
     const file={kind:'file',name:'report.txt',path:join(directory,'note.txt')};
     expect(await validateConversationAnswerAttachments('s',{question:[file]})).toEqual({question:[file]});

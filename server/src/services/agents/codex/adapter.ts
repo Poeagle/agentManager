@@ -11,6 +11,7 @@ import { shellSingleQuote } from '../shell.js';
 import { codexCommand, codexPermissions, codexResources } from './commands.js';
 import { capabilities, requireNative, type AgentAdapter } from '../types.js';
 import { findCodexRollout } from '../../prompt-context.js';
+import {ensureCodexTerminalBridge} from './terminal-bridge.js';
 export const codexAdapter: AgentAdapter = {
     descriptor: { terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'stream', 'controls', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) },
     identity: { read: session => session.codex_session_id ?? null, legacyField: 'codex_session_id', purge: context => { if (context.session.id)
@@ -69,6 +70,7 @@ export const codexAdapter: AgentAdapter = {
     },
     launch: { prepare: async (context, task, instructions, resume) => {
             const streamSocket = context.sharedAccess ? process.env.AGENTMANAGER_CODEX_STREAM_SOCKET || null : null;
+            const terminalSocket=streamSocket?await ensureCodexTerminalBridge(streamSocket):null;
             const module = await import('./stream.js');
             let nativeId = resume ? context.nativeId || undefined : undefined;
             if (streamSocket) {
@@ -78,7 +80,7 @@ export const codexAdapter: AgentAdapter = {
                     nativeId = await module.createStreamingCodexThread(context.projectPath!, task, instructions);
             }
             const manager = await import('../../session-manager.js');
-            return { nativeId, freshMode: 'resume', streamSocket, bindingPath: context.session.id ? manager.codexBindingPath(context.session.id) : undefined };
+            return { nativeId, freshMode: 'resume', streamSocket:terminalSocket, bindingPath: context.session.id ? manager.codexBindingPath(context.session.id) : undefined };
         }, ready: async (context) => { if (context.session.id)
             (await import('../../session-manager.js')).watchCodexSessionBinding(context.session.id); } },
     commands: { configure: (command, projectPath, streamSocket) => streamSocket && projectPath ? command.replace(/(?:^|\s)(?:--dangerously-bypass-approvals-and-sandbox|--yolo)(?=\s|$)/g, ' ').trim() + ` --cd ${shellSingleQuote(projectPath)}` : codexPermissions(command), build: codexCommand, permissions: codexPermissions, sharedResources: codexResources },
