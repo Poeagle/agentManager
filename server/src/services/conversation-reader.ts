@@ -95,6 +95,22 @@ function dedupe(messages:IndexedMessage[]):IndexedMessage[] {
       const existing=result.findIndex(item=>item.id===message.id);if(existing>=0)result.splice(existing,1);
       result.push(message);continue;
     }
+    // `task_complete.last_agent_message` is a lifecycle echo of the final
+    // assistant item, not a second answer. It may be separated from the
+    // native item by progress records and may carry a different turn ID.
+    if(message.recordType==='completion_echo') {
+      let echoed=-1;
+      for(let i=result.length-1;i>=0;i--) {
+        const item=result[i];
+        // Do not reach into an earlier user turn; identical answers there are
+        // legitimate separate replies.
+        if(item.role==='user') break;
+        if(item.role==='assistant'&&item.hash===message.hash&&item.recordType!=='completion_echo') {
+          echoed=i;break;
+        }
+      }
+      if(echoed>=0) continue;
+    }
     const previous=result.at(-1);
     if(previous?.id===message.id)continue;
     if(previous?.hash===message.hash && previous.role===message.role

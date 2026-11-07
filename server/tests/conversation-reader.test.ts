@@ -203,4 +203,10 @@ describe('public conversation pages',()=>{
     const result=await readConversation(binding);const answers=result.messages.filter(message=>message.role==='assistant');
     expect(answers).toHaveLength(2);expect(answers[0].id).not.toBe(answers[1].id);
   });
+  it('removes a completion echo with a mismatched turn ID after progress',async()=>{
+    const answer=line('response_item',{type:'message',id:'answer-item',role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'internal-turn'},content:[{type:'output_text',text:'延迟完成回显'}]});
+    writeFileSync(file,user('问题')+answer+line('event_msg',{type:'agent_reasoning',text:'内部进展'})+line('event_msg',{type:'task_complete',turn_id:'public-turn',last_agent_message:'延迟完成回显'}));
+    const result=await readConversation(binding);
+    expect(result.messages.filter(message=>message.role==='assistant').map(message=>message.text)).toEqual(['延迟完成回显']);
+  });
 });
