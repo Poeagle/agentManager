@@ -34,4 +34,24 @@ describe('bounded native conversation statistics',()=>{
  it('does not scan old oversized history to fabricate a complete current turn',async()=>{
   writeFileSync(file,start()+row('response_item',{type:'function_call_output',output:'x'.repeat(3*1024*1024)})+message('tail')+usage(1000,100));expect((await readConversationStatistics(file))[0]).toMatchObject({complete:false,tokens:{total_tokens:100}});
  });
+ it('marks an unphased assistant item as the conclusion only when task_complete names its exact text',async()=>{
+  const unphased=(id:string,text:string)=>row('response_item',{type:'message',id,role:'assistant',content:[{type:'output_text',text}],internal_chat_message_metadata_passthrough:{turn_id:'implicit'}});
+  const completed=(text:string)=>row('event_msg',{type:'task_complete',turn_id:'implicit',last_agent_message:text});
+  // Native rollouts write token_count before task_complete. Its snapshot must
+  // already count usage while leaving the matching answer pending.
+  writeFileSync(file,start('implicit')+unphased('progress','正在检查')+usage(100,100)+completed('检查完成'));
+  expect((await readConversationStatistics(file))[0].conclusion).toBeUndefined();
+  const resolved=join(dir,'resolved.jsonl');
+  writeFileSync(resolved,start('implicit')+unphased('answer','介绍完成')+usage(200,200)+completed('介绍完成'));
+  expect((await readConversationStatistics(resolved))[0]).toMatchObject({turn_id:'implicit',complete:true,tokens:null,conclusion:{complete:false,end_at:null,shared_messages:1,tokens:{total_tokens:200}}});
+ });
+ it('settles the matching tail rather than an earlier identical progress item',async()=>{
+  const answer=(id:string,text:string)=>row('response_item',{type:'message',id,role:'assistant',content:[{type:'output_text',text}],internal_chat_message_metadata_passthrough:{turn_id:'same-tail'}});
+  writeFileSync(file,start('same-tail')+answer('first','完成')+usage(100,100)+answer('later-progress','仍在检查')+usage(200,100)+answer('tail','完成')+usage(300,100)+row('event_msg',{type:'task_complete',turn_id:'same-tail',last_agent_message:'完成'}));
+  const snapshots=await readConversationStatistics(file);
+  expect(snapshots).toHaveLength(3);
+  expect(snapshots[0].conclusion).toBeUndefined();
+  expect(snapshots[1].conclusion).toBeUndefined();
+  expect(snapshots[2]).toMatchObject({message_id:expect.any(String),conclusion:{shared_messages:1,tokens:{total_tokens:300}}});
+ });
 });

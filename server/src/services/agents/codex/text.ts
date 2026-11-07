@@ -17,7 +17,16 @@ export function codexUserText(content: unknown): string {
 }
 export function decodeCodexText(entries: Iterable<unknown>, limit = 8000) {
     const { messages, append: collect } = textCollector(limit);
-    const append = (role: 'user' | 'assistant', phase: 'user' | 'commentary' | 'final', text: string, timestamp: unknown) => { if (role === 'user' && /^<codex_internal_context\b[^>]*>[\s\S]*<\/codex_internal_context>$/.test(text))
+    const phase = (value: unknown): 'unknown' | 'commentary' | 'final' => value === 'final_answer' || value === 'final'
+        ? 'final'
+        : value === 'commentary' ? 'commentary' : 'unknown';
+    const itemText = (content: unknown) => Array.isArray(content)
+        ? content.filter(isRecord)
+            .filter(block => ['Text', 'output_text', 'text'].includes(String(block.type)) && typeof block.text === 'string')
+            .map(block => (block.text as string).trim())
+            .filter(Boolean).join('\n').trim()
+        : '';
+    const append = (role: 'user' | 'assistant', phase: 'user' | 'unknown' | 'commentary' | 'final', text: string, timestamp: unknown) => { if (role === 'user' && /^<codex_internal_context\b[^>]*>[\s\S]*<\/codex_internal_context>$/.test(text))
         return; collect(role, phase, text, timestamp); };
     for (const entry of entries) {
         if (!isRecord(entry) || !isRecord(entry.payload))
@@ -27,13 +36,15 @@ export function decodeCodexText(entries: Iterable<unknown>, limit = 8000) {
             if (p.role === 'user')
                 append('user', 'user', codexUserText(p.content), entry.timestamp);
             if (p.role === 'assistant')
-                append('assistant', p.phase === 'final_answer' ? 'final' : 'commentary', contentText(p.content, 'output_text'), entry.timestamp);
+                append('assistant', phase(p.phase), contentText(p.content, 'output_text'), entry.timestamp);
         }
         else if (entry.type === 'event_msg') {
             if (p.type === 'user_message')
                 append('user', 'user', cleanText(p.message), entry.timestamp);
             if (p.type === 'agent_message')
-                append('assistant', p.phase === 'final_answer' ? 'final' : 'commentary', cleanText(p.message), entry.timestamp);
+                append('assistant', phase(p.phase), cleanText(p.message), entry.timestamp);
+            if (p.type === 'item_completed' && isRecord(p.item) && p.item.type === 'AgentMessage')
+                append('assistant', phase(p.item.phase), itemText(p.item.content), entry.timestamp);
             if (p.type === 'task_complete')
                 append('assistant', 'final', cleanText(p.last_agent_message), entry.timestamp);
         }

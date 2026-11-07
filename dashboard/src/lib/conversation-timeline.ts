@@ -60,6 +60,50 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
     const current=result.findIndex(item=>item.id===batch[i].id);
     if(current<before) {const [message]=result.splice(current,1);result.splice(before,0,message);}
   }
+  // A native answer can arrive once from the live stream and again from the
+  // durable history with different ids/phases (commentary -> final). Keep one
+  // copy per turn and prefer the finalized/durable representation.
+  const removedAssistants=new Set<number>();
+  const assistantByText=new Map<string,{live?:number;durable?:number}>();
+  const assistantRank=(item:TimelineMessage)=>(
+    item.phase==='final'?4:item.sequence!==undefined?3:item.streaming?1:2
+  );
+  result.forEach((item,index)=>{
+    if(item.role==='user'){assistantByText.clear();return;}
+    if(item.role!=='assistant'||!item.turn_id)return;
+    const text=item.text.replace(/\r\n?/g,'\n').trim();
+    let candidate: number|undefined;
+    // The live stream and the rollout reader can disagree on the public turn
+    // UUID for the same native item. This applies to progress as well as the
+    // final answer: the original terminal receives one native event, while
+    // AgentManager can see its live copy and its durable rollout copy. Keep
+    // the safe shape: identical text, one durable sequence and one live item,
+    // with no user message between them. This cannot merge intentional
+    // identical messages from separate user turns.
+    const source=item.sequence===undefined?'live':'durable';
+    const opposite=source==='live'?'durable':'live';
+    const indexed=assistantByText.get(text);
+    if(indexed && (item.phase==='final'||item.sequence!==undefined)) {
+      const priorIndex=indexed[opposite];
+      const prior=priorIndex===undefined?undefined:result[priorIndex];
+      if(prior && prior.turn_id!==item.turn_id) candidate=priorIndex;
+    }
+    const previousIndex=candidate;
+    if(previousIndex===undefined) {
+      const entry=assistantByText.get(text)||{};
+      entry[source]=index;assistantByText.set(text,entry);
+      return;
+    }
+    const prior=result[previousIndex];
+    const keep=item.sequence!==undefined && prior.sequence===undefined
+      ? index
+      : prior.sequence!==undefined && item.sequence===undefined ? previousIndex
+      : assistantRank(item)>assistantRank(prior)?index:previousIndex;
+    const drop=keep===index?previousIndex:index;
+    result[keep]={...result[drop],...result[keep],aliases:[...new Set([...(result[keep].aliases||[]),...(result[drop].aliases||[]),result[drop].id])]};
+    removedAssistants.add(drop);
+    if(indexed)delete indexed[opposite];
+  });
   // A native ID can be learned after both the optimistic and durable copies
   // already exist. Once the client ID is available, settle that pair too.
   const correlated=new Map<string,number>(),removed=new Set<number>();
@@ -72,7 +116,7 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
     result[keep]={...result[drop],...result[keep],aliases:[...new Set([...(result[keep].aliases||[]),...(result[drop].aliases||[]),result[drop].id])],queued:rank(result[keep])>=2?false:result[keep].queued,optimistic:rank(result[keep])>=2?undefined:result[keep].optimistic};
     removed.add(drop);correlated.set(item.client_id,keep);
   });
-  const settled=result.filter((_item,index)=>!removed.has(index));
+  const settled=result.filter((_item,index)=>!removed.has(index)&&!removedAssistants.has(index));
   return [...settled.filter(item=>!item.queued),...settled.filter(item=>item.queued)];
 }
 

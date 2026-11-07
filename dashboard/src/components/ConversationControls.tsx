@@ -34,6 +34,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const data=baseline&&update&&update.native_id===baseline.native_id&&(!baseline.usage_observed_at||Date.parse(update.observed_at)>=Date.parse(baseline.usage_observed_at))
     ?{...baseline,usage:update.usage,usage_observed_at:update.observed_at}:baseline;
   const selected=data?.pending||{model:data?.model||'',effort:data?.effort||'',provider:data?.provider||undefined};
+  const visibleWarning=data?.warning&&!/^客户端\s+[\d.]+?\s*·\s*共享引擎\s+[\d.]+/.test(data.warning)?data.warning:null;
   const model=data?.models.find(m=>m.model===selected.model&&(!m.provider||!selected.provider||m.provider===selected.provider)),usage=data?.usage;
   const context=usage?.window&&usage.last.total_tokens!=null?Math.min(100,Math.round(100*usage.last.total_tokens/usage.window)):null;
   const fastTier=model?.service_tiers?.find(tier=>tier.name.trim().toLowerCase()==='fast');
@@ -69,7 +70,6 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
           {data.git&&<><span title="当前 Git 分支">{data.git.branch}</span><span title="工作区状态，每 5 分钟刷新，也可手动刷新">{data.git.changes?`${data.git.changes} 项变更`:'无变更'}</span></>}
           <span title="会话运行状态">{compacting?'压缩中':busy?'执行中':data.loaded?'等待输入':'未接入实时控制'}</span>
           {data.permission&&<span title="当前会话访问权限">{permissions[data.permission]||data.permission}</span>}
-          {data.engine_version&&<span title={`当前连接的 ${data.agent?.label||'Agent'} 服务版本`}>{data.agent?.label||'Agent'} {data.engine_version}</span>}
           {usage?.window!=null&&<span title={`上下文窗口容量：${usage.window.toLocaleString()} Token`}>窗口 {compact(usage.window)}</span>}
           {usage?.total.total_tokens!=null&&<span title={`会话累计用量：${usage.total.total_tokens.toLocaleString()} Token，包含重复上下文输入和缓存命中；不是当前上下文占用或金额`}>累计 {compact(usage.total.total_tokens)} Token</span>}
           {usage?.total.input_tokens!=null&&<span title={`会话累计输入：${usage.total.input_tokens.toLocaleString()} Token，包含缓存命中`}>输入 {compact(usage.total.input_tokens)}</span>}
@@ -79,7 +79,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         <button type="button" aria-label="刷新会话信息" title="用量随会话事件实时更新，其他信息每 5 分钟刷新，也可手动刷新" disabled={query.isFetching} onClick={refresh}><RefreshCw size={13} className={query.isFetching?'animate-spin':''}/>刷新</button>
       </>:<><span>{query.isPending?'读取会话信息…':'会话信息暂不可用'}</span>{query.isError&&<button type="button" onClick={refresh}><RefreshCw size={13}/>重试</button>}</>}
     </div>
-    {data?.warning&&!expanded&&<p className="conversation-controls-note" role="status">{data.warning}</p>}
+    {visibleWarning&&!expanded&&<p className="conversation-controls-note" role="status">{visibleWarning}</p>}
     {notice&&<p className="conversation-controls-note" role="status">{notice}</p>}
     {newOpen&&<Dialog title="在当前标签页新开会话" busy={operation==='new'} onClose={()=>setNewOpen(false)}>
       <p className="text-sm leading-relaxed">{data?.supports_fresh_model?'请确认新会话使用的模型服务、模型和推理强度。':'新会话将使用当前 Agent 的默认模型设置。'}当前任务会停止，旧会话的后台终端会回收，历史消息可从“项目会话记录”重新打开。当前输入框中未发送的文字和附件会保留。</p>
@@ -93,7 +93,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   </div>;
 }
 function ControlDetails({data,onClose,onRefresh,refreshing}:{data:ConversationControlsData;onClose:()=>void;onRefresh:()=>void;refreshing:boolean}) {
-  const fields=[['当前模型',data.model],['当前推理强度',data.effort?`${effortNames[data.effort]||data.effort}（${data.effort}）`:null],['模型服务',data.provider],['访问权限',data.permission?permissions[data.permission]||data.permission:null],['执行确认',data.approval==='never'?'无需逐次确认':data.approval],['服务层级',data.service_tier],['工作目录',data.cwd],['当前分支',data.git?.branch],['工作区状态',data.git?data.git.changes?`${data.git.changes} 项变更`:'无变更':null],['会话状态',data.state==='active'?'执行中':data.state==='idle'?'等待输入':data.state==='notLoaded'?'未接入实时控制':data.state],[`当前运行的 ${data.agent?.label||'Agent'} 服务版本`,data.engine_version]];
+  const fields=[['当前模型',data.model],['当前推理强度',data.effort?`${effortNames[data.effort]||data.effort}（${data.effort}）`:null],['模型服务',data.provider],['访问权限',data.permission?permissions[data.permission]||data.permission:null],['执行确认',data.approval==='never'?'无需逐次确认':data.approval],['服务层级',data.service_tier],['工作目录',data.cwd],['当前分支',data.git?.branch],['工作区状态',data.git?data.git.changes?`${data.git.changes} 项变更`:'无变更':null],['会话状态',data.state==='active'?'执行中':data.state==='idle'?'等待输入':data.state==='notLoaded'?'未接入实时控制':data.state]];
   return <Dialog title="会话详情" size="lg" onClose={onClose} actions={<button className="conversation-preview-dock" type="button" onClick={onRefresh} disabled={refreshing}><RefreshCw size={14} className={refreshing?'animate-spin':''}/>刷新</button>}>
     {data.pending&&<p className="conversation-controls-note">{data.pending_status==='submitted'?'等待原生请求确认：':'恢复或重载时应用：'}{data.pending.model} · {data.pending.effort}。</p>}
     {data.warning&&<p role="status" className="conversation-controls-note">{data.warning}</p>}

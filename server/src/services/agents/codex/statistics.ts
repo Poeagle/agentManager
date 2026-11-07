@@ -6,7 +6,7 @@ export type ConversationInterval=import('../types.js').AgentStatisticsInterval;
 export type ConversationConclusion=NonNullable<import('../types.js').AgentStatistics['conclusion']>;
 export type ConversationStatistics=import('../types.js').AgentStatistics;
 
-interface Turn {checkpoint?:{tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:number;rounds:number};intervalIntact?:boolean;id:string;complete:boolean;tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:Set<string>;rounds:number;pendingTools:boolean;waiting:Array<{sequence:number;message_id?:string;final:boolean;timestamp:string|null}>}
+interface Turn {checkpoint?:{tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:number;rounds:number};intervalIntact?:boolean;id:string;complete:boolean;tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:Set<string>;rounds:number;pendingTools:boolean;waiting:Array<{sequence:number;message_id?:string;final:boolean;timestamp:string|null;hash?:string;implicit?:boolean}>}
 interface Conclusion {tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:number;rounds:number;complete:boolean;start:string|null;initial:boolean}
 interface State {offset:number;inode:number;mtime:number;partial:Buffer;turn:Turn|null;conclusion:Conclusion;fingerprint:string|null;stats:Map<number,ConversationStatistics>}
 const cache=new Map<string,State>(),WINDOW=2*1024*1024;
@@ -16,17 +16,31 @@ function conclusion(start:string|null,complete:boolean,initial=false):Conclusion
 const timestamp=(value:unknown):string|null=>typeof value==='string'&&Number.isFinite(Date.parse(value))?value:null;
 function incomplete(state:State){state.conclusion.complete=false;if(state.turn){state.turn.complete=false;state.turn.intervalIntact=false;}}
 function turn(id:string,complete:boolean):Turn{return {id,complete,tokens:Object.fromEntries(tokenFields.map(field=>[field,0])) as Turn['tokens'],requests:0,calls:new Set(),rounds:0,pendingTools:false,waiting:[]};}
-function finish(state:State,hasUsage:boolean){
+function settleImplicit(state:State,text:string){
+  // Older records omit phase on an assistant item. task_complete names the
+  // exact final text, so only the matching tail is promoted to a conclusion.
+  const current=state.turn,tail=current?.waiting.at(-1),hash=text?createHash('sha256').update(text).digest('hex'):undefined;
+  if(!current||!tail||!tail.implicit||tail.hash!==hash)return;
+  tail.final=true;
+  const snapshot=state.stats.get(tail.sequence);
+  if(!snapshot)return;
+  const end=tail.timestamp,start=state.conclusion.start,elapsed=start&&end?Date.parse(end)-Date.parse(start):null;
+  snapshot.conclusion={tokens:state.conclusion.requests?{...state.conclusion.tokens}:null,requests:state.conclusion.requests,tool_calls:state.conclusion.calls,tool_rounds:state.conclusion.rounds,complete:state.conclusion.complete&&!!snapshot.interval?.complete,shared_messages:1,start_at:start,end_at:end,elapsed_ms:elapsed!==null&&elapsed>=0?elapsed:null};
+  state.conclusion=conclusion(end,true);
+}
+function finish(state:State,hasUsage:boolean,retainTail=0){
   const current=state.turn;if(!current||!current.waiting.length)return;
+  const retained=retainTail&&current.waiting.at(-1)?.implicit?current.waiting.slice(-1):[];
+  const settled=current.waiting.slice(0,current.waiting.length-retained.length);if(!settled.length)return;
   const previous=current.checkpoint;
   const interval:ConversationInterval={
     tokens:hasUsage?Object.fromEntries(tokenFields.map(field=>{const end=current.tokens[field],start=previous?previous.tokens[field]:0;return [field,end===null||start===null?null:Math.max(0,end-start)];})) as Turn['tokens']:null,
     requests:current.requests-(previous?.requests??0),tool_calls:current.calls.size-(previous?.calls??0),tool_rounds:current.rounds-(previous?.rounds??0),
-    complete:(current.intervalIntact??current.complete)&&hasUsage,shared_messages:current.waiting.length,
+    complete:(current.intervalIntact??current.complete)&&hasUsage,shared_messages:settled.length,
   };
-  const finals=current.waiting.filter(message=>message.final),summary=state.conclusion;
+  const finals=settled.filter(message=>message.final),summary=state.conclusion;
   let conclusionStart=summary.start;
-  for(const message of current.waiting){
+  for(const message of settled){
     state.stats.set(message.sequence,{sequence:message.sequence,...message.message_id?{message_id:message.message_id}:{},turn_id:current.id,tokens:hasUsage?{...current.tokens}:null,requests:current.requests,tool_calls:current.calls.size,tool_rounds:current.rounds,complete:current.complete});
     state.stats.get(message.sequence)!.interval={...interval,tokens:interval.tokens?{...interval.tokens}:null};
     if(message.final){
@@ -39,12 +53,12 @@ function finish(state:State,hasUsage:boolean){
   // turn or the retained page. Follow-ups and retries must not reset it.
   if(finals.length)state.conclusion=conclusion(finals.at(-1)!.timestamp,true);
   current.checkpoint={tokens:{...current.tokens},requests:current.requests,calls:current.calls.size,rounds:current.rounds};current.intervalIntact=true;
-  current.waiting=[];while(state.stats.size>80)state.stats.delete(state.stats.keys().next().value!);
+  current.waiting=retained;while(state.stats.size>80)state.stats.delete(state.stats.keys().next().value!);
 }
 function consume(state:State,line:Buffer,sequence:number){
   // Only parse relevant records; never retain arguments, outputs or reasoning.
   const header=line.subarray(0,600).toString();
-  if(!/"type"\s*:\s*"(?:task_started|task_complete|turn_context|token_count|message|function_call|custom_tool_call|tool_search_call|web_search_call|local_shell_call)"/.test(header))return;
+  if(!/"type"\s*:\s*"(?:task_started|task_complete|turn_context|token_count|message|item_completed|AgentMessage|function_call|custom_tool_call|tool_search_call|web_search_call|local_shell_call)"/.test(header))return;
   if(line.length>256*1024){incomplete(state);return;}
   let record:any;try{record=JSON.parse(line.toString());}catch{incomplete(state);return;}
   const p=record.payload;if(!p)return;
@@ -54,13 +68,20 @@ function consume(state:State,line:Buffer,sequence:number){
     if(state.turn?.id!==id){finish(state,false);state.turn=turn(id,true);}return;
   }
   if(record.type==='turn_context'&&typeof id==='string'&&state.turn?.id!==id){finish(state,false);state.turn=turn(id,false);return;}
-  if(record.type==='response_item'&&p.type==='message'&&p.role==='assistant'&&typeof id==='string'){
+  const assistantItem=record.type==='event_msg'&&p.type==='item_completed'&&p.item?.type==='AgentMessage'?p.item
+    :record.type==='response_item'&&p.type==='message'&&p.role==='assistant'?p:undefined;
+  if(assistantItem&&typeof id==='string'){
     if(state.turn?.id!==id){finish(state,false);state.turn=turn(id,false);}
-    const message_id=typeof p.id==='string'?createHash('sha256').update(`${id}:assistant:${p.id}`).digest('hex').slice(0,32):undefined;
-    const final=['final_answer','final'].includes(p.phase)&&p.delivery!=='async'&&!p.questions?.length&&Array.isArray(p.content)&&p.content.some((part:any)=>part?.type==='output_text'&&typeof part.text==='string'&&part.text.trim());
+    const message_id=typeof assistantItem.id==='string'?createHash('sha256').update(`${id}:assistant:${assistantItem.id}`).digest('hex').slice(0,32):undefined;
+    const text=Array.isArray(assistantItem.content)?assistantItem.content.filter((part:any)=>['Text','output_text','text'].includes(part?.type)&&typeof part.text==='string').map((part:any)=>part.text.trim()).filter(Boolean).join('\n').trim():'';
+    const final=['final_answer','final'].includes(assistantItem.phase)&&assistantItem.delivery!=='async'&&!assistantItem.questions?.length&&!!text;
+    const implicit=!assistantItem.phase||assistantItem.phase==='unknown';
+    const current=state.turn!;
+    const firstVisible=!state.stats.size&&!current.waiting.some(message=>!message.implicit);
     if(!state.conclusion.start)state.conclusion.complete=false;
+    if(firstVisible)state.conclusion.complete=current.complete;
     state.conclusion.initial=false;
-    state.turn!.waiting.push({sequence,...message_id?{message_id}:{},final:!!final,timestamp:timestamp(record.timestamp)});return;
+    current.waiting.push({sequence,...message_id?{message_id}:{},final:!!final,timestamp:timestamp(record.timestamp),...(text?{hash:createHash('sha256').update(text).digest('hex')}:{}),...(implicit?{implicit:true}:{})});return;
   }
   if(record.type==='response_item'&&callTypes.has(p.type)&&state.turn){
     if(typeof id==='string'&&id!==state.turn.id){finish(state,false);state.turn=turn(id,false);}
@@ -76,9 +97,16 @@ function consume(state:State,line:Buffer,sequence:number){
     const current=state.turn;if(!current)return;
     current.requests++;state.conclusion.requests++;if(current.pendingTools){current.rounds++;state.conclusion.rounds++;current.pendingTools=false;}
     for(const field of tokenFields){current.tokens[field]=current.tokens[field]===null||last[field]===null?null:current.tokens[field]!+last[field]!;state.conclusion.tokens[field]=state.conclusion.tokens[field]===null||last[field]===null?null:state.conclusion.tokens[field]!+last[field]!;}
+    // Keep the exact answer pending until task_complete can identify it.
+    const tail=current.waiting.at(-1);
+    if(tail?.implicit && !tail.final){finish(state,true,1);return;}
     finish(state,true);return;
   }
-  if(record.type==='event_msg'&&p.type==='task_complete'&&state.turn?.id===id)finish(state,false);
+  if(record.type==='event_msg'&&p.type==='task_complete'&&state.turn?.id===id&&state.turn){
+    const text=typeof p.last_agent_message==='string'?p.last_agent_message.trim():'';
+    settleImplicit(state,text);
+    finish(state,false);
+  }
 }
 /** One bounded cold read, then append-only reads shared by HTTP and existing
  * file notifications. Missing turn starts produce explicitly partial counts. */

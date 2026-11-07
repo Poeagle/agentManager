@@ -35,7 +35,7 @@ export function textCollector(messageLimit: number) {
             return;
         const last = messages.at(-1);
         if (last?.role === role && last.text === text) {
-            if (phase === 'final')
+            if (phase === 'final' || last.phase === 'unknown')
                 last.phase = phase;
             return;
         }

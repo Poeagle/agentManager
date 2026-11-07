@@ -295,6 +295,25 @@ describe('native Codex conversation streaming',()=>{
       if(frame?.type==='snapshot') {expect(frame.messages.map(item=>item.text)).toEqual(['第一段回答','追问的回答']);expect(new Set(frame.messages.map(item=>item.id)).size).toBe(2);}
     });
   });
+  it('promotes an unphased assistant message when its turn completes normally',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
+    send('turn/started',{threadId:'thread',turn:{id:'turn'}});
+    send('item/started',{threadId:'thread',turnId:'turn',item:{type:'agentMessage',id:'answer',text:''}});
+    send('item/agentMessage/delta',{threadId:'thread',turnId:'turn',itemId:'answer',delta:'自我介绍'});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({messages:[{text:'自我介绍',phase:'commentary',streaming:true}]}));
+    send('item/completed',{threadId:'thread',turnId:'turn',completedAtMs:Date.now(),item:{type:'agentMessage',id:'answer',text:'自我介绍'}});
+    send('turn/completed',{threadId:'thread',turn:{id:'turn',status:'completed',completedAt:Date.now()/1000}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:false,messages:[{id:conversationMessageId('turn','assistant','answer'),text:'自我介绍',phase:'final',streaming:false}]}));
+  });
+  it('does not promote an unphased final on failed, interrupted, or explicitly commentary turns',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
+    for(const [turn,status,phase] of [['failed','failed',undefined],['interrupted','interrupted',undefined],['explicit','completed','commentary']] as const){
+      send('turn/started',{threadId:'thread',turn:{id:turn}});
+      send('item/completed',{threadId:'thread',turnId:turn,item:{type:'agentMessage',id:`${turn}-answer`,text:turn,...(phase?{phase}:{})}});
+      send('turn/completed',{threadId:'thread',turn:{id:turn,status}});
+      await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:false,messages:[{text:turn,phase:'commentary'}]}));
+    }
+  });
   it('never resumes an embedded or unloaded thread into a second engine',async()=>{
     loaded=false;stop=observeCodexConversation('thread',frame=>frames.push(frame));
     await vi.waitFor(()=>expect(frames.at(-1)?.type).toBe('unavailable'));

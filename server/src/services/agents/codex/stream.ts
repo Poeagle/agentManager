@@ -273,9 +273,10 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     const text=reply?.text??rawText;
     // A reconnect baseline can arrive after fresh deltas on the same socket.
     if(previous && streaming && (previous.message.text.length>text.length || (!previous.message.streaming && previous.message.text.length>=text.length))) return;
-    items.set(item.id,{phase:item.phase??previous?.phase??null,message:{
+    const nativePhase=item.phase==='final_answer'||item.phase==='final'?'final':item.phase==='commentary'?'commentary':previous?.phase??null;
+    items.set(item.id,{phase:nativePhase,message:{
       id:conversationMessageId(turnId,role,item.id),role,turn_id:turnId,
-      ...(role==='assistant'?{phase:item.phase==='final_answer'?'final' as const:'commentary' as const}:{}),
+      ...(role==='assistant'?{phase:nativePhase==='final'?'final' as const:'commentary' as const}:{}),
       ...(reply?{question_replies:reply.answers}:{}),
       ...(role==='assistant'&&conversationAsyncQuestions(item)?{async_questions:conversationAsyncQuestions(item)}:{}),
       ...(typeof item.clientId==='string'?{client_id:item.clientId}:{}),
@@ -286,6 +287,14 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     const publicId=conversationMessageId(turnId,role,item.id);dirty.add(publicId);publicItems.set(publicId,item.id);
     if(items.size>256){const oldest=[...items.entries()].find(([,value])=>!value.message.streaming);if(oldest){items.delete(oldest[0]);publicItems.delete(oldest[1].message.id);dirty.delete(oldest[1].message.id);deltas.delete(oldest[1].message.id);}}
     changed();
+  }
+  function finalizeImplicitAssistant() {
+    // A normal turn completion is the lifecycle proof for releases that omit
+    // `phase` on the last AgentMessage. Explicit commentary remains progress.
+    const last=[...items.entries()].reverse().find(([,value])=>value.message.role==='assistant'&&value.message.phase!=='error');
+    if(!last||last[1].phase!==null)return;
+    items.set(last[0],{phase:'final',message:{...last[1].message,phase:'final'}});
+    dirty.add(last[1].message.id);
   }
   async function attach() {
     try {
@@ -402,11 +411,14 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       if(typeof data.turnId==='string' && (!turnId || turnId===data.turnId))reportError(data.turnId,data.error,data.willRetry===true,new Date().toISOString(),true);
     } else if(frame.method==='turn/completed') {
       if(turnId && data.turn?.id && turnId!==data.turn.id)return;
+      const completed=data.turn?.status===undefined||data.turn?.status==='completed';
       completedAt=typeof data.turn?.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString();
       // A completed compaction is its own step. Later turn completion must not
       // extend its duration or make an old completion look newly finished.
       if(compaction?.status==='running'){const status=data.turn?.status==='interrupted'?'interrupted':data.turn?.status==='failed'?'failed':'completed';compaction={...compaction,status,completed_at:completedAt,duration_ms:compaction.started_at?Math.max(0,Date.parse(completedAt!)-Date.parse(compaction.started_at)):compaction.duration_ms};}
-      interactions.clear();busy=false;stage='idle';for(const item of items.values())if(item.message.streaming){item.message={...item.message,timestamp:completedAt,streaming:false};dirty.add(item.message.id);}
+      interactions.clear();busy=false;stage='idle';
+      if(completed)finalizeImplicitAssistant();
+      for(const item of items.values())if(item.message.streaming){item.message={...item.message,timestamp:completedAt,streaming:false};dirty.add(item.message.id);}
       finishedState=data.turn?.status==='failed'?'failed':data.turn?.status==='interrupted'?'interrupted':'idle';
       if(finishedState==='idle')void startOwnedCodexQueue(request,threadId).catch(()=>{});
       if(data.turn?.error)reportError(data.turn.id,data.turn.error,false,typeof data.turn.completedAt==='number'?new Date(data.turn.completedAt*1000).toISOString():new Date().toISOString(),true);

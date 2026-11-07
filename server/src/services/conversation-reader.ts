@@ -10,7 +10,7 @@ import type {AgentStatistics as ConversationStatistics} from './agents/types.js'
 
 export type ConversationMessage=import('./agents/types.js').AgentMessage;
 
-interface IndexedMessage extends Omit<ConversationMessage,'text'> {offset:number;length:number;hash:string;recordType:string;nativeItem:boolean;itemId?:string;declaredTurnId?:string;questionSignature?:string;questionCallId?:string}
+interface IndexedMessage extends Omit<ConversationMessage,'text'|'phase'> {offset:number;length:number;hash:string;recordType:string;nativeItem:boolean;itemId?:string;declaredTurnId?:string;questionSignature?:string;questionCallId?:string;phase?:'unknown'|'commentary'|'final'|'error'}
 interface NativeQuestionCall {offset:number;id:string;turnId?:string;signature:string}
 interface TurnBoundary {offset:number;kind:'start'|'end';turnId:string}
 function questionSignature(questions:ConversationAsyncQuestion[]) {return createHash('sha256').update(JSON.stringify(questions.map(q=>({title:q.title,options:q.options})))).digest('hex');}
@@ -55,7 +55,7 @@ function scan(buffer:Buffer,base:number,kind:CliType,questionCalls:NativeQuestio
       const {message,failure,recordType,turnId,itemId}=parsed;
       const hash=createHash('sha256').update(message.text).digest('hex');
       const offset=base+start;
-      result.push({id:failure?.id || (turnId && (message.role==='assistant' || itemId)?conversationMessageId(turnId,message.role,itemId || (recordType==='completion_echo'?undefined:String(offset))):createHash('sha256').update(`${offset}:${message.role}:${hash}`).digest('hex').slice(0,32)),role:message.role,timestamp:message.timestamp,turn_id:turnId,...(message.role==='assistant'?{phase:message.phase==='error'?'error' as const:message.phase==='final'?'final' as const:'commentary' as const}:{}),...(failure?{error:failure.error}:{}),offset,length:end-start,hash,recordType,nativeItem:!!itemId,itemId,declaredTurnId:turnId,...(parsed.asyncQuestions?{questionSignature:questionSignature(parsed.asyncQuestions)}:{})});
+      result.push({id:failure?.id || (turnId && (message.role==='assistant' || itemId)?conversationMessageId(turnId,message.role,itemId || (recordType==='completion_echo'?undefined:String(offset))):createHash('sha256').update(`${offset}:${message.role}:${hash}`).digest('hex').slice(0,32)),role:message.role,timestamp:message.timestamp,turn_id:turnId,...(message.role==='assistant'?{phase:message.phase==='error'?'error' as const:message.phase==='final'?'final' as const:message.phase==='commentary'?'commentary' as const:'unknown' as const}:{}),...(failure?{error:failure.error}:{}),offset,length:end-start,hash,recordType,nativeItem:!!itemId,itemId,declaredTurnId:turnId,...(parsed.asyncQuestions?{questionSignature:questionSignature(parsed.asyncQuestions)}:{})});
     }
     start=end+1;
   }
@@ -96,25 +96,41 @@ function dedupe(messages:IndexedMessage[]):IndexedMessage[] {
       result.push(message);continue;
     }
     // `task_complete.last_agent_message` is a lifecycle echo of the final
-    // assistant item, not a second answer. It may be separated from the
-    // native item by progress records and may carry a different turn ID.
+    // assistant item, not a second answer.  It is not always adjacent to the
+    // native item (an activity/progress record may be interleaved), so the
+    // adjacent-only check below can leak the same answer twice.
     if(message.recordType==='completion_echo') {
       let echoed=-1;
+      // Some Codex versions stamp the response item with an internal turn ID
+      // while task_complete uses the public lifecycle turn ID. Walk backward
+      // only within the current user turn, so an identical answer from an
+      // earlier turn is still preserved.
       for(let i=result.length-1;i>=0;i--) {
         const item=result[i];
-        // Do not reach into an earlier user turn; identical answers there are
-        // legitimate separate replies.
-        if(item.role==='user') break;
+        if(item.role==='user')break;
         if(item.role==='assistant'&&item.hash===message.hash&&item.recordType!=='completion_echo') {
           echoed=i;break;
         }
       }
-      if(echoed>=0) continue;
+      if(echoed>=0) {
+        if(result[echoed].phase==='unknown')result[echoed]={...result[echoed],phase:'final'};
+        continue;
+      }
     }
     const previous=result.at(-1);
     if(previous?.id===message.id)continue;
+    // Codex writes the same assistant item twice: an event_msg lifecycle
+    // notification and a response_item durable message.  Their metadata
+    // turn IDs are often different (the former is the native turn, the latter
+    // is an internal UUID), so identity matching cannot be used here.  They
+    // are adjacent and separated from a real later reply by a user record.
+    const lifecycleDuplicate=message.role==='assistant'&&previous?.role==='assistant'
+      && previous.hash===message.hash
+      && previous.recordType!==message.recordType
+      && new Set([previous.recordType,message.recordType]).has('event_message')
+      && new Set([previous.recordType,message.recordType]).has('native_message');
     if(previous?.hash===message.hash && previous.role===message.role
-      && (!previous.turn_id || !message.turn_id || previous.turn_id===message.turn_id)
+      && (lifecycleDuplicate || !previous.turn_id || !message.turn_id || previous.turn_id===message.turn_id)
       && ((message.role==='user' && previous.recordType!==message.recordType)
         || (message.role==='assistant' && previous.phase!=='error' && previous.recordType!==message.recordType))) {
       if(message.recordType==='async_question' || (message.recordType==='native_message' && message.nativeItem && previous.recordType!=='async_question')) result[result.length-1]=message;
@@ -208,7 +224,7 @@ export async function readConversation(session:PromptContextSession,query:{after
       for(const item of selected) {
         const buffer=Buffer.alloc(item.length);await handle.read(buffer,0,buffer.length,item.offset);
         const parsed=publicMessage(buffer,file.kind,item.questionCallId);
-        if(parsed) messages.push({id:item.id,role:item.role,text:parsed.message.text,timestamp:item.timestamp,turn_id:item.turn_id,phase:item.phase,...(byOffset.has(item.offset)?{statistics:byOffset.get(item.offset)}:{}),...(parsed.questionReplies?{question_replies:parsed.questionReplies}:{}),...(parsed.asyncQuestions?{async_questions:parsed.asyncQuestions}:{}),...(item.error?{error:item.error}:{}),sequence:item.offset,...(parsed.imagePaths.length?{image_paths:parsed.imagePaths}:{})});
+        if(parsed) messages.push({id:item.id,role:item.role,text:parsed.message.text,timestamp:item.timestamp,turn_id:item.turn_id,phase:item.phase==='unknown'?'commentary':item.phase,...(byOffset.has(item.offset)?{statistics:byOffset.get(item.offset)}:{}),...(parsed.questionReplies?{question_replies:parsed.questionReplies}:{}),...(parsed.asyncQuestions?{async_questions:parsed.asyncQuestions}:{}),...(item.error?{error:item.error}:{}),sequence:item.offset,...(parsed.imagePaths.length?{image_paths:parsed.imagePaths}:{})});
       }
       const first=selected[0];
       return {messages,statistics,has_more:index.start>0 || (!!first && index.messages[0]?.id!==first.id),reset,available:true,generation:index.generation};

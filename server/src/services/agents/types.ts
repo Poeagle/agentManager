@@ -76,7 +76,9 @@ export interface AgentMessage {
 }
 export interface AgentTextMessage {
     role: 'user' | 'assistant';
-    phase: 'user' | 'commentary' | 'final';
+    /** `unknown` is an internal parser state for native assistant messages
+     * whose lifecycle has not yet been decided by a completion event. */
+    phase: 'user' | 'unknown' | 'commentary' | 'final';
     text: string;
     timestamp: string | null;
     task_reference?: string | null;
@@ -208,7 +210,7 @@ export interface AgentHistoryPage {
 export interface AgentHistoryRecord {
     message: {
         role: 'user' | 'assistant';
-        phase?: 'user' | 'commentary' | 'final' | 'error';
+        phase?: 'user' | 'unknown' | 'commentary' | 'final' | 'error';
         text: string;
         timestamp: string | null;
     };

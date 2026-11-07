@@ -26,6 +26,13 @@ describe('causal conversation timeline',()=>{
     expect(ids(mergeConversationTimeline(history,live))).toEqual(ids(history));
     expect(mergeConversationTimeline(history,[message('other','assistant',{text:'正在检查。',turn_id:'other',phase:'commentary',streaming:true})])).toHaveLength(4);
   });
+  it('reconciles a live answer and durable answer when native turn IDs differ',()=>{
+    const live=message('live-answer','assistant',{text:'同一条最终答复',turn_id:'live-turn',phase:'final',streaming:false});
+    const saved=message('saved-answer','assistant',{text:'同一条最终答复',turn_id:'rollout-turn',phase:'final',sequence:200,streaming:false});
+    const merged=mergeConversationTimeline([message('question','user',{text:'问题',turn_id:'rollout-turn'}),live],[saved]);
+    expect(merged.filter(item=>item.role==='assistant')).toHaveLength(1);
+    expect(merged.at(-1)).toMatchObject({id:'saved-answer',sequence:200,turn_id:'rollout-turn'});
+  });
   it('ignores clock skew and completion timestamp changes while preserving a streaming bubble',()=>{
     const old=[message('q1','user',{timestamp:'2030-01-01'}),message('a1','assistant',{timestamp:'2030-01-02'}),message('q2','user',{timestamp:'2020-01-01'}),message('a2','assistant',{timestamp:'2020-01-02',streaming:true})];
     const merged=mergeConversationTimeline(old,[message('a2','assistant',{timestamp:'2019-01-01',sequence:400})]);
@@ -40,6 +47,14 @@ describe('causal conversation timeline',()=>{
     expect(ids(merged)).toEqual(['q0','a0','q1','p2','a1']);expect(merged.filter(item=>item.optimistic)).toHaveLength(1);
     const echo=mergeConversationTimeline(merged,[message('q1','user',{text:'继续',sequence:200}),message('q2','user',{text:'继续',sequence:300})]);
     expect(ids(echo)).toEqual(['q0','a0','q1','q2','a1']);expect(echo.some(item=>item.optimistic)).toBe(false);
+  });
+  it('merges duplicated commentary from live stream and rollout history',()=>{
+    const live=message('live-progress','assistant',{text:'正在检查文件',phase:'commentary',turn_id:'live-turn',streaming:false});
+    const durable=message('durable-progress','assistant',{text:'正在检查文件',phase:'commentary',turn_id:'durable-turn',sequence:42});
+    const result=mergeConversationTimeline([live],[durable]);
+    expect(result).toHaveLength(1);
+    expect(result[0].text).toBe('正在检查文件');
+    expect(result[0].sequence).toBe(42);
   });
   it('aliases different native user IDs from stream and history without duplicating repeated prompts',()=>{
     const live=[message('stream1','user',{text:'继续',turn_id:'same',client_id:'one'}),message('answer1','assistant'),message('stream2','user',{text:'继续',turn_id:'same',client_id:'two'})];

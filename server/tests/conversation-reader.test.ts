@@ -203,10 +203,47 @@ describe('public conversation pages',()=>{
     const result=await readConversation(binding);const answers=result.messages.filter(message=>message.role==='assistant');
     expect(answers).toHaveLength(2);expect(answers[0].id).not.toBe(answers[1].id);
   });
-  it('removes a completion echo with a mismatched turn ID after progress',async()=>{
-    const answer=line('response_item',{type:'message',id:'answer-item',role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'internal-turn'},content:[{type:'output_text',text:'延迟完成回显'}]});
-    writeFileSync(file,user('问题')+answer+line('event_msg',{type:'agent_reasoning',text:'内部进展'})+line('event_msg',{type:'task_complete',turn_id:'public-turn',last_agent_message:'延迟完成回显'}));
+  it('coalesces the adjacent lifecycle and durable assistant copies with different turn IDs',async()=>{
+    const text='同一条最终结论';
+    const lifecycle=line('event_msg',{type:'agent_message',turn_id:'native-turn',message:text,phase:'final_answer'});
+    const durable=line('response_item',{type:'message',id:'durable-item',role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'internal-copy'},content:[{type:'output_text',text}]});
+    writeFileSync(file,user('问题')+lifecycle+durable);
+    const answers=(await readConversation(binding)).messages.filter(message=>message.role==='assistant');
+    expect(answers).toHaveLength(1);
+    expect(answers[0].text).toBe(text);
+  });
+  it('removes a delayed completion echo even when progress is interleaved',async()=>{
+    const answer=line('response_item',{type:'message',id:'answer-item',role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'delayed-turn'},content:[{type:'output_text',text:'延迟完成回显'}]});
+    writeFileSync(file,user('问题')+answer+line('event_msg',{type:'agent_reasoning',text:'内部进展'})+line('event_msg',{type:'task_complete',turn_id:'delayed-turn',last_agent_message:'延迟完成回显'}));
     const result=await readConversation(binding);
     expect(result.messages.filter(message=>message.role==='assistant').map(message=>message.text)).toEqual(['延迟完成回显']);
+  });
+  it('promotes an unphased final answer using its exact task completion and keeps it across incremental reads',async()=>{
+    const turn='implicit-final-turn',answer='我是 Codex，一个编程协作助手。';
+    const start=line('event_msg',{type:'task_started',turn_id:turn});
+    const eventItem=line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'AgentMessage',id:'event-answer',content:[{type:'Text',text:answer}]}});
+    const native=line('response_item',{type:'message',id:'native-answer',role:'assistant',internal_chat_message_metadata_passthrough:{turn_id:turn},content:[{type:'output_text',text:answer}]});
+    const complete=line('event_msg',{type:'task_complete',turn_id:turn,last_agent_message:answer});
+    writeFileSync(file,start+user('介绍你自己')+eventItem+native+complete);
+    const result=await readConversation(binding),answers=result.messages.filter(message=>message.role==='assistant');
+    expect(answers).toHaveLength(1);
+    expect(answers[0]).toMatchObject({role:'assistant',phase:'final',text:answer,turn_id:turn});
+    expect((await readConversation(binding)).messages.filter(message=>message.role==='assistant')).toEqual(answers);
+  });
+  it('does not promote an unphased item when task completion names a different later item',async()=>{
+    const turn='implicit-interleaved-turn',answer='本轮最终答复';
+    const answerItem=(id:string,text:string)=>line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'AgentMessage',id,content:[{type:'Text',text}]}});
+    writeFileSync(file,line('event_msg',{type:'task_started',turn_id:turn})+user('问题')+answerItem('answer','本轮最终答复')+answerItem('progress','补充检查')+line('event_msg',{type:'task_complete',turn_id:turn,last_agent_message:answer}));
+    const messages=(await readConversation(binding)).messages.filter(message=>message.role==='assistant');
+    // `last_agent_message` is authoritative only when its exact text matches.
+    // Here it names an earlier item, so neither native message is the result.
+    expect(messages.map(message=>message.text)).toEqual(['本轮最终答复','补充检查']);
+  });
+  it('keeps an unphased progress message as progress when it is not the completed answer',async()=>{
+    const turn='implicit-progress-turn';
+    const progress=line('response_item',{type:'message',id:'progress-answer',role:'assistant',internal_chat_message_metadata_passthrough:{turn_id:turn},content:[{type:'output_text',text:'正在检查文件'}]});
+    writeFileSync(file,line('event_msg',{type:'task_started',turn_id:turn})+user('检查')+progress+line('event_msg',{type:'task_complete',turn_id:turn,last_agent_message:'检查完成'}));
+    const messages=(await readConversation(binding)).messages.filter(message=>message.role==='assistant');
+    expect(messages).toMatchObject([{text:'正在检查文件',phase:'commentary'},{text:'检查完成',phase:'final'}]);
   });
 });

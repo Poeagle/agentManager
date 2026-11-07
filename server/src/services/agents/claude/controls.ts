@@ -51,8 +51,12 @@ async function metadata(context: AgentContext) {
             if (typeof record.timestamp === 'string')
                 state.last = record.timestamp;
             if (record.type === 'assistant') {
-                if (typeof record.message?.model === 'string') {
-                    state.model = record.message.model;
+                // Claude Code writes synthetic bookkeeping records (model ===
+                // '<synthetic>') for errors and internal turns. They are not real
+                // model selections and must never become the observed model.
+                const model = record.message?.model;
+                if (typeof model === 'string' && model && !model.startsWith('<')) {
+                    state.model = model;
                     state.modelAt = record.timestamp || null;
                 }
                 const usage = record.message?.usage;
@@ -88,19 +92,32 @@ export async function readClaudeRuntime(context: AgentContext): Promise<AgentRun
     const state = tracker?.processState === 'waiting_for_input' ? 'waiting_for_input' : tracker?.processState === 'busy' ? 'running' : value.state;
     return { source: 'claude_history', session_id: context.nativeId, state, last_activity_at: value.last, observed_at: new Date().toISOString(), reason: '依据 Claude 原生历史和当前客户端状态', pending_question_count: 0, pending_questions: [], compaction: value.compaction };
 }
+/** Claude Code's built-in aliases. */
 const aliases = ['default', 'sonnet', 'opus', 'haiku'];
+/** Custom models reach Claude Code through the ANTHROPIC_* model env vars (a
+ * gateway deployment) instead of an alias, so they must be offered explicitly
+ * or the dashboard cannot select them at all. */
+function configuredModels(): string[] {
+    return [...new Set(['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL']
+        .map(key => process.env[key]?.trim())
+        .filter((value): value is string => !!value && !value.startsWith('<') && !aliases.includes(value)))];
+}
 export async function readClaudeControls(context: AgentContext): Promise<AgentControls> {
     const value = await metadata(context), manager = await import('../../session-manager.js');
     const loaded = !!context.session.id && await manager.getLiveWorkAgent(context.session.id) === 'claude';
-    const models = aliases.map(model => ({ model, name: model, description: 'Claude 原生模型别名', efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' }));
+    const seen = new Set<string>();
+    const models = [...configuredModels(), ...aliases]
+        .filter(model => !seen.has(model) && (seen.add(model), true))
+        .map(model => ({ model, name: model, description: aliases.includes(model) ? 'Claude 原生模型别名' : '网关配置的模型', efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' }));
     if (value.model && !models.some(model => model.model === value.model))
         models.unshift({ model: value.model, name: value.model, description: '当前原生模型', efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' });
     return { model_observed_at: value.modelAt, model: value.model, effort: null, provider: 'anthropic', cwd: context.projectPath, cli_version: null, engine_version: null, installed_cli_version: null, git: null, state: loaded ? 'idle' : 'notLoaded', permission: null, approval: null, service_tier: null, usage: value.usage, limits: [], usage_observed_at: value.last, models, loaded, warning: loaded ? '模型变更由原生客户端执行，下一次请求使用的新模型确认后生效。' : '未检测到已连接的 Claude 客户端；当前可查看历史及已有用量。', native_id: context.nativeId || '', checked_at: new Date().toISOString() };
 }
 export async function validateClaudeControls(_context: AgentContext, value: unknown): Promise<ModelPreference> {
     const p = value as ModelPreference;
-    if (!p || typeof p !== 'object' || Object.keys(p).some(key => !['model', 'effort'].includes(key)) || !aliases.includes(p.model) || p.effort !== '')
-        throw Error('请选择 Claude 支持的模型别名；推理强度由原生客户端管理');
+    const allowed = new Set([...aliases, ...configuredModels()]);
+    if (!p || typeof p !== 'object' || Object.keys(p).some(key => !['model', 'effort'].includes(key)) || typeof p.model !== 'string' || !allowed.has(p.model) || p.effort !== '')
+        throw Error('请选择 Claude 支持的模型；推理强度由原生客户端管理');
     return { model: p.model, effort: '' };
 }
 function command(context: AgentContext, value: string) { return withTerminalInput(context.session.id || '', () => sendCommand(context, value)); }

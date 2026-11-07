@@ -14,7 +14,7 @@ export interface PromptContextTurn {
 
 export interface AgentTextMessage {
   role: 'user' | 'assistant';
-  phase: 'user' | 'commentary' | 'final';
+  phase: 'user' | 'unknown' | 'commentary' | 'final';
   text: string;
   timestamp: string | null;
   task_reference?: string | null;
