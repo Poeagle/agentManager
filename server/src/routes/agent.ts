@@ -788,7 +788,14 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     };
     if(adapter.descriptor.capabilities.retry)retries.monitor(id,req.user!.id,nativeId);
     const stopRetry=adapter.descriptor.capabilities.retry?retries.subscribe(id,nativeId,send):()=>{};
-    const stopFile=observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},send);
+    // Codex's native observer already replays the same turn from
+    // thread/resume, exactly like the original terminal. Starting a rollout
+    // file observer here as well creates a second live copy; the page's
+    // conversation poller remains responsible for durable history and older
+    // pages. Keep the file observer for agents without a native stream.
+    const stopFile=adapter.descriptor.id==='codex'
+      ? undefined
+      : observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},send);
     const stop=observeAgentConversation(session,frame=>{
       send(frame);
       if(frame.type==='unavailable'&&frame.reconnect&&socket.readyState===1)socket.close(1012,'Native connection lost');

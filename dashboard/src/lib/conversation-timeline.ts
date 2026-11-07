@@ -12,6 +12,33 @@ function sameInput(a:ConversationMessage,b:ConversationMessage) {
   return normalize(a.text)===normalize(b.text) && (!a.attachments || !b.attachments || JSON.stringify(a.attachments.map(item=>item.path))===JSON.stringify(b.attachments.map(item=>item.path)));
 }
 
+/** A live commentary item can arrive after the durable final item that caused
+ * the history poll. Within one user turn, commentary is always causal
+ * context for the final answer; a sequence-less late item must be inserted
+ * before that final instead of being rendered as a post-answer progress row. */
+function restoreAssistantPhaseOrder(items:TimelineMessage[]) {
+  const result=[...items];
+  let segmentStart=0;
+  const flush=(end:number)=>{
+    let firstFinal=-1;
+    for(let i=segmentStart;i<end;i++) {
+      if(result[i].role==='assistant'&&result[i].phase==='final'){firstFinal=i;break;}
+    }
+    if(firstFinal<0)return;
+    for(let i=firstFinal+1;i<end;) {
+      const item=result[i];
+      if(item.role==='assistant'&&item.phase==='commentary'&&item.sequence===undefined) {
+        result.splice(i,1);result.splice(firstFinal,0,item);firstFinal++;continue;
+      }
+      i++;
+    }
+  };
+  for(let i=0;i<=result.length;i++) {
+    if(i===result.length||result[i].role==='user'){flush(i);segmentStart=i+1;}
+  }
+  return result;
+}
+
 /** Reconcile ordered native batches. Timestamps are display data, never order
  * keys: client clocks, item-start times and durable completion times differ. */
 export function mergeConversationTimeline(previous:TimelineMessage[],incoming:ConversationMessage[],placement:'append'|'prepend'='append'):TimelineMessage[] {
@@ -117,7 +144,7 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
     removed.add(drop);correlated.set(item.client_id,keep);
   });
   const settled=result.filter((_item,index)=>!removed.has(index)&&!removedAssistants.has(index));
-  return [...settled.filter(item=>!item.queued),...settled.filter(item=>item.queued)];
+  return restoreAssistantPhaseOrder([...settled.filter(item=>!item.queued),...settled.filter(item=>item.queued)]);
 }
 
 /** crypto.randomUUID is unavailable on HTTP LAN previews; getRandomValues is

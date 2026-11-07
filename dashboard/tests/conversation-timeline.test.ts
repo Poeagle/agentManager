@@ -56,6 +56,11 @@ describe('causal conversation timeline',()=>{
     expect(result[0].text).toBe('正在检查文件');
     expect(result[0].sequence).toBe(42);
   });
+  it('places a late live progress item before the durable conclusion',()=>{
+    const old=[message('question','user',{text:'问题'}),message('conclusion','assistant',{text:'已完成',phase:'final',sequence:20})];
+    const result=mergeConversationTimeline(old,[message('late-progress','assistant',{text:'正在检查',phase:'commentary',turn_id:'live-turn',streaming:false})]);
+    expect(ids(result)).toEqual(['question','late-progress','conclusion']);
+  });
   it('aliases different native user IDs from stream and history without duplicating repeated prompts',()=>{
     const live=[message('stream1','user',{text:'继续',turn_id:'same',client_id:'one'}),message('answer1','assistant'),message('stream2','user',{text:'继续',turn_id:'same',client_id:'two'})];
     const history=[message('log1','user',{text:'继续',turn_id:'same',sequence:100}),message('answer1','assistant',{sequence:200}),message('log2','user',{text:'继续',turn_id:'same',sequence:300})];
