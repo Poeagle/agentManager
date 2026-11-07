@@ -1,13 +1,38 @@
 import {AsyncLocalStorage} from 'async_hooks';
 import {open} from 'fs/promises';
+import {mkdirSync, readFileSync, renameSync, writeFileSync} from 'fs';
+import {dirname, join} from 'path';
 import {findCodexRollout} from '../../prompt-context.js';
+import {config} from '../../../config.js';
 
 export interface CodexEngine {socket:string;provider?:string;models?:string[]}
 const scope=new AsyncLocalStorage<CodexEngine>();
 const threads=new Map<string,CodexEngine>();
 let defaultProvider:{socket:string;provider:string}|undefined;
 let configured:{raw:string;engines:CodexEngine[]}|undefined;
+const persistedRoutes = new Map<string,string>();
+let persistedRoutesLoaded = false;
 const threadKey=(id:string)=>JSON.stringify([process.env.CODEX_HOME,process.env.AGENTMANAGER_CODEX_STREAM_SOCKET,id]);
+const routeFile=()=>join(dirname(config.dbPath),'codex-thread-routes.json');
+function loadPersistedRoutes():void {
+ if(persistedRoutesLoaded||process.env.NODE_ENV!=='production')return;
+ persistedRoutesLoaded=true;
+ try {
+  const parsed=JSON.parse(readFileSync(routeFile(),'utf8')) as Record<string,unknown>;
+  for(const [threadId,provider] of Object.entries(parsed))if(typeof provider==='string'&&provider.length<=100)persistedRoutes.set(threadId,provider);
+ } catch {/* Rollout metadata remains the fallback when the route journal is absent. */}
+}
+function persistRoute(threadId:string,provider:string):void {
+ if(process.env.NODE_ENV!=='production')return;
+ loadPersistedRoutes();persistedRoutes.set(threadId,provider);
+ while(persistedRoutes.size>2048)persistedRoutes.delete(persistedRoutes.keys().next().value!);
+ try {
+  const path=routeFile(),tmp=`${path}.new`;
+  mkdirSync(dirname(path),{recursive:true,mode:0o700});
+  writeFileSync(tmp,JSON.stringify(Object.fromEntries(persistedRoutes)),'utf8');
+  renameSync(tmp,path);
+ } catch {/* In-memory routing remains available until the next restart. */}
+}
 export function defaultCodexEngine():CodexEngine {
  return configuredCodexEngines().find(e=>e.socket===process.env.AGENTMANAGER_CODEX_STREAM_SOCKET) ?? {socket:process.env.AGENTMANAGER_CODEX_STREAM_SOCKET||'',
   ...(defaultProvider&&defaultProvider.socket===process.env.AGENTMANAGER_CODEX_STREAM_SOCKET?{provider:defaultProvider.provider}:{})};
@@ -41,6 +66,7 @@ export function rememberCodexThread(thread:any):void {
  const provider=typeof thread.modelProvider==='string'?thread.modelProvider:engine.provider;
  const route=configuredCodexEngines().find(item=>item.provider===provider);
  threads.set(threadKey(thread.id),route??{...engine,provider});
+ if(typeof provider==='string'&&provider)persistRoute(thread.id,provider);
  while(threads.size>1024)threads.delete(threads.keys().next().value!);
 }
 export function runInCodexEngine<T>(engine:CodexEngine,action:()=>T):T{return scope.run(engine,action);}
@@ -53,9 +79,35 @@ export function engineForProvider(provider?:string):CodexEngine {
 }
 export async function engineForThread(threadId:string):Promise<CodexEngine> {
  const saved=threads.get(threadKey(threadId));if(saved)return {...saved,...configuredCodexEngines().find(e=>e.provider===saved.provider)};
+ loadPersistedRoutes();
+ const persisted=persistedRoutes.get(threadId);
+ if(persisted){
+  const route=configuredCodexEngines().find(item=>item.provider===persisted);
+  if(route){threads.set(threadKey(threadId),route);return route;}
+ }
  // Only needed after restart and only when alternate engines are configured.
- if(!configuredCodexEngines().length)return currentCodexEngine();
- const file=await findCodexRollout(threadId);if(!file)return currentCodexEngine();
+ const routes=configuredCodexEngines();
+ if(!routes.length)return currentCodexEngine();
+ const file=await findCodexRollout(threadId);
+ // Provider-specific CODEX_HOME directories are intentionally not assumed by
+ // the main server. If the rollout is not visible there, ask each configured
+ // engine which one owns the thread; this repairs cold starts after restart.
+ if(!file){
+  for(const route of routes){
+   try {
+    const result=await runInCodexEngine(route,async()=>{
+     const {withCodexConnection}=await import('./stream.js');
+     return withCodexConnection(request=>request('thread/read',{threadId}));
+    });
+    if(result?.thread?.id===threadId){
+     threads.set(threadKey(threadId),route);
+     if(route.provider)persistRoute(threadId,route.provider);
+     return route;
+    }
+   } catch {/* Try the next configured provider engine. */}
+  }
+  return currentCodexEngine();
+ }
  const handle=await open(file,'r');
  try {
   const buffer=Buffer.alloc(64*1024),{bytesRead}=await handle.read(buffer,0,buffer.length,0);
