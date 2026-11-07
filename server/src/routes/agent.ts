@@ -29,6 +29,7 @@ import {personalQuestionRuntime} from '../services/question-attention.js';
 import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,validateConversationAttachments,validateConversationAnswerAttachments} from '../services/conversation-attachments.js';
 import {observeConversationFile} from '../services/conversation-file-stream.js';
 import {ConversationRetryManager} from '../services/conversation-retry.js';
+import {ConversationProjection} from '../services/conversation-projection.js';
 
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
@@ -770,9 +771,14 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       socket.send(JSON.stringify({type:'unavailable',reason:'等待原生实时会话连接'}));socket.close(1000);return;
     }
     const adapter=agentForSession(session),context=sessionAgentContext(session),nativeId=nativeConversationId(session)!;
+    const projection=new ConversationProjection();
     let lastUsageFingerprint:string|undefined;
     const send=(frame:any)=>{
       if(!canAccessAgentSession(req.user!.id,id)) {socket.close(1008);return;}
+      if(frame.type==='history'||frame.type==='snapshot'||frame.type==='patch'){
+        frame=projection.accept(frame);
+        if(!frame)return;
+      }
       // File observers share native state; reminder preferences belong to the
       // connected user and must be projected on every replay/reconnect too.
       if(frame.type==='history'&&frame.runtime)frame={...frame,runtime:personalQuestionRuntime(frame.runtime,req.user!.id)};
@@ -788,14 +794,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     };
     if(adapter.descriptor.capabilities.retry)retries.monitor(id,req.user!.id,nativeId);
     const stopRetry=adapter.descriptor.capabilities.retry?retries.subscribe(id,nativeId,send):()=>{};
-    // Codex's native observer already replays the same turn from
-    // thread/resume, exactly like the original terminal. Starting a rollout
-    // file observer here as well creates a second live copy; the page's
-    // conversation poller remains responsible for durable history and older
-    // pages. Keep the file observer for agents without a native stream.
-    const stopFile=adapter.descriptor.id==='codex'
-      ? undefined
-      : observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},send);
+    const stopFile=observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},send);
     const stop=observeAgentConversation(session,frame=>{
       send(frame);
       if(frame.type==='unavailable'&&frame.reconnect&&socket.readyState===1)socket.close(1012,'Native connection lost');
