@@ -45,8 +45,8 @@ test-results/
 CLAUDE.local.md
 # AgentManager context files
 .agentmanager-pro/
-# AgentManager-generated agents manifest
-AGENTS.md
+# Keep the generated copy local unless a project intentionally tracks its rules.
+/.agentmanager-pro/AGENTS.md
 
 # Platform AI private encryption key and migration backups
 .platform-ai.key

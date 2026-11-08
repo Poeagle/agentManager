@@ -4,12 +4,11 @@ import {useQuery,useQueryClient} from '@tanstack/react-query';
 import {ChevronDown,Info,RefreshCw,Minimize2,Plus,Loader2,Zap} from 'lucide-react';
 import {api,type ConversationControlsData,type ConversationUsageUpdate} from '../lib/api';
 import {Dialog} from './Dialog';
-import {ConversationUsagePanel} from './ConversationUsagePanel';
+import {ConversationDetailsPanel,type ConversationDetailRuntimeRow} from './ConversationDetailsPanel';
 
 const effortNames:Record<string,string>={none:'无',minimal:'最低',low:'低',medium:'中',high:'高',xhigh:'更高',max:'最高',ultra:'极高'};
 const compact=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(value);
 const choiceKey=(value:{provider?:string;model:string})=>value.provider?JSON.stringify([value.provider,value.model]):value.model;
-const stamp=(value:string|null)=>value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'未提供';
 const permissions:Record<string,string>={'danger-full-access':'完整访问','workspace-write':'工作区可写','read-only':'只读'};
 export function ConversationControls({sessionId,active,busy=false,compacting=false,onCompact,onNewConversation}:{sessionId:string;active:boolean;busy?:boolean;compacting?:boolean;onCompact?:()=>Promise<void>;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<void>}) {
   const queryClient=useQueryClient(),[expanded,setExpanded]=useState(false),[saving,setSaving]=useState(false),[applied,setApplied]=useState(false),[error,setError]=useState('');
@@ -93,17 +92,18 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   </div>;
 }
 function ControlDetails({data,onClose,onRefresh,refreshing}:{data:ConversationControlsData;onClose:()=>void;onRefresh:()=>void;refreshing:boolean}) {
-  const fields=[['当前模型',data.model],['当前推理强度',data.effort?`${effortNames[data.effort]||data.effort}（${data.effort}）`:null],['模型服务',data.provider],['访问权限',data.permission?permissions[data.permission]||data.permission:null],['执行确认',data.approval==='never'?'无需逐次确认':data.approval],['服务层级',data.service_tier],['工作目录',data.cwd],['当前分支',data.git?.branch],['工作区状态',data.git?data.git.changes?`${data.git.changes} 项变更`:'无变更':null],['会话状态',data.state==='active'?'执行中':data.state==='idle'?'等待输入':data.state==='notLoaded'?'未接入实时控制':data.state]];
+  const runtime:ConversationDetailRuntimeRow[]=[
+    {label:'当前模型',value:data.model,detail:data.provider?`服务 ${data.provider}`:null},
+    {label:'当前推理强度',value:data.effort?`${effortNames[data.effort]||data.effort}（${data.effort}）`:null,detail:`服务层级 ${data.service_tier||'未提供'}`},
+    {label:'访问权限',value:data.permission?permissions[data.permission]||data.permission:null,detail:`执行确认 ${data.approval==='never'?'无需逐次确认':data.approval||'未提供'}`},
+    {label:'工作目录',value:data.cwd},
+    {label:'当前分支',value:data.git?.branch,detail:data.git?data.git.changes?`工作区 ${data.git.changes} 项变更`:'工作区无变更':'未提供 Git 信息'},
+    {label:'会话状态',value:data.state==='active'?'执行中':data.state==='idle'?'等待输入':data.state==='notLoaded'?'未接入实时控制':data.state},
+  ];
   return <Dialog title="会话详情" size="lg" onClose={onClose} actions={<button className="conversation-preview-dock" type="button" onClick={onRefresh} disabled={refreshing}><RefreshCw size={14} className={refreshing?'animate-spin':''}/>刷新</button>}>
     {data.pending&&<p className="conversation-controls-note">{data.pending_status==='submitted'?'等待原生请求确认：':'恢复或重载时应用：'}{data.pending.model} · {data.pending.effort}。</p>}
     {data.warning&&<p role="status" className="conversation-controls-note">{data.warning}</p>}
     {!data.can_edit&&<p className="conversation-controls-note">当前显示只读信息。可在原始终端查看或修改该会话支持的设置。</p>}
-    <ConversationUsagePanel usage={data.usage} observedAt={data.usage_observed_at}/>
-    <details className="conversation-usage-details" open><summary>模型与运行环境详情</summary>
-    <dl className="conversation-controls-details">{fields.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value||'未提供'}</dd></div>)}</dl>
-    </details>
-    <p className="conversation-controls-note">原生会话编号：{data.native_id}</p>
-    {data.limits.length>0&&<><h4 className="conversation-controls-heading">可用额度</h4><ul className="conversation-controls-limits">{data.limits.map((limit,index)=><li key={index}><strong>{limit.minutes>=6*24*60?'周额度':limit.minutes>=60?`${compact(limit.minutes/60)} 小时额度`:`${limit.minutes} 分钟额度`}</strong><span>剩余 {Math.round(100-limit.used_percent)}%</span><span>{limit.resets_at?`重置：${new Date(limit.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:'未提供重置时间'}</span></li>)}</ul></>}
-    <p className="conversation-controls-note">模型目录与账号额度每 5 分钟刷新，用量随本地事件更新。信息读取时间：{stamp(data.checked_at)}。未提供的数据不作估算。</p>
+    <ConversationDetailsPanel usage={data.usage} observedAt={data.usage_observed_at} runtime={runtime} nativeId={data.native_id} limits={data.limits} checkedAt={data.checked_at}/>
   </Dialog>;
 }
