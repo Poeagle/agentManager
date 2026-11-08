@@ -2,27 +2,26 @@ import {describe,expect,it} from 'vitest';
 import {ConversationProjection} from '../src/services/conversation-projection.js';
 import type {AgentMessage} from '../src/services/agents/types.js';
 
-const message=(id:string,text:string,phase:'commentary'|'final'='commentary',extra:Partial<AgentMessage>={}):AgentMessage=>({
-  id,role:'assistant',text,phase,timestamp:null,turn_id:'turn-1',...extra,
+const message=(id:string,text:string,extra:Partial<AgentMessage>={}):AgentMessage=>({
+  id,role:'assistant',text,phase:'commentary',timestamp:null,turn_id:'turn-1',...extra,
 });
+const snapshot=(messages:AgentMessage[])=>({type:'snapshot' as const,messages,interactions:[],activities:[],compaction:null,busy:true,connected:true as const,turn_id:'turn-1',started_at:null,completed_at:null,stage:'answering' as const});
 
-describe('ConversationProjection',()=>{
-  it('coalesces native progress and durable final with different ids',()=>{
+describe('ConversationProjection exact identity',()=>{
+  it('updates one native item across live and durable sources without changing its position',()=>{
     const projection=new ConversationProjection();
-    const live=projection.accept({type:'snapshot',messages:[message('live','正在检查代码')],interactions:[],activities:[],compaction:null,busy:true,connected:true,turn_id:'turn-1',started_at:null,completed_at:null,stage:'answering'});
-    expect(live?.type).toBe('snapshot');
-    const durable=projection.accept({type:'history',runtime:{},messages:[message('rollout','正在检查代码','final')]});
-    expect(durable?.type).toBe('history');
-    expect((durable as any).messages).toHaveLength(1);
-    expect((durable as any).messages[0]).toMatchObject({id:'live',phase:'final'});
+    projection.accept(snapshot([message('native-item','正在检查',{streaming:true})]));
+    const durable=projection.accept({type:'history',runtime:{},messages:[message('native-item','已完成',{phase:'final',sequence:42})]});
+    expect(durable).toMatchObject({type:'history',messages:[{id:'native-item',text:'已完成',phase:'final',streaming:false}]});
+    expect(projection.accept({type:'history',runtime:{},messages:[message('native-item','已完成',{phase:'final',sequence:42})]})).toBeNull();
   });
 
-  it('drops an identical rollout replay after the native snapshot',()=>{
+  it('never merges distinct native items merely because their text matches',()=>{
     const projection=new ConversationProjection();
-    projection.accept({type:'snapshot',messages:[message('live','结论','final')],interactions:[],activities:[],compaction:null,busy:false,connected:true,turn_id:'turn-1',started_at:null,completed_at:null,stage:'idle'});
-    const replay=projection.accept({type:'history',runtime:{},messages:[message('rollout','结论','final')]});
-    expect(replay?.type).toBe('history');
-    expect((replay as any).messages).toEqual([]);
-    expect(projection.accept({type:'history',runtime:{},messages:[message('rollout','结论','final')]})).toBeNull();
+    projection.accept(snapshot([message('first','相同回答',{streaming:false})]));
+    const durable=projection.accept({type:'history',runtime:{},messages:[message('second','相同回答',{phase:'final',sequence:42})]});
+    expect(durable).toMatchObject({type:'history',messages:[{id:'second'}]});
+    const full=projection.accept(snapshot([]));
+    expect(full&&'messages' in full?full.messages.map(item=>item.id):[]).toEqual(['first','second']);
   });
 });

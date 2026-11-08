@@ -1,8 +1,8 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,realpathSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {availableAiClients} from '../src/services/ai-source-discovery.js';
 let root:string,bin:string,codex:string,claude:string;
-beforeEach(()=>{root=mkdtempSync(join(tmpdir(),'ai-discovery-'));bin=join(root,'bin');codex=join(root,'codex');claude=join(root,'claude');for(const dir of [bin,codex,claude])mkdirSync(dir);vi.stubEnv('PATH',bin);vi.stubEnv('CODEX_HOME',codex);vi.stubEnv('CLAUDE_CONFIG_DIR',claude);for(const key of ['OPENAI_API_KEY','CODEX_API_KEY','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN'])vi.stubEnv(key,'');});
+beforeEach(()=>{root=realpathSync(mkdtempSync(join(tmpdir(),'ai-discovery-')));bin=join(root,'bin');codex=join(root,'codex');claude=join(root,'claude');for(const dir of [bin,codex,claude])mkdirSync(dir);vi.stubEnv('PATH',bin);vi.stubEnv('CODEX_HOME',codex);vi.stubEnv('CLAUDE_CONFIG_DIR',claude);for(const key of ['OPENAI_API_KEY','CODEX_API_KEY','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN'])vi.stubEnv(key,'');});
 afterEach(()=>{vi.unstubAllEnvs();rmSync(root,{recursive:true,force:true});});
 const client=(kind:string)=>writeFileSync(join(bin,kind),`#!/bin/sh\nprintf '%s\\n' "$*" >> '${join(root,'calls')}'\nprintf '${kind} 0.166.0 PRIVATE_VERSION_OUTPUT\\n'\n`,{mode:0o755});
 describe('read-only AI client discovery',()=>{

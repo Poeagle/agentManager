@@ -772,9 +772,14 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     }
     const adapter=agentForSession(session),context=sessionAgentContext(session),nativeId=nativeConversationId(session)!;
     const projection=new ConversationProjection();
+    let stopFile:(()=>void)|undefined;
+    const startFileFallback=()=>{if(!stopFile)stopFile=observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},send);};
+    const stopFileFallback=()=>{stopFile?.();stopFile=undefined;};
     let lastUsageFingerprint:string|undefined;
     const send=(frame:any)=>{
       if(!canAccessAgentSession(req.user!.id,id)) {socket.close(1008);return;}
+      if(frame.type==='snapshot'||frame.type==='patch')stopFileFallback();
+      else if(frame.type==='unavailable')startFileFallback();
       if(frame.type==='history'||frame.type==='snapshot'||frame.type==='patch'){
         frame=projection.accept(frame);
         if(!frame)return;
@@ -794,7 +799,6 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     };
     if(adapter.descriptor.capabilities.retry)retries.monitor(id,req.user!.id,nativeId);
     const stopRetry=adapter.descriptor.capabilities.retry?retries.subscribe(id,nativeId,send):()=>{};
-    const stopFile=observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},send);
     const stop=observeAgentConversation(session,frame=>{
       send(frame);
       if(frame.type==='unavailable'&&frame.reconnect&&socket.readyState===1)socket.close(1012,'Native connection lost');
@@ -817,7 +821,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     });
     let alive=true;socket.on('pong',()=>{alive=true;});
     const heartbeat=setInterval(()=>{if(socket.readyState!==1)return;if(!alive){socket.terminate();return;}alive=false;socket.ping();socket.send(JSON.stringify({type:'heartbeat'}));},25000);
-    socket.once('close',()=>{clearInterval(heartbeat);stopFile?.();stop();stopRetry();});
+    socket.once('close',()=>{clearInterval(heartbeat);stopFileFallback();stop();stopRetry();});
   });
 
   app.get<{Params:{id:string};Querystring:{after?:string;before?:string;limit?:string}}>('/sessions/:id/conversation',async(req,reply)=>{

@@ -196,7 +196,7 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
       guidance: 'Known tab: read_tab directly. Project overview: list_project_tabs; only read details if insufficient. No tracking required. start_work creates work, send_to_session forwards input. APIs remain permission scoped.' };
   }
   if (name === 'platform_request') {
-    const input = z.object({ endpoint_id: z.string(), path_params: z.record(z.string().max(256)).default({}), query: z.record(z.string().max(1024)).default({}), body: z.record(z.unknown()).optional() }).strict().parse(args);
+    const input = z.object({ endpoint_id: z.string(), path_params: z.record(z.string(),z.string().max(256)).default({}), query: z.record(z.string(),z.string().max(1024)).default({}), body: z.record(z.string(),z.unknown()).optional() }).strict().parse(args);
     const endpoint = platformCatalog(app).find(item => item.endpoint_id === input.endpoint_id);
     if (!endpoint) throw new Error('接口不在平台 AI 能力目录中');
     const cleanDisplayAlias = endpoint.method === 'GET' && /^\/api\/sessions\/:id\/(?:output|rendered-output)$/.test(endpoint.path);

@@ -12,7 +12,17 @@ const cache = new Map<string, {expires: number; value: Promise<WorkAgent>}>();
 
 export async function detectWorkAgent(cli: WorkAgent['cli_type'], cwd?: string, fresh = false): Promise<WorkAgent> {
   const descriptor=getAgent(cli).descriptor;
-  if(descriptor.sessionHost==='managed')return {cli_type:cli,label:descriptor.label,status:'unknown',reason:'通过服务或 SDK 连接；启动时验证连接和访问权限'};
+  if(descriptor.sessionHost==='managed') {
+    if(cli==='claude') {
+      try {
+        await import('@anthropic-ai/claude-agent-sdk');
+        return {cli_type:cli,label:descriptor.label,status:'available',reason:'Claude Agent SDK 已安装；账号和模型权限在启动会话时验证'};
+      } catch {
+        return {cli_type:cli,label:descriptor.label,status:'unavailable',reason:'Claude Agent SDK 未安装或无法加载'};
+      }
+    }
+    return {cli_type:cli,label:descriptor.label,status:'unknown',reason:'通过服务或 SDK 连接；启动时验证连接和访问权限'};
+  }
   const command = getSetting(`session_${cli}_command`).trim() || cli;
   const shell = process.env.SHELL || '/bin/bash';
   const key = JSON.stringify([cli, command, shell, cwd, process.env.PATH]);

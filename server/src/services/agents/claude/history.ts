@@ -7,7 +7,9 @@ export function parseClaudeMessage(line: Buffer) { if (line.length > claudeRecor
     if (!extracted)
         return null;
     const reply = extracted.role === 'user' ? conversationQuestionReply(extracted.text) : undefined;
-    return { message: reply ? { ...extracted, text: reply.text } : extracted, recordType: 'native_message', questionReplies: reply?.answers, imagePaths: [] };
+    const itemId=typeof entry.uuid==='string'?entry.uuid:undefined;
+    const turnId=extracted.role==='user'?itemId:typeof entry.parentUuid==='string'?entry.parentUuid:undefined;
+    return { message: reply ? { ...extracted, text: reply.text } : extracted, recordType: 'native_message', questionReplies: reply?.answers, imagePaths: [], itemId, turnId };
 }
 catch {
     return null;

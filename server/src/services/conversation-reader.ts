@@ -10,7 +10,7 @@ import type {AgentStatistics as ConversationStatistics} from './agents/types.js'
 
 export type ConversationMessage=import('./agents/types.js').AgentMessage;
 
-interface IndexedMessage extends Omit<ConversationMessage,'text'|'phase'> {offset:number;length:number;hash:string;recordType:string;nativeItem:boolean;itemId?:string;declaredTurnId?:string;questionSignature?:string;questionCallId?:string;phase?:'unknown'|'commentary'|'final'|'error'}
+interface IndexedMessage extends Omit<ConversationMessage,'text'|'phase'> {offset:number;length:number;recordType:string;nativeItem:boolean;itemId?:string;declaredTurnId?:string;questionSignature?:string;questionCallId?:string;phase?:'unknown'|'commentary'|'final'|'error'}
 interface NativeQuestionCall {offset:number;id:string;turnId?:string;signature:string}
 interface TurnBoundary {offset:number;kind:'start'|'end';turnId:string}
 function questionSignature(questions:ConversationAsyncQuestion[]) {return createHash('sha256').update(JSON.stringify(questions.map(q=>({title:q.title,options:q.options})))).digest('hex');}
@@ -32,7 +32,10 @@ const indexes=new Map<string,Index>();
 const locks=new Map<string,Promise<unknown>>();
 
 export function conversationMessageId(turnId:string,role:string,itemId?:string) {
-  return createHash('sha256').update(`${turnId}:${role}${itemId?`:${itemId}`:''}`).digest('hex').slice(0,32);
+  // Native item IDs are stable across the live protocol and the durable
+  // transcript. Turn IDs are not: a provider can expose different container
+  // IDs for the same item in those two channels.
+  return createHash('sha256').update(itemId?`item:${role}:${itemId}`:`turn:${turnId}:${role}`).digest('hex').slice(0,32);
 }
 
 function publicMessage(line:Buffer,kind:CliType,questionCallId?:string){return getAgent(kind).history.file!.project(line,questionCallId);}
@@ -53,9 +56,8 @@ function scan(buffer:Buffer,base:number,kind:CliType,questionCalls:NativeQuestio
     const parsed=codec.project(record,undefined,context);
     if(parsed) {
       const {message,failure,recordType,turnId,itemId}=parsed;
-      const hash=createHash('sha256').update(message.text).digest('hex');
       const offset=base+start;
-      result.push({id:failure?.id || (turnId && (message.role==='assistant' || itemId)?conversationMessageId(turnId,message.role,itemId || (recordType==='completion_echo'?undefined:String(offset))):createHash('sha256').update(`${offset}:${message.role}:${hash}`).digest('hex').slice(0,32)),role:message.role,timestamp:message.timestamp,turn_id:turnId,...(message.role==='assistant'?{phase:message.phase==='error'?'error' as const:message.phase==='final'?'final' as const:message.phase==='commentary'?'commentary' as const:'unknown' as const}:{}),...(failure?{error:failure.error}:{}),offset,length:end-start,hash,recordType,nativeItem:!!itemId,itemId,declaredTurnId:turnId,...(parsed.asyncQuestions?{questionSignature:questionSignature(parsed.asyncQuestions)}:{})});
+      result.push({id:failure?.id || (turnId && (message.role==='assistant' || itemId)?conversationMessageId(turnId,message.role,itemId || (recordType==='completion_echo'?undefined:String(offset))):createHash('sha256').update(`${offset}:${message.role}`).digest('hex').slice(0,32)),role:message.role,timestamp:message.timestamp,turn_id:turnId,...(message.role==='assistant'?{phase:message.phase==='error'?'error' as const:message.phase==='final'?'final' as const:message.phase==='commentary'?'commentary' as const:'unknown' as const}:{}),...(failure?{error:failure.error}:{}),offset,length:end-start,recordType,nativeItem:!!itemId,itemId,declaredTurnId:turnId,...(parsed.asyncQuestions?{questionSignature:questionSignature(parsed.asyncQuestions)}:{})});
     }
     start=end+1;
   }
@@ -65,16 +67,17 @@ function bindTurnBoundaries(messages:IndexedMessage[],boundaries:TurnBoundary[])
   boundaries.sort((a,b)=>a.offset-b.offset);
   let cursor=0,active:string|undefined;
   for(const message of messages) {
-    while(cursor<boundaries.length&&boundaries[cursor].offset<=message.offset){const boundary=boundaries[cursor++];active=boundary.kind==='start'?boundary.turnId:undefined;}
-    const at=boundaries[cursor-1];
-    if(message.declaredTurnId&&!(at?.kind==='end'&&at.offset===message.offset))active=message.declaredTurnId;
+    while(cursor<boundaries.length&&boundaries[cursor].offset<message.offset){const boundary=boundaries[cursor++];active=boundary.kind==='start'?boundary.turnId:undefined;}
+    while(cursor<boundaries.length&&boundaries[cursor].offset===message.offset&&boundaries[cursor].kind==='start')active=boundaries[cursor++].turnId;
     // A bounded cold window may start inside a completed turn. Its closing
     // boundary still identifies that prefix without reading the whole rollout.
     const next=boundaries[cursor];
-    if(!message.turn_id){
-      message.turn_id=active || (next?.kind==='end'?next.turnId:undefined);
-      if(message.turn_id&&message.phase!=='error'&&(message.role==='assistant'||message.itemId))message.id=conversationMessageId(message.turn_id,message.role,message.questionCallId||message.itemId||(message.recordType==='completion_echo'?undefined:String(message.offset)));
+    const canonical=active || message.declaredTurnId || (next?.kind==='end'?next.turnId:undefined);
+    if(canonical&&message.turn_id!==canonical){
+      message.turn_id=canonical;
+      if(message.phase!=='error'&&(message.role==='assistant'||message.itemId))message.id=conversationMessageId(canonical,message.role,message.questionCallId||message.itemId||(message.recordType==='completion_echo'?undefined:String(message.offset)));
     }
+    while(cursor<boundaries.length&&boundaries[cursor].offset===message.offset){const boundary=boundaries[cursor++];active=boundary.kind==='start'?boundary.turnId:undefined;}
   }
   return messages;
 }
@@ -90,55 +93,57 @@ function bindQuestionCalls(messages:IndexedMessage[],calls:NativeQuestionCall[])
 }
 function dedupe(messages:IndexedMessage[]):IndexedMessage[] {
   const result:IndexedMessage[]=[];
+  const indexes=new Map<string,number>();
+  const priority=(message:IndexedMessage)=>message.recordType==='async_question'?5:message.recordType==='shared_context'?4:message.recordType==='native_message'?3:message.recordType==='event_message'?2:1;
   for(const message of messages) {
     if(message.phase==='error') {
-      const existing=result.findIndex(item=>item.id===message.id);if(existing>=0)result.splice(existing,1);
-      result.push(message);continue;
-    }
-    // `task_complete.last_agent_message` is a lifecycle echo of the final
-    // assistant item, not a second answer.  It is not always adjacent to the
-    // native item (an activity/progress record may be interleaved), so the
-    // adjacent-only check below can leak the same answer twice.
-    if(message.recordType==='completion_echo') {
-      let echoed=-1;
-      // Some Codex versions stamp the response item with an internal turn ID
-      // while task_complete uses the public lifecycle turn ID. Walk backward
-      // only within the current user turn, so an identical answer from an
-      // earlier turn is still preserved.
-      for(let i=result.length-1;i>=0;i--) {
-        const item=result[i];
-        if(item.role==='user')break;
-        if(item.role==='assistant'&&item.hash===message.hash&&item.recordType!=='completion_echo') {
-          echoed=i;break;
-        }
-      }
-      if(echoed>=0) {
-        if(result[echoed].phase==='unknown')result[echoed]={...result[echoed],phase:'final'};
-        continue;
-      }
-    }
-    const previous=result.at(-1);
-    if(previous?.id===message.id)continue;
-    // Codex writes the same assistant item twice: an event_msg lifecycle
-    // notification and a response_item durable message.  Their metadata
-    // turn IDs are often different (the former is the native turn, the latter
-    // is an internal UUID), so identity matching cannot be used here.  They
-    // are adjacent and separated from a real later reply by a user record.
-    const lifecycleDuplicate=message.role==='assistant'&&previous?.role==='assistant'
-      && previous.hash===message.hash
-      && previous.recordType!==message.recordType
-      && new Set([previous.recordType,message.recordType]).has('event_message')
-      && new Set([previous.recordType,message.recordType]).has('native_message');
-    if(previous?.hash===message.hash && previous.role===message.role
-      && (lifecycleDuplicate || !previous.turn_id || !message.turn_id || previous.turn_id===message.turn_id)
-      && ((message.role==='user' && previous.recordType!==message.recordType)
-        || (message.role==='assistant' && previous.phase!=='error' && previous.recordType!==message.recordType))) {
-      if(message.recordType==='async_question' || (message.recordType==='native_message' && message.nativeItem && previous.recordType!=='async_question')) result[result.length-1]=message;
+      const existing=indexes.get(message.id);
+      if(existing===undefined){indexes.set(message.id,result.length);result.push(message);}
+      else result[existing]=message;
       continue;
     }
-    result.push(message);
+    const existing=indexes.get(message.id);
+    if(existing===undefined){indexes.set(message.id,result.length);result.push(message);}
+    else if(priority(message)>=priority(result[existing]))result[existing]=message;
   }
-  return result;
+
+  const turns:IndexedMessage[][]=[];
+  let turn:IndexedMessage[]=[];
+  let hasAssistant=false;
+  for(const message of result){
+    if(!turn.length||message.role==='user'&&hasAssistant){turn=[];turns.push(turn);hasAssistant=false;}
+    turn.push(message);
+    if(message.role==='assistant')hasAssistant=true;
+  }
+  const omit=new Set<IndexedMessage>();
+  for(const turn of turns){
+    const completed=turn.some(message=>message.recordType==='completion_echo'&&message.phase!=='error');
+    const questions=turn.filter(message=>message.recordType==='async_question');
+    if(questions.length){
+      const firstQuestion=turn.indexOf(questions[0]);
+      for(const message of turn){
+        if(message.role!=='assistant'||message.recordType==='async_question'||message.phase==='error')continue;
+        if(completed||message.recordType==='event_message'&&turn.indexOf(message)<firstQuestion)omit.add(message);
+      }
+      continue;
+    }
+    for(const role of ['user','assistant'] as const){
+      const native=turn.filter(message=>message.role===role&&message.recordType==='native_message');
+      const events=turn.filter(message=>message.role===role&&message.recordType==='event_message');
+      if(native.length)for(const message of events){
+        if(role==='user'||message.phase!=='commentary'||native.some(item=>item.phase==='commentary'))omit.add(message);
+      }
+      if(role==='assistant'&&completed){
+        const authoritative=native.length?native:events;
+        if(authoritative.length){
+          for(const message of turn)if(message.recordType==='completion_echo'&&message.phase!=='error')omit.add(message);
+          const last=authoritative.at(-1)!;
+          if(last.phase==='unknown')last.phase='final';
+        }
+      }
+    }
+  }
+  return result.filter(message=>!omit.has(message));
 }
 
 /** A bounded incremental byte index. Cached metadata never contains message

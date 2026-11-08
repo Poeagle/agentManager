@@ -21,7 +21,7 @@ export function applyConversationPatches(previous:TimelineMessage[],patches:Conv
  for(const patch of patches){
   if(patch.upserts.length){messages=mergeConversationTimeline(messages,patch.upserts);index=undefined;copied=true;}
   if(!patch.deltas.length)continue;
-  if(!index){index=new Map();messages.forEach((message,i)=>{index!.set(message.id,i);for(const alias of message.aliases||[])index!.set(alias,i);});}
+  if(!index){index=new Map();messages.forEach((message,i)=>index!.set(message.id,i));}
   for(const delta of patch.deltas){const i=index.get(delta.id);if(i===undefined){needsSync=true;continue;}const message=messages[i];
    if(!delta.text.length)continue;
    if(message.text.length!==delta.offset){if(delta.offset<message.text.length&&message.text.slice(delta.offset,delta.offset+delta.text.length)===delta.text)continue;needsSync=true;continue;}

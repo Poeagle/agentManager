@@ -50,7 +50,7 @@ export function listChannels() {
 
 export function saveChannel(input: unknown, id?: string) {
   const parsed = z.object({ name: z.string().trim().min(1).max(100), kind: z.enum(channelKinds), enabled: z.boolean(),
-    config: z.record(z.string().max(2048)).default({}), secrets: z.record(z.string().max(4096)).default({}),
+    config: z.record(z.string(),z.string().max(2048)).default({}), secrets: z.record(z.string(),z.string().max(4096)).default({}),
   }).strict().parse(input);
   const previous = id ? getChannel(id) : undefined;
   if (id && !previous) throw new ChannelError('渠道不存在', 404);
@@ -219,7 +219,7 @@ export function decodeCallback(channel: Channel, method: string, query: Record<s
 
 function validateInbound(message: InboundMessage): void {
   z.object({ externalUserId: z.string().min(1).max(256), chatId: z.string().min(1).max(256), messageId: z.string().min(1).max(256),
-    content: z.string().min(1).max(24000), replyContext: z.record(z.unknown()) }).parse(message);
+    content: z.string().min(1).max(24000), replyContext: z.record(z.string(),z.unknown()) }).parse(message);
 }
 
 const tokenCache = new Map<string, { token: string; expires: number; fingerprint: string }>();

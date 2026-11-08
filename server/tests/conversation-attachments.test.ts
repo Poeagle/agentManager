@@ -38,7 +38,7 @@ describe('conversation attachment validation',()=>{
     rememberConversationAttachments('s','client-image','看图',attachments,true);
     const nativeText=nativeConversationInput('看图',attachments)[0].text!,paths=conversationImagePaths([{type:'input_text',text:`<image name=[Image #1] path="${attachments[0].path}">`},{type:'input_image',image_url:'data:private'},{type:'input_text',text:'</image>'}]);
     const saved=decorateConversationAttachments('s',[{role:'user',text:nativeText,image_paths:paths}])[0];
-    expect(saved).toEqual({role:'user',text:'看图',attachments});expect(JSON.stringify(saved)).not.toContain('private');
+    expect(saved).toEqual({role:'user',text:'看图',attachments});expect(JSON.stringify(saved)).not.toContain('data:private');
     expect(decorateConversationAttachments('s',[{role:'user',text:nativeText,client_id:'client-image'}])[0]).toMatchObject({text:'看图',attachments});
     expect(decorateConversationAttachments('other',[{role:'user',text:nativeText,image_paths:paths}])[0]).not.toHaveProperty('attachments');
     rememberConversationAttachments('s','legacy','',attachments,false);

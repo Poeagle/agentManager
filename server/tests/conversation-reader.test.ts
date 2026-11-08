@@ -125,7 +125,7 @@ describe('public conversation pages',()=>{
     expect(result.body).not.toContain('PRIVATE');expect((await readConversation(binding)).messages[2].id).toBe(messages[2].id);
     expect((await readConversation(binding,{after:messages[1].id})).messages).toHaveLength(1);
   });
-  it('shows user messages, agent progress and final text while excluding tool records',async()=>{
+  it('uses durable response items instead of lifecycle text mirrors while excluding tool records',async()=>{
     writeFileSync(file,user('修复问题')
       +line('response_item',{type:'message',role:'user',content:[{type:'input_text',text:'修复问题'}]})
       +line('response_item',{type:'reasoning',text:'hidden reasoning'})
@@ -135,7 +135,7 @@ describe('public conversation pages',()=>{
       +line('response_item',{type:'message',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'已完成。'}]})+final('已完成。'));
     const result=await app.inject({url:'/api/sessions/chat/conversation',headers:{cookie}});
     expect(result.statusCode).toBe(200);expect(result.headers['cache-control']).toContain('no-store');
-    expect(result.json().messages.map((message:{text:string})=>message.text)).toEqual(['修复问题','中间进展','已完成。']);
+    expect(result.json().messages.map((message:{text:string})=>message.text)).toEqual(['修复问题','已完成。']);
     expect(result.body).not.toMatch(/secret arguments|private tool output|hidden reasoning/);
     expect(getDb().prepare('SELECT COUNT(*) n FROM platform_ai_tasks').get()).toEqual({n:0});
   });
@@ -239,11 +239,11 @@ describe('public conversation pages',()=>{
     // Here it names an earlier item, so neither native message is the result.
     expect(messages.map(message=>message.text)).toEqual(['本轮最终答复','补充检查']);
   });
-  it('keeps an unphased progress message as progress when it is not the completed answer',async()=>{
+  it('uses turn completion to finalize the last unphased durable assistant item without comparing text',async()=>{
     const turn='implicit-progress-turn';
     const progress=line('response_item',{type:'message',id:'progress-answer',role:'assistant',internal_chat_message_metadata_passthrough:{turn_id:turn},content:[{type:'output_text',text:'正在检查文件'}]});
     writeFileSync(file,line('event_msg',{type:'task_started',turn_id:turn})+user('检查')+progress+line('event_msg',{type:'task_complete',turn_id:turn,last_agent_message:'检查完成'}));
     const messages=(await readConversation(binding)).messages.filter(message=>message.role==='assistant');
-    expect(messages).toMatchObject([{text:'正在检查文件',phase:'commentary'},{text:'检查完成',phase:'final'}]);
+    expect(messages).toMatchObject([{text:'正在检查文件',phase:'final'}]);
   });
 });

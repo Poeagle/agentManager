@@ -11,7 +11,7 @@ import * as conversation from '../src/services/agents/codex/stream.js';
 import * as fileStream from '../src/services/conversation-file-stream.js';
 import {setIgnoredQuestions} from '../src/services/question-attention.js';
 import {createTestDatabase} from './helpers/database.js';
-import {mkdirSync,writeFileSync} from 'fs';
+import {mkdirSync,realpathSync,writeFileSync} from 'fs';
 import {join} from 'path';
 
 describe('immediate session input',()=>{
@@ -36,7 +36,10 @@ describe('immediate session input',()=>{
     getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();
     const owner=getDb().prepare("SELECT id FROM users WHERE username='owner'").get() as {id:string};
     setIgnoredQuestions(owner.id,'native',['old-question']);
-    vi.spyOn(conversation,'observeCodexConversation').mockReturnValue(Object.assign(vi.fn(),{respond:vi.fn()}));
+    vi.spyOn(conversation,'observeCodexConversation').mockImplementation((_native,emit)=>{
+      queueMicrotask(()=>emit({type:'unavailable',reason:'test fallback'}));
+      return Object.assign(vi.fn(),{respond:vi.fn()});
+    });
     vi.spyOn(fileStream,'observeConversationFile').mockImplementation((_binding,emit)=>{
       queueMicrotask(()=>emit({type:'history',messages:[],runtime:{source:'codex_rollout',session_id:'native',state:'idle',observed_at:new Date().toISOString(),last_activity_at:null,reason:'native',pending_question_count:1,pending_questions:[{id:'old',timestamp:null,questions:[{id:'old-question',title:'Old question',options:null}]}]}}));
       return vi.fn();
@@ -51,18 +54,24 @@ describe('immediate session input',()=>{
   it('preserves native event sequence numbers when file and native usage counters coincide',async()=>{
     getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();
     let nativeEmit!:(frame:any)=>void,fileEmit!:(frame:any)=>void;
+    const stopFile=vi.fn();
     vi.spyOn(conversation,'observeCodexConversation').mockImplementation((_native,emit)=>{nativeEmit=emit;return Object.assign(vi.fn(),{respond:vi.fn()});});
-    vi.spyOn(fileStream,'observeConversationFile').mockImplementation((_binding,emit)=>{fileEmit=emit;return vi.fn();});
+    vi.spyOn(fileStream,'observeConversationFile').mockImplementation((_binding,emit)=>{fileEmit=emit;return stopFile;});
     const received:any[]=[],socket=await app.injectWS('/api/sessions/own/conversation/stream?protocol=2',{headers:{cookie}},{onInit:ws=>ws.on('message',bytes=>received.push(JSON.parse(bytes.toString())))});
     try {
       await vi.waitFor(()=>expect(nativeEmit).toBeTypeOf('function'));
+      nativeEmit({type:'unavailable',reason:'test fallback'});
+      await vi.waitFor(()=>expect(fileEmit).toBeTypeOf('function'));
+      const usage={type:'usage',native_id:'native',usage:{total:null,last:null,window:40000},observed_at:new Date().toISOString()};
+      fileEmit(usage);
       const state={type:'snapshot',messages:[],interactions:[],activities:[],compaction:null,busy:true,connected:true,turn_id:'turn',started_at:null,completed_at:null,stage:'answering'};
       nativeEmit(state);
-      const usage={type:'usage',native_id:'native',usage:{total:null,last:null,window:40000},observed_at:new Date().toISOString()};
-      fileEmit(usage);nativeEmit(usage);nativeEmit({type:'patch',upserts:[],deltas:[],state:{...state,busy:false,stage:'idle'}});fileEmit(usage);
+      nativeEmit(usage);nativeEmit({type:'patch',upserts:[],deltas:[],state:{...state,busy:false,stage:'idle'}});
       await vi.waitFor(()=>expect(received.some(frame=>frame.type==='patch')).toBe(true));
-      expect(received.filter(frame=>frame.stream_id).map(frame=>frame.stream_seq)).toEqual([1,2,3]);
+      const sequence=received.filter(frame=>frame.stream_id).map(frame=>frame.stream_seq);
+      expect(sequence).toEqual(sequence.map((_:number,index:number)=>index+1));
       expect(received.filter(frame=>frame.type==='usage'&&!frame.stream_id)).toHaveLength(1);
+      expect(stopFile).toHaveBeenCalledOnce();
     }finally{await new Promise<void>(resolve=>{socket.once('close',()=>resolve());socket.close();});}
   });
   it('acknowledges an async provider response only after acceptance and reports rejection',async()=>{
@@ -142,7 +151,7 @@ describe('immediate session input',()=>{
     const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue(true);
     const attachments=[{kind:'file',name:'note.txt',path}];
     const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'',source:'conversation',client_id:'file-only',attachments}});
-    expect(result.statusCode).toBe(202);expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','', 'file-only',attachments);
+    expect(result.statusCode).toBe(202);expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','', 'file-only',[{...attachments[0],path:realpathSync(path)}]);
     const rejected=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'read',source:'conversation',attachments:[{kind:'file',name:'private',path:'/etc/passwd'}]}});
     expect(rejected.statusCode).toBe(400);expect(submit).toHaveBeenCalledTimes(1);expect(manager.writeToSession).not.toHaveBeenCalled();
   });

@@ -13,7 +13,7 @@ it('discovers configured executables without running them or installing anything
   const executable=join(bin,'test-agent'), sentinel=join(dir,'must-not-exist');
   writeFileSync(executable,`#!/bin/sh\ntouch '${sentinel}'\n`,{mode:0o700});
   command('codex',`'${executable}' --model test`);command('claude',join(dir,'missing-claude'));
-  expect(await detectWorkAgents(dir)).toMatchObject([{cli_type:'codex',status:'available'},{cli_type:'claude',status:'unavailable'}]);
+  expect(await detectWorkAgents(dir)).toMatchObject([{cli_type:'codex',status:'available'},{cli_type:'claude',status:'available'}]);
   expect(existsSync(sentinel)).toBe(false);
 });
 it('rechecks before launch and does not mistake a custom wrapper for a ready Agent',async()=>{

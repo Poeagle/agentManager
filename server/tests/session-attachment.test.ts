@@ -2,7 +2,7 @@ import {beforeEach,describe,expect,it,vi} from 'vitest';
 vi.mock('../src/services/session-manager.js',()=>({getSession:vi.fn(),isSessionActive:vi.fn(),reconnectSession:vi.fn(),recoverSessionOnAttach:vi.fn()}));
 import * as manager from '../src/services/session-manager.js';
 import {attachExistingSession} from '../src/services/session-attachment.js';
-beforeEach(()=>{vi.resetAllMocks();vi.mocked(manager.getSession).mockReturnValue({id:'s',status:'detached'} as any);vi.mocked(manager.isSessionActive).mockReturnValue(false);});
+beforeEach(()=>{vi.resetAllMocks();vi.mocked(manager.getSession).mockReturnValue({id:'s',status:'detached',mode:'terminal'} as any);vi.mocked(manager.isSessionActive).mockReturnValue(false);});
 describe('existing terminal attachment',()=>{
  it('is idempotent when another socket already restored the session',async()=>{vi.mocked(manager.isSessionActive).mockReturnValue(true);expect(await attachExistingSession('s')).toBe(true);expect(manager.reconnectSession).not.toHaveBeenCalled();});
  it('reattaches the surviving detached wrapper',async()=>{vi.mocked(manager.reconnectSession).mockResolvedValue(true);expect(await attachExistingSession('s')).toBe(true);expect(manager.reconnectSession).toHaveBeenCalledExactlyOnceWith('s');expect(manager.recoverSessionOnAttach).not.toHaveBeenCalled();});

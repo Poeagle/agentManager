@@ -21,5 +21,5 @@ export function nativeConversationId(session: NativeConversationFields): string 
 /** Identify only the real top-level CLI executable, not similarly named args. */
 export function cliTypeFromArgv(args: string[]): CliType | null {
   const command = basename(args[0] || '').toLowerCase();
-  return agentDescriptors().find(agent=>agent.sessionHost==='terminal'&&(agentForSession({agent_id:agent.id}).identity.matchesProcess?.(args)??agent.id===command))?.id??null;
+  return agentDescriptors().find(agent=>agentForSession({agent_id:agent.id}).identity.matchesProcess?.(args)??agent.id===command)?.id??null;
 }

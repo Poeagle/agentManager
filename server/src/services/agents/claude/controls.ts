@@ -1,4 +1,3 @@
-import { withTerminalInput } from '../terminal-input.js';
 import { NATIVE_SESSION_ID_RE } from '../native-identifiers.js';
 import { open } from 'fs/promises';
 import { join } from 'path';
@@ -103,15 +102,16 @@ function configuredModels(): string[] {
         .filter((value): value is string => !!value && !value.startsWith('<') && !aliases.includes(value)))];
 }
 export async function readClaudeControls(context: AgentContext): Promise<AgentControls> {
-    const value = await metadata(context), manager = await import('../../session-manager.js');
-    const loaded = !!context.session.id && await manager.getLiveWorkAgent(context.session.id) === 'claude';
+    const value = await metadata(context);
+    const runtime=context.nativeId?(await import('./sdk-runtime.js')).claudeRuntime(context.nativeId):undefined;
+    const loaded=!!runtime;
     const seen = new Set<string>();
     const models = [...configuredModels(), ...aliases]
         .filter(model => !seen.has(model) && (seen.add(model), true))
         .map(model => ({ model, name: model, description: aliases.includes(model) ? 'Claude 原生模型别名' : '网关配置的模型', efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' }));
     if (value.model && !models.some(model => model.model === value.model))
         models.unshift({ model: value.model, name: value.model, description: '当前原生模型', efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' });
-    return { model_observed_at: value.modelAt, model: value.model, effort: null, provider: 'anthropic', cwd: context.projectPath, cli_version: null, engine_version: null, installed_cli_version: null, git: null, state: loaded ? 'idle' : 'notLoaded', permission: null, approval: null, service_tier: null, usage: value.usage, limits: [], usage_observed_at: value.last, models, loaded, warning: loaded ? '模型变更由原生客户端执行，下一次请求使用的新模型确认后生效。' : '未检测到已连接的 Claude 客户端；当前可查看历史及已有用量。', native_id: context.nativeId || '', checked_at: new Date().toISOString() };
+    return { model_observed_at: value.modelAt, model: value.model, effort: null, provider: 'anthropic', cwd: context.projectPath, cli_version: null, engine_version: null, installed_cli_version: null, git: null, state: loaded ? runtime!.runtime().state : 'notLoaded', permission: 'bypassPermissions', approval: null, service_tier: null, usage: value.usage, limits: [], usage_observed_at: value.last, models, loaded, warning: loaded ? null : 'Claude managed runtime is not connected; durable history remains available.', native_id: context.nativeId || '', checked_at: new Date().toISOString() };
 }
 export async function validateClaudeControls(_context: AgentContext, value: unknown): Promise<ModelPreference> {
     const p = value as ModelPreference;
@@ -120,21 +120,15 @@ export async function validateClaudeControls(_context: AgentContext, value: unkn
         throw Error('请选择 Claude 支持的模型；推理强度由原生客户端管理');
     return { model: p.model, effort: '' };
 }
-function command(context: AgentContext, value: string) { return withTerminalInput(context.session.id || '', () => sendCommand(context, value)); }
-async function sendCommand(context: AgentContext, value: string) {
-    if (!context.session.id)
-        throw Error('会话尚未连接');
-    const manager = await import('../../session-manager.js'), { getTracker } = await import('../../session-state.js');
-    if (await manager.getLiveWorkAgent(context.session.id) !== 'claude' || getTracker(context.session.id)?.state.processState !== 'idle')
-        throw Error('请等待 Claude 空闲后再操作');
-    if (!manager.writeToSession(context.session.id, value, true))
-        throw Error('Claude 客户端未接收命令');
-    await new Promise(resolve => setTimeout(resolve, 50));
-    if (!manager.writeToSession(context.session.id, '\r', false))
-        throw Error('命令输入状态未知，请在原始终端确认');
+export async function applyClaudeControls(context: AgentContext, value: ModelPreference) {
+    if(!context.nativeId)throw Error('会话尚未连接');
+    const runtime=(await import('./sdk-runtime.js')).claudeRuntime(context.nativeId);
+    if(!runtime)throw Error('Claude managed runtime is not connected');
+    if(runtime.runtime().state==='running')throw Error('请等待 Claude 空闲后再切换模型');
+    runtime.setModel(value);
+    return {...value,pending:false};
 }
-export async function applyClaudeControls(context: AgentContext, value: ModelPreference) { await command(context, `/model ${value.model}`); return { ...value, pending: true }; }
-export async function compactClaudeConversation(context: AgentContext) { await command(context, '/compact'); }
+export async function compactClaudeConversation() { throw Error('Claude managed runtime does not expose manual compaction'); }
 /** Usage events only read the bounded native metadata cache; no process-tree scan. */
 export async function readClaudeTelemetry(context: AgentContext) { const value = await metadata(context); return { usage: value.usage, observed_at: value.last }; }
 export function confirmedClaudeControls(_context: AgentContext, value: ModelPreference, controls: AgentControls, submittedAt: string): boolean {

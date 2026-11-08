@@ -6,7 +6,7 @@ export async function attachExistingSession(id:string):Promise<boolean> {
   const session=getSession(id);
   if(!session || !['running','detached'].includes(session.status))return false;
   if(isSessionActive(id))return true;
-  if(agentForSession(session).descriptor.sessionHost==='managed')return recoverSessionOnAttach(id);
+  if(session.mode!=='terminal'&&agentForSession(session).descriptor.sessionHost==='managed')return recoverSessionOnAttach(id);
   if(await reconnectSession(id))return true;
   return recoverSessionOnAttach(id);
 }

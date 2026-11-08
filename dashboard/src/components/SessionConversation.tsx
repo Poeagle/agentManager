@@ -401,7 +401,7 @@ export function SessionConversation({session,active,onRaw,onResume,onNewConversa
   const statisticsIndex=useMemo(()=>{const byId=new Map<string,ConversationStatistics>();for(const item of statistics){if(item.message_id)byId.set(item.message_id,item);byId.set(`${item.turn_id}:${item.sequence}`,item);}return byId;},[statistics]);
   const projected=useRef(new WeakMap<ConversationMessage,{ignored:string;stats:ConversationStatistics|undefined;value:ConversationMessage|null}>());
   const displayed=useMemo(()=>messages.flatMap(message=>{
-    const stats=statisticsIndex.get(message.id)||message.aliases?.map(id=>statisticsIndex.get(id)).find(Boolean)||statisticsIndex.get(`${message.turn_id}:${message.sequence}`);
+    const stats=statisticsIndex.get(message.id)||statisticsIndex.get(`${message.turn_id}:${message.sequence}`);
     const ignored=message.async_questions?.length?ignoredKey:'',cached=projected.current.get(message);
     if(cached&&cached.ignored===ignored&&cached.stats===stats)return cached.value?[cached.value]:[];
     const questions=message.async_questions?.filter(q=>!q.id||!ignoredIds.includes(q.id));

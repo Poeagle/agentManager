@@ -1,154 +1,46 @@
 import type {ConversationMessage} from './api';
 
 export interface TimelineMessage extends ConversationMessage {
-  /** A local send reserves its position before either HTTP or native echo. */
   optimistic?: {afterSequence:number;accepted?:boolean};
-  /** Codex assigns different user IDs to stream items and rollout records. */
-  aliases?: string[];
 }
 
-function sameInput(a:ConversationMessage,b:ConversationMessage) {
-  const normalize=(text:string)=>text.replace(/\r\n?/g,'\n').trim();
-  return normalize(a.text)===normalize(b.text) && (!a.attachments || !b.attachments || JSON.stringify(a.attachments.map(item=>item.path))===JSON.stringify(b.attachments.map(item=>item.path)));
-}
-
-/** A live commentary item can arrive after the durable final item that caused
- * the history poll. Within one user turn, commentary is always causal
- * context for the final answer; a sequence-less late item must be inserted
- * before that final instead of being rendered as a post-answer progress row. */
-function restoreAssistantPhaseOrder(items:TimelineMessage[]) {
-  const result=[...items];
-  let segmentStart=0;
-  const flush=(end:number)=>{
-    let firstFinal=-1;
-    for(let i=segmentStart;i<end;i++) {
-      if(result[i].role==='assistant'&&result[i].phase==='final'){firstFinal=i;break;}
-    }
-    if(firstFinal<0)return;
-    for(let i=firstFinal+1;i<end;) {
-      const item=result[i];
-      if(item.role==='assistant'&&item.phase==='commentary'&&item.sequence===undefined) {
-        result.splice(i,1);result.splice(firstFinal,0,item);firstFinal++;continue;
-      }
-      i++;
-    }
-  };
-  for(let i=0;i<=result.length;i++) {
-    if(i===result.length||result[i].role==='user'){flush(i);segmentStart=i+1;}
-  }
-  return result;
-}
-
-/** Reconcile ordered native batches. Timestamps are display data, never order
- * keys: client clocks, item-start times and durable completion times differ. */
+/** Merge only identities guaranteed by the transport contract.
+ * Native messages use their public ID; local sends use client_id until the
+ * native user item arrives. Text and timestamps never decide identity/order. */
 export function mergeConversationTimeline(previous:TimelineMessage[],incoming:ConversationMessage[],placement:'append'|'prepend'='append'):TimelineMessage[] {
   const result=[...previous];
-  const batch:TimelineMessage[]=[];
-  const matched=new Set<number>();
-  for(const message of incoming) {
+  for(let position=0;position<incoming.length;position++){
+    const message=incoming[position];
     if(message.queued&&message.client_id&&result.some(item=>item.role==='user'&&item.client_id===message.client_id&&!item.queued&&!item.optimistic))continue;
-    let index=result.findIndex(item=>item.id===message.id || item.aliases?.includes(message.id));
-    if(index<0&&message.role==='user'&&message.client_id)index=result.findIndex((item,i)=>!matched.has(i)&&item.role==='user'&&item.client_id===message.client_id);
-    if(index<0 && message.role==='user') {
-      index=result.findIndex(item=>(item.optimistic||item.queued) && (message.client_id
-        ? item.client_id===message.client_id
-        : message.sequence!==undefined && !!item.optimistic && message.sequence>item.optimistic.afterSequence && sameInput(item,message)));
+    let index=result.findIndex(item=>item.id===message.id);
+    if(index<0&&message.role==='user'&&message.client_id){
+      index=result.findIndex(item=>item.role==='user'&&item.client_id===message.client_id);
     }
-    if(index<0 && message.turn_id) {
-      // Native stream/rollout item IDs can differ after resume. Reconcile ordered
-      // occurrences within the same turn, including identical followups.
-      index=result.findIndex((item,index)=>!matched.has(index) && !item.optimistic && item.role===message.role && item.turn_id===message.turn_id && sameInput(item,message) && (message.role==='user' || item.phase===message.phase) && (!item.client_id || !message.client_id || item.client_id===message.client_id) && (item.sequence===undefined)!==(message.sequence===undefined));
-    }
-    if(index>=0) {
-      matched.add(index);
+    if(index>=0){
       const old=result[index];
-      // A stale live snapshot must not turn a persisted answer back into an
-      // incomplete stream. Keep native order/identity and local correlation.
-      const value=old.sequence!==undefined && message.sequence===undefined
-        ? {...message,...old,client_id:message.client_id??old.client_id}
-        : {...old,...message,streaming:message.streaming??false,optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
-      if(old.id!==message.id) value.aliases=[...new Set([...(old.aliases||[]),old.id,message.id])];
-      result[index]=value;batch.push(value);
-    } else batch.push(message);
-  }
-  for(let i=0;i<batch.length;i++) {
-    const message=batch[i];
-    if(result.some(item=>item.id===message.id)) continue;
-    const next=batch.slice(i+1).map(item=>result.findIndex(value=>value.id===item.id)).find(index=>index>=0);
-    const later=message.sequence===undefined?-1:result.findIndex(item=>item.sequence!==undefined && item.sequence>message.sequence!);
-    const previousIndex=i?result.findIndex(item=>item.id===batch[i-1].id):-1;
-    const index=next!==undefined?next:later>=0?later:placement==='prepend'?previousIndex+1:result.length;
-    result.splice(index,0,message);
-  }
-  // A native batch can fill a gap between already visible items (for example
-  // raw-terminal input discovered after its answer). Its causal order wins.
-  for(let i=1;i<batch.length;i++) {
-    const before=result.findIndex(item=>item.id===batch[i-1].id);
-    const current=result.findIndex(item=>item.id===batch[i].id);
-    if(current<before) {const [message]=result.splice(current,1);result.splice(before,0,message);}
-  }
-  // A native answer can arrive once from the live stream and again from the
-  // durable history with different ids/phases (commentary -> final). Keep one
-  // copy per turn and prefer the finalized/durable representation.
-  const removedAssistants=new Set<number>();
-  const assistantByText=new Map<string,{live?:number;durable?:number}>();
-  const assistantRank=(item:TimelineMessage)=>(
-    item.phase==='final'?4:item.sequence!==undefined?3:item.streaming?1:2
-  );
-  result.forEach((item,index)=>{
-    if(item.role==='user'){assistantByText.clear();return;}
-    if(item.role!=='assistant'||!item.turn_id)return;
-    const text=item.text.replace(/\r\n?/g,'\n').trim();
-    let candidate: number|undefined;
-    // The live stream and the rollout reader can disagree on the public turn
-    // UUID for the same native item. This applies to progress as well as the
-    // final answer: the original terminal receives one native event, while
-    // AgentManager can see its live copy and its durable rollout copy. Keep
-    // the safe shape: identical text, one durable sequence and one live item,
-    // with no user message between them. This cannot merge intentional
-    // identical messages from separate user turns.
-    const source=item.sequence===undefined?'live':'durable';
-    const opposite=source==='live'?'durable':'live';
-    const indexed=assistantByText.get(text);
-    if(indexed && (item.phase==='final'||item.sequence!==undefined)) {
-      const priorIndex=indexed[opposite];
-      const prior=priorIndex===undefined?undefined:result[priorIndex];
-      if(prior && prior.turn_id!==item.turn_id) candidate=priorIndex;
+      result[index]={...old,...message,streaming:message.streaming??(message.sequence!==undefined?false:old.streaming),optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
+      continue;
     }
-    const previousIndex=candidate;
-    if(previousIndex===undefined) {
-      const entry=assistantByText.get(text)||{};
-      entry[source]=index;assistantByText.set(text,entry);
-      return;
-    }
-    const prior=result[previousIndex];
-    const keep=item.sequence!==undefined && prior.sequence===undefined
-      ? index
-      : prior.sequence!==undefined && item.sequence===undefined ? previousIndex
-      : assistantRank(item)>assistantRank(prior)?index:previousIndex;
-    const drop=keep===index?previousIndex:index;
-    result[keep]={...result[drop],...result[keep],aliases:[...new Set([...(result[keep].aliases||[]),...(result[drop].aliases||[]),result[drop].id])]};
-    removedAssistants.add(drop);
-    if(indexed)delete indexed[opposite];
-  });
-  // A native ID can be learned after both the optimistic and durable copies
-  // already exist. Once the client ID is available, settle that pair too.
-  const correlated=new Map<string,number>(),removed=new Set<number>();
-  const rank=(item:TimelineMessage)=>item.sequence!==undefined?3:!item.optimistic&&!item.queued?2:item.queued?1:0;
+    const nextId=incoming.slice(position+1).map(item=>item.id).find(id=>result.some(item=>item.id===id));
+    const next=nextId?result.findIndex(item=>item.id===nextId):-1;
+    const previous=position>0?result.findIndex(item=>item.id===incoming[position-1].id):-1;
+    const later=message.sequence===undefined?-1:result.findIndex(item=>item.sequence!==undefined&&item.sequence>message.sequence!);
+    const at=next>=0?next:later>=0?later:placement==='prepend'?previous+1:result.length;
+    result.splice(at,0,message);
+  }
+  const byClient=new Map<string,number>(),remove=new Set<number>();
   result.forEach((item,index)=>{
     if(item.role!=='user'||!item.client_id)return;
-    const previous=correlated.get(item.client_id);
-    if(previous===undefined){correlated.set(item.client_id,index);return;}
-    const keep=rank(item)>rank(result[previous])?index:previous,drop=keep===index?previous:index;
-    result[keep]={...result[drop],...result[keep],aliases:[...new Set([...(result[keep].aliases||[]),...(result[drop].aliases||[]),result[drop].id])],queued:rank(result[keep])>=2?false:result[keep].queued,optimistic:rank(result[keep])>=2?undefined:result[keep].optimistic};
-    removed.add(drop);correlated.set(item.client_id,keep);
+    const old=byClient.get(item.client_id);
+    if(old===undefined){byClient.set(item.client_id,index);return;}
+    const oldItem=result[old];
+    const keep=oldItem.optimistic&&!item.optimistic?index:!oldItem.optimistic&&item.optimistic?old:item.sequence!==undefined&&oldItem.sequence===undefined?index:old;
+    remove.add(keep===old?index:old);byClient.set(item.client_id,keep);
   });
-  const settled=result.filter((_item,index)=>!removed.has(index)&&!removedAssistants.has(index));
-  return restoreAssistantPhaseOrder([...settled.filter(item=>!item.queued),...settled.filter(item=>item.queued)]);
+  const settled=result.filter((_item,index)=>!remove.has(index));
+  return [...settled.filter(item=>!item.queued),...settled.filter(item=>item.queued)];
 }
 
-/** crypto.randomUUID is unavailable on HTTP LAN previews; getRandomValues is
- * also available in those contexts. Correlation is separate from native IDs. */
 export function conversationClientId() {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
 }
