@@ -33,7 +33,11 @@ if [ "${AGENTMANAGER_INSTALL_DEPENDENCIES:-0}" = "1" ]; then
 fi
 
 log_info "Building dashboard + server..."
-"${AGENTMANAGER_BUILD_CMD:-npm run build}"
+if [ -n "${AGENTMANAGER_BUILD_CMD:-}" ]; then
+  "$AGENTMANAGER_BUILD_CMD"
+else
+  npm run build
+fi
 
 if [ ! -f "$SRC_DIR/dashboard/dist/index.html" ] || [ ! -f "$SRC_DIR/server/dist/index.js" ]; then
   log_error "Build output is incomplete; the running service was not changed."
