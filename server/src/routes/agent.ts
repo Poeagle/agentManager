@@ -24,6 +24,7 @@ import {loadRecentAgentMessages,loadRecentPromptContext} from '../services/promp
 import {sessionPresenter} from '../services/session-labels.js';
 import {randomUUID} from 'crypto';
 import {readConversation} from '../services/conversation-reader.js';
+import {config} from '../config.js';
 
 import {personalQuestionRuntime} from '../services/question-attention.js';
 import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,validateConversationAttachments,validateConversationAnswerAttachments} from '../services/conversation-attachments.js';
@@ -543,7 +544,15 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   }});
   app.addHook('onClose',async()=>retries.close());
   app.addHook('onListen',async()=>{for(const session of getDb().prepare("SELECT * FROM sessions WHERE status='running' AND created_by_user_id IS NOT NULL").all() as import('../services/session-manager.js').Session[])if(agentForSession(session).descriptor.capabilities.retry&&nativeConversationId(session))retries.monitor(session.id,session.created_by_user_id!,nativeConversationId(session)!);});
-  app.addHook('onListen',async()=>{const {restoreManagedCodexProviders}=await import('../services/agents/codex/management.js');await restoreManagedCodexProviders();});
+  app.addHook('onListen',async()=>{
+    if(!config.manageCodexEngines)return;
+    try{
+      const {initializeManagedCodexEngines}=await import('../services/agents/codex/management.js');
+      await initializeManagedCodexEngines();
+    }catch(error){
+      app.log.error({err:error},'Codex Engine 初始化失败');
+    }
+  });
   app.addHook('preHandler', async (req, reply) => {
     requirePermission(req, reply, 'agent_api', req.method === 'GET' && !req.routeOptions.url?.endsWith('/agent') ? 'read' : 'write');
   });
@@ -582,7 +591,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       return {models:management.readModelConfigs?await management.readModelConfigs():[]};
     }catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'读取模型配置失败'});}
   });
-  app.put<{Params:{agentId:string};Body:{models:Array<{model:string;contextWindow?:number|null;maxContextWindow?:number|null;effectiveContextWindowPercent?:number|null;supportsImages?:boolean}>}}>('/agent-management/:agentId/model-configs',async(req,reply)=>{
+  app.put<{Params:{agentId:string};Body:{models:Array<{provider?:string;model:string;contextWindow?:number|null;maxContextWindow?:number|null;effectiveContextWindowPercent?:number|null;supportsImages?:boolean}>}}>('/agent-management/:agentId/model-configs',async(req,reply)=>{
     if(!requirePermission(req,reply,'settings','write'))return;
     try{
       const management=getAgent(req.params.agentId).management;
@@ -630,6 +639,43 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     try{return {state:await getAgent(req.params.agentId).management.updateProvider(req.params.providerId,req.body||{})};}
     catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'保存 Provider 失败'});}
   });
+  app.get<{Params:{agentId:string;providerId:string}}>('/agent-management/:agentId/providers/:providerId',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','read'))return;
+    try{
+      const management=getAgent(req.params.agentId).management;
+      const provider=management.inspectProvider
+        ? await management.inspectProvider(req.params.providerId)
+        : (await management.inspect(false)).providers.find(item=>item.id===req.params.providerId)||null;
+      return provider?{provider}:reply.code(404).send({error:'Provider 不存在'});
+    }catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'读取 Provider 状态失败'});}
+  });
+  app.put<{Params:{agentId:string;providerId:string};Body:{name?:string;kind?:string;enabled?:boolean;apiKey?:string;fields?:Record<string,string|boolean|string[]|null>}}>('/agent-management/:agentId/providers/:providerId/update-stream',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    reply.hijack();
+    reply.raw.writeHead(200,{
+      'Content-Type':'application/x-ndjson; charset=utf-8',
+      'Cache-Control':'no-store, no-transform',
+      'X-Accel-Buffering':'no',
+    });
+    let closed=false;
+    reply.raw.once('close',()=>{closed=true;});
+    const send=(event:Record<string,unknown>)=>{if(!closed)reply.raw.write(`${JSON.stringify(event)}\n`);};
+    send({type:'progress',stage:'start',message:'开始保存 Provider 配置',progress:0});
+    try{
+      const management=getAgent(req.params.agentId).management;
+      await management.updateProvider(req.params.providerId,req.body||{},progress=>send({type:'progress',...progress}));
+      const provider=management.inspectProvider
+        ? await management.inspectProvider(req.params.providerId)
+        : (await management.inspect(false)).providers.find(item=>item.id===req.params.providerId)||null;
+      if(!provider)throw Object.assign(Error('Provider 状态在保存后不可用'),{statusCode:404});
+      send({type:'complete',provider});
+    }catch(error){
+      send({type:'error',error:error instanceof Error?error.message:'保存 Provider 失败',status:(error as any)?.statusCode||400});
+    }finally{
+      closed=true;
+      reply.raw.end();
+    }
+  });
   app.delete<{Params:{agentId:string;providerId:string}}>('/agent-management/:agentId/providers/:providerId',async(req,reply)=>{
     if(!requirePermission(req,reply,'settings','write'))return;
     try{return {state:await getAgent(req.params.agentId).management.deleteProvider(req.params.providerId)};}
@@ -639,6 +685,35 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     if(!requirePermission(req,reply,'settings','write'))return;
     try{return {state:await getAgent(req.params.agentId).management.providerAction(req.params.providerId,req.body?.action)};}
     catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'Provider 操作失败'});}
+  });
+  app.post<{Params:{agentId:string;providerId:string};Body:{action:string}}>('/agent-management/:agentId/providers/:providerId/action-stream',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    const action=req.body?.action;
+    if(!['start','stop','restart','enable','disable','test'].includes(action))return reply.code(400).send({error:'不支持的 Engine 操作'});
+    reply.hijack();
+    reply.raw.writeHead(200,{
+      'Content-Type':'application/x-ndjson; charset=utf-8',
+      'Cache-Control':'no-store, no-transform',
+      'X-Accel-Buffering':'no',
+    });
+    let closed=false;
+    reply.raw.once('close',()=>{closed=true;});
+    const send=(event:Record<string,unknown>)=>{if(!closed)reply.raw.write(`${JSON.stringify(event)}\n`);};
+    send({type:'progress',stage:'start',message:'开始执行 Engine 操作',progress:0});
+    try{
+      const management=getAgent(req.params.agentId).management;
+      await management.providerAction(req.params.providerId,action,progress=>send({type:'progress',...progress}));
+      const provider=management.inspectProvider
+        ? await management.inspectProvider(req.params.providerId)
+        : (await management.inspect(false)).providers.find(item=>item.id===req.params.providerId)||null;
+      if(!provider)throw Object.assign(Error('Engine 状态在操作后不可用'),{statusCode:404});
+      send({type:'complete',provider});
+    }catch(error){
+      send({type:'error',error:error instanceof Error?error.message:'Engine 操作失败',status:(error as any)?.statusCode||400});
+    }finally{
+      closed=true;
+      reply.raw.end();
+    }
   });
   app.post<{Params:{agentId:string};Body:{path:string;revealSensitive?:boolean}}>('/agent-management/:agentId/config-file',async(req,reply)=>{
     if(!requirePermission(req,reply,'settings','read'))return;

@@ -17,11 +17,11 @@ JS
 mkdir -p "$PREVIEW_DIR"
 chmod 700 "$PREVIEW_DIR"
 npm run build
-export AGENTMANAGER_CODEX_STREAM_SOCKET="$(node scripts/conversation-codex-server.mjs)"
 export NODE_ENV=production
 export PORT="$PREVIEW_PORT"
 export HOST=0.0.0.0
 export AGENTMANAGER_DB_PATH="$PREVIEW_DIR/agentmanager.db"
+export AGENTMANAGER_TAKEOVER_CODEX_LAUNCH_AGENTS=false
 export AGENTMANAGER_RUNTIME_NAMESPACE=chat-preview
 export AGENTMANAGER_SKIP_UPDATE_CHECK=1
 echo "Conversation preview: http://127.0.0.1:$PREVIEW_PORT"

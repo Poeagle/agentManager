@@ -50,6 +50,9 @@ setInterval(() => {
 }, 50).unref();
 
 async function start() {
+  if (config.manageCodexEngines && !process.env.AGENTMANAGER_CODEX_STREAM_SOCKET?.trim()) {
+    process.env.AGENTMANAGER_CODEX_STREAM_SOCKET = config.nativeCodexSocket;
+  }
   const app = Fastify({
     logger: {
       level: config.logLevel,

@@ -25,6 +25,61 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
   return res.json();
 }
 
+async function streamProviderOperation(
+  url: string,
+  body: Record<string, unknown>,
+  onProgress?: (progress: AgentOperationProgress) => void,
+): Promise<{provider: AgentProviderState}> {
+  const response = await fetch(`${API_BASE}${url}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new ApiError(body?.error || `API error: ${response.status}`,response.status);
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('浏览器不支持 Engine 操作进度流');
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let complete: {provider: AgentProviderState} | null = null;
+  const consume = (line: string) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line) as {
+      type: 'progress' | 'complete' | 'error';
+      stage?: string;
+      message?: string;
+      progress?: number;
+      provider?: AgentProviderState;
+      error?: string;
+      status?: number;
+    };
+    if (event.type === 'progress' && event.stage && event.message) {
+      onProgress?.({
+        stage: event.stage,
+        message: event.message,
+        progress: event.progress ?? 0,
+      });
+    } else if (event.type === 'complete' && event.provider) {
+      complete = { provider: event.provider };
+    } else if (event.type === 'error') {
+      throw new ApiError(event.error || 'Engine 操作失败', event.status || 400);
+    }
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) consume(line);
+    if (done) break;
+  }
+  consume(buffer);
+  if (!complete) throw new Error('Engine 操作未返回完成状态');
+  return complete;
+}
+
 // XMLHttpRequest reports file upload progress; fetch does not expose it.
 // `onProgress` receives a 0..1 fraction.
 function uploadWithProgress<T>(url: string, file: File, onProgress?: (fraction: number) => void): Promise<T> {
@@ -128,7 +183,14 @@ export interface AgentProviderState {
   socket?: string | null;
   pid?: number | null;
   codexHome?: string | null;
+  launchCommand?: string;
+  launchArgs?: string[];
   configFiles?: AgentConfigFile[];
+}
+export interface AgentOperationProgress {
+  stage: string;
+  message: string;
+  progress: number;
 }
 export interface AgentManagementState {
   agent: AgentDescriptor;
@@ -643,6 +705,8 @@ export const api = {
   agentManagement: {
     list: () => fetchJSON<{ agents: Array<{ agent: AgentDescriptor; state: AgentManagementState }> }>('/agent-management'),
     get: (agentId: string) => fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}`),
+    provider: (agentId: string, providerId: string) =>
+      fetchJSON<{ provider: AgentProviderState }>(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}`),
     detectModels: (agentId: string, options: { providerId?: string; endpoint?: string; apiKey?: string; all?: boolean } = {}) => fetchJSON<{ models: DetectedAgentModel[] }>(`/agent-management/${encodeURIComponent(agentId)}/detect-models`, {
       method: 'POST', body: JSON.stringify({ refresh: true, ...options }),
     }),
@@ -662,12 +726,16 @@ export const api = {
       fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}`, {
         method: 'PUT', body: JSON.stringify(input),
       }),
+    updateProviderStream: (agentId: string, providerId: string, input: { name?: string; kind?: string; enabled?: boolean; apiKey?: string; fields?: Record<string, string | boolean | string[] | null> }, onProgress?: (progress: AgentOperationProgress) => void) =>
+      streamProviderOperation(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}/update-stream`, input, onProgress),
     deleteProvider: (agentId: string, providerId: string) =>
       fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' }),
     providerAction: (agentId: string, providerId: string, action: string) =>
       fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}/action`, {
         method: 'POST', body: JSON.stringify({ action }),
       }),
+    providerActionStream: (agentId: string, providerId: string, action: string, onProgress?: (progress: AgentOperationProgress) => void) =>
+      streamProviderOperation(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}/action-stream`, { action }, onProgress),
     readFile: (agentId: string, path: string, revealSensitive = false) =>
       fetchJSON<{ file: AgentConfigFileContent }>(`/agent-management/${encodeURIComponent(agentId)}/config-file`, {
         method: 'POST', body: JSON.stringify({ path, revealSensitive }),
@@ -679,7 +747,7 @@ export const api = {
     modelConfigs: (agentId: string) =>
       fetchJSON<{ models: AgentModelConfig[] }>(`/agent-management/${encodeURIComponent(agentId)}/model-configs`),
     updateModelConfigs: (agentId: string, models: Array<{
-      model: string; contextWindow?: number | null; maxContextWindow?: number | null;
+      provider?: string; model: string; contextWindow?: number | null; maxContextWindow?: number | null;
       effectiveContextWindowPercent?: number | null; supportsImages?: boolean;
     }>) => fetchJSON<{ models: AgentModelConfig[] }>(`/agent-management/${encodeURIComponent(agentId)}/model-configs`, {
       method: 'PUT', body: JSON.stringify({ models }),

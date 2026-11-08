@@ -2,7 +2,9 @@
 
 运行 `bash scripts/dev-conversation-preview.sh`。默认端口 43231；占用时直接报错，不停止其他服务。数据放在当前工作树的 `.test-data/conversation-preview`，使用独立数据库、登录 Cookie、tmux 命名空间。首次访问按界面创建试用账号。
 
-试用服务还会启动自己的 Codex App Server，Unix Socket 在当前用户专属临时目录内，名称包含工作树路径摘要。进程和日志路径由 `scripts/conversation-codex-server.mjs` 管理。重启 Web 服务会复用该引擎，保留正在执行的任务。引擎的权限设置独立于终端 worker，因此管理员会话使用共享实时引擎；普通成员继续使用原有隔离终端与内嵌 CLI，并屏蔽共享引擎的 Socket 目录，保留原有文件权限边界。
+AgentManager 在服务启动时接管 Codex Engine 生命周期，默认 Unix Socket 位于应用数据库同级的 `codex-engine` 目录，也可由 `AGENTMANAGER_CODEX_STREAM_SOCKET` 覆盖。平台记录 Engine PID、启动时间和日志；重启 Web 服务时验证并复用仍在运行的进程，进程不存在时才重新启动。生产环境会解除并禁用旧的 `com.ymchen.codex-engine*` launchd 作业，避免旧守护与平台同时管理 Socket。引擎的权限设置独立于终端 worker，因此管理员会话使用共享实时引擎；普通成员继续使用原有隔离终端与内嵌 CLI，并屏蔽共享引擎的 Socket 目录，保留原有文件权限边界。
+
+每个 Provider 的侧栏卡片和设置页独立读取自己的运行时状态。页面显示实际启动命令和 argv；启动命令与附加参数可编辑，保存后只重启目标 Engine。启动、停止、重启和配置保存由服务端流式返回当前阶段、百分比和已完成步骤，失败时保留具体错误，不再用整份 Agent 状态覆盖所有 Provider。
 
 对话页与终端连接同一个原生线程。新建时由引擎提交一次初始请求，终端随后连接该原生 ID，不重复提交。用户后续消息使用现有输入接口并标记 `source: conversation`，服务端直接向已加载的同一原生线程提交，避免终端菜单吞掉文本；未加载到此引擎的旧 CLI 保留终端输入路径。原生提交结果不确定时不会再向终端补发。显式停止会话会先中断远程引擎，再结束终端；重启 Web 服务只分离终端连接。
 
@@ -50,7 +52,7 @@ PDF 和 Word 转换后的分页预览，根据纸张纵横比、预览区域宽�
 
 ## 日常服务接入
 
-`bash scripts/dev-isolated.sh` 保留原有 `42011` 前端、`42020` 后端与 `~/.agentmanager-dev/agentmanager.db`，启动时复用当前检出目录专属的 Codex App Server。已配置 `AGENTMANAGER_CODEX_STREAM_SOCKET` 时沿用该配置。后台引擎跨 Web 服务重启保留；新建或恢复的管理员 Codex 会话提供原生流式事件，普通成员继续走原有隔离 CLI。原先由内嵌 CLI 持有的运行中会话不会被额外引擎重复加载，仍可看历史答复及原始终端。
+`bash scripts/dev-isolated.sh` 保留原有 `42011` 前端、`42020` 后端与 `~/.agentmanager-dev/agentmanager.db`。开发数据库使用自己的 `codex-engine/codex.sock`，由 AgentManager 启动和恢复，避免与生产 Engine 共用进程；已配置 `AGENTMANAGER_CODEX_STREAM_SOCKET` 时沿用该配置。后台引擎跨 Web 服务重启保留；新建或恢复的管理员 Codex 会话提供原生流式事件，普通成员继续走原有隔离 CLI。原先由内嵌 CLI 持有的运行中会话不会被额外引擎重复加载，仍可看历史答复及原始终端。
 
 ## 对话附件
 

@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import { execFileSync } from 'child_process';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { mkdirSync } from 'fs';
 dotenv.config();
@@ -44,6 +44,12 @@ if (wantTmux && !hasTmux) {
   console.warn('  tmux not found — plain terminals will use dtach/direct mode. Install with: sudo apt install tmux');
 }
 
+const dbPath = process.env.AGENTMANAGER_DB_PATH || (() => {
+  const dir = join(homedir(), '.agentmanager');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return join(dir, 'agentmanager.db');
+})();
+
 export const config = {
   port: parseInt(process.env.PORT || '42010', 10),
   host: resolveListenHost(),
@@ -59,11 +65,14 @@ export const config = {
   eventRateLimitPerMinute: positiveInt(process.env.AGENTMANAGER_EVENT_RATE_LIMIT_PER_MINUTE, 300),
   eventRetentionMax: positiveInt(process.env.AGENTMANAGER_EVENT_RETENTION_MAX, 50_000),
   eventRetentionDays: positiveInt(process.env.AGENTMANAGER_EVENT_RETENTION_DAYS, 30),
-  dbPath: process.env.AGENTMANAGER_DB_PATH || (() => {
-    const dir = join(homedir(), '.agentmanager');
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    return join(dir, 'agentmanager.db');
-  })(),
+  dbPath,
+  /** Native Codex Engine socket managed by AgentManager. */
+  nativeCodexSocket: process.env.AGENTMANAGER_CODEX_STREAM_SOCKET?.trim()
+    || join(dirname(dbPath), 'codex-engine', 'codex.sock'),
+  /** Start and recover Codex Engines with the AgentManager process lifecycle. */
+  manageCodexEngines: process.env.AGENTMANAGER_MANAGE_CODEX_ENGINES !== 'false',
+  /** Disable legacy launchd Engine jobs when the production platform starts. */
+  takeoverCodexLaunchAgents: process.env.AGENTMANAGER_TAKEOVER_CODEX_LAUNCH_AGENTS !== 'false',
   /** Use dtach to persist sessions across server restarts. Enabled by default, set AGENTMANAGER_USE_DTACH=false to disable. */
   useDtach: wantDtach && hasDtach,
   /** Use tmux for plain terminal sessions. Provides proper resize/reflow handling

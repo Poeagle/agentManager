@@ -24,6 +24,7 @@ import {
   type AgentProviderState,
   type DetectedAgentModel,
   type AgentModelConfig,
+  type AgentOperationProgress,
 } from "../lib/api";
 import { ClaudeIcon, CodexIcon } from "./CliIcons";
 import { Dialog } from "./Dialog";
@@ -44,6 +45,11 @@ const valueText = (value: AgentManagementField["value"]) =>
 const splitLines = (value: string) =>
   value
     .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+const splitArgumentLines = (value: string) =>
+  value
+    .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean);
 
@@ -210,12 +216,14 @@ export function OperationStatus({
   busy,
   message,
   successMessage = "操作已完成",
+  progress,
   error,
   success,
 }: {
   busy?: boolean;
   message: string;
   successMessage?: string;
+  progress?: number;
   error?: unknown;
   success?: boolean;
 }) {
@@ -239,7 +247,21 @@ export function OperationStatus({
       ) : (
         <Check size={13} />
       )}
-      <span>{failure || (success && !busy ? successMessage : message)}</span>
+      <div className="agent-management-operation-copy">
+        <span>{failure || (success && !busy ? successMessage : message)}</span>
+        {busy && progress !== undefined && (
+          <span
+            className="agent-management-operation-progress"
+            role="progressbar"
+            aria-label="Engine 操作进度"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(progress)}
+          >
+            <span style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -613,6 +635,34 @@ function ProviderCard({
   );
 }
 
+function LiveProviderCard({
+  agentId,
+  state,
+  selected,
+  onSelect,
+}: {
+  agentId: string;
+  state: AgentProviderState;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const query = useQuery({
+    queryKey: ["agent-provider", agentId, state.id],
+    queryFn: async () =>
+      (await api.agentManagement.provider(agentId, state.id)).provider,
+    initialData: state,
+    initialDataUpdatedAt: 0,
+    staleTime: 5_000,
+  });
+  return (
+    <ProviderCard
+      state={query.data}
+      selected={selected}
+      onSelect={onSelect}
+    />
+  );
+}
+
 function ModelConfigTable({
   agentId,
   providerId,
@@ -628,7 +678,7 @@ function ModelConfigTable({
 }) {
   const queryClient = useQueryClient();
   const query = useQuery({
-    queryKey: ["agent-model-configs", agentId],
+    queryKey: ["agent-model-configs", agentId, providerId],
     queryFn: () => api.agentManagement.modelConfigs(agentId),
   });
   const [rows, setRows] = useState<AgentModelConfig[]>([]);
@@ -696,6 +746,7 @@ function ModelConfigTable({
       api.agentManagement.updateModelConfigs(
         agentId,
         rows.map((item) => ({
+          provider: item.provider,
           model: item.model,
           contextWindow: item.contextWindow,
           maxContextWindow: item.maxContextWindow,
@@ -704,7 +755,10 @@ function ModelConfigTable({
         })),
       ),
     onSuccess: (result) => {
-      queryClient.setQueryData(["agent-model-configs", agentId], result);
+      queryClient.setQueryData(
+        ["agent-model-configs", agentId, providerId],
+        result,
+      );
       setWritten(true);
       setDirty(false);
       onDirtyChange(false);
@@ -744,7 +798,16 @@ function ModelConfigTable({
             type="button"
             className="agent-management-button"
             disabled={readOnly}
-            onClick={onReload}
+            onClick={() => {
+              if (
+                providerId === "native" &&
+                !window.confirm(
+                  "原生 Codex Engine 由所有原生会话共享。重启会断开现有连接并中断正在执行的请求，确定继续吗？",
+                )
+              )
+                return;
+              onReload();
+            }}
           >
             <RefreshCw size={13} />
             重载 Engine
@@ -987,7 +1050,7 @@ function EnvironmentTable({
 
 function ProviderEditor({
   agentId,
-  provider,
+  provider: initialProvider,
   defaults,
   readOnly,
   onDirtyChange,
@@ -1001,6 +1064,17 @@ function ProviderEditor({
   onFileDirtyChange: (dirty: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+  const providerQuery = useQuery({
+    queryKey: ["agent-provider", agentId, initialProvider.id],
+    queryFn: async () =>
+      (await api.agentManagement.provider(agentId, initialProvider.id))
+        .provider,
+    initialData: initialProvider,
+    initialDataUpdatedAt: 0,
+    staleTime: 5_000,
+  });
+  const provider = initialProvider;
+  const liveProvider = providerQuery.data;
   const initial = () =>
     Object.fromEntries(
       provider.fields.map((field) => [
@@ -1018,6 +1092,21 @@ function ProviderEditor({
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [engineOperation, setEngineOperation] = useState<{
+    busy: boolean;
+    message: string;
+    progress: number;
+    success: boolean;
+    error: string;
+    steps: AgentOperationProgress[];
+  }>({
+    busy: false,
+    message: "",
+    progress: 0,
+    success: false,
+    error: "",
+    steps: [],
+  });
   const dirtyRef = useRef(onDirtyChange);
   dirtyRef.current = onDirtyChange;
   useEffect(() => {
@@ -1026,6 +1115,14 @@ function ProviderEditor({
     setSaved(false);
     setSaveApiKey(false);
     setSelectedModels(provider.models);
+    setEngineOperation({
+      busy: false,
+      message: "",
+      progress: 0,
+      success: false,
+      error: "",
+      steps: [],
+    });
   }, [provider.id, provider.fields]);
   useEffect(() => {
     const original = Object.fromEntries(
@@ -1042,9 +1139,32 @@ function ProviderEditor({
       ) || saveApiKey,
     );
   }, [fields, provider.fields, saveApiKey]);
+  const beginEngineOperation = (message: string) => {
+    setError("");
+    setEngineOperation({
+      busy: true,
+      message,
+      progress: 0,
+      success: false,
+      error: "",
+      steps: [],
+    });
+  };
+  const recordEngineProgress = (progress: AgentOperationProgress) => {
+    setEngineOperation((current) => ({
+      ...current,
+      message: progress.message,
+      progress: Math.max(current.progress, progress.progress),
+      steps:
+        current.steps.at(-1)?.stage === progress.stage
+          ? [...current.steps.slice(0, -1), progress]
+          : [...current.steps, progress],
+    }));
+  };
   const update = useMutation({
-    mutationFn: () =>
-      api.agentManagement.updateProvider(agentId, provider.id, {
+    mutationFn: () => {
+      beginEngineOperation("正在校验 Provider 配置…");
+      return api.agentManagement.updateProviderStream(agentId, provider.id, {
         ...(provider.fields.some((field) => field.key === "envKey") &&
         saveApiKey
           ? { apiKey: fields.envKey || "" }
@@ -1057,14 +1177,21 @@ function ProviderEditor({
               : field.key === "models"
                 ? selectedModels
                 : field.type === "string-list"
-                  ? splitLines(fields[field.key] || "")
+                  ? field.key === "launchArgs"
+                    ? splitArgumentLines(fields[field.key] || "")
+                    : splitLines(fields[field.key] || "")
                   : fields[field.key] || "",
           ]),
         ),
-      }),
+      }, recordEngineProgress);
+    },
     onSuccess: (result) => {
-      queryClient.setQueryData(["agent-management", agentId], {
-        state: result.state,
+      queryClient.setQueryData(
+        ["agent-provider", agentId, provider.id],
+        result.provider,
+      );
+      void queryClient.invalidateQueries({
+        queryKey: ["agent-management", agentId],
       });
       queryClient.invalidateQueries({ queryKey: ["agent-management-list"] });
       void queryClient.invalidateQueries({
@@ -1072,23 +1199,71 @@ function ProviderEditor({
       });
       setSaved(true);
       setSaveApiKey(false);
+      setEngineOperation((current) => ({
+        ...current,
+        busy: false,
+        success: true,
+        message: "Provider 配置已保存，Engine 已就绪",
+        progress: 100,
+      }));
       setTimeout(() => setSaved(false), 1800);
     },
-    onError: (failure: Error) => setError(failure.message),
+    onError: (failure: Error) => {
+      setError(failure.message);
+      setEngineOperation((current) => ({
+        ...current,
+        busy: false,
+        success: false,
+        error: failure.message,
+      }));
+    },
   });
-  const action = useMutation({
-    mutationFn: (name: string) =>
-      api.agentManagement.providerAction(agentId, provider.id, name),
-    onSuccess: (result) => {
-      queryClient.setQueryData(["agent-management", agentId], {
-        state: result.state,
+  const changeEngineState = async (
+    operation: "start" | "stop" | "restart",
+  ) => {
+    if (
+      provider.id === "native" &&
+      operation !== "start" &&
+      !window.confirm(
+        "原生 Codex Engine 由所有原生会话共享。此操作会断开现有连接并中断正在执行的请求，确定继续吗？",
+      )
+    )
+      return;
+    beginEngineOperation("正在准备 Engine 操作…");
+    try {
+      const result = await api.agentManagement.providerActionStream(
+        agentId,
+        provider.id,
+        operation,
+        recordEngineProgress,
+      );
+      queryClient.setQueryData(
+        ["agent-provider", agentId, provider.id],
+        result.provider,
+      );
+      void queryClient.invalidateQueries({
+        queryKey: ["agent-management-list"],
       });
       void queryClient.invalidateQueries({
         queryKey: ["conversation-controls"],
       });
-    },
-    onError: (failure: Error) => setError(failure.message),
-  });
+      setEngineOperation((current) => ({
+        ...current,
+        busy: false,
+        success: true,
+        message: "Engine 操作完成",
+        progress: 100,
+      }));
+    } catch (failure) {
+      setEngineOperation((current) => ({
+        ...current,
+        busy: false,
+        success: false,
+        error:
+          failure instanceof Error ? failure.message : "Engine 操作失败",
+      }));
+    }
+  };
   const remove = useMutation({
     mutationFn: () => api.agentManagement.deleteProvider(agentId, provider.id),
     onSuccess: (result) => {
@@ -1138,44 +1313,75 @@ function ProviderEditor({
           <div className="agent-management-eyebrow">
             PROVIDER / {provider.id}
           </div>
-          <h3>{provider.name}</h3>
-          <p>{provider.statusText}</p>
+          <h3>{liveProvider.name}</h3>
+          <p>{liveProvider.statusText}</p>
         </div>
         <div className="agent-management-status-row">
           <span
-            className={`agent-management-pill ${statusTone(provider.status)}`}
+            className={`agent-management-pill ${statusTone(liveProvider.status)}`}
           >
-            {statusLabel[provider.status] || provider.status}
+            {statusLabel[liveProvider.status] || liveProvider.status}
           </span>
-          {provider.managed && provider.enabled && (
-            <button
-              type="button"
-              className="agent-management-button"
-              disabled={action.isPending || readOnly}
-              onClick={() => action.mutate("restart")}
-            >
-              <RefreshCw
-                size={13}
-                className={action.isPending ? "animate-spin" : ""}
-              />
-              重启 Engine
-            </button>
-          )}
-          {provider.managed && (
+          {liveProvider.id === "native" ? (
             <>
               <button
                 type="button"
                 className="agent-management-button"
-                disabled={action.isPending || readOnly}
+                disabled={engineOperation.busy || readOnly || !!liveProvider.pid}
+                onClick={() => void changeEngineState("start")}
+              >
+                启动 Engine
+              </button>
+              <button
+                type="button"
+                className="agent-management-button"
+                disabled={engineOperation.busy || readOnly || !liveProvider.pid}
+                onClick={() => void changeEngineState("stop")}
+              >
+                停止 Engine
+              </button>
+              <button
+                type="button"
+                className="agent-management-button"
+                disabled={engineOperation.busy || readOnly}
+                onClick={() => void changeEngineState("restart")}
+              >
+                <RefreshCw
+                  size={13}
+                  className={engineOperation.busy ? "animate-spin" : ""}
+                />
+                重启 Engine
+              </button>
+            </>
+          ) : liveProvider.managed && liveProvider.enabled ? (
+            <button
+              type="button"
+              className="agent-management-button"
+              disabled={engineOperation.busy || readOnly}
+              onClick={() => void changeEngineState("restart")}
+            >
+              <RefreshCw
+                size={13}
+                className={engineOperation.busy ? "animate-spin" : ""}
+              />
+              重启 Engine
+            </button>
+          ) : null}
+          {liveProvider.managed && liveProvider.id !== "native" && (
+            <>
+              <button
+                type="button"
+                className="agent-management-button"
+                disabled={engineOperation.busy || readOnly}
                 onClick={() =>
-                  action.mutate(provider.enabled ? "disable" : "enable")
+                  void changeEngineState(liveProvider.enabled ? "stop" : "start")
                 }
               >
-                {provider.enabled ? "停用" : "启用"}
+                {liveProvider.enabled ? "停用" : "启用"}
               </button>
             </>
           )}
-          {provider.managed && (
+          {liveProvider.managed && liveProvider.id !== "native" && (
             <button
               type="button"
               className="agent-management-button agent-management-button-danger"
@@ -1188,12 +1394,23 @@ function ProviderEditor({
           )}
         </div>
       </header>
-      {provider.codexHome && (
+      {liveProvider.codexHome && (
         <div className="agent-management-path">
           <FolderCog size={14} />
           <span>
             <small>独立 CODEX_HOME</small>
-            <code>{provider.codexHome}</code>
+            <code>{liveProvider.codexHome}</code>
+          </span>
+        </div>
+      )}
+      {liveProvider.launchCommand && (
+        <div className="agent-management-path agent-management-launch-command">
+          <FileCode2 size={14} />
+          <span>
+            <small>实际启动命令</small>
+            <code title={liveProvider.launchCommand}>
+              {liveProvider.launchCommand}
+            </code>
           </span>
         </div>
       )}
@@ -1206,31 +1423,33 @@ function ProviderEditor({
       <section className="agent-management-section">
         <div className="agent-management-section-title">
           <div>
-            <h4>连接与模型</h4>
-            <p>修改后重启此 Provider 的 Engine 生效；默认模型用于新会话。</p>
+            <h4>Engine 配置与模型</h4>
+            <p>
+              启动命令、参数和连接设置会在保存后重启此 Engine；默认模型用于新会话。
+            </p>
           </div>
         </div>
         <OperationStatus
           busy={
             detect.isPending ||
             update.isPending ||
-            action.isPending ||
+            engineOperation.busy ||
             remove.isPending
           }
           message={
             detect.isPending
               ? "正在探测此 Provider 的模型…"
               : update.isPending
-                ? "正在保存 Provider 并重启 Engine…"
-                : action.isPending
-                  ? "正在更新 Engine 状态…"
+                ? engineOperation.message
+                : engineOperation.busy
+                  ? engineOperation.message
                   : "正在删除 Provider…"
           }
           successMessage={
             detect.isSuccess
               ? "Provider 模型探测完成"
-              : action.isSuccess
-                ? "Provider Engine 状态已更新"
+              : engineOperation.success
+                ? "Engine 操作完成"
                 : "Provider 已保存"
           }
           error={
@@ -1239,12 +1458,26 @@ function ProviderEditor({
               ? detect.error
               : update.isError
                 ? update.error
-                : action.isError
-                  ? action.error
+                : engineOperation.error
+                  ? engineOperation.error
                   : remove.error)
           }
-          success={saved || detect.isSuccess}
+          progress={engineOperation.busy ? engineOperation.progress : undefined}
+          success={saved || detect.isSuccess || engineOperation.success}
         />
+        {engineOperation.steps.length > 0 && (
+          <ol
+            className="agent-management-operation-steps"
+            aria-label="Engine 操作过程"
+          >
+            {engineOperation.steps.map((step, index) => (
+              <li key={`${step.stage}-${index}`}>
+                <span>{step.progress}%</span>
+                {step.message}
+              </li>
+            ))}
+          </ol>
+        )}
         <div className="agent-management-form">
           {provider.fields
             .filter(
@@ -1317,7 +1550,7 @@ function ProviderEditor({
             <button
               type="button"
               className="agent-management-button agent-management-button-primary"
-              disabled={update.isPending}
+              disabled={update.isPending || engineOperation.busy}
               onClick={() => update.mutate()}
             >
               {update.isPending ? (
@@ -1338,7 +1571,7 @@ function ProviderEditor({
         providerId={provider.id}
         readOnly={readOnly}
         onDirtyChange={onDirtyChange}
-        onReload={() => action.mutate("restart")}
+        onReload={() => void changeEngineState("restart")}
       />
       {files.length > 0 && (
         <section className="agent-management-section">
@@ -1697,8 +1930,9 @@ function CodexWorkspace({
           )}
         </div>
         {state.providers.map((provider) => (
-          <ProviderCard
+          <LiveProviderCard
             key={provider.id}
+            agentId={agentId}
             state={provider}
             selected={provider.id === selected?.id}
             onSelect={() => switchProvider(provider.id)}
@@ -2014,6 +2248,10 @@ export function AgentManagementPanel({
     if (selectedId)
       void queryClient.invalidateQueries({
         queryKey: ["agent-management", selectedId],
+      });
+    if (selectedId)
+      void queryClient.invalidateQueries({
+        queryKey: ["agent-provider", selectedId],
       });
   };
   const agent = agents.find((item) => item.agent.id === selectedId);
