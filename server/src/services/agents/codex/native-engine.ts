@@ -76,6 +76,26 @@ function socketPid(socket: string): number | null {
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
+function processPidForSocket(socket: string): number | null {
+  const result = spawnSync('ps', ['-ax', '-o', 'pid=,command='], { encoding: 'utf8' });
+  const expectedListen = `--listen unix://${socket}`;
+  const line = (result.stdout || '').split('\n').find(item =>
+    item.includes(' app-server ')
+    && item.includes(expectedListen));
+  const pid = Number(line?.trim().split(/\s+/, 1)[0]);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function currentEnginePid(): number | null {
+  const socket = nativeCodexEngineSocket();
+  return socketPid(socket)
+    || processPidForSocket(socket)
+    || (() => {
+      const pid = readMetadata()?.pid;
+      return pid && processAlive(pid) ? pid : null;
+    })();
+}
+
 function socketReady(socket: string): Promise<boolean> {
   return new Promise(resolve => {
     const ws = new WebSocket(`ws+unix://${socket}:/`, { handshakeTimeout: 1000 });
@@ -134,9 +154,10 @@ function stateFromProcess(pid: number, metadata: EngineMetadata | null): NativeC
 
 export function inspectNativeCodexEngine(): NativeCodexEngineState {
   const socket = nativeCodexEngineSocket();
-  const pid = socketPid(socket);
+  const socketOwner = socketPid(socket);
+  const pid = socketOwner || processPidForSocket(socket);
   const metadata = readMetadata();
-  if (pid && processAlive(pid)) return stateFromProcess(pid, metadata);
+  if (socketOwner && processAlive(socketOwner)) return stateFromProcess(socketOwner, metadata);
   if (!config.isDev && config.takeoverCodexLaunchAgents && launchAgentLoaded(legacyNativeLabel)) {
     return {
       socket,
@@ -149,7 +170,7 @@ export function inspectNativeCodexEngine(): NativeCodexEngineState {
   }
   return {
     socket,
-    pid: null,
+    pid,
     startedAt: null,
     status: pid ? 'warning' : 'unavailable',
     statusText: pid ? `Engine 进程 PID ${pid} 存在但 Socket 未就绪` : 'Engine 尚未启动',
@@ -191,6 +212,11 @@ async function launchEngine(report?: AgentOperationReporter): Promise<NativeCode
   const executable = await findExecutable(launch.command);
   if (!executable) throw Object.assign(Error(`Codex Engine 命令不可执行：${launch.command}`), { statusCode: 409 });
   const socket = nativeCodexEngineSocket();
+  const stalePid = currentEnginePid();
+  if (stalePid) {
+    report?.({ stage: 'cleanup', message: `清理未就绪的 Engine 进程 PID ${stalePid}`, progress: 25 });
+    await terminateEngine(stalePid);
+  }
   report?.({ stage: 'prepare', message: '准备 socket、CODEX_HOME 与启动参数', progress: 30 });
   mkdirSync(engineDirectory(), { recursive: true, mode: 0o700 });
   try { unlinkSync(socket); } catch { /* stale socket absent */ }
@@ -262,9 +288,8 @@ export async function ensureNativeCodexEngine(
 export async function restartNativeCodexEngine(report?: AgentOperationReporter): Promise<NativeCodexEngineState> {
   report?.({ stage: 'inspect', message: '检查当前 Engine 进程', progress: 5 });
   if (shouldTakeOverLaunchAgents()) disableLegacyCodexLaunchAgents();
-  const metadata = readMetadata();
   report?.({ stage: 'stop', message: '停止当前 Engine', progress: 20 });
-  await terminateEngine(socketPid(nativeCodexEngineSocket()) || metadata?.pid || null);
+  await terminateEngine(currentEnginePid());
   return launchEngine(progress => report?.({ ...progress, progress: 25 + progress.progress * 0.75 }));
 }
 
@@ -286,9 +311,8 @@ export function nativeEngineLaunchDescription(): { command: string; args: string
 export async function stopNativeCodexEngine(report?: AgentOperationReporter): Promise<NativeCodexEngineState> {
   report?.({ stage: 'inspect', message: '检查当前 Engine 进程', progress: 10 });
   if (shouldTakeOverLaunchAgents()) disableLegacyCodexLaunchAgents();
-  const metadata = readMetadata();
   report?.({ stage: 'stop', message: '停止 Codex app-server', progress: 35 });
-  await terminateEngine(socketPid(nativeCodexEngineSocket()) || metadata?.pid || null);
+  await terminateEngine(currentEnginePid());
   report?.({ stage: 'cleanup', message: '清理 socket 与进程元数据', progress: 85 });
   return inspectNativeCodexEngine();
 }
