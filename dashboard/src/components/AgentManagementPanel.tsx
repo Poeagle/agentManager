@@ -206,14 +206,16 @@ function statusTone(status: string) {
         : "unknown";
 }
 
-function OperationStatus({
+export function OperationStatus({
   busy,
   message,
+  successMessage = "操作已完成",
   error,
   success,
 }: {
   busy?: boolean;
   message: string;
+  successMessage?: string;
   error?: unknown;
   success?: boolean;
 }) {
@@ -237,7 +239,7 @@ function OperationStatus({
       ) : (
         <Check size={13} />
       )}
-      <span>{failure || message}</span>
+      <span>{failure || (success && !busy ? successMessage : message)}</span>
     </div>
   );
 }
@@ -353,6 +355,7 @@ function AgentDefaultsEditor({
       <OperationStatus
         busy={save.isPending}
         message="正在保存 Agent 默认值…"
+        successMessage="Agent 默认值已保存"
         error={save.isError ? save.error : undefined}
         success={saved}
       />
@@ -469,6 +472,7 @@ function ConfigFileEditor({
         <OperationStatus
           busy={save.isPending}
           message="正在写入配置文件…"
+          successMessage="配置文件已写入"
           error={save.isError ? save.error : undefined}
           success={saved}
         />
@@ -845,6 +849,7 @@ function ModelConfigTable({
       <OperationStatus
         busy={save.isPending}
         message="正在写入模型目录…"
+        successMessage="模型目录已写入"
         error={save.isError ? save.error : undefined}
         success={written && !dirty}
       />
@@ -972,6 +977,7 @@ function EnvironmentTable({
       <OperationStatus
         busy={save.isPending}
         message="正在写入 LaunchAgent 环境变量…"
+        successMessage="LaunchAgent 环境变量已写入"
         error={error || (save.isError ? save.error : undefined)}
         success={saved}
       />
@@ -1219,6 +1225,13 @@ function ProviderEditor({
                 : action.isPending
                   ? "正在更新 Engine 状态…"
                   : "正在删除 Provider…"
+          }
+          successMessage={
+            detect.isSuccess
+              ? "Provider 模型探测完成"
+              : action.isSuccess
+                ? "Provider Engine 状态已更新"
+                : "Provider 已保存"
           }
           error={
             error ||
@@ -1535,6 +1548,7 @@ function AddCodexProvider({
           <OperationStatus
             busy={detect.isPending}
             message="正在探测 Provider 模型…"
+            successMessage="Provider 模型探测完成"
             error={detect.isError ? detect.error : undefined}
             success={detect.isSuccess}
           />
@@ -1564,6 +1578,7 @@ function AddCodexProvider({
       <OperationStatus
         busy={create.isPending}
         message="正在创建 Provider、保存密钥并启动 Engine…"
+        successMessage="Provider 已创建，Engine 已启动"
         error={create.isError ? create.error : undefined}
         success={create.isSuccess}
       />
@@ -1909,6 +1924,11 @@ function ClaudeWorkspace({
             detect.isPending
               ? "正在探测 Claude 模型…"
               : "正在保存 Claude 模型选择…"
+          }
+          successMessage={
+            save.isSuccess
+              ? "Claude 模型选择已保存"
+              : "Claude 模型探测完成"
           }
           error={
             save.isError
