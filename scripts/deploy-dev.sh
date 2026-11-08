@@ -43,6 +43,10 @@ if [ ! -f "$SRC_DIR/dashboard/dist/index.html" ] || [ ! -f "$SRC_DIR/server/dist
   log_error "Build output is incomplete; the running service was not changed."
   exit 1
 fi
+if ! find "$SRC_DIR/server/dist" -type f -name '*.js' -print0 | xargs -0 -n1 node --check; then
+  log_error "Server build contains invalid JavaScript; the running service was not changed."
+  exit 1
+fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)-$$"
 BACKUP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentmanager-deploy-backup.XXXXXX")"

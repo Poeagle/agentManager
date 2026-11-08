@@ -27,6 +27,12 @@ if [ "${BUILD_FAIL:-0}" = "1" ]; then exit 1; fi
 printf 'new-server\n' > "$TEST_SOURCE/server/dist/index.js"
 printf 'new-dashboard\n' > "$TEST_SOURCE/dashboard/dist/index.html"
 EOF
+cat > "$BIN/node" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'node %s\n' "$*" >> "$TEST_LOG"
+exit "${NODE_CHECK_FAIL:-0}"
+EOF
 cat > "$BIN/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -43,10 +49,10 @@ cat > "$INSTALL/bin/agentmanager" <<'EOF'
 set -euo pipefail
 printf 'agentmanager %s\n' "$*" >> "$TEST_LOG"
 EOF
-chmod +x "$BIN/build" "$BIN/curl" "$BIN/git" "$INSTALL/bin/agentmanager" "$SOURCE/scripts/deploy-dev.sh"
+chmod +x "$BIN/build" "$BIN/node" "$BIN/curl" "$BIN/git" "$INSTALL/bin/agentmanager" "$SOURCE/scripts/deploy-dev.sh"
 
 run() {
-  PATH="$BIN:$PATH" TEST_LOG="$TMP/log" TEST_SOURCE="$SOURCE" \
+  PATH="$BIN:$PATH" TEST_LOG="$TMP/log" TEST_SOURCE="$SOURCE" BUILD_FAIL="${BUILD_FAIL:-0}" NODE_CHECK_FAIL="${NODE_CHECK_FAIL:-0}" HEALTH_FAIL="${HEALTH_FAIL:-0}" \
     AGENTMANAGER_INSTALL_DIR="$INSTALL" AGENTMANAGER_BUILD_CMD="$BIN/build" PORT=42010 "$SOURCE/scripts/deploy-dev.sh"
 }
 
@@ -54,6 +60,11 @@ BUILD_FAIL=1 run 2>"$TMP/build-failure.err" || true
 test "$(cat "$INSTALL/server/dist/index.js")" = previous-server
 test "$(cat "$INSTALL/dashboard/dist/index.html")" = previous-dashboard
 test ! -e "$TMP/log" || ! grep -q 'agentmanager restart' "$TMP/log"
+
+NODE_CHECK_FAIL=1 run >"$TMP/syntax-failure.log" 2>"$TMP/syntax-failure.err" || true
+test "$(cat "$INSTALL/server/dist/index.js")" = previous-server
+test "$(grep -c 'agentmanager restart' "$TMP/log")" -eq 0
+grep -q 'invalid JavaScript' "$TMP/syntax-failure.log"
 
 run >"$TMP/success.log"
 test "$(cat "$INSTALL/server/dist/index.js")" = new-server
