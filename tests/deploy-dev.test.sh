@@ -44,36 +44,45 @@ cat > "$BIN/git" <<'EOF'
 set -euo pipefail
 printf '0123456\n'
 EOF
+cat > "$BIN/launchctl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'launchctl %s\n' "$*" >> "$TEST_LOG"
+[ "${1:-}" = "print" ] && exit "${LAUNCHD_MISSING:-0}"
+exit 0
+EOF
 cat > "$INSTALL/bin/agentmanager" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'agentmanager %s\n' "$*" >> "$TEST_LOG"
 EOF
-chmod +x "$BIN/build" "$BIN/node" "$BIN/curl" "$BIN/git" "$INSTALL/bin/agentmanager" "$SOURCE/scripts/deploy-dev.sh"
+chmod +x "$BIN/build" "$BIN/node" "$BIN/curl" "$BIN/git" "$BIN/launchctl" "$INSTALL/bin/agentmanager" "$SOURCE/scripts/deploy-dev.sh"
 
 run() {
-  PATH="$BIN:$PATH" TEST_LOG="$TMP/log" TEST_SOURCE="$SOURCE" BUILD_FAIL="${BUILD_FAIL:-0}" NODE_CHECK_FAIL="${NODE_CHECK_FAIL:-0}" HEALTH_FAIL="${HEALTH_FAIL:-0}" \
+  PATH="$BIN:$PATH" TEST_LOG="$TMP/log" TEST_SOURCE="$SOURCE" BUILD_FAIL="${BUILD_FAIL:-0}" NODE_CHECK_FAIL="${NODE_CHECK_FAIL:-0}" HEALTH_FAIL="${HEALTH_FAIL:-0}" LAUNCHD_MISSING="${LAUNCHD_MISSING:-0}" \
     AGENTMANAGER_INSTALL_DIR="$INSTALL" AGENTMANAGER_BUILD_CMD="$BIN/build" PORT=42010 "$SOURCE/scripts/deploy-dev.sh"
 }
 
 BUILD_FAIL=1 run 2>"$TMP/build-failure.err" || true
 test "$(cat "$INSTALL/server/dist/index.js")" = previous-server
 test "$(cat "$INSTALL/dashboard/dist/index.html")" = previous-dashboard
-test ! -e "$TMP/log" || ! grep -q 'agentmanager restart' "$TMP/log"
+test ! -e "$TMP/log" || ! grep -q 'agentmanager stop' "$TMP/log"
 
 NODE_CHECK_FAIL=1 run >"$TMP/syntax-failure.log" 2>"$TMP/syntax-failure.err" || true
 test "$(cat "$INSTALL/server/dist/index.js")" = previous-server
-test "$(grep -c 'agentmanager restart' "$TMP/log")" -eq 0
+test "$(grep -c 'agentmanager stop' "$TMP/log")" -eq 0
 grep -q 'invalid JavaScript' "$TMP/syntax-failure.log"
 
 run >"$TMP/success.log"
 test "$(cat "$INSTALL/server/dist/index.js")" = new-server
 test "$(cat "$INSTALL/dashboard/dist/index.html")" = new-dashboard
-test "$(grep -c 'agentmanager restart' "$TMP/log")" -eq 1
+test "$(grep -c 'agentmanager stop' "$TMP/log")" -eq 1
+test "$(grep -c 'launchctl kickstart' "$TMP/log")" -eq 1
 grep -q 'Deploy complete' "$TMP/success.log"
 
 HEALTH_FAIL=1 run >"$TMP/health-failure.log" 2>"$TMP/health-failure.err" || true
 test "$(cat "$INSTALL/server/dist/index.js")" = new-server
 test "$(cat "$INSTALL/dashboard/dist/index.html")" = new-dashboard
-test "$(grep -c 'agentmanager restart' "$TMP/log")" -eq 3
+test "$(grep -c 'agentmanager stop' "$TMP/log")" -eq 3
+test "$(grep -c 'launchctl kickstart' "$TMP/log")" -eq 3
 grep -q 'Previous build restored' "$TMP/health-failure.log"

@@ -54,6 +54,7 @@ SERVER_NEXT="$INSTALL_DIR/server/dist.next-$STAMP"
 SERVER_PREVIOUS="$INSTALL_DIR/server/dist.previous-$STAMP"
 DASHBOARD_NEXT="$INSTALL_DIR/dashboard/dist.next-$STAMP"
 DASHBOARD_PREVIOUS="$INSTALL_DIR/dashboard/dist.previous-$STAMP"
+LAUNCHD_LABEL="${AGENTMANAGER_LAUNCHD_LABEL:-com.aigenius.agentmanager}"
 
 rollback() {
   local reason="$1"
@@ -68,9 +69,18 @@ rollback() {
   fi
   [ -d "$SERVER_NEXT" ] && mv "$SERVER_NEXT" "$BACKUP_DIR/server-dist-next" || true
   [ -d "$DASHBOARD_NEXT" ] && mv "$DASHBOARD_NEXT" "$BACKUP_DIR/dashboard-dist-next" || true
-  "$INSTALL_DIR/bin/agentmanager" restart >/dev/null 2>&1 || true
+  restart_service >/dev/null 2>&1 || true
   log_info "Previous build restored and service restart requested. Recovery artifacts: $BACKUP_DIR"
   exit 1
+}
+
+restart_service() {
+  "$INSTALL_DIR/bin/agentmanager" stop >/dev/null 2>&1 || true
+  if launchctl print "gui/$(id -u)/$LAUNCHD_LABEL" >/dev/null 2>&1; then
+    launchctl kickstart -k "gui/$(id -u)/$LAUNCHD_LABEL"
+  else
+    "$INSTALL_DIR/bin/agentmanager" start
+  fi
 }
 
 log_info "Staging build output..."
@@ -84,13 +94,19 @@ mv "$INSTALL_DIR/dashboard/dist" "$DASHBOARD_PREVIOUS"
 mv "$DASHBOARD_NEXT" "$INSTALL_DIR/dashboard/dist"
 
 log_info "Restarting service..."
-if ! "$INSTALL_DIR/bin/agentmanager" restart; then
+if ! restart_service; then
   rollback "service restart failed"
 fi
 
 log_info "Checking health on port $PORT..."
-for _ in $(seq 1 30); do
+HEALTHY=0
+for _ in $(seq 1 60); do
   if curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
+    HEALTHY=$((HEALTHY + 1))
+  else
+    HEALTHY=0
+  fi
+  if [ "$HEALTHY" -ge 3 ]; then
     log_ok "Deploy complete from $SRC_DIR"
     log_info "Processed commit: $(git -C "$SRC_DIR" rev-parse --short HEAD)"
     exit 0
@@ -98,4 +114,4 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-rollback "health check did not recover within 30 seconds"
+rollback "health check did not remain healthy for three consecutive probes"
