@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'os';
 import { delimiter, join } from 'path';
 import { createRequire } from 'module';
+import { spawn } from 'child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { config } from '../src/config.js';
@@ -157,6 +158,50 @@ describe('AgentManager-managed Codex Engines', () => {
     expect(JSON.parse(readFileSync(nativeCatalog, 'utf8')).models[0].context_window).toBe(100);
     expect(JSON.parse(readFileSync(providerCatalog, 'utf8')).models[0].context_window).toBe(200);
   });
+
+  it('finds and removes an orphan Engine when neither socket nor metadata remains', async () => {
+    const database = createTestDatabase();
+    cleanupDatabase = database.cleanup;
+    const bin = join(root, 'bin');
+    const socket = join(root, 'engine', 'codex.sock');
+    mkdirSync(bin);
+    const executable = join(bin, 'codex');
+    const wsModule = require.resolve('ws');
+    writeFileSync(executable, `#!${process.execPath}
+const {createServer}=require('http');
+const {WebSocketServer}=require(${JSON.stringify(wsModule)});
+const {unlinkSync}=require('fs');
+if(process.env.FAKE_ORPHAN==='1'){setInterval(()=>{},1000);}else{
+  const args=process.argv.slice(2),listen=args.indexOf('--listen');
+  const socket=args[listen+1].replace(/^unix:\\/\\//,'');
+  const server=createServer(),wss=new WebSocketServer({server});
+  const close=()=>{for(const client of wss.clients)client.terminate();server.close(()=>{try{unlinkSync(socket)}catch{}process.exit(0)});};
+  process.once('SIGTERM',close);process.once('SIGINT',close);server.listen(socket);
+}
+`, { mode: 0o755 });
+    updateAgentManagement('codex', current => ({
+      ...current,
+      defaults: { ...current.defaults, nativeEngineCommand: executable },
+    }));
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET', socket);
+    vi.stubEnv('PATH', `${bin}${delimiter}${process.env.PATH || ''}`);
+    const orphan = spawn(executable, ['app-server', '--listen', `unix://${socket}`], {
+      detached: true,
+      env: { ...process.env, FAKE_ORPHAN: '1' },
+      stdio: 'ignore',
+    });
+    orphan.unref();
+    enginePids.push(orphan.pid!);
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    const managed = await ensureNativeCodexEngine(false);
+
+    expect(managed.status).toBe('ready');
+    expect(managed.pid).not.toBe(orphan.pid);
+    expect(() => process.kill(orphan.pid!, 0)).toThrow();
+    enginePids.push(managed.pid!);
+    await stopNativeCodexEngine();
+  }, 15_000);
 
   it('starts, adopts, restarts, and stops a detached native Engine', async () => {
     const bin = join(root, 'bin');
