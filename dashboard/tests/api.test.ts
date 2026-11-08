@@ -114,4 +114,48 @@ describe('dashboard API client', () => {
       body: JSON.stringify({ endpoint: 'https://llm.example/v1' }),
     }));
   });
+
+  it('streams Engine operation stages and keeps the completed Provider state', async () => {
+    const provider = {
+      id: 'provider-a',
+      name: 'Provider A',
+      kind: 'responses',
+      enabled: true,
+      managed: true,
+      status: 'ready',
+      statusText: 'Engine running',
+      authentication: { status: 'authenticated', method: 'fixture' },
+      models: ['model-a'],
+      defaultModel: 'model-a',
+      fields: [],
+    };
+    const body = [
+      { type: 'progress', stage: 'command', message: 'Checking command', progress: 15 },
+      { type: 'progress', stage: 'socket', message: 'Waiting for socket', progress: 75 },
+      { type: 'complete', provider },
+    ].map(event => JSON.stringify(event)).join('\n');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(`${body}\n`, {
+      status: 200,
+      headers: { 'Content-Type': 'application/x-ndjson' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const stages: string[] = [];
+
+    const result = await api.agentManagement.providerActionStream(
+      'codex',
+      'provider-a',
+      'restart',
+      progress => stages.push(`${progress.progress}:${progress.message}`),
+    );
+
+    expect(stages).toEqual(['15:Checking command', '75:Waiting for socket']);
+    expect(result.provider).toMatchObject({ id: 'provider-a', status: 'ready' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/agent-management/codex/providers/provider-a/action-stream',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ action: 'restart' }),
+      }),
+    );
+  });
 });

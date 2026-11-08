@@ -107,6 +107,7 @@ export interface AgentModelConfig {
   sourceFile: string | null;
 }
 export interface AgentModelConfigUpdate {
+  provider?: string;
   model: string;
   contextWindow?: number | null;
   maxContextWindow?: number | null;
@@ -132,6 +133,9 @@ export interface AgentProviderState {
   socket?: string | null;
   pid?: number | null;
   codexHome?: string | null;
+  /** Fully resolved argv used to launch this Engine. */
+  launchCommand?: string;
+  launchArgs?: string[];
   authenticationConfigured?: boolean;
   configFiles?: AgentConfigFile[];
 }
@@ -186,6 +190,12 @@ export interface AgentManagementState {
 export interface AgentManagementUpdate {
   defaults?: Record<string, string | boolean | string[] | null>;
 }
+export interface AgentOperationProgress {
+  stage: string;
+  message: string;
+  progress: number;
+}
+export type AgentOperationReporter = (progress: AgentOperationProgress) => void;
 export interface AgentProviderInput {
   id?: string;
   name?: string;
@@ -203,17 +213,20 @@ export interface AgentModelDetectionInput {
 }
 export interface AgentManagementPort {
   inspect(force?: boolean): Promise<AgentManagementState>;
+  inspectProvider?(providerId: string): Promise<AgentProviderState | null>;
   update(input: AgentManagementUpdate): Promise<AgentManagementState>;
   action(action: string): Promise<AgentManagementState>;
   createProvider(input: AgentProviderInput): Promise<AgentManagementState>;
   updateProvider(
     providerId: string,
     input: AgentProviderInput,
+    onProgress?: AgentOperationReporter,
   ): Promise<AgentManagementState>;
   deleteProvider(providerId: string): Promise<AgentManagementState>;
   providerAction(
     providerId: string,
     action: string,
+    onProgress?: AgentOperationReporter,
   ): Promise<AgentManagementState>;
   detectModels?(input?: AgentModelDetectionInput): Promise<
     Array<{

@@ -5,6 +5,7 @@ import { dirname, join } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import WebSocket from 'ws';
 import { getDb } from '../../../db/index.js';
+import { config } from '../../../config.js';
 import type {
   AgentDescriptor,
   AgentManagementPort,
@@ -13,12 +14,23 @@ import type {
   AgentProviderState,
   AgentModelConfig,
   AgentModelConfigUpdate,
+  AgentOperationReporter,
 } from '../types.js';
 import { findExecutable, firstVersion, runCli } from '../management-cli.js';
 import { expandHome } from '../management-common.js';
 import { managedLaunchCommand, openAgentSecret, readAgentManagement, sealAgentSecret, updateAgentManagement, writeAgentManagement, type StoredProvider } from '../management-store.js';
 import { configuredCodexEngines } from './engine-context.js';
 import { clearManagedCodexRuntimeSocket, managedCodexSocket, managedCodexRuntimeSocket, setManagedCodexRuntimeSocket } from './provider-config.js';
+import {
+  disableLegacyCodexLaunchAgents,
+  ensureNativeCodexEngine,
+  inspectNativeCodexEngine,
+  nativeEngineLaunchDescription,
+  restartNativeCodexEngine,
+  stopNativeCodexEngine,
+} from './native-engine.js';
+import { nativeEngineConfig, updateNativeEngineConfig } from './native-engine-config.js';
+import { displayEngineCommand, normalizeEngineArgs, normalizeEngineCommand } from './engine-command.js';
 
 const processes = new Map<string, { pid: number; startedAt: string }>();
 const startupErrors = new Map<string, string>();
@@ -218,19 +230,6 @@ async function socketPid(socket: string): Promise<number | null> {
     const match = stdout.match(/^p(\d+)$/m);
     if (match) return Number(match[1]);
   } catch { return null; }
-  if (socket.includes('codex-engine-xindu')) {
-    try {
-      const { stdout } = await new Promise<{stdout:string}>((resolve, reject) => {
-        const child = spawn('launchctl', ['print', `gui/${process.getuid?.() ?? ''}/com.ymchen.codex-engine-xindu`], { stdio: ['ignore', 'pipe', 'ignore'] });
-        let output = '';
-        child.stdout?.on('data', chunk => { output += String(chunk); });
-        child.once('error', reject);
-        child.once('close', () => resolve({stdout:output}));
-      });
-      const match = stdout.match(/^\s*pid = (\d+)$/m);
-      return match ? Number(match[1]) : null;
-    } catch { return null; }
-  }
   return null;
 }
 
@@ -240,23 +239,31 @@ function engineForStoredProvider(providerId: string) {
 }
 
 function nativeProviders(): AgentProviderState[] {
+  const engine = inspectNativeCodexEngine();
+  const codexHome = join(dirname(configPath()));
+  const launchConfig = nativeEngineConfig();
+  const launch = nativeEngineLaunchDescription();
   return [{
     id: 'native',
     name: 'OpenAI / Codex 原生',
     kind: 'native',
     enabled: true,
-    managed: false,
-    status: 'ready',
-    statusText: '由 Codex 原生登录和 config.toml 管理',
-    authentication: { status: existsSync(join(homedir(), '.codex', 'auth.json')) ? 'authenticated' : 'unknown', method: 'Codex 登录或原生 Provider' },
+    managed: true,
+    status: engine.status,
+    statusText: engine.statusText,
+    authentication: { status: existsSync(join(codexHome, 'auth.json')) ? 'authenticated' : 'unknown', method: 'Codex 登录或原生 Provider' },
     models: [],
     defaultModel: null,
-    codexHome: join(homedir(), '.codex'),
+    socket: engine.socket,
+    pid: engine.pid,
+    codexHome,
+    launchCommand: displayEngineCommand(launch.command, launch.args),
+    launchArgs: launch.args,
     configFiles: ['config.toml', 'models_cache.json', 'models.json', 'model-catalog.json', 'model-catalog-all.json',
       'model-catalog-grok-4.6.json', 'auth.json', '.codex-global-state.json', 'history.jsonl']
       .map(name => ({
-        path: join(homedir(), '.codex', name),
-        exists: existsSync(join(homedir(), '.codex', name)),
+        path: join(codexHome, name),
+        exists: existsSync(join(codexHome, name)),
         format: name.endsWith('.toml') ? 'TOML' : name.endsWith('.jsonl') ? 'JSONL' : 'JSON',
         description: name === 'config.toml' ? 'Codex 原生配置' : name === 'auth.json' ? 'Codex 原生凭据'
           : name === 'history.jsonl' ? 'Codex 历史索引' : name.includes('model') ? 'Codex 模型配置' : 'Codex 全局状态',
@@ -269,8 +276,43 @@ function nativeProviders(): AgentProviderState[] {
         writable: !['auth.json'].includes(name),
         ...(name === 'auth.json' ? { sensitive: true } : {}),
       })),
-    fields: [],
+    fields: [
+      {
+        key: 'command',
+        label: '启动命令',
+        type: 'text',
+        value: launchConfig.command,
+        required: true,
+        description: '作为无 shell 的可执行文件路径或 PATH 中的命令名启动。',
+      },
+      {
+        key: 'launchArgs',
+        label: '附加启动参数',
+        type: 'string-list',
+        value: launchConfig.extraArgs,
+        description: '每行一个 argv；追加到 AgentManager 生成的基础 app-server 参数之后，重启 Engine 后生效。',
+      },
+    ],
   }];
+}
+
+function providerLaunch(provider: StoredProvider): { command: string; args: string[] } {
+  const socket = managedCodexSocket(provider.id);
+  const defaultModel = stringField(provider, 'defaultModel') || listField(provider, 'models')[0];
+  const envKey = 'AGENTMANAGER_PROVIDER_API_KEY';
+  const base = [
+    'app-server', '--listen', `unix://${socket}`,
+    '-c', `model_provider=${JSON.stringify(provider.id)}`,
+    '-c', `model_providers.${provider.id}.name=${JSON.stringify(provider.name)}`,
+    '-c', `model_providers.${provider.id}.base_url=${JSON.stringify(stringField(provider, 'baseUrl'))}`,
+    '-c', `model_providers.${provider.id}.wire_api="responses"`,
+    '-c', `model_providers.${provider.id}.env_key=${JSON.stringify(envKey)}`,
+    ...(defaultModel ? ['-c', `model=${JSON.stringify(defaultModel)}`] : []),
+  ];
+  return {
+    command: normalizeEngineCommand(provider.fields.command, 'codex'),
+    args: [...base, ...normalizeEngineArgs(provider.fields.launchArgs)],
+  };
 }
 
 function managedProviderState(provider: StoredProvider): AgentProviderState {
@@ -283,6 +325,7 @@ function managedProviderState(provider: StoredProvider): AgentProviderState {
   const effectiveApiKey = storedApiKey || environmentApiKey;
   const running = !!processInfo;
   const startupError = startupErrors.get(provider.id);
+  const launch = providerLaunch(provider);
   return {
     id: provider.id,
     name: provider.name,
@@ -303,6 +346,8 @@ function managedProviderState(provider: StoredProvider): AgentProviderState {
     authenticationConfigured: !!storedApiKey,
     socket,
     pid: processInfo?.pid ?? null,
+    launchCommand: displayEngineCommand(launch.command, launch.args),
+    launchArgs: launch.args,
     configFiles: [
       { path: join(codexHome, 'config.toml'), exists: existsSync(join(codexHome, 'config.toml')), format: 'TOML', description: 'Provider Engine 启动配置', writable: true, purpose: '决定该 Provider 的 API 地址、默认模型、API Key 环境变量和 CODEX_HOME。' },
       { path: join(codexHome, 'model-catalog.json'), exists: existsSync(join(codexHome, 'model-catalog.json')), format: 'JSON', description: '可选模型目录与能力声明', writable: true, purpose: '定义模型上下文长度、有效比例、图片输入等能力，并供模型选择使用。' },
@@ -316,6 +361,21 @@ function managedProviderState(provider: StoredProvider): AgentProviderState {
       { key: 'codexHome', label: '独立 CODEX_HOME', type: 'text', value: codexHome },
       { key: 'models', label: '模型', type: 'string-list', value: listField(provider, 'models'), required: true },
       { key: 'defaultModel', label: '默认模型', type: 'text', value: stringField(provider, 'defaultModel') },
+      {
+        key: 'command',
+        label: '启动命令',
+        type: 'text',
+        value: normalizeEngineCommand(provider.fields.command, 'codex'),
+        required: true,
+        description: '作为无 shell 的可执行文件路径或 PATH 中的命令名启动。',
+      },
+      {
+        key: 'launchArgs',
+        label: '附加启动参数',
+        type: 'string-list',
+        value: normalizeEngineArgs(provider.fields.launchArgs),
+        description: '每行一个 argv；追加到 AgentManager 生成的 Provider 参数之后，重启 Engine 后生效。',
+      },
     ],
   };
 }
@@ -332,27 +392,35 @@ function validateProvider(input: AgentProviderInput, prior?: StoredProvider): St
   if (!models.length) throw Object.assign(Error('至少配置一个模型'), { statusCode: 400 });
   const envKey = typeof fields.envKey === 'string' ? fields.envKey.trim() : '';
   if (envKey && !/^[A-Z_][A-Z0-9_]*$/.test(envKey)) throw Object.assign(Error('API Key 环境变量名无效'), { statusCode: 400 });
+  const command = normalizeEngineCommand(fields.command, 'codex');
+  const launchArgs = normalizeEngineArgs(fields.launchArgs);
   return {
     id,
     name: input.name?.trim() || prior?.name || id,
     kind: input.kind?.trim() || prior?.kind || 'responses',
     enabled: input.enabled ?? prior?.enabled ?? true,
-    fields: { ...fields, baseUrl, models, envKey },
+    fields: { ...fields, baseUrl, models, envKey, command, launchArgs },
   };
 }
 
-async function startProvider(provider: StoredProvider): Promise<void> {
+async function startProvider(provider: StoredProvider, report?: AgentOperationReporter): Promise<void> {
   if (processes.has(provider.id) && existsSync(managedCodexSocket(provider.id))) return;
   startupErrors.delete(provider.id);
-  const executable = await findExecutable('codex');
-  if (!executable) throw Object.assign(Error('Codex CLI 未安装'), { statusCode: 409 });
+  report?.({ stage: 'command', message: '校验 Engine 启动命令', progress: 10 });
+  const launch = providerLaunch(provider);
+  const executable = await findExecutable(launch.command);
+  if (!executable) throw Object.assign(Error(`Engine 命令不可执行：${launch.command}`), { statusCode: 409 });
+  report?.({ stage: 'prepare', message: '准备 CODEX_HOME、socket 与启动参数', progress: 25 });
   const socket = managedCodexSocket(provider.id);
   const codexHome = expandHome(stringField(provider, 'codexHome', `~/.codex-agentmanager/${provider.id}`));
   mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
   mkdirSync(codexHome, { recursive: true, mode: 0o700 });
   const defaultModel = stringField(provider, 'defaultModel') || listField(provider, 'models')[0];
   const envKey = 'AGENTMANAGER_PROVIDER_API_KEY';
-  const apiKey = providerApiKey(provider.id) || stringField(provider, 'envKey');
+  const credentialName = stringField(provider, 'envKey');
+  const apiKey = providerApiKey(provider.id)
+    || (credentialName && process.env[credentialName])
+    || '';
   const configFile = join(codexHome, 'config.toml');
   if (!existsSync(configFile)) {
     await writeFile(configFile, [
@@ -367,15 +435,8 @@ async function startProvider(provider: StoredProvider): Promise<void> {
     ].join('\n'), { encoding: 'utf8', mode: 0o600 });
   }
   try { unlinkSync(socket); } catch { /* stale socket */ }
-  const args = [
-    'app-server', '--listen', `unix://${socket}`,
-    '-c', `model_provider=${JSON.stringify(provider.id)}`,
-    '-c', `model_providers.${provider.id}.name=${JSON.stringify(provider.name)}`,
-    '-c', `model_providers.${provider.id}.base_url=${JSON.stringify(stringField(provider, 'baseUrl'))}`,
-    '-c', `model_providers.${provider.id}.wire_api="responses"`,
-  ];
-  if (envKey) args.push('-c', `model_providers.${provider.id}.env_key=${JSON.stringify(envKey)}`);
-  if (defaultModel) args.push('-c', `model=${JSON.stringify(defaultModel)}`);
+  const args = launch.args;
+  report?.({ stage: 'spawn', message: '启动 Codex app-server', progress: 45 });
   const child = spawn(executable, args, {
     env: { ...process.env, CODEX_HOME: codexHome, ...(apiKey ? { [envKey]: apiKey } : {}) },
     detached: true,
@@ -385,6 +446,7 @@ async function startProvider(provider: StoredProvider): Promise<void> {
   if (!child.pid) throw Object.assign(Error('Codex Provider Engine 启动失败'), { statusCode: 502 });
   processes.set(provider.id, { pid: child.pid, startedAt: new Date().toISOString() });
   child.once('exit', () => processes.delete(provider.id));
+  report?.({ stage: 'socket', message: '等待 Engine socket 就绪', progress: 70 });
   let connectedSocket = '';
   for (let attempt = 0; attempt < 50 && !connectedSocket; attempt++) {
     connectedSocket = discoverProviderSocket(child.pid);
@@ -401,6 +463,7 @@ async function startProvider(provider: StoredProvider): Promise<void> {
     throw Object.assign(Error(message), { statusCode: 502 });
   }
   setManagedCodexRuntimeSocket(provider.id, connectedSocket);
+  report?.({ stage: 'confirm', message: '确认 Engine 进程与 socket 状态', progress: 95 });
   child.once('exit', () => {
     processes.delete(provider.id);
     clearManagedCodexRuntimeSocket(provider.id);
@@ -422,18 +485,6 @@ function providerStartupLog(codexHome: string): string {
   if (!existsSync(database)) return '';
   const result = spawnSync('sqlite3', [database, "SELECT message FROM logs WHERE level IN ('ERROR','WARN') ORDER BY rowid DESC LIMIT 3;"], { encoding: 'utf8' });
   return (result.stdout || '').trim().replace(/\s+/g, ' ').slice(0, 500);
-}
-
-function providerLaunchAgentLabel(providerId: string): string | null {
-  const labels = spawnSync('launchctl', ['list'], { encoding: 'utf8' }).stdout || '';
-  return labels.split('\n').find(line => line.includes(`com.ymchen.codex-engine-${providerId}`))?.trim().split(/\s+/).at(-1) || null;
-}
-
-function restartProviderLaunchAgent(providerId: string): boolean {
-  const label = providerLaunchAgentLabel(providerId);
-  if (!label) return false;
-  const result = spawnSync('launchctl', ['kickstart', '-k', `gui/${process.getuid?.() ?? ''}/${label}`], { encoding: 'utf8' });
-  return result.status === 0;
 }
 
 /** Persist provider config into its own CODEX_HOME before a restart. */
@@ -577,7 +628,7 @@ function allowedProviderConfigPath(provider: StoredProvider, path: string): bool
 }
 
 function nativeConfigPaths(): string[] {
-  const home = join(homedir(), '.codex');
+  const home = dirname(configPath());
   return [
     join(home, 'config.toml'),
     join(home, 'models_cache.json'),
@@ -592,7 +643,7 @@ function nativeConfigPaths(): string[] {
 }
 
 function isNativeSensitivePath(path: string): boolean {
-  return path === join(homedir(), '.codex', 'auth.json');
+  return path === join(dirname(configPath()), 'auth.json');
 }
 
 async function readProviderConfig(provider: StoredProvider, path: string): Promise<string> {
@@ -651,6 +702,18 @@ export async function restoreManagedCodexProviders(): Promise<void> {
   }
 }
 
+export async function initializeManagedCodexEngines(): Promise<void> {
+  const providerIds = readAgentManagement('codex').providers.map(provider => provider.id);
+  const takeOverLaunchAgents = !config.isDev && config.takeoverCodexLaunchAgents;
+  if (takeOverLaunchAgents) disableLegacyCodexLaunchAgents(providerIds);
+  const results = await Promise.allSettled([
+    ensureNativeCodexEngine(takeOverLaunchAgents),
+    restoreManagedCodexProviders(),
+  ]);
+  const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failure) throw failure.reason;
+}
+
 function socketPidSync(socket: string): number | null {
   const result = spawnSync('lsof', ['-nP', '-Fp', socket], { encoding: 'utf8' });
   const pid = result.stdout?.match(/^p(\d+)$/m)?.[1];
@@ -685,13 +748,6 @@ export async function inspectManagedCodexProvider(providerId: string): Promise<A
     };
   }
   return managedProviderState(provider);
-}
-
-function restartExternalProvider(providerId: string): boolean {
-  if (providerId !== 'xindu') return false;
-  const result = spawn('launchctl', ['kickstart', '-k', `gui/${process.getuid?.() ?? ''}/com.ymchen.codex-engine-xindu`], { detached: true, stdio: 'ignore' });
-  result.unref();
-  return true;
 }
 
 export function codexManagement(descriptor: AgentDescriptor): AgentManagementPort {
@@ -732,7 +788,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       configFiles: [
         { path: configPath(), exists: existsSync(configPath()), format: 'TOML', description: 'Codex 原生配置', writable: true },
         { path: join(dirname(configPath()), 'model-catalog.json'), exists: existsSync(join(dirname(configPath()), 'model-catalog.json')), format: 'JSON', description: 'Codex 原生模型目录', writable: true },
-        { path: join(homedir(), '.codex', 'auth.json'), exists: existsSync(join(homedir(), '.codex', 'auth.json')), format: 'JSON', description: 'Codex 原生凭据，仅显示存在状态', writable: false, sensitive: true },
+        { path: join(dirname(configPath()), 'auth.json'), exists: existsSync(join(dirname(configPath()), 'auth.json')), format: 'JSON', description: 'Codex 原生凭据，仅显示存在状态', writable: false, sensitive: true },
       ],
       diagnostics: [
         { id: 'installation', status: executable ? 'ready' : 'error', label: 'CLI', detail: executable || '未找到 Codex CLI' },
@@ -759,7 +815,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       applySemantics: {
         settings: 'new_session',
         providers: 'immediate',
-        detail: 'Provider Engine 的启停立即生效；命令和模型默认值用于新开或恢复的会话。正在运行的会话请在对话底部控制条切换。',
+        detail: 'Engine 命令、参数与启停由 AgentManager 即时管理；模型默认值用于新开或恢复的会话。正在运行的会话请在对话底部控制条切换。',
       },
       checkedAt: new Date().toISOString(),
     };
@@ -767,6 +823,16 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
 
   return {
     inspect,
+    inspectProvider: async providerId => {
+      if (providerId === 'native') return nativeProviders()[0];
+      let provider = readAgentManagement('codex').providers.find(item => item.id === providerId);
+      if (!provider) {
+        await externalProviders();
+        provider = readAgentManagement('codex').providers.find(item => item.id === providerId);
+      }
+      if (!provider) return null;
+      return await inspectManagedCodexProvider(providerId) || managedProviderState(provider);
+    },
     update: async input => {
       updateAgentManagement('codex', current => ({ ...current, defaults: { ...current.defaults, ...(input.defaults || {}) } }));
       return inspect(true);
@@ -783,7 +849,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
     createProvider: async input => {
       const provider = validateProvider(input);
       updateAgentManagement('codex', current => {
-        if (current.providers.some(item => item.id === provider.id) || nativeProviders().some(item => item.id === provider.id)) {
+        if (current.providers.some(item => item.id === provider.id) || provider.id === 'native') {
           throw Object.assign(Error('Provider ID 已存在'), { statusCode: 409 });
         }
         return { ...current, providers: [...current.providers, provider] };
@@ -795,8 +861,16 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       }
       return inspect(true);
     },
-    updateProvider: async (providerId, input) => {
+    updateProvider: async (providerId, input, report) => {
+      if (providerId === 'native') {
+        report?.({ stage: 'validate', message: '校验 Engine 启动命令与附加参数', progress: 10 });
+        updateNativeEngineConfig(input);
+        report?.({ stage: 'save', message: '保存原生 Engine 启动配置', progress: 25 });
+        await restartNativeCodexEngine(progress => report?.({ ...progress, progress: 25 + progress.progress * 0.75 }));
+        return inspect(true);
+      }
       let updated: StoredProvider | undefined;
+      report?.({ stage: 'validate', message: '校验 Provider 配置', progress: 10 });
       updateAgentManagement('codex', current => {
         const prior = current.providers.find(item => item.id === providerId);
         if (!prior) throw Object.assign(Error('原生 Provider 只能在 Codex config.toml 中编辑'), { statusCode: 409 });
@@ -805,8 +879,11 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       });
       saveProviderApiKey(providerId, input.apiKey);
       if (updated?.enabled) {
+        report?.({ stage: 'save', message: '写入 Provider 配置与模型目录', progress: 25 });
         await writeProviderConfigFile(updated);
-        if (!restartProviderLaunchAgent(providerId)) startProvider(updated).catch(() => {});
+        report?.({ stage: 'stop', message: '停止现有 Provider Engine', progress: 35 });
+        stopProvider(providerId);
+        await startProvider(updated, progress => report?.({ ...progress, progress: 35 + progress.progress * 0.65 }));
       } else {
         stopProvider(providerId);
       }
@@ -819,23 +896,35 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       await removeManagedProviderStorage(providerId);
       return inspect(true);
     },
-    providerAction: async (providerId, action) => {
+    providerAction: async (providerId, action, report) => {
+      if (providerId === 'native') {
+        if (action === 'start' || action === 'enable') await ensureNativeCodexEngine(undefined, report);
+        else if (action === 'stop' || action === 'disable') await stopNativeCodexEngine(report);
+        else if (action === 'restart') await restartNativeCodexEngine(report);
+        else throw Object.assign(Error(`不支持的原生 Engine 操作: ${action}`), { statusCode: 400 });
+        report?.({ stage: 'complete', message: `${action === 'stop' || action === 'disable' ? 'Engine 已停止' : 'Engine 已就绪'}`, progress: 100 });
+        return inspect(true);
+      }
       const provider = readAgentManagement('codex').providers.find(item => item.id === providerId);
       if (!provider) throw Object.assign(Error('原生 Provider 不支持此操作'), { statusCode: 409 });
       if (action === 'start' || action === 'enable') {
+        report?.({ stage: 'enable', message: '启用 Provider 启动配置', progress: 5 });
         updateAgentManagement('codex', current => ({ ...current, providers: current.providers.map(item => item.id === providerId ? { ...item, enabled: true } : item) }));
-        await startProvider({ ...provider, enabled: true });
+        await startProvider({ ...provider, enabled: true }, report);
       } else if (action === 'stop' || action === 'disable') {
+        report?.({ stage: 'stop', message: '停止 Provider Engine', progress: 25 });
         stopProvider(providerId);
         updateAgentManagement('codex', current => ({ ...current, providers: current.providers.map(item => item.id === providerId ? { ...item, enabled: false } : item) }));
+        report?.({ stage: 'cleanup', message: '清理 socket 与运行状态', progress: 90 });
       } else if (action === 'restart') {
-        if (!restartExternalProvider(providerId)) {
-          stopProvider(providerId);
-          await startProvider(provider);
-        }
+        report?.({ stage: 'stop', message: '停止当前 Provider Engine', progress: 15 });
+        stopProvider(providerId);
+        await startProvider(provider, progress => report?.({ ...progress, progress: 20 + progress.progress * 0.8 }));
       } else if (action === 'test') {
+        report?.({ stage: 'inspect', message: '检查 Provider Engine 路由', progress: 50 });
         if (!configuredCodexEngines().some(engine => engine.provider === providerId)) throw Object.assign(Error('Provider Engine 未启用'), { statusCode: 409 });
       } else throw Object.assign(Error(`不支持的 Provider 操作: ${action}`), { statusCode: 400 });
+      report?.({ stage: 'complete', message: 'Engine 状态已更新', progress: 100 });
       return inspect(true);
     },
     detectModels: async input => {
@@ -863,10 +952,14 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
           ? [readModelConfigsForProvider(engine.provider).catch(() => [])] : []),
       ]);
       const all = available.flat();
+      const providerIdFor = (config: AgentModelConfig) =>
+        config.provider === 'wanzhao' ? 'native' : config.provider || 'native';
       for (const update of updates) {
-        const config = all.find(item => item.model === update.model);
+        const requestedProvider = update.provider === 'wanzhao' ? 'native' : update.provider;
+        const config = all.find(item => item.model === update.model
+          && (!requestedProvider || providerIdFor(item) === requestedProvider));
         if (!config) continue;
-        const providerId = config.provider === 'wanzhao' ? 'native' : config.provider || 'native';
+        const providerId = providerIdFor(config);
         grouped.set(providerId, [...(grouped.get(providerId) || []), update]);
       }
       for (const [providerId, values] of grouped) await updateModelConfigsForProvider(providerId, values);
@@ -902,8 +995,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         }
         await writeFile(file.path, file.content, { encoding: 'utf8', mode: 0o600 });
         const route = engineForStoredProvider(owner.id);
-        const external = route ? restartExternalProvider(owner.id) : false;
-        if (!external && route && owner.enabled) {
+        if (route && owner.enabled) {
           stopProvider(owner.id);
           await startProvider(owner);
         }
@@ -914,7 +1006,14 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         if (current !== file.expectedContent) throw Object.assign(Error('配置文件已在磁盘上发生变化，请重新加载后再保存'), { statusCode: 409 });
       }
       await writeFile(file.path, file.content, { encoding: 'utf8', mode: 0o600 });
-      return { path: file.path, content: file.content, exists: true, format: file.path.endsWith('.json') ? 'JSON' : 'TOML' };
+      const nativeEngineFile = file.path === configPath()
+        || file.path === join(dirname(configPath()), 'model-catalog.json')
+        || file.path === join(dirname(configPath()), 'model-catalog-all.json')
+        || file.path === join(dirname(configPath()), 'model-catalog-grok-4.6.json')
+        || file.path === join(dirname(configPath()), 'models.json')
+        || file.path === join(dirname(configPath()), 'models_cache.json');
+      if (nativeEngineFile) await restartNativeCodexEngine();
+      return { path: file.path, content: file.content, exists: true, format: file.path.endsWith('.json') ? 'JSON' : 'TOML', restarted: nativeEngineFile };
     },
   };
 }

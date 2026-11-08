@@ -8,7 +8,7 @@ import { tmpdir } from 'os';
 import { authHook, createSession, createUser } from '../src/auth.js';
 import { agentRoutes } from '../src/routes/agent.js';
 import { registerAgent } from '../src/services/agents/index.js';
-import { capabilities, type AgentDefinition, type AgentManagementPort } from '../src/services/agents/types.js';
+import { capabilities, type AgentDefinition, type AgentManagementPort, type AgentProviderState } from '../src/services/agents/types.js';
 import { createTestDatabase } from './helpers/database.js';
 import { commonManagement } from '../src/services/agents/management-common.js';
 import { getDb } from '../src/db/index.js';
@@ -36,9 +36,21 @@ function management(root: string): AgentManagementPort {
     diagnostics: [], actions: [], providerManagement: { create: false, update: false, delete: false, actions: [], fields: [] },
     applySemantics: { settings: 'immediate' as const, providers: 'immediate' as const, detail: 'fixture' }, checkedAt: new Date().toISOString(),
   });
+  const provider: AgentProviderState = {
+    id: 'provider-a', name: 'Provider A', kind: 'responses', enabled: true, managed: true,
+    status: 'ready', statusText: 'Engine running', authentication: { status: 'authenticated', method: 'fixture' },
+    models: ['model-a'], defaultModel: 'model-a', socket: join(root, 'provider.sock'), pid: 42,
+    launchCommand: 'codex app-server --listen unix://provider.sock', launchArgs: ['app-server', '--listen', `unix://${join(root, 'provider.sock')}`],
+    fields: [],
+  };
   return {
     inspect: state, update: state, action: state, createProvider: state, updateProvider: state,
-    deleteProvider: state, providerAction: state,
+    deleteProvider: state,
+    inspectProvider: async providerId => providerId === provider.id ? provider : null,
+    providerAction: async (_providerId, _action, report) => {
+      report?.({ stage: 'spawn', message: 'Starting Engine', progress: 50 });
+      return state();
+    },
     readConfigFile: async file => ({ path: file.path, content: readFileSync(file.path, 'utf8'), exists: true, format: 'TOML' }),
     writeConfigFile: async file => {
       if (file.expectedContent !== undefined && file.expectedContent !== null) {
@@ -117,6 +129,25 @@ describe('agent management routes', () => {
     const state = (await app.inject({ url: '/api/agent-management/management_fixture', headers: admin })).json();
     expect(state.state.configFiles).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: join(root, 'config.toml'), purpose: 'test config', writable: true }),
+    ]));
+  });
+
+  it('returns one Provider state and streams Engine operation progress', async () => {
+    const read = await app.inject({ url: '/api/agent-management/management_fixture/providers/provider-a', headers: member });
+    expect(read.statusCode).toBe(200);
+    expect(read.json().provider).toMatchObject({ id: 'provider-a', status: 'ready', pid: 42 });
+
+    const stream = await app.inject({
+      method: 'POST',
+      url: '/api/agent-management/management_fixture/providers/provider-a/action-stream',
+      headers: admin,
+      payload: { action: 'restart' },
+    });
+    expect(stream.statusCode).toBe(200);
+    const events = stream.body.trim().split('\n').map(line => JSON.parse(line));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'progress', stage: 'spawn', progress: 50 }),
+      expect.objectContaining({ type: 'complete', provider: expect.objectContaining({ id: 'provider-a' }) }),
     ]));
   });
 });

@@ -251,7 +251,7 @@ actual dispatch count and persist a reason such as new input, a newer turn,
 changed access, or an actual final answer. Historical records without a reason
 are identified explicitly.
 
-Codex terminals attached to a platform-managed isolated engine use `--disable plugins`, matching that engine. Embedded Codex terminals preserve the user daemon’s plugin and hook feature settings; the platform does not restart the global daemon. An incompatible native startup menu is displayed as waiting for input, with an explanation in the conversation status. The recommended real-time deployment uses `AGENTMANAGER_CODEX_STREAM_SOCKET` (the isolated development launcher provisions this automatically).
+Codex terminals attached to a platform-managed isolated engine use `--disable plugins`, matching that engine. AgentManager starts and recovers the default Engine and every configured Provider Engine; production startup disables legacy `com.ymchen.codex-engine*` launchd jobs so two owners cannot race to restart the same socket. The process remains detached across an AgentManager restart and is adopted from its PID metadata when the platform returns. Embedded Codex terminals preserve the user daemon’s plugin and hook feature settings. An incompatible native startup menu is displayed as waiting for input, with an explanation in the conversation status. The default socket is `<database-directory>/codex-engine/codex.sock`; `AGENTMANAGER_CODEX_STREAM_SOCKET` can override it.
 
 The quota indicator refreshes every five minutes while visible and shares a
 five-minute server cache across browsers. Manual refresh uses the same dedicated
@@ -274,9 +274,10 @@ the configured model against the engine catalog before submitting a task.
 
 Codex 0.166 checks a thread’s provider against the engine configuration on input
 and resume; retaining a WebSocket does not bypass that check. To use multiple
-providers concurrently, run a separate `codex app-server --listen unix:///…`
-for each provider with `-c 'model_provider="provider-id"' --disable plugins`,
-then set `AGENTMANAGER_CODEX_PROVIDER_ENGINES` to explicit routes, for example:
+providers concurrently, AgentManager starts a separate
+`codex app-server --listen unix:///…` for each provider stored in Agent
+Management. `AGENTMANAGER_CODEX_PROVIDER_ENGINES` remains an explicit fallback
+for externally provisioned routes, for example:
 
 ```json
 [
@@ -285,17 +286,24 @@ then set `AGENTMANAGER_CODEX_PROVIDER_ENGINES` to explicit routes, for example:
 ]
 ```
 
-Keep those sockets in an owner-only directory. `AGENTMANAGER_CODEX_STREAM_SOCKET`
-continues to identify the default engine. Include its route above too when its
-catalog mixes models from different providers. Model allowlists are explicit:
+Keep those sockets in an owner-only directory. A stored Provider always uses
+the AgentManager-owned socket and cannot be redirected back to an environment
+route. `AGENTMANAGER_CODEX_STREAM_SOCKET` identifies the default engine. Model allowlists are explicit:
 the platform never infers credential routing from a model name or description.
 Each route is checked against the engine’s reported provider. Provider changes
 open a confirmation dialog with model/effort choices, create the replacement on
 the target engine, and retain the previous conversation. All control, input,
 retry, streaming and terminal connections use the bound engine. Existing thread
 routes are recovered from bounded native metadata after a platform restart.
-The platform does not install agents, start these additional engines, edit the
-user’s provider configuration, or silently migrate a thread’s provider.
+The platform starts and reloads these engines, edits declared Provider files,
+and retains the source Engine for existing threads. It does not install agents
+or silently migrate a thread’s provider.
+
+Each Provider card and settings page owns a separate runtime query. The page
+shows the resolved launch command and argv, accepts a non-shell executable plus
+one extra argv per line, and restarts only that Engine after saving. Start,
+stop, restart and configuration updates stream named progress stages and a
+percentage so socket startup and cleanup remain visible.
 
 API-key/custom-provider authentication may not expose ChatGPT account quotas.
 Quota endpoints then return HTTP 200 with `quota: null` and

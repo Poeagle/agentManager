@@ -176,6 +176,7 @@
 .agent-management-path code { display: block; }
 .agent-management-path small { margin-bottom: 2px; font-size: 10px; }
 .agent-management-path code { overflow: hidden; color: var(--text-primary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-management-launch-command code { white-space: normal; overflow-wrap: anywhere; }
 .agent-management-section {
   margin-top: 14px;
   padding-top: 14px;
@@ -483,6 +484,33 @@
   font-size: 11px;
   line-height: 17px;
 }
+.agent-management-operation-copy { display: grid; min-width: 0; flex: 1; gap: 6px; }
+.agent-management-operation-progress {
+  display: block;
+  overflow: hidden;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+}
+.agent-management-operation-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: currentColor;
+  transition: width .18s ease;
+}
+.agent-management-operation-steps {
+  display: grid;
+  max-height: 150px;
+  overflow-y: auto;
+  gap: 3px;
+  margin: 7px 0 0;
+  padding: 0 0 0 18px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 16px;
+}
+.agent-management-operation-steps span { display: inline-block; min-width: 34px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .agent-management-operation.busy { color: var(--text-secondary); background: var(--bg-secondary); }
 .agent-management-operation.success { color: var(--success, #22c55e); border-color: color-mix(in srgb, var(--success, #22c55e) 30%, var(--border)); background: color-mix(in srgb, var(--success, #22c55e) 5%, var(--bg-primary)); }
 .agent-management-operation.error { color: var(--error); border-color: color-mix(in srgb, var(--error) 30%, var(--border)); background: color-mix(in srgb, var(--error) 5%, var(--bg-primary)); }

@@ -73,6 +73,20 @@ Codex 适配器因此为终端客户端使用本地兼容通道：请求逐字�
 消息转发受发送完成回调控制，避免无界排队。已有终端需要在当前任务结束后重载标签页才能接入；
 平台不会为清理提示自动重启正在工作的 Agent。
 
+Codex Engine 属于平台管理资源。默认 Engine 和各 Provider Engine 由 AgentManager
+启动，Socket、PID、日志和启动元数据保存在数据库专属目录；Web 服务重启只重新验证并附着，
+不会创建第二个所有者。生产启动会解除旧的 `com.ymchen.codex-engine*` launchd 作业，
+保存的 Provider 路由优先于环境变量中的外部路由。模型目录在 Engine 启动时读取，
+修改目录后由用户显式重启对应 Engine；共享原生 Engine 的重启入口必须说明会中断其会话。
+测试和隔离预览通过 `AGENTMANAGER_MANAGE_CODEX_ENGINES=false` 或
+`AGENTMANAGER_TAKEOVER_CODEX_LAUNCH_AGENTS=false` 避免接管真实进程。
+
+Engine 设置分别读取单个 Provider 状态，Provider 卡片和设置页共享该 Provider 的查询键，
+不同 Provider 之间不共享运行状态或操作状态。每页显示实际 argv，并允许设置无 shell 的
+启动命令和每行一个的附加参数；参数保存后重启目标 Engine。主动启动、停止、重启和配置保存
+通过 NDJSON 进度流返回校验、准备、启动、等待 socket、确认和清理等阶段，前端按阶段显示
+进度条与历史步骤，只有目标 Provider 的缓存会更新。
+
 ## 新增服务型 Agent 的最小结构
 
 ```ts

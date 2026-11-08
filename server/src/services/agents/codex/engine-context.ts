@@ -48,7 +48,7 @@ export function configuredCodexEngines():CodexEngine[] {
  const raw=process.env.AGENTMANAGER_CODEX_PROVIDER_ENGINES;
  const managed=managedCodexEngines();
  if(!raw)return managed;
- if(configured?.raw===raw)return [...configured.engines,...managed.filter(item=>!configured!.engines.some(existing=>existing.provider===item.provider))];
+ if(configured?.raw===raw)return [...managed,...configured.engines.filter(item=>!managed.some(existing=>existing.provider===item.provider))];
  let value:unknown;try{value=JSON.parse(raw);}catch{throw Error('CODEX_PROVIDER_ENGINES 必须是 JSON 数组');}
  if(!Array.isArray(value)||value.length>16)throw Error('CODEX_PROVIDER_ENGINES 配置无效');
  const seen=new Set<string>();
@@ -56,7 +56,11 @@ export function configuredCodexEngines():CodexEngine[] {
   if(!item||typeof item.provider!=='string'||!/^[-\w.]{1,100}$/.test(item.provider)||typeof item.socket!=='string'||!item.socket.startsWith('/')||seen.has(item.provider)||!Array.isArray(item.models)||!item.models.length||item.models.some((m:unknown)=>typeof m!=='string'||m.length>200))throw Error('每个 provider 必须指定独立 socket 和明确的 models 列表');
   seen.add(item.provider);return {provider:item.provider,socket:item.socket,models:item.models};
  });
- configured={raw,engines};return [...engines,...managed.filter(item=>!engines.some(existing=>existing.provider===item.provider))];
+ configured={raw,engines};
+ // Stored Providers are owned by AgentManager. Environment routes remain
+ // supported for externally provisioned Agents, but cannot override a managed
+ // Provider and send requests back to its legacy launchd socket.
+ return [...managed,...engines.filter(item=>!managed.some(existing=>existing.provider===item.provider))];
 }
 export function rememberCodexProvider(provider:unknown):void {
  const engine=currentCodexEngine();
