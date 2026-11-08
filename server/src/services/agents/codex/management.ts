@@ -31,6 +31,7 @@ import {
 } from './native-engine.js';
 import { nativeEngineConfig, updateNativeEngineConfig } from './native-engine-config.js';
 import { displayEngineCommand, normalizeEngineArgs, normalizeEngineCommand } from './engine-command.js';
+import { terminateDetachedProcess } from './process-lifecycle.js';
 
 const processes = new Map<string, { pid: number; startedAt: string }>();
 const startupErrors = new Map<string, string>();
@@ -669,12 +670,15 @@ async function probeProviderModels(endpoint: string, apiKey: string): Promise<Ar
     : []);
 }
 
-function stopProvider(providerId: string): void {
-  const processInfo = processes.get(providerId);
-  if (processInfo) {
-    try { process.kill(processInfo.pid, 'SIGTERM'); } catch { /* already exited */ }
-    processes.delete(providerId);
-  }
+async function stopProvider(providerId: string): Promise<void> {
+  const processInfo = processes.get(providerId) || (() => {
+    recoverRuntimeProviderState(providerId);
+    return processes.get(providerId);
+  })();
+  const pid = processInfo?.pid
+    || socketPidSync(managedCodexRuntimeSocket(providerId) || managedCodexSocket(providerId));
+  if (pid) await terminateDetachedProcess(pid, `Provider ${providerId} Engine`);
+  processes.delete(providerId);
   clearManagedCodexRuntimeSocket(providerId);
   try { unlinkSync(managedCodexSocket(providerId)); } catch { /* socket already gone */ }
 }
@@ -882,17 +886,17 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         report?.({ stage: 'save', message: '写入 Provider 配置与模型目录', progress: 25 });
         await writeProviderConfigFile(updated);
         report?.({ stage: 'stop', message: '停止现有 Provider Engine', progress: 35 });
-        stopProvider(providerId);
+        await stopProvider(providerId);
         await startProvider(updated, progress => report?.({ ...progress, progress: 35 + progress.progress * 0.65 }));
       } else {
-        stopProvider(providerId);
+        await stopProvider(providerId);
       }
       return inspect(true);
     },
     deleteProvider: async providerId => {
       const provider = readAgentManagement('codex').providers.find(item => item.id === providerId);
       if (!provider) throw Object.assign(Error('Provider 不存在或属于原生配置'), { statusCode: 409 });
-      stopProvider(providerId);
+      await stopProvider(providerId);
       await removeManagedProviderStorage(providerId);
       return inspect(true);
     },
@@ -913,12 +917,12 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         await startProvider({ ...provider, enabled: true }, report);
       } else if (action === 'stop' || action === 'disable') {
         report?.({ stage: 'stop', message: '停止 Provider Engine', progress: 25 });
-        stopProvider(providerId);
+        await stopProvider(providerId);
         updateAgentManagement('codex', current => ({ ...current, providers: current.providers.map(item => item.id === providerId ? { ...item, enabled: false } : item) }));
         report?.({ stage: 'cleanup', message: '清理 socket 与运行状态', progress: 90 });
       } else if (action === 'restart') {
         report?.({ stage: 'stop', message: '停止当前 Provider Engine', progress: 15 });
-        stopProvider(providerId);
+        await stopProvider(providerId);
         await startProvider(provider, progress => report?.({ ...progress, progress: 20 + progress.progress * 0.8 }));
       } else if (action === 'test') {
         report?.({ stage: 'inspect', message: '检查 Provider Engine 路由', progress: 50 });
@@ -996,7 +1000,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         await writeFile(file.path, file.content, { encoding: 'utf8', mode: 0o600 });
         const route = engineForStoredProvider(owner.id);
         if (route && owner.enabled) {
-          stopProvider(owner.id);
+          await stopProvider(owner.id);
           await startProvider(owner);
         }
         return { path: file.path, content: file.content, exists: true, format: file.path.endsWith('.json') ? 'JSON' : 'TOML', restarted: true };
