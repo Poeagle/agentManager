@@ -28,6 +28,10 @@ playwright-report/
 test-results/
 .test-data/
 
+# Local deployment backups and service logs
+dist.previous-*/
+logs/
+
 # Codex local configuration
 .codex/
 .agents/
