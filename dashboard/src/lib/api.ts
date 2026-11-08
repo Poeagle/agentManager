@@ -92,6 +92,113 @@ export interface AgentApiEndpoint {
   outgoingMessages?: unknown[];
 }
 
+export interface AgentManagementField {
+  key: string;
+  label: string;
+  type: 'text' | 'password' | 'select' | 'toggle' | 'string-list';
+  value?: string | boolean | string[] | null;
+  required?: boolean;
+  configured?: boolean;
+  readOnly?: boolean;
+  placeholder?: string;
+  description?: string;
+  options?: Array<{ value: string; label: string }>;
+}
+export interface AgentConfigFile {
+  path: string;
+  exists: boolean;
+  format: string;
+  description: string;
+  writable?: boolean;
+  sensitive?: boolean;
+  purpose?: string;
+}
+export interface AgentProviderState {
+  id: string;
+  name: string;
+  kind: string;
+  enabled: boolean;
+  managed: boolean;
+  status: 'ready' | 'warning' | 'error' | 'unavailable' | 'unknown';
+  statusText: string;
+  authentication: { status: 'authenticated' | 'missing' | 'unknown'; method: string };
+  models: string[];
+  defaultModel: string | null;
+  fields: AgentManagementField[];
+  socket?: string | null;
+  pid?: number | null;
+  codexHome?: string | null;
+  configFiles?: AgentConfigFile[];
+}
+export interface AgentManagementState {
+  agent: AgentDescriptor;
+  installation: {
+    status: 'ready' | 'warning' | 'error' | 'unavailable' | 'unknown';
+    executable: string | null;
+    version: string | null;
+    latestVersion: string | null;
+    updateAvailable: boolean;
+    installCommand: string;
+    updateCommand: string;
+    requirement?: string | null;
+  };
+  authentication: {
+    status: 'authenticated' | 'missing' | 'unknown' | 'not_applicable';
+    method: string;
+    detail: string;
+  };
+  defaults: AgentManagementField[];
+  providers: AgentProviderState[];
+  configFiles: AgentConfigFile[];
+  environment?: AgentEnvironmentVariable[];
+  diagnostics: Array<{ id: string; status: 'ready' | 'warning' | 'error' | 'unavailable' | 'unknown'; label: string; detail: string }>;
+  actions: Array<{ id: string; label: string; kind?: 'primary' | 'secondary' | 'danger'; confirm?: string; available: boolean }>;
+  providerManagement: {
+    create: boolean;
+    update: boolean;
+    delete: boolean;
+    actions: string[];
+    fields: AgentManagementField[];
+  };
+  applySemantics: {
+    settings: 'immediate' | 'new_session' | 'restart';
+    providers: 'immediate' | 'new_session' | 'restart';
+    detail: string;
+  };
+  checkedAt: string;
+}
+export interface AgentEnvironmentVariable {
+  name: string;
+  value: string;
+  configured: boolean;
+  secret?: boolean;
+  description: string;
+  source: string;
+  editable: boolean;
+}
+export interface DetectedAgentModel {
+  provider?: string;
+  model: string;
+  name: string;
+  description: string;
+  efforts: Array<{ value: string; description: string }>;
+  defaultEffort: string;
+  default_service_tier?: string | null;
+  service_tiers?: Array<{ id: string; name: string; description: string }>;
+}
+export interface AgentConfigFileContent { path: string; content: string; exists: boolean; format: string; restarted?: boolean; }
+export interface AgentModelConfig {
+  provider?: string;
+  model: string;
+  name: string;
+  contextWindow: number | null;
+  maxContextWindow: number | null;
+  effectiveContextWindowPercent: number | null;
+  inputModalities: string[];
+  supportsImages: boolean;
+  sourceFile: string | null;
+}
+
 export interface AgentApiContract {
   name: string;
   version: string;
@@ -532,6 +639,59 @@ export const api = {
       install: () => fetchJSON<{ ok: boolean; scriptPath: string }>('/settings/statusline/install', { method: 'POST' }),
       uninstall: () => fetchJSON<{ ok: boolean; removed: string[] }>('/settings/statusline/uninstall', { method: 'POST' }),
     },
+  },
+  agentManagement: {
+    list: () => fetchJSON<{ agents: Array<{ agent: AgentDescriptor; state: AgentManagementState }> }>('/agent-management'),
+    get: (agentId: string) => fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}`),
+    detectModels: (agentId: string, options: { providerId?: string; endpoint?: string; apiKey?: string; all?: boolean } = {}) => fetchJSON<{ models: DetectedAgentModel[] }>(`/agent-management/${encodeURIComponent(agentId)}/detect-models`, {
+      method: 'POST', body: JSON.stringify({ refresh: true, ...options }),
+    }),
+    updateDefaults: (agentId: string, defaults: Record<string, string | boolean | string[] | null>) =>
+      fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}`, {
+        method: 'PUT', body: JSON.stringify({ defaults }),
+      }),
+    action: (agentId: string, action: string) =>
+      fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}/action`, {
+        method: 'POST', body: JSON.stringify({ action }),
+      }),
+    createProvider: (agentId: string, input: { id?: string; name?: string; kind?: string; enabled?: boolean; apiKey?: string; fields?: Record<string, string | boolean | string[] | null> }) =>
+      fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}/providers`, {
+        method: 'POST', body: JSON.stringify(input),
+      }),
+    updateProvider: (agentId: string, providerId: string, input: { name?: string; kind?: string; enabled?: boolean; apiKey?: string; fields?: Record<string, string | boolean | string[] | null> }) =>
+      fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}`, {
+        method: 'PUT', body: JSON.stringify(input),
+      }),
+    deleteProvider: (agentId: string, providerId: string) =>
+      fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' }),
+    providerAction: (agentId: string, providerId: string, action: string) =>
+      fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}/action`, {
+        method: 'POST', body: JSON.stringify({ action }),
+      }),
+    readFile: (agentId: string, path: string, revealSensitive = false) =>
+      fetchJSON<{ file: AgentConfigFileContent }>(`/agent-management/${encodeURIComponent(agentId)}/config-file`, {
+        method: 'POST', body: JSON.stringify({ path, revealSensitive }),
+      }),
+    writeFile: (agentId: string, file: { path: string; content: string; expectedContent?: string | null }) =>
+      fetchJSON<{ file: AgentConfigFileContent }>(`/agent-management/${encodeURIComponent(agentId)}/config-file`, {
+        method: 'PUT', body: JSON.stringify(file),
+      }),
+    modelConfigs: (agentId: string) =>
+      fetchJSON<{ models: AgentModelConfig[] }>(`/agent-management/${encodeURIComponent(agentId)}/model-configs`),
+    updateModelConfigs: (agentId: string, models: Array<{
+      model: string; contextWindow?: number | null; maxContextWindow?: number | null;
+      effectiveContextWindowPercent?: number | null; supportsImages?: boolean;
+    }>) => fetchJSON<{ models: AgentModelConfig[] }>(`/agent-management/${encodeURIComponent(agentId)}/model-configs`, {
+      method: 'PUT', body: JSON.stringify({ models }),
+    }),
+    updateEnvironment: (agentId: string, environment: { values: Record<string, string>; clear?: string[]; restart?: boolean }) =>
+      fetchJSON<{ environment: AgentEnvironmentVariable[] }>(`/agent-management/${encodeURIComponent(agentId)}/environment`, {
+        method: 'PUT', body: JSON.stringify(environment),
+      }),
+    saveSelectedModels: (agentId: string, models: string[], defaultModel: string | null, restart = false) =>
+      fetchJSON<{ environment: AgentEnvironmentVariable[] }>(`/agent-management/${encodeURIComponent(agentId)}/selected-models`, {
+        method: 'PUT', body: JSON.stringify({ models, defaultModel, restart }),
+      }),
   },
   promptEnhancer: {
     config: () => fetchJSON<{ config: PromptEnhancerConfig }>('/prompt-enhancer/config'),
@@ -1042,7 +1202,7 @@ export interface SessionOutput {
 export interface ConversationInterval {tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;shared_messages:number}
 export interface ConversationConclusion extends ConversationInterval {start_at:string|null;end_at:string|null;elapsed_ms:number|null}
 export interface ConversationStatistics {sequence:number;message_id?:string;turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;interval?:ConversationInterval;conclusion?:ConversationConclusion}
-export interface ConversationMessage {statistics?:ConversationStatistics;id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
+export interface ConversationMessage {statistics?:ConversationStatistics;id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';content_blocks?:Array<{type:'text';index:number;text:string}|{type:'tool_use';index:number;id:string;name:string;input:unknown;status:'running'|'completed'|'failed';result?:string;is_error?:boolean}>;presentation?:'compaction_summary';compaction?:{before_tokens:number|null;after_tokens:number|null;duration_ms:number|null};error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
 export interface ConversationUsageUpdate {native_id:string;usage:NonNullable<ConversationControlsData['usage']>;observed_at:string}
 export interface AgentModelPreference {service_tier?:string;model:string;effort:string;provider?:string}
 export interface ConversationControlsData {

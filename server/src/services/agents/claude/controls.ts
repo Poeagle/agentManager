@@ -5,6 +5,7 @@ import { resolveClaudeDir } from './archive.js';
 import { publicTokenCounters } from '../../conversation-usage.js';
 import type { AgentCompaction } from '../events.js';
 import type { AgentContext, AgentControls, AgentRuntime, ModelPreference } from '../types.js';
+import { managedEnv } from '../environment-store.js';
 const cache = new Map<string, {
     size: number;
     inode: number;
@@ -98,7 +99,7 @@ const aliases = ['default', 'sonnet', 'opus', 'haiku'];
  * or the dashboard cannot select them at all. */
 function configuredModels(): string[] {
     return [...new Set(['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL']
-        .map(key => process.env[key]?.trim())
+        .map(key => managedEnv(key).trim())
         .filter((value): value is string => !!value && !value.startsWith('<') && !aliases.includes(value)))];
 }
 export async function readClaudeControls(context: AgentContext): Promise<AgentControls> {
@@ -124,7 +125,6 @@ export async function applyClaudeControls(context: AgentContext, value: ModelPre
     if(!context.nativeId)throw Error('会话尚未连接');
     const runtime=(await import('./sdk-runtime.js')).claudeRuntime(context.nativeId);
     if(!runtime)throw Error('Claude managed runtime is not connected');
-    if(runtime.runtime().state==='running')throw Error('请等待 Claude 空闲后再切换模型');
     runtime.setModel(value);
     return {...value,pending:false};
 }

@@ -89,6 +89,22 @@ async function readEngineModels(force=false):Promise<ModelChoice[]> {
   });loadingCatalogs.set(key,promise);try{const result=await promise;catalogFailures.delete(key);return result;}catch(error){if(!(error instanceof Error&&error.message.includes('未返回可用模型')))catalogFailures.set(key,{until:Date.now()+30000,error});if(catalogFailures.size>17)catalogFailures.delete(catalogFailures.keys().next().value!);throw error;}finally{if(loadingCatalogs.get(key)===promise)loadingCatalogs.delete(key);}
 }
 
+/** Probe one explicit engine. Provider isolation is preserved; callers that
+ * intentionally want a combined catalog use readCodexModels(). */
+export async function readEngineModelsForProvider(providerId?: string, force=false): Promise<ModelChoice[]> {
+  const engine = providerId && providerId !== 'native'
+    ? configuredCodexEngines().find(item => item.provider === providerId)
+    : (currentCodexEngine().provider ? currentCodexEngine() : defaultCodexEngine());
+  if (!engine) throw Error(`模型服务 ${providerId} 尚未配置独立引擎`);
+  // Provider status discovery also repairs daemon-redirected sockets. Make the
+  // same route visible to the connection layer before the first RPC.
+  if (providerId && providerId !== 'native') {
+    const state = await import('./management.js').then(module => module.inspectManagedCodexProvider(providerId));
+    if (state?.socket && state.status === 'ready') engine.socket = state.socket;
+  }
+  return runInCodexEngine(engine, () => readEngineModels(force));
+}
+
 /** Provider catalogs remain isolated. Alternate engines are explicit deployment
  * routes, not inferred from descriptions or gateway names. */
 export async function readCodexModels(force=false):Promise<ModelChoice[]> {

@@ -543,11 +543,121 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   }});
   app.addHook('onClose',async()=>retries.close());
   app.addHook('onListen',async()=>{for(const session of getDb().prepare("SELECT * FROM sessions WHERE status='running' AND created_by_user_id IS NOT NULL").all() as import('../services/session-manager.js').Session[])if(agentForSession(session).descriptor.capabilities.retry&&nativeConversationId(session))retries.monitor(session.id,session.created_by_user_id!,nativeConversationId(session)!);});
+  app.addHook('onListen',async()=>{const {restoreManagedCodexProviders}=await import('../services/agents/codex/management.js');await restoreManagedCodexProviders();});
   app.addHook('preHandler', async (req, reply) => {
     requirePermission(req, reply, 'agent_api', req.method === 'GET' && !req.routeOptions.url?.endsWith('/agent') ? 'read' : 'write');
   });
   app.get('/agent/capabilities', async () => ({...getAgentApiContract(),agents:agentDescriptors()}));
   app.get('/agent/providers',async()=>({agents:agentDescriptors()}));
+  app.get('/agent-management',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','read'))return;
+    const agents=agentDescriptors();
+    const management=await Promise.all(agents.map(async agent=>({
+      agent,
+      state:await getAgent(agent.id).management.inspect(false).catch(error=>({error:error instanceof Error?error.message:'无法读取 Agent 配置'})),
+    })));
+    return {agents:management};
+  });
+  app.get<{Params:{agentId:string}}>('/agent-management/:agentId',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','read'))return;
+    try{return {state:await getAgent(req.params.agentId).management.inspect(false)};}
+    catch(error){return reply.code(error instanceof Error&&(error as any).statusCode||400).send({error:error instanceof Error?error.message:'无法读取 Agent 配置'});}
+  });
+  app.post<{Params:{agentId:string};Body:{refresh?:boolean;all?:boolean;providerId?:string;endpoint?:string;apiKey?:string}}>('/agent-management/:agentId/detect-models',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    try{
+      const agent=getAgent(req.params.agentId);
+      if(agent.management.detectModels) return {models:await agent.management.detectModels(req.body)};
+      if(agent.descriptor.id==='codex'){
+        const {readCodexModels}=await import('../services/agents/codex/controls.js');
+        return {models:await readCodexModels(req.body?.refresh===true)};
+      }
+      return reply.code(409).send({error:'当前 Agent 不支持独立模型探测'});
+    }catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'模型探测失败'});}
+  });
+  app.get<{Params:{agentId:string}}>('/agent-management/:agentId/model-configs',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','read'))return;
+    try{
+      const management=getAgent(req.params.agentId).management;
+      return {models:management.readModelConfigs?await management.readModelConfigs():[]};
+    }catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'读取模型配置失败'});}
+  });
+  app.put<{Params:{agentId:string};Body:{models:Array<{model:string;contextWindow?:number|null;maxContextWindow?:number|null;effectiveContextWindowPercent?:number|null;supportsImages?:boolean}>}}>('/agent-management/:agentId/model-configs',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    try{
+      const management=getAgent(req.params.agentId).management;
+      if(!management.updateModelConfigs)return reply.code(409).send({error:'当前 Agent 不支持模型参数配置'});
+      return {models:await management.updateModelConfigs(req.body?.models||[])};
+    }catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'保存模型配置失败'});}
+  });
+  app.put<{Params:{agentId:string};Body:{values?:Record<string,string>;clear?:string[];restart?:boolean}}>('/agent-management/:agentId/environment',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    try{
+      const management=getAgent(req.params.agentId).management;
+      if(!management.updateEnvironment)return reply.code(409).send({error:'当前 Agent 不支持环境变量配置'});
+      const environment=await management.updateEnvironment(req.body||{});
+      if(req.body?.restart===true){const {restartAgentManagerForEnvironment}=await import('../services/agents/environment-store.js');restartAgentManagerForEnvironment();}
+      return {environment};
+    }catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'保存环境变量失败'});}
+  });
+  app.put<{Params:{agentId:string};Body:{models?:string[];defaultModel?:string|null;restart?:boolean}}>('/agent-management/:agentId/selected-models',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    try{
+      const management=getAgent(req.params.agentId).management;
+      if(!management.saveSelectedModels)return reply.code(409).send({error:'当前 Agent 不支持保存模型选择'});
+      const environment=await management.saveSelectedModels(req.body?.models||[],req.body?.defaultModel||null);
+      if(req.body?.restart===true){const {restartAgentManagerForEnvironment}=await import('../services/agents/environment-store.js');restartAgentManagerForEnvironment();}
+      return {environment};
+    }catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'保存模型选择失败'});}
+  });
+  app.put<{Params:{agentId:string};Body:{defaults?:Record<string,string|boolean|string[]|null>}}>('/agent-management/:agentId',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    try{return {state:await getAgent(req.params.agentId).management.update({defaults:req.body?.defaults})};}
+    catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'保存 Agent 设置失败'});}
+  });
+  app.post<{Params:{agentId:string};Body:{action:string}}>('/agent-management/:agentId/action',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    try{return {state:await getAgent(req.params.agentId).management.action(req.body?.action)};}
+    catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'Agent 操作失败'});}
+  });
+  app.post<{Params:{agentId:string};Body:{id?:string;name?:string;kind?:string;enabled?:boolean;apiKey?:string;fields?:Record<string,string|boolean|string[]|null>}}>('/agent-management/:agentId/providers',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    try{return {state:await getAgent(req.params.agentId).management.createProvider(req.body||{})};}
+    catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'添加 Provider 失败'});}
+  });
+  app.put<{Params:{agentId:string;providerId:string};Body:{name?:string;kind?:string;enabled?:boolean;apiKey?:string;fields?:Record<string,string|boolean|string[]|null>}}>('/agent-management/:agentId/providers/:providerId',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    try{return {state:await getAgent(req.params.agentId).management.updateProvider(req.params.providerId,req.body||{})};}
+    catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'保存 Provider 失败'});}
+  });
+  app.delete<{Params:{agentId:string;providerId:string}}>('/agent-management/:agentId/providers/:providerId',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    try{return {state:await getAgent(req.params.agentId).management.deleteProvider(req.params.providerId)};}
+    catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'删除 Provider 失败'});}
+  });
+  app.post<{Params:{agentId:string;providerId:string};Body:{action:string}}>('/agent-management/:agentId/providers/:providerId/action',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    try{return {state:await getAgent(req.params.agentId).management.providerAction(req.params.providerId,req.body?.action)};}
+    catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'Provider 操作失败'});}
+  });
+  app.post<{Params:{agentId:string};Body:{path:string;revealSensitive?:boolean}}>('/agent-management/:agentId/config-file',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','read'))return;
+    try{
+      const management=getAgent(req.params.agentId).management;
+      if(!management.readConfigFile)return reply.code(409).send({error:'当前 Agent 不支持配置文件编辑'});
+      return {file:await management.readConfigFile({path:req.body.path,content:'',revealSensitive:req.body.revealSensitive===true})};
+    }
+    catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'读取配置文件失败'});}
+  });
+  app.put<{Params:{agentId:string};Body:{path:string;content:string;expectedContent?:string|null}}>('/agent-management/:agentId/config-file',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    try{
+      const management=getAgent(req.params.agentId).management;
+      if(!management.writeConfigFile)return reply.code(409).send({error:'当前 Agent 不支持配置文件编辑'});
+      return {file:await management.writeConfigFile(req.body)};
+    }
+    catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'保存配置文件失败'});}
+  });
   app.get<{Params:{agent:string}}>('/agent/providers/:agent/quota',async(req,reply)=>{if(!isAdmin(req.user!.id))return reply.code(403).send({error:'无权读取主机账号额度'});return sendAgentQuota(reply,()=>getAgent(req.params.agent).quota.read());});
 
   app.get<{Params:{id:string};Querystring:{refresh?:string}}>('/sessions/:id/controls',async(req,reply)=>{

@@ -14,5 +14,17 @@ export function resolveAgent(definition: AgentDefinition): AgentAdapter {
         lifecycle: { preflight: async () => null, bind: async () => { }, compact: async () => unsupported('compact'), prepareFresh: async () => unsupported('newConversation'), release: async () => { }, interrupt: async () => { }, ...definition.lifecycle },
         launch: { prepare: async () => unsupported('launch'), ready: async () => { }, ...definition.launch },
         commands: { configure: command => command, build: () => unsupported('launch'), permissions: command => command, sharedResources: () => unsupported('sharedResources'), ...definition.commands },
+        management: {
+            inspect: async () => unsupported('launch'),
+            update: async () => unsupported('launch'),
+            action: async () => unsupported('launch'),
+            createProvider: async () => unsupported('launch'),
+            updateProvider: async () => unsupported('launch'),
+            deleteProvider: async () => unsupported('launch'),
+            providerAction: async () => unsupported('launch'),
+            readConfigFile: async () => unsupported('launch'),
+            writeConfigFile: async () => unsupported('launch'),
+            ...definition.management,
+        },
     };
 }

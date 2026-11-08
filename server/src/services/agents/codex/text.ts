@@ -45,6 +45,8 @@ export function decodeCodexText(entries: Iterable<unknown>, limit = 8000) {
                 append('assistant', phase(p.phase), cleanText(p.message), entry.timestamp);
             if (p.type === 'item_completed' && isRecord(p.item) && p.item.type === 'AgentMessage')
                 append('assistant', phase(p.item.phase), itemText(p.item.content), entry.timestamp);
+            if (p.type === 'item_completed' && isRecord(p.item) && p.item.type === 'UserMessage')
+                append('user', 'user', contentText(Array.isArray(p.item.content) ? p.item.content.map((part: unknown) => isRecord(part) && part.type === 'text' ? { ...part, type: 'input_text' } : part) : p.item.content, 'input_text'), entry.timestamp);
             if (p.type === 'task_complete')
                 append('assistant', 'final', cleanText(p.last_agent_message), entry.timestamp);
         }

@@ -2464,11 +2464,12 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
   tlog(`[CLEANUP] start`);
   recordServerStart();
   const db = getDb();
+  const adapterForKnownSession=(session:Session)=>{try{return agentForSession(session);}catch{return null;}};
   // A Codex SessionStart hook may have persisted its UUID milliseconds before
   // the server died. Ingest those durable files before deciding which stale
   // sessions are resumable.
   for(const descriptor of agentDescriptors())getAgent(descriptor.id).identity.recover?.();
-  for(const session of db.prepare("SELECT * FROM sessions WHERE status IN ('running','detached')").all() as Session[])if(agentForSession(session).descriptor.sessionHost==='managed'&&nativeConversationId(session))try{attachManagedAgent(session);}catch{/* Persisted identity remains available for explicit reconnect. */}
+  for(const session of db.prepare("SELECT * FROM sessions WHERE status IN ('running','detached')").all() as Session[]){const adapter=adapterForKnownSession(session);if(adapter?.descriptor.sessionHost==='managed'&&nativeConversationId(session))try{attachManagedAgent(session);}catch{/* Persisted identity remains available for explicit reconnect. */}}
 
   if (config.useDtach || config.useTmux) {
     const stale = db.prepare(`
@@ -2477,7 +2478,7 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
       WHERE s.status IN ('running', 'pending', 'launching', 'detached')
       OR (s.status = 'failed' AND (s.completed_at IS NULL OR s.completed_at > datetime('now', '-1 hour')))
     `).all() as Array<Session & { project_path: string | null }>;
-    const terminals=stale.filter(session=>agentForSession(session).descriptor.sessionHost==='terminal');
+    const terminals=stale.filter(session=>adapterForKnownSession(session)?.descriptor.sessionHost==='terminal');
 
     if (stale.length === 0) { tlog(`[CLEANUP] no stale sessions, done in ${Date.now() - t0}ms`); return; }
 
@@ -2528,7 +2529,7 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
       SELECT * FROM sessions WHERE status IN ('running', 'pending', 'launching', 'detached')
     `).all() as Session[];
 
-    const terminals=stale.filter(session=>agentForSession(session).descriptor.sessionHost==='terminal');
+    const terminals=stale.filter(session=>adapterForKnownSession(session)?.descriptor.sessionHost==='terminal');
     for (const { id, pid } of terminals) {
       if (pid) killOrphanedProcess(pid, id);
     }

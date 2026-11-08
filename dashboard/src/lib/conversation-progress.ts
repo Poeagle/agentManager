@@ -7,7 +7,7 @@ type ConversationGroup={kind:'progress';id:string;messages:ConversationMessage[]
 export function groupConversationProgress(messages:ConversationMessage[]):ConversationGroup[] {
   const groups:ConversationGroup[]=[];
   for(const message of messages) {
-    if(message.role==='assistant' && message.phase==='commentary') {
+    if(message.role==='assistant' && message.phase==='commentary' && message.presentation!=='compaction_summary') {
       const previous=groups.at(-1),turn=previous?.kind==='progress'?previous.messages.at(-1)?.turn_id:undefined;
       if(previous?.kind==='progress' && (!turn || !message.turn_id || turn===message.turn_id))previous.messages.push(message);
       else groups.push({kind:'progress',id:message.id,messages:[message]});

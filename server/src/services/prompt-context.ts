@@ -3,6 +3,7 @@ import {getAgent,agentForSession,agentContext} from './agents/index.js';
 import {access,open,readdir,stat} from 'fs/promises';
 import {homedir} from 'os';
 import {join} from 'path';
+import {readAgentManagement} from './agents/management-store.js';
 
 
 import {NATIVE_SESSION_ID_RE,type CliType} from './session-identity.js';
@@ -36,6 +37,18 @@ export const MAX_PROMPT_CONTEXT_CHARS = 16_000;
 const MAX_CONTEXT_MESSAGE_CHARS = 8_000;
 const CONTEXT_TAIL_BUDGETS = [4, 32, 128].map((megabytes) => megabytes * 1024 * 1024);
 const codexRolloutCache = new Map<string, string>();
+
+function codexSessionRoots(): string[] {
+  const roots = new Set<string>([process.env.CODEX_HOME || join(homedir(), '.codex')]);
+  for (const provider of readAgentManagement('codex').providers) {
+    const configured = provider.fields.codexHome;
+    const home = typeof configured === 'string' && configured.trim()
+      ? configured.trim()
+      : join(homedir(), `.codex-${provider.id}`);
+    roots.add(home === '~' ? homedir() : home.startsWith('~/') ? join(homedir(), home.slice(2)) : home);
+  }
+  return [...roots];
+}
 
 /** Keep newest complete turns within a fixed request budget. */
 export function limitPromptContext(turns: PromptContextTurn[], rounds: number): PromptContextTurn[] {
@@ -107,8 +120,8 @@ export async function loadPromptContextFromFile(filePath: string, kind: CliType,
 
 export async function findCodexRollout(sessionId: string): Promise<string | null> {
   if (!NATIVE_SESSION_ID_RE.test(sessionId)) return null;
-  const root = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions');
-  const cacheKey = `${root}:${sessionId}`;
+  const roots = codexSessionRoots().map(home => join(home, 'sessions'));
+  const cacheKey = `${roots.join('|')}:${sessionId}`;
   const cached = codexRolloutCache.get(cacheKey);
   if (cached) {
     try {
@@ -118,18 +131,21 @@ export async function findCodexRollout(sessionId: string): Promise<string | null
       codexRolloutCache.delete(cacheKey);
     }
   }
-  let entries;
-  try {
-    entries = await readdir(root, { recursive: true, withFileTypes: true });
-  } catch {
-    return null;
-  }
   const suffix = `${sessionId}.jsonl`;
-  const match = entries.find((entry) => entry.isFile() && entry.name.endsWith(suffix));
-  if (!match) return null;
-  const path = join(match.parentPath, match.name);
-  codexRolloutCache.set(cacheKey, path);
-  return path;
+  for (const root of roots) {
+    let entries;
+    try {
+      entries = await readdir(root, { recursive: true, withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const match = entries.find((entry) => entry.isFile() && entry.name.endsWith(suffix));
+    if (!match) continue;
+    const path = join(match.parentPath, match.name);
+    codexRolloutCache.set(cacheKey, path);
+    return path;
+  }
+  return null;
 }
 
 export async function loadRecentAgentMessages(session: PromptContextSession): Promise<AgentTextMessage[]> {
