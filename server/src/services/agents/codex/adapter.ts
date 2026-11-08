@@ -6,21 +6,23 @@ import { discoverCodexTerminal } from './terminal.js';
 import { ingestAllCodexSessionBindings, backfillLegacyCodexSessionIds } from './binding.js';
 import { extractCodexPromptContext } from './prompt-context.js';
 import { decodeCodexText } from './text.js';
-import { parseCodexMessage, codexRecordLimit, codexQuestionCall,codexTurnBoundary } from './history.js';
+import { parseCodexMessage, codexRecordLimitWithCompaction, codexQuestionCall,codexTurnBoundary,codexHistoryReplacementIndexes } from './history.js';
 import { subscribeCodexRuntimeSignals } from './runtime-signals.js';
 import { shellSingleQuote } from '../shell.js';
 import { codexCommand, codexPermissions, codexResources } from './commands.js';
 import { capabilities, requireNative, type AgentAdapter } from '../types.js';
 import { findCodexRollout } from '../../prompt-context.js';
 import {ensureCodexTerminalBridge} from './terminal-bridge.js';
+import {codexManagement} from './management.js';
+import {applyManagedCommandDefaults} from '../management-store.js';
 export const codexAdapter: AgentAdapter = {
-    descriptor: { terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) },
+    descriptor: { launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) },
     identity: { read: session => session.codex_session_id ?? null, legacyField: 'codex_session_id', purge: context => { if (context.session.id)
             try {
                 unlinkSync(codexBindingFile(context.session.id));
             }
             catch { } }, discoverTerminal: discoverCodexTerminal, recover: () => { ingestAllCodexSessionBindings(); backfillLegacyCodexSessionIds(); } },
-    history: { file: { turns: extractCodexPromptContext, relevant: line => /"type"\s*:\s*"(?:user_message|agent_message|task_complete|message)"/.test(line), locate: context => context.nativeId ? findCodexRollout(context.nativeId) : Promise.resolve(null), decode: decodeCodexText, project: parseCodexMessage, recordLimit: codexRecordLimit, questionCall: codexQuestionCall,turnBoundary:codexTurnBoundary }, read: async () => null },
+    history: { file: { turns: extractCodexPromptContext, relevant: line => /"type"\s*:\s*"(?:user_message|agent_message|task_complete|message|compacted)"/.test(line), locate: context => context.nativeId ? findCodexRollout(context.nativeId) : Promise.resolve(null), decode: decodeCodexText, project: parseCodexMessage, replacementHistory: codexHistoryReplacementIndexes, recordLimit: codexRecordLimitWithCompaction, questionCall: codexQuestionCall,turnBoundary:codexTurnBoundary }, read: async () => null },
     runtime: { subscribe: (context, changed) => subscribeCodexRuntimeSignals(id => { if (id === context.nativeId)
             changed(); }), read: async (context) => {
             const module=await import('./runtime.js');
@@ -92,5 +94,9 @@ export const codexAdapter: AgentAdapter = {
             return { nativeId, freshMode: 'resume', streamSocket:terminalSocket, bindingPath: context.session.id ? manager.codexBindingPath(context.session.id) : undefined };
         }, ready: async (context) => { if (context.session.id)
             (await import('../../session-manager.js')).watchCodexSessionBinding(context.session.id); } },
-    commands: { configure: (command, projectPath, streamSocket) => streamSocket && projectPath ? command.replace(/(?:^|\s)(?:--dangerously-bypass-approvals-and-sandbox|--yolo)(?=\s|$)/g, ' ').trim() + ` --cd ${shellSingleQuote(projectPath)}` : codexPermissions(command), build: codexCommand, permissions: codexPermissions, sharedResources: codexResources },
+    commands: { configure: (command, projectPath, streamSocket) => {
+        const configured=applyManagedCommandDefaults('codex',command);
+        return streamSocket && projectPath ? configured.replace(/(?:^|\s)(?:--dangerously-bypass-approvals-and-sandbox|--yolo)(?=\s|$)/g, ' ').trim() + ` --cd ${shellSingleQuote(projectPath)}` : codexPermissions(configured);
+    }, build: codexCommand, permissions: codexPermissions, sharedResources: codexResources },
+    management: codexManagement({ launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) }),
 };

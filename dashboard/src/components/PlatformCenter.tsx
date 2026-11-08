@@ -1,10 +1,11 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { Activity, Bot, KeyRound, Settings, ShieldCheck, Users, X, FolderKey, Loader2 } from 'lucide-react';
+import { Activity, Bot, KeyRound, Settings, ShieldCheck, Users, X, FolderKey, Loader2, SlidersHorizontal } from 'lucide-react';
 import type { AuthUser } from '../lib/api';
 import { hasPermission, usePermissions } from '../lib/permissions';
 import { ChangePassword, ProjectAccessAdmin } from './AccountModal';
 import { RoleManagementPanel } from './RoleManagementPanel';
 import { UserManagementPanel } from './UserManagementPanel';
+import './PlatformCenter.css';
 
 const PlatformAi = lazy(() => import('./PlatformAiPanel').then((module) => ({ default: module.PlatformAiPanel })));
 
@@ -12,6 +13,7 @@ const SettingsPanel = lazy(() => import('./SettingsModal').then((module) => ({ d
 const AgentGuide = lazy(() => import('./AgentGuide').then((module) => ({ default: module.AgentGuideModal })));
 const Monitor = lazy(() => import('./AdminMonitorPage').then((module) => ({ default: module.AdminMonitorPage })));
 const SharedResources = lazy(() => import('./SharedResourcesPanel').then(module => ({ default: module.SharedResourcesPanel })));
+const AgentManagement = lazy(() => import('./AgentManagementPanel').then(module => ({ default: module.AgentManagementPanel })));
 
 const sections = [
   { id: 'account', label: '我的账户', group: '个人', icon: KeyRound, permission: null },
@@ -21,6 +23,7 @@ const sections = [
   { id: 'projects', label: '项目授权', group: '权限中心', icon: FolderKey, permission: 'project_access' },
   { id: 'monitor', label: '用户监控', group: '平台', icon: Activity, permission: 'monitor' },
   { id: 'assistant', label: '平台 AI', group: '平台', icon: Bot, permission: 'agent_api' },
+  { id: 'agents', label: 'Agent 配置', group: '平台', icon: SlidersHorizontal, permission: 'settings' },
   { id: 'settings', label: '平台设置', group: '平台', icon: Settings, permission: 'settings' },
   { id: 'agent', label: 'Agent API', group: '集成', icon: Bot, permission: 'agent_api' },
 ] as const;
@@ -55,7 +58,7 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
   }, [onClose]);
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center p-4 sm:p-6" style={{ background: 'rgba(0,0,0,.58)' }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="platform-center-title" className="flex h-[92vh] w-full flex-col overflow-hidden rounded-xl border shadow-2xl" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}>
+      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="platform-center-title" className="flex h-[calc(100dvh-24px)] w-full max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-xl border shadow-2xl" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}>
         <header className="flex shrink-0 items-center justify-between border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}><div className="flex items-center gap-3"><ShieldCheck className="h-5 w-5" style={{ color: 'var(--accent)' }} /><div><h2 id="platform-center-title" className="text-base font-semibold">平台管理</h2><p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>账户、授权、监控与配置</p></div></div><button ref={closeButtonRef} aria-label="关闭平台管理" onClick={onClose} className="rounded-md p-2 hover:opacity-70"><X className="h-5 w-5" /></button></header>
         {query.isPending ? <div className="flex flex-1 items-center justify-center gap-2 text-sm"><Loader2 className="h-4 w-4 animate-spin" />正在加载权限…</div> : query.error ? <div role="alert" className="p-6 text-sm">权限加载失败：{query.error.message}<button onClick={() => { void query.refetch(); }} className="ml-3 underline">重试</button></div> : (
           <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
@@ -67,7 +70,7 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
             </nav>
             <div className="min-h-0 min-w-0 flex-1 flex flex-col">
               <div className="shrink-0 border-b px-5 py-3 text-sm font-semibold" style={{ borderColor: 'var(--border)' }}>{current.label}</div>
-              <div className="min-h-0 flex-1 overflow-hidden">
+              <div className="platform-center-scroll min-h-0 flex-1 overflow-y-auto">
                 <Suspense fallback={<div className="p-6 text-sm">正在加载…</div>}>
                   {current.id === 'account' && <div className="page-content py-4 sm:py-6"><p className="mb-5 text-sm">{currentUser.display_name || currentUser.username} <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>@{currentUser.username}</span></p><div className="mb-6 flex flex-wrap gap-2">{query.data?.roles.map((role) => <span key={role.id} className="rounded border px-2 py-1 text-xs" style={{ borderColor: 'var(--border)' }}>{role.name}</span>)}</div><ChangePassword /></div>}
                   {current.id === 'resources' && <SharedResources userId={currentUser.id} />}
@@ -75,6 +78,7 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
                   {current.id === 'roles' && query.data && <RoleManagementPanel permissions={query.data} />}
                   {current.id === 'projects' && <div className="page-content h-full overflow-auto py-4 sm:py-6"><ProjectAccessAdmin readOnly={!hasPermission(query.data, 'project_access', 'write')} /></div>}
                   {current.id === 'settings' && <SettingsPanel embedded onClose={onClose} readOnly={!hasPermission(query.data, 'settings', 'write')} />}
+                  {current.id === 'agents' && <AgentManagement readOnly={!hasPermission(query.data, 'settings', 'write')} />}
                   {current.id === 'assistant' && query.data && <PlatformAi permissions={query.data} onOpenSession={onOpenSession} />}
                   {current.id === 'agent' && <AgentGuide embedded onClose={onClose} />}
                   {current.id === 'monitor' && <Monitor onBack={onClose} onOpenSession={onOpenSession} canWrite={hasPermission(query.data, 'monitor', 'write')} canDelete={hasPermission(query.data, 'monitor', 'delete')} canOpenSessions={currentUser.role === 'admin'} />}

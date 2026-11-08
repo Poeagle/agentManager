@@ -46,4 +46,10 @@ describe('manual-only recovery', () => {
     expect(fork).not.toHaveBeenCalled();
     expect(getDb().prepare("SELECT status FROM sessions WHERE id='ended'").get()).toEqual({ status: 'failed' });
   });
+  it('preserves sessions for agent adapters that are no longer installed', async () => {
+    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,cli_type,agent_id) VALUES ('legacy-dsh','project','old task','detached','dsh','dsh')`).run();
+    await expect(cleanupStaleRunningSessions()).resolves.toBeUndefined();
+    expect(getDb().prepare("SELECT status,agent_id FROM sessions WHERE id='legacy-dsh'").get()).toEqual({ status: 'detached', agent_id: 'dsh' });
+    expect(fork).not.toHaveBeenCalled();
+  });
 });

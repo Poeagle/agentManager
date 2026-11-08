@@ -1,4 +1,4 @@
-import { describe, expect, it,vi } from 'vitest';
+import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {
   buildSessionCommand,
   codexIdentityFlags,
@@ -9,6 +9,12 @@ import {
 const SESSION_ID = '019f7f9d-6ad7-7110-8615-8410399fd932';
 
 describe('CLI command construction', () => {
+  beforeEach(() => {
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET', '');
+    vi.stubEnv('AGENTMANAGER_CODEX_PROVIDER_ENGINES', '');
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
   it('attaches a remote terminal without submitting the initial task again',()=>{
     vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/chat-preview.sock');
     try {

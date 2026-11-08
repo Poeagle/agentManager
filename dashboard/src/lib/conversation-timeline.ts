@@ -18,6 +18,19 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
     }
     if(index>=0){
       const old=result[index];
+      // A reconnect/history frame can contain an older snapshot of the same
+      // live message. Never replace already streamed text with a shorter
+      // non-sequenced projection; the next authoritative sequenced history
+      // frame will still be allowed to settle it.
+      if(old.role==='assistant'&&message.role==='assistant'&&old.text.length>message.text.length
+        &&message.phase!=='error'){
+        // A native assistant item is append-only from the UI's perspective.
+        // History/reconnect projections may lag the live stream even when they
+        // carry a sequence number; never regress visible text.
+        result[index]={...old,...message,text:old.text,content_blocks:old.content_blocks?.length?old.content_blocks:message.content_blocks,
+          streaming:message.streaming??(message.sequence!==undefined?false:old.streaming),optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
+        continue;
+      }
       result[index]={...old,...message,streaming:message.streaming??(message.sequence!==undefined?false:old.streaming),optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
       continue;
     }

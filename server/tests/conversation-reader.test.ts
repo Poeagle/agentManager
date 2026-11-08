@@ -10,13 +10,13 @@ import {agentRoutes} from '../src/routes/agent.js';
 import {conversationMessageId,readConversation} from '../src/services/conversation-reader.js';
 
 const id='019ff001-6666-7666-8666-666666666666';
-let app:FastifyInstance,cleanup:()=>void,file:string,cookie:string;
+let app:FastifyInstance,cleanup:()=>void,file:string,cookie:string,dbDirPath:string;
 const binding={cli_type:'codex' as const,codex_session_id:id,claude_session_id:null,project_path:'/project'};
 const line=(type:string,payload:unknown,stamp='2026-10-29T10:00:00Z')=>JSON.stringify({type,timestamp:stamp,payload})+'\n';
 const user=(text:string,stamp?:string)=>line('event_msg',{type:'user_message',message:text},stamp);
 const final=(text:string,stamp?:string)=>line('event_msg',{type:'task_complete',last_agent_message:text},stamp);
 beforeEach(async()=>{
-  const db=createTestDatabase();cleanup=db.cleanup;vi.stubEnv('CODEX_HOME',db.dir);mkdirSync(join(db.dir,'sessions'));
+  const db=createTestDatabase();cleanup=db.cleanup;dbDirPath=db.dir;vi.stubEnv('CODEX_HOME',db.dir);mkdirSync(join(db.dir,'sessions'));
   file=join(db.dir,'sessions',`rollout-test-${id}.jsonl`);
   const owner=createUser({username:'chat-owner',password:'password1',role:'admin'});
   cookie=`agentmanager_session=${createSession(owner.id)}`;
@@ -72,6 +72,100 @@ describe('public conversation pages',()=>{
     const page=await app.inject({url:'/api/sessions/chat/conversation',headers:{cookie}});
     expect(page.json().messages[0].text).toBe(notice);expect(page.body).not.toContain('PRIVATE');
     expect((await readConversation(binding,{after:initial.messages[0].id})).messages.map(message=>message.text)).toEqual(['Start up','What would you like me to do?']);
+  });
+  it('returns Codex compaction summaries with an explicit presentation marker',async()=>{
+    const summary='Another language model summarized the session.\n\n## Current Goal\nFix duplicate messages.';
+    const before=line('event_msg',{type:'token_count',info:{last_token_usage:{total_tokens:141965}}});
+    const compacted=line('compacted',{message:summary,window_id:'window-7',latest_token_usage_record:{usage:{input_tokens:141965}},replacement_history:[{role:'assistant',content:'private archived transcript'}]},'2026-10-29T10:05:00Z');
+    const after=line('event_msg',{type:'token_count',info:{last_token_usage:{total_tokens:7212}}});
+    writeFileSync(file,before+compacted+after+user('继续'));
+    const result=await readConversation(binding);
+    expect(result.messages[0]).toMatchObject({role:'assistant',phase:'commentary',presentation:'compaction_summary',text:summary,timestamp:'2026-10-29T10:05:00Z'});
+    expect(result.messages[0].compaction).toEqual({before_tokens:141965,after_tokens:7212,duration_ms:null});
+    expect(result.messages[0].id).toBe(conversationMessageId('compaction','assistant','compaction:window-7'));
+    expect(JSON.stringify(result)).not.toContain('private archived transcript');
+    expect(result.messages[1]).toMatchObject({role:'user',text:'继续'});
+  });
+  it('restores Codex history from a provider-specific CODEX_HOME after a cold start',async()=>{
+    const providerHome=join(dbDirPath,'provider-xindu');
+    mkdirSync(join(providerHome,'sessions'),{recursive:true});
+    const providerFile=join(providerHome,'sessions',`rollout-xindu-${id}.jsonl`);
+    writeFileSync(providerFile,
+      line('event_msg',{type:'user_message',message:'xindu 的历史问题'})+
+      line('response_item',{type:'message',id:'xindu-answer',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'xindu 的历史答复'}]}));
+    getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run('agent_management_codex',JSON.stringify({
+      defaults:{},
+      providers:[{id:'xindu',name:'Xindu',kind:'responses',enabled:true,fields:{codexHome:providerHome,models:['model-a']}}],
+    }));
+
+    const result=await readConversation(binding);
+    expect(result.messages.map(message=>message.text)).toEqual(['xindu 的历史问题','xindu 的历史答复']);
+  });
+  it('uses the compaction response item identity so its ordinary echo cannot become a duplicate conclusion',async()=>{
+    const summary='## Current Goal\nKeep the compaction summary visible as a summary card.';
+    const responseId='compaction-response-7';
+    const compacted=line('compacted',{message:summary,window_id:'window-7',compaction_response_id:responseId});
+    const echoed=line('response_item',{type:'message',id:responseId,role:'assistant',phase:'final_answer',content:[{type:'output_text',text:summary}]});
+    const followup=line('response_item',{type:'message',id:'after-compaction',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'后续回答只显示一次。'}]});
+    writeFileSync(file,user('继续')+compacted+echoed+followup);
+    const messages=(await readConversation(binding)).messages;
+    expect(messages.filter(message=>message.text===summary)).toHaveLength(1);
+    expect(messages.find(message=>message.text===summary)).toMatchObject({presentation:'compaction_summary',phase:'commentary',id:conversationMessageId('compaction','assistant',responseId)});
+    expect(messages.filter(message=>message.text==='后续回答只显示一次。')).toHaveLength(1);
+    expect(messages.at(-1)).toMatchObject({text:'后续回答只显示一次。',phase:'final'});
+  });
+  it('rebuilds Codex history from replacement_history and renders its summary only as a summary card',async()=>{
+    const staleUser=line('response_item',{type:'message',id:'stale-user',role:'user',content:[{type:'input_text',text:'旧问题'}]});
+    const staleAnswer=line('response_item',{type:'message',id:'stale-answer',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'旧结论'}]});
+    writeFileSync(file,staleUser+staleAnswer);
+    const first=await readConversation(binding);
+    const staleCursor=first.messages.at(-1)!.id;
+    const summary='压缩后的会话摘要';
+    const compacted=line('compacted',{
+      message:summary,
+      window_id:'window-real-shape',
+      compaction_response_id:'resp_compaction_7',
+      replacement_history:[
+        {type:'message',id:'canonical-user',role:'user',content:[{type:'input_text',text:'保留的问题'}]},
+        {type:'message',id:'canonical-answer',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'保留的结论'}]},
+        {type:'message',id:'msg_summary_7',role:'user',content:[{type:'input_text',text:summary}]},
+      ],
+    });
+    appendFileSync(file,compacted+user('继续')+final('继续后的答复'));
+
+    const delta=await readConversation(binding,{after:staleCursor});
+    expect(delta.reset).toBe(true);
+    expect(delta.messages.map(message=>message.text)).toEqual(['保留的问题','保留的结论',summary,'继续','继续后的答复']);
+    expect(delta.messages[2]).toMatchObject({
+      role:'assistant',
+      phase:'commentary',
+      presentation:'compaction_summary',
+      id:conversationMessageId('','assistant','msg_summary_7'),
+    });
+    expect(delta.messages.filter(message=>message.text===summary)).toHaveLength(1);
+    expect(delta.messages.some(message=>message.text==='旧结论')).toBe(false);
+    expect(delta.messages.at(-1)).toMatchObject({phase:'final',text:'继续后的答复'});
+  });
+  it('keeps the compaction summary after replacement history when the summary has no native message copy',async()=>{
+    const summary='压缩内容';
+    const compacted=line('compacted',{message:summary,window_id:'window-no-summary-item',replacement_history:[
+      {type:'message',id:'replacement-user',role:'user',content:[{type:'input_text',text:'保留的问题'}]},
+      {type:'message',id:'replacement-answer',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'保留的答复'}]},
+    ]});
+    writeFileSync(file,compacted+user('继续'));
+    const messages=(await readConversation(binding)).messages;
+    expect(messages.map(message=>message.text)).toEqual(['保留的问题','保留的答复',summary,'继续']);
+    expect(messages[2]).toMatchObject({presentation:'compaction_summary',phase:'commentary'});
+  });
+  it('projects Codex replacement history COMPACTION_SUMMARY markers as cards, not user or conclusion messages',async()=>{
+    const compacted=line('compacted',{message:'',replacement_history:[
+      {type:'message',id:'before-summary',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'压缩前保留的回答'}]},
+      {type:'message',id:'summary-marker',role:'user',content:[{type:'input_text',text:'<COMPACTION_SUMMARY>\n压缩后需要继续的上下文'}]},
+    ]});
+    writeFileSync(file,compacted+user('继续'));
+    const messages=(await readConversation(binding)).messages;
+    expect(messages.map(message=>message.text)).toEqual(['压缩前保留的回答','压缩后需要继续的上下文','继续']);
+    expect(messages[1]).toMatchObject({role:'assistant',phase:'commentary',presentation:'compaction_summary'});
   });
   it('shows only an actual shared-resource developer notice while hiding other developer context and tool lookalikes',async()=>{
     const notice='<octoally_shared_resources>\n凭据文件：/work/.env\n通过本地程序按需读取凭据。\n</octoally_shared_resources>';
@@ -229,6 +323,28 @@ describe('public conversation pages',()=>{
     expect(answers).toHaveLength(1);
     expect(answers[0]).toMatchObject({role:'assistant',phase:'final',text:answer,turn_id:turn});
     expect((await readConversation(binding)).messages.filter(message=>message.role==='assistant')).toEqual(answers);
+  });
+  it('deduplicates item_completed and response_item copies by their shared native item ID',async()=>{
+    const turn='shared-native-item-turn',item='msg_09fffff6ba8453c7016aefe4fd49c887d09617620d9fcedbb',answer='只显示一次的最终回复';
+    const started=line('event_msg',{type:'task_started',turn_id:turn});
+    const completed=line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'AgentMessage',id:item,content:[{type:'Text',text:answer}]}},'2026-10-29T10:00:05Z');
+    const durable=line('response_item',{type:'message',id:item,role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:turn},content:[{type:'output_text',text:answer}]},'2026-10-29T10:00:05Z');
+    const finished=line('event_msg',{type:'task_complete',turn_id:turn,last_agent_message:answer},'2026-10-29T10:00:06Z');
+    writeFileSync(file,started+user('问题')+completed+durable+finished);
+    const answers=(await readConversation(binding)).messages.filter(message=>message.role==='assistant');
+    expect(answers).toHaveLength(1);
+    expect(answers[0]).toMatchObject({text:answer,phase:'final',turn_id:turn});
+  });
+  it('uses the completed Codex UserMessage identity instead of rendering its response_item copy twice',async()=>{
+    const turn='input-turn',item='01a1b938-c01c-7512-b8dd-e82285b0991a',client='eb84cac63fa00b11cecd8739d9472cae';
+    const text='[Image #1]刚才又发现一个问题，就是另一个会话输出过程中重新覆盖了内容，是你刚才重新部署的缘故吗\n';
+    const started=line('event_msg',{type:'task_started',turn_id:turn});
+    const durable=line('response_item',{type:'message',id:'msg_01a1b938-c01c-7512-b8dd-e81da9939816',role:'user',internal_chat_message_metadata_passthrough:{turn_id:turn},content:[{type:'input_text',text},{type:'input_text',text:'<image name=[Image #1] path="/tmp/input.png">'},{type:'input_image',image_url:'data:image/png;base64,hidden'},{type:'input_text',text:'</image>'}]});
+    const completed=line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'UserMessage',id:item,client_id:client,content:[{type:'text',text},{type:'local_image',path:'/tmp/input.png'}]}});
+    writeFileSync(file,started+durable+completed);
+    const users=(await readConversation(binding)).messages.filter(message=>message.role==='user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({id:conversationMessageId(turn,'user',item),text:text.trimEnd(),turn_id:turn,client_id:client,image_paths:['/tmp/input.png']});
   });
   it('does not promote an unphased item when task completion names a different later item',async()=>{
     const turn='implicit-interleaved-turn',answer='本轮最终答复';

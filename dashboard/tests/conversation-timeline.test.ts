@@ -12,6 +12,14 @@ describe('deterministic conversation timeline',()=>{
     expect(mergeConversationTimeline(settled,[message('two','assistant',{text:'相同',sequence:30})])).toHaveLength(2);
   });
 
+  it('never regresses an assistant message when a stale history frame is shorter',()=>{
+    const live=message('native','assistant',{text:'已经输出到这里',streaming:true});
+    const stale=message('native','assistant',{text:'已经输出',phase:'final',sequence:20});
+    const result=mergeConversationTimeline([live],[stale]);
+    expect(result).toHaveLength(1);
+    expect(result[0].text).toBe('已经输出到这里');
+  });
+
   it('settles one optimistic send only through its client identity',()=>{
     const pending=message('pending','user',{text:'继续',client_id:'client-one',optimistic:{afterSequence:10}});
     const native=message('native','user',{text:'继续',client_id:'client-one',sequence:20});
