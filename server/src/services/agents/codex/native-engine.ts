@@ -7,6 +7,7 @@ import { config } from '../../../config.js';
 import { findExecutable } from '../management-cli.js';
 import type { AgentOperationReporter } from '../types.js';
 import { nativeEngineConfig } from './native-engine-config.js';
+import { processAlive, terminateDetachedProcess } from './process-lifecycle.js';
 
 export interface NativeCodexEngineState {
   socket: string;
@@ -66,15 +67,6 @@ function writeMetadata(value: EngineMetadata | null): void {
   }
   mkdirSync(engineDirectory(), { recursive: true, mode: 0o700 });
   writeFileSync(metadataPath(), `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-}
-
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function socketPid(socket: string): number | null {
@@ -188,16 +180,7 @@ async function adoptRunningEngine(): Promise<NativeCodexEngineState> {
 }
 
 async function terminateEngine(pid: number | null): Promise<void> {
-  if (pid && processAlive(pid)) {
-    try { process.kill(pid, 'SIGTERM'); } catch { /* process already exited */ }
-  }
-  const deadline = Date.now() + 2_500;
-  while (pid && processAlive(pid) && Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-  if (pid && processAlive(pid)) {
-    try { process.kill(pid, 'SIGKILL'); } catch { /* process already exited */ }
-  }
+  if (pid) await terminateDetachedProcess(pid, '原生 Codex Engine');
   try { unlinkSync(nativeCodexEngineSocket()); } catch { /* socket already absent */ }
   writeMetadata(null);
 }
