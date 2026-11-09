@@ -91,6 +91,13 @@ export function CodexAccountProviderEditor({environment,onSaved,onDirtyChange,on
         </div>
       </fieldset>
 
+      <section className="codex-account-card codex-account-preflight" aria-label="账号连接预检">
+        <div className="codex-account-card-heading"><div><h4><PlugZap size={15}/>连接预检</h4><p className="codex-account-description">检查 SSH、已有登录、模型列表，以及测试项目的读写权限。</p></div><button type="button" className="agent-management-button" aria-label="预检连接、已有登录、模型与项目" disabled={readOnly||!!working||!ready} onClick={()=>void check()}>{working==='check'?<Loader2 size={14} className="animate-spin"/>:<PlugZap size={14}/>} {working==='check'?'正在预检…':'预检连接'}</button></div>
+        <label className="agent-management-field"><span>测试项目 <small>可选</small></span><select aria-label="账号预检测试项目" disabled={!!working} value={projectId} onChange={event=>setProjectId(event.target.value)}><option value="">仅验证连接、已有登录和模型</option>{projects.data?.projects.map(project=><option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+        {checks.length>0&&<EnvironmentChecks checks={checks}/>}
+        {models.length>0&&<div className="codex-account-models" aria-label="已检测可用模型"><small>检测到 {models.length} 个可用模型</small><div>{models.map(model=><span key={model}>{model}</span>)}</div></div>}
+      </section>
+
       <fieldset className="codex-account-card" disabled={readOnly||!!working}>
         <legend><TerminalSquare size={15}/>Codex 环境</legend><p className="codex-account-description">沿用目标系统用户的登录状态。未登录时，预检会提示该用户先运行 codex login。</p>
         <div className="codex-account-grid">
@@ -104,12 +111,6 @@ export function CodexAccountProviderEditor({environment,onSaved,onDirtyChange,on
         <div className="codex-account-users">{query.isPending?<p>正在读取平台用户…</p>:query.isError?<p role="alert" className="agent-management-error">无法读取用户列表，请刷新页面后重试。</p>:members.length?members.map(user=><label key={user.id} className={`codex-account-user${users.includes(user.id)?' selected':''}`}><input type="checkbox" aria-label={`允许 ${user.username} 使用`} checked={users.includes(user.id)} onChange={event=>setUsers(old=>event.target.checked?[...old,user.id]:old.filter(id=>id!==user.id))}/><span className="codex-account-avatar">{(user.display_name||user.username).slice(0,1).toUpperCase()}</span><span><strong>{user.display_name||user.username}</strong><small>{user.username}</small></span></label>):<p className="codex-account-description">暂无普通用户，此 Provider 仅管理员可用。</p>}</div>
       </fieldset>
 
-      <section className="codex-account-card codex-account-preflight" aria-label="账号连接预检">
-        <div className="codex-account-card-heading"><div><h4><PlugZap size={15}/>连接预检</h4><p className="codex-account-description">检查 SSH、已有登录、模型列表，以及测试项目的读写权限。</p></div><button type="button" className="agent-management-button" aria-label="预检连接、已有登录、模型与项目" disabled={!!working||!ready} onClick={()=>void check()}>{working==='check'?<Loader2 size={14} className="animate-spin"/>:<PlugZap size={14}/>} {working==='check'?'正在预检…':'预检连接'}</button></div>
-        <label className="agent-management-field"><span>测试项目 <small>可选</small></span><select aria-label="账号预检测试项目" disabled={!!working} value={projectId} onChange={event=>setProjectId(event.target.value)}><option value="">仅验证连接、已有登录和模型</option>{projects.data?.projects.map(project=><option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
-        {checks.length>0&&<EnvironmentChecks checks={checks}/>}
-        {models.length>0&&<div className="codex-account-models" aria-label="已检测可用模型"><small>检测到 {models.length} 个可用模型</small><div>{models.map(model=><span key={model}>{model}</span>)}</div></div>}
-      </section>
       {error&&<p role="alert" className="agent-management-error">{error}</p>}
       {environment&&(usage.busy||!usage.verified)&&<p className="agent-management-hint">{usage.isPending?'正在检查 Provider 运行状态…':usage.busy&&usage.verified?'有任务正在执行，完成后可保存设置。':'暂时无法确认运行状态，请检查连接后再保存。'}</p>}
       <footer className="codex-account-footer"><label className="codex-account-enabled"><input type="checkbox" checked={enabled} disabled={readOnly||!!working} onChange={event=>{setEnabled(event.target.checked);setChecks([]);setModels([]);}}/>启用此 Provider</label><div>{onCancel&&<button type="button" className="agent-management-button" disabled={!!working} onClick={onCancel}>取消编辑</button>}{environment&&<button type="button" className="agent-management-button agent-management-button-danger" aria-label="删除账号 Provider" disabled={readOnly||!!working} onClick={()=>setRemoveConfirm(true)}><Trash2 size={14}/>删除 Provider</button>}<button type="submit" className="agent-management-button agent-management-button-primary" aria-label="保存账号 Provider" disabled={readOnly||!!working||!name||!ready||!!environment&&(usage.busy||!usage.verified)}>{working==='save'?<Loader2 size={14} className="animate-spin"/>:<Save size={14}/>} {working==='save'?'正在保存…':'保存 Provider'}</button></div></footer>

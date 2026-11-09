@@ -294,6 +294,9 @@ export interface AgentApiContract {
 export const api = {
   codexEnvironments: {
     quota:(id:string)=>fetchJSON<AgentQuotaResponse>('/codex/environments/'+encodeURIComponent(id)+'/quota'),
+    configFiles:(id:string)=>fetchJSON<{files:Array<{id:string;path:string;exists:boolean;label:string;description:string;format:string}>}>('/codex/environments/'+encodeURIComponent(id)+'/config-files'),
+    readConfigFile:(id:string,file:string)=>fetchJSON<{content:string;revision:string;exists:boolean}>('/codex/environments/'+encodeURIComponent(id)+'/config-files?file='+encodeURIComponent(file)),
+    writeConfigFile:(id:string,file:string,content:string,revision:string)=>fetchJSON<{content:string;revision:string;exists:boolean}>('/codex/environments/'+encodeURIComponent(id)+'/config-files',{method:'PUT',body:JSON.stringify({file,content,revision})}),
     details:(id:string)=>fetchJSON<{details:CodexAccountDetails}>('/codex/environments/'+encodeURIComponent(id)+'/details'),
     remove:(id:string)=>fetchJSON<{ok:boolean}>('/codex/environments/'+encodeURIComponent(id),{method:'DELETE'}),
     usage:(id:string)=>fetchJSON<{tabs:ProviderUsageTab[];busy:boolean;verified:boolean}>('/codex/environments/'+encodeURIComponent(id)+'/usage'),
@@ -1325,5 +1328,5 @@ export interface CodexAccountDetails {
   authentication:{status:string;type:string|null;email:string|null;plan:string|null};
   config:{path:string|null;exists:boolean;notice:string|null};
   settings:Record<string,string|null>;
-  models:Array<{model:string;name?:string;description?:string;defaultEffort?:string}>;
+  models:Array<{model:string;name?:string;description?:string;defaultEffort?:string;efforts?:Array<{value:string;description:string}>;service_tiers?:Array<{id:string;name:string;description:string}>;default_service_tier?:string|null}>;
 }

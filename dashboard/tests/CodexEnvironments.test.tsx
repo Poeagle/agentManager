@@ -19,6 +19,7 @@ describe('Codex environments UI',()=>{
   fireEvent.change(screen.getByRole('textbox',{name:'账号 Provider 名称'}),{target:{value:'Private'}});
   fireEvent.change(screen.getByRole('textbox',{name:'系统用户名'}),{target:{value:'ymchen'}});
   fireEvent.change(screen.getByRole('combobox',{name:'SSH 认证方式'}),{target:{value:'key'}});
+  expect(screen.getByLabelText('账号连接预检').compareDocumentPosition(screen.getByRole('textbox',{name:'Codex 命令'})) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   const command=screen.getByRole('textbox',{name:'Codex 命令'});
   fireEvent.change(command,{target:{value:'codex --dangerously-bypass-approvals-and-sandbox'}});
   expect(command).toHaveAttribute('aria-invalid','true');expect(screen.getByRole('alert')).toHaveTextContent('例如填写 codex');

@@ -7,7 +7,7 @@ vi.mock('child_process',async original=>{(state.execute as any)[Symbol.for('node
 vi.mock('../src/services/agents/codex/process-lifecycle.js',()=>({waitForSocketReady:state.ready}));
 import {readFile,stat} from 'fs/promises';
 import {execFileSync} from 'child_process';
-import {sshArguments,sshEnvironment,accountCommand,ensureAccountTransport,closeAccountTransports,validateAccountConnection} from '../src/services/agents/codex/account-transport.js';
+import {sshArguments,sshEnvironment,accountCommand,accountCommandInput,ensureAccountTransport,closeAccountTransports,validateAccountConnection} from '../src/services/agents/codex/account-transport.js';
 const connection={username:'fixture',port:22,identityFile:'',codexCommand:'codex',codexHome:''};
 let db:ReturnType<typeof createTestDatabase>;
 beforeEach(()=>{
@@ -17,6 +17,14 @@ beforeEach(()=>{
 });
 afterEach(async()=>{await closeAccountTransports();db.cleanup();});
 describe('same-machine account SSH transport',()=>{
+ it('sends file content through SSH stdin and decodes split UTF-8 output',async()=>{
+  let input='';state.forward.mockImplementation((_command:string,args:string[])=>{
+   expect(args.join(' ')).not.toContain('文件内容');
+   const child:any=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=vi.fn();
+   child.stdin.on('data',(chunk:Buffer)=>{input+=chunk.toString();});child.stdin.on('end',()=>{const bytes=Buffer.from('中文');child.stdout.write(bytes.subarray(0,2));child.stdout.write(bytes.subarray(2));child.stdout.end();child.emit('close',0);});return child;
+  });
+  expect(await accountCommandInput(connection,'print("ok")','文件内容')).toBe('中文');expect(input).toBe('文件内容');
+ });
  it.each(['codex --dangerously-bypass-approvals-and-sandbox','/home/fixture/.local/bin/codex --dangerously-bypass-approvals-and-sandbox'])('explains that %s contains CLI flags before any SSH attempt',value=>{expect(()=>validateAccountConnection({...connection,codexCommand:value})).toThrow('不要附加启动参数');expect(state.execute).not.toHaveBeenCalled();});
  it.each(['codex','/home/fixture/.local/bin/codex'])('accepts the executable %s without requiring interactive CLI flags',value=>{expect(validateAccountConnection({...connection,codexCommand:value}).codexCommand).toBe(value);});
 

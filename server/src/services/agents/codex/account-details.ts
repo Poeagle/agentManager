@@ -42,7 +42,7 @@ print(json.dumps({'executable':command,'version':result.stdout.strip()[:200],'ho
     id,checked_at:new Date().toISOString(),
     executable:text(metadata.executable),version:text(metadata.version),home:text(metadata.home),
     engine:{state:'connected',pid:Number.isSafeInteger(metadata.pid)?metadata.pid:null},
-    authentication:{status:auth.account||auth.requiresOpenaiAuth===false?'authenticated':'unauthenticated',type:text(auth.account?.type),email:text(auth.account?.email),plan:text(auth.account?.planType)},
+    authentication:{status:auth.account?'authenticated':auth.requiresOpenaiAuth===false?'not_applicable':'unauthenticated',type:text(auth.account?.type),email:text(auth.account?.email),plan:text(auth.account?.planType)},
     config:{path:text(metadata.config?.path),exists:metadata.config?.exists===true,notice:text(metadata.config?.notice)},
     settings:Object.fromEntries(['model','model_provider','model_reasoning_effort','approval_policy','sandbox_mode'].map(key=>[key,text(metadata.settings?.[key])])),
     models,

@@ -1,3 +1,4 @@
+import {ProviderUsageTable} from './ProviderUsageTable';
 import {ProviderDeleteDialog} from './ProviderDeleteDialog';
 import {useProviderUsage} from '../lib/use-provider-usage';
 import {CodexAccountProvider} from './CodexAccountProvider';
@@ -1512,7 +1513,8 @@ function ProviderEditor({
           </span>
         </div>
       )}
-      <section className="agent-management-section" aria-label="Provider 接入信息"><dl className="agent-management-kv"><div><dt>接入类型</dt><dd>{provider.id==='native'?'本机默认 Codex':'API Key / Responses API'}</dd></div><div><dt>认证方式</dt><dd>{liveProvider.authentication.method}</dd></div>{endpoint&&<div><dt>接口地址</dt><dd>{String(endpoint)}</dd></div>}<div><dt>默认模型</dt><dd>{liveProvider.defaultModel||'使用当前环境默认模型'}</dd></div><div><dt>可用模型</dt><dd>{liveProvider.models.length?liveProvider.models.join('、'):'尚未检测模型'}</dd></div></dl></section>
+      {!readOnly&&<ProviderUsageTable environmentId={provider.id==='native'?'native':'provider:'+provider.id}/>}
+      <section className="agent-management-section" aria-label="Provider 接入信息"><dl className="agent-management-kv"><div><dt>接入类型</dt><dd>{provider.id==='native'?'本机默认 Codex':'API Key / Responses API'}</dd></div><div><dt>认证方式</dt><dd>{liveProvider.authentication.method}</dd></div><div><dt>认证状态</dt><dd>{liveProvider.authentication.status==='authenticated'?'已认证':liveProvider.authentication.status==='missing'?'未认证':'未知'}</dd></div><div><dt>Engine 状态</dt><dd>{liveProvider.statusText}</dd></div><div><dt>Engine PID</dt><dd>{liveProvider.pid??'未知'}</dd></div><div><dt>CODEX_HOME</dt><dd>{liveProvider.codexHome||'未提供'}</dd></div>{endpoint&&<div><dt>接口地址</dt><dd>{String(endpoint)}</dd></div>}<div><dt>默认模型</dt><dd>{liveProvider.defaultModel||'使用当前环境默认模型'}</dd></div><div><dt>可用模型</dt><dd>{liveProvider.models.length?liveProvider.models.join('、'):'尚未检测模型'}</dd></div></dl></section>
       {provider.id==='native'&&<AgentDefaultsEditor
         agentId={agentId}
         defaults={defaults}

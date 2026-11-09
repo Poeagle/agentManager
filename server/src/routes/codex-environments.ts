@@ -1,3 +1,4 @@
+import {accountConfigFiles} from '../services/agents/codex/account-config-files.js';
 import {runInCodexEngine} from '../services/agents/codex/engine-context.js';
 import {withCodexConnection} from '../services/agents/codex/stream.js';
 import {codexWeeklyQuotaFromResponse} from '../services/agents/codex/quota.js';
@@ -38,6 +39,14 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
     return {quota:codexWeeklyQuotaFromResponse(await request('account/rateLimits/read',{}))};
    }));
   }catch{return reply.code(503).send({error:'账号额度暂不可用'});}
+ });
+ app.get<{Params:{id:string};Querystring:{file?:string}}>('/codex/environments/:id/config-files',async(req,reply)=>{
+  if(!requirePermission(req,reply,'settings','write'))return;
+  reply.header('Cache-Control','private, no-store');try{return await accountConfigFiles(req.params.id,req.query.file?'read':'list',req.query.file);}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'读取文件失败'});}
+ });
+ app.put<{Params:{id:string};Body:{file?:string;content?:unknown;revision?:unknown}}>('/codex/environments/:id/config-files',async(req,reply)=>{
+  if(!requirePermission(req,reply,'settings','write'))return;
+  reply.header('Cache-Control','private, no-store');try{return await accountConfigFiles(req.params.id,'write',req.body?.file,req.body?.content,req.body?.revision);}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'保存文件失败'});}
  });
  app.get<{Params:{id:string}}>('/codex/environments/:id/details',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{return {details:await readCodexAccountDetails(req.params.id)};}catch(error){return reply.code(errorStatus(error)).send({error:error instanceof Error?error.message:'无法读取该用户的 Codex 详情',stage:(error as {stage?:string}).stage||'account_details'});}});
  app.get<{Params:{id:string}}>('/codex/environments/:id/usage',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{getCodexEnvironment(req.params.id);return await environmentUsage(req.params.id);}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'读取占用情况失败'});}});

@@ -712,3 +712,9 @@
 .codex-account-model-cards p { margin: 9px 0 6px; font-size: 11px; line-height: 1.6; color: var(--text-secondary); }
 .codex-account-model-cards small { font-size: 10px; color: var(--text-muted); }
 @media (max-width: 560px) { .codex-account-detail-grid { grid-template-columns: 1fr; } }
+
+.codex-account-quota {display:flex;align-items:center;gap:8px;font-variant-numeric:tabular-nums;}
+.codex-account-quota progress {width:84px;height:5px;appearance:none;border:0;border-radius:999px;overflow:hidden;background:var(--border);}
+.codex-account-quota progress::-webkit-progress-bar {background:var(--border);}
+.codex-account-quota progress::-webkit-progress-value {background:var(--accent);border-radius:999px;}
+.codex-account-quota progress::-moz-progress-bar {background:var(--accent);border-radius:999px;}

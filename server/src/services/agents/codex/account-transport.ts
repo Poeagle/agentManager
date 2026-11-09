@@ -57,6 +57,22 @@ export async function accountCommand(connection:AccountConnection,script:string,
  try {const result=await execute('ssh',[...sshArguments(connection),`${connection.username}@127.0.0.1`,`python3 -c ${shellSingleQuote(script)}`],{timeout,maxBuffer:128*1024,env:await sshEnvironment(connection)});return result.stdout.trim();}
  catch(e){if(e instanceof AccountConnectionError)throw e;const error=e as {stderr?:string;code?:string};if(error.code==='ENOENT')throw new AccountConnectionError('ssh_executable','平台运行环境找不到 ssh 命令');throw connectionFailure(error.stderr||String(error.code||''));}
 }
+/** Send file content over stdin; it never appears in command arguments or logs. */
+export async function accountCommandInput(connection:AccountConnection,script:string,input:string):Promise<string> {
+ const env=await sshEnvironment(connection);
+ return new Promise((resolve,reject)=>{
+  const child=spawn('ssh',[...sshArguments(connection),`${connection.username}@127.0.0.1`,`python3 -c ${shellSingleQuote(script)}`],{stdio:['pipe','pipe','pipe'],env});
+  let output='',error='',settled=false;
+  const finish=(failure?:Error)=>{if(settled)return;settled=true;clearTimeout(timer);failure?reject(failure):resolve(output.trim());};
+  const timer=setTimeout(()=>{child.kill('SIGTERM');finish(new Error('账号文件操作超时'));},15000);
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data',(chunk:string)=>{output+=chunk;if(Buffer.byteLength(output)>768*1024){child.kill('SIGTERM');finish(new Error('账号文件响应过大'));}});
+  child.stderr.on('data',(chunk:Buffer)=>{if(error.length<4096)error+=chunk.toString();});
+  child.on('error',()=>finish(new Error('无法启动 SSH 文件操作')));
+  child.on('close',code=>finish(code===0?undefined:connectionFailure(error)));
+  child.stdin.on('error',()=>{});child.stdin.end(input);
+ });
+}
 const launchScript=(c:AccountConnection,tag:string)=>`import os,pathlib,shutil,socket,subprocess,json,sys
 home=pathlib.Path.home()
 os.environ['PATH']=str(home/'.local/bin')+':/usr/local/bin:/usr/bin:/bin:'+os.environ.get('PATH','')
