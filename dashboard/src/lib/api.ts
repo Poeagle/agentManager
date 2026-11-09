@@ -293,6 +293,7 @@ export interface AgentApiContract {
 // Sessions
 export const api = {
   codexEnvironments: {
+    quota:(id:string)=>fetchJSON<AgentQuotaResponse>('/codex/environments/'+encodeURIComponent(id)+'/quota'),
     remove:(id:string)=>fetchJSON<{ok:boolean}>('/codex/environments/'+encodeURIComponent(id),{method:'DELETE'}),
     usage:(id:string)=>fetchJSON<{tabs:ProviderUsageTab[];busy:boolean;verified:boolean}>('/codex/environments/'+encodeURIComponent(id)+'/usage'),
     closeTabs:(id:string,ids:string[])=>fetchJSON<{results:Array<{id:string;ok:boolean;error?:string}>}>('/codex/environments/'+encodeURIComponent(id)+'/close-tabs',{method:'POST',body:JSON.stringify({session_ids:ids})}),

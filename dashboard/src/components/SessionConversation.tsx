@@ -543,6 +543,7 @@ export function SessionConversation({
   const canRead = hasPermission(permissions.data, "agent_api");
   const canSend = hasPermission(permissions.data, "agent_api", "write");
   const canAttach = agentSupports(session, "attachments");
+  const [toolbarTarget, setToolbarTarget] = useState<HTMLDivElement | null>(null);
   const [messages, setMessages] = useState<TimelineMessage[]>([]);
   const [autoRetries, setAutoRetries] = useState<
     Record<string, ConversationRetry>
@@ -2361,7 +2362,8 @@ export function SessionConversation({
                 disabled={!canAttach || !canSend || ended || sending}
                 onFiles={attachments.enqueue}
               />
-              <span>Enter 发送 · Shift+Enter 换行</span>
+              <div className="session-chat-controls-slot" ref={setToolbarTarget} />
+              <span className="session-chat-send-hint">Enter 发送 · Shift+Enter 换行</span>
               <div className="session-chat-send-actions">
                 <button
                   type="button"
@@ -2408,6 +2410,7 @@ export function SessionConversation({
             !!page?.native_id &&
             canRead && (
               <ConversationControls
+                toolbarTarget={toolbarTarget}
                 sessionId={session.id}
                 active={active}
                 busy={busy || sending || resuming}

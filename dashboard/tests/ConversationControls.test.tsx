@@ -10,6 +10,17 @@ beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}})
 afterEach(()=>client.clear());
 const mount=()=>render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active/></QueryClientProvider>);
 describe('compact conversation controls',()=>{
+ it('places editable controls in the composer slot and keeps runtime information below',async()=>{
+  const slot=document.createElement('div');document.body.append(slot);
+  const view=render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active toolbarTarget={slot} onNewConversation={async()=>{}}/></QueryClientProvider>);
+  expect(await within(slot).findByLabelText('选择模型')).toBeVisible();
+  expect(within(slot).getByLabelText('选择推理强度')).toBeVisible();
+  expect(within(slot).getByRole('button',{name:'压缩'})).toBeVisible();
+  expect(within(slot).getByRole('button',{name:'新开'})).toBeVisible();
+  expect(within(slot).queryByText('/project')).not.toBeInTheDocument();
+  expect(within(view.container).getByText('/project')).toBeVisible();
+  view.unmount();expect(slot).toBeEmptyDOMElement();slot.remove();
+ });
  it('updates usage immediately without an extra controls request and ignores an older metadata refresh',async()=>{
   mount();await screen.findByText('上下文 30%');const calls=vi.mocked(api.agent.controls).mock.calls.length;
   await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-02T03:20:55Z',usage:{last:{total_tokens:2400,input_tokens:2000,cached_input_tokens:1900,output_tokens:400},total:{total_tokens:402400,input_tokens:400000,cached_input_tokens:380000},window:40000}});});

@@ -1,9 +1,12 @@
+import {runInCodexEngine} from '../services/agents/codex/engine-context.js';
+import {withCodexConnection} from '../services/agents/codex/stream.js';
+import {codexWeeklyQuotaFromResponse} from '../services/agents/codex/quota.js';
 import {environmentUsage,closeEnvironmentTabs} from '../services/agents/codex/environment-usage.js';
 import type {FastifyPluginAsync} from 'fastify';
 import {getDb} from '../db/index.js';
 import {requirePermission,userHasPermission} from '../services/rbac.js';
 import {userCanUseSessionTool,userCanUseToolForProject} from '../auth.js';
-import {allCodexEnvironments,getCodexEnvironment,environmentConnection,visibleCodexEnvironments,saveCodexEnvironment,deleteCodexEnvironment,preflightEnvironment,sessionEnvironmentId} from '../services/agents/codex/environments.js';
+import {engineForEnvironment,allCodexEnvironments,getCodexEnvironment,environmentConnection,visibleCodexEnvironments,saveCodexEnvironment,deleteCodexEnvironment,preflightEnvironment,sessionEnvironmentId} from '../services/agents/codex/environments.js';
 import {assertEnvironmentUse,canControlEnvironment} from '../services/agents/environment-access.js';
 import {readEngineModelsForEnvironment} from '../services/agents/codex/controls.js';
 import {getSession} from '../services/session-manager.js';
@@ -19,6 +22,19 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   }
   if(!requirePermission(req,reply,'agent_api','read'))return;
   return {environments:visibleCodexEnvironments(req.user!.id)};
+ });
+ app.get<{Params:{id:string}}>('/codex/environments/:id/quota',async(req,reply)=>{
+  if(!requirePermission(req,reply,'agent_api','read'))return;
+  const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.kind==='account'&&e.enabled);
+  if(!account)return reply.code(404).send({error:'账号不存在或无权访问'});
+  try {
+   const engine=await engineForEnvironment(account.id);
+   return await runInCodexEngine(engine,()=>withCodexConnection(async request=>{
+    const auth=await request('account/read',{});
+    if(!auth.account||auth.account.type==='apiKey')return {quota:null,reason:'not_applicable',message:'此账号未登录 ChatGPT，无法读取订阅额度'};
+    return {quota:codexWeeklyQuotaFromResponse(await request('account/rateLimits/read',{}))};
+   }));
+  }catch{return reply.code(503).send({error:'账号额度暂不可用'});}
  });
  app.get<{Params:{id:string}}>('/codex/environments/:id/usage',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{getCodexEnvironment(req.params.id);return await environmentUsage(req.params.id);}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'读取占用情况失败'});}});
  app.post<{Params:{id:string};Body:{session_ids?:unknown}}>('/codex/environments/:id/close-tabs',async(req,reply)=>{
