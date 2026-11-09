@@ -380,3 +380,11 @@
 .session-chat-pending-attention{display:flex;align-items:center;gap:12px}
 .session-chat-pending-attention button{background:none;border:1px solid var(--border);color:inherit;border-radius:5px;padding:3px 8px;cursor:pointer}
 .session-chat-pending-attention button:disabled{opacity:.5;cursor:wait}
+
+/* Keep composer actions compact; only the send hint consumes spare space. */
+.session-chat-input-tools {justify-content:flex-start;gap:8px;}
+.session-chat-controls-slot {min-width:0;max-width:100%;}
+.conversation-toolbar {gap:8px;margin-top:0;}
+.conversation-control-select select {field-sizing:content;}
+.session-chat-input-tools>.session-chat-send-hint {flex:0 0 auto;margin-left:auto;margin-right:0;text-align:right;}
+.session-chat-send-actions {margin-left:0;}

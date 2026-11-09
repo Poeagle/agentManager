@@ -1,3 +1,4 @@
+import * as stream from '../src/services/agents/codex/stream.js';
 import Fastify,{type FastifyInstance} from 'fastify';
 import websocket from '@fastify/websocket';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
@@ -24,6 +25,17 @@ describe('Codex account environments and platform ACLs',()=>{
  });
  afterEach(async()=>{await app.close();db.cleanup();vi.restoreAllMocks();});
  const create=()=>saveCodexEnvironment({name:'ymchen Codex',connection,allowed_user_ids:[owner.id]});
+ it('reads quota through the selected account and denies unassigned, disabled and native environments',async()=>{
+  const e=await create();
+  const request=vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt'}}:{rateLimits:{secondary:{usedPercent:30,windowDurationMins:10080}}});
+  const read=vi.spyOn(stream,'withCodexConnection').mockImplementation(async callback=>callback(request as any));
+  const allowed=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/quota`,headers:{cookie:cookies.owner}});
+  expect(allowed.statusCode).toBe(200);expect(allowed.json().quota.remainingPercent).toBe(70);
+  expect(transport.ensureAccountTransport).toHaveBeenCalledWith(e.id,expect.objectContaining({username:'ymchen'}));read.mockClear();
+  for(const id of [e.id,'native','missing']){const denied=await app.inject({url:`/api/codex/environments/${encodeURIComponent(id)}/quota`,headers:{cookie:cookies.other}});expect(denied.statusCode).toBe(404);}
+  getDb().prepare('UPDATE agent_environments SET enabled=0 WHERE id=?').run(e.id);
+  const disabled=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/quota`,headers:{cookie:cookies.owner}});expect(disabled.statusCode).toBe(404);expect(read).not.toHaveBeenCalled();
+ });
  it('keeps existing native and API Provider access without requiring account login',()=>{
   updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'gateway',name:'API gateway',kind:'responses',enabled:true,fields:{models:['model-a'],baseUrl:'https://example.invalid/v1'}}]}));
   const visible=visibleCodexEnvironments(other.id);expect(visible.map(e=>e.id)).toEqual(['native','provider:gateway']);expect(visible[1].kind).toBe('provider');
