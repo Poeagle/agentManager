@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'http';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { delimiter, join } from 'path';
 import { createRequire } from 'module';
@@ -14,6 +14,7 @@ import {
   restartNativeCodexEngine,
   stopNativeCodexEngine,
 } from '../src/services/agents/codex/native-engine.js';
+import { resolveUnixSocketPath } from '../src/services/agents/codex/process-lifecycle.js';
 import { configuredCodexEngines } from '../src/services/agents/codex/engine-context.js';
 import { codexManagement, restoreManagedCodexProviders } from '../src/services/agents/codex/management.js';
 import { managedCodexSocket } from '../src/services/agents/codex/provider-config.js';
@@ -76,6 +77,14 @@ describe('AgentManager-managed Codex Engines', () => {
       status: 'ready',
       managed: true,
     });
+  });
+
+  it('resolves Codex daemon socket symlinks before process inspection', () => {
+    const target = join(root, 'daemon.sock');
+    const socket = join(root, 'codex.sock');
+    writeFileSync(target, '');
+    symlinkSync(target, socket);
+    expect(resolveUnixSocketPath(socket)).toBe(realpathSync(target));
   });
 
   it('prefers an AgentManager-managed Provider route over a legacy environment route', () => {

@@ -7,7 +7,7 @@ import { config } from '../../../config.js';
 import { findExecutable } from '../management-cli.js';
 import type { AgentOperationReporter } from '../types.js';
 import { nativeEngineConfig } from './native-engine-config.js';
-import { processAlive, terminateDetachedProcess } from './process-lifecycle.js';
+import { processAlive, resolveUnixSocketPath, terminateDetachedProcess } from './process-lifecycle.js';
 
 export interface NativeCodexEngineState {
   socket: string;
@@ -70,8 +70,9 @@ function writeMetadata(value: EngineMetadata | null): void {
 }
 
 function socketPid(socket: string): number | null {
-  if (!existsSync(socket)) return null;
-  const result = spawnSync('lsof', ['-nP', '-Fp', socket], { encoding: 'utf8' });
+  const resolved = resolveUnixSocketPath(socket);
+  if (!resolved) return null;
+  const result = spawnSync('lsof', ['-nP', '-Fp', resolved], { encoding: 'utf8' });
   const pid = Number(result.stdout?.match(/^p(\d+)$/m)?.[1]);
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
@@ -158,6 +159,9 @@ export function inspectNativeCodexEngine(): NativeCodexEngineState {
   const pid = socketOwner || processPidForSocket(socket);
   const metadata = readMetadata();
   if (socketOwner && processAlive(socketOwner)) return stateFromProcess(socketOwner, metadata);
+  if (metadata?.socket === socket && processAlive(metadata.pid) && resolveUnixSocketPath(socket)) {
+    return stateFromProcess(metadata.pid, metadata);
+  }
   if (!config.isDev && config.takeoverCodexLaunchAgents && launchAgentLoaded(legacyNativeLabel)) {
     return {
       socket,
