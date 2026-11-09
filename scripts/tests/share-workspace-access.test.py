@@ -2,8 +2,13 @@ import importlib.util,os,pathlib,stat,tempfile,unittest
 spec=importlib.util.spec_from_file_location('sharing',pathlib.Path(__file__).parents[1]/'share-workspace-access.py');sharing=importlib.util.module_from_spec(spec);spec.loader.exec_module(sharing)
 class WorkspaceSharing(unittest.TestCase):
  def test_owner_and_peer_get_equal_rights_without_making_plain_files_executable(self):
-  result=sharing.shared_acl('user::r--\ngroup::---\nother::---\n',os.getuid(),[os.getuid(),424242],mode=0o400)
+  result=sharing.shared_acl('user::rw-\ngroup::---\nother::---\n',os.getuid(),[os.getuid(),424242],mode=0o600)
   self.assertIn('user::rw-',result);self.assertIn('user:424242:rw-',result);self.assertIn('other::---',result)
+ def test_preserves_git_style_readonly_files_and_requires_equal_effective_permissions(self):
+  result=sharing.shared_acl('user::r--\ngroup::r--\nother::r--\n',os.getuid(),[os.getuid(),424242],mode=0o444)
+  self.assertIn('user::r--',result);self.assertIn('user:424242:r--',result)
+  self.assertTrue(sharing.has_shared_access(result,os.getuid(),[os.getuid(),424242],4))
+  self.assertFalse(sharing.has_shared_access('user::r--\nuser:424242:rw-\ngroup::---\nmask::rw-\nother::---\n',os.getuid(),[os.getuid(),424242],4))
  def test_mask_expansion_does_not_enable_old_other_user_rights(self):
   result=sharing.shared_acl('user::rw-\nuser:424243:rwx\ngroup::rwx\nmask::r--\nother::---\n',os.getuid(),[os.getuid(),424242],mode=0o640)
   self.assertIn('user:424243:r--',result);self.assertIn('group::r--',result);self.assertIn('user:424242:rw-',result)

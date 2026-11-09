@@ -79,7 +79,7 @@ def shared_acl(text, owner, users, directory=False, mode=0o600, default=False):
     # Expanding the mask must not activate previously masked rights of others.
     for key in list(entries):
         if key[0] == 'group' or key[0] == 'user' and key[1]: entries[key] &= old_mask
-    needed = 7 if directory or default or mode & 0o111 else 6
+    needed = 7 if directory or default else (mode >> 6) & 7
     for uid in users: entries[('user', str(uid))] = needed
     if default or owner in users: entries[('user', '')] = needed
     mask = needed
@@ -160,8 +160,10 @@ def restore(backup):
 def has_shared_access(text, owner, users, needed):
     entries = parse_acl(text); mask = entries.get(('mask', ''), 7)
     for uid in users:
-        actual = entries.get(('user', ''), 0) if uid == owner else entries.get(('user', str(uid)), entries.get(('other', ''), 0)) & mask
-        if actual & needed != needed: return False
+        if uid == owner: actual = entries.get(('user', ''), 0)
+        elif ('user', str(uid)) in entries: actual = entries[('user', str(uid))] & mask
+        else: actual = entries.get(('other', ''), 0)
+        if actual != needed: return False
     return True
 
 
@@ -173,7 +175,7 @@ def audit(root, users):
             fd = open_entry(path, info)
             try:
                 directory = stat.S_ISDIR(info.st_mode)
-                needed = 7 if directory or info.st_mode & 0o111 else 6
+                needed = 7 if directory else (info.st_mode >> 6) & 7
                 good = has_shared_access(acl.read(fd), info.st_uid, users, needed)
                 if directory: good = good and has_shared_access(acl.read(fd, DEFAULT), -1, users, 7)
                 if not good: restricted += 1
