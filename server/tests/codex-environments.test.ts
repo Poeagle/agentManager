@@ -4,6 +4,7 @@ import websocket from '@fastify/websocket';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
 import {authHook,createUser,createSession,setProjectToolAccess,userCanUseSessionTool} from '../src/auth.js';
+import {renameCodexProvider} from '../src/services/agents/codex/management.js';
 import {getDb} from '../src/db/index.js';
 import {codexEnvironmentRoutes} from '../src/routes/codex-environments.js';
 import {sessionRoutes} from '../src/routes/sessions.js';
@@ -52,6 +53,16 @@ describe('Codex account environments and platform ACLs',()=>{
   const response=await app.inject({url:'/api/codex/environments?management=true',headers:{cookie:cookies.admin}});
   expect(response.statusCode).toBe(200);expect(response.json().environments.find((e:any)=>e.id===environment.id).connection.codexCommand).toContain('--old-flag');
   await expect(saveCodexEnvironment({name:environment.name,connection,allowed_user_ids:[owner.id]},environment.id)).resolves.toMatchObject({connection:{codexCommand:'codex'}});
+ });
+ it('uses one native and API provider name across configuration and authorized environment lists',async()=>{
+  updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'gateway',name:'Old API',kind:'responses',enabled:true,fields:{models:['m'],baseUrl:'https://example.invalid/v1'}}]}));
+  await saveCodexEnvironment({name:'Old native',allowed_user_ids:null},'native');
+  await saveCodexEnvironment({name:'Old API',allowed_user_ids:null},'provider:gateway');
+  renameCodexProvider('native','Native renamed');renameCodexProvider('gateway','API renamed');
+  const response=await app.inject({url:'/api/codex/environments',headers:{cookie:cookies.admin}});
+  expect(response.json().environments).toEqual(expect.arrayContaining([expect.objectContaining({id:'native',name:'Native renamed'}),expect.objectContaining({id:'provider:gateway',name:'API renamed'})]));
+  await saveCodexEnvironment({name:'Native again'},'native');await saveCodexEnvironment({name:'API again'},'provider:gateway');
+  expect(visibleCodexEnvironments(admin.id)).toEqual(expect.arrayContaining([expect.objectContaining({id:'native',name:'Native again'}),expect.objectContaining({id:'provider:gateway',name:'API again'})]));
  });
  it('keeps existing native and API Provider access without requiring account login',()=>{
   updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'gateway',name:'API gateway',kind:'responses',enabled:true,fields:{models:['model-a'],baseUrl:'https://example.invalid/v1'}}]}));

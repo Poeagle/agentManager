@@ -2,7 +2,7 @@ import {assertEnvironmentIdle,assertEnvironmentUnused} from './environment-usage
 import {randomUUID} from 'crypto';
 import {getDb} from '../../../db/index.js';
 import {config} from '../../../config.js';
-import {readAgentManagement,sealAgentSecret,openAgentSecret} from '../management-store.js';
+import {readAgentManagement,updateAgentManagement,sealAgentSecret,openAgentSecret} from '../management-store.js';
 import {assertEnvironmentUse,canUseEnvironment,environmentRecord,validateEnvironmentUsers,environmentAccessChanged} from '../environment-access.js';
 import {ensureAccountTransport,validateAccountConnection,closeAccountTransport,checkAccountProject,type AccountConnection} from './account-transport.js';
 import {configuredCodexEngines,defaultCodexEngine,runInCodexEngine,type CodexEngine} from './engine-context.js';
@@ -21,8 +21,10 @@ export function allCodexEnvironments():CodexEnvironment[] {
  const records=getDb().prepare("SELECT * FROM agent_environments WHERE agent_id='codex'").all() as import('../environment-access.js').EnvironmentRecord[];
  const overrides=new Map(records.map(r=>[r.id,r]));
  const permissions=(id:string)=>{const r=overrides.get(id);return {enabled:r?.enabled!==0,allowed_user_ids:r?.allowed_user_ids?JSON.parse(r.allowed_user_ids) as string[]:null};};
- const result:CodexEnvironment[]=[{id:'native',name:overrides.get('native')?.name||'本机默认 Codex',kind:'native',...permissions('native')}];
- for(const p of readAgentManagement('codex').providers)result.push({id:'provider:'+p.id,name:overrides.get('provider:'+p.id)?.name||p.name,kind:'provider',provider:p.id,...permissions('provider:'+p.id),enabled:p.enabled&&permissions('provider:'+p.id).enabled});
+ const management=readAgentManagement('codex');
+ const nativeName=typeof management.defaults.nativeDisplayName==='string'?management.defaults.nativeDisplayName.trim():'';
+ const result:CodexEnvironment[]=[{id:'native',name:nativeName||overrides.get('native')?.name||'本机默认 Codex',kind:'native',...permissions('native')}];
+ for(const p of management.providers)result.push({id:'provider:'+p.id,name:p.name||overrides.get('provider:'+p.id)?.name||p.id,kind:'provider',provider:p.id,...permissions('provider:'+p.id),enabled:p.enabled&&permissions('provider:'+p.id).enabled});
  for(const r of records.filter(r=>r.kind==='account'&&!JSON.parse(r.config).retired))result.push({id:r.id,name:r.name,kind:'account',enabled:!!r.enabled,allowed_user_ids:r.allowed_user_ids?JSON.parse(r.allowed_user_ids):[],connection:publicAccountConnection(JSON.parse(r.config))});
  return result;
 }
@@ -53,7 +55,10 @@ export async function saveCodexEnvironment(input:unknown,id?:string):Promise<Cod
  const {password:_,passwordConfigured:__,...publicConnection}=connection||{};
  const storedConnection={...publicConnection,...encryptedPassword?{encryptedPassword}:{}};
  const enabled=p.enabled===undefined?(old?.enabled??true):p.enabled;
- getDb().prepare(`INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES(?,'codex',?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,enabled=excluded.enabled,config=excluded.config,allowed_user_ids=excluded.allowed_user_ids`).run(environmentId,name,kind,enabled?1:0,JSON.stringify(storedConnection),allowed===null?null:JSON.stringify(allowed));
+ getDb().transaction(()=>{
+  getDb().prepare(`INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES(?,'codex',?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,enabled=excluded.enabled,config=excluded.config,allowed_user_ids=excluded.allowed_user_ids`).run(environmentId,name,kind,enabled?1:0,JSON.stringify(storedConnection),allowed===null?null:JSON.stringify(allowed));
+  if(typeof p.name==='string'&&kind!=='account')updateAgentManagement('codex',current=>kind==='native'?{...current,defaults:{...current.defaults,nativeDisplayName:name}}:{...current,providers:current.providers.map(provider=>provider.id===old?.provider?{...provider,name}:provider)});
+ })();
  environmentAccessChanged();
  if(kind==='account'&&(!old||JSON.stringify(priorConfig)!==JSON.stringify(storedConnection)||!enabled))await closeAccountTransport(environmentId);
  return getCodexEnvironment(environmentId);
