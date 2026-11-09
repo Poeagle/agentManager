@@ -26,6 +26,13 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app.close();vi.unstubAllEnvs();cleanup();});
 describe('public conversation pages',()=>{
+  it('links duplicate native record statistics to the displayed conclusion',async()=>{
+    const contents=[{type:'output_text',text:'最终答复'}],turn='turn-stats';
+    const usage={total_token_usage:{total_tokens:200},last_token_usage:{total_tokens:200,input_tokens:180,cached_input_tokens:50,output_tokens:20,reasoning_output_tokens:5}};
+    writeFileSync(file,line('event_msg',{type:'task_started',turn_id:turn},'2026-10-29T10:00:00Z')+line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'AgentMessage',id:'answer',phase:'final_answer',content:contents}},'2026-10-29T10:01:04Z')+line('response_item',{type:'message',role:'assistant',id:'answer',phase:'final_answer',content:contents},'2026-10-29T10:01:04.001Z')+line('event_msg',{type:'token_count',info:usage},'2026-10-29T10:01:05Z')+line('event_msg',{type:'task_complete',turn_id:turn,last_agent_message:'最终答复'},'2026-10-29T10:01:06Z'));
+    const page=await readConversation(binding);const answer=page.messages.find(message=>message.id===conversationMessageId(turn,'assistant','answer'));
+    expect(answer).toBeDefined();expect(page.statistics?.find(stat=>stat.message_id===answer?.id)).toMatchObject({conclusion:{shared_messages:1,elapsed_ms:64001,tokens:{total_tokens:200}}});
+  });
   it('returns a complete baseline when a history file is replaced even if its old cursor survives',async()=>{
     writeFileSync(file,user('第一问')+final('第一答'));
     const first=await readConversation(binding);const cursor=first.messages.at(-1)!.id;
