@@ -34,6 +34,14 @@ export class ConversationProjection {
         changed.push(value);
       }
     }
+    // History supplies durable ordering after live items have been projected.
+    // Reorder only sequenced slots so pending live items keep their positions.
+    if(incoming.some(item=>item.sequence!==undefined)) {
+      const sequenced=this.messages.filter(item=>item.sequence!==undefined).sort((a,b)=>a.sequence!-b.sequence!);
+      let next=0;
+      this.messages=this.messages.map(item=>item.sequence===undefined?item:sequenced[next++]);
+      this.byId=new Map(this.messages.map((item,index)=>[item.id,index]));
+    }
     return changed;
   }
 

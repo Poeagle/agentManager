@@ -51,7 +51,13 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
     remove.add(keep===old?index:old);byClient.set(item.client_id,keep);
   });
   const settled=result.filter((_item,index)=>!remove.has(index));
-  return [...settled.filter(item=>!item.queued),...settled.filter(item=>item.queued)];
+  // Live events can arrive before their durable sequence. Once history supplies
+  // sequence numbers, repair the relative order of those known identities.
+  // Keep unsequenced optimistic/live entries in their existing slots.
+  const ordered=settled.filter(item=>!item.queued);
+  const sequenced=ordered.filter(item=>item.sequence!==undefined).sort((a,b)=>a.sequence!-b.sequence!);
+  let next=0;
+  return [...ordered.map(item=>item.sequence===undefined?item:sequenced[next++]),...settled.filter(item=>item.queued)];
 }
 
 export function conversationClientId() {

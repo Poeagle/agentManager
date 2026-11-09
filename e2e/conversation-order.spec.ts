@@ -61,6 +61,23 @@ test('sending, early native echoes, late history and reload preserve causal mess
     push(JSON.stringify({type:'snapshot',messages:[user,{...answer,streaming:false}],busy:round===1,stage:round===1?'tools':'idle',turn_id:turn}));
     await expectBodies(expected);
   }
+  // A delayed progress event can arrive after the final answer. Both items
+  // already exist when their authoritative history order becomes available.
+  const progress={id:id('t2','assistant','progress'),role:'assistant',phase:'commentary',text:'正在整理',timestamp:'2026-01-01T00:00:00Z',turn_id:'t2'};
+  const final={id:id('t2','assistant','final'),role:'assistant',phase:'final',text:'整理完成',timestamp:'2026-01-01T00:00:01Z',turn_id:'t2'};
+  push(JSON.stringify({type:'snapshot',messages:[final,progress],busy:false,stage:'idle'}));
+  await expectBodies([...expected,final.text,progress.text]);
+  appendFileSync(log,record('t2','assistant','progress',progress.text,progress.timestamp).replace('"phase":"final_answer"','"phase":"commentary"')+record('t2','assistant','final',final.text,final.timestamp));
+  const history=await expect.poll(async()=>{
+    const response=await page.request.get(`/api/sessions/${session.id}/conversation`);
+    const data=await response.json();return data.messages.filter((item:{id:string})=>[progress.id,final.id].includes(item.id));
+  }).toHaveLength(2).then(async()=>{
+    const response=await page.request.get(`/api/sessions/${session.id}/conversation`);const data=await response.json();
+    return data.messages.filter((item:{id:string})=>[progress.id,final.id].includes(item.id));
+  });
+  push(JSON.stringify({type:'history',messages:history}));
+  expected.push(progress.text,final.text);await expectBodies(expected);
+  push(JSON.stringify({type:'history',messages:history}));await expectBodies(expected);
   await page.getByRole('button',{name:'原始终端',exact:true}).click();await page.getByRole('button',{name:'对话',exact:true}).click();await expectBodies(expected);
   await page.reload();await expect(chat.getByText('事件通道已连接')).toBeVisible();await expectBodies(expected);
   await page.screenshot({path:testInfo.outputPath('message-order.png')});
