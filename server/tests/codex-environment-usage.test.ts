@@ -1,0 +1,21 @@
+import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
+import {getDb} from '../src/db/index.js';
+import {createTestDatabase} from './helpers/database.js';
+const state=vi.hoisted(()=>({busy:new Set<string>(),failed:new Set<string>(),kill:vi.fn()}));
+vi.mock('../src/services/session-manager.js',()=>({killSession:state.kill,waitForStoppedSessionLifecycle:vi.fn(),isSessionActive:vi.fn(()=>false)}));
+vi.mock('../src/services/agents/codex/environments.js',()=>({engineForEnvironment:vi.fn(async()=>({socket:'/fixture'}))}));
+vi.mock('../src/services/agents/codex/engine-context.js',()=>({runInCodexEngine:(_engine:unknown,action:()=>unknown)=>action()}));
+vi.mock('../src/services/agents/codex/stream.js',()=>({withCodexConnection:async(action:any)=>action(async(_method:string,p:any)=>({thread:{id:p.threadId,model:'fixture-model',status:{type:state.busy.has(p.threadId)?'active':'idle'}}}))}));
+import {environmentTabs,environmentUsage,assertEnvironmentIdle,assertEnvironmentUnused,closeEnvironmentTabs} from '../src/services/agents/codex/environment-usage.js';
+let db:ReturnType<typeof createTestDatabase>;
+const one='019ff001-1111-7111-8111-111111111111',two='019ff001-2222-7222-8222-222222222222';
+beforeEach(()=>{db=createTestDatabase();state.busy.clear();state.failed.clear();vi.clearAllMocks();getDb().prepare("INSERT INTO projects(id,name,path) VALUES('p','Project','/fixture/project')").run();for(const user of ['one','two'])getDb().prepare("INSERT INTO users(id,username,password_hash,role) VALUES(?,?,?,'member')").run(user,user,'fixture-not-used');for(const [id,user,native,status] of [['s1','one',one,'running'],['s2','two',two,'cancelled']]){getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,agent_id,native_session_id,agent_environment_id,created_by_user_id) VALUES(?,'p',?,?, 'codex','codex',?,'account:shared',?)").run(id,'task '+id,status,native,user);getDb().prepare('INSERT INTO user_ui_state(user_id,key,value) VALUES(?,?,?)').run(user,'project:p',JSON.stringify({terminalInstances:[{id,label:'Tab '+id}],activeTerminalId:id}));}
+ state.kill.mockImplementation(async(id:string)=>{if(state.failed.has(id))throw Error('stop failed');getDb().prepare("UPDATE sessions SET status='cancelled' WHERE id=?").run(id);return true;});});
+afterEach(()=>db.cleanup());
+describe('all-user provider occupancy and bulk close',()=>{
+ it('includes idle and ended-but-open tabs across all users and blocks deletion',()=>{expect(environmentTabs('account:shared').map(t=>t.id)).toEqual(['s1','s2']);expect(()=>assertEnvironmentUnused('account:shared')).toThrow('2 个标签页');});
+ it('permits changes while every occupying tab is idle but rejects a running model task',async()=>{await expect(assertEnvironmentIdle('account:shared')).resolves.toBeUndefined();state.busy.add(two);await expect(assertEnvironmentIdle('account:shared')).rejects.toThrow('正在执行');const usage=await environmentUsage('account:shared');expect(usage.busy).toBe(true);expect(usage.tabs[1]).toMatchObject({busy:true,model:'fixture-model'});});
+ it('closes selected tabs across users while preserving all conversation rows',async()=>{expect(await closeEnvironmentTabs('account:shared',['s1','s2'])).toEqual([{id:'s1',ok:true},{id:'s2',ok:true}]);expect(environmentTabs('account:shared')).toEqual([]);expect(getDb().prepare('SELECT count(*) n FROM sessions').get()).toEqual({n:2});expect(()=>assertEnvironmentUnused('account:shared')).not.toThrow();});
+ it('closes one selected tab and still blocks Provider deletion while another user retains a tab',async()=>{expect(await closeEnvironmentTabs('account:shared',['s1'])).toEqual([{id:'s1',ok:true}]);expect(environmentTabs('account:shared').map(t=>t.id)).toEqual(['s2']);expect(()=>assertEnvironmentUnused('account:shared')).toThrow('1 个标签页');expect(state.kill).not.toHaveBeenCalledWith('s2');});
+ it('keeps failed tabs and reports partial success without closing an unrelated provider',async()=>{state.failed.add('s2');const result=await closeEnvironmentTabs('account:shared',['s1','s2']);expect(result[0].ok).toBe(true);expect(result[1]).toMatchObject({id:'s2',ok:false});expect(environmentTabs('account:shared').map(t=>t.id)).toEqual(['s2']);await expect(closeEnvironmentTabs('account:other',['s2'])).rejects.toThrow('不属于');});
+});

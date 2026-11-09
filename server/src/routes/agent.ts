@@ -1,3 +1,5 @@
+import {closeAccountTransports} from '../services/agents/codex/account-transport.js';
+import {canControlEnvironment,assertEnvironmentUse,watchSessionEnvironment} from '../services/agents/environment-access.js';
 import {AgentSubmissionError} from '../services/agents/submission.js';
 import {sendAgentQuota} from '../services/agents/quota-response.js';
 import {withTerminalInput} from '../services/agents/terminal-input.js';
@@ -532,6 +534,7 @@ export function getAgentApiContract() {
 }
 
 export const agentRoutes: FastifyPluginAsync = async (app) => {
+  app.addHook('onClose',async()=>{await closeAccountTransports();});
   app.addHook('onClose',async()=>{for(const descriptor of agentDescriptors())await getAgent(descriptor.id).stream.shutdown?.();});
   const retryAgent=(nativeId:string)=>{
     const rows=getDb().prepare('SELECT * FROM sessions WHERE native_session_id=? OR codex_session_id=? OR claude_session_id=?').all(nativeId,nativeId,nativeId) as import('../services/session-manager.js').Session[];
@@ -739,9 +742,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const session=getSession(req.params.id);
     if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
     const adapter=agentForSession(session),context=sessionAgentContext(session);if(!context.nativeId)return reply.code(409).send({error:'当前会话尚未绑定原生会话'});
-    const shared=req.user!.role==='admin'&&(!session.created_by_user_id||isAdmin(session.created_by_user_id));
+    const shared=session.agent_environment_id?canControlEnvironment(session.agent_environment_id,req.user!.id):req.user!.role==='admin'&&(!session.created_by_user_id||isAdmin(session.created_by_user_id));
     if(req.query.refresh!==undefined&&req.query.refresh!=='true')return reply.code(400).send({error:'Invalid refresh flag'});
-    const data=await adapter.controls.read({...context,sharedAccess:shared,force:req.query.refresh==='true'});
+    const data=await adapter.controls.read({...context,actorUserId:req.user!.id,sharedAccess:shared,force:req.query.refresh==='true'});
     let pending=readModelPreference(req.user!.id,session.id);const submittedAt=modelPreferenceSubmittedAt(req.user!.id,session.id);
     if(pending&&adapter.controls.confirmed?.(context,pending,data,submittedAt||'')){saveModelPreference(req.user!.id,session.id,null);pending=null;}
     const owned=!session.created_by_user_id||session.created_by_user_id===req.user!.id;
@@ -751,13 +754,14 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   app.put<{Params:{id:string};Body:unknown}>('/sessions/:id/controls',async(req,reply)=>{
     const session=getSession(req.params.id);
     if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
-    if(req.user!.role!=='admin'||session.created_by_user_id&&session.created_by_user_id!==req.user!.id)return reply.code(403).send({error:'只能修改自己的会话设置'});
+    if((session.agent_environment_id?!canControlEnvironment(session.agent_environment_id,req.user!.id):req.user!.role!=='admin')||session.created_by_user_id&&session.created_by_user_id!==req.user!.id)return reply.code(403).send({error:'只能修改自己的会话设置'});
     const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:true});
     if(!context.nativeId||!adapter.descriptor.capabilities.model)return reply.code(409).send({error:'当前会话不可修改，请先恢复会话'});
     if(req.body===null){saveModelPreference(req.user!.id,session.id,null);return {ok:true,pending:null};}
     try {
       const data=await adapter.controls.read(context);
       const value=await adapter.controls.validate(context,req.body);
+      if(adapter.descriptor.id==='codex'&&value.provider&&value.provider!==data.provider)assertEnvironmentUse('codex','provider:'+value.provider,req.user!.id);
       if(value.provider&&data.provider&&value.provider!==data.provider)return reply.code(409).send({error:'切换模型服务需要确认新开会话，原会话已保留'});
       if(!data.loaded&&!data.supports_model_recovery)return reply.code(409).send({error:'当前 Agent 尚不支持保存恢复模型，请先恢复会话'});
       if(!data.loaded){saveModelPreference(req.user!.id,session.id,value);return {ok:true,pending:value,pending_status:'saved'};}
@@ -951,6 +955,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const id=req.params.id;
     if(!req.user || !canAccessAgentSession(req.user.id,id)) {socket.close(1008,'Session not found');return;}
     if(!registerUserConnection(req.user.id,readSessionCookie(req),socket)) return;
+    const stopEnvironmentWatch=watchSessionEnvironment(id,req.user.id,()=>socket.close(1008,'Codex environment access changed'));socket.once('close',stopEnvironmentWatch);
     const session=getSession(id);
     if(!session||!nativeConversationId(session)||!agentForSession(session).descriptor.capabilities.stream) {
       socket.send(JSON.stringify({type:'unavailable',reason:'等待原生实时会话连接'}));socket.close(1000);return;

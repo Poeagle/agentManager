@@ -1,3 +1,4 @@
+import {canUseEnvironment} from '../environment-access.js';
 import {rememberCodexSettings,codexSettings} from './settings-state.js';
 import {currentCodexEngine,defaultCodexEngine,configuredCodexEngines,runInCodexEngine,rememberCodexProvider,engineForProvider} from './engine-context.js';
 import type {ModelPreference} from '../types.js';
@@ -107,9 +108,13 @@ export async function readEngineModelsForProvider(providerId?: string, force=fal
 
 /** Provider catalogs remain isolated. Alternate engines are explicit deployment
  * routes, not inferred from descriptions or gateway names. */
-export async function readCodexModels(force=false):Promise<ModelChoice[]> {
- const current=currentCodexEngine(),all=[current,...[defaultCodexEngine(),...configuredCodexEngines()].filter((e,i,list)=>e.socket!==current.socket&&list.findIndex(item=>item.socket===e.socket)===i)];
- const results=await Promise.allSettled(all.map(engine=>runInCodexEngine(engine,()=>readEngineModels(force))));
+export async function readCodexModels(force=false,userId?:string):Promise<ModelChoice[]> {
+ const current=currentCodexEngine();if(current.environmentId)return readEngineModels(force);
+ const all=[current,...[defaultCodexEngine(),...configuredCodexEngines()].filter((e,i,list)=>e.socket!==current.socket&&list.findIndex(item=>item.socket===e.socket)===i)];
+ const nativeSocket=defaultCodexEngine().socket;
+ const accessible=all.filter(engine=>!userId||canUseEnvironment('codex',engine.environmentId||(engine.socket===nativeSocket?'native':engine.provider?'provider:'+engine.provider:'native'),userId));
+ if(!accessible.length)return [];
+ const results=await Promise.allSettled(accessible.map(engine=>runInCodexEngine(engine,()=>readEngineModels(force))));
  if(results[0].status==='rejected')throw results[0].reason;
  return results.flatMap(result=>result.status==='fulfilled'?result.value:[]);
 }
@@ -155,7 +160,7 @@ async function readGitInfo(cwd:string|null,force=false) {
   }catch{/* Not every session directory is a Git repository. */}
   gitCache.set(cwd,{until:Date.now()+3000,data});if(gitCache.size>64)gitCache.delete(gitCache.keys().next().value!);return data;
 }
-export async function readConversationControls(threadId:string,sharedAccess:boolean,force=false) {
+export async function readConversationControls(threadId:string,sharedAccess:boolean,force=false,userId?:string) {
   const telemetry=await readConversationTelemetry(threadId).catch(()=>empty());
   let native:any=null,loaded=false,models:ModelChoice[]=[],warning:string|null=null,limits=telemetry.limits,engineVersion:string|null=null;
   if(sharedAccess&&process.env.AGENTMANAGER_CODEX_STREAM_SOCKET) {
@@ -168,7 +173,7 @@ export async function readConversationControls(threadId:string,sharedAccess:bool
         if(loaded&&(!codexSettings(threadId)||force)){const settings=await request('thread/resume',{threadId,excludeTurns:true});rememberCodexSettings(threadId,settings);}
         return response.thread;
       });
-      models=await readCodexModels(force);
+      models=currentCodexEngine().environmentId?await readEngineModels(force):await readCodexModels(force,userId);
       if(loaded) {
         const key=currentCodexEngine().socket;
         if(!force&&quota?.key===key&&quota.until>Date.now())limits=quota.data;
@@ -215,4 +220,9 @@ export async function assertCodexLaunchModel(request:(method:string,params:unkno
  if(!config)return;
  rememberCodexProvider(config.model_provider);
  if(typeof config.model==='string'&&!(await readEngineModels()).some(m=>m.model===config.model))throw Error(`配置模型 ${config.model} 不在当前模型服务 ${config.model_provider||'默认'} 的可用目录中；请修正配置后新开会话`);
+}
+
+export async function readEngineModelsForEnvironment(id:string,force=false):Promise<ModelChoice[]> {
+ const {engineForEnvironment}=await import('./environments.js');
+ return runInCodexEngine(await engineForEnvironment(id),()=>readEngineModels(force));
 }

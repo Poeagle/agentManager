@@ -191,3 +191,12 @@ Claude 尚未提供统一的问题交互、逐进展统计、自动重试或额�
 官方资料：
 [项目](https://github.com/deepseek-ai/deepseek-harness)、
 [CLI 说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/README.md)。
+
+## Codex 账号环境
+
+Codex 适配器支持同机不同系统用户的已登录账号环境，独立于 API Provider
+标识。平台会话使用可选的 `agent_environment_id` 持久绑定环境；通用权限
+边界统一执行环境授权，账号连接、原生历史传输和 RPC 路由留在 Codex
+适配层。环境切换复用会话生命周期的串行化、历史快照、恢复与回滚流程。
+
+配置、权限、预检和历史格式边界见 [Codex 账号环境](codex-environments.md)。

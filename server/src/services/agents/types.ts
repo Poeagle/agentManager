@@ -252,6 +252,7 @@ export interface AgentManagementPort {
   writeConfigFile?(file: AgentConfigFileInput): Promise<AgentConfigFileResult>;
 }
 export interface AgentSession {
+  agent_environment_id?: string | null;
   id?: string;
   agent_id?: string | null;
   cli_type?: string | null;
@@ -270,6 +271,7 @@ export interface AgentContext {
   nativeId: string | null;
   projectPath: string | null;
   sharedAccess?: boolean;
+  actorUserId?: string;
   force?: boolean;
   verifyProcess?: boolean;
 }
@@ -650,7 +652,10 @@ export interface AgentLifecyclePort {
   release(context: AgentContext): Promise<void>;
   interrupt(context: AgentContext): Promise<void>;
 }
+export interface AgentTerminalProfile {home:string;readOnlyPaths:string[]}
 export interface AgentLaunchPlan {
+  /** Thin terminal clients use a separate HOME and only their authorized transport paths. */
+  terminalProfile?:AgentTerminalProfile;
   nativeId?: string;
   freshMode?: "resume" | "new";
   streamSocket?: string | null;

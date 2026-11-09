@@ -7,7 +7,7 @@ import { api, type Project, type Session } from '../src/lib/api';
 
 vi.mock('../src/lib/api', async (original) => {
   const actual = await original<typeof import('../src/lib/api')>();
-  return { ...actual, api: { ...actual.api, sessions: { ...actual.api.sessions, create: vi.fn() } } };
+  return { ...actual, api: { ...actual.api, codexEnvironments: { ...actual.api.codexEnvironments, list: vi.fn(async()=>({environments:[{id:"native",name:"默认 Codex",kind:"native",enabled:true,allowed_user_ids:null}]})) }, sessions: { ...actual.api.sessions, create: vi.fn() } } };
 });
 const project: Project = {
   id: 'p1', name: 'DolphinDB Manager', path: '/workspace/dolphindb-manager', description: null,

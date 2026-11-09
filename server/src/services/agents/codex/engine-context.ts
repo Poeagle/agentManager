@@ -1,3 +1,4 @@
+import {getDb} from '../../../db/index.js';
 import {AsyncLocalStorage} from 'async_hooks';
 import {open} from 'fs/promises';
 import {mkdirSync, readFileSync, renameSync, writeFileSync} from 'fs';
@@ -6,14 +7,14 @@ import {findCodexRollout} from '../../prompt-context.js';
 import {config} from '../../../config.js';
 import {managedCodexEngines} from './provider-config.js';
 
-export interface CodexEngine {socket:string;provider?:string;models?:string[]}
+export interface CodexEngine {socket:string;provider?:string;models?:string[];environmentId?:string;accountHome?:string}
 const scope=new AsyncLocalStorage<CodexEngine>();
 const threads=new Map<string,CodexEngine>();
 let defaultProvider:{socket:string;provider:string}|undefined;
 let configured:{raw:string;engines:CodexEngine[]}|undefined;
 const persistedRoutes = new Map<string,string>();
 let persistedRoutesLoaded = false;
-const threadKey=(id:string)=>JSON.stringify([process.env.CODEX_HOME,process.env.AGENTMANAGER_CODEX_STREAM_SOCKET,id]);
+const threadKey=(id:string)=>JSON.stringify([config.dbPath,process.env.CODEX_HOME,process.env.AGENTMANAGER_CODEX_STREAM_SOCKET,id]);
 const routeFile=()=>join(dirname(config.dbPath),'codex-thread-routes.json');
 function loadPersistedRoutes():void {
  if(persistedRoutesLoaded||process.env.NODE_ENV!=='production')return;
@@ -68,6 +69,7 @@ export function rememberCodexProvider(provider:unknown):void {
 }
 export function rememberCodexThread(thread:any):void {
  if(typeof thread?.id!=='string')return;
+ if(currentCodexEngine().environmentId){threads.set(threadKey(thread.id),currentCodexEngine());while(threads.size>1024)threads.delete(threads.keys().next().value!);return;}
  const engine=currentCodexEngine();
  const provider=typeof thread.modelProvider==='string'?thread.modelProvider:engine.provider;
  const route=configuredCodexEngines().find(item=>item.provider===provider);
@@ -84,7 +86,11 @@ export function engineForProvider(provider?:string):CodexEngine {
  return route;
 }
 export async function engineForThread(threadId:string):Promise<CodexEngine> {
- const saved=threads.get(threadKey(threadId));if(saved)return {...saved,...configuredCodexEngines().find(e=>e.provider===saved.provider)};
+ let ids:string[]=[];
+ try {ids=(getDb().prepare('SELECT DISTINCT agent_environment_id AS id FROM sessions WHERE (native_session_id=? OR codex_session_id=?) AND agent_environment_id IS NOT NULL').all(threadId,threadId) as Array<{id:string}>).map(row=>row.id);}catch{/* File-only callers have no application database. */}
+ if(ids.length>1)throw Error('会话同时绑定多个 Codex 环境，已拒绝猜测账号');
+ if(ids.length===1)return (await import('./environments.js')).engineForEnvironment(ids[0],{history:true});
+ const saved=threads.get(threadKey(threadId));if(saved?.environmentId)return (await import('./environments.js')).engineForEnvironment(saved.environmentId,{history:true});if(saved)return {...saved,...configuredCodexEngines().find(e=>e.provider===saved.provider)};
  loadPersistedRoutes();
  const persisted=persistedRoutes.get(threadId);
  if(persisted){

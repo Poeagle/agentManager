@@ -1,3 +1,4 @@
+import {canUseSessionEnvironment,isRetiredEnvironment} from './services/agents/environment-access.js';
 /**
  * Authentication: password hashing (scrypt — no native deps), cookie-based
  * login sessions, and the Fastify onRequest hook that gates /api/* behind login.
@@ -333,6 +334,12 @@ export async function authHook(req: FastifyRequest, reply: FastifyReply) {
 
   if (PUBLIC_PATHS.has(path)) return;        // public: login not required
   if (!user) return reply.code(401).send({ error: 'Unauthorized' });
+  const match=/^\/api\/sessions\/([^/]+)/.exec(path);
+  if(match){let id:string;try{id=decodeURIComponent(match[1]);}catch{return reply.code(400).send({error:'无效的会话地址'});}
+    const session=getDb().prepare('SELECT agent_id,cli_type,agent_environment_id FROM sessions WHERE id=?').get(id) as {agent_id:string|null;cli_type:string|null;agent_environment_id:string|null}|undefined;
+    if(session&&!canUseSessionEnvironment(session,user.id))return reply.code(403).send({error:'无权使用该会话的 Codex 环境'});
+    if(session&&isRetiredEnvironment(session.agent_environment_id)&&!['GET','DELETE'].includes(req.method))return reply.code(410).send({error:'Provider 已删除，该会话仅支持查看历史'});
+  }
 }
 
 /* ── Data-ownership access helpers (soft multi-tenant) ─────────────── */
@@ -514,10 +521,10 @@ export function userCanUseToolForProject(
 }
 
 export function userCanUseSessionTool(userId: string, sessionId: string, cliType: string, toolMode: 'session' | 'terminal'): boolean {
-  const row = getDb().prepare('SELECT project_id, mode, created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as
-    | { project_id: string | null; mode: string | null; created_by_user_id: string | null }
+  const row = getDb().prepare('SELECT project_id, mode, created_by_user_id, agent_id, cli_type, agent_environment_id FROM sessions WHERE id = ?').get(sessionId) as
+    | { project_id: string | null; mode: string | null; created_by_user_id: string | null;agent_id:string|null;cli_type:string|null;agent_environment_id:string|null }
     | undefined;
-  if (!row) return false;
+  if (!row || !canUseSessionEnvironment(row,userId)) return false;
   if (isAdmin(userId)) return true;
   // Project membership grants permission to create a session, not permission
   // to inspect or control another user's session in the same project.

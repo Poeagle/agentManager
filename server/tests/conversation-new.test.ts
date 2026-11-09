@@ -1,3 +1,4 @@
+vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),ensureAccountTransport:vi.fn(async()=>({socket:'/fake-target',home:'/fake-home'})),closeAccountTransport:vi.fn()}));
 vi.mock('../src/services/agents/codex/controls.js',()=>({readModelPreference:vi.fn(()=>null),prepareCodexModelRecovery:vi.fn().mockResolvedValue(undefined)}));
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 vi.mock('../src/services/agents/codex/terminal-bridge.js',()=>({ensureCodexTerminalBridge:vi.fn(async(path:string)=>path)}));
@@ -33,4 +34,23 @@ describe('fresh conversation in the same tab',()=>{
  it('retains the running conversation when preparation fails',async()=>{vi.mocked(prepareFreshCodexConversation).mockRejectedValueOnce(Error('prepare failed'));expect(await newSessionConversation('new-test')).toMatchObject({ok:false,error:'prepare failed'});expect(getSession('new-test')).toMatchObject({status:'running',codex_session_id:native});expect(fork).not.toHaveBeenCalled();expect(getDb().prepare('SELECT count(*) n FROM sessions').get()).toEqual({n:1});});
  it('serializes new and compact requests before affecting runtimes',async()=>{let release!:(v:string)=>void,entered!:()=>void;const ready=new Promise<void>(r=>entered=r);vi.mocked(prepareCodexReload).mockImplementationOnce(()=>new Promise(r=>{release=r;entered();}));const first=newSessionConversation('new-test');await ready;expect((await newSessionConversation('new-test')).ok).toBe(false);expect((await compactSessionConversation('new-test')).ok).toBe(false);release('0.166.0');expect((await first).ok).toBe(true);expect(fork).toHaveBeenCalledTimes(1);});
  it('compacts through the native action without creating or replacing a thread',async()=>{expect((await compactSessionConversation('new-test')).ok).toBe(true);expect(compactCodexConversation).toHaveBeenCalledWith(native);expect(fork).not.toHaveBeenCalled();expect(getSession('new-test')?.codex_session_id).toBe(native);});
+});
+
+describe('environment replacement lifecycle',()=>{
+ const fresh='019ff001-4444-7444-8444-444444444444';
+ function target(){getDb().prepare("INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES('account:fixture','codex','Fixture','account',1,?, '[]')").run(JSON.stringify({username:'fixture',port:22,identityFile:'',codexCommand:'codex',codexHome:''}));}
+ it('commits environment and native identity together, keeping source history and attachments',async()=>{
+  target();const prepare=vi.fn(async()=>fresh);const result=await newSessionConversation('new-test',undefined,{environmentId:'account:fixture',prepare});
+  expect(result.error).toBeUndefined();expect(result).toMatchObject({ok:true});expect(getSession('new-test')).toMatchObject({agent_environment_id:'account:fixture',codex_session_id:fresh,task:'Do not submit old task'});
+  expect(getSession(result.history_id!)).toMatchObject({agent_environment_id:null,codex_session_id:native});
+  expect(getDb().prepare('SELECT session_id FROM conversation_attachments ORDER BY session_id').all()).toEqual(expect.arrayContaining([{session_id:'new-test'},{session_id:result.history_id}]));
+  expect(prepareFreshCodexConversation).not.toHaveBeenCalled();
+ });
+ it('restores source environment, native identity and attachments when target activation fails',async()=>{
+  target();vi.mocked(fork).mockImplementationOnce(()=>{throw Error('target worker unavailable');});
+  const result=await newSessionConversation('new-test',undefined,{environmentId:'account:fixture',prepare:async()=>fresh});expect(result.ok).toBe(false);
+  expect(getSession('new-test')).toMatchObject({agent_environment_id:null,codex_session_id:native,status:'running'});
+  expect(getDb().prepare('SELECT session_id FROM conversation_attachments').all()).toEqual([{session_id:'new-test'}]);
+  expect(getDb().prepare('SELECT count(*) n FROM sessions').get()).toEqual({n:1});
+ });
 });

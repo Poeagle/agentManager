@@ -1,3 +1,4 @@
+import {userInfo as hostUserInfo} from 'os';
 import {isManagedAgentActive,attachManagedAgent,detachManagedAgent} from './agents/host.js';
 import {storeAgentNativeId} from './agents/identity-store.js';
 import {agentForSession,getAgent,agentDescriptors} from './agents/index.js';
@@ -144,6 +145,7 @@ function pushSystemEvent(text: string): void {
 }
 
 export interface Session {
+  agent_environment_id?: string | null;
   id: string;
   project_id: string | null;
   task: string;
@@ -280,6 +282,8 @@ export function sensitiveHostPathsForSandbox(dbPath: string, userHome: string, c
   ];
 }
 
+function hostUserHome():string{try{return hostUserInfo().homedir;}catch{return homedir();}}
+
 function workerSandboxPolicy(createdByUserId: string | null | undefined): {
   inaccessiblePaths: string[];
   sandboxRequired: boolean;
@@ -290,6 +294,7 @@ function workerSandboxPolicy(createdByUserId: string | null | undefined): {
   return {
     inaccessiblePaths: [...new Set([
       ...inaccessibleProjectPaths(createdByUserId),
+      ...sensitiveHostPathsForSandbox(config.dbPath,hostUserHome(),process.env.AGENTMANAGER_CODEX_STREAM_SOCKET),
       ...sensitiveHostPathsForSandbox(config.dbPath, homedir(),process.env.AGENTMANAGER_CODEX_STREAM_SOCKET),
     ])],
     sandboxRequired: true,
@@ -1639,6 +1644,7 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
     assignSessionId,
     bindingPath: bindingPath,
     streamSocket:streamSocket,
+    terminalProfile:launch.terminalProfile,
     ...workerSandboxPolicy(creator?.created_by_user_id),
   });
   await active.lifecycleReady;
@@ -2775,6 +2781,7 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
     assignSessionId:fresh&&launch.freshMode!=='resume'?nativeSessionId:undefined,
     bindingPath:launch.bindingPath,
     streamSocket:streamSocket,
+    terminalProfile:launch.terminalProfile,
     ...workerSandboxPolicy(staleSession.created_by_user_id),
   });
   await active.lifecycleReady;
@@ -2888,7 +2895,7 @@ export function compactSessionConversation(sessionId:string):Promise<SessionRelo
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
 }
 
-export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference):Promise<SessionReloadResult&{history_id?:string}> {
+export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference,replacement?:{environmentId:string;prepare:(context:import('./agents/types.js').AgentContext)=>Promise<string>}):Promise<SessionReloadResult&{history_id?:string}> {
   if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'});
   return runSessionLifecycle(sessionId,async()=>{
     const session=getSession(sessionId);
@@ -2900,12 +2907,12 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
     const binding=(id:string)=>adapter.lifecycle.bind(context,id);
     try {
       await adapter.lifecycle.preflight(context);
-      if(preference){
+      if(preference&&!replacement){
         if(!(await adapter.controls.read(context)).supports_fresh_model)throw Error('此 Agent 尚不支持为新会话指定模型');
         preference=await adapter.controls.validate(context,preference);
       }
       const instructions=adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(session.created_by_user_id, project.path)?.instructions:undefined;
-      fresh=await adapter.lifecycle.prepareFresh({...context,projectPath:project.path},instructions,preference);
+      fresh=replacement?await replacement.prepare({...context,projectPath:project.path}):await adapter.lifecycle.prepareFresh({...context,projectPath:project.path},instructions,preference);
       if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');
       history=snapshotConversation(sessionId);
       const worker=activeSessions.get(sessionId)?.worker;
@@ -2919,7 +2926,15 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
       if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');
       await waitForSessionReplayFinalization(sessionId);
       getDb().prepare('DELETE FROM session_snapshots WHERE session_id=?').run(sessionId);
-      activateFreshConversation(sessionId,history,fresh);activated=true;await binding(fresh);
+      getDb().transaction(()=>{
+        activateFreshConversation(sessionId,history!,fresh!);
+        if(replacement){
+          getDb().prepare('UPDATE sessions SET agent_environment_id=?,task=?,created_at=? WHERE id=?').run(replacement.environmentId,session.task,session.created_at,sessionId);
+          getDb().prepare('INSERT OR IGNORE INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments) SELECT ?,client_id,input_key,input_text,attachments FROM conversation_attachments WHERE session_id=?').run(sessionId,history);
+          getDb().prepare('UPDATE conversation_input_links SET native_id=? WHERE session_id=?').run(fresh,sessionId);
+        }
+      })();activated=true;
+      await binding(fresh);
       await resumeCrashedSessionUnlocked(getSession(sessionId)!,project.path,true,true);
       // Release only the old thread. Never restart the shared server or archive
       // a user thread and its descendants to reclaim one tab.

@@ -1,0 +1,92 @@
+import Fastify,{type FastifyInstance} from 'fastify';
+import websocket from '@fastify/websocket';
+import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
+import {createTestDatabase} from './helpers/database.js';
+import {authHook,createUser,createSession,setProjectToolAccess,userCanUseSessionTool} from '../src/auth.js';
+import {getDb} from '../src/db/index.js';
+import {codexEnvironmentRoutes} from '../src/routes/codex-environments.js';
+import {sessionRoutes} from '../src/routes/sessions.js';
+import {saveCodexEnvironment,visibleCodexEnvironments,engineForEnvironment,environmentConnection} from '../src/services/agents/codex/environments.js';
+import {watchSessionEnvironment,canUseEnvironment} from '../src/services/agents/environment-access.js';
+import {engineForThread,rememberCodexThread,runInCodexEngine} from '../src/services/agents/codex/engine-context.js';
+import {updateAgentManagement} from '../src/services/agents/management-store.js';
+import * as transport from '../src/services/agents/codex/account-transport.js';
+vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),ensureAccountTransport:vi.fn(async(id:string)=>({socket:'/fixture/'+id+'.sock',home:'/fixture/home'})),closeAccountTransport:vi.fn(async()=>{}),probeAccountConnection:vi.fn(async()=>({models:[{model:'fixture',name:'Fixture',description:'',efforts:[],defaultEffort:''}]})),accountCommand:vi.fn(async()=> 'ok'),checkAccountProject:vi.fn(async()=>{})}));
+const connection={username:'ymchen',port:22,identityFile:'',codexCommand:'codex',codexHome:''};
+describe('Codex account environments and platform ACLs',()=>{
+ let app:FastifyInstance,db:ReturnType<typeof createTestDatabase>,owner:ReturnType<typeof createUser>,other:ReturnType<typeof createUser>,admin:ReturnType<typeof createUser>,cookies:Record<string,string>;
+ beforeEach(async()=>{
+  db=createTestDatabase();owner=createUser({username:'ymchen',password:'password1'});other=createUser({username:'other',password:'password1'});admin=createUser({username:'admin',password:'password1',role:'admin'});
+  cookies={other:'agentmanager_session='+createSession(other.id),owner:'agentmanager_session='+createSession(owner.id),admin:'agentmanager_session='+createSession(admin.id)};
+  getDb().prepare("INSERT INTO projects(id,name,path,owner_id) VALUES('p','Project','/tmp/fixture-project',?)").run(owner.id);
+  setProjectToolAccess({projectId:'p',userId:owner.id,canSession:true,canTerminal:true,sessionClients:['codex'],grantedBy:admin.id});
+  app=Fastify();await app.register(websocket);app.addHook('onRequest',authHook);await app.register(codexEnvironmentRoutes,{prefix:'/api'});await app.register(sessionRoutes,{prefix:'/api'});
+ });
+ afterEach(async()=>{await app.close();db.cleanup();vi.restoreAllMocks();});
+ const create=()=>saveCodexEnvironment({name:'ymchen Codex',connection,allowed_user_ids:[owner.id]});
+ it('keeps existing native and API Provider access without requiring account login',()=>{
+  updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'gateway',name:'API gateway',kind:'responses',enabled:true,fields:{models:['model-a'],baseUrl:'https://example.invalid/v1'}}]}));
+  const visible=visibleCodexEnvironments(other.id);expect(visible.map(e=>e.id)).toEqual(['native','provider:gateway']);expect(visible[1].kind).toBe('provider');
+ });
+ it('shows private accounts to administrators and allowed members while hiding them from other members',async()=>{
+  const e=await create();expect(visibleCodexEnvironments(owner.id).some(x=>x.id===e.id)).toBe(true);expect(visibleCodexEnvironments(other.id).some(x=>x.id===e.id)).toBe(false);expect(visibleCodexEnvironments(admin.id).some(x=>x.id===e.id)).toBe(true);
+  const r=await app.inject({url:'/api/codex/environments',headers:{cookie:cookies.other}});expect(r.statusCode).toBe(200);expect(r.body).not.toContain('ymchen Codex');expect(r.body).not.toContain('identityFile');
+  const management=await app.inject({url:'/api/codex/environments?management=true',headers:{cookie:cookies.admin}});expect(management.statusCode).toBe(200);expect(management.json().environments.some((x:any)=>x.id===e.id)).toBe(true);
+ });
+ it('rejects environment management from a regular platform account',async()=>{
+  const r=await app.inject({method:'POST',url:'/api/codex/environments',headers:{cookie:cookies.owner},payload:{name:'account',connection,allowed_user_ids:[owner.id]}});expect(r.statusCode).toBe(403);
+ });
+ it('rejects invalid authorization lists and account-wide public access',async()=>{
+  await expect(saveCodexEnvironment({name:'x',connection,allowed_user_ids:['unknown']})).rejects.toThrow('不存在');
+  await expect(saveCodexEnvironment({name:'x',connection,allowed_user_ids:null})).rejects.toThrow('明确指定');
+ });
+ it('blocks direct REST calls and session creation by unauthorized regular members',async()=>{
+  const e=await create();getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,created_by_user_id,agent_environment_id) VALUES('s','p','work','failed','codex',?,?)").run(owner.id,e.id);
+  for(const [method,path] of [['GET','/api/sessions/s/environments'],['GET',`/api/sessions/s/environments/${encodeURIComponent(e.id)}/models`],['POST','/api/sessions/s/environment']] as const){const r=await app.inject({method,url:path,headers:{cookie:cookies.other},...method==='POST'?{payload:{environment_id:e.id,model:'m',effort:'high'}}:{}});expect(r.statusCode).toBe(403);}
+  const r=await app.inject({method:'POST',url:'/api/sessions',headers:{cookie:cookies.other},payload:{project_path:'/tmp/fixture-project',project_id:'p',cli_type:'codex',task:'work',environment_id:e.id}});expect(r.statusCode).toBe(403);
+  expect(userCanUseSessionTool(other.id,'s','codex','session')).toBe(false);
+ });
+ it('allows administrators to select and create sessions with a private account without an explicit grant',async()=>{
+  const e=await create();const r=await app.inject({method:'POST',url:'/api/sessions',headers:{cookie:cookies.admin},payload:{project_path:'/tmp/fixture-project',project_id:'p',cli_type:'codex',task:'admin test',environment_id:e.id}});expect(r.statusCode).toBe(200);expect(r.json().session.agent_environment_id).toBe(e.id);
+  const list=await app.inject({url:'/api/codex/environments',headers:{cookie:cookies.admin}});expect(list.json().environments.some((x:any)=>x.id===e.id)).toBe(true);
+  expect(userCanUseSessionTool(admin.id,r.json().session.id,'codex','session')).toBe(true);
+  const invalidated=vi.fn(),stop=watchSessionEnvironment(r.json().session.id,admin.id,invalidated);
+  try{await saveCodexEnvironment({name:e.name,allowed_user_ids:[]},e.id);expect(invalidated).not.toHaveBeenCalled();expect(canUseEnvironment('codex',e.id,admin.id)).toBe(true);}finally{stop();}
+ });
+ it('binds an authorized new tab before any worker is spawned',async()=>{
+  const e=await create();const r=await app.inject({method:'POST',url:'/api/sessions',headers:{cookie:cookies.owner},payload:{project_path:'/tmp/fixture-project',project_id:'p',cli_type:'codex',task:'work',environment_id:e.id}});expect(r.statusCode).toBe(200);expect(r.json().session.agent_environment_id).toBe(e.id);
+ });
+ it('revokes existing tabs immediately and never contacts another account as a fallback',async()=>{
+  const e=await create();getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,created_by_user_id,agent_environment_id) VALUES('s','p','work','failed','codex',?,?)").run(owner.id,e.id);
+  const invalidated=vi.fn();const stop=watchSessionEnvironment('s',owner.id,invalidated);
+  try{expect(userCanUseSessionTool(owner.id,'s','codex','session')).toBe(true);await saveCodexEnvironment({name:e.name,allowed_user_ids:[]},e.id);expect(invalidated).toHaveBeenCalledOnce();expect(userCanUseSessionTool(owner.id,'s','codex','session')).toBe(false);const r=await app.inject({url:'/api/sessions/s/environments',headers:{cookie:cookies.owner}});expect(r.statusCode).toBe(403);}finally{stop();}
+ });
+ it('routes two OpenAI accounts by environment identity, even after reading modelProvider=openai',async()=>{
+  const a=await create();const b=await saveCodexEnvironment({name:'second',connection:{...connection,username:'xlli'},allowed_user_ids:[other.id]});
+  const one='019ff001-1212-7212-8212-121212121211',two='019ff001-1212-7212-8212-121212121212';
+  getDb().prepare("INSERT INTO sessions(id,task,cli_type,codex_session_id,agent_environment_id) VALUES('a','x','codex',?,?),('b','x','codex',?,?)").run(one,a.id,two,b.id);
+  const engineA=await engineForEnvironment(a.id),engineB=await engineForEnvironment(b.id);
+  runInCodexEngine(engineA,()=>rememberCodexThread({id:one,modelProvider:'openai'}));runInCodexEngine(engineB,()=>rememberCodexThread({id:two,modelProvider:'openai'}));
+  expect((await engineForThread(one)).environmentId).toBe(a.id);expect((await engineForThread(two)).environmentId).toBe(b.id);expect((await engineForThread(one)).socket).not.toBe((await engineForThread(two)).socket);
+ });
+ it('does not silently reassign used environments to a different OS account',async()=>{
+  const e=await create();getDb().prepare("INSERT INTO sessions(id,task,agent_environment_id) VALUES('s','x',?)").run(e.id);
+  await expect(saveCodexEnvironment({name:e.name,connection:{...connection,username:'xlli'}},e.id)).rejects.toThrow('归属');
+ });
+ it('reports a missing Codex login as a distinct preflight step without trying to log in',async()=>{
+  vi.mocked(transport.probeAccountConnection).mockRejectedValueOnce(new transport.AccountConnectionError('codex_authentication','该系统用户尚未登录 Codex，请先运行 codex login'));
+  const r=await app.inject({method:'POST',url:'/api/codex/environments/check-connection',headers:{cookie:cookies.admin},payload:connection});expect(r.statusCode).toBe(200);expect(r.json()).toMatchObject({ok:false,checks:[{stage:'codex_authentication',ok:false}]});expect(r.body).toContain('codex login');
+ });
+ it('encrypts SSH passwords, preserves an unchanged saved password, and never returns it to the browser',async()=>{
+  const secret='dummy-ssh-password-for-tests';const e=await saveCodexEnvironment({name:'password',connection:{...connection,authMethod:'password',password:secret},allowed_user_ids:[owner.id]});
+  expect(JSON.stringify(e)).not.toContain(secret);expect(e.connection).toMatchObject({authMethod:'password',passwordConfigured:true});expect(e.connection).not.toHaveProperty('password');
+  const row=getDb().prepare('SELECT config FROM agent_environments WHERE id=?').get(e.id) as {config:string};expect(row.config).not.toContain(secret);expect(environmentConnection(e).password).toBe(secret);
+  const updated=await saveCodexEnvironment({name:'updated',connection:{...e.connection,password:''}},e.id);expect(environmentConnection(updated).password).toBe(secret);
+  const api=await app.inject({url:'/api/codex/environments?management=true',headers:{cookie:cookies.admin}});expect(api.body).not.toContain(secret);expect(api.body).not.toContain('encryptedPassword');
+  await expect(saveCodexEnvironment({name:'x',connection:{...updated.connection,username:'second',password:''}},e.id)).rejects.toThrow('SSH 登录密码');
+ });
+ it('validates SSH settings and uses localhost, strict host checking and noninteractive key auth',()=>{
+  expect(()=>transport.validateAccountConnection({...connection,username:'user;id'})).toThrow();expect(()=>transport.validateAccountConnection({...connection,port:0})).toThrow();expect(()=>transport.validateAccountConnection({...connection,codexHome:'~/.codex'})).toThrow();
+  const args=transport.sshArguments({...connection,identityFile:'/tmp/test-key'});expect(args).toContain('StrictHostKeyChecking=yes');expect(args).toContain('BatchMode=yes');expect(args).toContain('/tmp/test-key');
+ });
+});

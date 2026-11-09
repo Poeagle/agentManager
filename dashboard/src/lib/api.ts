@@ -292,6 +292,20 @@ export interface AgentApiContract {
 
 // Sessions
 export const api = {
+  codexEnvironments: {
+    remove:(id:string)=>fetchJSON<{ok:boolean}>('/codex/environments/'+encodeURIComponent(id),{method:'DELETE'}),
+    usage:(id:string)=>fetchJSON<{tabs:ProviderUsageTab[];busy:boolean;verified:boolean}>('/codex/environments/'+encodeURIComponent(id)+'/usage'),
+    closeTabs:(id:string,ids:string[])=>fetchJSON<{results:Array<{id:string;ok:boolean;error?:string}>}>('/codex/environments/'+encodeURIComponent(id)+'/close-tabs',{method:'POST',body:JSON.stringify({session_ids:ids})}),
+    list:()=>fetchJSON<{environments:CodexEnvironment[]}>('/codex/environments'),
+    management:()=>fetchJSON<{environments:CodexEnvironment[];users:Array<{id:string;username:string;display_name:string}>}>('/codex/environments?management=true'),
+    save:(input:{name:string;enabled:boolean;allowed_user_ids:string[]|null;connection?:CodexEnvironment['connection']},id?:string)=>fetchJSON<{environment:CodexEnvironment}>('/codex/environments'+(id?'/'+encodeURIComponent(id):''),{method:id?'PUT':'POST',body:JSON.stringify(input)}),
+    checkConnection:(connection:NonNullable<CodexEnvironment['connection']>&{environment_id?:string;project_id?:string})=>fetchJSON<EnvironmentPreflight>('/codex/environments/check-connection',{method:'POST',body:JSON.stringify(connection)}),
+    preflight:(id:string,projectId?:string)=>fetchJSON<EnvironmentPreflight>('/codex/environments/'+encodeURIComponent(id)+'/preflight',{method:'POST',body:JSON.stringify(projectId?{project_id:projectId}:{})}),
+    forSession:(id:string)=>fetchJSON<{current:string;environments:CodexEnvironment[]}>('/sessions/'+encodeURIComponent(id)+'/environments'),
+    sessionPreflight:(id:string,environment:string)=>fetchJSON<EnvironmentPreflight>('/sessions/'+encodeURIComponent(id)+'/environments/'+encodeURIComponent(environment)+'/preflight',{method:'POST',body:'{}'}),
+    transfer:(id:string,input:{environment_id:string;model:string;effort:string;provider?:string})=>fetchJSON<{ok:boolean;session:Session;history_id?:string}>('/sessions/'+encodeURIComponent(id)+'/environment',{method:'POST',body:JSON.stringify(input)}),
+  },
+
   sharedResources: {
     get: () => fetchJSON<{ resources: SharedResources }>('/me/shared-resources'),
     openEnv: () => fetchJSON<SharedEnvFile>('/me/shared-resources/env/open', { method: 'POST' }),
@@ -353,7 +367,7 @@ export const api = {
     },
     get: (id: string) => fetchJSON<{ session: Session }>(`/sessions/${id}`),
     ignoreQuestions:(id:string,questionIds:string[],ignored=true)=>fetchJSON<{ok:boolean;ignored_question_ids:string[]}>(`/sessions/${encodeURIComponent(id)}/questions/ignore`,{method:'POST',body:JSON.stringify({question_ids:questionIds,ignored})}),
-    create: (data: { project_path: string; task?: string; mode?: 'session' | 'terminal'; project_id?: string; cli_type?: string }) =>
+    create: (data: { project_path: string; task?: string; mode?: 'session' | 'terminal'; project_id?: string; cli_type?: string;environment_id?:string }) =>
       fetchJSON<{ ok: boolean; session: Session }>('/sessions', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -833,6 +847,7 @@ export function scopeProjectFiles(files: typeof api.files, projectId?: string): 
 
 // Types
 export interface Session {
+  agent_environment_id?: string | null;
   id: string;
   project_id: string | null;
   task: string;
@@ -1272,6 +1287,10 @@ export interface ConversationConclusion extends ConversationInterval {start_at:s
 export interface ConversationStatistics {sequence:number;message_id?:string;turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;interval?:ConversationInterval;conclusion?:ConversationConclusion}
 export interface ConversationMessage {statistics?:ConversationStatistics;id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';content_blocks?:Array<{type:'text';index:number;text:string}|{type:'tool_use';index:number;id:string;name:string;input:unknown;status:'running'|'completed'|'failed';result?:string;is_error?:boolean}>;presentation?:'compaction_summary';compaction?:{before_tokens:number|null;after_tokens:number|null;duration_ms:number|null};error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
 export interface ConversationUsageUpdate {native_id:string;usage:NonNullable<ConversationControlsData['usage']>;observed_at:string}
+export interface CodexEnvironment {id:string;name:string;kind:'native'|'provider'|'account';provider?:string;enabled:boolean;allowed_user_ids:string[]|null;can_control?:boolean;connection?:{username:string;port:number;identityFile:string;codexCommand:string;codexHome:string;authMethod?:'key'|'password';password?:string;passwordConfigured?:boolean}}
+export interface ProviderUsageTab {id:string;user_id:string|null;username:string;project_id:string|null;project_name:string;name:string;status:string;native_id:string|null;model:string|null;busy:boolean|null}
+export interface EnvironmentCheck {stage:string;ok:boolean;message:string}
+export interface EnvironmentPreflight {ok:boolean;checks:EnvironmentCheck[];models?:ConversationControlsData['models']}
 export interface AgentModelPreference {service_tier?:string;model:string;effort:string;provider?:string}
 export interface ConversationControlsData {
   supports_model_recovery?:boolean;supports_fresh_model?:boolean;

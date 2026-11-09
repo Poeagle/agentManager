@@ -41,8 +41,10 @@ export function restoreConversationSnapshot(sessionId:string,historyId:string) {
     moveHistoricalLinks(historyId,sessionId);
     db.prepare('DELETE FROM user_ui_state WHERE key=?').run(`session-control:${sessionId}`);
     db.prepare('UPDATE user_ui_state SET key=? WHERE key=?').run(`session-control:${sessionId}`,`session-control:${historyId}`);
-    const columns=['task','agent_id','native_session_id','cli_type','codex_session_id','claude_session_id','created_at'];
+    const columns=['agent_environment_id','task','agent_id','native_session_id','cli_type','codex_session_id','claude_session_id','created_at'];
     db.prepare(`UPDATE sessions SET ${columns.map(column=>`${column}=(SELECT ${column} FROM sessions WHERE id=?)`).join(',')},status='cancelled',pid=NULL WHERE id=?`).run(...columns.map(()=>historyId),sessionId);
+    const restored=db.prepare('SELECT native_session_id,codex_session_id,claude_session_id FROM sessions WHERE id=?').get(sessionId) as {native_session_id:string|null;codex_session_id:string|null;claude_session_id:string|null};
+    db.prepare('UPDATE conversation_input_links SET native_id=? WHERE session_id=?').run(restored.native_session_id||restored.codex_session_id||restored.claude_session_id,sessionId);
     db.prepare('DELETE FROM pty_output WHERE session_id=?').run(historyId);
     db.prepare('DELETE FROM sessions WHERE id=?').run(historyId);
   })();

@@ -121,7 +121,7 @@ describe('member PTY sandbox', () => {
     );
     expect(member.program).toBe('systemd-run');
     expect(member.args).toContain('PrivateTmp=yes');
-    expect(member.args).toContain('InaccessiblePaths=/other-project');
+    expect(member.args).toContain('InaccessiblePaths=-/other-project');
     expect(member.args).toContain('InaccessiblePaths=-/home/member/.ssh');
 
     expect(buildSandboxCommand('session-1', '/project', '/bin/sh', ['-i'], [], false)).toEqual({
@@ -130,6 +130,10 @@ describe('member PTY sandbox', () => {
     });
   });
 
+  it('binds only the authorized project, thin-client HOME and transport into a member namespace',()=>{
+    const command=buildSandboxCommand('s','/tmp/test project','/bin/sh',['-i'],['/private'],true,{home:'/tmp/client',readOnlyPaths:['/tmp/bridge']});
+    expect(command.args).toContain('PrivateTmp=yes');expect(command.args).toContain('BindPaths="/tmp/test project"');expect(command.args).toContain('BindPaths="/tmp/client"');expect(command.args).toContain('BindReadOnlyPaths="/tmp/bridge"');expect(command.args).toContain('--setenv=HOME=/tmp/client');expect(command.args).toContain('InaccessiblePaths=-/private');
+  });
   it('includes the service DB directory and common credential paths', () => {
     expect(sensitiveHostPathsForSandbox('/state/agentmanager.db','/home/member','/state/codex/codex.sock')).toContain('-/state/codex');
     expect(sensitiveHostPathsForSandbox('/state/agentmanager.db', '/home/member')).toEqual([

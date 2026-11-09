@@ -8,7 +8,7 @@ import { useStreamStore } from '../src/lib/websocket';
 
 vi.mock('../src/lib/api', async (original) => {
   const actual = await original<typeof import('../src/lib/api')>();
-  return { ...actual, api: { ...actual.api,
+  return { ...actual, api: { ...actual.api, codexEnvironments: { ...actual.api.codexEnvironments, list: vi.fn(async()=>({environments:[{id:"native",name:"默认 Codex",kind:"native",enabled:true,allowed_user_ids:null}]})) },
     auth: { ...actual.api.auth, status: vi.fn() }, rbac: { ...actual.api.rbac, me: vi.fn() },
     projects: { ...actual.api.projects, list: vi.fn(), create: vi.fn(), delete: vi.fn() }, settings: { ...actual.api.settings, get: vi.fn() },
     sessions: { ...actual.api.sessions, list: vi.fn(), create: vi.fn() },

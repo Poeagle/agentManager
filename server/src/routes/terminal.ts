@@ -1,3 +1,4 @@
+import {watchSessionEnvironment} from '../services/agents/environment-access.js';
 import {getAgent} from '../services/agents/index.js';
 import {FastifyPluginAsync} from 'fastify';
 import {attachTerminal,writeToSession,resizeSession,reconnectSession,getPendingSpawn,consumePendingSpawn,spawnSession,spawnTerminal,spawnAdopt,sendReplay,sendIncrementalReplay,terminalGeometryMatches,recoverSessionOnAttach,getSession,isSessionActive,isValidTerminalDimensions,subscribeSessionLifecycle,waitForSessionLifecycle,} from '../services/session-manager.js';
@@ -236,6 +237,7 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
       return;
     }
 
+    if(getSession(sessionId)?.cli_type==='codex'){const stopEnvironmentWatch=watchSessionEnvironment(sessionId,req.user.id,()=>socket.close(1008,'Codex environment access changed'));socket.once('close',stopEnvironmentWatch);}
     const isPassive = req.query.passive === '1';
     const requestedCursor = typeof req.query.cursor === 'string' && /^\d+$/.test(req.query.cursor)
       ? Number(req.query.cursor)

@@ -1,3 +1,5 @@
+import {ProviderUsageTable} from './ProviderUsageTable';
+import {CodexAccountProviderEditor} from './CodexAccountProviderEditor';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -1125,6 +1127,7 @@ function ProviderEditor({
   onFileDirtyChange: (dirty: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+  const [usage,setUsage]=useState({inUse:true,busy:true,verified:false});
   const providerQuery = useQuery({
     queryKey: ["agent-provider", agentId, initialProvider.id],
     queryFn: async () =>
@@ -1369,7 +1372,9 @@ function ProviderEditor({
     onError: (failure: Error) => setError(failure.message),
   });
   const detected = detect.data?.models || [];
-  const files = provider.configFiles || [];
+  const files = (liveProvider.configFiles||[]).filter(file=>file.exists&&file.writable!==false&&!file.sensitive);
+  const endpoint=liveProvider.fields.find(field=>field.key==='baseUrl')?.value;
+
   return (
     <div className="agent-management-provider-detail">
       <header className="agent-management-detail-heading">
@@ -1402,7 +1407,7 @@ function ProviderEditor({
                 type="button"
                 className="agent-management-button"
                 title="停止原生 Codex Engine。所有原生会话会断开，正在执行的请求会被中断。"
-                disabled={engineOperation.busy || readOnly || !liveProvider.pid}
+                disabled={engineOperation.busy || readOnly || !liveProvider.pid || usage.busy || !usage.verified}
                 onClick={() => void changeEngineState("stop")}
               >
                 停止 Engine
@@ -1411,7 +1416,7 @@ function ProviderEditor({
                 type="button"
                 className="agent-management-button"
                 title="停止并重新启动原生 Codex Engine。所有原生会话会短暂断开。"
-                disabled={engineOperation.busy || readOnly}
+                disabled={engineOperation.busy || readOnly || usage.busy || !usage.verified}
                 onClick={() => void changeEngineState("restart")}
               >
                 <RefreshCw
@@ -1426,7 +1431,7 @@ function ProviderEditor({
               type="button"
               className="agent-management-button"
               title="停止并重新启动当前 Provider Engine；不影响其他 Provider。"
-              disabled={engineOperation.busy || readOnly}
+              disabled={engineOperation.busy || readOnly || usage.busy || !usage.verified}
               onClick={() => void changeEngineState("restart")}
             >
               <RefreshCw
@@ -1446,7 +1451,7 @@ function ProviderEditor({
                     ? "停止当前 Provider Engine，并标记为停用。"
                     : "启用 Provider，并启动它的独立 Engine。"
                 }
-                disabled={engineOperation.busy || readOnly}
+                disabled={engineOperation.busy || readOnly || usage.busy || !usage.verified}
                 onClick={() =>
                   void changeEngineState(liveProvider.enabled ? "stop" : "start")
                 }
@@ -1460,7 +1465,7 @@ function ProviderEditor({
               type="button"
               className="agent-management-button agent-management-button-danger"
               title="删除 Provider 的独立 Engine、socket、配置目录和加密密钥。"
-              disabled={remove.isPending || readOnly}
+              disabled={remove.isPending || readOnly || usage.inUse}
               onClick={() => setDeleteOpen(true)}
             >
               <Trash2 size={13} />
@@ -1469,6 +1474,8 @@ function ProviderEditor({
           )}
         </div>
       </header>
+      <ProviderUsageTable key={provider.id} environmentId={provider.id==='native'?'native':'provider:'+provider.id} onStateChange={setUsage}/>
+      {usage.inUse&&<p className="agent-management-hint">有用户占用标签页，不能删除此 Provider。</p>}
       {liveProvider.codexHome && (
         <div className="agent-management-path">
           <FolderCog size={14} />
@@ -1489,12 +1496,13 @@ function ProviderEditor({
           </span>
         </div>
       )}
-      <AgentDefaultsEditor
+      <section className="agent-management-section" aria-label="Provider 接入信息"><dl className="agent-management-kv"><div><dt>接入类型</dt><dd>{provider.id==='native'?'本机默认 Codex':'API Key / Responses API'}</dd></div><div><dt>认证方式</dt><dd>{liveProvider.authentication.method}</dd></div>{endpoint&&<div><dt>接口地址</dt><dd>{String(endpoint)}</dd></div>}<div><dt>默认模型</dt><dd>{liveProvider.defaultModel||'使用当前环境默认模型'}</dd></div><div><dt>可用模型</dt><dd>{liveProvider.models.length?liveProvider.models.join('、'):'尚未检测模型'}</dd></div></dl></section>
+      {provider.id==='native'&&<AgentDefaultsEditor
         agentId={agentId}
         defaults={defaults}
         readOnly={readOnly}
         onDirtyChange={onDirtyChange}
-      />
+      />}
       <section className="agent-management-section agent-management-engine-settings">
         <div className="agent-management-section-title">
           <div>
@@ -1675,7 +1683,7 @@ function ProviderEditor({
               type="button"
               className="agent-management-button agent-management-button-primary"
               title="保存当前 Provider 的启动参数、连接信息和模型配置，并重启该 Engine。"
-              disabled={update.isPending || engineOperation.busy}
+              disabled={update.isPending || engineOperation.busy || usage.busy || !usage.verified}
               onClick={() => update.mutate()}
             >
               {update.isPending ? (
@@ -1978,6 +1986,9 @@ function CodexWorkspace({
   onDirtyChange: (dirty: boolean) => void;
   onFileDirtyChange: (dirty: boolean) => void;
 }) {
+  const accounts=useQuery({queryKey:['codex-environment-management'],queryFn:()=>api.codexEnvironments.management(),retry:false,enabled:!readOnly});
+  const [newKind,setNewKind]=useState<'api'|'account'>('api');
+  const accountProviders=accounts.data?.environments.filter(e=>e.kind==='account')||[];
   const defaultProvider =
     state.providers.find(
       (provider) => provider.managed && provider.status === "ready",
@@ -1993,6 +2004,7 @@ function CodexWorkspace({
   const selected =
     state.providers.find((provider) => provider.id === selectedProviderId) ||
     state.providers[0];
+  const selectedAccount=accountProviders.find(e=>e.id===selectedProviderId);
   const providerDirtyChange = useCallback((dirty: boolean) => {
     setProviderDirty(dirty);
   }, []);
@@ -2015,8 +2027,6 @@ function CodexWorkspace({
     if (providerId === selected?.id && !adding) return;
     setSelectedProviderId(providerId);
     setAdding(false);
-    setProviderDirty(false);
-    setFileDirty(false);
     setProviderDirty(false);
     setFileDirty(false);
   };
@@ -2062,22 +2072,17 @@ function CodexWorkspace({
             onSelect={() => switchProvider(provider.id)}
           />
         ))}
+        {accountProviders.map(e=><button key={e.id} type="button" className="agent-management-provider" title={`${e.name}：本机用户 ${e.connection?.username}，${e.enabled?'已启用':'已停用'}`} aria-current={selectedAccount?.id===e.id?'true':undefined} onClick={()=>switchProvider(e.id)}><span className={`agent-management-dot ${e.enabled?'ready':'unknown'}`}/><span className="agent-management-provider-copy"><strong>{e.name}</strong><small>登录账号 · {e.connection?.username}</small><small>{e.enabled?'已启用':'已停用'} · {e.connection?.authMethod==='password'?'SSH 密码':'SSH 密钥'}</small></span><ChevronRight size={14}/></button>)}
         <p className="agent-management-provider-note">
-          Provider 引擎相互隔离。切换模型服务时，新会话可选择对应 Provider。
+          API 接口和登录账号分别配置；标签页可选择已授权的 Provider。
         </p>
       </aside>
       <div className="agent-management-provider-content">
         {adding ? (
-          <AddCodexProvider
-            agentId={agentId}
-            readOnly={readOnly}
-            onEditingChange={providerDirtyChange}
-            onClose={() => {
-              setAdding(false);
-              setProviderDirty(false);
-              onDirtyChange(false);
-            }}
-          />
+          <div><label className="agent-management-field"><span>接入类型</span><select aria-label="Provider 接入类型" value={newKind} onChange={e=>{if((providerDirty||fileDirty)&&!window.confirm('放弃当前未保存修改并切换接入类型吗？'))return;setNewKind(e.target.value as 'api'|'account');setProviderDirty(false);setFileDirty(false);}}><option value="api">API Key 接入</option><option value="account">Codex 登录账号</option></select></label>
+          {newKind==='account'?<CodexAccountProviderEditor onDirtyChange={providerDirtyChange} onSaved={e=>{setSelectedProviderId(e.id);setAdding(false);setProviderDirty(false);}}/>:<AddCodexProvider agentId={agentId} readOnly={readOnly} onEditingChange={providerDirtyChange} onClose={()=>{setAdding(false);setProviderDirty(false);onDirtyChange(false);}}/>}</div>
+        ) : selectedAccount ? (
+          <CodexAccountProviderEditor key={selectedAccount.id} environment={selectedAccount} readOnly={readOnly} onDirtyChange={providerDirtyChange} onSaved={()=>setProviderDirty(false)}/>
         ) : selected ? (
           <ProviderEditor
             agentId={agentId}
@@ -2337,6 +2342,11 @@ export function AgentManagementPanel({
   readOnly?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const accountCatalog = useQuery({
+    queryKey: ['codex-environment-management'],
+    queryFn: () => api.codexEnvironments.management(),
+    enabled: false,
+  });
   const catalog = useQuery({
     queryKey: ["agent-management-list"],
     queryFn: () => api.agentManagement.list(),
@@ -2421,7 +2431,7 @@ export function AgentManagementPanel({
               <span>{item.agent.label}</span>
               <small>
                 {item.agent.id === "codex"
-                  ? `${(item.state as any).providers?.length || 0} 个 Provider`
+                  ? `${((item.state as any).providers?.length || 0) + (accountCatalog.data?.environments.filter(e=>e.kind==='account').length || 0)} 个 Provider`
                   : "原生配置"}
               </small>
             </button>

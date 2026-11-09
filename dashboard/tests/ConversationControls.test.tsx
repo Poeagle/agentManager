@@ -4,7 +4,7 @@ import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {beforeEach,afterEach,describe,expect,it,vi} from 'vitest';
 import {ConversationControls} from '../src/components/ConversationControls';
 import {api,type ConversationControlsData} from '../src/lib/api';
-vi.mock('../src/lib/api',()=>({api:{agent:{controls:vi.fn(),setControls:vi.fn()},sessions:{compactConversation:vi.fn().mockResolvedValue({ok:true})}}}));
+vi.mock('../src/lib/api',()=>({api:{codexEnvironments:{forSession:vi.fn(async()=>({current:'provider:provider-a',environments:[{id:'provider:provider-a',kind:'provider',provider:'provider-a',name:'A',can_control:true},{id:'provider:provider-b',kind:'provider',provider:'provider-b',name:'B',can_control:true}]})),sessionPreflight:vi.fn(async()=>({ok:true,checks:[{stage:'models',ok:true,message:'available'}],models:[{model:'model-b',name:'B',provider:'provider-b',efforts:[{value:'low'}],defaultEffort:'low'}]})),transfer:vi.fn(async()=>({ok:true}))},agent:{controls:vi.fn(),setControls:vi.fn()},sessions:{compactConversation:vi.fn().mockResolvedValue({ok:true})}}}));
 let client:QueryClient,data:ConversationControlsData;
 beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}});data={agent:sessionAgent({cli_type:'codex'}),engine_version:'0.166.0',git:{branch:'main',changes:2},state:'active',model:'model-a',effort:'high',provider:'openai',cwd:'/project',cli_version:'0.test',permission:'workspace-write',approval:'never',service_tier:null,usage:{total:{total_tokens:400000},last:{total_tokens:12000,input_tokens:11000,cached_input_tokens:9000,output_tokens:1000},window:40000},limits:[{used_percent:25,minutes:10080,resets_at:1900000000}],models:[{model:'model-a',name:'Model A',description:'默认',efforts:[{value:'high',description:''}],defaultEffort:'high'},{model:'model-b',name:'Model B',description:'另一模型',efforts:[{value:'low',description:''},{value:'medium',description:''}],defaultEffort:'low'}],can_edit:true,loaded:true,pending:null,warning:null,native_id:'native',checked_at:'2026-10-31T02:00:00Z',usage_observed_at:'2026-10-31T01:59:00Z'};vi.mocked(api.agent.controls).mockImplementation(async()=>data);vi.mocked(api.agent.setControls).mockImplementation(async(_id,value)=>({ok:true,pending:null,...value}));});
 afterEach(()=>client.clear());
@@ -60,13 +60,12 @@ describe('compact conversation controls',()=>{
   data={...data,service_tier:null,models:[{...data.models[0],default_service_tier:'priority',service_tiers:[{id:'priority',name:'Fast',description:'Faster requests'}]}]};mount();
   fireEvent.click(await screen.findByRole('button',{name:'关闭 Fast 模式'}));await waitFor(()=>expect(api.agent.setControls).toHaveBeenLastCalledWith('s',{model:'model-a',effort:'high',service_tier:'default'}));expect(await screen.findByRole('button',{name:'开启 Fast 模式'})).toHaveAttribute('aria-pressed','false');
  });
- it('confirms a provider change with explicit new-thread model settings instead of applying it to the old thread',async()=>{
+ it('copies history when switching providers instead of opening an empty conversation',async()=>{
   data={...data,supports_fresh_model:true,provider:'provider-a',models:[{...data.models[0],provider:'provider-a'},{...data.models[1],provider:'provider-b'}]};
   const open=vi.fn().mockResolvedValue(undefined);vi.mocked(api.agent.setControls).mockClear();render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active onNewConversation={open}/></QueryClientProvider>);
   const model=await screen.findByRole('combobox',{name:'选择模型'});fireEvent.change(model,{target:{value:JSON.stringify(['provider-b','model-b'])}});
   expect(api.agent.setControls).not.toHaveBeenCalled();expect(open).not.toHaveBeenCalled();
-  const dialog=screen.getByRole('dialog',{name:'在当前标签页新开会话'});expect(within(dialog).getByRole('combobox',{name:'新会话模型'})).toHaveValue(JSON.stringify(['provider-b','model-b']));
-  fireEvent.click(within(dialog).getByRole('button',{name:'停止旧会话并新开'}));await waitFor(()=>expect(open).toHaveBeenCalledWith({provider:'provider-b',model:'model-b',effort:'low'}));
+  const dialog=await screen.findByRole('dialog',{name:'保留上下文切换 Codex 环境'});fireEvent.click(within(dialog).getByRole('button',{name:'预检连接、登录、模型与项目权限'}));await within(dialog).findByRole('combobox',{name:'目标环境模型'});fireEvent.click(within(dialog).getByRole('button',{name:'复制历史并切换'}));await waitFor(()=>expect(api.codexEnvironments.transfer).toHaveBeenCalledWith('s',{environment_id:'provider:provider-b',provider:'provider-b',model:'model-b',effort:'low'}));expect(open).not.toHaveBeenCalled();
  });
  it('shows a saved recovery model without resubmitting settings automatically',async()=>{
   data={...data,supports_model_recovery:true,loaded:false,pending:{model:'model-b',effort:'low'},pending_status:'saved'};vi.mocked(api.agent.setControls).mockClear();mount();

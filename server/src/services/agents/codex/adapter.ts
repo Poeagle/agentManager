@@ -1,4 +1,11 @@
-import {inCodexThread,engineForThread,currentCodexEngine} from './engine-context.js';
+import {mkdirSync,lstatSync,chmodSync,writeFileSync} from 'fs';
+import {createHash} from 'crypto';
+import {join,dirname} from 'path';
+import {tmpdir} from 'os';
+import {config} from '../../../config.js';
+import {assertSessionEnvironment,engineForEnvironment} from './environments.js';
+import {canControlEnvironment} from '../environment-access.js';
+import {runInCodexEngine,inCodexThread,engineForThread,currentCodexEngine} from './engine-context.js';
 import {retryableConversationError} from '../../conversation-retry.js';
 import { unlinkSync } from 'fs';
 import { codexBindingFile } from './identity.js';
@@ -22,7 +29,7 @@ export const codexAdapter: AgentAdapter = {
                 unlinkSync(codexBindingFile(context.session.id));
             }
             catch { } }, discoverTerminal: discoverCodexTerminal, recover: () => { ingestAllCodexSessionBindings(); backfillLegacyCodexSessionIds(); } },
-    history: { file: { turns: extractCodexPromptContext, relevant: line => /"type"\s*:\s*"(?:user_message|agent_message|task_complete|message|compacted)"/.test(line), locate: context => context.nativeId ? findCodexRollout(context.nativeId) : Promise.resolve(null), decode: decodeCodexText, project: parseCodexMessage, replacementHistory: codexHistoryReplacementIndexes, recordLimit: codexRecordLimitWithCompaction, questionCall: codexQuestionCall,turnBoundary:codexTurnBoundary }, read: async () => null },
+    history: { file: { turns: extractCodexPromptContext, relevant: line => /"type"\s*:\s*"(?:user_message|agent_message|task_complete|message|compacted)"/.test(line), locate: async context => { if(!context.nativeId)return null;const account=await (await import('./account-files.js')).environmentRollout(context);return account||findCodexRollout(context.nativeId); }, decode: decodeCodexText, project: parseCodexMessage, replacementHistory: codexHistoryReplacementIndexes, recordLimit: codexRecordLimitWithCompaction, questionCall: codexQuestionCall,turnBoundary:codexTurnBoundary }, read: async () => null },
     runtime: { subscribe: (context, changed) => subscribeCodexRuntimeSignals(id => { if (id === context.nativeId)
             changed(); }), read: async (context) => {
             const module=await import('./runtime.js');
@@ -35,7 +42,7 @@ export const codexAdapter: AgentAdapter = {
         } },
     controls: {
         confirmed: (_context,value,data) => data.loaded&&data.model===value.model&&data.effort===value.effort&&(!value.provider||value.provider===data.provider)&&(value.service_tier===undefined||value.service_tier===(data.service_tier||'default')),
-        read: async (context) => inCodexThread(requireNative(context),async()=>(await import('./controls.js')).readConversationControls(requireNative(context), !!context.sharedAccess, context.force)),
+        read: async (context) => inCodexThread(requireNative(context),async()=>(await import('./controls.js')).readConversationControls(requireNative(context), !!context.sharedAccess, context.force, context.actorUserId||context.session.created_by_user_id||undefined)),
         validate: async (context, value) => inCodexThread(requireNative(context),async()=>(await import('./controls.js')).validateModelPreference(value)),
         apply: async (context, value) => inCodexThread(requireNative(context),async()=>(await import('./controls.js')).applyCodexModelSettings(requireNative(context), value)),
     },
@@ -46,6 +53,7 @@ export const codexAdapter: AgentAdapter = {
     input: {
         cancelQueued: async(context,clientId)=>inCodexThread(requireNative(context),async()=>(await import('./queue.js')).cancelCodexQueuedInput(requireNative(context),clientId)),
         submit: async (context, text, clientId, attachments) => {
+            assertSessionEnvironment(context.session,context.actorUserId);
             const stream = await import('./stream.js');
             const submit = () => inCodexThread(requireNative(context),()=>attachments?.length ? stream.submitStreamingCodexInput(requireNative(context), text, clientId, attachments) : clientId ? stream.submitStreamingCodexInput(requireNative(context), text, clientId) : stream.submitStreamingCodexInput(requireNative(context), text));
             let result = process.env.AGENTMANAGER_CODEX_STREAM_SOCKET ? await submit() : false;
@@ -76,6 +84,21 @@ export const codexAdapter: AgentAdapter = {
             await inCodexThread(context.nativeId,async()=>(await import('./stream.js')).interruptStreamingCodexThread(context.nativeId!)); },
     },
     launch: { prepare: async (context, task, instructions, resume) => {
+            assertSessionEnvironment(context.session);
+            const owner=context.session.created_by_user_id;
+            if(context.session.agent_environment_id&&owner&&canControlEnvironment(context.session.agent_environment_id,owner))context={...context,sharedAccess:true};
+            if(context.session.agent_environment_id)return runInCodexEngine(await engineForEnvironment(context.session.agent_environment_id),()=>prepareCodexLaunch(context,task,instructions,resume));
+            return prepareCodexLaunch(context,task,instructions,resume);
+        }, ready: async (context) => { if (context.session.id)
+            (await import('../../session-manager.js')).watchCodexSessionBinding(context.session.id); } },
+    commands: { configure: (command, projectPath, streamSocket) => {
+        const configured=applyManagedCommandDefaults('codex',command);
+        return streamSocket && projectPath ? configured.replace(/(?:^|\s)(?:--dangerously-bypass-approvals-and-sandbox|--yolo)(?=\s|$)/g, ' ').trim() + ` --cd ${shellSingleQuote(projectPath)}` : codexPermissions(configured);
+    }, build: codexCommand, permissions: codexPermissions, sharedResources: codexResources },
+    management: codexManagement({ launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) }),
+
+};
+async function prepareCodexLaunch(context:import('../types.js').AgentContext,task:string,instructions:string|undefined,resume?:boolean) {
             const streamSocket = context.sharedAccess ? (resume&&context.nativeId?(await engineForThread(context.nativeId)).socket:currentCodexEngine().socket)||null : null;
             const terminalSocket=streamSocket?await ensureCodexTerminalBridge(streamSocket):null;
             const module = await import('./stream.js');
@@ -90,13 +113,16 @@ export const codexAdapter: AgentAdapter = {
                 else if (!resume)
                     nativeId = await module.createStreamingCodexThread(context.projectPath!, task, instructions);
             }
+            let terminalProfile:import('../types.js').AgentTerminalProfile|undefined;
+            if(context.session.agent_environment_id&&terminalSocket){
+                const tag=createHash('sha256').update(JSON.stringify([config.dbPath,context.session.created_by_user_id,context.session.agent_environment_id])).digest('hex').slice(0,16);
+                const home=join(tmpdir(),`octo-client-${process.getuid?.()??'user'}-${tag}`);
+                mkdirSync(home,{recursive:true,mode:0o700});const info=lstatSync(home);
+                if(!info.isDirectory()||info.isSymbolicLink()||process.getuid&&info.uid!==process.getuid())throw Error('账号终端客户端目录不可用');chmodSync(home,0o700);mkdirSync(join(home,'.codex'),{recursive:true,mode:0o700});
+                try{writeFileSync(join(home,'.zshrc'),'',{flag:'wx',mode:0o600});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
+                terminalProfile={home,readOnlyPaths:[dirname(terminalSocket)]};
+            }
             const manager = await import('../../session-manager.js');
-            return { nativeId, freshMode: 'resume', streamSocket:terminalSocket, bindingPath: context.session.id ? manager.codexBindingPath(context.session.id) : undefined };
-        }, ready: async (context) => { if (context.session.id)
-            (await import('../../session-manager.js')).watchCodexSessionBinding(context.session.id); } },
-    commands: { configure: (command, projectPath, streamSocket) => {
-        const configured=applyManagedCommandDefaults('codex',command);
-        return streamSocket && projectPath ? configured.replace(/(?:^|\s)(?:--dangerously-bypass-approvals-and-sandbox|--yolo)(?=\s|$)/g, ' ').trim() + ` --cd ${shellSingleQuote(projectPath)}` : codexPermissions(configured);
-    }, build: codexCommand, permissions: codexPermissions, sharedResources: codexResources },
-    management: codexManagement({ launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) }),
-};
+            return { nativeId,terminalProfile, freshMode: 'resume' as const, streamSocket:terminalSocket, bindingPath: context.session.id ? manager.codexBindingPath(context.session.id) : undefined };
+
+}

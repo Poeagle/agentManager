@@ -802,7 +802,7 @@ export async function readConversation(
           before = index.messages.length;
           reset = true;
         }
-        if (query.after) {
+        if (query.after && !reset) {
           const after = index.messages.findIndex(
             (message) => message.id === query.after,
           );

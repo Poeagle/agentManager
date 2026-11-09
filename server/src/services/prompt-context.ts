@@ -25,6 +25,7 @@ export interface AgentTextMessage {
 export function decodeNativeAgentMessages(entries:Iterable<unknown>,kind:CliType,limit=8000){return getAgent(kind).history.file!.decode(entries,limit);}
 
 export interface PromptContextSession {
+  agent_environment_id?:string|null;
   agent_id?:string|null;native_session_id?:string|null;
   cli_type: CliType | null;
   claude_session_id: string | null;
@@ -119,6 +120,10 @@ export async function loadPromptContextFromFile(filePath: string, kind: CliType,
 }
 
 export async function findCodexRollout(sessionId: string): Promise<string | null> {
+  // Explicit environment bindings must never fall back to another account's files.
+  let environmentId:string|undefined;
+  try {const {getDb}=await import('../db/index.js');environmentId=(getDb().prepare("SELECT agent_environment_id AS id FROM sessions WHERE (codex_session_id=? OR native_session_id=?) AND agent_environment_id LIKE 'account:%' LIMIT 1").get(sessionId,sessionId) as {id:string}|undefined)?.id;}catch{/* File-only readers have no application database. */}
+  if(environmentId)return (await import('./agents/codex/account-files.js')).environmentRollout({nativeId:sessionId,session:{agent_environment_id:environmentId}});
   if (!NATIVE_SESSION_ID_RE.test(sessionId)) return null;
   const roots = codexSessionRoots().map(home => join(home, 'sessions'));
   const cacheKey = `${roots.join('|')}:${sessionId}`;

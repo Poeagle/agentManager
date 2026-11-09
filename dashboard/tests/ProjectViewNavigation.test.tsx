@@ -14,7 +14,7 @@ vi.mock('../src/components/ProjectSkillsPanel', () => ({ ProjectSkillsPanel: () 
 vi.mock('../src/components/ScheduledTasksPanel', () => ({ ScheduledTasksPanel: () => null }));
 vi.mock('../src/lib/api', async (original) => {
   const actual = await original<typeof import('../src/lib/api')>();
-  return { ...actual, api: { ...actual.api,
+  return { ...actual, api: { ...actual.api, codexEnvironments: { ...actual.api.codexEnvironments, list: vi.fn(async()=>({environments:[{id:"native",name:"默认 Codex",kind:"native",enabled:true,allowed_user_ids:null}]})) },
     projects: { ...actual.api.projects, list: vi.fn() },
     sessions: { ...actual.api.sessions, list: vi.fn(), create: vi.fn() },
     userState: { ...actual.api.userState, getAll: vi.fn(), set: vi.fn() },

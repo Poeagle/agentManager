@@ -11,7 +11,7 @@ test('sending, early native echoes, late history and reload preserve causal mess
   const {project}=await(await page.request.post('/api/projects',{data:{name:'Message order',path:projectPath}})).json();
   const {session}=await(await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:projectPath,mode:'terminal'}})).json();
   const native='019ff001-aaaa-7aaa-8aaa-aaaaaaaaaaaa';const dir=join(root,'home/.codex/sessions');mkdirSync(dir,{recursive:true});const log=join(dir,`rollout-order-${native}.jsonl`);
-  const id=(turn:string,role:string,item:string)=>createHash('sha256').update(`${turn}:${role}:${item}`).digest('hex').slice(0,32);
+  const id=(_turn:string,role:string,item:string)=>createHash('sha256').update(`item:${role}:${item}`).digest('hex').slice(0,32);
   const record=(turn:string,role:string,item:string,text:string,timestamp:string)=>JSON.stringify({type:'response_item',timestamp,payload:{type:'message',id:item,role,phase:role==='assistant'?'final_answer':undefined,internal_chat_message_metadata_passthrough:{turn_id:turn},content:[{type:role==='user'?'input_text':'output_text',text}]}})+'\n';
   writeFileSync(log,record('t0','user','q0','之前的问题','2099-01-01T00:00:00Z')+record('t0','assistant','a0','之前的答复','2099-01-02T00:00:00Z'));
   const require=createRequire(import.meta.url),Database=require('../server/node_modules/better-sqlite3'),db=new Database(join(root,'agentmanager.db'));
@@ -41,13 +41,13 @@ test('sending, early native echoes, late history and reload preserve causal mess
     await expect(chat.getByRole('textbox')).toHaveText('',{timeout:1000});
     if(round===2) {
       release();await expect(chat.getByRole('textbox')).toHaveText('');
-      await expect(chat.getByText('追问已提交，Codex 正在继续执行',{exact:true})).toBeVisible();
       await expect(chat.getByText('尚未收到正文，收到后会立即逐段显示。',{exact:true})).toHaveCount(0);
     }
     const turn='t1',stamp=`201${round}-01-01T00:00:00Z`;
-    // Real Codex uses different IDs in userMessage events and rollout records.
-    const user={id:id(turn,'user',`stream-user-${round}`),role:'user',text:'继续',timestamp:stamp,turn_id:turn,client_id:submitted!.client_id};
-    const answer={id:id(turn,'assistant',`stream-a${round}`),role:'assistant',phase:round===1?'commentary':'final',text:`第 ${round} 轮答复\n`,timestamp:stamp,turn_id:turn,streaming:true};
+    // Public IDs follow the stable native item identity across live/history;
+    // container turn IDs and timestamps do not determine identity or order.
+    const user={id:id(turn,'user',`log-user-${round}`),role:'user',text:'继续',timestamp:stamp,turn_id:'live-'+turn,client_id:submitted!.client_id};
+    const answer={id:id(turn,'assistant',`a${round}`),role:'assistant',phase:round===1?'commentary':'final',text:`第 ${round} 轮答复\n`,timestamp:stamp,turn_id:'live-'+turn,streaming:true};
     push(JSON.stringify({type:'snapshot',messages:[user,answer],busy:true,stage:'answering',turn_id:turn}));
     expected.push(answer.text.trim());await expectBodies(expected);
     await expect(chat.getByText('追问已提交，Codex 正在继续执行',{exact:true})).toHaveCount(0);

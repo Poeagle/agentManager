@@ -44,7 +44,9 @@
     "clean": "cd server && rm -rf dist && cd ../dashboard && rm -rf dist",
     "deploy": "bash scripts/deploy-dev.sh",
     "deploy:ui": "npm run build:dashboard && rsync -a --delete dashboard/dist/ \"$HOME/agentmanager/dashboard/dist/\"",
-    "dev:platform-ai": "bash scripts/dev-platform-ai.sh"
+    "dev:platform-ai": "bash scripts/dev-platform-ai.sh",
+    "test:regression:conversation": "npm --prefix server test -- --run tests/conversation-reader.test.ts tests/conversation-stream.test.ts tests/conversation-stream-recovery.test.ts && npm --prefix dashboard test -- --run tests/SessionConversationSend.test.tsx tests/conversation-timeline.test.ts tests/conversation-stream.test.ts && playwright test e2e/conversation-duplicate-input.spec.ts e2e/conversation-order.spec.ts e2e/conversation-reconnect.spec.ts e2e/conversation-history-replacement.spec.ts",
+    "test:regression:accounts": "npm --prefix server test -- --run tests/codex-environments.test.ts tests/codex-account-transport.test.ts tests/codex-account-files.test.ts tests/codex-history-bundle.test.ts tests/codex-environment-transfer.test.ts tests/codex-environment-usage.test.ts tests/conversation-new.test.ts tests/terminal-worker-controls.test.ts && npm --prefix dashboard test -- --run tests/CodexEnvironments.test.tsx tests/ProviderUsageTable.test.tsx tests/ConversationControls.test.tsx && playwright test e2e/codex-environments.spec.ts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",

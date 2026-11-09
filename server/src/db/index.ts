@@ -61,6 +61,7 @@ function createCurrentSchema(): void {
       cli_type TEXT DEFAULT 'claude',
       agent_id TEXT,
       native_session_id TEXT,
+      agent_environment_id TEXT,
       terminal_cols INTEGER DEFAULT 120,
       terminal_rows INTEGER DEFAULT 40,
       external_socket TEXT,
@@ -271,6 +272,8 @@ function reconcileAgentIdentity(): void {
   addColumn('sessions','cli_type',"TEXT DEFAULT 'claude'");
   addColumn('sessions','codex_session_id','TEXT');
   addColumn('sessions','claude_session_id','TEXT');
+  addColumn('sessions','agent_environment_id','TEXT');
+  db.exec(`CREATE TABLE IF NOT EXISTS agent_environments (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, config TEXT NOT NULL DEFAULT '{}', allowed_user_ids TEXT)`);
   addColumn('sessions','agent_id','TEXT');
   addColumn('sessions','native_session_id','TEXT');
   db.exec(`UPDATE sessions SET agent_id=COALESCE(agent_id,cli_type,'claude'),native_session_id=COALESCE(native_session_id,CASE cli_type WHEN 'codex' THEN codex_session_id WHEN 'claude' THEN claude_session_id END) WHERE agent_id IS NULL OR (native_session_id IS NULL AND (cli_type='codex' AND codex_session_id IS NOT NULL OR cli_type='claude' AND claude_session_id IS NOT NULL));

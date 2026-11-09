@@ -1,3 +1,4 @@
+import {canUseSessionEnvironment} from '../services/agents/environment-access.js';
 import { runtimeNames } from '../services/runtime-namespace.js';
 import type { FastifyPluginAsync } from 'fastify';
 import { execFile } from 'child_process';
@@ -256,7 +257,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
 
     const tabSessionIds = [...sessionTabOwners.keys()];
     const tabSessionPlaceholders = tabSessionIds.length > 0 ? tabSessionIds.map(() => '?').join(', ') : 'NULL';
-    const sessionRows = db.prepare(`
+    const rawSessionRows = db.prepare(`
       WITH ranked AS (
         SELECT s.*,
                ROW_NUMBER() OVER (
@@ -266,7 +267,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
         FROM sessions s
         WHERE s.created_by_user_id IS NOT NULL OR s.id IN (${tabSessionPlaceholders})
       )
-      SELECT id, project_id, task, status, mode, cli_type, agent_id,native_session_id,claude_session_id, codex_session_id, pid, terminal_cols,
+      SELECT id, project_id, task, status, mode, cli_type, agent_id,agent_environment_id,native_session_id,claude_session_id, codex_session_id, pid, terminal_cols,
              created_by_user_id, started_at, completed_at, created_at, updated_at
       FROM ranked
       WHERE status IN ('pending', 'launching', 'running', 'detached', 'released')
@@ -280,6 +281,8 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
       status: string;
       mode: string | null;
       cli_type: string | null;
+      agent_id: string | null;
+      agent_environment_id: string | null;
       pid: number | null;
       terminal_cols: number | null;claude_session_id:string|null;codex_session_id:string|null;
       created_by_user_id: string | null;
@@ -288,6 +291,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
       created_at: string;
       updated_at: string;
     }>;
+    const sessionRows=rawSessionRows.filter(session=>canUseSessionEnvironment(session,req.user!.id));
     const activeStatuses = new Set(['pending', 'launching', 'running', 'detached', 'released']);
     const rootPids = new Map<string, number | null>();
     await Promise.all(sessionRows.map(async (session) => {

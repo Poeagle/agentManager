@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {appendFileSync,mkdirSync,writeFileSync} from 'fs';
+import {appendFileSync,mkdirSync,writeFileSync,renameSync} from 'fs';
 import {join} from 'path';
 import Fastify,{type FastifyInstance} from 'fastify';
 import websocket from '@fastify/websocket';
@@ -26,6 +26,14 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app.close();vi.unstubAllEnvs();cleanup();});
 describe('public conversation pages',()=>{
+  it('returns a complete baseline when a history file is replaced even if its old cursor survives',async()=>{
+    writeFileSync(file,user('第一问')+final('第一答'));
+    const first=await readConversation(binding);const cursor=first.messages.at(-1)!.id;
+    writeFileSync(file+'.replacement',user('第一问')+final('第一答')+user('第二问')+final('第二答'));
+    renameSync(file+'.replacement',file);
+    const result=await readConversation(binding,{after:cursor});
+    expect(result.reset).toBe(true);expect(result.messages.map(m=>m.text)).toEqual(['第一问','第一答','第二问','第二答']);
+  });
   it('rejects a thread UUID masquerading as a turn ID and merges event echoes within the real turn',async()=>{
     const start=(turn:string)=>line('event_msg',{type:'task_started',turn_id:turn});
     const answer=(turn:string,item:string)=>line('response_item',{type:'message',id:item,role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:turn},content:[{type:'output_text',text:'same answer'}]});

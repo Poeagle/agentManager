@@ -14,7 +14,7 @@ import {sessionEnvironment as sessionEnv,tmuxClientArgs} from '../lib/terminal-e
 import * as pty from 'node-pty-prebuilt-multiarch';
 import {execFile,execFileSync} from 'child_process';
 import {promisify} from 'util';
-import {existsSync,unlinkSync,mkdirSync,createReadStream,appendFileSync} from 'fs';
+import {existsSync,unlinkSync,mkdirSync,createReadStream,appendFileSync,readFileSync,lstatSync} from 'fs';
 import {join} from 'path';
 import {tmpdir} from 'os';
 import type {ReadStream} from 'fs';
@@ -32,6 +32,7 @@ function tlog(s: string): void {
    ================================================================ */
 
 interface SpawnMessage {
+  terminalProfile?:import('./agents/types.js').AgentTerminalProfile;
   type: 'spawn';
   sessionId: string;
   projectPath: string;
@@ -118,9 +119,10 @@ export function buildSandboxCommand(
   args: string[],
   inaccessiblePaths: string[] = [],
   sandboxRequired = false,
+  terminalProfile?:import('./agents/types.js').AgentTerminalProfile,
 ): { program: string; args: string[] } {
   if (!sandboxRequired) return { program, args };
-  const properties = inaccessiblePaths.flatMap((path) => ['-p', `InaccessiblePaths=${path}`]);
+  const properties = inaccessiblePaths.flatMap((path) => ['-p', `InaccessiblePaths=${path.startsWith('-')?path:'-'+path}`]);
 
   return {
     program: 'systemd-run',
@@ -130,6 +132,8 @@ export function buildSandboxCommand(
       `--working-directory=${projectPath}`,
       '-p', 'NoNewPrivileges=yes',
       '-p', 'PrivateTmp=yes',
+      '-p', `BindPaths=${JSON.stringify(projectPath)}`,
+      ...(terminalProfile?['-p',`BindPaths=${JSON.stringify(terminalProfile.home)}`,...terminalProfile.readOnlyPaths.flatMap(path=>['-p',`BindReadOnlyPaths=${JSON.stringify(path)}`]),`--setenv=HOME=${terminalProfile.home}`,`--setenv=CODEX_HOME=${join(terminalProfile.home,'.codex')}`,`--setenv=PATH=${process.env.PATH||'/usr/local/bin:/usr/bin:/bin'}`,`--setenv=TERM=xterm-256color`]:[]),
       '-p', 'PrivateDevices=yes',
       '-p', 'ProtectKernelTunables=yes',
       '-p', 'ProtectKernelModules=yes',
@@ -168,6 +172,7 @@ async function tmuxCreate(
   command?: string,
   inaccessiblePaths: string[] = [],
   sandboxRequired = false,
+  terminalProfile?:import('./agents/types.js').AgentTerminalProfile,
 ): Promise<void> {
   const name = tmuxSessionName(sessionId);
   if (tmuxExists(sessionId)) {
@@ -190,7 +195,7 @@ async function tmuxCreate(
     ? [envCmd, ...envArgs, shell, '-i', '-c', command]
     : [envCmd, ...envArgs, shell, '-i'];
   await stopSandbox(sessionId);
-  const sandboxed = buildSandboxCommand(sessionId, projectPath, baseRunArgs[0], baseRunArgs.slice(1), inaccessiblePaths, sandboxRequired);
+  const sandboxed = buildSandboxCommand(sessionId, projectPath, baseRunArgs[0], baseRunArgs.slice(1), inaccessiblePaths, sandboxRequired,terminalProfile);
 
   await execFileAsync('tmux', [
     ...tmuxBaseArgs, 'new-session', '-d', '-s', name,
@@ -245,14 +250,14 @@ function dtachExists(sessionId: string): boolean {
   }
 }
 
-async function dtachCreate(sessionId: string, projectPath: string, command: string, inaccessiblePaths: string[] = [], sandboxRequired = false): Promise<void> {
+async function dtachCreate(sessionId: string, projectPath: string, command: string, inaccessiblePaths: string[] = [], sandboxRequired = false,terminalProfile?:import('./agents/types.js').AgentTerminalProfile): Promise<void> {
   const sock = dtachSocket(sessionId);
   if (existsSync(sock)) {
     try { unlinkSync(sock); } catch { /* ignore */ }
   }
   const shell = process.env.SHELL || '/bin/bash';
   await stopSandbox(sessionId);
-  const sandboxed = buildSandboxCommand(sessionId, projectPath, shell, ['-i', '-c', command], inaccessiblePaths, sandboxRequired);
+  const sandboxed = buildSandboxCommand(sessionId, projectPath, shell, ['-i', '-c', command], inaccessiblePaths, sandboxRequired,terminalProfile);
   await execFileAsync('dtach', [
     '-n', sock, '-Ez', sandboxed.program, ...sandboxed.args,
   ], {
@@ -280,7 +285,7 @@ async function dtachKill(sessionId: string): Promise<void> {
 }
 
 function spawnDirect(msg: SpawnMessage, program: string, args: string[]): pty.IPty {
-  const sandboxed = buildSandboxCommand(msg.sessionId, msg.projectPath, program, args, msg.inaccessiblePaths, msg.sandboxRequired);
+  const sandboxed = buildSandboxCommand(msg.sessionId, msg.projectPath, program, args, msg.inaccessiblePaths, msg.sandboxRequired,msg.terminalProfile);
   return pty.spawn(sandboxed.program, sandboxed.args, {
     name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
     env: sessionEnv(),
@@ -517,6 +522,7 @@ interface LifecycleReady {
 }
 
 async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
+  if(msg.terminalProfile){mkdirSync(join(msg.terminalProfile.home,'.codex'),{recursive:true,mode:0o700});const clientConfig=join(msg.terminalProfile.home,'.codex','config.toml');if(existsSync(clientConfig)&&(!lstatSync(clientConfig).isFile()||lstatSync(clientConfig).isSymbolicLink()))throw Error('账号终端配置路径不安全');const trustSection='[projects.'+JSON.stringify(msg.projectPath)+']';if(!existsSync(clientConfig)||!readFileSync(clientConfig,'utf8').includes(trustSection))appendFileSync(clientConfig,'\n'+trustSection+'\ntrust_level = \"trusted\"\n',{mode:0o600});process.env.HOME=msg.terminalProfile.home;delete process.env.XDG_CONFIG_HOME;delete process.env.XDG_DATA_HOME;delete process.env.XDG_CACHE_HOME;delete process.env.XDG_STATE_HOME;}
   currentSessionId = msg.sessionId;
   useTmux = msg.useTmux;
   useDtach = msg.useDtach;
@@ -529,7 +535,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
   try {
     if (msg.mode === 'terminal') {
       if (msg.useTmux) {
-        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, undefined, msg.inaccessiblePaths, msg.sandboxRequired);
+        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, undefined, msg.inaccessiblePaths, msg.sandboxRequired,msg.terminalProfile);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
           pipePaneStream = pp.stream;
@@ -541,7 +547,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
           env: sessionEnv(),
         });
       } else if (msg.useDtach) {
-        await dtachCreate(msg.sessionId, msg.projectPath, shell, msg.inaccessiblePaths, msg.sandboxRequired);
+        await dtachCreate(msg.sessionId, msg.projectPath, shell, msg.inaccessiblePaths, msg.sandboxRequired,msg.terminalProfile);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
           name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
@@ -554,7 +560,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
       // Old parent processes may still send the earlier message shape.
       const command=msg.agentCommand??(await import('./cli-command.js')).buildSessionCommand(msg.task,msg.useTmux,sessionCmd,cliType,msg.resumeSessionId,msg.assignSessionId,msg.bindingPath??msg.codexBindingPath,msg.streamSocket??msg.codexStreamSocket);
       if (msg.useTmux) {
-        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command, msg.inaccessiblePaths, msg.sandboxRequired);
+        await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command, msg.inaccessiblePaths, msg.sandboxRequired,msg.terminalProfile);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
           pipePaneStream = pp.stream;
@@ -566,7 +572,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<LifecycleReady> {
           env: sessionEnv(),
         });
       } else if (msg.useDtach) {
-        await dtachCreate(msg.sessionId, msg.projectPath, command, msg.inaccessiblePaths, msg.sandboxRequired);
+        await dtachCreate(msg.sessionId, msg.projectPath, command, msg.inaccessiblePaths, msg.sandboxRequired,msg.terminalProfile);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
           name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,

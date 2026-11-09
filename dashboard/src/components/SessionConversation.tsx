@@ -861,12 +861,21 @@ export function SessionConversation({
     const poll = async () => {
       let pageActive = false;
       try {
-        const result = await api.agent.conversation(
+        let result = await api.agent.conversation(
           session.id,
           cursor.current ? { after: cursor.current } : {},
           controller.signal,
         );
         if (controller.signal.aborted) return;
+        // A replaced history file changes generation while its old cursor can
+        // still be valid. Never replace the timeline with that incremental
+        // tail: obtain a complete baseline before resetting visible history.
+        if (cursor.current && (result.reset ||
+          generation.current !== null && result.generation !== generation.current)) {
+          result = await api.agent.conversation(session.id, {}, controller.signal);
+          if (controller.signal.aborted) return;
+          result = { ...result, reset: true };
+        }
         pageActive = result.session_active;
         const reset =
           result.reset ||

@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, unlinkSync } from 'fs';
+import {assertEnvironmentIdle,assertEnvironmentUnused} from './environment-usage.js';
+import { existsSync, mkdirSync, unlinkSync, readFileSync } from 'fs';
 import { readFile, rm, writeFile } from 'fs/promises';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
@@ -262,23 +263,8 @@ function nativeProviders(): AgentProviderState[] {
     codexHome,
     launchCommand: displayEngineCommand(launch.command, launch.args),
     launchArgs: launch.args,
-    configFiles: ['config.toml', 'models_cache.json', 'models.json', 'model-catalog.json', 'model-catalog-all.json',
-      'model-catalog-grok-4.6.json', 'auth.json', '.codex-global-state.json', 'history.jsonl']
-      .map(name => ({
-        path: join(codexHome, name),
-        exists: existsSync(join(codexHome, name)),
-        format: name.endsWith('.toml') ? 'TOML' : name.endsWith('.jsonl') ? 'JSONL' : 'JSON',
-        description: name === 'config.toml' ? 'Codex 原生配置' : name === 'auth.json' ? 'Codex 原生凭据'
-          : name === 'history.jsonl' ? 'Codex 历史索引' : name.includes('model') ? 'Codex 模型配置' : 'Codex 全局状态',
-        purpose: name === 'config.toml' ? '控制默认 Provider、默认模型、登录方式和 Codex 运行行为。'
-          : name === 'auth.json' ? '保存登录令牌与认证信息；只读展示存在状态，避免泄露凭据。'
-          : name === 'history.jsonl' ? 'Codex 原生输入历史索引，可能包含提示词；不是当前会话记录。'
-          : name === 'models_cache.json' ? 'Codex 发现模型的本地缓存，用于模型列表和能力读取。'
-          : name === '.codex-global-state.json' ? 'Codex 的全局界面与运行状态，不决定 Provider 认证。'
-          : '定义模型名称、上下文长度、推理强度和输入模态能力。',
-        writable: !['auth.json'].includes(name),
-        ...(name === 'auth.json' ? { sensitive: true } : {}),
-      })),
+    configFiles: [{path:configPath(),exists:existsSync(configPath()),format:'TOML',description:'Codex 原生配置',writable:true,purpose:'当前原生环境实际读取的 Provider、模型与启动设置。'},
+      ...(()=>{try{const path=catalogPathFromConfig(readFileSync(configPath(),'utf8'));return path&&existsSync(path)?[{path,exists:true,format:'JSON',description:'当前启用的模型能力目录',writable:true,purpose:'由当前 config.toml 的 model_catalog_json 实际引用。'}]:[];}catch{return [];}})()],
     fields: [
       {
         key: 'command',
@@ -354,7 +340,6 @@ function managedProviderState(provider: StoredProvider): AgentProviderState {
     configFiles: [
       { path: join(codexHome, 'config.toml'), exists: existsSync(join(codexHome, 'config.toml')), format: 'TOML', description: 'Provider Engine 启动配置', writable: true, purpose: '决定该 Provider 的 API 地址、默认模型、API Key 环境变量和 CODEX_HOME。' },
       { path: join(codexHome, 'model-catalog.json'), exists: existsSync(join(codexHome, 'model-catalog.json')), format: 'JSON', description: '可选模型目录与能力声明', writable: true, purpose: '定义模型上下文长度、有效比例、图片输入等能力，并供模型选择使用。' },
-      { path: join(codexHome, 'models_cache.json'), exists: existsSync(join(codexHome, 'models_cache.json')), format: 'JSON', description: 'Codex 模型发现缓存', writable: true, purpose: '保存模型发现结果；通常由 Codex 自动更新。' },
     ],
     fields: [
       { key: 'baseUrl', label: 'Responses API 地址', type: 'text', value: stringField(provider, 'baseUrl'), required: true },
@@ -873,6 +858,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       return inspect(true);
     },
     updateProvider: async (providerId, input, report) => {
+      await assertEnvironmentIdle(providerId==='native'?'native':'provider:'+providerId);
       if (providerId === 'native') {
         report?.({ stage: 'validate', message: '校验 Engine 启动命令与附加参数', progress: 10 });
         updateNativeEngineConfig(input);
@@ -903,11 +889,13 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
     deleteProvider: async providerId => {
       const provider = readAgentManagement('codex').providers.find(item => item.id === providerId);
       if (!provider) throw Object.assign(Error('Provider 不存在或属于原生配置'), { statusCode: 409 });
+      assertEnvironmentUnused('provider:'+providerId);
       await stopProvider(providerId);
       await removeManagedProviderStorage(providerId);
       return inspect(true);
     },
     providerAction: async (providerId, action, report) => {
+      if(['stop','disable','restart'].includes(action))await assertEnvironmentIdle(providerId==='native'?'native':'provider:'+providerId);
       if (providerId === 'native') {
         if (action === 'start' || action === 'enable') await ensureNativeCodexEngine(undefined, report);
         else if (action === 'stop' || action === 'disable') await stopNativeCodexEngine(report);

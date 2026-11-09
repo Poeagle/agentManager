@@ -40,6 +40,20 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('reloads the baseline instead of dropping older messages when another reader replaced the history generation',async()=>{
+    const original=await api.agent.conversation(session.id);
+    const old={id:'old',role:'user' as const,text:'保留之前的消息',timestamp:null};
+    const latest={id:'new',role:'assistant' as const,text:'新消息正文',timestamp:null,phase:'final' as const,streaming:false};
+    const read=vi.mocked(api.agent.conversation);read.mockResolvedValueOnce({...original,messages:[old]});await mount();
+    expect(await screen.findByText(old.text)).toBeVisible();
+    read.mockResolvedValueOnce({...original,generation:'replaced',messages:[latest],reset:false})
+      .mockResolvedValue({...original,generation:'replaced',messages:[old,latest],reset:false});
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[latest],busy:false,stage:'idle'}));
+    expect(await screen.findByText(latest.text)).toBeVisible();
+    await waitFor(()=>expect(read.mock.calls.slice(-1)[0][1]).toEqual({}));
+    expect(screen.getByText(old.text)).toBeVisible();
+    expect(document.querySelectorAll('[data-chat-message-id]')).toHaveLength(2);
+  });
   it('does not rerender completed message metadata when only the current answer changes',async()=>{
     const title=vi.spyOn(metadata,'metadataTimestampTitle');await mount();
     const old={id:'old-answer',role:'assistant',turn_id:'previous',phase:'final',text:'已完成的结论',timestamp:'2026-11-05T01:00:00Z',streaming:false};

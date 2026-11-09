@@ -1,3 +1,4 @@
+import {canUseSessionEnvironment,assertEnvironmentUse} from '../services/agents/environment-access.js';
 import {detachManagedAgents} from '../services/agents/host.js';
 import {agentForSession,getAgent} from '../services/agents/index.js';
 import {readAgentRuntime,presentAgentSession} from '../services/agents/session.js';
@@ -113,7 +114,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const owned = userProjectIds(req.user!.id);
     const visible = all
       .filter((s: any) => !s.project_id || owned.has(s.project_id))
-      .filter((s: any) => canAccessSessionByRow(req.user!.id, s));
+      .filter((s: any) => canAccessSessionByRow(req.user!.id, s)&&canUseSessionEnvironment(s,req.user!.id));
     const outputActivity = new Map<string, { createdAt: string; data: string }>();
     if (visible.length > 0) {
       const placeholders = visible.map(() => '?').join(',');
@@ -457,11 +458,15 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       project_id?: string;
       mode?: 'session' | 'terminal';
       cli_type?: string;
+      environment_id?: string;
     };
   }>('/sessions', async (req, reply) => {
     const { project_path, task, project_id, mode, cli_type } = req.body as any;
     const cliType = getAgent(cli_type||'claude').descriptor.id;
     if (mode !== undefined && mode !== 'session' && mode !== 'terminal') return reply.status(400).send({ error: 'mode must be session or terminal' });
+    const environmentId=(req.body as {environment_id?:unknown}).environment_id;
+    if(environmentId!==undefined){if(cliType!=='codex'||typeof environmentId!=='string'||mode==='terminal')return reply.code(400).send({error:'Codex 环境仅适用于 Codex 会话'});try{assertEnvironmentUse('codex',environmentId,req.user!.id);}catch{return reply.code(403).send({error:'无权使用该 Codex 环境'});}}
+    if(cliType==='codex'&&mode!=='terminal'&&environmentId===undefined){try{assertEnvironmentUse('codex','native',req.user!.id);}catch{return reply.code(403).send({error:'无权使用默认 Codex 环境，请选择已授权的账号环境'});}}
     const requestedMode = mode === 'terminal' ? 'terminal' : 'session';
     if(requestedMode==='session'&&!getAgent(cliType).descriptor.capabilities.launch)return reply.code(409).send({error:'此 Agent 不支持创建会话'});
     const usage = getUserTabUsage(req.user!.id);
@@ -500,6 +505,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const session = sessionManager.createSession(canonicalProjectPath, task, resolvedProjectId, cliType, req.user!.id, 'session');
+    if(typeof environmentId==='string')getDb().prepare('UPDATE sessions SET agent_environment_id=? WHERE id=?').run(environmentId,session.id);
     if(getAgent(cliType).descriptor.sessionHost==='managed')await sessionManager.spawnSession(session.id,canonicalProjectPath,task,120,40,cliType);
     else registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task, mode: 'session', projectId: resolvedProjectId, cliType });
 

@@ -1,3 +1,4 @@
+import {ConversationEnvironmentSelector} from './ConversationEnvironmentSelector';
 import type {AgentFeature} from '../lib/agents';
 import {useEffect,useRef,useState} from 'react';
 import {useQuery,useQueryClient} from '@tanstack/react-query';
@@ -14,6 +15,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const queryClient=useQueryClient(),[expanded,setExpanded]=useState(false),[saving,setSaving]=useState(false),[applied,setApplied]=useState(false),[error,setError]=useState('');
   const [operation,setOperation]=useState<'compact'|'new'|null>(null),[newOpen,setNewOpen]=useState(false),[notice,setNotice]=useState('');
   const [freshPreference,setFreshPreference]=useState<import('../lib/api').AgentModelPreference>();
+  const [environmentRequest,setEnvironmentRequest]=useState<{provider:string;model:string;effort:string}>();
   const operationLock=useRef(false);
     const forceRefresh=useRef(false);
   const query=useQuery({queryKey:['conversation-controls',sessionId],queryFn:()=>{const force=forceRefresh.current;forceRefresh.current=false;return api.agent.controls(sessionId,force);},enabled:active,refetchInterval:active?300000:false,staleTime:300000,refetchOnWindowFocus:false,retry:false});
@@ -50,7 +52,8 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   return <div className="conversation-controls-wrap">
     <div className="conversation-controls" aria-label="模型和会话信息">
       {data?<>
-        <label className="conversation-control-select"><span>模型</span><select aria-label="选择模型" value={model?choiceKey(model):selected.model} disabled={!data.can_edit||saving||!!operation} title={model?.description||(!data.can_edit?'此会话暂不可切换模型，可查看原始终端':undefined)} onChange={event=>{const next=data.models.find(m=>choiceKey(m)===event.target.value);if(next){const preference={model:next.model,...(next.provider?{provider:next.provider}:{}),effort:next.efforts.some(e=>e.value===selected.effort)?selected.effort:next.defaultEffort};if(next.provider&&data.provider&&next.provider!==data.provider){if(!onNewConversation){setError('切换模型服务需要从标签页新开会话');return;}setFreshPreference(preference);setNewOpen(true);}else void save(preference);}}}>
+        {data.agent?.id==='codex'&&<ConversationEnvironmentSelector sessionId={sessionId} busy={busy||saving||!!operation} requested={environmentRequest} onRequestHandled={()=>setEnvironmentRequest(undefined)}/>}
+        <label className="conversation-control-select"><span>模型</span><select aria-label="选择模型" value={model?choiceKey(model):selected.model} disabled={!data.can_edit||saving||!!operation} title={model?.description||(!data.can_edit?'此会话暂不可切换模型，可查看原始终端':undefined)} onChange={event=>{const next=data.models.find(m=>choiceKey(m)===event.target.value);if(next){const preference={model:next.model,...(next.provider?{provider:next.provider}:{}),effort:next.efforts.some(e=>e.value===selected.effort)?selected.effort:next.defaultEffort};if(next.provider&&data.provider&&next.provider!==data.provider){if(data.agent?.id==='codex'){setEnvironmentRequest({...preference,provider:next.provider});return;}if(!onNewConversation){setError('切换模型服务需要从标签页新开会话');return;}setFreshPreference(preference);setNewOpen(true);}else void save(preference);}}}>
           {!model&&<option value={model?choiceKey(model):selected.model}>{selected.model||'未提供'}</option>}{data.models.map(m=><option key={choiceKey(m)} value={choiceKey(m)}>{m.provider?`${m.provider} · `:''}{m.name}</option>)}
         </select><ChevronDown size={12}/></label>
         <label className="conversation-control-select"><span>强度</span><select aria-label="选择推理强度" value={selected.effort} disabled={!canEdit('effort')||!model||saving||!!operation} onChange={event=>void save({model:selected.model,...(model?.provider?{provider:model.provider}:{}),effort:event.target.value})}>

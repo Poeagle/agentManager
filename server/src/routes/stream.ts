@@ -1,3 +1,4 @@
+import {canUseSessionEnvironment} from '../services/agents/environment-access.js';
 import {nativeConversationId} from '../services/session-identity.js';
 import type {AgentSession} from '../services/agents/types.js';
 import {FastifyPluginAsync} from 'fastify';
@@ -18,6 +19,7 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
     if (!userId || !registerUserConnection(userId, readSessionCookie(req), socket,true)) return;
     // Subscribe to events
     const unsubscribe = subscribe((event: any) => {
+      if(event.session_id){const s=getDb().prepare('SELECT agent_id,cli_type,agent_environment_id FROM sessions WHERE id=?').get(event.session_id) as AgentSession|undefined;if(s&&!canUseSessionEnvironment(s,userId))return;}
       if(event.type==='session.runtime'){
         const row=getDb().prepare('SELECT * FROM sessions WHERE id=?').get(event.session_id) as (AgentSession&{mode:string})|undefined;
         if(!row||!userCanUseSessionTool(userId,event.session_id,row.cli_type||'claude',row.mode==='terminal'?'terminal':'session'))return;
