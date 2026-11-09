@@ -1,5 +1,6 @@
 import {afterEach,beforeEach,describe,expect,it} from 'vitest';
 import {mkdtempSync,writeFileSync,appendFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+import {conversationMessageId} from '../src/services/conversation-reader.js';
 import {readConversationStatistics} from '../src/services/agents/codex/statistics.js';
 let dir:string,file:string;
 const row=(type:string,payload:unknown)=>JSON.stringify({type,payload})+'\n';
@@ -9,6 +10,29 @@ const call=(id:string,type='function_call')=>row('response_item',{type,call_id:i
 const usage=(total:number,last:number)=>row('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{total_tokens:last,input_tokens:last-10,cached_input_tokens:20,output_tokens:10,reasoning_output_tokens:3},PRIVATE:'DO_NOT_EXPOSE'}});
 beforeEach(()=>{dir=mkdtempSync(join(tmpdir(),'conversation-statistics-'));file=join(dir,'rollout.jsonl');});afterEach(()=>rmSync(dir,{recursive:true,force:true}));
 describe('bounded native conversation statistics',()=>{
+ it('counts a native event and response echo once with the real conclusion duration',async()=>{
+  const at=(time:string,type:string,payload:unknown)=>JSON.stringify({timestamp:time,type,payload})+'\n';
+  const content=[{type:'output_text',text:'Answer'}];
+  const record=at('2026-11-09T16:00:00Z','event_msg',{type:'task_started',turn_id:'turn'})
+   +at('2026-11-09T16:00:20Z','response_item',{type:'custom_tool_call',call_id:'tool'})
+   +at('2026-11-09T16:01:04Z','event_msg',{type:'item_completed',turn_id:'turn',item:{type:'AgentMessage',id:'answer',phase:'final_answer',content}})
+   +at('2026-11-09T16:01:04.001Z','response_item',{type:'message',id:'answer',role:'assistant',phase:'final_answer',content,internal_chat_message_metadata_passthrough:{turn_id:'turn'}})
+   +usage(1000,200)+at('2026-11-09T16:01:05Z','event_msg',{type:'task_complete',turn_id:'turn'});
+  writeFileSync(file,record);
+  const result=await readConversationStatistics(file);expect(result).toHaveLength(1);
+  expect(result[0]).toMatchObject({message_id:conversationMessageId('other','assistant','answer'),interval:{shared_messages:1},conclusion:{shared_messages:1,elapsed_ms:64001,tool_calls:1,tool_rounds:1,tokens:{total_tokens:200}}});
+ });
+ it('still marks genuinely distinct conclusions in one request as shared',async()=>{
+  writeFileSync(file,start()+message('first','one','final_answer')+message('second','one','final_answer')+usage(100,100));
+  const result=await readConversationStatistics(file);expect(result).toHaveLength(2);expect(result.map(item=>item.conclusion?.shared_messages)).toEqual([2,2]);
+ });
+ it('does not duplicate an already settled native item when its echo arrives later',async()=>{
+  const content=[{type:'output_text',text:'Answer'}];
+  writeFileSync(file,start()+row('event_msg',{type:'item_completed',turn_id:'one',item:{type:'AgentMessage',id:'same',phase:'final_answer',content}})+usage(100,100));
+  expect(await readConversationStatistics(file)).toHaveLength(1);
+  appendFileSync(file,row('response_item',{type:'message',role:'assistant',id:'same',phase:'final_answer',content})+usage(200,100));
+  expect(await readConversationStatistics(file)).toHaveLength(1);
+ });
  it('uses lifecycle identity when a legacy assistant item omits per-message turn metadata',async()=>{
   writeFileSync(file,start('legacy')+row('response_item',{type:'message',id:'legacy-answer',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'visible'}]})+usage(100,100)+row('event_msg',{type:'task_complete',turn_id:'legacy'}));
   const snapshots=await readConversationStatistics(file);expect(snapshots).toHaveLength(1);expect(snapshots[0]).toMatchObject({turn_id:'legacy',complete:true,requests:1,tokens:{total_tokens:100}});expect(snapshots[0].message_id).toHaveLength(32);

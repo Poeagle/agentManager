@@ -72,11 +72,24 @@ function consume(state:State,line:Buffer,sequence:number){
     :record.type==='response_item'&&p.type==='message'&&p.role==='assistant'?p:undefined;
   if(assistantItem&&typeof id==='string'){
     if(state.turn?.id!==id){finish(state,false);state.turn=turn(id,false);}
-    const message_id=typeof assistantItem.id==='string'?createHash('sha256').update(`${id}:assistant:${assistantItem.id}`).digest('hex').slice(0,32):undefined;
+    const message_id=typeof assistantItem.id==='string'?createHash('sha256').update(`item:assistant:${assistantItem.id}`).digest('hex').slice(0,32):undefined;
     const text=Array.isArray(assistantItem.content)?assistantItem.content.filter((part:any)=>['Text','output_text','text'].includes(part?.type)&&typeof part.text==='string').map((part:any)=>part.text.trim()).filter(Boolean).join('\n').trim():'';
     const final=['final_answer','final'].includes(assistantItem.phase)&&assistantItem.delivery!=='async'&&!assistantItem.questions?.length&&!!text;
     const implicit=!assistantItem.phase||assistantItem.phase==='unknown';
     const current=state.turn!;
+    // Codex records the same item in item_completed and response_item. Merge
+    // by native ID before assigning a request interval or conclusion boundary.
+    if(message_id){
+      const prior=current.waiting.find(item=>item.message_id===message_id);
+      if(prior){
+        prior.final ||= !!final;
+        prior.timestamp=timestamp(record.timestamp)??prior.timestamp;
+        if(text)prior.hash=createHash('sha256').update(text).digest('hex');
+        if(!implicit)prior.implicit=false;
+        return;
+      }
+      if([...state.stats.values()].some(item=>item.message_id===message_id))return;
+    }
     const firstVisible=!state.stats.size&&!current.waiting.some(message=>!message.implicit);
     if(!state.conclusion.start)state.conclusion.complete=false;
     if(firstVisible)state.conclusion.complete=current.complete;
