@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { join, relative } from 'path';
+import {userInfo} from 'os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { authHook, createSession, createUser } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
@@ -41,6 +42,14 @@ describe('session clipboard uploads', () => {
   function upload(kind: 'image' | 'file', body: object, cookie = ownerCookie) {
     return app.inject({ method: 'POST', url: `/api/sessions/paste-session/paste-${kind}`, headers: { cookie }, payload: body });
   }
+
+  it.skipIf(process.getuid?.()===0).each(['image','file'] as const)('identifies the actual service user when the project attachment directory denies %s uploads',async kind=>{
+    const directory=join(project,'.agentmanager','pastes');mkdirSync(directory,{recursive:true});chmodSync(directory,0o500);
+    try {
+      const response=await upload(kind,kind==='image'?{dataUrl:dataUrl('image/png',png)}:{dataUrl:dataUrl('text/plain',Buffer.from('hello')),filename:'notes.txt'});
+      expect(response.statusCode).toBe(500);expect(response.json().error).toContain('平台运行用户 '+userInfo().username);expect(response.json().error).toContain(directory);expect(response.json().error).toContain('目录读写权限');
+    }finally{chmodSync(directory,0o700);}
+  });
 
   it('saves pasted screenshots inside the project with unique names', async () => {
     const first = await upload('image', { dataUrl: dataUrl('image/png', png) });

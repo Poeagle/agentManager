@@ -19,6 +19,7 @@ import {randomUUID} from 'crypto';
 import {existsSync,mkdirSync,realpathSync,writeFileSync} from 'fs';
 import {isAbsolute,join,relative,sep} from 'path';
 import {prunePastesDir} from '../services/paste-cleanup.js';
+import {pasteUploadError} from '../services/paste-error.js';
 import {sessionPresenter} from '../services/session-labels.js';
 import {readConversationPreview,humanSessionTask} from '../services/conversation-preview.js';
 
@@ -242,7 +243,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         prunePastesDir(dir);
         return { ok: true, path };
       } catch (error: any) {
-        return reply.status(500).send({ error: `Failed to save image: ${error?.message || 'unknown error'}` });
+        return reply.status(500).send({ error: pasteUploadError('image',project.path,error) });
       }
     },
   );
@@ -270,7 +271,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         prunePastesDir(dir);
         return { ok: true, path };
       } catch (error: any) {
-        return reply.status(500).send({ error: `Failed to save file: ${error?.message || 'unknown error'}` });
+        return reply.status(500).send({ error: pasteUploadError('file',project.path,error) });
       }
     },
   );
