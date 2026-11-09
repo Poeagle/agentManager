@@ -1,6 +1,7 @@
 import {runInCodexEngine} from '../services/agents/codex/engine-context.js';
 import {withCodexConnection} from '../services/agents/codex/stream.js';
 import {codexWeeklyQuotaFromResponse} from '../services/agents/codex/quota.js';
+import {readCodexAccountDetails} from '../services/agents/codex/account-details.js';
 import {environmentUsage,closeEnvironmentTabs} from '../services/agents/codex/environment-usage.js';
 import type {FastifyPluginAsync} from 'fastify';
 import {getDb} from '../db/index.js';
@@ -18,7 +19,7 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
  app.get<{Querystring:{management?:string}}>('/codex/environments',async(req,reply)=>{
   if(req.query.management==='true'){
    if(!requirePermission(req,reply,'settings','write'))return;
-   return {environments:allCodexEnvironments(),users:getDb().prepare('SELECT id,username,display_name FROM users WHERE disabled=0 ORDER BY username').all()};
+   return {environments:allCodexEnvironments(),users:getDb().prepare('SELECT id,username,display_name,role FROM users WHERE disabled=0 ORDER BY username').all()};
   }
   if(!requirePermission(req,reply,'agent_api','read'))return;
   return {environments:visibleCodexEnvironments(req.user!.id)};
@@ -38,6 +39,7 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
    }));
   }catch{return reply.code(503).send({error:'账号额度暂不可用'});}
  });
+ app.get<{Params:{id:string}}>('/codex/environments/:id/details',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{return {details:await readCodexAccountDetails(req.params.id)};}catch(error){return reply.code(errorStatus(error)).send({error:error instanceof Error?error.message:'无法读取该用户的 Codex 详情',stage:(error as {stage?:string}).stage||'account_details'});}});
  app.get<{Params:{id:string}}>('/codex/environments/:id/usage',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{getCodexEnvironment(req.params.id);return await environmentUsage(req.params.id);}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'读取占用情况失败'});}});
  app.post<{Params:{id:string};Body:{session_ids?:unknown}}>('/codex/environments/:id/close-tabs',async(req,reply)=>{
   if(!requirePermission(req,reply,'settings','write')||!requirePermission(req,reply,'monitor','delete'))return;

@@ -10,7 +10,7 @@ import {waitForSocketReady} from './process-lifecycle.js';
 const execute=promisify(execFile);
 export interface AccountConnection {username:string;port:number;identityFile:string;codexCommand:string;codexHome:string;authMethod?:'key'|'password';password?:string;passwordConfigured?:boolean}
 export class AccountConnectionError extends Error {constructor(readonly stage:string,message:string){super(message);}}
-export function validateAccountConnection(value:unknown):AccountConnection {
+export function validateAccountConnection(value:unknown,options:{stored?:boolean}={}):AccountConnection {
  const p=value as Record<string,unknown>;
  if(!p||typeof p!=='object'||! /^[a-z_][a-z0-9_-]{0,63}\$?$/i.test(String(p.username||'')))throw Object.assign(Error('请输入有效的本机系统用户名'),{statusCode:400});
  const port=Number(p.port??22);
@@ -21,7 +21,7 @@ export function validateAccountConnection(value:unknown):AccountConnection {
  const identityFile=field('identityFile'),codexHome=field('codexHome'),codexCommand=field('codexCommand','codex');
  if(identityFile&&!identityFile.startsWith('/')&&!identityFile.startsWith('~/'))throw Object.assign(Error('SSH 私钥路径必须为绝对路径或 ~/ 路径'),{statusCode:400});
  if(codexHome&&!codexHome.startsWith('/'))throw Object.assign(Error('CODEX_HOME 必须为目标用户下的绝对路径，或留空使用默认值'),{statusCode:400});
- if(!codexCommand||!(/^[\w.+-]+$/.test(codexCommand)||codexCommand.startsWith('/')))throw Object.assign(Error('Codex 命令必须是命令名或绝对路径'),{statusCode:400});
+ if(!codexCommand||!options.stored&&/\s/.test(codexCommand)||!(/^[\w.+-]+$/.test(codexCommand)||codexCommand.startsWith('/')))throw Object.assign(Error('这里只填写 Codex 可执行文件，例如 codex 或 /home/用户名/.local/bin/codex，不要附加启动参数；会话权限由平台控制'),{statusCode:400});
  return {username:String(p.username),port,identityFile,codexCommand,codexHome,authMethod,...typeof p.password==='string'?{password:p.password}:{},...p.passwordConfigured===true?{passwordConfigured:true}:{}};
 }
 export function sshArguments(connection:AccountConnection):string[] {

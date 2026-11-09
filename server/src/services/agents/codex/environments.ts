@@ -9,7 +9,7 @@ import {configuredCodexEngines,defaultCodexEngine,runInCodexEngine,type CodexEng
 export interface CodexEnvironment {id:string;name:string;kind:'native'|'provider'|'account';enabled:boolean;allowed_user_ids:string[]|null;connection?:AccountConnection;provider?:string;retired?:boolean}
 function publicAccountConnection(value:Record<string,unknown>):AccountConnection {
  const {password:_,encryptedPassword,...connection}=value;
- return validateAccountConnection({...connection,passwordConfigured:!!encryptedPassword});
+ return validateAccountConnection({...connection,passwordConfigured:!!encryptedPassword},{stored:true});
 }
 /** Hydrate a secret only for server-side transport use, never a management DTO. */
 export function environmentConnection(environment:CodexEnvironment):AccountConnection {

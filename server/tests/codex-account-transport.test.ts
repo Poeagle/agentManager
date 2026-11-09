@@ -17,6 +17,9 @@ beforeEach(()=>{
 });
 afterEach(async()=>{await closeAccountTransports();db.cleanup();});
 describe('same-machine account SSH transport',()=>{
+ it.each(['codex --dangerously-bypass-approvals-and-sandbox','/home/fixture/.local/bin/codex --dangerously-bypass-approvals-and-sandbox'])('explains that %s contains CLI flags before any SSH attempt',value=>{expect(()=>validateAccountConnection({...connection,codexCommand:value})).toThrow('不要附加启动参数');expect(state.execute).not.toHaveBeenCalled();});
+ it.each(['codex','/home/fixture/.local/bin/codex'])('accepts the executable %s without requiring interactive CLI flags',value=>{expect(validateAccountConnection({...connection,codexCommand:value}).codexCommand).toBe(value);});
+
  it.each([
   ['Permission denied (publickey).','ssh_authentication','认证失败'],
   ['Host key verification failed.','ssh_host_key','主机密钥'],

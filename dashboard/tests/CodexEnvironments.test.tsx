@@ -5,15 +5,40 @@ import {CodexAccountProviderEditor} from '../src/components/CodexAccountProvider
 import {ConversationEnvironmentSelector} from '../src/components/ConversationEnvironmentSelector';
 import {ProjectSessionCreateDialog} from '../src/components/ProjectSessionCreateDialog';
 import {api,type Project,type CodexEnvironment} from '../src/lib/api';
-vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,projects:{...actual.api.projects,list:vi.fn(async()=>({projects:[]}))},codexEnvironments:{management:vi.fn(),list:vi.fn(),save:vi.fn(),checkConnection:vi.fn(),preflight:vi.fn(),forSession:vi.fn(),sessionPreflight:vi.fn(),transfer:vi.fn()},sessions:{...actual.api.sessions,create:vi.fn()}}};});
+vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,projects:{...actual.api.projects,list:vi.fn(async()=>({projects:[]}))},codexEnvironments:{management:vi.fn(),list:vi.fn(),save:vi.fn(),checkConnection:vi.fn(),preflight:vi.fn(),forSession:vi.fn(),sessionPreflight:vi.fn(),transfer:vi.fn(),usage:vi.fn(),remove:vi.fn(),closeTabs:vi.fn()},sessions:{...actual.api.sessions,create:vi.fn()}}};});
 const native:CodexEnvironment={id:'native',name:'xlli 默认账号',kind:'native',enabled:true,allowed_user_ids:null};
-const account:CodexEnvironment={id:'account:ymchen',name:'ymchen Codex',kind:'account',enabled:true,allowed_user_ids:['ymchen'],connection:{username:'ymchen',port:22,identityFile:'',codexCommand:'codex',codexHome:''}};
+const account:CodexEnvironment={id:'account:ymchen',name:'ymchen Codex',kind:'account',enabled:true,allowed_user_ids:['ymchen'],connection:{authMethod:'key',username:'ymchen',port:22,identityFile:'',codexCommand:'codex',codexHome:''}};
 const model={model:'fixture-model',provider:'openai',name:'Fixture',description:'',efforts:[{value:'high',description:''}],defaultEffort:'high'};
 let client:QueryClient;
-beforeEach(()=>{vi.clearAllMocks();client=new QueryClient({defaultOptions:{queries:{retry:false}}});vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[native,account],users:[{id:'ymchen',username:'ymchen',display_name:null},{id:'xlli',username:'xlli',display_name:null}]});vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[account]});vi.mocked(api.codexEnvironments.forSession).mockResolvedValue({current:'native',environments:[{...native,can_control:true},{...account,can_control:true}]});vi.mocked(api.codexEnvironments.sessionPreflight).mockResolvedValue({ok:true,checks:[{stage:'codex_authentication',ok:true,message:'已登录'}],models:[model]});vi.mocked(api.codexEnvironments.transfer).mockResolvedValue({ok:true});});
+beforeEach(()=>{vi.clearAllMocks();client=new QueryClient({defaultOptions:{queries:{retry:false}}});vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[native,account],users:[{id:'ymchen',username:'ymchen',display_name:null},{id:'xlli',username:'xlli',display_name:null}]});vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[account]});vi.mocked(api.codexEnvironments.forSession).mockResolvedValue({current:'native',environments:[{...native,can_control:true},{...account,can_control:true}]});vi.mocked(api.codexEnvironments.sessionPreflight).mockResolvedValue({ok:true,checks:[{stage:'codex_authentication',ok:true,message:'已登录'}],models:[model]});vi.mocked(api.codexEnvironments.transfer).mockResolvedValue({ok:true});vi.mocked(api.codexEnvironments.usage).mockResolvedValue({tabs:[],busy:false,verified:true});vi.mocked(api.codexEnvironments.remove).mockResolvedValue({ok:true});});
 afterEach(()=>client.clear());
 const mount=(child:React.ReactNode)=>render(<QueryClientProvider client={client}>{child}</QueryClientProvider>);
 describe('Codex environments UI',()=>{
+ it('explains executable-only input immediately and prevents misleading SSH checks with CLI flags',async()=>{
+  mount(<CodexAccountProviderEditor onSaved={vi.fn()}/>);
+  fireEvent.change(screen.getByRole('textbox',{name:'账号 Provider 名称'}),{target:{value:'Private'}});
+  fireEvent.change(screen.getByRole('textbox',{name:'系统用户名'}),{target:{value:'ymchen'}});
+  fireEvent.change(screen.getByRole('combobox',{name:'SSH 认证方式'}),{target:{value:'key'}});
+  const command=screen.getByRole('textbox',{name:'Codex 命令'});
+  fireEvent.change(command,{target:{value:'codex --dangerously-bypass-approvals-and-sandbox'}});
+  expect(command).toHaveAttribute('aria-invalid','true');expect(screen.getByRole('alert')).toHaveTextContent('例如填写 codex');
+  expect(screen.getByRole('button',{name:'预检连接、已有登录、模型与项目'})).toBeDisabled();expect(screen.getByRole('button',{name:'保存账号 Provider'})).toBeDisabled();
+  expect(api.codexEnvironments.checkConnection).not.toHaveBeenCalled();
+  fireEvent.change(command,{target:{value:'codex'}});expect(command).toHaveAttribute('aria-invalid','false');expect(screen.getByRole('button',{name:'保存账号 Provider'})).toBeEnabled();
+ });
+ it('keeps occupancy hidden until Delete opens a dialog and closes it without deleting anything on cancel',async()=>{
+  vi.mocked(api.codexEnvironments.usage).mockResolvedValue({tabs:[{id:'s',user_id:'ymchen',username:'ymchen',project_id:'p',project_name:'Project',name:'Busy tab',status:'running',native_id:'n',model:'Model',busy:true}],busy:true,verified:true});
+  mount(<CodexAccountProviderEditor environment={account} onSaved={vi.fn()}/>);
+  await waitFor(()=>expect(api.codexEnvironments.usage).toHaveBeenCalled());
+  expect(screen.queryByRole('table',{name:'Provider 占用标签页列表'})).not.toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'保存账号 Provider'})).toBeDisabled();
+  fireEvent.click(screen.getByRole('button',{name:'删除账号 Provider'}));
+  const dialog=await screen.findByRole('dialog',{name:'删除 Provider · ymchen Codex'});
+  expect(await within(dialog).findByText('Busy tab')).toBeVisible();expect(within(dialog).getByRole('button',{name:'确认删除 Provider'})).toBeDisabled();
+  fireEvent.click(within(dialog).getByRole('button',{name:'取消',exact:true}));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(screen.queryByRole('table')).not.toBeInTheDocument();expect(api.codexEnvironments.remove).not.toHaveBeenCalled();
+ });
+
  it('configures SSH password and user grants in one account Provider form using the existing Codex login',async()=>{
   const saved=vi.fn();mount(<CodexAccountProviderEditor onSaved={saved}/>);await screen.findByRole('checkbox',{name:'允许 ymchen 使用'});
   expect(screen.getByText(/已经登录/)).toBeVisible();fireEvent.change(screen.getByRole('textbox',{name:'账号 Provider 名称'}),{target:{value:'private'}});fireEvent.change(screen.getByRole('textbox',{name:'系统用户名'}),{target:{value:'ymchen'}});
