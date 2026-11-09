@@ -29,7 +29,9 @@ item=next((f for f in files if f['id']==name),None)
 if not item:print(json.dumps({'error':'文件不存在或超出该账号目录','status':404}));sys.exit(0)
 p=pathlib.Path(item['path'])
 try:
- raw=p.read_bytes() if p.is_file() else b''
+ raw=b''
+ if p.is_file():
+  with p.open('rb') as f:raw=f.read(98305)
  if len(raw)>98304:raise ValueError('文件超过 96 KiB，无法在此编辑')
  text=raw.decode('utf-8')
  # Do not expose files containing inline credentials through this UI.
