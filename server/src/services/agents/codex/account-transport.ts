@@ -58,20 +58,26 @@ export async function accountCommand(connection:AccountConnection,script:string,
  catch(e){if(e instanceof AccountConnectionError)throw e;const error=e as {stderr?:string;code?:string};if(error.code==='ENOENT')throw new AccountConnectionError('ssh_executable','平台运行环境找不到 ssh 命令');throw connectionFailure(error.stderr||String(error.code||''));}
 }
 /** Send file content over stdin; it never appears in command arguments or logs. */
-export async function accountCommandInput(connection:AccountConnection,script:string,input:string):Promise<string> {
- const env=await sshEnvironment(connection);
+async function commandInput(command:string,args:string[],env:NodeJS.ProcessEnv,input:string):Promise<string> {
  return new Promise((resolve,reject)=>{
-  const child=spawn('ssh',[...sshArguments(connection),`${connection.username}@127.0.0.1`,`python3 -c ${shellSingleQuote(script)}`],{stdio:['pipe','pipe','pipe'],env});
+  const child=spawn(command,args,{stdio:['pipe','pipe','pipe'],env});
   let output='',error='',settled=false;
   const finish=(failure?:Error)=>{if(settled)return;settled=true;clearTimeout(timer);failure?reject(failure):resolve(output.trim());};
   const timer=setTimeout(()=>{child.kill('SIGTERM');finish(new Error('账号文件操作超时'));},15000);
   child.stdout.setEncoding('utf8');
   child.stdout.on('data',(chunk:string)=>{output+=chunk;if(Buffer.byteLength(output)>768*1024){child.kill('SIGTERM');finish(new Error('账号文件响应过大'));}});
   child.stderr.on('data',(chunk:Buffer)=>{if(error.length<4096)error+=chunk.toString();});
-  child.on('error',()=>finish(new Error('无法启动 SSH 文件操作')));
+  child.on('error',()=>finish(new Error('无法启动文件操作')));
   child.on('close',code=>finish(code===0?undefined:connectionFailure(error)));
   child.stdin.on('error',()=>{});child.stdin.end(input);
  });
+}
+export async function accountCommandInput(connection:AccountConnection,script:string,input:string):Promise<string> {
+ return commandInput('ssh',[...sshArguments(connection),`${connection.username}@127.0.0.1`,`python3 -c ${shellSingleQuote(script)}`],await sshEnvironment(connection),input);
+}
+export async function localCommandInput(script:string,input:string):Promise<string> {
+ const env:NodeJS.ProcessEnv={PATH:process.env.PATH,HOME:process.env.HOME,CODEX_HOME:process.env.CODEX_HOME,LANG:process.env.LANG};
+ return commandInput('python3',['-c',script],env,input);
 }
 const launchScript=(c:AccountConnection,tag:string)=>`import os,pathlib,shutil,socket,subprocess,json,sys
 home=pathlib.Path.home()

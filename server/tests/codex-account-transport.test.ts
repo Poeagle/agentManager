@@ -7,7 +7,7 @@ vi.mock('child_process',async original=>{(state.execute as any)[Symbol.for('node
 vi.mock('../src/services/agents/codex/process-lifecycle.js',()=>({waitForSocketReady:state.ready}));
 import {readFile,stat} from 'fs/promises';
 import {execFileSync} from 'child_process';
-import {sshArguments,sshEnvironment,accountCommand,accountCommandInput,ensureAccountTransport,closeAccountTransports,validateAccountConnection} from '../src/services/agents/codex/account-transport.js';
+import {sshArguments,sshEnvironment,accountCommand,accountCommandInput,localCommandInput,ensureAccountTransport,closeAccountTransports,validateAccountConnection} from '../src/services/agents/codex/account-transport.js';
 const connection={username:'fixture',port:22,identityFile:'',codexCommand:'codex',codexHome:''};
 let db:ReturnType<typeof createTestDatabase>;
 beforeEach(()=>{
@@ -24,6 +24,13 @@ describe('same-machine account SSH transport',()=>{
    child.stdin.on('data',(chunk:Buffer)=>{input+=chunk.toString();});child.stdin.on('end',()=>{const bytes=Buffer.from('中文');child.stdout.write(bytes.subarray(0,2));child.stdout.write(bytes.subarray(2));child.stdout.end();child.emit('close',0);});return child;
   });
   expect(await accountCommandInput(connection,'print("ok")','文件内容')).toBe('中文');expect(input).toBe('文件内容');
+ });
+ it('does not forward unrelated service environment values to local file helpers',async()=>{
+  vi.stubEnv('TEST_UNRELATED_SERVICE_SECRET','dummy');state.forward.mockImplementation((_command:string,_args:string[],options:any)=>{
+   expect(options.env.TEST_UNRELATED_SERVICE_SECRET).toBeUndefined();const child:any=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=vi.fn();
+   child.stdin.on('data',()=>{});child.stdin.on('end',()=>{child.stdout.write('ok');child.stdout.end();child.emit('close',0);});return child;
+  });
+  try{expect(await localCommandInput('print("ok")','')).toBe('ok');}finally{vi.unstubAllEnvs();}
  });
  it.each(['codex --dangerously-bypass-approvals-and-sandbox','/home/fixture/.local/bin/codex --dangerously-bypass-approvals-and-sandbox'])('explains that %s contains CLI flags before any SSH attempt',value=>{expect(()=>validateAccountConnection({...connection,codexCommand:value})).toThrow('不要附加启动参数');expect(state.execute).not.toHaveBeenCalled();});
  it.each(['codex','/home/fixture/.local/bin/codex'])('accepts the executable %s without requiring interactive CLI flags',value=>{expect(validateAccountConnection({...connection,codexCommand:value}).codexCommand).toBe(value);});

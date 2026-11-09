@@ -1,6 +1,9 @@
 import {createHash} from 'crypto';
 import {config} from '../../../config.js';
-import {accountCommand} from './account-transport.js';
+import {accountCommand,localCommandInput} from './account-transport.js';
+import {nativeEngineConfig} from './native-engine-config.js';
+import {inspectNativeCodexEngine} from './native-engine.js';
+import {userInfo} from 'os';
 import {getCodexEnvironment,environmentConnection,engineForEnvironment} from './environments.js';
 import {runInCodexEngine} from './engine-context.js';
 import {withCodexConnection} from './stream.js';
@@ -9,13 +12,14 @@ import {readEngineModelsForEnvironment} from './controls.js';
 /** Read only the selected account. Raw auth/config documents are never returned. */
 export async function readCodexAccountDetails(id:string) {
   const environment=getCodexEnvironment(id);
-  if(environment.kind!=='account')throw Object.assign(Error('此详情接口仅适用于 Codex 登录账号'),{statusCode:400});
+  if(environment.kind!=='account'&&environment.kind!=='native')throw Object.assign(Error('此详情接口仅适用于 Codex 登录账号'),{statusCode:400});
   const engine=await engineForEnvironment(id);
   const auth=await runInCodexEngine(engine,()=>withCodexConnection(request=>request('account/read',{})));
   const models=await readEngineModelsForEnvironment(id,true);
-  const connection=environmentConnection(environment);
+  const native=environment.kind==='native';
+  const connection=native?{codexCommand:nativeEngineConfig().command,codexHome:process.env.CODEX_HOME||'',username:userInfo().username}:environmentConnection(environment);
   const tag=createHash('sha256').update(config.dbPath+':'+id).digest('hex').slice(0,12);
-  const metadata=JSON.parse(await accountCommand(connection,`import os,pathlib,shutil,subprocess,json,sys
+  const metadataScript=`import os,pathlib,shutil,subprocess,json,sys
 home=pathlib.Path.home()
 os.environ['PATH']=str(home/'.local/bin')+':/usr/local/bin:/usr/bin:/bin:'+os.environ.get('PATH','')
 command=shutil.which(${JSON.stringify(connection.codexCommand)})
@@ -36,10 +40,12 @@ except Exception:notice='暂时无法读取或解析 config.toml，其他详情�
 pid=None
 try:pid=int((home/'.agentmanager-codex'/${JSON.stringify(tag)}/'pid').read_text())
 except (OSError,ValueError):pass
-print(json.dumps({'executable':command,'version':result.stdout.strip()[:200],'home':str(directory),'config':{'path':str(path),'exists':path.is_file(),'notice':notice},'settings':settings,'pid':pid}))`,15000));
+print(json.dumps({'executable':command,'version':result.stdout.strip()[:200],'home':str(directory),'config':{'path':str(path),'exists':path.is_file(),'notice':notice},'settings':settings,'pid':pid}))`;
+  const metadata=JSON.parse(native?await localCommandInput(metadataScript,''):await accountCommand(environmentConnection(environment),metadataScript,15000));
+  if(native)metadata.pid=inspectNativeCodexEngine().pid;
   const text=(value:unknown)=>typeof value==='string'?value.slice(0,500):null;
   return {
-    id,checked_at:new Date().toISOString(),
+    id,system_user:connection.username,checked_at:new Date().toISOString(),
     executable:text(metadata.executable),version:text(metadata.version),home:text(metadata.home),
     engine:{state:'connected',pid:Number.isSafeInteger(metadata.pid)?metadata.pid:null},
     authentication:{status:auth.account?'authenticated':auth.requiresOpenaiAuth===false?'not_applicable':'unauthenticated',type:text(auth.account?.type),email:text(auth.account?.email),plan:text(auth.account?.planType)},

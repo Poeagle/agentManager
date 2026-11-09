@@ -41,14 +41,22 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   }catch{return reply.code(503).send({error:'账号额度暂不可用'});}
  });
  app.get<{Params:{id:string};Querystring:{file?:string}}>('/codex/environments/:id/config-files',async(req,reply)=>{
-  if(!requirePermission(req,reply,'settings','write'))return;
+  if(!requirePermission(req,reply,'settings',req.params.id==='native'?'read':'write'))return;
+  if(req.params.id==='native'&&req.query.file&&!canControlEnvironment('native',req.user!.id))return reply.code(403).send({error:'无权查看该账号配置文件'});
   reply.header('Cache-Control','private, no-store');try{return await accountConfigFiles(req.params.id,req.query.file?'read':'list',req.query.file);}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'读取文件失败'});}
  });
  app.put<{Params:{id:string};Body:{file?:string;content?:unknown;revision?:unknown}}>('/codex/environments/:id/config-files',async(req,reply)=>{
   if(!requirePermission(req,reply,'settings','write'))return;
   reply.header('Cache-Control','private, no-store');try{return await accountConfigFiles(req.params.id,'write',req.body?.file,req.body?.content,req.body?.revision);}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'保存文件失败'});}
  });
- app.get<{Params:{id:string}}>('/codex/environments/:id/details',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{return {details:await readCodexAccountDetails(req.params.id)};}catch(error){return reply.code(errorStatus(error)).send({error:error instanceof Error?error.message:'无法读取该用户的 Codex 详情',stage:(error as {stage?:string}).stage||'account_details'});}});
+ app.get<{Params:{id:string}}>('/codex/environments/:id/details',async(req,reply)=>{
+  if(!requirePermission(req,reply,'settings',req.params.id==='native'?'read':'write'))return;
+  try {
+   const details=await readCodexAccountDetails(req.params.id);
+   if(req.params.id==='native'&&!canControlEnvironment('native',req.user!.id))details.authentication={...details.authentication,email:null,plan:null};
+   reply.header('Cache-Control','private, no-store');return {details};
+  }catch(error){return reply.code(errorStatus(error)).send({error:error instanceof Error?error.message:'无法读取该用户的 Codex 详情',stage:(error as {stage?:string}).stage||'account_details'});}
+ });
  app.get<{Params:{id:string}}>('/codex/environments/:id/usage',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{getCodexEnvironment(req.params.id);return await environmentUsage(req.params.id);}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'读取占用情况失败'});}});
  app.post<{Params:{id:string};Body:{session_ids?:unknown}}>('/codex/environments/:id/close-tabs',async(req,reply)=>{
   if(!requirePermission(req,reply,'settings','write')||!requirePermission(req,reply,'monitor','delete'))return;

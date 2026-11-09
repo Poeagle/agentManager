@@ -1,4 +1,3 @@
-import {ProviderUsageTable} from './ProviderUsageTable';
 import {ProviderDeleteDialog} from './ProviderDeleteDialog';
 import {useProviderUsage} from '../lib/use-provider-usage';
 import {CodexAccountProvider} from './CodexAccountProvider';
@@ -1120,6 +1119,7 @@ function ProviderEditor({
   readOnly,
   onDirtyChange,
   onFileDirtyChange,
+  onCloseEditor,
 }: {
   agentId: string;
   provider: AgentProviderState;
@@ -1127,6 +1127,7 @@ function ProviderEditor({
   readOnly: boolean;
   onDirtyChange: (dirty: boolean) => void;
   onFileDirtyChange: (dirty: boolean) => void;
+  onCloseEditor?: () => void;
 }) {
   const queryClient = useQueryClient();
   const usage=useProviderUsage(initialProvider.id==='native'?'native':'provider:'+initialProvider.id);
@@ -1397,6 +1398,7 @@ function ProviderEditor({
 
   return (
     <div className="agent-management-provider-detail">
+      {onCloseEditor&&<button type="button" className="agent-management-button" onClick={onCloseEditor}>返回详情</button>}
       <header className="agent-management-detail-heading">
         <div>
           <div className="agent-management-eyebrow">
@@ -1515,7 +1517,6 @@ function ProviderEditor({
           </span>
         </div>
       )}
-      {!readOnly&&<ProviderUsageTable environmentId={provider.id==='native'?'native':'provider:'+provider.id}/>}
       <section className="agent-management-section" aria-label="Provider 接入信息"><dl className="agent-management-kv"><div><dt>接入类型</dt><dd>{provider.id==='native'?'本机默认 Codex':'API Key / Responses API'}</dd></div><div><dt>认证方式</dt><dd>{liveProvider.authentication.method}</dd></div><div><dt>认证状态</dt><dd>{liveProvider.authentication.status==='authenticated'?'已认证':liveProvider.authentication.status==='missing'?'未认证':'未知'}</dd></div><div><dt>Engine 状态</dt><dd>{liveProvider.statusText}</dd></div><div><dt>Engine PID</dt><dd>{liveProvider.pid??'未知'}</dd></div><div><dt>CODEX_HOME</dt><dd>{liveProvider.codexHome||'未提供'}</dd></div>{endpoint&&<div><dt>接口地址</dt><dd>{String(endpoint)}</dd></div>}<div><dt>默认模型</dt><dd>{liveProvider.defaultModel||'使用当前环境默认模型'}</dd></div><div><dt>可用模型</dt><dd>{liveProvider.models.length?liveProvider.models.join('、'):'尚未检测模型'}</dd></div></dl></section>
       {provider.id==='native'&&<AgentDefaultsEditor
         agentId={agentId}
@@ -2007,6 +2008,7 @@ function CodexWorkspace({
   const accounts=useQuery({queryKey:['codex-environment-management'],queryFn:()=>api.codexEnvironments.management(),retry:false,enabled:!readOnly});
   const [newKind,setNewKind]=useState<'api'|'account'>('api');
   const accountProviders=accounts.data?.environments.filter(e=>e.kind==='account')||[];
+  const nativeEnvironment=accounts.data?.environments.find(e=>e.id==='native');
   const defaultProvider =
     state.providers.find(
       (provider) => provider.managed && provider.status === "ready",
@@ -2017,6 +2019,7 @@ function CodexWorkspace({
     defaultProvider?.id || "",
   );
   const [adding, setAdding] = useState(false);
+  const [nativeEditing,setNativeEditing]=useState(false);
   const [providerDirty, setProviderDirty] = useState(false);
   const [fileDirty, setFileDirty] = useState(false);
   const selected =
@@ -2040,6 +2043,7 @@ function CodexWorkspace({
     if ((providerDirty || fileDirty) &&
       !window.confirm("当前 Provider 配置有未保存的修改，确定丢弃吗？")) return;
     setSelectedProviderId(providerId);
+    setNativeEditing(false);
     setAdding(false);
     setProviderDirty(false);
     setFileDirty(false);
@@ -2097,6 +2101,8 @@ function CodexWorkspace({
           {newKind==='account'?<CodexAccountProviderEditor onDirtyChange={providerDirtyChange} onSaved={e=>{setSelectedProviderId(e.id);setAdding(false);setProviderDirty(false);}}/>:<AddCodexProvider agentId={agentId} readOnly={readOnly} onEditingChange={providerDirtyChange} onClose={()=>{setAdding(false);setProviderDirty(false);onDirtyChange(false);}}/>}</div>
         ) : selectedAccount ? (
           <CodexAccountProvider key={selectedAccount.id} environment={selectedAccount} readOnly={readOnly} onDirtyChange={providerDirtyChange}/>
+        ) : selected?.id === 'native' && !nativeEditing ? (
+          <CodexAccountProvider key="native" environment={nativeEnvironment?{...nativeEnvironment,name:selected.name}:{id:'native',name:selected.name,kind:'native',enabled:selected.enabled,allowed_user_ids:null}} readOnly={readOnly} onDirtyChange={providerDirtyChange} nativeInfo={selected} onNativeEdit={()=>setNativeEditing(true)}/>
         ) : selected ? (
           <ProviderEditor
             agentId={agentId}
@@ -2105,6 +2111,7 @@ function CodexWorkspace({
             readOnly={readOnly}
             onDirtyChange={providerDirtyChange}
             onFileDirtyChange={fileDirtyChange}
+            onCloseEditor={selected.id==='native'?()=>{if((providerDirty||fileDirty)&&!window.confirm('当前配置有未保存的修改，确定返回吗？'))return;setProviderDirty(false);setFileDirty(false);setNativeEditing(false);}:undefined}
           />
         ) : (
           <div className="agent-management-empty">尚未配置 Provider。</div>

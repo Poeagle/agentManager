@@ -294,7 +294,7 @@ export interface AgentApiContract {
 export const api = {
   codexEnvironments: {
     quota:(id:string)=>fetchJSON<AgentQuotaResponse>('/codex/environments/'+encodeURIComponent(id)+'/quota'),
-    configFiles:(id:string)=>fetchJSON<{files:Array<{id:string;path:string;exists:boolean;label:string;description:string;format:string}>}>('/codex/environments/'+encodeURIComponent(id)+'/config-files'),
+    configFiles:(id:string)=>fetchJSON<{files:Array<{id:string;path:string;exists:boolean;label:string;description:string;format:string;sensitive?:boolean}>}>('/codex/environments/'+encodeURIComponent(id)+'/config-files'),
     readConfigFile:(id:string,file:string)=>fetchJSON<{content:string;revision:string;exists:boolean}>('/codex/environments/'+encodeURIComponent(id)+'/config-files?file='+encodeURIComponent(file)),
     writeConfigFile:(id:string,file:string,content:string,revision:string)=>fetchJSON<{content:string;revision:string;exists:boolean}>('/codex/environments/'+encodeURIComponent(id)+'/config-files',{method:'PUT',body:JSON.stringify({file,content,revision})}),
     details:(id:string)=>fetchJSON<{details:CodexAccountDetails}>('/codex/environments/'+encodeURIComponent(id)+'/details'),
@@ -1323,7 +1323,7 @@ export interface SessionStateResponse {
 }
 
 export interface CodexAccountDetails {
-  id:string;checked_at:string;executable:string|null;version:string|null;home:string|null;
+  id:string;system_user?:string|null;checked_at:string;executable:string|null;version:string|null;home:string|null;
   engine:{state:string;pid:number|null};
   authentication:{status:string;type:string|null;email:string|null;plan:string|null};
   config:{path:string|null;exists:boolean;notice:string|null};
