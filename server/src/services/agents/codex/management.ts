@@ -249,7 +249,7 @@ function nativeProviders(): AgentProviderState[] {
   const launch = nativeEngineLaunchDescription();
   return [{
     id: 'native',
-    name: 'OpenAI / Codex 原生',
+    name: typeof readAgentManagement('codex').defaults.nativeDisplayName === 'string' ? String(readAgentManagement('codex').defaults.nativeDisplayName) : 'OpenAI / Codex 原生',
     kind: 'native',
     enabled: true,
     managed: true,
@@ -746,6 +746,16 @@ export async function inspectManagedCodexProvider(providerId: string): Promise<A
   return managedProviderState(provider);
 }
 
+export function renameCodexProvider(providerId: string, nameInput: string): void {
+  const name = nameInput.trim();
+  if (!name || name.length > 100) throw Object.assign(Error('名称须为 1–100 个字符'), { statusCode: 400 });
+  updateAgentManagement('codex', current => {
+    if (providerId === 'native') return {...current, defaults: {...current.defaults, nativeDisplayName: name}};
+    if (!current.providers.some(item => item.id === providerId)) throw Object.assign(Error('Provider 不存在'), { statusCode: 404 });
+    return {...current, providers: current.providers.map(item => item.id === providerId ? {...item, name} : item)};
+  });
+}
+
 export function codexManagement(descriptor: AgentDescriptor): AgentManagementPort {
   const inspect = async (force = false): Promise<AgentManagementState> => {
     const executable = await findExecutable('codex');
@@ -858,6 +868,10 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       return inspect(true);
     },
     updateProvider: async (providerId, input, report) => {
+      if (input.name !== undefined && input.fields === undefined && input.kind === undefined && input.enabled === undefined && input.apiKey === undefined) {
+        renameCodexProvider(providerId, input.name);
+        return inspect();
+      }
       await assertEnvironmentIdle(providerId==='native'?'native':'provider:'+providerId);
       if (providerId === 'native') {
         report?.({ stage: 'validate', message: '校验 Engine 启动命令与附加参数', progress: 10 });

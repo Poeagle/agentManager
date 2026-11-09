@@ -1128,6 +1128,22 @@ function ProviderEditor({
 }) {
   const queryClient = useQueryClient();
   const [usage,setUsage]=useState({inUse:true,busy:true,verified:false});
+  const [renameOpen,setRenameOpen]=useState(false);
+  const [renameValue,setRenameValue]=useState(initialProvider.name);
+  const [renameError,setRenameError]=useState('');
+  const rename=useMutation({
+    mutationFn:(name:string)=>api.agentManagement.updateProvider(agentId,initialProvider.id,{name}),
+    onSuccess:(result)=>{
+      queryClient.setQueryData(["agent-management",agentId],{state:result.state});
+      const updated=result.state.providers.find(item=>item.id===initialProvider.id);
+      if(updated)queryClient.setQueryData(["agent-provider",agentId,initialProvider.id],updated);
+      void queryClient.invalidateQueries({queryKey:["agent-management-list"]});
+      void queryClient.invalidateQueries({queryKey:["codex-environments"]});
+      setRenameOpen(false);setRenameError('');
+    },
+    onError:(failure:Error)=>setRenameError(failure.message),
+  });
+
   const providerQuery = useQuery({
     queryKey: ["agent-provider", agentId, initialProvider.id],
     queryFn: async () =>
@@ -1382,7 +1398,8 @@ function ProviderEditor({
           <div className="agent-management-eyebrow">
             PROVIDER / {provider.id}
           </div>
-          <h3>{liveProvider.name}</h3>
+          <div className="flex items-center gap-2"><h3>{liveProvider.name}</h3><button type="button" className="agent-management-button" disabled={readOnly||rename.isPending} onClick={()=>{setRenameValue(liveProvider.name);setRenameError('');setRenameOpen(true);}}>重命名</button></div>
+          {renameOpen&&<Dialog title="重命名 Provider" busy={rename.isPending} onClose={()=>setRenameOpen(false)}><form onSubmit={event=>{event.preventDefault();if(renameValue.trim())rename.mutate(renameValue.trim());}}><label>名称<input autoFocus aria-label="Provider 名称" maxLength={100} value={renameValue} onChange={event=>setRenameValue(event.target.value)} /></label>{renameError&&<p role="alert">{renameError}</p>}<footer className="mt-4 flex justify-end gap-2"><button type="button" className="agent-management-button" onClick={()=>setRenameOpen(false)}>取消</button><button type="submit" className="agent-management-button" disabled={rename.isPending||!renameValue.trim()}>保存</button></footer></form></Dialog>}
           <p>{liveProvider.statusText}</p>
         </div>
         <div className="agent-management-status-row">

@@ -61,7 +61,6 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         {data.agent?.capabilities.serviceTier&&<button type="button" aria-label={fastEnabled?'关闭 Fast 模式':'开启 Fast 模式'} aria-pressed={fastEnabled} disabled={!canEdit('serviceTier')||!fastTier||saving||!!operation} title={!fastTier?'当前模型目录未提供 Fast 档位':`Fast ${fastEnabled?'已开启，点击恢复默认档位':'已关闭，点击开启'}；对后续模型请求生效`} style={{color:fastEnabled?'var(--accent)':undefined}} onClick={()=>void save({model:selected.model,effort:selected.effort,...model?.provider?{provider:model.provider}:{},service_tier:fastEnabled?'default':fastTier!.id})}><Zap size={12}/>{fastEnabled?'Fast 开':'Fast 关'}</button>}
         {data.pending&&<span className="conversation-control-pending">{data.pending_status==='submitted'?'已提交，等待原生模型确认':'恢复或重载时应用'} {data.pending_status!=='submitted'&&<button type="button" disabled={saving} onClick={()=>void save(data.pending)}>应用</button>}<button type="button" disabled={saving} onClick={()=>void save(null)}>取消</button></span>}
         {applied&&!data.pending&&<span className="conversation-control-pending" role="status">已应用</span>}
-        {context!==null&&<span className="conversation-control-context" title="最近一次模型请求的 Token 数占上下文窗口的比例，下一次请求可能变化。"><i><b style={{width:`${context}%`}}/></i>上下文 {context}%</span>}
         <button type="button" disabled={!canEdit('compact')||busy||compacting||saving||!!operation} title={compactReason} onClick={()=>void perform('compact')}>{compacting||operation==='compact'?<Loader2 size={12} className="animate-spin"/>:<Minimize2 size={12}/>} {compacting||operation==='compact'?'压缩中…':'压缩'}</button>
         {onNewConversation&&<button type="button" disabled={!canEdit('newConversation')||saving||!!operation} title="在当前标签页新开会话，保留旧记录并停止旧会话" onClick={()=>{let rawDraft=false;window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId,respond:(value:boolean)=>{rawDraft ||= value;}}}));if(rawDraft){setError('原始终端还有未发送内容，请先发送或清空。');return;}setError('');setFreshPreference(model?{model:model.model,effort:selected.effort,provider:model.provider}:undefined);setNewOpen(true);}}><Plus size={12}/>{operation==='new'?'新开中…':'新开'}</button>}
   </div>:null;
@@ -69,6 +68,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
     <div className="conversation-controls" aria-label="模型和会话信息">
       {data?<>
         {toolbarTarget?createPortal(toolbar,toolbarTarget):toolbar}
+        {context!==null&&<span className="conversation-control-context" title="最近一次模型请求的 Token 数占上下文窗口的比例，下一次请求可能变化。"><i><b style={{width:`${context}%`}}/></i>上下文 {context}%</span>}
         {weekly&&<span title={weekly.resets_at?`重置时间：${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>周额度剩余 {Math.round(100-weekly.used_percent)}%</span>}
         <span className="conversation-control-environment" aria-label="会话运行信息">
           {data.cwd&&<span className="conversation-control-directory" title={`工作目录：${data.cwd}`}>{data.cwd}</span>}

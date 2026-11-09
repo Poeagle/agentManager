@@ -17,6 +17,8 @@ describe('compact conversation controls',()=>{
   expect(within(slot).getByLabelText('选择推理强度')).toBeVisible();
   expect(within(slot).getByRole('button',{name:'压缩'})).toBeVisible();
   expect(within(slot).getByRole('button',{name:'新开'})).toBeVisible();
+  expect(within(slot).queryByText('上下文 30%')).not.toBeInTheDocument();
+  expect(within(view.container).getByText('上下文 30%')).toBeVisible();
   expect(within(slot).queryByText('/project')).not.toBeInTheDocument();
   expect(within(view.container).getByText('/project')).toBeVisible();
   view.unmount();expect(slot).toBeEmptyDOMElement();slot.remove();

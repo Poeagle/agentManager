@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { openAgentSecret, readAgentManagement, sealAgentSecret, updateAgentManagement } from '../src/services/agents/management-store.js';
-import { ensureManagedProviderCatalog, removeManagedProviderStorage } from '../src/services/agents/codex/management.js';
+import { ensureManagedProviderCatalog, removeManagedProviderStorage, renameCodexProvider } from '../src/services/agents/codex/management.js';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { authHook, createSession, createUser } from '../src/auth.js';
@@ -225,4 +225,16 @@ describe('codex provider catalog migration', () => {
       database.cleanup();
     }
   });
+});
+
+describe('Codex provider display names', () => {
+ it('renames native and configured providers without changing their engine settings', () => {
+  const db=createTestDatabase();
+  try {
+   updateAgentManagement('codex',current=>({...current,providers:[{id:'one',name:'Old',kind:'responses',enabled:true,fields:{baseUrl:'https://example.invalid',models:['m']}}]}));
+   renameCodexProvider('native','  本机  ');renameCodexProvider('one','新名称');
+   const state=readAgentManagement('codex');expect(state.defaults.nativeDisplayName).toBe('本机');expect(state.providers[0]).toMatchObject({id:'one',name:'新名称',fields:{models:['m']}});
+   expect(()=>renameCodexProvider('one','  ')).toThrow();expect(()=>renameCodexProvider('missing','x')).toThrow();
+  } finally { db.cleanup(); }
+ });
 });
