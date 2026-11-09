@@ -5,6 +5,22 @@ const message=(id:string,role:'user'|'assistant',extra:Partial<TimelineMessage>=
 const ids=(items:TimelineMessage[])=>items.map(item=>item.id);
 
 describe('deterministic conversation timeline',()=>{
+  it('repairs live arrival order when durable sequences arrive, including replay and duplicates',()=>{
+    const progress=message('progress','assistant',{phase:'commentary',streaming:false});
+    const answer=message('answer','assistant',{phase:'final',streaming:false});
+    const live=mergeConversationTimeline([], [answer,progress]);
+    const history=[{...progress,sequence:10},{...answer,sequence:20}];
+    const repaired=mergeConversationTimeline(live,history);
+    expect(ids(repaired)).toEqual(['progress','answer']);
+    expect(ids(mergeConversationTimeline(repaired,history))).toEqual(['progress','answer']);
+    expect(ids(mergeConversationTimeline([],history))).toEqual(['progress','answer']);
+  });
+  it('keeps unsequenced and queued messages anchored while ordering durable items',()=>{
+    const local=message('local','user',{optimistic:{afterSequence:10}});
+    const queued=message('queued','user',{queued:true});
+    const previous=[message('answer','assistant',{sequence:30}),local,message('progress','assistant',{sequence:10}),queued];
+    expect(ids(mergeConversationTimeline(previous,[]))).toEqual(['progress','local','answer','queued']);
+  });
   it('updates exact native identities and preserves intentional identical messages',()=>{
     const first=message('one','assistant',{text:'相同',streaming:true});
     const settled=mergeConversationTimeline([first],[message('one','assistant',{text:'相同',sequence:20})]);
