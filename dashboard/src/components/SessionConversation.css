@@ -388,3 +388,28 @@
 .conversation-control-select select {field-sizing:content;}
 .session-chat-input-tools>.session-chat-send-hint {flex:0 0 auto;margin-left:auto;margin-right:0;text-align:right;}
 .session-chat-send-actions {margin-left:0;}
+
+/* Composer controls share a quiet surface and a consistent interaction target. */
+.conversation-toolbar {gap:6px;min-height:32px;padding:2px 0;}
+.conversation-toolbar .conversation-control-select,
+.conversation-toolbar>button,
+.conversation-toolbar .conversation-control-context {
+  height:28px;box-sizing:border-box;border:1px solid var(--border);border-radius:7px;
+  background:var(--bg-secondary);padding:0 8px;gap:6px;transition:background .15s,border-color .15s;
+}
+.conversation-toolbar .conversation-control-select {padding-right:6px;}
+.conversation-toolbar .conversation-control-select>span {font-size:11px;}
+.conversation-toolbar .conversation-control-select select {max-width:170px;padding:2px 16px 2px 0;line-height:20px;}
+.conversation-toolbar .conversation-control-select>svg {right:6px;color:var(--text-muted);}
+.conversation-toolbar>button {color:var(--text-secondary);font-weight:500;}
+.conversation-toolbar .conversation-control-select:hover,
+.conversation-toolbar>button:hover:not(:disabled) {background:var(--bg-tertiary);border-color:color-mix(in srgb,var(--accent) 35%,var(--border));}
+.conversation-toolbar .conversation-control-select:focus-within,
+.conversation-toolbar>button:focus-visible {outline:2px solid var(--accent);outline-offset:2px;}
+.conversation-toolbar .conversation-control-select select:focus-visible {outline:none;}
+.conversation-toolbar .conversation-control-select:has(select:disabled),
+.conversation-toolbar>button:disabled {opacity:.5;cursor:default;}
+.conversation-toolbar>button[aria-pressed=true] {color:var(--accent);border-color:color-mix(in srgb,var(--accent) 30%,var(--border));background:color-mix(in srgb,var(--accent) 9%,var(--bg-primary));}
+.conversation-toolbar .conversation-control-context {border-color:transparent;background:transparent;font-size:11px;color:var(--text-muted);}
+.conversation-toolbar .conversation-control-context i {width:28px;}
+@media(max-width:700px){.session-chat-controls-slot,.conversation-toolbar {display:contents;}.conversation-toolbar .conversation-control-select select {max-width:135px;}}

@@ -32,9 +32,19 @@ describe('Codex account environments and platform ACLs',()=>{
   const allowed=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/quota`,headers:{cookie:cookies.owner}});
   expect(allowed.statusCode).toBe(200);expect(allowed.json().quota.remainingPercent).toBe(70);
   expect(transport.ensureAccountTransport).toHaveBeenCalledWith(e.id,expect.objectContaining({username:'ymchen'}));read.mockClear();
-  for(const id of [e.id,'native','missing']){const denied=await app.inject({url:`/api/codex/environments/${encodeURIComponent(id)}/quota`,headers:{cookie:cookies.other}});expect(denied.statusCode).toBe(404);}
+  for(const id of [e.id,'missing']){const denied=await app.inject({url:`/api/codex/environments/${encodeURIComponent(id)}/quota`,headers:{cookie:cookies.other}});expect(denied.statusCode).toBe(404);}
   getDb().prepare('UPDATE agent_environments SET enabled=0 WHERE id=?').run(e.id);
   const disabled=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/quota`,headers:{cookie:cookies.owner}});expect(disabled.statusCode).toBe(404);expect(read).not.toHaveBeenCalled();
+ });
+ it('shows native quota to admins but hides an unassigned host account and missing login',async()=>{
+  const request=vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt'}}:{rateLimits:{secondary:{usedPercent:40,windowDurationMins:10080}}});
+  const read=vi.spyOn(stream,'withCodexConnection').mockImplementation(async callback=>callback(request as any));
+  const hidden=await app.inject({url:'/api/codex/environments/native/quota',headers:{cookie:cookies.other}});
+  expect(hidden.json()).toEqual({quota:null,reason:'not_applicable'});expect(read).not.toHaveBeenCalled();
+  const allowed=await app.inject({url:'/api/codex/environments/native/quota',headers:{cookie:cookies.admin}});
+  expect(allowed.statusCode).toBe(200);expect(allowed.json().quota.remainingPercent).toBe(60);
+  request.mockImplementation(async()=>({account:null}) as any);
+  const loggedOut=await app.inject({url:'/api/codex/environments/native/quota',headers:{cookie:cookies.admin}});expect(loggedOut.json()).toMatchObject({quota:null,reason:'not_applicable'});
  });
  it('keeps existing native and API Provider access without requiring account login',()=>{
   updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'gateway',name:'API gateway',kind:'responses',enabled:true,fields:{models:['model-a'],baseUrl:'https://example.invalid/v1'}}]}));

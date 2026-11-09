@@ -9,12 +9,19 @@ afterEach(()=>{client.clear();vi.clearAllMocks();});
 const mount=()=>render(<QueryClientProvider client={client}><AgentQuotaIndicators/></QueryClientProvider>);
 it('hides Codex quota when no enabled account is available',async()=>{
  vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[{id:'native',name:'Native',kind:'native',enabled:true,allowed_user_ids:null}]});
+ vi.mocked(api.codexEnvironments.quota).mockResolvedValue({quota:null,reason:'not_applicable'});
  const view=mount();await waitFor(()=>expect(client.getQueryData(['codex-environments'])).toBeDefined());
- expect(view.container).toBeEmptyDOMElement();expect(api.agentQuota.read).not.toHaveBeenCalled();expect(api.codexEnvironments.quota).not.toHaveBeenCalled();
+ expect(view.container).toBeEmptyDOMElement();expect(api.agentQuota.read).not.toHaveBeenCalled();expect(api.codexEnvironments.quota).toHaveBeenCalledWith('native');
 });
 it('shows separate account names and quotas and refreshes only the selected account',async()=>{
  vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:['a','b'].map(id=>({id,name:id,kind:'account',enabled:true,allowed_user_ids:null}))});
  vi.mocked(api.codexEnvironments.quota).mockImplementation(async id=>({quota:{usedPercent:id==='a'?20:60,remainingPercent:id==='a'?80:40,windowDurationMins:10080,resetsAt:null,planType:null,checkedAt:'2026-11-09T00:00:00Z'}}));
  mount();expect(await screen.findByLabelText('Codex · a 周额度剩余 80%')).toBeVisible();expect(await screen.findByLabelText('Codex · b 周额度剩余 40%')).toBeVisible();
  vi.mocked(api.codexEnvironments.quota).mockClear();fireEvent.click(screen.getByRole('button',{name:'刷新 Codex · b 额度'}));await waitFor(()=>expect(api.codexEnvironments.quota).toHaveBeenCalledExactlyOnceWith('b'));
+});
+
+it('includes a logged-in native account alongside configured accounts',async()=>{
+ vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[{id:'native',name:'本机账号',kind:'native',enabled:true,allowed_user_ids:null},{id:'extra',name:'其他账号',kind:'account',enabled:true,allowed_user_ids:null}]});
+ vi.mocked(api.codexEnvironments.quota).mockResolvedValue({quota:{usedPercent:25,remainingPercent:75,windowDurationMins:10080,resetsAt:null,planType:null,checkedAt:'2026-11-09T00:00:00Z'}});
+ mount();expect(await screen.findByLabelText('Codex · 本机账号 周额度剩余 75%')).toBeVisible();expect(await screen.findByLabelText('Codex · 其他账号 周额度剩余 75%')).toBeVisible();
 });

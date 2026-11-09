@@ -21,7 +21,7 @@ function formatResetTime(value: number | null | undefined) {
   return `周额度重置时间（本地时间）：${date.toLocaleString(undefined, { timeZoneName: 'short' })}`;
 }
 
-export function AgentQuotaIndicator({agent,read,label=agent.label,queryKey=['agent-weekly-quota',agent.id,'global']}:{agent:AgentDescriptor;label?:string;read?:(force?:boolean)=>Promise<AgentQuotaResponse>;queryKey?:string[]}) {
+export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenUnavailable=false,queryKey=['agent-weekly-quota',agent.id,'global']}:{agent:AgentDescriptor;label?:string;hideWhenUnavailable?:boolean;read?:(force?:boolean)=>Promise<AgentQuotaResponse>;queryKey?:string[]}) {
   const readQuota=read??((force=false)=>api.agentQuota.read(agent.id,force));
   const queryClient = useQueryClient();
   const refresh = useMutation({
@@ -49,11 +49,13 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,queryKey=['age
       ? `${label} 周额度读取失败 · 每 5 分钟重试`
       : `正在读取 ${label} 周额度`;
 
+  if (hideWhenUnavailable && !quota) return null;
+
   return (
     <div
       aria-label={quota ? `${label} 周额度剩余 ${quota.remainingPercent}%` : `${label} 周额度`}
       title={title}
-      className="workspace-indicator relative flex h-6 shrink-0 items-center gap-1 overflow-hidden whitespace-nowrap rounded border px-1.5"
+      className="workspace-indicator workspace-quota relative flex h-6 shrink-0 items-center gap-1 overflow-hidden whitespace-nowrap rounded border px-1.5"
       style={{
         borderColor: 'var(--border)',
         background: 'var(--bg-tertiary)',
@@ -61,7 +63,7 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,queryKey=['age
       }}
     >
       <AgentIcon session={{agent}} className="h-3.5 w-3.5 shrink-0"/>
-      <span className="text-[10px] font-medium" style={{ color: 'var(--text-muted)' }}>{label}</span>
+      <span className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>{label}</span>
       <strong className="font-mono text-[11px] tabular-nums" style={{ color }}>
         {quota ? `${quota.remainingPercent}%` : notApplicable ? '不适用' : quotaQuery.isError ? '不可用' : '读取中'}
       </strong>
@@ -74,7 +76,7 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,queryKey=['age
         <RefreshCw aria-hidden="true" className={`h-3 w-3 ${refresh.isPending || quotaQuery.isFetching ? 'animate-spin motion-reduce:animate-none' : ''}`} />
       </button>
       {refreshFailed && <span role="status" className="sr-only">刷新失败</span>}
-      <span className="absolute inset-x-0 bottom-0 h-px" style={{ background: 'var(--border)' }}>
+      <span aria-hidden="true" className="workspace-quota-progress absolute inset-x-0 bottom-0 h-px" style={{ background: 'var(--border)' }}>
         <span className="block h-full transition-[width] duration-500 motion-reduce:transition-none" style={{ width: `${quota?.remainingPercent ?? 0}%`, background: color }} />
       </span>
     </div>

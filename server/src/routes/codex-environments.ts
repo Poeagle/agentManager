@@ -25,8 +25,10 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
  });
  app.get<{Params:{id:string}}>('/codex/environments/:id/quota',async(req,reply)=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;
-  const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.kind==='account'&&e.enabled);
+  const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&(e.kind==='account'||e.kind==='native')&&e.enabled);
   if(!account)return reply.code(404).send({error:'账号不存在或无权访问'});
+  // The implicit host environment is visible for creation, but its account is private.
+  if(account.kind==='native'&&!canControlEnvironment(account.id,req.user!.id))return {quota:null,reason:'not_applicable'};
   try {
    const engine=await engineForEnvironment(account.id);
    return await runInCodexEngine(engine,()=>withCodexConnection(async request=>{

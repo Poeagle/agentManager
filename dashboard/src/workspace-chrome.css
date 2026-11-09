@@ -114,3 +114,14 @@
 @media (max-width: 639px) {
   .workspace-file-tree { position: absolute; z-index: 20; left: 0; top: 0; bottom: 0; max-width: calc(100% - 12px); box-shadow: 5px 0 16px #0002; }
 }
+
+/* Align account quota and server metrics on the same text baseline. */
+.workspace-header .workspace-indicator {
+  height:26px;box-sizing:border-box;align-items:center;gap:6px;padding:0 8px;
+  border-radius:6px;font-size:11px;line-height:16px;
+}
+.workspace-header .workspace-indicator span,
+.workspace-header .workspace-indicator strong {line-height:16px;}
+.workspace-header .workspace-indicator strong {font-size:11px;font-weight:500;}
+.workspace-header .workspace-quota>button {height:18px;width:18px;margin-left:0;}
+.workspace-header .workspace-quota-progress {display:none;}
