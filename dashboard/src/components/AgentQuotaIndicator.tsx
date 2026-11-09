@@ -21,7 +21,7 @@ function formatResetTime(value: number | null | undefined) {
   return `周额度重置时间（本地时间）：${date.toLocaleString(undefined, { timeZoneName: 'short' })}`;
 }
 
-export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenUnavailable=false,queryKey=['agent-weekly-quota',agent.id,'global']}:{agent:AgentDescriptor;label?:string;hideWhenUnavailable?:boolean;read?:(force?:boolean)=>Promise<AgentQuotaResponse>;queryKey?:string[]}) {
+export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApplicable=false,queryKey=['agent-weekly-quota',agent.id,'global']}:{agent:AgentDescriptor;label?:string;hideWhenNotApplicable?:boolean;read?:(force?:boolean)=>Promise<AgentQuotaResponse>;queryKey?:string[]}) {
   const readQuota=read??((force=false)=>api.agentQuota.read(agent.id,force));
   const queryClient = useQueryClient();
   const refresh = useMutation({
@@ -49,7 +49,7 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenUnavai
       ? `${label} 周额度读取失败 · 每 5 分钟重试`
       : `正在读取 ${label} 周额度`;
 
-  if (hideWhenUnavailable && !quota) return null;
+  if (hideWhenNotApplicable && notApplicable && !quota) return null;
 
   return (
     <div
