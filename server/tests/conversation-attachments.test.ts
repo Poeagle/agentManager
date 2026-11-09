@@ -33,6 +33,17 @@ describe('conversation attachment validation',()=>{
     expect(formatConversationInput('只看图',items.slice(0,1))).toBe('只看图');expect(formatConversationInput('只看图',items.slice(0,1),true)).toContain('image.png');
     expect(formatConversationInput('看附件',items)).not.toContain('agentmanager_attachments');
   });
+  it('accepts files up to 100 MB and enforces the same total across messages and answer fields',async()=>{
+    const file={kind:'file',name:'large.zip',path:join(directory,'large.zip')};
+    writeFileSync(file.path,'');truncateSync(file.path,100*1024*1024);
+    expect(await validateConversationAttachments('s',[file])).toEqual([file]);
+    expect(await validateConversationAnswerAttachments('s',{one:[file]})).toEqual({one:[file]});
+    const extra={kind:'file',name:'note.txt',path:join(directory,'note.txt')};
+    await expect(validateConversationAttachments('s',[file,extra])).rejects.toThrow('附件总大小最多 100 MB');
+    await expect(validateConversationAnswerAttachments('s',{one:[file],two:[extra]})).rejects.toThrow('附件总大小最多 100 MB');
+    truncateSync(file.path,100*1024*1024+1);
+    await expect(validateConversationAttachments('s',[file])).rejects.toThrow('附件不可用');
+  });
   it('stores attachment metadata separately and restores both stream and history without leaking it across sessions',()=>{
     const attachments=[{kind:'image' as const,name:'截图.png',path:join(directory,'image.png')},{kind:'file' as const,name:'说明.txt',path:join(directory,'note.txt')}];
     rememberConversationAttachments('s','client-image','看图',attachments,true);

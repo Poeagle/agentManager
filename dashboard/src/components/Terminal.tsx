@@ -696,14 +696,14 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     const uploadFile = async (file: File) => {
       const id = ++pasteUploadSeqRef.current;
       const image = /^(image\/(png|jpeg|gif|webp))$/i.test(file.type);
-      const maxBytes = image ? 10 * 1024 * 1024 : 35 * 1024 * 1024;
+      const maxBytes = image ? 10 * 1024 * 1024 : 100 * 1024 * 1024;
       const name = file.name || (image ? '截图' : '文件');
       const patch = (change: Partial<PasteUpload>) => {
         if (!disposed) setPasteUploads(previous => previous.map(item => item.id === id ? { ...item, ...change } : item));
       };
       setPasteUploads(previous => [...previous.filter(item => item.sessionId === sessionId && item.phase !== 'error'), { id, sessionId, name, phase: 'reading' }]);
       if (file.size > maxBytes) {
-        patch({ phase: 'error', error: `文件过大，最大允许 ${image ? 10 : 35} MB` });
+        patch({ phase: 'error', error: `文件过大，最大允许 ${image ? 10 : 100} MB` });
         return;
       }
 

@@ -50,10 +50,10 @@ export function ConversationInteraction({request,storageKey,connected,canAnswer,
   const customQuestion=(id:string)=>!request.questions?.find(q=>q.id===id)?.options?.length||drafts[id]?.choice==='custom';
   const activeFiles=(request.questions||[]).flatMap(q=>customQuestion(q.id)?files[q.id]?.items||[]:[]);
   const uploading=activeFiles.some(item=>['queued','uploading','packing'].includes(item.status)),failed=activeFiles.some(item=>item.status==='error');
-  const limitError=activeFiles.length>8?'本次回答合计最多支持 8 个附件':activeFiles.reduce((sum,item)=>sum+item.size,0)>50*1024*1024?'本次回答的附件合计最多 50 MB':activeFiles.filter(item=>item.kind==='image').reduce((sum,item)=>sum+item.size,0)>10*1024*1024?'本次回答的图片合计最多 10 MB':'';
+  const limitError=activeFiles.length>8?'本次回答合计最多支持 8 个附件':activeFiles.reduce((sum,item)=>sum+item.size,0)>100*1024*1024?'本次回答的附件合计最多 100 MB':activeFiles.filter(item=>item.kind==='image').reduce((sum,item)=>sum+item.size,0)>10*1024*1024?'本次回答的图片合计最多 10 MB':'';
   function validateFiles(selected:File[]){const plain=selected.filter(file=>!file.webkitRelativePath),directories=new Set(selected.filter(file=>file.webkitRelativePath).map(file=>file.webkitRelativePath.split('/')[0]));
     if(activeFiles.length+plain.length+directories.size>8)return '本次回答合计最多支持 8 个附件';
-    if([...activeFiles,...plain].reduce((sum,item)=>sum+item.size,0)>50*1024*1024)return '本次回答的附件合计最多 50 MB';
+    if([...activeFiles,...plain].reduce((sum,item)=>sum+item.size,0)>100*1024*1024)return '本次回答的附件合计最多 100 MB';
     if(activeFiles.filter(item=>item.kind==='image').reduce((sum,item)=>sum+item.size,0)+plain.filter(file=>/^image\/(png|jpeg|gif|webp)$/i.test(file.type)).reduce((sum,file)=>sum+file.size,0)>10*1024*1024)return '本次回答的图片合计最多 10 MB';
     return '';
   }
