@@ -1,5 +1,15 @@
 import { spawnSync } from 'child_process';
+import { existsSync, realpathSync } from 'fs';
 import WebSocket from 'ws';
+
+export function resolveUnixSocketPath(path: string): string | null {
+  if (!existsSync(path)) return null;
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+}
 
 export function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;

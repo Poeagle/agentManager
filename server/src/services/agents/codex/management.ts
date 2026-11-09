@@ -31,7 +31,7 @@ import {
 } from './native-engine.js';
 import { nativeEngineConfig, updateNativeEngineConfig } from './native-engine-config.js';
 import { displayEngineCommand, normalizeEngineArgs, normalizeEngineCommand } from './engine-command.js';
-import { terminateDetachedProcess, waitForSocketReady } from './process-lifecycle.js';
+import { resolveUnixSocketPath, terminateDetachedProcess, waitForSocketReady } from './process-lifecycle.js';
 
 const processes = new Map<string, { pid: number; startedAt: string }>();
 const startupErrors = new Map<string, string>();
@@ -220,10 +220,11 @@ function recoverRuntimeProviderState(providerId: string): { pid: number; socket:
 }
 
 async function socketPid(socket: string): Promise<number | null> {
-  if (!existsSync(socket)) return null;
+  const resolved = resolveUnixSocketPath(socket);
+  if (!resolved) return null;
   try {
     const { stdout } = await new Promise<{stdout:string}>((resolve, reject) => {
-      const child = spawn('lsof', ['-nP', '-Fp', socket], { stdio: ['ignore', 'pipe', 'ignore'] });
+      const child = spawn('lsof', ['-nP', '-Fp', resolved], { stdio: ['ignore', 'pipe', 'ignore'] });
       let output = '';
       child.stdout?.on('data', chunk => { output += String(chunk); });
       child.once('error', reject);
@@ -723,7 +724,9 @@ export async function initializeManagedCodexEngines(): Promise<void> {
 }
 
 function socketPidSync(socket: string): number | null {
-  const result = spawnSync('lsof', ['-nP', '-Fp', socket], { encoding: 'utf8' });
+  const resolved = resolveUnixSocketPath(socket);
+  if (!resolved) return null;
+  const result = spawnSync('lsof', ['-nP', '-Fp', resolved], { encoding: 'utf8' });
   const pid = result.stdout?.match(/^p(\d+)$/m)?.[1];
   return pid ? Number(pid) : null;
 }
