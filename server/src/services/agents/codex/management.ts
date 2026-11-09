@@ -31,7 +31,7 @@ import {
 } from './native-engine.js';
 import { nativeEngineConfig, updateNativeEngineConfig } from './native-engine-config.js';
 import { displayEngineCommand, normalizeEngineArgs, normalizeEngineCommand } from './engine-command.js';
-import { terminateDetachedProcess } from './process-lifecycle.js';
+import { terminateDetachedProcess, waitForSocketReady } from './process-lifecycle.js';
 
 const processes = new Map<string, { pid: number; startedAt: string }>();
 const startupErrors = new Map<string, string>();
@@ -206,13 +206,14 @@ async function externalProviders(): Promise<AgentProviderState[]> {
 
 function recoverRuntimeProviderState(providerId: string): { pid: number; socket: string } | null {
   const result = spawnSync('ps', ['-ax', '-o', 'pid=,command='], { encoding: 'utf8' });
+  const expectedSocket = managedCodexRuntimeSocket(providerId) || managedCodexSocket(providerId);
   const line = (result.stdout || '').split('\n').find(item => item.includes('codex app-server')
+    && item.includes(`--listen unix://${expectedSocket}`)
     && (item.includes(`model_providers.${providerId}.`) || item.includes(`model_provider="${providerId}"`)));
   if (!line) return null;
   const pid = Number(line.trim().split(/\s+/, 1)[0]);
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  const socket = discoverProviderSocket(pid);
-  if (!socket) return null;
+  const socket = discoverProviderSocket(pid) || expectedSocket;
   processes.set(providerId, { pid, startedAt: new Date().toISOString() });
   setManagedCodexRuntimeSocket(providerId, socket);
   return { pid, socket };
@@ -406,6 +407,11 @@ function validateProvider(input: AgentProviderInput, prior?: StoredProvider): St
 
 async function startProvider(provider: StoredProvider, report?: AgentOperationReporter): Promise<void> {
   if (processes.has(provider.id) && existsSync(managedCodexSocket(provider.id))) return;
+  const orphan = processes.get(provider.id) || (() => {
+    recoverRuntimeProviderState(provider.id);
+    return processes.get(provider.id);
+  })();
+  if (orphan) await stopProvider(provider.id);
   startupErrors.delete(provider.id);
   report?.({ stage: 'command', message: '校验 Engine 启动命令', progress: 10 });
   const launch = providerLaunch(provider);
@@ -448,11 +454,9 @@ async function startProvider(provider: StoredProvider, report?: AgentOperationRe
   processes.set(provider.id, { pid: child.pid, startedAt: new Date().toISOString() });
   child.once('exit', () => processes.delete(provider.id));
   report?.({ stage: 'socket', message: '等待 Engine socket 就绪', progress: 70 });
-  let connectedSocket = '';
-  for (let attempt = 0; attempt < 50 && !connectedSocket; attempt++) {
-    connectedSocket = discoverProviderSocket(child.pid);
-    if (!connectedSocket) await new Promise(resolve => setTimeout(resolve, 100));
-  }
+  const connectedSocket = await waitForSocketReady(socket)
+    ? socket
+    : discoverProviderSocketBySocket(socket) || discoverProviderSocket(child.pid);
   if (!connectedSocket) {
     processes.delete(provider.id);
     try { process.kill(child.pid, 'SIGTERM'); } catch { /* already exited */ }

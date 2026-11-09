@@ -15,7 +15,7 @@ import {
   stopNativeCodexEngine,
 } from '../src/services/agents/codex/native-engine.js';
 import { configuredCodexEngines } from '../src/services/agents/codex/engine-context.js';
-import { codexManagement } from '../src/services/agents/codex/management.js';
+import { codexManagement, restoreManagedCodexProviders } from '../src/services/agents/codex/management.js';
 import { managedCodexSocket } from '../src/services/agents/codex/provider-config.js';
 import { updateAgentManagement } from '../src/services/agents/management-store.js';
 import { capabilities } from '../src/services/agents/types.js';
@@ -171,8 +171,10 @@ describe('AgentManager-managed Codex Engines', () => {
 const {createServer}=require('http');
 const {WebSocketServer}=require(${JSON.stringify(wsModule)});
 const {unlinkSync}=require('fs');
+const args=process.argv.slice(2);
+if(args[0]!=='app-server'){process.exit(0);}
 if(process.env.FAKE_ORPHAN==='1'){setInterval(()=>{},1000);}else{
-  const args=process.argv.slice(2),listen=args.indexOf('--listen');
+  const listen=args.indexOf('--listen');
   const socket=args[listen+1].replace(/^unix:\\/\\//,'');
   const server=createServer(),wss=new WebSocketServer({server});
   const close=()=>{for(const client of wss.clients)client.terminate();server.close(()=>{try{unlinkSync(socket)}catch{}process.exit(0)});};
@@ -198,9 +200,91 @@ if(process.env.FAKE_ORPHAN==='1'){setInterval(()=>{},1000);}else{
 
     expect(managed.status).toBe('ready');
     expect(managed.pid).not.toBe(orphan.pid);
-    expect(() => process.kill(orphan.pid!, 0)).toThrow();
+    await vi.waitFor(() => expect(() => process.kill(orphan.pid!, 0)).toThrow());
     enginePids.push(managed.pid!);
     await stopNativeCodexEngine();
+  }, 15_000);
+
+  it('removes an orphan Provider Engine before starting its replacement', async () => {
+    const database = createTestDatabase();
+    cleanupDatabase = database.cleanup;
+    const bin = join(root, 'bin');
+    const providerHome = join(root, 'provider-home');
+    const socket = join(database.dir, 'codex-providers', 'provider-a.sock');
+    mkdirSync(bin);
+    mkdirSync(providerHome);
+    const executable = join(bin, 'codex');
+    const wsModule = require.resolve('ws');
+    writeFileSync(executable, `#!${process.execPath}
+const {createServer}=require('http');
+const {WebSocketServer}=require(${JSON.stringify(wsModule)});
+const {unlinkSync}=require('fs');
+const args=process.argv.slice(2);
+if(args[0]!=='app-server'){process.exit(0);}
+if(process.env.FAKE_ORPHAN==='1'){setInterval(()=>{},1000);}else{
+  const listen=args.indexOf('--listen');
+  const socket=args[listen+1].replace(/^unix:\\/\\//,'');
+  const server=createServer(),wss=new WebSocketServer({server});
+  const close=()=>{for(const client of wss.clients)client.terminate();server.close(()=>{try{unlinkSync(socket)}catch{}process.exit(0)});};
+  process.once('SIGTERM',close);process.once('SIGINT',close);server.listen(socket);
+}
+`, { mode: 0o755 });
+    writeFileSync(join(providerHome, 'model-catalog.json'), JSON.stringify({
+      models: [{
+        slug: 'model-a',
+        base_instructions: 'test',
+        support_verbosity: true,
+        default_verbosity: 'low',
+        truncation_policy: { mode: 'tokens', limit: 1000 },
+      }],
+    }));
+    updateAgentManagement('codex', current => ({
+      ...current,
+      providers: [{
+        id: 'provider-a',
+        name: 'Provider A',
+        kind: 'responses',
+        enabled: true,
+        fields: {
+          baseUrl: 'https://example.com/v1',
+          codexHome: providerHome,
+          command: executable,
+          models: ['model-a'],
+          defaultModel: 'model-a',
+        },
+      }],
+    }));
+    vi.stubEnv('PATH', `${bin}${delimiter}${process.env.PATH || ''}`);
+    const orphan = spawn(executable, [
+      'app-server',
+      '--listen',
+      `unix://${socket}`,
+      '-c',
+      'model_provider="provider-a"',
+    ], {
+      detached: true,
+      env: { ...process.env, CODEX_HOME: providerHome, FAKE_ORPHAN: '1' },
+      stdio: 'ignore',
+    });
+    orphan.unref();
+    enginePids.push(orphan.pid!);
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    await restoreManagedCodexProviders();
+
+    const management = codexManagement({
+      id: 'codex',
+      label: 'Codex',
+      sessionHost: 'terminal',
+      capabilities: capabilities(['history', 'runtime', 'input', 'stream']),
+      presentation: { icon: 'codex', color: '#000' },
+    });
+    const providerState = await management.inspectProvider?.('provider-a');
+    expect(providerState).toMatchObject({
+      status: 'ready',
+    });
+    await vi.waitFor(() => expect(() => process.kill(orphan.pid!, 0)).toThrow());
+    if (providerState?.pid) enginePids.push(providerState.pid);
   }, 15_000);
 
   it('starts, adopts, restarts, and stops a detached native Engine', async () => {
