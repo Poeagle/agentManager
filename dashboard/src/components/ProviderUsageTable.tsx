@@ -1,13 +1,14 @@
 import {useState} from 'react';
-import {useQuery,useQueryClient} from '@tanstack/react-query';
+import {useQueryClient} from '@tanstack/react-query';
+import {useProviderUsage} from '../lib/use-provider-usage';
 import {api} from '../lib/api';
 import {ConfirmModal} from './ConfirmModal';
 import {DataTable} from './table/DataTable';
 import {useTableModel,type TableColumn} from './table/use-table-model';
 import type {ProviderUsageTab} from '../lib/api';
 const columns:TableColumn<ProviderUsageTab>[]=[{key:'username',title:'平台用户',value:t=>t.username},{key:'project',title:'项目',value:t=>t.project_name},{key:'name',title:'标签页',value:t=>t.name},{key:'model',title:'模型',value:t=>t.model},{key:'status',title:'运行状态',value:t=>t.busy===true?'正在执行任务':t.busy===false?'空闲':t.status==='pending'?'等待启动':'状态未确认'}];
-export function ProviderUsageTable({environmentId,onStateChange}:{environmentId:string;onStateChange?:(state:{inUse:boolean;busy:boolean;verified:boolean})=>void}) {
- const client=useQueryClient();const query=useQuery({queryKey:['provider-usage',environmentId],queryFn:async()=>{const data=await api.codexEnvironments.usage(environmentId);onStateChange?.({inUse:!!data.tabs.length,busy:data.busy,verified:data.verified});return data;},retry:false,refetchInterval:10000});
+export function ProviderUsageTable({environmentId}:{environmentId:string}) {
+ const client=useQueryClient();const query=useProviderUsage(environmentId);
  const [selected,setSelected]=useState<string[]>([]),[confirm,setConfirm]=useState<string[]|null>(null),[working,setWorking]=useState(false),[error,setError]=useState('');
  const tabs=query.data?.tabs||[],ids=tabs.map(tab=>tab.id),picked=selected.filter(id=>ids.includes(id));
  const table=useTableModel(tabs,columns);

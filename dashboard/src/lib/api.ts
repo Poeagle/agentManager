@@ -294,11 +294,12 @@ export interface AgentApiContract {
 export const api = {
   codexEnvironments: {
     quota:(id:string)=>fetchJSON<AgentQuotaResponse>('/codex/environments/'+encodeURIComponent(id)+'/quota'),
+    details:(id:string)=>fetchJSON<{details:CodexAccountDetails}>('/codex/environments/'+encodeURIComponent(id)+'/details'),
     remove:(id:string)=>fetchJSON<{ok:boolean}>('/codex/environments/'+encodeURIComponent(id),{method:'DELETE'}),
     usage:(id:string)=>fetchJSON<{tabs:ProviderUsageTab[];busy:boolean;verified:boolean}>('/codex/environments/'+encodeURIComponent(id)+'/usage'),
     closeTabs:(id:string,ids:string[])=>fetchJSON<{results:Array<{id:string;ok:boolean;error?:string}>}>('/codex/environments/'+encodeURIComponent(id)+'/close-tabs',{method:'POST',body:JSON.stringify({session_ids:ids})}),
     list:()=>fetchJSON<{environments:CodexEnvironment[]}>('/codex/environments'),
-    management:()=>fetchJSON<{environments:CodexEnvironment[];users:Array<{id:string;username:string;display_name:string}>}>('/codex/environments?management=true'),
+    management:()=>fetchJSON<{environments:CodexEnvironment[];users:Array<{id:string;username:string;display_name:string;role?:string}>}>('/codex/environments?management=true'),
     save:(input:{name:string;enabled:boolean;allowed_user_ids:string[]|null;connection?:CodexEnvironment['connection']},id?:string)=>fetchJSON<{environment:CodexEnvironment}>('/codex/environments'+(id?'/'+encodeURIComponent(id):''),{method:id?'PUT':'POST',body:JSON.stringify(input)}),
     checkConnection:(connection:NonNullable<CodexEnvironment['connection']>&{environment_id?:string;project_id?:string})=>fetchJSON<EnvironmentPreflight>('/codex/environments/check-connection',{method:'POST',body:JSON.stringify(connection)}),
     preflight:(id:string,projectId?:string)=>fetchJSON<EnvironmentPreflight>('/codex/environments/'+encodeURIComponent(id)+'/preflight',{method:'POST',body:JSON.stringify(projectId?{project_id:projectId}:{})}),
@@ -1316,4 +1317,13 @@ export interface SessionStateResponse {
   lastActivity: number;
   promptType: 'choice' | 'confirmation' | 'text' | null;
   choices: string[] | null;
+}
+
+export interface CodexAccountDetails {
+  id:string;checked_at:string;executable:string|null;version:string|null;home:string|null;
+  engine:{state:string;pid:number|null};
+  authentication:{status:string;type:string|null;email:string|null;plan:string|null};
+  config:{path:string|null;exists:boolean;notice:string|null};
+  settings:Record<string,string|null>;
+  models:Array<{model:string;name?:string;description?:string;defaultEffort?:string}>;
 }

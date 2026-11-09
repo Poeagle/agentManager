@@ -46,6 +46,13 @@ describe('Codex account environments and platform ACLs',()=>{
   request.mockImplementation(async()=>({account:null}) as any);
   const loggedOut=await app.inject({url:'/api/codex/environments/native/quota',headers:{cookie:cookies.admin}});expect(loggedOut.json()).toMatchObject({quota:null,reason:'not_applicable'});
  });
+ it('keeps a legacy saved absolute command visible so administrators can correct it',async()=>{
+  const environment=await create();
+  getDb().prepare('UPDATE agent_environments SET config=? WHERE id=?').run(JSON.stringify({...connection,codexCommand:'/home/fixture/codex --old-flag'}),environment.id);
+  const response=await app.inject({url:'/api/codex/environments?management=true',headers:{cookie:cookies.admin}});
+  expect(response.statusCode).toBe(200);expect(response.json().environments.find((e:any)=>e.id===environment.id).connection.codexCommand).toContain('--old-flag');
+  await expect(saveCodexEnvironment({name:environment.name,connection,allowed_user_ids:[owner.id]},environment.id)).resolves.toMatchObject({connection:{codexCommand:'codex'}});
+ });
  it('keeps existing native and API Provider access without requiring account login',()=>{
   updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'gateway',name:'API gateway',kind:'responses',enabled:true,fields:{models:['model-a'],baseUrl:'https://example.invalid/v1'}}]}));
   const visible=visibleCodexEnvironments(other.id);expect(visible.map(e=>e.id)).toEqual(['native','provider:gateway']);expect(visible[1].kind).toBe('provider');

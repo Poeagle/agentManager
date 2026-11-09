@@ -1,4 +1,6 @@
-import {ProviderUsageTable} from './ProviderUsageTable';
+import {ProviderDeleteDialog} from './ProviderDeleteDialog';
+import {useProviderUsage} from '../lib/use-provider-usage';
+import {CodexAccountProvider} from './CodexAccountProvider';
 import {CodexAccountProviderEditor} from './CodexAccountProviderEditor';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -31,7 +33,6 @@ import {
 } from "../lib/api";
 import { ClaudeIcon, CodexIcon } from "./CliIcons";
 import { Dialog } from "./Dialog";
-import { ConfirmModal } from "./ConfirmModal";
 import { DataTable } from "./table/DataTable";
 import { useTableModel } from "./table/use-table-model";
 import "./AgentManagementPanel.css";
@@ -1127,7 +1128,7 @@ function ProviderEditor({
   onFileDirtyChange: (dirty: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [usage,setUsage]=useState({inUse:true,busy:true,verified:false});
+  const usage=useProviderUsage(initialProvider.id==='native'?'native':'provider:'+initialProvider.id);
   const providerQuery = useQuery({
     queryKey: ["agent-provider", agentId, initialProvider.id],
     queryFn: async () =>
@@ -1465,7 +1466,7 @@ function ProviderEditor({
               type="button"
               className="agent-management-button agent-management-button-danger"
               title="删除 Provider 的独立 Engine、socket、配置目录和加密密钥。"
-              disabled={remove.isPending || readOnly || usage.inUse}
+              disabled={remove.isPending || readOnly}
               onClick={() => setDeleteOpen(true)}
             >
               <Trash2 size={13} />
@@ -1474,8 +1475,6 @@ function ProviderEditor({
           )}
         </div>
       </header>
-      <ProviderUsageTable key={provider.id} environmentId={provider.id==='native'?'native':'provider:'+provider.id} onStateChange={setUsage}/>
-      {usage.inUse&&<p className="agent-management-hint">有用户占用标签页，不能删除此 Provider。</p>}
       {liveProvider.codexHome && (
         <div className="agent-management-path">
           <FolderCog size={14} />
@@ -1722,14 +1721,12 @@ function ProviderEditor({
         </section>
       )}
       {deleteOpen && (
-        <ConfirmModal
-          title={`彻底删除 Provider ${provider.name}`}
-          message={`将删除 Provider ${provider.id} 的 Engine、socket、独立 CODEX_HOME（${provider.codexHome || "未配置"}）、加密 API Key 和平台配置。该目录中的配置与缓存会永久删除，无法恢复。`}
-          confirmLabel="彻底删除"
-          cancelLabel="取消"
-          variant="danger"
+        <ProviderDeleteDialog
+          environmentId={provider.id==='native'?'native':'provider:'+provider.id}
+          name={provider.name}
+          message={`将删除此 Provider 的 Engine、socket、独立 CODEX_HOME（${provider.codexHome || '未配置'}）、加密 API Key 和平台配置。确认前请先关闭所有占用标签页。`}
           onCancel={() => setDeleteOpen(false)}
-          onConfirm={() => remove.mutate()}
+          onDelete={() => remove.mutateAsync()}
         />
       )}
     </div>
@@ -2018,13 +2015,9 @@ function CodexWorkspace({
     onFileDirtyChange(fileDirty);
   }, [fileDirty, onFileDirtyChange]);
   const switchProvider = (providerId: string) => {
-    if (
-      providerId !== selected?.id &&
-      (providerDirty || fileDirty) &&
-      !window.confirm("当前 Provider 配置有未保存的修改，确定丢弃吗？")
-    )
-      return;
-    if (providerId === selected?.id && !adding) return;
+    if (providerId === selectedProviderId && !adding) return;
+    if ((providerDirty || fileDirty) &&
+      !window.confirm("当前 Provider 配置有未保存的修改，确定丢弃吗？")) return;
     setSelectedProviderId(providerId);
     setAdding(false);
     setProviderDirty(false);
@@ -2068,7 +2061,7 @@ function CodexWorkspace({
             key={provider.id}
             agentId={agentId}
             state={provider}
-            selected={provider.id === selected?.id}
+            selected={provider.id === (selectedAccount?.id || selected?.id)}
             onSelect={() => switchProvider(provider.id)}
           />
         ))}
@@ -2082,7 +2075,7 @@ function CodexWorkspace({
           <div><label className="agent-management-field"><span>接入类型</span><select aria-label="Provider 接入类型" value={newKind} onChange={e=>{if((providerDirty||fileDirty)&&!window.confirm('放弃当前未保存修改并切换接入类型吗？'))return;setNewKind(e.target.value as 'api'|'account');setProviderDirty(false);setFileDirty(false);}}><option value="api">API Key 接入</option><option value="account">Codex 登录账号</option></select></label>
           {newKind==='account'?<CodexAccountProviderEditor onDirtyChange={providerDirtyChange} onSaved={e=>{setSelectedProviderId(e.id);setAdding(false);setProviderDirty(false);}}/>:<AddCodexProvider agentId={agentId} readOnly={readOnly} onEditingChange={providerDirtyChange} onClose={()=>{setAdding(false);setProviderDirty(false);onDirtyChange(false);}}/>}</div>
         ) : selectedAccount ? (
-          <CodexAccountProviderEditor key={selectedAccount.id} environment={selectedAccount} readOnly={readOnly} onDirtyChange={providerDirtyChange} onSaved={()=>setProviderDirty(false)}/>
+          <CodexAccountProvider key={selectedAccount.id} environment={selectedAccount} readOnly={readOnly} onDirtyChange={providerDirtyChange}/>
         ) : selected ? (
           <ProviderEditor
             agentId={agentId}

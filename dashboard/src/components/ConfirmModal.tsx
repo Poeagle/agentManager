@@ -10,6 +10,8 @@ interface ConfirmModalProps {
   onConfirm: () => void;
   onCancel: () => void;
   children?: React.ReactNode;
+  maxWidth?: number;
+  confirmDisabled?: boolean;
 }
 
 export function ConfirmModal({
@@ -21,16 +23,25 @@ export function ConfirmModal({
   onConfirm,
   onCancel,
   children,
+  maxWidth = 400,
+  confirmDisabled = false,
 }: ConfirmModalProps) {
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
     cancelRef.current?.focus();
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel();
+      const dialogs = document.querySelectorAll('[data-confirm-modal]');
+      if (e.key === 'Escape' && dialogs[dialogs.length - 1] === panelRef.current) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        onCancel();
+      }
     };
     window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
+    return () => { window.removeEventListener('keydown', handleKey); if (previous?.isConnected) previous.focus(); };
   }, [onCancel]);
 
   const confirmColor = variant === 'danger' ? '#ef4444' : '#f59e0b';
@@ -42,10 +53,16 @@ export function ConfirmModal({
       onClick={onCancel}
     >
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        data-confirm-modal
         className="flex flex-col rounded-lg shadow-2xl overflow-hidden"
         style={{
-          width: '100%',
-          maxWidth: '400px',
+          width: 'calc(100vw - 32px)',
+          maxWidth,
+          maxHeight: 'calc(100dvh - 32px)',
           background: 'var(--bg-primary)',
           border: '1px solid var(--border)',
         }}
@@ -65,7 +82,7 @@ export function ConfirmModal({
         </div>
 
         {/* Body */}
-        <div className="px-5 py-3">
+        <div className="px-5 py-3 overflow-y-auto">
           <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
             {message}
           </p>
@@ -78,6 +95,7 @@ export function ConfirmModal({
           style={{ borderTop: '1px solid var(--border)', background: 'var(--bg-secondary)' }}
         >
           <button
+            type="button"
             ref={cancelRef}
             onClick={onCancel}
             className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
@@ -90,12 +108,16 @@ export function ConfirmModal({
             {cancelLabel}
           </button>
           <button
+            type="button"
+            disabled={confirmDisabled}
             onClick={onConfirm}
             className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
             style={{
               background: confirmColor,
               color: '#fff',
               border: 'none',
+              opacity: confirmDisabled ? 0.45 : 1,
+              cursor: confirmDisabled ? 'not-allowed' : 'pointer',
             }}
           >
             {confirmLabel}
