@@ -1141,6 +1141,8 @@ function ProviderEditor({
       if(updated)queryClient.setQueryData(["agent-provider",agentId,initialProvider.id],updated);
       void queryClient.invalidateQueries({queryKey:["agent-management-list"]});
       void queryClient.invalidateQueries({queryKey:["codex-environments"]});
+      void queryClient.invalidateQueries({queryKey:["codex-environment-management"]});
+      void queryClient.invalidateQueries({queryKey:["session-environments"]});
       setRenameOpen(false);setRenameError('');
     },
     onError:(failure:Error)=>setRenameError(failure.message),

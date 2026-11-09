@@ -32,3 +32,10 @@ it('keeps the native account visible after a quota error and allows retry',async
  mount();expect(await screen.findByText('不可用')).toBeVisible();expect(screen.getByText('Codex · 本机账号')).toBeVisible();
  fireEvent.click(screen.getByRole('button',{name:'刷新 Codex · 本机账号 额度'}));expect(await screen.findByLabelText('Codex · 本机账号 周额度剩余 70%')).toBeVisible();
 });
+
+it('updates the header name immediately after the environment list is invalidated',async()=>{
+ vi.mocked(api.codexEnvironments.list).mockResolvedValueOnce({environments:[{id:'native',name:'旧名称',kind:'native',enabled:true,allowed_user_ids:null}]}).mockResolvedValueOnce({environments:[{id:'native',name:'新名称',kind:'native',enabled:true,allowed_user_ids:null}]});
+ vi.mocked(api.codexEnvironments.quota).mockResolvedValue({quota:{usedPercent:25,remainingPercent:75,windowDurationMins:10080,resetsAt:null,planType:null,checkedAt:'2026-11-09T00:00:00Z'}});
+ mount();expect(await screen.findByLabelText('Codex · 旧名称 周额度剩余 75%')).toBeVisible();
+ await client.invalidateQueries({queryKey:['codex-environments']});expect(await screen.findByLabelText('Codex · 新名称 周额度剩余 75%')).toBeVisible();expect(screen.queryByLabelText('Codex · 旧名称 周额度剩余 75%')).not.toBeInTheDocument();
+});
