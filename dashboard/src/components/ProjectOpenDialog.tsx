@@ -1,5 +1,6 @@
 import { useState,type ReactNode } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, FolderOpen } from 'lucide-react';
+import './ProjectOpenDialog.css';
 import type { Project } from '../lib/api';
 import { projectOpenModes } from './project-open-modes';
 import { TableActionButton } from './table/TableActions';
@@ -14,19 +15,18 @@ export function ProjectOpenDialog({ project, onClose, onOpen, busy = false, erro
   const [selected, setSelected] = useState<string>(options[0]?.id ?? '');
   const choice = options.find((option) => option.id === selected);
   return <Dialog title={`${title} · ${project.name}`} onClose={onClose} busy={busy}>
-    <form onSubmit={(event) => { event.preventDefault(); if (choice && !busy && (isChoiceReady?.(choice.mode,choice.cli)??true)) onOpen(choice.mode, choice.cli); }}>
-      <p className="mb-4 break-all text-xs" style={{ color: 'var(--text-secondary)' }}>{project.path}</p>
-      <fieldset disabled={busy} className="space-y-2"><legend className="mb-2 text-xs" style={{ color: 'var(--text-secondary)' }}>选择新会话的打开方式</legend>
-        {options.map(({ id, label, Icon }) => <label key={id} className="flex cursor-pointer items-center gap-3 rounded-md border px-3 py-2"
-          style={{ borderColor: selected === id ? 'var(--accent)' : 'var(--border)' }}>
-          <input type="radio" name="project-open-mode" value={id} checked={selected === id} onChange={() => setSelected(id)} style={{ accentColor: 'var(--accent)' }} />
-          <Icon className="h-4 w-4" /><span className="text-sm">{label}</span>
-        </label>)}
-        {options.length === 0 && <p className="text-xs">该项目尚未授权任何会话打开方式。</p>}
+    <form className="project-open-form" onSubmit={(event) => { event.preventDefault(); if (choice && !busy && (isChoiceReady?.(choice.mode,choice.cli)??true)) onOpen(choice.mode, choice.cli); }}>
+      <p className="project-open-path" title={project.path}><FolderOpen size={14} aria-hidden="true"/><span>{project.path}</span></p>
+      <fieldset disabled={busy} className="project-open-fieldset"><legend>选择打开方式</legend>
+        <div className="project-open-options">{options.map(({ id, label, Icon }) => <label key={id} className="project-open-option" data-selected={selected === id}>
+          <input type="radio" name="project-open-mode" value={id} checked={selected === id} onChange={() => setSelected(id)} />
+          <Icon className="project-open-option-icon" aria-hidden="true"/><span>{label}</span>
+        </label>)}</div>
+        {options.length === 0 && <p className="project-open-message">该项目尚未授权任何会话打开方式。</p>}
       </fieldset>
       {choice&&renderOptions?.(choice.mode,choice.cli)}
       {error && <p role="alert" className="mt-3 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
-      <footer className="mt-4 flex justify-end gap-2"><TableActionButton disabled={busy} onClick={onClose}>取消</TableActionButton>
+      <footer className="project-open-footer"><TableActionButton disabled={busy} onClick={onClose}>取消</TableActionButton>
         <TableActionButton type="submit" disabled={!choice || busy||!(isChoiceReady?.(choice.mode,choice.cli)??true)} style={{ background: 'var(--accent)', borderColor: 'var(--accent)', color: '#fff' }}>{busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{busy ? '正在创建…' : '新建会话'}</TableActionButton></footer>
     </form>
   </Dialog>;
