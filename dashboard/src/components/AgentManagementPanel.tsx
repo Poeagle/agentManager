@@ -653,6 +653,9 @@ function LiveProviderCard({
     initialData: state,
     initialDataUpdatedAt: 0,
     staleTime: 5_000,
+    refetchInterval: (query) =>
+      query.state.data?.status === "ready" ? false : 3_000,
+    refetchIntervalInBackground: false,
   });
   return (
     <ProviderCard
@@ -1072,6 +1075,9 @@ function ProviderEditor({
     initialData: initialProvider,
     initialDataUpdatedAt: 0,
     staleTime: 5_000,
+    refetchInterval: (query) =>
+      query.state.data?.status === "ready" ? false : 3_000,
+    refetchIntervalInBackground: false,
   });
   const provider = initialProvider;
   const liveProvider = providerQuery.data;
