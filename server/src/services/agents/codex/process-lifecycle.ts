@@ -1,4 +1,5 @@
 import { spawnSync } from 'child_process';
+import WebSocket from 'ws';
 
 export function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -52,4 +53,24 @@ export async function terminateDetachedProcess(
     Error(`${label} 进程 ${pid} 未能退出，已停止启动新 Engine`),
     { statusCode: 409 },
   );
+}
+
+function socketReady(socket: string): Promise<boolean> {
+  return new Promise(resolve => {
+    const ws = new WebSocket(`ws+unix://${socket}:/`, { handshakeTimeout: 1000 });
+    ws.once('open', () => {
+      ws.close();
+      resolve(true);
+    });
+    ws.once('error', () => resolve(false));
+  });
+}
+
+export async function waitForSocketReady(socket: string, timeoutMs = 5_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await socketReady(socket)) return true;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return false;
 }
