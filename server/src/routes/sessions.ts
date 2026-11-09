@@ -28,7 +28,7 @@ import {requirePermission} from '../services/rbac.js';
 import {attachExistingSession} from '../services/session-attachment.js';
 
 const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
-const MAX_PASTED_FILE_BYTES = 35 * 1024 * 1024;
+const MAX_PASTED_FILE_BYTES = 100 * 1024 * 1024;
 
 function decodePastedDataUrl(dataUrl: unknown): { mime: string; bytes: Buffer } | null {
   if (typeof dataUrl !== 'string') return null;
@@ -246,8 +246,9 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
+  // Reserve space for base64 expansion and the data URL / JSON envelope.
   app.post<{ Params: { id: string }; Body: { dataUrl?: string; filename?: string } }>(
-    '/sessions/:id/paste-file', { bodyLimit: 50 * 1024 * 1024 }, async (req, reply) => {
+    '/sessions/:id/paste-file', { bodyLimit: Math.ceil(MAX_PASTED_FILE_BYTES / 3) * 4 + 1024 * 1024 }, async (req, reply) => {
       const session = sessionManager.getSession(req.params.id);
       if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
       const project = session.project_id
@@ -257,7 +258,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
 
       const data = decodePastedDataUrl(req.body?.dataUrl);
       if (!data) return reply.status(400).send({ error: 'Expected a base64 file data URL' });
-      if (data.bytes.length > MAX_PASTED_FILE_BYTES) return reply.status(413).send({ error: 'File too large (max 35 MB)' });
+      if (data.bytes.length > MAX_PASTED_FILE_BYTES) return reply.status(413).send({ error: 'File too large (max 100 MB)' });
       const base = (typeof req.body?.filename === 'string' ? req.body.filename : '').split(/[\\/]/).pop() || '';
       const safeName = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(0, 100) || 'file';
 

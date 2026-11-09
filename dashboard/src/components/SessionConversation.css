@@ -306,7 +306,9 @@
 .conversation-auto-summary-body {max-height:420px;overflow:auto;font-size:12px;line-height:1.65;}
 .conversation-auto-summary-body .conversation-markdown>:first-child {margin-top:0;}
 .conversation-auto-summary-body .conversation-markdown>:last-child {margin-bottom:0;}
-.conversation-controls {display:flex;align-items:center;gap:6px 10px;flex-wrap:nowrap;min-width:0;min-height:30px;margin-top:5px;overflow-x:auto;white-space:nowrap;scrollbar-width:thin;font-family:var(--app-font-family);font-size:12px;line-height:20px;font-weight:400;font-variant-numeric:tabular-nums;color:var(--text-secondary);}
+.conversation-controls {display:flex;align-items:center;gap:6px 12px;flex-wrap:nowrap;min-width:0;min-height:30px;margin-top:5px;overflow-x:auto;white-space:nowrap;scrollbar-width:thin;font-family:var(--app-font-family);font-size:12px;line-height:20px;font-weight:400;font-variant-numeric:tabular-nums;color:var(--text-secondary);}
+.conversation-controls>* {flex-shrink:0;}
+.conversation-control-message {max-width:180px;overflow:hidden;text-overflow:ellipsis;color:var(--error);}
 .conversation-control-select {display:flex;gap:5px;align-items:center;position:relative;}
 .conversation-control-select>span {color:var(--text-muted);}
 .conversation-control-select select {width:auto;max-width:150px;min-width:0;appearance:none;background:transparent;color:var(--text-primary);font:inherit;font-weight:500;padding:3px 15px 3px 2px;cursor:pointer;}

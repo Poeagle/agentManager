@@ -64,6 +64,16 @@ describe('question reply attachments',()=>{
   paste(Array.from({length:5},(_,i)=>file(`one-${i}.txt`)),'问题一');paste(Array.from({length:4},(_,i)=>file(`two-${i}.txt`)),'问题二');
   expect(await screen.findByText('本次回答合计最多支持 8 个附件')).toBeVisible();expect(screen.getByRole('button',{name:'提交回答'})).toBeDisabled();
  });
+ it('accepts 100 MB in an answer and enforces the total across question fields',async()=>{
+  mount(vi.fn(),{...question,async_questions:[{id:'one',title:'问题一',options:null},{id:'two',title:'问题二',options:null}]});
+  const second=screen.getByRole('textbox',{name:'问题二'});second.textContent='补充说明';fireEvent.input(second);
+  const large=file('large.zip');Object.defineProperty(large,'size',{value:100*1024*1024});paste([large],'问题一');
+  await waitFor(()=>expect(screen.getByRole('button',{name:'提交回答'})).toBeEnabled());
+  paste([file('extra.txt')],'问题二');
+  expect(await screen.findByText('本次回答的附件合计最多 100 MB')).toBeVisible();expect(screen.getByRole('button',{name:'提交回答'})).toBeEnabled();
+  expect(screen.queryByRole('button',{name:'预览待发送文件 extra.txt'})).not.toBeInTheDocument();
+  expect(api.sessions.pasteFile).toHaveBeenCalledOnce();
+ });
  it.each([false,true])('respects provider capabilities and readonly access (canAnswer %s)',async canAnswer=>{
   mount(vi.fn(),question,!canAnswer,canAnswer);paste([file()]);await act(async()=>{});expect(api.sessions.pasteFile).not.toHaveBeenCalled();expect(api.sessions.pasteImage).not.toHaveBeenCalled();
   if(canAnswer)expect(screen.getByRole('alert')).toHaveTextContent('不支持附件');

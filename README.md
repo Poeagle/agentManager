@@ -106,8 +106,8 @@ not fetched. Limits: 20 MB Office, 50 MB PDF/image and 5 MB text/diagram files.
 The conversation composer accepts directory drops and a directory picker. It
 packs each directory as a ZIP in a dedicated browser worker before uploading,
 preserving relative paths and empty directories reported by the browser. Each
-directory supports 2000 files, 100 MB of source data and a 35 MB resulting ZIP;
-the existing 8-attachment and 50 MB per-message limits still apply. The directory
+directory supports 2000 files, 100 MB of source data and a 100 MB resulting ZIP;
+the existing 8-attachment and 100 MB per-message limits still apply. The directory
 picker may omit empty folders depending on browser support.
 
 Conversation timestamps follow the browser clock and timezone. A timestamp on
@@ -216,7 +216,7 @@ Question answer fields support pasted images/files, attachment previews and
 upload retries through the same uploader as the main composer. Uploaded drafts
 survive minimizing the question or reloading; an answer and its attachments are
 submitted together without clearing a separate composer draft. The entire answer
-group shares the usual 8-file, 10 MB image and 50 MB total limits. Async replies
+group shares the usual 8-file, 10 MB image and 100 MB total limits. Async replies
 use native attachment input. Text-only blocking question protocols receive
 validated file references; adapters with richer protocols may map them directly.
 The main composer and question fields share one upload/packing queue per session.

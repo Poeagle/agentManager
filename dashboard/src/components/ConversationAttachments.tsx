@@ -35,7 +35,7 @@ export function useConversationAttachments(sessionId:string,initial:DraftAttachm
       const image=/^image\/(png|jpeg|gif|webp)$/i.test(file.type),name=file.name || (image?'截图.png':'文件');
       const total=current.current.reduce((sum,item)=>sum+item.size,0),images=current.current.filter(item=>item.kind==='image').reduce((sum,item)=>sum+item.size,0);
       if(current.current.length>=8){setError('每条消息最多支持 8 个附件');break;}
-      if(file.size>(image?10:35)*1024*1024 || total+file.size>50*1024*1024 || image && images+file.size>10*1024*1024){setError('图片总大小最多 10 MB，单个文件最多 35 MB，附件合计最多 50 MB');continue;}
+      if(file.size>(image?10:100)*1024*1024 || total+file.size>100*1024*1024 || image && images+file.size>10*1024*1024){setError('图片总大小最多 10 MB，单个文件最多 100 MB，附件合计最多 100 MB');continue;}
       const id=conversationClientId(),controller=new AbortController();controllers.current.set(id,controller);
       retries.current.set(id,()=>enqueue([file]));
       const thumbnail=image && typeof URL.createObjectURL==='function'?URL.createObjectURL(file):undefined;if(thumbnail)urls.current.add(thumbnail);
@@ -63,7 +63,7 @@ export function useConversationAttachments(sessionId:string,initial:DraftAttachm
         patch(id,{status:'packing',progress:0});
         const entries=await read(controller.signal);controller.signal.throwIfAborted();
         const file=await packDirectory(name,entries,controller.signal,progress=>{if(!controller.signal.aborted&&alive.current)patch(id,{progress});});
-        if(file.size>35*1024*1024||current.current.filter(item=>item.id!==id).reduce((sum,item)=>sum+item.size,0)+file.size>50*1024*1024)throw Error('单个 ZIP 最多 35 MB，附件合计最多 50 MB');
+        if(file.size>100*1024*1024||current.current.filter(item=>item.id!==id).reduce((sum,item)=>sum+item.size,0)+file.size>100*1024*1024)throw Error('单个 ZIP 最多 100 MB，附件合计最多 100 MB');
         patch(id,{status:'uploading',size:file.size});
         const data=await readFileAsDataUrl(file,controller.signal),uploaded=await api.sessions.pasteFile(sessionId,data,file.name,controller.signal);
         if(!controller.signal.aborted&&alive.current){patch(id,{status:'ready',path:uploaded.path});retries.current.delete(id);}

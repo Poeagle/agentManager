@@ -33,7 +33,6 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const data=baseline&&update&&update.native_id===baseline.native_id&&(!baseline.usage_observed_at||Date.parse(update.observed_at)>=Date.parse(baseline.usage_observed_at))
     ?{...baseline,usage:update.usage,usage_observed_at:update.observed_at}:baseline;
   const selected=data?.pending||{model:data?.model||'',effort:data?.effort||'',provider:data?.provider||undefined};
-  const visibleWarning=data?.warning&&!/^客户端\s+[\d.]+?\s*·\s*共享引擎\s+[\d.]+/.test(data.warning)?data.warning:null;
   const model=data?.models.find(m=>m.model===selected.model&&(!m.provider||!selected.provider||m.provider===selected.provider)),usage=data?.usage;
   const context=usage?.window&&usage.last.total_tokens!=null?Math.min(100,Math.round(100*usage.last.total_tokens/usage.window)):null;
   const fastTier=model?.service_tiers?.find(tier=>tier.name.trim().toLowerCase()==='fast');
@@ -74,12 +73,11 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
           {usage?.total.input_tokens!=null&&<span title={`会话累计输入：${usage.total.input_tokens.toLocaleString()} Token，包含缓存命中`}>输入 {compact(usage.total.input_tokens)}</span>}
           {usage?.total.output_tokens!=null&&<span title={`会话累计输出：${usage.total.output_tokens.toLocaleString()} Token，包含推理输出`}>输出 {compact(usage.total.output_tokens)}</span>}
         </span>
+        {(error&&!newOpen||notice)&&<span className="conversation-control-message" role={error&&!newOpen?'alert':'status'} title={error&&!newOpen?error:notice}>{error&&!newOpen?error:notice}</span>}
         <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>详情</button>
         <button type="button" aria-label="刷新会话信息" title="用量随会话事件实时更新，其他信息每 5 分钟刷新，也可手动刷新" disabled={query.isFetching} onClick={refresh}><RefreshCw size={13} className={query.isFetching?'animate-spin':''}/>刷新</button>
       </>:<><span>{query.isPending?'读取会话信息…':'会话信息暂不可用'}</span>{query.isError&&<button type="button" onClick={refresh}><RefreshCw size={13}/>重试</button>}</>}
     </div>
-    {visibleWarning&&!expanded&&<p className="conversation-controls-note" role="status">{visibleWarning}</p>}
-    {notice&&<p className="conversation-controls-note" role="status">{notice}</p>}
     {newOpen&&<Dialog title="在当前标签页新开会话" busy={operation==='new'} onClose={()=>setNewOpen(false)}>
       <p className="text-sm leading-relaxed">{data?.supports_fresh_model?'请确认新会话使用的模型服务、模型和推理强度。':'新会话将使用当前 Agent 的默认模型设置。'}当前任务会停止，旧会话的后台终端会回收，历史消息可从“项目会话记录”重新打开。当前输入框中未发送的文字和附件会保留。</p>
       {data?.supports_fresh_model&&<><label className="mt-3 flex items-center gap-2 text-sm">新会话模型<select aria-label="新会话模型" className="min-w-0 flex-1 rounded border px-2 py-1" style={{background:'var(--bg-tertiary)',borderColor:'var(--border)',color:'var(--text-primary)'}} value={freshPreference?choiceKey(freshPreference):''} onChange={event=>{const next=data?.models.find(m=>choiceKey(m)===event.target.value);if(next)setFreshPreference({model:next.model,...(next.provider?{provider:next.provider}:{}),effort:next.defaultEffort});}}><option value="" disabled>请选择可用模型</option>{data?.models.map(m=><option key={choiceKey(m)} value={choiceKey(m)}>{m.provider?`${m.provider} · `:''}{m.name}</option>)}</select></label>
@@ -87,7 +85,6 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
       {error&&<p role="alert" className="session-chat-error">{error}</p>}
       <footer className="mt-4 flex justify-end gap-3 text-sm"><button type="button" disabled={!!operation} onClick={()=>setNewOpen(false)}>取消</button><button type="button" disabled={!!operation||!!data?.supports_fresh_model&&!freshPreference} onClick={()=>void perform('new')}>{operation==='new'?'正在新开…':'停止旧会话并新开'}</button></footer>
     </Dialog>}
-    {error&&<p className="session-chat-error" role="alert">{error}</p>}
     {expanded&&data&&<ControlDetails data={{...data,state:data.loaded?(busy||compacting?'active':'idle'):data.state}} onClose={()=>setExpanded(false)} onRefresh={refresh} refreshing={query.isFetching}/>}
   </div>;
 }

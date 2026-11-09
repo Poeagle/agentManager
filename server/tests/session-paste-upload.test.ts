@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { join, relative } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { authHook, createSession, createUser } from '../src/auth.js';
@@ -73,6 +73,23 @@ describe('session clipboard uploads', () => {
     expect(readFileSync(response.json().path, 'utf8')).toBe('hello');
     expect(readdirSync(join(project, '.agentmanager', 'pastes'))).toHaveLength(1);
   });
+
+  it('accepts a 100 MB file including its base64 request overhead', async () => {
+    const bytes = Buffer.alloc(100 * 1024 * 1024, 42);
+    const response = await upload('file', { dataUrl: dataUrl('application/zip', bytes), filename: 'large.zip' });
+    expect(response.statusCode).toBe(200);
+    expect(statSync(response.json().path).size).toBe(bytes.length);
+    expect(readFileSync(response.json().path).equals(bytes)).toBe(true);
+  }, 30_000);
+
+  it('rejects files above 100 MB without saving them', async () => {
+    const response = await upload('file', {
+      dataUrl: dataUrl('application/zip', Buffer.alloc(100 * 1024 * 1024 + 1)), filename: 'too-large.zip',
+    });
+    expect(response.statusCode).toBe(413);
+    expect(response.json().error).toBe('File too large (max 100 MB)');
+    expect(existsSync(join(project, '.agentmanager', 'pastes'))).toBe(false);
+  }, 30_000);
 
   it('does not write through a symlinked paste directory', async () => {
     const outside = join(project, '..', 'outside');
