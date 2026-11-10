@@ -82,8 +82,13 @@ export function engineForProvider(provider?:string):CodexEngine {
  const current=currentCodexEngine();
  if(!provider||provider===current.provider)return current;
  const route=configuredCodexEngines().find(item=>item.provider===provider);
- if(!route)throw Error(`模型服务 ${provider} 尚未接入独立引擎；请配置 provider engine，原会话已保留`);
- return route;
+ if(route)return route;
+ // The native/default Codex engine can expose a model_provider (for example
+ // `openai`) without being listed among the explicitly configured engines.
+ // Model catalogs include that engine, so fresh-conversation routing must too.
+ const native=defaultCodexEngine();
+ if(provider===native.provider)return native;
+ throw Error(`模型服务 ${provider} 尚未接入独立引擎；请配置 provider engine，原会话已保留`);
 }
 export async function engineForThread(threadId:string):Promise<CodexEngine> {
  let ids:string[]=[];

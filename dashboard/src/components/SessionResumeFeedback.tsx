@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Loader2, X } from 'lucide-react';
 import type { SessionResumeState } from '../lib/use-session-resume';
 
-export function SessionResumeFeedback({ state }: { state: SessionResumeState }) {
+export function SessionResumeFeedback({ state, onDismiss }: { state: SessionResumeState; onDismiss: () => void }) {
   const [now, setNow] = useState(Date.now);
   const busy = state.phase === 'starting' || state.phase === 'connecting';
   useEffect(() => {
@@ -17,7 +17,7 @@ export function SessionResumeFeedback({ state }: { state: SessionResumeState }) 
 
   return (
     <div
-      className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[60] max-w-[calc(100%-32px)] rounded-md border px-4 py-3 text-xs shadow-lg pointer-events-none"
+      className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[60] max-w-[calc(100%-32px)] rounded-md border px-4 py-3 text-xs shadow-lg"
       style={{ background: 'var(--bg-secondary)', borderColor: color, color: 'var(--text-primary)' }}
       role={failed ? 'alert' : 'status'}
       aria-live={failed ? 'assertive' : 'polite'}
@@ -31,6 +31,7 @@ export function SessionResumeFeedback({ state }: { state: SessionResumeState }) 
               : failed ? 'Resume failed' : 'Session resumed'}
         </span>
         {busy && <span aria-live="off" style={{ color: 'var(--text-muted)' }}>{elapsed}s</span>}
+        {failed && <button type="button" onClick={onDismiss} className="ml-2 rounded p-0.5 hover:bg-black/5 dark:hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2" aria-label="关闭错误提示"><X className="h-3.5 w-3.5" /></button>}
       </div>
       {state.warning&&<p className="mt-1.5 max-w-md break-words">{state.warning}</p>}
       {failed && <p className="mt-1.5 max-w-md break-words">{state.error}</p>}
