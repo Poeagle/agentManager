@@ -73,7 +73,7 @@ export function DocumentPreview({ path, type, content, filesApi, onDownload }: P
     </div>
     {office&&fonts&&(fonts.substitutions.length>0||!fonts.checked)&&<div role="status" aria-label="文档字体提示" className="px-4 py-2 text-xs shrink-0" style={{color:'var(--text-secondary)',borderBottom:'1px solid var(--border)'}}>
       {fonts.substitutions.length>0&&<details><summary className="cursor-pointer">预览字体替换：{fonts.substitutions[0].requested} → {fonts.substitutions[0].replacement}{fonts.substitutions.length+(fonts.omitted||0)>1&&` 等 ${fonts.substitutions.length+(fonts.omitted||0)} 项`}</summary><ul>{fonts.substitutions.map((entry,index)=><li key={index}>{entry.requested} → {entry.replacement}</li>)}{!!fonts.omitted&&<li>另有 {fonts.omitted} 项</li>}</ul></details>}
-      <p>{!fonts.checked?'部分字体未能逐项核对。':''}预览采用服务器可用字体，替换可能影响换行和分页；原文件未修改。</p>
+      <p>{!fonts.checked?'部分字体未能逐项核对。':''}{fonts.substitutions.length?'预览采用了替代字体，可能影响换行和分页。':'预览未进行字体替换。'}原文件未修改。</p>
     </div>}
     {!preview && <div role="status" className="flex-1 flex items-center justify-center gap-2 text-sm" style={{ color: 'var(--text-secondary)' }}>
       <Loader2 className="w-4 h-4 animate-spin" />{office ? '正在服务器本地转换文档，请稍候…' : '正在加载预览…'}

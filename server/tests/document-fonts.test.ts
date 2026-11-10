@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {zipSync,strToU8} from 'fflate';
-import {requestedDocumentFonts} from '../src/services/document-fonts.js';
+import {documentFontEnvironment,requestedDocumentFonts} from '../src/services/document-fonts.js';
 const zip=(files:Record<string,string>)=>Buffer.from(zipSync(Object.fromEntries(Object.entries(files).map(([name,text])=>[name,strToU8(text)]))));
 describe('Office font inspection',()=>{
  it('follows used paragraph styles and defaults without reporting unused styles',()=>{
@@ -11,5 +11,12 @@ describe('Office font inspection',()=>{
   expect(requestedDocumentFonts(zip({'word/document.xml':'<w:rFonts w:asciiTheme="minorHAnsi"/>'}),'docx').checked).toBe(false);
   expect(requestedDocumentFonts(Buffer.from('not zip'),'docx').checked).toBe(false);
   expect(requestedDocumentFonts(zip({'word/document.xml':' '.repeat(4*1024*1024+1)}),'docx').checked).toBe(false);
+ });
+ it('reports missing exact fonts without selecting a fallback',async()=>{
+  const bytes=zip({'word/document.xml':'<w:document><w:r><w:rPr><w:rFonts w:ascii="Font That Cannot Exist"/></w:rPr></w:r></w:document>'});
+  const environment=await documentFontEnvironment(bytes,'docx');
+  expect(environment.report.missing).toEqual(['Font That Cannot Exist']);
+  expect(environment.report.substitutions).toEqual([]);
+  expect(environment.config).not.toContain('<alias');
  });
 });

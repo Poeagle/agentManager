@@ -5,14 +5,19 @@ import {isAbsolute,join,relative,sep} from 'path';
 import {realpath,stat} from 'fs/promises';
 import {unzipSync} from 'fflate';
 const run=promisify(execFile);
-export interface PreviewFontReport {checked:boolean;substitutions:Array<{requested:string;replacement:string}>;omitted?:number}
+export interface PreviewFontReport {
+ checked:boolean;
+ /** Kept for compatibility with older clients; strict previews never populate this. */
+ substitutions:Array<{requested:string;replacement:string}>;
+ missing?:string[];
+ omitted?:number
+}
 const unescapeXml=(s:string)=>s.replace(/&(?:amp|lt|gt|quot|apos|#\d+|#x[\da-f]+);/gi,v=>{
  const code=v.startsWith('&#x')?parseInt(v.slice(3,-1),16):v.startsWith('&#')?parseInt(v.slice(2,-1),10):null;
  return code!==null&&code>0&&code<=0x10ffff?String.fromCodePoint(code):({'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&apos;':"'"}[v]||v);
 });
 const attrs=(s:string)=>Object.fromEntries([...s.matchAll(/(?:[\w.-]+:)?([\w-]+)\s*=\s*["']([^"']*)["']/g)].map(m=>[m[1],unescapeXml(m[2])]));
 const normalize=(s:string)=>s.toLowerCase().replace(/[\s_-]/g,'');
-const escapeXml=(s:string)=>s.replace(/[&<>"']/g,v=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[v]!));
 
 /** Inspect bounded DOCX text/style parts; never inflate media or execute XML. */
 export function requestedDocumentFonts(content:Buffer,extension:string):{fonts:string[];checked:boolean}{
@@ -46,8 +51,8 @@ export function requestedDocumentFonts(content:Buffer,extension:string):{fonts:s
 
 /** Export only installed font files, not their home directories or settings. */
 export async function documentFontEnvironment(content:Buffer,extension:string){
- const requested=requestedDocumentFonts(content,extension),report:PreviewFontReport={checked:requested.checked,substitutions:[]};
- const files:string[]=[];let config='';
+ const requested=requestedDocumentFonts(content,extension),report:PreviewFontReport={checked:requested.checked,substitutions:[],missing:[]};
+ const files:string[]=[];
  try{
   const {stdout}=await run('/usr/bin/fc-list',['-f','%{family}\t%{file}\n'],{timeout:5000,maxBuffer:2*1024*1024});
   const inventory=stdout.split('\n').flatMap(line=>{const [family,path]=line.split('\t');return family&&path?[{names:family.split(',').map(normalize),path}]:[];});
@@ -57,17 +62,13 @@ export async function documentFontEnvironment(content:Buffer,extension:string){
    const path=await realpath(font.path),info=await stat(path);if(!info.isFile()||info.size>64*1024*1024||files.includes(path))continue;
    if(files.length>=128||total+info.size>256*1024*1024){report.checked=false;continue;}files.push(path);total+=info.size;
   }
-  const aliases:Array<[string,string]>=[];
   for(const family of requested.fonts){
    if(inventory.some(font=>font.names.includes(normalize(family))))continue;
-   const fang=/^(?:仿宋|fangsong)(?:[_ -]?gb2312)?$/i.test(family)&&inventory.some(font=>font.names.includes(normalize('FandolFang')));
-   const replacement=fang?'FandolFang':(await run('/usr/bin/fc-match',['-f','%{family[0]}','--',family.replace(/([\\,:-])/g,'\\$1')],{timeout:3000,maxBuffer:4096})).stdout.trim();
-   if(replacement){report.substitutions.push({requested:family,replacement});aliases.push([family,replacement]);}else report.checked=false;
+   // Do not map a missing font to a metrically different fallback. That changes
+   // line wrapping and pagination and makes the preview look more authoritative
+   // than it is. The caller will stop the conversion and ask for the exact font.
+   report.missing!.push(family);
   }
-  // Legacy Office formats cannot be inspected here, but their known FangSong
-  // fallback must still be available inside the converter.
-  if(!requested.checked&&inventory.some(font=>font.names.includes(normalize('FandolFang'))))for(const family of ['仿宋','FangSong','仿宋_GB2312','FangSong_GB2312'])if(!aliases.some(([name])=>name===family))aliases.push([family,'FandolFang']);
-  config=aliases.map(([from,to])=>`<alias binding="strong"><family>${escapeXml(from)}</family><prefer><family>${escapeXml(to)}</family></prefer></alias>`).join('');
  }catch{report.checked=false;}
- return {files,report,config:`<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd"><fontconfig><include ignore_missing="yes">/etc/fonts/fonts.conf</include><dir>/work/fonts</dir><cachedir>/work/font-cache</cachedir>${config}</fontconfig>`};
+ return {files,report,config:`<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd"><fontconfig><include ignore_missing="yes">/etc/fonts/fonts.conf</include><dir>/work/fonts</dir><cachedir>/work/font-cache</cachedir></fontconfig>`};
 }
