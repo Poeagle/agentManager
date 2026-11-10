@@ -4,7 +4,7 @@ import {WebSocketServer} from 'ws';
 import {mkdtempSync,rmSync,mkdirSync,writeFileSync} from 'fs';
 import {tmpdir} from 'os';
 import {join} from 'path';
-import {inCodexThread,engineForProvider} from '../src/services/agents/codex/engine-context.js';
+import {inCodexThread,engineForProvider,rememberCodexProvider,runInCodexEngine} from '../src/services/agents/codex/engine-context.js';
 import {withCodexConnection,publicCodexRpcMessage,createStreamingCodexThread} from '../src/services/agents/codex/stream.js';
 import {prepareCodexModelRecovery,readCodexModels} from '../src/services/agents/codex/controls.js';
 import {codexAdapter} from '../src/services/agents/codex/adapter.js';
@@ -67,6 +67,12 @@ it('rejects invalid creation config before creating a thread or submitting input
 it('does not dereference a missing engine configuration',async()=>{
  vi.stubEnv('AGENTMANAGER_CODEX_PROVIDER_ENGINES','');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',undefined);
  expect(()=>engineForProvider()).not.toThrow();
+});
+it('routes a native OpenAI model selected from an alternate Codex engine back to the default engine',()=>{
+ const nativeSocket=join(dir,'native');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',nativeSocket);
+ runInCodexEngine({socket:nativeSocket},()=>rememberCodexProvider('openai'));
+ const engine=runInCodexEngine({socket:join(dir,'b'),provider:'provider-b'},()=>engineForProvider('openai'));
+ expect(engine).toMatchObject({socket:nativeSocket,provider:'openai'});
 });
 it('keeps native actionable status/reasons while redacting credentials',()=>{
  expect(publicCodexRpcMessage('404 model not found api_key=PRIVATE https://user:password@host/error?token=PRIVATE Bearer PRIVATE')).toBe('404 model not found api_key=[redacted] https://host/error Bearer [redacted]');

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, renderHook, screen } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { api, type Session } from '../src/lib/api';
@@ -138,8 +138,15 @@ describe('manual session resume feedback', () => {
   });
 
   it('makes a failed resume visible with the server error', () => {
-    render(<SessionResumeFeedback state={{ phase: 'error', startedAt: Date.now(), error: 'Project path not found' }} />);
+    render(<SessionResumeFeedback state={{ phase: 'error', startedAt: Date.now(), error: 'Project path not found' }} onDismiss={vi.fn()} />);
     expect(screen.getByRole('alert')).toHaveTextContent('Resume failed');
     expect(screen.getByRole('alert')).toHaveTextContent('Project path not found');
+  });
+
+  it('lets the user dismiss a failed session action notice', () => {
+    const onDismiss = vi.fn();
+    render(<SessionResumeFeedback state={{ phase: 'error', startedAt: Date.now(), error: 'New session failed' }} onDismiss={onDismiss} />);
+    fireEvent.click(screen.getByRole('button', { name: '关闭错误提示' }));
+    expect(onDismiss).toHaveBeenCalledOnce();
   });
 });

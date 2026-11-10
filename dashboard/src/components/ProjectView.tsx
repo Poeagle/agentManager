@@ -1616,7 +1616,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         onReload={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async()=>{await sessionResume.reload(term.id);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
                         onClose={isEnded ? () => closeEndedSession(term.id) : undefined}
                       /> : <div className="p-3 text-xs" style={{color:'var(--text-secondary)'}}>正在读取会话信息…</div>)}
-                      {shouldMount && resumeState && <SessionResumeFeedback state={resumeState} />}
+                      {shouldMount && resumeState && <SessionResumeFeedback state={resumeState} onDismiss={() => sessionResume.forget(term.id)} />}
                     </div>
                   );
                 })}
