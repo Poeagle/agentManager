@@ -39,13 +39,6 @@ export async function previewOfficeDocumentDetailed(content:Buffer,extension:str
     await mkdir(join(directory, 'output'));
     await mkdir(join(directory,'fonts'));await mkdir(join(directory,'font-cache'));
     const fonts=await documentFontEnvironment(content,extension);
-    if (fonts.report.missing?.length) {
-      const missing = fonts.report.missing.join('、');
-      throw new DocumentPreviewError(
-        `预览未执行：服务器未安装原字体「${missing}」。已禁止字体替换，请安装这些字体后重试，或下载原文件查看。`,
-        422,
-      );
-    }
     await writeFile(join(directory,'fonts.conf'),fonts.config,{mode:0o600});
     for(let i=0;i<fonts.files.length;i++)await writeFile(join(directory,'fonts',String(i)+'.'+fonts.files[i].split('.').at(-1)),'');
     await mkdir(join(directory, 'profile', 'user'), { recursive: true });
