@@ -95,9 +95,24 @@ there is no unsandboxed fallback. Missing components produce a clear message.
 Server fonts determine Office conversion fidelity; install CJK fonts for Chinese
 documents to avoid missing glyphs, and the original fonts when exact layout matters.
 Installed user font files are also available inside the isolated converter.
-Word previews disclose detected font substitutions (for example FangSong →
-FandolFang); a substitute is not reported as the original font. Theme-only fonts
-and legacy Office formats may not be fully inspectable, which the preview notes.
+DOCX previews never replace a detected font with a metrically different font. If
+an explicitly referenced font is missing, preview conversion stops and lists the
+missing names instead of producing a misleading layout; install the original
+font files under the server user's `~/.local/share/fonts` (then run `fc-cache -f`)
+and retry. Theme-only fonts and legacy Office formats may not be fully
+inspectable, which the preview notes.
+
+For a document that uses private or licensed fonts, download the authorized
+font files first and install them for the account running AgentManager:
+
+```bash
+mkdir -p ~/.local/share/fonts
+cp /path/to/authorized-fonts/*.{ttf,otf,ttc} ~/.local/share/fonts/
+fc-cache -f ~/.local/share/fonts
+```
+
+The preview error lists every missing family, so the exact set can be installed
+without adding unrelated fallback fonts.
 PDF/image preview does not require LibreOffice; PDF rendering uses the browser's
 built-in viewer. The bundled [draw.io viewer](dashboard/src/vendor/drawio/README.md)
 runs offline in a sandboxed iframe; remote images, fonts and math resources are

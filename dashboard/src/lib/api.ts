@@ -3,7 +3,7 @@ import {calibrateBrowserClock} from './display-clock';
 import type {AiSource} from './ai-source';
 import type {ConversationAttachment} from './conversation-attachments';
 const API_BASE = '/api';
-export interface PreviewFontReport {checked:boolean;substitutions:Array<{requested:string;replacement:string}>;omitted?:number}
+export interface PreviewFontReport {checked:boolean;substitutions:Array<{requested:string;replacement:string}>;missing?:string[];omitted?:number}
 
 function fileEndpoint(url: string, projectId?: string): string {
   return projectId ? `${url}${url.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(projectId)}` : url;
@@ -567,7 +567,7 @@ export const api = {
         throw new Error(body?.error || `预览失败：${res.status}`);
       }
       const header=res.headers.get('X-Preview-Fonts');
-      if(header&&onFonts)try{const report=JSON.parse(decodeURIComponent(header));if(typeof report.checked==='boolean'&&Array.isArray(report.substitutions)&&report.substitutions.every((entry:PreviewFontReport['substitutions'][number])=>typeof entry.requested==='string'&&typeof entry.replacement==='string'))onFonts(report);}catch{/* Ignore malformed preview metadata. */}
+      if(header&&onFonts)try{const report=JSON.parse(decodeURIComponent(header));if(typeof report.checked==='boolean'&&Array.isArray(report.substitutions)&&report.substitutions.every((entry:PreviewFontReport['substitutions'][number])=>typeof entry.requested==='string'&&typeof entry.replacement==='string')&&(!report.missing||Array.isArray(report.missing)&&report.missing.every((font:unknown)=>typeof font==='string')))onFonts(report);}catch{/* Ignore malformed preview metadata. */}
       return res.blob();
     },
     export: async (path: string, signal?: AbortSignal, projectId?: string) => {
