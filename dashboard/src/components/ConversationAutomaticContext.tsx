@@ -1,19 +1,23 @@
 import {useDisplayClock} from '../lib/display-clock';
-import {ChevronDown,Copy,Check,Info} from 'lucide-react';
+import {useState} from 'react';
+import {ExternalLink,Copy,Check,Info} from 'lucide-react';
 import type {ConversationMessage} from '../lib/api';
 import {formatConversationTimestamp} from '../lib/conversation-timing';
 import {formatElapsed} from '../lib/conversation-timing';
 import {ConversationMarkdown} from './ConversationMarkdown';
+import {Dialog} from './Dialog';
+import {automaticContextMarkdown} from '../lib/conversation-context';
 export function ConversationAutomaticContext({message,context,copied,onCopy,projectPath,projectId,onNavigate}:{message:ConversationMessage;context:{kind:string;label:string;source:string};copied:boolean;onCopy:()=>void;projectPath?:string;projectId:string|null;onNavigate:()=>void}) {
   useDisplayClock();
+  const [open,setOpen]=useState(false);
   const isSummary=context.kind==='compaction_summary';
   const heading=isSummary?'会话压缩摘要':`自动信息 · ${context.label}`;
   const metrics=message.compaction;
   const tokenCount=(value:number)=>new Intl.NumberFormat('zh-CN').format(value);
   return <article className="conversation-auto-context" data-chat-message-id={message.id} data-context-kind={context.kind}>
-    <details><summary><Info size={13}/><strong>{heading}</strong>{isSummary&&metrics?.before_tokens!==null&&metrics?.before_tokens!==undefined&&metrics.after_tokens!==null&&metrics.after_tokens!==undefined&&<span className="conversation-auto-compaction-metrics">{tokenCount(metrics.before_tokens)} tokens → {tokenCount(metrics.after_tokens)} tokens{metrics.duration_ms!==null&&metrics.duration_ms!==undefined?` · ${formatElapsed(metrics.duration_ms)}`:''}</span>}{context.source&&<span title={context.source}>{context.source}</span>}{message.timestamp&&<time dateTime={message.timestamp}>{formatConversationTimestamp(message.timestamp)}</time>}<ChevronDown size={13} className="conversation-auto-expand"/></summary>
-      <button className="conversation-auto-copy" type="button" onClick={onCopy} aria-label={`复制${heading}`} title={copied?'已复制':'复制全文'}>{copied?<Check size={13}/>:<Copy size={13}/>}</button>
-      <div className={`conversation-auto-context-body${isSummary?' conversation-auto-summary-body':''}`}>{isSummary?<ConversationMarkdown content={message.text} messageId={message.id} projectPath={projectPath} projectId={projectId} onNavigate={onNavigate}/>:<pre>{message.text}</pre>}</div>
-    </details>
+    <button type="button" className="conversation-auto-open" aria-haspopup="dialog" aria-label={`查看${heading}`} onClick={()=>setOpen(true)}><Info size={13}/><strong>{heading}</strong>{isSummary&&metrics?.before_tokens!=null&&metrics.after_tokens!=null&&<span className="conversation-auto-compaction-metrics">{tokenCount(metrics.before_tokens)} tokens → {tokenCount(metrics.after_tokens)} tokens{metrics.duration_ms!=null?` · ${formatElapsed(metrics.duration_ms)}`:''}</span>}{context.source&&<span title={context.source}>{context.source}</span>}{message.timestamp&&<time dateTime={message.timestamp}>{formatConversationTimestamp(message.timestamp)}</time>}<ExternalLink size={13}/></button>
+    {open&&<Dialog title={heading} size="image" width={1120} onClose={()=>setOpen(false)} actions={<button className="conversation-auto-dialog-copy" type="button" onClick={onCopy} aria-label={`复制${heading}`} title={copied?'已复制':'复制全文'}>{copied?<Check size={14}/>:<Copy size={14}/>} {copied?'已复制':'复制全文'}</button>}>
+      <div className="conversation-auto-context-body"><div className="conversation-auto-dialog-meta">{context.source&&<span>{context.source}</span>}{message.timestamp&&<time>{formatConversationTimestamp(message.timestamp)}</time>}</div><ConversationMarkdown content={isSummary?message.text:automaticContextMarkdown(message.text)} messageId={`${message.id}-details`} projectPath={projectPath} projectId={projectId} onNavigate={onNavigate}/></div>
+    </Dialog>}
   </article>;
 }

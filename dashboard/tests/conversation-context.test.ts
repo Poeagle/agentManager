@@ -1,10 +1,13 @@
 import {describe,it,expect} from 'vitest';
-import {automaticConversationContext} from '../src/lib/conversation-context';
+import {automaticConversationContext,automaticContextMarkdown} from '../src/lib/conversation-context';
 import {conversationTimings} from '../src/lib/conversation-timing';
 import {conversationOutline} from '../src/components/ConversationReadingTools';
 import {groupConversationProgress} from '../src/lib/conversation-progress';
 const rules='# AGENTS.md instructions for /project\n\n<INSTRUCTIONS>\n# 项目治理\n自动规则\n</INSTRUCTIONS>';
 describe('native automatic context',()=>{
+ it('unwraps complete native blocks without stripping user examples and displays environment XML faithfully',()=>{
+  expect(automaticContextMarkdown('<octoally_shared_resources>\n## 标题\n**内容**\n</octoally_shared_resources>')).toBe('## 共享资源\n\n## 标题\n**内容**');const plain='示例：<environment_context>linux</environment_context>';expect(automaticContextMarkdown(plain)).toBe(plain);expect(automaticContextMarkdown('<environment_context><cwd>/work</cwd></environment_context>')).toContain('```xml\n<cwd>/work</cwd>\n```');
+ });
  it('folds coalesced startup rules and environment, retaining ordinary requests after wrappers',()=>{
   const combined=rules+'\n<environment_context>linux</environment_context>';
   expect(automaticConversationContext(combined)).toMatchObject({kind:'combined',label:'项目规则 · 运行环境'});

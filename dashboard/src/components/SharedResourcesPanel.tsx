@@ -2,7 +2,9 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FileKey, FolderKey, Loader2, Save, X } from 'lucide-react';
 import { api, type SharedResources } from '../lib/api';
+import {AiReply} from './AiReply';
 import './SettingsPanel.css';
+import './SharedResourcesPanel.css';
 
 export function SharedResourcesPanel({ userId }: { userId: string }) {
   const [notice, setNotice] = useState('');
@@ -18,6 +20,7 @@ function SharedResourcesForm({ userId, initial, notice, onSaved }: { userId: str
   const [scope, setScope] = useState(initial.scope_path);
   const [envFile, setEnvFile] = useState(initial.env_file);
   const [instructions, setInstructions] = useState(initial.instructions);
+  const [instructionsMode,setInstructionsMode]=useState<'read'|'edit'>('read');
   const [enabled, setEnabled] = useState(initial.enabled);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState('');
@@ -34,10 +37,10 @@ function SharedResourcesForm({ userId, initial, notice, onSaved }: { userId: str
     catch (error) { setOpenError(error instanceof Error ? error.message : '无法打开凭据文件'); }
     finally { setOpening(false); }
   }
-  return <div className="page-content h-full overflow-y-auto py-4 sm:py-6">
+  return <div className="page-content shared-resources-page">
     <div className="mb-6 flex items-start gap-3"><FolderKey className="mt-0.5 h-5 w-5 shrink-0" style={{ color: 'var(--accent)' }} /><div><h3 className="text-base font-semibold">个人共享资源</h3><p className="mt-1 text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>凭据保存在 .env 文件，使用方法写在提示词中。适用项目的会话只加载说明，按需读取凭据。</p></div></div>
-    <form onSubmit={event => { event.preventDefault(); save.mutate(); }}>
-      <fieldset disabled={save.isPending} className="space-y-6">
+    <form className="shared-resources-form" onSubmit={event => { event.preventDefault(); save.mutate(); }}>
+      <fieldset disabled={save.isPending} className="shared-resources-fields">
         <section className="settings-panel-section space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="settings-panel-field"><span>共享工作目录</span><input required aria-label="共享工作目录" className="settings-panel-control" placeholder="/home/你的目录" value={directory} onChange={event => { setDirectory(event.target.value); if (!envFile || envFile === `${directory}/.env`) setEnvFile(`${event.target.value.replace(/\/$/, '')}/.env`); }} /></label>
@@ -53,13 +56,16 @@ function SharedResourcesForm({ userId, initial, notice, onSaved }: { userId: str
           <p className="mt-3 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>{pathSaved ? '点击打开文件后，可查看、编辑并保存真实的 .env 内容。文件不存在时可在编辑器中新建。' : '设置或修改文件路径后，请先保存配置，再打开文件。'} 文件内容不会自动放进会话提示词。</p>
           {openError && <p role="alert" className="mt-3 text-sm" style={{ color: 'var(--error)' }}>{openError}</p>}
         </section>
-        <section className="settings-panel-section">
-          <label className="settings-panel-field"><span>共享资源使用提示词</span><textarea aria-label="共享资源使用提示词" className="settings-panel-control min-h-64 resize-y" maxLength={32000} value={instructions} onChange={event => setInstructions(event.target.value)} placeholder="说明 .env 中有哪些变量、如何读取、如何访问 Jira / Confluence / GitLab。不要在这里填写 Token 或密码。" /></label>
-          <p className="mt-2 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>此提示词和文件位置会作为会话启动说明静默加载。只写变量名和使用方法，敏感值放在 .env 文件里。</p>
+        <section className="settings-panel-section shared-instructions">
+          <div className="shared-instructions-heading"><span>共享资源使用提示词</span><div role="group" aria-label="提示词显示方式"><button type="button" aria-pressed={instructionsMode==='read'} onClick={()=>setInstructionsMode('read')}>Markdown 阅读</button><button type="button" aria-pressed={instructionsMode==='edit'} onClick={()=>setInstructionsMode('edit')}>编辑源码</button></div></div>
+          {instructionsMode==='edit'?<textarea aria-label="共享资源使用提示词" className="settings-panel-control shared-instructions-editor" maxLength={32000} value={instructions} onChange={event => setInstructions(event.target.value)} placeholder="说明 .env 中有哪些变量、如何读取、如何访问 Jira / Confluence / GitLab。不要在这里填写 Token 或密码。"/>:<div className="shared-instructions-preview" role="region" aria-label="共享资源使用提示词（Markdown）" tabIndex={0}>{instructions?<AiReply content={instructions}/>:<p>尚未填写提示词，点击“编辑源码”开始编写。</p>}</div>}
         </section>
+        <footer className="shared-resources-footer">
+        <p className="text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>提示词和文件位置作为会话启动说明加载。只写变量名和使用方法，敏感值放在 .env 文件里。</p>
         {save.error && <p role="alert" className="text-sm" style={{ color: 'var(--error)' }}>{save.error.message}</p>}
         {notice && <p role="status" className="text-sm">{notice}</p>}
         <button type="submit" disabled={!directory || !scope || !envFile} className="flex items-center gap-2 rounded px-4 py-2 text-sm font-medium disabled:opacity-50" style={{ background: 'var(--accent)', color: 'white' }}>{save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}保存配置</button>
+        </footer>
       </fieldset>
     </form>
     {editor && <SharedEnvEditor initial={editor} onClose={() => setEditor(null)} onSaved={() => { void client.invalidateQueries({ queryKey: ['shared-resources-file', userId] }); }} />}

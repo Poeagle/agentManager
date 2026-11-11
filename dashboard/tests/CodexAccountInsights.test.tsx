@@ -18,7 +18,7 @@ it('switches dimensions, recomputes range shares and applies dates before groupi
  vi.mocked(fetchJSON).mockImplementation(async(path)=>path.endsWith('insights')?{usage:{checked_at:null,error:null,partial:false,timezone:'UTC',rows:[item('2026-11-09','/Alpha','model-one',100),item('2026-11-10','/Alpha','model-two',300),item('2026-11-10','/Beta','model-one',100)]}}:{account:{email:null,plan:null},resets:null} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="c" name="Dimensions" onClose={()=>{}}/></QueryClientProvider>);
  await screen.findByText('/Alpha');const dimension=screen.getByRole('combobox',{name:'统计维度'});
- fireEvent.change(dimension,{target:{value:'week'}});expect(screen.getByText('2026-11-09 ~ 2026-11-15')).toBeVisible();expect(screen.getByText('当周占比')).toBeVisible();
+ fireEvent.change(dimension,{target:{value:'week'}});expect(screen.getByText('2026-11-09 ~ 2026-11-15')).toBeVisible();expect(screen.getByRole('columnheader',{name:'耗用占比'})).toBeVisible();
  fireEvent.change(dimension,{target:{value:'month'}});expect(screen.getByText('2026-11')).toBeVisible();
  fireEvent.change(dimension,{target:{value:'project'}});expect(screen.getByText('项目 / 模型 / 日期')).toBeVisible();const alpha=screen.getByText('/Alpha').closest('tr')!;expect(within(alpha).getByText('80.0%')).toBeVisible();
  fireEvent.change(dimension,{target:{value:'model'}});expect(screen.getByText('模型 / 项目 / 日期')).toBeVisible();expect(screen.getByText('model-two')).toBeVisible();expect(screen.getAllByText('60.0%')[0]).toBeVisible();

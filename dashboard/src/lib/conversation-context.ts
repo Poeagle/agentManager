@@ -28,3 +28,21 @@ function singleContext(text:string):{kind:string;label:string;source:string}|nul
   }
   return null;
 }
+/** Native wrapper tags are transport metadata, not HTML. Remove only complete
+ * recognized wrappers so Markdown remains visible without enabling raw HTML. */
+export function automaticContextMarkdown(text:string):string {
+ if(!automaticConversationContext(text))return text;
+ let rest=text.trim();const parts:string[]=[];
+ while(rest){
+  const opening=/^# AGENTS\.md instructions for [^\r\n]+\r?\n\s*<INSTRUCTIONS>/.exec(rest)||/^<(environment_context|permissions|skills_instructions|task_notification|turn_aborted|octoally_shared_resources)(?:\s[^>]*)?>/.exec(rest);
+  if(!opening)return text;
+  const tag=opening[1]||'INSTRUCTIONS',end=rest.indexOf(`</${tag}>`,opening[0].length);
+  if(end<0)return text;
+  const original=rest.slice(0,end+tag.length+3),meta=singleContext(original);
+  const body=rest.slice(opening[0].length,end).trim();
+  // Structured environment XML is shown faithfully as a fenced Markdown block.
+  const content=body.startsWith('<')?'```xml\n'+body+'\n```':body;
+  parts.push(`## ${meta?.label||'自动信息'}\n\n${content}`);rest=rest.slice(end+tag.length+3).trim();
+ }
+ return parts.join('\n\n');
+}

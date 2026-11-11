@@ -1,4 +1,4 @@
-/* Ported from dolphindb_manager: themes/index.ts (OPS_BLUE / dark),
+/* Ported from dolphindb_manager: themes/index.ts (neutral light / dark),
  * styles/design-system.css, table/SmartTable.css, StatisticsCards.css and
  * pages/SettingsPage.css. Kept local to management; conversation keeps app tokens. */
 .manager-ui-host {
@@ -23,10 +23,10 @@
 }
 :root[data-theme="light"] .manager-ui {
   color-scheme:light;
-  --ops-chrome:#dbe8f5;--ops-chrome-strong:#c7daed;--ops-surface:#f9fbfe;
-  --ops-surface-muted:#edf4fa;--ops-text:#172a3d;--ops-text-secondary:#566b7f;
-  --ops-border:#b8cadc;--ops-primary:#1677ff;--ops-primary-soft:#e1efff;
-  --ops-table-header:#e3edf7;--ops-table-header-text:#29455f;--ops-track:#d3e0ec;
+  --ops-chrome:#f2f4f7;--ops-chrome-strong:#e4e8ed;--ops-surface:#ffffff;
+  --ops-surface-muted:#f7f8fa;--ops-text:#1d2733;--ops-text-secondary:#66717f;
+  --ops-border:#d7dde5;--ops-primary:#0958d9;--ops-primary-soft:#e7f0ff;
+  --ops-table-header:#f1f3f6;--ops-table-header-text:#394654;--ops-track:#e2e7ed;
 }
 .manager-ui-original {
   --bg-primary:var(--manager-app-primary);--bg-secondary:var(--manager-app-secondary);
