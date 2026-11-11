@@ -2,7 +2,9 @@
  * message bodies, tool output, credentials and byte cursors never leave it. */
 export const USAGE_SCAN = String.raw`
 import os,sys,json,pathlib,hashlib,re,datetime,math,base64
+from zoneinfo import ZoneInfo
 o=json.load(sys.stdin)
+zone=ZoneInfo(o.get('timezone') or 'UTC');previous_zone=ZoneInfo(o.get('previous_timezone') or 'UTC');rebin=bool(o.get('rebin'))
 home=pathlib.Path(o.get('home') or str(pathlib.Path.home()/'.codex')).resolve()
 mode=o.get('mode','full'); day=o.get('day')
 if mode not in ['full','daily']:raise ValueError('invalid mode')
@@ -28,13 +30,13 @@ for root in roots:
    history_files+=1;history_bytes+=st.st_size
    match=re.search(r'([0-9a-fA-F-]{36})\.jsonl$',name)
    if match:index.setdefault(match[1],[]).append((p,st.st_size))
-   modified=datetime.datetime.fromtimestamp(st.st_mtime,datetime.timezone.utc).date().isoformat()
+   modified=datetime.datetime.fromtimestamp(st.st_mtime,zone).date().isoformat()
    if mode=='full' or modified in days:paths.append((p,st.st_size))
    if len(paths)>20000:raise RuntimeError('history inventory exceeds limit')
 fields=['input_tokens','cached_input_tokens','output_tokens','reasoning_output_tokens','total_tokens']
 known=base64.b64decode(o.get('known_events',''),validate=True)
 if len(known)%32 or len(known)>64000000:raise ValueError('invalid known events')
-groups={};events=[];events_truncated=False;projection_seen=set();seen={known[i:i+32] for i in range(0,len(known),32)};new_events={};read=0
+groups={};matched={};events=[];events_truncated=False;projection_seen=set();previous_known={known[i:i+32] for i in range(0,len(known),32)};seen=set() if rebin else set(previous_known);new_events={};read=0
 cutoff=datetime.datetime.fromisoformat(o['baseline_at'].replace('Z','+00:00')) if o.get('baseline_at') else None
 if cutoff and cutoff.tzinfo is None:raise ValueError('invalid baseline')
 origins=o.get('origins') or {};baseline_cache={};baseline_budget=64*1024*1024;baseline_bytes=0
@@ -123,7 +125,7 @@ for path,size in paths:
     previous=snapshot
     at=datetime.datetime.fromisoformat(stamp.replace('Z','+00:00'))
     if at.tzinfo is None:errors+=1;continue
-    event_day=at.astimezone(datetime.timezone.utc).date().isoformat()
+    event_day=at.astimezone(zone).date().isoformat()
     if mode=='daily' and event_day not in days:continue
     if after and at<=after or inherited_ordinal is not None and type(r.get('ordinal'))==int and r['ordinal']<inherited_ordinal:continue
     # Legacy aggregate caches have no request identities. Preserve their totals
@@ -138,13 +140,20 @@ for path,size in paths:
      if len(events)<50000:
       projection_seen.add(key);events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
      else:events_truncated=True
-    if cutoff and at<=cutoff:continue
+    if not rebin and cutoff and at<=cutoff:continue
     if key in seen:continue
     seen.add(key)
     if o.get('includeEvents') and not o.get('rebuildEvents'):
      if len(events)<50000:events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
      else:events_truncated=True
     if len(seen)>2000000:raise RuntimeError('usage event limit exceeded')
+    if rebin and (key in previous_known or cutoff and at<=cutoff):
+     legacy=key not in previous_known;old_day=at.astimezone(previous_zone).date().isoformat();mask=tuple(tokens[k] is not None for k in fields)
+     match_key=(old_day,cwd or '',model,tier,legacy,None if legacy else mask)
+     entry=matched.setdefault(match_key,{'day':old_day,'cwd':cwd or '', 'model':model,'tier':tier,'legacy':legacy,'requests':0,'tokens':dict.fromkeys(fields,0)})
+     if len(matched)>50000:raise RuntimeError('usage match limit exceeded')
+     entry['requests']+=1
+     for k in fields:entry['tokens'][k]=None if entry['tokens'][k] is None or tokens[k] is None else entry['tokens'][k]+tokens[k]
     new_events.setdefault(event_day,bytearray()).extend(key)
     # Keep complete counters separate from unknown fields so a partial request
     # cannot erase the known estimate of earlier requests in the same model.
@@ -157,6 +166,9 @@ for path,size in paths:
     errors+=1
     if first_type and first_type[1]==b'session_meta':break
 result={'rows':list(groups.values()),'event_keys':{d:base64.b64encode(keys).decode('ascii') for d,keys in new_events.items()},'mode':mode,'day':day,'errors':errors,'partial':errors>0,'progress':{'mode':mode,'day':day,'history_files':history_files,'history_bytes':history_bytes,'files_selected':len(paths),'files_total':len(paths),'files_complete':len(paths),'bytes_total':sum(s for _,s in paths),'bytes_read':read,'lineage_bytes_read':baseline_bytes}}
-if o.get('includeEvents'):result.update({'events':events,'events_truncated':events_truncated})
+if o.get('includeEvents'):
+ for event in events:event['timezone']=o.get('timezone') or 'UTC'
+ result.update({'events':events,'events_truncated':events_truncated})
+if rebin:result['matched_rows']=list(matched.values())
 print(json.dumps(result,separators=(',',':'),allow_nan=False))
 `;

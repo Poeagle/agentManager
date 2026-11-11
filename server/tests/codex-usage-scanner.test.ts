@@ -12,6 +12,15 @@ const record=(stamp:string,total:number,last:number)=>JSON.stringify({type:'even
 beforeEach(async()=>{home=await mkdtemp(join(tmpdir(),'codex-usage-test-'));await mkdir(join(home,'sessions'));file=join(home,'sessions','rollout-test.jsonl');});
 afterEach(async()=>{await rm(home,{recursive:true,force:true});});
 describe('account-scoped complete-file scanner',()=>{
+ it('uses the requested local zone for both file modification dates and event attribution',async()=>{
+  await writeFile(file,meta+context+record('2026-11-11T15:59:59Z',10,10)+record('2026-11-11T16:00:00Z',30,20));await utimes(file,new Date('2026-11-11T16:34:00Z'),new Date('2026-11-11T16:34:00Z'));
+  const local=await scan('daily','2026-11-12',{timezone:'Asia/Taipei'});expect(local.progress.files_selected).toBe(1);expect(local.rows[0]).toMatchObject({day:'2026-11-12',tokens:{total_tokens:20}});expect(local.rows).toHaveLength(1);
+  const all=await scan('full','2026-11-12',{timezone:'Asia/Taipei'});expect(all.rows.map((r:any)=>r.day)).toEqual(['2026-11-11','2026-11-12']);
+ });
+ it('handles a 25-hour local day across DST and does not use the SSH process timezone',async()=>{
+  await writeFile(file,meta+record('2026-11-01T05:30:00Z',10,10)+record('2026-11-01T06:30:00Z',30,20));await utimes(file,new Date('2026-11-02T04:59:00Z'),new Date('2026-11-02T04:59:00Z'));
+  const result=await scan('daily','2026-11-01',{timezone:'America/New_York'});expect(result.rows[0]).toMatchObject({day:'2026-11-01',requests:2,tokens:{total_tokens:30}});
+ });
  it('does not charge imported paginated history or inherited snapshot notifications to the destination Engine',async()=>{
   const parent='019ff001-1111-7111-8111-111111111111',child='019ff001-2222-7222-8222-222222222222';
   const ancestor=JSON.stringify({type:'session_meta',payload:{id:parent,cwd:'/project'}})+'\n'+context+record('2026-01-02T10:00:00Z',500,100);
