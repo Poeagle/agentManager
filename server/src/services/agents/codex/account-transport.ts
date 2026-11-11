@@ -62,11 +62,11 @@ type InputOptions={timeoutMs?:number;maxOutputBytes?:number;signal?:AbortSignal}
 async function commandInput(command:string,args:string[],env:NodeJS.ProcessEnv,input:string,options:InputOptions={}):Promise<string> {
  return new Promise((resolve,reject)=>{
   const child=spawn(command,args,{stdio:['pipe','pipe','pipe'],env,signal:options.signal});
-  let output='',error='',settled=false;
-  const finish=(failure?:Error)=>{if(settled)return;settled=true;clearTimeout(timer);failure?reject(failure):resolve(output.trim());};
+  const chunks:string[]=[];let outputBytes=0,error='',settled=false;
+  const finish=(failure?:Error)=>{if(settled)return;settled=true;clearTimeout(timer);failure?reject(failure):resolve(chunks.join('').trim());};
   const timer=setTimeout(()=>{child.kill('SIGTERM');finish(new Error('账号文件操作超时'));},options.timeoutMs??15000);
   child.stdout.setEncoding('utf8');
-  child.stdout.on('data',(chunk:string)=>{if(settled)return;output+=chunk;if(Buffer.byteLength(output)>(options.maxOutputBytes??768*1024)){child.kill('SIGTERM');finish(new Error('账号文件响应过大'));}});
+  child.stdout.on('data',(chunk:string)=>{if(settled)return;outputBytes+=Buffer.byteLength(chunk);if(outputBytes>(options.maxOutputBytes??768*1024)){child.kill('SIGTERM');finish(new Error('账号文件响应过大'));return;}chunks.push(chunk);});
   child.stderr.on('data',(chunk:Buffer)=>{if(error.length<4096)error+=chunk.toString();});
   child.on('error',()=>finish(new Error('无法启动文件操作')));
   child.on('close',code=>finish(code===0?undefined:connectionFailure(error)));
