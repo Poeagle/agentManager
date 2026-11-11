@@ -1,3 +1,6 @@
+import {assertEnvironmentUse} from './agents/environment-access.js';
+import {readEngineModelsForEnvironment} from './agents/codex/controls.js';
+import {saveModelPreference} from './agents/model-preferences.js';
 import {getAgent,agentForSession} from './agents/index.js';
 import {taskAgent,targetSupportsQuota} from './agents/scheduling.js';
 import {captureScheduledBaseline,PlatformAiScheduleBusyError,scheduledObservationPrompt} from './platform-ai/scheduled-observation.js';
@@ -27,6 +30,8 @@ export interface ScheduledTaskRow {
   target_session_id: string | null;
   new_mode: ScheduledNewMode | null;
   new_cli_type: string | null;
+  new_environment_id?: string | null;
+  new_model_preference?: string | null;
   inactive_policy: ScheduledInactivePolicy;
   enabled: number;
   next_run_at: string | null;
@@ -223,6 +228,18 @@ async function createScheduledSession(task: ScheduledTaskRow, projectPath: strin
   if (!userCanUseToolForProject(task.user_id, task.project_id, mode, mode === 'terminal' ? 'claude' : cliType)) {
     throw new Error('用户已无权在该项目创建此类标签页');
   }
+  let preference: import('./agents/types.js').ModelPreference | null = null;
+  if (mode === 'session' && cliType === 'codex') {
+    const environment = task.new_environment_id || 'native';
+    assertEnvironmentUse('codex', environment, task.user_id);
+    if (task.new_model_preference) {
+      preference = JSON.parse(task.new_model_preference);
+      if (!preference || typeof preference.model !== 'string' || typeof preference.effort !== 'string') throw new Error('任务的模型配置无效');
+      const models = await readEngineModelsForEnvironment(environment);
+      const choice = models.find(m => m.model === preference!.model && (!preference!.provider || m.provider === preference!.provider));
+      if (!choice || !choice.efforts.some(e => e.value === preference!.effort) || (preference.service_tier && preference.service_tier !== 'default' && !choice.service_tiers?.some(t => t.id === preference!.service_tier))) throw new Error('所选模型或参数在目标 Engine 中不可用');
+    }
+  }
   const usage = getUserTabUsage(task.user_id);
   if (!usage.allowed) throw new Error(`已达到活动标签页上限（${usage.limit}）`);
 
@@ -239,6 +256,10 @@ async function createScheduledSession(task: ScheduledTaskRow, projectPath: strin
   );
 
   try {
+    if (mode === 'session' && cliType === 'codex') {
+      if (task.new_environment_id) getDb().prepare('UPDATE sessions SET agent_environment_id = ? WHERE id = ?').run(task.new_environment_id, session.id);
+      if (preference) saveModelPreference(task.user_id, session.id, preference);
+    }
     if (mode === 'terminal') {
       await sessionManager.spawnTerminal(session.id, projectPath, 120, 40);
       if (!sessionManager.writeToSession(session.id, task.prompt, true)

@@ -17,6 +17,8 @@ const quota = vi.hoisted(() => ({
 }));
 const tracker = vi.hoisted(() => ({ getTracker: vi.fn() }));
 
+const catalog = vi.hoisted(() => vi.fn());
+vi.mock('../src/services/agents/codex/controls.js', async (original) => ({ ...(await original<typeof import('../src/services/agents/codex/controls.js')>()), readEngineModelsForEnvironment: catalog }));
 vi.mock('../src/services/session-manager.js', () => manager);
 vi.mock('../src/services/agents/codex/quota.js', () => quota);
 vi.mock('../src/services/session-state.js', () => tracker);
@@ -36,6 +38,7 @@ describe('scheduled task API', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    manager.spawnSession.mockReset();
     manager.isSessionActive.mockReturnValue(true);
     manager.writeToSession.mockReturnValue(true);
     tracker.getTracker.mockReturnValue({ state: { processState: 'idle', promptType: null, isPermission: false }, hasPendingExecute: false });
@@ -70,6 +73,31 @@ describe('scheduled task API', () => {
     await app.close();
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it('saves the selected Codex environment and applies its model before starting a scheduled session', async () => {
+    catalog.mockResolvedValue([{model:'test-model',provider:'test-provider',efforts:[{value:'high'}],service_tiers:[{id:'fast'}]}]);
+    const preference={model:'test-model',provider:'test-provider',effort:'high',service_tier:'fast'};
+    const created=await app.inject({method:'POST',url:'/api/scheduled-tasks',headers:{cookie},payload:{project_id:'project-1',name:'Codex',prompt:'inspect',schedule_kind:'daily',schedule_value:'09:00',timezone:'UTC',target_type:'new',new_mode:'session',new_cli_type:'codex',new_environment_id:'native',new_model_preference:preference,enabled:false}});
+    expect(created.statusCode).toBe(200);
+    expect(created.json().task).toMatchObject({new_environment_id:'native',new_model_preference:preference});
+    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('scheduled-codex','project-1','Work','pending','session','codex',?)`).run(ownerId);
+    manager.createSession.mockReturnValue({id:'scheduled-codex'});
+    manager.spawnSession.mockImplementation(async()=>{
+      expect(getDb().prepare('SELECT agent_environment_id FROM sessions WHERE id=?').get('scheduled-codex')).toEqual({agent_environment_id:'native'});
+      const state=getDb().prepare('SELECT value FROM user_ui_state WHERE user_id=? AND key=?').get(ownerId,'session-control:scheduled-codex') as {value:string};
+      expect(JSON.parse(state.value)).toEqual(preference);
+    });
+    const run=await app.inject({method:'POST',url:`/api/scheduled-tasks/${created.json().task.id}/run`,headers:{cookie}});
+    expect(run.json().run.status).toBe('success');
+    expect(manager.spawnSession).toHaveBeenCalled();
+    const invalid=await app.inject({method:'PATCH',url:`/api/scheduled-tasks/${created.json().task.id}`,headers:{cookie},payload:{new_environment_id:'missing'}});
+    expect(invalid.statusCode).toBe(400);
+    getDb().prepare('UPDATE scheduled_tasks SET new_environment_id=? WHERE id=?').run('missing',created.json().task.id);
+    manager.createSession.mockClear();
+    const denied=await app.inject({method:'POST',url:`/api/scheduled-tasks/${created.json().task.id}/run`,headers:{cookie}});
+    expect(denied.json().run.status).toBe('failed');
+    expect(manager.createSession).not.toHaveBeenCalled();
   });
 
   it('round trips mixed groups and rejects invalid nested conditions', async () => {

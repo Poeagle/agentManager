@@ -15,6 +15,7 @@ vi.mock('../src/lib/api', async () => {
         list: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), run: vi.fn(), runs: vi.fn(), agentQuota: vi.fn(),
       },
       sessions: { ...actual.api.sessions, list: vi.fn() },
+      codexEnvironments: { ...actual.api.codexEnvironments, list: vi.fn(), scheduledModels: vi.fn() },
     },
   };
 });
@@ -70,6 +71,8 @@ const editor = () => within(screen.getByRole('dialog'));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[{id:'native',name:'本机',enabled:true} as any]});
+  vi.mocked(api.codexEnvironments.scheduledModels).mockResolvedValue({models:[{model:'test-model',name:'Test',provider:'test',description:'',defaultEffort:'high',efforts:[{value:'high',description:''}],service_tiers:[]}]});
   vi.mocked(api.scheduledTasks.list).mockResolvedValue({ tasks: [task] });
   vi.mocked(api.scheduledTasks.runs).mockResolvedValue({ runs: [] });
   vi.mocked(api.scheduledTasks.run).mockResolvedValue({
@@ -93,6 +96,21 @@ beforeEach(() => {
 });
 
 describe('ScheduledTasksPanel', () => {
+  it('saves the selected engine, model and reasoning effort for a new Codex session', async () => {
+    vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[{id:'native',name:'本机',enabled:true} as any]});
+    vi.mocked(api.codexEnvironments.scheduledModels).mockResolvedValue({models:[{model:'test-model',name:'Test',provider:'test',description:'',defaultEffort:'high',efforts:[{value:'high',description:''}],service_tiers:[]}]});
+    const user=userEvent.setup(); renderPanel();
+    await screen.findByText('每日代码巡检');
+    await user.click(screen.getByRole('button',{name:'新建任务'}));
+    await user.selectOptions(editor().getByLabelText('Agent 类型'),'codex');
+    await user.selectOptions(await editor().findByLabelText('Engine'),'native');
+    await user.selectOptions(await editor().findByLabelText('模型'),JSON.stringify(['test-model','test']));
+    await user.type(editor().getByPlaceholderText('例如：每日代码巡检'),'Codex 任务');
+    await user.type(editor().getByLabelText('提示词'),'执行检查');
+    await user.click(editor().getByRole('button',{name:'创建任务'}));
+    await waitFor(()=>expect(api.scheduledTasks.create).toHaveBeenCalledWith(expect.objectContaining({new_environment_id:'native',new_model_preference:{model:'test-model',provider:'test',effort:'high'}})));
+  });
+
   it('shows the next run and can execute a task immediately', async () => {
     const user = userEvent.setup();
     renderPanel();
@@ -149,6 +167,8 @@ describe('ScheduledTasksPanel', () => {
 
     await user.click(screen.getByRole('button', { name: '新建任务' }));
     await user.selectOptions(screen.getByLabelText('Agent 类型'), 'codex');
+    await user.selectOptions(await screen.findByLabelText('Engine'), 'native');
+    await user.selectOptions(await screen.findByLabelText('模型'), JSON.stringify(['test-model','test']));
     await user.click(screen.getByText('任务截止限制（可选，到期后需手动重新启用）'));
     const addCondition = screen.getByRole('button', { name: '添加停止条件' });
     await user.click(addCondition);

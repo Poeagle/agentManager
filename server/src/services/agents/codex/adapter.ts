@@ -110,9 +110,12 @@ async function prepareCodexLaunch(context:import('../types.js').AgentContext,tas
                     await controls.prepareCodexModelRecovery(nativeId!,preference);
                     if(instructions)await module.configureStreamingSharedResources(nativeId!,instructions);
                 });
-                else if (!resume)
-                    nativeId = await module.createStreamingCodexThread(context.projectPath!, task, instructions);
+                else if (!resume) {
+                    const preference=context.session.created_by_user_id&&context.session.id?(await import('./controls.js')).readModelPreference(context.session.created_by_user_id,context.session.id):null;
+                    nativeId = await module.createStreamingCodexThread(context.projectPath!, task, instructions, preference);
+                }
             }
+            if (!streamSocket && !resume && context.session.created_by_user_id && context.session.id && (await import('./controls.js')).readModelPreference(context.session.created_by_user_id,context.session.id)) throw Error('所选模型无法在当前 Engine 启动');
             let terminalProfile:import('../types.js').AgentTerminalProfile|undefined;
             if(context.session.agent_environment_id&&terminalSocket){
                 const tag=createHash('sha256').update(JSON.stringify([config.dbPath,context.session.created_by_user_id,context.session.agent_environment_id])).digest('hex').slice(0,16);

@@ -1,3 +1,6 @@
+import {assertEnvironmentUse} from '../services/agents/environment-access.js';
+import {readEngineModelsForEnvironment} from '../services/agents/codex/controls.js';
+import type {ModelPreference} from '../services/agents/types.js';
 import {sendAgentQuota} from '../services/agents/quota-response.js';
 import {agentDescriptors,getAgent} from '../services/agents/index.js';
 import {targetSupportsQuota} from '../services/agents/scheduling.js';
@@ -21,6 +24,8 @@ interface ScheduledTaskInput {
   target_session_id?: string | null;
   new_mode?: ScheduledNewMode | null;
   new_cli_type?: string | null;
+  new_environment_id?: string | null;
+  new_model_preference?: ModelPreference | null;
   inactive_policy?: ScheduledInactivePolicy;
   stop_at?: string | null;
   daily_stop_time?: string | null;
@@ -47,7 +52,7 @@ function validateRawInput(raw: unknown): string | null {
   for (const key of ['project_id', 'name', 'prompt', 'schedule_kind', 'schedule_value', 'timezone', 'target_type', 'inactive_policy', 'condition_unmet_policy']) {
     if (value[key] !== undefined && typeof value[key] !== 'string') return `${key} 必须是字符串`;
   }
-  for (const key of ['target_session_id', 'new_mode', 'new_cli_type', 'stop_at', 'daily_stop_time', 'daily_start_time', 'daily_end_time']) {
+  for (const key of ['target_session_id', 'new_mode', 'new_cli_type', 'new_environment_id', 'stop_at', 'daily_stop_time', 'daily_start_time', 'daily_end_time']) {
     if (value[key] !== undefined && value[key] !== null && typeof value[key] !== 'string') return `${key} 必须是字符串或 null`;
   }
   for (const key of ['max_successful_runs', 'quota_remaining_below', 'max_consecutive_failures']) {
@@ -55,6 +60,12 @@ function validateRawInput(raw: unknown): string | null {
   }
   for (const key of ['enabled', 'stop_on_target_unavailable']) {
     if (value[key] !== undefined && typeof value[key] !== 'boolean') return `${key} 必须是布尔值`;
+  }
+  const pref = value.new_model_preference;
+  if (pref !== undefined && pref !== null) {
+    if (typeof pref !== 'object' || Array.isArray(pref)) return '模型参数无效';
+    const p = pref as Record<string, unknown>;
+    if (typeof p.model !== 'string' || !p.model.trim() || p.model.length > 200 || typeof p.effort !== 'string' || p.effort.length > 100 || (p.provider !== undefined && (typeof p.provider !== 'string' || p.provider.length > 200)) || (p.service_tier !== undefined && (typeof p.service_tier !== 'string' || p.service_tier.length > 100))) return '模型参数无效';
   }
   return null;
 }
@@ -64,7 +75,7 @@ function taskForUser(id: string, userId: string): ScheduledTaskRow | undefined {
 }
 
 function taskResponse(task: ScheduledTaskRow | undefined) {
-  return task && { ...task, start_conditions: parseTaskConditions(task.start_conditions), daily_stop_conditions: parseTaskConditions(task.daily_stop_conditions) };
+  return task && { ...task, new_model_preference: task.new_model_preference ? JSON.parse(task.new_model_preference) : null, start_conditions: parseTaskConditions(task.start_conditions), daily_stop_conditions: parseTaskConditions(task.daily_stop_conditions) };
 }
 
 function validateTarget(userId: string, input: ScheduledTaskInput): string | null {
@@ -83,6 +94,10 @@ function validateTarget(userId: string, input: ScheduledTaskInput): string | nul
   }
 
   const mode = input.new_mode ?? 'session';
+  if (mode === 'session' && input.new_cli_type === 'codex') {
+    try { assertEnvironmentUse('codex', input.new_environment_id || 'native', userId); } catch { return '无权使用该 Codex Engine'; }
+    if (input.new_model_preference && !input.new_environment_id) return '请选择 Engine';
+  } else if (input.new_environment_id || input.new_model_preference) return 'Engine 和模型配置仅适用于 Codex Session';
   const cliType = input.new_cli_type||'claude';
   if (!newModes.has(mode)) return '新标签页类型无效';
   if (input.new_cli_type && !agentDescriptors().some(agent=>agent.id===input.new_cli_type)) return 'CLI 类型无效';
@@ -105,6 +120,8 @@ function normalizeInput(raw: Partial<ScheduledTaskInput>, base?: ScheduledTaskRo
     target_session_id: raw.target_session_id !== undefined ? raw.target_session_id : base?.target_session_id,
     new_mode: raw.new_mode !== undefined ? raw.new_mode : base?.new_mode,
     new_cli_type: raw.new_cli_type !== undefined ? raw.new_cli_type : base?.new_cli_type,
+    new_environment_id: raw.new_environment_id !== undefined ? raw.new_environment_id : base?.new_environment_id,
+    new_model_preference: raw.new_model_preference !== undefined ? raw.new_model_preference : base?.new_model_preference ? JSON.parse(base.new_model_preference) : null,
     inactive_policy: raw.inactive_policy ?? base?.inactive_policy ?? 'resume',
     stop_at: raw.stop_at !== undefined ? raw.stop_at : base?.stop_at,
     daily_stop_time: raw.daily_stop_time !== undefined ? raw.daily_stop_time : base?.daily_stop_time,
@@ -171,6 +188,11 @@ function validateInput(userId: string, input: ScheduledTaskInput): string | null
 }
 
 export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
+  app.get<{Querystring:{project_id?:string;environment_id?:string}}>('/scheduled-tasks/codex-models',async(req,reply)=>{
+    const {project_id,environment_id}=req.query;
+    if (!project_id || !environment_id || !userOwnsProject(req.user!.id,project_id) || !userCanUseToolForProject(req.user!.id,project_id,'session','codex')) return reply.code(403).send({error:'无权使用该项目'});
+    try { assertEnvironmentUse('codex',environment_id,req.user!.id); return {models:await readEngineModelsForEnvironment(environment_id)}; } catch(e) { return reply.code((e as {statusCode?:number}).statusCode || 503).send({error:e instanceof Error?e.message:'读取模型失败'}); }
+  });
   app.get<{Params:{agent:string};Querystring:{refresh?:string}}>('/agent-quota/:agent',async(req,reply)=>sendAgentQuota(reply,()=>getAgent(req.params.agent).quota.read(req.query.refresh==='true')));
   app.get<{ Querystring: { refresh?: string } }>('/codex-quota', async (req, reply) => {
     return sendAgentQuota(reply,()=>readCodexWeeklyQuota({force:req.query.refresh === 'true'}));
@@ -234,10 +256,10 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
     getDb().prepare(`
       INSERT INTO scheduled_tasks (
         id, user_id, project_id, name, prompt, schedule_kind, schedule_value, timezone,
-        target_type, target_session_id, new_mode, new_cli_type,
+        target_type, target_session_id, new_mode, new_cli_type, new_environment_id, new_model_preference,
         inactive_policy, stop_at, daily_stop_time, daily_stop_at, daily_start_time, daily_end_time, start_conditions, daily_stop_conditions, condition_unmet_policy, max_successful_runs, quota_remaining_below,
         max_consecutive_failures, stop_on_target_unavailable, enabled, next_run_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       req.user!.id,
@@ -251,6 +273,8 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       input.target_type === 'existing' ? input.target_session_id : null,
       input.target_type === 'new' ? (input.new_mode ?? 'session') : null,
       input.target_type === 'new' ? (input.new_cli_type ?? 'claude') : null,
+      input.target_type === 'new' && input.new_mode !== 'terminal' && input.new_cli_type === 'codex' ? input.new_environment_id ?? null : null,
+      input.target_type === 'new' && input.new_mode !== 'terminal' && input.new_cli_type === 'codex' && input.new_model_preference ? JSON.stringify(input.new_model_preference) : null,
       input.inactive_policy ?? 'resume',
       input.stop_at ?? null,
       input.daily_stop_time ?? null,
@@ -304,7 +328,7 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
     getDb().prepare(`
       UPDATE scheduled_tasks SET
         project_id = ?, name = ?, prompt = ?, schedule_kind = ?, schedule_value = ?, timezone = ?,
-        target_type = ?, target_session_id = ?, new_mode = ?, new_cli_type = ?,
+        target_type = ?, target_session_id = ?, new_mode = ?, new_cli_type = ?, new_environment_id = ?, new_model_preference = ?,
         inactive_policy = ?, stop_at = ?, daily_stop_time = ?, daily_stop_at = ?, daily_start_time = ?, daily_end_time = ?,
         start_conditions = ?, daily_stop_conditions = ?, condition_unmet_policy = ?,
         max_successful_runs = ?, quota_remaining_below = ?,
@@ -324,6 +348,8 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
       input.target_type === 'existing' ? input.target_session_id : null,
       input.target_type === 'new' ? (input.new_mode ?? 'session') : null,
       input.target_type === 'new' ? (input.new_cli_type ?? 'claude') : null,
+      input.target_type === 'new' && input.new_mode !== 'terminal' && input.new_cli_type === 'codex' ? input.new_environment_id ?? null : null,
+      input.target_type === 'new' && input.new_mode !== 'terminal' && input.new_cli_type === 'codex' && input.new_model_preference ? JSON.stringify(input.new_model_preference) : null,
       input.inactive_policy ?? 'resume',
       input.stop_at ?? null,
       input.daily_stop_time ?? null,

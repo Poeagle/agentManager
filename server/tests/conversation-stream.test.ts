@@ -246,6 +246,11 @@ describe('native Codex conversation streaming',()=>{
     expect(await createStreamingCodexThread('/project','initial request')).toBe('019ff001-8888-7888-8888-888888888888');
     expect(requests.filter(method=>method==='thread/start')).toHaveLength(1);expect(requests.filter(method=>method==='turn/start')).toHaveLength(1);
   });
+  it('starts the first turn with the selected model and parameters',async()=>{
+    await createStreamingCodexThread('/project','initial',undefined,{model:'chosen',provider:'provider',effort:'high',service_tier:'fast'});
+    expect(requestParams.find(frame=>frame.method==='thread/start')?.params).toMatchObject({model:'chosen',modelProvider:'provider',config:{model_reasoning_effort:'high'},serviceTier:'fast'});
+    expect(requestParams.find(frame=>frame.method==='turn/start')?.params).toMatchObject({model:'chosen',effort:'high',serviceTier:'fast',input:[{text:'initial'}]});
+  });
   it('passes shared-resource discovery as configuration, never as a human message or extra model turn',async()=>{
     requestParams=[];
     const instructions='<octoally_shared_resources>entry only</octoally_shared_resources>';
