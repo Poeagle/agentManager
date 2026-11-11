@@ -72,3 +72,6 @@
 .ci-overview-account .ci-quota small{font-size:11px;}
 .ci-overview-account .ci-usage-breakdown{gap:4px 12px;margin:0;}
 .ci-overview-account .ci-muted{font-size:11px;}
+
+.ci-provider-url{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent);}
+.ci-provider-url:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
