@@ -20,6 +20,10 @@ interface DataTableProps<T> {
   onRetry?: () => void;
 }
 
+export function TableHeaders<T>({model}:{model:TableModel<T>}){
+ return <>{model.columns.map(column=><TableColumnHeader key={column.key} table={model} columnKey={column.key}/>)}</>;
+}
+
 /** Shared table frame for list models and hierarchical aggregate views. */
 export function TableFrame({label,header,children,columns,className='',tableClassName='data-table',loading=false,style}:{label:string;header:ReactNode;children:ReactNode;columns?:ReactNode;className?:string;tableClassName?:string;loading?:boolean;style?:CSSProperties}){
  return <div className={`table-wrap ${className}`} role="region" aria-label={`${label}，可横向滚动查看全部列`} tabIndex={0}><table className={tableClassName} aria-label={label} aria-busy={loading} style={style}

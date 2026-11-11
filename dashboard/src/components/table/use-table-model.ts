@@ -6,9 +6,10 @@ export interface TableColumn<T> {
   title: string;
   value: (row: T) => TableValue;
   kind?: 'text' | 'number' | 'date';
+  filterMode?: 'range' | 'text';
   format?: (value: TableValue) => string;
 }
-export type ColumnFilter = { text?: string; values?: string[] };
+export type ColumnFilter = { text?: string; values?: string[];min?:string;max?:string };
 const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
 export const filterKey = (value: TableValue): string => value == null || value === '' ? 'empty:' : `${typeof value}:${value}`;
 export const filterLabel = (value: TableValue): string => value == null || value === '' ? '（空）' : typeof value === 'boolean' ? value ? '是' : '否' : String(value);
@@ -31,6 +32,7 @@ export function useTableModel<T>(data: readonly T[], columns: readonly TableColu
       if (!filter) return true;
       const value = column.value(row);
       if (filter.values?.length && !filter.values.includes(filterKey(value))) return false;
+      if(filter.min||filter.max){const n=column.kind==='date'?tableTime(value):value==null||value===''?null:Number(value);const min=filter.min?(column.kind==='date'?tableTime(filter.min):Number(filter.min)):null,max=filter.max?(column.kind==='date'?tableTime(filter.max):Number(filter.max)):null;if(n===null||!Number.isFinite(n)||min!==null&&n<min||max!==null&&n>max)return false;}
       return !filter.text || `${filterLabel(value)} ${column.format?.(value) ?? ''}`.toLocaleLowerCase().includes(filter.text.toLocaleLowerCase());
     }));
     const column = columns.find((item) => item.key === sort?.key);
@@ -58,7 +60,7 @@ export function useTableModel<T>(data: readonly T[], columns: readonly TableColu
     setFilter(key: string, filter: ColumnFilter) {
       setFilters((current) => {
         const next = { ...current };
-        if (!filter.text && !filter.values?.length) delete next[key];
+        if (!filter.text && !filter.values?.length&&!filter.min&&!filter.max) delete next[key];
         else next[key] = filter;
         return next;
       });
