@@ -3,7 +3,7 @@ import {render,screen,fireEvent,waitFor,within,act} from '@testing-library/react
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {AgentManagementPanel} from '../src/components/AgentManagementPanel';
 import {api,type AgentManagementState,type AgentProviderState,type AgentModelConfig} from '../src/lib/api';
-vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,agentManagement:{...actual.api.agentManagement,list:vi.fn(),get:vi.fn(),provider:vi.fn(),modelConfigs:vi.fn(),updateModelConfigs:vi.fn(),updateProviderStream:vi.fn(),detectModels:vi.fn()},codexEnvironments:{...actual.api.codexEnvironments,management:vi.fn(),usage:vi.fn()}}};});
+vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,agentManagement:{...actual.api.agentManagement,list:vi.fn(),get:vi.fn(),provider:vi.fn(),modelConfigs:vi.fn(),updateModelConfigs:vi.fn(),updateProviderStream:vi.fn(),detectModels:vi.fn()},codexEnvironments:{...actual.api.codexEnvironments,management:vi.fn(),usage:vi.fn(),details:vi.fn(),configFiles:vi.fn(async()=>({files:[]})),quota:vi.fn(async()=>({quota:null,reason:'not_applicable'}))}}};});
 let client:QueryClient,provider:AgentProviderState,state:AgentManagementState,configs:AgentModelConfig[];
 beforeEach(()=>{
  vi.clearAllMocks();client=new QueryClient({defaultOptions:{queries:{retry:false}}});
@@ -17,6 +17,14 @@ beforeEach(()=>{
 });
 afterEach(()=>{client.clear();vi.restoreAllMocks();});
 const mount=(readOnly=false)=>render(<QueryClientProvider client={client}><AgentManagementPanel readOnly={readOnly}/></QueryClientProvider>);
+it('shows the native API engine in the Provider layout using runtime settings',async()=>{
+ provider={...provider,id:'native',name:'Native API',kind:'native',fields:[{key:'command',label:'启动命令',type:'text',value:'codex'}]};state={...state,providers:[provider]};
+ vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[{id:'native',name:'Native API',kind:'native',enabled:true,auth_mode:'api',allowed_user_ids:null}],users:[]});
+ vi.mocked(api.codexEnvironments.details).mockResolvedValue({details:{id:'native',checked_at:'',home:'/fixture/.codex',executable:'codex',version:null,engine:{state:'connected',pid:1},authentication:{status:'authenticated',type:'apiKey',email:null,plan:null},config:{path:null,exists:true,notice:null},settings:{model:'model-a',base_url:'https://fixture.invalid/v1'},models:[{model:'model-a',name:'Model A'}]}});
+ vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({auth_mode:'api',status:'available',amount:5,currency:'USD'}))));
+ mount();expect(await screen.findByRole('textbox',{name:'Responses API 地址'})).toHaveValue('https://fixture.invalid/v1');
+ expect(await screen.findByRole('table',{name:'Provider 模型'})).toHaveTextContent('model-a');expect(screen.queryByText('CODEX 登录账号')).not.toBeInTheDocument();vi.unstubAllGlobals();
+});
 it('shows one editable model table with detection above it and keeps runtime details on demand',async()=>{
  mount();const table=await screen.findByRole('table',{name:'Provider 模型'});await within(table).findByRole('checkbox',{name:'启用 model-a'});
  expect(screen.getAllByRole('table')).toHaveLength(1);expect(screen.getAllByRole('button',{name:'保存并重启 Engine',exact:true})).toHaveLength(1);expect(screen.queryByText('已保存模型')).toBeNull();expect(screen.queryByRole('combobox',{name:'默认模型'})).toBeNull();expect(screen.queryByText('实际启动命令')).toBeNull();expect(screen.queryByText('密钥安全保存')).toBeNull();
