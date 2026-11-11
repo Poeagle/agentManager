@@ -1,5 +1,5 @@
 import {submissionFailure,AgentSubmissionError} from '../submission.js';
-import {runInCodexEngine,engineForProvider} from './engine-context.js';
+import {runInCodexEngine,engineForProvider,currentCodexEngine} from './engine-context.js';
 import {validateModelPreference,readCodexModels} from './controls.js';
 import type {ModelPreference} from '../types.js';
 import {withCodexConnection,rememberStreamingSharedResources} from './stream.js';
@@ -23,6 +23,11 @@ export async function prepareFreshCodexConversation(threadId:string,cwd:string,s
   return withCodexConnection(async request=>{
     const current=await request('thread/read',{threadId});
     if(!current.thread)throw Error('原生会话不存在，历史已保留');
+    // The engine can omit model_provider in config/read even though its
+    // loaded thread identifies the provider. Bind that identity only to this
+    // operation and keep an explicitly configured engine authoritative.
+    const engine=currentCodexEngine();
+    return runInCodexEngine(!engine.provider&&typeof current.thread.modelProvider==='string'&&current.thread.modelProvider?{...engine,provider:current.thread.modelProvider}:engine,async()=>{
     const chosen=preference?await validateModelPreference(preference):undefined;
     if(!chosen&&!(await readCodexModels()).some(m=>m.model===current.thread.model&&(!m.provider||m.provider===current.thread.modelProvider)))throw Error('原模型当前不可用，请先选择新会话的模型');
     const settings=await request('thread/resume',{threadId,excludeTurns:true});
@@ -49,6 +54,7 @@ export async function prepareFreshCodexConversation(threadId:string,cwd:string,s
       return id;
     } catch(error){await target('thread/archive',{threadId:id}).catch(()=>{});throw error;}
     }));
+    });
   });
 }
 
