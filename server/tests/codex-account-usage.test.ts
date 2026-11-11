@@ -125,6 +125,12 @@ it('collects a distinct provider history but refuses a shared directory and inva
  expect(cachedAccountUsage('provider:a').rows).toEqual([]);vi.mocked(localCommandInput).mockClear();
  await collectAccountUsage('provider:a');expect(localCommandInput).not.toHaveBeenCalled();expect(cachedAccountUsage('provider:a')).toMatchObject({partial:true,error:expect.stringContaining('共用'),rows:[]});
 });
+it('preserves provider consumption when unrelated Engines are added and upgrades the old source signature without clearing history',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));const provider=(id:string)=>({id,name:id,kind:'responses',enabled:true,fields:{codexHome:'/tmp/usage-isolated-'+id,models:['m'],baseUrl:'https://example.invalid/v1'}});
+ updateAgentManagement('codex',()=>({defaults:{},providers:[provider('a')]}));await collectAccountUsage('provider:a');
+ getDb().prepare('UPDATE codex_usage_sources SET identity=? WHERE account=?').run(JSON.stringify(['provider','/tmp/usage-isolated-a',[['provider:a','/tmp/usage-isolated-a',null]]]),'provider:a');
+ updateAgentManagement('codex',()=>({defaults:{},providers:[provider('a'),provider('b')]}));respond([]);await collectAccountUsage('provider:a');expect(JSON.parse(vi.mocked(localCommandInput).mock.calls.at(-1)![1]).mode).toBe('daily');expect(cachedAccountUsage('provider:a').rows[0].tokens.total_tokens).toBe(10);
+});
 it('merges distinct provider histories while counting a copied session event only once',async()=>{
  vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
  const provider=(id:string)=>({id,name:id,kind:'responses',enabled:true,fields:{codexHome:'/tmp/group-fixture-'+id,models:['m'],baseUrl:'https://example.invalid/v1'}});
@@ -136,4 +142,13 @@ it('merges distinct provider histories while counting a copied session event onl
  expect(cachedGroupUsage(['provider:a','provider:b'])).toMatchObject({partial:false,rows:[{date:'2026-01-01',cwd:'/project',requests:2,tokens:{total_tokens:20}}]});
  const conflict={...event,tokens:{...tokens,total_tokens:15}};respond([row],{events:[conflict,{...event,key:'b'.repeat(64)}]});await collectAccountUsage('provider:b');
  expect(cachedGroupUsage(['provider:a','provider:b'])).toMatchObject({partial:true,rows:[{requests:1,tokens:{total_tokens:10}}]});
+});
+it('retains upstream group consumption when sessions disappear and bridges legacy fingerprint aliases safely',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+ const provider=(id:string)=>({id,name:id,kind:'responses',enabled:true,fields:{codexHome:'/tmp/group-retain-'+id,models:['m'],baseUrl:'https://example.invalid/v1'}});
+ vi.spyOn(engineBalance,'cachedEngineBalance').mockReturnValue({auth_mode:'api',status:'available',groupKey:'same',providerId:'same'});updateAgentManagement('codex',()=>({defaults:{},providers:[provider('a'),provider('b')]}));
+ const event={key:'a'.repeat(64),day:'2026-01-01',cwd:'/project',model:null,tier:null,provider:'same',tokens};respond([row],{events:[event]});await collectAccountUsage('provider:a');
+ respond([row],{events:[{...event,key:'b'.repeat(64),legacy_key:event.key}]});await collectAccountUsage('provider:b');expect(cachedGroupUsage(['provider:a','provider:b']).rows[0].tokens.total_tokens).toBe(10);
+ respond([]);await collectAccountUsage('provider:a');await collectAccountUsage('provider:b');expect(cachedGroupUsage(['provider:a','provider:b']).rows[0].tokens.total_tokens).toBe(10);
+ respond([],{events:[{...event,key:'c'.repeat(64),legacy_key:event.key}]});await collectAccountUsage('provider:b');expect(cachedGroupUsage(['provider:a','provider:b'])).toMatchObject({partial:true,rows:[{requests:2,tokens:{total_tokens:20}}]});
 });

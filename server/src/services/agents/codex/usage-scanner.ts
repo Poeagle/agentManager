@@ -133,15 +133,16 @@ for path,size in paths:
     if tokens['total_tokens'] is None:errors+=1;continue
     fingerprint=json.dumps([turn or stamp,cwd,total],sort_keys=True,separators=(',',':'))
     key=hashlib.sha256(fingerprint.encode()).digest()
+    legacy_key=hashlib.sha256(json.dumps([stamp,cwd,total],sort_keys=True,separators=(',',':')).encode()).hexdigest()
     if o.get('includeEvents') and o.get('rebuildEvents') and key not in projection_seen:
-     projection_seen.add(key)
-     if len(events)<50000:events.append({'key':key.hex(),'day':event_day,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
+     if len(events)<50000:
+      projection_seen.add(key);events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
      else:events_truncated=True
     if cutoff and at<=cutoff:continue
     if key in seen:continue
     seen.add(key)
     if o.get('includeEvents') and not o.get('rebuildEvents'):
-     if len(events)<50000:events.append({'key':key.hex(),'day':event_day,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
+     if len(events)<50000:events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
      else:events_truncated=True
     if len(seen)>2000000:raise RuntimeError('usage event limit exceeded')
     new_events.setdefault(event_day,bytearray()).extend(key)

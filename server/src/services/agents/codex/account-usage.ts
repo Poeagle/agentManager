@@ -89,7 +89,7 @@ export async function collectAccountUsage(id:string):Promise<void>{
     events.push({day:eventDay,keys});
    }
    if(result.rows.reduce((n:number,r:any)=>n+r.requests,0)!==count)throw Error('Usage identity count mismatch');
-   if(!Array.isArray(result.events)||result.events.length>50000||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||mode==='daily'&&!days.includes(event.day)||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
+   if(!Array.isArray(result.events)||result.events.length>50000||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||event.legacy_key!=null&&!/^[a-f0-9]{64}$/.test(event.legacy_key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||mode==='daily'&&!days.includes(event.day)||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
    const current=getCodexEnvironment(id);if(!current.enabled||usageIdentity(current)!==identity)return;
    db.transaction(()=>{
     // Request identities and aggregates commit together. Missing/truncated files
@@ -105,7 +105,7 @@ export async function collectAccountUsage(id:string):Promise<void>{
      insert.run(id,key,row.day,row.cwd,row.model||null,row.tier||null,JSON.stringify({...tokens,requests:row.requests+(old?.requests??0)}));
     }
     const eventInsert=db.prepare('INSERT OR REPLACE INTO codex_usage_dedup_events VALUES(?,?,?,?,?,?,?,?)');
-    for(const event of result.events)eventInsert.run(id,event.key,event.day,event.cwd,event.model||null,event.tier||null,event.provider||null,JSON.stringify(event.tokens));
+    for(const event of result.events)eventInsert.run(id,event.key,event.day,event.cwd,event.model||null,event.tier||null,event.provider||null,JSON.stringify({...event.tokens,...event.legacy_key?{_legacy_key:event.legacy_key}:{}}));
     db.prepare('INSERT OR REPLACE INTO codex_usage_dedup_status VALUES(?,?)').run(id,!result.events_truncated&&(mode==='full'||dedupStatus?.ready===1)?1:0);
     db.prepare('INSERT INTO codex_usage_ledger VALUES(?,?,?) ON CONFLICT(account) DO UPDATE SET last_day=excluded.last_day').run(id,baseline,day);
     db.prepare('INSERT OR REPLACE INTO codex_usage_snapshots VALUES(?,1)').run(id);
@@ -148,7 +148,9 @@ export function cachedAccountUsage(id:string){
 /** Combine per-request snapshots using their content fingerprints. Conflicting
  * copies are excluded and marked partial rather than counted twice. */
 export function cachedGroupUsage(ids:string[]){
- const db=getDb(),events=new Map<string,{day:string;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string}|null>();let partial=false;const checked:string[]=[];
+ type GroupEvent={day:string;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string};
+ const db=getDb(),events=new Map<string,GroupEvent|null>(),legacy:Array<{key:string;event:GroupEvent}>=[],aliases=new Map<string,string|null>();let partial=false,processed=0;const checked:string[]=[];
+ const merge=(key:string,event:GroupEvent)=>{if(!events.has(key))events.set(key,event);else if(JSON.stringify(events.get(key))!==JSON.stringify(event)){events.set(key,null);partial=true;}};
  const all=allCodexEnvironments().filter(e=>e.enabled);
  const canonical=(path:string)=>{try{return realpathSync(path);}catch{return resolve(path);}};
  const homeFor=(e:ReturnType<typeof getCodexEnvironment>)=>e.kind==='account'?(e.connection?.codexHome||((e.connection?.username===userInfo().username)?join(homedir(),'.codex'):'')):usageHome(e);
@@ -161,13 +163,18 @@ export function cachedGroupUsage(ids:string[]){
   if(!snapshot.initialized||!ready?.ready){partial=true;continue;}if(snapshot.partial)partial=true;if(snapshot.checked_at)checked.push(snapshot.checked_at);
   const rows=db.prepare('SELECT event_key,day,cwd,model,tier,provider,tokens FROM codex_usage_dedup_events WHERE account=? LIMIT 50001').all(id) as Array<{event_key:string;day:string;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string}>;
   if(rows.length>50000){partial=true;continue;}
-  for(const {event_key,...event} of rows){
-   if(!event.provider){partial=true;continue;}if(event.provider!==providerId)continue;
-   if(!events.has(event_key))events.set(event_key,event);
-   else if(JSON.stringify(events.get(event_key))!==JSON.stringify(event)){events.set(event_key,null);partial=true;}
-   if(events.size>200000)return {partial:true,error:'统计记录过多，无法安全合并',rows:[]};
+  for(const {event_key,...raw} of rows){
+   if(!raw.provider){partial=true;continue;}if(raw.provider!==providerId)continue;
+   if(++processed>200000)return {partial:true,error:'统计记录过多，无法安全合并',rows:[]};
+   const parsed=JSON.parse(raw.tokens),legacyKey=typeof parsed._legacy_key==='string'?parsed._legacy_key:null;
+   const event={...raw,tokens:JSON.stringify(Object.fromEntries(tokenFields.map(k=>[k,parsed[k]??null])))};
+   if(legacyKey){if(!aliases.has(legacyKey))aliases.set(legacyKey,event_key);else if(aliases.get(legacyKey)!==event_key)aliases.set(legacyKey,null);merge(event_key,event);}
+   else legacy.push({key:event_key,event});
   }
  }
+ // Old caches used timestamp-based identities. Bridge only unambiguous aliases;
+ // two verified native turns remain separate even at identical timestamps.
+ for(const {key,event} of legacy){const alias=aliases.get(key);if(alias===null){partial=true;continue;}merge(alias??key,event);}
  const grouped=new Map<string,{date:string;cwd:string;tokens:Record<string,number|null>;requests:number;models:Map<string,{model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number}}>}>();
  for(const event of events.values()){
   if(!event)continue;const key=JSON.stringify([event.day,event.cwd]);let row=grouped.get(key);
