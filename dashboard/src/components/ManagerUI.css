@@ -37,7 +37,7 @@
   background:var(--manager-app-secondary);
   color:var(--text-primary);font-family:var(--app-font-family);font-size:var(--app-font-size,16px);line-height:normal;
 }
-.manager-platform {border-radius:8px;background:var(--ops-chrome)!important;}
+.manager-platform {width:min(94vw,1440px);height:min(88dvh,900px);border-radius:8px;background:var(--ops-chrome)!important;}
 .manager-platform-header {min-height:48px;padding:6px 12px;background:var(--ops-chrome);}
 .manager-platform-header h2 {font-size:16px;line-height:24px;}
 .manager-platform-header p {display:none;}
@@ -116,6 +116,7 @@
 .manager-ui .agent-management-kv dt {font-size:12px;line-height:22px;}
 .manager-ui .agent-management-kv dd {flex:1;margin:0;font-size:12px;line-height:22px;}
 @media(max-width:767px){
+  .manager-platform {width:calc(100vw - 24px);height:calc(100dvh - 24px);}
   .manager-navigation {width:auto;gap:8px;}
   .manager-navigation>div>div:first-child {display:none;}
   .manager-platform-header {min-height:42px;}
