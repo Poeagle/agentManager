@@ -2,7 +2,7 @@ import {getDb} from '../../../db/index.js';
 import {allCodexEnvironments,environmentConnection,getCodexEnvironment} from './environments.js';
 import {localHome} from './account-files.js';
 import {accountCommandInput,localCommandInput} from './account-transport.js';
-import {USAGE_SCAN} from './usage-scanner.js';
+import {USAGE_EVENT_LIMIT,USAGE_SCAN} from './usage-scanner.js';
 import {tokenFields} from '../../conversation-usage.js';
 import {CREDIT_RATE_DATE,estimateUsageCredits} from './usage-credits.js';
 import {initUsageProvenance,usageOrigins} from './usage-provenance.js';
@@ -66,7 +66,7 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean}={
   const initialized=!options.rebuild&&!!db.prepare('SELECT initialized FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
   const dedupStatus=options.rebuild?undefined:db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
   const timezone=usageTimezone(),previousTimezone=usageStoredTimezone(id),rebin=initialized&&previousTimezone!==timezone;
-  const mode=initialized&&dedupStatus&&!rebin?'daily':'full',day=usageDay(Date.now(),timezone);
+  const mode=initialized&&dedupStatus?.ready===1&&!rebin?'daily':'full',day=usageDay(Date.now(),timezone);
   const controller=new AbortController();controllers.set(id,controller);
   try{
    const home=e.kind==='account'?e.connection?.codexHome:usageHome(e);
@@ -78,10 +78,10 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean}={
    const yesterday=new Date(Date.parse(day+'T00:00:00Z')-86400000).toISOString().slice(0,10);
    const lastDay=ledger?.last_day??prior?.checked_at?.slice(0,10);
    const days=mode==='daily'&&lastDay&&lastDay<day?[yesterday,day]:[day];
-   const known=options.rebuild?[]:db.prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=? AND (? OR timezone!=? OR day IN (?,?)) LIMIT 2000001').all(id,rebin?1:0,timezone,days[0],day) as {event_id:Buffer}[];
+   const known=options.rebuild?[]:db.prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=? AND (? OR timezone!=? OR day IN (?,?)) LIMIT 2000001').all(id,rebin||mode==='full'?1:0,timezone,days[0],day) as {event_id:Buffer}[];
    if(known.length>2000000)throw Error('Usage identity limit exceeded');
-   const input=JSON.stringify({home,mode,day,days,timezone,previous_timezone:previousTimezone,rebin,baseline_at:baseline,known_events:Buffer.concat(known.map(r=>r.event_id)).toString('base64'),origins:usageOrigins(id),includeEvents:true,rebuildEvents:initialized&&!dedupStatus});
-   const commandOptions={timeoutMs:mode==='full'?300000:120000,maxOutputBytes:128*1024*1024,signal:controller.signal};
+   const input=JSON.stringify({home,mode,day,days,timezone,previous_timezone:previousTimezone,rebin,baseline_at:baseline,known_events:Buffer.concat(known.map(r=>r.event_id)).toString('base64'),origins:usageOrigins(id),includeEvents:true,rebuildEvents:initialized&&dedupStatus?.ready!==1});
+   const commandOptions={timeoutMs:mode==='full'?300000:120000,maxOutputBytes:256*1024*1024,signal:controller.signal};
    const result=JSON.parse(await (e.kind==='account'?accountCommandInput(environmentConnection(e),USAGE_SCAN,input,commandOptions):localCommandInput(USAGE_SCAN,input,commandOptions)));
    if(!Array.isArray(result.rows)||result.rows.length>50000||result.mode!==mode||result.day!==day)throw Error('Invalid usage response');
    const requestsPerDay=new Map<string,number>();
@@ -101,7 +101,7 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean}={
    }
    if(result.rows.reduce((n:number,r:any)=>n+r.requests,0)!==count)throw Error('Usage identity count mismatch');
    if(rebin&&(!Array.isArray(result.matched_rows)||result.matched_rows.length>50000||result.matched_rows.some((r:MatchedUsage)=>typeof r.legacy!=='boolean'||!/^\d{4}-\d{2}-\d{2}$/.test(r.day)||typeof r.cwd!=='string'||r.cwd.length>4096||!Number.isSafeInteger(r.requests)||r.requests<1||!r.tokens||tokenFields.some(k=>r.tokens[k]!==null&&(!Number.isFinite(r.tokens[k])||r.tokens[k]!<0)))))throw Error('Invalid timezone reconciliation');
-   if(!Array.isArray(result.events)||result.events.length>200000||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||event.legacy_key!=null&&!/^[a-f0-9]{64}$/.test(event.legacy_key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||event.hour!=null&&(!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):00:00(?:Z|[+-]\d{2}:\d{2})$/.test(event.hour)||!event.hour.startsWith(event.day))||mode==='daily'&&!days.includes(event.day)||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
+   if(!Array.isArray(result.events)||result.events.length>USAGE_EVENT_LIMIT||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||event.legacy_key!=null&&!/^[a-f0-9]{64}$/.test(event.legacy_key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||event.hour!=null&&(!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):00:00(?:Z|[+-]\d{2}:\d{2})$/.test(event.hour)||!event.hour.startsWith(event.day))||mode==='daily'&&!days.includes(event.day)||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
    if(options.rebuild&&(result.events_truncated||result.events.length!==count||result.events.some((event:any)=>!event.hour)||(result.errors&&count===0)))throw Error('Rebuild incomplete');
    const current=getCodexEnvironment(id);if((!current.enabled&&!options.rebuild)||usageIdentity(current)!==identity){if(options.rebuild)throw Error('Environment changed');return;}
    db.transaction(()=>{
@@ -180,9 +180,9 @@ export async function backfillUsageHours(id:string):Promise<void>{
   try{
    const timezone=usageTimezone();if(usageStoredTimezone(id)!==timezone)return;
    const day=usageDay(Date.now(),timezone),input=JSON.stringify({home,mode:'full',day,days:[day],timezone,baseline_at:new Date().toISOString(),known_events:'',origins:usageOrigins(id),includeEvents:true,rebuildEvents:true});
-   const options={timeoutMs:300000,maxOutputBytes:128*1024*1024,signal:controller.signal};
+   const options={timeoutMs:300000,maxOutputBytes:256*1024*1024,signal:controller.signal};
    const raw=await(e.kind==='account'?accountCommandInput(environmentConnection(e),USAGE_SCAN,input,options):localCommandInput(USAGE_SCAN,input,options));
-   const data=JSON.parse(raw);if(!Array.isArray(data.events)||data.events.length>200000)throw Error('Invalid hourly backfill');
+   const data=JSON.parse(raw);if(!Array.isArray(data.events)||data.events.length>USAGE_EVENT_LIMIT)throw Error('Invalid hourly backfill');
    if(usageIdentity(getCodexEnvironment(id))!==identity)return;
    db.transaction(()=>{
     const update=db.prepare('UPDATE codex_usage_dedup_events SET hour=? WHERE account=? AND event_key=? AND day=? AND hour IS NULL');
@@ -209,11 +209,11 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   const snapshot=cachedAccountUsage(id);
   const ready=db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
   if(!snapshot.initialized||!ready?.ready||snapshot.timezone!==timezone){partial=true;continue;}if(snapshot.partial)partial=true;if(snapshot.checked_at)checked.push(snapshot.checked_at);
-  const rows=db.prepare('SELECT event_key,day,hour,cwd,model,tier,provider,tokens FROM codex_usage_dedup_events WHERE account=? LIMIT 200001').all(id) as Array<{event_key:string;day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string}>;
-  if(rows.length>200000){partial=true;continue;}
+  const rows=db.prepare(`SELECT event_key,day,hour,cwd,model,tier,provider,tokens FROM codex_usage_dedup_events WHERE account=? LIMIT ${USAGE_EVENT_LIMIT+1}`).all(id) as Array<{event_key:string;day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string}>;
+  if(rows.length>USAGE_EVENT_LIMIT){partial=true;continue;}
   for(const {event_key,...raw} of rows){
    if(!single&&!raw.provider){partial=true;continue;}if(!single&&raw.provider!==providerId)continue;
-   if(++processed>200000)return {partial:true,error:'统计记录过多，无法安全合并',rows:[]};
+   if(++processed>USAGE_EVENT_LIMIT)return {partial:true,error:'统计记录过多，无法安全合并',rows:[]};
    const parsed=JSON.parse(raw.tokens),legacyKey=typeof parsed._legacy_key==='string'?parsed._legacy_key:null;
    const event={...raw,tokens:JSON.stringify(Object.fromEntries(tokenFields.map(k=>[k,parsed[k]??null])))};
    const unassigned=(parsed._timezone??'UTC')!==timezone;

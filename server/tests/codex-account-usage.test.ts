@@ -27,6 +27,8 @@ it('recovers recorded hours from real history while retaining unknown deleted hi
   expect(hours.partial).toBe(false);expect(hours.rows.map(r=>[r.hour,r.tokens.total_tokens])).toEqual([['2026-01-01T02:00:00+00:00',20],['2026-01-01T01:00:00+00:00',10]]);
   expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(original);
   await collectAccountUsage('native',{rebuild:true});expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(30);expect(cachedGroupUsage(['native'],'hour',true).rows).toHaveLength(2);
+  getDb().prepare('UPDATE codex_usage_dedup_status SET ready=0 WHERE account=?').run('native');await collectAccountUsage('native');
+  expect(getDb().prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get('native')).toEqual({ready:1});expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(30);
   await appendFile(path,JSON.stringify({type:'event_msg',timestamp:'2026-01-01T03:00:00Z',payload:{type:'token_count',info:{total_token_usage:{},last_token_usage:{}}}})+'\n');
   await collectAccountUsage('native',{rebuild:true});expect(cachedAccountUsage('native')).toMatchObject({initialized:true,partial:true,rows:[{tokens:{total_tokens:30}}]});
   const realScanner=vi.mocked(localCommandInput).getMockImplementation()!;vi.mocked(localCommandInput).mockRejectedValueOnce(Error('fixture read failure'));
@@ -44,6 +46,16 @@ function response(input:string,rows:any[],options:Record<string,unknown>={}){
 function respond(rows:any[]=[row],options:Record<string,unknown>={}){vi.mocked(localCommandInput).mockImplementation(async(_script,input)=>response(input,rows,options));}
 beforeEach(()=>{vi.stubEnv('TZ','UTC');fixture=createTestDatabase();initAccountUsage();respond();vi.mocked(accountCommandInput).mockImplementation(async(_c,_s,input)=>response(input,[row]));});
 afterEach(async()=>{await stopAccountUsage();fixture.cleanup();vi.restoreAllMocks();vi.resetAllMocks();vi.useRealTimers();vi.unstubAllEnvs();});
+it('returns hourly usage beyond the old 200000-event limit without truncation',()=>{
+ const db=getDb();db.prepare('INSERT OR REPLACE INTO codex_usage_snapshots VALUES(?,1)').run('native');
+ db.prepare('INSERT OR REPLACE INTO codex_usage_status VALUES(?,?,?,?)').run('native','2026-01-01T03:00:00Z',null,0);
+ db.prepare('INSERT OR REPLACE INTO codex_usage_dedup_status(account,ready,hour_backfilled) VALUES(?,1,1)').run('native');
+ const payload=JSON.stringify({...tokens,_timezone:'UTC'});
+ db.prepare(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<200001)
+ INSERT INTO codex_usage_dedup_events(account,event_key,day,cwd,model,tier,provider,tokens,hour)
+ SELECT 'native',printf('%064x',n),'2026-01-01','/project',NULL,NULL,NULL,?,'2026-01-01T01:00:00+00:00' FROM seq`).run(payload);
+ const result=cachedGroupUsage(['native'],'hour',true);expect(result.rows).toHaveLength(1);expect(result.rows[0].requests).toBe(200001);expect(result.rows[0].tokens.total_tokens).toBe(2000010);
+},60000);
 it('groups model usage across speeds while retaining unknown models and exact totals',async()=>{
  const token=(input:number,cached:number)=>({input_tokens:input,cached_input_tokens:cached,output_tokens:0,reasoning_output_tokens:0,total_tokens:input});
  respond([{...row,model:'gpt-6.1-sol',tier:'default',tokens:token(100,50)},{...row,model:'gpt-6.1-sol',tier:'fast',tokens:token(900,900)},{...row,model:'gpt-6.1-terra',tokens:token(100,0)},{...row,tokens:token(0,0)}]);
