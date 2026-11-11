@@ -117,10 +117,10 @@ export interface MyPermissions { permissions: PermissionGrants; roles: Array<{ i
 export interface AuthStatus { needsSetup: boolean; authenticated: boolean; user: AuthUser | null; }
 export interface AuthCredentials { username: string; password: string; display_name?: string; }
 export interface SharedResourcesInput {
-  directory: string; scope_path: string; env_file: string; instructions: string;
+  directory: string; scope_path?: string; env_file?: string; instructions: string;
   enabled: boolean; revision: number;
 }
-export interface SharedResources extends SharedResourcesInput { env_exists: boolean; }
+export interface SharedResources extends SharedResourcesInput { scope_path:string;env_file:string;env_exists: boolean; }
 export interface SharedEnvFile { path: string; content: string; hash: string | null; exists: boolean; revision: number; }
 export type PromptEnhancerMode = 'base' | 'lite' | 'standard' | 'expert' | 'publish';
 export interface PromptEnhancerConfig {
@@ -314,6 +314,8 @@ export const api = {
   sharedResources: {
     get: () => fetchJSON<{ resources: SharedResources }>('/me/shared-resources'),
     openEnv: () => fetchJSON<SharedEnvFile>('/me/shared-resources/env/open', { method: 'POST' }),
+    createEnv: () => fetchJSON<SharedEnvFile>('/me/shared-resources/env/create', { method: 'POST' }),
+    browse: (path?:string) => fetchJSON<BrowseResult>(`/me/shared-resources/browse${path?`?path=${encodeURIComponent(path)}`:''}`),
     saveEnv: (data: { content: string; expected_hash: string | null; revision: number }) => fetchJSON<{path: string; hash: string; exists: boolean}>('/me/shared-resources/env', { method: 'PUT', body: JSON.stringify(data) }),
     save: (data: SharedResourcesInput) => fetchJSON<{ resources: SharedResources }>('/me/shared-resources', { method: 'PUT', body: JSON.stringify(data) }),
     preview: (scope_path: string) => fetchJSON<{ projects: Array<{ id: string; name: string; path: string }> }>('/me/shared-resources/preview', { method: 'POST', body: JSON.stringify({ scope_path }) }),

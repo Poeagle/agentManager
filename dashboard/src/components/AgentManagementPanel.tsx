@@ -1299,6 +1299,9 @@ function AddCodexProvider({
   const [models, setModels] = useState<DetectedAgentModel[]>([]);
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
+  const probeVersion=useRef(0);
+  const probeRequestVersion=useRef(0);
+  const clearProbe=()=>{probeVersion.current++;setModels([]);setSelectedModels([]);setDefaultModel('');};
   useEffect(() => {
     onEditingChange(
       !!(
@@ -1320,9 +1323,13 @@ function AddCodexProvider({
     selectedModels.length,
   ]);
   const detect = useMutation({
-    mutationFn: () =>
-      api.agentManagement.detectModels(agentId, { endpoint: baseUrl, apiKey }),
+    mutationFn: async () => {
+      const version=probeRequestVersion.current;
+      const result=await api.agentManagement.detectModels(agentId, { endpoint: baseUrl, apiKey });
+      return {...result,version};
+    },
     onSuccess: (result) => {
+      if(result.version!==probeVersion.current)return;
       setModels(result.models);
       setSelectedModels(result.models.map((item) => item.model));
       setDefaultModel(result.models[0]?.model || "");
@@ -1401,7 +1408,7 @@ function AddCodexProvider({
             placeholder="https://example.com/v1"
             onChange={(event) => {
               setBaseUrl(event.target.value);
-              setModels([]);
+              clearProbe();
             }}
           />
         </label>
@@ -1413,7 +1420,7 @@ function AddCodexProvider({
             autoComplete="new-password"
             value={apiKey}
             placeholder="输入该 Provider 的 API Key"
-            onChange={(event) => setApiKey(event.target.value)}
+            onChange={(event) => {setApiKey(event.target.value);clearProbe();}}
           />
         </label>
         <div className="agent-management-field agent-management-model-picker">
@@ -1422,7 +1429,7 @@ function AddCodexProvider({
             type="button"
             className="agent-management-button"
             disabled={detect.isPending || !baseUrl || !apiKey}
-            onClick={() => detect.mutate()}
+            onClick={() => {probeRequestVersion.current=probeVersion.current;detect.mutate();}}
           >
             {detect.isPending ? (
               <Loader2 size={13} className="animate-spin" />
@@ -1458,8 +1465,8 @@ function AddCodexProvider({
             busy={detect.isPending}
             message="正在探测 Provider 模型…"
             successMessage="Provider 模型探测完成"
-            error={detect.isError ? detect.error : undefined}
-            success={detect.isSuccess}
+            error={detect.isError&&probeRequestVersion.current===probeVersion.current ? detect.error : undefined}
+            success={detect.isSuccess&&detect.data?.version===probeVersion.current}
           />
         </div>
         <label className="agent-management-field">
@@ -1498,6 +1505,7 @@ function AddCodexProvider({
           disabled={
             readOnly ||
             create.isPending ||
+            detect.isPending ||
             !id ||
             !baseUrl ||
             !apiKey ||
