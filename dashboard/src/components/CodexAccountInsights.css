@@ -57,6 +57,7 @@
 .ci-footnote{font-size:11px;color:var(--text-secondary);line-height:18px;margin:4px 0 0;}
 .ci-footnote a{color:var(--accent);margin-left:5px;}
 .ci-section h4{font-size:13px;font-weight:600;margin-bottom:8px;}
+.ci-api-overview{margin-bottom:16px;}
 .ci-group-label button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
 @media(max-width:800px){.ci-overview{grid-template-columns:1fr;}.ci-overview>section+section{border-left:0;border-top:1px solid var(--border);}.ci-overview>section{grid-template-columns:auto 1fr;padding:6px 10px;}.ci-last-collection{margin-left:0;}.ci-toolbar label{flex-wrap:wrap;}.ci-snapshot{display:none;}}
 .ci-usage-breakdown{display:flex;flex-wrap:wrap;gap:4px 12px;margin:5px 0;font-size:12px;}
