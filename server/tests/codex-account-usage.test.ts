@@ -20,8 +20,8 @@ function response(input:string,rows:any[],options:Record<string,unknown>={}){
  return JSON.stringify({...request,rows:fresh,event_keys:Object.fromEntries(Object.entries(eventKeys).map(([day,keys])=>[day,Buffer.concat(keys).toString('base64')])),events:[],events_truncated:false,partial:false,errors:0,...options});
 }
 function respond(rows:any[]=[row],options:Record<string,unknown>={}){vi.mocked(localCommandInput).mockImplementation(async(_script,input)=>response(input,rows,options));}
-beforeEach(()=>{fixture=createTestDatabase();initAccountUsage();respond();vi.mocked(accountCommandInput).mockImplementation(async(_c,_s,input)=>response(input,[row]));});
-afterEach(async()=>{await stopAccountUsage();fixture.cleanup();vi.restoreAllMocks();vi.resetAllMocks();vi.useRealTimers();});
+beforeEach(()=>{vi.stubEnv('TZ','UTC');fixture=createTestDatabase();initAccountUsage();respond();vi.mocked(accountCommandInput).mockImplementation(async(_c,_s,input)=>response(input,[row]));});
+afterEach(async()=>{await stopAccountUsage();fixture.cleanup();vi.restoreAllMocks();vi.resetAllMocks();vi.useRealTimers();vi.unstubAllEnvs();});
 it('groups model usage across speeds while retaining unknown models and exact totals',async()=>{
  const token=(input:number,cached:number)=>({input_tokens:input,cached_input_tokens:cached,output_tokens:0,reasoning_output_tokens:0,total_tokens:input});
  respond([{...row,model:'gpt-6.1-sol',tier:'default',tokens:token(100,50)},{...row,model:'gpt-6.1-sol',tier:'fast',tokens:token(900,900)},{...row,model:'gpt-6.1-terra',tokens:token(100,0)},{...row,tokens:token(0,0)}]);

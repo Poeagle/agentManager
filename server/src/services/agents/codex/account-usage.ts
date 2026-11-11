@@ -12,6 +12,8 @@ import {homedir,userInfo} from 'os';
 import {readAgentManagement} from '../management-store.js';
 import {externalProviderCodexHome} from './management.js';
 import {cachedEngineBalance} from './engine-balance.js';
+import {usageTimezone,usageDay} from './usage-time.js';
+import {initUsageTimeStorage,usageStoredTimezone,retainUnassignedUsage,unassignedUsage,type MatchedUsage} from './usage-time-migration.js';
 let timer:ReturnType<typeof setTimeout>|undefined;
 let stopped=true;
 const pending=new Map<string,Promise<void>>();
@@ -38,7 +40,7 @@ export function initAccountUsage(){initUsageProvenance();getDb().exec(`
  CREATE TABLE IF NOT EXISTS codex_usage_ledger(account TEXT PRIMARY KEY,baseline_at TEXT,last_day TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS codex_usage_dedup_events(account TEXT NOT NULL,event_key TEXT NOT NULL,day TEXT NOT NULL,cwd TEXT NOT NULL,model TEXT,tier TEXT,provider TEXT,tokens TEXT NOT NULL,PRIMARY KEY(account,event_key));
  CREATE TABLE IF NOT EXISTS codex_usage_dedup_status(account TEXT PRIMARY KEY,ready INTEGER NOT NULL);
-`);}
+`);initUsageTimeStorage();}
 export async function collectAccountUsage(id:string):Promise<void>{
  if(pending.has(id))return pending.get(id)!;
  const task=(async()=>{
@@ -49,13 +51,14 @@ export async function collectAccountUsage(id:string):Promise<void>{
    try{const old=JSON.parse(source.identity),current=JSON.parse(identity);if(Array.isArray(old[2])&&old[0]===current[0]&&old[1]===current[1]&&old[2].some((r:unknown)=>Array.isArray(r)&&r[0]===id&&r[1]===current[1]&&r[2]===current[2])){db.prepare('UPDATE codex_usage_sources SET identity=? WHERE account=?').run(identity,id);source={identity};}}catch{/* An incompatible source requires a fresh baseline. */}
   }
   if(source?.identity!==identity)db.transaction(()=>{
-   for(const table of ['codex_usage_snapshots','codex_usage_events','codex_usage_status','codex_usage_progress','codex_usage_event_ids','codex_usage_ledger','codex_usage_dedup_events','codex_usage_dedup_status'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
+   for(const table of ['codex_usage_snapshots','codex_usage_events','codex_usage_status','codex_usage_progress','codex_usage_event_ids','codex_usage_ledger','codex_usage_dedup_events','codex_usage_dedup_status','codex_usage_unassigned'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
    if(source)db.prepare('DELETE FROM codex_usage_origins WHERE account=?').run(id);
    db.prepare('INSERT OR REPLACE INTO codex_usage_sources VALUES(?,?)').run(id,identity);
   })();
   const initialized=!!db.prepare('SELECT initialized FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
   const dedupStatus=db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
-  const mode=initialized&&dedupStatus?'daily':'full',day=new Date().toISOString().slice(0,10);
+  const timezone=usageTimezone(),previousTimezone=usageStoredTimezone(id),rebin=initialized&&previousTimezone!==timezone;
+  const mode=initialized&&dedupStatus&&!rebin?'daily':'full',day=usageDay(Date.now(),timezone);
   const controller=new AbortController();controllers.set(id,controller);
   try{
    const home=e.kind==='account'?e.connection?.codexHome:usageHome(e);
@@ -67,9 +70,9 @@ export async function collectAccountUsage(id:string):Promise<void>{
    const yesterday=new Date(Date.parse(day+'T00:00:00Z')-86400000).toISOString().slice(0,10);
    const lastDay=ledger?.last_day??prior?.checked_at?.slice(0,10);
    const days=mode==='daily'&&lastDay&&lastDay<day?[yesterday,day]:[day];
-   const known=db.prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=? AND day IN (?,?) LIMIT 2000001').all(id,days[0],day) as {event_id:Buffer}[];
+   const known=db.prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=? AND (? OR timezone!=? OR day IN (?,?)) LIMIT 2000001').all(id,rebin?1:0,timezone,days[0],day) as {event_id:Buffer}[];
    if(known.length>2000000)throw Error('Usage identity limit exceeded');
-   const input=JSON.stringify({home,mode,day,days,baseline_at:baseline,known_events:Buffer.concat(known.map(r=>r.event_id)).toString('base64'),origins:usageOrigins(id),includeEvents:true,rebuildEvents:initialized&&!dedupStatus});
+   const input=JSON.stringify({home,mode,day,days,timezone,previous_timezone:previousTimezone,rebin,baseline_at:baseline,known_events:Buffer.concat(known.map(r=>r.event_id)).toString('base64'),origins:usageOrigins(id),includeEvents:true,rebuildEvents:initialized&&!dedupStatus});
    const options={timeoutMs:mode==='full'?300000:120000,maxOutputBytes:128*1024*1024,signal:controller.signal};
    const result=JSON.parse(await (e.kind==='account'?accountCommandInput(environmentConnection(e),USAGE_SCAN,input,options):localCommandInput(USAGE_SCAN,input,options)));
    if(!Array.isArray(result.rows)||result.rows.length>50000||result.mode!==mode||result.day!==day)throw Error('Invalid usage response');
@@ -89,13 +92,15 @@ export async function collectAccountUsage(id:string):Promise<void>{
     events.push({day:eventDay,keys});
    }
    if(result.rows.reduce((n:number,r:any)=>n+r.requests,0)!==count)throw Error('Usage identity count mismatch');
+   if(rebin&&(!Array.isArray(result.matched_rows)||result.matched_rows.length>50000||result.matched_rows.some((r:MatchedUsage)=>typeof r.legacy!=='boolean'||!/^\d{4}-\d{2}-\d{2}$/.test(r.day)||typeof r.cwd!=='string'||r.cwd.length>4096||!Number.isSafeInteger(r.requests)||r.requests<1||!r.tokens||tokenFields.some(k=>r.tokens[k]!==null&&(!Number.isFinite(r.tokens[k])||r.tokens[k]!<0)))))throw Error('Invalid timezone reconciliation');
    if(!Array.isArray(result.events)||result.events.length>50000||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||event.legacy_key!=null&&!/^[a-f0-9]{64}$/.test(event.legacy_key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||mode==='daily'&&!days.includes(event.day)||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
    const current=getCodexEnvironment(id);if(!current.enabled||usageIdentity(current)!==identity)return;
    db.transaction(()=>{
     // Request identities and aggregates commit together. Missing/truncated files
     // never retract recorded consumption; repeated/forked records cannot add it.
-    const record=db.prepare('INSERT INTO codex_usage_event_ids VALUES(?,?,?)');
-    for(const event of events)for(let i=0;i<event.keys.length;i+=32)record.run(id,event.keys.subarray(i,i+32),event.day);
+    if(rebin){retainUnassignedUsage(id,previousTimezone,result.matched_rows);db.prepare('DELETE FROM codex_usage_events WHERE account=?').run(id);}
+    const record=db.prepare(rebin?'INSERT INTO codex_usage_event_ids(account,event_id,day,timezone) VALUES(?,?,?,?) ON CONFLICT(account,event_id) DO UPDATE SET day=excluded.day,timezone=excluded.timezone':'INSERT INTO codex_usage_event_ids(account,event_id,day,timezone) VALUES(?,?,?,?)');
+    for(const event of events)for(let i=0;i<event.keys.length;i+=32)record.run(id,event.keys.subarray(i,i+32),event.day,timezone);
     const lookup=db.prepare('SELECT tokens FROM codex_usage_events WHERE account=? AND event_key=?');
     const insert=db.prepare('INSERT OR REPLACE INTO codex_usage_events VALUES(?,?,?,?,?,?,?)');
     for(const row of result.rows){
@@ -105,9 +110,9 @@ export async function collectAccountUsage(id:string):Promise<void>{
      insert.run(id,key,row.day,row.cwd,row.model||null,row.tier||null,JSON.stringify({...tokens,requests:row.requests+(old?.requests??0)}));
     }
     const eventInsert=db.prepare('INSERT OR REPLACE INTO codex_usage_dedup_events VALUES(?,?,?,?,?,?,?,?)');
-    for(const event of result.events)eventInsert.run(id,event.key,event.day,event.cwd,event.model||null,event.tier||null,event.provider||null,JSON.stringify({...event.tokens,...event.legacy_key?{_legacy_key:event.legacy_key}:{}}));
+    for(const event of result.events)eventInsert.run(id,event.key,event.day,event.cwd,event.model||null,event.tier||null,event.provider||null,JSON.stringify({...event.tokens,_timezone:timezone,...event.legacy_key?{_legacy_key:event.legacy_key}:{}}));
     db.prepare('INSERT OR REPLACE INTO codex_usage_dedup_status VALUES(?,?)').run(id,!result.events_truncated&&(mode==='full'||dedupStatus?.ready===1)?1:0);
-    db.prepare('INSERT INTO codex_usage_ledger VALUES(?,?,?) ON CONFLICT(account) DO UPDATE SET last_day=excluded.last_day').run(id,baseline,day);
+    db.prepare('INSERT INTO codex_usage_ledger(account,baseline_at,last_day,timezone) VALUES(?,?,?,?) ON CONFLICT(account) DO UPDATE SET last_day=excluded.last_day,timezone=excluded.timezone').run(id,baseline,day,timezone);
     db.prepare('INSERT OR REPLACE INTO codex_usage_snapshots VALUES(?,1)').run(id);
     db.prepare('INSERT OR REPLACE INTO codex_usage_status VALUES(?,?,?,?)').run(id,new Date().toISOString(),result.errors?'部分记录不可读取或缺少统计字段':null,result.partial||result.errors?1:0);
     if(result.progress)db.prepare('INSERT OR REPLACE INTO codex_usage_progress VALUES(?,?)').run(id,JSON.stringify(result.progress));
@@ -117,11 +122,11 @@ export async function collectAccountUsage(id:string):Promise<void>{
  })();pending.set(id,task);try{await task;}finally{pending.delete(id);}
 }
 export function cachedAccountUsage(id:string){
- const db=getDb();
+ const db=getDb(),timezone=usageStoredTimezone(id),timezone_pending=timezone!==usageTimezone()?usageTimezone():null,unassigned=unassignedUsage(id);
  const source=db.prepare('SELECT identity FROM codex_usage_sources WHERE account=?').get(id) as {identity:string}|undefined;
- if(source&&source.identity!==usageIdentity(getCodexEnvironment(id)))return {initialized:false,checked_at:null,error:null,partial:true,progress:null,timezone:'UTC',credit_rate_date:CREDIT_RATE_DATE,rows:[]};
+ if(source&&source.identity!==usageIdentity(getCodexEnvironment(id)))return {initialized:false,checked_at:null,error:null,partial:true,progress:null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:[]};
  const environment=getCodexEnvironment(id);
- if(environment.kind==='provider'&&(!usageHome(environment)||providerHistoryIsShared(id,usageHome(environment))))return {initialized:false,checked_at:null,error:'历史目录与其他 Engine 共用或无法确认，未统计以避免重复',partial:true,progress:null,timezone:'UTC',credit_rate_date:CREDIT_RATE_DATE,rows:[]};
+ if(environment.kind==='provider'&&(!usageHome(environment)||providerHistoryIsShared(id,usageHome(environment))))return {initialized:false,checked_at:null,error:'历史目录与其他 Engine 共用或无法确认，未统计以避免重复',partial:true,progress:null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:[]};
  const status=db.prepare('SELECT checked_at,error,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;error:string|null;partial:number}|undefined;
  const sums=tokenFields.map(k=>`CASE WHEN COUNT(json_extract(tokens,'$.${k}'))=COUNT(*) THEN SUM(json_extract(tokens,'$.${k}')) ELSE NULL END AS ${k}`).join(',');
  const rows=db.prepare(`SELECT day,cwd,${sums} FROM codex_usage_events WHERE account=? GROUP BY day,cwd ORDER BY day DESC,cwd LIMIT 5001`).all(id) as Array<Record<string,any>>;
@@ -139,7 +144,7 @@ export function cachedAccountUsage(id:string){
  const projects=db.prepare('SELECT name,path FROM projects').all() as {name:string;path:string}[];
  const progress=db.prepare('SELECT data FROM codex_usage_progress WHERE account=?').get(id) as {data:string}|undefined;
  const initialized=!!db.prepare('SELECT account FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
- return {initialized,checked_at:status?.checked_at??null,error:status?.error??null,partial:status?.partial!==0||rows.length>5000,progress:progress?JSON.parse(progress.data):null,timezone:'UTC',credit_rate_date:CREDIT_RATE_DATE,rows:rows.slice(0,5000).map(row=>{
+ return {initialized,checked_at:status?.checked_at??null,error:status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:status?.partial!==0||rows.length>5000||!!timezone_pending||!!unassigned,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:rows.slice(0,5000).map(row=>{
   const match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];
   const estimate=estimates.get(JSON.stringify([row.day,row.cwd]));
   return {date:row.day,cwd:row.cwd,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null,models:[...(models.get(JSON.stringify([row.day,row.cwd]))?.values()||[])].sort((a,b)=>(b.tokens.total_tokens??0)-(a.tokens.total_tokens??0))};
@@ -149,7 +154,7 @@ export function cachedAccountUsage(id:string){
  * copies are excluded and marked partial rather than counted twice. */
 export function cachedGroupUsage(ids:string[]){
  type GroupEvent={day:string;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string};
- const db=getDb(),events=new Map<string,GroupEvent|null>(),legacy:Array<{key:string;event:GroupEvent}>=[],aliases=new Map<string,string|null>();let partial=false,processed=0;const checked:string[]=[];
+ const db=getDb(),events=new Map<string,GroupEvent|null>(),legacy:Array<{key:string;event:GroupEvent;unassigned?:boolean}>=[],aliases=new Map<string,string|null>();let partial=false,processed=0;const checked:string[]=[],timezone=usageTimezone(),unassignedEvents=new Map<string,GroupEvent|null>();
  const merge=(key:string,event:GroupEvent)=>{if(!events.has(key))events.set(key,event);else if(JSON.stringify(events.get(key))!==JSON.stringify(event)){events.set(key,null);partial=true;}};
  const all=allCodexEnvironments().filter(e=>e.enabled);
  const canonical=(path:string)=>{try{return realpathSync(path);}catch{return resolve(path);}};
@@ -160,7 +165,7 @@ export function cachedGroupUsage(ids:string[]){
   if(!home||all.some(other=>{const otherHome=homeFor(other);return other.id!==id&&!!otherHome&&canonical(otherHome)===canonical(home)&&(!group||balanceGroup(other.id)!==group);})){partial=true;continue;}
   const snapshot=cachedAccountUsage(id);
   const ready=db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
-  if(!snapshot.initialized||!ready?.ready){partial=true;continue;}if(snapshot.partial)partial=true;if(snapshot.checked_at)checked.push(snapshot.checked_at);
+  if(!snapshot.initialized||!ready?.ready||snapshot.timezone!==timezone){partial=true;continue;}if(snapshot.partial)partial=true;if(snapshot.checked_at)checked.push(snapshot.checked_at);
   const rows=db.prepare('SELECT event_key,day,cwd,model,tier,provider,tokens FROM codex_usage_dedup_events WHERE account=? LIMIT 50001').all(id) as Array<{event_key:string;day:string;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string}>;
   if(rows.length>50000){partial=true;continue;}
   for(const {event_key,...raw} of rows){
@@ -168,13 +173,22 @@ export function cachedGroupUsage(ids:string[]){
    if(++processed>200000)return {partial:true,error:'统计记录过多，无法安全合并',rows:[]};
    const parsed=JSON.parse(raw.tokens),legacyKey=typeof parsed._legacy_key==='string'?parsed._legacy_key:null;
    const event={...raw,tokens:JSON.stringify(Object.fromEntries(tokenFields.map(k=>[k,parsed[k]??null])))};
-   if(legacyKey){if(!aliases.has(legacyKey))aliases.set(legacyKey,event_key);else if(aliases.get(legacyKey)!==event_key)aliases.set(legacyKey,null);merge(event_key,event);}
-   else legacy.push({key:event_key,event});
+   const unassigned=(parsed._timezone??'UTC')!==timezone;
+   if(legacyKey){if(!aliases.has(legacyKey))aliases.set(legacyKey,event_key);else if(aliases.get(legacyKey)!==event_key)aliases.set(legacyKey,null);}
+   if(unassigned||!legacyKey)legacy.push({key:event_key,event,unassigned});else merge(event_key,event);
   }
  }
  // Old caches used timestamp-based identities. Bridge only unambiguous aliases;
  // two verified native turns remain separate even at identical timestamps.
- for(const {key,event} of legacy){const alias=aliases.get(key);if(alias===null){partial=true;continue;}merge(alias??key,event);}
+ for(const {key,event,unassigned} of legacy){
+  const alias=aliases.get(key);if(alias===null){partial=true;continue;}const resolved=alias??key;
+  if(!unassigned){merge(resolved,event);continue;}
+  const recovered=events.get(resolved);
+  if(recovered&&JSON.stringify({...recovered,day:''})===JSON.stringify({...event,day:''}))continue;
+  partial=true;if(!unassignedEvents.has(resolved))unassignedEvents.set(resolved,event);else if(JSON.stringify(unassignedEvents.get(resolved))!==JSON.stringify(event))unassignedEvents.set(resolved,null);
+ }
+ const retained={tokens:Object.fromEntries(tokenFields.map(k=>[k,0])) as Record<string,number|null>,requests:0,estimated_credits:null as number|null};
+ for(const event of unassignedEvents.values())if(event){const counters=JSON.parse(event.tokens);retained.requests++;for(const k of tokenFields)retained.tokens[k]=retained.tokens[k]===null||counters[k]===null?null:retained.tokens[k]!+counters[k];const amount=estimateUsageCredits(event.model,event.tier,counters);if(amount!==null)retained.estimated_credits=(retained.estimated_credits??0)+amount;}
  const grouped=new Map<string,{date:string;cwd:string;tokens:Record<string,number|null>;requests:number;models:Map<string,{model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number}}>}>();
  for(const event of events.values()){
   if(!event)continue;const key=JSON.stringify([event.day,event.cwd]);let row=grouped.get(key);
@@ -187,7 +201,7 @@ export function cachedGroupUsage(ids:string[]){
  }
  if(grouped.size>5000)partial=true;
  const projects=db.prepare('SELECT name,path FROM projects').all() as {name:string;path:string}[];
- return {initialized:checked.length>0,checked_at:checked.sort()[0]??null,timezone:'UTC',credit_rate_date:CREDIT_RATE_DATE,partial,error:partial?'部分环境尚未完成采集或存在无法去重的记录':null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()],known=entries.filter(m=>m.estimated_credits!==null),match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];return {...row,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
+ return {initialized:checked.length>0,checked_at:checked.sort()[0]??null,timezone,unassigned:retained.requests?retained:null,credit_rate_date:CREDIT_RATE_DATE,partial,error:partial?'部分环境尚未完成采集或存在无法去重的记录':null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()],known=entries.filter(m=>m.estimated_credits!==null),match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];return {...row,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
 }
 export function startAccountUsage(){initAccountUsage();stopped=false;const tick=async()=>{try{for(const e of allCodexEnvironments()){if(stopped)break;if(e.enabled)await collectAccountUsage(e.id);}}catch{/* Configuration may be changing; retry on the next scheduled pass. */}finally{if(!stopped){timer=setTimeout(()=>void tick(),300000);timer.unref();}}};timer=setTimeout(()=>void tick(),1000);timer.unref();}
 export async function stopAccountUsage(){stopped=true;clearTimeout(timer);for(const controller of controllers.values())controller.abort();await Promise.allSettled([...pending.values()]);}

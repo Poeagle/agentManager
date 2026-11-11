@@ -26,8 +26,8 @@ function period(date:string,dimension:Dimension){
  const end=new Date(start);end.setUTCDate(end.getUTCDate()+6);
  return `${start.toISOString().slice(0,10)} ~ ${end.toISOString().slice(0,10)}`;
 }
-/** Each source counter contributes once to each ancestor. Period boundaries use
- * UTC; project identity is the full cwd, never the potentially duplicate name. */
+/** Dates already belong to the report's local timezone. UTC arithmetic above
+ * only walks date labels without DST shifts. Each counter contributes once. */
 export function groupUsage(rows:UsageRow[],dimension:Dimension):UsageGroup[]{
  const leaves:Leaf[]=rows.flatMap(row=>(row.models?.length?row.models:[{...row,model:null}]).map(model=>({date:row.date,cwd:row.cwd,project:row.project_name||row.cwd.split('/').filter(Boolean).pop()||'未归属',model:model.model,missing:!row.models?.length,metrics:model})));
  const order:('date'|'project'|'model')[]=dimension==='project'?['project','model','date']:dimension==='model'?['model','project','date']:['date','project','model'];
