@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { execFileSync } from 'child_process';
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { authHook, createSession, createUser, userOwnsFilesystemPath } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
 import { fileRoutes } from '../src/routes/files.js';
@@ -77,6 +77,13 @@ describe('command execution boundaries', () => {
 
   });
 
+  it('recognizes an authorized repository owned by another system user without global trust',async()=>{
+    execFileSync('git',['init','-q'],{cwd:projectPath});vi.stubEnv('GIT_TEST_ASSUME_DIFFERENT_OWNER','true');
+    try{const response=await app.inject({url:'/api/git/status?path='+encodeURIComponent(projectPath),headers:{cookie:ownerCookie}});expect(response.statusCode).toBe(200);expect(response.json().branch).toBeTruthy();}finally{vi.unstubAllEnvs();}
+  });
+  it('distinguishes inaccessible paths from non-repositories',async()=>{
+    const response=await app.inject({url:'/api/git/status?path='+encodeURIComponent(join(projectPath,'missing')),headers:{cookie:ownerCookie}});expect(response.statusCode).toBe(503);expect(response.json().error).toContain('无法检测 Git 仓库');
+  });
   it('disables repository hooks for server-side git commits', async () => {
     execFileSync('git', ['init', '-q'], { cwd: projectPath });
     execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: projectPath });

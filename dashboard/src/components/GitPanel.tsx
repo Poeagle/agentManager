@@ -156,7 +156,7 @@ export function GitPanel({ projectPath, isVisible, onFileSaved, onOpenInExplorer
       setError(null);
       const [statusRes, logRes] = await Promise.all([
         api.git.status(projectPath),
-        api.git.log(projectPath, 20),
+        api.git.log(projectPath, 20).catch(err=>{setError(errorMessage(err));return {commits:[]};}),
       ]);
       setBranch(statusRes.branch);
       setAhead(statusRes.ahead);
@@ -361,7 +361,7 @@ export function GitPanel({ projectPath, isVisible, onFileSaved, onOpenInExplorer
   };
 
   if (loading) return <div className="h-full flex items-center justify-center" style={{ color: 'var(--text-secondary)' }}><RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading...</div>;
-  if (error && !branch) return <div className="h-full flex items-center justify-center p-4 text-center" style={{ color: 'var(--text-secondary)' }}><div><p style={{ color: 'var(--error)' }}>Not a git repository</p><p className="text-xs mt-1">Initialize a git repo in this project to use source control.</p></div></div>;
+  if (error && !branch) return <div className="h-full flex items-center justify-center p-4 text-center" style={{ color: 'var(--text-secondary)' }}><div><p role="alert" style={{ color: 'var(--error)' }}>{error}</p>{error==='Not a git repository'&&<p className="text-xs mt-1">Initialize a git repo in this project to use source control.</p>}<button type="button" className="mt-2 text-xs" onClick={()=>void refresh()}>重试</button></div></div>;
 
   const displayDiff = detail?.type === 'commit'
     ? (selectedCommitFile ? filterDiffToFile(commitDiff, selectedCommitFile) : commitDiff)
