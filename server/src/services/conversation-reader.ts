@@ -519,6 +519,19 @@ function dedupe(messages: IndexedMessage[]): IndexedMessage[] {
   }
   const omit = new Set<IndexedMessage>();
   for (const turn of turns) {
+    // Codex can persist the same user item as a response_item and later as an
+    // item_completed event with a different native ID. Pair only exact records
+    // from the same turn and timestamp, one for one, including question turns.
+    // Retain the first public ID so incremental readers can reconcile it.
+    const nativeUsers=turn.filter(message=>message.role==='user'&&message.recordType==='native_message');
+    const matched=new Set<IndexedMessage>();
+    for(const event of turn.filter(message=>message.role==='user'&&message.recordType==='event_user_item')){
+      const native=nativeUsers.find(item=>!matched.has(item)&&!!item.timestamp&&item.timestamp===event.timestamp&&item.turn_id===event.turn_id&&item.text===event.text);
+      if(!native)continue;
+      matched.add(native);native.client_id ||= event.client_id;
+      if(!native.image_paths?.length&&event.image_paths?.length)native.image_paths=event.image_paths;
+      omit.add(event);
+    }
     const completed = turn.some(
       (message) =>
         message.recordType === "completion_echo" && message.phase !== "error",
@@ -565,12 +578,6 @@ function dedupe(messages: IndexedMessage[]): IndexedMessage[] {
           )
             omit.add(message);
         }
-      if (
-        role === "user" &&
-        events.some((message) => message.recordType === "event_user_item")
-      )
-        for (const message of native)
-          if (message.recordType === "native_message") omit.add(message);
       if (role === "assistant" && completed) {
         const authoritative = native.length ? native : events;
         if (authoritative.length) {

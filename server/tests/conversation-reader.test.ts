@@ -386,7 +386,25 @@ describe('public conversation pages',()=>{
     writeFileSync(file,started+durable+completed);
     const users=(await readConversation(binding)).messages.filter(message=>message.role==='user');
     expect(users).toHaveLength(1);
-    expect(users[0]).toMatchObject({id:conversationMessageId(turn,'user',item),text:text.trimEnd(),turn_id:turn,client_id:client,image_paths:['/tmp/input.png']});
+    expect(users[0]).toMatchObject({id:conversationMessageId(turn,'user','msg_01a1b938-c01c-7512-b8dd-e81da9939816'),text:text.trimEnd(),turn_id:turn,client_id:client,image_paths:['/tmp/input.png']});
+  });
+  it('keeps one stable user message when an asynchronous question follows the native and completion records',async()=>{
+    const turn='question-turn',text='清理并重新获取',stamp='2026-10-29T10:00:01Z',client='client-fixture';
+    const durable=line('response_item',{type:'message',id:'native-user',role:'user',internal_chat_message_metadata_passthrough:{turn_id:turn},content:[{type:'input_text',text}]},stamp);
+    const completed=line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'UserMessage',id:'completed-user',client_id:client,content:[{type:'text',text}]}},stamp);
+    const questions=[{title:'选择范围',options:['当前','全部']}];
+    writeFileSync(file,line('event_msg',{type:'task_started',turn_id:turn})+durable);
+    const first=await readConversation(binding);expect(first.messages.filter(m=>m.role==='user')).toHaveLength(1);
+    appendFileSync(file,completed+line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'AgentMessage',id:'question',delivery:'async',questions,content:[{type:'Text',text:'选择范围'}]}}));
+    const next=await readConversation(binding),users=next.messages.filter(m=>m.role==='user');expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({id:first.messages[0].id,text,client_id:client});expect(next.messages.some(m=>m.async_questions?.length)).toBe(true);
+  });
+  it('preserves repeated distinct user inputs within the same question turn',async()=>{
+    const turn='repeated-question',text='同一内容';
+    const pair=(suffix:string,stamp:string)=>line('response_item',{type:'message',id:'native-'+suffix,role:'user',content:[{type:'input_text',text}]},stamp)+line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'UserMessage',id:'event-'+suffix,client_id:'client-'+suffix,content:[{type:'text',text}]}},stamp);
+    const questions=[{title:'选择',options:['A','B']}];
+    writeFileSync(file,line('event_msg',{type:'task_started',turn_id:turn})+pair('one','2026-10-29T10:00:01Z')+pair('two','2026-10-29T10:00:02Z')+line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'AgentMessage',id:'question',delivery:'async',questions,content:[{type:'Text',text:'选择'}]}}));
+    const users=(await readConversation(binding)).messages.filter(m=>m.role==='user');expect(users).toHaveLength(2);expect(users.map(m=>m.client_id)).toEqual(['client-one','client-two']);
   });
   it('does not promote an unphased item when task completion names a different later item',async()=>{
     const turn='implicit-interleaved-turn',answer='本轮最终答复';
