@@ -1,4 +1,4 @@
-import {render,screen,fireEvent,waitFor} from '@testing-library/react';
+import {render,screen,fireEvent,waitFor,within} from '@testing-library/react';
 import {afterEach,expect,it,vi} from 'vitest';
 import {ApiKeys} from '../src/components/ApiKeys';
 import {fetchJSON,type MyPermissions} from '../src/lib/api';
@@ -8,13 +8,17 @@ const permissions:MyPermissions={permissions:{settings:'write',agent_api:'read'}
 it('creates a scoped key and reveals it only until closed',async()=>{
  vi.mocked(fetchJSON).mockResolvedValueOnce({keys:[]}).mockResolvedValueOnce({key:'temporary-test-key',record:{id:'key1',name:'automation',grants:{settings:'read'},created_at:new Date().toISOString(),expires_at:new Date(Date.now()+3600000).toISOString(),last_used_at:null}});
  render(<ApiKeys permissions={permissions}/>);
- fireEvent.change(screen.getByLabelText('名称'),{target:{value:'automation'}});
- fireEvent.change(screen.getByLabelText('平台设置'),{target:{value:'read'}});
+ expect(await screen.findByText('暂无 API Key')).toBeVisible();
+ expect(screen.getByRole('table',{name:'API Key 列表'})).toBeVisible();
+ fireEvent.click(screen.getByRole('button',{name:'新建 API'}));
+ const dialog=screen.getByRole('dialog',{name:'新建 API'});expect(dialog).toBeVisible();
+ fireEvent.change(within(dialog).getByLabelText('名称'),{target:{value:'automation'}});
+ fireEvent.change(within(dialog).getByLabelText('平台设置'),{target:{value:'read'}});
  expect(screen.queryByRole('option',{name:'读写',selected:true})).not.toBeInTheDocument();
- fireEvent.click(screen.getByRole('button',{name:'创建'}));
+ fireEvent.click(screen.getByRole('button',{name:'保存'}));
  expect(await screen.findByText('temporary-test-key')).toBeVisible();
  expect(JSON.parse(String(vi.mocked(fetchJSON).mock.calls[1][1]?.body)).grants).toEqual({settings:'read'});
- fireEvent.click(screen.getByRole('button',{name:'关闭'}));expect(screen.queryByText('temporary-test-key')).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'完成'}));expect(screen.queryByText('temporary-test-key')).not.toBeInTheDocument();
  vi.mocked(fetchJSON).mockResolvedValueOnce({ok:true});fireEvent.click(screen.getByRole('button',{name:'撤销'}));
  await waitFor(()=>expect(screen.queryByText('automation')).not.toBeInTheDocument());
 });
