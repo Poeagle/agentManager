@@ -866,7 +866,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         await startProvider(provider);
         void import('./engine-balance.js').then(module=>module.collectEngineBalance('provider:'+provider.id)).catch(()=>{});
       }
-      return inspect(true);
+      return inspect(false);
     },
     updateProvider: async (providerId, input, report) => {
       if (input.name !== undefined && input.fields === undefined && input.kind === undefined && input.enabled === undefined && input.apiKey === undefined) {
@@ -879,7 +879,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         updateNativeEngineConfig(input);
         report?.({ stage: 'save', message: '保存原生 Engine 启动配置', progress: 25 });
         await restartNativeCodexEngine(progress => report?.({ ...progress, progress: 25 + progress.progress * 0.75 }));
-        return inspect(true);
+        return inspect(false);
       }
       let updated: StoredProvider | undefined;
       report?.({ stage: 'validate', message: '校验 Provider 配置', progress: 10 });
@@ -900,7 +900,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       } else {
         await stopProvider(providerId);
       }
-      return inspect(true);
+      return inspect(false);
     },
     deleteProvider: async providerId => {
       const provider = readAgentManagement('codex').providers.find(item => item.id === providerId);
@@ -908,7 +908,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       assertEnvironmentUnused('provider:'+providerId);
       await stopProvider(providerId);
       await removeManagedProviderStorage(providerId);
-      return inspect(true);
+      return inspect(false);
     },
     providerAction: async (providerId, action, report) => {
       if(['stop','disable','restart'].includes(action))await assertEnvironmentIdle(providerId==='native'?'native':'provider:'+providerId);
@@ -918,7 +918,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         else if (action === 'restart') await restartNativeCodexEngine(report);
         else throw Object.assign(Error(`不支持的原生 Engine 操作: ${action}`), { statusCode: 400 });
         report?.({ stage: 'complete', message: `${action === 'stop' || action === 'disable' ? 'Engine 已停止' : 'Engine 已就绪'}`, progress: 100 });
-        return inspect(true);
+        return inspect(false);
       }
       const provider = readAgentManagement('codex').providers.find(item => item.id === providerId);
       if (!provider) throw Object.assign(Error('原生 Provider 不支持此操作'), { statusCode: 409 });
@@ -940,7 +940,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         if (!configuredCodexEngines().some(engine => engine.provider === providerId)) throw Object.assign(Error('Provider Engine 未启用'), { statusCode: 409 });
       } else throw Object.assign(Error(`不支持的 Provider 操作: ${action}`), { statusCode: 400 });
       report?.({ stage: 'complete', message: 'Engine 状态已更新', progress: 100 });
-      return inspect(true);
+      return inspect(false);
     },
     detectModels: async input => {
       if (input?.endpoint) {

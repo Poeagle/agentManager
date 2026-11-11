@@ -28,10 +28,11 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
 async function streamProviderOperation(
   url: string,
   body: Record<string, unknown>,
+  method: 'POST' | 'PUT',
   onProgress?: (progress: AgentOperationProgress) => void,
 ): Promise<{provider: AgentProviderState}> {
   const response = await fetch(`${API_BASE}${url}`, {
-    method: 'POST',
+    method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
@@ -749,7 +750,7 @@ export const api = {
         method: 'PUT', body: JSON.stringify(input),
       }),
     updateProviderStream: (agentId: string, providerId: string, input: { name?: string; kind?: string; enabled?: boolean; apiKey?: string; fields?: Record<string, string | boolean | string[] | null> }, onProgress?: (progress: AgentOperationProgress) => void) =>
-      streamProviderOperation(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}/update-stream`, input, onProgress),
+      streamProviderOperation(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}/update-stream`, input, 'PUT', onProgress),
     deleteProvider: (agentId: string, providerId: string) =>
       fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' }),
     providerAction: (agentId: string, providerId: string, action: string) =>
@@ -757,7 +758,7 @@ export const api = {
         method: 'POST', body: JSON.stringify({ action }),
       }),
     providerActionStream: (agentId: string, providerId: string, action: string, onProgress?: (progress: AgentOperationProgress) => void) =>
-      streamProviderOperation(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}/action-stream`, { action }, onProgress),
+      streamProviderOperation(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}/action-stream`, { action }, 'POST', onProgress),
     readFile: (agentId: string, path: string, revealSensitive = false) =>
       fetchJSON<{ file: AgentConfigFileContent }>(`/agent-management/${encodeURIComponent(agentId)}/config-file`, {
         method: 'POST', body: JSON.stringify({ path, revealSensitive }),
