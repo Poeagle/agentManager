@@ -6,12 +6,26 @@ import {engineForThread,runInCodexEngine} from './engine-context.js';
 import {withCodexConnection} from './stream.js';
 import {engineForEnvironment,getCodexEnvironment,sessionEnvironmentId,environmentConnection} from './environments.js';
 import {stageEnvironmentHistory} from './account-files.js';
-import {preparePagedHistory} from './history-bundle.js';
+import {preparePagedHistory,omitAdditionalToolsForEndpoint} from './history-bundle.js';
+import {readAgentManagement} from '../management-store.js';
 import {findCodexRollout} from '../../prompt-context.js';
 import {checkAccountProject,accountCommand} from './account-transport.js';
 import {readEngineModelsForEnvironment} from './controls.js';
 import type {ModelPreference} from '../types.js';
 import {recordUsageImports,recordUsageFork} from './usage-provenance.js';
+
+async function turnIds(request:(method:string,params:unknown)=>Promise<any>,threadId:string):Promise<string[]>{
+ const ids:string[]=[];let cursor:string|undefined;const seen=new Set<string>();
+ for(let page=0;page<20;page++){
+  const result=await request('thread/turns/list',{threadId,limit:100,sortDirection:'asc',itemsView:'notLoaded',...cursor?{cursor}:{}});
+  if(!result||!Array.isArray(result.data)||result.data.some((turn:any)=>typeof turn.id!=='string'||!turn.id))throw Error('无法验证会话历史，切换已取消，原会话保持不变');
+  ids.push(...result.data.map((turn:any)=>turn.id));
+  if(!result.nextCursor)return ids;
+  if(typeof result.nextCursor!=='string'||seen.has(result.nextCursor))throw Error('无法验证会话历史，切换已取消，原会话保持不变');
+  seen.add(result.nextCursor);cursor=result.nextCursor;
+ }
+ throw Error('会话历史过长，无法完整验证，切换已取消，原会话保持不变');
+}
 
 /** Fork the full native rollout, never seed a lossy user/assistant summary.
  * The existing tab lifecycle supplies serialization, history snapshots and
@@ -34,6 +48,7 @@ export async function transferCodexEnvironment(sessionId:string,userId:string,ta
   const before=await sourceRequest('thread/read',{threadId:native});
   if(before.thread?.status?.type==='active')throw Error('当前任务仍在执行，请等待本轮结束后切换 Codex 环境');
   if(!before.thread)throw Error('原会话不存在或无法读取，原会话保持不变');
+  const sourceTurns=before.thread.historyMode==='paginated'?await turnIds(sourceRequest,native):null;
   const models=await readEngineModelsForEnvironment(targetId,true);
   const choice=models.find(m=>m.model===preference.model&&(!preference.provider||m.provider===preference.provider));
   if(!choice||!choice.efforts.some(e=>e.value===preference.effort))throw Error('目标环境不支持所选模型或推理强度，请重新预检模型列表');
@@ -49,7 +64,16 @@ export async function transferCodexEnvironment(sessionId:string,userId:string,ta
   const sandbox=({readOnly:'read-only',workspaceWrite:'workspace-write',dangerFullAccess:'danger-full-access'} as Record<string,string>)[settings.sandbox?.type];
   if(!sandbox||!settings.approvalPolicy)throw Error('无法确认原会话权限，迁移尚未执行');
   if(sandbox==='read-only'&&settings.sandbox.networkAccess===true)throw Error('该只读会话包含自定义网络权限，暂不能完整复制权限配置，原会话保持不变');
-  if(before.thread.historyMode==='paginated')paged=await preparePagedHistory(sourceId,source,targetId);
+  if(before.thread.historyMode==='paginated'){
+   let endpoint:unknown;
+   if(target.kind==='provider')endpoint=readAgentManagement('codex').providers.find(p=>p.id===target.provider)?.fields.baseUrl;
+   else {
+    const result=await runInCodexEngine(targetEngine,()=>withCodexConnection(r=>r('config/read',{}))).catch(()=>null);
+    const config=result?.config,provider=config?.model_provider;endpoint=provider?config?.model_providers?.[provider]?.base_url:undefined;
+    if(!endpoint)try{const status=(await import('./engine-balance.js')).cachedEngineBalance(targetId);if(status.auth_mode==='api')endpoint=status.origin;}catch{/* Unknown compatibility never enables rewriting. */}
+   }
+   paged=await preparePagedHistory(sourceId,source,targetId,{omitAdditionalTools:omitAdditionalToolsForEndpoint(endpoint)});
+  }
   if(paged)recordUsageImports(targetId,paged.importedIds);
   const forkBoundary=new Date().toISOString();
   const staged=paged?{path:paged.path,cleanup:async()=>{}}:await stageEnvironmentHistory(targetId,source);
@@ -64,15 +88,17 @@ export async function transferCodexEnvironment(sessionId:string,userId:string,ta
     // Only generated import identities are archived. Their files remain as
     // immutable ancestors of the new fork; original account history is intact.
     for(const imported of paged?.importedIds||[])await request('thread/archive',{threadId:imported}).catch(()=>{});
+    if(sourceTurns){const targetTurns=await turnIds(request,id);if(sourceTurns.length!==targetTurns.length||sourceTurns.some((turn,index)=>turn!==targetTurns[index]))throw Error('目标引擎无法完整读取复制后的会话历史，切换已取消，原会话保持不变');}
     return id;
    }));
    const after=await sourceRequest('thread/read',{threadId:native});
    if(after.thread?.status?.type==='active')throw Error('迁移期间原会话开始了新任务，已取消切换，请等待本轮完成后重试');
+   if(sourceTurns){const afterTurns=await turnIds(sourceRequest,native);if(sourceTurns.length!==afterTurns.length||sourceTurns.some((turn,index)=>turn!==afterTurns[index]))throw Error('迁移期间原会话历史发生变化，切换已取消，原会话保持不变');}
    assertAccess();return fresh!;
   }finally{await staged.cleanup();}
   }));
  }});
- if(paged)await paged.finish(Boolean(fresh));
+ if(paged)await paged.finish(result.ok);
  if(!result.ok&&fresh)await runInCodexEngine(targetEngine,()=>withCodexConnection(request=>request('thread/archive',{threadId:fresh}))).catch(()=>{});
  if(result.ok)environmentAccessChanged();
  return result;

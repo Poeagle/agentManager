@@ -5,6 +5,11 @@ import {config} from '../../../config.js';
 import {getCodexEnvironment,environmentConnection} from './environments.js';
 import {accountCommand,ensureAccountTransport} from './account-transport.js';
 import {historyFileCommand,localHome} from './account-files.js';
+/** Only gateways verified to reject this native protocol item opt in. */
+export function omitAdditionalToolsForEndpoint(endpoint:unknown):boolean {
+ if(typeof endpoint!=='string')return false;
+ try{return new URL(endpoint).origin==='https://xindu.xyz';}catch{return false;}
+}
 /** Copy immutable lineage prefixes. Only native metadata IDs change, always
  * UUID -> UUID of identical byte length, so native byte cutoffs remain valid.
  * Raw messages, tools, context and compaction records are retained verbatim. */
@@ -128,6 +133,49 @@ with tarfile.open(fileobj=sys.stdin.buffer,mode='r|') as archive:
     if not chunk:break
     out.write(chunk)
 `;
+/** Build one self-contained paginated root for the destination. Native Codex
+ * may otherwise resolve only the nearest parent of an imported fork. The
+ * original files remain untouched; message and tool payloads are retained. */
+export const NORMALIZE_TRANSFER_HISTORY=EXPORT_HISTORY_BUNDLE.slice(0,EXPORT_HISTORY_BUNDLE.indexOf('mapping={'))+String.raw`
+import tempfile
+new_id=str(uuid.uuid4())
+meta=json.loads(entries[root]['header']);payload=meta['payload'];payload['id']=new_id;payload['session_id']=new_id
+for key in ['history_base','forked_from_id','forked_from_ordinal_exclusive','parent_thread_id']:payload.pop(key,None)
+meta['ordinal']=0
+order=[]
+def collect(ident):
+ base=json.loads(entries[ident]['header'])['payload'].get('history_base')
+ if base:collect(base['thread_id'])
+ order.append(ident)
+collect(root)
+def encode(item):return (json.dumps(item,separators=(',',':'),ensure_ascii=True,allow_nan=False)+'\n').encode()
+with tempfile.TemporaryFile() as out:
+ def append(item):
+  data=encode(item)
+  if out.tell()+len(data)>limit:raise ValueError('normalized history exceeds limit')
+  out.write(data)
+ append(meta);ordinal=1;expected=0
+ for ident in order:
+  entry=entries[ident];header=json.loads(entry['header'])
+  if header.get('ordinal')!=expected:raise ValueError('history ordinal mismatch')
+  expected+=1
+  with entry['path'].open('rb') as source:
+   source.readline();left=entry['size']-len(entry['header'])
+   while left>0:
+    line=source.readline(min(left,64*1024*1024+1));left-=len(line)
+    if not line or len(line)>64*1024*1024 or not line.endswith(b'\n'):raise ValueError('history record exceeds limit')
+    item=json.loads(line)
+    if not isinstance(item,dict) or item.get('ordinal')!=expected:raise ValueError('history ordinal mismatch')
+    expected+=1
+    payload=item.get('payload')
+    if options.get('omit_additional') and item.get('type')=='response_item' and isinstance(payload,dict) and payload.get('type')=='additional_tools':continue
+    item['ordinal']=ordinal;ordinal+=1;append(item)
+ size=out.tell();out.seek(0);name=entries[root]['path'].name.replace(root,new_id)
+ manifest={'root':name,'ids':[new_id]}
+ with tarfile.open(fileobj=sys.stdout.buffer,mode='w|',format=tarfile.USTAR_FORMAT) as archive:
+  data=json.dumps(manifest).encode();info=tarfile.TarInfo('manifest.json');info.size=len(data);info.mode=0o600;archive.addfile(info,io.BytesIO(data))
+  info=tarfile.TarInfo(name);info.size=size;info.mode=0o600;archive.addfile(info,out)
+`;
 /** Read-only projection for the conversation reader. Native imports retain
  * their paginated graph; only the platform's private view is concatenated. */
 export const FLATTEN_HISTORY=EXPORT_HISTORY_BUNDLE.slice(0,EXPORT_HISTORY_BUNDLE.indexOf('mapping={'))+String.raw`
@@ -143,13 +191,13 @@ def emit(ident):
 emit(root)
 `;
 function script(options:unknown,body:string){return `import json\noptions=json.loads(${JSON.stringify(JSON.stringify(options))})\n`+body;}
-export async function preparePagedHistory(sourceId:string,sourcePath:string,targetId:string):Promise<{path:string;importedIds:string[];finish:(keep:boolean)=>Promise<void>}> {
+export async function preparePagedHistory(sourceId:string,sourcePath:string,targetId:string,options:{omitAdditionalTools?:boolean}={}):Promise<{path:string;importedIds:string[];finish:(keep:boolean)=>Promise<void>}> {
  const source=getCodexEnvironment(sourceId),target=getCodexEnvironment(targetId);
  const directory=join(dirname(config.dbPath),'history-transfers');await mkdir(directory,{recursive:true,mode:0o700});
  const archive=join(directory,randomUUID()+'.tar');let targetDirectory:string|undefined;
  const sourceConnection=source.kind==='account'?environmentConnection(source):null,targetConnection=target.kind==='account'?environmentConnection(target):null;
  try{
-  await historyFileCommand(sourceConnection,script({home:source.kind==='account'?source.connection!.codexHome:localHome(source),path:sourcePath},EXPORT_HISTORY_BUNDLE),'',archive,'read');
+  await historyFileCommand(sourceConnection,script({home:source.kind==='account'?source.connection!.codexHome:localHome(source),path:sourcePath,omit_additional:options.omitAdditionalTools===true},NORMALIZE_TRANSFER_HISTORY),'',archive,'read');
   const handle=await open(archive,'r');let manifest:{root:string;ids:string[]};
   try{const header=Buffer.alloc(512);await handle.read(header,0,512,0);const size=Number.parseInt(header.subarray(124,136).toString().replace(/\0/g,'').trim(),8);if(header.subarray(0,100).toString().replace(/\0/g,'')!=='manifest.json'||!Number.isFinite(size)||size>65536)throw Error('历史包索引无效');const content=Buffer.alloc(size);await handle.read(content,0,size,512);manifest=JSON.parse(content.toString());if(!/^rollout-[^/\\]+\.jsonl$/.test(manifest.root)||!Array.isArray(manifest.ids)||manifest.ids.length>65||manifest.ids.some(id=>!/^[-a-f0-9]{36}$/i.test(id)))throw Error('历史包路径无效');}finally{await handle.close();}
   const home=target.kind==='account'?(await ensureAccountTransport(target.id,targetConnection!)).home:localHome(target);
