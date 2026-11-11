@@ -26,15 +26,15 @@ function period(date:string,dimension:Dimension){
  const end=new Date(start);end.setUTCDate(end.getUTCDate()+6);
  return `${start.toISOString().slice(0,10)} ~ ${end.toISOString().slice(0,10)}`;
 }
-/** Each source counter contributes once to each ancestor. Period boundaries use
- * UTC; project identity is the full cwd, never the potentially duplicate name. */
+/** Dates already belong to the report's local timezone. UTC arithmetic above
+ * only walks date labels without DST shifts. Each counter contributes once. */
 export function groupUsage(rows:UsageRow[],dimension:Dimension):UsageGroup[]{
  const leaves:Leaf[]=rows.flatMap(row=>(row.models?.length?row.models:[{...row,model:null}]).map(model=>({date:row.date,hour:row.hour,cwd:row.cwd,project:row.project_name||row.cwd.split('/').filter(Boolean).pop()||'未归属',model:model.model,missing:!row.models?.length,metrics:model})));
  const order:('date'|'project'|'model')[]=dimension==='project'?['project','model','date']:dimension==='model'?['model','project','date']:['date','project','model'];
  function build(items:Leaf[],depth:number,parent:string):UsageGroup[]{
   if(depth===order.length)return [];
   const kind=order[depth],groups=new Map<string,Leaf[]>();
-  for(const item of items){const id=kind==='project'?item.cwd:kind==='model'?JSON.stringify([item.model,item.missing]):depth===0&&dimension==='hour'?(item.hour?item.hour.replace('T',' ').replace(':00:00Z',':00 UTC'):`${item.date} 时间未知`):period(item.date,depth===0?dimension:'day');const group=groups.get(id)||[];group.push(item);groups.set(id,group);}
+  for(const item of items){const id=kind==='project'?item.cwd:kind==='model'?JSON.stringify([item.model,item.missing]):depth===0&&dimension==='hour'?(item.hour?item.hour.replace('T',' ').replace(':00:00Z',':00 UTC').replace(/:00:00([+-])/,':00 UTC$1'):`${item.date} 时间未知`):period(item.date,depth===0?dimension:'day');const group=groups.get(id)||[];group.push(item);groups.set(id,group);}
   return [...groups].map(([id,group])=>{const first=group[0],key=JSON.stringify([parent,kind,id]);return {key,kind,label:kind==='project'?first.project:kind==='model'?(first.missing?'模型明细未返回':first.model||'模型未记录'):id,detail:kind==='project'?(first.cwd||'原始记录未提供工作目录'):undefined,metrics:aggregateMetrics(group.map(g=>g.metrics)),children:build(group,depth+1,key),missingModels:group.some(g=>g.missing)};}).sort((a,b)=>kind==='date'?b.label.localeCompare(a.label):(b.metrics.tokens.total_tokens??0)-(a.metrics.tokens.total_tokens??0)||a.label.localeCompare(b.label));
  }
  return build(leaves,0,dimension);

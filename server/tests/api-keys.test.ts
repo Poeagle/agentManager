@@ -16,6 +16,7 @@ beforeEach(async()=>{
   app.get('/api/agent-management/codex',async(req,reply)=>{if(!requirePermission(req,reply,'settings','read'))return;return {ok:true};});
   app.post('/api/agent-management/codex/providers',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;return {ok:true};});
   app.get('/api/projects',async()=>({ok:true}));
+  app.get('/api/codex/environments/:id/balance',async(req)=>({id:(req.params as {id:string}).id}));
 });
 afterEach(async()=>{await app.close();cleanup();});
 async function createKey(grants:Record<string,string>={settings:'write',agent_api:'write'}){
@@ -31,6 +32,8 @@ describe('expiring API keys',()=>{
   expect((await app.inject({method:'GET',url:'/api/agent-management/codex',headers})).statusCode).toBe(200);
   expect((await app.inject({method:'POST',url:'/api/agent-management/codex/providers',headers})).statusCode).toBe(200);
   expect((await app.inject({method:'GET',url:'/api/projects',headers})).statusCode).toBe(200);
+  expect((await app.inject({method:'GET',url:'/api/codex/environments/provider%3Axindu/balance',headers})).json()).toEqual({id:'provider:xindu'});
+  expect((await app.inject({method:'GET',url:'/api/codex/environments/provider%2Fxindu/balance',headers})).statusCode).toBe(403);
   expect((await app.inject({method:'GET',url:'/api/users',headers})).statusCode).toBe(403);
   expect((await app.inject({method:'POST',url:'/api/auth/api-keys',headers,payload:{}})).statusCode).toBe(403);
   expect((await app.inject({method:'DELETE',url:`/api/auth/api-keys/${record.id}`,headers:{cookie}})).statusCode).toBe(200);

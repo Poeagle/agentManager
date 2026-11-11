@@ -11,6 +11,11 @@ it('loads and groups precise UTC hourly records without changing daily statistic
  expect(await screen.findByText('2026-11-11')).toBeVisible();fireEvent.change(screen.getByRole('combobox',{name:'统计维度'}),{target:{value:'hour'}});
  expect(await screen.findByText('2026-11-11 12:00 UTC')).toBeVisible();expect(vi.mocked(fetchJSON).mock.calls.some(([url])=>url.includes('granularity=hour'))).toBe(true);
 });
+it('shows local-day usage, formats collection time in the same zone and explicitly retains unassigned history',async()=>{
+ vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:true,timezone:'Asia/Taipei',checked_at:'2026-11-11T16:34:39Z',unassigned:{tokens:{total_tokens:100},requests:1,estimated_credits:1},rows:[{date:'2026-11-12',cwd:'/local',estimated_credits:2,tokens:{input_tokens:20,cached_input_tokens:10,output_tokens:0,total_tokens:20}}]}}:{account:{},resets:null} as any);
+ render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="local" name="Local" onClose={()=>{}}/></QueryClientProvider>);
+ expect(await screen.findByText('/local')).toBeVisible();expect(screen.getByText(/上次采集/)).toHaveTextContent('2026/11/12 00:34:39');expect(screen.getByText(/上次采集/)).toHaveTextContent('本地时间（Asia/Taipei）');expect(screen.getByText('2026-11-12')).toBeVisible();expect(screen.queryByText(/已保留 100 Token/)).toBeNull();expect(screen.getByText(/周从本地周一开始/)).toBeVisible();
+});
 it('orders estimated Credits before spend share and uses Credits rather than Token ratios at each level',async()=>{
  const item=(cwd:string,model:string,n:number,credit:number)=>({date:'2026-11-11',cwd,project_name:cwd.slice(1),estimated_credits:credit,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n},models:[{model,estimated_credits:credit,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n}}]});
  vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:false,timezone:'UTC',rows:[item('/Alpha','cheap',900,1),item('/Beta','expensive',100,9),item('/Zero','free',0,0)]}}:{account:{},resets:null} as any);

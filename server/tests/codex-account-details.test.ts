@@ -30,6 +30,12 @@ describe('selected system-user Codex account details',()=>{
   expect(state.models).toHaveBeenCalledWith('native',true);expect(adminResult.body).not.toContain('DO_NOT_RETURN');
   const memberResult=await app.inject({url:'/api/codex/environments/native/details',headers:{cookie:memberCookie}});expect(memberResult.statusCode).toBe(200);expect(memberResult.json().details.authentication).toMatchObject({email:null,plan:null});expect(memberResult.body).not.toContain('fixture@example.invalid');
  });
+ it('uses the runtime API configuration when host TOML parsing is unavailable',async()=>{
+  state.local.mockResolvedValue(JSON.stringify({executable:'/fixture/codex',home:'/fixture',config:{path:'/fixture/config.toml',exists:true,notice:'解析失败'},settings:{}}));
+  state.rpc.mockImplementation(async(method:string)=>method==='account/read'?{account:{type:'apiKey'}}:{config:{model:'model-a',model_provider:'gateway',model_providers:{gateway:{base_url:'https://gateway.invalid/v1?secret=hidden',api_key:'DO_NOT_RETURN'}}}});
+  const result=await app.inject({url:'/api/codex/environments/native/details',headers:{cookie:adminCookie}});
+  expect(result.statusCode).toBe(200);expect(result.json().details.settings).toMatchObject({model:'model-a',model_provider:'gateway',base_url:'https://gateway.invalid/v1'});expect(result.json().details.config.notice).toBeNull();expect(result.body).not.toContain('DO_NOT_RETURN');expect(result.body).not.toContain('secret=hidden');
+ });
  it('requires settings permission even when a member can use the account',async()=>{
   const r=await app.inject({url:'/api/codex/environments/'+encodeURIComponent(id)+'/details',headers:{cookie:memberCookie}});expect(r.statusCode).toBe(403);expect(state.command).not.toHaveBeenCalled();expect(state.rpc).not.toHaveBeenCalled();
  });

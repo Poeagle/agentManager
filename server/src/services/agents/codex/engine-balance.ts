@@ -25,16 +25,22 @@ function sourceIdentity(id:string):string {
  return createHash('sha256').update(JSON.stringify([e.kind,e.connection,p?.fields,sealed,env,home,files])).digest('hex');
 }
 export function initEngineBalance(){getDb().exec('CREATE TABLE IF NOT EXISTS codex_engine_balance (id TEXT PRIMARY KEY, identity TEXT NOT NULL, data TEXT NOT NULL)');}
-const script=`import json,os,pathlib,sys,tomllib
+const script=`import json,os,pathlib,sys
 try:
  p=json.load(sys.stdin); home=pathlib.Path(p['home']) if p.get('home') else pathlib.Path(os.environ.get('CODEX_HOME') or pathlib.Path.home()/'.codex')
- config=tomllib.loads((home/'config.toml').read_text())
+ config={}
+ if not p.get('runtime_provider'):
+  try:
+   import tomllib
+   config=tomllib.loads((home/'config.toml').read_text())
+  except Exception:pass
  provider=config.get('model_providers',{}).get(config.get('model_provider',''),{})
- auth=json.loads((home/'auth.json').read_text()) if (home/'auth.json').exists() else {}
- envkey=provider.get('env_key','')
+ try:auth=json.loads((home/'auth.json').read_text()) if (home/'auth.json').exists() else {}
+ except Exception:auth={}
+ envkey=p.get('envkey') or provider.get('env_key','')
  print(json.dumps({'base':provider.get('base_url',''),'provider':config.get('model_provider',''),'key':os.environ.get(envkey,'') or auth.get('OPENAI_API_KEY',''),'envkey':envkey}))
 except Exception: print('{}')`;
-async function apiConfig(id:string):Promise<{base:string;key:string;providerId:string}>{
+async function apiConfig(id:string,runtime?:{providerId:string;base:string;envkey:string}):Promise<{base:string;key:string;providerId:string}>{
  const e=getCodexEnvironment(id);
  if(e.kind==='provider'){
   const p=readAgentManagement('codex').providers.find(p=>p.id===e.provider);
@@ -42,21 +48,22 @@ async function apiConfig(id:string):Promise<{base:string;key:string;providerId:s
   return {base:typeof p?.fields.baseUrl==='string'?p.fields.baseUrl:'',providerId:e.provider||'',key:providerApiKey(e.provider!)||(env?process.env[env]||'':'')};
  }
  const home=e.connection?.codexHome||'';
- const input=JSON.stringify({home});
+ const input=JSON.stringify({home,runtime_provider:runtime?.providerId||'',envkey:runtime?.envkey||''});
  const raw=e.kind==='account'?await accountCommandInput(environmentConnection(e),script,input):await localCommandInput(script,input);
  const result=JSON.parse(raw) as {base?:unknown;key?:unknown;envkey?:unknown;provider?:unknown};
  const env=e.kind==='native'&&typeof result.envkey==='string'?process.env[result.envkey]||'':'';
- return {base:typeof result.base==='string'?result.base:'',providerId:typeof result.provider==='string'?result.provider:'',key:env||(typeof result.key==='string'?result.key:'')};
+ return {base:runtime?.base||(typeof result.base==='string'?result.base:''),providerId:runtime?.providerId||(typeof result.provider==='string'?result.provider:''),key:env||(typeof result.key==='string'?result.key:'')};
 }
 export async function collectEngineBalance(id:string):Promise<void>{
  if(pending.has(id))return pending.get(id)!;
  const task=(async()=>{
   const e=getCodexEnvironment(id);if(!e.enabled)return;const sourceKey=sourceIdentity(id);
-  let auth:AuthMode|null=null,runtimeProviderId:string|null=null;
+  let auth:AuthMode|null=null,runtimeProviderId:string|null=null,runtimeConfig:{providerId:string;base:string;envkey:string}|undefined;
   try{
    const {result,config}=await runInCodexEngine(await engineForEnvironment(id),()=>withCodexConnection(async request=>({result:await request('account/read',{}),config:await request('config/read',{}).catch(()=>null)})));
    const settings=config?.config as Record<string,any>|undefined,provider=settings?.model_providers?.[settings?.model_provider];
    if(typeof settings?.model_provider==='string'&&settings.model_provider)runtimeProviderId=settings.model_provider;
+   if(runtimeProviderId&&provider)runtimeConfig={providerId:runtimeProviderId,base:typeof provider.base_url==='string'?provider.base_url:'',envkey:typeof provider.env_key==='string'?provider.env_key:''};
    if(provider&&(typeof provider.env_key==='string'&&provider.env_key||provider.requires_openai_auth===false)||result.account?.type==='apiKey'||!result.account&&result.requiresOpenaiAuth===false)auth='api';
    else if(result.account?.type==='chatgpt'||result.account?.type==='chatgptAuthTokens')auth='account';
   }catch{/* Keep unknown separate from both authentication modes. */}
@@ -67,7 +74,7 @@ export async function collectEngineBalance(id:string):Promise<void>{
    else getDb().prepare('INSERT OR REPLACE INTO codex_engine_balance VALUES(?,?,?)').run(id,sourceKey,JSON.stringify(current.auth_mode?{...current,status:current.amount!==undefined?'stale':'unavailable',error:'auth_unknown'}:{auth_mode:null,status:'unavailable',error:'auth_unknown'}));
    return;
   }
-  let cfg:{base:string;key:string;providerId:string};try{cfg=await apiConfig(id);}catch{cfg={base:'',key:'',providerId:''};}
+  let cfg:{base:string;key:string;providerId:string};try{cfg=await apiConfig(id,runtimeConfig);}catch{cfg={base:runtimeConfig?.base||'',key:'',providerId:runtimeConfig?.providerId||''};}
   if(runtimeProviderId&&cfg.providerId&&runtimeProviderId!==cfg.providerId)cfg={base:'',key:'',providerId:runtimeProviderId};
   const identity=sourceKey;
   const row=getDb().prepare('SELECT identity,data FROM codex_engine_balance WHERE id=?').get(id) as {identity:string;data:string}|undefined;

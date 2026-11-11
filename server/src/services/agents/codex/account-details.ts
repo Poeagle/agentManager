@@ -14,7 +14,7 @@ export async function readCodexAccountDetails(id:string) {
   const environment=getCodexEnvironment(id);
   if(environment.kind!=='account'&&environment.kind!=='native')throw Object.assign(Error('此详情接口仅适用于 Codex 登录账号'),{statusCode:400});
   const engine=await engineForEnvironment(id);
-  const auth=await runInCodexEngine(engine,()=>withCodexConnection(request=>request('account/read',{})));
+  const {auth,runtime}=await runInCodexEngine(engine,()=>withCodexConnection(async request=>({auth:await request('account/read',{}),runtime:await request('config/read',{}).catch(()=>null)})));
   const models=await readEngineModelsForEnvironment(id,true);
   const native=environment.kind==='native';
   const connection=native?{codexCommand:nativeEngineConfig().command,codexHome:process.env.CODEX_HOME||'',username:userInfo().username}:environmentConnection(environment);
@@ -47,13 +47,17 @@ print(json.dumps({'executable':command,'version':result.stdout.strip()[:200],'ho
   const metadata=JSON.parse(native?await localCommandInput(metadataScript,''):await accountCommand(environmentConnection(environment),metadataScript,15000));
   if(native)metadata.pid=inspectNativeCodexEngine().pid;
   const text=(value:unknown)=>typeof value==='string'?value.slice(0,500):null;
+  const live=runtime?.config,provider=live?.model_providers?.[live?.model_provider];
+  const safeUrl=(value:unknown)=>{if(typeof value!=='string')return null;try{const url=new URL(value);if(!['http:','https:'].includes(url.protocol))return null;url.username='';url.password='';url.search='';url.hash='';return url.toString().slice(0,500);}catch{return null;}};
+  const settings=Object.fromEntries(['model','model_provider','model_reasoning_effort','approval_policy','sandbox_mode'].map(key=>[key,text(live?.[key])??text(metadata.settings?.[key])]));
+  settings.base_url=safeUrl(provider?.base_url)??text(metadata.settings?.base_url);
   return {
     id,system_user:connection.username,checked_at:new Date().toISOString(),
     executable:text(metadata.executable),version:text(metadata.version),home:text(metadata.home),
     engine:{state:'connected',pid:Number.isSafeInteger(metadata.pid)?metadata.pid:null},
     authentication:{status:auth.account?'authenticated':auth.requiresOpenaiAuth===false?'not_applicable':'unauthenticated',type:text(auth.account?.type),email:text(auth.account?.email),plan:text(auth.account?.planType)},
-    config:{path:text(metadata.config?.path),exists:metadata.config?.exists===true,notice:text(metadata.config?.notice)},
-    settings:Object.fromEntries(['model','model_provider','model_reasoning_effort','approval_policy','sandbox_mode','base_url'].map(key=>[key,text(metadata.settings?.[key])])),
+    config:{path:text(metadata.config?.path),exists:metadata.config?.exists===true,notice:live?null:text(metadata.config?.notice)},
+    settings,
     models,
   };
 }

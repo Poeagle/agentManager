@@ -2,7 +2,7 @@ import {ProviderDeleteDialog} from './ProviderDeleteDialog';
 import {ProviderModelTable} from './ProviderModelTable';
 import {useProviderUsage} from '../lib/use-provider-usage';
 import {CodexAccountProvider} from './CodexAccountProvider';
-import {BalanceSummary} from './CodexEngineBalance';
+import {BalanceSummary,useEngineBalance} from './CodexEngineBalance';
 import {CodexAccountProviderEditor} from './CodexAccountProviderEditor';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -777,6 +777,7 @@ function ProviderEditor({
   onDirtyChange,
   onFileDirtyChange,
   onCloseEditor,
+  nativeApi = false,
 }: {
   agentId: string;
   provider: AgentProviderState;
@@ -785,8 +786,11 @@ function ProviderEditor({
   onDirtyChange: (dirty: boolean) => void;
   onFileDirtyChange: (dirty: boolean) => void;
   onCloseEditor?: () => void;
+  nativeApi?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const nativeDetails=useQuery({queryKey:['codex-account-details','native'],queryFn:()=>api.codexEnvironments.details('native'),enabled:nativeApi,retry:false});
+  const nativeBalance=useEngineBalance('native',nativeApi&&!readOnly);
   const usage=useProviderUsage(initialProvider.id==='native'?'native':'provider:'+initialProvider.id);
   const [renameOpen,setRenameOpen]=useState(false);
   const [renameValue,setRenameValue]=useState(initialProvider.name);
@@ -1234,6 +1238,7 @@ function ProviderEditor({
         )}
 
           <div className="agent-management-form agent-management-engine-form">
+            {nativeApi&&<><label className="agent-management-field agent-management-field-baseUrl"><span>Responses API 地址</span><input aria-label="Responses API 地址" value={nativeDetails.data?.details.settings.base_url||''} readOnly placeholder={nativeDetails.isPending?'正在读取…':'未提供'} /></label><label className="agent-management-field"><span>API Key</span><input aria-label="API Key 状态" readOnly value={nativeBalance.data?.error==='missing_key'?'未配置':nativeBalance.data?.status==='available'||nativeBalance.data?.error==='unauthorized'||nativeBalance.data?.status==='unsupported'?'已配置':'未确认'} /></label><label className="agent-management-field"><span>CODEX_HOME</span><input aria-label="CODEX_HOME" readOnly value={nativeDetails.data?.details.home||provider.codexHome||''} /></label></>}
             {provider.fields
               .filter(
                 (field) =>
@@ -1258,14 +1263,20 @@ function ProviderEditor({
                 />
               ))}
           </div>
+          {nativeApi&&<p className="agent-management-hint">API 地址和凭据由本机 Codex 配置管理；可在下方配置文件中编辑可公开的配置。</p>}
       </section>
+      {nativeApi&&nativeDetails.data?.details&&<ProviderModelTable key="native-models" agentId={agentId} providerId="native"
+        options={[...nativeDetails.data.details.models.map(model=>({model:model.model,name:model.name||model.model})),...detected]}
+        selected={nativeDetails.data.details.models.map(model=>model.model)} defaultModel={nativeDetails.data.details.settings.model||''} readOnly={readOnly} selectionReadOnly
+        busy={update.isPending||engineOperation.busy} detecting={detect.isPending} canSave={!usage.busy&&usage.verified}
+        onSelectedChange={()=>{}} onDefaultChange={()=>{}} onDetect={()=>detect.mutate()} onSave={saveProvider} onDirtyChange={setModelsDirty} onBusyChange={setModelsSaving}/>}
       {provider.id!=='native'?<ProviderModelTable key={provider.id} agentId={agentId} providerId={provider.id}
         options={[...provider.models.map(model=>({model,name:model})),...detected]}
         selected={selectedModels} defaultModel={fields.defaultModel||''} readOnly={readOnly}
         busy={update.isPending||engineOperation.busy||remove.isPending} detecting={detect.isPending}
         canSave={!usage.busy&&usage.verified&&(provider.id==='native'||selectedModels.length>0)}
         onSelectedChange={setSelectedModels} onDefaultChange={model=>setFields(current=>({...current,defaultModel:model}))}
-        onDetect={()=>detect.mutate()} onSave={saveProvider} onDirtyChange={setModelsDirty} onBusyChange={setModelsSaving}/>:!readOnly&&<div className="agent-management-actions"><button type="button" className="agent-management-button" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate()}><Save size={13}/>保存并重启 Engine</button></div>}
+        onDetect={()=>detect.mutate()} onSave={saveProvider} onDirtyChange={setModelsDirty} onBusyChange={setModelsSaving}/>:!readOnly&&!nativeApi&&<div className="agent-management-actions"><button type="button" className="agent-management-button" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate()}><Save size={13}/>保存并重启 Engine</button></div>}
       {files.length>0&&<section className="agent-management-section provider-files"><button type="button" className="agent-management-button" aria-expanded={filesOpen} onClick={()=>setFilesOpen(!filesOpen)}><ChevronRight size={13} style={{transform:filesOpen?'rotate(90deg)':undefined}}/>配置文件 ({files.length})</button>{filesOpen&&<ConfigFiles agentId={agentId} files={files} readOnly={readOnly} onDirtyChange={onFileDirtyChange}/>}</section>}
       {deleteOpen && (
         <ProviderDeleteDialog
@@ -1538,7 +1549,7 @@ function CodexWorkspace({
   onDirtyChange: (dirty: boolean) => void;
   onFileDirtyChange: (dirty: boolean) => void;
 }) {
-  const accounts=useQuery({queryKey:['codex-environment-management'],queryFn:()=>api.codexEnvironments.management(),retry:false,enabled:!readOnly});
+  const accounts=useQuery({queryKey:['codex-environment-management'],queryFn:()=>api.codexEnvironments.management(),retry:false,enabled:!readOnly,refetchInterval:query=>query.state.data?.environments.some(e=>e.enabled&&!e.auth_mode)?10000:false});
   const [newKind,setNewKind]=useState<'api'|'account'>('api');
   const accountProviders=accounts.data?.environments.filter(e=>e.kind==='account')||[];
   const nativeEnvironment=accounts.data?.environments.find(e=>e.id==='native');
@@ -1633,7 +1644,7 @@ function CodexWorkspace({
           {newKind==='account'?<CodexAccountProviderEditor onDirtyChange={providerDirtyChange} onSaved={e=>{setSelectedProviderId(e.id);setAdding(false);setProviderDirty(false);}}/>:<AddCodexProvider agentId={agentId} readOnly={readOnly} onEditingChange={providerDirtyChange} onClose={()=>{setAdding(false);setProviderDirty(false);onDirtyChange(false);}}/>}</div>
         ) : selectedAccount ? (
           <CodexAccountProvider key={selectedAccount.id} environment={selectedAccount} readOnly={readOnly} onDirtyChange={providerDirtyChange}/>
-        ) : selected?.id === 'native' && !nativeEditing ? (
+        ) : selected?.id === 'native' && !nativeEditing && nativeEnvironment?.auth_mode!=='api' ? (
           <CodexAccountProvider key="native" environment={nativeEnvironment?{...nativeEnvironment,name:selected.name}:{id:'native',name:selected.name,kind:'native',enabled:selected.enabled,allowed_user_ids:null}} readOnly={readOnly} onDirtyChange={providerDirtyChange} nativeInfo={selected} onNativeEdit={()=>setNativeEditing(true)}/>
         ) : selected ? (
           <ProviderEditor
@@ -1643,6 +1654,7 @@ function CodexWorkspace({
             readOnly={readOnly}
             onDirtyChange={providerDirtyChange}
             onFileDirtyChange={fileDirtyChange}
+            nativeApi={selected.id==='native'&&nativeEnvironment?.auth_mode==='api'}
             onCloseEditor={selected.id==='native'?()=>{if((providerDirty||fileDirty)&&!window.confirm('当前配置有未保存的修改，确定返回吗？'))return;setProviderDirty(false);setFileDirty(false);setNativeEditing(false);}:undefined}
           />
         ) : (
