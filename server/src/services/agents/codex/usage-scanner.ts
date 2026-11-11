@@ -7,7 +7,7 @@ home=pathlib.Path(o.get('home') or str(pathlib.Path.home()/'.codex')).resolve()
 mode=o.get('mode','full'); day=o.get('day')
 if mode not in ['full','daily']:raise ValueError('invalid mode')
 if mode=='daily':datetime.date.fromisoformat(day)
-roots=[home/'sessions',home/'archived_sessions']; paths=[]; directories=0; inventory=0; errors=0
+roots=[home/'sessions',home/'archived_sessions']; paths=[]; directories=0; inventory=0; errors=0; history_files=0; history_bytes=0
 def walk_error(error):raise error
 for root in roots:
  if root.is_symlink():raise ValueError('history root is a symlink')
@@ -23,6 +23,7 @@ for root in roots:
    p=pathlib.Path(directory,name)
    if p.is_symlink():errors+=1;continue
    st=p.stat()
+   history_files+=1;history_bytes+=st.st_size
    modified=datetime.datetime.fromtimestamp(st.st_mtime,datetime.timezone.utc).date().isoformat()
    if mode=='full' or modified==day:paths.append((p,st.st_size))
    if len(paths)>20000:raise RuntimeError('history inventory exceeds limit')
@@ -76,5 +77,5 @@ for path,size in paths:
     group['requests']+=1
     for k in fields:group['tokens'][k]=None if group['tokens'][k] is None or tokens[k] is None else group['tokens'][k]+tokens[k]
    except (ValueError,TypeError,AttributeError,OverflowError):errors+=1
-print(json.dumps({'rows':list(groups.values()),'mode':mode,'day':day,'errors':errors,'partial':errors>0,'progress':{'files_total':len(paths),'files_complete':len(paths),'bytes_total':sum(s for _,s in paths),'bytes_read':read}},separators=(',',':'),allow_nan=False))
+print(json.dumps({'rows':list(groups.values()),'mode':mode,'day':day,'errors':errors,'partial':errors>0,'progress':{'mode':mode,'day':day,'history_files':history_files,'history_bytes':history_bytes,'files_selected':len(paths),'files_total':len(paths),'files_complete':len(paths),'bytes_total':sum(s for _,s in paths),'bytes_read':read}},separators=(',',':'),allow_nan=False))
 `;

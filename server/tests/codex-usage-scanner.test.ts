@@ -19,14 +19,14 @@ describe('account-scoped complete-file scanner',()=>{
   await writeFile(file,header+longContext+tool+record('2026-01-01T12:00:00Z',10,10)+record('2026-01-02T12:00:00Z',20,10));
   await mkdir(join(home,'archived_sessions'));await writeFile(join(home,'archived_sessions','old.jsonl'),meta+record('2025-01-01T12:00:00Z',4,4));
   const result=await scan();expect(result.rows).toHaveLength(3);expect(result.rows.find((r:any)=>r.day==='2026-01-01')).toMatchObject({cwd:'/large/project',model:'gpt-6.1-sol',tokens:{total_tokens:10}});
-  expect(result.errors).toBe(0);expect(result.partial).toBe(false);expect(result.progress.files_complete).toBe(2);expect(result.progress.bytes_read).toBe(result.progress.bytes_total);
+  expect(result.errors).toBe(0);expect(result.partial).toBe(false);expect(result.progress).toMatchObject({mode:'full',history_files:2,files_selected:2,files_complete:2});expect(result.progress.bytes_read).toBe(result.progress.bytes_total);
   expect(result).not.toHaveProperty('changes');expect(result).not.toHaveProperty('events');
  });
  it('selects by UTC modification day, rereads whole files and retains only today while preserving older model context',async()=>{
   await writeFile(file,meta+context+record('2026-01-01T12:00:00Z',100,100)+record('2026-01-02T12:00:00Z',150,50));
   await utimes(file,new Date('2026-01-02T10:00:00Z'),new Date('2026-01-02T10:00:00Z'));
   const old=join(home,'sessions','not-modified-today.jsonl');await writeFile(old,meta+record('2026-01-02T11:00:00Z',999,999));await utimes(old,new Date('2026-01-01T23:59:59Z'),new Date('2026-01-01T23:59:59Z'));
-  const first=await scan('daily');expect(first.rows).toHaveLength(1);expect(first.rows[0]).toMatchObject({day:'2026-01-02',model:'gpt-6.1-sol',tokens:{total_tokens:50}});expect(first.progress.files_total).toBe(1);
+  const first=await scan('daily');expect(first.rows).toHaveLength(1);expect(first.rows[0]).toMatchObject({day:'2026-01-02',model:'gpt-6.1-sol',tokens:{total_tokens:50}});expect(first.progress).toMatchObject({mode:'daily',day:'2026-01-02',history_files:2,files_selected:1,files_complete:1});expect(first.progress.history_bytes).toBeGreaterThan(first.progress.bytes_total);
   expect((await scan('daily')).rows).toEqual(first.rows);
   await appendFile(file,record('2026-01-02T13:00:00Z',170,20));await utimes(file,new Date('2026-01-02T14:00:00Z'),new Date('2026-01-02T14:00:00Z'));
   expect((await scan('daily')).rows[0]).toMatchObject({requests:2,tokens:{total_tokens:70}});
