@@ -33,6 +33,11 @@ describe('same-machine account SSH transport',()=>{
   });
   expect(await accountCommandInput(connection,'print("ok")','文件内容')).toBe('中文');expect(input).toBe('文件内容');
  });
+ it('counts response bytes incrementally while preserving a large chunked response',async()=>{
+  const original=Buffer.byteLength,measured:number[]=[];const measure=vi.spyOn(Buffer,'byteLength').mockImplementation(((value:any,...args:any[])=>{if(typeof value==='string')measured.push(value.length);return original(value,...args as []);}) as typeof Buffer.byteLength);
+  state.forward.mockImplementation(()=>{const child:any=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=vi.fn();child.stdin.on('end',()=>{for(let i=0;i<4096;i++)child.stdout.write('x'.repeat(1024));child.stdout.end();child.emit('close',0);});child.stdin.resume();return child;});
+  try{const output=await localCommandInput('unused','',{maxOutputBytes:5*1024*1024});expect(output).toHaveLength(4*1024*1024);expect(Math.max(...measured)).toBeLessThanOrEqual(1024);}finally{measure.mockRestore();}
+ });
  it('does not forward unrelated service environment values to local file helpers',async()=>{
   vi.stubEnv('TEST_UNRELATED_SERVICE_SECRET','dummy');state.forward.mockImplementation((_command:string,_args:string[],options:any)=>{
    expect(options.env.TEST_UNRELATED_SERVICE_SECRET).toBeUndefined();const child:any=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=vi.fn();
