@@ -1306,6 +1306,7 @@ export function SessionConversation({
           return;
         }
         if (frame.type === "unavailable") {
+          setMessages(previous => previous.map(message => message.streaming ? {...message, streaming: false} : message));
           pushAvailable.current = false;
           setLiveRetrying(!!frame.retrying);
           setLiveReason(frame.reason || "实时连接暂不可用");
@@ -1340,6 +1341,7 @@ export function SessionConversation({
       socket.onclose = () => {
         if (!disposed && liveSocket.current === current) {
           flushPatches();
+          setMessages(previous => previous.map(message => message.streaming ? {...message, streaming: false} : message));
           pushAvailable.current = false;
           liveSocket.current = null;
           for (const pending of pendingAnswers.current.values()) {

@@ -77,6 +77,16 @@ describe('conversation send transaction', () => {
     act(()=>document.dispatchEvent(new Event('visibilitychange')));expect(Socket.latest).not.toBe(second);
     expect(editor).toHaveTextContent('未发送的草稿');expect(submit).not.toHaveBeenCalled();
   });
+  it('clears stale streaming indicators on disconnect and restores live streaming after reconnect',async()=>{
+    await mount();const first=Socket.latest;
+    const item={id:'partial',role:'assistant',text:'部分输出',phase:'commentary',streaming:true,turn_id:'turn'};
+    act(()=>first.emit({type:'snapshot',messages:[item],busy:true,stage:'answering'}));
+    await waitFor(()=>expect(screen.getByText('Streaming')).toBeInTheDocument());
+    act(()=>first.emit({type:'unavailable',reason:'断线',retrying:true}));
+    await waitFor(()=>expect(screen.queryByText('Streaming')).not.toBeInTheDocument());expect(screen.getByText('部分输出')).toBeInTheDocument();
+    act(()=>first.emit({type:'snapshot',messages:[{...item,text:'部分输出继续'}],busy:true,stage:'answering'}));
+    await waitFor(()=>expect(screen.getByText('Streaming')).toBeInTheDocument());expect(screen.getByText('部分输出继续')).toBeInTheDocument();
+  });
   it('resynchronizes a missing delta sequence immediately without replaying a submitted message',async()=>{
     const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();const first=Socket.latest;
     act(()=>first.emit({type:'snapshot',stream_id:'shared',stream_seq:1,messages:[],busy:false,stage:'idle'}));
