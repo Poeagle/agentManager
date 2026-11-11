@@ -1,50 +1,51 @@
 import {execFile} from 'node:child_process';
-import {mkdtemp,mkdir,writeFile,appendFile,rm,symlink} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,appendFile,rm,symlink,utimes} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {afterEach,beforeEach,describe,expect,it} from 'vitest';
 import {USAGE_SCAN} from '../src/services/agents/codex/usage-scanner.js';
 let home:string,file:string;
-function scan(cursors:Record<string,unknown>={}){return new Promise<any>((resolve,reject)=>{const child=execFile('python3',['-c',USAGE_SCAN],{maxBuffer:768*1024},(error,out)=>error?reject(error):resolve(JSON.parse(out)));child.stdin!.end(JSON.stringify({home,cursors}));});}
+function scan(mode='full',day='2026-01-02'){return new Promise<any>((resolve,reject)=>{const child=execFile('python3',['-c',USAGE_SCAN],{maxBuffer:1024*1024},(error,out)=>error?reject(error):resolve(JSON.parse(out)));child.stdin!.end(JSON.stringify({home,mode,day}));});}
 const meta=JSON.stringify({type:'session_meta',payload:{cwd:'/project'}})+'\n';
+const context=JSON.stringify({type:'turn_context',payload:{model:'gpt-6.1-sol'}})+'\n';
 const record=(stamp:string,total:number,last:number)=>JSON.stringify({type:'event_msg',timestamp:stamp,payload:{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{total_tokens:last,input_tokens:last,output_tokens:0}}}})+'\n';
 beforeEach(async()=>{home=await mkdtemp(join(tmpdir(),'codex-usage-test-'));await mkdir(join(home,'sessions'));file=join(home,'sessions','rollout-test.jsonl');});
 afterEach(async()=>{await rm(home,{recursive:true,force:true});});
-describe('account-scoped incremental JSONL scanner',()=>{
- it('makes progress through a tool record larger than the read budget and keeps subsequent usage',async()=>{
-  const tool=JSON.stringify({type:'response_item',payload:{type:'function_call_output',output:'x'.repeat(18*1024*1024)}})+'\n';
-  await writeFile(file,meta+tool+record('2026-01-01T12:00:00Z',10,10));
-  const first=await scan();expect(first.partial).toBe(true);expect(first.changes[0][1].offset).toBeGreaterThan(1024*1024);expect(first.changes[0][1].skip_record).toBe(true);
-  const next=await scan(Object.fromEntries(first.changes));expect(next.events).toHaveLength(1);expect(next.events[0].tokens.total_tokens).toBe(10);expect(next.progress.files_complete).toBe(1);
- });
- it('keeps valid usage when the payload precedes the outer record type',async()=>{
-  const r=JSON.parse(record('2026-01-01T12:00:00Z',10,10));await writeFile(file,meta+JSON.stringify({payload:r.payload,timestamp:r.timestamp,type:r.type})+'\n');
-  const result=await scan();expect(result.events).toHaveLength(1);expect(result.events[0].tokens.total_tokens).toBe(10);
- });
- it('extracts workdir from large modern metadata and does not flag oversized tool records as lost usage',async()=>{
+describe('account-scoped complete-file scanner',()=>{
+ it('scans all history in a single pass, including a giant tool record and modern metadata',async()=>{
   const header=JSON.stringify({type:'session_meta',payload:{cwd:'/large/project',base_instructions:{text:'x'.repeat(400000)}}})+'\n';
-  const tool=JSON.stringify({type:'response_item',payload:{type:'function_call_output',output:'x'.repeat(300000)}})+'\n';
-  await writeFile(file,header+tool+record('2026-01-01T12:00:00Z',10,10));
-  const result=await scan();expect(result.events[0].cwd).toBe('/large/project');expect(result.errors).toBe(0);expect(result.partial).toBe(false);
+  const tool=JSON.stringify({type:'response_item',payload:{type:'function_call_output',output:'x'.repeat(18*1024*1024)}})+'\n';
+  const longContext=JSON.stringify({type:'turn_context',payload:{instructions:'x'.repeat(400000),model:'gpt-6.1-sol'}})+'\n';
+  await writeFile(file,header+longContext+tool+record('2026-01-01T12:00:00Z',10,10)+record('2026-01-02T12:00:00Z',20,10));
+  await mkdir(join(home,'archived_sessions'));await writeFile(join(home,'archived_sessions','old.jsonl'),meta+record('2025-01-01T12:00:00Z',4,4));
+  const result=await scan();expect(result.rows).toHaveLength(3);expect(result.rows.find((r:any)=>r.day==='2026-01-01')).toMatchObject({cwd:'/large/project',model:'gpt-6.1-sol',tokens:{total_tokens:10}});
+  expect(result.errors).toBe(0);expect(result.partial).toBe(false);expect(result.progress.files_complete).toBe(2);expect(result.progress.bytes_read).toBe(result.progress.bytes_total);
+  expect(result).not.toHaveProperty('changes');expect(result).not.toHaveProperty('events');
  });
- it('resumes at complete lines and ignores duplicate snapshots',async()=>{
-  await writeFile(file,meta+record('2026-01-01T12:00:00Z',100,100));
-  const first=await scan();expect(first.events).toHaveLength(1);expect(first.events[0]).toMatchObject({cwd:'/project',tokens:{total_tokens:100}});
-  expect(first.progress.files_complete).toBe(1);expect(first.progress.files_total).toBe(1);expect(first.progress.bytes_read).toBe(first.progress.bytes_total);
-  const cursors=Object.fromEntries(first.changes);expect((await scan(cursors)).events).toHaveLength(0);
-  const next=record('2026-01-02T12:00:00Z',150,50);await appendFile(file,record('2026-01-01T12:01:00Z',100,100)+next.slice(0,-4));
-  const partial=await scan(cursors);expect(partial.events).toHaveLength(0);expect(partial.partial).toBe(true);
-  expect(partial.progress.files_complete).toBe(0);expect(partial.progress.bytes_read).toBeLessThan(partial.progress.bytes_total);
-  await appendFile(file,next.slice(-4));const final=await scan(Object.fromEntries(partial.changes));expect(final.events).toHaveLength(1);expect(final.events[0].tokens.total_tokens).toBe(50);
+ it('selects by UTC modification day, rereads whole files and retains only today while preserving older model context',async()=>{
+  await writeFile(file,meta+context+record('2026-01-01T12:00:00Z',100,100)+record('2026-01-02T12:00:00Z',150,50));
+  await utimes(file,new Date('2026-01-02T10:00:00Z'),new Date('2026-01-02T10:00:00Z'));
+  const old=join(home,'sessions','not-modified-today.jsonl');await writeFile(old,meta+record('2026-01-02T11:00:00Z',999,999));await utimes(old,new Date('2026-01-01T23:59:59Z'),new Date('2026-01-01T23:59:59Z'));
+  const first=await scan('daily');expect(first.rows).toHaveLength(1);expect(first.rows[0]).toMatchObject({day:'2026-01-02',model:'gpt-6.1-sol',tokens:{total_tokens:50}});expect(first.progress.files_total).toBe(1);
+  expect((await scan('daily')).rows).toEqual(first.rows);
+  await appendFile(file,record('2026-01-02T13:00:00Z',170,20));await utimes(file,new Date('2026-01-02T14:00:00Z'),new Date('2026-01-02T14:00:00Z'));
+  expect((await scan('daily')).rows[0]).toMatchObject({requests:2,tokens:{total_tokens:70}});
  });
- it('gives copied fork records the same identity and excludes cumulative baselines',async()=>{
-  const body=meta+record('2026-01-01T12:00:00Z',5000,50);await writeFile(file,body);await writeFile(join(home,'sessions','copy.jsonl'),body);
-  const result=await scan();expect(new Set(result.events.map((e:any)=>e.key)).size).toBe(1);expect(result.events[0].tokens.total_tokens).toBe(50);
+ it('deduplicates inherited fork records, repeated snapshots and charges last-request counters only',async()=>{
+  const body=meta+context+record('2026-01-02T12:00:00Z',5000,50)+record('2026-01-02T12:01:00Z',5000,50);
+  await writeFile(file,body);await writeFile(join(home,'sessions','copy.jsonl'),body);
+  const result=await scan();expect(result.rows).toHaveLength(1);expect(result.rows[0]).toMatchObject({requests:1,tokens:{total_tokens:50}});
  });
- it('replays truncations and never follows symlinks outside history',async()=>{
-  await writeFile(file,meta+record('2026-01-01T12:00:00Z',100,100));const first=await scan();
-  await writeFile(file,meta);const next=await scan(Object.fromEntries(first.changes));expect(next.changes[0][1].offset).toBe(Buffer.byteLength(meta));expect(next.events).toHaveLength(0);
-  const secret=join(home,'auth.jsonl');await writeFile(secret,record('2026-01-01T12:00:00Z',99,99));await symlink(secret,join(home,'sessions','escape.jsonl'));
-  const result=await scan();expect(result.events).toHaveLength(0);expect(result.errors).toBeGreaterThan(0);
+ it('handles UTC timestamp boundaries and a reordered outer type without assuming local timezone',async()=>{
+  const r=JSON.parse(record('2026-01-03T00:30:00+08:00',10,10));await writeFile(file,meta+JSON.stringify({payload:r.payload,timestamp:r.timestamp,type:r.type})+'\n');
+  await utimes(file,new Date('2026-01-02T23:00:00Z'),new Date('2026-01-02T23:00:00Z'));
+  expect((await scan('daily')).rows[0].day).toBe('2026-01-02');
+ });
+ it('does not follow symlinks, reports malformed or incomplete lines and recovers by rereading',async()=>{
+  const next=record('2026-01-02T12:00:00Z',100,100);await writeFile(file,meta+'broken\n'+next.slice(0,-4));
+  const partial=await scan();expect(partial.rows).toHaveLength(0);expect(partial.partial).toBe(true);
+  await appendFile(file,next.slice(-4));expect((await scan()).rows[0].tokens.total_tokens).toBe(100);
+  await writeFile(file,meta);const secret=join(home,'auth.jsonl');await writeFile(secret,next);await symlink(secret,join(home,'sessions','escape.jsonl'));
+  const result=await scan();expect(result.rows).toHaveLength(0);expect(result.errors).toBeGreaterThan(0);
  });
 });

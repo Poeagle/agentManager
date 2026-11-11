@@ -8,8 +8,11 @@ import {CREDIT_RATE_DATE,estimateUsageCredits} from './usage-credits.js';
 let timer:ReturnType<typeof setTimeout>|undefined;
 let stopped=true;
 const pending=new Map<string,Promise<void>>();
+const controllers=new Map<string,AbortController>();
+const usageIdentity=(e:ReturnType<typeof getCodexEnvironment>)=>JSON.stringify(e.kind==='account'?[e.connection?.username,e.connection?.codexHome]:['native',localHome(e)]);
 export function initAccountUsage(){getDb().exec(`
- CREATE TABLE IF NOT EXISTS codex_usage_cursors(account TEXT NOT NULL,path TEXT NOT NULL,state TEXT NOT NULL,PRIMARY KEY(account,path));
+ DROP TABLE IF EXISTS codex_usage_cursors;
+ CREATE TABLE IF NOT EXISTS codex_usage_snapshots(account TEXT PRIMARY KEY,initialized INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS codex_usage_events(account TEXT NOT NULL,event_key TEXT NOT NULL,day TEXT NOT NULL,cwd TEXT NOT NULL,model TEXT,tier TEXT,tokens TEXT NOT NULL,PRIMARY KEY(account,event_key));
  CREATE INDEX IF NOT EXISTS codex_usage_days ON codex_usage_events(account,day);
  CREATE TABLE IF NOT EXISTS codex_usage_status(account TEXT PRIMARY KEY,checked_at TEXT,error TEXT,partial INTEGER NOT NULL DEFAULT 1);
@@ -20,36 +23,49 @@ export async function collectAccountUsage(id:string):Promise<void>{
  if(pending.has(id))return pending.get(id)!;
  const task=(async()=>{
   const db=getDb(),e=getCodexEnvironment(id);if(!e.enabled||e.kind==='provider')return;
-  const identity=JSON.stringify(e.kind==='account'?[e.connection?.username,e.connection?.codexHome]:['native',localHome(e)]);
+  const identity=usageIdentity(e);
   const source=db.prepare('SELECT identity FROM codex_usage_sources WHERE account=?').get(id) as {identity:string}|undefined;
   if(source?.identity!==identity)db.transaction(()=>{
-   for(const table of ['codex_usage_cursors','codex_usage_events','codex_usage_status','codex_usage_progress'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
+   for(const table of ['codex_usage_snapshots','codex_usage_events','codex_usage_status','codex_usage_progress'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
    db.prepare('INSERT OR REPLACE INTO codex_usage_sources VALUES(?,?)').run(id,identity);
   })();
-  const cursors=Object.fromEntries((db.prepare('SELECT path,state FROM codex_usage_cursors WHERE account=?').all(id) as {path:string;state:string}[]).map(row=>[row.path,JSON.parse(row.state)]));
+  const initialized=!!db.prepare('SELECT initialized FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
+  const mode=initialized?'daily':'full',day=new Date().toISOString().slice(0,10);
+  const controller=new AbortController();controllers.set(id,controller);
   try{
    const home=e.kind==='account'?e.connection?.codexHome:localHome(e);
-   const input=JSON.stringify({home,cursors});
-   const result=JSON.parse(await (e.kind==='account'?accountCommandInput(environmentConnection(e),USAGE_SCAN,input):localCommandInput(USAGE_SCAN,input)));
-   if(!Array.isArray(result.events)||!Array.isArray(result.changes))throw Error('Invalid usage response');
+   const input=JSON.stringify({home,mode,day});
+   const options={timeoutMs:mode==='full'?300000:120000,maxOutputBytes:32*1024*1024,signal:controller.signal};
+   const result=JSON.parse(await (e.kind==='account'?accountCommandInput(environmentConnection(e),USAGE_SCAN,input,options):localCommandInput(USAGE_SCAN,input,options)));
+   if(!Array.isArray(result.rows)||result.rows.length>50000||result.mode!==mode||result.day!==day)throw Error('Invalid usage response');
+   for(const row of result.rows){
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(row.day)||mode==='daily'&&row.day!==day||typeof row.cwd!=='string'||row.cwd.length>4096||!Number.isSafeInteger(row.requests)||row.requests<1||!row.tokens||tokenFields.some(k=>row.tokens[k]!==null&&(!Number.isFinite(row.tokens[k])||row.tokens[k]<0)))throw Error('Invalid usage row');
+   }
+   const current=getCodexEnvironment(id);if(!current.enabled||usageIdentity(current)!==identity)return;
    db.transaction(()=>{
-    const insert=db.prepare('INSERT OR IGNORE INTO codex_usage_events VALUES(?,?,?,?,?,?,?)');
-    for(const event of result.events){const time=Date.parse(event.timestamp);if(!Number.isFinite(time))continue;insert.run(id,event.key,new Date(time).toISOString().slice(0,10),event.cwd||'',event.model||null,event.tier||null,JSON.stringify(event.tokens));}
-    const cursor=db.prepare('INSERT OR REPLACE INTO codex_usage_cursors VALUES(?,?,?)');
-    for(const [path,state] of result.changes)cursor.run(id,path,JSON.stringify(state));
+    // Publish one complete snapshot: historical days remain untouched on daily scans.
+    if(mode==='full')db.prepare('DELETE FROM codex_usage_events WHERE account=?').run(id);
+    else db.prepare('DELETE FROM codex_usage_events WHERE account=? AND day=?').run(id,day);
+    const insert=db.prepare('INSERT INTO codex_usage_events VALUES(?,?,?,?,?,?,?)');
+    for(const row of result.rows)insert.run(id,JSON.stringify([row.day,row.cwd,row.model,row.tier]),row.day,row.cwd,row.model||null,row.tier||null,JSON.stringify({...row.tokens,requests:row.requests}));
+    db.prepare('INSERT OR REPLACE INTO codex_usage_snapshots VALUES(?,1)').run(id);
     db.prepare('INSERT OR REPLACE INTO codex_usage_status VALUES(?,?,?,?)').run(id,new Date().toISOString(),result.errors?'部分记录不可读取或缺少统计字段':null,result.partial||result.errors?1:0);
     if(result.progress)db.prepare('INSERT OR REPLACE INTO codex_usage_progress VALUES(?,?)').run(id,JSON.stringify(result.progress));
    })();
   }catch{db.prepare(`INSERT INTO codex_usage_status(account,error,partial) VALUES(?,'采集失败，保留上次成功数据',1) ON CONFLICT(account) DO UPDATE SET error=excluded.error,partial=1`).run(id);}
+  finally{controllers.delete(id);}
  })();pending.set(id,task);try{await task;}finally{pending.delete(id);}
 }
 export function cachedAccountUsage(id:string){
- const db=getDb();const status=db.prepare('SELECT checked_at,error,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;error:string|null;partial:number}|undefined;
+ const db=getDb();
+ const source=db.prepare('SELECT identity FROM codex_usage_sources WHERE account=?').get(id) as {identity:string}|undefined;
+ if(source&&source.identity!==usageIdentity(getCodexEnvironment(id)))return {initialized:false,checked_at:null,error:null,partial:true,progress:null,timezone:'UTC',credit_rate_date:CREDIT_RATE_DATE,rows:[]};
+ const status=db.prepare('SELECT checked_at,error,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;error:string|null;partial:number}|undefined;
  const sums=tokenFields.map(k=>`CASE WHEN COUNT(json_extract(tokens,'$.${k}'))=COUNT(*) THEN SUM(json_extract(tokens,'$.${k}')) ELSE NULL END AS ${k}`).join(',');
  const rows=db.prepare(`SELECT day,cwd,${sums} FROM codex_usage_events WHERE account=? GROUP BY day,cwd ORDER BY day DESC,cwd LIMIT 5001`).all(id) as Array<Record<string,any>>;
  const estimates=new Map<string,{value:number;covered:number;requests:number}>();
  const models=new Map<string,Map<string,{model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number}}>>();
- const breakdown=db.prepare(`SELECT day,cwd,model,tier,COUNT(*) requests,${sums} FROM codex_usage_events WHERE account=? GROUP BY day,cwd,model,tier`).all(id) as Array<Record<string,any>>;
+ const breakdown=db.prepare(`SELECT day,cwd,model,tier,SUM(COALESCE(json_extract(tokens,'$.requests'),1)) requests,${sums} FROM codex_usage_events WHERE account=? GROUP BY day,cwd,model,tier`).all(id) as Array<Record<string,any>>;
  for(const row of breakdown){
   const key=JSON.stringify([row.day,row.cwd]),group=estimates.get(key)||{value:0,covered:0,requests:0};const value=estimateUsageCredits(row.model,row.tier,row);group.requests+=row.requests;if(value!==null){group.value+=value;group.covered+=row.requests;}estimates.set(key,group);
   const byModel=models.get(key)||new Map(),modelKey=JSON.stringify(row.model),model=byModel.get(modelKey)||{model:row.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0}};
@@ -59,24 +75,12 @@ export function cachedAccountUsage(id:string){
  }
  const projects=db.prepare('SELECT name,path FROM projects').all() as {name:string;path:string}[];
  const progress=db.prepare('SELECT data FROM codex_usage_progress WHERE account=?').get(id) as {data:string}|undefined;
- return {checked_at:status?.checked_at??null,error:status?.error??null,partial:status?.partial!==0||rows.length>5000,progress:progress?JSON.parse(progress.data):null,timezone:'UTC',credit_rate_date:CREDIT_RATE_DATE,rows:rows.slice(0,5000).map(row=>{
+ const initialized=!!db.prepare('SELECT account FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
+ return {initialized,checked_at:status?.checked_at??null,error:status?.error??null,partial:status?.partial!==0||rows.length>5000,progress:progress?JSON.parse(progress.data):null,timezone:'UTC',credit_rate_date:CREDIT_RATE_DATE,rows:rows.slice(0,5000).map(row=>{
   const match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];
   const estimate=estimates.get(JSON.stringify([row.day,row.cwd]));
   return {date:row.day,cwd:row.cwd,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null,models:[...(models.get(JSON.stringify([row.day,row.cwd]))?.values()||[])].sort((a,b)=>(b.tokens.total_tokens??0)-(a.tokens.total_tokens??0))};
  })};
 }
-export async function backfillAccountUsage(id:string,shouldStop:()=>boolean=()=>false){
- const deadline=Date.now()+60000;
- let advanced=false;
- const progress=()=>{const row=getDb().prepare('SELECT data FROM codex_usage_progress WHERE account=?').get(id) as {data:string}|undefined;return row?JSON.parse(row.data):null;};
- for(let batch=0;batch<40&&!shouldStop()&&Date.now()<deadline;batch++){
-  const before=progress();
-  await collectAccountUsage(id);
-  const after=progress();
-  if(!after||after.files_complete>=after.files_total||JSON.stringify(before)===JSON.stringify(after))return false;
-  advanced=true;
- }
- return advanced&&!shouldStop();
-}
-export function startAccountUsage(){initAccountUsage();stopped=false;const tick=async()=>{let backlog=false;try{for(const e of allCodexEnvironments()){if(stopped)break;if(e.enabled&&e.kind!=='provider')backlog=await backfillAccountUsage(e.id,()=>stopped).catch(()=>false)||backlog;}}catch{/* Configuration may be changing; retry on the next scheduled pass. */}finally{if(!stopped){timer=setTimeout(()=>void tick(),backlog?1000:300000);timer.unref();}}};timer=setTimeout(()=>void tick(),1000);timer.unref();}
-export async function stopAccountUsage(){stopped=true;clearTimeout(timer);await Promise.allSettled([...pending.values()]);}
+export function startAccountUsage(){initAccountUsage();stopped=false;const tick=async()=>{try{for(const e of allCodexEnvironments()){if(stopped)break;if(e.enabled&&e.kind!=='provider')await collectAccountUsage(e.id);}}catch{/* Configuration may be changing; retry on the next scheduled pass. */}finally{if(!stopped){timer=setTimeout(()=>void tick(),300000);timer.unref();}}};timer=setTimeout(()=>void tick(),1000);timer.unref();}
+export async function stopAccountUsage(){stopped=true;clearTimeout(timer);for(const controller of controllers.values())controller.abort();await Promise.allSettled([...pending.values()]);}
