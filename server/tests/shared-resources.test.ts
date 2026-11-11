@@ -69,8 +69,8 @@ describe('shared .env file and separate usage instructions', () => {
     expect(otherUser.json().resources).toMatchObject({ revision: 0, env_file: '' });
     expect((await open(memberCookie)).statusCode).toBe(400);
     expect((await put(input, memberCookie)).statusCode).toBe(403);
-    const memberFile = join(root, '.member.env');
-    expect((await put({ ...input, env_file: memberFile }, memberCookie)).statusCode).toBe(200);
+    const memberFile = join(project, '.member.env');
+    expect((await put({ ...input, directory:project, scope_path:project, env_file: memberFile }, memberCookie)).statusCode).toBe(200);
     expect((await open(memberCookie)).json().path).toBe(memberFile);
     expect((await put({ ...input, env_file: join(other, '.env'), revision: 1 }, memberCookie)).statusCode).toBe(403);
     expect((await put({ ...input, user_id: owner }, memberCookie)).statusCode).toBe(400);
@@ -114,5 +114,29 @@ describe('shared .env file and separate usage instructions', () => {
     expect((await put({ ...input, directory: '/' })).statusCode).toBe(400);
     symlinkSync(join(other, '.env'), input.env_file);
     expect((await put(input)).statusCode).toBe(400);
+  });
+  it('derives scope and .env from the directory, creates without overwriting, and enforces current project authorization',async()=>{
+    expect((await put({directory:root,instructions:'使用本地环境变量',enabled:true,revision:0},memberCookie)).statusCode).toBe(403);
+    const response=await put({directory:project,instructions:'使用本地环境变量',enabled:true,revision:0},memberCookie);
+    expect(response.statusCode).toBe(200);expect(response.json().resources).toMatchObject({directory:project,scope_path:project,env_file:join(project,'.env'),env_exists:false});
+    expect(sharedResourceLaunch(member,project)).toBeDefined();expect(sharedResourceLaunch(member,other)).toBeUndefined();
+    const created=await app.inject({method:'POST',url:'/api/me/shared-resources/env/create',headers:headers(memberCookie)});expect(created.statusCode).toBe(200);expect(created.json()).toMatchObject({exists:true,content:''});expect(statSync(join(project,'.env')).mode&0o777).toBe(0o600);
+    expect((await app.inject({method:'POST',url:'/api/me/shared-resources/env/create',headers:headers(memberCookie)})).statusCode).toBe(409);
+    getDb().prepare('DELETE FROM project_user_access WHERE project_id=? AND user_id=?').run('project',member);
+    expect(sharedResourceLaunch(member,project)).toBeUndefined();expect((await open(memberCookie)).statusCode).toBe(403);
+  });
+  it('preserves old scope and file on read, then migrates only on a new-format save',async()=>{
+    const old=join(root,'.old.env');writeFileSync(old,content);expect((await put({...input,scope_path:project,env_file:old})).statusCode).toBe(200);
+    expect(getSharedResources(owner)).toMatchObject({scope_path:project,env_file:old});expect(sharedResourceLaunch(owner,other)).toBeUndefined();
+    const saved=await put({directory:root,instructions:input.instructions,enabled:true,revision:1});expect(saved.statusCode).toBe(200);expect(saved.json().resources).toMatchObject({scope_path:root,env_file:join(root,'.env')});expect(readFileSync(old,'utf8')).toBe(content);
+  });
+  it('restricts directory browsing to authorized paths',async()=>{
+    const browse=await app.inject({url:`/api/me/shared-resources/browse?path=${encodeURIComponent(root)}`,headers:headers(memberCookie)});expect(browse.statusCode).toBe(200);expect(browse.json().dirs.map((d:any)=>d.name)).toContain('project');expect(browse.json().dirs.map((d:any)=>d.name)).not.toContain('other');
+    expect((await app.inject({url:`/api/me/shared-resources/browse?path=${encodeURIComponent(other)}`,headers:headers(memberCookie)})).statusCode).toBe(403);
+  });
+  it('revalidates .env at creation when the path changes into a symlink',async()=>{
+    expect((await put({directory:root,instructions:'',enabled:true,revision:0})).statusCode).toBe(200);
+    const outside=join(other,'credential');writeFileSync(outside,'UNCHANGED');symlinkSync(outside,join(root,'.env'));
+    const created=await app.inject({method:'POST',url:'/api/me/shared-resources/env/create',headers:headers(cookie)});expect(created.statusCode).toBe(400);expect(readFileSync(outside,'utf8')).toBe('UNCHANGED');
   });
 });
