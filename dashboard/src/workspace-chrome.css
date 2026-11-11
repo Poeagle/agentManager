@@ -123,5 +123,7 @@
 .workspace-header .workspace-indicator span,
 .workspace-header .workspace-indicator strong {line-height:16px;}
 .workspace-header .workspace-indicator strong {font-size:11px;font-weight:500;}
-.workspace-header .workspace-quota>button {height:18px;width:18px;margin-left:0;}
+.workspace-header .workspace-quota>button {height:18px;margin-left:0;flex-shrink:0;}
+.workspace-header .workspace-quota>button[aria-label^="刷新 "] {width:18px;}
+.workspace-header .workspace-quota>button[aria-label^="查看 "] {width:auto;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .workspace-header .workspace-quota-progress {display:none;}

@@ -14,8 +14,13 @@ for root in roots:
   for name in sorted(files):
    if name.endswith('.jsonl'):paths.append(pathlib.Path(directory,name))
    if len(paths)>20000:raise RuntimeError('history inventory exceeds limit')
-# Oldest visited first prevents a large active file from starving other files.
-paths.sort(key=lambda p:(cursors.get(str(p),{}).get('visited',0),str(p)))
+# Unvisited recent files first, then least recently visited. Current work is
+# visible during bootstrap without starving older history on later passes.
+def priority(p):
+ try:modified=p.stat().st_mtime
+ except OSError:modified=0
+ return (cursors.get(str(p),{}).get('visited',0),-modified,str(p))
+paths.sort(key=priority)
 for path in paths:
  try:
   if path.is_symlink():errors+=1;continue
@@ -28,10 +33,22 @@ for path in paths:
   if budget<=0 or len(changes)>=200 or len(events)>=1000:partial=True;break
   with path.open('rb') as f:
    # A small immutable prefix detects replacement even on filesystems reusing inodes.
-   first=f.readline(262145); prefix=hashlib.sha256(first).hexdigest()
+   first=f.readline(262145); budget-=len(first); prefix=hashlib.sha256(first).hexdigest()
    generation=str(s.st_dev)+':'+str(s.st_ino)+':'+prefix
    if old.get('generation')!=generation or old.get('offset',0)>s.st_size:state={'offset':0,'cwd':None,'model':None,'tier':None}
    state['generation']=generation; state['visited']=time.time()
+   # Large modern headers contain instructions as well as cwd. Inspect once,
+   # bounded to 4 MiB, without returning the instruction fields to the caller.
+   if not state.get('cwd'):
+    f.seek(0); header=f.readline(4*1024*1024+1);budget-=len(header)
+    if header.endswith(b'\n') and len(header)<=4*1024*1024:
+     try:
+      metadata=json.loads(header)
+      if metadata.get('type')=='session_meta':
+       payload=metadata.get('payload') or {}
+       if isinstance(payload.get('cwd'),str):state['cwd']=payload['cwd'][:4096]
+       if state['offset']==0:state['offset']=len(header)
+     except (ValueError,TypeError):pass
    if state['offset']==s.st_size:
     if old.get('mtime')!=str(s.st_mtime_ns):state={'offset':0,'cwd':None,'model':None,'tier':None,'generation':generation,'visited':time.time()}
     else:changes.append([str(path),state]);continue
@@ -40,9 +57,10 @@ for path in paths:
     start=f.tell(); line=f.readline(262145); budget-=len(line);count+=1
     if len(line)>262144:
      # Skip oversized records without retaining their contents.
+     if b'"token_count"' in line[:512]:errors+=1;state['incomplete']=True
      while line and not line.endswith(b'\n') and budget>0:line=f.readline(262145);budget-=len(line)
      if not line.endswith(b'\n'):f.seek(start);partial=True;break
-     state['offset']=f.tell();errors+=1;state['incomplete']=True;continue
+     state['offset']=f.tell();continue
     if not line.endswith(b'\n'):f.seek(start);partial=True;break
     state['offset']=f.tell()
     try:r=json.loads(line)
