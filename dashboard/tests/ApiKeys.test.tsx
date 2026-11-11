@@ -1,0 +1,20 @@
+import {render,screen,fireEvent,waitFor} from '@testing-library/react';
+import {afterEach,expect,it,vi} from 'vitest';
+import {ApiKeys} from '../src/components/ApiKeys';
+import {fetchJSON,type MyPermissions} from '../src/lib/api';
+vi.mock('../src/lib/api',async original=>({...await original<typeof import('../src/lib/api')>(),fetchJSON:vi.fn()}));
+afterEach(()=>vi.restoreAllMocks());
+const permissions:MyPermissions={permissions:{settings:'write',agent_api:'read'},roles:[],catalog:[{key:'settings',label:'平台设置',levels:['read','write']},{key:'agent_api',label:'Agent API',levels:['read','write']}]};
+it('creates a scoped key and reveals it only until closed',async()=>{
+ vi.mocked(fetchJSON).mockResolvedValueOnce({keys:[]}).mockResolvedValueOnce({key:'temporary-test-key',record:{id:'key1',name:'automation',grants:{settings:'read'},created_at:new Date().toISOString(),expires_at:new Date(Date.now()+3600000).toISOString(),last_used_at:null}});
+ render(<ApiKeys permissions={permissions}/>);
+ fireEvent.change(screen.getByLabelText('名称'),{target:{value:'automation'}});
+ fireEvent.change(screen.getByLabelText('平台设置'),{target:{value:'read'}});
+ expect(screen.queryByRole('option',{name:'读写',selected:true})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'创建'}));
+ expect(await screen.findByText('temporary-test-key')).toBeVisible();
+ expect(JSON.parse(String(vi.mocked(fetchJSON).mock.calls[1][1]?.body)).grants).toEqual({settings:'read'});
+ fireEvent.click(screen.getByRole('button',{name:'关闭'}));expect(screen.queryByText('temporary-test-key')).not.toBeInTheDocument();
+ vi.mocked(fetchJSON).mockResolvedValueOnce({ok:true});fireEvent.click(screen.getByRole('button',{name:'撤销'}));
+ await waitFor(()=>expect(screen.queryByText('automation')).not.toBeInTheDocument());
+});

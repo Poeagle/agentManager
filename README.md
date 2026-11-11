@@ -12,6 +12,8 @@ you as persistent terminal sessions on the host machine, streams their output in
 real time, and adds project management, git, a file explorer, and multi-user
 access around them.
 
+For scoped, expiring API access, see [API keys](docs/api-keys.md).
+
 Key features:
 
 - **AI coding sessions** — Launch Claude or Codex Sessions per project.

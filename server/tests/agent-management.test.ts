@@ -5,7 +5,7 @@ import { openAgentSecret, readAgentManagement, sealAgentSecret, updateAgentManag
 import { ensureManagedProviderCatalog, removeManagedProviderStorage, renameCodexProvider } from '../src/services/agents/codex/management.js';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { authHook, createSession, createUser } from '../src/auth.js';
+import { authHook, createSession, createUser, hashApiKey } from '../src/auth.js';
 import { agentRoutes } from '../src/routes/agent.js';
 import { registerAgent } from '../src/services/agents/index.js';
 import { capabilities, type AgentDefinition, type AgentManagementPort, type AgentProviderState } from '../src/services/agents/types.js';
@@ -104,6 +104,17 @@ describe('agent management routes', () => {
       payload: { path: join(root, 'config.toml'), content: 'changed' } });
     expect(write.statusCode).toBe(403);
     expect(readFileSync(join(root, 'config.toml'), 'utf8')).toContain('model');
+  });
+
+  it('requires both selected key grants on actual Agent management routes', async () => {
+    const adminId=(getDb().prepare("SELECT id FROM users WHERE username='management-admin'").get() as {id:string}).id;
+    const key='amk_'+Buffer.alloc(32,7).toString('base64url');
+    getDb().prepare('INSERT INTO api_keys(id,user_id,name,token_hash,grants,created_at,expires_at) VALUES(?,?,?,?,?,?,?)').run('test-key',adminId,'test',hashApiKey(key),JSON.stringify({settings:'write',agent_api:'read'}),new Date().toISOString(),new Date(Date.now()+3600000).toISOString());
+    const headers={authorization:`Bearer ${key}`};
+    expect((await app.inject({url:'/api/agent-management/management_fixture',headers})).statusCode).toBe(200);
+    expect((await app.inject({method:'POST',url:'/api/agent-management/management_fixture/providers',headers,payload:{}})).statusCode).toBe(403);
+    getDb().prepare('UPDATE api_keys SET grants=? WHERE id=?').run(JSON.stringify({settings:'write',agent_api:'write'}),'test-key');
+    expect((await app.inject({method:'POST',url:'/api/agent-management/management_fixture/providers',headers,payload:{}})).statusCode).toBe(200);
   });
 
   it('reads and writes declared files and reports state', async () => {

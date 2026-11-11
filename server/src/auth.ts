@@ -6,7 +6,7 @@ import {canUseSessionEnvironment,isRetiredEnvironment} from './services/agents/e
  * Soft multi-tenant model: this enforces *who is logged in*. Per-row data
  * ownership/filtering lives in the route handlers (see projects.owner_id).
  */
-import {createHmac,randomBytes,scrypt,scryptSync,timingSafeEqual} from 'crypto';
+import {createHash,createHmac,randomBytes,scrypt,scryptSync,timingSafeEqual} from 'crypto';
 import {chmodSync,readFileSync,realpathSync,writeFileSync} from 'fs';
 import {dirname,join,resolve,sep} from 'path';
 import {nanoid} from 'nanoid';
@@ -14,7 +14,7 @@ import type {FastifyRequest,FastifyReply} from 'fastify';
 import {getDb} from './db/index.js';
 import {config} from './config.js';
 import {runtimeNames} from './services/runtime-namespace.js';
-import {userHasPermission} from './services/rbac.js';
+import {userHasPermission,validateGrants,type PermissionGrants,type PermissionKey,type PermissionLevel} from './services/rbac.js';
 import {sessionClients,parseSessionClients} from './services/session-clients.js';
 import {requestLoginMetadata,type LoginMetadata} from './services/login-metadata.js';
 import {privateResourcePath} from './services/shared-resources/path-guard.js';
@@ -34,6 +34,7 @@ export interface User {
 declare module 'fastify' {
   interface FastifyRequest {
     user?: User;
+    apiKeyGrants?: PermissionGrants;
   }
 }
 
@@ -271,6 +272,7 @@ export function purgeExpiredAuthSessions():number {
 /** Invalidate every session for a user (e.g. on disable / password reset). */
 export function destroyUserSessions(userId: string): void {
   getDb().prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(userId);
+  getDb().prepare('DELETE FROM api_keys WHERE user_id = ?').run(userId);
 }
 
 /* ── Cookie helpers ────────────────────────────────────────────────── */
@@ -290,6 +292,42 @@ export function readSessionCookie(req: FastifyRequest): string | null {
     }
   }
   return null;
+}
+
+/** Explicit HTTP route families. Personal credentials and authentication
+ * endpoints never accept bearer keys. Unknown routes fail closed. */
+function apiKeyRoute(method: string, path: string): [PermissionKey,PermissionLevel] | null {
+  if(!['GET','POST','PUT','PATCH','DELETE'].includes(method)||path.includes('%'))return null;
+  const read=method==='GET', level:PermissionLevel=read?'read':method==='DELETE'?'delete':'write';
+  if(/^\/api\/agent-management(?:\/|$)/.test(path))return ['settings',read?'read':'write'];
+  if(/^\/api\/settings(?:\/|$)/.test(path))return ['settings',read?'read':'write'];
+  if(/^\/api\/users(?:\/|$)/.test(path))return ['users',level];
+  if(/^\/api\/rbac\/roles(?:\/|$)/.test(path)||/^\/api\/rbac\/users(?:\/|$)/.test(path))return ['roles',level];
+  if(/^\/api\/admin(?:\/|$)/.test(path))return ['monitor',level];
+  if(path==='/api/projects'&&method==='POST')return ['projects_create','write'];
+  if(/^\/api\/projects\/[^/]+\/access(?:\/|$)/.test(path))return ['project_access',read?'read':'write'];
+  if(/^\/api\/projects(?:\/|$)/.test(path))return [read?'agent_api':'project_access',read?'read':'write'];
+  if(/^\/api\/(?:agent|sessions|scheduled-tasks|agent-quota|codex-quota|context|files|git|tasks|skills|events)(?:\/|$)/.test(path))return ['agent_api',read?'read':'write'];
+  if(path==='/api/prompt-enhancer/enhance')return ['agent_api',read?'read':'write'];
+  if(/^\/api\/(?:prompt-enhancer|ai-sources)(?:\/|$)/.test(path))return ['settings',read?'read':'write'];
+  if(/^\/api\/codex\/environments(?:\/|$)/.test(path))return ['settings',read?'read':'write'];
+  if(/^\/api\/platform-ai(?:\/|$)/.test(path))return ['agent_api',read?'read':'write'];
+  return null;
+}
+
+export function hashApiKey(token: string): string { return createHash('sha256').update(token).digest('hex'); }
+function apiKeyUser(token: string): {user:User;grants:PermissionGrants} | undefined {
+  if (!/^amk_[A-Za-z0-9_-]{43}$/.test(token)) return undefined;
+  const db=getDb();
+  const row=db.prepare('SELECT id,user_id,expires_at,grants FROM api_keys WHERE token_hash=?').get(hashApiKey(token)) as {id:string;user_id:string;expires_at:string;grants:string}|undefined;
+  if(!row || Date.parse(row.expires_at)<=Date.now() || !Number.isFinite(Date.parse(row.expires_at))) return undefined;
+  const user=findUserById(row.user_id);
+  if(!user || user.disabled) return undefined;
+  try{
+    const grants:unknown=JSON.parse(row.grants);if(!validateGrants(grants))return undefined;
+    db.prepare('UPDATE api_keys SET last_used_at=? WHERE id=?').run(new Date().toISOString(),row.id);
+    return {user,grants};
+  }catch{return undefined;}
 }
 
 export function setSessionCookie(reply: FastifyReply, token: string): void {
@@ -328,8 +366,17 @@ export async function authHook(req: FastifyRequest, reply: FastifyReply) {
 
   // Always resolve the user when a valid session cookie is present, so public
   // endpoints (e.g. /auth/status) can still report who is logged in.
+  const authorization=req.headers.authorization;
+  const scope=authorization?apiKeyRoute(req.method,path):null;
+  if(authorization && !scope) return reply.code(403).send({error:'API Key 无权访问此接口'});
   const token = readSessionCookie(req);
-  const user = token ? getSessionUser(token,requestLoginMetadata(req)) : undefined;
+  const apiKey=authorization?apiKeyUser(/^Bearer (\S+)$/.exec(authorization)?.[1] || ''):undefined;
+  const user = authorization ? apiKey?.user : token ? getSessionUser(token,requestLoginMetadata(req)) : undefined;
+  if(apiKey&&scope){
+    const rank={read:1,write:2,delete:3};const grant=apiKey.grants[scope[0]];
+    if(!grant||rank[grant]<rank[scope[1]]||!userHasPermission(apiKey.user.id,scope[0],scope[1]))return reply.code(403).send({error:'API Key 权限不足'});
+    req.apiKeyGrants=apiKey.grants;
+  }
   if (user) req.user = user;
 
   if (PUBLIC_PATHS.has(path)) return;        // public: login not required
