@@ -4,7 +4,7 @@ import Fastify,{type FastifyInstance} from 'fastify';
 import websocket from '@fastify/websocket';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
-import {authHook,createUser,createSession,setProjectToolAccess,userCanUseSessionTool} from '../src/auth.js';
+import {authHook,createUser,createSession,hashApiKey,setProjectToolAccess,userCanUseSessionTool} from '../src/auth.js';
 import {renameCodexProvider} from '../src/services/agents/codex/management.js';
 import {getDb} from '../src/db/index.js';
 import {codexEnvironmentRoutes} from '../src/routes/codex-environments.js';
@@ -29,6 +29,15 @@ describe('Codex account environments and platform ACLs',()=>{
  });
  afterEach(async()=>{await app.close();db.cleanup();vi.restoreAllMocks();});
  const create=()=>saveCodexEnvironment({name:'ymchen Codex',connection,allowed_user_ids:[owner.id]});
+ it('allows only administrators to rebuild cached usage and exposes hourly data',async()=>{
+  const path='/api/codex/environments/native/insights/rebuild';
+  expect((await app.inject({method:'POST',url:path,headers:{cookie:cookies.owner}})).statusCode).toBe(403);
+  vi.spyOn(transport,'localCommandInput').mockImplementation(async(_script,input)=>{const data=JSON.parse(input);return JSON.stringify({mode:data.mode,day:data.day,rows:[],event_keys:{},events:[],events_truncated:false,partial:false,errors:0});});
+  expect((await app.inject({method:'POST',url:path,headers:{cookie:cookies.admin}})).statusCode).toBe(200);
+  const key='amk_'+Buffer.alloc(32,9).toString('base64url');getDb().prepare('INSERT INTO api_keys(id,user_id,name,token_hash,grants,created_at,expires_at) VALUES(?,?,?,?,?,?,?)').run('fixture-key',admin.id,'fixture',hashApiKey(key),JSON.stringify({settings:'write',agent_api:'write'}),new Date().toISOString(),new Date(Date.now()+3600000).toISOString());
+  expect((await app.inject({method:'POST',url:path,headers:{authorization:`Bearer ${key}`}})).statusCode).toBe(200);
+  const hourly=await app.inject({url:'/api/codex/environments/native/insights?granularity=hour',headers:{cookie:cookies.admin}});expect(hourly.statusCode).toBe(200);expect(hourly.json().usage.rows).toEqual([]);
+ });
  it('returns empty status caches without contacting Codex even on repeated or forced HTTP reads',async()=>{
   const e=await create(),read=vi.spyOn(stream,'withCodexConnection');
   for(let n=0;n<3;n++){

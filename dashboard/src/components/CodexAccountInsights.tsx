@@ -29,7 +29,8 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
  const [dimension,setDimension]=useState<Dimension>('day');
  const [search,setSearch]=useState(''),[from,setFrom]=useState(''),[to,setTo]=useState(''),[page,setPage]=useState(0),[tab,setTab]=useState<'usage'|'cards'>('usage');
  const base='/codex/environments/'+encodeURIComponent(id);
- const usage=useQuery({queryKey:groupId?['codex-group-insights',groupId]:['codex-insights',id],queryFn:()=>fetchJSON<{usage:Usage}>(groupId?'/codex/balance-groups/'+encodeURIComponent(groupId)+'/insights':base+'/insights'),retry:false,refetchInterval:300000});
+ const hourly=dimension==='hour';
+ const usage=useQuery({queryKey:groupId?['codex-group-insights',groupId,hourly]:['codex-insights',id,hourly],queryFn:()=>fetchJSON<{usage:Usage}>((groupId?'/codex/balance-groups/'+encodeURIComponent(groupId)+'/insights':base+'/insights')+(hourly?'?granularity=hour':'')),retry:false,refetchInterval:300000});
  const resets=useQuery({queryKey:['codex-reset-credits',id],queryFn:()=>fetchJSON<Resets>(base+'/reset-credits'),retry:false,refetchInterval:300000,staleTime:300000,enabled:!apiMode});
  const data=usage.data?.usage;
  const filteredRows=useMemo(()=>(data?.rows||[]).filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&(!search||`${r.cwd} ${r.project_name||''}`.toLowerCase().includes(search.toLowerCase()))),[data,from,to,search]);
@@ -37,9 +38,9 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
  const days=useMemo(()=>{const result=new Map<string,Row[]>();for(const row of rows){const group=result.get(row.date)||[];group.push(row);result.set(row.date,group);}return [...result].sort(([a],[b])=>b.localeCompare(a));},[rows]);
  const pages=Math.max(1,Math.ceil(groups.length/10)),currentPage=Math.min(page,pages-1),shown=groups.slice(currentPage*10,currentPage*10+10);
  const input=sum(rows,'input_tokens'),cached=sum(rows,'cached_input_tokens'),uncached=input!==null&&cached!==null&&cached<=input?input-cached:null;
- const rangeTotal=credits(rows),byPeriod=['day','week','month'].includes(dimension);
+ const rangeTotal=credits(rows),byPeriod=['hour','day','week','month'].includes(dimension);
  const columnWidths=useMemo(()=>usageColumnWidths(groups),[groups]);
- const periodName=dimension==='day'?'日期':dimension==='week'?'周期':'月份';
+ const periodName=dimension==='hour'?'小时':dimension==='day'?'日期':dimension==='week'?'周期':'月份';
  const cards=resets.data?.resets;
  const refresh=()=>{void usage.refetch();if(!apiMode)void resets.refetch();};
  return <Dialog appearance="manager" title={`${name} ${apiMode?'上游':'账号'}详情`} size="image" width={1480} onClose={onClose}>

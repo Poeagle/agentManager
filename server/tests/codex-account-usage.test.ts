@@ -6,7 +6,7 @@ import {execFile} from 'node:child_process';
 import {mkdtemp,mkdir,writeFile,appendFile,utimes,rm,copyFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {initAccountUsage,collectAccountUsage,cachedAccountUsage,cachedGroupUsage,startAccountUsage,stopAccountUsage} from '../src/services/agents/codex/account-usage.js';
+import {initAccountUsage,collectAccountUsage,cachedAccountUsage,cachedGroupUsage,backfillUsageHours,startAccountUsage,stopAccountUsage} from '../src/services/agents/codex/account-usage.js';
 import {accountCommandInput,localCommandInput} from '../src/services/agents/codex/account-transport.js';
 vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),accountCommandInput:vi.fn(),localCommandInput:vi.fn()}));
 import {updateAgentManagement} from '../src/services/agents/management-store.js';
@@ -14,6 +14,26 @@ import * as engineBalance from '../src/services/agents/codex/engine-balance.js';
 let fixture:ReturnType<typeof createTestDatabase>;
 const tokens={total_tokens:10,input_tokens:10,cached_input_tokens:null,output_tokens:0,reasoning_output_tokens:null};
 const row={day:'2026-01-01',cwd:'/project',model:null,tier:null,requests:1,tokens};
+it('recovers recorded hours from real history while retaining unknown deleted history',async()=>{
+ const home=await mkdtemp(join(tmpdir(),'usage-hours-')),old=process.env.CODEX_HOME;process.env.CODEX_HOME=home;
+ const header=JSON.stringify({type:'session_meta',payload:{id:'hour-session',cwd:'/project'}})+'\n';
+ const turn=(id:string,time:string,total:number,last:number)=>JSON.stringify({type:'turn_context',payload:{turn_id:id,model:'gpt-6.1-sol'}})+'\n'+JSON.stringify({type:'event_msg',timestamp:time,payload:{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{...tokens,input_tokens:last,total_tokens:last}}}})+'\n';
+ try{
+  await mkdir(join(home,'sessions'));const path=join(home,'sessions','sample.jsonl');await writeFile(path,header+turn('a','2026-01-01T01:12:00Z',10,10)+turn('b','2026-01-01T02:03:00Z',30,20));
+  vi.mocked(localCommandInput).mockImplementation((script,input)=>new Promise((resolve,reject)=>{const child=execFile('python3',['-c',script],{maxBuffer:1024*1024},(error,out)=>error?reject(error):resolve(out));child.stdin!.end(input);}));
+  await collectAccountUsage('native');const original=cachedAccountUsage('native').rows[0].tokens.total_tokens;expect(original).toBe(30);
+  getDb().prepare('UPDATE codex_usage_dedup_events SET hour=NULL WHERE account=?').run('native');
+  await backfillUsageHours('native');const hours=cachedGroupUsage(['native'],'hour',true);
+  expect(hours.partial).toBe(false);expect(hours.rows.map(r=>[r.hour,r.tokens.total_tokens])).toEqual([['2026-01-01T02:00:00Z',20],['2026-01-01T01:00:00Z',10]]);
+  expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(original);
+  await collectAccountUsage('native',{rebuild:true});expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(30);expect(cachedGroupUsage(['native'],'hour',true).rows).toHaveLength(2);
+  const realScanner=vi.mocked(localCommandInput).getMockImplementation()!;vi.mocked(localCommandInput).mockRejectedValueOnce(Error('fixture read failure'));
+  await expect(collectAccountUsage('native',{rebuild:true})).rejects.toThrow('保留上次成功数据');expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(30);vi.mocked(localCommandInput).mockImplementation(realScanner);
+  getDb().prepare('UPDATE codex_usage_dedup_events SET hour=NULL WHERE account=?').run('native');getDb().prepare('UPDATE codex_usage_dedup_status SET hour_backfilled=0 WHERE account=?').run('native');await rm(path);
+  await backfillUsageHours('native');expect(cachedGroupUsage(['native'],'hour',true)).toMatchObject({partial:true,rows:[{hour:null,tokens:{total_tokens:30}}]});expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(30);
+  await collectAccountUsage('native',{rebuild:true});expect(cachedAccountUsage('native').rows).toEqual([]);
+ }finally{if(old===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=old;await rm(home,{recursive:true,force:true});}
+});
 function response(input:string,rows:any[],options:Record<string,unknown>={}){
  const request=JSON.parse(input),known=Buffer.from(request.known_events||'','base64'),seen=new Set<string>();for(let i=0;i<known.length;i+=32)seen.add(known.subarray(i,i+32).toString('hex'));
  const eventKeys:Record<string,Buffer[]>={},fresh=rows.filter(r=>{const keys=Array.from({length:r.requests},(_,i)=>createHash('sha256').update(JSON.stringify([r,i])).digest());if(keys.every(k=>seen.has(k.toString('hex'))))return false;(eventKeys[r.day]??=[]).push(...keys);return true;});

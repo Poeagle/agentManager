@@ -123,7 +123,7 @@ for path,size in paths:
     previous=snapshot
     at=datetime.datetime.fromisoformat(stamp.replace('Z','+00:00'))
     if at.tzinfo is None:errors+=1;continue
-    event_day=at.astimezone(datetime.timezone.utc).date().isoformat()
+    event_day=at.astimezone(datetime.timezone.utc).date().isoformat();event_hour=at.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:00:00Z')
     if mode=='daily' and event_day not in days:continue
     if after and at<=after or inherited_ordinal is not None and type(r.get('ordinal'))==int and r['ordinal']<inherited_ordinal:continue
     # Legacy aggregate caches have no request identities. Preserve their totals
@@ -135,14 +135,14 @@ for path,size in paths:
     key=hashlib.sha256(fingerprint.encode()).digest()
     legacy_key=hashlib.sha256(json.dumps([stamp,cwd,total],sort_keys=True,separators=(',',':')).encode()).hexdigest()
     if o.get('includeEvents') and o.get('rebuildEvents') and key not in projection_seen:
-     if len(events)<50000:
-      projection_seen.add(key);events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
+     if len(events)<200000:
+      projection_seen.add(key);events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'hour':event_hour,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
      else:events_truncated=True
     if cutoff and at<=cutoff:continue
     if key in seen:continue
     seen.add(key)
     if o.get('includeEvents') and not o.get('rebuildEvents'):
-     if len(events)<50000:events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
+     if len(events)<200000:events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'hour':event_hour,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
      else:events_truncated=True
     if len(seen)>2000000:raise RuntimeError('usage event limit exceeded')
     new_events.setdefault(event_day,bytearray()).extend(key)

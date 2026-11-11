@@ -4,6 +4,13 @@ import {it,expect,vi} from 'vitest';
 import {CodexAccountInsights} from '../src/components/CodexAccountInsights';
 import {fetchJSON} from '../src/lib/api';
 vi.mock('../src/lib/api',()=>({fetchJSON:vi.fn()}));
+it('loads and groups precise UTC hourly records without changing daily statistics',async()=>{
+ const metric={input_tokens:10,cached_input_tokens:0,output_tokens:0,total_tokens:10};
+ vi.mocked(fetchJSON).mockImplementation(async path=>path.includes('/insights')?{usage:{initialized:true,partial:false,timezone:'UTC',rows:[{date:'2026-11-11',...path.includes('granularity=hour')?{hour:'2026-11-11T12:00:00Z'}:{},cwd:'/hour-project',estimated_credits:1,tokens:metric,models:[{model:'model',estimated_credits:1,tokens:metric}]}]}}:{account:{},resets:null} as any);
+ render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="hourly" name="Hourly" onClose={()=>{}}/></QueryClientProvider>);
+ expect(await screen.findByText('2026-11-11')).toBeVisible();fireEvent.change(screen.getByRole('combobox',{name:'统计维度'}),{target:{value:'hour'}});
+ expect(await screen.findByText('2026-11-11 12:00 UTC')).toBeVisible();expect(vi.mocked(fetchJSON).mock.calls.some(([url])=>url.includes('granularity=hour'))).toBe(true);
+});
 it('orders estimated Credits before spend share and uses Credits rather than Token ratios at each level',async()=>{
  const item=(cwd:string,model:string,n:number,credit:number)=>({date:'2026-11-11',cwd,project_name:cwd.slice(1),estimated_credits:credit,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n},models:[{model,estimated_credits:credit,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n}}]});
  vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:false,timezone:'UTC',rows:[item('/Alpha','cheap',900,1),item('/Beta','expensive',100,9),item('/Zero','free',0,0)]}}:{account:{},resets:null} as any);
