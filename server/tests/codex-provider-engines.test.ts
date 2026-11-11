@@ -13,9 +13,9 @@ vi.mock('../src/services/agents/codex/terminal-bridge.js',()=>({ensureCodexTermi
 import {prepareFreshCodexConversation} from '../src/services/agents/codex/actions.js';
 let dir:string,servers:Server[],sockets:WebSocketServer[],calls:Array<{provider:string;method:string;params:any}>;
 const native='019ff001-1212-7212-8212-121212121212',fresh='019ff001-1313-7313-8313-131313131313';
-let model:string,loaded:boolean,configuredModel:string;
+let model:string,loaded:boolean,configuredModel:string,omitProvider:boolean;
 beforeEach(async()=>{
- dir=mkdtempSync(join(tmpdir(),'provider-engines-'));servers=[];sockets=[];calls=[];model='a-model';loaded=true;configuredModel='a-model';
+ dir=mkdtempSync(join(tmpdir(),'provider-engines-'));servers=[];sockets=[];calls=[];model='a-model';loaded=true;configuredModel='a-model';omitProvider=false;
  vi.stubEnv('CODEX_HOME',dir);vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',join(dir,'a'));
  vi.stubEnv('AGENTMANAGER_CODEX_PROVIDER_ENGINES',JSON.stringify([{provider:'provider-a',socket:join(dir,'a'),models:['a-model']},{provider:'provider-b',socket:join(dir,'b'),models:['b-model']}]));
  for(const provider of ['provider-a','provider-b']) {
@@ -23,7 +23,7 @@ beforeEach(async()=>{
   wss.on('connection',ws=>ws.on('message',raw=>{
    const m=JSON.parse(raw.toString());if(!m.id)return;calls.push({provider,...m});let result:any={};
    const thread={id:m.params.threadId||fresh,status:{type:loaded?'idle':'notLoaded'},model:provider==='provider-a'?model:'b-model',reasoningEffort:'high',modelProvider:provider};
-   if(m.method==='config/read')result={config:{model_provider:provider,model:provider==='provider-a'?configuredModel:'b-model'}};
+   if(m.method==='config/read')result={config:{...omitProvider?{}:{model_provider:provider},model:provider==='provider-a'?configuredModel:'b-model'}};
    // Simulate a mixed catalog: explicit engine allowlists must scope it.
    if(m.method==='model/list')result={data:['a-model','b-model'].map(model=>({model,displayName:model,supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'}))};
    if(m.method==='thread/read')result={thread};
@@ -67,6 +67,12 @@ it('rejects invalid creation config before creating a thread or submitting input
 it('does not dereference a missing engine configuration',async()=>{
  vi.stubEnv('AGENTMANAGER_CODEX_PROVIDER_ENGINES','');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',undefined);
  expect(()=>engineForProvider()).not.toThrow();
+});
+it('opens a fresh conversation on its current engine when config omits the provider',async()=>{
+ vi.stubEnv('AGENTMANAGER_CODEX_PROVIDER_ENGINES','');omitProvider=true;
+ await prepareFreshCodexConversation(native,'/work',undefined,{model:'a-model',effort:'high'});
+ expect(calls.filter(c=>c.method==='thread/start')).toMatchObject([{provider:'provider-a',params:{modelProvider:'provider-a',model:'a-model'}}]);
+ expect(calls.some(c=>c.method==='turn/start')).toBe(false);
 });
 it('routes a native OpenAI model selected from an alternate Codex engine back to the default engine',()=>{
  const nativeSocket=join(dir,'native');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',nativeSocket);
