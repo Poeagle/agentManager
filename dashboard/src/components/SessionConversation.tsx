@@ -1097,6 +1097,7 @@ export function SessionConversation({
           retry?: ConversationRetry;
           observed_at?: string;
           messages?: ConversationMessage[];
+          reset?: boolean;
           runtime?: ConversationPage["runtime"];
           busy?: boolean;
           interactions?: ConversationInteractionRequest[];
@@ -1255,6 +1256,10 @@ export function SessionConversation({
           return;
         }
         if (frame.type === "history" && Array.isArray(frame.messages)) {
+          if (frame.reset) {
+            setRefresh((value) => value + 1);
+            return;
+          }
           if (
             frame.messages.some(
               (message) => message.role === "assistant" && !message.streaming,

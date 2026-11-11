@@ -31,6 +31,17 @@ it('pushes typed compaction summaries and usage changes without exposing tool ou
  expect(frames.flatMap(frame=>frame.type==='history'?frame.messages:[])).toContainEqual(expect.objectContaining({text:'PRIVATE_SUMMARY',presentation:'compaction_summary'}));
  expect(JSON.stringify(frames)).not.toContain('PRIVATE_OUTPUT');
 });
+it('signals a history reset when compaction replaces the current transcript',async()=>{
+ dir=mkdtempSync(join(tmpdir(),'conversation-file-reset-'));vi.stubEnv('CODEX_HOME',dir);mkdirSync(join(dir,'sessions'));
+ const native='019ff001-5555-7555-8555-555555555555',file=join(dir,'sessions',`rollout-${native}.jsonl`);
+ const record=(type:string,payload:unknown)=>JSON.stringify({type,payload})+'\n';
+ writeFileSync(file,record('event_msg',{type:'user_message',message:'原消息'}));
+ const frames:ConversationHistoryFrame[]=[];
+ close=observeConversationFile({cli_type:'codex',codex_session_id:native,claude_session_id:null,project_path:dir},frame=>{if(frame.type==='history')frames.push(frame);});
+ await vi.waitFor(()=>expect(frames.flatMap(frame=>frame.messages).some(message=>message.text==='原消息')).toBe(true));
+ appendFileSync(file,record('compacted',{message:'压缩摘要',replacement_history:[{type:'message',id:'replacement',role:'user',content:[{type:'input_text',text:'保留的消息'}]}]}));
+ await vi.waitFor(()=>expect(frames.some(frame=>frame.reset===true&&frame.messages.some(message=>message.presentation==='compaction_summary'))).toBe(true));
+});
 it('shares file parsing and updates question metadata while the execution state remains running',async()=>{
  dir=mkdtempSync(join(tmpdir(),'conversation-file-runtime-'));vi.stubEnv('CODEX_HOME',dir);mkdirSync(join(dir,'sessions'));
  const native='019ff001-9999-7999-8999-999999999999',file=join(dir,'sessions',`rollout-${native}.jsonl`),binding={cli_type:'codex',codex_session_id:native,claude_session_id:null,project_path:dir};
