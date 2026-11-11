@@ -7,7 +7,7 @@ import { api, type Session } from '../src/lib/api';
 
 vi.mock('../src/lib/api', async (original) => {
   const actual = await original<typeof import('../src/lib/api')>();
-  return { ...actual, api: { ...actual.api, sessions: { ...actual.api.sessions, list: vi.fn(), deleteRecord: vi.fn(), output: vi.fn() },agent:{...actual.api.agent,conversation:vi.fn()} } };
+  return { ...actual, api: { ...actual.api, codexEnvironments:{...actual.api.codexEnvironments,list:vi.fn(async()=>({environments:[{id:'native',name:'本机 Engine'}]}))}, sessions: { ...actual.api.sessions, list: vi.fn(), deleteRecord: vi.fn(), output: vi.fn() },agent:{...actual.api.agent,conversation:vi.fn()} } };
 });
 
 const ended: Session = { id: 'ended', project_id: 'project', task: 'Ended task', status: 'cancelled', mode: 'session', cli_type: 'codex',
@@ -35,6 +35,15 @@ async function mount() {
 }
 
 describe('project session deletion', () => {
+  it('selects only ended sessions and preserves failures during bulk deletion',async()=>{
+    records=[ended,active,{...ended,id:'second',task:'Second task',agent_environment_id:'provider:xindu'}];
+    vi.mocked(api.sessions.deleteRecord).mockImplementation(async id=>{if(id==='second')throw Error('failed');records=records.filter(row=>row.id!==id);return {ok:true};});
+    const user=userEvent.setup(),onDeleted=await mount();expect(await screen.findByText('xindu')).toBeVisible();
+    expect(screen.getByRole('checkbox',{name:'选择会话 Active task'})).toBeDisabled();await user.click(screen.getByRole('checkbox',{name:'全选可删除会话'}));
+    await user.click(screen.getByRole('button',{name:'批量删除 (2)'}));expect(api.sessions.deleteRecord).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button',{name:'确认批量删除'}));await screen.findByRole('alert');
+    expect(onDeleted).toHaveBeenCalledExactlyOnceWith('ended');expect(screen.getByRole('checkbox',{name:'选择会话 Second task'})).toBeChecked();expect(api.sessions.deleteRecord).not.toHaveBeenCalledWith('active');
+  });
   it('uses the common actions column and seven-column detail rows, and waits for confirmation', async () => {
     const user = userEvent.setup();
     await mount();
@@ -42,7 +51,7 @@ describe('project session deletion', () => {
     expect(within(table).getAllByRole('columnheader').at(-1)).toHaveTextContent('操作');
     expect(screen.getByRole('button', { name: '删除会话 Active task' })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: '展开会话 已关闭的会话' }));
-    expect((await screen.findByText('最近会话内容')).closest('td')).toHaveAttribute('colspan', '7');await screen.findByText('已完成核对。');expect(screen.getByText('正在核对配置。')).toBeVisible();expect(screen.getByText('进展')).toBeVisible();expect(screen.getByText('结果')).toBeVisible();expect(screen.queryByText('用户问题不冒充进展')).not.toBeInTheDocument();expect(api.sessions.output).not.toHaveBeenCalled();
+    expect((await screen.findByText('最近会话内容')).closest('td')).toHaveAttribute('colspan', '8');await screen.findByText('已完成核对。');expect(screen.getByText('正在核对配置。')).toBeVisible();expect(screen.getByText('进展')).toBeVisible();expect(screen.getByText('结果')).toBeVisible();expect(screen.queryByText('用户问题不冒充进展')).not.toBeInTheDocument();expect(api.sessions.output).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: '删除会话 已关闭的会话' }));
     expect(api.sessions.deleteRecord).not.toHaveBeenCalled();
     await user.click(within(screen.getByRole('dialog', { name: '删除记录' })).getByRole('button', { name: '取消' }));
