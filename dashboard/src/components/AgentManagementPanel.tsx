@@ -1,4 +1,5 @@
 import {ProviderDeleteDialog} from './ProviderDeleteDialog';
+import {ProviderModelTable} from './ProviderModelTable';
 import {useProviderUsage} from '../lib/use-provider-usage';
 import {CodexAccountProvider} from './CodexAccountProvider';
 import {CodexAccountProviderEditor} from './CodexAccountProviderEditor';
@@ -10,7 +11,6 @@ import {
   ChevronRight,
   CircleAlert,
   FileCode2,
-  FolderCog,
   Info,
   Loader2,
   Plus,
@@ -28,14 +28,12 @@ import {
   type AgentManagementState,
   type AgentProviderState,
   type DetectedAgentModel,
-  type AgentModelConfig,
   type AgentOperationProgress,
 } from "../lib/api";
 import { ClaudeIcon, CodexIcon } from "./CliIcons";
 import { Dialog } from "./Dialog";
-import { DataTable } from "./table/DataTable";
-import { useTableModel } from "./table/use-table-model";
 import "./AgentManagementPanel.css";
+import "./ProviderModelTable.css";
 
 const statusLabel: Record<string, string> = {
   ready: "正常",
@@ -84,11 +82,13 @@ function FieldEditor({
   value,
   onChange,
   disabled,
+  compact=false,
 }: {
   field: AgentManagementField;
   value: string;
   onChange: (value: string | boolean | string[]) => void;
   disabled?: boolean;
+  compact?:boolean;
 }) {
   const displayValue =
     field.type === "password" && field.configured && value !== "configured"
@@ -105,7 +105,7 @@ function FieldEditor({
       <span>
         {field.label}
         {field.required && <b aria-label="必填">*</b>}
-        <InfoTip text={help} />
+        {!compact&&<InfoTip text={help} />}
         {field.configured && (
           <small className="agent-management-configured">已配置</small>
         )}
@@ -114,7 +114,7 @@ function FieldEditor({
         <textarea
           aria-label={field.label}
           title={help}
-          rows={field.key === "launchArgs" ? 4 : 3}
+          rows={compact?1:field.key === "launchArgs" ? 4 : 3}
           value={value}
           disabled={disabled}
           placeholder={field.placeholder}
@@ -157,101 +157,11 @@ function FieldEditor({
           onChange={(event) => onChange(event.target.value)}
         />
       )}
-      {field.description && <small>{field.description}</small>}
+      {!compact&&field.description && <small>{field.description}</small>}
     </label>
   );
 }
 
-function ModelSelector({
-  provider,
-  detected,
-  selected,
-  onSelectedChange,
-  onDetect,
-  detecting,
-  error,
-}: {
-  provider: AgentProviderState;
-  detected: DetectedAgentModel[];
-  selected: string[];
-  onSelectedChange: (models: string[]) => void;
-  onDetect: () => void;
-  detecting: boolean;
-  error?: string;
-}) {
-  const available = detected.length
-    ? detected
-    : provider.models.map((model) => ({ model, name: model }));
-  return (
-    <div className="agent-management-model-picker">
-      <div className="agent-management-model-picker-heading">
-        <div>
-          <strong>
-            可用模型
-            <InfoTip text="探测会读取当前 Engine 的模型目录。勾选后的模型可保存到该 Provider，并用于新会话。" />
-          </strong>
-          <p>
-            探测时从当前 Engine 读取；未探测时显示已经保存到该 Provider 的模型。
-          </p>
-        </div>
-        <button
-          type="button"
-          className="agent-management-button"
-          disabled={detecting}
-          title="读取当前 Provider Engine 返回的模型列表；不会发送模型请求，也不会消耗模型额度。"
-          onClick={onDetect}
-        >
-          {detecting ? (
-            <Loader2 size={13} className="animate-spin" />
-          ) : (
-            <Search size={13} />
-          )}
-          探测此 Provider 模型
-        </button>
-      </div>
-      {available.length ? (
-        <div className="agent-management-model-options">
-          {available.map((item) => (
-            <label
-              key={item.model}
-              title={`${item.name}（${item.model}）：${
-                selected.includes(item.model) ? "已勾选" : "未勾选"
-              }。勾选后保存到 Provider 模型目录。`}
-            >
-              <input
-                type="checkbox"
-                checked={selected.includes(item.model)}
-                onChange={(event) =>
-                  onSelectedChange(
-                    event.target.checked
-                      ? [...selected, item.model]
-                      : selected.filter((model) => model !== item.model),
-                  )
-                }
-              />
-              <span>{item.name}</span>
-              <code>{item.model}</code>
-            </label>
-          ))}
-        </div>
-      ) : (
-        <div className="agent-management-model-empty">
-          <Search size={14} />
-          <span>
-            {provider.id === "native"
-              ? "当前原生 Engine 尚未返回模型。点击“探测此 Provider 模型”读取。"
-              : "尚未保存或发现模型。请确认 API Key 有效后探测。"}
-          </span>
-        </div>
-      )}
-      {error && (
-        <p role="alert" className="agent-management-error">
-          {error}
-        </p>
-      )}
-    </div>
-  );
-}
 
 function statusTone(status: string) {
   return status === "ready"
@@ -718,271 +628,6 @@ function LiveProviderCard({
   );
 }
 
-function ModelConfigTable({
-  agentId,
-  providerId,
-  readOnly,
-  onDirtyChange,
-  onReload,
-}: {
-  agentId: string;
-  providerId: string;
-  readOnly: boolean;
-  onDirtyChange: (dirty: boolean) => void;
-  onReload: () => void;
-}) {
-  const queryClient = useQueryClient();
-  const query = useQuery({
-    queryKey: ["agent-model-configs", agentId, providerId],
-    queryFn: () => api.agentManagement.modelConfigs(agentId),
-  });
-  const [rows, setRows] = useState<AgentModelConfig[]>([]);
-  const [written, setWritten] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const table = useTableModel(rows, [
-    { key: "model", title: "模型", value: (row) => row.name },
-    {
-      key: "contextWindow",
-      title: "上下文长度",
-      value: (row) => row.contextWindow,
-      kind: "number",
-    },
-    {
-      key: "maxContextWindow",
-      title: "最大上下文",
-      value: (row) => row.maxContextWindow,
-      kind: "number",
-    },
-    {
-      key: "effectiveContextWindowPercent",
-      title: "有效比例",
-      value: (row) => row.effectiveContextWindowPercent,
-      kind: "number",
-    },
-    {
-      key: "supportsImages",
-      title: "图片输入",
-      value: (row) => row.supportsImages,
-    },
-    {
-      key: "actual",
-      title: "实际窗口",
-      value: (row) =>
-        row.contextWindow && row.effectiveContextWindowPercent
-          ? Math.round(
-              (row.contextWindow * row.effectiveContextWindowPercent) / 100,
-            )
-          : null,
-      kind: "number",
-    },
-  ]);
-  useEffect(() => {
-    const next = (query.data?.models || []).filter(
-      (item) =>
-        item.provider === providerId ||
-        (providerId === "native" && item.provider === "wanzhao"),
-    );
-    setRows(next);
-    setDirty(false);
-    onDirtyChange(false);
-  }, [onDirtyChange, providerId, query.data]);
-  const update = (model: string, patch: Partial<AgentModelConfig>) => {
-    setRows((current) =>
-      current.map((item) =>
-        item.model === model ? { ...item, ...patch } : item,
-      ),
-    );
-    setDirty(true);
-    setWritten(false);
-    onDirtyChange(true);
-  };
-  const save = useMutation({
-    mutationFn: () =>
-      api.agentManagement.updateModelConfigs(
-        agentId,
-        rows.map((item) => ({
-          provider: item.provider,
-          model: item.model,
-          contextWindow: item.contextWindow,
-          maxContextWindow: item.maxContextWindow,
-          effectiveContextWindowPercent: item.effectiveContextWindowPercent,
-          supportsImages: item.supportsImages,
-        })),
-      ),
-    onSuccess: (result) => {
-      queryClient.setQueryData(
-        ["agent-model-configs", agentId, providerId],
-        result,
-      );
-      setWritten(true);
-      setDirty(false);
-      onDirtyChange(false);
-      void queryClient.invalidateQueries({
-        queryKey: ["conversation-controls"],
-      });
-    },
-  });
-  if (query.isPending)
-    return <p className="agent-management-hint">读取模型配置…</p>;
-  if (query.isError)
-    return <p className="agent-management-error">{query.error.message}</p>;
-  return (
-    <section className="agent-management-section">
-      <div className="agent-management-section-title">
-        <div>
-          <h4>
-            模型参数
-            <InfoTip text="这些参数写入当前 Provider 的模型目录。保存文件不会热更新 Engine；需要重载后新进程才会读取。" />
-          </h4>
-          <p>
-            每个模型一行；保存会写回模型目录，点击重载后 Engine 才加载新值。
-          </p>
-        </div>
-        <div className="agent-management-status-row">
-          <button
-            type="button"
-            className="agent-management-button agent-management-button-primary"
-            title="只把当前表格写入该 Provider 的模型目录，不发送模型请求。"
-            disabled={readOnly || save.isPending || !dirty}
-            onClick={() => save.mutate()}
-          >
-            {save.isPending ? (
-              <Loader2 size={13} className="animate-spin" />
-            ) : (
-              <Save size={13} />
-            )}
-            写入配置文件
-          </button>
-          <button
-            type="button"
-            className="agent-management-button"
-            title="重启当前 Provider Engine，使模型目录参数生效；不影响其他 Provider。"
-            disabled={readOnly}
-            onClick={() => {
-              if (
-                providerId === "native" &&
-                !window.confirm(
-                  "原生 Codex Engine 由所有原生会话共享。重启会断开现有连接并中断正在执行的请求，确定继续吗？",
-                )
-              )
-                return;
-              onReload();
-            }}
-          >
-            <RefreshCw size={13} />
-            重载 Engine
-          </button>
-        </div>
-      </div>
-      <DataTable
-        label="模型参数"
-        model={table}
-        minWidth={820}
-        className="agent-management-model-table"
-        empty={rows.length === 0}
-        emptyMessage="暂无可配置模型"
-      >
-        {table.rows.map((row) => {
-          const actual =
-            row.contextWindow && row.effectiveContextWindowPercent
-              ? Math.round(
-                  (row.contextWindow * row.effectiveContextWindowPercent) / 100,
-                )
-              : null;
-          return (
-            <tr key={row.model}>
-              <td>
-                <strong>{row.name}</strong>
-                <code>{row.model}</code>
-              </td>
-              <td>
-                <input
-                  aria-label={`${row.model} 上下文长度`}
-                  title="模型可用的上下文窗口大小，通常与模型的 token 上限一致。"
-                  type="number"
-                  min="1"
-                  value={row.contextWindow ?? ""}
-                  disabled={readOnly}
-                  onChange={(event) =>
-                    update(row.model, {
-                      contextWindow: event.target.value
-                        ? Number(event.target.value)
-                        : null,
-                    })
-                  }
-                />
-              </td>
-              <td>
-                <input
-                  aria-label={`${row.model} 最大上下文`}
-                  title="模型支持的最大上下文窗口。大于有效窗口时，部分上下文会被压缩或截断。"
-                  type="number"
-                  min="1"
-                  value={row.maxContextWindow ?? ""}
-                  disabled={readOnly}
-                  onChange={(event) =>
-                    update(row.model, {
-                      maxContextWindow: event.target.value
-                        ? Number(event.target.value)
-                        : null,
-                    })
-                  }
-                />
-              </td>
-              <td>
-                <input
-                  aria-label={`${row.model} 有效比例`}
-                  title="实际可用上下文占模型窗口的百分比，用于预留系统指令和输出空间。"
-                  type="number"
-                  min="1"
-                  max="100"
-                  value={row.effectiveContextWindowPercent ?? ""}
-                  disabled={readOnly}
-                  onChange={(event) =>
-                    update(row.model, {
-                      effectiveContextWindowPercent: event.target.value
-                        ? Number(event.target.value)
-                        : null,
-                    })
-                  }
-                />
-                <span>%</span>
-              </td>
-              <td>
-                <label className="agent-management-inline-toggle">
-                  <input
-                    type="checkbox"
-                    title="勾选表示当前模型支持图片输入；保存并重载后生效。"
-                    checked={row.supportsImages}
-                    disabled={readOnly}
-                    onChange={(event) =>
-                      update(row.model, {
-                        supportsImages: event.target.checked,
-                      })
-                    }
-                  />
-                  {row.supportsImages ? "支持" : "不支持"}
-                </label>
-              </td>
-              <td>
-                <span className="agent-management-model-window">
-                  {actual ? `${Math.round(actual / 1000)}K` : "未配置"}
-                </span>
-              </td>
-            </tr>
-          );
-        })}
-      </DataTable>
-      <OperationStatus
-        busy={save.isPending}
-        message="正在写入模型目录…"
-        successMessage="模型目录已写入"
-        error={save.isError ? save.error : undefined}
-        success={written && !dirty}
-      />
-    </section>
-  );
-}
 
 function EnvironmentTable({
   agentId,
@@ -1180,6 +825,8 @@ function ProviderEditor({
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [runtimeOpen,setRuntimeOpen]=useState(false),[filesOpen,setFilesOpen]=useState(false);
+  const [modelsDirty,setModelsDirty]=useState(false),[modelsSaving,setModelsSaving]=useState(false);
   const [engineOperation, setEngineOperation] = useState<{
     busy: boolean;
     message: string;
@@ -1196,8 +843,12 @@ function ProviderEditor({
     steps: [],
   });
   const dirtyRef = useRef(onDirtyChange);
+  const providerSignature=JSON.stringify([provider.id,provider.fields]);
+  const initializedSignature=useRef(providerSignature);
   dirtyRef.current = onDirtyChange;
   useEffect(() => {
+    if(initializedSignature.current===providerSignature)return;
+    initializedSignature.current=providerSignature;
     setFields(initial());
     setError("");
     setSaved(false);
@@ -1211,7 +862,7 @@ function ProviderEditor({
       error: "",
       steps: [],
     });
-  }, [provider.id, provider.fields]);
+  }, [provider.id, provider.fields,providerSignature]);
   useEffect(() => {
     const original = Object.fromEntries(
       provider.fields.map((field) => [
@@ -1224,9 +875,9 @@ function ProviderEditor({
     dirtyRef.current(
       provider.fields.some(
         (field) => fields[field.key] !== original[field.key],
-      ) || saveApiKey,
+      ) || saveApiKey || JSON.stringify(selectedModels)!==JSON.stringify(provider.models) || modelsDirty || modelsSaving,
     );
-  }, [fields, provider.fields, saveApiKey]);
+  }, [fields, provider.fields, provider.models, saveApiKey,selectedModels,modelsDirty,modelsSaving]);
   const beginEngineOperation = (message: string) => {
     setError("");
     setEngineOperation({
@@ -1394,17 +1045,30 @@ function ProviderEditor({
   });
   const detected = detect.data?.models || [];
   const files = (liveProvider.configFiles||[]).filter(file=>file.exists&&file.writable!==false&&!file.sensitive);
-  const endpoint=liveProvider.fields.find(field=>field.key==='baseUrl')?.value;
+  const saveProvider=async (patches:Parameters<typeof api.agentManagement.updateModelConfigs>[1])=>{
+    let written=false;
+    try{
+      if(patches.length){
+        beginEngineOperation('正在写入模型参数…');
+        const result=await api.agentManagement.updateModelConfigs(agentId,patches);
+        queryClient.setQueryData(['agent-model-configs',agentId,provider.id],result);
+        written=true;
+      }
+      await update.mutateAsync();
+      await queryClient.invalidateQueries({queryKey:['agent-model-configs',agentId,provider.id]});
+    }catch(failure){
+      const message=(written?'模型参数已写入，Engine 配置保存或重启失败：':'')+(failure instanceof Error?failure.message:'保存失败');
+      setError(message);setEngineOperation(current=>({...current,busy:false,success:false,error:message}));
+      throw failure;
+    }
+  };
 
   return (
-    <div className="agent-management-provider-detail">
+    <div className="agent-management-provider-detail provider-editor">
       {onCloseEditor&&<button type="button" className="agent-management-button" onClick={onCloseEditor}>返回详情</button>}
       <header className="agent-management-detail-heading">
         <div>
-          <div className="agent-management-eyebrow">
-            PROVIDER / {provider.id}
-          </div>
-          <div className="flex items-center gap-2"><h3>{liveProvider.name}</h3><button type="button" className="agent-management-button" disabled={readOnly||rename.isPending} onClick={()=>{setRenameValue(liveProvider.name);setRenameError('');setRenameOpen(true);}}>重命名</button></div>
+          <div className="flex items-center gap-2"><h3>{liveProvider.name}</h3><button type="button" className="agent-management-button" disabled={readOnly||modelsSaving||rename.isPending} onClick={()=>{setRenameValue(liveProvider.name);setRenameError('');setRenameOpen(true);}}>重命名</button></div>
           {renameOpen&&<Dialog appearance="manager" title="重命名 Provider" busy={rename.isPending} onClose={()=>setRenameOpen(false)}><form onSubmit={event=>{event.preventDefault();if(renameValue.trim())rename.mutate(renameValue.trim());}}><label className="agent-management-field"><span>名称</span><input autoFocus aria-label="Provider 名称" maxLength={100} value={renameValue} onChange={event=>setRenameValue(event.target.value)} /></label>{renameError&&<p role="alert">{renameError}</p>}<footer className="mt-4 flex justify-end gap-2"><button type="button" className="agent-management-button" onClick={()=>setRenameOpen(false)}>取消</button><button type="submit" className="agent-management-button" disabled={rename.isPending||!renameValue.trim()}>保存</button></footer></form></Dialog>}
           <p>{liveProvider.statusText}</p>
         </div>
@@ -1421,7 +1085,7 @@ function ProviderEditor({
                 type="button"
                 className="agent-management-button"
                 title="启动当前尚未运行的原生 Codex Engine。"
-                disabled={engineOperation.busy || readOnly || !!liveProvider.pid}
+                disabled={engineOperation.busy || modelsSaving || readOnly || !!liveProvider.pid}
                 onClick={() => void changeEngineState("start")}
               >
                 启动 Engine
@@ -1430,7 +1094,7 @@ function ProviderEditor({
                 type="button"
                 className="agent-management-button"
                 title="停止原生 Codex Engine。所有原生会话会断开，正在执行的请求会被中断。"
-                disabled={engineOperation.busy || readOnly || !liveProvider.pid || usage.busy || !usage.verified}
+                disabled={engineOperation.busy || modelsSaving || readOnly || !liveProvider.pid || usage.busy || !usage.verified}
                 onClick={() => void changeEngineState("stop")}
               >
                 停止 Engine
@@ -1439,7 +1103,7 @@ function ProviderEditor({
                 type="button"
                 className="agent-management-button"
                 title="停止并重新启动原生 Codex Engine。所有原生会话会短暂断开。"
-                disabled={engineOperation.busy || readOnly || usage.busy || !usage.verified}
+                disabled={engineOperation.busy || modelsSaving || readOnly || usage.busy || !usage.verified}
                 onClick={() => void changeEngineState("restart")}
               >
                 <RefreshCw
@@ -1454,7 +1118,7 @@ function ProviderEditor({
               type="button"
               className="agent-management-button"
               title="停止并重新启动当前 Provider Engine；不影响其他 Provider。"
-              disabled={engineOperation.busy || readOnly || usage.busy || !usage.verified}
+              disabled={engineOperation.busy || modelsSaving || readOnly || usage.busy || !usage.verified}
               onClick={() => void changeEngineState("restart")}
             >
               <RefreshCw
@@ -1474,7 +1138,7 @@ function ProviderEditor({
                     ? "停止当前 Provider Engine，并标记为停用。"
                     : "启用 Provider，并启动它的独立 Engine。"
                 }
-                disabled={engineOperation.busy || readOnly || usage.busy || !usage.verified}
+                disabled={engineOperation.busy || modelsSaving || readOnly || usage.busy || !usage.verified}
                 onClick={() =>
                   void changeEngineState(liveProvider.enabled ? "stop" : "start")
                 }
@@ -1488,7 +1152,7 @@ function ProviderEditor({
               type="button"
               className="agent-management-button agent-management-button-danger"
               title="删除 Provider 的独立 Engine、socket、配置目录和加密密钥。"
-              disabled={remove.isPending || readOnly}
+              disabled={remove.isPending || modelsSaving || readOnly}
               onClick={() => setDeleteOpen(true)}
             >
               <Trash2 size={13} />
@@ -1497,27 +1161,7 @@ function ProviderEditor({
           )}
         </div>
       </header>
-      {liveProvider.codexHome && (
-        <div className="agent-management-path">
-          <FolderCog size={14} />
-          <span>
-            <small>独立 CODEX_HOME</small>
-            <code>{liveProvider.codexHome}</code>
-          </span>
-        </div>
-      )}
-      {liveProvider.launchCommand && (
-        <div className="agent-management-path agent-management-launch-command">
-          <FileCode2 size={14} />
-          <span>
-            <small>实际启动命令</small>
-            <code title={liveProvider.launchCommand}>
-              {liveProvider.launchCommand}
-            </code>
-          </span>
-        </div>
-      )}
-      <section className="agent-management-section" aria-label="Provider 接入信息"><dl className="agent-management-kv"><div><dt>接入类型</dt><dd>{provider.id==='native'?'本机默认 Codex':'API Key / Responses API'}</dd></div><div><dt>认证方式</dt><dd>{liveProvider.authentication.method}</dd></div><div><dt>认证状态</dt><dd>{liveProvider.authentication.status==='authenticated'?'已认证':liveProvider.authentication.status==='missing'?'未认证':'未知'}</dd></div><div><dt>Engine 状态</dt><dd>{liveProvider.statusText}</dd></div><div><dt>Engine PID</dt><dd>{liveProvider.pid??'未知'}</dd></div><div><dt>CODEX_HOME</dt><dd>{liveProvider.codexHome||'未提供'}</dd></div>{endpoint&&<div><dt>接口地址</dt><dd>{String(endpoint)}</dd></div>}<div><dt>默认模型</dt><dd>{liveProvider.defaultModel||'使用当前环境默认模型'}</dd></div><div><dt>可用模型</dt><dd>{liveProvider.models.length?liveProvider.models.join('、'):'尚未检测模型'}</dd></div></dl></section>
+      {runtimeOpen&&<Dialog appearance="manager" title="Engine 运行信息" size="lg" onClose={()=>setRuntimeOpen(false)}><dl className="provider-runtime"><dt>实际启动命令</dt><dd><pre>{liveProvider.launchCommand||'未提供'}</pre></dd><dt>CODEX_HOME</dt><dd><code>{liveProvider.codexHome||'未提供'}</code></dd><dt>认证方式</dt><dd>{liveProvider.authentication.method}</dd></dl></Dialog>}
       {provider.id==='native'&&<AgentDefaultsEditor
         agentId={agentId}
         defaults={defaults}
@@ -1525,21 +1169,10 @@ function ProviderEditor({
         onDirtyChange={onDirtyChange}
       />}
       <section className="agent-management-section agent-management-engine-settings">
-        <div className="agent-management-section-title">
-          <div>
-            <h4>
-              Engine 配置与模型
-              <InfoTip text="启动命令和参数用于创建 Codex app-server；连接信息与模型目录保存到该 Provider 的独立 CODEX_HOME。保存后只重启当前 Engine。" />
-            </h4>
-            <p>
-              启动命令、参数和连接设置会在保存后重启此 Engine；默认模型用于新会话。
-            </p>
-          </div>
-          <span className="agent-management-section-badge">保存后重启</span>
-        </div>
+        <div className="agent-management-section-title"><h4>连接配置</h4><button type="button" className="agent-management-button" onClick={()=>setRuntimeOpen(true)}><FileCode2 size={13}/>运行信息</button></div>
         <OperationStatus
           busy={
-            detect.isPending ||
+            modelsSaving || detect.isPending ||
             update.isPending ||
             engineOperation.busy ||
             remove.isPending
@@ -1551,7 +1184,7 @@ function ProviderEditor({
                 ? engineOperation.message
                 : engineOperation.busy
                   ? engineOperation.message
-                  : "正在删除 Provider…"
+                  : modelsSaving?"正在保存模型配置…":"正在删除 Provider…"
           }
           successMessage={
             detect.isSuccess
@@ -1586,16 +1219,7 @@ function ProviderEditor({
             ))}
           </ol>
         )}
-        <div className="agent-management-subsection">
-          <div className="agent-management-subsection-heading">
-            <div>
-              <h5>
-                启动与连接
-                <InfoTip text="启动命令作为无 shell 的可执行文件运行；附加参数每行一个 argv。API 地址、密钥和 CODEX_HOME 只作用于当前 Provider。" />
-              </h5>
-              <p>配置当前 Engine 如何启动，以及它连接哪个模型服务。</p>
-            </div>
-          </div>
+
           <div className="agent-management-form agent-management-engine-form">
             {provider.fields
               .filter(
@@ -1607,7 +1231,8 @@ function ProviderEditor({
                   key={field.key}
                   field={field}
                   value={fields[field.key] || ""}
-                  disabled={readOnly}
+                  disabled={readOnly||modelsSaving||update.isPending}
+                  compact
                   onChange={(value) => {
                     if (field.key === "envKey") setSaveApiKey(true);
                     setFields((current) => ({
@@ -1620,128 +1245,15 @@ function ProviderEditor({
                 />
               ))}
           </div>
-        </div>
-        <div className="agent-management-subsection agent-management-model-settings">
-          <div className="agent-management-subsection-heading">
-            <div>
-              <h5>
-                模型与默认值
-                <InfoTip text="已勾选模型会写入该 Provider 的模型目录。默认模型用于新开会话；当前会话不会自动迁移。" />
-              </h5>
-              <p>选择此 Engine 可提供的模型，并指定新会话的默认模型。</p>
-            </div>
-          </div>
-          <ModelSelector
-            provider={provider}
-            detected={detected}
-            selected={selectedModels}
-            onSelectedChange={setSelectedModels}
-            onDetect={() => detect.mutate()}
-            detecting={detect.isPending}
-            error={detect.isError ? detect.error.message : undefined}
-          />
-          <div className="agent-management-model-default-grid">
-            <label
-              className="agent-management-field"
-              title="新开会话时优先使用的模型。留空时使用已勾选模型中的第一个。"
-            >
-              <span>
-                默认模型
-                <InfoTip text="新开会话时优先使用的模型。留空时使用已勾选模型中的第一个。修改后保存并重启 Engine 才会生效。" />
-              </span>
-              <select
-                aria-label="默认模型"
-                title="新开会话时优先使用的模型；当前会话不会自动迁移。"
-                value={fields.defaultModel || ""}
-                disabled={readOnly}
-                onChange={(event) =>
-                  setFields((current) => ({
-                    ...current,
-                    defaultModel: event.target.value,
-                  }))
-                }
-              >
-                <option value="">使用已选模型中的第一个</option>
-                {[
-                  ...(detected.length
-                    ? detected
-                    : provider.models.map((model) => ({ model, name: model }))),
-                ]
-                  .filter((item) => selectedModels.includes(item.model))
-                  .map((item) => (
-                    <option key={item.model} value={item.model}>
-                      {item.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <div
-              className="agent-management-provider-models"
-              title="这些模型已经保存在当前 Provider 的模型目录中。"
-            >
-              <span>
-                已保存模型
-                <InfoTip text="这些模型已经保存在当前 Provider 的模型目录中；切换 Provider 时不会混用。" />
-              </span>
-              <div>
-                {provider.models.length ? (
-                  provider.models.map((model) => (
-                    <code key={model}>{model}</code>
-                  ))
-                ) : (
-                  <small>尚未保存模型</small>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-        {!readOnly && (
-          <div className="agent-management-actions agent-management-engine-actions">
-            <span>
-              保存会重启当前 Engine；当前会话不会自动迁移。
-            </span>
-            <button
-              type="button"
-              className="agent-management-button agent-management-button-primary"
-              title="保存当前 Provider 的启动参数、连接信息和模型配置，并重启该 Engine。"
-              disabled={update.isPending || engineOperation.busy || usage.busy || !usage.verified}
-              onClick={() => update.mutate()}
-            >
-              {update.isPending ? (
-                <Loader2 size={13} className="animate-spin" />
-              ) : saved ? (
-                <Check size={13} />
-              ) : (
-                <Save size={13} />
-              )}
-              {saved ? "已保存" : "保存并重启 Engine"}
-            </button>
-          </div>
-        )}
       </section>
-      <ModelConfigTable
-        agentId={agentId}
-        providerId={provider.id}
-        readOnly={readOnly}
-        onDirtyChange={onDirtyChange}
-        onReload={() => void changeEngineState("restart")}
-      />
-      {files.length > 0 && (
-        <section className="agent-management-section">
-          <div className="agent-management-section-title">
-            <div>
-              <h4>配置文件</h4>
-              <p>直接查看和修改此 Provider 的独立配置文件。</p>
-            </div>
-          </div>
-          <ConfigFiles
-            agentId={agentId}
-            files={files}
-            readOnly={readOnly}
-            onDirtyChange={onFileDirtyChange}
-          />
-        </section>
-      )}
+      {provider.id!=='native'?<ProviderModelTable key={provider.id} agentId={agentId} providerId={provider.id}
+        options={[...provider.models.map(model=>({model,name:model})),...detected]}
+        selected={selectedModels} defaultModel={fields.defaultModel||''} readOnly={readOnly}
+        busy={update.isPending||engineOperation.busy||remove.isPending} detecting={detect.isPending}
+        canSave={!usage.busy&&usage.verified&&(provider.id==='native'||selectedModels.length>0)}
+        onSelectedChange={setSelectedModels} onDefaultChange={model=>setFields(current=>({...current,defaultModel:model}))}
+        onDetect={()=>detect.mutate()} onSave={saveProvider} onDirtyChange={setModelsDirty} onBusyChange={setModelsSaving}/>:!readOnly&&<div className="agent-management-actions"><button type="button" className="agent-management-button" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate()}><Save size={13}/>保存并重启 Engine</button></div>}
+      {files.length>0&&<section className="agent-management-section provider-files"><button type="button" className="agent-management-button" aria-expanded={filesOpen} onClick={()=>setFilesOpen(!filesOpen)}><ChevronRight size={13} style={{transform:filesOpen?'rotate(90deg)':undefined}}/>配置文件 ({files.length})</button>{filesOpen&&<ConfigFiles agentId={agentId} files={files} readOnly={readOnly} onDirtyChange={onFileDirtyChange}/>}</section>}
       {deleteOpen && (
         <ProviderDeleteDialog
           environmentId={provider.id==='native'?'native':'provider:'+provider.id}
@@ -2091,9 +1603,6 @@ function CodexWorkspace({
           />
         ))}
         {accountProviders.map(e=><button key={e.id} type="button" className="agent-management-provider" title={`${e.name}：本机用户 ${e.connection?.username}，${e.enabled?'已启用':'已停用'}`} aria-current={selectedAccount?.id===e.id?'true':undefined} onClick={()=>switchProvider(e.id)}><span className={`agent-management-dot ${e.enabled?'ready':'unknown'}`}/><span className="agent-management-provider-copy"><strong>{e.name}</strong><small>登录账号 · {e.connection?.username}</small><small>{e.enabled?'已启用':'已停用'} · {e.connection?.authMethod==='password'?'SSH 密码':'SSH 密钥'}</small></span><ChevronRight size={14}/></button>)}
-        <p className="agent-management-provider-note">
-          API 接口和登录账号分别配置；标签页可选择已授权的 Provider。
-        </p>
       </aside>
       <div className="agent-management-provider-content">
         {adding ? (
@@ -2418,10 +1927,10 @@ export function AgentManagementPanel({
         <header className="agent-management-page-heading">
           <div>
             <h3>Agent 配置</h3>
-            <p>
+            {selectedId!=='codex'&&<p>
               统一查看和管理每个 Agent 的运行时、模型与配置文件。
               {readOnly ? "当前为只读。" : "保存后立即应用。"}
-            </p>
+            </p>}
           </div>
           <button
             type="button"
