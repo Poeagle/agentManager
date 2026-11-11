@@ -103,7 +103,7 @@ function AiChat({enabled, canSend}: {enabled: boolean; canSend: boolean}) {
     finally { setBusy(false); }
   }
   const queryError = conversations.error || messages.error;
-  return <div className="flex h-full min-h-[400px] flex-col sm:flex-row">
+  return <div className="manager-ui-original flex h-full min-h-[400px] flex-col sm:flex-row">
     <aside className="flex w-full shrink-0 flex-col border-b p-3 sm:w-56 sm:border-r sm:border-b-0" style={{borderColor: 'var(--border)'}}>
       <button className={buttonClass + ' mb-3 flex items-center justify-center gap-2'} style={fieldStyle} onClick={() => { setSelected(null); setError(''); }}><Plus className="h-4 w-4" />新对话</button>
       <div className="flex gap-2 overflow-auto sm:flex-col">{conversations.data?.conversations.map(conversation => <button key={conversation.id} onClick={() => {setSelected(conversation.id); setError('');}} className="shrink-0 rounded-md p-2 text-left text-xs sm:shrink" style={{background: selected === conversation.id ? 'var(--bg-tertiary)' : 'transparent'}}><span className="block truncate">{conversation.title || '新对话'}</span><span style={muted}>{conversation.channel_name || '平台网页'}</span></button>)}</div>

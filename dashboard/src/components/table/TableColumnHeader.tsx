@@ -49,7 +49,7 @@ export function TableColumnHeader<T>({ table, columnKey, className = '' }: {
           setPosition({ left: Math.max(8, Math.min(rect.right - 236, window.innerWidth - 244)), top: Math.min(rect.bottom + 4, Math.max(8, window.innerHeight - 340)) });
         }}><Filter /></button>
     </div>
-    {position && createPortal(<form ref={popup} role="dialog" aria-label={`${column.title}筛选`} className="smart-table-filter-popup"
+    {position && createPortal(<form ref={popup} role="dialog" aria-label={`${column.title}筛选`} className={`smart-table-filter-popup${trigger.current?.closest('.manager-ui')?' manager-ui':''}`}
       style={{ left: position.left, top: position.top }} onSubmit={(event) => {
         event.preventDefault(); table.setFilter(columnKey, enums ? { values } : { text: text.trim() }); setPosition(null); trigger.current?.focus();
       }}>

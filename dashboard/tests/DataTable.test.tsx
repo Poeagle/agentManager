@@ -31,3 +31,6 @@ it('preserves headers and nested row structure through loading, empty, and faile
   expect(within(table).getAllByRole('row')[1]).toHaveTextContent('A');
   expect(within(table).getByText('展开内容').closest('td')).toHaveAttribute('colspan', '3');
 });
+it('provides complete plain cell text on hover in management tables',async()=>{
+ const user=userEvent.setup();render(<div className="manager-ui"><List/></div>);const cell=screen.getByText('B').closest('td')!;await user.hover(cell);expect(cell).toHaveAttribute('title','B');
+});

@@ -405,7 +405,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           </h1>
         </div>
         <div className="workspace-header-tools flex min-w-0 items-center overflow-x-auto [scrollbar-width:none] [&>*]:shrink-0">
-          <AgentQuotaIndicators agents={projectsData?.agents}/>
+          <AgentQuotaIndicators agents={projectsData?.agents} isAdmin={authUser.role==='admin'}/>
           {hasPermission(permissionsQuery.data, 'monitor') && <ServerResourceIndicator />}
           <button
             onClick={() => setPlatformSection(hasPermission(permissionsQuery.data, 'monitor') ? 'monitor' : 'account')}

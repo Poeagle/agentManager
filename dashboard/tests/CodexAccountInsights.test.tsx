@@ -5,7 +5,7 @@ import {CodexAccountInsights} from '../src/components/CodexAccountInsights';
 import {fetchJSON} from '../src/lib/api';
 vi.mock('../src/lib/api',()=>({fetchJSON:vi.fn()}));
 it('opens a centered dialog, exposes reset expiry and expands dates into project usage',async()=>{
- vi.mocked(fetchJSON).mockImplementation(async(path)=>path.endsWith('insights')?{usage:{checked_at:null,error:null,partial:true,timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/project',tokens:{input_tokens:10,cached_input_tokens:null,output_tokens:0,total_tokens:10}}]}}:{account:{email:'fixture@example.invalid',plan:'pro'},resets:{availableCount:2,credits:[{status:'available',expiresAt:1800000000,grantedAt:1700000000}]}} as any);
+ vi.mocked(fetchJSON).mockImplementation(async(path)=>path.endsWith('insights')?{usage:{checked_at:null,error:null,partial:true,timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/project',estimated_credits:1,tokens:{input_tokens:10,cached_input_tokens:null,output_tokens:0,total_tokens:10}}]}}:{account:{email:'fixture@example.invalid',plan:'pro'},resets:{availableCount:2,credits:[{status:'available',expiresAt:1800000000,grantedAt:1700000000}]}} as any);
  const close=vi.fn();render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="a" name="Fixture" onClose={close}/></QueryClientProvider>);
  expect(screen.getByRole('dialog')).toBeVisible();expect(await screen.findByText('/project')).toBeVisible();expect(screen.getAllByText('100.0%')).toHaveLength(2);expect(screen.getByText('模型明细未返回')).toBeVisible();expect(screen.queryByText('0 个模型')).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:/收起 2026-01-01/}));expect(screen.queryByText('/project')).toBeNull();
@@ -14,7 +14,7 @@ it('opens a centered dialog, exposes reset expiry and expands dates into project
  fireEvent.click(screen.getByLabelText('关闭Fixture 账号详情'));expect(close).toHaveBeenCalledOnce();
 });
 it('switches dimensions, recomputes range shares and applies dates before grouping',async()=>{
- const item=(date:string,cwd:string,model:string,n:number)=>({date,cwd,project_name:cwd.slice(1),tokens:{input_tokens:n,cached_input_tokens:n/2,output_tokens:0,total_tokens:n},models:[{model,tokens:{input_tokens:n,cached_input_tokens:n/2,output_tokens:0,total_tokens:n}}]});
+ const item=(date:string,cwd:string,model:string,n:number)=>({date,cwd,project_name:cwd.slice(1),estimated_credits:n/1000,tokens:{input_tokens:n,cached_input_tokens:n/2,output_tokens:0,total_tokens:n},models:[{model,estimated_credits:n/1000,tokens:{input_tokens:n,cached_input_tokens:n/2,output_tokens:0,total_tokens:n}}]});
  vi.mocked(fetchJSON).mockImplementation(async(path)=>path.endsWith('insights')?{usage:{checked_at:null,error:null,partial:false,timezone:'UTC',rows:[item('2026-11-09','/Alpha','model-one',100),item('2026-11-10','/Alpha','model-two',300),item('2026-11-10','/Beta','model-one',100)]}}:{account:{email:null,plan:null},resets:null} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="c" name="Dimensions" onClose={()=>{}}/></QueryClientProvider>);
  await screen.findByText('/Alpha');const dimension=screen.getByRole('combobox',{name:'统计维度'});
@@ -27,10 +27,16 @@ it('switches dimensions, recomputes range shares and applies dates before groupi
 });
 it('expands project models and computes weighted cache rates with explicit unknown and zero handling',async()=>{
  const metrics=(input:number,cached:number|null)=>({input_tokens:input,cached_input_tokens:cached,output_tokens:0,total_tokens:input});
- vi.mocked(fetchJSON).mockImplementation(async(path)=>path.endsWith('insights')?{usage:{checked_at:null,error:null,partial:true,timezone:'UTC',progress:{files_complete:3,files_total:10,bytes_read:1048576,bytes_total:2097152},rows:[{date:'2026-01-02',cwd:'/weighted',project_name:'Weighted',tokens:metrics(1000,900),models:[{model:'model-large',tokens:metrics(900,900)},{model:'model-small',tokens:metrics(100,0)},{model:null,tokens:metrics(0,0)}]}]}}:{account:{email:null,plan:null},resets:null} as any);
+ vi.mocked(fetchJSON).mockImplementation(async(path)=>path.endsWith('insights')?{usage:{checked_at:null,error:null,partial:true,timezone:'UTC',progress:{files_complete:3,files_total:10,bytes_read:1048576,bytes_total:2097152},rows:[{date:'2026-01-02',cwd:'/weighted',project_name:'Weighted',estimated_credits:1,tokens:metrics(1000,900),models:[{model:'model-large',estimated_credits:1,tokens:metrics(900,900)},{model:'model-small',estimated_credits:.1,tokens:metrics(100,0)},{model:'model-zero',estimated_credits:0,tokens:metrics(0,0)}]}]}}:{account:{email:null,plan:null},resets:null} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="b" name="Models" onClose={()=>{}}/></QueryClientProvider>);
- await screen.findByText('/weighted');expect(screen.getByText(/已处理 3 \/ 10 个会话文件/)).toBeVisible();
+ await screen.findByText('/weighted');expect(screen.getByText(/历史文件 — · 本轮读取 3 \/ 10 个文件/)).toBeVisible();expect(screen.getByRole('columnheader',{name:'工作目录'})).toBeVisible();expect(screen.getByText('/weighted').closest('td')).toHaveAttribute('title','/weighted');
  expect(screen.getAllByText('90.0%')).toHaveLength(2);expect(screen.queryByText('50.0%')).toBeNull();
- fireEvent.click(screen.getByRole('button',{name:'展开 Weighted 模型'}));expect(screen.getByText('model-large')).toBeVisible();expect(screen.getByText('model-small')).toBeVisible();expect(screen.getByText('模型未记录')).toBeVisible();
+ fireEvent.click(screen.getByRole('button',{name:'展开 Weighted 模型'}));expect(screen.getByText('model-large')).toBeVisible();expect(screen.getByText('model-small')).toBeVisible();expect(screen.getByText('model-zero')).toBeVisible();
  fireEvent.click(screen.getByRole('button',{name:'收起 Weighted 模型'}));expect(screen.queryByText('model-large')).toBeNull();fireEvent.click(screen.getByRole('button',{name:'展开本页'}));expect(screen.getByText('model-large')).toBeVisible();
+});
+it('distinguishes historical inventory from the daily scan and hides unestimatable rows',async()=>{
+ const metric={tokens:{input_tokens:100,cached_input_tokens:80,output_tokens:10,total_tokens:110},estimated_credits:1};
+ vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,checked_at:null,partial:false,error:null,timezone:'UTC',progress:{mode:'daily',history_files:965,files_selected:30,files_total:30,files_complete:30,bytes_total:100,bytes_read:100},rows:[{date:'2026-11-11',cwd:'/known',...metric,models:[{model:'known',...metric}]},{date:'2026-11-11',cwd:'/hidden',tokens:metric.tokens,estimated_credits:null,models:[{model:null,tokens:metric.tokens,estimated_credits:null}]}]}}:{account:{email:null,plan:null},resets:null} as any);
+ render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="scope" name="Scope" onClose={()=>{}}/></QueryClientProvider>);
+ expect(await screen.findByText(/历史文件 965 · 本轮读取 30 \/ 30 个文件/)).toBeVisible();expect(screen.queryByText('/hidden')).toBeNull();expect(screen.queryByText('暂不可估')).toBeNull();expect(screen.getByText('/known')).toBeVisible();expect(screen.getAllByText('100.0%')).toHaveLength(2);expect(screen.getByText(/1 条日期\/项目记录/)).toBeVisible();
 });

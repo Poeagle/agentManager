@@ -30,7 +30,7 @@ describe('Codex account environments and platform ACLs',()=>{
  it('returns empty status caches without contacting Codex even on repeated or forced HTTP reads',async()=>{
   const e=await create(),read=vi.spyOn(stream,'withCodexConnection');
   for(let n=0;n<3;n++){
-   const cards=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/reset-credits`,headers:{cookie:cookies.owner}});expect(cards.json()).toMatchObject({resets:null,pending:true});
+   const cards=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/reset-credits`,headers:{cookie:cookies.admin}});expect(cards.json()).toMatchObject({resets:null,pending:true});
    const quota=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/quota?force=true`,headers:{cookie:cookies.owner}});expect(quota.statusCode).toBe(503);
   }
   expect(read).not.toHaveBeenCalled();
@@ -38,13 +38,14 @@ describe('Codex account environments and platform ACLs',()=>{
  it('protects usage caches and reset details using the same account visibility boundary',async()=>{
   const e=await create();
   for(const endpoint of ['insights','reset-credits']){
+   expect((await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/${endpoint}`,headers:{cookie:cookies.owner}})).statusCode).toBe(403);
    expect((await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/${endpoint}`,headers:{cookie:cookies.other}})).statusCode).toBe(404);
    expect((await app.inject({url:`/api/codex/environments/native/${endpoint}`,headers:{cookie:cookies.other}})).statusCode).toBe(404);
   }
-  const cached=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/insights`,headers:{cookie:cookies.owner}});expect(cached.statusCode).toBe(200);expect(cached.json().usage.rows).toEqual([]);
+  const cached=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/insights`,headers:{cookie:cookies.admin}});expect(cached.statusCode).toBe(200);expect(cached.json().usage.rows).toEqual([]);
   vi.spyOn(stream,'withCodexConnection').mockImplementation(async callback=>callback(vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt',email:'fixture@example.invalid'}}:{rateLimitResetCredits:{availableCount:2,credits:null}}) as any));
   await collectAccountStatus(e.id);vi.mocked(stream.withCodexConnection).mockClear();
-  const resets=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/reset-credits`,headers:{cookie:cookies.owner}});expect(resets.json().resets).toEqual({availableCount:2,credits:null});
+  const resets=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/reset-credits`,headers:{cookie:cookies.admin}});expect(resets.json().resets).toEqual({availableCount:2,credits:null});
   expect(stream.withCodexConnection).not.toHaveBeenCalled();
  });
  it('reads quota through the selected account and denies unassigned, disabled and native environments',async()=>{
