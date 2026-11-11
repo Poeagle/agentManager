@@ -1,13 +1,29 @@
 import {beforeEach,afterEach,it,expect,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
-import {initAccountUsage,collectAccountUsage,cachedAccountUsage} from '../src/services/agents/codex/account-usage.js';
+import {initAccountUsage,collectAccountUsage,cachedAccountUsage,backfillAccountUsage} from '../src/services/agents/codex/account-usage.js';
 import {accountCommandInput,localCommandInput} from '../src/services/agents/codex/account-transport.js';
 vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),accountCommandInput:vi.fn(),localCommandInput:vi.fn()}));
 let fixture:ReturnType<typeof createTestDatabase>;
 const result={changes:[['/fixture/file.jsonl',{offset:10}]],events:[{key:'event',timestamp:'2026-01-01T23:00:00Z',cwd:'/project',tokens:{total_tokens:10,input_tokens:10,cached_input_tokens:null,output_tokens:0,reasoning_output_tokens:null}}],partial:false,errors:0};
 beforeEach(()=>{fixture=createTestDatabase();initAccountUsage();vi.mocked(localCommandInput).mockResolvedValue(JSON.stringify(result));vi.mocked(accountCommandInput).mockResolvedValue(JSON.stringify(result));});
 afterEach(()=>{fixture.cleanup();vi.resetAllMocks();});
+it('groups model usage across speeds while retaining unknown models and preserving project totals',async()=>{
+ const token=(input:number,cached:number)=>({input_tokens:input,cached_input_tokens:cached,output_tokens:0,reasoning_output_tokens:0,total_tokens:input});
+ const events=[{key:'one',model:'gpt-6.1-sol',tier:'default',tokens:token(100,50)},{key:'two',model:'gpt-6.1-sol',tier:'fast',tokens:token(900,900)},{key:'three',model:'gpt-6.1-terra',tier:null,tokens:token(100,0)},{key:'four',model:null,tier:null,tokens:token(0,0)}].map(e=>({...result.events[0],...e}));
+ vi.mocked(localCommandInput).mockResolvedValueOnce(JSON.stringify({...result,events}));await collectAccountUsage('native');
+ const row=cachedAccountUsage('native').rows[0];expect(row.tokens.input_tokens).toBe(1100);expect(row.tokens.cached_input_tokens).toBe(950);expect(row.models).toHaveLength(3);
+ const sol=row.models.find(m=>m.model==='gpt-6.1-sol')!;expect(sol.tokens.input_tokens).toBe(1000);expect(sol.tokens.cached_input_tokens).toBe(950);expect(sol.estimated_credits).toBeCloseTo(0.007125);expect(row.models.find(m=>m.model===null)?.estimated_credits).toBeNull();
+ expect(row.models.reduce((n,m)=>n+(m.tokens.total_tokens??0),0)).toBe(row.tokens.total_tokens);
+});
+it('continues initial history batches immediately and stops once inventory is complete',async()=>{
+ vi.mocked(localCommandInput).mockResolvedValueOnce(JSON.stringify({...result,progress:{files_complete:1,files_total:2,bytes_read:10,bytes_total:20}})).mockResolvedValueOnce(JSON.stringify({...result,progress:{files_complete:2,files_total:2,bytes_read:20,bytes_total:20}}));
+ await backfillAccountUsage('native');expect(localCommandInput).toHaveBeenCalledTimes(2);expect(cachedAccountUsage('native').progress.files_complete).toBe(2);expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(10);
+});
+it('stops backfill on no progress or shutdown rather than spinning on incomplete tails',async()=>{
+ vi.mocked(localCommandInput).mockResolvedValue(JSON.stringify({...result,progress:{files_complete:0,files_total:1,bytes_read:10,bytes_total:20}}));
+ await backfillAccountUsage('native');expect(localCommandInput).toHaveBeenCalledTimes(2);vi.mocked(localCommandInput).mockClear();await backfillAccountUsage('native',()=>true);expect(localCommandInput).not.toHaveBeenCalled();
+});
 it('returns registered project names with credit totals and explicit estimate coverage',async()=>{
  getDb().prepare("INSERT INTO projects(id,name,path) VALUES('usage-project','Usage Project','/project')").run();
  vi.mocked(localCommandInput).mockResolvedValueOnce(JSON.stringify({...result,events:[{...result.events[0],model:'gpt-6.1-sol',tier:'default',cwd:'/project/src',tokens:{total_tokens:1100000,input_tokens:1000000,cached_input_tokens:500000,output_tokens:100000,reasoning_output_tokens:50000}}]}));
