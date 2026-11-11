@@ -39,6 +39,14 @@ describe('engine balance snapshots',()=>{
   vi.stubGlobal('fetch',vi.fn(async()=>new Response('{"balance":12}')));
   await collectEngineBalance('native');expect(cachedEngineBalance('native')).toMatchObject({auth_mode:'api',status:'available',amount:12});
  });
+ it('uses the live native provider URL and reads the key without requiring TOML support',async()=>{
+  vi.mocked(stream.withCodexConnection).mockImplementation(async callback=>callback(vi.fn(async(method:string)=>method==='account/read'?{account:{type:'apiKey'}}:{config:{model_provider:'wz',model_providers:{wz:{base_url:'https://sub.wanzhao.top/v1'}}}}) as any));
+  const command=vi.spyOn(transport,'localCommandInput').mockResolvedValue(JSON.stringify({key:randomUUID()}));
+  vi.stubGlobal('fetch',vi.fn(async()=>new Response('{"balance":12}')));
+  await collectEngineBalance('native');expect(cachedEngineBalance('native')).toMatchObject({auth_mode:'api',providerId:'wz',status:'available',amount:12,origin:'https://sub.wanzhao.top'});
+  expect(JSON.parse(command.mock.calls[0][1] as string)).toMatchObject({runtime_provider:'wz'});
+  expect(command.mock.calls[0][0]).not.toMatch(/^import .*tomllib/m);
+ });
  it('uses the active runtime provider authentication even when an OAuth account also exists',async()=>{
   vi.mocked(stream.withCodexConnection).mockImplementation(async callback=>callback(vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt'}}:{config:{model_provider:'one',model_providers:{one:{env_key:'FIXTURE_WALLET_KEY'}}}}) as any));
   vi.stubGlobal('fetch',vi.fn(async()=>new Response('{"balance":8}')));await collectEngineBalance('provider:one');

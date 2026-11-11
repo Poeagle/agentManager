@@ -139,7 +139,7 @@ function modelConfigsFromCatalog(content: string, sourceFile: string, provider?:
 
 async function readModelConfigsForProvider(providerId: string): Promise<AgentModelConfig[]> {
   const target = await providerCatalogPath(providerId);
-  return target ? modelConfigsFromCatalog(target.content, target.path, providerId === 'native' ? 'wanzhao' : providerId) : [];
+  return target ? modelConfigsFromCatalog(target.content, target.path, providerId) : [];
 }
 
 async function updateModelConfigsForProvider(providerId: string, updates: AgentModelConfigUpdate[]): Promise<AgentModelConfig[]> {
@@ -164,7 +164,7 @@ async function updateModelConfigsForProvider(providerId: string, updates: AgentM
     return next;
   });
   await writeFile(target.path, JSON.stringify(catalog, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
-  return modelConfigsFromCatalog(JSON.stringify(catalog), target.path, providerId === 'native' ? 'wanzhao' : providerId);
+  return modelConfigsFromCatalog(JSON.stringify(catalog), target.path, providerId);
 }
 
 function saveProviderApiKey(providerId: string, apiKey?: string): void {
@@ -864,6 +864,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       if (provider.enabled) {
         await writeProviderConfigFile(provider);
         await startProvider(provider);
+        void import('./engine-balance.js').then(module=>module.collectEngineBalance('provider:'+provider.id)).catch(()=>{});
       }
       return inspect(true);
     },
@@ -895,6 +896,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         report?.({ stage: 'stop', message: '停止现有 Provider Engine', progress: 35 });
         await stopProvider(providerId);
         await startProvider(updated, progress => report?.({ ...progress, progress: 35 + progress.progress * 0.65 }));
+        void import('./engine-balance.js').then(module=>module.collectEngineBalance('provider:'+providerId)).catch(()=>{});
       } else {
         await stopProvider(providerId);
       }
@@ -965,10 +967,9 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
           ? [readModelConfigsForProvider(engine.provider).catch(() => [])] : []),
       ]);
       const all = available.flat();
-      const providerIdFor = (config: AgentModelConfig) =>
-        config.provider === 'wanzhao' ? 'native' : config.provider || 'native';
+      const providerIdFor = (config: AgentModelConfig) => config.provider || 'native';
       for (const update of updates) {
-        const requestedProvider = update.provider === 'wanzhao' ? 'native' : update.provider;
+        const requestedProvider = update.provider === 'wanzhao' && !all.some(item=>item.provider==='wanzhao') ? 'native' : update.provider;
         const config = all.find(item => item.model === update.model
           && (!requestedProvider || providerIdFor(item) === requestedProvider));
         if (!config) continue;
