@@ -66,6 +66,7 @@ function renderPanel(sessionTabs: Array<{ id: string; label: string; customLabel
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={client}><ScheduledTasksPanel projectId="project-1" sessionTabs={sessionTabs} /></QueryClientProvider>);
 }
+const editor = () => within(screen.getByRole('dialog'));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -110,8 +111,8 @@ describe('ScheduledTasksPanel', () => {
     await screen.findByText('每日代码巡检');
 
     await user.click(screen.getByRole('button', { name: '新建任务' }));
-    await user.type(screen.getByPlaceholderText('例如：每日代码巡检'), '夜间测试');
-    await user.type(screen.getByPlaceholderText('到时间后发送给标签页的完整指令…'), '运行完整测试并总结失败项');
+    await user.type(editor().getByPlaceholderText('例如：每日代码巡检'), '夜间测试');
+    await user.type(editor().getByPlaceholderText('到时间后发送给标签页的完整指令…'), '运行完整测试并总结失败项');
     await user.click(screen.getByRole('button', { name: '创建任务' }));
 
     await waitFor(() => expect(api.scheduledTasks.create).toHaveBeenCalledWith(expect.objectContaining({
@@ -136,7 +137,7 @@ describe('ScheduledTasksPanel', () => {
 
     await screen.findByText('每日代码巡检');
     await user.click(screen.getByRole('button', { name: '新建任务' }));
-    await user.click(screen.getByRole('button', { name: /现有标签页/ }));
+    await user.selectOptions(screen.getByLabelText('发送到'), 'existing');
     expect(screen.getByRole('option', { name: '代码巡检主会话 · Session · running' })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: /Old terminal/ })).not.toBeInTheDocument();
   });
@@ -147,7 +148,7 @@ describe('ScheduledTasksPanel', () => {
     await screen.findByText('每日代码巡检');
 
     await user.click(screen.getByRole('button', { name: '新建任务' }));
-    await user.click(screen.getByRole('button', { name: 'Codex' }));
+    await user.selectOptions(screen.getByLabelText('Agent 类型'), 'codex');
     await user.click(screen.getByText('任务截止限制（可选，到期后需手动重新启用）'));
     const addCondition = screen.getByRole('button', { name: '添加停止条件' });
     await user.click(addCondition);
@@ -178,21 +179,22 @@ describe('ScheduledTasksPanel', () => {
     })));
   });
 
-  it('separates the list and settings, and preserves an existing unwindowed schedule', async () => {
+  it('edits in a centered dialog while keeping the task list behind it', async () => {
     const user = userEvent.setup();
     renderPanel();
     await screen.findByText('每日代码巡检');
-    expect(screen.queryByLabelText('任务名称')).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: `查看任务 ${task.name}` }));
-    expect(screen.queryByLabelText('定时任务展示')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('任务名称')).toHaveValue(task.name);
-    expect(screen.getByLabelText('任务运行情况')).toBeVisible();
-    await user.selectOptions(screen.getByLabelText('执行周期'), 'interval');
-    expect(screen.queryByLabelText('限定每天执行时段')).not.toBeInTheDocument();
-    expect(screen.getByText('不限制开始条件，按周期执行。')).toBeVisible();
-    await user.click(screen.getByRole('button', { name: '返回任务列表' }));
+    expect(screen.getByRole('dialog', { name: '编辑定时任务' })).toBeVisible();
+    expect(screen.getByText('任务列表')).toBeInTheDocument();
+    expect(editor().getByLabelText('任务名称')).toHaveValue(task.name);
+    expect(editor().getByLabelText('任务运行情况')).toBeVisible();
+    await user.selectOptions(editor().getByLabelText('执行周期'), 'interval');
+    expect(editor().queryByLabelText('限定每天执行时段')).not.toBeInTheDocument();
+    expect(editor().getByText('不限制开始条件，按周期执行。')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '关闭编辑定时任务' }));
     expect(screen.getByLabelText('定时任务展示')).toBeVisible();
-    expect(screen.queryByLabelText('任务名称')).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('saves daily conditions in the single execution configuration area', async () => {
@@ -200,10 +202,10 @@ describe('ScheduledTasksPanel', () => {
     renderPanel();
     await screen.findByText(task.name);
     await user.click(screen.getByRole('button', { name: '新建任务' }));
-    await user.type(screen.getByLabelText('任务名称'), '白天巡检');
-    await user.type(screen.getByLabelText('提示词'), '继续检查');
-    await user.clear(screen.getByLabelText('执行间隔'));
-    await user.type(screen.getByLabelText('执行间隔'), '30');
+    await user.type(editor().getByLabelText('任务名称'), '白天巡检');
+    await user.type(editor().getByLabelText('提示词'), '继续检查');
+    await user.clear(editor().getByLabelText('执行间隔'));
+    await user.type(editor().getByLabelText('执行间隔'), '30');
     await user.click(screen.getByRole('button', { name: '创建任务' }));
     await waitFor(() => expect(api.scheduledTasks.create).toHaveBeenCalledWith(expect.objectContaining({
       daily_start_time: null, daily_end_time: null, schedule_value: '30', daily_stop_time: null,
@@ -212,7 +214,7 @@ describe('ScheduledTasksPanel', () => {
       condition_unmet_policy: 'skip',
     })));
     await waitFor(() => expect(screen.getByLabelText('定时任务展示')).toBeVisible());
-    expect(screen.queryByLabelText('定时任务设置')).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('supports mixed AND/OR groups and preserves them on save', async () => {
@@ -220,13 +222,13 @@ describe('ScheduledTasksPanel', () => {
     renderPanel([{ id: session.id, label: '巡检' }]);
     await screen.findByText(task.name);
     await user.click(screen.getByRole('button', { name: '新建任务' }));
-    await user.click(screen.getByRole('button', { name: /现有标签页/ }));
-    await user.selectOptions(screen.getByLabelText('目标标签页'), session.id);
-    await user.click(screen.getByRole('button', { name: '每次开始条件添加分组' }));
-    await user.click(screen.getByRole('button', { name: '每次开始条件 2分组添加条件' }));
-    await user.selectOptions(screen.getByLabelText('每次开始条件 2分组 2'), 'weekday');
-    await user.type(screen.getByLabelText('任务名称'), '条件巡检');
-    await user.type(screen.getByLabelText('提示词'), '继续检查');
+    await user.selectOptions(editor().getByLabelText('发送到'), 'existing');
+    await user.selectOptions(editor().getByLabelText('目标标签页'), session.id);
+    await user.click(editor().getByRole('button', { name: '每次开始条件添加分组' }));
+    await user.click(editor().getByRole('button', { name: '每次开始条件 2分组添加条件' }));
+    await user.selectOptions(editor().getByLabelText('每次开始条件 2分组 2'), 'weekday');
+    await user.type(editor().getByLabelText('任务名称'), '条件巡检');
+    await user.type(editor().getByLabelText('提示词'), '继续检查');
     await user.click(screen.getByRole('button', { name: '创建任务' }));
     await waitFor(() => expect(api.scheduledTasks.create).toHaveBeenCalledWith(expect.objectContaining({
       condition_unmet_policy: 'skip',

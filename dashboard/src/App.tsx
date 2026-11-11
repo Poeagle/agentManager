@@ -6,7 +6,7 @@ import { api, type AuthUser } from './lib/api';
 import { AuthGate } from './components/AuthGate';
 import { cleanupProjectStorage } from './lib/project-view-storage';
 import { confirmDiscardProject } from './lib/unsaved-files';
-import { X, LayoutGrid, Settings, ArrowUpCircle, LogOut, KeyRound, Plus } from 'lucide-react';
+import { X, LayoutGrid, ArrowUpCircle, Plus } from 'lucide-react';
 import { hasPermission, usePermissions } from './lib/permissions';
 import type { PlatformSection } from './components/PlatformCenter';
 import { CloseTabModal } from './components/CloseTabModal';
@@ -397,7 +397,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       {/* Header */}
       <header
         className="workspace-header flex items-center justify-between border-b shrink-0"
-        style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}
+        style={{ borderColor: 'var(--border)', background: 'var(--bg-primary)' }}
       >
         <div className="flex shrink-0 items-center gap-2">
           <h1 className="workspace-brand font-bold">
@@ -409,38 +409,37 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           {hasPermission(permissionsQuery.data, 'monitor') && <ServerResourceIndicator />}
           <button
             onClick={() => setPlatformSection(hasPermission(permissionsQuery.data, 'monitor') ? 'monitor' : 'account')}
-            className="workspace-header-button border font-medium hover:opacity-80"
-            style={{ borderColor: 'var(--border)', color: showPlatformCenter ? 'var(--accent)' : 'var(--text-secondary)', background: 'var(--bg-tertiary)' }}
+            className="workspace-header-button workspace-header-chip border font-medium hover:opacity-80"
+            style={{ borderColor: 'var(--border)', color: showPlatformCenter ? 'var(--accent)' : 'var(--text-primary)' }}
             title="平台管理"
             aria-label="平台管理"
           >
-            <Settings className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">平台管理</span>
+            <span>平台管理</span>
           </button>
-          <div className="workspace-connection" role="status" aria-label={connected ? 'Connected' : 'Disconnected'} title={connected ? 'Connected · 实时连接正常' : 'Disconnected · 实时连接已断开，正在重连'}>
+          <div className="workspace-header-chip workspace-connection border" role="status" aria-label={connected ? 'Connected' : 'Disconnected'} title={connected ? 'Connected · 实时连接正常' : 'Disconnected · 实时连接已断开，正在重连'}>
             <div
               className="h-1.5 w-1.5 rounded-full"
               style={{ background: connected ? 'var(--success)' : 'var(--error)' }}
             />
-            {!connected && <span style={{ color: 'var(--error)' }}>连接已断开</span>}
+            <span style={{ color: connected ? 'var(--text-primary)' : 'var(--error)' }}>{connected ? '在线' : '连接中断'}</span>
           </div>
-          <div className="workspace-account pl-1" style={{ borderLeft: '1px solid var(--border)' }}>
+          <div className="workspace-account">
             <button
               onClick={() => setPlatformSection('account')}
-              className="workspace-header-button font-medium transition-colors hover:opacity-80"
-              style={{ color: 'var(--text-secondary)' }}
+              className="workspace-header-button workspace-header-chip border font-medium transition-colors hover:opacity-80"
+              style={{ color: 'var(--text-primary)', borderColor: 'var(--border)' }}
               title="我的账户"
             >
-              <KeyRound className="w-3.5 h-3.5" />
               <span className="workspace-account-name">{authUser.display_name || authUser.username}</span>
             </button>
             <button
               onClick={onLogout}
-              className="workspace-header-button transition-colors hover:opacity-80"
-              style={{ color: 'var(--text-secondary)', background: 'transparent' }}
+              className="workspace-header-button workspace-header-chip border transition-colors hover:opacity-80"
+              style={{ color: 'var(--text-primary)', borderColor: 'var(--border)' }}
               title="登出"
+              aria-label="登出"
             >
-              <LogOut className="w-4 h-4" />
+              <span>退出</span>
             </button>
           </div>
         </div>

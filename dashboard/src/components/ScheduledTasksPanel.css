@@ -5,11 +5,13 @@
   background: var(--bg-primary);
 }
 .schedule-editor {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-primary);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
-.schedule-editor > .compact-form { padding: 14px; }
+.schedule-editor > .compact-form { padding: 4px 0 12px; }
+.schedule-editor :where(.rounded-lg,.rounded-xl) { border-radius: 4px; }
+.schedule-editor :where(button,select,input,textarea):focus-visible { outline-offset: 1px; }
 .schedule-editor .compact-form :where(input:not([type=checkbox]), select, textarea) {
   font-size: 13px;
   line-height: 20px;
@@ -20,12 +22,11 @@
   padding-block: 12px;
 }
 .schedule-editor .condition-workspace > section { align-self: start; }
-.schedule-target { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 14px; }
-.schedule-target > span { margin: 0 0 8px; font-size: 13px; }
+.schedule-target { display: flex; flex-wrap: wrap; align-items: start; gap: 10px 14px; }
+.schedule-target > label { margin: 0; font-size: 13px; }
 .schedule-target > .field-grid { display: flex; flex-wrap: wrap; margin: 0; }
 .schedule-target > .field-grid > label { width: 280px; max-width: 100%; }
 .schedule-target > .mt-2 { margin-top: 0; }
-.schedule-target button { min-height: 32px; padding-block: 5px; border-radius: 5px; }
 .schedule-editor .compact-form > div > label textarea { min-height: 144px; }
 .schedule-cutoffs { padding-block: 6px; }
 .schedule-cutoffs > summary { width: fit-content; }
