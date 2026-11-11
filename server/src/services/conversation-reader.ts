@@ -258,7 +258,6 @@ function scan(
       length = end - start;
     const replacements = codec.replacementHistory?.(record);
     if (replacements) {
-      result.length = 0;
       const projected: IndexedMessage[] = [];
       for (const [
         replacementOrder,
@@ -271,10 +270,11 @@ function scan(
           length,
           replacementIndex,
           offset + (replacementOrder + 1) / (replacements.length + 1),
-          replacementOrder === 0,
+          false,
         );
         if (result.length > previousLength) {
-          projected.push(result.pop()!);
+          const item = result.pop()!;
+          if (item.presentation === "compaction_summary") projected.push(item);
         }
       }
       const hasSummary = projected.some(
@@ -282,11 +282,9 @@ function scan(
       );
       let fallback: IndexedMessage | undefined;
       if (!hasSummary) {
-        addProjection(record, offset, length, undefined, offset + 1);
-        fallback = result.pop();
+        if (addProjection(record, offset, length, undefined, offset + 1))
+          fallback = result.pop();
       }
-      if (projected.length) projected[0].resetBefore = true;
-      else if (fallback) fallback.resetBefore = true;
       result.push(...projected);
       if (fallback) result.push(fallback);
       start = end + 1;

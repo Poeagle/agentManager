@@ -149,16 +149,16 @@ describe('public conversation pages',()=>{
     appendFileSync(file,compacted+user('继续')+final('继续后的答复'));
 
     const delta=await readConversation(binding,{after:staleCursor});
-    expect(delta.reset).toBe(true);
-    expect(delta.messages.map(message=>message.text)).toEqual(['保留的问题','保留的结论',summary,'继续','继续后的答复']);
-    expect(delta.messages[2]).toMatchObject({
+    expect(delta.reset).toBe(false);
+    expect(delta.messages.map(message=>message.text)).toEqual([summary,'继续','继续后的答复']);
+    expect(delta.messages[0]).toMatchObject({
       role:'assistant',
       phase:'commentary',
       presentation:'compaction_summary',
       id:conversationMessageId('','assistant','msg_summary_7'),
     });
     expect(delta.messages.filter(message=>message.text===summary)).toHaveLength(1);
-    expect(delta.messages.some(message=>message.text==='旧结论')).toBe(false);
+    expect((await readConversation(binding)).messages.map(message=>message.text)).toEqual(['旧问题','旧结论',summary,'继续','继续后的答复']);
     expect(delta.messages.at(-1)).toMatchObject({phase:'final',text:'继续后的答复'});
   });
   it('keeps the compaction summary after replacement history when the summary has no native message copy',async()=>{
@@ -169,8 +169,8 @@ describe('public conversation pages',()=>{
     ]});
     writeFileSync(file,compacted+user('继续'));
     const messages=(await readConversation(binding)).messages;
-    expect(messages.map(message=>message.text)).toEqual(['保留的问题','保留的答复',summary,'继续']);
-    expect(messages[2]).toMatchObject({presentation:'compaction_summary',phase:'commentary'});
+    expect(messages.map(message=>message.text)).toEqual([summary,'继续']);
+    expect(messages[0]).toMatchObject({presentation:'compaction_summary',phase:'commentary'});
   });
   it('projects Codex replacement history COMPACTION_SUMMARY markers as cards, not user or conclusion messages',async()=>{
     const compacted=line('compacted',{message:'',replacement_history:[
@@ -179,8 +179,35 @@ describe('public conversation pages',()=>{
     ]});
     writeFileSync(file,compacted+user('继续'));
     const messages=(await readConversation(binding)).messages;
-    expect(messages.map(message=>message.text)).toEqual(['压缩前保留的回答','压缩后需要继续的上下文','继续']);
-    expect(messages[1]).toMatchObject({role:'assistant',phase:'commentary',presentation:'compaction_summary'});
+    expect(messages.map(message=>message.text)).toEqual(['压缩后需要继续的上下文','继续']);
+    expect(messages[0]).toMatchObject({role:'assistant',phase:'commentary',presentation:'compaction_summary'});
+  });
+  it('preserves original turns and exposes an encrypted compaction without leaking its payload',async()=>{
+    const original=user('原问题')+final('原答复');
+    writeFileSync(file,original);
+    const before=await readConversation(binding);
+    appendFileSync(file,line('compacted',{message:'',replacement_history:[
+      {type:'message',id:'copied-user',role:'user',content:[{type:'input_text',text:'原问题'}]},
+      {type:'compaction',id:'encrypted-summary',encrypted_content:'SECRET_ENCRYPTED_DATA'},
+    ]})+user('继续')+final('新答复'));
+    const delta=await readConversation(binding,{after:before.messages.at(-1)!.id});
+    expect(delta.reset).toBe(false);
+    expect(delta.messages.map(message=>message.text)).toEqual(['压缩内容由 Codex 加密保存，无法显示摘要正文。','继续','新答复']);
+    expect(delta.messages[0]).toMatchObject({presentation:'compaction_summary'});
+    const full=await readConversation(binding);
+    expect(full.messages.map(message=>message.text)).toEqual(['原问题','原答复','压缩内容由 Codex 加密保存，无法显示摘要正文。','继续','新答复']);
+    expect(JSON.stringify(full)).not.toContain('SECRET_ENCRYPTED_DATA');
+  });
+  it('preserves prior messages when a compaction contains no readable or encrypted summary',async()=>{
+    writeFileSync(file,user('原问题')+final('原答复')+line('compacted',{message:'',replacement_history:[]})+user('继续'));
+    expect((await readConversation(binding)).messages.map(message=>message.text)).toEqual(['原问题','原答复','Codex 未提供可显示的压缩摘要正文。','继续']);
+  });
+  it('retains separate summaries and messages across multiple compactions',async()=>{
+    const compact=(id:string)=>line('compacted',{message:'',replacement_history:[{type:'compaction',id,encrypted_content:'opaque'}]});
+    writeFileSync(file,user('第一问')+final('第一答')+compact('compact-1')+user('第二问')+final('第二答')+compact('compact-2')+user('第三问'));
+    const messages=(await readConversation(binding)).messages;
+    expect(messages.map(message=>message.presentation==='compaction_summary'?'摘要':message.text)).toEqual(['第一问','第一答','摘要','第二问','第二答','摘要','第三问']);
+    expect(new Set(messages.map(message=>message.id)).size).toBe(messages.length);
   });
   it('shows only an actual shared-resource developer notice while hiding other developer context and tool lookalikes',async()=>{
     const notice='<octoally_shared_resources>\n凭据文件：/work/.env\n通过本地程序按需读取凭据。\n</octoally_shared_resources>';
