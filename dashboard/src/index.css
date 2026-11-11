@@ -165,12 +165,12 @@ button, [role="button"], select, a, summary {
 
 button:not(:disabled):hover,
 [role="button"]:not(:disabled):hover {
-  filter: brightness(1.15);
+  opacity: .88;
 }
 
 button:not(:disabled):active,
 [role="button"]:not(:disabled):active {
-  filter: brightness(0.95);
+  opacity: .76;
 }
 
 button:disabled {
@@ -179,7 +179,7 @@ button:disabled {
 }
 
 select:hover {
-  filter: brightness(1.1);
+  border-color: var(--accent);
 }
 
 /* Markdown preview styles */

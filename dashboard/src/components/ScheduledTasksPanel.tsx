@@ -1,14 +1,11 @@
 import {agentSupports,builtinAgentDescriptors} from '../lib/agents';
-import {AgentIcon} from './AgentIcon';
-
 import { TableActions, TableActionButton } from './table/TableActions';
 import { useTableModel } from './table/use-table-model';
 import { DataTable } from './table/DataTable';
 import { RowActionsMenu } from './table/RowActionsMenu';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  ArrowLeft,
   Gauge,
   History,
   Loader2,
@@ -16,10 +13,8 @@ import {
   Pencil,
   Play,
   Plus,
-  TerminalSquare,
   Trash2,
   XCircle,
-  Zap,
 } from 'lucide-react';
 import {
   api,
@@ -32,6 +27,7 @@ import {
 } from '../lib/api';
 import type { TerminalInstance } from '../lib/project-session-state';
 import { ScheduleConditionsEditor } from './ScheduleConditionsEditor';
+import { Dialog } from './Dialog';
 import './ScheduledTasksPanel.css';
 
 const DAYS = [
@@ -434,6 +430,11 @@ export function ScheduledTasksPanel({
     setFormError('');
     setPage('edit');
   };
+  const closeEditor = useCallback(() => {
+    if (saveMutation.isPending) return;
+    setPage('list');
+    setFormError('');
+  }, [saveMutation.isPending]);
 
   const taskTable = useTableModel(tasks, [
     { key: 'name', title: '任务名称', value: (task) => task.name },
@@ -452,38 +453,31 @@ export function ScheduledTasksPanel({
 
   return (
     <div className="h-full overflow-y-auto" style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
-      <div className="page-content py-3">
+      <div className="page-content py-3" aria-hidden={page === 'edit'} inert={page === 'edit'}>
         <header className="schedule-page-header mb-3 flex flex-wrap items-center justify-between gap-2 border-b py-2" style={{ borderColor: 'var(--border)' }}>
           <div>
-            <h1 className="text-base font-semibold">{page === 'list' ? '定时任务' : editor.id ? '编辑定时任务' : '新建定时任务'}</h1>
+            <h1 className="text-base font-semibold">定时任务</h1>
             <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
               服务端按任务时区执行，浏览器关闭后仍生效。
             </p>
           </div>
-          {page === 'list' ? <button
+          <button
             onClick={() => openEditor()}
-            className="flex items-center gap-1.5 self-start rounded-lg px-3 py-2 text-xs font-semibold sm:self-auto"
-            style={{ background: 'var(--accent)', color: 'white' }}
+            className="flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs font-medium"
+            style={{ borderColor: 'var(--border)', color: 'var(--text-primary)' }}
           >
             <Plus className="h-3.5 w-3.5" /> 新建任务
-          </button> : <div className="flex flex-wrap items-center gap-3">
-            <button onClick={() => { setPage('list'); setFormError(''); }} className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}><ArrowLeft className="h-3.5 w-3.5" />返回任务列表</button>
-            <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={editor.enabled} onChange={(event) => setEditor({ ...editor, enabled: event.target.checked })} className="accent-[var(--accent)]" />启用</label>
-            <button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} className="flex h-8 items-center gap-1.5 rounded-md px-3 text-[13px] font-medium disabled:opacity-50" style={{ background: 'var(--accent)', color: 'white' }}>
-              {saveMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {editor.id ? '保存更改' : '创建任务'}
-            </button>
-          </div>}
+          </button>
         </header>
 
-        {formError && (
+        {formError && page === 'list' && (
           <div role="alert" className="mb-4 rounded-lg border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--error) 35%, var(--border))', color: 'var(--error)', background: 'color-mix(in srgb, var(--error) 8%, transparent)' }}>
             {formError}
           </div>
         )}
 
         <div className="space-y-3">
-          {page === 'list' && <section className="min-w-0" aria-label="定时任务展示">
+          <section className="min-w-0" aria-label="定时任务展示">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>任务列表</h2>
               <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-muted)' }}>{tasks.length} 个任务</span>
@@ -529,9 +523,29 @@ export function ScheduledTasksPanel({
                 })}
                   </DataTable>
 
-          </section>}
+          </section>
 
-          {page === 'edit' && <section aria-label="定时任务设置" className="schedule-editor min-w-0">
+        </div>
+      </div>
+
+      {page === 'edit' && <Dialog
+        appearance="manager"
+        size="image"
+        width={1180}
+        title={editor.id ? '编辑定时任务' : '新建定时任务'}
+        onClose={closeEditor}
+        busy={saveMutation.isPending}
+        actions={<div className="flex shrink-0 items-center gap-3">
+          <label className="flex items-center gap-1.5 whitespace-nowrap text-xs"><input type="checkbox" checked={editor.enabled} onChange={(event) => setEditor({ ...editor, enabled: event.target.checked })} className="accent-[var(--accent)]" />启用</label>
+          <button type="button" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} className="flex h-8 items-center gap-1.5 rounded border px-3 text-xs font-medium disabled:opacity-50" style={{ background: 'var(--accent)', borderColor: 'var(--accent)', color: 'white' }}>
+            {saveMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {editor.id ? '保存更改' : '创建任务'}
+          </button>
+        </div>}
+      >
+        {formError && <div role="alert" className="mb-3 rounded border px-3 py-2 text-xs" style={{ borderColor: 'color-mix(in srgb, var(--error) 35%, var(--border))', color: 'var(--error)', background: 'color-mix(in srgb, var(--error) 8%, transparent)' }}>{formError}</div>}
+        <div className="schedule-editor">
+          <section aria-label="定时任务设置" className="min-w-0">
             <div className="compact-form space-y-3 p-3">
               <div className="min-w-0 space-y-3">
               <div className="flex flex-wrap items-end gap-3">
@@ -558,7 +572,7 @@ export function ScheduledTasksPanel({
                       <div className="flex flex-wrap gap-1">
                         {DAYS.map((day) => {
                           const active = editor.weeklyDays.includes(day.value);
-                          return <button key={day.value} onClick={() => setEditor({ ...editor, weeklyDays: active ? editor.weeklyDays.filter((value) => value !== day.value) : [...editor.weeklyDays, day.value] })} className="h-8 w-8 rounded-full text-xs" style={{ background: active ? 'var(--accent)' : 'var(--bg-tertiary)', color: active ? 'white' : 'var(--text-secondary)' }}>{day.label}</button>;
+                          return <button type="button" key={day.value} aria-label={`星期${day.label}`} aria-pressed={active} onClick={() => setEditor({ ...editor, weeklyDays: active ? editor.weeklyDays.filter((value) => value !== day.value) : [...editor.weeklyDays, day.value] })} className="h-8 w-8 rounded border text-xs" style={{ borderColor: active ? 'var(--accent)' : 'var(--border)', background: active ? 'var(--accent)' : 'transparent', color: active ? 'white' : 'var(--text-secondary)' }}>{day.label}</button>;
                         })}
                       </div>
                       <input aria-label="每周执行时间" type="time" value={editor.weeklyTime} onChange={(event) => setEditor({ ...editor, weeklyTime: event.target.value })} className={`${fieldClass} sm:w-36`} style={fieldStyle} />
@@ -568,11 +582,12 @@ export function ScheduledTasksPanel({
               </div>
 
               <div className="schedule-target">
-                <span className="mb-2 block text-xs" style={{ color: 'var(--text-secondary)' }}>发送到</span>
-                <div className="flex flex-wrap gap-2">
-                  <button onClick={() => setEditor({ ...editor, targetType: 'existing' })} className="flex items-center gap-2 rounded-lg border px-3 py-2 text-left" style={{ borderColor: editor.targetType === 'existing' ? 'var(--accent)' : 'var(--border)', background: editor.targetType === 'existing' ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'transparent' }}><TerminalSquare className="h-4 w-4" style={{ color: 'var(--accent)' }} /><span><strong className="text-[13px] font-medium">现有标签页</strong></span></button>
-                  <button onClick={() => setEditor({ ...editor, targetType: 'new' })} className="flex items-center gap-2 rounded-lg border px-3 py-2 text-left" style={{ borderColor: editor.targetType === 'new' ? 'var(--accent)' : 'var(--border)', background: editor.targetType === 'new' ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'transparent' }}><Plus className="h-4 w-4" style={{ color: 'var(--accent)' }} /><span><strong className="text-[13px] font-medium">新建标签页</strong></span></button>
-                </div>
+                <label className="block w-56 space-y-1 text-xs">
+                  <span style={{ color: 'var(--text-secondary)' }}>发送到</span>
+                  <select aria-label="发送到" value={editor.targetType} onChange={(event) => setEditor({ ...editor, targetType: event.target.value as 'existing' | 'new' })} className={fieldClass} style={fieldStyle}>
+                    <option value="existing">现有标签页</option><option value="new">新建标签页</option>
+                  </select>
+                </label>
 
                 {editor.targetType === 'existing' ? (
                   <div className="field-grid mt-2">
@@ -580,17 +595,18 @@ export function ScheduledTasksPanel({
                     <label className="space-y-1.5 text-xs"><span style={{ color: 'var(--text-secondary)' }}>标签页未运行时</span><select value={editor.inactivePolicy} onChange={(event) => setEditor({ ...editor, inactivePolicy: event.target.value as 'resume' | 'fail' })} className={fieldClass} style={fieldStyle}><option value="resume">自动恢复后发送</option><option value="fail">本次执行失败</option></select></label>
                   </div>
                 ) : (
-                  <div className="mt-2 flex flex-wrap items-center gap-3">
-                    <div className="flex gap-2">
-                      {([
-                        ['session', Zap, 'Session'], ['terminal', TerminalSquare, 'Terminal'],
-                      ] as Array<[ScheduledNewMode, typeof Zap, string]>).map(([mode, Icon, label]) => <button key={mode} onClick={() => setEditor({ ...editor, newMode: mode })} className="flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-xs" style={{ borderColor: editor.newMode === mode ? 'var(--accent)' : 'var(--border)', color: editor.newMode === mode ? 'var(--accent)' : 'var(--text-secondary)' }}><Icon className="h-3.5 w-3.5" />{label}</button>)}
-                    </div>
-                    {editor.newMode!=='terminal'&&<div className="grid grid-cols-2 gap-2">{providers.map(agent=><button key={agent.id} onClick={()=>setEditor({...editor,newCliType:agent.id})} className="flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs" style={{borderColor:editor.newCliType===agent.id?'var(--accent)':'var(--border)',color:editor.newCliType===agent.id?'var(--text-primary)':'var(--text-secondary)'}}><AgentIcon session={{agent}} className="h-4 w-4"/>{agent.label}</button>)}</div>}
+                  <div className="mt-2 flex flex-wrap items-start gap-3">
+                    <label className="block w-44 space-y-1 text-xs"><span style={{ color: 'var(--text-secondary)' }}>标签页类型</span><select aria-label="新建标签页类型" value={editor.newMode} onChange={(event) => setEditor({ ...editor, newMode: event.target.value as ScheduledNewMode })} className={fieldClass} style={fieldStyle}><option value="session">Session</option><option value="terminal">Terminal</option></select></label>
+                    {editor.newMode!=='terminal'&&<label className="block w-56 space-y-1 text-xs"><span style={{ color: 'var(--text-secondary)' }}>Agent</span><select aria-label="Agent 类型" value={editor.newCliType} onChange={(event) => setEditor({...editor,newCliType:event.target.value})} className={fieldClass} style={fieldStyle}>{providers.map(agent=><option key={agent.id} value={agent.id}>{agent.label}</option>)}</select></label>}
                     {editor.newMode === 'terminal' && <p className="rounded-lg px-3 py-2 text-[10px] leading-relaxed" style={{ background: 'color-mix(in srgb, #f59e0b 9%, transparent)', color: '#f59e0b' }}>Terminal 会把提示词作为终端输入提交；如果标签页处于 Shell，这段文字会被当作命令执行。</p>}
                   </div>
                 )}
               </div>
+
+              <label className="block space-y-1.5 text-xs">
+                <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>发送内容</span>
+                <textarea aria-label="提示词" value={editor.prompt} onChange={(event) => setEditor({ ...editor, prompt: event.target.value })} rows={7} maxLength={100000} placeholder="到时间后发送给标签页的完整指令…" className={`${fieldClass} min-h-36 resize-y leading-relaxed`} style={fieldStyle} />
+              </label>
 
               <section aria-label="执行配置" className="space-y-2">
                 <div className="condition-workspace">
@@ -653,19 +669,11 @@ export function ScheduledTasksPanel({
               </section>
               </details>
               </div>
-              <div className="min-w-0 space-y-5">
-              <label className="block space-y-1.5 text-xs">
-                <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>发送内容</span>
-                <textarea aria-label="提示词" value={editor.prompt} onChange={(event) => setEditor({ ...editor, prompt: event.target.value })} rows={7} maxLength={100000} placeholder="到时间后发送给标签页的完整指令…" className={`${fieldClass} min-h-36 resize-y leading-relaxed`} style={fieldStyle} />
-              </label>
-
-              </div>
-
             </div>
 
-          </section>}
+          </section>
 
-            {page === 'edit' && selectedTask && (
+            {selectedTask && (
               <section aria-label="任务运行情况" className="rounded-xl border" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
                 <div className="space-y-1 px-3 py-2">
                   <h2 className="text-sm font-semibold">运行情况</h2>
@@ -688,7 +696,7 @@ export function ScheduledTasksPanel({
               </section>
             )}
         </div>
-      </div>
+      </Dialog>}
     </div>
   );
 }

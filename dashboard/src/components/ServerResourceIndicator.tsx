@@ -42,8 +42,8 @@ export function ServerResourceIndicator() {
 
   return (
     <div aria-label="部署服务器资源" title={title}
-      className="workspace-indicator flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded border px-1.5 text-[11px]"
-      style={{ borderColor: 'var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-muted)' }}>
+      className="workspace-indicator workspace-header-chip flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded border px-1.5 text-[11px]"
+      style={{ borderColor: 'var(--border)' }}>
       {resources ? metrics.map(({ label, value, percent, detail }, index) => (
         <span key={label} title={`${detail}\n检测时间：${sampledTime}`} className={`flex items-center gap-1 ${index ? 'border-l pl-1.5' : ''}`} style={{ borderColor: 'var(--border)' }}>
           <span>{label}</span>
