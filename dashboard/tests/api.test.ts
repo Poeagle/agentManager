@@ -158,4 +158,11 @@ describe('dashboard API client', () => {
       }),
     );
   });
+  it('sends provider updates with PUT and reads the operation stream', async () => {
+    const provider={id:'fixture',status:'ready'};
+    const fetchMock=vi.fn().mockResolvedValue(new Response(JSON.stringify({type:'complete',provider})+'\n',{status:200}));
+    vi.stubGlobal('fetch',fetchMock);
+    expect(await api.agentManagement.updateProviderStream('codex','fixture',{fields:{models:['model']}})).toEqual({provider});
+    expect(fetchMock).toHaveBeenCalledWith('/api/agent-management/codex/providers/fixture/update-stream',expect.objectContaining({method:'PUT'}));
+  });
 });
