@@ -27,6 +27,8 @@ it('recovers recorded hours from real history while retaining unknown deleted hi
   expect(hours.partial).toBe(false);expect(hours.rows.map(r=>[r.hour,r.tokens.total_tokens])).toEqual([['2026-01-01T02:00:00+00:00',20],['2026-01-01T01:00:00+00:00',10]]);
   expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(original);
   await collectAccountUsage('native',{rebuild:true});expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(30);expect(cachedGroupUsage(['native'],'hour',true).rows).toHaveLength(2);
+  await appendFile(path,JSON.stringify({type:'event_msg',timestamp:'2026-01-01T03:00:00Z',payload:{type:'token_count',info:{total_token_usage:{},last_token_usage:{}}}})+'\n');
+  await collectAccountUsage('native',{rebuild:true});expect(cachedAccountUsage('native')).toMatchObject({initialized:true,partial:true,rows:[{tokens:{total_tokens:30}}]});
   const realScanner=vi.mocked(localCommandInput).getMockImplementation()!;vi.mocked(localCommandInput).mockRejectedValueOnce(Error('fixture read failure'));
   await expect(collectAccountUsage('native',{rebuild:true})).rejects.toThrow('保留上次成功数据');expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(30);vi.mocked(localCommandInput).mockImplementation(realScanner);
   getDb().prepare('UPDATE codex_usage_dedup_events SET hour=NULL WHERE account=?').run('native');getDb().prepare('UPDATE codex_usage_dedup_status SET hour_backfilled=0 WHERE account=?').run('native');await rm(path);
