@@ -11,6 +11,12 @@ const record=(stamp:string,total:number,last:number)=>JSON.stringify({type:'even
 beforeEach(async()=>{home=await mkdtemp(join(tmpdir(),'codex-usage-test-'));await mkdir(join(home,'sessions'));file=join(home,'sessions','rollout-test.jsonl');});
 afterEach(async()=>{await rm(home,{recursive:true,force:true});});
 describe('account-scoped incremental JSONL scanner',()=>{
+ it('extracts workdir from large modern metadata and does not flag oversized tool records as lost usage',async()=>{
+  const header=JSON.stringify({type:'session_meta',payload:{cwd:'/large/project',base_instructions:{text:'x'.repeat(400000)}}})+'\n';
+  const tool=JSON.stringify({type:'response_item',payload:{type:'function_call_output',output:'x'.repeat(300000)}})+'\n';
+  await writeFile(file,header+tool+record('2026-01-01T12:00:00Z',10,10));
+  const result=await scan();expect(result.events[0].cwd).toBe('/large/project');expect(result.errors).toBe(0);expect(result.partial).toBe(false);
+ });
  it('resumes at complete lines and ignores duplicate snapshots',async()=>{
   await writeFile(file,meta+record('2026-01-01T12:00:00Z',100,100));
   const first=await scan();expect(first.events).toHaveLength(1);expect(first.events[0]).toMatchObject({cwd:'/project',tokens:{total_tokens:100}});

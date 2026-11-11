@@ -4,6 +4,7 @@ import {localHome} from './account-files.js';
 import {accountCommandInput,localCommandInput} from './account-transport.js';
 import {USAGE_SCAN} from './usage-scanner.js';
 import {tokenFields} from '../../conversation-usage.js';
+import {CREDIT_RATE_DATE,estimateUsageCredits} from './usage-credits.js';
 let timer:ReturnType<typeof setTimeout>|undefined;
 let stopped=true;
 const pending=new Map<string,Promise<void>>();
@@ -44,7 +45,15 @@ export function cachedAccountUsage(id:string){
  const db=getDb();const status=db.prepare('SELECT checked_at,error,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;error:string|null;partial:number}|undefined;
  const sums=tokenFields.map(k=>`CASE WHEN COUNT(json_extract(tokens,'$.${k}'))=COUNT(*) THEN SUM(json_extract(tokens,'$.${k}')) ELSE NULL END AS ${k}`).join(',');
  const rows=db.prepare(`SELECT day,cwd,${sums} FROM codex_usage_events WHERE account=? GROUP BY day,cwd ORDER BY day DESC,cwd LIMIT 5001`).all(id) as Array<Record<string,any>>;
- return {checked_at:status?.checked_at??null,error:status?.error??null,partial:status?.partial!==0||rows.length>5000,timezone:'UTC',rows:rows.slice(0,5000).map(row=>({date:row.day,cwd:row.cwd,tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]]))}))};
+ const estimates=new Map<string,{value:number;covered:number;requests:number}>();
+ const breakdown=db.prepare(`SELECT day,cwd,model,tier,COUNT(*) requests,${sums} FROM codex_usage_events WHERE account=? GROUP BY day,cwd,model,tier`).all(id) as Array<Record<string,any>>;
+ for(const row of breakdown){const key=JSON.stringify([row.day,row.cwd]),group=estimates.get(key)||{value:0,covered:0,requests:0};const value=estimateUsageCredits(row.model,row.tier,row);group.requests+=row.requests;if(value!==null){group.value+=value;group.covered+=row.requests;}estimates.set(key,group);}
+ const projects=db.prepare('SELECT name,path FROM projects').all() as {name:string;path:string}[];
+ return {checked_at:status?.checked_at??null,error:status?.error??null,partial:status?.partial!==0||rows.length>5000,timezone:'UTC',credit_rate_date:CREDIT_RATE_DATE,rows:rows.slice(0,5000).map(row=>{
+  const match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];
+  const estimate=estimates.get(JSON.stringify([row.day,row.cwd]));
+  return {date:row.day,cwd:row.cwd,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null};
+ })};
 }
 export function startAccountUsage(){initAccountUsage();stopped=false;const tick=async()=>{try{for(const e of allCodexEnvironments()){if(stopped)break;if(e.enabled&&e.kind!=='provider')await collectAccountUsage(e.id).catch(()=>{});}}catch{/* Configuration may be changing; retry on the next scheduled pass. */}finally{if(!stopped){timer=setTimeout(()=>void tick(),300000);timer.unref();}}};timer=setTimeout(()=>void tick(),1000);timer.unref();}
 export async function stopAccountUsage(){stopped=true;clearTimeout(timer);await Promise.allSettled([...pending.values()]);}
