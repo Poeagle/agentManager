@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from 'fastify';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import {realpathSync} from 'fs';
 import { isAdmin, userOwnsFilesystemPath } from '../auth.js';
 
 const execFileAsync = promisify(execFile);
@@ -12,13 +13,15 @@ const SAFE_GIT_CONFIG: Array<[string, string]> = [
 ];
 
 /** Apply high-precedence config to Git and to Git subprocesses launched by gh. */
-function safeGitEnv(): NodeJS.ProcessEnv {
+function gitConfig(cwd?:string):Array<[string,string]>{return [...SAFE_GIT_CONFIG,...cwd?[['safe.directory',realpathSync(cwd)] as [string,string]]:[]];}
+function safeGitEnv(cwd?:string): NodeJS.ProcessEnv {
+  const settings=gitConfig(cwd);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    GIT_CONFIG_COUNT: String(SAFE_GIT_CONFIG.length),
+    GIT_CONFIG_COUNT: String(settings.length),
     GIT_TERMINAL_PROMPT: '0',
   };
-  SAFE_GIT_CONFIG.forEach(([key, value], index) => {
+  settings.forEach(([key, value], index) => {
     env[`GIT_CONFIG_KEY_${index}`] = key;
     env[`GIT_CONFIG_VALUE_${index}`] = value;
   });
@@ -26,10 +29,10 @@ function safeGitEnv(): NodeJS.ProcessEnv {
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
-  const safeArgs = SAFE_GIT_CONFIG.flatMap(([key, value]) => ['-c', `${key}=${value}`]);
+  const safeArgs = gitConfig(cwd).flatMap(([key, value]) => ['-c', `${key}=${value}`]);
   const { stdout } = await execFileAsync('git', [...safeArgs, ...args], {
     cwd,
-    env: safeGitEnv(),
+    env: safeGitEnv(cwd),
     encoding: 'utf8',
     maxBuffer: 5 * 1024 * 1024,
   });
@@ -38,10 +41,11 @@ async function git(cwd: string, args: string[]): Promise<string> {
 
 async function isGitRepo(path: string): Promise<boolean> {
   try {
-    await git(path, ['rev-parse', '--is-inside-work-tree']);
-    return true;
-  } catch {
-    return false;
+    return (await git(path, ['rev-parse', '--is-inside-work-tree'])).trim()==='true';
+  } catch (error) {
+    const failure=error as {stderr?:string;code?:string};
+    if(/not a git repository/i.test(failure.stderr||''))return false;
+    throw Object.assign(Error(/dubious ownership/i.test(failure.stderr||'')?'Git 拒绝访问该仓库，请检查目录归属与授权':'无法检测 Git 仓库，请检查目录访问权限和 Git 安装'),{statusCode:503,code:'GIT_REPOSITORY_UNAVAILABLE'});
   }
 }
 
@@ -64,6 +68,7 @@ function validGitRefInput(value: unknown): value is string {
 }
 
 export const gitRoutes: FastifyPluginAsync = async (app) => {
+  app.setErrorHandler((error,_req,reply)=>{if(error instanceof Error&&(error as Error&{code?:string}).code==='GIT_REPOSITORY_UNAVAILABLE')return reply.code(503).send({error:error.message});return reply.send(error);});
   app.addHook('preHandler', async (req, reply) => {
     const query = (req.query || {}) as Record<string, unknown>;
     const body = (req.body || {}) as Record<string, unknown>;
@@ -84,7 +89,7 @@ export const gitRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const [branchOut, statusOut, aheadBehindOut, remoteOut] = await Promise.all([
-        git(path, ['rev-parse', '--abbrev-ref', 'HEAD']),
+        git(path, ['symbolic-ref', '--short', 'HEAD']).catch(()=>git(path, ['rev-parse', '--abbrev-ref', 'HEAD'])),
         git(path, ['status', '--porcelain=v1']),
         git(path, ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}']).catch(() => ''),
         git(path, ['remote', 'get-url', 'origin']).catch(() => ''),
@@ -412,7 +417,7 @@ export const gitRoutes: FastifyPluginAsync = async (app) => {
         '--source', path,
         '--remote', 'origin',
         '--push',
-      ], { cwd: path, env: safeGitEnv(), encoding: 'utf8', maxBuffer: 5 * 1024 * 1024 });
+      ], { cwd: path, env: safeGitEnv(path), encoding: 'utf8', maxBuffer: 5 * 1024 * 1024 });
 
       return { ok: true, output: stdout.trim() };
     } catch (err: any) {
