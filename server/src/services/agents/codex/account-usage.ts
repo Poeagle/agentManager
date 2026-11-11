@@ -72,7 +72,7 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean}={
    const home=e.kind==='account'?e.connection?.codexHome:usageHome(e);
    if(e.kind==='provider'&&(!home||providerHistoryIsShared(id,home)))throw Error('历史目录无法独立归属');
    const ledger=options.rebuild?undefined:db.prepare('SELECT baseline_at,last_day FROM codex_usage_ledger WHERE account=?').get(id) as {baseline_at:string|null;last_day:string}|undefined;
-   const prior=db.prepare('SELECT checked_at FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null}|undefined;
+   const prior=db.prepare('SELECT checked_at,error,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;error:string|null;partial:number}|undefined;
    const baseline=ledger?.baseline_at??(!ledger&&initialized?prior?.checked_at:null)??null;
    if(initialized&&!ledger&&(!baseline||!Number.isFinite(Date.parse(baseline))))throw Error('Legacy usage baseline unavailable');
    const yesterday=new Date(Date.parse(day+'T00:00:00Z')-86400000).toISOString().slice(0,10);
@@ -128,7 +128,8 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean}={
     if(options.rebuild)db.prepare('UPDATE codex_usage_dedup_status SET hour_backfilled=1 WHERE account=?').run(id);
     db.prepare('INSERT INTO codex_usage_ledger(account,baseline_at,last_day,timezone) VALUES(?,?,?,?) ON CONFLICT(account) DO UPDATE SET last_day=excluded.last_day,timezone=excluded.timezone').run(id,baseline,day,timezone);
     db.prepare('INSERT OR REPLACE INTO codex_usage_snapshots VALUES(?,1)').run(id);
-    db.prepare('INSERT OR REPLACE INTO codex_usage_status VALUES(?,?,?,?)').run(id,new Date().toISOString(),result.errors?'部分记录不可读取或缺少统计字段':null,result.partial||result.errors?1:0);
+    const historicalIncomplete=mode==='daily'&&prior?.error==='部分记录不可读取或缺少统计字段';
+    db.prepare('INSERT OR REPLACE INTO codex_usage_status VALUES(?,?,?,?)').run(id,new Date().toISOString(),result.errors||historicalIncomplete?'部分记录不可读取或缺少统计字段':null,result.partial||result.errors||historicalIncomplete?1:0);
     if(result.progress)db.prepare('INSERT OR REPLACE INTO codex_usage_progress VALUES(?,?)').run(id,JSON.stringify(result.progress));
    })();
   }catch(error){const message=error instanceof Error&&error.message==='历史目录无法独立归属'?'历史目录与其他 Engine 共用或无法确认，未统计以避免重复':'采集失败，保留上次成功数据';if(options.rebuild)throw Object.assign(Error(message),{statusCode:409});db.prepare('INSERT INTO codex_usage_status(account,error,partial) VALUES(?,?,1) ON CONFLICT(account) DO UPDATE SET error=excluded.error,partial=1').run(id,message);}
