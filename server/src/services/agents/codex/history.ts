@@ -58,6 +58,15 @@ export function parseCodexMessage(line: Buffer, questionCallId?: string, context
             if (entry.type === 'compacted') parsedRecords.set(line, entry);
             const item = entry.type === 'compacted' && entry.payload?.replacement_history?.[context.replacementIndex];
             if (!item || typeof item !== 'object') return null;
+            if (item.type === 'compaction' && typeof item.encrypted_content === 'string' && item.encrypted_content && !(typeof entry.payload?.message === 'string' && entry.payload.message.trim())) {
+                return {
+                    message: {role: 'assistant', phase: 'commentary', text: '压缩内容由 Codex 加密保存，无法显示摘要正文。', timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null},
+                    presentation: 'compaction_summary',
+                    compaction: {before_tokens: finiteTokenCount(entry.payload?.latest_token_usage_record?.usage?.input_tokens), after_tokens: finiteTokenCount(entry.payload?.post_compaction_token_count), duration_ms: finiteTokenCount(entry.payload?.duration_ms)},
+                    itemId: typeof item.id === 'string' ? item.id : undefined,
+                    recordType: 'compaction_summary', imagePaths: [],
+                };
+            }
             const compactedText = typeof entry.payload?.message === 'string' ? entry.payload.message : '';
             const itemText = Array.isArray(item.content)
                 ? item.content.filter((part: any) => ['input_text', 'text', 'output_text', 'Text'].includes(part?.type) && typeof part.text === 'string').map((part: any) => part.text).join('\n')
@@ -105,10 +114,11 @@ export function parseCodexMessage(line: Buffer, questionCallId?: string, context
     try {
         const entry = parsedRecords.get(line) ?? JSON.parse(text);
         if (entry.type === 'compacted') parsedRecords.set(line, entry);
-        if (compactionSummary && entry.type === 'compacted' && typeof entry.payload?.message === 'string' && entry.payload.message.trim()) {
+        if (compactionSummary && entry.type === 'compacted') {
             const nativeId = typeof entry.payload.compaction_response_id === 'string' ? entry.payload.compaction_response_id : typeof entry.payload.window_id === 'string' ? `compaction:${entry.payload.window_id}` : undefined;
+            const summary = typeof entry.payload?.message === 'string' && entry.payload.message.trim() ? entry.payload.message : 'Codex 未提供可显示的压缩摘要正文。';
             return {
-                message: { role: 'assistant' as const, phase: 'commentary' as const, text: entry.payload.message.slice(0, 128 * 1024), timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null },
+                message: { role: 'assistant' as const, phase: 'commentary' as const, text: summary.slice(0, 128 * 1024), timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null },
                 presentation: 'compaction_summary' as const,
                 compaction: {
                     before_tokens: finiteTokenCount(entry.payload.latest_token_usage_record?.usage?.input_tokens),

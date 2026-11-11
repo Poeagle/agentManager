@@ -12,7 +12,8 @@ test('compaction refreshes the timeline and shows its summary once',async({page}
  const native='019ff001-abcd-7abc-8abc-abcdefabcdef',file=join(directory,`rollout-${native}.jsonl`);
  const record=(type:string,payload:unknown)=>JSON.stringify({type,timestamp:'2026-11-09T12:00:00Z',payload})+'\n';
  const user=(id:string,text:string)=>({type:'message',id,role:'user',content:[{type:'input_text',text}]});
- writeFileSync(file,record('response_item',user('old','压缩前消息')));
+ const answer=(id:string,text:string)=>({type:'message',id,role:'assistant',phase:'final_answer',content:[{type:'output_text',text}]});
+ writeFileSync(file,record('response_item',user('old','压缩前消息'))+record('response_item',answer('old-answer','压缩前回答')));
  const require=createRequire(import.meta.url),Database=require('../server/node_modules/better-sqlite3'),db=new Database(join(root,'agentmanager.db'));
  try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',native,session.id);}finally{db.close();}
  try{
@@ -21,13 +22,13 @@ test('compaction refreshes the timeline and shows its summary once',async({page}
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'压缩模拟'}],activeTerminalId:session.id,explorerInstances:[]}}});
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
   await expect(chat.getByText('压缩前消息',{exact:true})).toBeVisible();
-  appendFileSync(file,record('compacted',{message:'模拟压缩摘要',replacement_history:[user('kept','压缩后保留消息')]}));
+  appendFileSync(file,record('compacted',{message:'',replacement_history:[user('old','压缩前消息'),{type:'compaction',id:'encrypted-summary',encrypted_content:'opaque'}]}));
   await expect(chat.getByText('会话压缩摘要',{exact:true})).toBeVisible();
-  await expect(chat.getByText('压缩前消息',{exact:true})).toHaveCount(0);
-  await expect(chat.getByText('压缩后保留消息',{exact:true})).toHaveCount(1);
-  await chat.getByText('会话压缩摘要',{exact:true}).click();await expect(chat.getByText('模拟压缩摘要',{exact:true})).toBeVisible();
+  await expect(chat.getByText('压缩前消息',{exact:true})).toHaveCount(1);
+  await expect(chat.getByText('压缩前回答',{exact:true})).toHaveCount(1);
+  await chat.getByText('会话压缩摘要',{exact:true}).click();await expect(chat.getByText('压缩内容由 Codex 加密保存，无法显示摘要正文。',{exact:true})).toBeVisible();
   appendFileSync(file,record('response_item',user('after','压缩后发送')));
   await expect(chat.getByText('压缩后发送',{exact:true})).toHaveCount(1);
-  await page.reload();await expect(chat.getByText('压缩后发送',{exact:true})).toHaveCount(1);await expect(chat.getByText('会话压缩摘要',{exact:true})).toHaveCount(1);
+  await page.reload();await expect(chat.getByText('压缩后发送',{exact:true})).toHaveCount(1);await expect(chat.getByText('会话压缩摘要',{exact:true})).toHaveCount(1);await expect(chat.getByText('压缩前回答',{exact:true})).toHaveCount(1);
  }finally{await page.request.delete(`/api/sessions/${session.id}`);}
 });
