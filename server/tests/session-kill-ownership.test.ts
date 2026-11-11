@@ -68,7 +68,7 @@ describe('session kill ownership', () => {
     const req=()=>app.inject({method:'POST',url:'/api/sessions/deferred/reload',headers:{cookie:ownerCookie},payload:{when_idle:true}});
     expect((await req()).statusCode).toBe(202);expect((await req()).statusCode).toBe(202);expect(observe).toHaveBeenCalledOnce();
     emit({type:'snapshot',busy:true,stage:'tools'});await Promise.resolve();expect(reload).not.toHaveBeenCalled();
-    emit({type:'snapshot',busy:false,stage:'idle'});await vi.waitFor(()=>expect(reload).toHaveBeenCalledExactlyOnceWith('deferred',{idleOnly:true}));expect(stop).toHaveBeenCalledOnce();
+    emit({type:'patch',state:{busy:false,stage:'idle'},upserts:[],deltas:[]});await vi.waitFor(()=>expect(reload).toHaveBeenCalledExactlyOnceWith('deferred',{idleOnly:true}));expect(stop).toHaveBeenCalledOnce();
   });
   it('keeps waiting when the session becomes busy during the idle recheck',async()=>{
     getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES('race','project-1','Work','running','session','codex','019ff001-3434-7434-8434-343434343434',?)").run(ownerId);getDb().prepare("UPDATE users SET role='admin' WHERE id=?").run(ownerId);

@@ -123,7 +123,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         if(result.ok||!result.error?.includes('会话仍在执行'))stop();
       }catch{stop();}finally{busy=false;}
     };
-    try{unsubscribe=observeAgentConversation(session,frame=>{if(frame.type==='snapshot'&&!frame.busy&&frame.stage==='idle')queueMicrotask(()=>void changed());});}
+    try{unsubscribe=observeAgentConversation(session,frame=>{const state=frame.type==='snapshot'?frame:frame.type==='patch'?frame.state:undefined;if(state&&!state.busy&&state.stage==='idle')queueMicrotask(()=>void changed());});}
     catch{return false;}
     timer=setTimeout(stop,24*60*60*1000);timer.unref();deferredReloads.set(session.id,stop);return true;
   }
