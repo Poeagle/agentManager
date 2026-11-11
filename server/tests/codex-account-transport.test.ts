@@ -17,6 +17,14 @@ beforeEach(()=>{
 });
 afterEach(async()=>{await closeAccountTransports();db.cleanup();});
 describe('same-machine account SSH transport',()=>{
+ it('accepts explicit usage-snapshot output bounds while keeping ordinary file reads bounded',async()=>{
+  state.forward.mockImplementation(()=>{
+   const child:any=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=vi.fn();
+   child.stdin.on('data',()=>{});child.stdin.on('end',()=>{child.stdout.write('x'.repeat(800*1024));child.stdout.end();child.emit('close',0);});return child;
+  });
+  await expect(localCommandInput('unused','')).rejects.toThrow('响应过大');
+  expect((await localCommandInput('unused','',{maxOutputBytes:1024*1024,timeoutMs:300000})).length).toBe(800*1024);
+ });
  it('sends file content through SSH stdin and decodes split UTF-8 output',async()=>{
   let input='';state.forward.mockImplementation((_command:string,args:string[])=>{
    expect(args.join(' ')).not.toContain('文件内容');

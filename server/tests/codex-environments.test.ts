@@ -13,6 +13,7 @@ import {watchSessionEnvironment,canUseEnvironment} from '../src/services/agents/
 import {engineForThread,rememberCodexThread,runInCodexEngine} from '../src/services/agents/codex/engine-context.js';
 import {updateAgentManagement} from '../src/services/agents/management-store.js';
 import * as transport from '../src/services/agents/codex/account-transport.js';
+import {collectAccountStatus} from '../src/services/agents/codex/account-status.js';
 vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),ensureAccountTransport:vi.fn(async(id:string)=>({socket:'/fixture/'+id+'.sock',home:'/fixture/home'})),closeAccountTransport:vi.fn(async()=>{}),probeAccountConnection:vi.fn(async()=>({models:[{model:'fixture',name:'Fixture',description:'',efforts:[],defaultEffort:''}]})),accountCommand:vi.fn(async()=> 'ok'),checkAccountProject:vi.fn(async()=>{})}));
 const connection={username:'ymchen',port:22,identityFile:'',codexCommand:'codex',codexHome:''};
 describe('Codex account environments and platform ACLs',()=>{
@@ -26,6 +27,14 @@ describe('Codex account environments and platform ACLs',()=>{
  });
  afterEach(async()=>{await app.close();db.cleanup();vi.restoreAllMocks();});
  const create=()=>saveCodexEnvironment({name:'ymchen Codex',connection,allowed_user_ids:[owner.id]});
+ it('returns empty status caches without contacting Codex even on repeated or forced HTTP reads',async()=>{
+  const e=await create(),read=vi.spyOn(stream,'withCodexConnection');
+  for(let n=0;n<3;n++){
+   const cards=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/reset-credits`,headers:{cookie:cookies.owner}});expect(cards.json()).toMatchObject({resets:null,pending:true});
+   const quota=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/quota?force=true`,headers:{cookie:cookies.owner}});expect(quota.statusCode).toBe(503);
+  }
+  expect(read).not.toHaveBeenCalled();
+ });
  it('protects usage caches and reset details using the same account visibility boundary',async()=>{
   const e=await create();
   for(const endpoint of ['insights','reset-credits']){
@@ -34,15 +43,18 @@ describe('Codex account environments and platform ACLs',()=>{
   }
   const cached=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/insights`,headers:{cookie:cookies.owner}});expect(cached.statusCode).toBe(200);expect(cached.json().usage.rows).toEqual([]);
   vi.spyOn(stream,'withCodexConnection').mockImplementation(async callback=>callback(vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt',email:'fixture@example.invalid'}}:{rateLimitResetCredits:{availableCount:2,credits:null}}) as any));
+  await collectAccountStatus(e.id);vi.mocked(stream.withCodexConnection).mockClear();
   const resets=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/reset-credits`,headers:{cookie:cookies.owner}});expect(resets.json().resets).toEqual({availableCount:2,credits:null});
+  expect(stream.withCodexConnection).not.toHaveBeenCalled();
  });
  it('reads quota through the selected account and denies unassigned, disabled and native environments',async()=>{
   const e=await create();
   const request=vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt'}}:{rateLimits:{secondary:{usedPercent:30,windowDurationMins:10080}}});
   const read=vi.spyOn(stream,'withCodexConnection').mockImplementation(async callback=>callback(request as any));
+  await collectAccountStatus(e.id);read.mockClear();
   const allowed=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/quota`,headers:{cookie:cookies.owner}});
   expect(allowed.statusCode).toBe(200);expect(allowed.json().quota.remainingPercent).toBe(70);
-  expect(transport.ensureAccountTransport).toHaveBeenCalledWith(e.id,expect.objectContaining({username:'ymchen'}));read.mockClear();
+  expect(transport.ensureAccountTransport).toHaveBeenCalledWith(e.id,expect.objectContaining({username:'ymchen'}));expect(read).not.toHaveBeenCalled();
   for(const id of [e.id,'missing']){const denied=await app.inject({url:`/api/codex/environments/${encodeURIComponent(id)}/quota`,headers:{cookie:cookies.other}});expect(denied.statusCode).toBe(404);}
   getDb().prepare('UPDATE agent_environments SET enabled=0 WHERE id=?').run(e.id);
   const disabled=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/quota`,headers:{cookie:cookies.owner}});expect(disabled.statusCode).toBe(404);expect(read).not.toHaveBeenCalled();
@@ -52,9 +64,11 @@ describe('Codex account environments and platform ACLs',()=>{
   const read=vi.spyOn(stream,'withCodexConnection').mockImplementation(async callback=>callback(request as any));
   const hidden=await app.inject({url:'/api/codex/environments/native/quota',headers:{cookie:cookies.other}});
   expect(hidden.json()).toEqual({quota:null,reason:'not_applicable'});expect(read).not.toHaveBeenCalled();
+  await collectAccountStatus('native');read.mockClear();
   const allowed=await app.inject({url:'/api/codex/environments/native/quota',headers:{cookie:cookies.admin}});
   expect(allowed.statusCode).toBe(200);expect(allowed.json().quota.remainingPercent).toBe(60);
   request.mockImplementation(async()=>({account:null}) as any);
+  await collectAccountStatus('native');read.mockClear();
   const loggedOut=await app.inject({url:'/api/codex/environments/native/quota',headers:{cookie:cookies.admin}});expect(loggedOut.json()).toMatchObject({quota:null,reason:'not_applicable'});
  });
  it('keeps a legacy saved absolute command visible so administrators can correct it',async()=>{

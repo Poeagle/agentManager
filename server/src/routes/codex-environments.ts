@@ -1,15 +1,13 @@
 import {accountConfigFiles} from '../services/agents/codex/account-config-files.js';
 import {cachedAccountUsage,initAccountUsage} from '../services/agents/codex/account-usage.js';
-import {runInCodexEngine} from '../services/agents/codex/engine-context.js';
-import {withCodexConnection} from '../services/agents/codex/stream.js';
-import {codexWeeklyQuotaFromResponse} from '../services/agents/codex/quota.js';
+import {cachedAccountStatus,initAccountStatus} from '../services/agents/codex/account-status.js';
 import {readCodexAccountDetails} from '../services/agents/codex/account-details.js';
 import {environmentUsage,closeEnvironmentTabs} from '../services/agents/codex/environment-usage.js';
 import type {FastifyPluginAsync} from 'fastify';
 import {getDb} from '../db/index.js';
 import {requirePermission,userHasPermission} from '../services/rbac.js';
 import {userCanUseSessionTool,userCanUseToolForProject} from '../auth.js';
-import {engineForEnvironment,allCodexEnvironments,getCodexEnvironment,environmentConnection,visibleCodexEnvironments,saveCodexEnvironment,deleteCodexEnvironment,preflightEnvironment,sessionEnvironmentId} from '../services/agents/codex/environments.js';
+import {allCodexEnvironments,getCodexEnvironment,environmentConnection,visibleCodexEnvironments,saveCodexEnvironment,deleteCodexEnvironment,preflightEnvironment,sessionEnvironmentId} from '../services/agents/codex/environments.js';
 import {assertEnvironmentUse,canControlEnvironment} from '../services/agents/environment-access.js';
 import {readEngineModelsForEnvironment} from '../services/agents/codex/controls.js';
 import {getSession} from '../services/session-manager.js';
@@ -19,6 +17,7 @@ import {validateAccountConnection,probeAccountConnection} from '../services/agen
 const errorStatus=(e:unknown)=>Number((e as {statusCode?:number})?.statusCode)||409;
 export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
  initAccountUsage();
+ initAccountStatus();
  app.get<{Params:{id:string}}>('/codex/environments/:id/insights',async(req,reply)=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;
   const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.enabled&&e.kind!=='provider');
@@ -31,11 +30,7 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.enabled&&e.kind!=='provider');
   if(!account||account.kind==='native'&&!canControlEnvironment(account.id,req.user!.id))return reply.code(404).send({error:'账号不存在或无权访问'});
   reply.header('Cache-Control','private, no-store');
-  try{return await runInCodexEngine(await engineForEnvironment(account.id),()=>withCodexConnection(async request=>{
-   const auth=await request('account/read',{});const limits=await request('account/rateLimits/read',{});
-   const raw=limits.rateLimitResetCredits,snapshot=limits.rateLimitsByLimitId?.codex??limits.rateLimits;
-   return {account:{email:auth.account?.email??null,plan:auth.account?.planType??snapshot?.planType??null},windows:[snapshot?.primary,snapshot?.secondary].filter(w=>w&&Number.isFinite(w.usedPercent)).map(w=>({usedPercent:w.usedPercent,windowDurationMins:w.windowDurationMins??null,resetsAt:w.resetsAt??null})),resets:raw&&Number.isInteger(raw.availableCount)&&raw.availableCount>=0?{availableCount:raw.availableCount,credits:Array.isArray(raw.credits)?raw.credits.slice(0,100).map((c:any)=>({expiresAt:typeof c.expiresAt==='number'?c.expiresAt:null,grantedAt:typeof c.grantedAt==='number'?c.grantedAt:null,status:typeof c.status==='string'?c.status:null})):null}:null};
-  }));}catch{return reply.code(503).send({error:'重置卡信息暂不可用，当前 Codex 版本可能尚未支持'});}
+  const {quota:_,reason:__,...status}=cachedAccountStatus(account.id);return status;
  });
  app.get<{Querystring:{management?:string}}>('/codex/environments',async(req,reply)=>{
   if(req.query.management==='true'){
@@ -51,14 +46,11 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   if(!account)return reply.code(404).send({error:'账号不存在或无权访问'});
   // The implicit host environment is visible for creation, but its account is private.
   if(account.kind==='native'&&!canControlEnvironment(account.id,req.user!.id))return {quota:null,reason:'not_applicable'};
-  try {
-   const engine=await engineForEnvironment(account.id);
-   return await runInCodexEngine(engine,()=>withCodexConnection(async request=>{
-    const auth=await request('account/read',{});
-    if(!auth.account||auth.account.type==='apiKey')return {quota:null,reason:'not_applicable',message:'此账号未登录 ChatGPT，无法读取订阅额度'};
-    return {quota:codexWeeklyQuotaFromResponse(await request('account/rateLimits/read',{}))};
-   }));
-  }catch{return reply.code(503).send({error:'账号额度暂不可用'});}
+  reply.header('Cache-Control','private, no-store');
+  const status=cachedAccountStatus(account.id);
+  if(status.reason==='not_applicable')return {quota:null,reason:'not_applicable',message:'此账号未登录 ChatGPT，无法读取订阅额度'};
+  if(status.quota)return {quota:status.quota};
+  return reply.code(503).send({quota:null,reason:'unavailable',error:status.error||'等待后台每 5 分钟采集账号额度'});
  });
  app.get<{Params:{id:string};Querystring:{file?:string}}>('/codex/environments/:id/config-files',async(req,reply)=>{
   if(!requirePermission(req,reply,'settings',req.params.id==='native'?'read':'write'))return;
