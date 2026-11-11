@@ -26,6 +26,16 @@ describe('Codex account environments and platform ACLs',()=>{
  });
  afterEach(async()=>{await app.close();db.cleanup();vi.restoreAllMocks();});
  const create=()=>saveCodexEnvironment({name:'ymchen Codex',connection,allowed_user_ids:[owner.id]});
+ it('protects usage caches and reset details using the same account visibility boundary',async()=>{
+  const e=await create();
+  for(const endpoint of ['insights','reset-credits']){
+   expect((await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/${endpoint}`,headers:{cookie:cookies.other}})).statusCode).toBe(404);
+   expect((await app.inject({url:`/api/codex/environments/native/${endpoint}`,headers:{cookie:cookies.other}})).statusCode).toBe(404);
+  }
+  const cached=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/insights`,headers:{cookie:cookies.owner}});expect(cached.statusCode).toBe(200);expect(cached.json().usage.rows).toEqual([]);
+  vi.spyOn(stream,'withCodexConnection').mockImplementation(async callback=>callback(vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt',email:'fixture@example.invalid'}}:{rateLimitResetCredits:{availableCount:2,credits:null}}) as any));
+  const resets=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/reset-credits`,headers:{cookie:cookies.owner}});expect(resets.json().resets).toEqual({availableCount:2,credits:null});
+ });
  it('reads quota through the selected account and denies unassigned, disabled and native environments',async()=>{
   const e=await create();
   const request=vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt'}}:{rateLimits:{secondary:{usedPercent:30,windowDurationMins:10080}}});
