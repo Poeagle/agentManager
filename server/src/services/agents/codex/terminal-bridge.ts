@@ -1,5 +1,5 @@
 import {createServer,request as httpRequest} from 'node:http';
-import {fork} from 'node:child_process';
+import {fork,spawn} from 'node:child_process';
 import {mkdirSync,lstatSync,chmodSync,unlinkSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
@@ -7,6 +7,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import WebSocket,{WebSocketServer} from 'ws';
 import {projectCodexTerminalFrame,terminalHistoryMethods} from './terminal-projection.js';
+import {durableProcessCommand} from './process-lifecycle.js';
 
 const VERSION=1,IDLE_MS=60_000;
 const preparing=new Map<string,Promise<string>>();
@@ -37,6 +38,18 @@ export function ensureCodexTerminalBridge(upstream:string):Promise<string>{
     if(state==='unavailable')throw Error('原始终端兼容通道暂未响应，请稍后重试');
     try{const stale=lstatSync(socketPath);if(stale.isSocket()&&Date.now()-stale.mtimeMs>10_000)unlinkSync(socketPath);}catch(error:any){if(error.code!=='ENOENT')throw error;}
     const script=fileURLToPath(import.meta.url);
+    const workerArgs=[...(script.endsWith('.ts')?['--import',import.meta.resolve('tsx/esm')]:[]),script,'--codex-terminal-bridge-worker',socketPath,upstream];
+    const command=durableProcessCommand(process.execPath,workerArgs);
+    if(command.scoped){
+      const worker=spawn(command.command,command.args,{detached:true,stdio:'ignore'});worker.on('error',()=>{});worker.unref();
+      const deadline=Date.now()+5000;
+      while(Date.now()<deadline){
+        if(await inspectBridge(socketPath,upstream)==='ready')return socketPath;
+        if(worker.exitCode!==null)throw Error('原始终端兼容通道启动失败');
+        await new Promise(resolve=>setTimeout(resolve,50));
+      }
+      worker.kill();throw Error('原始终端兼容通道启动超时');
+    }
     const child=fork(script,['--codex-terminal-bridge-worker',socketPath,upstream],{
       detached:true,stdio:['ignore','ignore','ignore','ipc'],
       execArgv:script.endsWith('.ts')?['--import',import.meta.resolve('tsx/esm')]:[],

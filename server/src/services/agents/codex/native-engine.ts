@@ -7,7 +7,7 @@ import { config } from '../../../config.js';
 import { findExecutable } from '../management-cli.js';
 import type { AgentOperationReporter } from '../types.js';
 import { nativeEngineConfig } from './native-engine-config.js';
-import { processAlive, resolveUnixSocketPath, terminateDetachedProcess } from './process-lifecycle.js';
+import { durableProcessCommand, processAlive, resolveUnixSocketPath, terminateDetachedProcess } from './process-lifecycle.js';
 
 export interface NativeCodexEngineState {
   socket: string;
@@ -81,7 +81,7 @@ function processPidForSocket(socket: string): number | null {
   const result = spawnSync('ps', ['-ax', '-o', 'pid=,command='], { encoding: 'utf8' });
   const expectedListen = `--listen unix://${socket}`;
   const line = (result.stdout || '').split('\n').find(item =>
-    item.includes(' app-server ')
+    !item.includes('systemd-run ') && item.includes(' app-server ')
     && item.includes(expectedListen));
   const pid = Number(line?.trim().split(/\s+/, 1)[0]);
   return Number.isInteger(pid) && pid > 0 ? pid : null;
@@ -236,7 +236,8 @@ async function launchEngine(report?: AgentOperationReporter): Promise<NativeCode
     ...launch.extraArgs,
   ];
   report?.({ stage: 'spawn', message: '启动 Codex app-server', progress: 50 });
-  const child = spawn(executable, args, {
+  const launchCommand = durableProcessCommand(executable, args);
+  const child = spawn(launchCommand.command, launchCommand.args, {
     cwd: homedir(),
     env: {
       ...process.env,
@@ -254,7 +255,7 @@ async function launchEngine(report?: AgentOperationReporter): Promise<NativeCode
     await terminateEngine(child.pid);
     throw Object.assign(Error(`Codex Engine 未创建可连接的 socket。启动日志：${logPath()}`), { statusCode: 502 });
   }
-  const pid = socketPid(socket) || child.pid;
+  const pid = socketPid(socket) || processPidForSocket(socket) || child.pid;
   report?.({ stage: 'confirm', message: '记录 PID 并确认 Engine 状态', progress: 95 });
   writeMetadata({
     owner: 'agentmanager',

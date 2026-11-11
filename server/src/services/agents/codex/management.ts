@@ -32,7 +32,7 @@ import {
 } from './native-engine.js';
 import { nativeEngineConfig, updateNativeEngineConfig } from './native-engine-config.js';
 import { displayEngineCommand, normalizeEngineArgs, normalizeEngineCommand } from './engine-command.js';
-import { resolveUnixSocketPath, terminateDetachedProcess, waitForSocketReady } from './process-lifecycle.js';
+import { durableProcessCommand, resolveUnixSocketPath, terminateDetachedProcess, waitForSocketReady } from './process-lifecycle.js';
 
 const processes = new Map<string, { pid: number; startedAt: string }>();
 const startupErrors = new Map<string, string>();
@@ -208,7 +208,7 @@ async function externalProviders(): Promise<AgentProviderState[]> {
 function recoverRuntimeProviderState(providerId: string): { pid: number; socket: string } | null {
   const result = spawnSync('ps', ['-ax', '-o', 'pid=,command='], { encoding: 'utf8' });
   const expectedSocket = managedCodexRuntimeSocket(providerId) || managedCodexSocket(providerId);
-  const line = (result.stdout || '').split('\n').find(item => item.includes('codex app-server')
+  const line = (result.stdout || '').split('\n').find(item => !item.includes('systemd-run ') && item.includes('codex app-server')
     && item.includes(`--listen unix://${expectedSocket}`)
     && (item.includes(`model_providers.${providerId}.`) || item.includes(`model_provider="${providerId}"`)));
   if (!line) return null;
@@ -430,7 +430,8 @@ async function startProvider(provider: StoredProvider, report?: AgentOperationRe
   try { unlinkSync(socket); } catch { /* stale socket */ }
   const args = launch.args;
   report?.({ stage: 'spawn', message: '启动 Codex app-server', progress: 45 });
-  const child = spawn(executable, args, {
+  const launchCommand = durableProcessCommand(executable, args);
+  const child = spawn(launchCommand.command, launchCommand.args, {
     env: { ...process.env, CODEX_HOME: codexHome, ...(apiKey ? { [envKey]: apiKey } : {}) },
     detached: true,
     stdio: 'ignore',
@@ -453,6 +454,8 @@ async function startProvider(provider: StoredProvider, report?: AgentOperationRe
     startupErrors.set(provider.id, message);
     throw Object.assign(Error(message), { statusCode: 502 });
   }
+  const actualPid = socketPidSync(connectedSocket) || recoverRuntimeProviderState(provider.id)?.pid;
+  if (actualPid) processes.set(provider.id, { pid: actualPid, startedAt: new Date().toISOString() });
   setManagedCodexRuntimeSocket(provider.id, connectedSocket);
   report?.({ stage: 'confirm', message: '确认 Engine 进程与 socket 状态', progress: 95 });
   child.once('exit', () => {

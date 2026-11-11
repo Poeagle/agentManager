@@ -9,7 +9,7 @@ import {renameCodexProvider} from '../src/services/agents/codex/management.js';
 import {getDb} from '../src/db/index.js';
 import {codexEnvironmentRoutes} from '../src/routes/codex-environments.js';
 import {sessionRoutes} from '../src/routes/sessions.js';
-import {saveCodexEnvironment,visibleCodexEnvironments,engineForEnvironment,environmentConnection} from '../src/services/agents/codex/environments.js';
+import {saveCodexEnvironment,visibleCodexEnvironments,engineForEnvironment,environmentConnection,restoreActiveAccountTransports} from '../src/services/agents/codex/environments.js';
 import {watchSessionEnvironment,canUseEnvironment} from '../src/services/agents/environment-access.js';
 import {engineForThread,rememberCodexThread,runInCodexEngine} from '../src/services/agents/codex/engine-context.js';
 import {updateAgentManagement} from '../src/services/agents/management-store.js';
@@ -37,6 +37,14 @@ describe('Codex account environments and platform ACLs',()=>{
   const key='amk_'+Buffer.alloc(32,9).toString('base64url');getDb().prepare('INSERT INTO api_keys(id,user_id,name,token_hash,grants,created_at,expires_at) VALUES(?,?,?,?,?,?,?)').run('fixture-key',admin.id,'fixture',hashApiKey(key),JSON.stringify({settings:'write',agent_api:'write'}),new Date().toISOString(),new Date(Date.now()+3600000).toISOString());
   expect((await app.inject({method:'POST',url:path,headers:{authorization:`Bearer ${key}`}})).statusCode).toBe(200);
   const hourly=await app.inject({url:'/api/codex/environments/native/insights?granularity=hour',headers:{cookie:cookies.admin}});expect(hourly.statusCode).toBe(200);expect(hourly.json().usage.rows).toEqual([]);
+ });
+ it('restores only enabled account tunnels used by running or detached sessions',async()=>{
+  const active=await create(),disabled=await create(),closed=await create();
+  getDb().prepare('UPDATE agent_environments SET enabled=0 WHERE id=?').run(disabled.id);
+  const add=getDb().prepare("INSERT INTO sessions(id,task,status,cli_type,agent_environment_id) VALUES(?,?,?,'codex',?)");
+  add.run('active','fixture','running',active.id);add.run('detached','fixture','detached',active.id);add.run('disabled','fixture','running',disabled.id);add.run('closed','fixture','stopped',closed.id);
+  vi.mocked(transport.ensureAccountTransport).mockClear();await restoreActiveAccountTransports();
+  expect(transport.ensureAccountTransport).toHaveBeenCalledOnce();expect(transport.ensureAccountTransport).toHaveBeenCalledWith(active.id,expect.objectContaining({username:'ymchen'}));
  });
  it('returns empty status caches without contacting Codex even on repeated or forced HTTP reads',async()=>{
   const e=await create(),read=vi.spyOn(stream,'withCodexConnection');

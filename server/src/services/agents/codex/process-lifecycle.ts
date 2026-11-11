@@ -1,6 +1,24 @@
 import { spawnSync } from 'child_process';
-import { existsSync, realpathSync } from 'fs';
+import { existsSync, realpathSync, readFileSync } from 'fs';
 import WebSocket from 'ws';
+
+// A detached process still belongs to its parent's systemd service cgroup.
+// A transient user scope lets running engines and terminal bridges survive a
+// platform restart without placing credentials in the process arguments.
+let scopeAvailable:boolean|undefined;
+export function durableProcessCommand(command:string,args:string[]):{command:string;args:string[];scoped:boolean} {
+  if(scopeAvailable===undefined){
+    scopeAvailable=false;
+    if(process.platform==='linux')try{
+      const cgroup=readFileSync('/proc/self/cgroup','utf8');
+      if(/\.service(?:\/|$)/m.test(cgroup)){
+        const probe=spawnSync('systemd-run',['--user','--scope','--quiet','--','/bin/true'],{stdio:'ignore',timeout:3000});
+        scopeAvailable=probe.status===0;
+      }
+    }catch{/* Non-systemd installations retain the normal detached launcher. */}
+  }
+  return scopeAvailable?{command:'systemd-run',args:['--user','--scope','--quiet','--',command,...args],scoped:true}:{command,args,scoped:false};
+}
 
 export function resolveUnixSocketPath(path: string): string | null {
   if (!existsSync(path)) return null;
