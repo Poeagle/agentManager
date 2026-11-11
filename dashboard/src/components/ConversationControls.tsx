@@ -7,6 +7,7 @@ import {ChevronDown,Info,RefreshCw,Minimize2,Plus,Loader2,Zap} from 'lucide-reac
 import {api,type ConversationControlsData,type ConversationUsageUpdate} from '../lib/api';
 import {Dialog} from './Dialog';
 import {ConversationDetailsPanel,type ConversationDetailRuntimeRow} from './ConversationDetailsPanel';
+import {ConversationContextUsage} from './ConversationContextUsage';
 
 const effortNames:Record<string,string>={none:'无',minimal:'最低',low:'低',medium:'中',high:'高',xhigh:'更高',max:'最高',ultra:'极高'};
 const compact=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(value);
@@ -16,6 +17,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const queryClient=useQueryClient(),[expanded,setExpanded]=useState(false),[saving,setSaving]=useState(false),[applied,setApplied]=useState(false),[error,setError]=useState('');
   const [operation,setOperation]=useState<'compact'|'new'|null>(null),[newOpen,setNewOpen]=useState(false),[notice,setNotice]=useState('');
   const [freshPreference,setFreshPreference]=useState<import('../lib/api').AgentModelPreference>();
+  const [contextOpen,setContextOpen]=useState(false);
   const [environmentRequest,setEnvironmentRequest]=useState<{provider:string;model:string;effort:string}>();
   const operationLock=useRef(false);
     const forceRefresh=useRef(false);
@@ -33,6 +35,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
     finally{operationLock.current=false;setOperation(null);}
   }
   const baseline=query.data,update=liveUsage.data;
+  useEffect(()=>{setContextOpen(false);},[sessionId,baseline?.native_id,active]);
   const data=baseline&&update&&update.native_id===baseline.native_id&&(!baseline.usage_observed_at||Date.parse(update.observed_at)>=Date.parse(baseline.usage_observed_at))
     ?{...baseline,usage:update.usage,usage_observed_at:update.observed_at}:baseline;
   const selected=data?.pending||{model:data?.model||'',effort:data?.effort||'',provider:data?.provider||undefined};
@@ -68,7 +71,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
     <div className="conversation-controls" aria-label="模型和会话信息">
       {data?<>
         {toolbarTarget?createPortal(toolbar,toolbarTarget):toolbar}
-        {context!==null&&<span className="conversation-control-context" title="最近一次模型请求的 Token 数占上下文窗口的比例，下一次请求可能变化。"><i><b style={{width:`${context}%`}}/></i>上下文 {context}%</span>}
+        {data.native_id&&<button type="button" className="conversation-control-context" aria-label="查看上下文 Token 详情" aria-haspopup="dialog" title="最近一次模型请求的 Token 数占上下文窗口的比例；点击查看 JSONL 分类估算。" onClick={()=>setContextOpen(true)}><i><b style={{width:`${context??0}%`}}/></i>上下文 {context===null?'未提供':`${context}%`}</button>}
         {weekly&&<span title={weekly.resets_at?`重置时间：${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>周额度剩余 {Math.round(100-weekly.used_percent)}%</span>}
         <span className="conversation-control-environment" aria-label="会话运行信息">
           {data.cwd&&<span className="conversation-control-directory" title={`工作目录：${data.cwd}`}>{data.cwd}</span>}
@@ -93,6 +96,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
       <footer className="mt-4 flex justify-end gap-3 text-sm"><button type="button" disabled={!!operation} onClick={()=>setNewOpen(false)}>取消</button><button type="button" disabled={!!operation||!!data?.supports_fresh_model&&!freshPreference} onClick={()=>void perform('new')}>{operation==='new'?'正在新开…':'停止旧会话并新开'}</button></footer>
     </Dialog>}
     {expanded&&data&&<ControlDetails data={{...data,state:data.loaded?(busy||compacting?'active':'idle'):data.state}} onClose={()=>setExpanded(false)} onRefresh={refresh} refreshing={query.isFetching}/>}
+    {contextOpen&&active&&data?.native_id&&<ConversationContextUsage key={`${sessionId}:${data.native_id}`} sessionId={sessionId} nativeId={data.native_id} usage={data.usage} observedAt={data.usage_observed_at} model={data.model} onClose={()=>setContextOpen(false)}/>}
   </div>;
 }
 function ControlDetails({data,onClose,onRefresh,refreshing}:{data:ConversationControlsData;onClose:()=>void;onRefresh:()=>void;refreshing:boolean}) {

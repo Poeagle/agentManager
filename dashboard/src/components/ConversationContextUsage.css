@@ -1,0 +1,18 @@
+.context-usage{display:flex;flex-direction:column;gap:10px;font-size:12px;line-height:1.6;}
+.context-usage-summary{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;}
+.context-usage-summary>span,.context-usage-note{color:var(--text-secondary);}
+.context-usage-note{margin:0;font-size:11px;line-height:1.6;}
+.context-usage-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--bg-tertiary);}
+.context-usage-bar>i{height:100%;}
+.context-usage-label{display:flex;align-items:center;gap:6px;white-space:nowrap;}
+.context-usage-label>b{width:8px;height:8px;border-radius:2px;flex-shrink:0;}
+.context-usage-label>button,.context-usage-spacer{width:18px;height:18px;flex-shrink:0;}
+.context-usage-label>button{line-height:16px;border:1px solid var(--border);border-radius:3px;}
+.context-usage .context-usage-table :is(th,td){font-weight:400;}
+.context-usage .context-usage-table .data-table>tbody>tr>th{padding:5px 8px;border-bottom:1px solid var(--border);vertical-align:middle;}
+.context-usage .context-usage-table .data-table>tbody>tr:last-child>th{border-bottom:0;}
+.context-usage .context-usage-table :is(th,td):not(:first-child){text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.context-usage-table th:first-child{width:52%;text-align:left;}
+.context-usage-detail th:first-child{padding-left:34px;color:var(--text-secondary);overflow-wrap:anywhere;}
+.context-usage-refresh{display:flex;align-items:center;gap:4px;font-size:12px;}
+.context-usage-warning,.context-usage [role=alert]{margin:0;color:var(--error);}

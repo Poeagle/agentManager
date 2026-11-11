@@ -4,6 +4,16 @@ import {it,expect,vi} from 'vitest';
 import {CodexAccountInsights} from '../src/components/CodexAccountInsights';
 import {fetchJSON} from '../src/lib/api';
 vi.mock('../src/lib/api',()=>({fetchJSON:vi.fn()}));
+it('orders estimated Credits before spend share and uses Credits rather than Token ratios at each level',async()=>{
+ const item=(cwd:string,model:string,n:number,credit:number)=>({date:'2026-11-11',cwd,project_name:cwd.slice(1),estimated_credits:credit,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n},models:[{model,estimated_credits:credit,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n}}]});
+ vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:false,timezone:'UTC',rows:[item('/Alpha','cheap',900,1),item('/Beta','expensive',100,9),item('/Zero','free',0,0)]}}:{account:{},resets:null} as any);
+ render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="credit-share" name="Credits" onClose={()=>{}}/></QueryClientProvider>);
+ await screen.findByText('/Alpha');const headers=screen.getAllByRole('columnheader').map(h=>h.textContent);expect(headers.slice(-2)).toEqual(['预计 Credits','耗用占比']);
+ expect(screen.getByText('/Alpha').closest('tr')!.lastElementChild).toHaveTextContent('10.0%');expect(screen.getByText('/Beta').closest('tr')!.lastElementChild).toHaveTextContent('90.0%');expect(screen.getByText('/Zero').closest('tr')!.lastElementChild).toHaveTextContent('0.0%');
+ fireEvent.click(screen.getByRole('button',{name:'展开 Alpha 模型'}));expect(screen.getByText('cheap').closest('tr')!.lastElementChild).toHaveTextContent('10.0%');
+ fireEvent.change(screen.getByRole('combobox',{name:'统计维度'}),{target:{value:'model'}});expect(screen.getByText('expensive').closest('tr')!.lastElementChild).toHaveTextContent('90.0%');
+ fireEvent.change(screen.getByLabelText('搜索项目或目录'),{target:{value:'Zero'}});expect(screen.getByText('free').closest('tr')!.lastElementChild).toHaveTextContent('—');
+});
 it('opens a centered dialog, exposes reset expiry and expands dates into project usage',async()=>{
  vi.mocked(fetchJSON).mockImplementation(async(path)=>path.endsWith('insights')?{usage:{checked_at:null,error:null,partial:true,timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/project',estimated_credits:1,tokens:{input_tokens:10,cached_input_tokens:null,output_tokens:0,total_tokens:10}}]}}:{account:{email:'fixture@example.invalid',plan:'pro'},resets:{availableCount:2,credits:[{status:'available',expiresAt:1800000000,grantedAt:1700000000}]}} as any);
  const close=vi.fn();render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="a" name="Fixture" onClose={close}/></QueryClientProvider>);

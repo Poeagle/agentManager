@@ -4,7 +4,7 @@
 
 | 来源（dolphindb_manager/frontend/src） | 本项目采用的规格 |
 | --- | --- |
-| themes/index.ts、styles/design-system.css | OPS_BLUE / dark 配色、边框、表头、选中态和圆角 |
+| themes/index.ts、styles/design-system.css | PALETTES.light 极简灰白 / dark 配色、边框、表头、选中态和圆角 |
 | components/table/SmartTable.css | 表格 12px 字号、22px 行高、单元格 5px 8px 内边距、表内按钮 24px |
 | styles/design-system.css | 普通控件 32px、页面间距 12px、紧凑提示条与滚动弹窗 |
 | components/StatisticsCards.css | 紧凑统计条，最低 58px，统计值 20px |
@@ -17,5 +17,11 @@
 采集状态、历史文件总数、本轮读取数、读取量与上次采集时间合并在状态栏。history_files 是全部历史 JSONL 文件数，files_selected / files_complete 是上轮实际读取范围；文件数不等同独立会话数。旧缓存没有历史文件总数时显示未知。底部的日期/项目记录按日期与工作目录组合计数，不等同项目数或会话数。
 
 完全无法估算 Credits 的项目、模型记录从展示中排除；汇总 Token、缓存率、日期/项目计数与占比按剩余记录重新计算。部分覆盖的估算仍使用星号说明，状态栏显示隐藏记录数量。原始后台缓存保持原有统计范围。
+
+“预计 Credits”位于“耗用占比”之前。耗用占比为当前行预计 Credits / 对应筛选范围预计 Credits，日、周、月使用对应周期，项目、模型使用整个筛选范围；不再按 Token 计算。分母为零或未知时显示 —。
+
+共享资源提示词默认 Markdown 阅读，可切换源码编辑，草稿与保存内容保持原文。内容框伸展至底部操作栏之前，长文在框内滚动，小屏仍可滚动到保存按钮。凭据文件继续仅由用户主动打开后读取，不进入 Markdown 预览。
+
+对话中的自动信息与压缩摘要点击后在居中弹窗中渲染 Markdown、复制全文；不再在消息列表下拉展开。普通对话正文保持原样。上下文用量条可点击查看原生最近一次用量与 JSONL 可见文本分类估算，参照 DolphinDB Manager 的分类色条及工具/注入来源明细，数据口径和边界见 [上下文分类](context-breakdown.md)。
 
 只有管理员可点击 Codex 额度卡片查看详情或刷新卡片缓存。普通用户仍可查看已授权账号的额度摘要。服务端 insights / reset-credits 在环境权限之外检查管理员身份；普通用户直接请求也会被拒绝。用量、额度和重置卡的后台采集继续保持 5 分钟周期，查看与刷新缓存不触发采集。
