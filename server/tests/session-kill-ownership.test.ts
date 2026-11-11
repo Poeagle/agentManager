@@ -84,6 +84,17 @@ describe('session kill ownership', () => {
     getDb().prepare("UPDATE users SET role='member' WHERE id=?").run(ownerId);getDb().prepare('DELETE FROM rbac_user_roles WHERE user_id=?').run(ownerId);emit({type:'snapshot',busy:false,stage:'idle'});
     await vi.waitFor(()=>expect(stop).toHaveBeenCalledOnce());expect(reload).not.toHaveBeenCalled();
   });
+  it('batch schedules only the owner terminals whose current screen shows a reconnect timeout',async()=>{
+    getDb().prepare("UPDATE users SET role='admin' WHERE id=?").run(ownerId);
+    const add=getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES(?,'project-1','Work','running','session','codex',?,?)");
+    add.run('broken','019ff001-3434-7434-8434-343434343434',ownerId);add.run('healthy','019ff001-4545-7454-8454-454545454545',ownerId);
+    const viewer=getDb().prepare("SELECT id FROM users WHERE username='kill-viewer'").get() as {id:string};add.run('other-owner','019ff001-5656-7565-8565-565656565656',viewer.id);
+    const detect=vi.spyOn(sessionManager,'terminalReconnectTimedOut').mockImplementation(async id=>id==='broken');let emit:(frame:any)=>void=()=>{};const stop=vi.fn();
+    vi.spyOn(agentHost,'observeAgentConversation').mockImplementation((_session,listener)=>{emit=listener;return Object.assign(stop,{respond:vi.fn()}) as any;});const reload=vi.spyOn(sessionManager,'reloadAgentSessionById').mockResolvedValue({ok:true});
+    const request=(body:object)=>app.inject({method:'POST',url:'/api/sessions/recover-terminals',headers:{cookie:ownerCookie},payload:body});
+    expect((await request({})).statusCode).toBe(400);const result=await request({confirmed_no_drafts:true});expect(result.json()).toMatchObject({examined:2,scheduled:1,unavailable:0});expect(detect).not.toHaveBeenCalledWith('other-owner');expect(reload).not.toHaveBeenCalled();
+    emit({type:'patch',state:{busy:false,stage:'idle'},upserts:[],deltas:[]});await vi.waitFor(()=>expect(reload).toHaveBeenCalledExactlyOnceWith('broken',{idleOnly:true}));expect(stop).toHaveBeenCalledOnce();
+  });
   it('explicit deletion stops the owned running session before purging its record',async()=>{
     getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES('delete-running','project-1','Task','running','session','codex',?)").run(ownerId);
     const kill=vi.spyOn(sessionManager,'killSession').mockImplementation(async id=>{getDb().prepare("UPDATE sessions SET status='cancelled' WHERE id=?").run(id);return true;});

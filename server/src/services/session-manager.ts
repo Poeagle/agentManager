@@ -1124,6 +1124,15 @@ function tmuxArgsForSession(sessionId: string): string[] {
   return tmuxBaseArgs;
 }
 
+/** Inspect only the current terminal screen; never return its contents. */
+export async function terminalReconnectTimedOut(sessionId:string):Promise<boolean|null>{
+  if(!config.useTmux)return null;
+  try{
+    const {stdout}=await execFileAsync('tmux',[...tmuxBaseArgs,'capture-pane','-t',tmuxSessionName(sessionId),'-p','-T'],{encoding:'utf8',timeout:3000,maxBuffer:1024*1024});
+    return /Automatic reconnect timed out/i.test(stdout)&&/Reconnect failed/i.test(stdout);
+  }catch{return null;}
+}
+
 /** Check if a tmux session is alive on the tmux server */
 async function tmuxExistsAsync(sessionId: string): Promise<boolean> {
   const name = tmuxSessionName(sessionId);
