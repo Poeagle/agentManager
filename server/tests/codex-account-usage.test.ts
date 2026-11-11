@@ -31,6 +31,7 @@ it('recovers recorded hours from real history while retaining unknown deleted hi
   expect(getDb().prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get('native')).toEqual({ready:1});expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(30);
   await appendFile(path,JSON.stringify({type:'event_msg',timestamp:'2026-01-01T03:00:00Z',payload:{type:'token_count',info:{total_token_usage:{},last_token_usage:{}}}})+'\n');
   await collectAccountUsage('native',{rebuild:true});expect(cachedAccountUsage('native')).toMatchObject({initialized:true,partial:true,rows:[{tokens:{total_tokens:30}}]});
+  await utimes(path,new Date('2026-01-01T00:00:00Z'),new Date('2026-01-01T00:00:00Z'));await collectAccountUsage('native');expect(cachedAccountUsage('native')).toMatchObject({partial:true,error:'部分记录不可读取或缺少统计字段'});
   const realScanner=vi.mocked(localCommandInput).getMockImplementation()!;vi.mocked(localCommandInput).mockRejectedValueOnce(Error('fixture read failure'));
   await expect(collectAccountUsage('native',{rebuild:true})).rejects.toThrow('保留上次成功数据');expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(30);vi.mocked(localCommandInput).mockImplementation(realScanner);
   getDb().prepare('UPDATE codex_usage_dedup_events SET hour=NULL WHERE account=?').run('native');getDb().prepare('UPDATE codex_usage_dedup_status SET hour_backfilled=0 WHERE account=?').run('native');await rm(path);
