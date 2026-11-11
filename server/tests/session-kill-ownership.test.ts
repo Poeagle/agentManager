@@ -4,6 +4,7 @@ import { authHook, createSession as createAuthSession, createUser, setProjectToo
 import { getDb } from '../src/db/index.js';
 import { sessionRoutes } from '../src/routes/sessions.js';
 import * as sessionManager from '../src/services/session-manager.js';
+import * as agentHost from '../src/services/agents/host.js';
 import { createTestDatabase } from './helpers/database.js';
 
 describe('session kill ownership', () => {
@@ -58,6 +59,30 @@ describe('session kill ownership', () => {
     const denied=await app.inject({method:'POST',url:'/api/sessions/reload-owned/reload',headers:{cookie:viewerCookie}});expect(denied.statusCode).toBe(404);expect(reload).not.toHaveBeenCalled();
     getDb().prepare("UPDATE users SET role='member' WHERE id=?").run(ownerId);getDb().prepare('DELETE FROM rbac_user_roles WHERE user_id=?').run(ownerId);expect((await app.inject({method:'POST',url:'/api/sessions/reload-owned/reload',headers:{cookie:ownerCookie}})).statusCode).toBe(403);expect(reload).not.toHaveBeenCalled();
     getDb().prepare("UPDATE users SET role='admin' WHERE id=?").run(ownerId);const result=await app.inject({method:'POST',url:'/api/sessions/reload-owned/reload',headers:{cookie:ownerCookie}});expect(result.statusCode).toBe(200);expect(result.json().session.id).toBe('reload-owned');expect(reload).toHaveBeenCalledExactlyOnceWith('reload-owned');
+  });
+  it('defers an owned terminal reload until the native stream is idle',async()=>{
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES('deferred','project-1','Work','running','session','codex','019ff001-3434-7434-8434-343434343434',?)").run(ownerId);
+    getDb().prepare("UPDATE users SET role='admin' WHERE id=?").run(ownerId);
+    let emit:(frame:any)=>void=()=>{};const stop=vi.fn();const observe=vi.spyOn(agentHost,'observeAgentConversation').mockImplementation((_session,listener)=>{emit=listener;return Object.assign(stop,{respond:vi.fn()}) as any;});
+    const reload=vi.spyOn(sessionManager,'reloadAgentSessionById').mockResolvedValue({ok:true,client_version:'0.166.0'});
+    const req=()=>app.inject({method:'POST',url:'/api/sessions/deferred/reload',headers:{cookie:ownerCookie},payload:{when_idle:true}});
+    expect((await req()).statusCode).toBe(202);expect((await req()).statusCode).toBe(202);expect(observe).toHaveBeenCalledOnce();
+    emit({type:'snapshot',busy:true,stage:'tools'});await Promise.resolve();expect(reload).not.toHaveBeenCalled();
+    emit({type:'snapshot',busy:false,stage:'idle'});await vi.waitFor(()=>expect(reload).toHaveBeenCalledExactlyOnceWith('deferred',{idleOnly:true}));expect(stop).toHaveBeenCalledOnce();
+  });
+  it('keeps waiting when the session becomes busy during the idle recheck',async()=>{
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES('race','project-1','Work','running','session','codex','019ff001-3434-7434-8434-343434343434',?)").run(ownerId);getDb().prepare("UPDATE users SET role='admin' WHERE id=?").run(ownerId);
+    let emit:(frame:any)=>void=()=>{};const stop=vi.fn();vi.spyOn(agentHost,'observeAgentConversation').mockImplementation((_session,listener)=>{emit=listener;return Object.assign(stop,{respond:vi.fn()}) as any;});
+    const reload=vi.spyOn(sessionManager,'reloadAgentSessionById').mockResolvedValueOnce({ok:false,error:'会话仍在执行或等待交互'}).mockResolvedValueOnce({ok:true});
+    expect((await app.inject({method:'POST',url:'/api/sessions/race/reload',headers:{cookie:ownerCookie},payload:{when_idle:true}})).statusCode).toBe(202);emit({type:'snapshot',busy:false,stage:'idle'});
+    await vi.waitFor(()=>expect(reload).toHaveBeenCalledTimes(1));expect(stop).not.toHaveBeenCalled();emit({type:'snapshot',busy:false,stage:'idle'});await vi.waitFor(()=>expect(reload).toHaveBeenCalledTimes(2));expect(stop).toHaveBeenCalledOnce();
+  });
+  it('cancels a deferred reload if its owner loses write permission',async()=>{
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES('revoked','project-1','Work','running','session','codex','019ff001-3434-7434-8434-343434343434',?)").run(ownerId);getDb().prepare("UPDATE users SET role='admin' WHERE id=?").run(ownerId);
+    let emit:(frame:any)=>void=()=>{};const stop=vi.fn();vi.spyOn(agentHost,'observeAgentConversation').mockImplementation((_session,listener)=>{emit=listener;return Object.assign(stop,{respond:vi.fn()}) as any;});const reload=vi.spyOn(sessionManager,'reloadAgentSessionById');
+    expect((await app.inject({method:'POST',url:'/api/sessions/revoked/reload',headers:{cookie:ownerCookie},payload:{when_idle:true}})).statusCode).toBe(202);
+    getDb().prepare("UPDATE users SET role='member' WHERE id=?").run(ownerId);getDb().prepare('DELETE FROM rbac_user_roles WHERE user_id=?').run(ownerId);emit({type:'snapshot',busy:false,stage:'idle'});
+    await vi.waitFor(()=>expect(stop).toHaveBeenCalledOnce());expect(reload).not.toHaveBeenCalled();
   });
   it('explicit deletion stops the owned running session before purging its record',async()=>{
     getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES('delete-running','project-1','Task','running','session','codex',?)").run(ownerId);
