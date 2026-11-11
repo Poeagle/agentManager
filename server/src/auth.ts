@@ -297,7 +297,7 @@ export function readSessionCookie(req: FastifyRequest): string | null {
 /** Explicit HTTP route families. Personal credentials and authentication
  * endpoints never accept bearer keys. Unknown routes fail closed. */
 function apiKeyRoute(method: string, path: string): [PermissionKey,PermissionLevel] | null {
-  if(!['GET','POST','PUT','PATCH','DELETE'].includes(method)||path.includes('%'))return null;
+  if(!['GET','POST','PUT','PATCH','DELETE'].includes(method)||/%(?:2f|5c)/i.test(path))return null;
   const read=method==='GET', level:PermissionLevel=read?'read':method==='DELETE'?'delete':'write';
   if(/^\/api\/agent-management(?:\/|$)/.test(path))return ['settings',read?'read':'write'];
   if(/^\/api\/settings(?:\/|$)/.test(path))return ['settings',read?'read':'write'];
