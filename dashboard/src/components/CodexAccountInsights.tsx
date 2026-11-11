@@ -1,6 +1,6 @@
 import {useMemo,useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
-import {ChevronRight,Folder,RefreshCw,Ticket,Activity,CalendarDays,Cpu} from 'lucide-react';
+import {ChevronRight,Folder,RefreshCw,Cpu} from 'lucide-react';
 import {Dialog} from './Dialog';
 import {fetchJSON} from '../lib/api';
 import './CodexAccountInsights.css';
@@ -45,10 +45,10 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
  return <Dialog appearance="manager" title={`${name} ${apiMode?'上游':'账号'}详情`} size="image" width={1480} onClose={onClose}>
   <div className="codex-insights">
    {apiMode?<><div className="ci-identity"><button className="ci-button" onClick={refresh} disabled={usage.isFetching}><RefreshCw size={14}/>刷新缓存</button></div>{apiOverview}</>:<>   <div className="ci-identity"><span>{resets.data?.account.email||name}</span><span className="ci-tag">{resets.data?.account.plan||'套餐未提供'}</span><span className="ci-snapshot" title={resets.data?.checked_at?`额度与重置卡上次成功采集：${new Date(resets.data.checked_at).toLocaleString()}${resets.data.stale?'；显示上次成功数据':''}`:'等待首次后台采集'}>额度与重置卡 · 每 5 分钟更新{resets.data?.stale?' · 缓存已过期':''}</span><button className="ci-button" title="重新读取后台缓存，不触发采集" onClick={refresh} disabled={usage.isFetching||resets.isFetching}><RefreshCw size={14}/>刷新缓存</button></div>
-   <div className="ci-overview">
-    <section><span className="ci-label"><Activity size={15}/>账号额度</span>{resets.data?.windows?.length?resets.data.windows.map((w,i)=><div className="ci-quota" key={i}><span>{w.windowDurationMins===10080?'周额度':w.windowDurationMins?`${w.windowDurationMins/60} 小时`:'额度'}</span><strong>剩余 {numeric(Math.max(0,100-w.usedPercent))}%</strong><progress aria-label="账号额度剩余" value={Math.max(0,100-w.usedPercent)} max={100}/><small>重置 {time(w.resetsAt)}</small></div>):<p>{resets.isPending?'正在读取…':'额度暂不可用'}</p>}</section>
-    <section><span className="ci-label"><Ticket size={15}/>重置卡</span><strong className="ci-value">{cards?cards.availableCount:'—'}<small> 张可用</small></strong><button className="ci-link" onClick={()=>setTab('cards')}>查看卡片与到期时间 <ChevronRight size={13}/></button></section>
-    <section><span className="ci-label"><CalendarDays size={15}/>所选范围用量</span><div className="ci-usage-breakdown"><span>输入（未缓存） <strong>{numeric(uncached)}</strong></span><span>输入（缓存） <strong>{numeric(cached)}</strong></span><span>输出 <strong>{numeric(sum(rows,'output_tokens'))}</strong></span></div><span className="ci-muted">Token · {days.length} 天 · {new Set(rows.map(r=>r.cwd)).size} 个工作目录</span></section>
+   <div className="ci-overview ci-overview-account">
+    <section><span className="ci-label">账号额度</span>{resets.data?.windows?.length?resets.data.windows.map((w,i)=><div className="ci-quota" key={i}><span>{w.windowDurationMins===10080?'周额度':w.windowDurationMins?`${w.windowDurationMins/60} 小时`:'额度'}</span><strong>剩余 {numeric(Math.max(0,100-w.usedPercent))}%</strong><small>重置 {time(w.resetsAt)}</small></div>):<p>{resets.isPending?'正在读取…':'额度暂不可用'}</p>}</section>
+    <section><span className="ci-label">重置卡</span><strong className="ci-value">{cards?cards.availableCount:'—'}<small> 张可用</small></strong><button className="ci-link" onClick={()=>setTab('cards')}>查看卡片与到期时间 <ChevronRight size={13}/></button></section>
+    <section><span className="ci-label">所选范围用量</span><div className="ci-usage-breakdown"><span>输入（未缓存） <strong>{numeric(uncached)}</strong></span><span>输入（缓存） <strong>{numeric(cached)}</strong></span><span>输出 <strong>{numeric(sum(rows,'output_tokens'))}</strong></span></div><span className="ci-muted">Token · {days.length} 天 · {new Set(rows.map(r=>r.cwd)).size} 个工作目录</span></section>
    </div>
    {resets.data?.error&&<p className="ci-notice" role="status">{resets.data.error}</p>}
    <nav className="ci-tabs" aria-label="账号详情栏目"><button aria-selected={tab==='usage'} onClick={()=>setTab('usage')}>每日项目用量</button><button aria-selected={tab==='cards'} onClick={()=>setTab('cards')}>重置卡{cards?` (${cards.availableCount})`:''}</button></nav>
