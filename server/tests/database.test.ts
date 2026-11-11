@@ -12,13 +12,24 @@ let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
 
 describe('database schema and durable session identity', () => {
+  it('upgrades version 24 schedules with Engine and model fields without losing data',()=>{
+    const fixture=createTestDatabase();cleanup=fixture.cleanup;
+    const user=createUser({username:'schedule-v24',password:'password1'});
+    const db=getDb();
+    db.prepare("INSERT INTO projects(id,name,path) VALUES('migration-project','Keep',?)").run(fixture.dir);
+    db.prepare("INSERT INTO scheduled_tasks(id,user_id,project_id,name,prompt,schedule_kind,schedule_value,target_type) VALUES('migration-task',?,'migration-project','Keep','task','daily','09:00','new')").run(user.id);
+    db.exec('ALTER TABLE scheduled_tasks DROP COLUMN new_environment_id; ALTER TABLE scheduled_tasks DROP COLUMN new_model_preference; PRAGMA user_version=24');
+    closeDb();initDb();
+    expect(getDb().prepare("SELECT name,new_environment_id,new_model_preference FROM scheduled_tasks WHERE id='migration-task'").get()).toEqual({name:'Keep',new_environment_id:null,new_model_preference:null});
+    expect(getDb().pragma('user_version',{simple:true})).toBe(25);
+  });
   it('adds API keys to a version 23 database without losing login sessions',()=>{
     const fixture=createTestDatabase();cleanup=fixture.cleanup;
     const user=createUser({username:'api-upgrade-owner',password:'password1'}),token=createSession(user.id);
     getDb().exec('DROP TABLE api_keys; PRAGMA user_version = 23');closeDb();initDb();
     expect(getSessionUser(token)?.id).toBe(user.id);
     expect(getDb().prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='api_keys'").get()).toBeTruthy();
-    expect(getDb().pragma('user_version',{simple:true})).toBe(24);
+    expect(getDb().pragma('user_version',{simple:true})).toBe(25);
   });
   it.each([22,23])('repairs actual legacy identity columns at version %s while preserving the native conversation and login',version=>{
     const fixture=createTestDatabase();cleanup=fixture.cleanup;
@@ -33,10 +44,10 @@ describe('database schema and durable session identity', () => {
     expect(getDb().prepare("SELECT id,task,status,cli_type,codex_session_id,agent_id,native_session_id FROM sessions WHERE id='legacy-identity'").get()).toEqual({id:'legacy-identity',task:'Keep task',status:'running',cli_type:'codex',codex_session_id:native,agent_id:'codex',native_session_id:native});
     expect(getDb().prepare("SELECT count(*) n FROM conversation_attachments WHERE session_id='legacy-identity'").get()).toEqual({n:1});
     expect(getDb().prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'sessions_agent_identity_%'").all()).toHaveLength(2);
-    const backups=readdirSync(fixture.dir).filter(name=>name.includes('.pre-v24-'));expect(backups.length).toBeGreaterThan(0);
+    const backups=readdirSync(fixture.dir).filter(name=>name.includes('.pre-v25-'));expect(backups.length).toBeGreaterThan(0);
     getDb().prepare("UPDATE sessions SET codex_session_id=? WHERE id='legacy-identity'").run('019ff001-5656-7565-8565-565656565656');
     expect(getDb().prepare("SELECT native_session_id FROM sessions WHERE id='legacy-identity'").get()).toEqual({native_session_id:'019ff001-5656-7565-8565-565656565656'});
-    closeDb();initDb();expect(readdirSync(fixture.dir).filter(name=>name.includes('.pre-v24-'))).toEqual(backups);
+    closeDb();initDb();expect(readdirSync(fixture.dir).filter(name=>name.includes('.pre-v25-'))).toEqual(backups);
   });
   it('adds separate attachment storage to v18 while keeping sessions and login valid',()=>{
     const fixture=createTestDatabase();cleanup=fixture.cleanup;
@@ -46,7 +57,7 @@ describe('database schema and durable session identity', () => {
     getDb().exec('DROP TABLE conversation_attachments');getDb().pragma('user_version = 18');closeDb();initDb();
     expect(getSessionUser(token)?.id).toBe(user.id);expect(getDb().prepare("SELECT task,status FROM sessions WHERE id='s'").get()).toEqual({task:'Keep task',status:'running'});
     expect(getDb().prepare('SELECT COUNT(*) n FROM conversation_attachments').get()).toEqual({n:0});
-    expect(getDb().pragma('user_version',{simple:true})).toBe(24);expect(readdirSync(fixture.dir).some(file=>file.includes('.pre-v24-'))).toBe(true);
+    expect(getDb().pragma('user_version',{simple:true})).toBe(25);expect(readdirSync(fixture.dir).some(file=>file.includes('.pre-v25-'))).toBe(true);
   });
   it('removes retired browser configuration from v11 without losing projects, sessions, login or other tab state', () => {
     const database = createTestDatabase();
@@ -75,7 +86,7 @@ describe('database schema and durable session identity', () => {
     const { webPageInstances: _web, activeWebPageId: _active, ...retained } = tabs;
     expect(JSON.parse(state.value)).toEqual(retained);
     expect(getDb().prepare(`SELECT value FROM user_ui_state WHERE key = 'project:corrupt'`).get()).toEqual({ value: 'not-json' });
-    const backup = readdirSync(database.dir).find((file) => file.includes('.pre-v24-') && file.endsWith('.bak'));
+    const backup = readdirSync(database.dir).find((file) => file.includes('.pre-v25-') && file.endsWith('.bak'));
     expect(backup).toBeDefined();
     const original = new Database(join(database.dir, backup!), { readonly: true });
     try { expect(original.prepare('SELECT default_web_url FROM projects WHERE id = ?').get('p')).toEqual({ default_web_url: 'https://example.com' }); }
@@ -137,7 +148,7 @@ describe('database schema and durable session identity', () => {
       'stopped_at',
       'stop_reason',
     ]));
-    expect(db.pragma('user_version', { simple: true })).toBe(24);
+    expect(db.pragma('user_version', { simple: true })).toBe(25);
   });
 
   it('adds project notifications to v17 without losing users, projects or login sessions', () => {
@@ -152,7 +163,7 @@ describe('database schema and durable session identity', () => {
     expect(getDb().prepare("SELECT name,owner_id FROM projects WHERE id='notify'").get()).toEqual({name:'Notify',owner_id:user.id});
     expect(getDb().prepare('SELECT * FROM platform_ai_project_notifications').all()).toEqual([]);
     expect(getDb().pragma('foreign_key_check')).toEqual([]);
-    expect(readdirSync(database.dir).some(file => file.includes('.pre-v24-'))).toBe(true);
+    expect(readdirSync(database.dir).some(file => file.includes('.pre-v25-'))).toBe(true);
   });
 
   it('preserves legacy project prompt data while migrating', () => {
@@ -179,7 +190,7 @@ describe('database schema and durable session identity', () => {
     initDb();
     const migrated = getDb().prepare('SELECT session_prompt FROM projects WHERE id = ?').get('legacy') as { session_prompt: string };
     expect(migrated.session_prompt).toBe('keep this prompt');
-    expect(getDb().pragma('user_version', { simple: true })).toBe(24);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(25);
 
     cleanup = () => {
       closeDb();
@@ -264,6 +275,6 @@ describe('database schema and durable session identity', () => {
       'legacy-orphan-project': null,
       'legacy-owned': 'owner',
     });
-    expect(getDb().pragma('user_version', { simple: true })).toBe(24);
+    expect(getDb().pragma('user_version', { simple: true })).toBe(25);
   });
 });

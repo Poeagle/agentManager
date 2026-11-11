@@ -6,7 +6,7 @@ import {migrateRbac} from '../services/rbac.js';
 import {migratePlatformAi} from '../services/platform-ai/schema.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 24;
+const SCHEMA_VERSION = 25;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -214,6 +214,8 @@ function createCurrentSchema(): void {
       target_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
       new_mode TEXT,
       new_cli_type TEXT,
+      new_environment_id TEXT,
+      new_model_preference TEXT,
       inactive_policy TEXT NOT NULL DEFAULT 'resume',
       enabled INTEGER NOT NULL DEFAULT 1,
       next_run_at TEXT,
@@ -389,8 +391,6 @@ function migrateLegacySessionOwnership(): void {
 }
 
 function migrateScheduledTaskStopConditions(): void {
-  addColumn('scheduled_tasks', 'new_environment_id', 'TEXT');
-  addColumn('scheduled_tasks', 'new_model_preference', 'TEXT');
   addColumn('scheduled_tasks', 'stop_at', 'TEXT');
   addColumn('scheduled_tasks', 'max_successful_runs', 'INTEGER');
   addColumn('scheduled_tasks', 'quota_remaining_below', 'INTEGER');
@@ -459,6 +459,10 @@ function runMigrations(): void {
     if (current < 3) migrateLegacySessionOwnership();
     if (current < 5) migrateScheduledTaskStopConditions();
     if (current < 6) migrateScheduledTaskDailyStop();
+    if (current < 25) {
+      addColumn('scheduled_tasks', 'new_environment_id', 'TEXT');
+      addColumn('scheduled_tasks', 'new_model_preference', 'TEXT');
+    }
     if (current < 8) {
       addColumn('scheduled_tasks', 'daily_start_time', 'TEXT');
       addColumn('scheduled_tasks', 'daily_end_time', 'TEXT');
