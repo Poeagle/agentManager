@@ -1,11 +1,12 @@
 import {targetSupportsQuota} from '../src/services/agents/scheduling.js';
 import {attachManagedAgent,observeAgentConversation,detachManagedAgents,isManagedAgentActive} from '../src/services/agents/host.js';
 import {afterEach,describe,expect,it,vi} from 'vitest';
-import {mkdtempSync,writeFileSync,rmSync} from 'fs';
+import {mkdtempSync,writeFileSync,rmSync,mkdirSync} from 'fs';
 import {join} from 'path';import {tmpdir} from 'os';
 import Fastify from 'fastify';
 import {registerAgent,getAgent,agentContext,agentDescriptors} from '../src/services/agents/index.js';
 import {capabilities,type AgentDefinition,type AgentAdapter,type AgentControls} from '../src/services/agents/types.js';
+import {linkConversationInputs} from '../src/services/conversation-input-links.js';
 import {readConversation} from '../src/services/conversation-reader.js';
 import {loadRecentPromptContext} from '../src/services/prompt-context.js';
 import {nativeConversationId} from '../src/services/session-identity.js';
@@ -22,7 +23,7 @@ const controls=(native_id:string):AgentControls=>({model:'future-model',effort:'
 function fixture(path:string):AgentAdapter {
  const decode=(record:any)=>({role:record.speaker as 'user'|'assistant',phase:record.speaker==='user'?'user' as const:'final' as const,text:record.body as string,timestamp:record.when as string});
  return {
-  descriptor:{sessionHost:'managed',id:'fixture_agent',label:'Fixture Agent',capabilities:capabilities(['history','runtime','controls','model','launch','resume','input','stream']),presentation:{icon:'agent',color:'#123456'}},
+  descriptor:{sessionHost:'managed',id:'fixture_agent',label:'Fixture Agent',capabilities:capabilities(['history','runtime','controls','model','launch','resume','input','stream','attachments']),presentation:{icon:'agent',color:'#123456'}},
   identity:{read:()=>null},history:{file:{locate:async()=>path,decode:entries=>[...entries].map(decode),project:bytes=>{const entry=JSON.parse(bytes.toString());return {message:decode(entry),recordType:'native_message',imagePaths:[]};},recordLimit:()=>512*1024,questionCall:()=>null,relevant:()=>true,turns:entries=>{const messages=[...entries].map(decode);return [{user:messages[0].text,assistant:messages[1].text}];}},read:async()=>null},
   runtime:{read:async context=>({source:'fixture_events',session_id:context.nativeId,state:'idle',last_activity_at:null,observed_at:new Date().toISOString(),reason:'fixture'}),subscribe:()=>()=>{}},
   controls:{read:async context=>controls(context.nativeId!),validate:async(_context,value)=>value as {model:string;effort:string},apply:vi.fn(async(_context,value)=>value)},
@@ -66,6 +67,9 @@ describe('provider-neutral agent features',()=>{
    const update=await app.inject({method:'PUT',url:'/api/sessions/adapter-s/controls',headers:{cookie},payload:{model:'future-model',effort:'standard'}});expect(update.statusCode).toBe(200);expect(adapter.controls.apply).toHaveBeenCalledOnce();
    const sent=await app.inject({method:'POST',url:'/api/sessions/adapter-s/input',headers:{cookie},payload:{input:'Continue',source:'conversation',client_id:'fixture-client'}});expect(sent.statusCode).toBe(202);expect(adapter.input.submit).toHaveBeenCalledOnce();
    expect(getDb().prepare('SELECT client_id FROM conversation_input_links WHERE session_id=?').get('adapter-s')).toEqual({client_id:'fixture-client'});
+   const pastes=join(database.dir,'.agentmanager','pastes');mkdirSync(pastes,{recursive:true});const image=join(pastes,'fixture.png');writeFileSync(image,Buffer.from([137,80,78,71,13,10,26,10]));
+   const attached=await app.inject({method:'POST',url:'/api/sessions/adapter-s/input',headers:{cookie},payload:{input:'确认',source:'conversation',client_id:'image-client',attachments:[{kind:'image',name:'fixture.png',path:image,offset:0}]}});expect(attached.statusCode).toBe(202);
+   const linked=linkConversationInputs('adapter-s','opaque/thread:1',[{id:'native-image',sequence:0,role:'user',text:'[Image #1]确认',timestamp:null}]);expect(linked[0].client_id).toBe('image-client');
    const sessions=(await app.inject({url:'/api/sessions',headers:{cookie}})).json().sessions;expect(sessions[0]).toMatchObject({agent_id:'fixture_agent',native_session_id:'opaque/thread:1',agent_runtime:{source:'fixture_events',state:'idle'}});
    const providers=(await app.inject({url:'/api/agent/providers',headers:{cookie}})).json().agents;expect(providers.some((agent:any)=>agent.id==='fixture_agent')).toBe(true);
    const other=createUser({username:'adapter-other',password:'password1'});expect((await app.inject({url:'/api/sessions/adapter-s/controls',headers:{cookie:`agentmanager_session=${createSession(other.id)}`}})).statusCode).toBe(404);
