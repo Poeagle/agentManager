@@ -5,6 +5,7 @@ import {accountCommandInput,localCommandInput} from './account-transport.js';
 import {USAGE_SCAN} from './usage-scanner.js';
 import {tokenFields} from '../../conversation-usage.js';
 import {CREDIT_RATE_DATE,estimateUsageCredits} from './usage-credits.js';
+import {initUsageProvenance,usageOrigins} from './usage-provenance.js';
 import {realpathSync} from 'fs';
 import {resolve,join} from 'path';
 import {homedir,userInfo} from 'os';
@@ -17,14 +18,14 @@ const pending=new Map<string,Promise<void>>();
 const controllers=new Map<string,AbortController>();
 function usageHome(e:ReturnType<typeof getCodexEnvironment>){if(e.kind!=='provider')return localHome(e);const provider=readAgentManagement('codex').providers.find(p=>p.id===e.provider);return provider?externalProviderCodexHome(provider):'';}
 const balanceGroup=(id:string)=>{try{return cachedEngineBalance(id).groupKey??null;}catch{return null;}};
-const usageIdentity=(e:ReturnType<typeof getCodexEnvironment>)=>JSON.stringify(e.kind==='account'?[e.connection?.username,e.connection?.codexHome]:e.kind==='provider'?[e.kind,usageHome(e),allCodexEnvironments().filter(other=>other.enabled&&other.kind!=='account').map(other=>[other.id,usageHome(other),balanceGroup(other.id)]).sort()]:[e.kind,usageHome(e)]);
+const usageIdentity=(e:ReturnType<typeof getCodexEnvironment>)=>JSON.stringify(e.kind==='account'?[e.connection?.username,e.connection?.codexHome]:e.kind==='provider'?[e.kind,usageHome(e),balanceGroup(e.id)]:[e.kind,usageHome(e)]);
 function providerHistoryIsShared(id:string,home:string):boolean {
  const canonical=(path:string)=>{try{return realpathSync(path);}catch{return resolve(path);}};
  const target=canonical(home);
  const group=balanceGroup(id);
  return allCodexEnvironments().some(e=>e.id!==id&&e.enabled&&e.kind!=='account'&&!!usageHome(e)&&canonical(usageHome(e))===target&&(!group||balanceGroup(e.id)!==group));
 }
-export function initAccountUsage(){getDb().exec(`
+export function initAccountUsage(){initUsageProvenance();getDb().exec(`
  DROP TABLE IF EXISTS codex_usage_cursors;
  CREATE TABLE IF NOT EXISTS codex_usage_snapshots(account TEXT PRIMARY KEY,initialized INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS codex_usage_events(account TEXT NOT NULL,event_key TEXT NOT NULL,day TEXT NOT NULL,cwd TEXT NOT NULL,model TEXT,tier TEXT,tokens TEXT NOT NULL,PRIMARY KEY(account,event_key));
@@ -32,6 +33,9 @@ export function initAccountUsage(){getDb().exec(`
  CREATE TABLE IF NOT EXISTS codex_usage_status(account TEXT PRIMARY KEY,checked_at TEXT,error TEXT,partial INTEGER NOT NULL DEFAULT 1);
  CREATE TABLE IF NOT EXISTS codex_usage_sources(account TEXT PRIMARY KEY,identity TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS codex_usage_progress(account TEXT PRIMARY KEY,data TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS codex_usage_event_ids(account TEXT NOT NULL,event_id BLOB NOT NULL,day TEXT NOT NULL,PRIMARY KEY(account,event_id));
+ CREATE INDEX IF NOT EXISTS codex_usage_event_id_days ON codex_usage_event_ids(account,day);
+ CREATE TABLE IF NOT EXISTS codex_usage_ledger(account TEXT PRIMARY KEY,baseline_at TEXT,last_day TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS codex_usage_dedup_events(account TEXT NOT NULL,event_key TEXT NOT NULL,day TEXT NOT NULL,cwd TEXT NOT NULL,model TEXT,tier TEXT,provider TEXT,tokens TEXT NOT NULL,PRIMARY KEY(account,event_key));
  CREATE TABLE IF NOT EXISTS codex_usage_dedup_status(account TEXT PRIMARY KEY,ready INTEGER NOT NULL);
 `);}
@@ -40,9 +44,13 @@ export async function collectAccountUsage(id:string):Promise<void>{
  const task=(async()=>{
   const db=getDb(),e=getCodexEnvironment(id);if(!e.enabled)return;
   const identity=usageIdentity(e);
-  const source=db.prepare('SELECT identity FROM codex_usage_sources WHERE account=?').get(id) as {identity:string}|undefined;
+  let source=db.prepare('SELECT identity FROM codex_usage_sources WHERE account=?').get(id) as {identity:string}|undefined;
+  if(source&&e.kind==='provider'){
+   try{const old=JSON.parse(source.identity),current=JSON.parse(identity);if(Array.isArray(old[2])&&old[0]===current[0]&&old[1]===current[1]&&old[2].some((r:unknown)=>Array.isArray(r)&&r[0]===id&&r[1]===current[1]&&r[2]===current[2])){db.prepare('UPDATE codex_usage_sources SET identity=? WHERE account=?').run(identity,id);source={identity};}}catch{/* An incompatible source requires a fresh baseline. */}
+  }
   if(source?.identity!==identity)db.transaction(()=>{
-   for(const table of ['codex_usage_snapshots','codex_usage_events','codex_usage_status','codex_usage_progress','codex_usage_dedup_events','codex_usage_dedup_status'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
+   for(const table of ['codex_usage_snapshots','codex_usage_events','codex_usage_status','codex_usage_progress','codex_usage_event_ids','codex_usage_ledger','codex_usage_dedup_events','codex_usage_dedup_status'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
+   if(source)db.prepare('DELETE FROM codex_usage_origins WHERE account=?').run(id);
    db.prepare('INSERT OR REPLACE INTO codex_usage_sources VALUES(?,?)').run(id,identity);
   })();
   const initialized=!!db.prepare('SELECT initialized FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
@@ -52,31 +60,59 @@ export async function collectAccountUsage(id:string):Promise<void>{
   try{
    const home=e.kind==='account'?e.connection?.codexHome:usageHome(e);
    if(e.kind==='provider'&&(!home||providerHistoryIsShared(id,home)))throw Error('历史目录无法独立归属');
-   const input=JSON.stringify({home,mode,day,includeEvents:true});
-   const options={timeoutMs:mode==='full'?300000:120000,maxOutputBytes:32*1024*1024,signal:controller.signal};
+   const ledger=db.prepare('SELECT baseline_at,last_day FROM codex_usage_ledger WHERE account=?').get(id) as {baseline_at:string|null;last_day:string}|undefined;
+   const prior=db.prepare('SELECT checked_at FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null}|undefined;
+   const baseline=ledger?.baseline_at??(!ledger&&initialized?prior?.checked_at:null)??null;
+   if(initialized&&!ledger&&(!baseline||!Number.isFinite(Date.parse(baseline))))throw Error('Legacy usage baseline unavailable');
+   const yesterday=new Date(Date.parse(day+'T00:00:00Z')-86400000).toISOString().slice(0,10);
+   const lastDay=ledger?.last_day??prior?.checked_at?.slice(0,10);
+   const days=mode==='daily'&&lastDay&&lastDay<day?[yesterday,day]:[day];
+   const known=db.prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=? AND day IN (?,?) LIMIT 2000001').all(id,days[0],day) as {event_id:Buffer}[];
+   if(known.length>2000000)throw Error('Usage identity limit exceeded');
+   const input=JSON.stringify({home,mode,day,days,baseline_at:baseline,known_events:Buffer.concat(known.map(r=>r.event_id)).toString('base64'),origins:usageOrigins(id),includeEvents:true,rebuildEvents:initialized&&!dedupStatus});
+   const options={timeoutMs:mode==='full'?300000:120000,maxOutputBytes:128*1024*1024,signal:controller.signal};
    const result=JSON.parse(await (e.kind==='account'?accountCommandInput(environmentConnection(e),USAGE_SCAN,input,options):localCommandInput(USAGE_SCAN,input,options)));
    if(!Array.isArray(result.rows)||result.rows.length>50000||result.mode!==mode||result.day!==day)throw Error('Invalid usage response');
+   const requestsPerDay=new Map<string,number>();
    for(const row of result.rows){
-    if(!/^\d{4}-\d{2}-\d{2}$/.test(row.day)||mode==='daily'&&row.day!==day||typeof row.cwd!=='string'||row.cwd.length>4096||!Number.isSafeInteger(row.requests)||row.requests<1||!row.tokens||tokenFields.some(k=>row.tokens[k]!==null&&(!Number.isFinite(row.tokens[k])||row.tokens[k]<0)))throw Error('Invalid usage row');
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(row.day)||mode==='daily'&&!days.includes(row.day)||typeof row.cwd!=='string'||row.cwd.length>4096||!Number.isSafeInteger(row.requests)||row.requests<1||!row.tokens||tokenFields.some(k=>row.tokens[k]!==null&&(!Number.isFinite(row.tokens[k])||row.tokens[k]<0)))throw Error('Invalid usage row');
+    requestsPerDay.set(row.day,(requestsPerDay.get(row.day)??0)+row.requests);
    }
-   if(!Array.isArray(result.events)||result.events.length>50000||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||mode==='daily'&&event.day!==day||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
+   if(!result.event_keys||typeof result.event_keys!=='object'||Array.isArray(result.event_keys))throw Error('Usage identities unavailable');
+   const events:Array<{day:string;keys:Buffer}>=[];let count=0;
+   for(const [eventDay,encoded]of Object.entries(result.event_keys)){
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(eventDay)||mode==='daily'&&!days.includes(eventDay)||typeof encoded!=='string')throw Error('Invalid usage identities');
+    const keys=Buffer.from(encoded,'base64');
+    if(keys.length%32||keys.toString('base64')!==encoded)throw Error('Invalid usage identities');
+    count+=keys.length/32;if(count>2000000)throw Error('Usage identity limit exceeded');
+    if((requestsPerDay.get(eventDay)??0)!==keys.length/32)throw Error('Usage identity count mismatch');
+    events.push({day:eventDay,keys});
+   }
+   if(result.rows.reduce((n:number,r:any)=>n+r.requests,0)!==count)throw Error('Usage identity count mismatch');
+   if(!Array.isArray(result.events)||result.events.length>50000||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||mode==='daily'&&!days.includes(event.day)||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
    const current=getCodexEnvironment(id);if(!current.enabled||usageIdentity(current)!==identity)return;
    db.transaction(()=>{
-    // Publish one complete snapshot: historical days remain untouched on daily scans.
-    if(mode==='full')db.prepare('DELETE FROM codex_usage_events WHERE account=?').run(id);
-    else db.prepare('DELETE FROM codex_usage_events WHERE account=? AND day=?').run(id,day);
-    const insert=db.prepare('INSERT INTO codex_usage_events VALUES(?,?,?,?,?,?,?)');
-    for(const row of result.rows)insert.run(id,JSON.stringify([row.day,row.cwd,row.model,row.tier]),row.day,row.cwd,row.model||null,row.tier||null,JSON.stringify({...row.tokens,requests:row.requests}));
-    if(mode==='full')db.prepare('DELETE FROM codex_usage_dedup_events WHERE account=?').run(id);
-    else db.prepare('DELETE FROM codex_usage_dedup_events WHERE account=? AND day=?').run(id,day);
+    // Request identities and aggregates commit together. Missing/truncated files
+    // never retract recorded consumption; repeated/forked records cannot add it.
+    const record=db.prepare('INSERT INTO codex_usage_event_ids VALUES(?,?,?)');
+    for(const event of events)for(let i=0;i<event.keys.length;i+=32)record.run(id,event.keys.subarray(i,i+32),event.day);
+    const lookup=db.prepare('SELECT tokens FROM codex_usage_events WHERE account=? AND event_key=?');
+    const insert=db.prepare('INSERT OR REPLACE INTO codex_usage_events VALUES(?,?,?,?,?,?,?)');
+    for(const row of result.rows){
+     const key=JSON.stringify([row.day,row.cwd,row.model,row.tier,tokenFields.map(k=>row.tokens[k]===null?0:1).join('')]);
+     const previous=lookup.get(id,key) as {tokens:string}|undefined,old=previous?JSON.parse(previous.tokens):null;
+     const tokens=old?Object.fromEntries(tokenFields.map(k=>[k,old[k]==null||row.tokens[k]===null?null:old[k]+row.tokens[k]])):row.tokens;
+     insert.run(id,key,row.day,row.cwd,row.model||null,row.tier||null,JSON.stringify({...tokens,requests:row.requests+(old?.requests??0)}));
+    }
     const eventInsert=db.prepare('INSERT OR REPLACE INTO codex_usage_dedup_events VALUES(?,?,?,?,?,?,?,?)');
     for(const event of result.events)eventInsert.run(id,event.key,event.day,event.cwd,event.model||null,event.tier||null,event.provider||null,JSON.stringify(event.tokens));
     db.prepare('INSERT OR REPLACE INTO codex_usage_dedup_status VALUES(?,?)').run(id,!result.events_truncated&&(mode==='full'||dedupStatus?.ready===1)?1:0);
+    db.prepare('INSERT INTO codex_usage_ledger VALUES(?,?,?) ON CONFLICT(account) DO UPDATE SET last_day=excluded.last_day').run(id,baseline,day);
     db.prepare('INSERT OR REPLACE INTO codex_usage_snapshots VALUES(?,1)').run(id);
     db.prepare('INSERT OR REPLACE INTO codex_usage_status VALUES(?,?,?,?)').run(id,new Date().toISOString(),result.errors?'部分记录不可读取或缺少统计字段':null,result.partial||result.errors?1:0);
     if(result.progress)db.prepare('INSERT OR REPLACE INTO codex_usage_progress VALUES(?,?)').run(id,JSON.stringify(result.progress));
    })();
-  }catch(error){const shared=error instanceof Error&&error.message==='历史目录无法独立归属';if(shared)db.transaction(()=>{for(const table of ['codex_usage_events','codex_usage_snapshots','codex_usage_progress','codex_usage_dedup_events','codex_usage_dedup_status'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);})();const message=shared?'历史目录与其他 Engine 共用或无法确认，未统计以避免重复':'采集失败，保留上次成功数据';db.prepare(`INSERT INTO codex_usage_status(account,error,partial) VALUES(?,?,1) ON CONFLICT(account) DO UPDATE SET error=excluded.error,partial=1`).run(id,message);}
+  }catch(error){const message=error instanceof Error&&error.message==='历史目录无法独立归属'?'历史目录与其他 Engine 共用或无法确认，未统计以避免重复':'采集失败，保留上次成功数据';db.prepare('INSERT INTO codex_usage_status(account,error,partial) VALUES(?,?,1) ON CONFLICT(account) DO UPDATE SET error=excluded.error,partial=1').run(id,message);}
   finally{controllers.delete(id);}
  })();pending.set(id,task);try{await task;}finally{pending.delete(id);}
 }
@@ -84,12 +120,15 @@ export function cachedAccountUsage(id:string){
  const db=getDb();
  const source=db.prepare('SELECT identity FROM codex_usage_sources WHERE account=?').get(id) as {identity:string}|undefined;
  if(source&&source.identity!==usageIdentity(getCodexEnvironment(id)))return {initialized:false,checked_at:null,error:null,partial:true,progress:null,timezone:'UTC',credit_rate_date:CREDIT_RATE_DATE,rows:[]};
+ const environment=getCodexEnvironment(id);
+ if(environment.kind==='provider'&&(!usageHome(environment)||providerHistoryIsShared(id,usageHome(environment))))return {initialized:false,checked_at:null,error:'历史目录与其他 Engine 共用或无法确认，未统计以避免重复',partial:true,progress:null,timezone:'UTC',credit_rate_date:CREDIT_RATE_DATE,rows:[]};
  const status=db.prepare('SELECT checked_at,error,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;error:string|null;partial:number}|undefined;
  const sums=tokenFields.map(k=>`CASE WHEN COUNT(json_extract(tokens,'$.${k}'))=COUNT(*) THEN SUM(json_extract(tokens,'$.${k}')) ELSE NULL END AS ${k}`).join(',');
  const rows=db.prepare(`SELECT day,cwd,${sums} FROM codex_usage_events WHERE account=? GROUP BY day,cwd ORDER BY day DESC,cwd LIMIT 5001`).all(id) as Array<Record<string,any>>;
  const estimates=new Map<string,{value:number;covered:number;requests:number}>();
  const models=new Map<string,Map<string,{model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number}}>>();
- const breakdown=db.prepare(`SELECT day,cwd,model,tier,SUM(COALESCE(json_extract(tokens,'$.requests'),1)) requests,${sums} FROM codex_usage_events WHERE account=? GROUP BY day,cwd,model,tier`).all(id) as Array<Record<string,any>>;
+ const counterColumns=tokenFields.map(k=>`json_extract(tokens,'$.${k}') AS ${k}`).join(',');
+ const breakdown=db.prepare(`SELECT day,cwd,model,tier,COALESCE(json_extract(tokens,'$.requests'),1) requests,${counterColumns} FROM codex_usage_events WHERE account=?`).all(id) as Array<Record<string,any>>;
  for(const row of breakdown){
   const key=JSON.stringify([row.day,row.cwd]),group=estimates.get(key)||{value:0,covered:0,requests:0};const value=estimateUsageCredits(row.model,row.tier,row);group.requests+=row.requests;if(value!==null){group.value+=value;group.covered+=row.requests;}estimates.set(key,group);
   const byModel=models.get(key)||new Map(),modelKey=JSON.stringify(row.model),model=byModel.get(modelKey)||{model:row.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0}};

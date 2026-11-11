@@ -11,6 +11,7 @@ import {findCodexRollout} from '../../prompt-context.js';
 import {checkAccountProject,accountCommand} from './account-transport.js';
 import {readEngineModelsForEnvironment} from './controls.js';
 import type {ModelPreference} from '../types.js';
+import {recordUsageImports,recordUsageFork} from './usage-provenance.js';
 
 /** Fork the full native rollout, never seed a lossy user/assistant summary.
  * The existing tab lifecycle supplies serialization, history snapshots and
@@ -49,12 +50,15 @@ export async function transferCodexEnvironment(sessionId:string,userId:string,ta
   if(!sandbox||!settings.approvalPolicy)throw Error('无法确认原会话权限，迁移尚未执行');
   if(sandbox==='read-only'&&settings.sandbox.networkAccess===true)throw Error('该只读会话包含自定义网络权限，暂不能完整复制权限配置，原会话保持不变');
   if(before.thread.historyMode==='paginated')paged=await preparePagedHistory(sourceId,source,targetId);
+  if(paged)recordUsageImports(targetId,paged.importedIds);
+  const forkBoundary=new Date().toISOString();
   const staged=paged?{path:paged.path,cleanup:async()=>{}}:await stageEnvironmentHistory(targetId,source);
   try {
    fresh=await runInCodexEngine(targetEngine,()=>withCodexConnection(async request=>{
     const fork=await request('thread/fork',{threadId:native,path:staged.path,model:choice.model,...choice.provider?{modelProvider:choice.provider}:{},cwd:context.projectPath,approvalPolicy:settings.approvalPolicy,sandbox,...settings.approvalsReviewer?{approvalsReviewer:settings.approvalsReviewer}:{},...preference.service_tier!==undefined?{serviceTier:preference.service_tier}:settings.serviceTier?{serviceTier:settings.serviceTier}:{},deferGoalContinuation:true,excludeTurns:true,...settings.runtimeWorkspaceRoots?{runtimeWorkspaceRoots:settings.runtimeWorkspaceRoots}:{},config:{model_reasoning_effort:preference.effort,...sandbox==='workspace-write'?{sandbox_workspace_write:{writable_roots:settings.sandbox.writableRoots||[],network_access:settings.sandbox.networkAccess===true,exclude_tmpdir_env_var:settings.sandbox.excludeTmpdirEnvVar===true,exclude_slash_tmp:settings.sandbox.excludeSlashTmp===true}}:{}}});
     const id=fork.thread?.id;if(typeof id!=='string'||id===native)throw Error('目标引擎未创建独立的历史副本');
     fresh=id;
+    recordUsageFork(targetId,id,forkBoundary);
     const verified=await request('thread/resume',{threadId:id,model:choice.model,excludeTurns:true});
     if(verified.thread?.id!==id||verified.thread?.status?.type==='notLoaded'||(verified.model||verified.thread?.model)!==choice.model)throw Error('目标会话恢复或模型验证失败，原会话保持不变');
     // Only generated import identities are archived. Their files remain as
