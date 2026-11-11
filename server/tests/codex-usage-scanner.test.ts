@@ -11,6 +11,16 @@ const record=(stamp:string,total:number,last:number)=>JSON.stringify({type:'even
 beforeEach(async()=>{home=await mkdtemp(join(tmpdir(),'codex-usage-test-'));await mkdir(join(home,'sessions'));file=join(home,'sessions','rollout-test.jsonl');});
 afterEach(async()=>{await rm(home,{recursive:true,force:true});});
 describe('account-scoped incremental JSONL scanner',()=>{
+ it('makes progress through a tool record larger than the read budget and keeps subsequent usage',async()=>{
+  const tool=JSON.stringify({type:'response_item',payload:{type:'function_call_output',output:'x'.repeat(18*1024*1024)}})+'\n';
+  await writeFile(file,meta+tool+record('2026-01-01T12:00:00Z',10,10));
+  const first=await scan();expect(first.partial).toBe(true);expect(first.changes[0][1].offset).toBeGreaterThan(1024*1024);expect(first.changes[0][1].skip_record).toBe(true);
+  const next=await scan(Object.fromEntries(first.changes));expect(next.events).toHaveLength(1);expect(next.events[0].tokens.total_tokens).toBe(10);expect(next.progress.files_complete).toBe(1);
+ });
+ it('keeps valid usage when the payload precedes the outer record type',async()=>{
+  const r=JSON.parse(record('2026-01-01T12:00:00Z',10,10));await writeFile(file,meta+JSON.stringify({payload:r.payload,timestamp:r.timestamp,type:r.type})+'\n');
+  const result=await scan();expect(result.events).toHaveLength(1);expect(result.events[0].tokens.total_tokens).toBe(10);
+ });
  it('extracts workdir from large modern metadata and does not flag oversized tool records as lost usage',async()=>{
   const header=JSON.stringify({type:'session_meta',payload:{cwd:'/large/project',base_instructions:{text:'x'.repeat(400000)}}})+'\n';
   const tool=JSON.stringify({type:'response_item',payload:{type:'function_call_output',output:'x'.repeat(300000)}})+'\n';
@@ -20,9 +30,11 @@ describe('account-scoped incremental JSONL scanner',()=>{
  it('resumes at complete lines and ignores duplicate snapshots',async()=>{
   await writeFile(file,meta+record('2026-01-01T12:00:00Z',100,100));
   const first=await scan();expect(first.events).toHaveLength(1);expect(first.events[0]).toMatchObject({cwd:'/project',tokens:{total_tokens:100}});
+  expect(first.progress.files_complete).toBe(1);expect(first.progress.files_total).toBe(1);expect(first.progress.bytes_read).toBe(first.progress.bytes_total);
   const cursors=Object.fromEntries(first.changes);expect((await scan(cursors)).events).toHaveLength(0);
   const next=record('2026-01-02T12:00:00Z',150,50);await appendFile(file,record('2026-01-01T12:01:00Z',100,100)+next.slice(0,-4));
   const partial=await scan(cursors);expect(partial.events).toHaveLength(0);expect(partial.partial).toBe(true);
+  expect(partial.progress.files_complete).toBe(0);expect(partial.progress.bytes_read).toBeLessThan(partial.progress.bytes_total);
   await appendFile(file,next.slice(-4));const final=await scan(Object.fromEntries(partial.changes));expect(final.events).toHaveLength(1);expect(final.events[0].tokens.total_tokens).toBe(50);
  });
  it('gives copied fork records the same identity and excludes cumulative baselines',async()=>{

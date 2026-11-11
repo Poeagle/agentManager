@@ -1,10 +1,10 @@
 /** Runs under the selected OS account. Only bounded metadata and counters leave
  * the process; prompts, tool arguments and authentication files are never read. */
 export const USAGE_SCAN = String.raw`
-import os,sys,json,pathlib,time,hashlib
+import os,sys,json,pathlib,time,hashlib,re
 o=json.load(sys.stdin); home=pathlib.Path(o.get('home') or str(pathlib.Path.home()/'.codex')).resolve()
 cursors=o.get('cursors',{}); changes=[]; events=[]; budget=16*1024*1024; partial=False; errors=0; directories=0
-roots=[home/'sessions',home/'archived_sessions']; paths=[]
+roots=[home/'sessions',home/'archived_sessions']; paths=[]; sizes={}
 for root in roots:
  if not root.exists():continue
  for directory,dirs,files in os.walk(root,followlinks=False):
@@ -17,7 +17,8 @@ for root in roots:
 # Unvisited recent files first, then least recently visited. Current work is
 # visible during bootstrap without starving older history on later passes.
 def priority(p):
- try:modified=p.stat().st_mtime
+ try:
+  st=p.stat();modified=st.st_mtime;sizes[str(p)]=st.st_size
  except OSError:modified=0
  return (cursors.get(str(p),{}).get('visited',0),-modified,str(p))
 paths.sort(key=priority)
@@ -55,14 +56,24 @@ for path in paths:
    f.seek(state['offset']); count=0
    while f.tell()<s.st_size and budget>0 and count<5000 and len(events)<1000:
     start=f.tell(); line=f.readline(262145); budget-=len(line);count+=1
+    if state.get('skip_record'):
+     state['offset']=f.tell()
+     if line.endswith(b'\n'):state.pop('skip_record',None)
+     continue
     if len(line)>262144:
      # Skip oversized records without retaining their contents.
      if b'"token_count"' in line[:512]:errors+=1;state['incomplete']=True
      while line and not line.endswith(b'\n') and budget>0:line=f.readline(262145);budget-=len(line)
-     if not line.endswith(b'\n'):f.seek(start);partial=True;break
+     if not line.endswith(b'\n'):
+      state['skip_record']=True;state['offset']=f.tell();partial=True;break
      state['offset']=f.tell();continue
     if not line.endswith(b'\n'):f.seek(start);partial=True;break
     state['offset']=f.tell()
+    # Native response_item records are messages/tool I/O, never token events.
+    # Check only the first type field; unfamiliar or reordered records still
+    # take the full parser path, avoiding reliance on counter-field ordering.
+    first_type=re.search(rb'"type"\s*:\s*"([^"\\]+)"',line[:1024])
+    if first_type and first_type[1] in [b'response_item',b'function_call_output',b'agent_message',b'task_started',b'task_complete']:continue
     try:r=json.loads(line)
     except Exception:errors+=1;state['incomplete']=True;continue
     p=r.get('payload') or {}; kind=r.get('type')
@@ -88,5 +99,9 @@ for path in paths:
    state['mtime']=str(s.st_mtime_ns)
    changes.append([str(path),state])
  except (OSError,ValueError,TypeError):errors+=1
-print(json.dumps({'changes':changes,'events':events,'partial':partial,'errors':errors},separators=(',',':')))
+latest=dict(cursors);latest.update(dict(changes))
+complete=sum(1 for p,size in sizes.items() if latest.get(p,{}).get('offset',0)>=size and not latest.get(p,{}).get('skip_record'))
+read=sum(min(size,latest.get(p,{}).get('offset',0)) for p,size in sizes.items())
+progress={'files_total':len(paths),'files_complete':complete,'bytes_total':sum(sizes.values()),'bytes_read':read}
+print(json.dumps({'changes':changes,'events':events,'partial':partial,'errors':errors,'progress':progress},separators=(',',':')))
 `;
