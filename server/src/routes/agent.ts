@@ -738,6 +738,17 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   });
   app.get<{Params:{agent:string}}>('/agent/providers/:agent/quota',async(req,reply)=>{if(!isAdmin(req.user!.id))return reply.code(403).send({error:'无权读取主机账号额度'});return sendAgentQuota(reply,()=>getAgent(req.params.agent).quota.read());});
 
+  app.get<{Params:{id:string};Querystring:{refresh?:string}}>('/sessions/:id/context-breakdown',async(req,reply)=>{
+    const session=getSession(req.params.id);
+    if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
+    if(!requirePermission(req,reply,'agent_api','read'))return;
+    if(req.query.refresh!==undefined&&req.query.refresh!=='true')return reply.code(400).send({error:'Invalid refresh flag'});
+    const adapter=agentForSession(session),context=sessionAgentContext(session,{actorUserId:req.user!.id,force:req.query.refresh==='true'});
+    if(!context.nativeId||!adapter.telemetry.contextBreakdown)return reply.code(409).send({error:'当前会话不支持上下文分类统计'});
+    reply.header('Cache-Control','private, no-store');
+    try{return {context:await adapter.telemetry.contextBreakdown(context)};}
+    catch(error){return reply.code(Number((error as {statusCode?:number}).statusCode)||503).send({error:error instanceof Error?error.message:'上下文分类暂不可用'});}
+  });
   app.get<{Params:{id:string};Querystring:{refresh?:string}}>('/sessions/:id/controls',async(req,reply)=>{
     const session=getSession(req.params.id);
     if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});

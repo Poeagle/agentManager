@@ -685,6 +685,7 @@ export const api = {
   agent: {
     cancelQueuedInput:(sessionId:string,clientId:string)=>fetchJSON<{ok:boolean}>(`/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(clientId)}`,{method:'DELETE'}),
     controls:(sessionId:string,refresh=false)=>fetchJSON<ConversationControlsData>(`/sessions/${encodeURIComponent(sessionId)}/controls${refresh?'?refresh=true':''}`),
+    contextBreakdown:(sessionId:string,refresh=false,signal?:AbortSignal)=>fetchJSON<{context:ConversationContextBreakdown}>(`/sessions/${encodeURIComponent(sessionId)}/context-breakdown${refresh?'?refresh=true':''}`,{signal}),
     setControls:(sessionId:string,value:AgentModelPreference|null)=>fetchJSON<{ok:boolean;pending:AgentModelPreference|null;pending_status?:'saved'|'submitted'|null;model?:string;effort?:string;provider?:string;service_tier?:string}>(`/sessions/${encodeURIComponent(sessionId)}/controls`,{method:'PUT',body:JSON.stringify(value)}),
     conversation:(sessionId:string,query:{after?:string;before?:string}={},signal?:AbortSignal)=>fetchJSON<ConversationPage>(`/sessions/${encodeURIComponent(sessionId)}/conversation?${new URLSearchParams(query)}`,{signal}),
     sendInput:(sessionId:string,input:string,clientId?:string,attachments?:ConversationAttachment[])=>fetchJSON<{status:string}>(`/sessions/${encodeURIComponent(sessionId)}/input`,{method:'POST',body:JSON.stringify({input,source:'conversation',client_id:clientId,attachments})}),
@@ -1291,6 +1292,12 @@ export interface ConversationInterval {tokens:Record<string,number|null>|null;re
 export interface ConversationConclusion extends ConversationInterval {start_at:string|null;end_at:string|null;elapsed_ms:number|null}
 export interface ConversationStatistics {sequence:number;message_id?:string;turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;interval?:ConversationInterval;conclusion?:ConversationConclusion}
 export interface ConversationMessage {statistics?:ConversationStatistics;id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';content_blocks?:Array<{type:'text';index:number;text:string}|{type:'tool_use';index:number;id:string;name:string;input:unknown;status:'running'|'completed'|'failed';result?:string;is_error?:boolean}>;presentation?:'compaction_summary';compaction?:{before_tokens:number|null;after_tokens:number|null;duration_ms:number|null};error?:{code?:string;will_retry:boolean};client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
+export interface ConversationContextBreakdown {
+ source:'jsonl';exact:false;method:'characters_div_3';checked_at:string;observed_at:string|null;model:string|null;
+ usage:ConversationControlsData['usage'];partial:boolean;warnings:string[];
+ files_read:number;records_read:number;bytes_read:number;compactions:number;
+ categories:Array<{id:string;name:string;tokens:number|null;count:number;detail:Array<{name:string;tokens:number;count:number}>}>;
+}
 export interface ConversationUsageUpdate {native_id:string;usage:NonNullable<ConversationControlsData['usage']>;observed_at:string}
 export interface CodexEnvironment {id:string;name:string;kind:'native'|'provider'|'account';provider?:string;enabled:boolean;allowed_user_ids:string[]|null;can_control?:boolean;connection?:{username:string;port:number;identityFile:string;codexCommand:string;codexHome:string;authMethod?:'key'|'password';password?:string;passwordConfigured?:boolean}}
 export interface ProviderUsageTab {id:string;user_id:string|null;username:string;project_id:string|null;project_name:string;name:string;status:string;native_id:string|null;model:string|null;busy:boolean|null}

@@ -556,10 +556,18 @@ export interface AgentControlsPort {
   ): Promise<AgentControlResult>;
 }
 export interface AgentTelemetryPort {
+  contextBreakdown?(context:AgentContext):Promise<AgentContextBreakdown>;
   read(context: AgentContext): Promise<{
     usage: AgentControls["usage"];
     observed_at: string | null;
   }>;
+}
+/** Native occupancy and estimated text categories have distinct denominators. */
+export interface AgentContextBreakdown {
+  source:'jsonl';exact:false;method:'characters_div_3';checked_at:string;
+  observed_at:string|null;model:string|null;usage:AgentControls['usage'];
+  partial:boolean;warnings:string[];files_read:number;records_read:number;bytes_read:number;compactions:number;
+  categories:Array<{id:string;name:string;tokens:number|null;count:number;detail:Array<{name:string;tokens:number;count:number}>}>;
 }
 export interface AgentStatisticsPort {
   read(context: AgentContext, path: string): Promise<AgentStatistics[]>;

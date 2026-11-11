@@ -43,6 +43,15 @@ const get=()=>app.inject({url:'/api/sessions/s/controls',headers:{cookie}});
 const set=(value:any)=>app.inject({method:'PUT',url:'/api/sessions/s/controls',headers:{cookie,'content-type':'application/json'},payload:JSON.stringify(value)});
 const send=()=>app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{input:'继续',source:'conversation'}});
 describe('native conversation controls',()=>{
+ it('reads context category counters without submitting or resuming a model turn',async()=>{
+  const response=await app.inject({url:'/api/sessions/s/context-breakdown',headers:{cookie}});expect(response.statusCode).toBe(200);expect(response.json()).toMatchObject({context:{source:'jsonl',exact:false,usage:{last:{total_tokens:12000}}}});expect(response.body).not.toContain('PRIVATE');expect(methods).not.toContain('thread/resume');expect(methods).not.toContain('turn/start');expect(methods).not.toContain('model/list');expect(methods).not.toContain('account/rateLimits/read');
+ });
+ it('protects context statistics with session permissions and validates refresh flags',async()=>{
+  const other=createUser({username:'context-member',password:'password1'}),otherCookie='agentmanager_session='+createSession(other.id);
+  expect((await app.inject({url:'/api/sessions/s/context-breakdown',headers:{cookie:otherCookie}})).statusCode).toBe(404);
+  expect((await app.inject({url:'/api/sessions/missing/context-breakdown',headers:{cookie}})).statusCode).toBe(404);
+  expect((await app.inject({url:'/api/sessions/s/context-breakdown?refresh=false',headers:{cookie}})).statusCode).toBe(400);
+ });
  it('keeps external model and quota reads cached for five minutes while local counters can change immediately',async()=>{
   let now=Date.now();vi.spyOn(Date,'now').mockImplementation(()=>now);
   await get();methods=[];now+=120000;
