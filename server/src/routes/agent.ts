@@ -30,7 +30,7 @@ import {readConversation} from '../services/conversation-reader.js';
 import {config} from '../config.js';
 
 import {personalQuestionRuntime} from '../services/question-attention.js';
-import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,validateConversationAttachments,validateConversationAnswerAttachments} from '../services/conversation-attachments.js';
+import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,nativeConversationInput,validateConversationAttachments,validateConversationAnswerAttachments} from '../services/conversation-attachments.js';
 import {observeConversationFile} from '../services/conversation-file-stream.js';
 import {ConversationRetryManager} from '../services/conversation-retry.js';
 import {ConversationProjection} from '../services/conversation-projection.js';
@@ -819,9 +819,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       const session=getSession(id);
       if(req.body?.source==='conversation'&&session&&nativeConversationId(session)) {
         if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,true);
-        if(typeof clientId==='string'&&!attachments.length){
+        if(typeof clientId==='string'){
           const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
-          const visible=conversationQuestionReply(input)?.text??input;
+          const raw=nativeConversationInput(input,attachments)[0].text,visible=conversationQuestionReply(raw)?.text??raw;
           await rememberConversationInput(id,{...session,cli_type:session.cli_type||'claude',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},clientId,visible).catch(()=>{});
         }
         const adapter=agentForSession(session),native=await adapter.input.submit(sessionAgentContext(session),input,typeof clientId==='string'?clientId:attachments.length?attachmentClientId:undefined,attachments);
