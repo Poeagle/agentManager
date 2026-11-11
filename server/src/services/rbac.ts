@@ -80,7 +80,8 @@ export function userHasPermission(userId: string, permission: PermissionKey, lev
 }
 
 export function requirePermission(req: FastifyRequest, reply: FastifyReply, permission: PermissionKey, level: PermissionLevel = 'read'): boolean {
-  if (req.user && userHasPermission(req.user.id, permission, level)) return true;
+  const keyLevel=req.apiKeyGrants?.[permission];
+  if (req.user && (!req.apiKeyGrants || (keyLevel && RANK[keyLevel]>=RANK[level])) && userHasPermission(req.user.id, permission, level)) return true;
   reply.code(403).send({ error: '权限不足', permission, required: level });
   return false;
 }

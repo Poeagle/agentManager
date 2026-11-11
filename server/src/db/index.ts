@@ -6,7 +6,7 @@ import {migrateRbac} from '../services/rbac.js';
 import {migratePlatformAi} from '../services/platform-ai/schema.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 23;
+const SCHEMA_VERSION = 24;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -163,6 +163,18 @@ function createCurrentSchema(): void {
       session_kind TEXT NOT NULL DEFAULT 'browser',
       last_heartbeat_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      grants TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_used_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
 
     CREATE TABLE IF NOT EXISTS agent_queued_inputs (
       agent_id TEXT NOT NULL, scope_key TEXT NOT NULL, native_id TEXT NOT NULL,
