@@ -8,7 +8,7 @@ import {canControlEnvironment} from '../environment-access.js';
 import {runInCodexEngine,inCodexThread,engineForThread,currentCodexEngine} from './engine-context.js';
 import {retryableConversationError} from '../../conversation-retry.js';
 import { unlinkSync } from 'fs';
-import { codexBindingFile } from './identity.js';
+import { codexBindingFile, purgeCodexHistory } from './identity.js';
 import { discoverCodexTerminal } from './terminal.js';
 import { ingestAllCodexSessionBindings, backfillLegacyCodexSessionIds } from './binding.js';
 import { extractCodexPromptContext } from './prompt-context.js';
@@ -24,7 +24,7 @@ import {codexManagement} from './management.js';
 import {applyManagedCommandDefaults} from '../management-store.js';
 export const codexAdapter: AgentAdapter = {
     descriptor: { launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) },
-    identity: { read: session => session.codex_session_id ?? null, legacyField: 'codex_session_id', purge: context => { if (context.session.id)
+    identity: { read: session => session.codex_session_id ?? null, legacyField: 'codex_session_id', purgeHistory: purgeCodexHistory, purge: context => { if (context.session.id)
             try {
                 unlinkSync(codexBindingFile(context.session.id));
             }

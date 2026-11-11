@@ -702,6 +702,8 @@ export interface AgentIdentityPort {
   captureTerminal?(context: AgentContext): void;
   recover?(): void;
   purge?(context: AgentContext): void;
+  /** Delete the adapter-owned durable conversation source before purging the platform row. */
+  purgeHistory?(context: AgentContext): Promise<void>;
 }
 /** Resolved ports used by the platform. Unsupported optional operations have
  * one shared implementation that reports an explicit capability error. */
