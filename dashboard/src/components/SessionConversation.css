@@ -396,6 +396,7 @@
 .conversation-toolbar .conversation-control-select {padding-right:6px;}
 .conversation-toolbar .conversation-control-select>span {font-size:11px;}
 .conversation-toolbar .conversation-control-select select {border:0;max-width:170px;padding:2px 16px 2px 0;line-height:20px;}
+.conversation-toolbar .conversation-control-model select {max-width:min(280px,35vw);}
 .conversation-toolbar .conversation-control-select>svg {right:6px;color:var(--text-muted);}
 .conversation-toolbar>button {color:var(--text-secondary);font-weight:500;}
 .conversation-toolbar .conversation-control-select:hover,
@@ -409,3 +410,4 @@
 .conversation-toolbar .conversation-control-context {border-color:transparent;background:transparent;font-size:11px;color:var(--text-muted);}
 .conversation-toolbar .conversation-control-context i {width:28px;}
 @media(max-width:700px){.session-chat-controls-slot,.conversation-toolbar {display:contents;}.conversation-toolbar .conversation-control-select select {max-width:135px;}}
+@media(max-width:700px){.conversation-toolbar .conversation-control-model select {max-width:min(220px,45vw);}}

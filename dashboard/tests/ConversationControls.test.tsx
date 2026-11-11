@@ -10,6 +10,11 @@ beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}})
 afterEach(()=>client.clear());
 const mount=()=>render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active/></QueryClientProvider>);
 describe('compact conversation controls',()=>{
+ it('removes the provider prefix only for API engines while retaining account labels',async()=>{
+  data={...data,provider:'provider-a',models:[{...data.models[0],provider:'provider-a',name:'DeepSeek V4.1 Flash'},{...data.models[1],provider:'provider-b'}]};
+  vi.mocked(api.codexEnvironments.forSession).mockResolvedValueOnce({current:'provider:provider-a',environments:[{id:'provider:provider-a',name:'API',kind:'provider',provider:'provider-a',auth_mode:'api',enabled:true,allowed_user_ids:null,can_control:true},{id:'provider:provider-b',name:'Account',kind:'provider',provider:'provider-b',auth_mode:'account',enabled:true,allowed_user_ids:null,can_control:true}]});
+  mount();const model=await screen.findByRole('combobox',{name:'选择模型'});await waitFor(()=>expect(within(model).getByRole('option',{name:'DeepSeek V4.1 Flash'})).toBeVisible());expect(within(model).getByRole('option',{name:'provider-b · Model B'})).toBeVisible();expect(model).toHaveAttribute('title',expect.stringContaining('DeepSeek V4.1 Flash'));
+ });
  it('reads context categories only after clicking the usage indicator without reloading controls',async()=>{
   vi.mocked(api.agent.contextBreakdown).mockReset().mockResolvedValue({context:{source:'jsonl',exact:false,method:'characters_div_3',checked_at:'2026-11-11T12:00:00Z',observed_at:null,model:'model-a',usage:null,partial:false,warnings:[],files_read:1,records_read:1,bytes_read:100,compactions:0,categories:[{id:'user',name:'用户消息',tokens:100,count:1,detail:[]}]}});
   mount();await screen.findByText('上下文 30%');expect(api.agent.contextBreakdown).not.toHaveBeenCalled();const calls=vi.mocked(api.agent.controls).mock.calls.length;
