@@ -37,9 +37,9 @@ describe('account-scoped complete-file scanner',()=>{
   const result=await scan();expect(result.rows).toHaveLength(1);expect(result.rows[0]).toMatchObject({requests:1,tokens:{total_tokens:50}});
  });
  it('returns stable bounded request fingerprints for cross-engine deduplication',async()=>{
-  const body=meta+context+record('2026-01-02T12:00:00Z',5000,50);await writeFile(file,body);await writeFile(join(home,'sessions','copy.jsonl'),body);
+  const body=JSON.stringify({type:'session_meta',payload:{cwd:'/project',model_provider:'fixture-provider'}})+'\n'+context+record('2026-01-02T12:00:00Z',5000,50);await writeFile(file,body);await writeFile(join(home,'sessions','copy.jsonl'),body);
   const first=await scan('full','2026-01-02',true),second=await scan('full','2026-01-02',true);
-  expect(first.events).toHaveLength(1);expect(first.events[0]).toMatchObject({key:expect.stringMatching(/^[a-f0-9]{64}$/),day:'2026-01-02',tokens:{total_tokens:50}});expect(first.events).toEqual(second.events);expect(first.events_truncated).toBe(false);
+  expect(first.events).toHaveLength(1);expect(first.events[0]).toMatchObject({key:expect.stringMatching(/^[a-f0-9]{64}$/),day:'2026-01-02',provider:'fixture-provider',tokens:{total_tokens:50}});expect(first.events).toEqual(second.events);expect(first.events_truncated).toBe(false);
  });
  it('handles UTC timestamp boundaries and a reordered outer type without assuming local timezone',async()=>{
   const r=JSON.parse(record('2026-01-03T00:30:00+08:00',10,10));await writeFile(file,meta+JSON.stringify({payload:r.payload,timestamp:r.timestamp,type:r.type})+'\n');

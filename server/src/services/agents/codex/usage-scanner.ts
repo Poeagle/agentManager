@@ -30,7 +30,7 @@ for root in roots:
 fields=['input_tokens','cached_input_tokens','output_tokens','reasoning_output_tokens','total_tokens']
 groups={};seen=set();read=0;events=[];events_truncated=False
 for path,size in paths:
- cwd=None;model=None;tier=None;previous=None
+ cwd=None;model=None;tier=None;provider=None;previous=None
  # One bounded line at a time. Modern metadata may be up to 4 MiB;
  # oversized message/tool records are discarded in 256 KiB chunks.
  with path.open('rb') as f:
@@ -52,6 +52,7 @@ for path,size in paths:
     if kind in ['session_meta','turn_context']:
      if isinstance(p.get('cwd'),str):cwd=p['cwd'][:4096]
      if isinstance(p.get('model'),str):model=p['model'][:120]
+     if isinstance(p.get('model_provider'),str):provider=p['model_provider'][:120]
      if 'service_tier' in p:tier=p['service_tier'][:120] if isinstance(p['service_tier'],str) else None
     if kind!='event_msg' or p.get('type')!='token_count' or not p.get('info'):continue
     info=p['info'];total=info.get('total_token_usage') or {};last=info.get('last_token_usage') or {};stamp=r.get('timestamp')
@@ -71,7 +72,7 @@ for path,size in paths:
     if key in seen:continue
     seen.add(key)
     if o.get('includeEvents'):
-     if len(events)<50000:events.append({'key':key.hex(),'day':event_day,'cwd':cwd or '', 'model':model,'tier':tier,'tokens':tokens})
+     if len(events)<50000:events.append({'key':key.hex(),'day':event_day,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
      else:events_truncated=True
     if len(seen)>2000000:raise RuntimeError('usage event limit exceeded')
     group_key=(event_day,cwd or '',model,tier)

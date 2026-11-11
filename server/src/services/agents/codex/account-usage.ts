@@ -6,7 +6,8 @@ import {USAGE_SCAN} from './usage-scanner.js';
 import {tokenFields} from '../../conversation-usage.js';
 import {CREDIT_RATE_DATE,estimateUsageCredits} from './usage-credits.js';
 import {realpathSync} from 'fs';
-import {resolve} from 'path';
+import {resolve,join} from 'path';
+import {homedir,userInfo} from 'os';
 import {readAgentManagement} from '../management-store.js';
 import {externalProviderCodexHome} from './management.js';
 import {cachedEngineBalance} from './engine-balance.js';
@@ -31,7 +32,7 @@ export function initAccountUsage(){getDb().exec(`
  CREATE TABLE IF NOT EXISTS codex_usage_status(account TEXT PRIMARY KEY,checked_at TEXT,error TEXT,partial INTEGER NOT NULL DEFAULT 1);
  CREATE TABLE IF NOT EXISTS codex_usage_sources(account TEXT PRIMARY KEY,identity TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS codex_usage_progress(account TEXT PRIMARY KEY,data TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS codex_usage_dedup_events(account TEXT NOT NULL,event_key TEXT NOT NULL,day TEXT NOT NULL,cwd TEXT NOT NULL,model TEXT,tier TEXT,tokens TEXT NOT NULL,PRIMARY KEY(account,event_key));
+ CREATE TABLE IF NOT EXISTS codex_usage_dedup_events(account TEXT NOT NULL,event_key TEXT NOT NULL,day TEXT NOT NULL,cwd TEXT NOT NULL,model TEXT,tier TEXT,provider TEXT,tokens TEXT NOT NULL,PRIMARY KEY(account,event_key));
  CREATE TABLE IF NOT EXISTS codex_usage_dedup_status(account TEXT PRIMARY KEY,ready INTEGER NOT NULL);
 `);}
 export async function collectAccountUsage(id:string):Promise<void>{
@@ -58,7 +59,7 @@ export async function collectAccountUsage(id:string):Promise<void>{
    for(const row of result.rows){
     if(!/^\d{4}-\d{2}-\d{2}$/.test(row.day)||mode==='daily'&&row.day!==day||typeof row.cwd!=='string'||row.cwd.length>4096||!Number.isSafeInteger(row.requests)||row.requests<1||!row.tokens||tokenFields.some(k=>row.tokens[k]!==null&&(!Number.isFinite(row.tokens[k])||row.tokens[k]<0)))throw Error('Invalid usage row');
    }
-   if(!Array.isArray(result.events)||result.events.length>50000||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||mode==='daily'&&event.day!==day||typeof event.cwd!=='string'||event.cwd.length>4096||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
+   if(!Array.isArray(result.events)||result.events.length>50000||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||mode==='daily'&&event.day!==day||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
    const current=getCodexEnvironment(id);if(!current.enabled||usageIdentity(current)!==identity)return;
    db.transaction(()=>{
     // Publish one complete snapshot: historical days remain untouched on daily scans.
@@ -68,8 +69,8 @@ export async function collectAccountUsage(id:string):Promise<void>{
     for(const row of result.rows)insert.run(id,JSON.stringify([row.day,row.cwd,row.model,row.tier]),row.day,row.cwd,row.model||null,row.tier||null,JSON.stringify({...row.tokens,requests:row.requests}));
     if(mode==='full')db.prepare('DELETE FROM codex_usage_dedup_events WHERE account=?').run(id);
     else db.prepare('DELETE FROM codex_usage_dedup_events WHERE account=? AND day=?').run(id,day);
-    const eventInsert=db.prepare('INSERT OR REPLACE INTO codex_usage_dedup_events VALUES(?,?,?,?,?,?,?)');
-    for(const event of result.events)eventInsert.run(id,event.key,event.day,event.cwd,event.model||null,event.tier||null,JSON.stringify(event.tokens));
+    const eventInsert=db.prepare('INSERT OR REPLACE INTO codex_usage_dedup_events VALUES(?,?,?,?,?,?,?,?)');
+    for(const event of result.events)eventInsert.run(id,event.key,event.day,event.cwd,event.model||null,event.tier||null,event.provider||null,JSON.stringify(event.tokens));
     db.prepare('INSERT OR REPLACE INTO codex_usage_dedup_status VALUES(?,?)').run(id,!result.events_truncated&&(mode==='full'||dedupStatus?.ready===1)?1:0);
     db.prepare('INSERT OR REPLACE INTO codex_usage_snapshots VALUES(?,1)').run(id);
     db.prepare('INSERT OR REPLACE INTO codex_usage_status VALUES(?,?,?,?)').run(id,new Date().toISOString(),result.errors?'部分记录不可读取或缺少统计字段':null,result.partial||result.errors?1:0);
@@ -108,14 +109,21 @@ export function cachedAccountUsage(id:string){
 /** Combine per-request snapshots using their content fingerprints. Conflicting
  * copies are excluded and marked partial rather than counted twice. */
 export function cachedGroupUsage(ids:string[]){
- const db=getDb(),events=new Map<string,{day:string;cwd:string;model:string|null;tier:string|null;tokens:string}|null>();let partial=false;const checked:string[]=[];
+ const db=getDb(),events=new Map<string,{day:string;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string}|null>();let partial=false;const checked:string[]=[];
+ const all=allCodexEnvironments().filter(e=>e.enabled);
+ const canonical=(path:string)=>{try{return realpathSync(path);}catch{return resolve(path);}};
+ const homeFor=(e:ReturnType<typeof getCodexEnvironment>)=>e.kind==='account'?(e.connection?.codexHome||((e.connection?.username===userInfo().username)?join(homedir(),'.codex'):'')):usageHome(e);
  for(const id of ids){
+  const environment=getCodexEnvironment(id),home=homeFor(environment),group=balanceGroup(id),providerId=cachedEngineBalance(id).providerId;
+  if(!providerId){partial=true;continue;}
+  if(!home||all.some(other=>{const otherHome=homeFor(other);return other.id!==id&&!!otherHome&&canonical(otherHome)===canonical(home)&&(!group||balanceGroup(other.id)!==group);})){partial=true;continue;}
   const snapshot=cachedAccountUsage(id);
   const ready=db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
   if(!snapshot.initialized||!ready?.ready){partial=true;continue;}if(snapshot.partial)partial=true;if(snapshot.checked_at)checked.push(snapshot.checked_at);
-  const rows=db.prepare('SELECT event_key,day,cwd,model,tier,tokens FROM codex_usage_dedup_events WHERE account=? LIMIT 50001').all(id) as Array<{event_key:string;day:string;cwd:string;model:string|null;tier:string|null;tokens:string}>;
+  const rows=db.prepare('SELECT event_key,day,cwd,model,tier,provider,tokens FROM codex_usage_dedup_events WHERE account=? LIMIT 50001').all(id) as Array<{event_key:string;day:string;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string}>;
   if(rows.length>50000){partial=true;continue;}
   for(const {event_key,...event} of rows){
+   if(!event.provider){partial=true;continue;}if(event.provider!==providerId)continue;
    if(!events.has(event_key))events.set(event_key,event);
    else if(JSON.stringify(events.get(event_key))!==JSON.stringify(event)){events.set(event_key,null);partial=true;}
    if(events.size>200000)return {partial:true,error:'统计记录过多，无法安全合并',rows:[]};

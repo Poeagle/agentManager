@@ -12,7 +12,7 @@ import {providerApiKey} from './management.js';
 import {readWallet,type BalanceFailure} from './balance-protocol.js';
 
 type AuthMode='account'|'api';
-type Cached={auth_mode:AuthMode|null;groupKey?:string;origin?:string;status:'available'|'unavailable'|'unsupported'|'stale';amount?:number;currency?:string;mode?:string|null;todayActualCost?:number|null;todayRequests?:number|null;totalActualCost?:number|null;checkedAt?:string|null;error?:BalanceFailure|'auth_unknown'};
+type Cached={auth_mode:AuthMode|null;providerId?:string;groupKey?:string;origin?:string;status:'available'|'unavailable'|'unsupported'|'stale';amount?:number;currency?:string;mode?:string|null;todayActualCost?:number|null;todayRequests?:number|null;totalActualCost?:number|null;checkedAt?:string|null;error?:BalanceFailure|'auth_unknown'};
 const pending=new Map<string,Promise<void>>();
 let timer:ReturnType<typeof setTimeout>|undefined,stopped=true;
 function sourceIdentity(id:string):string {
@@ -32,30 +32,31 @@ try:
  provider=config.get('model_providers',{}).get(config.get('model_provider',''),{})
  auth=json.loads((home/'auth.json').read_text()) if (home/'auth.json').exists() else {}
  envkey=provider.get('env_key','')
- print(json.dumps({'base':provider.get('base_url',''),'key':os.environ.get(envkey,'') or auth.get('OPENAI_API_KEY',''),'envkey':envkey}))
+ print(json.dumps({'base':provider.get('base_url',''),'provider':config.get('model_provider',''),'key':os.environ.get(envkey,'') or auth.get('OPENAI_API_KEY',''),'envkey':envkey}))
 except Exception: print('{}')`;
-async function apiConfig(id:string):Promise<{base:string;key:string}>{
+async function apiConfig(id:string):Promise<{base:string;key:string;providerId:string}>{
  const e=getCodexEnvironment(id);
  if(e.kind==='provider'){
   const p=readAgentManagement('codex').providers.find(p=>p.id===e.provider);
   const env=typeof p?.fields.envKey==='string'?p.fields.envKey:'';
-  return {base:typeof p?.fields.baseUrl==='string'?p.fields.baseUrl:'',key:providerApiKey(e.provider!)||(env?process.env[env]||'':'')};
+  return {base:typeof p?.fields.baseUrl==='string'?p.fields.baseUrl:'',providerId:e.provider||'',key:providerApiKey(e.provider!)||(env?process.env[env]||'':'')};
  }
  const home=e.connection?.codexHome||'';
  const input=JSON.stringify({home});
  const raw=e.kind==='account'?await accountCommandInput(environmentConnection(e),script,input):await localCommandInput(script,input);
- const result=JSON.parse(raw) as {base?:unknown;key?:unknown;envkey?:unknown};
+ const result=JSON.parse(raw) as {base?:unknown;key?:unknown;envkey?:unknown;provider?:unknown};
  const env=e.kind==='native'&&typeof result.envkey==='string'?process.env[result.envkey]||'':'';
- return {base:typeof result.base==='string'?result.base:'',key:env||(typeof result.key==='string'?result.key:'')};
+ return {base:typeof result.base==='string'?result.base:'',providerId:typeof result.provider==='string'?result.provider:'',key:env||(typeof result.key==='string'?result.key:'')};
 }
 export async function collectEngineBalance(id:string):Promise<void>{
  if(pending.has(id))return pending.get(id)!;
  const task=(async()=>{
   const e=getCodexEnvironment(id);if(!e.enabled)return;const sourceKey=sourceIdentity(id);
-  let auth:AuthMode|null=null;
+  let auth:AuthMode|null=null,runtimeProviderId:string|null=null;
   try{
    const {result,config}=await runInCodexEngine(await engineForEnvironment(id),()=>withCodexConnection(async request=>({result:await request('account/read',{}),config:await request('config/read',{}).catch(()=>null)})));
    const settings=config?.config as Record<string,any>|undefined,provider=settings?.model_providers?.[settings?.model_provider];
+   if(typeof settings?.model_provider==='string'&&settings.model_provider)runtimeProviderId=settings.model_provider;
    if(provider&&(typeof provider.env_key==='string'&&provider.env_key||provider.requires_openai_auth===false)||result.account?.type==='apiKey'||!result.account&&result.requiresOpenaiAuth===false)auth='api';
    else if(result.account?.type==='chatgpt'||result.account?.type==='chatgptAuthTokens')auth='account';
   }catch{/* Keep unknown separate from both authentication modes. */}
@@ -66,7 +67,8 @@ export async function collectEngineBalance(id:string):Promise<void>{
    else getDb().prepare('INSERT OR REPLACE INTO codex_engine_balance VALUES(?,?,?)').run(id,sourceKey,JSON.stringify(current.auth_mode?{...current,status:current.amount!==undefined?'stale':'unavailable',error:'auth_unknown'}:{auth_mode:null,status:'unavailable',error:'auth_unknown'}));
    return;
   }
-  let cfg:{base:string;key:string};try{cfg=await apiConfig(id);}catch{cfg={base:'',key:''};}
+  let cfg:{base:string;key:string;providerId:string};try{cfg=await apiConfig(id);}catch{cfg={base:'',key:'',providerId:''};}
+  if(runtimeProviderId&&cfg.providerId&&runtimeProviderId!==cfg.providerId)cfg={base:'',key:'',providerId:runtimeProviderId};
   const identity=sourceKey;
   const row=getDb().prepare('SELECT identity,data FROM codex_engine_balance WHERE id=?').get(id) as {identity:string;data:string}|undefined;
   const previous:Cached|undefined=row?.identity===identity?JSON.parse(row.data):undefined;
@@ -74,9 +76,9 @@ export async function collectEngineBalance(id:string):Promise<void>{
   let groupKey:string|undefined,origin:string|undefined;
   try{const url=new URL(cfg.base);origin=url.origin;const path=url.pathname.replace(/\/+$/,'').replace(/\/v1$/,'');groupKey=createHash('sha256').update(origin+path).digest('hex');}catch{/* No valid upstream URL. */}
   let next:Cached;
-  if(result.status==='available')next={auth_mode:'api',groupKey,origin,...result,checkedAt:new Date().toISOString()};
+  if(result.status==='available')next={auth_mode:'api',providerId:cfg.providerId,groupKey,origin,...result,checkedAt:new Date().toISOString()};
   else if(previous?.amount!==undefined)next={...previous,status:'stale',error:result.error};
-  else next={auth_mode:'api',groupKey,origin,...result};
+  else next={auth_mode:'api',providerId:cfg.providerId,groupKey,origin,...result};
   if(getCodexEnvironment(id).enabled&&sourceIdentity(id)===sourceKey)getDb().prepare('INSERT OR REPLACE INTO codex_engine_balance VALUES(?,?,?)').run(id,identity,JSON.stringify(next));
  })();pending.set(id,task);try{await task;}finally{pending.delete(id);}
 }

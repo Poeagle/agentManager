@@ -40,7 +40,7 @@ describe('engine balance snapshots',()=>{
   await collectEngineBalance('native');expect(cachedEngineBalance('native')).toMatchObject({auth_mode:'api',status:'available',amount:12});
  });
  it('uses the active runtime provider authentication even when an OAuth account also exists',async()=>{
-  vi.mocked(stream.withCodexConnection).mockImplementation(async callback=>callback(vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt'}}:{config:{model_provider:'custom',model_providers:{custom:{env_key:'FIXTURE_WALLET_KEY'}}}}) as any));
+  vi.mocked(stream.withCodexConnection).mockImplementation(async callback=>callback(vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt'}}:{config:{model_provider:'one',model_providers:{one:{env_key:'FIXTURE_WALLET_KEY'}}}}) as any));
   vi.stubGlobal('fetch',vi.fn(async()=>new Response('{"balance":8}')));await collectEngineBalance('provider:one');
   expect(cachedEngineBalance('provider:one')).toMatchObject({auth_mode:'api',status:'available',amount:8});
  });
