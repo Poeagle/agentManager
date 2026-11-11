@@ -1947,27 +1947,6 @@ export function AgentManagementPanel({
   return (
     <div className="agent-management-page">
       <div className="agent-management-workbench">
-        <header className="agent-management-page-heading">
-          <div>
-            <h3>Agent 配置</h3>
-            {selectedId!=='codex'&&<p>
-              统一查看和管理每个 Agent 的运行时、模型与配置文件。
-              {readOnly ? "当前为只读。" : "保存后立即应用。"}
-            </p>}
-          </div>
-          <button
-            type="button"
-            className="agent-management-button"
-            onClick={refresh}
-            disabled={catalog.isFetching}
-          >
-            <RefreshCw
-              size={13}
-              className={catalog.isFetching ? "animate-spin" : ""}
-            />
-            重新检测
-          </button>
-        </header>
         <div className="agent-management-agents">
           {agents.map((item) => (
             <button
@@ -1989,6 +1968,18 @@ export function AgentManagementPanel({
               </small>
             </button>
           ))}
+          <button
+            type="button"
+            className="agent-management-button agent-management-refresh"
+            onClick={refresh}
+            disabled={catalog.isFetching}
+          >
+            <RefreshCw
+              size={13}
+              className={catalog.isFetching ? "animate-spin" : ""}
+            />
+            重新检测
+          </button>
         </div>
         {catalog.isPending ? (
           <div className="agent-management-loading">
