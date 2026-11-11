@@ -108,7 +108,7 @@ function sqliteUtcToIso(value: string | null | undefined): string | null {
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
   const deferredReloads=new Map<string,()=>void>();
   app.addHook('onClose',async()=>{for(const stop of deferredReloads.values())stop();deferredReloads.clear();stopSessionRuntimeWatches();detachManagedAgents();});
-  function reloadWhenIdle(session:NonNullable<ReturnType<typeof sessionManager.getSession>>,userId:string,keyHash:string|null):boolean {
+  function reloadWhenIdle(session:NonNullable<ReturnType<typeof sessionManager.getSession>>,userId:string,keyHash:string|null,onlyTimedOut=false):boolean {
     if(deferredReloads.has(session.id))return true;
     if(deferredReloads.size>=100||!nativeConversationId(session)||!agentForSession(session).descriptor.capabilities.reload)return false;
     let closed=false,busy=false,unsubscribe=()=>{};let timer:ReturnType<typeof setTimeout>;
@@ -119,6 +119,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         const current=sessionManager.getSession(session.id);
         const key=keyHash?getDb().prepare('SELECT expires_at FROM api_keys WHERE token_hash=? AND user_id=?').get(keyHash,userId) as {expires_at:string}|undefined:null;
         if(!current||!['running','detached'].includes(current.status)||nativeConversationId(current)!==nativeConversationId(session)||current.created_by_user_id!==userId||!userHasPermission(userId,'agent_api','write')||keyHash&&(!key||Date.parse(key.expires_at)<=Date.now())||!canAccessSessionByRow(userId,current)||!canUseSessionEnvironment(current,userId)){stop();return;}
+        if(onlyTimedOut&&await sessionManager.terminalReconnectTimedOut(session.id)!==true){stop();return;}
         const result=await sessionManager.reloadAgentSessionById(session.id,{idleOnly:true});
         if(result.ok||!result.error?.includes('会话仍在执行'))stop();
       }catch{stop();}finally{busy=false;}
@@ -127,6 +128,20 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     catch{return false;}
     timer=setTimeout(stop,24*60*60*1000);timer.unref();deferredReloads.set(session.id,stop);return true;
   }
+  // Recovery is deliberately limited to the requester's own terminals whose
+  // current screen proves the native client has already stopped reconnecting.
+  app.post<{Body?:{confirmed_no_drafts?:boolean}}>('/sessions/recover-terminals',async(req,reply)=>{
+    if(!requirePermission(req,reply,'agent_api','write'))return reply;
+    if(req.body?.confirmed_no_drafts!==true)return reply.code(400).send({error:'请先确认终端没有需要保留的未发送草稿'});
+    const token=req.apiKeyGrants?/^Bearer (\S+)$/.exec(req.headers.authorization||'')?.[1]:undefined,keyHash=token?hashApiKey(token):null;
+    const sessions=sessionManager.listSessionsForUser(req.user!.id).filter(session=>session.created_by_user_id===req.user!.id&&session.cli_type==='codex'&&['running','detached'].includes(session.status)&&nativeConversationId(session)&&canAccessSessionByRow(req.user!.id,session)&&canUseSessionEnvironment(session,req.user!.id));
+    let scheduled=0,unavailable=0;const examined=sessions.slice(0,100);
+    for(let i=0;i<examined.length;i+=4){
+      const batch=examined.slice(i,i+4),states=await Promise.all(batch.map(session=>sessionManager.terminalReconnectTimedOut(session.id)));
+      for(let n=0;n<batch.length;n++)if(states[n]===null)unavailable++;else if(states[n]===true&&reloadWhenIdle(batch[n],req.user!.id,keyHash,true))scheduled++;
+    }
+    return {ok:true,examined:examined.length,scheduled,unavailable,skipped:sessions.length-examined.length};
+  });
   // List sessions
   app.get<{
     Querystring: { status?: string; project_id?: string };
