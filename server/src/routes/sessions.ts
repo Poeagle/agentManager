@@ -1,5 +1,5 @@
 import {canUseSessionEnvironment,assertEnvironmentUse} from '../services/agents/environment-access.js';
-import {detachManagedAgents} from '../services/agents/host.js';
+import {detachManagedAgents,observeAgentConversation} from '../services/agents/host.js';
 import {agentForSession,getAgent} from '../services/agents/index.js';
 import {readAgentRuntime,presentAgentSession} from '../services/agents/session.js';
 import {nativeConversationId} from '../services/session-identity.js';
@@ -12,7 +12,7 @@ import * as sessionManager from '../services/session-manager.js';
 import {RESIZE_MARKER,registerPendingSpawn} from '../services/session-manager.js';
 import {getTracker} from '../services/session-state.js';
 import {getDb} from '../db/index.js';
-import {getUserTabUsage,isAdmin,userCanUseSessionTool,userCanUseToolForProject,userOwnsProject,userOwnsProjectPath,userProjectIds} from '../auth.js';
+import {getUserTabUsage,isAdmin,userCanUseSessionTool,userCanUseToolForProject,userOwnsProject,userOwnsProjectPath,userProjectIds,hashApiKey} from '../auth.js';
 import {listClaudeSessions,deleteClaudeSession} from '../services/claude-history.js';
 
 import {randomUUID} from 'crypto';
@@ -26,7 +26,7 @@ import {readConversationPreview,humanSessionTask} from '../services/conversation
 import {personalQuestionRuntime,setIgnoredQuestions} from '../services/question-attention.js';
 import {watchSessionRuntime,stopSessionRuntimeWatches} from '../services/session-runtime-watch.js';
 import {broadcastEphemeral} from '../services/event-store.js';
-import {requirePermission} from '../services/rbac.js';
+import {requirePermission,userHasPermission} from '../services/rbac.js';
 import {attachExistingSession} from '../services/session-attachment.js';
 
 const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -106,7 +106,27 @@ function sqliteUtcToIso(value: string | null | undefined): string | null {
 }
 
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
-  app.addHook('onClose',async()=>{stopSessionRuntimeWatches();detachManagedAgents();});
+  const deferredReloads=new Map<string,()=>void>();
+  app.addHook('onClose',async()=>{for(const stop of deferredReloads.values())stop();deferredReloads.clear();stopSessionRuntimeWatches();detachManagedAgents();});
+  function reloadWhenIdle(session:NonNullable<ReturnType<typeof sessionManager.getSession>>,userId:string,keyHash:string|null):boolean {
+    if(deferredReloads.has(session.id))return true;
+    if(deferredReloads.size>=100||!nativeConversationId(session)||!agentForSession(session).descriptor.capabilities.reload)return false;
+    let closed=false,busy=false,unsubscribe=()=>{};let timer:ReturnType<typeof setTimeout>;
+    const stop=()=>{if(closed)return;closed=true;clearTimeout(timer);unsubscribe();deferredReloads.delete(session.id);};
+    const changed=async()=>{
+      if(closed||busy)return;busy=true;
+      try{
+        const current=sessionManager.getSession(session.id);
+        const key=keyHash?getDb().prepare('SELECT expires_at FROM api_keys WHERE token_hash=? AND user_id=?').get(keyHash,userId) as {expires_at:string}|undefined:null;
+        if(!current||!['running','detached'].includes(current.status)||nativeConversationId(current)!==nativeConversationId(session)||current.created_by_user_id!==userId||!userHasPermission(userId,'agent_api','write')||keyHash&&(!key||Date.parse(key.expires_at)<=Date.now())||!canAccessSessionByRow(userId,current)||!canUseSessionEnvironment(current,userId)){stop();return;}
+        const result=await sessionManager.reloadAgentSessionById(session.id,{idleOnly:true});
+        if(result.ok||!result.error?.includes('会话仍在执行'))stop();
+      }catch{stop();}finally{busy=false;}
+    };
+    try{unsubscribe=observeAgentConversation(session,frame=>{if(frame.type==='snapshot'&&!frame.busy&&frame.stage==='idle')queueMicrotask(()=>void changed());});}
+    catch{return false;}
+    timer=setTimeout(stop,24*60*60*1000);timer.unref();deferredReloads.set(session.id,stop);return true;
+  }
   // List sessions
   app.get<{
     Querystring: { status?: string; project_id?: string };
@@ -292,10 +312,12 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return { ok: true, session: sessionManager.getSession(id) };
   });
 
-  app.post<{Params:{id:string}}>('/sessions/:id/reload',async(req,reply)=>{
+  app.post<{Params:{id:string};Body?:{when_idle?:boolean}}>('/sessions/:id/reload',async(req,reply)=>{
     const session=sessionManager.getSession(req.params.id);
     if(!session||session.created_by_user_id!==req.user!.id||!canAccessSessionByRow(req.user!.id,session))return reply.code(404).send({error:'Session not found'});
     if(!requirePermission(req,reply,'agent_api','write'))return reply;
+    if(req.body?.when_idle===true){const token=req.apiKeyGrants?/^Bearer (\S+)$/.exec(req.headers.authorization||'')?.[1]:undefined;if(!reloadWhenIdle(session,req.user!.id,token?hashApiKey(token):null))return reply.code(409).send({error:'无法安排空闲后恢复'});return reply.code(202).send({ok:true,scheduled:true});}
+    deferredReloads.get(session.id)?.();
     const result=await sessionManager.reloadAgentSessionById(session.id);
     if(!result.ok)return reply.code(409).send({error:result.error});
     return {...result,session:sessionManager.getSession(session.id)};
