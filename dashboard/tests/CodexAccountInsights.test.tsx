@@ -32,7 +32,7 @@ it('opens a centered dialog, exposes reset expiry and expands dates into project
  expect(screen.getByRole('dialog')).toBeVisible();expect(await screen.findByText('/project')).toBeVisible();expect(screen.getAllByText('100.0%')).toHaveLength(2);expect(screen.getByText('模型明细未返回')).toBeVisible();expect(screen.queryByText('0 个模型')).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:/收起 2026-01-01/}));expect(screen.queryByText('/project')).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:/展开 2026-01-01/}));expect(screen.getByText('/project')).toBeVisible();
- fireEvent.click(screen.getByRole('button',{name:/查看卡片与到期时间/}));expect(await screen.findByText('重置卡：2 张')).toBeVisible();expect(screen.getByText('服务未返回全部卡片明细。')).toBeVisible();
+ fireEvent.click(screen.getByRole('button',{name:/^重置卡/}));expect(await screen.findByText('重置卡：2 张')).toBeVisible();expect(screen.getByText('服务未返回全部卡片明细。')).toBeVisible();
  fireEvent.click(screen.getByLabelText('关闭Fixture 账号详情'));expect(close).toHaveBeenCalledOnce();
 });
 it('switches dimensions, recomputes range shares and applies dates before grouping',async()=>{
