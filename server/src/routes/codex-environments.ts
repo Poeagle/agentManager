@@ -1,4 +1,5 @@
 import {accountConfigFiles} from '../services/agents/codex/account-config-files.js';
+import {cachedAccountUsage,initAccountUsage} from '../services/agents/codex/account-usage.js';
 import {runInCodexEngine} from '../services/agents/codex/engine-context.js';
 import {withCodexConnection} from '../services/agents/codex/stream.js';
 import {codexWeeklyQuotaFromResponse} from '../services/agents/codex/quota.js';
@@ -17,6 +18,25 @@ import {validateAccountConnection,probeAccountConnection} from '../services/agen
 
 const errorStatus=(e:unknown)=>Number((e as {statusCode?:number})?.statusCode)||409;
 export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
+ initAccountUsage();
+ app.get<{Params:{id:string}}>('/codex/environments/:id/insights',async(req,reply)=>{
+  if(!requirePermission(req,reply,'agent_api','read'))return;
+  const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.enabled&&e.kind!=='provider');
+  if(!account||account.kind==='native'&&!canControlEnvironment(account.id,req.user!.id))return reply.code(404).send({error:'账号不存在或无权访问'});
+  reply.header('Cache-Control','private, no-store');
+  return {usage:cachedAccountUsage(account.id)};
+ });
+ app.get<{Params:{id:string}}>('/codex/environments/:id/reset-credits',async(req,reply)=>{
+  if(!requirePermission(req,reply,'agent_api','read'))return;
+  const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.enabled&&e.kind!=='provider');
+  if(!account||account.kind==='native'&&!canControlEnvironment(account.id,req.user!.id))return reply.code(404).send({error:'账号不存在或无权访问'});
+  reply.header('Cache-Control','private, no-store');
+  try{return await runInCodexEngine(await engineForEnvironment(account.id),()=>withCodexConnection(async request=>{
+   const auth=await request('account/read',{});const limits=await request('account/rateLimits/read',{});
+   const raw=limits.rateLimitResetCredits,snapshot=limits.rateLimitsByLimitId?.codex??limits.rateLimits;
+   return {account:{email:auth.account?.email??null,plan:auth.account?.planType??snapshot?.planType??null},windows:[snapshot?.primary,snapshot?.secondary].filter(w=>w&&Number.isFinite(w.usedPercent)).map(w=>({usedPercent:w.usedPercent,windowDurationMins:w.windowDurationMins??null,resetsAt:w.resetsAt??null})),resets:raw&&Number.isInteger(raw.availableCount)&&raw.availableCount>=0?{availableCount:raw.availableCount,credits:Array.isArray(raw.credits)?raw.credits.slice(0,100).map((c:any)=>({expiresAt:typeof c.expiresAt==='number'?c.expiresAt:null,grantedAt:typeof c.grantedAt==='number'?c.grantedAt:null,status:typeof c.status==='string'?c.status:null})):null}:null};
+  }));}catch{return reply.code(503).send({error:'重置卡信息暂不可用，当前 Codex 版本可能尚未支持'});}
+ });
  app.get<{Querystring:{management?:string}}>('/codex/environments',async(req,reply)=>{
   if(req.query.management==='true'){
    if(!requirePermission(req,reply,'settings','write'))return;

@@ -21,7 +21,7 @@ function formatResetTime(value: number | null | undefined) {
   return `周额度重置时间（本地时间）：${date.toLocaleString(undefined, { timeZoneName: 'short' })}`;
 }
 
-export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApplicable=false,queryKey=['agent-weekly-quota',agent.id,'global']}:{agent:AgentDescriptor;label?:string;hideWhenNotApplicable?:boolean;read?:(force?:boolean)=>Promise<AgentQuotaResponse>;queryKey?:string[]}) {
+export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApplicable=false,queryKey=['agent-weekly-quota',agent.id,'global'],onOpen}:{agent:AgentDescriptor;label?:string;hideWhenNotApplicable?:boolean;read?:(force?:boolean)=>Promise<AgentQuotaResponse>;queryKey?:string[];onOpen?:()=>void}) {
   const readQuota=read??((force=false)=>api.agentQuota.read(agent.id,force));
   const queryClient = useQueryClient();
   const refresh = useMutation({
@@ -56,6 +56,7 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApp
       aria-label={quota ? `${label} 周额度剩余 ${quota.remainingPercent}%` : `${label} 周额度`}
       title={title}
       className="workspace-indicator workspace-quota relative flex h-6 shrink-0 items-center gap-1 overflow-hidden whitespace-nowrap rounded border px-1.5"
+      onClick={onOpen?event=>{if(!(event.target as HTMLElement).closest('button'))onOpen();}:undefined}
       style={{
         borderColor: 'var(--border)',
         background: 'var(--bg-tertiary)',
@@ -63,7 +64,7 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApp
       }}
     >
       <AgentIcon session={{agent}} className="h-3.5 w-3.5 shrink-0"/>
-      <span className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>{label}</span>
+      {onOpen?<button type="button" aria-label={`查看 ${label} 账号详情`} onClick={onOpen} className="text-[11px] font-medium">{label}</button>:<span className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>{label}</span>}
       <strong className="font-mono text-[11px] tabular-nums" style={{ color }}>
         {quota ? `${quota.remainingPercent}%` : notApplicable ? '不适用' : quotaQuery.isError ? '不可用' : '读取中'}
       </strong>
