@@ -86,6 +86,11 @@ interface EditorState {
   targetSessionId: string;
   newMode: ScheduledNewMode;
   newCliType: string;
+  newEnvironmentId: string;
+  newModel: string;
+  newProvider: string;
+  newEffort: string;
+  newTier: string;
   inactivePolicy: 'resume' | 'fail';
   stopConditions: StopCondition[];
   enabled: boolean;
@@ -112,6 +117,7 @@ function emptyEditor(): EditorState {
     targetSessionId: '',
     newMode: 'session',
     newCliType: 'claude',
+    newEnvironmentId: '', newModel: '', newProvider: '', newEffort: '', newTier: '',
     inactivePolicy: 'resume',
     stopConditions: [],
     enabled: true,
@@ -151,6 +157,7 @@ function editorFromTask(task: ScheduledTask): EditorState {
     targetSessionId: task.target_session_id ?? '',
     newMode: task.new_mode ?? 'session',
     newCliType: task.new_cli_type ?? 'claude',
+    newEnvironmentId: task.new_environment_id ?? '', newModel: task.new_model_preference?.model ?? '', newProvider: task.new_model_preference?.provider ?? '', newEffort: task.new_model_preference?.effort ?? '', newTier: task.new_model_preference?.service_tier ?? '',
     inactivePolicy: task.inactive_policy ?? 'resume',
     stopConditions,
     enabled: !!task.enabled,
@@ -258,6 +265,10 @@ export function ScheduledTasksPanel({
   const selectedTargetSession = projectSessions.find((session) => session.id === editor.targetSessionId);
   const project=queryClient.getQueryData<{projects:import('../lib/api').Project[]}>(['projects'])?.projects.find(project=>project.id===projectId);
   const providers=(project?.agent_catalog??builtinAgentDescriptors()).filter(agent=>agent.capabilities.launch&&(!project?.tool_access||project.tool_access.session_clients.includes(agent.id)));
+  const showCodexSettings = page === 'edit' && editor.targetType === 'new' && editor.newMode === 'session' && editor.newCliType === 'codex';
+  const environmentsQuery = useQuery({queryKey:['codex-environments'], queryFn:()=>api.codexEnvironments.list(), enabled:showCodexSettings, retry:false});
+  const modelsQuery = useQuery({queryKey:['scheduled-codex-models',projectId,editor.newEnvironmentId], queryFn:()=>api.codexEnvironments.scheduledModels(projectId,editor.newEnvironmentId), enabled:showCodexSettings && !!editor.newEnvironmentId, retry:false});
+  const selectedModel = modelsQuery.data?.models.find(m=>m.model===editor.newModel && (m.provider||'')===editor.newProvider);
   const quotaProvider=editor.targetType==='new'?providers.find(agent=>agent.id===editor.newCliType):selectedTargetSession?.agent;
   const usesAgentQuota=editor.targetType==='new'?editor.newMode!=='terminal'&&!!quotaProvider?.capabilities.quota:!!selectedTargetSession&&selectedTargetSession.mode!=='terminal'&&agentSupports(selectedTargetSession,'quota');
   const quotaQuery = useQuery({
@@ -326,6 +337,7 @@ export function ScheduledTasksPanel({
       const scheduleValue = editor.scheduleKind === 'weekly'
         ? `${[...editor.weeklyDays].sort((a, b) => a - b).join(',')}@${editor.weeklyTime}`
         : editor.scheduleValue;
+      if (showCodexSettings && (!editor.newEnvironmentId || !selectedModel || !selectedModel.efforts.some(e=>e.value===editor.newEffort))) throw new Error('请选择可用的 Engine、模型和推理强度');
       const payload: ScheduledTaskInput = {
         project_id: projectId,
         name: editor.name.trim(),
@@ -337,6 +349,8 @@ export function ScheduledTasksPanel({
         target_session_id: editor.targetType === 'existing' ? editor.targetSessionId : null,
         new_mode: editor.targetType === 'new' ? editor.newMode : null,
         new_cli_type: editor.targetType === 'new' ? editor.newCliType : null,
+        new_environment_id: showCodexSettings ? editor.newEnvironmentId : null,
+        new_model_preference: showCodexSettings ? {model:editor.newModel,effort:editor.newEffort,...editor.newProvider?{provider:editor.newProvider}:{},...editor.newTier?{service_tier:editor.newTier}:{}} : null,
         inactive_policy: editor.inactivePolicy,
         stop_at: stopAt,
         daily_stop_time: null,
@@ -598,6 +612,13 @@ export function ScheduledTasksPanel({
                   <div className="mt-2 flex flex-wrap items-start gap-3">
                     <label className="block w-44 space-y-1 text-xs"><span style={{ color: 'var(--text-secondary)' }}>标签页类型</span><select aria-label="新建标签页类型" value={editor.newMode} onChange={(event) => setEditor({ ...editor, newMode: event.target.value as ScheduledNewMode })} className={fieldClass} style={fieldStyle}><option value="session">Session</option><option value="terminal">Terminal</option></select></label>
                     {editor.newMode!=='terminal'&&<label className="block w-56 space-y-1 text-xs"><span style={{ color: 'var(--text-secondary)' }}>Agent</span><select aria-label="Agent 类型" value={editor.newCliType} onChange={(event) => setEditor({...editor,newCliType:event.target.value})} className={fieldClass} style={fieldStyle}>{providers.map(agent=><option key={agent.id} value={agent.id}>{agent.label}</option>)}</select></label>}
+                    {showCodexSettings && <>
+                      <label className="block w-56 space-y-1 text-xs"><span style={{color:'var(--text-secondary)'}}>Engine</span><select aria-label="Engine" className={fieldClass} style={fieldStyle} value={editor.newEnvironmentId} onChange={e=>setEditor({...editor,newEnvironmentId:e.target.value,newModel:'',newProvider:'',newEffort:'',newTier:''})}><option value="">{environmentsQuery.isPending?'读取中…':'请选择 Engine'}</option>{environmentsQuery.data?.environments.map(e=><option key={e.id} value={e.id} disabled={!e.enabled}>{e.name}</option>)}</select></label>
+                      <label className="block w-56 space-y-1 text-xs"><span style={{color:'var(--text-secondary)'}}>模型</span><select aria-label="模型" className={fieldClass} style={fieldStyle} disabled={!editor.newEnvironmentId || modelsQuery.isPending} value={editor.newModel?JSON.stringify([editor.newModel,editor.newProvider]):''} onChange={e=>{if(!e.target.value){setEditor({...editor,newModel:'',newProvider:'',newEffort:'',newTier:''});return;}const [model,provider]=JSON.parse(e.target.value) as string[];const m=modelsQuery.data?.models.find(x=>x.model===model&&(x.provider||'')===provider);setEditor({...editor,newModel:model,newProvider:provider,newEffort:m?.defaultEffort||m?.efforts[0]?.value||'',newTier:''});}}><option value="">{modelsQuery.isPending?'读取中…':'请选择模型'}</option>{modelsQuery.data?.models.map(m=><option key={JSON.stringify([m.model,m.provider||''])} value={JSON.stringify([m.model,m.provider||''])}>{m.name}</option>)}</select></label>
+                      <label className="block w-40 space-y-1 text-xs"><span style={{color:'var(--text-secondary)'}}>推理强度</span><select aria-label="推理强度" className={fieldClass} style={fieldStyle} value={editor.newEffort} disabled={!selectedModel} onChange={e=>setEditor({...editor,newEffort:e.target.value})}>{!selectedModel&&<option value="">请选择模型</option>}{selectedModel?.efforts.map(e=><option key={e.value} value={e.value}>{e.value||'默认'}</option>)}</select></label>
+                      {!!selectedModel?.service_tiers?.length && <label className="block w-40 space-y-1 text-xs"><span style={{color:'var(--text-secondary)'}}>服务档位</span><select aria-label="服务档位" className={fieldClass} style={fieldStyle} value={editor.newTier} onChange={e=>setEditor({...editor,newTier:e.target.value})}><option value="">默认</option>{selectedModel.service_tiers.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></label>}
+                      {(environmentsQuery.isError || modelsQuery.isError) && <span role="alert" className="text-xs" style={{color:'var(--error)'}}>读取 Engine 或模型失败，请重新选择或稍后重试。</span>}
+                    </>}
                     {editor.newMode === 'terminal' && <p className="rounded-lg px-3 py-2 text-[10px] leading-relaxed" style={{ background: 'color-mix(in srgb, #f59e0b 9%, transparent)', color: '#f59e0b' }}>Terminal 会把提示词作为终端输入提交；如果标签页处于 Shell，这段文字会被当作命令执行。</p>}
                   </div>
                 )}

@@ -389,6 +389,8 @@ function migrateLegacySessionOwnership(): void {
 }
 
 function migrateScheduledTaskStopConditions(): void {
+  addColumn('scheduled_tasks', 'new_environment_id', 'TEXT');
+  addColumn('scheduled_tasks', 'new_model_preference', 'TEXT');
   addColumn('scheduled_tasks', 'stop_at', 'TEXT');
   addColumn('scheduled_tasks', 'max_successful_runs', 'INTEGER');
   addColumn('scheduled_tasks', 'quota_remaining_below', 'INTEGER');

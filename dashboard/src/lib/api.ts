@@ -294,6 +294,7 @@ export interface AgentApiContract {
 // Sessions
 export const api = {
   codexEnvironments: {
+    scheduledModels:(project:string,environment:string)=>fetchJSON<{models:ConversationControlsData['models']}>(`/scheduled-tasks/codex-models?project_id=${encodeURIComponent(project)}&environment_id=${encodeURIComponent(environment)}`),
     quota:(id:string)=>fetchJSON<AgentQuotaResponse>('/codex/environments/'+encodeURIComponent(id)+'/quota'),
     configFiles:(id:string)=>fetchJSON<{files:Array<{id:string;path:string;exists:boolean;label:string;description:string;format:string;sensitive?:boolean}>}>('/codex/environments/'+encodeURIComponent(id)+'/config-files'),
     readConfigFile:(id:string,file:string)=>fetchJSON<{content:string;revision:string;exists:boolean}>('/codex/environments/'+encodeURIComponent(id)+'/config-files?file='+encodeURIComponent(file)),
@@ -917,6 +918,8 @@ export interface ScheduledTaskInput {
   target_session_id?: string | null;
   new_mode?: ScheduledNewMode | null;
   new_cli_type?: string | null;
+  new_environment_id?: string | null;
+  new_model_preference?: AgentModelPreference | null;
   inactive_policy?: 'resume' | 'fail';
   stop_at?: string | null;
   daily_stop_time?: string | null;
