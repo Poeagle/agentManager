@@ -1,4 +1,5 @@
 import * as stream from '../src/services/agents/codex/stream.js';
+import {randomUUID} from 'crypto';
 import Fastify,{type FastifyInstance} from 'fastify';
 import websocket from '@fastify/websocket';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
@@ -14,6 +15,7 @@ import {engineForThread,rememberCodexThread,runInCodexEngine} from '../src/servi
 import {updateAgentManagement} from '../src/services/agents/management-store.js';
 import * as transport from '../src/services/agents/codex/account-transport.js';
 import {collectAccountStatus} from '../src/services/agents/codex/account-status.js';
+import {collectEngineBalance,cachedEngineBalance} from '../src/services/agents/codex/engine-balance.js';
 vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),ensureAccountTransport:vi.fn(async(id:string)=>({socket:'/fixture/'+id+'.sock',home:'/fixture/home'})),closeAccountTransport:vi.fn(async()=>{}),probeAccountConnection:vi.fn(async()=>({models:[{model:'fixture',name:'Fixture',description:'',efforts:[],defaultEffort:''}]})),accountCommand:vi.fn(async()=> 'ok'),checkAccountProject:vi.fn(async()=>{})}));
 const connection={username:'ymchen',port:22,identityFile:'',codexCommand:'codex',codexHome:''};
 describe('Codex account environments and platform ACLs',()=>{
@@ -35,13 +37,27 @@ describe('Codex account environments and platform ACLs',()=>{
   }
   expect(read).not.toHaveBeenCalled();
  });
+ it('restricts upstream group statistics to administrators and serves cached data',async()=>{
+  updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'gateway',name:'Gateway',kind:'responses',enabled:true,fields:{models:['m'],baseUrl:'https://xindu.xyz/v1',envKey:'WALLET_GROUP_TEST'}}]}));
+  process.env.WALLET_GROUP_TEST=randomUUID();
+  try{
+   vi.spyOn(stream,'withCodexConnection').mockImplementation(async callback=>callback(vi.fn(async()=>({account:{type:'apiKey'}})) as any));
+   vi.stubGlobal('fetch',vi.fn(async()=>new Response('{"balance":12}')));
+   await collectEngineBalance('provider:gateway');const group=cachedEngineBalance('provider:gateway').groupKey;expect(group).toMatch(/^[a-f0-9]{64}$/);vi.mocked(stream.withCodexConnection).mockClear();
+   const path=`/api/codex/balance-groups/${group}/insights`;
+   expect((await app.inject({url:path,headers:{cookie:cookies.owner}})).statusCode).toBe(403);
+   expect((await app.inject({url:path,headers:{cookie:cookies.admin}})).json()).toMatchObject({usage:{partial:true,rows:[]}});
+   expect(stream.withCodexConnection).not.toHaveBeenCalled();
+  }finally{delete process.env.WALLET_GROUP_TEST;vi.unstubAllGlobals();}
+ });
  it('protects usage caches and reset details using the same account visibility boundary',async()=>{
   const e=await create();
-  for(const endpoint of ['insights','reset-credits']){
+  for(const endpoint of ['insights','reset-credits','balance']){
    expect((await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/${endpoint}`,headers:{cookie:cookies.owner}})).statusCode).toBe(403);
    expect((await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/${endpoint}`,headers:{cookie:cookies.other}})).statusCode).toBe(404);
    expect((await app.inject({url:`/api/codex/environments/native/${endpoint}`,headers:{cookie:cookies.other}})).statusCode).toBe(404);
   }
+  const balance=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/balance`,headers:{cookie:cookies.admin}});expect(balance.statusCode).toBe(200);expect(balance.json()).toMatchObject({auth_mode:null,status:'unavailable'});
   const cached=await app.inject({url:`/api/codex/environments/${encodeURIComponent(e.id)}/insights`,headers:{cookie:cookies.admin}});expect(cached.statusCode).toBe(200);expect(cached.json().usage.rows).toEqual([]);
   vi.spyOn(stream,'withCodexConnection').mockImplementation(async callback=>callback(vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt',email:'fixture@example.invalid'}}:{rateLimitResetCredits:{availableCount:2,credits:null}}) as any));
   await collectAccountStatus(e.id);vi.mocked(stream.withCodexConnection).mockClear();

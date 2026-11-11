@@ -1299,7 +1299,8 @@ export interface ConversationContextBreakdown {
  categories:Array<{id:string;name:string;tokens:number|null;count:number;detail:Array<{name:string;tokens:number;count:number}>}>;
 }
 export interface ConversationUsageUpdate {native_id:string;usage:NonNullable<ConversationControlsData['usage']>;observed_at:string}
-export interface CodexEnvironment {id:string;name:string;kind:'native'|'provider'|'account';provider?:string;enabled:boolean;allowed_user_ids:string[]|null;can_control?:boolean;connection?:{username:string;port:number;identityFile:string;codexCommand:string;codexHome:string;authMethod?:'key'|'password';password?:string;passwordConfigured?:boolean}}
+export interface CodexEnvironment {id:string;name:string;kind:'native'|'provider'|'account';auth_mode?:'account'|'api'|null;balance_group?:string|null;source?:'managed_host'|'managed_provider'|'system_user';provider?:string;enabled:boolean;allowed_user_ids:string[]|null;can_control?:boolean;connection?:{username:string;port:number;identityFile:string;codexCommand:string;codexHome:string;authMethod?:'key'|'password';password?:string;passwordConfigured?:boolean}}
+export interface CodexEngineBalance {auth_mode:'account'|'api'|null;groupKey?:string;origin?:string;status:'available'|'unavailable'|'unsupported'|'stale';amount?:number;currency?:string;mode?:string|null;todayActualCost?:number|null;todayRequests?:number|null;totalActualCost?:number|null;checkedAt?:string|null;error?:string|null}
 export interface ProviderUsageTab {id:string;user_id:string|null;username:string;project_id:string|null;project_name:string;name:string;status:string;native_id:string|null;model:string|null;busy:boolean|null}
 export interface EnvironmentCheck {stage:string;ok:boolean;message:string}
 export interface EnvironmentPreflight {ok:boolean;checks:EnvironmentCheck[];models?:ConversationControlsData['models']}
