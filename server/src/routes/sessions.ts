@@ -363,7 +363,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       try {await sessionManager.killSession(id);await sessionManager.waitForStoppedSessionLifecycle(id);}
       catch {return reply.status(503).send({error:'停止会话失败，记录已保留，请重试'});}
     }
-    const result = sessionManager.purgeSessionRecord(id);
+    const result = await sessionManager.purgeSessionRecord(id);
     if (!result.ok) return reply.status(409).send({ error: result.error });
     return { ok: true };
   });
@@ -386,7 +386,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     let deleted = 0;
     let failed = 0;
     for (const { id } of candidates) {
-      const result = sessionManager.purgeSessionRecord(id);
+      const result = await sessionManager.purgeSessionRecord(id);
       if (result.ok) deleted++;
       else failed++;
     }

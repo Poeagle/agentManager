@@ -192,6 +192,7 @@ interface ActiveSession {
 const activeSessions = new Map<string, ActiveSession>();
 const sessionRecoveryPromises = new Map<string, Promise<boolean>>();
 const sessionLifecyclePromises = new Map<string, Promise<unknown>>();
+const purgingSessionRecords = new Set<string>();
 const cancelledSessionLifecycles = new Set<string>();
 type SessionLifecycleListener = (active: boolean) => void;
 const sessionLifecycleListeners = new Map<string, Set<SessionLifecycleListener>>();
@@ -315,6 +316,7 @@ function runSessionLifecycle<T>(
   operation: () => Promise<T>,
   afterExisting: () => T,
 ): Promise<T> {
+  if (purgingSessionRecords.has(sessionId)) return Promise.resolve(afterExisting());
   const existing = sessionLifecyclePromises.get(sessionId);
   if (existing) return existing.then(afterExisting);
 
@@ -3034,26 +3036,38 @@ export async function resumeAgentConversation(projectPath:string,projectId:strin
 export function resumeClaudeSession(projectPath:string,projectId:string|null,nativeId:string,task:string,createdByUserId?:string):Promise<Session>{return resumeAgentConversation(projectPath,projectId,'claude',nativeId,task,createdByUserId);}
 
 /**
- * Permanently delete an ended session: its DB row, events, any leftover PTY
- * replay rows, and the Claude JSONL conversation file. Refuses if the session
- * is still active (must be stopped first).
+ * Permanently delete an ended session and its adapter-owned history. Refuses
+ * if the session is active. Durable source deletion happens before DB removal;
+ * if it fails, retain the visible history row so the user can retry.
  */
-export function purgeSessionRecord(sessionId: string): { ok: boolean; error?: string } {
+export async function purgeSessionRecord(sessionId: string): Promise<{ ok: boolean; error?: string }> {
   const db = getDb();
   const session = getSession(sessionId);
   if (!session) return { ok: false, error: 'Session not found' };
-  if (activeSessions.has(sessionId) || sessionLifecyclePromises.has(sessionId) || sessionStatusMayHaveProcess(session.status)) {
+  if (activeSessions.has(sessionId) || sessionLifecyclePromises.has(sessionId) || purgingSessionRecords.has(sessionId) || sessionStatusMayHaveProcess(session.status)) {
     return { ok: false, error: 'Stop the session before deleting it' };
   }
-
-  try{agentForSession(session).identity.purge?.(sessionAgentContext(session));}catch{/* non-fatal */}
-
-  try { db.prepare('DELETE FROM pty_output WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
-  try { db.prepare('DELETE FROM session_snapshots WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
-  try { db.prepare('DELETE FROM events WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
-  db.prepare('DELETE FROM user_ui_state WHERE key = ?').run(`session-control:${sessionId}`);
-  db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
-  return { ok: true };
+  purgingSessionRecords.add(sessionId);
+  try {
+    const adapter=agentForSession(session),context=sessionAgentContext(session);
+    await adapter.identity.purgeHistory?.(context);
+    const current=getSession(sessionId);
+    if(!current||activeSessions.has(sessionId)||sessionStatusMayHaveProcess(current.status))return {ok:false,error:'会话状态已变化，原记录已保留，请确认会话已停止后重试'};
+    try{adapter.identity.purge?.(context);}catch{/* non-fatal platform binding cleanup */}
+    db.transaction(()=>{
+      try { db.prepare('DELETE FROM pty_output WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
+      try { db.prepare('DELETE FROM session_snapshots WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
+      try { db.prepare('DELETE FROM events WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
+      db.prepare('DELETE FROM user_ui_state WHERE key = ?').run(`session-control:${sessionId}`);
+      db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+    })();
+    return { ok: true };
+  } catch(error) {
+    return {ok:false,error:error instanceof Error?`删除会话原始历史失败：${error.message}`:'删除会话原始历史失败，请重试'};
+  } finally {
+    purgingSessionRecords.delete(sessionId);
+    notifySessionLifecycleListeners(sessionId,isSessionActive(sessionId));
+  }
 }
 
 /* ================================================================

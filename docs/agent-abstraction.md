@@ -21,12 +21,14 @@ flowchart TB
 | `runtime` | 原生执行状态，按需读取与变更通知 | 必需 |
 | `input` | 提交对话、区分接受/排队/拒绝，防止模糊失败后重复发送 | 必需 |
 | `stream` | 统一事件通道、交互回答、连接释放；可选实时通道升级与关闭钩子 | 必需 |
-| `identity` | 原生标识、可选终端识别、旧绑定恢复与本地清理 | 默认使用通用标识，终端识别按需实现 |
+| `identity` | 原生标识、可选终端识别、旧绑定恢复与本地清理；可选异步清理适配器拥有的原始历史 | 默认使用通用标识，终端识别按需实现 |
 | `controls` | 查询、验证、应用模型与推理设置 | 按能力声明 |
 | `telemetry` / `statistics` | 用量与消息区间统计，未知数据保持空值 | 按能力声明 |
 | `quota` / `retry` | 账户额度、失败判断与原生重试操作 | 按能力声明 |
 | `lifecycle` / `launch` | 预检、压缩、新对话、中断、释放、启动/恢复准备 | 按能力声明 |
 | `commands` | CLI 命令构造、权限和共享资源参数 | 仅终端宿主需要 |
+
+`identity` 的可选 `purgeHistory` 在移除平台会话行前异步清理 Agent 原始历史。Codex 按历史行绑定的 Engine 和原生会话 ID 删除 `sessions` 或 `archived_sessions` 中对应的 rollout；跨 Provider 副本、新开后的历史行各自保留其环境和 ID。压缩可能共享的 `history_base` 祖先不会随子会话删除，以免破坏其他会话。
 
 `AgentDefinition` 是新增 Agent 的实现契约；`resolveAgent()` 在注册时补齐可选接口，
 不支持的操作统一返回 `AGENT_FEATURE_UNSUPPORTED`，不借用其他厂商实现。

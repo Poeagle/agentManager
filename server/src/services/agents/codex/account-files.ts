@@ -15,6 +15,14 @@ import {runInCodexEngine,engineForThread} from './engine-context.js';
 const MAX_BYTES=1024*1024*1024;
 const cached=new Map<string,{until:number;path:string;signature:string}>();
 const pending=new Map<string,Promise<string|null>>();
+/** Drop a private history mirror after its source Codex rollout is deleted. */
+export async function forgetEnvironmentRollout(environmentId:string,nativeId:string):Promise<void> {
+ const key=environmentId+':'+nativeId;
+ await pending.get(key)?.catch(()=>null);
+ const previous=cached.get(key);cached.delete(key);
+ const directory=join(dirname(config.dbPath),'account-history',createHash('sha256').update(environmentId).digest('hex').slice(0,12));
+ await unlink(previous?.path||join(directory,nativeId+'.jsonl')).catch(error=>{if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;});
+}
 export function localHome(e:CodexEnvironment):string {
  if(e.kind==='native')return process.env.CODEX_HOME||join(homedir(),'.codex');
  const provider=readAgentManagement('codex').providers.find(p=>p.id===e.provider);
