@@ -1,3 +1,4 @@
+import {conversationQuestionReply} from '../services/conversation-question-reply.js';
 import {closeAccountTransports} from '../services/agents/codex/account-transport.js';
 import {canControlEnvironment,assertEnvironmentUse,watchSessionEnvironment} from '../services/agents/environment-access.js';
 import {AgentSubmissionError} from '../services/agents/submission.js';
@@ -818,6 +819,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       const session=getSession(id);
       if(req.body?.source==='conversation'&&session&&nativeConversationId(session)) {
         if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,true);
+        if(typeof clientId==='string'&&!attachments.length){
+          const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
+          const visible=conversationQuestionReply(input)?.text??input;
+          await rememberConversationInput(id,{...session,cli_type:session.cli_type||'claude',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},clientId,visible).catch(()=>{});
+        }
         const adapter=agentForSession(session),native=await adapter.input.submit(sessionAgentContext(session),input,typeof clientId==='string'?clientId:attachments.length?attachmentClientId:undefined,attachments);
         if(native)return native==='queued'?'queued':'submitted';if(adapter.descriptor.sessionHost==='managed')throw Object.assign(Error('Agent 服务未接受输入，消息尚未提交'),{submission:'rejected'});
       }
