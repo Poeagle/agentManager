@@ -549,6 +549,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('onClose',async()=>retries.close());
   app.addHook('onListen',async()=>{for(const session of getDb().prepare("SELECT * FROM sessions WHERE status='running' AND created_by_user_id IS NOT NULL").all() as import('../services/session-manager.js').Session[])if(agentForSession(session).descriptor.capabilities.retry&&nativeConversationId(session))retries.monitor(session.id,session.created_by_user_id!,nativeConversationId(session)!);});
   app.addHook('onListen',async()=>{
+    void import('../services/agents/codex/environments.js').then(({restoreActiveAccountTransports})=>restoreActiveAccountTransports()).catch(()=>{});
     if(!config.manageCodexEngines)return;
     try{
       const {initializeManagedCodexEngines}=await import('../services/agents/codex/management.js');

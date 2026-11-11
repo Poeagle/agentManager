@@ -53,6 +53,18 @@ describe('Codex terminal receipt compatibility',()=>{
    expect(received.filter(raw=>JSON.parse(raw).method==='turn/start')).toHaveLength(1);
   }finally{client.terminate();await bridge.stop();for(const socket of native.clients)socket.terminate();await new Promise<void>(resolve=>native.close(()=>resolve()));await new Promise<void>(resolve=>upstream.close(()=>resolve()));rmSync(dir,{recursive:true,force:true});}
  });
+ it('accepts a terminal reconnect after the upstream tunnel is recreated',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'am-tui-reconnect-')),path=join(dir,'native.sock'),received:string[]=[];
+  const makeUpstream=async()=>{const server=createServer(),wss=new WebSocketServer({server});wss.on('connection',ws=>ws.on('message',data=>{received.push(data.toString());ws.send(data);}));await new Promise<void>(resolve=>server.listen(path,resolve));return {server,wss};};
+  let upstream=await makeUpstream();const bridge=await startCodexTerminalBridge(join(dir,'terminal.sock'),path),url=`ws+unix://${join(dir,'terminal.sock')}:/`;
+  let first:WebSocket|undefined,second:WebSocket|undefined;
+  try{
+   first=new WebSocket(url);await new Promise<void>(resolve=>first!.once('open',resolve));first.send('first');await vi.waitFor(()=>expect(received).toEqual(['first']));
+   const closed=new Promise<void>(resolve=>first!.once('close',()=>resolve()));for(const ws of upstream.wss.clients)ws.terminate();await closed;
+   await new Promise<void>(resolve=>upstream.wss.close(()=>resolve()));await new Promise<void>(resolve=>upstream.server.close(()=>resolve()));
+   upstream=await makeUpstream();second=new WebSocket(url);await new Promise<void>(resolve=>second!.once('open',resolve));second.send('second');await vi.waitFor(()=>expect(received).toEqual(['first','second']));
+  }finally{first?.terminate();second?.terminate();await bridge.stop();for(const ws of upstream.wss.clients)ws.terminate();await new Promise<void>(resolve=>upstream.wss.close(()=>resolve()));await new Promise<void>(resolve=>upstream.server.close(()=>resolve()));rmSync(dir,{recursive:true,force:true});}
+ });
  it('releases an unused bridge without polling or touching the native engine',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'am-tui-idle-')),onIdle=vi.fn();
   const bridge=await startCodexTerminalBridge(join(dir,'terminal.sock'),join(dir,'missing.sock'),{idleMs:10,onIdle});

@@ -71,6 +71,14 @@ export async function deleteCodexEnvironment(id:string):Promise<void>{
  }else getDb().prepare('DELETE FROM agent_environments WHERE id=?').run(id);
  environmentAccessChanged();
 }
+/** Recreate only account tunnels belonging to sessions that were active when
+ * the platform stopped. A terminal can then reconnect without opening a page. */
+export async function restoreActiveAccountTransports():Promise<void> {
+ const rows=getDb().prepare("SELECT DISTINCT agent_environment_id AS id FROM sessions WHERE cli_type='codex' AND status IN ('running','detached') AND agent_environment_id LIKE 'account:%' LIMIT 100").all() as {id:string}[];
+ for(const {id} of rows){
+  try{const environment=getCodexEnvironment(id);if(environment.enabled&&environment.kind==='account')await ensureAccountTransport(id,environmentConnection(environment));}catch{/* A failed connection must not block platform startup; later access can retry. */}
+ }
+}
 export async function engineForEnvironment(id:string,options:{history?:boolean}={}):Promise<CodexEngine> {
  const e=getCodexEnvironment(id);if(e.retired&&!options.history)throw Object.assign(Error('Provider 已删除，仅保留历史记录'),{statusCode:410});if(!e.enabled&&!e.retired)throw Object.assign(Error('Codex 环境已停用'),{statusCode:403});
  if(e.kind==='account'){const transport=await ensureAccountTransport(e.id,environmentConnection(e));return {socket:transport.socket,environmentId:id,accountHome:transport.home};}
