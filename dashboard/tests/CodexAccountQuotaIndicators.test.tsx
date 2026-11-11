@@ -6,7 +6,16 @@ import {api} from '../src/lib/api';
 vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,codexEnvironments:{list:vi.fn(),quota:vi.fn()},agentQuota:{read:vi.fn()}}};});
 const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
 afterEach(()=>{client.clear();vi.clearAllMocks();});
-const mount=()=>render(<QueryClientProvider client={client}><AgentQuotaIndicators/></QueryClientProvider>);
+const mount=(isAdmin=true)=>render(<QueryClientProvider client={client}><AgentQuotaIndicators isAdmin={isAdmin}/></QueryClientProvider>);
+it('keeps member quota visible while exposing no clickable card or refresh controls',async()=>{
+ vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[{id:'member',name:'成员账号',kind:'account',enabled:true,allowed_user_ids:null}]});
+ vi.mocked(api.codexEnvironments.quota).mockResolvedValue({quota:{usedPercent:25,remainingPercent:75,windowDurationMins:10080,resetsAt:null,planType:null,checkedAt:'2026-11-09T00:00:00Z'}});
+ mount(false);const card=await screen.findByLabelText('Codex · 成员账号 周额度剩余 75%');fireEvent.click(card);expect(screen.queryByRole('dialog')).toBeNull();expect(screen.queryByRole('button',{name:/查看.*账号详情/})).toBeNull();expect(screen.queryByRole('button',{name:/刷新.*额度/})).toBeNull();
+});
+it('shows the account details control to administrators',async()=>{
+ vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[{id:'admin',name:'管理员账号',kind:'account',enabled:true,allowed_user_ids:null}]});vi.mocked(api.codexEnvironments.quota).mockResolvedValue({quota:null,reason:'not_applicable'});
+ mount(true);expect(await screen.findByRole('button',{name:'查看 Codex · 管理员账号 账号详情'})).toBeVisible();expect(screen.getByRole('button',{name:'刷新 Codex · 管理员账号 额度'})).toBeVisible();
+});
 it('hides Codex quota when no enabled account is available',async()=>{
  vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[{id:'native',name:'Native',kind:'native',enabled:true,allowed_user_ids:null}]});
  vi.mocked(api.codexEnvironments.quota).mockResolvedValue({quota:null,reason:'not_applicable'});

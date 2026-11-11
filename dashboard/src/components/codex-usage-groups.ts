@@ -11,6 +11,14 @@ export function aggregateMetrics(rows:Metrics[]):Metrics{
  const known=rows.filter(r=>r.estimated_credits!=null);
  return {tokens,estimated_credits:known.length?known.reduce((n,r)=>n+r.estimated_credits!,0):null,credit_coverage:{covered:rows.reduce((n,r)=>n+(r.credit_coverage?.covered??(r.estimated_credits!=null?1:0)),0),total:rows.reduce((n,r)=>n+(r.credit_coverage?.total??1),0)}};
 }
+/** Keep counters and denominators consistent with the records visible in the UI. */
+export function estimatableUsageRows(rows:UsageRow[]):UsageRow[]{
+ return rows.flatMap(row=>{
+  if(!row.models?.length)return row.estimated_credits!=null?[row]:[];
+  const models=row.models.filter(model=>model.estimated_credits!=null);
+  return models.length?[{...row,...aggregateMetrics(models),models}]:[];
+ });
+}
 function period(date:string,dimension:Dimension){
  if(dimension==='month')return date.slice(0,7);
  if(dimension!=='week')return date;

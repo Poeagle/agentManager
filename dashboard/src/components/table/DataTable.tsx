@@ -1,5 +1,5 @@
 import { TableActionButton } from './TableActions';
-import type { ReactNode } from 'react';
+import type { CSSProperties,ReactNode } from 'react';
 import { Loader2 } from 'lucide-react';
 import { TableColumnHeader } from './TableColumnHeader';
 import type { TableModel } from './use-table-model';
@@ -20,22 +20,27 @@ interface DataTableProps<T> {
   onRetry?: () => void;
 }
 
+/** Shared table frame for list models and hierarchical aggregate views. */
+export function TableFrame({label,header,children,columns,className='',tableClassName='data-table',loading=false,style}:{label:string;header:ReactNode;children:ReactNode;columns?:ReactNode;className?:string;tableClassName?:string;loading?:boolean;style?:CSSProperties}){
+ return <div className={`table-wrap ${className}`} role="region" aria-label={`${label}，可横向滚动查看全部列`} tabIndex={0}><table className={tableClassName} aria-label={label} aria-busy={loading} style={style}
+  onMouseOver={event=>{if(!event.currentTarget.closest('.manager-ui'))return;const cell=(event.target as HTMLElement).closest('td');if(cell?.closest('table')!==event.currentTarget||cell.colSpan>1||cell.querySelector('button,input,select,textarea'))return;cell.title=cell.textContent?.trim()||'';}}>
+  {columns}<thead><tr>{header}</tr></thead><tbody>{children}</tbody>
+ </table></div>;
+}
 /** All platform lists and nested lists share this structure and state handling. */
 export function DataTable<T>({ label, model, children, minWidth = 640, columnWidths, expandable = false, actions = false,
   className = '', loading = false, error, empty = false, emptyMessage = '暂无数据', onRetry }: DataTableProps<T>) {
   const columnCount = model.columns.length + Number(expandable) + Number(actions);
-  return <div className={`table-wrap ${className}`}>
-    <table className="data-table" aria-label={label} aria-busy={loading} style={{ minWidth }}>
-      <thead><tr>
-        {expandable && <th className="table-expand-column" aria-label="展开详情" />}
-        {model.columns.map((column, index) => <TableColumnHeader key={column.key} table={model} columnKey={column.key} className={columnWidths?.[index]} />)}
-        {actions && <th className="table-actions-column">操作</th>}
-      </tr></thead>
-      <tbody>{loading ? <TableStateRow columnCount={columnCount} loading>加载中…</TableStateRow>
-        : error ? <TableStateRow columnCount={columnCount} error onRetry={onRetry}>{error}</TableStateRow>
-          : empty ? <TableStateRow columnCount={columnCount}>{emptyMessage}</TableStateRow> : children}</tbody>
-    </table>
-  </div>;
+  const textWidth=(value:string)=>{let width=0;for(const c of value){width+=c.charCodeAt(0)>255?12:7;if(width>=300)break;}return width;};
+  const widths=model.columns.map(column=>model.rows.reduce((width,row)=>Math.min(320,Math.max(width,textWidth(String(column.format?.(column.value(row))??column.value(row)??''))+20)),Math.max(/授权|级别/.test(column.title)?160:96,textWidth(column.title)+48)));
+  const actionWidth=className.includes('user-management-table')?264:140;
+  const natural=widths.reduce((n,w)=>n+w,0)+(expandable?28:0)+(actions?actionWidth:0);
+  return <TableFrame label={label} className={className} loading={loading}
+    style={{minWidth:`var(--manager-table-minimum,${minWidth}px)`,'--table-requested':`${minWidth}px`,'--table-natural':`${natural}px`} as CSSProperties}
+    columns={!columnWidths&&<colgroup>{expandable&&<col style={{'--column-width':'28px'} as CSSProperties}/>}{widths.map((width,i)=><col key={i} style={{'--column-width':`${width}px`} as CSSProperties}/>)}{actions&&<col style={{'--column-width':`${actionWidth}px`} as CSSProperties}/>}</colgroup>}
+    header={<>{expandable&&<th className="table-expand-column" aria-label="展开详情"/>}{model.columns.map((column,index)=><TableColumnHeader key={column.key} table={model} columnKey={column.key} className={columnWidths?.[index]}/>)}{actions&&<th className="table-actions-column">操作</th>}</>}>
+    {loading?<TableStateRow columnCount={columnCount} loading>加载中…</TableStateRow>:error?<TableStateRow columnCount={columnCount} error onRetry={onRetry}>{error}</TableStateRow>:empty?<TableStateRow columnCount={columnCount}>{emptyMessage}</TableStateRow>:children}
+  </TableFrame>;
 }
 
 export function TableDetailRow({ columnCount, children }: { columnCount: number; children: ReactNode }) {

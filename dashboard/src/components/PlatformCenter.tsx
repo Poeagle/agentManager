@@ -6,6 +6,7 @@ import { ChangePassword, ProjectAccessAdmin } from './AccountModal';
 import { RoleManagementPanel } from './RoleManagementPanel';
 import { UserManagementPanel } from './UserManagementPanel';
 import './PlatformCenter.css';
+import './ManagerUI.css';
 
 const PlatformAi = lazy(() => import('./PlatformAiPanel').then((module) => ({ default: module.PlatformAiPanel })));
 
@@ -57,20 +58,20 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
     return () => { window.removeEventListener('keydown', onKey); if (previousFocus?.isConnected) previousFocus.focus(); };
   }, [onClose]);
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-4 sm:p-6" style={{ background: 'rgba(0,0,0,.58)' }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="platform-center-title" className="flex h-[calc(100dvh-24px)] w-full max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-xl border shadow-2xl" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}>
-        <header className="flex shrink-0 items-center justify-between border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}><div className="flex items-center gap-3"><ShieldCheck className="h-5 w-5" style={{ color: 'var(--accent)' }} /><div><h2 id="platform-center-title" className="text-base font-semibold">平台管理</h2><p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>账户、授权、监控与配置</p></div></div><button ref={closeButtonRef} aria-label="关闭平台管理" onClick={onClose} className="rounded-md p-2 hover:opacity-70"><X className="h-5 w-5" /></button></header>
+    <div className="manager-ui-host fixed inset-0 z-40 flex items-center justify-center p-3" style={{ background: 'rgba(0,0,0,.58)' }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="platform-center-title" className="manager-ui manager-platform flex h-[calc(100dvh-24px)] w-full max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-xl border shadow-2xl" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}>
+        <header className="manager-platform-header flex shrink-0 items-center justify-between border-b" style={{ borderColor: 'var(--border)' }}><div className="flex items-center gap-3"><ShieldCheck className="h-5 w-5" style={{ color: 'var(--accent)' }} /><div><h2 id="platform-center-title" className="text-base font-semibold">平台管理</h2><p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>账户、授权、监控与配置</p></div></div><button ref={closeButtonRef} aria-label="关闭平台管理" onClick={onClose} className="rounded-md p-2 hover:opacity-70"><X className="h-5 w-5" /></button></header>
         {query.isPending ? <div className="flex flex-1 items-center justify-center gap-2 text-sm"><Loader2 className="h-4 w-4 animate-spin" />正在加载权限…</div> : query.error ? <div role="alert" className="p-6 text-sm">权限加载失败：{query.error.message}<button onClick={() => { void query.refetch(); }} className="ml-3 underline">重试</button></div> : (
           <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
-            <nav aria-label="平台管理分类" className="flex shrink-0 gap-3 overflow-x-auto border-b p-3 sm:w-44 sm:flex-col sm:gap-4 sm:overflow-y-auto sm:border-r sm:border-b-0" style={{ borderColor: 'var(--border)', background: 'var(--bg-tertiary)' }}>
+            <nav aria-label="平台管理分类" className="manager-navigation flex shrink-0 overflow-x-auto border-b sm:flex-col sm:overflow-y-auto sm:border-r sm:border-b-0" style={{ borderColor: 'var(--border)', background: 'var(--bg-tertiary)' }}>
               {['个人', '权限中心', '平台', '集成'].map((group) => {
                 const items = allowed.filter((section) => section.group === group);
                 return items.length > 0 && <div key={group} className="shrink-0"><div className="mb-2 px-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>{group}</div><div className="flex gap-1 sm:flex-col">{items.map((item) => <button key={item.id} onClick={() => setSelected(item.id)} aria-current={item.id === current.id ? 'page' : undefined} className="flex items-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-sm text-left" style={{ color: item.id === current.id ? 'var(--accent)' : 'var(--text-secondary)', background: item.id === current.id ? 'var(--bg-secondary)' : 'transparent' }}><item.icon className="h-4 w-4 shrink-0" />{item.label}</button>)}</div></div>;
               })}
             </nav>
             <div className="min-h-0 min-w-0 flex-1 flex flex-col">
-              <div className="shrink-0 border-b px-5 py-3 text-sm font-semibold" style={{ borderColor: 'var(--border)' }}>{current.label}</div>
-              <div className="platform-center-scroll min-h-0 flex-1 overflow-y-auto">
+              <div className="manager-section-heading shrink-0 border-b font-semibold" style={{ borderColor: 'var(--border)' }}>{current.label}</div>
+              <div className="platform-center-scroll manager-content min-h-0 flex-1 overflow-y-auto">
                 <Suspense fallback={<div className="p-6 text-sm">正在加载…</div>}>
                   {current.id === 'account' && <div className="page-content py-4 sm:py-6"><p className="mb-5 text-sm">{currentUser.display_name || currentUser.username} <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>@{currentUser.username}</span></p><div className="mb-6 flex flex-wrap gap-2">{query.data?.roles.map((role) => <span key={role.id} className="rounded border px-2 py-1 text-xs" style={{ borderColor: 'var(--border)' }}>{role.name}</span>)}</div><ChangePassword /></div>}
                   {current.id === 'resources' && <SharedResources userId={currentUser.id} />}

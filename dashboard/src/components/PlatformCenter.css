@@ -18,16 +18,3 @@
 .platform-center-scroll::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--text-secondary) 75%, var(--border));
 }
-
-/* Shared form and table surfaces within platform management. */
-.platform-center-scroll :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),select,textarea) {
-  border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);font:inherit;
-}
-.platform-center-scroll :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),select,textarea):focus-visible {
-  outline:2px solid var(--accent);outline-offset:1px;
-}
-.platform-center-scroll :is(button[class*="button"],button[type="submit"]) {border-radius:6px;font:inherit;}
-.platform-center-scroll table {border-collapse:separate;border-spacing:0;color:var(--text-primary);font-size:12px;}
-.platform-center-scroll th {background:var(--bg-tertiary);color:var(--text-secondary);font-weight:600;}
-.platform-center-scroll :is(th,td) {border-color:var(--border);}
-.platform-center-scroll :is(button,input,select,textarea):disabled {cursor:not-allowed;opacity:.55;}

@@ -22,6 +22,7 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;
   const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.enabled&&e.kind!=='provider');
   if(!account||account.kind==='native'&&!canControlEnvironment(account.id,req.user!.id))return reply.code(404).send({error:'账号不存在或无权访问'});
+  if(req.user!.role!=='admin')return reply.code(403).send({error:'仅管理员可查看账号详情'});
   reply.header('Cache-Control','private, no-store');
   return {usage:cachedAccountUsage(account.id)};
  });
@@ -29,6 +30,7 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;
   const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.enabled&&e.kind!=='provider');
   if(!account||account.kind==='native'&&!canControlEnvironment(account.id,req.user!.id))return reply.code(404).send({error:'账号不存在或无权访问'});
+  if(req.user!.role!=='admin')return reply.code(403).send({error:'仅管理员可查看账号详情'});
   reply.header('Cache-Control','private, no-store');
   const {quota:_,reason:__,...status}=cachedAccountStatus(account.id);return status;
  });
