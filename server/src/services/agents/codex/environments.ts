@@ -71,12 +71,13 @@ export async function deleteCodexEnvironment(id:string):Promise<void>{
  }else getDb().prepare('DELETE FROM agent_environments WHERE id=?').run(id);
  environmentAccessChanged();
 }
-/** Recreate only account tunnels belonging to sessions that were active when
- * the platform stopped. A terminal can then reconnect without opening a page. */
-export async function restoreActiveAccountTransports():Promise<void> {
- const rows=getDb().prepare("SELECT DISTINCT agent_environment_id AS id FROM sessions WHERE cli_type='codex' AND status IN ('running','detached') AND agent_environment_id LIKE 'account:%' LIMIT 100").all() as {id:string}[];
+/** Restore the shared terminal endpoint for each active Codex environment.
+ * This lets existing clients reconnect even before a browser opens the tab. */
+export async function restoreActiveTerminalTransports():Promise<void> {
+ const rows=getDb().prepare("SELECT DISTINCT COALESCE(agent_environment_id,'native') AS id FROM sessions WHERE cli_type='codex' AND status IN ('running','detached') LIMIT 100").all() as {id:string}[];
+ const {ensureCodexTerminalBridge}=await import('./terminal-bridge.js');
  for(const {id} of rows){
-  try{const environment=getCodexEnvironment(id);if(environment.enabled&&environment.kind==='account')await ensureAccountTransport(id,environmentConnection(environment));}catch{/* A failed connection must not block platform startup; later access can retry. */}
+  try{const environment=getCodexEnvironment(id);if(!environment.enabled)continue;const engine=await engineForEnvironment(id);await ensureCodexTerminalBridge(engine.socket);}catch{/* Later access can retry without blocking platform startup. */}
  }
 }
 export async function engineForEnvironment(id:string,options:{history?:boolean}={}):Promise<CodexEngine> {

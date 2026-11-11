@@ -9,11 +9,13 @@ import {renameCodexProvider} from '../src/services/agents/codex/management.js';
 import {getDb} from '../src/db/index.js';
 import {codexEnvironmentRoutes} from '../src/routes/codex-environments.js';
 import {sessionRoutes} from '../src/routes/sessions.js';
-import {saveCodexEnvironment,visibleCodexEnvironments,engineForEnvironment,environmentConnection,restoreActiveAccountTransports} from '../src/services/agents/codex/environments.js';
+import {saveCodexEnvironment,visibleCodexEnvironments,engineForEnvironment,environmentConnection,restoreActiveTerminalTransports} from '../src/services/agents/codex/environments.js';
 import {watchSessionEnvironment,canUseEnvironment} from '../src/services/agents/environment-access.js';
 import {engineForThread,rememberCodexThread,runInCodexEngine} from '../src/services/agents/codex/engine-context.js';
 import {updateAgentManagement} from '../src/services/agents/management-store.js';
 import * as transport from '../src/services/agents/codex/account-transport.js';
+import * as bridge from '../src/services/agents/codex/terminal-bridge.js';
+vi.mock('../src/services/agents/codex/terminal-bridge.js',()=>({ensureCodexTerminalBridge:vi.fn(async(path:string)=>path)}));
 import {collectAccountStatus} from '../src/services/agents/codex/account-status.js';
 import {collectEngineBalance,cachedEngineBalance} from '../src/services/agents/codex/engine-balance.js';
 vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),ensureAccountTransport:vi.fn(async(id:string)=>({socket:'/fixture/'+id+'.sock',home:'/fixture/home'})),closeAccountTransport:vi.fn(async()=>{}),probeAccountConnection:vi.fn(async()=>({models:[{model:'fixture',name:'Fixture',description:'',efforts:[],defaultEffort:''}]})),accountCommand:vi.fn(async()=> 'ok'),checkAccountProject:vi.fn(async()=>{})}));
@@ -43,8 +45,8 @@ describe('Codex account environments and platform ACLs',()=>{
   getDb().prepare('UPDATE agent_environments SET enabled=0 WHERE id=?').run(disabled.id);
   const add=getDb().prepare("INSERT INTO sessions(id,task,status,cli_type,agent_environment_id) VALUES(?,?,?,'codex',?)");
   add.run('active','fixture','running',active.id);add.run('detached','fixture','detached',active.id);add.run('disabled','fixture','running',disabled.id);add.run('closed','fixture','stopped',closed.id);
-  vi.mocked(transport.ensureAccountTransport).mockClear();await restoreActiveAccountTransports();
-  expect(transport.ensureAccountTransport).toHaveBeenCalledOnce();expect(transport.ensureAccountTransport).toHaveBeenCalledWith(active.id,expect.objectContaining({username:'ymchen'}));
+  vi.mocked(transport.ensureAccountTransport).mockClear();vi.mocked(bridge.ensureCodexTerminalBridge).mockClear();await restoreActiveTerminalTransports();
+  expect(transport.ensureAccountTransport).toHaveBeenCalledOnce();expect(transport.ensureAccountTransport).toHaveBeenCalledWith(active.id,expect.objectContaining({username:'ymchen'}));expect(bridge.ensureCodexTerminalBridge).toHaveBeenCalledWith('/fixture/'+active.id+'.sock');
  });
  it('returns empty status caches without contacting Codex even on repeated or forced HTTP reads',async()=>{
   const e=await create(),read=vi.spyOn(stream,'withCodexConnection');
