@@ -29,7 +29,8 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
  const [dimension,setDimension]=useState<Dimension>('day');
  const [search,setSearch]=useState(''),[from,setFrom]=useState(''),[to,setTo]=useState(''),[page,setPage]=useState(0),[tab,setTab]=useState<'usage'|'cards'>('usage');
  const base='/codex/environments/'+encodeURIComponent(id);
- const usage=useQuery({queryKey:groupId?['codex-group-insights',groupId]:['codex-insights',id],queryFn:()=>fetchJSON<{usage:Usage}>(groupId?'/codex/balance-groups/'+encodeURIComponent(groupId)+'/insights':base+'/insights'),retry:false,refetchInterval:300000});
+ const hourly=dimension==='hour';
+ const usage=useQuery({queryKey:groupId?['codex-group-insights',groupId,hourly]:['codex-insights',id,hourly],queryFn:()=>fetchJSON<{usage:Usage}>((groupId?'/codex/balance-groups/'+encodeURIComponent(groupId)+'/insights':base+'/insights')+(hourly?'?granularity=hour':'')),retry:false,refetchInterval:300000});
  const resets=useQuery({queryKey:['codex-reset-credits',id],queryFn:()=>fetchJSON<Resets>(base+'/reset-credits'),retry:false,refetchInterval:300000,staleTime:300000,enabled:!apiMode});
  const data=usage.data?.usage;
  const timezone=data?.timezone||Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -40,9 +41,9 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
  const days=useMemo(()=>{const result=new Map<string,Row[]>();for(const row of rows){const group=result.get(row.date)||[];group.push(row);result.set(row.date,group);}return [...result].sort(([a],[b])=>b.localeCompare(a));},[rows]);
  const pages=Math.max(1,Math.ceil(groups.length/10)),currentPage=Math.min(page,pages-1),shown=groups.slice(currentPage*10,currentPage*10+10);
  const input=sum(rows,'input_tokens'),cached=sum(rows,'cached_input_tokens'),uncached=input!==null&&cached!==null&&cached<=input?input-cached:null;
- const rangeTotal=credits(rows),byPeriod=['day','week','month'].includes(dimension);
+ const rangeTotal=credits(rows),byPeriod=['hour','day','week','month'].includes(dimension);
  const columnWidths=useMemo(()=>usageColumnWidths(groups),[groups]);
- const periodName=dimension==='day'?'日期':dimension==='week'?'周期':'月份';
+ const periodName=dimension==='hour'?'小时':dimension==='day'?'日期':dimension==='week'?'周期':'月份';
  const cards=resets.data?.resets;
  const refresh=()=>{void usage.refetch();if(!apiMode)void resets.refetch();};
  return <Dialog appearance="manager" title={`${name} ${apiMode?'上游':'账号'}详情`} size="image" width={1480} onClose={onClose}>
@@ -65,8 +66,7 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
    </section>:<section aria-label="每日项目用量" className="ci-section">
     <div className="ci-toolbar"><label>统计维度 <select aria-label="统计维度" value={dimension} onChange={e=>{setDimension(e.target.value as Dimension);setPage(0);setExpansion({});}}>{Object.entries(dimensionLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><input aria-label="搜索项目或目录" placeholder="搜索项目名称或工作目录" value={search} onChange={e=>{setSearch(e.target.value);setPage(0);}}/><label>日期 <input type="date" aria-label="开始日期" value={from} onChange={e=>{setFrom(e.target.value);setPage(0);}}/>—<input type="date" aria-label="结束日期" value={to} onChange={e=>{setTo(e.target.value);setPage(0);}}/></label><button className="ci-button" onClick={()=>{table.reset();setSearch('');setFrom('');setTo('');setPage(0);}}>清除全部</button><button className="ci-button" onClick={()=>setExpansion(Object.fromEntries(treeKeys(shown).map(key=>[key,true])))}>展开本页</button><button className="ci-button" onClick={()=>setExpansion(Object.fromEntries(treeKeys(groups).map(key=>[key,false])))}>收起全部</button></div>
     <div className="ci-observation"><span className={`ci-dot${data?.partial?' pending':''}`}/>{data?.initialized===false?'首次全量采集尚未完成':data?.partial?'部分记录不可用 / 数据未完整':'缓存已更新'}{data?.progress&&<span className="ci-collection-progress" title={`已读取 ${numeric(data.progress.bytes_read/1048576)} / ${numeric(data.progress.bytes_total/1048576)} MB`}><progress aria-label="本轮采集进度" max={Math.max(1,data.progress.bytes_total)} value={data.progress.bytes_read}/><span>历史文件 {numeric(data.progress.history_files)} · 本轮读取 {numeric(data.progress.files_complete)} / {numeric(data.progress.files_selected??data.progress.files_total)} 个文件 · {numeric(data.progress.bytes_read/1048576)} MB</span></span>}<span className="ci-last-collection">上次采集 {data?.checked_at?collectionTime(data.checked_at):'尚未完成'} · 每 5 分钟采集当天 · {zoneLabel}</span></div>
-    {data?.unassigned&&<p className="ci-notice" role="status">已保留 {numeric(data.unassigned.tokens.total_tokens)} Token 历史用量，原始明细不完整，暂不能按本地日期归属；此部分不混入日期占比。</p>}
-    {data?.error&&<p className="ci-notice" role="status">{data.error}</p>}{usage.isError&&<p className="ci-notice" role="alert">缓存读取失败，请刷新重试。</p>}
+    {data?.error&&data.error!=='部分历史原始日志缺失，已保留用量但无法按本地日期归属'&&<p className="ci-notice" role="status">{data.error}</p>}{usage.isError&&<p className="ci-notice" role="alert">缓存读取失败，请刷新重试。</p>}
     {rows.some(row=>!row.models?.length)&&<p className="ci-notice" role="status">部分项目的模型明细未返回，请刷新；若仍未恢复，请检查后台服务版本。</p>}
     <TableFrame label="用量统计" className="ci-table-scroll" tableClassName="ci-table ci-usage-table" style={{minWidth:500+columnWidths.reduce((s,w)=>s+w,0)}} columns={<colgroup><col style={{width:240}}/><col style={{width:260}}/>{columnWidths.map((width,k)=><col key={k} style={{width}}/>)}</colgroup>} header={<TableHeaders model={table}/>}>
      {!groups.length&&<TableStateRow columnCount={10}>{usage.isPending?'正在读取缓存…':'所选范围暂无用量记录'}</TableStateRow>}

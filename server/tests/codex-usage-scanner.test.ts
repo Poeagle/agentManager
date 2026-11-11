@@ -14,12 +14,12 @@ afterEach(async()=>{await rm(home,{recursive:true,force:true});});
 describe('account-scoped complete-file scanner',()=>{
  it('uses the requested local zone for both file modification dates and event attribution',async()=>{
   await writeFile(file,meta+context+record('2026-11-11T15:59:59Z',10,10)+record('2026-11-11T16:00:00Z',30,20));await utimes(file,new Date('2026-11-11T16:34:00Z'),new Date('2026-11-11T16:34:00Z'));
-  const local=await scan('daily','2026-11-12',{timezone:'Asia/Taipei'});expect(local.progress.files_selected).toBe(1);expect(local.rows[0]).toMatchObject({day:'2026-11-12',tokens:{total_tokens:20}});expect(local.rows).toHaveLength(1);
+  const local=await scan('daily','2026-11-12',{timezone:'Asia/Taipei',includeEvents:true});expect(local.progress.files_selected).toBe(1);expect(local.rows[0]).toMatchObject({day:'2026-11-12',tokens:{total_tokens:20}});expect(local.rows).toHaveLength(1);expect(local.events[0].hour).toBe('2026-11-12T00:00:00+08:00');
   const all=await scan('full','2026-11-12',{timezone:'Asia/Taipei'});expect(all.rows.map((r:any)=>r.day)).toEqual(['2026-11-11','2026-11-12']);
  });
  it('handles a 25-hour local day across DST and does not use the SSH process timezone',async()=>{
   await writeFile(file,meta+record('2026-11-01T05:30:00Z',10,10)+record('2026-11-01T06:30:00Z',30,20));await utimes(file,new Date('2026-11-02T04:59:00Z'),new Date('2026-11-02T04:59:00Z'));
-  const result=await scan('daily','2026-11-01',{timezone:'America/New_York'});expect(result.rows[0]).toMatchObject({day:'2026-11-01',requests:2,tokens:{total_tokens:30}});
+  const result=await scan('daily','2026-11-01',{timezone:'America/New_York',includeEvents:true});expect(result.rows[0]).toMatchObject({day:'2026-11-01',requests:2,tokens:{total_tokens:30}});expect(result.events.map((event:any)=>event.hour)).toEqual(['2026-11-01T01:00:00-04:00','2026-11-01T01:00:00-05:00']);
  });
  it('does not charge imported paginated history or inherited snapshot notifications to the destination Engine',async()=>{
   const parent='019ff001-1111-7111-8111-111111111111',child='019ff001-2222-7222-8222-222222222222';

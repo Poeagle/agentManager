@@ -25,6 +25,7 @@ it('rebins UTC caches at local midnight once, preserves totals and returns to da
  vi.stubEnv('TZ','Asia/Taipei');expect(cachedAccountUsage('native')).toMatchObject({timezone:'UTC',timezone_pending:'Asia/Taipei'});await collectAccountUsage('native');
  expect(cachedAccountUsage('native')).toMatchObject({timezone:'Asia/Taipei',timezone_pending:null,unassigned:null,rows:[{date:'2026-11-12',tokens:{total_tokens:250}},{date:'2026-11-11',tokens:{total_tokens:100}}]});
  expect(cachedGroupUsage(['native'])).toMatchObject({timezone:'Asia/Taipei',unassigned:null,rows:[{date:'2026-11-12',tokens:{total_tokens:250}},{date:'2026-11-11',tokens:{total_tokens:100}}]});
+ expect(cachedGroupUsage(['native'],'hour',true)).toMatchObject({timezone:'Asia/Taipei',rows:[{date:'2026-11-12',hour:'2026-11-12T00:00:00+08:00',tokens:{total_tokens:250}},{date:'2026-11-11',hour:'2026-11-11T23:00:00+08:00',tokens:{total_tokens:100}}]});
  await collectAccountUsage('native');expect(JSON.parse(vi.mocked(localCommandInput).mock.calls.at(-1)![1])).toMatchObject({mode:'daily',day:'2026-11-12',timezone:'Asia/Taipei',rebin:false});
  await appendFile(path,record('2026-11-11T16:35:00Z',375,25));await utimes(path,new Date('2026-11-11T16:35:00Z'),new Date('2026-11-11T16:35:00Z'));await collectAccountUsage('native');expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(275);
  expect((getDb().prepare('SELECT COUNT(*) n FROM codex_usage_event_ids').get() as {n:number}).n).toBe(4);

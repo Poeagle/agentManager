@@ -1,5 +1,5 @@
 import {accountConfigFiles} from '../services/agents/codex/account-config-files.js';
-import {cachedAccountUsage,cachedGroupUsage,initAccountUsage} from '../services/agents/codex/account-usage.js';
+import {cachedAccountUsage,cachedGroupUsage,collectAccountUsage,initAccountUsage} from '../services/agents/codex/account-usage.js';
 import {cachedAccountStatus,initAccountStatus} from '../services/agents/codex/account-status.js';
 import {cachedEngineBalance,initEngineBalance} from '../services/agents/codex/engine-balance.js';
 import {readCodexAccountDetails} from '../services/agents/codex/account-details.js';
@@ -21,13 +21,13 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
  initAccountStatus();
  initEngineBalance();
  const describe=(e:ReturnType<typeof allCodexEnvironments>[number])=>({...e,auth_mode:cachedEngineBalance(e.id).auth_mode,balance_group:cachedEngineBalance(e.id).groupKey??null,source:e.kind==='native'?'managed_host':e.kind==='provider'?'managed_provider':'system_user'});
- app.get<{Params:{id:string}}>('/codex/environments/:id/insights',async(req,reply)=>{
+ app.get<{Params:{id:string};Querystring:{granularity?:string}}>('/codex/environments/:id/insights',async(req,reply)=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;
   const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.enabled);
   if(!account||account.kind==='native'&&!canControlEnvironment(account.id,req.user!.id))return reply.code(404).send({error:'账号不存在或无权访问'});
   if(req.user!.role!=='admin')return reply.code(403).send({error:'仅管理员可查看账号详情'});
   reply.header('Cache-Control','private, no-store');
-  return {usage:cachedAccountUsage(account.id)};
+  return {usage:req.query.granularity==='hour'?cachedGroupUsage([account.id],'hour',true):cachedAccountUsage(account.id)};
  });
  app.get<{Params:{id:string}}>('/codex/environments/:id/reset-credits',async(req,reply)=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;
@@ -52,13 +52,13 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   if(req.user!.role!=='admin')return reply.code(403).send({error:'仅管理员可查看余额'});
   reply.header('Cache-Control','private, no-store');return cachedEngineBalance(e.id);
  });
- app.get<{Params:{group:string}}>('/codex/balance-groups/:group/insights',async(req,reply)=>{
+ app.get<{Params:{group:string};Querystring:{granularity?:string}}>('/codex/balance-groups/:group/insights',async(req,reply)=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;
   if(req.user!.role!=='admin')return reply.code(403).send({error:'仅管理员可查看余额详情'});
   if(!/^[a-f0-9]{64}$/.test(req.params.group))return reply.code(404).send({error:'上游不存在或无权访问'});
   const members=visibleCodexEnvironments(req.user!.id).filter(e=>e.enabled&&cachedEngineBalance(e.id).auth_mode==='api'&&cachedEngineBalance(e.id).groupKey===req.params.group);
   if(!members.length||members.length>100)return reply.code(404).send({error:'上游不存在或无权访问'});
-  reply.header('Cache-Control','private, no-store');return {usage:cachedGroupUsage(members.map(e=>e.id))};
+  reply.header('Cache-Control','private, no-store');return {usage:cachedGroupUsage(members.map(e=>e.id),req.query.granularity==='hour'?'hour':'day')};
  });
  app.get<{Params:{id:string}}>('/codex/environments/:id/quota',async(req,reply)=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;
@@ -90,6 +90,12 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   }catch(error){return reply.code(errorStatus(error)).send({error:error instanceof Error?error.message:'无法读取该用户的 Codex 详情',stage:(error as {stage?:string}).stage||'account_details'});}
  });
  app.get<{Params:{id:string}}>('/codex/environments/:id/usage',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{getCodexEnvironment(req.params.id);return await environmentUsage(req.params.id);}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'读取占用情况失败'});}});
+ app.post<{Params:{id:string}}>('/codex/environments/:id/insights/rebuild',async(req,reply)=>{
+  if(!requirePermission(req,reply,'settings','write')||!requirePermission(req,reply,'agent_api','write'))return;
+  if(req.user!.role!=='admin')return reply.code(403).send({error:'仅管理员可重建用量统计'});
+  try{getCodexEnvironment(req.params.id);await collectAccountUsage(req.params.id,{rebuild:true});reply.header('Cache-Control','private, no-store');return {ok:true};}
+  catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'重建失败，原统计已保留'});}
+ });
  app.post<{Params:{id:string};Body:{session_ids?:unknown}}>('/codex/environments/:id/close-tabs',async(req,reply)=>{
   if(!requirePermission(req,reply,'settings','write')||!requirePermission(req,reply,'monitor','delete'))return;
   const ids=req.body?.session_ids;if(!Array.isArray(ids)||!ids.length||ids.length>100||ids.some(id=>typeof id!=='string'||id.length>100))return reply.code(400).send({error:'请选择 1–100 个标签页'});
