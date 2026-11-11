@@ -93,7 +93,7 @@ async function catalogInstructions(): Promise<Record<string, unknown>> {
   };
 }
 
-function providerApiKey(providerId: string): string {
+export function providerApiKey(providerId: string): string {
   const row = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(secretKeyName(providerId)) as {value:string}|undefined;
   return row?.value ? openAgentSecret(row.value, secretPurpose(providerId)) : '';
 }
@@ -607,7 +607,7 @@ export async function removeManagedProviderStorage(providerId: string): Promise<
   }));
 }
 
-function externalProviderCodexHome(provider: StoredProvider): string {
+export function externalProviderCodexHome(provider: StoredProvider): string {
   return expandHome(stringField(provider, 'codexHome', join(homedir(), `.codex-${provider.id}`)));
 }
 

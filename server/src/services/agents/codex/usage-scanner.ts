@@ -28,7 +28,7 @@ for root in roots:
    if mode=='full' or modified==day:paths.append((p,st.st_size))
    if len(paths)>20000:raise RuntimeError('history inventory exceeds limit')
 fields=['input_tokens','cached_input_tokens','output_tokens','reasoning_output_tokens','total_tokens']
-groups={};seen=set();read=0
+groups={};seen=set();read=0;events=[];events_truncated=False
 for path,size in paths:
  cwd=None;model=None;tier=None;previous=None
  # One bounded line at a time. Modern metadata may be up to 4 MiB;
@@ -70,6 +70,9 @@ for path,size in paths:
     key=hashlib.sha256(fingerprint.encode()).digest()
     if key in seen:continue
     seen.add(key)
+    if o.get('includeEvents'):
+     if len(events)<50000:events.append({'key':key.hex(),'day':event_day,'cwd':cwd or '', 'model':model,'tier':tier,'tokens':tokens})
+     else:events_truncated=True
     if len(seen)>2000000:raise RuntimeError('usage event limit exceeded')
     group_key=(event_day,cwd or '',model,tier)
     group=groups.setdefault(group_key,{'day':event_day,'cwd':cwd or '','model':model,'tier':tier,'requests':0,'tokens':dict.fromkeys(fields,0)})
@@ -77,5 +80,7 @@ for path,size in paths:
     group['requests']+=1
     for k in fields:group['tokens'][k]=None if group['tokens'][k] is None or tokens[k] is None else group['tokens'][k]+tokens[k]
    except (ValueError,TypeError,AttributeError,OverflowError):errors+=1
-print(json.dumps({'rows':list(groups.values()),'mode':mode,'day':day,'errors':errors,'partial':errors>0,'progress':{'mode':mode,'day':day,'history_files':history_files,'history_bytes':history_bytes,'files_selected':len(paths),'files_total':len(paths),'files_complete':len(paths),'bytes_total':sum(s for _,s in paths),'bytes_read':read}},separators=(',',':'),allow_nan=False))
+result={'rows':list(groups.values()),'mode':mode,'day':day,'errors':errors,'partial':errors>0,'progress':{'mode':mode,'day':day,'history_files':history_files,'history_bytes':history_bytes,'files_selected':len(paths),'files_total':len(paths),'files_complete':len(paths),'bytes_total':sum(s for _,s in paths),'bytes_read':read}}
+if o.get('includeEvents'):result.update({'events':events,'events_truncated':events_truncated})
+print(json.dumps(result,separators=(',',':'),allow_nan=False))
 `;

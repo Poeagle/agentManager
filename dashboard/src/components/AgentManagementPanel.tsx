@@ -1,6 +1,7 @@
 import {ProviderDeleteDialog} from './ProviderDeleteDialog';
 import {useProviderUsage} from '../lib/use-provider-usage';
 import {CodexAccountProvider} from './CodexAccountProvider';
+import {BalanceSummary} from './CodexEngineBalance';
 import {CodexAccountProviderEditor} from './CodexAccountProviderEditor';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -662,10 +663,14 @@ function ProviderCard({
   state,
   selected,
   onSelect,
+  authMode,
+  balanceId,
 }: {
   state: AgentProviderState;
   selected: boolean;
   onSelect: () => void;
+  authMode?:'account'|'api'|null;
+  balanceId?:string;
 }) {
   return (
     <button
@@ -679,8 +684,9 @@ function ProviderCard({
       <span className="agent-management-provider-copy">
         <strong>{state.name}</strong>
         <small>
-          {state.id} · {state.statusText}
+          {authMode==='api'?'API':authMode==='account'?'账号':'认证待检测'} · {state.statusText}
         </small>
+        {balanceId&&authMode==='api'&&<small>余额：<BalanceSummary id={balanceId}/></small>}
       </span>
       <ChevronRight size={14} />
     </button>
@@ -692,11 +698,15 @@ function LiveProviderCard({
   state,
   selected,
   onSelect,
+  authMode,
+  balanceId,
 }: {
   agentId: string;
   state: AgentProviderState;
   selected: boolean;
   onSelect: () => void;
+  authMode?:'account'|'api'|null;
+  balanceId?:string;
 }) {
   const query = useQuery({
     queryKey: ["agent-provider", agentId, state.id],
@@ -714,6 +724,8 @@ function LiveProviderCard({
       state={query.data}
       selected={selected}
       onSelect={onSelect}
+      authMode={authMode}
+      balanceId={balanceId}
     />
   );
 }
@@ -1517,7 +1529,7 @@ function ProviderEditor({
           </span>
         </div>
       )}
-      <section className="agent-management-section" aria-label="Provider 接入信息"><dl className="agent-management-kv"><div><dt>接入类型</dt><dd>{provider.id==='native'?'本机默认 Codex':'API Key / Responses API'}</dd></div><div><dt>认证方式</dt><dd>{liveProvider.authentication.method}</dd></div><div><dt>认证状态</dt><dd>{liveProvider.authentication.status==='authenticated'?'已认证':liveProvider.authentication.status==='missing'?'未认证':'未知'}</dd></div><div><dt>Engine 状态</dt><dd>{liveProvider.statusText}</dd></div><div><dt>Engine PID</dt><dd>{liveProvider.pid??'未知'}</dd></div><div><dt>CODEX_HOME</dt><dd>{liveProvider.codexHome||'未提供'}</dd></div>{endpoint&&<div><dt>接口地址</dt><dd>{String(endpoint)}</dd></div>}<div><dt>默认模型</dt><dd>{liveProvider.defaultModel||'使用当前环境默认模型'}</dd></div><div><dt>可用模型</dt><dd>{liveProvider.models.length?liveProvider.models.join('、'):'尚未检测模型'}</dd></div></dl></section>
+      <section className="agent-management-section" aria-label="Provider 接入信息"><dl className="agent-management-kv"><div><dt>Engine 来源</dt><dd>{provider.id==='native'?'本机托管':'本机托管 Provider'}</dd></div><div><dt>认证方式</dt><dd>{liveProvider.authentication.method}</dd></div><div><dt>认证状态</dt><dd>{liveProvider.authentication.status==='authenticated'?'已认证':liveProvider.authentication.status==='missing'?'未认证':'未知'}</dd></div>{!readOnly&&<div><dt>钱包余额</dt><dd><BalanceSummary id={provider.id==='native'?'native':'provider:'+provider.id}/></dd></div>}<div><dt>Engine 状态</dt><dd>{liveProvider.statusText}</dd></div><div><dt>Engine PID</dt><dd>{liveProvider.pid??'未知'}</dd></div><div><dt>CODEX_HOME</dt><dd>{liveProvider.codexHome||'未提供'}</dd></div>{endpoint&&<div><dt>接口地址</dt><dd>{String(endpoint)}</dd></div>}<div><dt>默认模型</dt><dd>{liveProvider.defaultModel||'使用当前环境默认模型'}</dd></div><div><dt>可用模型</dt><dd>{liveProvider.models.length?liveProvider.models.join('、'):'尚未检测模型'}</dd></div></dl></section>
       {provider.id==='native'&&<AgentDefaultsEditor
         agentId={agentId}
         defaults={defaults}
@@ -2086,11 +2098,13 @@ function CodexWorkspace({
             key={provider.id}
             agentId={agentId}
             state={provider}
+            authMode={accounts.data?.environments.find(e=>e.id===(provider.id==='native'?'native':'provider:'+provider.id))?.auth_mode}
+            balanceId={!readOnly?(provider.id==='native'?'native':'provider:'+provider.id):undefined}
             selected={provider.id === (selectedAccount?.id || selected?.id)}
             onSelect={() => switchProvider(provider.id)}
           />
         ))}
-        {accountProviders.map(e=><button key={e.id} type="button" className="agent-management-provider" title={`${e.name}：本机用户 ${e.connection?.username}，${e.enabled?'已启用':'已停用'}`} aria-current={selectedAccount?.id===e.id?'true':undefined} onClick={()=>switchProvider(e.id)}><span className={`agent-management-dot ${e.enabled?'ready':'unknown'}`}/><span className="agent-management-provider-copy"><strong>{e.name}</strong><small>登录账号 · {e.connection?.username}</small><small>{e.enabled?'已启用':'已停用'} · {e.connection?.authMethod==='password'?'SSH 密码':'SSH 密钥'}</small></span><ChevronRight size={14}/></button>)}
+        {accountProviders.map(e=><button key={e.id} type="button" className="agent-management-provider" title={`${e.name}：本机用户 ${e.connection?.username}，${e.enabled?'已启用':'已停用'}`} aria-current={selectedAccount?.id===e.id?'true':undefined} onClick={()=>switchProvider(e.id)}><span className={`agent-management-dot ${e.enabled?'ready':'unknown'}`}/><span className="agent-management-provider-copy"><strong>{e.name}</strong><small>{e.auth_mode==='api'?'API':e.auth_mode==='account'?'账号':'认证待检测'} · {e.connection?.username}</small><small>{e.enabled?'已启用':'已停用'} · {e.connection?.authMethod==='password'?'SSH 密码':'SSH 密钥'}</small>{e.auth_mode==='api'&&!readOnly&&<small>余额：<BalanceSummary id={e.id}/></small>}</span><ChevronRight size={14}/></button>)}
         <p className="agent-management-provider-note">
           API 接口和登录账号分别配置；标签页可选择已授权的 Provider。
         </p>

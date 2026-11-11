@@ -1,14 +1,15 @@
 import {beforeEach,afterEach,it,expect,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
-import {initAccountUsage,collectAccountUsage,cachedAccountUsage,startAccountUsage,stopAccountUsage} from '../src/services/agents/codex/account-usage.js';
+import {initAccountUsage,collectAccountUsage,cachedAccountUsage,cachedGroupUsage,startAccountUsage,stopAccountUsage} from '../src/services/agents/codex/account-usage.js';
 import {accountCommandInput,localCommandInput} from '../src/services/agents/codex/account-transport.js';
+import {updateAgentManagement} from '../src/services/agents/management-store.js';
 vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),accountCommandInput:vi.fn(),localCommandInput:vi.fn()}));
 let fixture:ReturnType<typeof createTestDatabase>;
 const tokens={total_tokens:10,input_tokens:10,cached_input_tokens:null,output_tokens:0,reasoning_output_tokens:null};
 const row={day:'2026-01-01',cwd:'/project',model:null,tier:null,requests:1,tokens};
-function respond(rows:any[]=[row],options:Record<string,unknown>={}){vi.mocked(localCommandInput).mockImplementation(async(_script,input)=>JSON.stringify({...JSON.parse(input),rows,partial:false,errors:0,...options}));}
-beforeEach(()=>{fixture=createTestDatabase();initAccountUsage();respond();vi.mocked(accountCommandInput).mockImplementation(async(_c,_s,input)=>JSON.stringify({...JSON.parse(input),rows:[row],partial:false,errors:0}));});
+function respond(rows:any[]=[row],options:Record<string,unknown>={}){vi.mocked(localCommandInput).mockImplementation(async(_script,input)=>JSON.stringify({...JSON.parse(input),rows,events:[],events_truncated:false,partial:false,errors:0,...options}));}
+beforeEach(()=>{fixture=createTestDatabase();initAccountUsage();respond();vi.mocked(accountCommandInput).mockImplementation(async(_c,_s,input)=>JSON.stringify({...JSON.parse(input),rows:[row],events:[],events_truncated:false,partial:false,errors:0}));});
 afterEach(async()=>{await stopAccountUsage();fixture.cleanup();vi.resetAllMocks();vi.useRealTimers();});
 it('groups model usage across speeds while retaining unknown models and exact totals',async()=>{
  const token=(input:number,cached:number)=>({input_tokens:input,cached_input_tokens:cached,output_tokens:0,reasoning_output_tokens:0,total_tokens:input});
@@ -54,4 +55,24 @@ it('isolates accounts through their SSH connection and resets the baseline after
  for(const id of ['a','b'])expect(accountCommandInput).toHaveBeenCalledWith(expect.objectContaining({username:id}),expect.any(String),expect.stringContaining('/home/'+id+'/.codex'),expect.objectContaining({timeoutMs:300000}));
  expect(cachedAccountUsage('a').rows[0].tokens.total_tokens).toBe(10);expect(cachedAccountUsage('b').rows[0].tokens.total_tokens).toBe(10);
  getDb().prepare("UPDATE agent_environments SET config=? WHERE id='a'").run(JSON.stringify({username:'a',port:22,codexCommand:'codex',codexHome:'/new-home',identityFile:''}));expect(cachedAccountUsage('a').rows).toEqual([]);await collectAccountUsage('a');expect(JSON.parse(vi.mocked(accountCommandInput).mock.calls.at(-1)![2]).mode).toBe('full');
+});
+it('collects a distinct provider history but refuses a shared directory and invalidates its old snapshot',async()=>{
+ const provider=(id:string,home:string)=>({id,name:id,kind:'responses',enabled:true,fields:{codexHome:home,models:['m'],baseUrl:'https://example.invalid/v1'}});
+ updateAgentManagement('codex',()=>({defaults:{},providers:[provider('a','/tmp/isolated-usage-a')]}));
+ await collectAccountUsage('provider:a');expect(cachedAccountUsage('provider:a').rows).toHaveLength(1);
+ expect(JSON.parse(vi.mocked(localCommandInput).mock.calls.at(-1)![1]).home).toBe('/tmp/isolated-usage-a');
+ updateAgentManagement('codex',()=>({defaults:{},providers:[provider('a','/tmp/isolated-usage-a'),provider('b','/tmp/isolated-usage-a')]}));
+ expect(cachedAccountUsage('provider:a').rows).toEqual([]);vi.mocked(localCommandInput).mockClear();
+ await collectAccountUsage('provider:a');expect(localCommandInput).not.toHaveBeenCalled();expect(cachedAccountUsage('provider:a')).toMatchObject({partial:true,error:expect.stringContaining('共用'),rows:[]});
+});
+it('merges distinct provider histories while counting a copied session event only once',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+ const provider=(id:string)=>({id,name:id,kind:'responses',enabled:true,fields:{codexHome:'/tmp/group-fixture-'+id,models:['m'],baseUrl:'https://example.invalid/v1'}});
+ updateAgentManagement('codex',()=>({defaults:{},providers:[provider('a'),provider('b')]}));
+ const event={key:'a'.repeat(64),day:'2026-01-01',cwd:'/project',model:null,tier:null,tokens};
+ respond([row],{events:[event]});await collectAccountUsage('provider:a');
+ respond([row],{events:[event,{...event,key:'b'.repeat(64)}]});await collectAccountUsage('provider:b');
+ expect(cachedGroupUsage(['provider:a','provider:b'])).toMatchObject({partial:false,rows:[{date:'2026-01-01',cwd:'/project',requests:2,tokens:{total_tokens:20}}]});
+ const conflict={...event,tokens:{...tokens,total_tokens:15}};respond([row],{events:[conflict,{...event,key:'b'.repeat(64)}]});await collectAccountUsage('provider:b');
+ expect(cachedGroupUsage(['provider:a','provider:b'])).toMatchObject({partial:true,rows:[{requests:1,tokens:{total_tokens:10}}]});
 });

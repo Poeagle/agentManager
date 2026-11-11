@@ -22,17 +22,18 @@ function usageColumnWidths(nodes:UsageGroup[]){
   [t.input_tokens,t.cached_input_tokens,t.input_tokens!=null&&t.cached_input_tokens!=null?t.input_tokens-t.cached_input_tokens:null,null,t.output_tokens,t.total_tokens,node.metrics.estimated_credits,null].forEach((value,i)=>{if(value!=null)widths[i]=Math.max(widths[i],numeric(value).length*7+20);});visit(node.children);
  }}visit(nodes);return widths;
 }
-export function CodexAccountInsights({id,name,onClose}:{id:string;name:string;onClose:()=>void}){
+export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:string;name:string;onClose:()=>void;groupId?:string;apiOverview?:React.ReactNode}){
+ const apiMode=!!groupId;
  const [expansion,setExpansion]=useState<Record<string,boolean>>({});
  const [dimension,setDimension]=useState<Dimension>('day');
  const [search,setSearch]=useState(''),[from,setFrom]=useState(''),[to,setTo]=useState(''),[page,setPage]=useState(0),[tab,setTab]=useState<'usage'|'cards'>('usage');
  const base='/codex/environments/'+encodeURIComponent(id);
- const usage=useQuery({queryKey:['codex-insights',id],queryFn:()=>fetchJSON<{usage:Usage}>(base+'/insights'),retry:false,refetchInterval:300000});
- const resets=useQuery({queryKey:['codex-reset-credits',id],queryFn:()=>fetchJSON<Resets>(base+'/reset-credits'),retry:false,refetchInterval:300000,staleTime:300000});
+ const usage=useQuery({queryKey:groupId?['codex-group-insights',groupId]:['codex-insights',id],queryFn:()=>fetchJSON<{usage:Usage}>(groupId?'/codex/balance-groups/'+encodeURIComponent(groupId)+'/insights':base+'/insights'),retry:false,refetchInterval:300000});
+ const resets=useQuery({queryKey:['codex-reset-credits',id],queryFn:()=>fetchJSON<Resets>(base+'/reset-credits'),retry:false,refetchInterval:300000,staleTime:300000,enabled:!apiMode});
  const data=usage.data?.usage;
  const filteredRows=useMemo(()=>(data?.rows||[]).filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&(!search||`${r.cwd} ${r.project_name||''}`.toLowerCase().includes(search.toLowerCase()))),[data,from,to,search]);
- const rows=useMemo(()=>estimatableUsageRows(filteredRows),[filteredRows]);
- const hidden=filteredRows.reduce((n,row)=>n+(row.models?.length?row.models.filter(model=>model.estimated_credits==null).length:row.estimated_credits==null?1:0),0);
+ const rows=useMemo(()=>apiMode?filteredRows:estimatableUsageRows(filteredRows),[filteredRows,apiMode]);
+ const hidden=apiMode?0:filteredRows.reduce((n,row)=>n+(row.models?.length?row.models.filter(model=>model.estimated_credits==null).length:row.estimated_credits==null?1:0),0);
  const days=useMemo(()=>{const result=new Map<string,Row[]>();for(const row of rows){const group=result.get(row.date)||[];group.push(row);result.set(row.date,group);}return [...result].sort(([a],[b])=>b.localeCompare(a));},[rows]);
  const groups=useMemo(()=>groupUsage(rows,dimension),[rows,dimension]);
  const pages=Math.max(1,Math.ceil(groups.length/10)),currentPage=Math.min(page,pages-1),shown=groups.slice(currentPage*10,currentPage*10+10);
@@ -40,10 +41,10 @@ export function CodexAccountInsights({id,name,onClose}:{id:string;name:string;on
  const columnWidths=useMemo(()=>usageColumnWidths(groups),[groups]);
  const periodName=dimension==='day'?'日期':dimension==='week'?'周期':'月份';
  const cards=resets.data?.resets;
- const refresh=()=>{void usage.refetch();void resets.refetch();};
- return <Dialog appearance="manager" title={`${name} 账号详情`} size="image" width={1480} onClose={onClose}>
+ const refresh=()=>{void usage.refetch();if(!apiMode)void resets.refetch();};
+ return <Dialog appearance="manager" title={`${name} ${apiMode?'上游':'账号'}详情`} size="image" width={1480} onClose={onClose}>
   <div className="codex-insights">
-   <div className="ci-identity"><span>{resets.data?.account.email||name}</span><span className="ci-tag">{resets.data?.account.plan||'套餐未提供'}</span><span className="ci-snapshot" title={resets.data?.checked_at?`额度与重置卡上次成功采集：${new Date(resets.data.checked_at).toLocaleString()}${resets.data.stale?'；显示上次成功数据':''}`:'等待首次后台采集'}>额度与重置卡 · 每 5 分钟更新{resets.data?.stale?' · 缓存已过期':''}</span><button className="ci-button" title="重新读取后台缓存，不触发采集" onClick={refresh} disabled={usage.isFetching||resets.isFetching}><RefreshCw size={14}/>刷新缓存</button></div>
+   {apiMode?<><div className="ci-identity"><span>{name} · API 上游</span><span className="ci-snapshot">余额默认每 5 分钟更新</span><button className="ci-button" onClick={refresh} disabled={usage.isFetching}><RefreshCw size={14}/>刷新缓存</button></div>{apiOverview}</>:<>   <div className="ci-identity"><span>{resets.data?.account.email||name}</span><span className="ci-tag">{resets.data?.account.plan||'套餐未提供'}</span><span className="ci-snapshot" title={resets.data?.checked_at?`额度与重置卡上次成功采集：${new Date(resets.data.checked_at).toLocaleString()}${resets.data.stale?'；显示上次成功数据':''}`:'等待首次后台采集'}>额度与重置卡 · 每 5 分钟更新{resets.data?.stale?' · 缓存已过期':''}</span><button className="ci-button" title="重新读取后台缓存，不触发采集" onClick={refresh} disabled={usage.isFetching||resets.isFetching}><RefreshCw size={14}/>刷新缓存</button></div>
    <div className="ci-overview">
     <section><span className="ci-label"><Activity size={15}/>账号额度</span>{resets.data?.windows?.length?resets.data.windows.map((w,i)=><div className="ci-quota" key={i}><span>{w.windowDurationMins===10080?'周额度':w.windowDurationMins?`${w.windowDurationMins/60} 小时`:'额度'}</span><strong>剩余 {numeric(Math.max(0,100-w.usedPercent))}%</strong><progress aria-label="账号额度剩余" value={Math.max(0,100-w.usedPercent)} max={100}/><small>重置 {time(w.resetsAt)}</small></div>):<p>{resets.isPending?'正在读取…':'额度暂不可用'}</p>}</section>
     <section><span className="ci-label"><Ticket size={15}/>重置卡</span><strong className="ci-value">{cards?cards.availableCount:'—'}<small> 张可用</small></strong><button className="ci-link" onClick={()=>setTab('cards')}>查看卡片与到期时间 <ChevronRight size={13}/></button></section>
@@ -51,6 +52,8 @@ export function CodexAccountInsights({id,name,onClose}:{id:string;name:string;on
    </div>
    {resets.data?.error&&<p className="ci-notice" role="status">{resets.data.error}</p>}
    <nav className="ci-tabs" aria-label="账号详情栏目"><button aria-selected={tab==='usage'} onClick={()=>setTab('usage')}>每日项目用量</button><button aria-selected={tab==='cards'} onClick={()=>setTab('cards')}>重置卡{cards?` (${cards.availableCount})`:''}</button></nav>
+</>}
+   {apiMode&&<nav className="ci-tabs" aria-label="上游详情栏目"><button aria-selected="true">合并会话用量</button></nav>}
    {tab==='cards'?<section aria-label="重置卡" className="ci-section">
     <h4>重置卡：{resets.isPending?'读取中…':cards?`${cards.availableCount} 张`:'未提供'}</h4>
     {resets.isError&&<p className="ci-notice" role="alert">重置卡读取失败，请刷新重试。</p>}
@@ -59,7 +62,7 @@ export function CodexAccountInsights({id,name,onClose}:{id:string;name:string;on
     {cards?.credits&&cards.credits.length<cards.availableCount&&<p className="ci-muted">服务未返回全部卡片明细。</p>}
    </section>:<section aria-label="每日项目用量" className="ci-section">
     <div className="ci-toolbar"><label>统计维度 <select aria-label="统计维度" value={dimension} onChange={e=>{setDimension(e.target.value as Dimension);setPage(0);setExpansion({});}}>{Object.entries(dimensionLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><input aria-label="搜索项目或目录" placeholder="搜索项目名称或工作目录" value={search} onChange={e=>{setSearch(e.target.value);setPage(0);}}/><label>日期 <input type="date" aria-label="开始日期" value={from} onChange={e=>{setFrom(e.target.value);setPage(0);}}/>—<input type="date" aria-label="结束日期" value={to} onChange={e=>{setTo(e.target.value);setPage(0);}}/></label><button className="ci-button" onClick={()=>setExpansion(Object.fromEntries(treeKeys(shown).map(key=>[key,true])))}>展开本页</button><button className="ci-button" onClick={()=>setExpansion(Object.fromEntries(treeKeys(groups).map(key=>[key,false])))}>收起全部</button></div>
-    <div className="ci-observation"><span className={`ci-dot${data?.partial?' pending':''}`}/>{data?.initialized===false?'首次全量采集尚未完成':data?.partial?'部分记录不可用 / 数据未完整':'缓存已更新'}{data?.progress&&<span className="ci-collection-progress" title={`已读取 ${numeric(data.progress.bytes_read/1048576)} / ${numeric(data.progress.bytes_total/1048576)} MB`}><progress aria-label="本轮采集进度" max={Math.max(1,data.progress.bytes_total)} value={data.progress.bytes_read}/><span>历史文件 {numeric(data.progress.history_files)} · 本轮读取 {numeric(data.progress.files_complete)} / {numeric(data.progress.files_selected??data.progress.files_total)} 个文件 · {numeric(data.progress.bytes_read/1048576)} MB</span></span>}{hidden>0&&<span>已隐藏 {hidden} 条不可估算记录</span>}<span className="ci-last-collection">上次采集 {data?.checked_at?new Date(data.checked_at).toLocaleString():'尚未完成'} · 每 5 分钟采集当天 · UTC</span></div>
+    <div className="ci-observation"><span className={`ci-dot${data?.partial?' pending':''}`}/>{data?.initialized===false?'首次全量采集尚未完成':data?.partial?'部分记录不可用 / 数据未完整':'缓存已更新'}{data?.progress&&<span className="ci-collection-progress" title={`已读取 ${numeric(data.progress.bytes_read/1048576)} / ${numeric(data.progress.bytes_total/1048576)} MB`}><progress aria-label="本轮采集进度" max={Math.max(1,data.progress.bytes_total)} value={data.progress.bytes_read}/><span>历史文件 {numeric(data.progress.history_files)} · 本轮读取 {numeric(data.progress.files_complete)} / {numeric(data.progress.files_selected??data.progress.files_total)} 个文件 · {numeric(data.progress.bytes_read/1048576)} MB</span></span>}{!apiMode&&hidden>0&&<span>已隐藏 {hidden} 条不可估算记录</span>}<span className="ci-last-collection">上次采集 {data?.checked_at?new Date(data.checked_at).toLocaleString():'尚未完成'} · 每 5 分钟采集当天 · UTC</span></div>
     {data?.error&&<p className="ci-notice" role="status">{data.error}</p>}{usage.isError&&<p className="ci-notice" role="alert">缓存读取失败，请刷新重试。</p>}
     {rows.some(row=>!row.models?.length)&&<p className="ci-notice" role="status">部分项目的模型明细未返回，请刷新；若仍未恢复，请检查后台服务版本。</p>}
     <TableFrame label="用量统计" className="ci-table-scroll" tableClassName="ci-table ci-usage-table" style={{minWidth:500+columnWidths.reduce((s,w)=>s+w,0)}} columns={<colgroup><col style={{width:240}}/><col style={{width:260}}/>{columnWidths.map((width,k)=><col key={k} style={{width}}/>)}</colgroup>} header={<><th>{dimension==='project'?'项目 / 模型 / 日期':dimension==='model'?'模型 / 项目 / 日期':`${periodName} / 项目 / 模型`}</th><th>工作目录</th><th>输入 Token</th><th>缓存输入</th><th>非缓存输入</th><th title="缓存输入 Token ÷ 输入 Token；汇总层按 Token 加权计算">缓存命中率</th><th>输出 Token</th><th>总 Token</th><th>预计 Credits</th><th title="当前行预计 Credits ÷ 当前筛选范围预计 Credits；日期分组按对应周期计算">耗用占比</th></>}>
@@ -67,7 +70,7 @@ export function CodexAccountInsights({id,name,onClose}:{id:string;name:string;on
      {shown.map((node,index)=><Group key={node.key} node={node} creditTotal={byPeriod?node.metrics.estimated_credits??null:rangeTotal} depth={0} defaultOpen={currentPage===0&&index===0} expansion={expansion} setExpansion={setExpansion}/>)}
     </TableFrame>
     <div className="ci-pagination"><span>{groups.length} 个{byPeriod?periodName:dimensionLabels[dimension]} · {rows.length} 条日期/项目记录</span><button className="ci-button" disabled={currentPage===0} onClick={()=>setPage(currentPage-1)}>上一页</button><span>{currentPage+1} / {pages}</span><button className="ci-button" disabled={currentPage+1>=pages} onClick={()=>setPage(currentPage+1)}>下一页</button></div>
-    <p className="ci-footnote">宽表可横向滚动查看完整列。仅展示可估算 Credits 的记录；缓存命中率 = 缓存输入 / 输入 Token；各汇总层按 Token 加权，输入为零或字段缺失时不计算。周从 UTC 周一开始，日期筛选先于分组；占比以筛选后{byPeriod?`对应${periodName}`:'全部范围'}预计 Credits 为分母。Credits 按 {data?.credit_rate_date||'当前'} 官方费率折算，非实际扣费；未记录速度时按 Standard 估算，带 * 为部分覆盖。<a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noreferrer">费率依据</a></p>
+    <p className="ci-footnote">宽表可横向滚动查看完整列。{apiMode?'显示全部可归属记录；':'仅展示可估算 Credits 的记录；'}缓存命中率 = 缓存输入 / 输入 Token；各汇总层按 Token 加权，输入为零或字段缺失时不计算。周从 UTC 周一开始，日期筛选先于分组；占比以筛选后{byPeriod?`对应${periodName}`:'全部范围'}预计 Credits 为分母。Credits 按 {data?.credit_rate_date||'当前'} 官方费率折算，非实际扣费；未记录速度时按 Standard 估算，带 * 为部分覆盖。<a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noreferrer">费率依据</a></p>
    </section>}
   </div>
  </Dialog>;

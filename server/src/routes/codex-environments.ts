@@ -1,6 +1,7 @@
 import {accountConfigFiles} from '../services/agents/codex/account-config-files.js';
-import {cachedAccountUsage,initAccountUsage} from '../services/agents/codex/account-usage.js';
+import {cachedAccountUsage,cachedGroupUsage,initAccountUsage} from '../services/agents/codex/account-usage.js';
 import {cachedAccountStatus,initAccountStatus} from '../services/agents/codex/account-status.js';
+import {cachedEngineBalance,initEngineBalance} from '../services/agents/codex/engine-balance.js';
 import {readCodexAccountDetails} from '../services/agents/codex/account-details.js';
 import {environmentUsage,closeEnvironmentTabs} from '../services/agents/codex/environment-usage.js';
 import type {FastifyPluginAsync} from 'fastify';
@@ -18,9 +19,11 @@ const errorStatus=(e:unknown)=>Number((e as {statusCode?:number})?.statusCode)||
 export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
  initAccountUsage();
  initAccountStatus();
+ initEngineBalance();
+ const describe=(e:ReturnType<typeof allCodexEnvironments>[number])=>({...e,auth_mode:cachedEngineBalance(e.id).auth_mode,balance_group:cachedEngineBalance(e.id).groupKey??null,source:e.kind==='native'?'managed_host':e.kind==='provider'?'managed_provider':'system_user'});
  app.get<{Params:{id:string}}>('/codex/environments/:id/insights',async(req,reply)=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;
-  const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.enabled&&e.kind!=='provider');
+  const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.enabled);
   if(!account||account.kind==='native'&&!canControlEnvironment(account.id,req.user!.id))return reply.code(404).send({error:'账号不存在或无权访问'});
   if(req.user!.role!=='admin')return reply.code(403).send({error:'仅管理员可查看账号详情'});
   reply.header('Cache-Control','private, no-store');
@@ -37,10 +40,25 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
  app.get<{Querystring:{management?:string}}>('/codex/environments',async(req,reply)=>{
   if(req.query.management==='true'){
    if(!requirePermission(req,reply,'settings','write'))return;
-   return {environments:allCodexEnvironments(),users:getDb().prepare('SELECT id,username,display_name,role FROM users WHERE disabled=0 ORDER BY username').all()};
+   return {environments:allCodexEnvironments().map(describe),users:getDb().prepare('SELECT id,username,display_name,role FROM users WHERE disabled=0 ORDER BY username').all()};
   }
   if(!requirePermission(req,reply,'agent_api','read'))return;
-  return {environments:visibleCodexEnvironments(req.user!.id)};
+  return {environments:visibleCodexEnvironments(req.user!.id).map(e=>({...e,auth_mode:cachedEngineBalance(e.id).auth_mode,balance_group:cachedEngineBalance(e.id).groupKey??null,source:e.kind==='native'?'managed_host':e.kind==='provider'?'managed_provider':'system_user'}))};
+ });
+ app.get<{Params:{id:string}}>('/codex/environments/:id/balance',async(req,reply)=>{
+  if(!requirePermission(req,reply,'agent_api','read'))return;
+  const e=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.enabled);
+  if(!e||e.kind==='native'&&!canControlEnvironment(e.id,req.user!.id))return reply.code(404).send({error:'环境不存在或无权访问'});
+  if(req.user!.role!=='admin')return reply.code(403).send({error:'仅管理员可查看余额'});
+  reply.header('Cache-Control','private, no-store');return cachedEngineBalance(e.id);
+ });
+ app.get<{Params:{group:string}}>('/codex/balance-groups/:group/insights',async(req,reply)=>{
+  if(!requirePermission(req,reply,'agent_api','read'))return;
+  if(req.user!.role!=='admin')return reply.code(403).send({error:'仅管理员可查看余额详情'});
+  if(!/^[a-f0-9]{64}$/.test(req.params.group))return reply.code(404).send({error:'上游不存在或无权访问'});
+  const members=visibleCodexEnvironments(req.user!.id).filter(e=>e.enabled&&cachedEngineBalance(e.id).auth_mode==='api'&&cachedEngineBalance(e.id).groupKey===req.params.group);
+  if(!members.length||members.length>100)return reply.code(404).send({error:'上游不存在或无权访问'});
+  reply.header('Cache-Control','private, no-store');return {usage:cachedGroupUsage(members.map(e=>e.id))};
  });
  app.get<{Params:{id:string}}>('/codex/environments/:id/quota',async(req,reply)=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;
@@ -77,8 +95,8 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   const ids=req.body?.session_ids;if(!Array.isArray(ids)||!ids.length||ids.length>100||ids.some(id=>typeof id!=='string'||id.length>100))return reply.code(400).send({error:'请选择 1–100 个标签页'});
   try{return {results:await closeEnvironmentTabs(req.params.id,[...new Set(ids)])};}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'删除标签页失败'});}
  });
- app.post('/codex/environments',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{return {environment:await saveCodexEnvironment(req.body)};}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'保存失败'});}});
- app.put<{Params:{id:string}}>('/codex/environments/:id',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{return {environment:await saveCodexEnvironment(req.body,req.params.id)};}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'保存失败'});}});
+ app.post('/codex/environments',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{return {environment:describe(await saveCodexEnvironment(req.body))};}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'保存失败'});}});
+ app.put<{Params:{id:string}}>('/codex/environments/:id',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{return {environment:describe(await saveCodexEnvironment(req.body,req.params.id))};}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'保存失败'});}});
  app.delete<{Params:{id:string}}>('/codex/environments/:id',async(req,reply)=>{if(!requirePermission(req,reply,'settings','write'))return;try{await deleteCodexEnvironment(req.params.id);return {ok:true};}catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'删除失败'});}});
  app.post('/codex/environments/check-connection',async(req,reply)=>{
   if(!requirePermission(req,reply,'settings','write'))return;
@@ -104,7 +122,7 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
  const own=(id:string,userId:string)=>{const s=getSession(id);return s?.cli_type==='codex'&&s.created_by_user_id===userId&&userCanUseSessionTool(userId,id,'codex',s.mode==='terminal'?'terminal':'session')?s:null;};
  app.get<{Params:{id:string}}>('/sessions/:id/environments',async(req,reply)=>{
   const s=own(req.params.id,req.user!.id);if(!s)return reply.code(404).send({error:'Session not found'});
-  return {current:sessionEnvironmentId(s),environments:visibleCodexEnvironments(req.user!.id).map(e=>({...e,can_control:canControlEnvironment(e.id,req.user!.id)}))};
+  return {current:sessionEnvironmentId(s),environments:visibleCodexEnvironments(req.user!.id).map(e=>({...e,auth_mode:cachedEngineBalance(e.id).auth_mode,source:e.kind==='native'?'managed_host':e.kind==='provider'?'managed_provider':'system_user',can_control:canControlEnvironment(e.id,req.user!.id)}))};
  });
  app.get<{Params:{id:string;environment:string}}>('/sessions/:id/environments/:environment/models',async(req,reply)=>{
   if(!own(req.params.id,req.user!.id))return reply.code(404).send({error:'Session not found'});
