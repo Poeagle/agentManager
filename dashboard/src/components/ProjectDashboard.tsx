@@ -9,8 +9,6 @@ import remarkGfm from 'remark-gfm';
 import {
   Plus,
   FolderOpen,
-  ChevronRight,
-  ArrowUp,
 
   Trash2,
   X,
@@ -39,6 +37,7 @@ import { ProjectSessionCreateDialog } from './ProjectSessionCreateDialog';
 import { projectOpenModes } from './project-open-modes';
 import { ProjectSessionTable } from './ProjectSessionTable';
 import { Dialog } from './Dialog';
+import {FolderBrowser} from './FolderBrowser';
 
 interface ProjectDashboardProps {
   onOpenProject: (projectId: string, projectName: string, quickLaunch?: 'session' | 'terminal', cliType?: string) => void;
@@ -49,73 +48,6 @@ interface ProjectDashboardProps {
 
 type ViewState = { mode: 'list' } | { mode: 'add' } | { mode: 'edit'; project: Project };
 
-function FolderBrowser({ onSelect }: { onSelect: (path: string, folderName: string) => void }) {
-  const [browsePath, setBrowsePath] = useState<string | undefined>(undefined);
-
-  const { data, isLoading } = useQuery({
-    queryKey: ['browse', browsePath],
-    queryFn: () => api.projects.browse(browsePath),
-  });
-
-  return (
-    <div
-      className="rounded-lg border overflow-hidden"
-      style={{ borderColor: 'var(--border)', background: 'var(--bg-primary)' }}
-    >
-      <div
-        className="flex items-center gap-2 px-3 py-2 text-xs border-b"
-        style={{ borderColor: 'var(--border)', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
-      >
-        {data?.parent && (
-          <button
-            onClick={() => setBrowsePath(data.parent!)}
-            className="p-0.5 rounded hover:bg-white/10"
-            title="Go up"
-          >
-            <ArrowUp className="w-3.5 h-3.5" />
-          </button>
-        )}
-        <span className="truncate font-mono">{data?.path || '~'}</span>
-        <button
-          onClick={() => {
-            if (data?.path) onSelect(data.path, data.folderName);
-          }}
-          className="ml-auto px-2 py-1 rounded text-xs font-medium shrink-0"
-          style={{ background: 'var(--accent)', color: 'white' }}
-        >
-          Select This Folder
-        </button>
-      </div>
-      <div className="max-h-64 overflow-y-auto">
-        {isLoading ? (
-          <div className="flex items-center justify-center py-6">
-            <Loader2 className="w-4 h-4 animate-spin" style={{ color: 'var(--accent)' }} />
-          </div>
-        ) : data?.dirs.length === 0 ? (
-          <div className="py-4 text-center text-xs" style={{ color: 'var(--text-secondary)' }}>
-            No subdirectories
-          </div>
-        ) : (
-          data?.dirs.map((dir) => (
-            <button
-              key={dir.path}
-              onClick={() => setBrowsePath(dir.path)}
-              onDoubleClick={() => onSelect(dir.path, dir.name)}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-white/5 text-left"
-              style={{ color: 'var(--text-primary)' }}
-            >
-              <FolderOpen className="w-4 h-4 shrink-0" style={{ color: 'var(--accent)' }} />
-              <span className="truncate">{dir.name}</span>
-              {dir.hasChildren && (
-                <ChevronRight className="w-3 h-3 ml-auto shrink-0" style={{ color: 'var(--text-secondary)' }} />
-              )}
-            </button>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
 
 function prevFolderName(path: string): string {
   const parts = path.replace(/\/+$/, '').split('/');

@@ -1,19 +1,20 @@
 import { createHash, randomUUID } from 'crypto';
-import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { accessSync, constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { z } from 'zod';
 import { getDb } from '../../db/index.js';
+import {userOwnsProject} from '../../auth.js';
 
 export const sharedResourcesSchema = z.object({
   directory: z.string().min(1).max(4096),
-  scope_path: z.string().min(1).max(4096),
-  env_file: z.string().min(1).max(4096),
+  scope_path: z.string().min(1).max(4096).optional(),
+  env_file: z.string().min(1).max(4096).optional(),
   instructions: z.string().max(32000),
   enabled: z.boolean(),
   revision: z.number().int().nonnegative(),
 }).strict();
 export type SharedResourcesInput = z.infer<typeof sharedResourcesSchema>;
-interface ResourceRow extends Omit<SharedResourcesInput, 'enabled'> { user_id: string; enabled: number; updated_at: string }
+interface ResourceRow extends Omit<Required<SharedResourcesInput>, 'enabled'> { user_id: string; enabled: number; updated_at: string }
 export class SharedResourceError extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
 }
@@ -26,6 +27,7 @@ export function canonicalDirectory(path: string): string {
   try {
     const canonical = realpathSync(path);
     if (!lstatSync(canonical).isDirectory() || canonical === '/') throw Error();
+    accessSync(canonical,constants.R_OK|constants.X_OK);
     return canonical;
   } catch { throw new SharedResourceError('目录不存在或无法访问'); }
 }
@@ -64,8 +66,8 @@ export function saveSharedResources(userId: string, input: SharedResourcesInput)
   if (!parsed.success) throw new SharedResourceError('共享资源格式无效，请检查目录、文件和提示词');
   input = parsed.data;
   const directory = canonicalDirectory(input.directory);
-  const scope = canonicalDirectory(input.scope_path);
-  const file = canonicalEnvFile(input.env_file, directory);
+  const scope = canonicalDirectory(input.scope_path || directory);
+  const file = canonicalEnvFile(input.env_file || join(directory,'.env'), directory);
   const previous = getRow(userId);
   if ((previous?.revision ?? 0) !== input.revision) throw new SharedResourceError('配置已更新，请重新加载后保存', 409);
   if (getDb().prepare('SELECT user_id FROM user_shared_resources WHERE env_file = ? AND user_id <> ?').get(file, userId)) {
@@ -99,6 +101,13 @@ export function openSharedEnv(userId: string) {
   const bytes = readEnvFile(row);
   return { path: row.env_file, content: bytes?.toString('utf8') ?? '', hash: bytes ? contentHash(bytes) : null, exists: bytes !== undefined, revision: row.revision };
 }
+export function createSharedEnv(userId:string) {
+ const row=requireRow(userId),directory=canonicalDirectory(row.directory),path=canonicalEnvFile(row.env_file,directory);
+ if(path!==join(directory,'.env'))throw new SharedResourceError('请先保存配置以使用共享目录中的 .env');
+ try{const fd=openSync(path,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);closeSync(fd);}
+ catch(error){if((error as NodeJS.ErrnoException).code==='EEXIST')throw new SharedResourceError('文件已存在，请重新打开',409);throw new SharedResourceError('无法创建凭据文件，请检查目录权限',403);}
+ return openSharedEnv(userId);
+}
 export function writeSharedEnv(userId: string, input: { content: string; expected_hash: string | null; revision: number }) {
   const row = requireRow(userId);
   if (row.revision !== input.revision) throw new SharedResourceError('配置已变更，请重新打开凭据文件', 409);
@@ -124,6 +133,8 @@ export function sharedResourceLaunch(userId: string | null | undefined, projectP
   if (!row?.enabled || !row.env_file) return;
   try {
     if (!withinDirectory(realpathSync(row.scope_path), realpathSync(projectPath))) return;
+    const project=(getDb().prepare('SELECT id,path FROM projects').all() as Array<{id:string;path:string}>).find(p=>{try{return realpathSync(p.path)===realpathSync(projectPath);}catch{return false;}});
+    if(!project||!userOwnsProject(userId,project.id))return;
     canonicalEnvFile(row.env_file, canonicalDirectory(row.directory));
   } catch { return; }
   // Never open .env here: only its location and the separate usage prompt
