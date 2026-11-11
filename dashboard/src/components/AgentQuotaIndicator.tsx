@@ -21,7 +21,7 @@ function formatResetTime(value: number | null | undefined) {
   return `周额度重置时间（本地时间）：${date.toLocaleString(undefined, { timeZoneName: 'short' })}`;
 }
 
-export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApplicable=false,queryKey=['agent-weekly-quota',agent.id,'global'],onOpen,canRefresh=true}:{agent:AgentDescriptor;label?:string;hideWhenNotApplicable?:boolean;read?:(force?:boolean)=>Promise<AgentQuotaResponse>;queryKey?:string[];onOpen?:()=>void;canRefresh?:boolean}) {
+export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApplicable=false,queryKey=['agent-weekly-quota',agent.id,'global'],onOpen,canRefresh=true,display='default'}:{agent:AgentDescriptor;label?:string;hideWhenNotApplicable?:boolean;read?:(force?:boolean)=>Promise<AgentQuotaResponse>;queryKey?:string[];onOpen?:()=>void;canRefresh?:boolean;display?:'default'|'engine-chip'}) {
   const readQuota=read??((force=false)=>api.agentQuota.read(agent.id,force));
   const queryClient = useQueryClient();
   const refresh = useMutation({
@@ -41,6 +41,7 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApp
   const resetTitle = formatResetTime(quota?.resetsAt) ?? '周额度重置时间未知';
   const refreshFailed = refresh.isError || quotaQuery.isError || !!quota?.stale;
   const color = quota ? quotaColor(quota.remainingPercent) : 'var(--text-muted)';
+  const engineChip=display==='engine-chip';
   const title = quota
     ? [`${label} 周额度剩余 ${quota.remainingPercent}% · 已用 ${quota.usedPercent}%`, resetTitle,
       `${quota.stale ? '上次成功检测时间' : '检测时间'} ${new Date(quota.checkedAt).toLocaleString()}`,
@@ -55,17 +56,17 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApp
     <div
       aria-label={quota ? `${label} 周额度剩余 ${quota.remainingPercent}%` : `${label} 周额度`}
       title={title}
-      className="workspace-indicator workspace-quota relative flex h-6 shrink-0 items-center gap-1 overflow-hidden whitespace-nowrap rounded border px-1.5"
+      className={`workspace-indicator ${engineChip?'workspace-engine-chip':''} workspace-quota relative flex h-6 shrink-0 items-center gap-1 overflow-hidden whitespace-nowrap rounded border px-1.5`}
       onClick={onOpen?event=>{if(!(event.target as HTMLElement).closest('button'))onOpen();}:undefined}
       style={{
         borderColor: 'var(--border)',
-        background: 'var(--bg-tertiary)',
-        color: 'var(--text-secondary)',
+        background: engineChip?'var(--bg-primary)':'var(--bg-tertiary)',
+        color: engineChip?'var(--text-primary)':'var(--text-secondary)',
       }}
     >
-      <AgentIcon session={{agent}} className="h-3.5 w-3.5 shrink-0"/>
+      {!engineChip&&<AgentIcon session={{agent}} className="h-3.5 w-3.5 shrink-0"/>}
       {onOpen?<button type="button" aria-label={`查看 ${label} 账号详情`} onClick={onOpen} className="text-[11px] font-medium">{label}</button>:<span className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>{label}</span>}
-      <strong className="font-mono text-[11px] tabular-nums" style={{ color }}>
+      <strong className="font-mono text-[11px] tabular-nums" style={{ color:engineChip?'var(--text-primary)':color }}>
         {quota ? `${quota.remainingPercent}%` : notApplicable ? '不适用' : quotaQuery.isError ? '不可用' : '读取中'}
       </strong>
       {canRefresh&&<button type="button" aria-label={`刷新 ${label} 额度`} title="刷新额度"
