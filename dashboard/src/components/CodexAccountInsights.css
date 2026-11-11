@@ -62,3 +62,14 @@
 .ci-usage-breakdown{display:flex;flex-wrap:wrap;gap:4px 12px;margin:5px 0;font-size:12px;}
 .ci-usage-breakdown span{white-space:nowrap;}
 .ci-usage-breakdown strong{font-variant-numeric:tabular-nums;}
+
+/* Account summary: consistent labels and compact, aligned values. */
+.ci-overview-account{grid-template-columns:repeat(3,minmax(0,1fr));}
+.ci-overview-account>section{display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:4px;padding:10px 12px;}
+.ci-overview-account .ci-value{justify-content:flex-start;font-size:14px;line-height:20px;}
+.ci-overview-account .ci-quota{grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;}
+.ci-overview-account .ci-link{align-self:flex-start;}
+.ci-overview-account .ci-usage-breakdown{display:grid;grid-template-columns:1fr;gap:2px;margin:0;}
+.ci-overview-account .ci-usage-breakdown span{display:flex;justify-content:space-between;gap:12px;white-space:normal;}
+.ci-overview-account .ci-usage-breakdown strong{text-align:right;}
+@media(max-width:800px){.ci-overview-account{grid-template-columns:1fr;}}
