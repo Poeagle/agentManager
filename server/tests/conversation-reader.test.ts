@@ -391,7 +391,7 @@ describe('public conversation pages',()=>{
   it('keeps one stable user message when an asynchronous question follows the native and completion records',async()=>{
     const turn='question-turn',text='清理并重新获取',stamp='2026-10-29T10:00:01Z',client='client-fixture';
     const durable=line('response_item',{type:'message',id:'native-user',role:'user',internal_chat_message_metadata_passthrough:{turn_id:turn},content:[{type:'input_text',text}]},stamp);
-    const completed=line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'UserMessage',id:'completed-user',client_id:client,content:[{type:'text',text}]}},stamp);
+    const completed=line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'UserMessage',id:'completed-user',client_id:client,content:[{type:'text',text}]}},'2026-10-29T10:00:01.001Z');
     const questions=[{title:'选择范围',options:['当前','全部']}];
     writeFileSync(file,line('event_msg',{type:'task_started',turn_id:turn})+durable);
     const first=await readConversation(binding);expect(first.messages.filter(m=>m.role==='user')).toHaveLength(1);
