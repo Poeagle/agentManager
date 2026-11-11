@@ -3,7 +3,7 @@ import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,readdirSync,stat
 import {join} from 'path';
 import {tmpdir} from 'os';
 import {afterEach,beforeEach,describe,expect,it} from 'vitest';
-import {EXPORT_HISTORY_BUNDLE,IMPORT_HISTORY_BUNDLE,FLATTEN_HISTORY} from '../src/services/agents/codex/history-bundle.js';
+import {EXPORT_HISTORY_BUNDLE,IMPORT_HISTORY_BUNDLE,FLATTEN_HISTORY,NORMALIZE_TRANSFER_HISTORY,omitAdditionalToolsForEndpoint} from '../src/services/agents/codex/history-bundle.js';
 let dir:string,home:string,root:string,parent:string,prefix:string;
 const a='019ff001-1111-7111-8111-111111111111',b='019ff001-2222-7222-8222-222222222222';
 const line=(ordinal:number,type:string,payload:any)=>JSON.stringify({ordinal,type,payload})+'\n';
@@ -21,4 +21,14 @@ describe('portable paginated native history',()=>{
  it('rejects a missing ancestor before producing a usable import',()=>{rmSync(parent);const result=run(EXPORT_HISTORY_BUNDLE,{home,path:root});expect(result.status).not.toBe(0);expect(result.stderr.toString()).toContain('missing history ancestor');});
  it('rejects a corrupt prefix ordinal instead of losing native context',()=>{const meta=JSON.parse(readFileSync(root,'utf8').split('\n')[0]);meta.payload.history_base.end_ordinal_exclusive=9;writeFileSync(root,JSON.stringify(meta)+'\n');const result=run(EXPORT_HISTORY_BUNDLE,{home,path:root});expect(result.status).not.toBe(0);expect(result.stderr.toString()).toContain('ordinal mismatch');});
  it('rejects a source outside the selected account history roots',()=>{const result=run(EXPORT_HISTORY_BUNDLE,{home:join(dir,'other'),path:root});expect(result.status).not.toBe(0);expect(result.stderr.toString()).toContain('outside account');});
+ it('normalizes a multi-level history without losing messages or tool results, and removes only declared incompatible metadata',()=>{
+  const header=line(0,'session_meta',{id:a,session_id:a,model_provider:'openai',history_mode:'paginated'});
+  const first=header+line(1,'response_item',{type:'additional_tools',tools:[{name:'old-tool'}]})+line(2,'event_msg',{type:'user_message',message:'KEEP CONTEXT'})+line(3,'response_item',{type:'function_call_output',output:'KEEP TOOL RESULT'});
+  writeFileSync(parent,first+line(4,'event_msg',{type:'user_message',message:'DO NOT COPY'}));writeFileSync(root,line(4,'session_meta',{id:b,session_id:b,model_provider:'api',history_mode:'paginated',history_base:{thread_id:a,end_ordinal_exclusive:4,end_byte_offset:Buffer.byteLength(first)}})+line(5,'event_msg',{type:'agent_message',message:'KEEP CHILD'}));
+  const before=readFileSync(root),result=run(NORMALIZE_TRANSFER_HISTORY,{home,path:root,omit_additional:true});expect(result.status).toBe(0);const target=join(dir,'normalized');expect(run(IMPORT_HISTORY_BUNDLE,{directory:target},result.stdout).status).toBe(0);
+  const manifest=JSON.parse(readFileSync(join(target,'manifest.json'),'utf8')),records=readFileSync(join(target,manifest.root),'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  expect(manifest.ids).toHaveLength(1);expect(records.map(r=>r.ordinal)).toEqual([0,1,2,3]);expect(records[0].payload.history_base).toBeUndefined();expect(JSON.stringify(records)).toContain('KEEP CONTEXT');expect(JSON.stringify(records)).toContain('KEEP TOOL RESULT');expect(JSON.stringify(records)).toContain('KEEP CHILD');expect(JSON.stringify(records)).not.toContain('DO NOT COPY');expect(JSON.stringify(records)).not.toContain('additional_tools');expect(readFileSync(root)).toEqual(before);
+  const compatible=run(NORMALIZE_TRANSFER_HISTORY,{home,path:root,omit_additional:false}),other=join(dir,'compatible');expect(run(IMPORT_HISTORY_BUNDLE,{directory:other},compatible.stdout).status).toBe(0);const index=JSON.parse(readFileSync(join(other,'manifest.json'),'utf8'));expect(readFileSync(join(other,index.root),'utf8')).toContain('additional_tools');
+  expect(omitAdditionalToolsForEndpoint('https://xindu.xyz/v1')).toBe(true);expect(omitAdditionalToolsForEndpoint('https://another.invalid/v1')).toBe(false);
+ });
 });
