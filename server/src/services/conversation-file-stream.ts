@@ -5,7 +5,7 @@ import {readConversation,type ConversationMessage} from './conversation-reader.j
 import type {AgentRuntime,AgentStatistics as ConversationStatistics} from './agents/types.js';
 import type {ConversationUsageFrame} from './conversation-usage.js';
 export interface ConversationStatisticsFrame {type:'statistics';native_id:string;statistics:ConversationStatistics[]}
-export interface ConversationHistoryFrame {type:'history';messages:ConversationMessage[];runtime:AgentRuntime}
+export interface ConversationHistoryFrame {type:'history';messages:ConversationMessage[];runtime:AgentRuntime;reset?:boolean}
 type Frame=ConversationHistoryFrame|ConversationUsageFrame|ConversationStatisticsFrame;
 const streams=new Map<string,{listeners:Set<(frame:Frame)=>void>;latest:Map<string,Frame>;stop:()=>void}>();
 /** Share file parsing among viewers of the same binding. Personal projection
@@ -21,8 +21,8 @@ export function observeConversationFile(binding:PromptContextSession,emit:(frame
  async function refresh(){timer=undefined;if(closed)return;reading=true;again=false;
   try{const page=await readConversation(binding,cursor?{after:cursor,limit:20}:{limit:8}),runtime=await adapter.runtime.read(context);if(closed)return;
    const {observed_at,...facts}=runtime,fingerprint=JSON.stringify(facts);
-   if(page.messages.length||lastRuntime!==fingerprint){send({type:'history',messages:page.messages,runtime});lastRuntime=fingerprint;}
-   cursor=page.messages.at(-1)?.id||cursor;
+   if(page.reset||page.messages.length||lastRuntime!==fingerprint){send({type:'history',messages:page.messages,runtime,...(page.reset?{reset:true}:{})});lastRuntime=fingerprint;}
+   cursor=page.messages.at(-1)?.id||(page.reset?undefined:cursor);
    if(context.nativeId){const changedStatistics=(page.statistics||[]).filter(item=>sentStatistics.get(item.sequence)!==JSON.stringify(item));
     if(changedStatistics.length){for(const item of changedStatistics)sentStatistics.set(item.sequence,JSON.stringify(item));while(sentStatistics.size>80)sentStatistics.delete(sentStatistics.keys().next().value!);send({type:'statistics',native_id:context.nativeId,statistics:changedStatistics});}
     const telemetry=await adapter.telemetry.read(context);if(closed)return;const usage=JSON.stringify(telemetry.usage);
