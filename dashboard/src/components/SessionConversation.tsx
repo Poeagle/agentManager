@@ -146,9 +146,9 @@ function ProgressSection({
         >
           <Sparkles size={13} />
           <span>{agentName}</span>
-          <span className="session-chat-kind">进展</span>
-          <span className="session-chat-progress-count">{count} 条</span>
-          {active && <span className="session-chat-progress-live">进行中</span>}
+          <span className="session-chat-kind">Progress</span>
+          <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
+          {active && <span className="session-chat-progress-live">In progress</span>}
           <ChevronDown size={14} className="session-chat-progress-chevron" />
         </summary>
         <div className="session-chat-progress-content">{children}</div>
@@ -432,7 +432,7 @@ const Bubble = memo(function Bubble({
           <Sparkles size={13} />
           <span>{agentName}</span>
           {message.phase === "final" && (
-            <span className="session-chat-kind">结论</span>
+            <span className="session-chat-kind">Final</span>
           )}
           {streaming && <span className="session-chat-writing">正在输出</span>}
           {headerMetadata && (
