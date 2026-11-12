@@ -106,7 +106,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.2.0',
+    version:'3.3.0',
     updatedAt:'2026-11-12',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -387,6 +387,12 @@ export function getAgentApiContract() {
         method: 'GET',
         path: '/api/context',
         description: 'Return a concise, low-token summary of the logged-in user\'s active sessions.',
+      },
+      {
+        category: 'Session control',
+        method: 'WS',
+        path: '/api/sessions/:id/conversation/stream',
+        description: 'Cookie-authenticated conversation stream. Supported agents can emit progress_statistics with cumulative recorded token and tool counts since the previous conclusion; missing or incomplete data remains unknown or a lower bound.',
       },
       {
         category: 'Session control',
@@ -1030,6 +1036,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     };
     if(adapter.descriptor.capabilities.retry)retries.monitor(id,req.user!.id,nativeId);
     const stopRetry=adapter.descriptor.capabilities.retry?retries.subscribe(id,nativeId,send):()=>{};
+    const stopProgress=adapter.statistics.readProgress?observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},frame=>{if(frame.type==='progress_statistics')send(frame);}):()=>{};
     const stop=observeAgentConversation(session,frame=>{
       send(frame);
       if(frame.type==='unavailable'&&frame.reconnect&&socket.readyState===1)socket.close(1012,'Native connection lost');
@@ -1052,7 +1059,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     });
     let alive=true;socket.on('pong',()=>{alive=true;});
     const heartbeat=setInterval(()=>{if(socket.readyState!==1)return;if(!alive){socket.terminate();return;}alive=false;socket.ping();socket.send(JSON.stringify({type:'heartbeat'}));},25000);
-    socket.once('close',()=>{clearInterval(heartbeat);stopFileFallback();stop();stopRetry();});
+    socket.once('close',()=>{clearInterval(heartbeat);stopFileFallback();stopProgress();stop();stopRetry();});
   });
 
   app.get<{Params:{id:string};Querystring:{after?:string;before?:string;limit?:string}}>('/sessions/:id/conversation',async(req,reply)=>{

@@ -1,7 +1,7 @@
 import {afterEach,beforeEach,describe,expect,it} from 'vitest';
-import {mkdtempSync,writeFileSync,rmSync} from 'fs';
+import {mkdtempSync,writeFileSync,appendFileSync,rmSync} from 'fs';
 import {tmpdir} from 'os';import {join} from 'path';
-import {readConversationStatistics} from '../src/services/agents/codex/statistics.js';
+import {readConversationStatistics,readConversationProgress} from '../src/services/agents/codex/statistics.js';
 let dir:string,file:string;
 const row=(type:string,payload:unknown)=>JSON.stringify({type,payload})+'\n';
 const start=(id='turn')=>row('event_msg',{type:'task_started',turn_id:id});
@@ -10,6 +10,11 @@ const call=(id:string)=>row('response_item',{type:'function_call',call_id:id});
 const usage=(total:number,last:number)=>row('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{total_tokens:last}}});
 beforeEach(()=>{dir=mkdtempSync(join(tmpdir(),'progress-interval-'));file=join(dir,'rollout.jsonl');});afterEach(()=>rmSync(dir,{recursive:true,force:true}));
 describe('progress request intervals',()=>{
+ it('updates cumulative progress as native records arrive and deduplicates tool calls',async()=>{
+  writeFileSync(file,start()+message('a')+call('one')+usage(100,100));expect(await readConversationProgress(file)).toMatchObject({turn_id:'turn',tokens:{total_tokens:100},tool_calls:1,tool_rounds:1,complete:true});
+  appendFileSync(file,call('two')+call('two'));expect(await readConversationProgress(file)).toMatchObject({tokens:{total_tokens:100},tool_calls:2,tool_rounds:1});
+  appendFileSync(file,usage(300,200));expect(await readConversationProgress(file)).toMatchObject({tokens:{total_tokens:300},tool_calls:2,tool_rounds:2});
+ });
  it('reports each increment while keeping turn totals and deduplicating calls',async()=>{
   writeFileSync(file,start()+message('a')+call('one')+usage(100,100)+call('two')+call('two')+usage(300,200)+message('b')+usage(600,300));
   const [a,b]=await readConversationStatistics(file);expect(a.interval).toMatchObject({tokens:{total_tokens:100},tool_calls:1,tool_rounds:1,requests:1,complete:true});expect(b.tokens?.total_tokens).toBe(600);expect(b.interval).toMatchObject({tokens:{total_tokens:500},tool_calls:1,tool_rounds:1,requests:2,complete:true});

@@ -141,3 +141,11 @@ export async function readConversationStatistics(path:string):Promise<Conversati
     state.mtime=info.mtimeMs;return [...state.stats.values()];
   }finally{await handle.close();}
 }
+
+/** The current conclusion interval is incrementally maintained by the same parser. */
+export async function readConversationProgress(path:string):Promise<import('../types.js').AgentProgressStatistics|null> {
+  await readConversationStatistics(path);
+  const state=cache.get(path),current=state?.turn,summary=state?.conclusion;
+  if(!current||!summary)return null;
+  return {turn_id:current.id,tokens:summary.requests?{...summary.tokens}:null,requests:summary.requests,tool_calls:summary.calls,tool_rounds:summary.rounds,complete:summary.complete};
+}

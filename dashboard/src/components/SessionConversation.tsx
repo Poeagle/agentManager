@@ -122,12 +122,14 @@ function ProgressSection({
   agentName,
   count,
   active,
+  progress,
   children,
 }: {
   agent: AgentDescriptor;
   agentName: string;
   count: number;
   active: boolean;
+  progress?: import('../lib/api').ConversationProgressStatistics | null;
   children: ReactNode;
 }) {
   const [preference, setPreference] = useState<boolean | null>(null);
@@ -151,6 +153,7 @@ function ProgressSection({
           <span>{agentName}</span>
           <span className="session-chat-kind">Progress</span>
           <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
+          {progress && <span className="session-chat-message-statistics" title="Cumulative recorded usage since the previous conclusion. Rounds update after the following model request; incomplete history is a lower bound.">total · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} / {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
           {active && <span className="session-chat-progress-live">In progress</span>}
           <ChevronDown size={14} className="session-chat-progress-chevron" />
         </summary>
@@ -555,6 +558,7 @@ export function SessionConversation({
   >({});
   useEffect(() => setAutoRetries({}), [session.id, agentNativeId(session)]);
   const [statistics, setStatistics] = useState<ConversationStatistics[]>([]);
+  const [progressStatistics,setProgressStatistics]=useState<import('../lib/api').ConversationProgressStatistics|null>(null);
   const [page, setPage] = useState<ConversationPage | null>(null);
   useEffect(() => {
     const update = (event: Event) => {
@@ -758,6 +762,7 @@ export function SessionConversation({
     setLiveRetrying(false);
     setLiveReason("");
     setLiveProgress({ turn_id: null, started_at: null, stage: "idle" });
+    setProgressStatistics(null);
     setMinimizedQuestion(null);
     setUnread(false);
     setError("");
@@ -1099,6 +1104,7 @@ export function SessionConversation({
           native_id?: string;
           usage?: ConversationUsageUpdate["usage"];
           statistics?: ConversationStatistics[];
+          progress?: import('../lib/api').ConversationProgressStatistics|null;
           retry?: ConversationRetry;
           observed_at?: string;
           messages?: ConversationMessage[];
@@ -1125,6 +1131,7 @@ export function SessionConversation({
           return;
         }
         if (frame.type === "snapshot" || frame.type === "patch") failures = 0;
+        if(frame.type==='progress_statistics'&&frame.native_id===agentNativeId(session)){setProgressStatistics(frame.progress||null);return;}
         if (
           frame.type === "patch" &&
           Array.isArray(frame.upserts) &&
@@ -1982,6 +1989,7 @@ export function SessionConversation({
                     agentName={agentName}
                     count={group.messages.length}
                     active={busy && groups.at(-1) === group}
+                    progress={busy && groups.at(-1)===group && progressStatistics && (!liveProgress.turn_id||progressStatistics.turn_id===liveProgress.turn_id) && (!group.messages.at(-1)?.turn_id||group.messages.at(-1)?.turn_id===progressStatistics.turn_id)?progressStatistics:null}
                   >
                     {group.messages.map((message, index) => (
                       <div

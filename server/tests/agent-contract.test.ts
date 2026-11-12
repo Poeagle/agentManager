@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.2.0');
+    expect(contract.version).toBe('3.3.0');
     expect(contract.scope).toContain('scheduled tasks');
 
     expect(keys).toEqual(expect.arrayContaining([
@@ -24,6 +24,7 @@ describe('Agent API contract', () => {
       'POST /api/sessions/:id/input',
       'GET /api/context',
       'WS /api/sessions/:id/agent',
+      'WS /api/sessions/:id/conversation/stream',
       'POST /api/prompt-enhancer/enhance',
       'GET /api/scheduled-tasks?project_id=:projectId',
       'POST /api/scheduled-tasks',

@@ -571,7 +571,9 @@ export interface AgentContextBreakdown {
 }
 export interface AgentStatisticsPort {
   read(context: AgentContext, path: string): Promise<AgentStatistics[]>;
+  readProgress?(context: AgentContext, path: string): Promise<AgentProgressStatistics | null>;
 }
+export interface AgentProgressStatistics {turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean}
 export interface AgentQuotaPort {
   shutdown?(): void | Promise<void>;
   read(force?: boolean): Promise<{

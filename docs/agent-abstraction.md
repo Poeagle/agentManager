@@ -28,6 +28,8 @@ flowchart TB
 | `lifecycle` / `launch` | 预检、压缩、新对话、中断、释放、启动/恢复准备 | 按能力声明 |
 | `commands` | CLI 命令构造、权限和共享资源参数 | 仅终端宿主需要 |
 
+`statistics.readProgress` 是可选能力，返回上一条结论完成以来、当前原生会话已记录的累计 Token 与工具调用统计；实时流通过 `progress_statistics` 推送变化。未完成的请求尚无 Token 时保持未知，历史不完整时标记为下限。适配器不能通过汇总重复消息估算这些数据。
+
 `identity` 的可选 `purgeHistory` 在移除平台会话行前异步清理 Agent 原始历史。Codex 按历史行绑定的 Engine 和原生会话 ID 删除 `sessions` 或 `archived_sessions` 中对应的 rollout；跨 Provider 副本、新开后的历史行各自保留其环境和 ID。压缩可能共享的 `history_base` 祖先不会随子会话删除，以免破坏其他会话。
 
 `AgentDefinition` 是新增 Agent 的实现契约；`resolveAgent()` 在注册时补齐可选接口，
