@@ -128,7 +128,7 @@
   border-color:transparent!important;background:transparent!important;color:var(--text-primary);font-size:11px;
 }
 .workspace-header .workspace-header-chip:hover, .workspace-header .workspace-header-chip:focus-within {background:var(--bg-secondary)!important;}
-.workspace-header .workspace-header-chip strong {color:var(--text-primary)!important;font-weight:500;}
+.workspace-header .workspace-header-chip strong {font-weight:500;}
 .workspace-header .workspace-header-chip>button {color:inherit;}
 .workspace-header .workspace-quota>button {height:18px;margin-left:0;flex-shrink:0;}
 .workspace-header .workspace-quota>button[aria-label^="刷新 "] {width:18px;}

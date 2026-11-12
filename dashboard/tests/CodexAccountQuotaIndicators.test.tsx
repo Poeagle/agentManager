@@ -26,6 +26,7 @@ it('shows separate account names and quotas and refreshes only the selected acco
  vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:['a','b'].map(id=>({id,name:id,kind:'account',auth_mode:'account',enabled:true,allowed_user_ids:null}))});
  vi.mocked(api.codexEnvironments.quota).mockImplementation(async id=>({quota:{usedPercent:id==='a'?20:60,remainingPercent:id==='a'?80:40,windowDurationMins:10080,resetsAt:null,planType:null,checkedAt:'2026-11-09T00:00:00Z'}}));
  mount();expect(await screen.findByLabelText('codex · a 周额度剩余 80%')).toBeVisible();expect(await screen.findByLabelText('codex · b 周额度剩余 40%')).toBeVisible();
+ expect(screen.getByText('80%')).toHaveAttribute('style',expect.stringContaining('var(--success)'));expect(screen.getByText('40%')).toHaveAttribute('style',expect.stringContaining('rgb(183, 121, 11)'));
  vi.mocked(api.codexEnvironments.quota).mockClear();fireEvent.click(screen.getByRole('button',{name:'刷新 codex · b 额度'}));await waitFor(()=>expect(api.codexEnvironments.quota).toHaveBeenCalledExactlyOnceWith('b'));
 });
 

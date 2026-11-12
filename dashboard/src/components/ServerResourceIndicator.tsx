@@ -6,8 +6,12 @@ function formatBytes(bytes: number): string {
   return gib >= 1024 ? `${(gib / 1024).toFixed(1)} TiB` : `${gib.toFixed(1)} GiB`;
 }
 
-function usageColor(percent: number): string {
-  return percent >= 90 ? 'var(--error)' : percent >= 75 ? '#f59e0b' : 'var(--text-secondary)';
+function usageColor(percent: number | null): string {
+  if (percent === null) return 'var(--text-muted)';
+  if (percent >= 90) return 'var(--error)';
+  if (percent >= 80) return '#e57b18';
+  if (percent >= 60) return '#b7790b';
+  return 'var(--success)';
 }
 
 export function ServerResourceIndicator() {
@@ -25,7 +29,7 @@ export function ServerResourceIndicator() {
       detail: `内存已用 ${formatBytes(resources.memory.used_bytes)} / 总量 ${formatBytes(resources.memory.total_bytes)} · 使用率 ${resources.memory.usage_percent.toFixed(1)}%`,
     },
     {
-      label: 'Disk', percent: resources.disk?.usage_percent ?? 0,
+      label: 'Disk', percent: resources.disk?.usage_percent ?? null,
       value: resources.disk ? `${resources.disk.usage_percent.toFixed(0)}%` : '不可用',
       detail: resources.disk
         ? `服务所在磁盘 ${resources.disk.mount} · 已用 ${formatBytes(resources.disk.used_bytes)} / 总量 ${formatBytes(resources.disk.total_bytes)} · 使用率 ${resources.disk.usage_percent.toFixed(1)}%`

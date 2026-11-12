@@ -81,3 +81,11 @@ it('shares one resource query between the header and monitor and updates both fr
   expect(screen.getAllByText('44%')).toHaveLength(2);
   expect(api.admin.serverResources).toHaveBeenCalledTimes(1);
 });
+
+it('colors usage from healthy to critical', async () => {
+  vi.mocked(api.admin.serverResources).mockResolvedValue({server_resources:{...resources,cpu:{...resources.cpu,usage_percent:12},memory:{...resources.memory,usage_percent:75},disk:{...resources.disk,usage_percent:95}}});
+  await mount();
+  expect(screen.getByText('12%')).toHaveAttribute('style',expect.stringContaining('var(--success)'));
+  expect(screen.getByText('75%')).toHaveAttribute('style',expect.stringContaining('rgb(183, 121, 11)'));
+  expect(screen.getByText('95%')).toHaveAttribute('style',expect.stringContaining('var(--error)'));
+});
