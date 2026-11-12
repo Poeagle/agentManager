@@ -2003,24 +2003,24 @@ export function SessionConversation({
               )}
               {waitingForText && (
                 <div className="session-chat-thinking" role="status">
-                  <span aria-hidden="true"><AgentIcon session={{agent:sessionAgent(session)}} className="h-[13px] w-[13px]" /></span>
+                  <span aria-hidden="true" className="session-chat-thinking-icon"><AgentIcon session={{agent:sessionAgent(session)}} className="h-[13px] w-[13px]" /></span>
                   <div>
                     <span>
                       {continuingAfterFollowup
                         ? sending
-                          ? "正在提交追问…"
-                          : `追问已提交，${agentName} 正在继续执行`
+                          ? "Sending follow-up…"
+                          : `Follow-up sent · ${agentName} is working`
                         : liveProgress.stage === "tools"
-                          ? `${agentName} 正在执行任务`
-                          : `等待 ${agentName} 返回正文`}
+                          ? `${agentName} is working`
+                          : `Waiting for ${agentName}`}
                     </span>
-                    <time className="session-chat-elapsed">{elapsed} 秒</time>
+                    <time className="session-chat-elapsed">{elapsed}s</time>
                     <p>
                       {continuingAfterFollowup
-                        ? "当前任务仍在进行，新进展到达后会自动追加。"
+                        ? "The task is still running. Updates will appear here."
                         : liveProgress.stage === "tools"
-                          ? "正在执行任务，新进展到达后会立即显示。"
-                          : "尚未收到正文，收到后会立即逐段显示。"}
+                          ? "Updates will appear as work continues."
+                          : "The response will appear as it arrives."}
                     </p>
                   </div>
                 </div>
@@ -2158,7 +2158,7 @@ export function SessionConversation({
                               ? "有问题待回答 · 本轮已结束"
                               : continuingAfterFollowup
                                 ? sending
-                                  ? "正在提交追问…"
+                                  ? "Sending follow-up…"
                                   : "追问已提交，任务继续执行中…"
                                 : busy
                                   ? liveProgress.stage === "tools"
