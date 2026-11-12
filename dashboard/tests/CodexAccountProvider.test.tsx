@@ -23,7 +23,7 @@ describe('saved Codex account Provider page',()=>{
   mount();const credential=await screen.findByRole('button',{name:/Codex 凭据文件/});expect(credential).toHaveTextContent('已存在 · 受保护');fireEvent.click(credential);expect(screen.getByRole('dialog',{name:'Codex 凭据文件'})).toHaveTextContent('凭据内容受保护');expect(api.codexEnvironments.readConfigFile).not.toHaveBeenCalled();
  });
  it('uses the same details layout and fields for native and SSH accounts',async()=>{
-  const view=mount();await screen.findByText('fixture@example.invalid');const fields=['登录状态','账号身份','登录方式 / 套餐','Codex 引擎','周额度剩余','额度重置时间','执行用户','Codex 版本','默认模型','模型 Provider','默认推理强度','执行确认策略','沙箱模式','授权用户','本机连接'];
+  const view=mount();await screen.findByText('fixture@example.invalid');const fields=['登录状态','账号身份','登录方式 / 套餐','Codex 引擎','周额度剩余','额度重置时间','执行用户','Codex 版本','默认模型','模型 Provider','默认推理强度','执行确认策略','沙箱模式','本机连接'];
   for(const field of fields)expect(screen.getByText(field,{exact:true})).toBeVisible();view.unmount();
   render(<QueryClientProvider client={client}><CodexAccountProvider environment={{id:'native',name:'Native',kind:'native',enabled:true,allowed_user_ids:null}} onNativeEdit={()=>{}}/></QueryClientProvider>);
   await screen.findByText('fixture@example.invalid');for(const field of fields)expect(screen.getByText(field,{exact:true})).toBeVisible();expect(screen.getByText('本机直接运行')).toBeVisible();expect(screen.queryByRole('table',{name:'Provider 占用标签页列表'})).not.toBeInTheDocument();

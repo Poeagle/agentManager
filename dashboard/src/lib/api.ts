@@ -109,6 +109,7 @@ function uploadWithProgress<T>(url: string, file: File, onProgress?: (fraction: 
   });
 }
 
+export interface UserEngineAccess { id:string;name:string;kind:'native'|'provider'|'account';enabled:boolean;access:'inherit'|'allow'|'deny';effective:boolean }
 export interface AuthUser { id: string; username: string; display_name: string; role: 'admin' | 'member'; role_ids?: string[]; disabled?: number; max_tabs?: number; can_create_projects?: number; created_at?: string; }
 export type PermissionLevel = 'read' | 'write' | 'delete';
 export type PermissionGrants = Record<string, PermissionLevel>;
@@ -332,6 +333,8 @@ export const api = {
       fetchJSON<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify(data) }),
   },
   users: {
+    engineAccess:(id:string)=>fetchJSON<{administrator:boolean;environments:UserEngineAccess[]}>(`/users/${encodeURIComponent(id)}/codex-environments`),
+    setEngineAccess:(id:string,entries:Array<{id:string;access:UserEngineAccess['access']}>)=>fetchJSON<{ok:boolean}>(`/users/${encodeURIComponent(id)}/codex-environments`,{method:'PUT',body:JSON.stringify({entries})}),
     list: () => fetchJSON<{ users: AuthUser[] }>('/users'),
     create: (data: { username: string; password: string; display_name?: string; role?: 'admin' | 'member'; max_tabs?: number; can_create_projects?: boolean }) =>
       fetchJSON<{ user: AuthUser }>('/users', { method: 'POST', body: JSON.stringify(data) }),

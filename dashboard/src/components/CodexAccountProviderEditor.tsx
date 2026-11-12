@@ -14,7 +14,6 @@ export function CodexAccountProviderEditor({environment,onSaved,onDirtyChange,on
   onCancel?:()=>void;
 }) {
   const client=useQueryClient();
-  const query=useQuery({queryKey:['codex-environment-management'],queryFn:()=>api.codexEnvironments.management(),retry:false});
   const projects=useQuery({queryKey:['projects'],queryFn:()=>api.projects.list(),retry:false});
   const usage=useProviderUsage(environment?.id);
   const original=environment?.connection;
@@ -26,7 +25,6 @@ export function CodexAccountProviderEditor({environment,onSaved,onDirtyChange,on
   const [key,setKey]=useState(original?.identityFile||'');
   const [command,setCommand]=useState(original?.codexCommand||'codex');
   const [home,setHome]=useState(original?.codexHome||'');
-  const [users,setUsers]=useState<string[]>(environment?.allowed_user_ids||[]);
   const [enabled,setEnabled]=useState(environment?.enabled??true);
   const [projectId,setProjectId]=useState('');
   const [working,setWorking]=useState<'check'|'save'|null>(null);
@@ -39,11 +37,10 @@ export function CodexAccountProviderEditor({environment,onSaved,onDirtyChange,on
   const connection={username,port,authMethod:auth,identityFile:auth==='key'?key:'',codexCommand:command,codexHome:home,...auth==='password'&&password?{password}:{}};
   const hasPassword=!!password||!!original?.passwordConfigured&&username===original.username&&port===original.port;
   const ready=!!username&&!!command.trim()&&!commandError&&(auth==='key'||hasPassword);
-  const members=query.data?.users.filter(user=>user.role!=='admin')||[];
 
   useEffect(()=>{
-    onDirtyChange?.(name!==(environment?.name||'')||username!==(original?.username||'')||port!==(original?.port||22)||auth!==(original?.authMethod||'password')||!!password||key!==(original?.identityFile||'')||command!==(original?.codexCommand||'codex')||home!==(original?.codexHome||'')||JSON.stringify(users)!==JSON.stringify(environment?.allowed_user_ids||[])||enabled!==(environment?.enabled??true));
-  },[name,username,port,auth,password,key,command,home,users,enabled,environment,original,onDirtyChange]);
+    onDirtyChange?.(name!==(environment?.name||'')||username!==(original?.username||'')||port!==(original?.port||22)||auth!==(original?.authMethod||'password')||!!password||key!==(original?.identityFile||'')||command!==(original?.codexCommand||'codex')||home!==(original?.codexHome||'')||enabled!==(environment?.enabled??true));
+  },[name,username,port,auth,password,key,command,home,enabled,environment,original,onDirtyChange]);
 
   async function check() {
     if(!ready||working)return;
@@ -58,7 +55,7 @@ export function CodexAccountProviderEditor({environment,onSaved,onDirtyChange,on
     if(!ready||working)return;
     setWorking('save');setError('');
     try {
-      const result=await api.codexEnvironments.save({name,enabled,allowed_user_ids:users,connection},environment?.id);
+      const result=await api.codexEnvironments.save({name,enabled,allowed_user_ids:environment?.allowed_user_ids ?? [],connection},environment?.id);
       setPassword('');onDirtyChange?.(false);
       await Promise.all(['codex-environment-management','session-environments','codex-environments'].map(key=>client.invalidateQueries({queryKey:[key]})));
       onSaved(result.environment);
@@ -106,10 +103,6 @@ export function CodexAccountProviderEditor({environment,onSaved,onDirtyChange,on
         </div>
       </fieldset>
 
-      <fieldset className="codex-account-card" disabled={readOnly||!!working}>
-        <legend><ShieldCheck size={15}/>使用权限</legend><p className="codex-account-description">选择可使用此账号的普通平台用户。管理员自动拥有全部权限，无需勾选。</p>
-        <div className="codex-account-users">{query.isPending?<p>正在读取平台用户…</p>:query.isError?<p role="alert" className="agent-management-error">无法读取用户列表，请刷新页面后重试。</p>:members.length?members.map(user=><label key={user.id} className={`codex-account-user${users.includes(user.id)?' selected':''}`}><input type="checkbox" aria-label={`允许 ${user.username} 使用`} checked={users.includes(user.id)} onChange={event=>setUsers(old=>event.target.checked?[...old,user.id]:old.filter(id=>id!==user.id))}/><span className="codex-account-avatar">{(user.display_name||user.username).slice(0,1).toUpperCase()}</span><span><strong>{user.display_name||user.username}</strong><small>{user.username}</small></span></label>):<p className="codex-account-description">暂无普通用户，此 Provider 仅管理员可用。</p>}</div>
-      </fieldset>
 
       {error&&<p role="alert" className="agent-management-error">{error}</p>}
       {environment&&(usage.busy||!usage.verified)&&<p className="agent-management-hint">{usage.isPending?'正在检查 Provider 运行状态…':usage.busy&&usage.verified?'有任务正在执行，完成后可保存设置。':'暂时无法确认运行状态，请检查连接后再保存。'}</p>}

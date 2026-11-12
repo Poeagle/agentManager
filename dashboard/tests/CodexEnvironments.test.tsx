@@ -41,11 +41,11 @@ describe('Codex environments UI',()=>{
  });
 
  it('configures SSH password and user grants in one account Provider form using the existing Codex login',async()=>{
-  const saved=vi.fn();mount(<CodexAccountProviderEditor onSaved={saved}/>);await screen.findByRole('checkbox',{name:'允许 ymchen 使用'});
+  const saved=vi.fn();mount(<CodexAccountProviderEditor onSaved={saved}/>);await screen.findByLabelText('账号 Provider 名称');
   expect(screen.getByText(/已经登录/)).toBeVisible();fireEvent.change(screen.getByRole('textbox',{name:'账号 Provider 名称'}),{target:{value:'private'}});fireEvent.change(screen.getByRole('textbox',{name:'系统用户名'}),{target:{value:'ymchen'}});
-  expect(screen.getByRole('button',{name:'保存账号 Provider'})).toBeDisabled();fireEvent.change(screen.getByLabelText('SSH 登录密码'),{target:{value:'dummy-test-password'}});fireEvent.click(screen.getByRole('checkbox',{name:'允许 ymchen 使用'}));
+  expect(screen.getByRole('button',{name:'保存账号 Provider'})).toBeDisabled();fireEvent.change(screen.getByLabelText('SSH 登录密码'),{target:{value:'dummy-test-password'}});expect(screen.queryByRole('checkbox',{name:'允许 ymchen 使用'})).not.toBeInTheDocument();
   vi.mocked(api.codexEnvironments.checkConnection).mockResolvedValueOnce({ok:false,checks:[{stage:'ssh_authentication',ok:false,message:'SSH 密码认证失败'}]});fireEvent.click(screen.getByRole('button',{name:'预检连接、已有登录、模型与项目'}));expect(await screen.findByRole('alert')).toHaveTextContent('SSH 密码认证失败');
-  vi.mocked(api.codexEnvironments.save).mockResolvedValueOnce({environment:account});fireEvent.click(screen.getByRole('button',{name:'保存账号 Provider'}));await waitFor(()=>expect(saved).toHaveBeenCalledWith(account));expect(api.codexEnvironments.save).toHaveBeenCalledWith(expect.objectContaining({name:'private',allowed_user_ids:['ymchen'],connection:expect.objectContaining({username:'ymchen',authMethod:'password',password:'dummy-test-password'})}),undefined);
+  vi.mocked(api.codexEnvironments.save).mockResolvedValueOnce({environment:account});fireEvent.click(screen.getByRole('button',{name:'保存账号 Provider'}));await waitFor(()=>expect(saved).toHaveBeenCalledWith(account));expect(api.codexEnvironments.save).toHaveBeenCalledWith(expect.objectContaining({name:'private',allowed_user_ids:[],connection:expect.objectContaining({username:'ymchen',authMethod:'password',password:'dummy-test-password'})}),undefined);
  });
  it('requires a successful destination preflight and retains the source selector when transfer fails',async()=>{
   mount(<ConversationEnvironmentSelector sessionId="s" busy={false}/>);const select=await screen.findByRole('combobox',{name:'选择 Codex 账号环境'});fireEvent.change(select,{target:{value:account.id}});

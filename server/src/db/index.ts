@@ -6,7 +6,7 @@ import {migrateRbac} from '../services/rbac.js';
 import {migratePlatformAi} from '../services/platform-ai/schema.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 25;
+const SCHEMA_VERSION = 26;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -288,6 +288,7 @@ function reconcileAgentIdentity(): void {
   addColumn('sessions','claude_session_id','TEXT');
   addColumn('sessions','agent_environment_id','TEXT');
   db.exec(`CREATE TABLE IF NOT EXISTS agent_environments (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, config TEXT NOT NULL DEFAULT '{}', allowed_user_ids TEXT)`);
+  db.exec(`CREATE TABLE IF NOT EXISTS agent_environment_user_access (environment_id TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, allowed INTEGER NOT NULL CHECK (allowed IN (0,1)), PRIMARY KEY(environment_id,user_id))`);
   addColumn('sessions','agent_id','TEXT');
   addColumn('sessions','native_session_id','TEXT');
   db.exec(`UPDATE sessions SET agent_id=COALESCE(agent_id,cli_type,'claude'),native_session_id=COALESCE(native_session_id,CASE cli_type WHEN 'codex' THEN codex_session_id WHEN 'claude' THEN claude_session_id END) WHERE agent_id IS NULL OR (native_session_id IS NULL AND (cli_type='codex' AND codex_session_id IS NOT NULL OR cli_type='claude' AND claude_session_id IS NOT NULL));

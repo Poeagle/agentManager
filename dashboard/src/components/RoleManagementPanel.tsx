@@ -1,12 +1,13 @@
 import { TableActionButton } from './table/TableActions';
 import { useTableModel } from './table/use-table-model';
-import { DataTable, TableExpandButton, TableDetailRow } from './table/DataTable';
-import { Fragment, useState } from 'react';
+import { DataTable } from './table/DataTable';
+import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, ShieldCheck, Trash2 } from 'lucide-react';
 import { api, type MyPermissions, type PermissionDefinition, type PermissionGrants, type PermissionLevel, type PlatformRole } from '../lib/api';
 import { hasPermission } from '../lib/permissions';
 import { ConfirmModal } from './ConfirmModal';
+import { Dialog } from './Dialog';
 
 const fieldStyle = { background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)' };
 const levelLabels = { read: '查看', write: '修改', delete: '删除' };
@@ -27,14 +28,12 @@ export function RoleManagementPanel({ permissions }: { permissions: MyPermission
   return <div className="page-content h-full overflow-auto py-3">
     <div className="mb-3 flex items-center justify-between"><span className="text-xs" style={{ color: 'var(--text-secondary)' }}>共 {roles.length} 个角色</span>{hasPermission(permissions, 'roles', 'write') && <TableActionButton  aria-label="新建角色" onClick={() => { setSelected('new'); setNotice(''); }}><Plus className="h-3.5 w-3.5" />新建角色</TableActionButton>}</div>
     {notice && <p role="status" className="mb-3 text-xs" style={{ color: 'var(--success)' }}>{notice}</p>}
-    <DataTable label="角色列表" model={rolesTable} minWidth={480} expandable loading={query.isPending}
+    <DataTable label="角色列表" model={rolesTable} minWidth={480} actions loading={query.isPending}
       error={query.error?.message} onRetry={() => { void query.refetch(); }}
-      empty={rolesTable.rows.length === 0 && selected !== 'new'} emptyMessage="没有匹配的角色">
-      {rolesTable.rows.map((role) => <Fragment key={role.id}><tr><td><TableExpandButton expanded={selected === role.id} label={`角色 ${role.name}`} onClick={() => { setSelected(selected === role.id ? null : role.id); setNotice(''); }} /></td><td className="font-medium">{role.name}</td><td>{role.description}</td><td>{role.builtin ? '内置' : '自定义'}</td><td>{role.member_count}</td></tr>
-        {selected === role.id && <TableDetailRow columnCount={5}><RoleEditor role={role} catalog={query.data?.catalog ?? []} permissions={permissions} onSaved={onSaved} onDeleted={onDeleted} /></TableDetailRow>}
-      </Fragment>)}
-      {selected === 'new' && <TableDetailRow columnCount={5}><RoleEditor key="new" catalog={query.data?.catalog ?? []} permissions={permissions} onSaved={onSaved} onDeleted={onDeleted} /></TableDetailRow>}
+      empty={rolesTable.rows.length === 0} emptyMessage="没有匹配的角色">
+      {rolesTable.rows.map(role=><tr key={role.id}><td className="font-medium">{role.name}</td><td>{role.description}</td><td>{role.builtin?'内置':'自定义'}</td><td>{role.member_count}</td><td><TableActionButton onClick={()=>{setSelected(role.id);setNotice('');}}>{role.builtin||!hasPermission(permissions,'roles','write')?'查看':'编辑'}</TableActionButton></td></tr>)}
     </DataTable>
+    {selected&&(selected==='new'||roles.some(role=>role.id===selected))&&<Dialog appearance="manager" size="lg" title={selected==='new'?'新建角色':`角色 · ${roles.find(role=>role.id===selected)?.name||''}`} onClose={()=>setSelected(null)}><RoleEditor key={selected} role={roles.find(role=>role.id===selected)} catalog={query.data?.catalog??[]} permissions={permissions} onSaved={onSaved} onDeleted={onDeleted}/></Dialog>}
   </div>;
 }
 

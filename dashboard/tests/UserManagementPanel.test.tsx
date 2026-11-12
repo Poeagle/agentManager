@@ -9,7 +9,8 @@ vi.mock('../src/lib/api', async (original) => {
   const actual = await original<typeof import('../src/lib/api')>();
   return { ...actual, api: {
     ...actual.api,
-    users: { list: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+    users: { list: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), engineAccess: vi.fn(), setEngineAccess: vi.fn() },
+    projects: {...actual.api.projects, list:vi.fn(), access:vi.fn(), setAccess:vi.fn()},
     rbac: { ...actual.api.rbac, assignableRoles: vi.fn(), assignRoles: vi.fn() },
   } };
 });
@@ -45,6 +46,11 @@ beforeEach(() => {
     return { ok: true, closed_sessions: 0 };
   });
   vi.mocked(api.rbac.assignRoles).mockResolvedValue({ ok: true });
+  vi.mocked(api.users.engineAccess).mockResolvedValue({administrator:false,environments:[{id:'native',name:'Main Engine',kind:'native',enabled:true,access:'inherit',effective:true}]});
+  vi.mocked(api.users.setEngineAccess).mockResolvedValue({ok:true});
+  vi.mocked(api.projects.list).mockResolvedValue({projects:[{id:'p',name:'Project',path:'/tmp/p'} as any]});
+  vi.mocked(api.projects.access).mockResolvedValue({access:[],clients:[{id:'codex',label:'codex'}]});
+  vi.mocked(api.projects.setAccess).mockResolvedValue({ok:true,access:{user_id:'member',can_session:true,can_terminal:false,session_clients:['codex']} as any});
 });
 
 async function show(permissions = fullPermissions) {
@@ -148,4 +154,18 @@ it('reports mutation failures and leaves the account unchanged', async () => {
   expect(await screen.findByRole('alert')).toHaveTextContent('无权修改此用户');
   expect(row('member').getByRole('cell', { name: '正常', exact: true })).toBeVisible();
   expect(row('member').getByRole('button', { name: '禁用' })).toBeEnabled();
+});
+
+it('edits a user project and Engine access together without changing another user',async()=>{
+ const permissions={...fullPermissions,permissions:{...fullPermissions.permissions,settings:'write' as const,project_access:'write' as const}};
+ const user=await show(permissions);
+ await user.click(row('member').getByRole('button',{name:'编辑'}));
+ const dialog=screen.getByRole('dialog',{name:'用户 · 普通成员'});
+ expect(await within(dialog).findByRole('combobox',{name:'选择项目'})).toBeVisible();
+ await user.click(await within(dialog).findByRole('checkbox',{name:'codex'}));
+ await user.click(within(dialog).getByRole('button',{name:'保存项目权限'}));
+ await waitFor(()=>expect(api.projects.setAccess).toHaveBeenCalledWith('p','member',{can_session:true,can_terminal:false,session_clients:['codex']}));
+ await user.selectOptions(await within(dialog).findByRole('combobox',{name:'Main Engine Engine 权限'}),'deny');
+ await user.click(within(dialog).getByRole('button',{name:'保存 Engine 权限'}));
+ await waitFor(()=>expect(api.users.setEngineAccess).toHaveBeenCalledWith('member',[{id:'native',access:'deny'}]));
 });

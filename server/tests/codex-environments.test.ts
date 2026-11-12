@@ -31,6 +31,26 @@ describe('Codex account environments and platform ACLs',()=>{
  });
  afterEach(async()=>{await app.close();db.cleanup();vi.restoreAllMocks();});
  const create=()=>saveCodexEnvironment({name:'ymchen Codex',connection,allowed_user_ids:[owner.id]});
+ it('updates one user Engine access without changing other users or inherited policy',async()=>{
+  const account=await create();
+  expect(canUseEnvironment('codex','native',owner.id)).toBe(true);
+  expect(canUseEnvironment('codex',account.id,other.id)).toBe(false);
+  getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id,agent_environment_id) VALUES('watch','p','task','running','session','codex',?,'native')").run(other.id);
+  const revoked=vi.fn();const stopWatching=watchSessionEnvironment('watch',other.id,revoked);
+  const path=`/api/users/${other.id}/codex-environments`;
+  expect((await app.inject({method:'PUT',url:path,headers:{cookie:cookies.other},payload:{entries:[{id:'native',access:'deny'}]}})).statusCode).toBe(403);
+  const saved=await app.inject({method:'PUT',url:path,headers:{cookie:cookies.admin},payload:{entries:[{id:'native',access:'deny'},{id:account.id,access:'allow'}]}});
+  expect(saved.statusCode).toBe(200);
+  expect(canUseEnvironment('codex','native',other.id)).toBe(false);
+  expect(revoked).toHaveBeenCalled();stopWatching();
+  expect(canUseEnvironment('codex','native',owner.id)).toBe(true);
+  expect(canUseEnvironment('codex',account.id,other.id)).toBe(true);
+  const list=await app.inject({url:path,headers:{cookie:cookies.admin}});
+  expect(list.json().environments).toEqual(expect.arrayContaining([expect.objectContaining({id:'native',access:'deny',effective:false}),expect.objectContaining({id:account.id,access:'allow',effective:true})]));
+  const reset=await app.inject({method:'PUT',url:path,headers:{cookie:cookies.admin},payload:{entries:[{id:'native',access:'inherit'},{id:account.id,access:'inherit'}]}});
+  expect(reset.statusCode).toBe(200);expect(canUseEnvironment('codex','native',other.id)).toBe(true);expect(canUseEnvironment('codex',account.id,other.id)).toBe(false);
+  expect((await app.inject({method:'PUT',url:path,headers:{cookie:cookies.admin},payload:{entries:[{id:'unknown',access:'allow'}]}})).statusCode).toBe(400);
+ });
  it('allows only administrators to rebuild cached usage and exposes hourly data',async()=>{
   const path='/api/codex/environments/native/insights/rebuild';
   expect((await app.inject({method:'POST',url:path,headers:{cookie:cookies.owner}})).statusCode).toBe(403);

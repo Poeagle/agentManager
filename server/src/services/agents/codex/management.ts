@@ -604,6 +604,7 @@ async function removeProviderDirectory(providerId: string): Promise<void> {
 export async function removeManagedProviderStorage(providerId: string): Promise<void> {
   await removeProviderDirectory(providerId);
   getDb().prepare('DELETE FROM settings WHERE key = ?').run(secretKeyName(providerId));
+  getDb().prepare('DELETE FROM agent_environment_user_access WHERE environment_id = ?').run('provider:'+providerId);
   updateAgentManagement('codex', current => ({
     ...current,
     providers: current.providers.filter(item => item.id !== providerId),
