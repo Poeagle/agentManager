@@ -809,9 +809,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(config),
     }),
-    enhance: (data: { session_id: string; prompt: string; mode?: PromptEnhancerMode }, signal?: AbortSignal) =>
+    enhance: (data: { session_id: string; prompt: string; mode?: PromptEnhancerMode; attachments?: import('./conversation-attachments').ConversationAttachment[] }, signal?: AbortSignal) =>
       fetchJSON<{
         prompt: string;
+        warnings?: string[];
         context?: { requested_rounds: number; included_rounds: number };
       }>('/prompt-enhancer/enhance', {
         method: 'POST',

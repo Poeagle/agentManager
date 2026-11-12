@@ -13,3 +13,13 @@ it('previews an editable result and applies only on explicit confirmation',async
 it('does not overwrite a draft edited during the request',async()=>{mount();click();await screen.findByDisplayValue('优化后的草稿');fireEvent.change(screen.getByLabelText('草稿'),{target:{value:'后续输入'}});expect(screen.getByRole('button',{name:'应用到输入框'})).toBeDisabled();fireEvent.click(screen.getByRole('button',{name:'取消'}));expect(screen.getByLabelText('草稿')).toHaveValue('后续输入');expect(apply).not.toHaveBeenCalled();});
 it('aborts a cancelled request and ignores a late response',async()=>{let finish!:(data:{prompt:string})=>void;vi.mocked(api.promptEnhancer.enhance).mockReturnValue(new Promise(resolve=>finish=resolve));mount();click();const signal=vi.mocked(api.promptEnhancer.enhance).mock.calls[0][1]!;fireEvent.click(screen.getByRole('button',{name:'取消'}));expect(signal.aborted).toBe(true);await act(async()=>finish({prompt:'迟到结果'}));expect(screen.queryByRole('dialog')).toBeNull();});
 it('shows empty-input and backend failures without changing the draft',async()=>{mount('');click();expect(await screen.findByRole('alert')).toHaveTextContent('请先');expect(api.promptEnhancer.enhance).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'取消'}));fireEvent.change(screen.getByLabelText('草稿'),{target:{value:'保留内容'}});vi.mocked(api.promptEnhancer.enhance).mockRejectedValueOnce(Error('尚未配置提示词优化'));click();await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('尚未配置'));expect(screen.getByLabelText('草稿')).toHaveValue('保留内容');});
+
+it('passes ready attachments and prevents applying if they change',async()=>{
+  const attachment={id:'a',name:'image.png',kind:'image' as const,size:10,path:'/tmp/image.png',status:'ready' as const};
+  const view=render(<ConversationPromptEnhancer sessionId="s" active canEdit value="检查图片" onApply={apply} attachments={[attachment]}/>);
+  click();await screen.findByDisplayValue('优化后的草稿');
+  expect(api.promptEnhancer.enhance).toHaveBeenCalledWith(expect.objectContaining({attachments:[{kind:'image',name:'image.png',path:'/tmp/image.png'}]}),expect.any(AbortSignal));
+  expect(screen.getByText(/附件将保留/)).toBeVisible();
+  view.rerender(<ConversationPromptEnhancer sessionId="s" active canEdit value="检查图片" onApply={apply} attachments={[]}/>);
+  expect(screen.getByRole('button',{name:'应用到输入框'})).toBeDisabled();
+});

@@ -1929,6 +1929,7 @@ export function SessionConversation({
           active={active}
           canEdit={canSend && !ended && !waiting}
           value={draft}
+          attachments={attachments.items}
           onApply={changeDraft}
         />
         <div className="session-chat-reading">
@@ -2378,7 +2379,7 @@ export function SessionConversation({
                   aria-label="优化当前输入"
                   title="增强提示词"
                   disabled={
-                    !canSend || ended || waiting || sending || !draft.trim()
+                    !canSend || ended || waiting || sending || attachments.uploading || attachments.failed || (!draft.trim() && !attachments.items.length)
                   }
                   onClick={() =>
                     window.dispatchEvent(
