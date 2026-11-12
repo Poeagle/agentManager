@@ -32,6 +32,8 @@ flowchart TB
 
 终端输入的浏览器 ID 与原生客户端 ID 可能不同。平台只在同一会话和原生线程内，依据发送前的文件边界及输入指纹一对一关联持久回显；`input_reconciliation` 推送已确认的关联，`native_client_id` 保留原生 ID 以合并实时回显。不同 ID 的相同文本不会单独触发去重。
 
+已登记会话的 Engine 绑定优先于线程路由缓存；旧记录中空绑定按界面与权限规则解释为 `native`。若同一原生 ID 同时绑定多个 Engine，平台拒绝猜测。原生会话已有其他写入者时，恢复明确失败，不切换账号、不终止占用者；需要用户回到原会话继续，或先在原位置停止它。
+
 `identity` 的可选 `purgeHistory` 在移除平台会话行前异步清理 Agent 原始历史。Codex 按历史行绑定的 Engine 和原生会话 ID 删除 `sessions` 或 `archived_sessions` 中对应的 rollout；跨 Provider 副本、新开后的历史行各自保留其环境和 ID。压缩可能共享的 `history_base` 祖先不会随子会话删除，以免破坏其他会话。
 
 `AgentDefinition` 是新增 Agent 的实现契约；`resolveAgent()` 在注册时补齐可选接口，
