@@ -26,3 +26,12 @@ it('hides unestimatable projects and models and recomputes parent counters for e
  const visible=estimatableUsageRows([mixed,unknown]);expect(visible).toHaveLength(1);expect(visible[0].models).toHaveLength(1);expect(visible[0].tokens.total_tokens).toBe(100);
  for(const dimension of ['day','week','month','project','model'] as Dimension[]){const grouped=groupUsage(visible,dimension);expect(grouped[0].metrics.tokens.total_tokens).toBe(100);expect(JSON.stringify(grouped)).not.toContain('unknown');}
 });
+it('hides offsets visually while preserving distinct repeated local hours',()=>{
+ const first={...row('2026-11-01','/a','m',10,0),hour:'2026-11-01T01:00:00-04:00'};
+ const second={...row('2026-11-01','/a','m',20,0),hour:'2026-11-01T01:00:00-05:00'};
+ const groups=groupUsage([first,second],'hour');
+ expect(groups).toHaveLength(2);
+ expect(groups.map(group=>group.label)).toEqual(['2026-11-01 01:00','2026-11-01 01:00']);
+ expect(groups.map(group=>group.title)).toEqual(expect.arrayContaining(['2026-11-01 01:00 UTC-04:00','2026-11-01 01:00 UTC-05:00']));
+ expect(new Set(groups.map(group=>group.key)).size).toBe(2);
+});

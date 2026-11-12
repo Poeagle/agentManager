@@ -9,7 +9,7 @@ it('loads and groups precise UTC hourly records without changing daily statistic
  vi.mocked(fetchJSON).mockImplementation(async path=>path.includes('/insights')?{usage:{initialized:true,partial:false,timezone:'UTC',rows:[{date:'2026-11-11',...path.includes('granularity=hour')?{hour:'2026-11-11T12:00:00Z'}:{},cwd:'/hour-project',estimated_credits:1,tokens:metric,models:[{model:'model',estimated_credits:1,tokens:metric}]}]}}:{account:{},resets:null} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="hourly" name="Hourly" onClose={()=>{}}/></QueryClientProvider>);
  expect(await screen.findByText('2026-11-11')).toBeVisible();fireEvent.change(screen.getByRole('combobox',{name:'统计维度'}),{target:{value:'hour'}});
- expect(await screen.findByText('2026-11-11 12:00 UTC')).toBeVisible();expect(vi.mocked(fetchJSON).mock.calls.some(([url])=>url.includes('granularity=hour'))).toBe(true);
+ expect(await screen.findByText('2026-11-11 12:00')).toBeVisible();expect(vi.mocked(fetchJSON).mock.calls.some(([url])=>url.includes('granularity=hour'))).toBe(true);
 });
 it('shows local-day usage, formats collection time in the same zone and explicitly retains unassigned history',async()=>{
  vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:true,timezone:'Asia/Taipei',checked_at:'2026-11-11T16:34:39Z',unassigned:{tokens:{total_tokens:100},requests:1,estimated_credits:1},rows:[{date:'2026-11-12',cwd:'/local',estimated_credits:2,tokens:{input_tokens:20,cached_input_tokens:10,output_tokens:0,total_tokens:20}}]}}:{account:{},resets:null} as any);
