@@ -1,5 +1,5 @@
 import { Server } from 'lucide-react';
-import { useState } from 'react';
+import { useRef,useState } from 'react';
 import {useQuery} from '@tanstack/react-query';
 import {api} from '../lib/api';
 import {DataTable} from './table/DataTable';
@@ -70,17 +70,17 @@ export function ServerResourceIndicator() {
       {stale && <span role="status" title={status} aria-label={status} className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--error)' }} />}
     </div>
     {selected&&resources&&current&&<Dialog title={`${selected} usage`} size="lg" appearance="manager" onClose={()=>setSelected(null)}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pb-3 text-xs"><span>Current usage <strong style={{color:usageColor(current.percent)}}>{current.value}</strong></span>{stale&&<span role="status">Showing the last successful sample.</span>}</div>
-      <ResourceBreakdown key={selected} kind={selected}/>
+      <ResourceBreakdown key={selected} kind={selected} current={current} stale={stale}/>
     </Dialog>}
     </>
   );
 }
 
-function ResourceBreakdown({kind}:{kind:'CPU'|'Memory'|'Disk'}) {
+function ResourceBreakdown({kind,current,stale}:{kind:'CPU'|'Memory'|'Disk';current:{percent:number|null;value:string};stale:boolean}) {
  const [path,setPath]=useState<string|undefined>();
+ const force=useRef(false);
  const resourceKind=kind==='CPU'?'cpu':kind==='Memory'?'memory':'disk';
- const query=useQuery({queryKey:['resource-breakdown',resourceKind,path],queryFn:()=>api.admin.resourceBreakdown(resourceKind,path),retry:false,refetchOnWindowFocus:false});
+ const query=useQuery({queryKey:['resource-breakdown',resourceKind,path],queryFn:()=>{const refresh=force.current;force.current=false;return refresh?api.admin.resourceBreakdown(resourceKind,path,true):api.admin.resourceBreakdown(resourceKind,path);},retry:false,refetchOnWindowFocus:false,staleTime:kind==='Disk'?60000:0,gcTime:600000});
  const result=query.data,processes=result&&result.kind!=='disk'?result.rows:[],directories=result?.kind==='disk'?result.rows:[];
  const processTable=useTableModel(processes,[
   {key:'program',title:'Program',value:row=>row.program},
@@ -93,8 +93,10 @@ function ResourceBreakdown({kind}:{kind:'CPU'|'Memory'|'Disk'}) {
  const location=result?.kind==='disk'?result.path:undefined;
  const up=location&&result?.kind==='disk'&&location!==result.mount?(location.slice(0,location.lastIndexOf('/'))||'/'):null;
  return <div className="space-y-2 text-xs">
-  <div className="flex flex-wrap items-center gap-2"><span className="min-w-0 flex-1 break-all">{result?.kind==='disk'?result.path:kind==='Disk'?'Scanning directories…':result?`Sampled ${new Date(result.sampled_at).toLocaleString()}`:'Sampling processes…'}</span>{up&&<button type="button" className="rounded border px-2 py-1" style={{borderColor:'var(--border)'}} disabled={query.isFetching} onClick={()=>setPath(up)}>Up</button>}<button type="button" className="rounded border px-2 py-1" style={{borderColor:'var(--border)'}} disabled={query.isFetching} onClick={()=>void query.refetch()}>Refresh</button></div>
-  {query.isPending?<p role="status">{kind==='Disk'?'Scanning directories (up to 15 seconds)…':'Sampling processes…'}</p>:query.isError?<p role="alert">{query.error instanceof Error?query.error.message:'Resource details unavailable'}</p>:result?.kind==='disk'?<DataTable label="Directory usage" model={directoryTable} minWidth={480} empty={!directories.length} emptyMessage="No readable directories found">{directoryTable.rows.map(row=><tr key={row.path}><td><button type="button" className="text-left" style={{color:'var(--accent)'}} disabled={query.isFetching} onClick={()=>setPath(row.path)}>{row.path}</button></td><td>{formatBytes(row.bytes)}</td></tr>)}</DataTable>:<DataTable label="Process usage" model={processTable} minWidth={600} empty={!processes.length} emptyMessage="No readable processes found">{processTable.rows.map(row=><tr key={row.pid}><td>{row.program}</td><td>{row.user}</td><td>{row.pid}</td><td>{row.cpu_percent===null?'—':`${row.cpu_percent.toFixed(1)}%`}</td><td>{formatBytes(row.memory_bytes)}</td></tr>)}</DataTable>}
+  <div className="flex flex-wrap items-center gap-x-4 gap-y-2"><span>Current usage <strong style={{color:usageColor(current.percent)}}>{current.value}</strong></span>{result?.kind==='disk'&&<span className="break-all">{result.path}</span>}<span className="min-w-0 flex-1">{result?`Sampled ${new Date(result.sampled_at).toLocaleString()}${result.kind==='disk'&&result.cached?' · Cached':''}`:kind==='Disk'?'Scanning directories…':'Sampling processes…'}{query.isFetching&&result?' · Updating…':''}</span>{up&&<button type="button" className="rounded border px-2 py-1" style={{borderColor:'var(--border)'}} disabled={query.isFetching} onClick={()=>setPath(up)}>Up</button>}<button type="button" className="rounded border px-2 py-1" style={{borderColor:'var(--border)'}} disabled={query.isFetching} onClick={()=>{force.current=true;void query.refetch();}}>Refresh</button></div>
+  {stale&&<p role="status">Showing the last successful usage sample.</p>}
+  {query.isError&&result&&<p role="alert">Refresh failed; showing the previous sample.</p>}
+  {query.isPending?<p role="status">{kind==='Disk'?'Scanning directories (up to 8 seconds)…':'Sampling processes…'}</p>:query.isError&&!result?<p role="alert">{query.error instanceof Error?query.error.message:'Resource details unavailable'}</p>:result?.kind==='disk'?<DataTable label="Directory usage" model={directoryTable} minWidth={480} empty={!directories.length} emptyMessage="No readable directories found">{directoryTable.rows.map(row=><tr key={row.path}><td><button type="button" className="text-left" style={{color:'var(--accent)'}} disabled={query.isFetching} onClick={()=>setPath(row.path)}>{row.path}</button></td><td>{formatBytes(row.bytes)}</td></tr>)}</DataTable>:<DataTable label="Process usage" model={processTable} minWidth={600} empty={!processes.length} emptyMessage="No readable processes found">{processTable.rows.map(row=><tr key={row.pid}><td>{row.program}</td><td>{row.user}</td><td>{row.pid}</td><td>{row.cpu_percent===null?'—':`${row.cpu_percent.toFixed(1)}%`}</td><td>{formatBytes(row.memory_bytes)}</td></tr>)}</DataTable>}
   {result?.partial&&<p role="status">Results are incomplete because some entries were inaccessible or the scan was limited.</p>}
   {result&&result.kind!=='disk'&&<p style={{color:'var(--text-secondary)'}}>Top 100 by {kind==='CPU'?'CPU':'memory'}. {result.cpu_method==='sampled'?'CPU is measured over a short interval; one core equals 100%.':'CPU is the process average reported by the operating system.'} Memory is resident size and can include shared pages.</p>}
   {result?.kind==='disk'&&<p style={{color:'var(--text-secondary)'}}>Top 100 directories on the same filesystem. Select a directory to inspect it.</p>}
