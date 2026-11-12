@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ServerResourceIndicator } from '../src/components/ServerResourceIndicator';
 import { api } from '../src/lib/api';
@@ -56,7 +56,7 @@ it('keeps successful data visibly marked stale on a failed refresh', async () =>
 it('keeps CPU and memory available when the platform cannot sample disk', async () => {
   vi.mocked(api.admin.serverResources).mockResolvedValue({ server_resources: { ...resources, disk: null } });
   await mount();
-  expect(screen.getByText('不可用')).toBeVisible();
+  expect(screen.getByText('Unavailable')).toBeVisible();
   expect(screen.getByText('12%')).toBeVisible();
 });
 
@@ -88,4 +88,19 @@ it('colors usage from healthy to critical', async () => {
   expect(screen.getByText('12%')).toHaveAttribute('style',expect.stringContaining('var(--success)'));
   expect(screen.getByText('75%')).toHaveAttribute('style',expect.stringContaining('rgb(183, 121, 11)'));
   expect(screen.getByText('95%')).toHaveAttribute('style',expect.stringContaining('var(--error)'));
+});
+
+it('opens a centered resource detail for each metric', async () => {
+  await mount();
+  fireEvent.click(screen.getByRole('button',{name:'Memory usage 25%'}));
+  let dialog=screen.getByRole('dialog',{name:'Memory usage'});
+  expect(within(dialog).getByText('32.0 GiB')).toBeVisible();
+  fireEvent.click(within(dialog).getByRole('button',{name:'关闭Memory usage'}));
+  fireEvent.click(screen.getByRole('button',{name:'CPU usage 12%'}));
+  dialog=screen.getByRole('dialog',{name:'CPU usage'});
+  expect(within(dialog).getByText('Logical cores')).toBeVisible();
+  fireEvent.click(within(dialog).getByRole('button',{name:'关闭CPU usage'}));
+  fireEvent.click(screen.getByRole('button',{name:'Disk usage 40%'}));
+  dialog=screen.getByRole('dialog',{name:'Disk usage'});
+  expect(within(dialog).getByText('250.0 GiB')).toBeVisible();
 });
