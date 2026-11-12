@@ -358,6 +358,7 @@ export const api = {
   admin: {
     monitor: () => fetchJSON<AdminMonitorResponse>('/admin/monitor'),
     serverResources: () => fetchJSON<Pick<AdminMonitorResponse, 'server_resources'>>('/admin/server-resources'),
+    resourceBreakdown: (kind:'cpu'|'memory'|'disk',path?:string) => fetchJSON<ResourceBreakdown>(`/admin/resource-breakdown?${new URLSearchParams({kind,...path?{path}:{}})}`),
     renameMonitorTab: (userId: string, projectId: string, sessionId: string, name: string) =>
       fetchJSON<{ ok: boolean; tab: { id: string; name: string } }>(
         `/admin/monitor/users/${encodeURIComponent(userId)}/projects/${encodeURIComponent(projectId)}/tabs/${encodeURIComponent(sessionId)}`,
@@ -1051,6 +1052,10 @@ export interface AdminMonitorLogin {
   user_agent:string|null;
   presence:AdminMonitorPresence;
 }
+
+export type ResourceBreakdown =
+ | {kind:'cpu'|'memory';rows:Array<{pid:number;user:string;program:string;cpu_percent:number|null;memory_bytes:number}>;partial:boolean;cpu_method:'sampled'|'ps_average';sampled_at:string}
+ | {kind:'disk';rows:Array<{path:string;bytes:number}>;partial:boolean;mount:string;path:string;sampled_at:string};
 
 export interface AdminMonitorResponse {
   generated_at: string;
