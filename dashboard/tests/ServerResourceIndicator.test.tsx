@@ -9,7 +9,7 @@ import { useStreamStore } from '../src/lib/websocket';
 
 vi.mock('../src/lib/api', async () => {
   const actual = await vi.importActual<typeof import('../src/lib/api')>('../src/lib/api');
-  return { ...actual, api: { ...actual.api, admin: { ...actual.api.admin, serverResources: vi.fn(), monitor: vi.fn() } } };
+  return { ...actual, api: { ...actual.api, admin: { ...actual.api.admin, serverResources: vi.fn(), monitor: vi.fn(), resourceBreakdown: vi.fn() } } };
 });
 const resources = {
   sampled_at: '2026-10-13T08:00:00.000Z',
@@ -23,6 +23,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   useStreamStore.getState().setConnected(false);
   vi.mocked(api.admin.serverResources).mockResolvedValue({ server_resources: resources });
+  vi.mocked(api.admin.resourceBreakdown).mockImplementation(async(kind,path)=>kind==='disk'?{kind:'disk',path:path||'/',mount:'/',partial:false,sampled_at:'2026-10-13T08:00:00Z',rows:[{path:'/home',bytes:1024**3}]}:{kind,partial:false,cpu_method:'sampled',sampled_at:'2026-10-13T08:00:00Z',rows:[{pid:42,user:'alice',program:'node',cpu_percent:12,memory_bytes:128*1024**2}]});
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
 afterEach(() => { client.clear(); useStreamStore.getState().setConnected(false); vi.useRealTimers(); vi.clearAllMocks(); });
@@ -90,17 +91,24 @@ it('colors usage from healthy to critical', async () => {
   expect(screen.getByText('95%')).toHaveAttribute('style',expect.stringContaining('var(--error)'));
 });
 
-it('opens a centered resource detail for each metric', async () => {
+it('shows processes and drillable directories in resource tables', async () => {
   await mount();
   fireEvent.click(screen.getByRole('button',{name:'Memory usage 25%'}));
+  await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
   let dialog=screen.getByRole('dialog',{name:'Memory usage'});
-  expect(within(dialog).getByText('32.0 GiB')).toBeVisible();
+  expect(within(dialog).getByRole('table',{name:'Process usage'})).toHaveTextContent('node');
+  expect(within(dialog).getByText('128.0 MiB')).toBeVisible();
   fireEvent.click(within(dialog).getByRole('button',{name:'关闭Memory usage'}));
   fireEvent.click(screen.getByRole('button',{name:'CPU usage 12%'}));
+  await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
   dialog=screen.getByRole('dialog',{name:'CPU usage'});
-  expect(within(dialog).getByText('Logical cores')).toBeVisible();
+  expect(within(dialog).getByRole('table',{name:'Process usage'})).toHaveTextContent('12.0%');
   fireEvent.click(within(dialog).getByRole('button',{name:'关闭CPU usage'}));
   fireEvent.click(screen.getByRole('button',{name:'Disk usage 40%'}));
+  await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
   dialog=screen.getByRole('dialog',{name:'Disk usage'});
-  expect(within(dialog).getByText('250.0 GiB')).toBeVisible();
+  expect(within(dialog).getByRole('table',{name:'Directory usage'})).toHaveTextContent('1.0 GiB');
+  fireEvent.click(within(dialog).getByRole('button',{name:'/home'}));
+  await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
+  expect(api.admin.resourceBreakdown).toHaveBeenCalledWith('disk','/home');
 });
