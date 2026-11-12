@@ -1143,6 +1143,7 @@ export function SessionConversation({
         }
         if (frame.type === "snapshot" || frame.type === "patch") failures = 0;
         if(frame.type==='progress_statistics'&&frame.native_id===agentNativeId(session)){setProgressStatistics(frame.progress||null);return;}
+        if(frame.type==='input_reconciliation'&&frame.native_id===agentNativeId(session)&&Array.isArray(frame.messages)){setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));return;}
         if (
           frame.type === "patch" &&
           Array.isArray(frame.upserts) &&

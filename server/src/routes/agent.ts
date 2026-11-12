@@ -9,7 +9,7 @@ import {readModelPreference,saveModelPreference,modelPreferenceSubmittedAt} from
 import {agentForSession,agentDescriptors,getAgent} from '../services/agents/index.js';
 import {sessionAgentContext,readAgentRuntime,presentAgentSession} from '../services/agents/session.js';
 import {nativeConversationId} from '../services/session-identity.js';
-import {rememberConversationInput,linkConversationInputs} from '../services/conversation-input-links.js';
+import {rememberConversationInput,linkConversationInputs,boundConversationInputs} from '../services/conversation-input-links.js';
 import {FastifyPluginAsync} from 'fastify';
 import {createRequire} from 'module';
 const require = createRequire(import.meta.url);
@@ -106,7 +106,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.3.0',
+    version:'3.4.0',
     updatedAt:'2026-11-12',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -392,7 +392,7 @@ export function getAgentApiContract() {
         category: 'Session control',
         method: 'WS',
         path: '/api/sessions/:id/conversation/stream',
-        description: 'Cookie-authenticated conversation stream. Supported agents can emit progress_statistics with cumulative recorded token and tool counts since the previous conclusion; missing or incomplete data remains unknown or a lower bound.',
+        description: 'Cookie-authenticated conversation stream. Supported agents can emit progress_statistics with cumulative recorded token and tool counts since the previous conclusion; missing or incomplete data remains unknown or a lower bound. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
       },
       {
         category: 'Session control',
@@ -860,7 +860,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);
       if(req.body?.source==='conversation'&&typeof clientId==='string'&&session){
         const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
-        await rememberConversationInput(id,{...session,cli_type:session.cli_type||'claude',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},clientId,preparedInput).catch(()=>{});
+        const raw=nativeConversationInput(input,attachments)[0].text,visible=conversationQuestionReply(raw)?.text??raw;
+        await rememberConversationInput(id,{...session,cli_type:session.cli_type||'claude',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},clientId,preparedInput,visible).catch(()=>{});
       }
       await withTerminalInput(id,async()=>{
       if (!writeToSession(id,preparedInput,true)) throw new AgentSubmissionError('消息尚未发送：终端未接收输入，请重连后重试','rejected');
@@ -1036,7 +1037,13 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     };
     if(adapter.descriptor.capabilities.retry)retries.monitor(id,req.user!.id,nativeId);
     const stopRetry=adapter.descriptor.capabilities.retry?retries.subscribe(id,nativeId,send):()=>{};
-    const stopProgress=adapter.statistics.readProgress?observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},frame=>{if(frame.type==='progress_statistics')send(frame);}):()=>{};
+    const stopProgress=adapter.history.file?observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},frame=>{
+      if(frame.type==='progress_statistics')send(frame);
+      else if(frame.type==='history'){
+        const messages=boundConversationInputs(id,nativeId,frame.messages);
+        if(messages.length)send({type:'input_reconciliation',native_id:nativeId,messages:decorateConversationAttachments(id,messages)});
+      }
+    }):()=>{};
     const stop=observeAgentConversation(session,frame=>{
       send(frame);
       if(frame.type==='unavailable'&&frame.reconnect&&socket.readyState===1)socket.close(1012,'Native connection lost');

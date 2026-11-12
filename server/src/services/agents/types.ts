@@ -319,6 +319,8 @@ export interface AgentMessage {
     will_retry: boolean;
   };
   client_id?: string;
+  /** Native echo identity, when a terminal generated a different client ID. */
+  native_client_id?: string;
   sequence?: number;
   attachments?: ConversationAttachment[];
   image_paths?: string[];

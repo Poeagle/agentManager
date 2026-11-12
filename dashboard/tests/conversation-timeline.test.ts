@@ -74,4 +74,11 @@ describe('deterministic conversation timeline',()=>{
     const result=mergeConversationTimeline([pending,native],[{...native,client_id:'client'}]);
     expect(ids(result)).toEqual(['native']);expect(result[0].client_id).toBe('client');
   });
+  it('reconciles a proven terminal alias, including late native snapshots, without hiding later repeats',()=>{
+    const pending=message('pending','user',{text:'same',client_id:'browser',optimistic:{afterSequence:10}}),live=message('live','user',{text:'same',client_id:'terminal'});
+    const durable=message('durable','user',{text:'same',client_id:'browser',native_client_id:'terminal',sequence:20});
+    const result=mergeConversationTimeline([pending,live],[durable]);expect(ids(result)).toEqual(['durable']);
+    expect(ids(mergeConversationTimeline(result,[live]))).toEqual(['durable']);
+    expect(ids(mergeConversationTimeline(result,[message('intentional','user',{text:'same',client_id:'another',sequence:30})]))).toEqual(['durable','intentional']);
+  });
 });
