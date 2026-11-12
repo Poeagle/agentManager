@@ -302,7 +302,7 @@
 .conversation-auto-context-body>.conversation-markdown {max-width:none;}
 .conversation-auto-context-body .conversation-markdown>:first-child {margin-top:0;}
 .conversation-auto-dialog-meta {display:flex;justify-content:space-between;gap:12px;margin-bottom:10px;color:var(--text-secondary);font-size:11px;overflow-wrap:anywhere;}
-.conversation-controls {display:flex;align-items:center;gap:6px 12px;flex-wrap:nowrap;min-width:0;min-height:24px;margin-top:2px;overflow-x:auto;white-space:nowrap;scrollbar-width:thin;font-family:var(--app-font-family);font-size:12px;line-height:20px;font-weight:400;font-variant-numeric:tabular-nums;color:var(--text-secondary);}
+.conversation-controls {display:flex;align-items:center;gap:6px 12px;flex-wrap:nowrap;min-width:0;min-height:24px;margin-top:2px;overflow-x:auto;white-space:nowrap;scrollbar-width:thin;font-family:var(--app-font-family);font-size:11px;line-height:18px;font-weight:400;font-variant-numeric:tabular-nums;color:var(--text-secondary);}
 .conversation-controls>* {flex-shrink:0;}
 .conversation-control-message {max-width:180px;overflow:hidden;text-overflow:ellipsis;color:var(--error);}
 .conversation-control-select {display:flex;gap:5px;align-items:center;position:relative;}
@@ -316,8 +316,8 @@
 .conversation-control-pending {color:var(--accent);font-size:10px;}
 .conversation-control-pending button {text-decoration:underline;margin-left:5px;}
 .conversation-control-context {display:flex;gap:5px;align-items:center;}
-.conversation-control-context i {display:block;width:34px;height:4px;border-radius:4px;overflow:hidden;background:var(--border);}
-.conversation-control-context b {display:block;height:100%;background:var(--accent);}
+.conversation-control-context i {position:relative;display:block;width:12px;height:12px;border-radius:50%;flex-shrink:0;}
+.conversation-control-context i::after {content:"";position:absolute;inset:2px;border-radius:50%;background:var(--bg-primary);}
 .conversation-control-environment {display:contents;}
 .conversation-control-environment>span {white-space:nowrap;font:inherit;color:var(--text-secondary);}
 .conversation-control-environment .conversation-control-directory {max-width:min(240px,45vw);overflow:hidden;text-overflow:ellipsis;}
@@ -408,6 +408,6 @@
 .conversation-toolbar>button:disabled {opacity:.5;cursor:default;}
 .conversation-toolbar>button[aria-pressed=true] {color:var(--accent);background:transparent;}
 .conversation-toolbar .conversation-control-context {border-color:transparent;background:transparent;font-size:11px;color:var(--text-muted);}
-.conversation-toolbar .conversation-control-context i {width:28px;}
+.conversation-toolbar .conversation-control-context i {width:12px;}
 @media(max-width:700px){.session-chat-controls-slot,.conversation-toolbar {display:contents;}.conversation-toolbar .conversation-control-select select {max-width:135px;}}
 @media(max-width:700px){.conversation-toolbar .conversation-control-model select {max-width:min(220px,45vw);}}

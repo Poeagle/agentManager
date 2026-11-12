@@ -78,7 +78,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
     <div className="conversation-controls" aria-label="Model and session status">
       {data?<>
         {toolbarTarget?createPortal(toolbar,toolbarTarget):toolbar}
-        {data.native_id&&<button type="button" className="conversation-control-context" aria-label="View context token details" aria-haspopup="dialog" title="Context used by the latest request; click for details." onClick={()=>setContextOpen(true)}><i><b style={{width:`${context??0}%`}}/></i>Context {context===null?'Unavailable':`${context}%`}</button>}
+        {data.native_id&&<button type="button" className="conversation-control-context" aria-label="View context token details" aria-haspopup="dialog" title="Context used by the latest request; click for details." onClick={()=>setContextOpen(true)}><i aria-hidden="true" style={{background:context===null?'var(--border)':`conic-gradient(var(--accent) ${context}%, var(--border) 0)`}}/>Context {context===null?'Unavailable':`${context}%`}</button>}
         {weekly&&<span title={weekly.resets_at?`Resets: ${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>Weekly remaining {Math.round(100-weekly.used_percent)}%</span>}
         <span className="conversation-control-environment" aria-label="Session information">
           {data.cwd&&<span className="conversation-control-directory" title={`Working directory: ${data.cwd}`}>{data.cwd}</span>}
@@ -86,7 +86,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
           <span title="Session status">{compacting?'Compacting':busy?'Running':data.loaded?'Waiting':'Disconnected'}</span>
           {data.permission&&<span title="Access permissions">{permissionsEn[data.permission]||data.permission}</span>}
           {usage?.window!=null&&<span title={`Context window: ${usage.window.toLocaleString()} Token`}>Window {compact(usage.window)}</span>}
-          {usage?.total.total_tokens!=null&&<span title={`Total usage: ${usage.total.total_tokens.toLocaleString()} tokens including cached and repeated context`}>Total {compact(usage.total.total_tokens)} Token</span>}
+          {usage?.total.total_tokens!=null&&<span title={`Total usage: ${usage.total.total_tokens.toLocaleString()} tokens including cached and repeated context`}>Total {compact(usage.total.total_tokens)}</span>}
           {usage?.total.input_tokens!=null&&<span title={`Total input: ${usage.total.input_tokens.toLocaleString()} tokens including cache`}>Input {compact(usage.total.input_tokens)}</span>}
           {usage?.total.cached_input_tokens!=null&&<span title="Cached input tokens">Cache {compact(usage.total.cached_input_tokens)}</span>}
           {usage?.total.reasoning_output_tokens!=null&&<span title="Reasoning output tokens">Reasoning {compact(usage.total.reasoning_output_tokens)}</span>}

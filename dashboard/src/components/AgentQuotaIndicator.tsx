@@ -67,7 +67,7 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApp
       {!headerChip&&<AgentIcon session={{agent}} className="h-3.5 w-3.5 shrink-0"/>}
       {onOpen?<button type="button" aria-label={`查看 ${label} 账号详情`} onClick={onOpen} className="text-[11px] font-medium">{label}</button>:<span className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>{label}</span>}
       <strong className="text-[11px] font-medium tabular-nums" style={{ color:headerChip?'var(--text-primary)':color }}>
-        {quota ? `${quota.remainingPercent}%` : notApplicable ? '不适用' : quotaQuery.isError ? '不可用' : '读取中'}
+        {quota ? `${quota.remainingPercent}%` : notApplicable ? 'N/A' : quotaQuery.isError ? 'Unavailable' : 'Loading'}
       </strong>
       {canRefresh&&<button type="button" aria-label={`刷新 ${label} 额度`} title="刷新额度"
         disabled={refresh.isPending || quotaQuery.isFetching}
