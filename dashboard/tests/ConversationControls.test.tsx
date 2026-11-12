@@ -10,6 +10,11 @@ beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}})
 afterEach(()=>client.clear());
 const mount=()=>render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active/></QueryClientProvider>);
 describe('compact conversation controls',()=>{
+ it('dismisses model details while selecting and restores them after focus leaves',async()=>{
+  mount();const select=await screen.findByRole('combobox',{name:'选择模型'}),label=select.closest('label')!;
+  fireEvent.mouseEnter(label);expect(screen.getByRole('tooltip')).toBeVisible();fireEvent.pointerDown(select);fireEvent.focus(select);expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+  fireEvent.mouseLeave(label);fireEvent.mouseEnter(label);expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();fireEvent.blur(select);fireEvent.mouseEnter(label);expect(screen.getByRole('tooltip')).toBeVisible();
+ });
  it('does not present subscription reference credits as API pricing',async()=>{
   data.models[0]={...data.models[0],reference_credits:{input:25,cached:1.25,output:125,as_of:'2026-11-11'}};
   vi.mocked(api.codexEnvironments.forSession).mockResolvedValueOnce({current:'provider:a',environments:[{id:'provider:a',name:'API',kind:'provider',auth_mode:'api',enabled:true,allowed_user_ids:null}]} as any);
@@ -32,7 +37,7 @@ describe('compact conversation controls',()=>{
  });
  it('reads context categories only after clicking the usage indicator without reloading controls',async()=>{
   vi.mocked(api.agent.contextBreakdown).mockReset().mockResolvedValue({context:{source:'jsonl',exact:false,method:'characters_div_3',checked_at:'2026-11-11T12:00:00Z',observed_at:null,model:'model-a',usage:null,partial:false,warnings:[],files_read:1,records_read:1,bytes_read:100,compactions:0,categories:[{id:'user',name:'用户消息',tokens:100,count:1,detail:[]}]}});
-  mount();await screen.findByText('Context 30%');expect(api.agent.contextBreakdown).not.toHaveBeenCalled();const calls=vi.mocked(api.agent.controls).mock.calls.length;
+  mount();await screen.findByText('Context 30%');expect(screen.getByText('Tokens Window/Total : 40K/400K').compareDocumentPosition(screen.getByText('Context 30%'))&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();expect(api.agent.contextBreakdown).not.toHaveBeenCalled();const calls=vi.mocked(api.agent.controls).mock.calls.length;
   fireEvent.click(screen.getByRole('button',{name:'View context token details'}));const dialog=await screen.findByRole('dialog',{name:'上下文 Token 详情'});expect(await within(dialog).findByRole('rowheader',{name:'用户消息'})).toBeVisible();expect(api.agent.controls).toHaveBeenCalledTimes(calls);expect(api.agent.contextBreakdown).toHaveBeenCalledTimes(1);fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).toBeNull();
  });
  it('places editable controls in the composer slot and keeps runtime information below',async()=>{
