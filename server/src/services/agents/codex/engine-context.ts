@@ -97,7 +97,7 @@ export async function engineForThread(threadId:string):Promise<CodexEngine> {
  // thread cache silently redirect that session into a different account.
  try {ids=(getDb().prepare("SELECT DISTINCT COALESCE(agent_environment_id,'native') AS id FROM sessions WHERE native_session_id=? OR codex_session_id=?").all(threadId,threadId) as Array<{id:string}>).map(row=>row.id);}catch{/* File-only callers have no application database. */}
  if(ids.length>1)throw Error('会话同时绑定多个 Codex 环境，已拒绝猜测账号');
- if(ids.length===1)return (await import('./environments.js')).engineForEnvironment(ids[0],{history:true});
+ if(ids.length===1)return ids[0]==='native'?defaultCodexEngine():(await import('./environments.js')).engineForEnvironment(ids[0],{history:true});
  const saved=threads.get(threadKey(threadId));if(saved?.environmentId)return (await import('./environments.js')).engineForEnvironment(saved.environmentId,{history:true});if(saved)return {...saved,...configuredCodexEngines().find(e=>e.provider===saved.provider)};
  loadPersistedRoutes();
  const persisted=persistedRoutes.get(threadId);
