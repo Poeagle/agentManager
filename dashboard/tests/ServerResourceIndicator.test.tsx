@@ -36,8 +36,8 @@ it('shows compact usage percentages, keeps capacities in tooltips, and refreshes
   expect(screen.getByText('12%')).toBeVisible();
   expect(screen.getByText('25%')).toBeVisible();
   expect(screen.getByText('40%')).toBeVisible();
-  expect(screen.getByText('内存').parentElement).toHaveAttribute('title', expect.stringContaining('8.0 GiB / 总量 32.0 GiB'));
-  expect(screen.getByText('磁盘').parentElement).toHaveAttribute('title', expect.stringContaining('100.0 GiB / 总量 250.0 GiB'));
+  expect(screen.getByText('Memory').parentElement).toHaveAttribute('title', expect.stringContaining('8.0 GiB / 总量 32.0 GiB'));
+  expect(screen.getByText('Disk').parentElement).toHaveAttribute('title', expect.stringContaining('100.0 GiB / 总量 250.0 GiB'));
   expect(screen.getByLabelText('部署服务器资源')).toHaveClass('workspace-header-chip');
   expect(screen.getByLabelText('部署服务器资源')).toHaveAttribute('title', expect.stringContaining('8 个逻辑核'));
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
