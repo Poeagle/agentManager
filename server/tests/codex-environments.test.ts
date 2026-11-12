@@ -36,7 +36,7 @@ describe('Codex account environments and platform ACLs',()=>{
   try{
    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,codex_session_id,created_by_user_id) VALUES('legacy','p','task','cancelled','codex',?,?)").run(native,owner.id);
    runInCodexEngine({socket:'/fixture/other.sock',environmentId:account.id},()=>rememberCodexThread({id:native,modelProvider:'openai'}));
-   expect(await engineForThread(native)).toMatchObject({socket:'/fixture/native.sock',environmentId:'native'});
+   expect(await engineForThread(native)).toMatchObject({socket:'/fixture/native.sock'});expect((await engineForThread(native)).environmentId).toBeUndefined();
    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,codex_session_id,created_by_user_id,agent_environment_id) VALUES('conflict','p','task','cancelled','codex',?,?,?)").run(native,owner.id,account.id);
    await expect(engineForThread(native)).rejects.toThrow('多个 Codex 环境');
   }finally{vi.unstubAllEnvs();}
