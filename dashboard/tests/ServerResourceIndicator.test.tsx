@@ -96,6 +96,7 @@ it('shows processes and drillable directories in resource tables', async () => {
   fireEvent.click(screen.getByRole('button',{name:'Memory usage 25%'}));
   await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
   let dialog=screen.getByRole('dialog',{name:'Memory usage'});
+  const header=within(dialog).getByRole('heading',{name:'Memory usage'}).closest('header')!;expect(within(header).getByText('Current usage')).toBeVisible();expect(within(header).getByText(/Sampled/)).toBeVisible();expect(within(header).getByRole('button',{name:'Refresh'})).toBeVisible();
   expect(within(dialog).getByRole('table',{name:'Process usage'})).toHaveTextContent('node');
   expect(within(dialog).getByText('128.0 MiB')).toBeVisible();
   fireEvent.click(within(dialog).getByRole('button',{name:'关闭Memory usage'}));

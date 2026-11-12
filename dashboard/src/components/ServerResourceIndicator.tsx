@@ -69,14 +69,12 @@ export function ServerResourceIndicator() {
       )) : <><Server className="h-3.5 w-3.5" aria-hidden="true" /><span role="status">{status}</span></>}
       {stale && <span role="status" title={status} aria-label={status} className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--error)' }} />}
     </div>
-    {selected&&resources&&current&&<Dialog title={`${selected} usage`} size="lg" appearance="manager" onClose={()=>setSelected(null)}>
-      <ResourceBreakdown key={selected} kind={selected} current={current} stale={stale}/>
-    </Dialog>}
+    {selected&&resources&&current&&<ResourceBreakdown key={selected} kind={selected} current={current} stale={stale} onClose={()=>setSelected(null)}/>}
     </>
   );
 }
 
-function ResourceBreakdown({kind,current,stale}:{kind:'CPU'|'Memory'|'Disk';current:{percent:number|null;value:string};stale:boolean}) {
+function ResourceBreakdown({kind,current,stale,onClose}:{kind:'CPU'|'Memory'|'Disk';current:{percent:number|null;value:string};stale:boolean;onClose:()=>void}) {
  const [path,setPath]=useState<string|undefined>();
  const force=useRef(false);
  const resourceKind=kind==='CPU'?'cpu':kind==='Memory'?'memory':'disk';
@@ -92,13 +90,14 @@ function ResourceBreakdown({kind,current,stale}:{kind:'CPU'|'Memory'|'Disk';curr
  const directoryTable=useTableModel(directories,[{key:'directory',title:'Directory',value:row=>row.path},{key:'usage',title:'Used',value:row=>row.bytes}]);
  const location=result?.kind==='disk'?result.path:undefined;
  const up=location&&result?.kind==='disk'&&location!==result.mount?(location.slice(0,location.lastIndexOf('/'))||'/'):null;
- return <div className="space-y-2 text-xs">
-  <div className="flex flex-wrap items-center gap-x-4 gap-y-2"><span>Current usage <strong style={{color:usageColor(current.percent)}}>{current.value}</strong></span>{result?.kind==='disk'&&<span className="break-all">{result.path}</span>}<span className="min-w-0 flex-1">{result?`Sampled ${new Date(result.sampled_at).toLocaleString()}${result.kind==='disk'&&result.cached?' · Cached':''}`:kind==='Disk'?'Scanning directories…':'Sampling processes…'}{query.isFetching&&result?' · Updating…':''}</span>{up&&<button type="button" className="rounded border px-2 py-1" style={{borderColor:'var(--border)'}} disabled={query.isFetching} onClick={()=>setPath(up)}>Up</button>}<button type="button" className="rounded border px-2 py-1" style={{borderColor:'var(--border)'}} disabled={query.isFetching} onClick={()=>{force.current=true;void query.refetch();}}>Refresh</button></div>
+ const header=<div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-1 text-xs font-normal"><span>Current usage <strong style={{color:usageColor(current.percent)}}>{current.value}</strong></span><span className="min-w-0 flex-1">{result?`Sampled ${new Date(result.sampled_at).toLocaleString()}${result.kind==='disk'&&result.cached?' · Cached':''}`:kind==='Disk'?'Scanning directories…':'Sampling processes…'}{query.isFetching&&result?' · Updating…':''}</span><button type="button" className="rounded border px-2 py-1" style={{borderColor:'var(--border)'}} disabled={query.isFetching} onClick={()=>{force.current=true;void query.refetch();}}>Refresh</button></div>;
+ return <Dialog title={`${kind} usage`} size="lg" appearance="manager" onClose={onClose} wrapHeader actions={header}><div className="space-y-2 text-xs">
+  {result?.kind==='disk'&&<div className="flex flex-wrap items-center gap-2"><span className="min-w-0 flex-1 break-all">{result.path}</span>{up&&<button type="button" className="rounded border px-2 py-1" style={{borderColor:'var(--border)'}} disabled={query.isFetching} onClick={()=>setPath(up)}>Up</button>}</div>}
   {stale&&<p role="status">Showing the last successful usage sample.</p>}
   {query.isError&&result&&<p role="alert">Refresh failed; showing the previous sample.</p>}
   {query.isPending?<p role="status">{kind==='Disk'?'Scanning directories (up to 8 seconds)…':'Sampling processes…'}</p>:query.isError&&!result?<p role="alert">{query.error instanceof Error?query.error.message:'Resource details unavailable'}</p>:result?.kind==='disk'?<DataTable label="Directory usage" model={directoryTable} minWidth={480} empty={!directories.length} emptyMessage="No readable directories found">{directoryTable.rows.map(row=><tr key={row.path}><td><button type="button" className="text-left" style={{color:'var(--accent)'}} disabled={query.isFetching} onClick={()=>setPath(row.path)}>{row.path}</button></td><td>{formatBytes(row.bytes)}</td></tr>)}</DataTable>:<DataTable label="Process usage" model={processTable} minWidth={600} empty={!processes.length} emptyMessage="No readable processes found">{processTable.rows.map(row=><tr key={row.pid}><td>{row.program}</td><td>{row.user}</td><td>{row.pid}</td><td>{row.cpu_percent===null?'—':`${row.cpu_percent.toFixed(1)}%`}</td><td>{formatBytes(row.memory_bytes)}</td></tr>)}</DataTable>}
   {result?.partial&&<p role="status">Results are incomplete because some entries were inaccessible or the scan was limited.</p>}
   {result&&result.kind!=='disk'&&<p style={{color:'var(--text-secondary)'}}>Top 100 by {kind==='CPU'?'CPU':'memory'}. {result.cpu_method==='sampled'?'CPU is measured over a short interval; one core equals 100%.':'CPU is the process average reported by the operating system.'} Memory is resident size and can include shared pages.</p>}
   {result?.kind==='disk'&&<p style={{color:'var(--text-secondary)'}}>Top 100 directories on the same filesystem. Select a directory to inspect it.</p>}
- </div>;
+ </div></Dialog>;
 }
