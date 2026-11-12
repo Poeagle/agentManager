@@ -129,6 +129,23 @@ describe('prompt enhancer settings and ownership', () => {
     }));
   });
 
+  it('sends validated images and text attachments to the model and rejects paths outside the project', async () => {
+    const pastes=join(testDir,'.agentmanager','pastes');mkdirSync(pastes,{recursive:true});
+    const image=join(pastes,'sample.png'),note=join(pastes,'note.txt'),binary=join(pastes,'data.bin');
+    writeFileSync(image,Buffer.from([137,80,78,71,13,10,26,10]));writeFileSync(note,'hello attachment');writeFileSync(binary,Buffer.from([0,1,2]));
+    getDb().prepare("INSERT INTO projects(id,name,path) VALUES('enhancer-project','Project',?)").run(testDir);
+    getDb().prepare("UPDATE sessions SET project_id='enhancer-project' WHERE id='member-session'").run();
+    await app.inject({method:'PUT',url:'/api/prompt-enhancer/config',headers:{'x-test-role':'admin'},payload:{enabled:true,endpoint:'https://llm.example/v1',model:'prompt-model',api_key:'key',context_rounds:0}});
+    const fetchMock=vi.fn().mockResolvedValue(new Response(JSON.stringify({choices:[{message:{content:'优化结果'}}]}),{status:200}));vi.stubGlobal('fetch',fetchMock);
+    const attachments=[{kind:'image',name:'sample.png',path:image},{kind:'file',name:'note.txt',path:note},{kind:'file',name:'data.bin',path:binary}];
+    const response=await app.inject({method:'POST',url:'/api/prompt-enhancer/enhance',payload:{session_id:'member-session',prompt:'请检查附件',attachments}});
+    expect(response.statusCode).toBe(200);expect(response.json().warnings[0]).toContain('二进制');
+    const body=JSON.parse(fetchMock.mock.calls[0][1].body);const contents=body.messages.at(-1).content;
+    expect(contents).toEqual(expect.arrayContaining([expect.objectContaining({type:'image_url',image_url:{url:expect.stringMatching(/^data:image\/png;base64,/)}}),expect.objectContaining({type:'text',text:expect.stringContaining('hello attachment')})]));
+    const rejected=await app.inject({method:'POST',url:'/api/prompt-enhancer/enhance',payload:{session_id:'member-session',prompt:'检查',attachments:[{kind:'file',name:'escape',path:join(testDir,'outside')}]}});
+    expect(rejected.statusCode).toBe(400);expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('recognizes short prompts that cannot be enhanced reliably without conversation context', () => {
     expect(promptRequiresConversationContext('继续优化')).toBe(true);
     expect(promptRequiresConversationContext('按照上面的方案继续')).toBe(true);
