@@ -3,7 +3,7 @@ import {sessionAgent,agentNativeId,agentSupports} from '../lib/agents';
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Trash2 } from 'lucide-react';
+import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Trash2,Loader2 } from 'lucide-react';
 import { Terminal } from './Terminal';
 import { SessionWorkspacePane } from './SessionWorkspacePane';
 import { FileExplorer, type FileRefreshRequest } from './FileExplorer';
@@ -1615,7 +1615,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         onNewConversation={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async(preference)=>{await sessionResume.newConversation(term.id,preference);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
                         onReload={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async()=>{await sessionResume.reload(term.id);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
                         onClose={isEnded ? () => closeEndedSession(term.id) : undefined}
-                      /> : <div className="p-3 text-xs" style={{color:'var(--text-secondary)'}}>正在读取会话信息…</div>)}
+                      /> : <div role="status" className="flex h-full items-center justify-center gap-2 p-3 text-xs" style={{color:'var(--text-secondary)'}}><Loader2 size={16} className="animate-spin"/>Loading session…</div>)}
                       {shouldMount && resumeState && <SessionResumeFeedback state={resumeState} onDismiss={() => sessionResume.forget(term.id)} />}
                     </div>
                   );
