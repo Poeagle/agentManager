@@ -38,7 +38,7 @@ it('includes a logged-in native account alongside configured accounts',async()=>
 it('keeps the native account visible after a quota error and allows retry',async()=>{
  vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[{id:'native',name:'本机账号',kind:'native',auth_mode:'account',enabled:true,allowed_user_ids:null}]});
  vi.mocked(api.codexEnvironments.quota).mockRejectedValueOnce(new Error('unavailable')).mockResolvedValue({quota:{usedPercent:30,remainingPercent:70,windowDurationMins:10080,resetsAt:null,planType:null,checkedAt:'2026-11-09T00:00:00Z'}});
- mount();expect(await screen.findByText('不可用')).toBeVisible();expect(screen.getByText('codex · 本机账号')).toBeVisible();
+ mount();expect(await screen.findByText('Unavailable')).toBeVisible();expect(screen.getByText('codex · 本机账号')).toBeVisible();
  fireEvent.click(screen.getByRole('button',{name:'刷新 codex · 本机账号 额度'}));expect(await screen.findByLabelText('codex · 本机账号 周额度剩余 70%')).toBeVisible();
 });
 
