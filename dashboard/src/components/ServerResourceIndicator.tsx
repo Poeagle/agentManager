@@ -6,6 +6,7 @@ import {DataTable} from './table/DataTable';
 import {useTableModel} from './table/use-table-model';
 import { Dialog } from './Dialog';
 import { useServerResources } from '../lib/use-server-resources';
+import './ServerResourceIndicator.css';
 
 function formatBytes(bytes: number): string {
   const gib = bytes / 1024 ** 3;
@@ -90,7 +91,7 @@ function ResourceBreakdown({kind,current,stale,onClose}:{kind:'CPU'|'Memory'|'Di
  const directoryTable=useTableModel(directories,[{key:'directory',title:'Directory',value:row=>row.path},{key:'usage',title:'Used',value:row=>row.bytes}]);
  const location=result?.kind==='disk'?result.path:undefined;
  const up=location&&result?.kind==='disk'&&location!==result.mount?(location.slice(0,location.lastIndexOf('/'))||'/'):null;
- const header=<div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-1 text-xs font-normal"><span>Current usage <strong style={{color:usageColor(current.percent)}}>{current.value}</strong></span><span className="min-w-0 flex-1">{result?`Sampled ${new Date(result.sampled_at).toLocaleString()}${result.kind==='disk'&&result.cached?' · Cached':''}`:kind==='Disk'?'Scanning directories…':'Sampling processes…'}{query.isFetching&&result?' · Updating…':''}</span><button type="button" className="rounded border px-2 py-1" style={{borderColor:'var(--border)'}} disabled={query.isFetching} onClick={()=>{force.current=true;void query.refetch();}}>Refresh</button></div>;
+ const header=<div className="resource-dialog-header-actions flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-1 text-xs font-normal"><span>Current usage <strong style={{color:usageColor(current.percent)}}>{current.value}</strong></span><span className="resource-dialog-sampled min-w-0 flex-1">{result?`Sampled ${new Date(result.sampled_at).toLocaleString()}${result.kind==='disk'&&result.cached?' · Cached':''}`:kind==='Disk'?'Scanning directories…':'Sampling processes…'}{query.isFetching&&result?' · Updating…':''}</span><button type="button" className="rounded border px-2 py-1" style={{borderColor:'var(--border)'}} disabled={query.isFetching} onClick={()=>{force.current=true;void query.refetch();}}>Refresh</button></div>;
  return <Dialog title={`${kind} usage`} size="lg" appearance="manager" onClose={onClose} wrapHeader actions={header}><div className="space-y-2 text-xs">
   {result?.kind==='disk'&&<div className="flex flex-wrap items-center gap-2"><span className="min-w-0 flex-1 break-all">{result.path}</span>{up&&<button type="button" className="rounded border px-2 py-1" style={{borderColor:'var(--border)'}} disabled={query.isFetching} onClick={()=>setPath(up)}>Up</button>}</div>}
   {stale&&<p role="status">Showing the last successful usage sample.</p>}

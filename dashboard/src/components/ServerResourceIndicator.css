@@ -1,0 +1,6 @@
+.resource-dialog-sampled {overflow-wrap:anywhere;}
+@media(max-width:600px) {
+  .resource-dialog-header>h3 {flex:1;}
+  .resource-dialog-header>.resource-dialog-header-actions {order:3;flex-basis:100%;}
+  .resource-dialog-header>button {order:2;}
+}
