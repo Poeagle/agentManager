@@ -49,6 +49,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
     return target?.auth_mode==='api'?m.name:`${m.provider?`${m.provider} · `:''}${m.name}`;
   };
   const model=data?.models.find(m=>m.model===selected.model&&(!m.provider||!selected.provider||m.provider===selected.provider)),usage=data?.usage;
+  const tokenMetrics=usage?([['Window',usage.window],['Total',usage.total.total_tokens],['Input',usage.total.input_tokens],['Cache',usage.total.cached_input_tokens],['Reasoning',usage.total.reasoning_output_tokens],['Output',usage.total.output_tokens]] as Array<[string,number|null|undefined]>).filter((entry):entry is [string,number]=>entry[1]!=null):[];
   const context=usage?.window&&usage.last.total_tokens!=null?Math.min(100,Math.round(100*usage.last.total_tokens/usage.window)):null;
   const currentEnvironment=environments.data?.environments.find(e=>e.id===environments.data?.current);
   const modelEnvironment=(!model?.provider||model.provider===data?.provider)?currentEnvironment:environments.data?.environments.find(e=>e.provider===model?.provider);
@@ -91,18 +92,13 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         {shortLimit&&<span title={shortLimit.resets_at?`Resets: ${new Date(shortLimit.resets_at*1000).toLocaleString('en',{hour12:false})}`:undefined}>{shortLimit.minutes%60===0?`${shortLimit.minutes/60}h`:`${shortLimit.minutes}m`} remaining {Math.round(100-shortLimit.used_percent)}%</span>}
         {weekly&&<span title={weekly.resets_at?`Resets: ${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>Weekly remaining {Math.round(100-weekly.used_percent)}%</span>}
         <span className="conversation-control-environment" aria-label="Session information">
+          {data.git&&<span title="Git branch and changed entries">Git {data.git.branch} · {data.git.changes?`${data.git.changes} changed`:'clean'}</span>}
           {data.cwd&&<span className="conversation-control-directory" title={`Working directory: ${data.cwd}`}>{data.cwd}</span>}
-          {data.git&&<><span title="Git branch">{data.git.branch}</span><span title="Working tree status">{data.git.changes?`${data.git.changes} changes`:'Clean'}</span></>}
           <span title="Session status">{compacting?'Compacting':busy?'Running':data.loaded?'Waiting':'Disconnected'}</span>
           {data.permission&&<span title="Access permissions">{permissionsEn[data.permission]||data.permission}</span>}
           {data.approval&&<span title="Approval policy">Approval: {data.approval}</span>}
           {data.engine_version&&<span title="Running engine version">Engine {data.engine_version}</span>}
-          {usage?.window!=null&&<span title={`Context window: ${usage.window.toLocaleString()} Token`}>Window {compact(usage.window)}</span>}
-          {usage?.total.total_tokens!=null&&<span title={`Total usage: ${usage.total.total_tokens.toLocaleString()} tokens including cached and repeated context`}>Total {compact(usage.total.total_tokens)}</span>}
-          {usage?.total.input_tokens!=null&&<span title={`Total input: ${usage.total.input_tokens.toLocaleString()} tokens including cache`}>Input {compact(usage.total.input_tokens)}</span>}
-          {usage?.total.cached_input_tokens!=null&&<span title="Cached input tokens">Cache {compact(usage.total.cached_input_tokens)}</span>}
-          {usage?.total.reasoning_output_tokens!=null&&<span title="Reasoning output tokens">Reasoning {compact(usage.total.reasoning_output_tokens)}</span>}
-          {usage?.total.output_tokens!=null&&<span title={`Total output: ${usage.total.output_tokens.toLocaleString()} tokens including reasoning`}>Output {compact(usage.total.output_tokens)}</span>}
+          {tokenMetrics.length>0&&<span title={`Token counts: ${tokenMetrics.map(([name,value])=>`${name}: ${value.toLocaleString()}`).join(' · ')}. Total and input include cached and repeated context; output includes reasoning.`}>Tokens {tokenMetrics.map(([name])=>name).join('/')} : {tokenMetrics.map(([,value])=>compact(value)).join('/')}</span>}
         </span>
         {(error&&!newOpen||notice)&&<span className="conversation-control-message" role={error&&!newOpen?'alert':'status'} title={error&&!newOpen?error:notice}>{error&&!newOpen?error:notice}</span>}
         <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>Details</button>

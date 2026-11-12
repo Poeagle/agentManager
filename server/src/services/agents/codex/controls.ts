@@ -13,6 +13,7 @@ import {installedCodexVersion} from './version.js';
 import {execFile} from 'child_process';
 import {promisify} from 'util';
 import {publicTokenCounters} from '../../conversation-usage.js';
+import {safeGitEnv} from '../../git-config.js';
 const execute=promisify(execFile);
 
 export interface ModelChoice {release_date?:string|null;context_window?:number|null;input_modalities?:string[];reference_credits?:{input:number;cached:number;output:number;as_of:string}|null;default_service_tier?:string|null;service_tiers?:Array<{id:string;name:string;description:string}>;provider?:string;model:string;name:string;description:string;efforts:Array<{value:string;description:string}>;defaultEffort:string}
@@ -185,17 +186,17 @@ export function applyCodexModelSettings(threadId:string,value:ModelPreference):P
 
 let quota:{key:string;until:number;data:ReturnType<typeof windows>}|undefined;
 const gitCache=new Map<string,{until:number;data:{branch:string;changes:number}|null}>();
-async function readGitInfo(cwd:string|null,force=false) {
-  if(!cwd)return null;const cached=gitCache.get(cwd);if(!force&&cached&&cached.until>Date.now())return cached.data;
+async function readGitInfo(cwd:string|null,force=false,projectPath?:string|null) {
+  if(!cwd)return null;const key=JSON.stringify([cwd,projectPath]);const cached=gitCache.get(key);if(!force&&cached&&cached.until>Date.now())return cached.data;
   let data:{branch:string;changes:number}|null=null;
   try {
-    const {stdout}=await execute('git',['-c','core.fsmonitor=false','-C',cwd,'status','--porcelain=v1','--branch','--untracked-files=normal','--ignore-submodules=all'],{timeout:1500,maxBuffer:128*1024,env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}});
-    const lines=stdout.trimEnd().split('\n'),header=lines.shift()||'';const branch=header.startsWith('## No commits yet on ')?header.slice(21):header.startsWith('## HEAD ')?'已分离':header.slice(3).split('...')[0].split(' [')[0];
+    const {stdout}=await execute('git',['-C',cwd,'status','--porcelain=v1','--branch','--untracked-files=normal','--ignore-submodules=all'],{timeout:1500,maxBuffer:128*1024,env:{...safeGitEnv(projectPath||undefined),GIT_OPTIONAL_LOCKS:'0'}});
+    const lines=stdout.trimEnd().split('\n'),header=lines.shift()||'';const branch=header.startsWith('## No commits yet on ')?header.slice(21):header.startsWith('## HEAD ')?'Detached':header.slice(3).split('...')[0].split(' [')[0];
     data={branch,changes:lines.filter(Boolean).length};
   }catch{/* Not every session directory is a Git repository. */}
-  gitCache.set(cwd,{until:Date.now()+3000,data});if(gitCache.size>64)gitCache.delete(gitCache.keys().next().value!);return data;
+  gitCache.set(key,{until:Date.now()+3000,data});if(gitCache.size>64)gitCache.delete(gitCache.keys().next().value!);return data;
 }
-export async function readConversationControls(threadId:string,sharedAccess:boolean,force=false,userId?:string) {
+export async function readConversationControls(threadId:string,sharedAccess:boolean,force=false,userId?:string,projectPath?:string|null) {
   const telemetry=await readConversationTelemetry(threadId).catch(()=>empty());
   let native:any=null,loaded=false,models:ModelChoice[]=[],warning:string|null=null,limits=telemetry.limits,engineVersion:string|null=null;
   if(sharedAccess&&process.env.AGENTMANAGER_CODEX_STREAM_SOCKET) {
@@ -219,7 +220,7 @@ export async function readConversationControls(threadId:string,sharedAccess:bool
   // Host account quotas are never exposed through an ordinary member session.
   if(!sharedAccess)limits=[];
   const cwd=typeof native?.cwd==='string'?native.cwd:null;
-  const git=await readGitInfo(cwd,force);
+  const git=await readGitInfo(cwd||projectPath||null,force,projectPath);
   const installed=await installedCodexVersion(force).catch(()=>null);
   if(!warning&&engineVersion&&installed&&engineVersion!==installed)warning=`客户端 ${installed} · 共享引擎 ${engineVersion}。重连保留当前引擎，不会重启其他会话。`;
   return {model:typeof native?.model==='string'?native.model:telemetry.model,effort:typeof native?.reasoningEffort==='string'?native.reasoningEffort:telemetry.effort,

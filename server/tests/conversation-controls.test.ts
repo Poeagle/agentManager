@@ -2,6 +2,7 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import Fastify,{type FastifyInstance} from 'fastify';
 import websocket from '@fastify/websocket';
 import {createServer,type Server} from 'http';
+import {execFileSync} from 'child_process';
 import {WebSocketServer} from 'ws';
 import {mkdirSync,writeFileSync,appendFileSync} from 'fs';
 import {join} from 'path';
@@ -18,16 +19,16 @@ import {setRoleGrants,setUserRoles} from '../src/services/rbac.js';
 
 const native='019ff001-9999-7999-8999-999999999999';
 let app:FastifyInstance,server:Server,wss:WebSocketServer,cleanup:()=>void,cookie:string,owner:string,dir:string,log:string;
-let inputs:any[],methods:string[],active:boolean,loaded:boolean,fail:boolean,noModels:boolean,model:string,effort:string,tier:string;
+let inputs:any[],methods:string[],active:boolean,loaded:boolean,fail:boolean,noModels:boolean,model:string,effort:string,tier:string,nativeCwd:string;
 const record=(type:string,payload:unknown)=>JSON.stringify({type,payload,timestamp:'2026-10-31T02:00:00Z'})+'\n';
 beforeEach(async()=>{
   const fixture=createTestDatabase();cleanup=fixture.cleanup;dir=fixture.dir;vi.stubEnv('CODEX_HOME',dir);vi.stubEnv('AGENTMANAGER_CODEX_PROVIDER_ENGINES','');const socket=join(dir,'controls.sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',socket);
   writeFileSync(join(dir,'models_cache.json'),JSON.stringify({models:[{slug:'model-a',context_window:128000,input_modalities:['text','image'],release_date:'2026-01-01',private_token:'PRIVATE MODEL SECRET'}]}));
   mkdirSync(join(dir,'sessions'));log=join(dir,'sessions',`rollout-${native}.jsonl`);
   writeFileSync(log,record('turn_context',{model:'model-a',effort:'high',approval_policy:'never',sandbox_policy:{type:'workspace-write',private:'PRIVATE CONFIG'},service_tier:'priority'})+record('event_msg',{type:'token_count',info:{total_token_usage:{input_tokens:1000000,cached_input_tokens:900000,output_tokens:12000,total_tokens:1012000},last_token_usage:{input_tokens:11000,cached_input_tokens:9000,output_tokens:1000,total_tokens:12000},model_context_window:40000},rate_limits:{primary:{used_percent:25,window_minutes:10080,resets_at:1900000000},credits:{balance:'PRIVATE BALANCE'}}})+record('response_item',{type:'function_call_output',output:'PRIVATE TOOL OUTPUT'}));
-  inputs=[];methods=[];active=false;loaded=true;fail=false;noModels=false;model='model-a';effort='high';tier='default';server=createServer();wss=new WebSocketServer({server});
+  inputs=[];methods=[];active=false;loaded=true;fail=false;noModels=false;model='model-a';effort='high';tier='default';nativeCwd='/project';server=createServer();wss=new WebSocketServer({server});
   wss.on('connection',ws=>ws.on('message',bytes=>{const f=JSON.parse(bytes.toString());if(!f.method||!f.id)return;methods.push(f.method);let result:any={};
-    if(f.method==='thread/read')result={thread:{id:native,status:{type:loaded?active?'active':'idle':'notLoaded'},model,reasoningEffort:effort,modelProvider:'openai',cwd:'/project',cliVersion:'0.test'}};
+    if(f.method==='thread/read')result={thread:{id:native,status:{type:loaded?active?'active':'idle':'notLoaded'},model,reasoningEffort:effort,modelProvider:'openai',cwd:nativeCwd,cliVersion:'0.test'}};
     if(f.method==='model/list')result={data:[{model:'model-a',displayName:'Model A',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high',serviceTiers:[{id:'priority',name:'Fast',description:'Faster requests'}]},{model:'model-b',displayName:'Model B',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'}],defaultReasoningEffort:'low'},{model:'hidden',displayName:'Hidden',hidden:true,supportedReasoningEfforts:[{reasoningEffort:'low'}]}]};
     if(f.method==='model/list'&&noModels)result={data:[]};
     if(f.method==='thread/resume')result={serviceTier:tier};
@@ -47,6 +48,10 @@ const get=()=>app.inject({url:'/api/sessions/s/controls',headers:{cookie}});
 const set=(value:any)=>app.inject({method:'PUT',url:'/api/sessions/s/controls',headers:{cookie,'content-type':'application/json'},payload:JSON.stringify(value)});
 const send=()=>app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{input:'继续',source:'conversation'}});
 describe('native conversation controls',()=>{
+ it('reads the authorized project Git status when ownership differs',async()=>{
+  execFileSync('git',['init','-q','-b','fixture',dir]);writeFileSync(join(dir,'new.txt'),'new');nativeCwd=dir;vi.stubEnv('GIT_TEST_ASSUME_DIFFERENT_OWNER','1');
+  const response=await get();expect(response.statusCode).toBe(200);expect(response.json().git).toMatchObject({branch:'fixture'});expect(response.json().git.changes).toBeGreaterThan(0);
+ });
  it('exposes only safe metadata from the matching Engine catalog',async()=>{
   const response=await get();expect(response.statusCode).toBe(200);
   expect(response.json().models.find((m:any)=>m.model==='model-a')).toMatchObject({context_window:128000,input_modalities:['text','image'],release_date:'2026-01-01'});
