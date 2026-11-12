@@ -62,16 +62,18 @@ export function parseDirectoryUsage(text:string,mount:string):DirectoryRow[] {
  }).sort((a,b)=>b.bytes-a.bytes).slice(0,MAX_ROWS);
 }
 let diskInFlight:{path:string;promise:Promise<{rows:DirectoryRow[];partial:boolean;mount:string;path:string;sampled_at:string}>}|null=null;
-export async function readDirectoryBreakdown(requestedPath?:string) {
+const diskCache=new Map<string,{until:number;data:{rows:DirectoryRow[];partial:boolean;mount:string;path:string;sampled_at:string}}>();
+export async function readDirectoryBreakdown(requestedPath?:string,force=false) {
  const sample=await serverResourceSampler.read(),mount=sample.disk?.mount;if(!mount||!mount.startsWith('/'))throw Error('Cannot determine the server disk mount');
  const root=await realpath(mount),path=await realpath(requestedPath||root),inside=relative(root,path);
  if(isAbsolute(inside)||inside==='..'||inside.startsWith('../'))throw Error('Directory is outside the server disk');
  const [rootInfo,info]=await Promise.all([stat(root),stat(path)]);if(!info.isDirectory()||rootInfo.dev!==info.dev)throw Error('Directory is outside the server disk');
+ const key=JSON.stringify([root,path]),cached=diskCache.get(key);if(!force&&cached&&cached.until>Date.now())return {...cached.data,cached:true};
  if(diskInFlight){if(diskInFlight.path!==path)throw Error('Another directory scan is running; try again shortly');return diskInFlight.promise;}
  const promise=(async()=>{
   let output='',partial=false;
-  try{const result=await exec('du',['-x','-k','-d','1',path],{encoding:'utf8',timeout:15000,maxBuffer:2*1024*1024,env:{...process.env,LC_ALL:'C'}});output=result.stdout;partial=!!result.stderr.trim();}
+  try{const result=await exec('du',['-x','-k','-d','1',path],{encoding:'utf8',timeout:8000,maxBuffer:2*1024*1024,env:{...process.env,LC_ALL:'C'}});output=result.stdout;partial=!!result.stderr.trim();}
   catch(error){const failure=error as {stdout?:string};output=failure.stdout||'';partial=true;if(!output)throw Error('Directory scan did not finish; access may be restricted or the scan timed out');}
-  return {rows:parseDirectoryUsage(output,resolve(path)),partial,mount:root,path,sampled_at:new Date().toISOString()};
+  const data={rows:parseDirectoryUsage(output,resolve(path)),partial,mount:root,path,sampled_at:new Date().toISOString()};diskCache.delete(key);diskCache.set(key,{data,until:Date.now()+60000});if(diskCache.size>32)diskCache.delete(diskCache.keys().next().value!);return data;
  })().finally(()=>{diskInFlight=null;});diskInFlight={path,promise};return promise;
 }

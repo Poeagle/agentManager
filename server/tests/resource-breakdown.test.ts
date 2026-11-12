@@ -39,6 +39,8 @@ it('scans only the selected filesystem directory and prevents escaping the mount
   vi.spyOn(serverResourceSampler,'read').mockResolvedValue({disk:{mount:root}} as never);
   const result=await readDirectoryBreakdown(root);
   expect(result.path).toBe(root);expect(result.rows.map(row=>row.path)).toEqual([join(root,'large'),join(root,'small')]);
+  mkdirSync(join(root,'later'));const cached=await readDirectoryBreakdown(root);expect(cached.cached).toBe(true);expect(cached.rows.some(row=>row.path===join(root,'later'))).toBe(false);
+  const refreshed=await readDirectoryBreakdown(root,true);expect(refreshed.rows.some(row=>row.path===join(root,'later'))).toBe(true);
   await expect(readDirectoryBreakdown('/')).rejects.toThrow('outside the server disk');
  }finally{rmSync(root,{recursive:true,force:true});}
 });

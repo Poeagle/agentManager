@@ -147,12 +147,13 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     return { server_resources: await serverResourceSampler.read() };
   });
 
-  app.get<{Querystring:{kind?:string;path?:string}}>('/admin/resource-breakdown',async(req,reply)=>{
+  app.get<{Querystring:{kind?:string;path?:string;refresh?:string}}>('/admin/resource-breakdown',async(req,reply)=>{
     if(!requirePermission(req,reply,'monitor'))return;
     const kind=req.query.kind;if(kind!=='cpu'&&kind!=='memory'&&kind!=='disk')return reply.code(400).send({error:'Invalid resource kind'});
     if(req.query.path!==undefined&&(kind!=='disk'||typeof req.query.path!=='string'||!req.query.path.startsWith('/')||req.query.path.length>4096||req.query.path.includes('\0')))return reply.code(400).send({error:'Invalid directory path'});
+    if(req.query.refresh!==undefined&&req.query.refresh!=='true')return reply.code(400).send({error:'Invalid refresh flag'});
     reply.header('Cache-Control','no-store');
-    try{return kind==='disk'?{kind,...await readDirectoryBreakdown(req.query.path)}:{kind,...await readProcessBreakdown(kind)};}
+    try{return kind==='disk'?{kind,...await readDirectoryBreakdown(req.query.path,req.query.refresh==='true')}:{kind,...await readProcessBreakdown(kind)};}
     catch(error){return reply.code(503).send({error:error instanceof Error?error.message:'Resource breakdown unavailable'});}
   });
 

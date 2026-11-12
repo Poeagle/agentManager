@@ -112,3 +112,12 @@ it('shows processes and drillable directories in resource tables', async () => {
   await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
   expect(api.admin.resourceBreakdown).toHaveBeenCalledWith('disk','/home');
 });
+
+it('keeps the disk table visible when reopening and while a refresh fails', async()=>{
+  await mount();fireEvent.click(screen.getByRole('button',{name:'Disk usage 40%'}));await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
+  let dialog=screen.getByRole('dialog',{name:'Disk usage'});expect(within(dialog).getByRole('table',{name:'Directory usage'})).toHaveTextContent('/home');
+  fireEvent.click(within(dialog).getByRole('button',{name:'关闭Disk usage'}));fireEvent.click(screen.getByRole('button',{name:'Disk usage 40%'}));
+  dialog=screen.getByRole('dialog',{name:'Disk usage'});expect(within(dialog).getByRole('table',{name:'Directory usage'})).toHaveTextContent('/home');
+  vi.mocked(api.admin.resourceBreakdown).mockRejectedValueOnce(new Error('timeout'));fireEvent.click(within(dialog).getByRole('button',{name:'Refresh'}));await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
+  expect(within(dialog).getByText('Refresh failed; showing the previous sample.')).toBeVisible();expect(within(dialog).getByRole('table',{name:'Directory usage'})).toHaveTextContent('/home');
+});
