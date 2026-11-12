@@ -50,7 +50,7 @@ beforeEach(() => {
 async function show(permissions = fullPermissions) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   render(<QueryClientProvider client={client}><UserManagementPanel currentUser={admin} permissions={permissions} /></QueryClientProvider>);
-  await screen.findByRole('button', { name: '展开用户 member', exact: true });
+  await screen.findByRole('cell', { name: 'member', exact: true });
   return userEvent.setup();
 }
 
@@ -61,7 +61,7 @@ function row(username: string) {
 it('adds compact row actions and never exposes self-disable or self-delete', async () => {
   await show();
   expect(screen.getByRole('columnheader', { name: '操作', exact: true })).toBeVisible();
-  expect(row('member').getAllByRole('cell')).toHaveLength(7);
+  expect(row('member').getAllByRole('cell')).toHaveLength(6);
   for (const name of ['编辑', '重置密码', '禁用', '删除']) expect(row('member').getByRole('button', { name, exact: true })).toBeVisible();
   expect(row('disabled').getByRole('button', { name: '启用', exact: true })).toBeVisible();
   const self = within(screen.getAllByRole('cell', { name: 'ymchen', exact: true })[0].closest('tr')!);
@@ -73,7 +73,7 @@ it('opens existing role and quota editing with details spanning all seven column
   const user = await show();
   await user.click(row('member').getByRole('button', { name: '编辑', exact: true }));
   const quota = screen.getByRole('spinbutton', { name: '最多活动标签页' });
-  expect(quota.closest('td')).toHaveAttribute('colspan', '7');
+  expect(quota.closest('[role=dialog]')).toHaveAttribute('aria-modal', 'true');
   await user.clear(quota);
   await user.type(quota, '20');
   await user.click(screen.getByRole('button', { name: '保存额度' }));
@@ -91,10 +91,12 @@ it('opens and focuses password reset without changing it until explicitly submit
   expect(password).toHaveFocus();
   expect(api.users.update).not.toHaveBeenCalled();
   await user.click(screen.getByRole('spinbutton', { name: '最多活动标签页' }));
+  await user.click(screen.getByRole('button', { name: /关闭用户/ }));
   await user.click(row('member').getByRole('button', { name: '重置密码' }));
-  expect(password).toHaveFocus();
-  await user.type(password, 'a-test-password');
-  await user.click(within(password.closest('form')!).getByRole('button', { name: '重置密码' }));
+  const reopenedPassword = screen.getByLabelText('新密码');
+  expect(reopenedPassword).toHaveFocus();
+  await user.type(reopenedPassword, 'a-test-password');
+  await user.click(within(screen.getByLabelText('新密码').closest('form')!).getByRole('button', { name: '重置密码' }));
   await waitFor(() => expect(api.users.update).toHaveBeenCalledWith('member', { password: 'a-test-password' }));
   expect(await screen.findByText('密码已重置，现有登录和活动会话已关闭')).toBeVisible();
 });

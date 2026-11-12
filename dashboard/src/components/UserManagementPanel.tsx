@@ -1,12 +1,13 @@
 import { TableActionButton, TableActions } from './table/TableActions';
 import { useTableModel } from './table/use-table-model';
-import { DataTable, TableExpandButton, TableDetailRow } from './table/DataTable';
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { DataTable } from './table/DataTable';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Search } from 'lucide-react';
 import { api, type AuthUser, type MyPermissions } from '../lib/api';
 import { hasPermission } from '../lib/permissions';
 import { ConfirmModal } from './ConfirmModal';
+import { Dialog } from './Dialog';
 
 const fieldStyle = { background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)' };
 
@@ -31,6 +32,7 @@ export function UserManagementPanel({ currentUser, permissions }: { currentUser:
   const [busyUserId, setBusyUserId] = useState<string | null>(null);
   const [deletingUser, setDeletingUser] = useState<AuthUser | null>(null);
   const [focusPassword, setFocusPassword] = useState(0);
+  const passwordInput = useRef<HTMLInputElement>(null);
   const users = query.data?.users ?? [];
   const roles = rolesQuery.data?.roles ?? [];
   const usersTable = useTableModel(users.filter((user) => `${user.username} ${user.display_name}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())), [
@@ -64,13 +66,12 @@ export function UserManagementPanel({ currentUser, permissions }: { currentUser:
     <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><label className="flex items-center gap-2 rounded px-2 py-1.5" style={fieldStyle}><Search className="h-3.5 w-3.5" /><input aria-label="搜索用户" placeholder="搜索用户" value={search} onChange={(event) => setSearch(event.target.value)} className="bg-transparent text-xs outline-none" /></label>{hasPermission(permissions, 'users', 'write') && <TableActionButton aria-label="新建用户" onClick={() => openUser('new')}><Plus className="h-3.5 w-3.5" />新建用户</TableActionButton>}</div>
     {notice && <p role="status" className="mb-3 text-xs" style={{ color: 'var(--success)' }}>{notice}</p>}
     {actionError && <p role="alert" className="mb-3 text-xs" style={{ color: 'var(--error)' }}>{actionError}</p>}
-    <DataTable label="用户列表" className="user-management-table" model={usersTable} minWidth={880} expandable actions loading={query.isPending || rolesQuery.isPending}
+    <DataTable label="用户列表" className="user-management-table" model={usersTable} minWidth={880} actions loading={query.isPending || rolesQuery.isPending}
       error={error?.message} onRetry={() => { void query.refetch(); void rolesQuery.refetch(); }}
       empty={usersTable.rows.length === 0 && selected !== 'new'} emptyMessage="没有匹配的用户">
       {usersTable.rows.map((user) => {
         const access = userAccess(user, permissions);
-        return <Fragment key={user.id}><tr>
-          <td><TableExpandButton expanded={selected === user.id} label={`用户 ${user.username}`} onClick={() => openUser(selected === user.id ? null : user.id)} /></td>
+        return <tr key={user.id}>
           <td>{user.username}</td><td>{user.display_name || user.username}</td><td>{(user.role_ids ?? [user.role]).map((id) => roles.find((role) => role.id === id)?.name ?? id).join('、') || '无角色'}</td><td>{user.disabled ? '已禁用' : '正常'}</td><td>{user.role === 'admin' ? '不限' : user.max_tabs ?? 10}</td>
           <td><TableActions>
             <TableActionButton disabled={busyUserId !== null} onClick={() => openUser(user.id)}>{access.canWrite || access.canRoles ? '编辑' : '查看'}</TableActionButton>
@@ -78,21 +79,21 @@ export function UserManagementPanel({ currentUser, permissions }: { currentUser:
             {user.id !== currentUser.id && access.canWrite && <TableActionButton disabled={busyUserId !== null} style={{ color: user.disabled ? 'var(--success)' : 'var(--error)' }} onClick={() => { void runUserAction(user, 'toggle'); }}>{busyUserId === user.id ? '处理中…' : user.disabled ? '启用' : '禁用'}</TableActionButton>}
             {user.id !== currentUser.id && access.canDelete && <TableActionButton disabled={busyUserId !== null} style={{ color: 'var(--error)' }} onClick={() => setDeletingUser(user)}>删除</TableActionButton>}
           </TableActions></td>
-        </tr>
-          {selected === user.id && <TableDetailRow columnCount={7}><UserDetails key={`${user.id}:${user.disabled}:${user.max_tabs}:${user.role_ids?.join(',')}`} user={user} currentUser={currentUser} permissions={permissions} roles={roles} onSaved={onSaved} focusPassword={focusPassword} /></TableDetailRow>}
-        </Fragment>;
+        </tr>;
       })}
-      {selected === 'new' && <TableDetailRow columnCount={7}><UserDetails key="new" currentUser={currentUser} permissions={permissions} roles={roles} onSaved={onSaved} /></TableDetailRow>}
     </DataTable>
+    {selected && (selected === 'new' || users.some(user => user.id === selected)) && <Dialog appearance="manager" size="lg" initialFocus={focusPassword ? passwordInput : undefined} title={selected === 'new' ? '新建用户' : `用户 · ${users.find(user => user.id === selected)?.display_name || users.find(user => user.id === selected)?.username || ''}`} onClose={() => openUser(null)}>
+      <UserDetails key={selected} user={users.find(user => user.id === selected)} currentUser={currentUser} permissions={permissions} roles={roles} onSaved={onSaved} focusPassword={focusPassword} passwordInput={passwordInput} />
+    </Dialog>}
     {deletingUser && <ConfirmModal title="删除用户" message={`确定删除“${deletingUser.display_name || deletingUser.username}”吗？该用户的活动会话会关闭，历史记录会保留。`} confirmLabel="删除" cancelLabel="取消" variant="danger" onCancel={() => setDeletingUser(null)} onConfirm={() => { setDeletingUser(null); void runUserAction(deletingUser, 'delete'); }} />}
   </div>;
 }
 
-function UserDetails({ user, currentUser, permissions, roles, onSaved, focusPassword = 0 }: {
+function UserDetails({ user, currentUser, permissions, roles, onSaved, focusPassword = 0, passwordInput }: {
   user?: AuthUser; currentUser: AuthUser; permissions: MyPermissions;
   roles: Array<{ id: string; name: string }>;
   onSaved: (id: string | null) => Promise<void>;
-  focusPassword?: number;
+  focusPassword?: number; passwordInput: React.RefObject<HTMLInputElement | null>;
 }) {
   const client = useQueryClient();
   const [username, setUsername] = useState('');
@@ -103,7 +104,6 @@ function UserDetails({ user, currentUser, permissions, roles, onSaved, focusPass
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
-  const passwordInput = useRef<HTMLInputElement>(null);
   const { canRoles, canWrite } = userAccess(user, permissions);
   useEffect(() => {
     if (focusPassword) passwordInput.current?.focus();
