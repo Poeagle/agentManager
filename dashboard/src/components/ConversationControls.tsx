@@ -86,7 +86,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
     <div className="conversation-controls" aria-label="Model and session status">
       {data?<>
         {toolbarTarget?createPortal(toolbar,toolbarTarget):toolbar}
-        {data.native_id&&<button type="button" className="conversation-control-context" aria-label="View context token details" aria-haspopup="dialog" title="Context used by the latest request; click for details." onClick={()=>setContextOpen(true)}><i aria-hidden="true" style={{background:context===null?'var(--border)':`conic-gradient(var(--accent) ${context}%, var(--border) 0)`}}/>Context {context===null?'Unavailable':`${context}%`}</button>}
+        {data.native_id&&context!==null&&<button type="button" className="conversation-control-context" aria-label="View context token details" aria-haspopup="dialog" title="Context used by the latest request; click for details." onClick={()=>setContextOpen(true)}><i aria-hidden="true" style={{background:`conic-gradient(var(--accent) ${context}%, var(--border) 0)`}}/>Context {context}%</button>}
         {shortLimit&&<span title={shortLimit.resets_at?`Resets: ${new Date(shortLimit.resets_at*1000).toLocaleString('en',{hour12:false})}`:undefined}>{shortLimit.minutes%60===0?`${shortLimit.minutes/60}h`:`${shortLimit.minutes}m`} remaining {Math.round(100-shortLimit.used_percent)}%</span>}
         {weekly&&<span title={weekly.resets_at?`Resets: ${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>Weekly remaining {Math.round(100-weekly.used_percent)}%</span>}
         <span className="conversation-control-environment" aria-label="Session information">

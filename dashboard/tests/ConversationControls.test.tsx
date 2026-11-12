@@ -110,6 +110,6 @@ describe('compact conversation controls',()=>{
   expect(await screen.findByText('恢复或重载时应用')).toBeVisible();expect(screen.getByRole('combobox',{name:'选择模型'})).toBeEnabled();expect(api.agent.setControls).not.toHaveBeenCalled();
  });
  it('does not invent percentages or editable options for missing or read-only telemetry',async()=>{
-  data={...data,can_edit:false,loaded:false,models:[],limits:[],usage:null,model:null,effort:null};mount();expect(await screen.findByRole('combobox',{name:'选择模型'})).toBeDisabled();expect(screen.queryByText(/Context \d/)).not.toBeInTheDocument();expect(screen.queryByText(/Weekly remaining/)).not.toBeInTheDocument();
+  data={...data,can_edit:false,loaded:false,models:[],limits:[],usage:null,model:null,effort:null};mount();expect(await screen.findByRole('combobox',{name:'选择模型'})).toBeDisabled();expect(screen.queryByRole('button',{name:'View context token details'})).not.toBeInTheDocument();expect(screen.queryByText(/Weekly remaining/)).not.toBeInTheDocument();
  });
 });
