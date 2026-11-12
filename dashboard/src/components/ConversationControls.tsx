@@ -1,7 +1,7 @@
 import {createPortal} from 'react-dom';
 import {ConversationEnvironmentSelector} from './ConversationEnvironmentSelector';
 import type {AgentFeature} from '../lib/agents';
-import {useEffect,useId,useRef,useState} from 'react';
+import {useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
 import {useQuery,useQueryClient} from '@tanstack/react-query';
 import {ChevronDown,Info,RefreshCw,Minimize2,Plus,Loader2,Zap} from 'lucide-react';
 import {api,type ConversationControlsData,type ConversationUsageUpdate} from '../lib/api';
@@ -19,7 +19,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const [operation,setOperation]=useState<'compact'|'new'|null>(null),[newOpen,setNewOpen]=useState(false),[notice,setNotice]=useState('');
   const [freshPreference,setFreshPreference]=useState<import('../lib/api').AgentModelPreference>();
   const [contextOpen,setContextOpen]=useState(false);
-  const tooltipId=useId(),[modelInfo,setModelInfo]=useState<{left:number;top?:number;bottom?:number}|null>(null);
+  const tooltipId=useId(),tooltipRef=useRef<HTMLDivElement>(null),[modelInfo,setModelInfo]=useState<{left:number;top?:number;bottom?:number}|null>(null);
   function showModelInfo(node:HTMLElement){const rect=node.getBoundingClientRect(),left=Math.max(8,Math.min(rect.left,window.innerWidth-328));setModelInfo(rect.top>230?{left,bottom:window.innerHeight-rect.top+8}:{left,top:rect.bottom+8});}
   const [environmentRequest,setEnvironmentRequest]=useState<{provider:string;model:string;effort:string}>();
   const operationLock=useRef(false);
@@ -54,6 +54,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const modelEnvironment=(!model?.provider||model.provider===data?.provider)?currentEnvironment:environments.data?.environments.find(e=>e.provider===model?.provider);
   const referenceCredits=modelEnvironment?.auth_mode==='account'?model?.reference_credits:null;
   const modelContext=model?.context_window??(model?.model===data?.model&&(!model?.provider||model.provider===data?.provider)?usage?.window:null);
+  useLayoutEffect(()=>{const node=tooltipRef.current;if(!node||!modelInfo)return;const rect=node.getBoundingClientRect();if(rect.bottom>window.innerHeight-8){node.style.bottom='auto';node.style.top=`${Math.max(8,window.innerHeight-8-rect.height)}px`;}if(rect.top<8){node.style.bottom='auto';node.style.top='8px';}},[modelInfo,model]);
   const fastTier=model?.service_tiers?.find(tier=>tier.name.trim().toLowerCase()==='fast');
   const fastEnabled=!!fastTier&&(data?.pending?.service_tier??data?.service_tier??model?.default_service_tier)===fastTier.id;
   const weekly=data?.limits.find(limit=>limit.minutes>=6*24*60);
@@ -103,7 +104,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         <button type="button" aria-label="Refresh session status" title="Usage updates live; other details refresh every 5 minutes" disabled={query.isFetching} onClick={refresh}><RefreshCw size={13} className={query.isFetching?'animate-spin':''}/>Refresh</button>
       </>:<><span>{query.isPending?'Loading session…':'Session status unavailable'}</span>{query.isError&&<button type="button" onClick={refresh}><RefreshCw size={13}/>Retry</button>}</>}
     </div>
-    {modelInfo&&model&&createPortal(<div id={tooltipId} role="tooltip" className="conversation-model-tooltip" style={{left:modelInfo.left,top:modelInfo.top,bottom:modelInfo.bottom}}>
+    {modelInfo&&model&&createPortal(<div ref={tooltipRef} id={tooltipId} role="tooltip" className="conversation-model-tooltip" style={{left:modelInfo.left,top:modelInfo.top,bottom:modelInfo.bottom}}>
       <strong>{modelLabel(model)}</strong>
       <dl>
         <dt>发布时间</dt><dd>{model.release_date||'未提供'}</dd>
