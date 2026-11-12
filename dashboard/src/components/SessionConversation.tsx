@@ -94,9 +94,12 @@ import {
   conversationTimings,
   elapsedBetween,
   formatConversationTimestamp,
+  formatElapsedEnglish,
 } from "../lib/conversation-timing";
 import {
   ConversationActivityLine,
+  currentConversationActivity,
+  conversationActivityDuration,
   type ConversationActivity,
 } from "./ConversationActivityLine";
 import { ConversationToolCall } from "./ConversationToolCall";
@@ -123,6 +126,9 @@ function ProgressSection({
   count,
   active,
   progress,
+  stepDuration,
+  stepRunning,
+  turnDuration,
   children,
 }: {
   agent: AgentDescriptor;
@@ -130,6 +136,9 @@ function ProgressSection({
   count: number;
   active: boolean;
   progress?: import('../lib/api').ConversationProgressStatistics | null;
+  stepDuration?: number|null;
+  stepRunning?: boolean;
+  turnDuration?: number|null;
   children: ReactNode;
 }) {
   const [preference, setPreference] = useState<boolean | null>(null);
@@ -154,6 +163,8 @@ function ProgressSection({
           <span className="session-chat-kind">progress</span>
           <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
           {progress && <span className="session-chat-message-statistics" title="Cumulative recorded usage since the previous conclusion. Rounds update after the following model request; incomplete history is a lower bound.">total · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} / {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
+          {active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
+          {active&&turnDuration!=null&&<time className="session-chat-progress-time" title="Elapsed time since the current user message or follow-up">Turn {formatElapsedEnglish(turnDuration)}</time>}
           {active && <span className="session-chat-progress-live">In progress</span>}
           <ChevronDown size={14} className="session-chat-progress-chevron" />
         </summary>
@@ -1802,6 +1813,12 @@ export function SessionConversation({
         )
       : null;
   const groups = groupConversationProgress(displayed);
+  const progressTimingVisible=busy&&!reconnectable&&!ended&&!waiting&&!activeError&&!compaction.state&&groups.at(-1)?.kind==='progress';
+  const activityRunning=busy&&!reconnectable&&!ended&&!waiting&&!activeError;
+  const currentActivities=liveState==='connected'&&!reconnectable&&liveProgress.stage==='tools'?liveProgress.activities||[]:[];
+  const currentActivity=currentConversationActivity(currentActivities,activityRunning);
+  const stepDuration=conversationActivityDuration(currentActivity,now);
+  const turnDuration=elapsedBetween(started,now);
   const timings = conversationTimings(
     displayed.filter((message) => !message.queued),
     now,
@@ -1989,6 +2006,9 @@ export function SessionConversation({
                     agentName={agentName}
                     count={group.messages.length}
                     active={busy && groups.at(-1) === group}
+                    stepDuration={progressTimingVisible&&groups.at(-1)===group?stepDuration:null}
+                    stepRunning={currentActivity?.status==='running'}
+                    turnDuration={progressTimingVisible&&groups.at(-1)===group?turnDuration:null}
                     progress={busy && groups.at(-1)===group && progressStatistics && (!liveProgress.turn_id||progressStatistics.turn_id===liveProgress.turn_id) && (!group.messages.at(-1)?.turn_id||group.messages.at(-1)?.turn_id===progressStatistics.turn_id)?progressStatistics:null}
                   >
                     {group.messages.map((message, index) => (
@@ -2135,18 +2155,11 @@ export function SessionConversation({
             ) : (
               <ConversationActivityLine
                 key={`${session.id}:${liveState}:${liveProgress.turn_id || ""}`}
-                activities={
-                  liveState === "connected" &&
-                  !reconnectable &&
-                  liveProgress.stage === "tools"
-                    ? liveProgress.activities || []
-                    : []
-                }
-                busy={
-                  busy && !reconnectable && !ended && !waiting && !activeError
-                }
+                activities={currentActivities}
+                busy={activityRunning}
                 now={now}
-                totalElapsed={elapsedBetween(started, now)}
+                totalElapsed={turnDuration}
+                hideTiming={progressTimingVisible}
                 fallback={
                   reconnecting
                     ? "Reconnecting session…"
