@@ -57,8 +57,9 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   useLayoutEffect(()=>{const node=tooltipRef.current;if(!node||!modelInfo)return;const rect=node.getBoundingClientRect();if(rect.bottom>window.innerHeight-8){node.style.bottom='auto';node.style.top=`${Math.max(8,window.innerHeight-8-rect.height)}px`;}if(rect.top<8){node.style.bottom='auto';node.style.top='8px';}},[modelInfo,model]);
   const fastTier=model?.service_tiers?.find(tier=>tier.name.trim().toLowerCase()==='fast');
   const fastEnabled=!!fastTier&&(data?.pending?.service_tier??data?.service_tier??model?.default_service_tier)===fastTier.id;
-  const weekly=data?.limits.find(limit=>limit.minutes>=6*24*60);
-  const shortLimit=data?.limits.find(limit=>limit.minutes>0&&limit.minutes<6*24*60);
+  const limits=data?.agent?.id==='codex'&&currentEnvironment?.auth_mode!=='account'?[]:data?.limits||[];
+  const weekly=limits.find(limit=>limit.minutes>=6*24*60);
+  const shortLimit=limits.find(limit=>limit.minutes>0&&limit.minutes<6*24*60);
   const canEdit=(feature:AgentFeature)=>data?.can_edit_features?.[feature]??data?.can_edit??false;
   const compactReason=compacting?'上下文正在压缩中，请等待完成':!data?.can_edit?'此会话尚未接入实时控制，请先重载标签页':busy?'当前任务完成后可压缩':saving?'正在保存设置':operation?'正在处理会话操作':'压缩当前会话上下文，保留对话记录';
   async function save(value:import('../lib/api').AgentModelPreference|null) {
