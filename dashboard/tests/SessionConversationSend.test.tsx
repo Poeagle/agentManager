@@ -1,5 +1,5 @@
 import {sessionAgent} from '../src/lib/agents';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor,within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, ApiError, type ConversationPage, type Session } from '../src/lib/api';
@@ -42,7 +42,8 @@ afterEach(() => { vi.unstubAllGlobals(); });
 describe('conversation send transaction', () => {
   it('updates the active progress total without mixing other native sessions',async()=>{
     await mount();const item={id:'progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'working',timestamp:null};
-    act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:true,stage:'tools',turn_id:'turn'}));await screen.findByText('working');
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:true,stage:'tools',turn_id:'turn',started_at:new Date(Date.now()-120000).toISOString(),activities:[{id:'tool',label:'运行命令 · test',status:'completed',duration_ms:40000,started_at:null,completed_at:null}]}));await screen.findByText('working');
+    const header=screen.getByText('progress').closest('summary')!;expect(within(header).getByText('Step 40s')).toHaveAttribute('title','Duration of the most recently completed tool step');expect(within(header).getByText(/^Turn /)).toHaveAttribute('title','Elapsed time since the current user message or follow-up');expect(within(screen.getByTestId('conversation-activity-line')).queryByText(/^Turn /)).not.toBeInTheDocument();
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'other',progress:{turn_id:'turn',tokens:{total_tokens:999},tool_calls:9,tool_rounds:9,complete:true}}));expect(screen.queryByText(/token: 999/)).not.toBeInTheDocument();
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:392100},tool_calls:2,tool_rounds:2,complete:true}}));expect(await screen.findByText('total · token: 392.1K · tools: 2 calls / 2 rounds')).toBeVisible();
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:400000},tool_calls:3,tool_rounds:2,complete:true}}));expect(await screen.findByText('total · token: 400K · tools: 3 calls / 2 rounds')).toBeVisible();
