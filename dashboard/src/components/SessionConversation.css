@@ -410,3 +410,8 @@
 .conversation-toolbar .conversation-control-context i {width:12px;}
 @media(max-width:700px){.session-chat-controls-slot,.conversation-toolbar {display:contents;}.conversation-toolbar .conversation-control-select select {max-width:135px;}}
 @media(max-width:700px){.conversation-toolbar .conversation-control-model select {max-width:min(220px,45vw);}}
+
+.conversation-model-tooltip {position:fixed;z-index:70;pointer-events:none;width:320px;max-width:calc(100vw - 16px);padding:10px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);box-shadow:0 4px 18px #0002;font-size:11px;line-height:1.5;white-space:normal;overflow-wrap:anywhere;}
+.conversation-model-tooltip dl {display:grid;grid-template-columns:72px minmax(0,1fr);gap:4px 8px;margin-top:6px;}
+.conversation-model-tooltip dt,.conversation-model-tooltip small {color:var(--text-secondary);}
+.conversation-model-tooltip dd {margin:0;min-width:0;}

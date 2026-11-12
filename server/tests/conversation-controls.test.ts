@@ -10,7 +10,10 @@ import {authHook,createUser,createSession,setProjectToolAccess} from '../src/aut
 import {getDb} from '../src/db/index.js';
 import {agentRoutes} from '../src/routes/agent.js';
 import * as manager from '../src/services/session-manager.js';
-import {readConversationTelemetry,readModelPreference,saveModelPreference} from '../src/services/agents/codex/controls.js';
+import {readConversationTelemetry,readModelPreference,saveModelPreference,readCodexModels} from '../src/services/agents/codex/controls.js';
+import {saveCodexEnvironment} from '../src/services/agents/codex/environments.js';
+import {runInCodexEngine} from '../src/services/agents/codex/engine-context.js';
+import * as accountTransport from '../src/services/agents/codex/account-transport.js';
 import {setRoleGrants,setUserRoles} from '../src/services/rbac.js';
 
 const native='019ff001-9999-7999-8999-999999999999';
@@ -19,6 +22,7 @@ let inputs:any[],methods:string[],active:boolean,loaded:boolean,fail:boolean,noM
 const record=(type:string,payload:unknown)=>JSON.stringify({type,payload,timestamp:'2026-10-31T02:00:00Z'})+'\n';
 beforeEach(async()=>{
   const fixture=createTestDatabase();cleanup=fixture.cleanup;dir=fixture.dir;vi.stubEnv('CODEX_HOME',dir);vi.stubEnv('AGENTMANAGER_CODEX_PROVIDER_ENGINES','');const socket=join(dir,'controls.sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',socket);
+  writeFileSync(join(dir,'models_cache.json'),JSON.stringify({models:[{slug:'model-a',context_window:128000,input_modalities:['text','image'],release_date:'2026-01-01',private_token:'PRIVATE MODEL SECRET'}]}));
   mkdirSync(join(dir,'sessions'));log=join(dir,'sessions',`rollout-${native}.jsonl`);
   writeFileSync(log,record('turn_context',{model:'model-a',effort:'high',approval_policy:'never',sandbox_policy:{type:'workspace-write',private:'PRIVATE CONFIG'},service_tier:'priority'})+record('event_msg',{type:'token_count',info:{total_token_usage:{input_tokens:1000000,cached_input_tokens:900000,output_tokens:12000,total_tokens:1012000},last_token_usage:{input_tokens:11000,cached_input_tokens:9000,output_tokens:1000,total_tokens:12000},model_context_window:40000},rate_limits:{primary:{used_percent:25,window_minutes:10080,resets_at:1900000000},credits:{balance:'PRIVATE BALANCE'}}})+record('response_item',{type:'function_call_output',output:'PRIVATE TOOL OUTPUT'}));
   inputs=[];methods=[];active=false;loaded=true;fail=false;noModels=false;model='model-a';effort='high';tier='default';server=createServer();wss=new WebSocketServer({server});
@@ -43,6 +47,18 @@ const get=()=>app.inject({url:'/api/sessions/s/controls',headers:{cookie}});
 const set=(value:any)=>app.inject({method:'PUT',url:'/api/sessions/s/controls',headers:{cookie,'content-type':'application/json'},payload:JSON.stringify(value)});
 const send=()=>app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{input:'继续',source:'conversation'}});
 describe('native conversation controls',()=>{
+ it('exposes only safe metadata from the matching Engine catalog',async()=>{
+  const response=await get();expect(response.statusCode).toBe(200);
+  expect(response.json().models.find((m:any)=>m.model==='model-a')).toMatchObject({context_window:128000,input_modalities:['text','image'],release_date:'2026-01-01'});
+  expect(response.body).not.toContain('PRIVATE MODEL SECRET');
+ });
+ it('reads account model metadata through the selected system account and does not expose other fields',async()=>{
+  const env=await saveCodexEnvironment({name:'Fixture',allowed_user_ids:[owner],connection:{username:'fixture',port:22,authMethod:'key',identityFile:'',codexHome:'',codexCommand:'codex'}});
+  const remote=vi.spyOn(accountTransport,'accountCommand').mockResolvedValue(JSON.stringify([{slug:'model-a',context_window:256000,input_modalities:['text','image'],private:'NEVER EXPOSE'}]));
+  const models=await runInCodexEngine({socket:join(dir,'controls.sock'),environmentId:env.id,accountHome:'/home/fixture/.codex'},()=>readCodexModels(true,owner));
+  expect(remote).toHaveBeenCalledOnce();expect(models.find(m=>m.model==='model-a')).toMatchObject({context_window:256000,input_modalities:['text','image']});
+  expect(JSON.stringify(models)).not.toContain('NEVER EXPOSE');
+ });
  it('reads context category counters without submitting or resuming a model turn',async()=>{
   const response=await app.inject({url:'/api/sessions/s/context-breakdown',headers:{cookie}});expect(response.statusCode).toBe(200);expect(response.json()).toMatchObject({context:{source:'jsonl',exact:false,usage:{last:{total_tokens:12000}}}});expect(response.body).not.toContain('PRIVATE');expect(methods).not.toContain('thread/resume');expect(methods).not.toContain('turn/start');expect(methods).not.toContain('model/list');expect(methods).not.toContain('account/rateLimits/read');
  });
