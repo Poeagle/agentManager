@@ -18,7 +18,8 @@ const treeKeys=(nodes:UsageGroup[]):string[]=>nodes.flatMap(n=>[n.key,...treeKey
 // Reserve numeric columns from the longest formatted value, including descendants.
 // Text columns have independent bounds; narrow screens scroll the whole table.
 function usageColumnWidths(nodes:UsageGroup[]){
- const widths=[104,104,104,92,100,112,104,88];
+ // Include room for the English heading, sort arrow, filter control and cell padding.
+ const widths=[150,150,160,135,150,145,145,110];
  function visit(items:UsageGroup[]){for(const node of items){const t=node.metrics.tokens;
   [t.input_tokens,t.cached_input_tokens,t.input_tokens!=null&&t.cached_input_tokens!=null?t.input_tokens-t.cached_input_tokens:null,null,t.output_tokens,t.total_tokens,node.metrics.estimated_credits,null].forEach((value,i)=>{if(value!=null)widths[i]=Math.max(widths[i],numeric(value).length*7+20);});visit(node.children);
  }}visit(nodes);return widths;
