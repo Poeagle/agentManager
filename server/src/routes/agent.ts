@@ -106,7 +106,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.1.0',
+    version:'3.2.0',
     updatedAt:'2026-11-12',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -241,6 +241,17 @@ export function getAgentApiContract() {
         description: 'Read one session visible to the authenticated user.',
         response: { session: 'Session' },
         errors: { 404: 'Session not found or not visible' },
+      },
+      {
+        category: 'Sessions', method: 'GET', path: '/api/sessions/:id/controls',
+        description: 'Read the accessible session model, runtime controls and available models. Optional ?refresh=true refreshes native data; model release date, context length, modalities and reference Credits are optional and may be unavailable. Reference Credits are not an invoice.',
+        errors: { 400: 'Invalid refresh flag', 404: 'Session not found or not accessible', 409: 'Session has no native identity' },
+      },
+      {
+        category: 'Sessions', method: 'PUT', path: '/api/sessions/:id/controls',
+        description: 'Update the model for an owned, authorized session. An unloaded supported session can save a preference for recovery. Send JSON null to clear a pending preference.',
+        request: { model: {type:'string',required:true}, effort: {type:'string',required:true}, provider: {type:'string',required:false}, service_tier: {type:'string',required:false} },
+        errors: { 400: 'Unsupported model or parameters', 403: 'Session or Engine not permitted', 409: 'Session or model service cannot be changed', 503: 'Native update not confirmed' },
       },
       {
         category: 'Sessions',

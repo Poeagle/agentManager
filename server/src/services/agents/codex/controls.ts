@@ -2,7 +2,10 @@ import {canUseEnvironment} from '../environment-access.js';
 import {rememberCodexSettings,codexSettings} from './settings-state.js';
 import {currentCodexEngine,defaultCodexEngine,configuredCodexEngines,runInCodexEngine,rememberCodexProvider,engineForProvider} from './engine-context.js';
 import type {ModelPreference} from '../types.js';
-import {open} from 'fs/promises';
+import {open,readFile,stat} from 'fs/promises';
+import {join} from 'path';
+import {homedir} from 'os';
+import {CREDIT_RATES,CREDIT_RATE_DATE} from './usage-credits.js';
 
 import {findCodexRollout} from '../../prompt-context.js';
 import {withCodexConnection} from './stream.js';
@@ -12,7 +15,7 @@ import {promisify} from 'util';
 import {publicTokenCounters} from '../../conversation-usage.js';
 const execute=promisify(execFile);
 
-export interface ModelChoice {default_service_tier?:string|null;service_tiers?:Array<{id:string;name:string;description:string}>;provider?:string;model:string;name:string;description:string;efforts:Array<{value:string;description:string}>;defaultEffort:string}
+export interface ModelChoice {release_date?:string|null;context_window?:number|null;input_modalities?:string[];reference_credits?:{input:number;cached:number;output:number;as_of:string}|null;default_service_tier?:string|null;service_tiers?:Array<{id:string;name:string;description:string}>;provider?:string;model:string;name:string;description:string;efforts:Array<{value:string;description:string}>;defaultEffort:string}
 export type {ModelPreference} from '../types.js';
 const finite=(n:unknown):number|null=>typeof n==='number'&&Number.isFinite(n)&&n>=0?n:null;
 const tokens=publicTokenCounters;
@@ -61,6 +64,34 @@ export async function readConversationTelemetry(threadId:string):Promise<Telemet
   }finally{await handle.close();}
 }
 
+type ModelMetadata={slug:string;context_window?:number;max_context_window?:number;input_modalities?:string[];release_date?:string};
+/** Only public, bounded catalog fields are returned, and account catalogs are read as their owning system user. */
+async function modelMetadata(engine:ReturnType<typeof currentCodexEngine>):Promise<ModelMetadata[]> {
+ try {
+  if(engine.environmentId?.startsWith('account:')) {
+   if(!engine.accountHome)return [];
+   const {getCodexEnvironment,environmentConnection}=await import('./environments.js');
+   const {accountCommand}=await import('./account-transport.js');
+   const environment=getCodexEnvironment(engine.environmentId),connection=environmentConnection(environment);
+   const script=`import json,pathlib
+p=pathlib.Path(${JSON.stringify(engine.accountHome||'')})/'models_cache.json'
+try:
+ if p.stat().st_size>4194304:raise ValueError()
+ data=json.loads(p.read_text())
+ rows=[{k:m.get(k) for k in ('slug','context_window','max_context_window','input_modalities','release_date') if k in m} for m in data.get('models',[])[:300] if isinstance(m,dict)]
+ print(json.dumps(rows))
+except Exception:print('[]')`;
+   const data=JSON.parse(await accountCommand(connection,script,2000));return Array.isArray(data)?data:[];
+  }
+  if(engine.environmentId?.startsWith('provider:') || (engine.provider && engine.models)) {
+   const {readModelConfigsForProvider}=await import('./management.js');
+   return (await readModelConfigsForProvider(engine.provider!)).map(m=>({slug:m.model,context_window:m.contextWindow??undefined,max_context_window:m.maxContextWindow??undefined,input_modalities:m.inputModalities}));
+  }
+  const path=join(process.env.CODEX_HOME||join(homedir(),'.codex'),'models_cache.json');
+  if((await stat(path)).size>4194304)return [];
+  const data=JSON.parse(await readFile(path,'utf8'));return Array.isArray(data?.models)?data.models.slice(0,300):[];
+ } catch{return [];}
+}
 const catalogs=new Map<string,{until:number;data:ModelChoice[]}>();
 const loadingCatalogs=new Map<string,Promise<ModelChoice[]>>();
 const catalogFailures=new Map<string,{until:number;error:unknown}>();
@@ -69,11 +100,13 @@ async function readEngineModels(force=false):Promise<ModelChoice[]> {
   const catalog=catalogs.get(key);if(!force&&catalog&&catalog.until>Date.now())return catalog.data;
   const loading=loadingCatalogs.get(key);if(loading)return loading;
   const failure=catalogFailures.get(key);if(!force&&failure&&failure.until>Date.now())throw failure.error;
+  const metadataPromise=modelMetadata(engine);
   const promise=withCodexConnection(async request=>{
     const config=await request('config/read',{}).then(r=>r.config??{}).catch(()=>({}));
     rememberCodexProvider(config.model_provider);
     const provider=engine.provider??config.model_provider;
     if(engine.provider&&config.model_provider&&engine.provider!==config.model_provider)throw Error(`模型服务 ${engine.provider} 的引擎实际配置为 ${config.model_provider}，请修正独立引擎配置`);
+    const metadata=await metadataPromise;
     const data:ModelChoice[]=[];let cursor:string|undefined;
     for(let i=0;i<4;i++) {
       const response=await request('model/list',{includeHidden:false,limit:100,...cursor?{cursor}:{}});
@@ -81,7 +114,9 @@ async function readEngineModels(force=false):Promise<ModelChoice[]> {
         if(engine.models&&!engine.models.includes(item.model))continue;
         if(item.hidden||typeof item.model!=='string'||typeof item.displayName!=='string'||!Array.isArray(item.supportedReasoningEfforts))continue;
         const efforts=item.supportedReasoningEfforts.filter((e:any)=>typeof e.reasoningEffort==='string').map((e:any)=>({value:e.reasoningEffort,description:typeof e.description==='string'?e.description:''}));
-        if(efforts.length)data.push({...typeof provider==='string'?{provider}:{},model:item.model,name:item.displayName,default_service_tier:typeof item.defaultServiceTier==='string'?item.defaultServiceTier:null,service_tiers:(Array.isArray(item.serviceTiers)?item.serviceTiers:[]).filter((tier:any)=>typeof tier.id==='string'&&typeof tier.name==='string').map((tier:any)=>({id:tier.id,name:tier.name,description:typeof tier.description==='string'?tier.description:''})),description:typeof item.description==='string'?item.description:'',efforts,defaultEffort:item.defaultReasoningEffort});
+        const info=metadata.find(m=>m&&typeof m==='object'&&m.slug===item.model);const contextWindow=info?.context_window??item.contextWindow;
+        const modalities=info?.input_modalities??item.inputModalities;const rate=Object.hasOwn(CREDIT_RATES,item.model)?CREDIT_RATES[item.model]:undefined;
+        if(efforts.length)data.push({context_window:typeof contextWindow==='number'&&Number.isSafeInteger(contextWindow)&&contextWindow>0?contextWindow:null,input_modalities:Array.isArray(modalities)?modalities.filter((v:unknown):v is string=>typeof v==='string'&&v.length<=50).slice(0,10):[],release_date:typeof (info?.release_date??item.releaseDate)==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(info?.release_date??item.releaseDate)?(info?.release_date??item.releaseDate):null,reference_credits:rate?{input:rate[0],cached:rate[1],output:rate[2],as_of:CREDIT_RATE_DATE}:null,...typeof provider==='string'?{provider}:{},model:item.model,name:item.displayName,default_service_tier:typeof item.defaultServiceTier==='string'?item.defaultServiceTier:null,service_tiers:(Array.isArray(item.serviceTiers)?item.serviceTiers:[]).filter((tier:any)=>typeof tier.id==='string'&&typeof tier.name==='string').map((tier:any)=>({id:tier.id,name:tier.name,description:typeof tier.description==='string'?tier.description:''})),description:typeof item.description==='string'?item.description:'',efforts,defaultEffort:item.defaultReasoningEffort});
       }
       if(!response.nextCursor)break;cursor=response.nextCursor;
     }

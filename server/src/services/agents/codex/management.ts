@@ -137,7 +137,7 @@ function modelConfigsFromCatalog(content: string, sourceFile: string, provider?:
   });
 }
 
-async function readModelConfigsForProvider(providerId: string): Promise<AgentModelConfig[]> {
+export async function readModelConfigsForProvider(providerId: string): Promise<AgentModelConfig[]> {
   const target = await providerCatalogPath(providerId);
   return target ? modelConfigsFromCatalog(target.content, target.path, providerId) : [];
 }

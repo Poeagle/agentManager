@@ -1,7 +1,7 @@
 import {createPortal} from 'react-dom';
 import {ConversationEnvironmentSelector} from './ConversationEnvironmentSelector';
 import type {AgentFeature} from '../lib/agents';
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
 import {useQuery,useQueryClient} from '@tanstack/react-query';
 import {ChevronDown,Info,RefreshCw,Minimize2,Plus,Loader2,Zap} from 'lucide-react';
 import {api,type ConversationControlsData,type ConversationUsageUpdate} from '../lib/api';
@@ -19,6 +19,8 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const [operation,setOperation]=useState<'compact'|'new'|null>(null),[newOpen,setNewOpen]=useState(false),[notice,setNotice]=useState('');
   const [freshPreference,setFreshPreference]=useState<import('../lib/api').AgentModelPreference>();
   const [contextOpen,setContextOpen]=useState(false);
+  const tooltipId=useId(),tooltipRef=useRef<HTMLDivElement>(null),[modelInfo,setModelInfo]=useState<{left:number;top?:number;bottom?:number}|null>(null);
+  function showModelInfo(node:HTMLElement){const rect=node.getBoundingClientRect(),left=Math.max(8,Math.min(rect.left,window.innerWidth-328));setModelInfo(rect.top>230?{left,bottom:window.innerHeight-rect.top+8}:{left,top:rect.bottom+8});}
   const [environmentRequest,setEnvironmentRequest]=useState<{provider:string;model:string;effort:string}>();
   const operationLock=useRef(false);
     const forceRefresh=useRef(false);
@@ -48,6 +50,11 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   };
   const model=data?.models.find(m=>m.model===selected.model&&(!m.provider||!selected.provider||m.provider===selected.provider)),usage=data?.usage;
   const context=usage?.window&&usage.last.total_tokens!=null?Math.min(100,Math.round(100*usage.last.total_tokens/usage.window)):null;
+  const currentEnvironment=environments.data?.environments.find(e=>e.id===environments.data?.current);
+  const modelEnvironment=(!model?.provider||model.provider===data?.provider)?currentEnvironment:environments.data?.environments.find(e=>e.provider===model?.provider);
+  const referenceCredits=modelEnvironment?.auth_mode==='account'?model?.reference_credits:null;
+  const modelContext=model?.context_window??(model?.model===data?.model&&(!model?.provider||model.provider===data?.provider)?usage?.window:null);
+  useLayoutEffect(()=>{const node=tooltipRef.current;if(!node||!modelInfo)return;const rect=node.getBoundingClientRect();if(rect.bottom>window.innerHeight-8){node.style.bottom='auto';node.style.top=`${Math.max(8,window.innerHeight-8-rect.height)}px`;}if(rect.top<8){node.style.bottom='auto';node.style.top='8px';}},[modelInfo,model]);
   const fastTier=model?.service_tiers?.find(tier=>tier.name.trim().toLowerCase()==='fast');
   const fastEnabled=!!fastTier&&(data?.pending?.service_tier??data?.service_tier??model?.default_service_tier)===fastTier.id;
   const weekly=data?.limits.find(limit=>limit.minutes>=6*24*60);
@@ -62,7 +69,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   useEffect(()=>{if(!applied)return;const timer=setTimeout(()=>setApplied(false),4000);return()=>clearTimeout(timer);},[applied]);
   const toolbar=data?<div className="conversation-controls conversation-toolbar" aria-label="会话操作">
         {data.agent?.id==='codex'&&<ConversationEnvironmentSelector sessionId={sessionId} busy={busy||saving||!!operation} requested={environmentRequest} onRequestHandled={()=>setEnvironmentRequest(undefined)}/>}
-        <label className="conversation-control-select conversation-control-model"><span>模型</span><select aria-label="选择模型" value={model?choiceKey(model):selected.model} disabled={!data.can_edit||saving||!!operation} title={model?`${modelLabel(model)}${model.description?` · ${model.description}`:''}`:(!data.can_edit?'此会话暂不可切换模型，可查看原始终端':undefined)} onChange={event=>{const next=data.models.find(m=>choiceKey(m)===event.target.value);if(next){const preference={model:next.model,...(next.provider?{provider:next.provider}:{}),effort:next.efforts.some(e=>e.value===selected.effort)?selected.effort:next.defaultEffort};if(next.provider&&data.provider&&next.provider!==data.provider){if(data.agent?.id==='codex'){setEnvironmentRequest({...preference,provider:next.provider});return;}if(!onNewConversation){setError('切换模型服务需要从标签页新开会话');return;}setFreshPreference(preference);setNewOpen(true);}else void save(preference);}}}>
+        <label className="conversation-control-select conversation-control-model" onMouseEnter={event=>showModelInfo(event.currentTarget)} onMouseLeave={()=>setModelInfo(null)} onFocus={event=>showModelInfo(event.currentTarget)} onBlur={()=>setModelInfo(null)}><span>模型</span><select aria-label="选择模型" aria-describedby={modelInfo&&model?tooltipId:undefined} value={model?choiceKey(model):selected.model} disabled={!data.can_edit||saving||!!operation} title={model?`${modelLabel(model)}${model.description?` · ${model.description}`:''}`:(!data.can_edit?'此会话暂不可切换模型，可查看原始终端':undefined)} onChange={event=>{const next=data.models.find(m=>choiceKey(m)===event.target.value);if(next){const preference={model:next.model,...(next.provider?{provider:next.provider}:{}),effort:next.efforts.some(e=>e.value===selected.effort)?selected.effort:next.defaultEffort};if(next.provider&&data.provider&&next.provider!==data.provider){if(data.agent?.id==='codex'){setEnvironmentRequest({...preference,provider:next.provider});return;}if(!onNewConversation){setError('切换模型服务需要从标签页新开会话');return;}setFreshPreference(preference);setNewOpen(true);}else void save(preference);}}}>
           {!model&&<option value={model?choiceKey(model):selected.model}>{selected.model||'未提供'}</option>}{data.models.map(m=><option key={choiceKey(m)} value={choiceKey(m)}>{modelLabel(m)}</option>)}
         </select><ChevronDown size={12}/></label>
         <label className="conversation-control-select"><span>强度</span><select aria-label="选择推理强度" value={selected.effort} disabled={!canEdit('effort')||!model||saving||!!operation} onChange={event=>void save({model:selected.model,...(model?.provider?{provider:model.provider}:{}),effort:event.target.value})}>
@@ -97,6 +104,18 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         <button type="button" aria-label="Refresh session status" title="Usage updates live; other details refresh every 5 minutes" disabled={query.isFetching} onClick={refresh}><RefreshCw size={13} className={query.isFetching?'animate-spin':''}/>Refresh</button>
       </>:<><span>{query.isPending?'Loading session…':'Session status unavailable'}</span>{query.isError&&<button type="button" onClick={refresh}><RefreshCw size={13}/>Retry</button>}</>}
     </div>
+    {modelInfo&&model&&createPortal(<div ref={tooltipRef} id={tooltipId} role="tooltip" className="conversation-model-tooltip" style={{left:modelInfo.left,top:modelInfo.top,bottom:modelInfo.bottom}}>
+      <strong>{modelLabel(model)}</strong>
+      <dl>
+        <dt>发布时间</dt><dd>{model.release_date||'未提供'}</dd>
+        <dt>计费标准</dt><dd>{referenceCredits?<>Credits / 1M：输入 {referenceCredits.input} · 缓存 {referenceCredits.cached} · 输出 {referenceCredits.output}<br/><small>参考费率 {referenceCredits.as_of}，非实际账单</small></>:'未提供'}</dd>
+        <dt>上下文长度</dt><dd>{modelContext!=null?`${modelContext.toLocaleString()} tokens`:'未提供'}</dd>
+        <dt>输入类型</dt><dd>{model.input_modalities?.length?model.input_modalities.join('、'):'未提供'}</dd>
+        <dt>推理强度</dt><dd>{model.efforts.length?model.efforts.map(e=>e.value||'默认').join('、'):'未提供'}</dd>
+        <dt>服务档位</dt><dd>{model.service_tiers?.length?model.service_tiers.map(t=>t.name).join('、'):'未提供'}</dd>
+        {model.description&&<><dt>说明</dt><dd>{model.description.length>180?`${model.description.slice(0,180)}…`:model.description}</dd></>}
+      </dl>
+    </div>,document.body)}
     {newOpen&&<Dialog title="在当前标签页新开会话" busy={operation==='new'} onClose={()=>setNewOpen(false)}>
       <p className="text-sm leading-relaxed">{data?.supports_fresh_model?'请确认新会话使用的模型服务、模型和推理强度。':'新会话将使用当前 Agent 的默认模型设置。'}当前任务会停止，旧会话的后台终端会回收，历史消息可从“项目会话记录”重新打开。当前输入框中未发送的文字和附件会保留。</p>
       {data?.supports_fresh_model&&<><label className="mt-3 flex items-center gap-2 text-sm">新会话模型<select aria-label="新会话模型" className="min-w-0 flex-1 rounded border px-2 py-1" style={{background:'var(--bg-tertiary)',borderColor:'var(--border)',color:'var(--text-primary)'}} value={freshPreference?choiceKey(freshPreference):''} onChange={event=>{const next=data?.models.find(m=>choiceKey(m)===event.target.value);if(next)setFreshPreference({model:next.model,...(next.provider?{provider:next.provider}:{}),effort:next.defaultEffort});}}><option value="" disabled>请选择可用模型</option>{data?.models.map(m=><option key={choiceKey(m)} value={choiceKey(m)}>{modelLabel(m)}</option>)}</select></label>

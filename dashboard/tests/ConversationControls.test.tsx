@@ -10,6 +10,21 @@ beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}})
 afterEach(()=>client.clear());
 const mount=()=>render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active/></QueryClientProvider>);
 describe('compact conversation controls',()=>{
+ it('does not present subscription reference credits as API pricing',async()=>{
+  data.models[0]={...data.models[0],reference_credits:{input:25,cached:1.25,output:125,as_of:'2026-11-11'}};
+  vi.mocked(api.codexEnvironments.forSession).mockResolvedValueOnce({current:'provider:a',environments:[{id:'provider:a',name:'API',kind:'provider',auth_mode:'api',enabled:true,allowed_user_ids:null}]} as any);
+  mount();const select=await screen.findByRole('combobox',{name:'选择模型'});await waitFor(()=>expect(api.codexEnvironments.forSession).toHaveBeenCalled());fireEvent.focus(select);
+  const tooltip=screen.getByRole('tooltip');expect(tooltip).not.toHaveTextContent('Credits / 1M');expect(tooltip).toHaveTextContent('计费标准未提供');
+ });
+ it('shows selected account model details on focus and distinguishes reference credits',async()=>{
+  data.models[0]={...data.models[0],context_window:128000,input_modalities:['text','image'],release_date:'2026-01-01',reference_credits:{input:25,cached:1.25,output:125,as_of:'2026-11-11'}};
+  vi.mocked(api.codexEnvironments.forSession).mockResolvedValueOnce({current:'native',environments:[{id:'native',name:'Account',kind:'native',auth_mode:'account',enabled:true,allowed_user_ids:null}]} as any);
+  mount();const select=await screen.findByRole('combobox',{name:'选择模型'});await waitFor(()=>expect(api.codexEnvironments.forSession).toHaveBeenCalled());
+  fireEvent.focus(select);const tooltip=screen.getByRole('tooltip');
+  expect(tooltip).toHaveTextContent('2026-01-01');expect(tooltip).toHaveTextContent('128,000 tokens');expect(tooltip).toHaveTextContent('text、image');expect(tooltip).toHaveTextContent('Credits / 1M');expect(tooltip).toHaveTextContent('非实际账单');
+  fireEvent.blur(select);expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+ });
+
  it('removes the provider prefix only for API engines while retaining account labels',async()=>{
   data={...data,provider:'provider-a',models:[{...data.models[0],provider:'provider-a',name:'DeepSeek V4.1 Flash'},{...data.models[1],provider:'provider-b'}]};
   vi.mocked(api.codexEnvironments.forSession).mockResolvedValueOnce({current:'provider:provider-a',environments:[{id:'provider:provider-a',name:'API',kind:'provider',provider:'provider-a',auth_mode:'api',enabled:true,allowed_user_ids:null,can_control:true},{id:'provider:provider-b',name:'Account',kind:'provider',provider:'provider-b',auth_mode:'account',enabled:true,allowed_user_ids:null,can_control:true}]});
