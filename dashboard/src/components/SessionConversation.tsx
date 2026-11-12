@@ -144,7 +144,7 @@ function ProgressSection({
           aria-label={`${open ? "收起" : "展开"}进展（${count} 条）`}
           aria-expanded={open}
         >
-          <Sparkles size={16} />
+          <Sparkles size={13} />
           <span>{agentName}</span>
           <span className="session-chat-kind">进展</span>
           <span className="session-chat-progress-count">{count} 条</span>
@@ -429,7 +429,7 @@ const Bubble = memo(function Bubble({
         <div
           className={`session-chat-agent${headerMetadata ? " session-chat-final-heading" : ""}`}
         >
-          <Sparkles size={16} />
+          <Sparkles size={13} />
           <span>{agentName}</span>
           {message.phase === "final" && (
             <span className="session-chat-kind">结论</span>
@@ -1692,7 +1692,7 @@ export function SessionConversation({
       previous.filter((item) => item.clientId !== saved.clientId),
     );
   }
-  const agentName = sessionAgent(session).label;
+  const agentName = sessionAgent(session).id === "codex" ? "codex" : sessionAgent(session).label;
   const lastUserTime = messages[lastUserIndex]?.timestamp;
   const currentAnswer = messages.some(
     (message, index) =>
@@ -1995,7 +1995,7 @@ export function SessionConversation({
               )}
               {waitingForText && (
                 <div className="session-chat-thinking" role="status">
-                  <Sparkles size={16} />
+                  <Sparkles size={13} />
                   <div>
                     <span>
                       {continuingAfterFollowup

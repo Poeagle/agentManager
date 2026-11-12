@@ -17,8 +17,8 @@ describe('compact conversation controls',()=>{
  });
  it('reads context categories only after clicking the usage indicator without reloading controls',async()=>{
   vi.mocked(api.agent.contextBreakdown).mockReset().mockResolvedValue({context:{source:'jsonl',exact:false,method:'characters_div_3',checked_at:'2026-11-11T12:00:00Z',observed_at:null,model:'model-a',usage:null,partial:false,warnings:[],files_read:1,records_read:1,bytes_read:100,compactions:0,categories:[{id:'user',name:'用户消息',tokens:100,count:1,detail:[]}]}});
-  mount();await screen.findByText('上下文 30%');expect(api.agent.contextBreakdown).not.toHaveBeenCalled();const calls=vi.mocked(api.agent.controls).mock.calls.length;
-  fireEvent.click(screen.getByRole('button',{name:'查看上下文 Token 详情'}));const dialog=await screen.findByRole('dialog',{name:'上下文 Token 详情'});expect(await within(dialog).findByRole('rowheader',{name:'用户消息'})).toBeVisible();expect(api.agent.controls).toHaveBeenCalledTimes(calls);expect(api.agent.contextBreakdown).toHaveBeenCalledTimes(1);fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).toBeNull();
+  mount();await screen.findByText('Context 30%');expect(api.agent.contextBreakdown).not.toHaveBeenCalled();const calls=vi.mocked(api.agent.controls).mock.calls.length;
+  fireEvent.click(screen.getByRole('button',{name:'View context token details'}));const dialog=await screen.findByRole('dialog',{name:'上下文 Token 详情'});expect(await within(dialog).findByRole('rowheader',{name:'用户消息'})).toBeVisible();expect(api.agent.controls).toHaveBeenCalledTimes(calls);expect(api.agent.contextBreakdown).toHaveBeenCalledTimes(1);fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).toBeNull();
  });
  it('places editable controls in the composer slot and keeps runtime information below',async()=>{
   const slot=document.createElement('div');document.body.append(slot);
@@ -27,24 +27,24 @@ describe('compact conversation controls',()=>{
   expect(within(slot).getByLabelText('选择推理强度')).toBeVisible();
   expect(within(slot).getByRole('button',{name:'压缩'})).toBeVisible();
   expect(within(slot).getByRole('button',{name:'新开'})).toBeVisible();
-  expect(within(slot).queryByText('上下文 30%')).not.toBeInTheDocument();
-  expect(within(view.container).getByText('上下文 30%')).toBeVisible();
+  expect(within(slot).queryByText('Context 30%')).not.toBeInTheDocument();
+  expect(within(view.container).getByText('Context 30%')).toBeVisible();
   expect(within(slot).queryByText('/project')).not.toBeInTheDocument();
   expect(within(view.container).getByText('/project')).toBeVisible();
   view.unmount();expect(slot).toBeEmptyDOMElement();slot.remove();
  });
  it('updates usage immediately without an extra controls request and ignores an older metadata refresh',async()=>{
-  mount();await screen.findByText('上下文 30%');const calls=vi.mocked(api.agent.controls).mock.calls.length;
+  mount();await screen.findByText('Context 30%');const calls=vi.mocked(api.agent.controls).mock.calls.length;
   await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-02T03:20:55Z',usage:{last:{total_tokens:2400,input_tokens:2000,cached_input_tokens:1900,output_tokens:400},total:{total_tokens:402400,input_tokens:400000,cached_input_tokens:380000},window:40000}});});
-  expect(await screen.findByText('上下文 6%')).toBeVisible();expect(api.agent.controls).toHaveBeenCalledTimes(calls);
+  expect(await screen.findByText('Context 6%')).toBeVisible();expect(api.agent.controls).toHaveBeenCalledTimes(calls);
   await act(async()=>{await client.invalidateQueries({queryKey:['conversation-controls','s']});});
-  expect(screen.getByText('上下文 6%')).toBeVisible();
-  fireEvent.click(screen.getByRole('button',{name:'详情'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(within(dialog).getByRole('rowheader',{name:'本次缓存命中率'}).parentElement).toHaveTextContent('95.0%');
+  expect(screen.getByText('Context 6%')).toBeVisible();
+  fireEvent.click(screen.getByRole('button',{name:'Details'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(within(dialog).getByRole('rowheader',{name:'本次缓存命中率'}).parentElement).toHaveTextContent('95.0%');
  });
  it('does not mix another native thread usage into this tab',async()=>{
-  mount();await screen.findByText('上下文 30%');
+  mount();await screen.findByText('Context 30%');
   await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'other',observed_at:'2026-11-02T03:20:55Z',usage:{last:{total_tokens:1000},total:{},window:40000}});});
-  expect(screen.getByText('上下文 30%')).toBeVisible();
+  expect(screen.getByText('Context 30%')).toBeVisible();
  });
  it('refreshes every five minutes, ignores focus refresh and retains a manual refresh action',async()=>{
   vi.useFakeTimers();vi.mocked(api.agent.controls).mockClear();
@@ -52,12 +52,12 @@ describe('compact conversation controls',()=>{
    await act(async()=>{mount();await vi.advanceTimersByTimeAsync(0);});expect(api.agent.controls).toHaveBeenCalledTimes(1);
    await act(async()=>{await vi.advanceTimersByTimeAsync(299999);window.dispatchEvent(new Event('focus'));document.dispatchEvent(new Event('visibilitychange'));});expect(api.agent.controls).toHaveBeenCalledTimes(1);
    await act(async()=>{await vi.advanceTimersByTimeAsync(1);});expect(api.agent.controls).toHaveBeenCalledTimes(2);
-   await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'刷新会话信息'}));await vi.advanceTimersByTimeAsync(0);});expect(api.agent.controls).toHaveBeenCalledTimes(3);
+   await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'Refresh session status'}));await vi.advanceTimersByTimeAsync(0);});expect(api.agent.controls).toHaveBeenCalledTimes(3);
   }finally{vi.useRealTimers();}
  });
 
  it('shows actual context and weekly remaining values and expands only allowlisted details',async()=>{
-  mount();expect(await screen.findByText('上下文 30%')).toBeVisible();expect(screen.getByText('周额度剩余 75%')).toBeVisible();expect(screen.queryByText('Codex 0.166.0')).not.toBeInTheDocument();expect(screen.getByText('累计 400K Token')).toBeVisible();expect(screen.getByText('main')).toBeVisible();expect(screen.getByText('2 项变更')).toBeVisible();expect(screen.queryByRole('dialog')).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'详情'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(dialog).not.toHaveTextContent('0.test');expect(dialog).not.toHaveTextContent('创建版本');expect(dialog).toHaveTextContent('工作区可写');expect(dialog).toHaveTextContent('40,000');expect(dialog).toHaveTextContent('400,000');const table=within(dialog).getByRole('table',{name:'Token 用量与运行环境'});expect(within(table).getByRole('rowheader',{name:'缓存命中输入'})).toBeVisible();expect(within(table).getByRole('rowheader',{name:'当前模型'})).toBeVisible();expect(dialog.querySelectorAll('details')).toHaveLength(0);fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  mount();expect(await screen.findByText('Context 30%')).toBeVisible();expect(screen.getByText('Weekly remaining 75%')).toBeVisible();expect(screen.queryByText('Codex 0.166.0')).not.toBeInTheDocument();expect(screen.getByText('Total 400K Token')).toBeVisible();expect(screen.getByText('main')).toBeVisible();expect(screen.getByText('2 changes')).toBeVisible();expect(screen.queryByRole('dialog')).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'Details'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(dialog).not.toHaveTextContent('0.test');expect(dialog).not.toHaveTextContent('创建版本');expect(dialog).toHaveTextContent('工作区可写');expect(dialog).toHaveTextContent('40,000');expect(dialog).toHaveTextContent('400,000');const table=within(dialog).getByRole('table',{name:'Token 用量与运行环境'});expect(within(table).getByRole('rowheader',{name:'缓存命中输入'})).toBeVisible();expect(within(table).getByRole('rowheader',{name:'当前模型'})).toBeVisible();expect(dialog.querySelectorAll('details')).toHaveLength(0);fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
  });
  it('applies model and effort immediately and shows the confirmed current settings',async()=>{
   mount();const model=await screen.findByRole('combobox',{name:'选择模型'});fireEvent.change(model,{target:{value:'model-b'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenCalledWith('s',{model:'model-b',effort:'low'}));expect(await screen.findByText('已应用')).toBeVisible();expect(screen.getByRole('combobox',{name:'选择推理强度'})).toHaveValue('low');expect(screen.queryByText('下轮生效')).not.toBeInTheDocument();fireEvent.change(screen.getByRole('combobox',{name:'选择推理强度'}),{target:{value:'medium'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenLastCalledWith('s',{model:'model-b',effort:'medium'}));expect(model).toHaveValue('model-b');
@@ -95,6 +95,6 @@ describe('compact conversation controls',()=>{
   expect(await screen.findByText('恢复或重载时应用')).toBeVisible();expect(screen.getByRole('combobox',{name:'选择模型'})).toBeEnabled();expect(api.agent.setControls).not.toHaveBeenCalled();
  });
  it('does not invent percentages or editable options for missing or read-only telemetry',async()=>{
-  data={...data,can_edit:false,loaded:false,models:[],limits:[],usage:null,model:null,effort:null};mount();expect(await screen.findByRole('combobox',{name:'选择模型'})).toBeDisabled();expect(screen.queryByText(/上下文 \d/)).not.toBeInTheDocument();expect(screen.queryByText(/周额度剩余/)).not.toBeInTheDocument();
+  data={...data,can_edit:false,loaded:false,models:[],limits:[],usage:null,model:null,effort:null};mount();expect(await screen.findByRole('combobox',{name:'选择模型'})).toBeDisabled();expect(screen.queryByText(/Context \d/)).not.toBeInTheDocument();expect(screen.queryByText(/Weekly remaining/)).not.toBeInTheDocument();
  });
 });

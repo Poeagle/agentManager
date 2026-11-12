@@ -13,6 +13,7 @@ const effortNames:Record<string,string>={none:'无',minimal:'最低',low:'低',m
 const compact=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(value);
 const choiceKey=(value:{provider?:string;model:string})=>value.provider?JSON.stringify([value.provider,value.model]):value.model;
 const permissions:Record<string,string>={'danger-full-access':'完整访问','workspace-write':'工作区可写','read-only':'只读'};
+const permissionsEn:Record<string,string>={'danger-full-access':'Full access','workspace-write':'Workspace write','read-only':'Read only'};
 export function ConversationControls({sessionId,active,busy=false,compacting=false,onCompact,onNewConversation,toolbarTarget}:{toolbarTarget?:HTMLElement|null;sessionId:string;active:boolean;busy?:boolean;compacting?:boolean;onCompact?:()=>Promise<void>;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<void>}) {
   const queryClient=useQueryClient(),[expanded,setExpanded]=useState(false),[saving,setSaving]=useState(false),[applied,setApplied]=useState(false),[error,setError]=useState('');
   const [operation,setOperation]=useState<'compact'|'new'|null>(null),[newOpen,setNewOpen]=useState(false),[notice,setNotice]=useState('');
@@ -74,25 +75,27 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         {onNewConversation&&<button type="button" disabled={!canEdit('newConversation')||saving||!!operation} title="在当前标签页新开会话，保留旧记录并停止旧会话" onClick={()=>{let rawDraft=false;window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId,respond:(value:boolean)=>{rawDraft ||= value;}}}));if(rawDraft){setError('原始终端还有未发送内容，请先发送或清空。');return;}setError('');setFreshPreference(model?{model:model.model,effort:selected.effort,provider:model.provider}:undefined);setNewOpen(true);}}><Plus size={12}/>{operation==='new'?'新开中…':'新开'}</button>}
   </div>:null;
   return <div className="conversation-controls-wrap">
-    <div className="conversation-controls" aria-label="模型和会话信息">
+    <div className="conversation-controls" aria-label="Model and session status">
       {data?<>
         {toolbarTarget?createPortal(toolbar,toolbarTarget):toolbar}
-        {data.native_id&&<button type="button" className="conversation-control-context" aria-label="查看上下文 Token 详情" aria-haspopup="dialog" title="最近一次模型请求的 Token 数占上下文窗口的比例；点击查看 JSONL 分类估算。" onClick={()=>setContextOpen(true)}><i><b style={{width:`${context??0}%`}}/></i>上下文 {context===null?'未提供':`${context}%`}</button>}
-        {weekly&&<span title={weekly.resets_at?`重置时间：${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>周额度剩余 {Math.round(100-weekly.used_percent)}%</span>}
-        <span className="conversation-control-environment" aria-label="会话运行信息">
-          {data.cwd&&<span className="conversation-control-directory" title={`工作目录：${data.cwd}`}>{data.cwd}</span>}
-          {data.git&&<><span title="当前 Git 分支">{data.git.branch}</span><span title="工作区状态，每 5 分钟刷新，也可手动刷新">{data.git.changes?`${data.git.changes} 项变更`:'无变更'}</span></>}
-          <span title="会话运行状态">{compacting?'压缩中':busy?'执行中':data.loaded?'等待输入':'未接入实时控制'}</span>
-          {data.permission&&<span title="当前会话访问权限">{permissions[data.permission]||data.permission}</span>}
-          {usage?.window!=null&&<span title={`上下文窗口容量：${usage.window.toLocaleString()} Token`}>窗口 {compact(usage.window)}</span>}
-          {usage?.total.total_tokens!=null&&<span title={`会话累计用量：${usage.total.total_tokens.toLocaleString()} Token，包含重复上下文输入和缓存命中；不是当前上下文占用或金额`}>累计 {compact(usage.total.total_tokens)} Token</span>}
-          {usage?.total.input_tokens!=null&&<span title={`会话累计输入：${usage.total.input_tokens.toLocaleString()} Token，包含缓存命中`}>输入 {compact(usage.total.input_tokens)}</span>}
-          {usage?.total.output_tokens!=null&&<span title={`会话累计输出：${usage.total.output_tokens.toLocaleString()} Token，包含推理输出`}>输出 {compact(usage.total.output_tokens)}</span>}
+        {data.native_id&&<button type="button" className="conversation-control-context" aria-label="View context token details" aria-haspopup="dialog" title="Context used by the latest request; click for details." onClick={()=>setContextOpen(true)}><i><b style={{width:`${context??0}%`}}/></i>Context {context===null?'Unavailable':`${context}%`}</button>}
+        {weekly&&<span title={weekly.resets_at?`Resets: ${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>Weekly remaining {Math.round(100-weekly.used_percent)}%</span>}
+        <span className="conversation-control-environment" aria-label="Session information">
+          {data.cwd&&<span className="conversation-control-directory" title={`Working directory: ${data.cwd}`}>{data.cwd}</span>}
+          {data.git&&<><span title="Git branch">{data.git.branch}</span><span title="Working tree status">{data.git.changes?`${data.git.changes} changes`:'Clean'}</span></>}
+          <span title="Session status">{compacting?'Compacting':busy?'Running':data.loaded?'Waiting':'Disconnected'}</span>
+          {data.permission&&<span title="Access permissions">{permissionsEn[data.permission]||data.permission}</span>}
+          {usage?.window!=null&&<span title={`Context window: ${usage.window.toLocaleString()} Token`}>Window {compact(usage.window)}</span>}
+          {usage?.total.total_tokens!=null&&<span title={`Total usage: ${usage.total.total_tokens.toLocaleString()} tokens including cached and repeated context`}>Total {compact(usage.total.total_tokens)} Token</span>}
+          {usage?.total.input_tokens!=null&&<span title={`Total input: ${usage.total.input_tokens.toLocaleString()} tokens including cache`}>Input {compact(usage.total.input_tokens)}</span>}
+          {usage?.total.cached_input_tokens!=null&&<span title="Cached input tokens">Cache {compact(usage.total.cached_input_tokens)}</span>}
+          {usage?.total.reasoning_output_tokens!=null&&<span title="Reasoning output tokens">Reasoning {compact(usage.total.reasoning_output_tokens)}</span>}
+          {usage?.total.output_tokens!=null&&<span title={`Total output: ${usage.total.output_tokens.toLocaleString()} tokens including reasoning`}>Output {compact(usage.total.output_tokens)}</span>}
         </span>
         {(error&&!newOpen||notice)&&<span className="conversation-control-message" role={error&&!newOpen?'alert':'status'} title={error&&!newOpen?error:notice}>{error&&!newOpen?error:notice}</span>}
-        <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>详情</button>
-        <button type="button" aria-label="刷新会话信息" title="用量随会话事件实时更新，其他信息每 5 分钟刷新，也可手动刷新" disabled={query.isFetching} onClick={refresh}><RefreshCw size={13} className={query.isFetching?'animate-spin':''}/>刷新</button>
-      </>:<><span>{query.isPending?'读取会话信息…':'会话信息暂不可用'}</span>{query.isError&&<button type="button" onClick={refresh}><RefreshCw size={13}/>重试</button>}</>}
+        <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>Details</button>
+        <button type="button" aria-label="Refresh session status" title="Usage updates live; other details refresh every 5 minutes" disabled={query.isFetching} onClick={refresh}><RefreshCw size={13} className={query.isFetching?'animate-spin':''}/>Refresh</button>
+      </>:<><span>{query.isPending?'Loading session…':'Session status unavailable'}</span>{query.isError&&<button type="button" onClick={refresh}><RefreshCw size={13}/>Retry</button>}</>}
     </div>
     {newOpen&&<Dialog title="在当前标签页新开会话" busy={operation==='new'} onClose={()=>setNewOpen(false)}>
       <p className="text-sm leading-relaxed">{data?.supports_fresh_model?'请确认新会话使用的模型服务、模型和推理强度。':'新会话将使用当前 Agent 的默认模型设置。'}当前任务会停止，旧会话的后台终端会回收，历史消息可从“项目会话记录”重新打开。当前输入框中未发送的文字和附件会保留。</p>
