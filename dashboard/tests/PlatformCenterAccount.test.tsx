@@ -12,7 +12,9 @@ vi.mock('../src/components/ApiKeys', () => ({ ApiKeys: () => null }));
 it('offers sign out inside the account page', () => {
   const logout = vi.fn();
   render(<PlatformCenter currentUser={{ username: 'member', display_name: 'Member' } as AuthUser} onClose={() => {}} onOpenSession={() => {}} onLogout={logout} />);
-  fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
+  const logoutButton=screen.getByRole('button', { name: '退出登录' });
+  expect(logoutButton.closest('.account-overview')).toContainElement(screen.getByRole('button',{name:'修改密码'}));
+  fireEvent.click(logoutButton);
   expect(logout).toHaveBeenCalledOnce();
 });
 

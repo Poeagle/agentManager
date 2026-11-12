@@ -18,3 +18,8 @@
 .platform-center-scroll::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--text-secondary) 75%, var(--border));
 }
+
+.account-overview { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; min-width:0; }
+.account-identity { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-width:0; overflow-wrap:anywhere; }
+.account-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-left:auto; }
+.account-actions button { white-space:nowrap; }
