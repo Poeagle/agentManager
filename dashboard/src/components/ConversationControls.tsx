@@ -90,7 +90,6 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
       {data?<>
         {toolbarTarget?createPortal(toolbar,toolbarTarget):toolbar}
         {shortLimit&&<span title={shortLimit.resets_at?`Resets: ${new Date(shortLimit.resets_at*1000).toLocaleString('en',{hour12:false})}`:undefined}>{shortLimit.minutes%60===0?`${shortLimit.minutes/60}h`:`${shortLimit.minutes}m`} remaining {Math.round(100-shortLimit.used_percent)}%</span>}
-        {weekly&&<span title={weekly.resets_at?`Resets: ${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>Weekly remaining {Math.round(100-weekly.used_percent)}%</span>}
         <span className="conversation-control-environment" aria-label="Session information">
           {data.git&&<span title="Git branch and changed entries">Git {data.git.branch} · {data.git.changes?`${data.git.changes} changed`:'clean'}</span>}
           {data.cwd&&<span className="conversation-control-directory" title={`Working directory: ${data.cwd}`}>{data.cwd}</span>}
@@ -100,6 +99,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
           {data.engine_version&&<span title="Running engine version">Engine {data.engine_version}</span>}
           {tokenMetrics.length>0&&<span title={`Token counts: ${tokenMetrics.map(([name,value])=>`${name}: ${value.toLocaleString()}`).join(' · ')}. Total and input include cached and repeated context; output includes reasoning.`}>Tokens {tokenMetrics.map(([name])=>name).join('/')} : {tokenMetrics.map(([,value])=>compact(value)).join('/')}</span>}
           {data.native_id&&context!==null&&<button type="button" className="conversation-control-context" aria-label="View context token details" aria-haspopup="dialog" title="Context used by the latest request; click for details." onClick={()=>setContextOpen(true)}><i aria-hidden="true" style={{background:`conic-gradient(var(--accent) ${context}%, var(--border) 0)`}}/>Context {context}%</button>}
+          {weekly&&<span className="conversation-control-weekly" title={weekly.resets_at?`Resets: ${new Date(weekly.resets_at*1000).toLocaleString('en',{hour12:false})}`:undefined}><i aria-hidden="true" style={{background:`conic-gradient(var(--accent) ${Math.round(100-weekly.used_percent)}%, var(--border) 0)`}}/>Weekly remaining {Math.round(100-weekly.used_percent)}%</span>}
         </span>
         {(error&&!newOpen||notice)&&<span className="conversation-control-message" role={error&&!newOpen?'alert':'status'} title={error&&!newOpen?error:notice}>{error&&!newOpen?error:notice}</span>}
         <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>Details</button>
