@@ -1951,7 +1951,7 @@ export function SessionConversation({
                   80;
             }}
           >
-            <div className="session-chat-feed">
+            <div className={`session-chat-feed${loading && canRead && !groups.length ? " session-chat-feed-loading" : ""}`}>
               {hasMore && (
                 <button
                   className="session-chat-older"
@@ -1962,9 +1962,9 @@ export function SessionConversation({
                 </button>
               )}
               {loading && canRead && (
-                <p className="session-chat-empty">
+                <p className="session-chat-empty session-chat-loading" role="status">
                   <Loader2 size={16} className="animate-spin" />
-                  正在读取对话…
+                  Loading conversation…
                 </p>
               )}
               {!canRead && !permissions.isPending && (
