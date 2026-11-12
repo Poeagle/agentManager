@@ -17,7 +17,7 @@ it('uses Monday UTC weeks across year boundaries and calendar months, after filt
 it('aggregates raw cache counters rather than averaging cache rates and preserves unknown values',()=>{
  const group=groupUsage(rows.slice(0,2),'week')[0];expect(group.metrics.tokens.cached_input_tokens!/group.metrics.tokens.input_tokens!).toBe(.9);
  const unknown=groupUsage([row('2026-01-01','/a','known',10,null)],'model')[0];expect(unknown.metrics.tokens.cached_input_tokens).toBeNull();
- const legacy=groupUsage([{date:'2026-01-01',cwd:'/a',...metrics(10,5)}],'project')[0];expect(legacy.missingModels).toBe(true);expect(legacy.children[0].label).toBe('模型明细未返回');expect(legacy.metrics.tokens.total_tokens).toBe(10);
+ const legacy=groupUsage([{date:'2026-01-01',cwd:'/a',...metrics(10,5)}],'project')[0];expect(legacy.missingModels).toBe(true);expect(legacy.children[0].label).toBe('Model details unavailable');expect(legacy.metrics.tokens.total_tokens).toBe(10);
 });
 it('hides unestimatable projects and models and recomputes parent counters for every dimension',()=>{
  const known=row('2026-01-01','/known','known',100,50);
