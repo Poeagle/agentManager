@@ -9,8 +9,9 @@ const QUOTA_REFRESH_MS = 5 * 60_000;
 
 function quotaColor(remaining: number): string {
   if (remaining <= 10) return 'var(--error)';
-  if (remaining <= 25) return '#f59e0b';
-  return '#7A9DFF';
+  if (remaining <= 25) return '#e57b18';
+  if (remaining < 60) return '#b7790b';
+  return 'var(--success)';
 }
 
 function formatResetTime(value: number | null | undefined) {
@@ -66,7 +67,7 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApp
     >
       {!headerChip&&<AgentIcon session={{agent}} className="h-3.5 w-3.5 shrink-0"/>}
       {onOpen?<button type="button" aria-label={`查看 ${label} 账号详情`} onClick={onOpen} className="text-[11px] font-medium">{label}</button>:<span className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>{label}</span>}
-      <strong className="text-[11px] font-medium tabular-nums" style={{ color:headerChip?'var(--text-primary)':color }}>
+      <strong className="text-[11px] font-medium tabular-nums" style={{ color }}>
         {quota ? `${quota.remainingPercent}%` : notApplicable ? 'N/A' : quotaQuery.isError ? 'Unavailable' : 'Loading'}
       </strong>
       {canRefresh&&<button type="button" aria-label={`刷新 ${label} 额度`} title="刷新额度"
