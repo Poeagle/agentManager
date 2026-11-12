@@ -151,7 +151,7 @@ function ProgressSection({
         >
           <span aria-hidden="true"><AgentIcon session={{agent}} className="h-[13px] w-[13px]" /></span>
           <span>{agentName}</span>
-          <span className="session-chat-kind">Progress</span>
+          <span className="session-chat-kind">progress</span>
           <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
           {progress && <span className="session-chat-message-statistics" title="Cumulative recorded usage since the previous conclusion. Rounds update after the following model request; incomplete history is a lower bound.">total · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} / {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
           {active && <span className="session-chat-progress-live">In progress</span>}
@@ -440,7 +440,7 @@ const Bubble = memo(function Bubble({
           <span aria-hidden="true"><AgentIcon session={{agent}} className="h-[13px] w-[13px]" /></span>
           <span>{agentName}</span>
           {message.phase === "final" && (
-            <span className="session-chat-kind">Final</span>
+            <span className="session-chat-kind">final</span>
           )}
           {streaming && <span className="session-chat-writing">正在输出</span>}
           {headerMetadata && (
