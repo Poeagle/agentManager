@@ -33,7 +33,7 @@ describe('CodexQuotaIndicator', () => {
     vi.mocked(api.codexQuota.read).mockResolvedValue({quota:null,reason:'not_applicable',message:'API key billing'});
     const client=new QueryClient({defaultOptions:{queries:{retry:false}}});render(<QueryClientProvider client={client}><CodexQuotaIndicator/></QueryClientProvider>);
     await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
-    expect(screen.getByText('不适用')).toBeVisible();expect(screen.queryByText('刷新失败')).not.toBeInTheDocument();expect(screen.getByLabelText('Codex 周额度')).toHaveAttribute('title','API key billing');client.clear();
+    expect(screen.getByText('N/A')).toBeVisible();expect(screen.queryByText('刷新失败')).not.toBeInTheDocument();expect(screen.getByLabelText('Codex 周额度')).toHaveAttribute('title','API key billing');client.clear();
   });
 
   it('shows the global weekly quota and refreshes it every five minutes', async () => {
