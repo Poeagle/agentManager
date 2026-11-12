@@ -4,15 +4,9 @@ import {api,type AgentQuotaResponse} from '../lib/api';
 import {builtinAgentDescriptors,type AgentDescriptor} from '../lib/agents';
 import {CodexAccountQuotaIndicators} from './CodexAccountQuotaIndicators';
 import {AgentIcon} from './AgentIcon';
+import {quotaColor} from '../lib/quota-color';
 
 const QUOTA_REFRESH_MS = 5 * 60_000;
-
-function quotaColor(remaining: number): string {
-  if (remaining <= 10) return 'var(--error)';
-  if (remaining <= 25) return '#e57b18';
-  if (remaining < 60) return '#b7790b';
-  return 'var(--success)';
-}
 
 function formatResetTime(value: number | null | undefined) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;

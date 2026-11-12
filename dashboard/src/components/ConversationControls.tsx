@@ -8,6 +8,7 @@ import {api,type ConversationControlsData,type ConversationUsageUpdate} from '..
 import {Dialog} from './Dialog';
 import {ConversationDetailsPanel,type ConversationDetailRuntimeRow} from './ConversationDetailsPanel';
 import {ConversationContextUsage} from './ConversationContextUsage';
+import {quotaColor} from '../lib/quota-color';
 
 const effortNames:Record<string,string>={none:'无',minimal:'最低',low:'低',medium:'中',high:'高',xhigh:'更高',max:'最高',ultra:'极高'};
 const compact=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(value);
@@ -61,6 +62,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const fastEnabled=!!fastTier&&(data?.pending?.service_tier??data?.service_tier??model?.default_service_tier)===fastTier.id;
   const limits=data?.agent?.id==='codex'&&currentEnvironment?.auth_mode!=='account'?[]:data?.limits||[];
   const weekly=limits.find(limit=>limit.minutes>=6*24*60);
+  const weeklyRemaining=weekly?Math.round(100-weekly.used_percent):null;
   const shortLimit=limits.find(limit=>limit.minutes>0&&limit.minutes<6*24*60);
   const canEdit=(feature:AgentFeature)=>data?.can_edit_features?.[feature]??data?.can_edit??false;
   const compactReason=compacting?'上下文正在压缩中，请等待完成':!data?.can_edit?'此会话尚未接入实时控制，请先重载标签页':busy?'当前任务完成后可压缩':saving?'正在保存设置':operation?'正在处理会话操作':'压缩当前会话上下文，保留对话记录';
@@ -99,7 +101,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
           {data.engine_version&&<span title="Running engine version">Engine {data.engine_version}</span>}
           {tokenMetrics.length>0&&<span title={`Token counts: ${tokenMetrics.map(([name,value])=>`${name}: ${value.toLocaleString()}`).join(' · ')}. Total and input include cached and repeated context; output includes reasoning.`}>Tokens {tokenMetrics.map(([name])=>name).join('/')} : {tokenMetrics.map(([,value])=>compact(value)).join('/')}</span>}
           {data.native_id&&context!==null&&<button type="button" className="conversation-control-context" aria-label="View context token details" aria-haspopup="dialog" title="Context used by the latest request; click for details." onClick={()=>setContextOpen(true)}><i aria-hidden="true" style={{background:`conic-gradient(var(--accent) ${context}%, var(--border) 0)`}}/>Context {context}%</button>}
-          {weekly&&<span className="conversation-control-weekly" title={weekly.resets_at?`Resets: ${new Date(weekly.resets_at*1000).toLocaleString('en',{hour12:false})}`:undefined}><i aria-hidden="true" style={{background:`conic-gradient(var(--accent) ${Math.round(100-weekly.used_percent)}%, var(--border) 0)`}}/>Weekly remaining {Math.round(100-weekly.used_percent)}%</span>}
+          {weekly&&weeklyRemaining!==null&&<span className="conversation-control-weekly" aria-label={`Weekly remaining ${weeklyRemaining}%`} title={weekly.resets_at?`Resets: ${new Date(weekly.resets_at*1000).toLocaleString('en',{hour12:false})}`:undefined}><i aria-hidden="true" style={{background:`conic-gradient(${quotaColor(weeklyRemaining)} ${weeklyRemaining}%, var(--border) 0)`}}/>Weekly remaining <strong style={{color:quotaColor(weeklyRemaining),font:'inherit'}}>{weeklyRemaining}%</strong></span>}
         </span>
         {(error&&!newOpen||notice)&&<span className="conversation-control-message" role={error&&!newOpen?'alert':'status'} title={error&&!newOpen?error:notice}>{error&&!newOpen?error:notice}</span>}
         <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>Details</button>
