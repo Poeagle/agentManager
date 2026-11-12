@@ -104,7 +104,7 @@ export function ProjectAccessAdmin({ readOnly = false }: { readOnly?: boolean })
   );
 }
 
-export function ChangePassword() {
+export function ChangePassword({onSuccess, inDialog=false}:{onSuccess?:()=>void;inDialog?:boolean} = {}) {
   const [cur, setCur] = useState('');
   const [next, setNext] = useState('');
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -116,7 +116,7 @@ export function ChangePassword() {
     try {
       await api.auth.changePassword({ current_password: cur, new_password: next });
       setMsg({ ok: true, text: '密码已修改' });
-      setCur(''); setNext('');
+      setCur(''); setNext(''); onSuccess?.();
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '失败' });
     } finally { setBusy(false); }
@@ -124,10 +124,10 @@ export function ChangePassword() {
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-2">
-      <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>修改我的密码</h3>
-      <div className="flex flex-col sm:flex-row gap-2">
-        <input type="password" placeholder="当前密码" value={cur} onChange={(e) => setCur(e.target.value)} className={`${inputCls} flex-1`} style={inputStyle} autoComplete="current-password" />
-        <input type="password" placeholder="新密码(≥6位)" value={next} onChange={(e) => setNext(e.target.value)} className={`${inputCls} flex-1`} style={inputStyle} autoComplete="new-password" />
+      {!inDialog&&<h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>修改我的密码</h3>}
+      <div className={inDialog ? "flex flex-col gap-2" : "flex flex-col sm:flex-row gap-2"}>
+        <input aria-label="当前密码" type="password" placeholder="当前密码" value={cur} onChange={(e) => setCur(e.target.value)} className={`${inputCls} flex-1`} style={inputStyle} autoComplete="current-password" />
+        <input aria-label="新密码" type="password" placeholder="新密码(≥6位)" value={next} onChange={(e) => setNext(e.target.value)} className={`${inputCls} flex-1`} style={inputStyle} autoComplete="new-password" />
         <button type="submit" disabled={busy || !cur || !next} className="px-3 py-1.5 rounded-md text-sm font-medium disabled:opacity-50" style={{ background: 'var(--accent)', color: 'white' }}>保存</button>
       </div>
       {msg && <div className="text-xs" style={{ color: msg.ok ? 'var(--success)' : 'var(--error)' }}>{msg.text}</div>}
