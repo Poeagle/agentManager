@@ -40,6 +40,13 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('updates the active progress total without mixing other native sessions',async()=>{
+    await mount();const item={id:'progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'working',timestamp:null};
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:true,stage:'tools',turn_id:'turn'}));await screen.findByText('working');
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'other',progress:{turn_id:'turn',tokens:{total_tokens:999},tool_calls:9,tool_rounds:9,complete:true}}));expect(screen.queryByText(/token: 999/)).not.toBeInTheDocument();
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:392100},tool_calls:2,tool_rounds:2,complete:true}}));expect(await screen.findByText('total · token: 392.1K · tools: 2 calls / 2 rounds')).toBeVisible();
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:400000},tool_calls:3,tool_rounds:2,complete:true}}));expect(await screen.findByText('total · token: 400K · tools: 3 calls / 2 rounds')).toBeVisible();
+  });
   it('reloads the baseline instead of dropping older messages when another reader replaced the history generation',async()=>{
     const original=await api.agent.conversation(session.id);
     const old={id:'old',role:'user' as const,text:'保留之前的消息',timestamp:null};

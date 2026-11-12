@@ -7,6 +7,15 @@ import type {ConversationUsageFrame} from '../src/services/conversation-usage.js
 import {rememberCodexQuestionReply,syncQueuedCodexQuestionReplies} from '../src/services/agents/codex/runtime-signals.js';
 let close:(()=>void)|undefined,dir:string|undefined;
 afterEach(()=>{close?.();vi.unstubAllEnvs();if(dir)rmSync(dir,{recursive:true,force:true});});
+it('pushes live cumulative progress as tools and usage are appended',async()=>{
+ dir=mkdtempSync(join(tmpdir(),'conversation-progress-live-'));vi.stubEnv('CODEX_HOME',dir);mkdirSync(join(dir,'sessions'));
+ const native='019ff001-1111-7111-8111-111111111111',file=join(dir,'sessions',`rollout-${native}.jsonl`),row=(type:string,payload:unknown)=>JSON.stringify({type,payload})+'\n';
+ writeFileSync(file,row('event_msg',{type:'task_started',turn_id:'work'}));const frames:any[]=[];
+ close=observeConversationFile({cli_type:'codex',codex_session_id:native,claude_session_id:null,project_path:dir},frame=>frames.push(frame));
+ await vi.waitFor(()=>expect(frames.some(f=>f.type==='progress_statistics'&&f.progress?.turn_id==='work')).toBe(true));
+ appendFileSync(file,row('response_item',{type:'function_call',call_id:'one'})+row('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:100},last_token_usage:{total_tokens:100}}}));
+ await vi.waitFor(()=>expect(frames.filter(f=>f.type==='progress_statistics').at(-1)?.progress).toMatchObject({turn_id:'work',tool_calls:1,tool_rounds:1,tokens:{total_tokens:100}}));
+});
 it('pushes new public legacy conversation records on file writes and stops when closed',async()=>{
  dir=mkdtempSync(join(tmpdir(),'conversation-file-'));vi.stubEnv('CODEX_HOME',dir);mkdirSync(join(dir,'sessions'));
  const native='019ff001-2345-7345-8345-234523452345',file=join(dir,'sessions',`rollout-${native}.jsonl`),record=(payload:any)=>JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload})+'\n';
