@@ -3,7 +3,8 @@ import {
   applyConversationPatches,
   type ConversationPatch,
 } from "../lib/conversation-stream";
-import { sessionAgent, agentNativeId, agentSupports } from "../lib/agents";
+import { sessionAgent, agentNativeId, agentSupports, type AgentDescriptor } from "../lib/agents";
+import { AgentIcon } from "./AgentIcon";
 import {
   ConversationStatisticsLabel,
   englishMetadataDuration,
@@ -117,11 +118,13 @@ interface FailedDraft {
 }
 
 function ProgressSection({
+  agent,
   agentName,
   count,
   active,
   children,
 }: {
+  agent: AgentDescriptor;
   agentName: string;
   count: number;
   active: boolean;
@@ -144,7 +147,7 @@ function ProgressSection({
           aria-label={`${open ? "收起" : "展开"}进展（${count} 条）`}
           aria-expanded={open}
         >
-          <Sparkles size={13} />
+          <span aria-hidden="true"><AgentIcon session={{agent}} className="h-[13px] w-[13px]" /></span>
           <span>{agentName}</span>
           <span className="session-chat-kind">Progress</span>
           <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
@@ -166,6 +169,7 @@ const Bubble = memo(function Bubble({
   onCancelRetry,
   onCancelQueued,
   compact = false,
+  agent,
   agentName,
   projectPath,
   projectId,
@@ -185,6 +189,7 @@ const Bubble = memo(function Bubble({
   message: ConversationMessage;
   streaming: boolean;
   compact?: boolean;
+  agent: AgentDescriptor;
   agentName: string;
   projectPath?: string;
   projectId: string | null;
@@ -429,7 +434,7 @@ const Bubble = memo(function Bubble({
         <div
           className={`session-chat-agent${headerMetadata ? " session-chat-final-heading" : ""}`}
         >
-          <Sparkles size={13} />
+          <span aria-hidden="true"><AgentIcon session={{agent}} className="h-[13px] w-[13px]" /></span>
           <span>{agentName}</span>
           {message.phase === "final" && (
             <span className="session-chat-kind">Final</span>
@@ -1912,6 +1917,7 @@ export function SessionConversation({
         compact={compact}
         durationLabel={timings.get(message.id)?.label}
         durationTitle={timings.get(message.id)?.title}
+        agent={sessionAgent(session)}
         agentName={agentName}
         projectPath={projectPath}
         projectId={session.project_id}
@@ -1972,6 +1978,7 @@ export function SessionConversation({
                 ) : (
                   <ProgressSection
                     key={`progress-${group.id}`}
+                    agent={sessionAgent(session)}
                     agentName={agentName}
                     count={group.messages.length}
                     active={busy && groups.at(-1) === group}
@@ -1996,7 +2003,7 @@ export function SessionConversation({
               )}
               {waitingForText && (
                 <div className="session-chat-thinking" role="status">
-                  <Sparkles size={13} />
+                  <span aria-hidden="true"><AgentIcon session={{agent:sessionAgent(session)}} className="h-[13px] w-[13px]" /></span>
                   <div>
                     <span>
                       {continuingAfterFollowup
