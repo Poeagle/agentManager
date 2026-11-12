@@ -58,6 +58,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const fastTier=model?.service_tiers?.find(tier=>tier.name.trim().toLowerCase()==='fast');
   const fastEnabled=!!fastTier&&(data?.pending?.service_tier??data?.service_tier??model?.default_service_tier)===fastTier.id;
   const weekly=data?.limits.find(limit=>limit.minutes>=6*24*60);
+  const shortLimit=data?.limits.find(limit=>limit.minutes>0&&limit.minutes<6*24*60);
   const canEdit=(feature:AgentFeature)=>data?.can_edit_features?.[feature]??data?.can_edit??false;
   const compactReason=compacting?'上下文正在压缩中，请等待完成':!data?.can_edit?'此会话尚未接入实时控制，请先重载标签页':busy?'当前任务完成后可压缩':saving?'正在保存设置':operation?'正在处理会话操作':'压缩当前会话上下文，保留对话记录';
   async function save(value:import('../lib/api').AgentModelPreference|null) {
@@ -86,12 +87,15 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
       {data?<>
         {toolbarTarget?createPortal(toolbar,toolbarTarget):toolbar}
         {data.native_id&&<button type="button" className="conversation-control-context" aria-label="View context token details" aria-haspopup="dialog" title="Context used by the latest request; click for details." onClick={()=>setContextOpen(true)}><i aria-hidden="true" style={{background:context===null?'var(--border)':`conic-gradient(var(--accent) ${context}%, var(--border) 0)`}}/>Context {context===null?'Unavailable':`${context}%`}</button>}
+        {shortLimit&&<span title={shortLimit.resets_at?`Resets: ${new Date(shortLimit.resets_at*1000).toLocaleString('en',{hour12:false})}`:undefined}>{shortLimit.minutes%60===0?`${shortLimit.minutes/60}h`:`${shortLimit.minutes}m`} remaining {Math.round(100-shortLimit.used_percent)}%</span>}
         {weekly&&<span title={weekly.resets_at?`Resets: ${new Date(weekly.resets_at*1000).toLocaleString('zh-CN',{hour12:false})}`:undefined}>Weekly remaining {Math.round(100-weekly.used_percent)}%</span>}
         <span className="conversation-control-environment" aria-label="Session information">
           {data.cwd&&<span className="conversation-control-directory" title={`Working directory: ${data.cwd}`}>{data.cwd}</span>}
           {data.git&&<><span title="Git branch">{data.git.branch}</span><span title="Working tree status">{data.git.changes?`${data.git.changes} changes`:'Clean'}</span></>}
           <span title="Session status">{compacting?'Compacting':busy?'Running':data.loaded?'Waiting':'Disconnected'}</span>
           {data.permission&&<span title="Access permissions">{permissionsEn[data.permission]||data.permission}</span>}
+          {data.approval&&<span title="Approval policy">Approval: {data.approval}</span>}
+          {data.engine_version&&<span title="Running engine version">Engine {data.engine_version}</span>}
           {usage?.window!=null&&<span title={`Context window: ${usage.window.toLocaleString()} Token`}>Window {compact(usage.window)}</span>}
           {usage?.total.total_tokens!=null&&<span title={`Total usage: ${usage.total.total_tokens.toLocaleString()} tokens including cached and repeated context`}>Total {compact(usage.total.total_tokens)}</span>}
           {usage?.total.input_tokens!=null&&<span title={`Total input: ${usage.total.input_tokens.toLocaleString()} tokens including cache`}>Input {compact(usage.total.input_tokens)}</span>}

@@ -4,6 +4,11 @@ import {it,expect,vi} from 'vitest';
 import {CodexEngineBalanceGroup,CodexEngineBalanceIndicator} from '../src/components/CodexEngineBalance';
 import {fetchJSON} from '../src/lib/api';
 vi.mock('../src/lib/api',()=>({fetchJSON:vi.fn(async(url:string)=>url.endsWith('/balance')?{auth_mode:'api',status:'stale',amount:42,currency:'USD',todayActualCost:1.25,error:'timeout',checkedAt:'2026-01-01T00:00:00Z',origin:'https://api.example.invalid'}:{usage:{rows:[],partial:false,initialized:true,checked_at:null}})}));
+it('rounds the header balance to two decimal places',async()=>{
+ vi.mocked(fetchJSON).mockResolvedValueOnce({auth_mode:'api',status:'available',amount:12.5418,currency:'USD'} as any);
+ const client=new QueryClient({defaultOptions:{queries:{retry:false}}});const view=render(<QueryClientProvider client={client}><CodexEngineBalanceIndicator id="rounded" name="Engine"/></QueryClientProvider>);
+ expect(await screen.findByText('$12.54')).toBeVisible();view.unmount();client.clear();
+});
 it('opens a wallet with actual cost, stale status and a clear error',async()=>{
  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
  const view=render(<QueryClientProvider client={client}><CodexEngineBalanceIndicator id="native" name="Engine"/></QueryClientProvider>);

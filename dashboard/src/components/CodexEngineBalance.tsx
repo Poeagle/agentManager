@@ -8,7 +8,7 @@ import './CodexAccountInsights.css';
 
 const errors:Record<string,string>={missing_key:'未配置 API Key',unauthorized:'API Key 无效或没有余额查询权限',unsupported:'该 Provider 未声明余额接口',invalid_response:'余额接口响应无法识别',timeout:'余额查询超时',network:'余额服务连接失败',too_large:'余额接口响应过大',auth_unknown:'认证方式尚未确认'};
 export const balanceError=(error:string)=>errors[error]||'余额暂不可用';
-const money=(amount:number|undefined|null,currency:string|undefined)=>amount==null?'未提供':`${currency==='USD'?'$':currency==='CNY'?'¥':`${currency||''} `}${amount.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:4})}`;
+const money=(amount:number|undefined|null,currency:string|undefined)=>amount==null?'未提供':`${currency==='USD'?'$':currency==='CNY'?'¥':`${currency||''} `}${amount.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 function ProviderUrl({value}:{value?:string}){
  try{const url=new URL(value||'');if(!['http:','https:'].includes(url.protocol)||url.username||url.password)return <>未提供</>;return <a className="ci-provider-url" href={url.href} target="_blank" rel="noopener noreferrer" title={value}>{value}</a>;}catch{return <>未提供</>;}
 }
