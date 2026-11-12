@@ -362,7 +362,6 @@
 .session-chat-send-actions .session-chat-enhance:hover:not(:disabled) {background:color-mix(in srgb,#8b5cf6 16%,var(--bg-primary));}
 .session-chat-send-actions .session-chat-enhance:disabled {opacity:.4;cursor:default;}
 .session-chat-send-actions>button:focus-visible {outline:2px solid var(--accent);outline-offset:2px;}
-.session-pane-switch .session-pane-enhance {display:flex;align-items:center;gap:4px;color:#8b5cf6;}
 
 .session-chat-retry-status{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;font-size:13px}
 .session-chat-retry-status p{display:flex;align-items:center;gap:6px;margin:4px 0}

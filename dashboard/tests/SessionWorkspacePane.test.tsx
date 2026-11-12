@@ -156,7 +156,7 @@ describe('chat/raw terminal display',()=>{
     mount();expect(await screen.findByText('检查已完成。')).toBeVisible();expect(screen.getByText('raw tool result')).not.toBeVisible();
     const raw=screen.getByTestId('raw');expect(raw).toHaveAttribute('data-suspended','true');
     fireEvent.click(screen.getByRole('button',{name:'原始终端',exact:true}));
-    expect(raw).toBeVisible();expect(raw).toHaveAttribute('data-suspended','false');
+    expect(raw).toBeVisible();expect(raw).toHaveAttribute('data-suspended','false');expect(screen.queryByRole('button',{name:'优化当前输入'})).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button',{name:'对话',exact:true}));expect(screen.getByTestId('raw')).toBe(raw);
     expect(screen.getByText('检查已完成。')).toBeVisible();
   });
