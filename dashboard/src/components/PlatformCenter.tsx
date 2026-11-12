@@ -6,6 +6,7 @@ import { ChangePassword, ProjectAccessAdmin } from './AccountModal';
 import { RoleManagementPanel } from './RoleManagementPanel';
 import { UserManagementPanel } from './UserManagementPanel';
 import { ApiKeys } from './ApiKeys';
+import { Dialog } from './Dialog';
 import './PlatformCenter.css';
 import './ManagerUI.css';
 
@@ -37,6 +38,8 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
 }) {
   const query = usePermissions();
   const [selected, setSelected] = useState<PlatformSection>(initialSection);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [passwordSaved, setPasswordSaved] = useState(false);
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const allowed = sections.filter((section) => section.permission === null || hasPermission(query.data, section.permission));
@@ -74,7 +77,14 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
               <div className="manager-section-heading shrink-0 border-b font-semibold" style={{ borderColor: 'var(--border)' }}>{current.label}</div>
               <div className="platform-center-scroll manager-content min-h-0 flex-1 overflow-y-auto">
                 <Suspense fallback={<div className="p-6 text-sm">正在加载…</div>}>
-                  {current.id === 'account' && <div className="page-content py-3"><p className="mb-2 text-sm">{currentUser.display_name || currentUser.username} <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>@{currentUser.username}</span></p><div className="mb-3 flex flex-wrap gap-2">{query.data?.roles.map((role) => <span key={role.id} className="rounded border px-2 py-1 text-xs" style={{ borderColor: 'var(--border)' }}>{role.name}</span>)}</div><ChangePassword />{query.data&&<ApiKeys permissions={query.data} />}<div className="mt-5 border-t pt-3" style={{borderColor:'var(--border)'}}><button type="button" onClick={onLogout} className="rounded border px-3 py-1.5 text-xs" style={{borderColor:'var(--border)',color:'var(--text-primary)'}}>退出登录</button></div></div>}
+                  {current.id === 'account' && <div className="page-content py-3">
+                    <div className="mb-3 flex flex-wrap items-center gap-2 text-sm"><span>{currentUser.display_name || currentUser.username} <span className="text-xs" style={{color:'var(--text-secondary)'}}>@{currentUser.username}</span></span>{query.data?.roles.map(role=><span key={role.id} className="rounded border px-2 py-1 text-xs" style={{borderColor:'var(--border)'}}>{role.name}</span>)}</div>
+                    <button type="button" onClick={()=>{setPasswordSaved(false);setPasswordOpen(true);}} className="rounded border px-3 py-1.5 text-xs" style={{borderColor:'var(--border)'}}>修改密码</button>
+                    {passwordSaved&&<p role="status" className="mt-2 text-xs" style={{color:'var(--success)'}}>密码已修改</p>}
+                    {query.data&&<ApiKeys permissions={query.data} />}
+                    <div className="mt-5 border-t pt-3" style={{borderColor:'var(--border)'}}><button type="button" onClick={onLogout} className="rounded border px-3 py-1.5 text-xs" style={{borderColor:'var(--border)',color:'var(--text-primary)'}}>退出登录</button></div>
+                    {passwordOpen&&<Dialog title="修改密码" appearance="manager" onClose={()=>setPasswordOpen(false)}><ChangePassword inDialog onSuccess={()=>{setPasswordOpen(false);setPasswordSaved(true);}}/></Dialog>}
+                  </div>}
                   {current.id === 'resources' && <SharedResources userId={currentUser.id} />}
                   {current.id === 'users' && query.data && <UserManagementPanel currentUser={currentUser} permissions={query.data} />}
                   {current.id === 'roles' && query.data && <RoleManagementPanel permissions={query.data} />}
