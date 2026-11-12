@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('2.9.0');
+    expect(contract.version).toBe('3.0.0');
     expect(contract.scope).toContain('scheduled tasks');
 
     expect(keys).toEqual(expect.arrayContaining([
@@ -29,6 +29,8 @@ describe('Agent API contract', () => {
       'DELETE /api/scheduled-tasks/:id',
       'POST /api/scheduled-tasks/:id/run',
       'GET /api/codex-quota',
+      'GET /api/codex/environments',
+      'GET /api/scheduled-tasks/codex-models?project_id=:projectId&environment_id=:environmentId',
     ]));
   });
 
@@ -41,6 +43,10 @@ describe('Agent API contract', () => {
     expect(kill?.description).toContain("cannot kill another user's session");
     expect(contract.authorization.sessions).toContain('may kill only a session created by the logged-in user');
     expect(scheduledCreate?.description).toContain("user's open tabs");
+    expect(scheduledCreate?.request).toHaveProperty('new_environment_id');
+    expect(scheduledCreate?.request).toHaveProperty('new_model_preference');
+    expect(contract.authentication.usage).toContain('API Key');
+    expect(contract.endpoints.find(e=>e.path==='/api/prompt-enhancer/enhance')?.request).toHaveProperty('attachments');
     expect(scheduledCreate?.request).toHaveProperty('daily_stop_time');
     expect(scheduledCreate?.request).toHaveProperty('daily_start_time');
     expect(scheduledCreate?.request).toHaveProperty('daily_end_time');
