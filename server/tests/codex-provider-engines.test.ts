@@ -13,9 +13,9 @@ vi.mock('../src/services/agents/codex/terminal-bridge.js',()=>({ensureCodexTermi
 import {prepareFreshCodexConversation} from '../src/services/agents/codex/actions.js';
 let dir:string,servers:Server[],sockets:WebSocketServer[],calls:Array<{provider:string;method:string;params:any}>;
 const native='019ff001-1212-7212-8212-121212121212',fresh='019ff001-1313-7313-8313-131313131313';
-let model:string,loaded:boolean,configuredModel:string,omitProvider:boolean;
+let model:string,loaded:boolean,configuredModel:string,omitProvider:boolean,writerLocked:boolean;
 beforeEach(async()=>{
- dir=mkdtempSync(join(tmpdir(),'provider-engines-'));servers=[];sockets=[];calls=[];model='a-model';loaded=true;configuredModel='a-model';omitProvider=false;
+ dir=mkdtempSync(join(tmpdir(),'provider-engines-'));servers=[];sockets=[];calls=[];model='a-model';loaded=true;configuredModel='a-model';omitProvider=false;writerLocked=false;
  vi.stubEnv('CODEX_HOME',dir);vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',join(dir,'a'));
  vi.stubEnv('AGENTMANAGER_CODEX_PROVIDER_ENGINES',JSON.stringify([{provider:'provider-a',socket:join(dir,'a'),models:['a-model']},{provider:'provider-b',socket:join(dir,'b'),models:['b-model']}]));
  for(const provider of ['provider-a','provider-b']) {
@@ -27,7 +27,7 @@ beforeEach(async()=>{
    // Simulate a mixed catalog: explicit engine allowlists must scope it.
    if(m.method==='model/list')result={data:['a-model','b-model'].map(model=>({model,displayName:model,supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'}))};
    if(m.method==='thread/read')result={thread};
-   if(m.method==='thread/resume'){loaded=true;if(m.params.model)model=m.params.model;result={thread:{...thread,status:{type:'idle'},model:provider==='provider-a'?model:'b-model'},approvalPolicy:'on-request',sandbox:{type:'readOnly',networkAccess:false}};}
+   if(m.method==='thread/resume'){if(writerLocked){ws.send(JSON.stringify({id:m.id,error:{message:'thread already has an active writer'}}));return;}loaded=true;if(m.params.model)model=m.params.model;result={thread:{...thread,status:{type:'idle'},model:provider==='provider-a'?model:'b-model'},approvalPolicy:'on-request',sandbox:{type:'readOnly',networkAccess:false}};}
    if(m.method==='thread/settings/update')model=m.params.model;
    if(m.method==='thread/start')result={thread:{...thread,id:fresh,model:m.params.model}};
    ws.send(JSON.stringify({id:m.id,result}));
@@ -59,6 +59,11 @@ it('blocks an unavailable persisted model and resumes an unloaded session with a
  expect(calls.some(c=>c.method==='turn/start'||c.method==='thread/resume')).toBe(false);
  calls=[];await inCodexThread(native,()=>prepareCodexModelRecovery(native,{provider:'provider-a',model:'a-model',effort:'high'}));
  const methods=calls.map(c=>c.method);expect(methods.indexOf('thread/resume')).toBeLessThan(methods.indexOf('thread/settings/update'));expect(methods).not.toContain('turn/start');
+});
+it('reports an active writer without interrupting it or switching the resume to another Engine',async()=>{
+ const id='019ff001-1515-7515-8515-151515151515';writerLocked=true;const context=agentContext({cli_type:'codex',codex_session_id:id},{projectPath:dir,sharedAccess:true});
+ await expect(codexAdapter.launch.prepare(context,'','fixture instructions',true)).rejects.toThrow('原生会话已被其他 Codex 进程占用');
+ expect(calls.filter(call=>call.method==='thread/resume')).toMatchObject([{provider:'provider-a'}]);expect(calls.some(call=>['turn/start','turn/interrupt','thread/inject_items'].includes(call.method))).toBe(false);
 });
 it('rejects invalid creation config before creating a thread or submitting input',async()=>{
  configuredModel='removed-model';await expect(createStreamingCodexThread('/work','never send')).rejects.toThrow('不在当前模型服务');

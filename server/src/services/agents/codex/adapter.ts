@@ -104,12 +104,18 @@ async function prepareCodexLaunch(context:import('../types.js').AgentContext,tas
             const module = await import('./stream.js');
             let nativeId = resume ? context.nativeId || undefined : undefined;
             if (streamSocket) {
-                if(resume && nativeId) await inCodexThread(nativeId,async()=>{
+                if(resume && nativeId) try {await inCodexThread(nativeId,async()=>{
                     const controls=await import('./controls.js');
                     const preference=context.session.created_by_user_id&&context.session.id?controls.readModelPreference(context.session.created_by_user_id,context.session.id):null;
                     await controls.prepareCodexModelRecovery(nativeId!,preference);
                     if(instructions)await module.configureStreamingSharedResources(nativeId!,instructions);
-                });
+                });} catch(error){
+                    if(error instanceof Error&&/already has an active writer/i.test(error.message)){
+                        let name='当前 Engine';try{name=(await import('./environments.js')).getCodexEnvironment(context.session.agent_environment_id||'native').name;}catch{/* Retain a useful error if configuration is unavailable. */}
+                        throw Error(`会话绑定的 Engine（${name}）无法恢复：原生会话已被其他 Codex 进程占用。请回到原会话继续，或先在原位置停止该会话后重试。`);
+                    }
+                    throw error;
+                }
                 else if (!resume) {
                     const preference=context.session.created_by_user_id&&context.session.id?(await import('./controls.js')).readModelPreference(context.session.created_by_user_id,context.session.id):null;
                     nativeId = await module.createStreamingCodexThread(context.projectPath!, task, instructions, preference);

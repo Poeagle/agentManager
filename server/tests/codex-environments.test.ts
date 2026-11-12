@@ -31,6 +31,16 @@ describe('Codex account environments and platform ACLs',()=>{
  });
  afterEach(async()=>{await app.close();db.cleanup();vi.restoreAllMocks();});
  const create=()=>saveCodexEnvironment({name:'ymchen Codex',connection,allowed_user_ids:[owner.id]});
+ it('uses the displayed native Engine for legacy null bindings even if an account route was cached',async()=>{
+  vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/fixture/native.sock');const account=await create(),native=randomUUID();
+  try{
+   getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,codex_session_id,created_by_user_id) VALUES('legacy','p','task','cancelled','codex',?,?)").run(native,owner.id);
+   runInCodexEngine({socket:'/fixture/other.sock',environmentId:account.id},()=>rememberCodexThread({id:native,modelProvider:'openai'}));
+   expect(await engineForThread(native)).toMatchObject({socket:'/fixture/native.sock',environmentId:'native'});
+   getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,codex_session_id,created_by_user_id,agent_environment_id) VALUES('conflict','p','task','cancelled','codex',?,?,?)").run(native,owner.id,account.id);
+   await expect(engineForThread(native)).rejects.toThrow('多个 Codex 环境');
+  }finally{vi.unstubAllEnvs();}
+ });
  it('updates one user Engine access without changing other users or inherited policy',async()=>{
   const account=await create();
   expect(canUseEnvironment('codex','native',owner.id)).toBe(true);
