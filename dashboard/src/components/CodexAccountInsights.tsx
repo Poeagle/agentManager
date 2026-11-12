@@ -19,7 +19,7 @@ const treeKeys=(nodes:UsageGroup[]):string[]=>nodes.flatMap(n=>[n.key,...treeKey
 // Text columns have independent bounds; narrow screens scroll the whole table.
 function usageColumnWidths(nodes:UsageGroup[]){
  // Include room for the English heading, sort arrow, filter control and cell padding.
- const widths=[150,150,160,135,150,145,145,110];
+ const widths=[122,128,140,106,128,122,120,92];
  function visit(items:UsageGroup[]){for(const node of items){const t=node.metrics.tokens;
   [t.input_tokens,t.cached_input_tokens,t.input_tokens!=null&&t.cached_input_tokens!=null?t.input_tokens-t.cached_input_tokens:null,null,t.output_tokens,t.total_tokens,node.metrics.estimated_credits,null].forEach((value,i)=>{if(value!=null)widths[i]=Math.max(widths[i],numeric(value).length*7+20);});visit(node.children);
  }}visit(nodes);return widths;
@@ -68,7 +68,7 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
     <div className="ci-observation"><span className={`ci-dot${data?.partial?' pending':''}`}/>{data?.initialized===false?'首次全量采集尚未完成':data?.partial?'部分记录不可用 / 数据未完整':'缓存已更新'}{data?.progress&&<span className="ci-collection-progress" title={`已读取 ${numeric(data.progress.bytes_read/1048576)} / ${numeric(data.progress.bytes_total/1048576)} MB`}><progress aria-label="本轮采集进度" max={Math.max(1,data.progress.bytes_total)} value={data.progress.bytes_read}/><span>历史文件 {numeric(data.progress.history_files)} · 本轮读取 {numeric(data.progress.files_complete)} / {numeric(data.progress.files_selected??data.progress.files_total)} 个文件 · {numeric(data.progress.bytes_read/1048576)} MB</span></span>}<span className="ci-last-collection">上次采集 {data?.checked_at?collectionTime(data.checked_at):'尚未完成'} · 每 5 分钟采集当天 · {zoneLabel}</span></div>
     {data?.error&&data.error!=='部分历史原始日志缺失，已保留用量但无法按本地日期归属'&&data.error!=='部分记录不可读取或缺少统计字段'&&!data.error.startsWith('小时统计尚未完整：')&&<p className="ci-notice" role="status">{data.error}</p>}{usage.isError&&<p className="ci-notice" role="alert">缓存读取失败，请刷新重试。</p>}
     {rows.some(row=>!row.models?.length)&&<p className="ci-notice" role="status">部分项目的模型明细未返回，请刷新；若仍未恢复，请检查后台服务版本。</p>}
-    <TableFrame label="用量统计" className="ci-table-scroll" tableClassName="ci-table ci-usage-table" style={{minWidth:500+columnWidths.reduce((s,w)=>s+w,0)}} columns={<colgroup><col style={{width:240}}/><col style={{width:260}}/>{columnWidths.map((width,k)=><col key={k} style={{width}}/>)}</colgroup>} header={<TableHeaders model={table}/>}>
+    <TableFrame label="用量统计" className="ci-table-scroll" tableClassName="ci-table ci-usage-table" style={{minWidth:350+columnWidths.reduce((s,w)=>s+w,0)}} columns={<colgroup><col style={{width:190}}/><col style={{width:160}}/>{columnWidths.map((width,k)=><col key={k} style={{width}}/>)}</colgroup>} header={<TableHeaders model={table}/>}>
      {!groups.length&&<TableStateRow columnCount={10}>{usage.isPending?'正在读取缓存…':'所选范围暂无用量记录'}</TableStateRow>}
      {shown.map((node,index)=><Group key={node.key} node={node} creditTotal={byPeriod?node.metrics.estimated_credits??null:rangeTotal} depth={0} defaultOpen={currentPage===0&&index===0} expansion={expansion} setExpansion={setExpansion}/>)}
     </TableFrame>
