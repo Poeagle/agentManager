@@ -319,8 +319,8 @@ const Bubble = memo(function Bubble({
         message={message}
         context={{
           kind: "compaction_summary",
-          label: "压缩摘要",
-          source: "Codex",
+          label: "Compaction summary",
+          source: "codex",
         }}
         copied={copied}
         onCopy={() => void copy()}
