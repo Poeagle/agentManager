@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.3.0');
+    expect(contract.version).toBe('3.4.0');
     expect(contract.scope).toContain('scheduled tasks');
 
     expect(keys).toEqual(expect.arrayContaining([

@@ -3,7 +3,8 @@ import {mkdirSync,writeFileSync,appendFileSync,statSync} from 'node:fs';
 import {join} from 'node:path';
 import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
-import {rememberConversationInput,linkConversationInputs} from '../src/services/conversation-input-links.js';
+import {rememberConversationInput,linkConversationInputs,boundConversationInputs} from '../src/services/conversation-input-links.js';
+import {rememberConversationAttachments,formatConversationInput,nativeConversationInput} from '../src/services/conversation-attachments.js';
 import type {ConversationMessage} from '../src/services/conversation-reader.js';
 const native='019ff001-1234-7234-8234-123456789abc',binding={cli_type:'codex' as const,codex_session_id:native,claude_session_id:null,project_path:'/project'};
 let cleanup:()=>void,file:string;
@@ -25,4 +26,25 @@ it('binds intentionally repeated inputs one for one without assigning an ID to a
 });
 it('stores only a bounded fingerprint journal and preserves the original boundary for retried client identities',async()=>{
   await rememberConversationInput('s',binding,'retry','sensitive body');const before=getDb().prepare('SELECT * FROM conversation_input_links').get();appendFileSync(file,'next\n');await rememberConversationInput('s',binding,'retry','sensitive body');expect(getDb().prepare('SELECT * FROM conversation_input_links').get()).toEqual(before);expect(JSON.stringify(before)).not.toContain('sensitive body');
+  await rememberConversationInput('s',binding,'retry','different terminal format','different native format');expect(getDb().prepare('SELECT * FROM conversation_input_links').get()).toEqual(before);
+});
+it('binds a terminal-generated client ID to the original browser submission after the file boundary',async()=>{
+ const boundary=statSync(file).size;await rememberConversationInput('s',binding,'browser','hello');
+ const older={...message('older',boundary-1,'hello'),client_id:'terminal-old'},echo={...message('native',boundary,'hello'),client_id:'terminal-new'};
+ expect(linkConversationInputs('s',native,[older])[0]).toEqual(older);
+ expect(boundConversationInputs('s',native,[echo])).toEqual([{...echo,client_id:'browser',native_client_id:'terminal-new'}]);
+ expect(linkConversationInputs('s',native,[echo])[0]).toMatchObject({client_id:'browser',native_client_id:'terminal-new'});
+ expect(linkConversationInputs('s',native,[{...message('independent',boundary+1,'hello'),client_id:'other-terminal'}])[0].client_id).toBe('other-terminal');
+});
+it('updates the pending fingerprint when native input falls back to terminal formatting',async()=>{
+ const attachments=[{kind:'image' as const,name:'picture.png',path:'/project/image.png',offset:0},{kind:'file' as const,name:'note.txt',path:'/project/note.txt'}],text='hello';
+ const boundary=statSync(file).size;await rememberConversationInput('s',binding,'browser',nativeConversationInput(text,attachments)[0].text);appendFileSync(file,'record\n');
+ await rememberConversationInput('s',binding,'browser',formatConversationInput(text,attachments,true),nativeConversationInput(text,attachments)[0].text);
+ const echo={...message('native',boundary,formatConversationInput(text,attachments,true)),client_id:'terminal'};
+ expect(linkConversationInputs('s',native,[echo])[0]).toMatchObject({client_id:'browser',native_client_id:'terminal'});
+});
+it('repairs previously journalled attachment fallbacks without guessing from displayed text',async()=>{
+ const attachments=[{kind:'image' as const,name:'picture.png',path:'/project/image.png',offset:0},{kind:'file' as const,name:'note.txt',path:'/project/note.txt'}],text='hello';
+ const boundary=statSync(file).size;rememberConversationAttachments('s','browser',text,attachments,true);await rememberConversationInput('s',binding,'browser',nativeConversationInput(text,attachments)[0].text);
+ expect(linkConversationInputs('s',native,[{...message('native',boundary,formatConversationInput(text,attachments,true)),client_id:'terminal'}])[0]).toMatchObject({client_id:'browser',native_client_id:'terminal'});
 });

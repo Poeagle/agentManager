@@ -14,10 +14,13 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
     if(message.queued&&message.client_id&&result.some(item=>item.role==='user'&&item.client_id===message.client_id&&!item.queued&&!item.optimistic))continue;
     let index=result.findIndex(item=>item.id===message.id);
     if(index<0&&message.role==='user'&&message.client_id){
-      index=result.findIndex(item=>item.role==='user'&&item.client_id===message.client_id);
+      index=result.findIndex(item=>item.role==='user'&&(item.client_id===message.client_id||item.native_client_id===message.client_id||!!message.native_client_id&&(item.client_id===message.native_client_id||item.native_client_id===message.native_client_id)));
     }
     if(index>=0){
       const old=result[index];
+      // A verified durable terminal echo wins over a later replay of the live
+      // native identity; the latter must not replace its sequence or client ID.
+      if(old.role==='user'&&message.role==='user'&&old.id!==message.id&&old.sequence!==undefined&&message.sequence===undefined)continue;
       // A reconnect/history frame can contain an older snapshot of the same
       // live message. Never replace already streamed text with a shorter
       // non-sequenced projection; the next authoritative sequenced history
@@ -44,11 +47,12 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
   const byClient=new Map<string,number>(),remove=new Set<number>();
   result.forEach((item,index)=>{
     if(item.role!=='user'||!item.client_id)return;
-    const old=byClient.get(item.client_id);
-    if(old===undefined){byClient.set(item.client_id,index);return;}
+    const identities=[item.client_id,...item.native_client_id?[item.native_client_id]:[]];
+    const old=identities.map(id=>byClient.get(id)).find(value=>value!==undefined);
+    if(old===undefined){for(const id of identities)byClient.set(id,index);return;}
     const oldItem=result[old];
     const keep=oldItem.optimistic&&!item.optimistic?index:!oldItem.optimistic&&item.optimistic?old:item.sequence!==undefined&&oldItem.sequence===undefined?index:old;
-    remove.add(keep===old?index:old);byClient.set(item.client_id,keep);
+    remove.add(keep===old?index:old);for(const id of identities)byClient.set(id,keep);
   });
   const settled=result.filter((_item,index)=>!remove.has(index));
   // Live events can arrive before their durable sequence. Once history supplies

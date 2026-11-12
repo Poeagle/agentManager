@@ -40,6 +40,15 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('reconciles the terminal echo when its native ID differs from the browser ID',async()=>{
+    const response=deferred<SendResult>(),submit=vi.spyOn(api.agent,'sendInput').mockReturnValue(response.promise);await mount();input('terminal echo');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
+    const browser=submit.mock.calls[0][2],live={id:'live-terminal',client_id:'terminal-client',role:'user',text:'terminal echo',timestamp:new Date().toISOString()};
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[live],busy:true,stage:'tools'}));expect(screen.getAllByText('terminal echo')).toHaveLength(2);
+    const durable={...live,id:'durable-terminal',sequence:120,client_id:browser,native_client_id:'terminal-client'};
+    act(()=>Socket.latest.emit({type:'input_reconciliation',native_id:'native',messages:[durable]}));expect(screen.getAllByText('terminal echo')).toHaveLength(1);
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[live],busy:true,stage:'tools'}));expect(screen.getAllByText('terminal echo')).toHaveLength(1);
+    await act(async()=>response.resolve({status:'submitted'} as SendResult));
+  });
   it('updates the active progress total without mixing other native sessions',async()=>{
     await mount();const item={id:'progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'working',timestamp:null};
     act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:true,stage:'tools',turn_id:'turn',started_at:new Date(Date.now()-120000).toISOString(),activities:[{id:'tool',label:'运行命令 · test',status:'completed',duration_ms:40000,started_at:null,completed_at:null}]}));await screen.findByText('working');
