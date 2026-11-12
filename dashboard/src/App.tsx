@@ -407,13 +407,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         <div className="workspace-header-tools flex min-w-0 items-center overflow-x-auto [scrollbar-width:none] [&>*]:shrink-0">
           <AgentQuotaIndicators agents={projectsData?.agents} isAdmin={authUser.role==='admin'}/>
           {hasPermission(permissionsQuery.data, 'monitor') && <ServerResourceIndicator />}
-          <div className="workspace-header-chip workspace-connection border" role="status" aria-label={connected ? 'Connected' : 'Disconnected'} title={connected ? 'Connected · 实时连接正常' : 'Disconnected · 实时连接已断开，正在重连'}>
-            <div
-              className="h-1.5 w-1.5 rounded-full"
-              style={{ background: connected ? 'var(--success)' : 'var(--error)' }}
-            />
-            <span style={{ color: connected ? 'var(--text-primary)' : 'var(--error)' }}>{connected ? 'Online' : 'Offline'}</span>
-          </div>
           <div className="workspace-account">
             <button
               onClick={() => setPlatformSection('account')}
@@ -421,6 +414,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
               style={{ color: 'var(--text-primary)', borderColor: 'var(--border)' }}
               title="My account"
             >
+              <span role="status" aria-label={connected ? 'Connected' : 'Disconnected'} title={connected ? 'Connected' : 'Disconnected · reconnecting'} className="h-1.5 w-1.5 shrink-0 rounded-full" style={{background:connected?'var(--success)':'var(--error)'}} />
               <span className="workspace-account-name">{authUser.display_name || authUser.username}</span>
             </button>
           </div>
