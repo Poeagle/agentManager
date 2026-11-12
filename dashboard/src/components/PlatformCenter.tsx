@@ -31,9 +31,9 @@ const sections = [
 ] as const;
 export type PlatformSection = typeof sections[number]['id'];
 
-export function PlatformCenter({ currentUser, initialSection = 'account', onClose, onOpenSession }: {
+export function PlatformCenter({ currentUser, initialSection = 'account', onClose, onOpenSession, onLogout }: {
   currentUser: AuthUser; initialSection?: PlatformSection; onClose: () => void;
-  onOpenSession: (projectId: string, sessionId: string) => void;
+  onOpenSession: (projectId: string, sessionId: string) => void; onLogout: () => void;
 }) {
   const query = usePermissions();
   const [selected, setSelected] = useState<PlatformSection>(initialSection);
@@ -74,7 +74,7 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
               <div className="manager-section-heading shrink-0 border-b font-semibold" style={{ borderColor: 'var(--border)' }}>{current.label}</div>
               <div className="platform-center-scroll manager-content min-h-0 flex-1 overflow-y-auto">
                 <Suspense fallback={<div className="p-6 text-sm">正在加载…</div>}>
-                  {current.id === 'account' && <div className="page-content py-3"><p className="mb-2 text-sm">{currentUser.display_name || currentUser.username} <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>@{currentUser.username}</span></p><div className="mb-3 flex flex-wrap gap-2">{query.data?.roles.map((role) => <span key={role.id} className="rounded border px-2 py-1 text-xs" style={{ borderColor: 'var(--border)' }}>{role.name}</span>)}</div><ChangePassword />{query.data&&<ApiKeys permissions={query.data} />}</div>}
+                  {current.id === 'account' && <div className="page-content py-3"><p className="mb-2 text-sm">{currentUser.display_name || currentUser.username} <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>@{currentUser.username}</span></p><div className="mb-3 flex flex-wrap gap-2">{query.data?.roles.map((role) => <span key={role.id} className="rounded border px-2 py-1 text-xs" style={{ borderColor: 'var(--border)' }}>{role.name}</span>)}</div><ChangePassword />{query.data&&<ApiKeys permissions={query.data} />}<div className="mt-5 border-t pt-3" style={{borderColor:'var(--border)'}}><button type="button" onClick={onLogout} className="rounded border px-3 py-1.5 text-xs" style={{borderColor:'var(--border)',color:'var(--text-primary)'}}>退出登录</button></div></div>}
                   {current.id === 'resources' && <SharedResources userId={currentUser.id} />}
                   {current.id === 'users' && query.data && <UserManagementPanel currentUser={currentUser} permissions={query.data} />}
                   {current.id === 'roles' && query.data && <RoleManagementPanel permissions={query.data} />}
