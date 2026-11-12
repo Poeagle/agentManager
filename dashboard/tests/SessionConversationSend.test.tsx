@@ -29,7 +29,7 @@ async function mount(target:Session=session) {
   render(<QueryClientProvider client={client}><SessionConversation session={target} active onRaw={() => {}} /></QueryClientProvider>);
   await waitFor(() => expect(Socket.latest?.onmessage).toBeTruthy());
   act(() => Socket.latest.emit({ type: 'snapshot', messages: [], busy: false, stage: 'idle' }));
-  await waitFor(() => expect(screen.getByText('事件通道已连接')).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText('Event stream connected')).toBeInTheDocument());
 }
 beforeEach(() => {
   Socket.latest = undefined as unknown as Socket;

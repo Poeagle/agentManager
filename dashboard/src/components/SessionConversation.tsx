@@ -2149,43 +2149,43 @@ export function SessionConversation({
                 totalElapsed={elapsedBetween(started, now)}
                 fallback={
                   reconnecting
-                    ? "正在恢复会话连接…"
+                    ? "Reconnecting session…"
                     : reconnectable
-                      ? "会话连接已断开"
+                      ? "Session disconnected"
                       : activeError
                         ? activeError.error?.will_retry
                           ? busy
-                            ? "执行遇到错误，正在自动重试…"
-                            : "重试已结束"
-                          : "本轮执行失败，可处理后重试"
+                            ? "An error occurred; retrying…"
+                            : "Retry ended"
+                          : "Turn failed; resolve the error and retry"
                         : ended
-                          ? "会话已结束"
+                          ? "Session ended"
                           : waiting
-                            ? "等待你处理"
+                            ? "Waiting for your response"
                             : pendingQuestion && !busy
-                              ? "有问题待回答 · 本轮已结束"
+                              ? "Question pending · turn ended"
                               : continuingAfterFollowup
                                 ? sending
                                   ? "Sending follow-up…"
-                                  : "追问已提交，任务继续执行中…"
+                                  : "Follow-up submitted; continuing…"
                                 : busy
                                   ? liveProgress.stage === "tools"
-                                    ? "正在执行任务…"
+                                    ? "Running…"
                                     : waitingForText
-                                      ? "等待正文…"
+                                      ? "Waiting for response…"
                                       : liveProgress.stage === "finishing"
-                                        ? "正在完成本轮…"
+                                        ? "Finishing turn…"
                                         : streamingId
-                                          ? "正文接收中…"
-                                          : "正在处理…"
+                                          ? "Receiving response…"
+                                          : "Processing…"
                                   : page?.session_active
-                                    ? "可以继续发送消息"
-                                    : "等待会话就绪"
+                                    ? "Ready for your next message"
+                                    : "Waiting for session"
                 }
               />
             )}
             {observingStream && liveState === "connected" && (
-              <span className="session-chat-live-label">事件通道已连接</span>
+              <span className="session-chat-live-label">Event stream connected</span>
             )}
             {observingStream && liveState === "connecting" && (
               <span
@@ -2193,7 +2193,7 @@ export function SessionConversation({
                 data-state="connecting"
                 role="status"
               >
-                {liveRetrying ? "实时连接恢复中…" : "正在连接实时输出…"}
+                {liveRetrying ? "Reconnecting live stream…" : "Connecting live stream…"}
               </span>
             )}
             {observingStream && liveState === "unavailable" && (
@@ -2202,7 +2202,7 @@ export function SessionConversation({
                 data-state={liveRetrying ? "retrying" : "unavailable"}
                 title={liveReason}
               >
-                {liveRetrying ? "实时连接恢复中…" : "尚未接入实时输出"}
+                {liveRetrying ? "Reconnecting live stream…" : "Live stream unavailable"}
               </span>
             )}
             {ended && onResume && (
