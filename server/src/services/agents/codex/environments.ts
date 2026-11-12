@@ -68,7 +68,7 @@ export async function deleteCodexEnvironment(id:string):Promise<void>{
  assertEnvironmentUnused(id);await closeAccountTransport(id);
  if(getDb().prepare('SELECT 1 FROM sessions WHERE agent_environment_id=? LIMIT 1').get(id)){
   const stored=JSON.parse(environmentRecord(id)!.config);getDb().prepare('UPDATE agent_environments SET enabled=0,config=? WHERE id=?').run(JSON.stringify({...stored,retired:true}),id);
- }else getDb().prepare('DELETE FROM agent_environments WHERE id=?').run(id);
+ }else {getDb().prepare('DELETE FROM agent_environment_user_access WHERE environment_id=?').run(id);getDb().prepare('DELETE FROM agent_environments WHERE id=?').run(id);}
  environmentAccessChanged();
 }
 /** Restore the shared terminal endpoint for each active Codex environment.

@@ -106,7 +106,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.0.0',
+    version:'3.1.0',
     updatedAt:'2026-11-12',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -126,7 +126,7 @@ export function getAgentApiContract() {
       sessions: 'Members can create only permitted mode/CLI combinations and can control only their own sessions. Administrators can monitor and interact with permitted sessions, but DELETE /api/sessions/:id may kill only a session created by the logged-in user.',
       scheduledTasks: 'Scheduled tasks, their run history, and existing-session targets are always restricted to the logged-in user.',
       promptEnhancer: 'Prompt enhancement can target only a tab created by the logged-in user. Its LLM configuration and API key require platform settings write permission and are never exposed by this API.',
-      createSession: 'The project must already be registered. Supply project_id and its matching project_path; project_path alone is resolved only when it exactly matches a registered project.',
+      createSession: 'The project must already be registered. Supply project_id and its matching project_path; project_path alone is resolved only when it exactly matches a registered project. Codex Engine access is checked against the current user, including per-user overrides.',
     },
     critical: [
       'AUTHENTICATE before reading capabilities or calling any other protected endpoint.',

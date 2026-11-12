@@ -1,10 +1,9 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { Activity, Bot, KeyRound, Settings, ShieldCheck, Users, X, FolderKey, Loader2, SlidersHorizontal } from 'lucide-react';
+import { Activity, Bot, KeyRound, Settings, Users, X, FolderKey, Loader2, SlidersHorizontal } from 'lucide-react';
 import type { AuthUser } from '../lib/api';
 import { hasPermission, usePermissions } from '../lib/permissions';
-import { ChangePassword, ProjectAccessAdmin } from './AccountModal';
-import { RoleManagementPanel } from './RoleManagementPanel';
-import { UserManagementPanel } from './UserManagementPanel';
+import { ChangePassword } from './AccountModal';
+import { PermissionCenter } from './PermissionCenter';
 import { ApiKeys } from './ApiKeys';
 import { Dialog } from './Dialog';
 import './PlatformCenter.css';
@@ -21,9 +20,7 @@ const AgentManagement = lazy(() => import('./AgentManagementPanel').then(module 
 const sections = [
   { id: 'account', label: '我的账户', group: '个人', icon: KeyRound, permission: null },
   { id: 'resources', label: '共享资源', group: '个人', icon: FolderKey, permission: null },
-  { id: 'users', label: '用户管理', group: '权限中心', icon: Users, permission: 'users' },
-  { id: 'roles', label: '角色与权限', group: '权限中心', icon: ShieldCheck, permission: 'roles' },
-  { id: 'projects', label: '项目授权', group: '权限中心', icon: FolderKey, permission: 'project_access' },
+  { id: 'users', label: '权限管理', group: '权限中心', icon: Users, permission: 'users' },
   { id: 'monitor', label: '用户监控', group: '平台', icon: Activity, permission: 'monitor' },
   { id: 'assistant', label: '平台 AI', group: '平台', icon: Bot, permission: 'agent_api' },
   { id: 'agents', label: 'Agent 配置', group: '平台', icon: SlidersHorizontal, permission: 'settings' },
@@ -42,7 +39,7 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
   const [passwordSaved, setPasswordSaved] = useState(false);
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const allowed = sections.filter((section) => section.permission === null || hasPermission(query.data, section.permission));
+  const allowed = sections.filter((section) => section.permission === null || (section.id==='users' ? ['users','roles','project_access'].some(key=>hasPermission(query.data,key)) : hasPermission(query.data, section.permission)));
   const current = allowed.find((section) => section.id === selected) ?? allowed[0];
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -87,9 +84,7 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
                     {passwordOpen&&<Dialog title="修改密码" appearance="manager" onClose={()=>setPasswordOpen(false)}><ChangePassword inDialog onSuccess={()=>{setPasswordOpen(false);setPasswordSaved(true);}}/></Dialog>}
                   </div>}
                   {current.id === 'resources' && <SharedResources userId={currentUser.id} />}
-                  {current.id === 'users' && query.data && <UserManagementPanel currentUser={currentUser} permissions={query.data} />}
-                  {current.id === 'roles' && query.data && <RoleManagementPanel permissions={query.data} />}
-                  {current.id === 'projects' && <div className="page-content h-full overflow-auto py-4 sm:py-6"><ProjectAccessAdmin readOnly={!hasPermission(query.data, 'project_access', 'write')} /></div>}
+                  {current.id === 'users' && query.data && <PermissionCenter currentUser={currentUser} permissions={query.data} />}
                   {current.id === 'settings' && <SettingsPanel embedded onClose={onClose} readOnly={!hasPermission(query.data, 'settings', 'write')} />}
                   {current.id === 'agents' && <AgentManagement readOnly={!hasPermission(query.data, 'settings', 'write')} />}
                   {current.id === 'assistant' && query.data && <PlatformAi permissions={query.data} onOpenSession={onOpenSession} />}

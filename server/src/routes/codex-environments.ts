@@ -6,10 +6,10 @@ import {readCodexAccountDetails} from '../services/agents/codex/account-details.
 import {environmentUsage,closeEnvironmentTabs} from '../services/agents/codex/environment-usage.js';
 import type {FastifyPluginAsync} from 'fastify';
 import {getDb} from '../db/index.js';
-import {requirePermission,userHasPermission} from '../services/rbac.js';
+import {requirePermission,userHasPermission,userRoleIds} from '../services/rbac.js';
 import {userCanUseSessionTool,userCanUseToolForProject} from '../auth.js';
 import {allCodexEnvironments,getCodexEnvironment,environmentConnection,visibleCodexEnvironments,saveCodexEnvironment,deleteCodexEnvironment,preflightEnvironment,sessionEnvironmentId} from '../services/agents/codex/environments.js';
-import {assertEnvironmentUse,canControlEnvironment} from '../services/agents/environment-access.js';
+import {assertEnvironmentUse,canControlEnvironment,canUseEnvironment,environmentUserOverride,environmentAccessChanged} from '../services/agents/environment-access.js';
 import {readEngineModelsForEnvironment} from '../services/agents/codex/controls.js';
 import {getSession} from '../services/session-manager.js';
 import {transferCodexEnvironment} from '../services/agents/codex/environment-transfer.js';
@@ -36,6 +36,23 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   if(req.user!.role!=='admin')return reply.code(403).send({error:'仅管理员可查看账号详情'});
   reply.header('Cache-Control','private, no-store');
   const {quota:_,reason:__,...status}=cachedAccountStatus(account.id);return status;
+ });
+ app.get<{Params:{id:string}}>('/users/:id/codex-environments',async(req,reply)=>{
+  if(!requirePermission(req,reply,'users','read')||!requirePermission(req,reply,'settings','read'))return;
+  const user=getDb().prepare('SELECT id,role,disabled FROM users WHERE id=?').get(req.params.id) as {id:string;role:string;disabled:number}|undefined;
+  if(!user)return reply.code(404).send({error:'用户不存在'});
+  return {environments:allCodexEnvironments().map(e=>({id:e.id,name:e.name,enabled:e.enabled,kind:e.kind,access:environmentUserOverride(e.id,user.id)===null?'inherit':environmentUserOverride(e.id,user.id)?'allow':'deny',effective:!user.disabled&&e.enabled&&canUseEnvironment('codex',e.id,user.id)})),administrator:user.role==='admin'};
+ });
+ app.put<{Params:{id:string};Body:{entries?:unknown}}>('/users/:id/codex-environments',async(req,reply)=>{
+  if(!requirePermission(req,reply,'users','write')||!requirePermission(req,reply,'settings','write'))return;
+  const user=getDb().prepare('SELECT id,role FROM users WHERE id=?').get(req.params.id) as {id:string;role:string}|undefined;
+  if(!user)return reply.code(404).send({error:'用户不存在'});
+  if(user.role==='admin')return reply.code(400).send({error:'管理员始终可以使用已配置的 Engine'});
+  if(userRoleIds(user.id).some(id=>id!=='member')&&!requirePermission(req,reply,'roles','write'))return;
+  const entries=req.body?.entries, valid=new Set(allCodexEnvironments().map(e=>e.id));
+  if(!Array.isArray(entries)||entries.length>200||entries.some(e=>!e||typeof e!=='object'||typeof e.id!=='string'||!valid.has(e.id)||!['inherit','allow','deny'].includes(e.access))||new Set(entries.map(e=>e.id)).size!==entries.length)return reply.code(400).send({error:'Engine 授权无效'});
+  getDb().transaction(()=>{for(const e of entries){if(e.access==='inherit')getDb().prepare('DELETE FROM agent_environment_user_access WHERE environment_id=? AND user_id=?').run(e.id,user.id);else getDb().prepare('INSERT INTO agent_environment_user_access(environment_id,user_id,allowed) VALUES(?,?,?) ON CONFLICT(environment_id,user_id) DO UPDATE SET allowed=excluded.allowed').run(e.id,user.id,e.access==='allow'?1:0);}})();
+  environmentAccessChanged();return {ok:true};
  });
  app.get<{Querystring:{management?:string}}>('/codex/environments',async(req,reply)=>{
   if(req.query.management==='true'){

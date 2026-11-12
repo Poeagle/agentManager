@@ -8,6 +8,7 @@ import { api, type AuthUser, type MyPermissions } from '../lib/api';
 import { hasPermission } from '../lib/permissions';
 import { ConfirmModal } from './ConfirmModal';
 import { Dialog } from './Dialog';
+import { UserResourcePermissions } from './UserResourcePermissions';
 
 const fieldStyle = { background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border)' };
 
@@ -74,7 +75,7 @@ export function UserManagementPanel({ currentUser, permissions }: { currentUser:
         return <tr key={user.id}>
           <td>{user.username}</td><td>{user.display_name || user.username}</td><td>{(user.role_ids ?? [user.role]).map((id) => roles.find((role) => role.id === id)?.name ?? id).join('、') || '无角色'}</td><td>{user.disabled ? '已禁用' : '正常'}</td><td>{user.role === 'admin' ? '不限' : user.max_tabs ?? 10}</td>
           <td><TableActions>
-            <TableActionButton disabled={busyUserId !== null} onClick={() => openUser(user.id)}>{access.canWrite || access.canRoles ? '编辑' : '查看'}</TableActionButton>
+            <TableActionButton disabled={busyUserId !== null} onClick={() => openUser(user.id)}>{access.canWrite || access.canRoles || hasPermission(permissions, 'project_access', 'write') ? '编辑' : '查看'}</TableActionButton>
             {access.canWrite && <TableActionButton disabled={busyUserId !== null} onClick={() => openUser(user.id, true)}>重置密码</TableActionButton>}
             {user.id !== currentUser.id && access.canWrite && <TableActionButton disabled={busyUserId !== null} style={{ color: user.disabled ? 'var(--success)' : 'var(--error)' }} onClick={() => { void runUserAction(user, 'toggle'); }}>{busyUserId === user.id ? '处理中…' : user.disabled ? '启用' : '禁用'}</TableActionButton>}
             {user.id !== currentUser.id && access.canDelete && <TableActionButton disabled={busyUserId !== null} style={{ color: 'var(--error)' }} onClick={() => setDeletingUser(user)}>删除</TableActionButton>}
@@ -141,6 +142,7 @@ function UserDetails({ user, currentUser, permissions, roles, onSaved, focusPass
         <DataTable label="用户角色分配" model={rolesTable} minWidth={320} columnWidths={['w-28', '']} empty={rolesTable.rows.length === 0} emptyMessage="暂无可分配角色">{rolesTable.rows.map((role) => <tr key={role.id}><td><input disabled={!canRoles || busy} type="checkbox" aria-label={role.name} checked={roleIds.includes(role.id)} onChange={(event) => setRoleIds(event.target.checked ? [...roleIds, role.id] : roleIds.filter((id) => id !== role.id))} /></td><td>{role.name}</td></tr>)}</DataTable>
         {canRoles && <button disabled={busy} onClick={() => { void run(async () => { await api.rbac.assignRoles(user.id, roleIds); await onSaved(user.id); }); }} className="rounded-md px-3 py-2 text-xs disabled:opacity-50" style={{ background: 'var(--accent)', color: 'white' }}>保存角色分配</button>}
       </section>
+      <UserResourcePermissions user={user} permissions={permissions} />
       <section className="space-y-3 border-t pt-3" style={{ borderColor: 'var(--border)' }}><h4 className="text-sm font-semibold">会话额度</h4><form onSubmit={(event) => { event.preventDefault(); void run(async () => { await api.users.update(user.id, { max_tabs: maxTabs }); await onSaved(user.id); }); }} className="flex items-center gap-3"><label className="flex items-center gap-2 text-xs">最多活动标签页<input aria-label="最多活动标签页" type="number" min={0} max={100} disabled={!canWrite || busy || user.role === 'admin'} value={maxTabs} onChange={(event) => setMaxTabs(Number(event.target.value))} className="w-20 rounded px-2 py-1.5" style={fieldStyle} /></label>{canWrite && user.role !== 'admin' && <button disabled={busy} className="text-xs underline">保存额度</button>}</form><p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{user.role === 'admin' ? '管理员不受标签页额度限制。' : '0 表示禁止创建会话。'}</p></section>
       {canWrite && <section className="space-y-3 border-t pt-3" style={{ borderColor: 'var(--border)' }}><h4 className="text-sm font-semibold">重置密码</h4><form onSubmit={(event) => { event.preventDefault(); void run(async () => { await api.users.update(user.id, { password }); setPassword(''); setNotice('密码已重置，现有登录和活动会话已关闭'); }); }} className="flex flex-wrap gap-3"><input ref={passwordInput} aria-label="新密码" type="password" minLength={6} maxLength={256} required autoComplete="new-password" placeholder="新密码（至少 6 位）" value={password} onChange={(event) => setPassword(event.target.value)} disabled={busy} className="min-w-0 flex-1 rounded-md px-3 py-2 text-sm" style={fieldStyle} /><button disabled={busy} className="rounded-md border px-3 py-2 text-xs" style={{ borderColor: 'var(--border)' }}>重置密码</button></form></section>}
       {notice && <p role="status" className="text-xs" style={{ color: 'var(--success)' }}>{notice}</p>}

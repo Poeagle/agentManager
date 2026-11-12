@@ -5,6 +5,10 @@ export interface EnvironmentRecord {id:string;agent_id:string;name:string;kind:s
 export function environmentRecord(id:string):EnvironmentRecord|undefined {
   return getDb().prepare('SELECT * FROM agent_environments WHERE id=?').get(id) as EnvironmentRecord|undefined;
 }
+export function environmentUserOverride(id:string,userId:string):boolean|null {
+  const row=getDb().prepare('SELECT allowed FROM agent_environment_user_access WHERE environment_id=? AND user_id=?').get(id,userId) as {allowed:number}|undefined;
+  return row ? row.allowed===1 : null;
+}
 export function isRetiredEnvironment(id:string|null|undefined):boolean {
  if(!id)return false;const row=environmentRecord(id);if(!row)return false;try{return JSON.parse(row.config).retired===true;}catch{return false;}
 }
@@ -23,6 +27,8 @@ export function canUseEnvironment(agentId:string,id:string|null|undefined,userId
   }
   if(admin)return true;
   if(row&&!row.enabled)return false;
+  const override=agentId==='codex'?environmentUserOverride(id,userId):null;
+  if(override!==null)return override;
   if(row?.allowed_user_ids!==null&&row?.allowed_user_ids!==undefined) {
     try {const users:unknown=JSON.parse(row.allowed_user_ids);return Array.isArray(users)&&users.includes(userId);}catch{return false;}
   }
@@ -32,7 +38,7 @@ export function assertEnvironmentUse(agentId:string,id:string,userId:string):voi
   if(!canUseEnvironment(agentId,id,userId))throw Object.assign(Error('无权使用该 Codex 环境，或环境已停用'),{statusCode:403});
 }
 export function canUseSessionEnvironment(session:{agent_id?:string|null;cli_type?:string|null;agent_environment_id?:string|null},userId:string):boolean {
-  if(session.agent_environment_id&&isRetiredEnvironment(session.agent_environment_id)){const row=environmentRecord(session.agent_environment_id)!;const admin=(getDb().prepare('SELECT role FROM users WHERE id=? AND disabled=0').get(userId) as {role:string}|undefined)?.role==='admin';try{return admin||(JSON.parse(row.allowed_user_ids||'[]') as string[]).includes(userId);}catch{return admin;}}
+  if(session.agent_environment_id&&isRetiredEnvironment(session.agent_environment_id)){const row=environmentRecord(session.agent_environment_id)!;const admin=(getDb().prepare('SELECT role FROM users WHERE id=? AND disabled=0').get(userId) as {role:string}|undefined)?.role==='admin';try{return admin||(environmentUserOverride(session.agent_environment_id!,userId) ?? (JSON.parse(row.allowed_user_ids||'[]') as string[]).includes(userId));}catch{return admin;}}
   const agent=session.agent_id||session.cli_type||'claude';
   return canUseEnvironment(agent,session.agent_environment_id||(agent==='codex'?'native':null),userId);
 }
@@ -47,6 +53,7 @@ export function validateEnvironmentUsers(value:unknown):string[]|null {
 export function canControlEnvironment(id:string,userId:string):boolean {
  if(!canUseEnvironment('codex',id,userId))return false;
  const row=environmentRecord(id);
+ if(environmentUserOverride(id,userId)===true)return true;
  if(row?.allowed_user_ids!==null&&row?.allowed_user_ids!==undefined)return true;
  return (getDb().prepare('SELECT role FROM users WHERE id=?').get(userId) as {role:string}|undefined)?.role==='admin';
 }
