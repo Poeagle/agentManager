@@ -1,32 +1,10 @@
 import { FastifyPluginAsync } from 'fastify';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import {realpathSync} from 'fs';
+import {gitConfig,safeGitEnv} from '../services/git-config.js';
 import { isAdmin, userOwnsFilesystemPath } from '../auth.js';
 
 const execFileAsync = promisify(execFile);
-
-const DISABLED_HOOKS_PATH = process.platform === 'win32' ? 'NUL' : '/dev/null';
-const SAFE_GIT_CONFIG: Array<[string, string]> = [
-  ['core.hooksPath', DISABLED_HOOKS_PATH],
-  ['core.fsmonitor', 'false'],
-];
-
-/** Apply high-precedence config to Git and to Git subprocesses launched by gh. */
-function gitConfig(cwd?:string):Array<[string,string]>{return [...SAFE_GIT_CONFIG,...cwd?[['safe.directory',realpathSync(cwd)] as [string,string]]:[]];}
-function safeGitEnv(cwd?:string): NodeJS.ProcessEnv {
-  const settings=gitConfig(cwd);
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    GIT_CONFIG_COUNT: String(settings.length),
-    GIT_TERMINAL_PROMPT: '0',
-  };
-  settings.forEach(([key, value], index) => {
-    env[`GIT_CONFIG_KEY_${index}`] = key;
-    env[`GIT_CONFIG_VALUE_${index}`] = value;
-  });
-  return env;
-}
 
 async function git(cwd: string, args: string[]): Promise<string> {
   const safeArgs = gitConfig(cwd).flatMap(([key, value]) => ['-c', `${key}=${value}`]);
