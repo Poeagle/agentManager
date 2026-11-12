@@ -106,19 +106,19 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'2.9.0',
-    updatedAt:'2026-11-04',
+    version:'3.0.0',
+    updatedAt:'2026-11-12',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
-      type: 'HttpOnly session cookie',
+      type: 'HttpOnly session cookie or scoped API Key',
       cookieName: sessionCookieName(),
       loginEndpoint: '/api/auth/login',
       capabilitiesEndpoint: '/api/agent/capabilities',
-      login: 'POST /api/auth/login with { username, password }; persist the Set-Cookie response in a private cookie jar.',
-      usage: 'Send the cookie on every protected REST request and WebSocket handshake. Same-origin browser requests use credentials: "include".',
+      login: 'Use a platform API Key for supported HTTP routes, or POST /api/auth/login with { username, password } and store the returned cookie privately.',
+      usage: 'For supported HTTP routes send Authorization: Bearer <API Key> or the session cookie. WebSocket handshakes require a browser session cookie; API Keys do not support WebSocket access.',
       errors: { 401: 'Missing, expired, or invalid login session.' },
-      security: 'Never put credentials or cookie values in an agent prompt, logs, or source control.',
+      security: 'Keep API Keys, passwords and cookies in a private credential store. API Key grants and the account’s current permissions are both checked for each request.',
     },
     authorization: {
       platform: 'Platform functions use RBAC role grants. Agent API inspection requires agent_api read; execute/cancel and agent WebSocket connections require agent_api write. Project/tool permissions and session ownership are checked separately.',
@@ -141,7 +141,7 @@ export function getAgentApiContract() {
       'Prompt enhancement operates only on a supplied draft and never reads native terminal input or another user\'s tab.',
     ],
     quickstart: [
-      '1. POST /api/auth/login — authenticate once and persist the returned cookie securely',
+      '1. Authenticate HTTP requests with a scoped API Key or POST /api/auth/login and persist the returned cookie securely',
       '2. GET /api/agent/capabilities — read this current contract',
       '3. GET /api/projects — select a visible project whose tool_access permits the desired mode and CLI',
       '4. POST /api/sessions — create a permitted session (returns session id)',
@@ -253,6 +253,7 @@ export function getAgentApiContract() {
           task: { type: 'string', required: false, description: 'Required for Session mode; ignored for terminal mode.' },
           mode: { type: 'session | terminal', required: false, default: 'session' },
           cli_type: { type:'registered Agent ID', required: false, default: 'claude', description: 'Used by Session mode.' },
+          environment_id: { type:'string', required:false, description:'Authorized Codex Engine ID for a new Codex session. If omitted, the default native environment must be authorized.' },
         },
         response: { ok: 'true', session: 'Created session; use session.id for control endpoints.' },
         errors: { 400: 'Missing required fields', 401: 'Not authenticated', 403: 'Project or requested tool combination is not permitted', 429: 'Active tab/session limit reached' },
@@ -410,8 +411,9 @@ export function getAgentApiContract() {
           session_id: { type: 'string', required: true, description: 'A session created by the logged-in user.' },
           prompt: { type: 'string', required: true, description: 'Draft text to enhance. Maximum 24,000 characters.' },
           mode: { type: 'base | lite | standard | expert | publish', required: false, description: 'Optional one-call mode override; otherwise the configured default is used.' },
+          attachments: { type:'Array<{kind: image | file, name: string, path: string}>', required:false, description:'Up to eight previously uploaded session-project attachments. Images are sent as image inputs; text files include a bounded excerpt. Binary files remain attached but their content is not read by the enhancer.' },
         },
-        response: { prompt: 'string — enhanced draft text; review it before sending to the terminal.' },
+        response: { prompt: 'string — enhanced draft text; review before sending.', warnings: 'string[]? — file contents omitted or truncated; original attachments remain in the draft.', context: 'Recent complete conversation rounds used by the enhancer.' },
         errors: { 400: 'Invalid draft/mode, unconfigured enhancer, or model request failure', 403: 'Session does not belong to the logged-in user' },
       },
       {
@@ -442,6 +444,8 @@ export function getAgentApiContract() {
           target_session_id: { type: 'string | null', required: false, description: 'Required for an existing target and must be the user\'s open tab.' },
           new_mode: { type: 'session | terminal', required: false },
           new_cli_type: { type:'registered Agent ID', required: false },
+          new_environment_id: { type:'string | null', required:false, description:'Authorized Codex Engine for a newly created Codex session.' },
+          new_model_preference: { type:'{ model: string, effort: string, provider?: string, service_tier?: string } | null', required:false, description:'Selected model and parameters; checked against the Engine catalog again before each run.' },
           inactive_policy: { type: 'resume | fail', required: false, default: 'resume' },
           stop_at: { type: 'ISO timestamp | null', required: false },
           daily_stop_time: { type: 'HH:mm | null', required: false },
@@ -474,6 +478,14 @@ export function getAgentApiContract() {
         method: 'POST',
         path: '/api/scheduled-tasks/:id/run',
         description: 'Run an owned scheduled task immediately and return its run record.',
+      },
+      {
+        category: 'Scheduled tasks', method: 'GET', path: '/api/scheduled-tasks/codex-models?project_id=:projectId&environment_id=:environmentId',
+        description: 'Read the selected authorized Codex Engine model catalog for a permitted project.',
+      },
+      {
+        category: 'Agents', method: 'GET', path: '/api/codex/environments',
+        description: 'List Codex Engines available to the current account. API Key requests also require platform settings read permission.',
       },
       {
         category:'Agents',method:'GET',path:'/api/agent/providers',
