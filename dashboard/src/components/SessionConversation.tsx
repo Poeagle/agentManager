@@ -120,6 +120,8 @@ interface FailedDraft {
   attachments: DraftAttachment[];
 }
 
+const timeColor=(seconds:number)=>seconds>=60?'var(--error)':seconds>=30?'#e57b18':'var(--text-muted)';
+
 function ProgressSection({
   agent,
   agentName,
@@ -128,6 +130,8 @@ function ProgressSection({
   progress,
   stepDuration,
   stepRunning,
+  phaseSeconds,
+  progressPhase,
   turnDuration,
   children,
 }: {
@@ -138,6 +142,8 @@ function ProgressSection({
   progress?: import('../lib/api').ConversationProgressStatistics | null;
   stepDuration?: number|null;
   stepRunning?: boolean;
+  phaseSeconds?: number|null;
+  progressPhase: 'calling'|'waiting'|'unknown';
   turnDuration?: number|null;
   children: ReactNode;
 }) {
@@ -164,7 +170,8 @@ function ProgressSection({
           <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
           {progress && <span className="session-chat-message-statistics" title="Cumulative recorded usage since the previous conclusion. Rounds update after the following model request; incomplete history is a lower bound.">total · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} / {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
           {active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
-          {active&&turnDuration!=null&&<time className="session-chat-progress-time" title="Elapsed time since the current user message or follow-up">Turn {formatElapsedEnglish(turnDuration)}</time>}
+          {active&&<span className="session-chat-progress-time">{progressPhase}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
+          {active&&turnDuration!=null&&<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time since the current user message or follow-up">Turn {formatElapsedEnglish(turnDuration)}</time>}
           {active && <span className="session-chat-progress-live">In progress</span>}
           <ChevronDown size={14} className="session-chat-progress-chevron" />
         </summary>
@@ -1819,6 +1826,13 @@ export function SessionConversation({
   const currentActivities=liveState==='connected'&&!reconnectable&&liveProgress.stage==='tools'?liveProgress.activities||[]:[];
   const currentActivity=currentConversationActivity(currentActivities,activityRunning);
   const stepDuration=conversationActivityDuration(currentActivity,now);
+  const progressForTurn=progressStatistics&&liveProgress.turn_id&&progressStatistics.turn_id===liveProgress.turn_id?progressStatistics:null;
+  const progressActivities=liveState==='connected'&&!reconnectable?liveProgress.activities||[]:[];
+  const runningTool=progressActivities.find(item=>item.status==='running');
+  const lastFinished=progressActivities.filter(item=>item.completed_at).sort((a,b)=>Date.parse(b.completed_at!)-Date.parse(a.completed_at!))[0];
+  const progressPhase=liveState!=='connected'||reconnectable||(!runningTool&&!lastFinished&&liveProgress.stage==='tools')?'unknown':runningTool?'calling':'waiting';
+  const phaseStart=progressPhase==='unknown'?null:runningTool?runningTool.started_at:lastFinished?.completed_at||liveProgress.started_at;
+  const phaseSeconds=phaseStart&&Number.isFinite(Date.parse(phaseStart))?Math.max(0,Math.floor((now-Date.parse(phaseStart))/1000)):null;
   const turnDuration=elapsedBetween(started,now);
   const timings = conversationTimings(
     displayed.filter((message) => !message.queued),
@@ -2009,6 +2023,8 @@ export function SessionConversation({
                     active={busy && groups.at(-1) === group}
                     stepDuration={progressTimingVisible&&groups.at(-1)===group?stepDuration:null}
                     stepRunning={currentActivity?.status==='running'}
+                    phaseSeconds={phaseSeconds}
+                    progressPhase={progressPhase}
                     turnDuration={progressTimingVisible&&groups.at(-1)===group?turnDuration:null}
                     progress={busy && groups.at(-1)===group && progressStatistics && (!liveProgress.turn_id||progressStatistics.turn_id===liveProgress.turn_id) && (!group.messages.at(-1)?.turn_id||group.messages.at(-1)?.turn_id===progressStatistics.turn_id)?progressStatistics:null}
                   >
@@ -2034,7 +2050,7 @@ export function SessionConversation({
                 <div className="session-chat-thinking" role="status">
                   <span aria-hidden="true" className="session-chat-thinking-icon"><AgentIcon session={{agent:sessionAgent(session)}} className="h-[13px] w-[13px]" /></span>
                   <div>
-                    <span>
+                    <div className="session-chat-thinking-summary"><span>
                       {continuingAfterFollowup
                         ? sending
                           ? "Sending follow-up…"
@@ -2043,7 +2059,8 @@ export function SessionConversation({
                           ? `${agentName} is working`
                           : `Waiting for ${agentName}`}
                     </span>
-                    <time className="session-chat-elapsed">{elapsed}s</time>
+                    <time className="session-chat-elapsed" style={{color:timeColor(elapsed)}}>{elapsed}s</time>
+                    {continuingAfterFollowup&&!sending&&<span>[tools: {progressForTurn?(progressForTurn.complete?'':'≥')+progressForTurn.tool_calls:'—'} calls · {progressPhase}: <time style={{color:phaseSeconds===null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds===null?'—':`${phaseSeconds}s`}</time>]</span>}</div>
                     <p>
                       {continuingAfterFollowup
                         ? "The task is still running. Updates will appear here."

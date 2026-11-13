@@ -52,6 +52,9 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   };
   const model=data?.models.find(m=>m.model===selected.model&&(!m.provider||!selected.provider||m.provider===selected.provider)),usage=data?.usage;
   const tokenMetrics=usage?([['Window',usage.window],['Total',usage.total.total_tokens],['Input',usage.total.input_tokens],['Cache',usage.total.cached_input_tokens],['Reasoning',usage.total.reasoning_output_tokens],['Output',usage.total.output_tokens]] as Array<[string,number|null|undefined]>).filter((entry):entry is [string,number]=>entry[1]!=null):[];
+  const cacheInput=usage?.last.input_tokens,cacheHit=usage?.last.cached_input_tokens;
+  const cacheRate=cacheInput!=null&&cacheInput>0&&cacheHit!=null&&cacheHit>=0&&cacheHit<=cacheInput?Math.round(100*cacheHit/cacheInput):null;
+  const cacheColor=cacheRate===null?'var(--text-muted)':quotaColor(cacheRate);
   const context=usage?.window&&usage.last.total_tokens!=null?Math.min(100,Math.round(100*usage.last.total_tokens/usage.window)):null;
   const currentEnvironment=environments.data?.environments.find(e=>e.id===environments.data?.current);
   const modelEnvironment=(!model?.provider||model.provider===data?.provider)?currentEnvironment:environments.data?.environments.find(e=>e.provider===model?.provider);
@@ -91,6 +94,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
     <div className="conversation-controls" aria-label="Model and session status">
       {data?<>
         {toolbarTarget?createPortal(toolbar,toolbarTarget):toolbar}
+        {data.native_id&&cacheRate!==null&&<span className="conversation-control-cache" aria-label={`Cache hit rate ${cacheRate}%`} title="Cached input tokens divided by input tokens in the latest request"><i aria-hidden="true" style={{background:`conic-gradient(${cacheColor} ${cacheRate}%, var(--border) 0)`}}/>Cache <strong style={{color:cacheColor,font:'inherit'}}>{cacheRate}%</strong></span>}
         {data.native_id&&context!==null&&<button type="button" className="conversation-control-context" aria-label="View context token details" aria-haspopup="dialog" title="Context used by the latest request; click for details." onClick={()=>setContextOpen(true)}><i aria-hidden="true" style={{background:`conic-gradient(var(--accent) ${context}%, var(--border) 0)`}}/>Context {context}%</button>}
         {weekly&&weeklyRemaining!==null&&<span className="conversation-control-weekly" aria-label={`Weekly remaining ${weeklyRemaining}%`} title={weekly.resets_at?`Resets: ${new Date(weekly.resets_at*1000).toLocaleString('en',{hour12:false})}`:undefined}><i aria-hidden="true" style={{background:`conic-gradient(${quotaColor(weeklyRemaining)} ${weeklyRemaining}%, var(--border) 0)`}}/>Weekly remaining <strong style={{color:quotaColor(weeklyRemaining),font:'inherit'}}>{weeklyRemaining}%</strong></span>}
         {shortLimit&&<span title={shortLimit.resets_at?`Resets: ${new Date(shortLimit.resets_at*1000).toLocaleString('en',{hour12:false})}`:undefined}>{shortLimit.minutes%60===0?`${shortLimit.minutes/60}h`:`${shortLimit.minutes}m`} remaining {Math.round(100-shortLimit.used_percent)}%</span>}
