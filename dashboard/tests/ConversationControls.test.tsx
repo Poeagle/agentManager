@@ -39,10 +39,13 @@ describe('compact conversation controls',()=>{
   vi.mocked(api.codexEnvironments.forSession).mockResolvedValueOnce({current:'provider:provider-a',environments:[{id:'provider:provider-a',name:'API',kind:'provider',provider:'provider-a',auth_mode:'api',enabled:true,allowed_user_ids:null,can_control:true},{id:'provider:provider-b',name:'Account',kind:'provider',provider:'provider-b',auth_mode:'account',enabled:true,allowed_user_ids:null,can_control:true}]});
   mount();const model=await screen.findByRole('combobox',{name:'选择模型'});await waitFor(()=>expect(within(model).getByRole('option',{name:'DeepSeek V4.1 Flash'})).toBeVisible());expect(within(model).getByRole('option',{name:'provider-b · Model B'})).toBeVisible();expect(model).toHaveAttribute('title',expect.stringContaining('DeepSeek V4.1 Flash'));
  });
- it('shows the latest cache hit rate before context and updates it live',async()=>{
-  mount();const cache=await screen.findByLabelText('Cache hit rate 82%');expect(cache.querySelector('i')).toHaveStyle({background:'conic-gradient(var(--success) 82%, var(--border) 0)'});expect(cache.compareDocumentPosition(screen.getByText('Context 30%'))&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-02T03:20:55Z',usage:{last:{total_tokens:1000,input_tokens:1000,cached_input_tokens:250},total:{},window:40000}});});
+ it('shows the cumulative cache hit rate before context and updates it live',async()=>{
+  data={...data,usage:{...data.usage!,total:{total_tokens:400000,input_tokens:1000,cached_input_tokens:974}}};
+  mount();const cache=await screen.findByLabelText('Cache hit rate 97.4%');expect(cache.querySelector('i')).toHaveStyle({background:'conic-gradient(var(--success) 97.4%, var(--border) 0)'});expect(cache.compareDocumentPosition(screen.getByText('Context 30%'))&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-02T03:20:55Z',usage:{last:{total_tokens:1000,input_tokens:1000,cached_input_tokens:1000},total:{input_tokens:2000,cached_input_tokens:500},window:40000}});});
   expect(await screen.findByLabelText('Cache hit rate 25%')).toBeVisible();
+  await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-02T03:20:56Z',usage:{last:{input_tokens:1000,cached_input_tokens:1000},total:{input_tokens:0,cached_input_tokens:0},window:40000}});});
+  await waitFor(()=>expect(screen.queryByLabelText(/Cache hit rate/)).not.toBeInTheDocument());
  });
  it('reads context categories only after clicking the usage indicator without reloading controls',async()=>{
   vi.mocked(api.agent.contextBreakdown).mockReset().mockResolvedValue({context:{source:'jsonl',exact:false,method:'characters_div_3',checked_at:'2026-11-11T12:00:00Z',observed_at:null,model:'model-a',usage:null,partial:false,warnings:[],files_read:1,records_read:1,bytes_read:100,compactions:0,categories:[{id:'user',name:'用户消息',tokens:100,count:1,detail:[]}]}});
