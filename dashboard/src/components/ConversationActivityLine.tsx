@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState,type CSSProperties} from 'react';
 import {elapsedBetween,formatElapsedEnglish} from '../lib/conversation-timing';
+import {browserTimestamp,formatDisplayTimestamp,useDisplayClock} from '../lib/display-clock';
 
 export interface ConversationActivity {
   id:string;label:string;status:'running'|'completed'|'failed';started_at:string|null;completed_at:string|null;duration_ms:number|null;
@@ -11,12 +12,15 @@ export function currentConversationActivity(activities:ConversationActivity[],bu
 export function conversationActivityDuration(item:ConversationActivity|null,now:number){return item?.duration_ms??(item?.status==='running'?elapsedBetween(item.started_at,now):null);}
 
 export function ConversationActivityLine({activities,busy,now,fallback,totalElapsed,hideTiming=false}:{activities:ConversationActivity[];busy:boolean;now:number;fallback:string;totalElapsed:number|null;hideTiming?:boolean}) {
+  useDisplayClock();
   const viewport=useRef<HTMLSpanElement>(null),text=useRef<HTMLSpanElement>(null);
   const [travel,setTravel]=useState(0);
   // The latest native step wins immediately; never replay a queue of stale
   // completed tools while newer work is already running.
   const item=currentConversationActivity(activities,busy);
-  const label=item?`${item.status==='completed'?'Running · Last completed · ':item.status==='failed'?'Running · Last failed · ':''}${englishActivity(item.label)}`:fallback;
+  const completedAt=item?.completed_at?browserTimestamp(item.completed_at):NaN;
+  const completionTime=Number.isFinite(completedAt)&&Math.abs(completedAt)<=8.64e15?`${formatDisplayTimestamp(item!.completed_at).replaceAll('-','.')}.${String(new Date(completedAt).getUTCMilliseconds()).padStart(3,'0')}`:'time unavailable';
+  const label=item?item.status==='running'?englishActivity(item.label):`Running · Last ${item.status==='completed'?'completed':'failed'} (${completionTime})`:fallback;
   useEffect(()=>{
     const measure=()=>setTravel(Math.max(0,(text.current?.scrollWidth||0)-(viewport.current?.clientWidth||0)));
     measure();
@@ -31,7 +35,7 @@ export function ConversationActivityLine({activities,busy,now,fallback,totalElap
         <span ref={text} className="session-chat-activity-text" data-overflow={travel>0} style={{'--activity-travel':`${-travel}px`,'--activity-duration':`${Math.max(8,travel/30)}s`} as CSSProperties}>{label}</span>
       </span>
     </span>
-    {!hideTiming&&duration!==null && duration!==undefined && <time className="session-chat-activity-duration" title={item?.status==='running'?'Current step duration':'Last step duration'}>{formatElapsedEnglish(duration)}</time>}
+    {!hideTiming&&item?.status==='running'&&duration!==null && duration!==undefined && <time className="session-chat-activity-duration" title="Current step duration">{formatElapsedEnglish(duration)}</time>}
     {!hideTiming&&busy && totalElapsed!==null && <time className="session-chat-round-duration" title="Elapsed time since the user's message">Turn {formatElapsedEnglish(totalElapsed)}</time>}
   </span>;
 }
