@@ -32,6 +32,10 @@ describe('conversation Markdown',()=>{
     expect(screen.getAllByRole('checkbox')).toHaveLength(2);expect(view.container.querySelector('script')).toBeNull();
     fireEvent.click(screen.getByRole('link',{name:'说明'}));expect(onOpenFile).not.toHaveBeenCalled();expect(screen.getByRole('dialog',{name:'文件预览 · README.md'})).toBeVisible();
   });
+  it('shows project-external file paths without offering unauthorized preview',()=>{
+    const onOpenFile=vi.fn();render(<ConversationMarkdown {...props} onOpenFile={onOpenFile} content={'[查看截图](/tmp/ops945-collection-code-en.png)'}/>);
+    expect(screen.getByText('/tmp/ops945-collection-code-en.png')).toBeVisible();expect(screen.getByTitle('File path is outside the current project')).toHaveTextContent('查看截图');expect(screen.queryByRole('link',{name:'查看截图'})).not.toBeInTheDocument();expect(onOpenFile).not.toHaveBeenCalled();
+  });
   it('repairs incomplete tables and resolves document-wide reference links and footnotes',()=>{
     const view=render(<ConversationMarkdown {...props} streaming content={'首段。\n\n| 名称 | 数值 |'}/>);
     view.rerender(<ConversationMarkdown {...props} content={'首段。\n\n| 名称 | 数值 |\n| --- | --- |\n| A | 1 |\n\n[文档][ref]\n\n注释[^a]\n\n[ref]: https://example.com\n[^a]: 完整脚注'}/>);

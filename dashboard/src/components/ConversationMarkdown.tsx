@@ -98,7 +98,8 @@ export const ConversationMarkdown=memo(function ConversationMarkdown({content,me
           const target=[...(scope?.querySelectorAll<HTMLElement>('[id]')||[])].find(node=>node.id===fragment || node.id===`user-content-${fragment}` || node.dataset.chatHeading && (node.textContent||'').trim().toLowerCase().replace(/\s+/g,'-')===fragment);
           if(target){event.preventDefault();onNavigate();target.scrollIntoView({block:'start'});}
         }}>{children}</a>;
-        if(!href || !/^(https?:|mailto:|tel:|\/\/)/i.test(href))return <span title={href}>{children}</span>;
+        if(!href)return <span>{children}</span>;
+        if(!/^(https?:|mailto:|tel:|\/\/)/i.test(href))return <span title="File path is outside the current project">{children} (<code>{href}</code>)</span>;
         return <a href={href} title={title} target="_blank" rel="noopener noreferrer">{children}</a>;
       },
       img:({src,alt})=><MarkdownImage src={typeof src==='string'?src:undefined} alt={alt} root={projectPath} projectId={projectId}/>,
