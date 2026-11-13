@@ -1922,7 +1922,15 @@ export function SessionConversation({
       );
     }
   }
+  const visibleQuestionAnswers=new Map<string,string>();
+  for(const question of displayed) {
+    if(!question.async_questions?.length)continue;
+    const answers=questionIndex.answers(question);
+    if(!answers)continue;
+    question.async_questions.forEach((item,index)=>{if(item.id)visibleQuestionAnswers.set(item.id,answers[index]);});
+  }
   const bubble = (message: ConversationMessage, compact = false) =>
+    message.role==='user'&&!message.queued&&!(message as TimelineMessage).optimistic&&!message.attachments?.length&&message.question_replies?.length&&message.question_replies.every(reply=>visibleQuestionAnswers.get(reply.question_id)===reply.answer) ? null :
     message.async_questions?.length ? (
       <ConversationQuestionSummary
         key={message.id}

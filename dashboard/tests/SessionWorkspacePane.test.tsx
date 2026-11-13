@@ -109,16 +109,19 @@ describe('chat/raw terminal display',()=>{
     const view=mount();fireEvent.click(await screen.findByRole('radio',{name:/A/}));await act(async()=>fireEvent.click(screen.getByRole('button',{name:'提交回答',exact:true})));expect(await screen.findByRole('alert')).toHaveTextContent('网络断开');expect(screen.getByRole('button',{name:'提交回答',exact:true})).toBeEnabled();view.unmount();
     page.messages=[...page.messages,{id:'next-user',role:'user',text:'下一个问题',timestamp:null}];mount();expect(await screen.findByRole('button',{name:'提交回答',exact:true})).toBeEnabled();expect(screen.queryByText('已继续对话')).not.toBeInTheDocument();
   });
-  it('displays the answer only in the user bubble and keeps the original question in its history card',async()=>{
+  it('shows the answer in its question card without a duplicate user bubble',async()=>{
     const question='安装目录是否需要递归列出全部文件？',answer='只说明一级目录，保留完整解释。';
     page.messages=[{id:'question',role:'assistant',text:question,timestamp:null,phase:'final',async_questions:[{id:'q',title:question,options:['只处理一级','递归全部']}]},{id:'reply',role:'user',text:`回复你的提问：\n1. ${question}\n我的回答：${answer}`,timestamp:null,question_replies:[{question_id:'q',question,answer}]}];
     mount();await screen.findByText('已回答');
-    const bubble=document.querySelector('[data-chat-message-id="reply"] .session-chat-user-text')!;
-    expect(bubble.textContent).toBe(answer);
+    expect(document.querySelector('[data-chat-message-id="reply"]')).toBeNull();
     const summary=document.querySelector('.session-chat-question-summary')!;
-    expect(summary).toHaveTextContent(question);expect(summary).not.toHaveTextContent(answer);
-    fireEvent.click(screen.getByText('查看详情'));expect(summary.querySelector('dt')).toHaveTextContent(question);expect(summary).not.toHaveTextContent(answer);
+    expect(summary).toHaveTextContent(question);
+    fireEvent.click(screen.getByText('查看详情'));expect(summary.querySelector('dt')).toHaveTextContent(question);expect(summary).toHaveTextContent(answer);
     expect(api.agent.sendInput).not.toHaveBeenCalled();
+  });
+  it('keeps the answer visible when its question card is not in the loaded history',async()=>{
+    page.messages=[{id:'reply-only',role:'user',text:'Answer text',timestamp:null,question_replies:[{question_id:'missing',question:'Question',answer:'Answer text'}]}];
+    mount();expect(await screen.findByText('Answer text')).toBeVisible();expect(document.querySelector('[data-chat-message-id="reply-only"]')).not.toBeNull();
   });
   it('attaches server retry status to the original failure and updates it after recovery',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
@@ -289,13 +292,13 @@ describe('chat/raw terminal display',()=>{
     const frame=(messages:unknown[],stage='tools')=>act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages,busy:true,stage,turn_id:'active',started_at:new Date(Date.now()-120000).toISOString()})}));
     frame([]);typeDraft(screen.getByRole('textbox'),'请用通俗语言解释');
     fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalled());
-    await screen.findByText('Follow-up sent · codex is working');expect(screen.queryByText('The response will appear as it arrives.')).not.toBeInTheDocument();
+    expect((await screen.findByText('0 items')).closest('.session-chat-pending-progress')).toHaveTextContent('In progress');expect(screen.queryByText('The response will appear as it arrives.')).not.toBeInTheDocument();
     const [,text,clientId]=vi.mocked(api.agent.sendInput).mock.calls[0];
     const echo={id:'followup-echo',role:'user',text,client_id:clientId,turn_id:'active',timestamp:new Date().toISOString()};
     frame([echo]);expect(screen.getAllByText('请用通俗语言解释')).toHaveLength(1);
     const progress={id:'new-progress',role:'assistant',phase:'commentary',text:'我会用',turn_id:'active',streaming:true,timestamp:new Date().toISOString()};
     frame([echo,progress],'answering');const article=screen.getByText('我会用').closest('article');expect(article).toHaveAttribute('data-streaming','true');
-    expect(screen.queryByText('Follow-up sent · codex is working')).not.toBeInTheDocument();
+    expect(document.querySelector('.session-chat-pending-progress')).toBeNull();
     frame([echo,{...progress,text:'我会用具体数字逐项解释'}],'answering');expect(screen.getByText('我会用具体数字逐项解释').closest('article')).toBe(article);
     expect(screen.getAllByText('请用通俗语言解释')).toHaveLength(1);
   });
