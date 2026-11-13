@@ -67,6 +67,16 @@ describe('conversation send transaction', () => {
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'other',progress:{turn_id:'turn',tokens:{total_tokens:999},tool_calls:9,tool_rounds:9,complete:true}}));expect(screen.queryByText(/token: 999/)).not.toBeInTheDocument();
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:392100},tool_calls:2,tool_rounds:2,complete:true}}));expect(await screen.findByText('total · token: 392.1K · tools: 2 calls / 2 rounds')).toBeVisible();
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:400000},tool_calls:3,tool_rounds:2,complete:true}}));expect(await screen.findByText('total · token: 400K · tools: 3 calls / 2 rounds')).toBeVisible();
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[item,{id:'final',role:'assistant',turn_id:'turn',phase:'final',text:'Done',timestamp:new Date().toISOString()}],busy:false,stage:'idle',turn_id:'turn'}));
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:null}));
+    expect(header).toHaveTextContent('total · token: 400K · tools: 3 calls / 2 rounds');expect(header).toHaveTextContent('Completed');expect(header).not.toHaveTextContent('In progress');expect(header).not.toHaveTextContent('waiting:');
+  });
+  it('restores completed progress totals and duration from recorded conclusion statistics',async()=>{
+    const existing=await api.agent.conversation(session.id),item={id:'historical-progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'Earlier work',timestamp:'2026-01-01T00:00:05Z'},final={id:'historical-final',role:'assistant',turn_id:'turn',phase:'final',text:'Complete',timestamp:'2026-01-01T00:01:00Z'};
+    const total={tokens:{total_tokens:97400},requests:2,tool_calls:4,tool_rounds:3,complete:true,shared_messages:1,start_at:'2026-01-01T00:00:00Z',end_at:final.timestamp,elapsed_ms:60000};
+    vi.mocked(api.agent.conversation).mockResolvedValue({...existing,messages:[item,final],statistics:[{sequence:1,message_id:final.id,turn_id:'turn',...total,conclusion:total}]} as unknown as ConversationPage);
+    await mount();const header=(await screen.findByText('progress')).closest('summary')!;
+    expect(header).toHaveTextContent('total · token: 97.4K · tools: 4 calls / 3 rounds');expect(header).toHaveTextContent('Total 1m 0s');expect(header).toHaveTextContent('Completed');expect(header).not.toHaveTextContent('calling:');
   });
   it('reloads the baseline instead of dropping older messages when another reader replaced the history generation',async()=>{
     const original=await api.agent.conversation(session.id);

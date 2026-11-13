@@ -125,6 +125,7 @@ const timeColor=(seconds:number)=>seconds>=60?'var(--error)':seconds>=30?'#e57b1
 interface ProgressSummaryProps {
   agent: AgentDescriptor; agentName: string; count: number; active: boolean;
   progress?: import('../lib/api').ConversationProgressStatistics | null;
+  progressScope?: 'total'|'turn'; completed?: boolean;
   stepDuration?: number|null; stepRunning?: boolean; phaseSeconds?: number|null;
   progressPhase: 'calling'|'waiting'|'unknown'; callingLabel: string|null; turnDuration?: number|null;
 }
@@ -135,6 +136,8 @@ function ProgressSection({
   count,
   active,
   progress,
+  progressScope,
+  completed,
   stepDuration,
   stepRunning,
   phaseSeconds,
@@ -160,7 +163,7 @@ function ProgressSection({
           aria-label={`${open ? "收起" : "展开"}进展（${count} 条）`}
           aria-expanded={open}
         >
-          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} progress={progress} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} callingLabel={callingLabel} turnDuration={turnDuration}/>
+          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} progress={progress} progressScope={progressScope} completed={completed} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} callingLabel={callingLabel} turnDuration={turnDuration}/>
           <ChevronDown size={14} className="session-chat-progress-chevron" />
         </summary>
         <div className="session-chat-progress-content">{children}</div>
@@ -169,17 +172,17 @@ function ProgressSection({
   );
 }
 
-function ProgressSummary({agent,agentName,count,active,progress,stepDuration,stepRunning,phaseSeconds,progressPhase,callingLabel,turnDuration}:ProgressSummaryProps) {
+function ProgressSummary({agent,agentName,count,active,progress,progressScope='total',completed,stepDuration,stepRunning,phaseSeconds,progressPhase,callingLabel,turnDuration}:ProgressSummaryProps) {
   return <>
           <span aria-hidden="true"><AgentIcon session={{agent}} className="h-[13px] w-[13px]" /></span>
           <span>{agentName}</span>
           <span className="session-chat-kind">progress</span>
           <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
-          {progress && <span className="session-chat-message-statistics" title="Cumulative recorded usage since the previous conclusion. Rounds update after the following model request; incomplete history is a lower bound.">total · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} / {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
+          {progress && <span className="session-chat-message-statistics" title={progressScope==='total'?'Cumulative recorded usage since the previous conclusion. Incomplete history is a lower bound.':'Recorded usage for this native turn through its last progress update. Incomplete history is a lower bound.'}>{progressScope} · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} / {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
           {active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
           {active&&<span className="session-chat-progress-time">{progressPhase}{callingLabel&&<span title={callingLabel}> ({Array.from(callingLabel).length>18?`${Array.from(callingLabel).slice(0,18).join('')}…`:callingLabel})</span>}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
-          {active&&turnDuration!=null&&<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time since the current user message or follow-up">Turn {formatElapsedEnglish(turnDuration)}</time>}
-          {active && <span className="session-chat-progress-live">In progress</span>}
+          {turnDuration!=null&&<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title={active?'Elapsed time since the current user message or follow-up':'Recorded time from the previous conclusion to this conclusion'}>{active?'Turn':'Total'} {formatElapsedEnglish(turnDuration)}</time>}
+          {active ? <span className="session-chat-progress-live">In progress</span> : completed ? <span className="session-chat-progress-time">Completed</span> : null}
   </>;
 }
 
@@ -1151,7 +1154,7 @@ export function SessionConversation({
           return;
         }
         if (frame.type === "snapshot" || frame.type === "patch") failures = 0;
-        if(frame.type==='progress_statistics'&&frame.native_id===agentNativeId(session)){setProgressStatistics(frame.progress||null);return;}
+        if(frame.type==='progress_statistics'&&frame.native_id===agentNativeId(session)){if(frame.progress)setProgressStatistics(frame.progress);return;}
         if(frame.type==='input_reconciliation'&&frame.native_id===agentNativeId(session)&&Array.isArray(frame.messages)){setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));return;}
         if (
           frame.type === "patch" &&
@@ -2022,10 +2025,14 @@ export function SessionConversation({
                   当前账号没有读取对话的权限。
                 </p>
               )}
-              {groups.map((group) =>
-                group.kind === "message" ? (
-                  bubble(group.message)
-                ) : (
+              {groups.map((group, groupIndex) => {
+                if(group.kind === "message") return bubble(group.message);
+                const last=group.messages.at(-1),next=groups[groupIndex+1];
+                const final=next?.kind==='message'&&next.message.role==='assistant'&&next.message.phase==='final'&&!!next.message.turn_id&&next.message.turn_id===last?.turn_id?next.message:null;
+                const conclusion=final?.statistics?.conclusion;
+                const live=groupIndex>=groups.length-2&&progressStatistics&&last?.turn_id&&last.turn_id===progressStatistics.turn_id?progressStatistics:null;
+                const summary=conclusion?{...conclusion,turn_id:final!.turn_id!}:live||last?.statistics||null;
+                return (
                   <ProgressSection
                     key={`progress-${group.id}`}
                     agent={sessionAgent(session)}
@@ -2037,8 +2044,10 @@ export function SessionConversation({
                     phaseSeconds={phaseSeconds}
                     progressPhase={progressPhase}
                     callingLabel={callingLabel}
-                    turnDuration={progressTimingVisible&&groups.at(-1)===group?turnDuration:null}
-                    progress={busy && groups.at(-1)===group && progressStatistics && (!liveProgress.turn_id||progressStatistics.turn_id===liveProgress.turn_id) && (!group.messages.at(-1)?.turn_id||group.messages.at(-1)?.turn_id===progressStatistics.turn_id)?progressStatistics:null}
+                    turnDuration={progressTimingVisible&&groups.at(-1)===group?turnDuration:conclusion?.elapsed_ms??null}
+                    completed={!!final}
+                    progressScope={conclusion||live?'total':'turn'}
+                    progress={summary}
                   >
                     {group.messages.map((message, index) => (
                       <div
@@ -2056,8 +2065,8 @@ export function SessionConversation({
                       </div>
                     ))}
                   </ProgressSection>
-                ),
-              )}
+                );
+              })}
               {waitingForText && continuingAfterFollowup && !sending && (
                 <div className="session-chat-agent session-chat-progress-toggle session-chat-pending-progress" role="status">
                   <ProgressSummary agent={sessionAgent(session)} agentName={agentName} count={0} active progress={progressForTurn} stepDuration={stepDuration} stepRunning={currentActivity?.status==='running'} phaseSeconds={phaseSeconds} progressPhase={progressPhase} callingLabel={callingLabel} turnDuration={turnDuration}/>
