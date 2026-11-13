@@ -57,6 +57,19 @@ describe('conversation send transaction', () => {
     await act(async()=>stop.resolve({status:'accepted'}));expect(button).toBeDisabled();
     act(()=>Socket.latest.emit({type:'snapshot',messages:[],busy:false,stage:'idle',turn_id:'active-turn'}));expect(screen.queryByRole('button',{name:'停止当前执行'})).not.toBeInTheDocument();
   });
+  it('uses Escape to stop the active conversation while respecting composition and dialogs',async()=>{
+    const stop=deferred<{status:'accepted'}>(),call=vi.spyOn(api.agent,'stopTurn').mockReturnValue(stop.promise),descriptor=sessionAgent(session);
+    await mount({...session,agent:{...descriptor,capabilities:{...descriptor.capabilities,stopTurn:true}}});
+    const editor=screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'});fireEvent.keyDown(editor,{key:'Escape'});expect(call).not.toHaveBeenCalled();
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[],busy:true,stage:'tools',turn_id:'active-turn',started_at:new Date().toISOString()}));
+    fireEvent.keyDown(editor,{key:'Escape',isComposing:true});fireEvent.keyDown(editor,{key:'Escape',repeat:true});expect(call).not.toHaveBeenCalled();
+    const select=document.createElement('select');editor.closest('section')!.appendChild(select);fireEvent.keyDown(select,{key:'Escape'});expect(call).not.toHaveBeenCalled();select.remove();
+    const modal=document.createElement('div');modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');document.body.appendChild(modal);
+    fireEvent.keyDown(editor,{key:'Escape'});expect(call).not.toHaveBeenCalled();modal.remove();
+    const unrelated=document.createElement('input');document.body.appendChild(unrelated);fireEvent.keyDown(unrelated,{key:'Escape'});expect(call).not.toHaveBeenCalled();unrelated.remove();
+    fireEvent.keyDown(editor,{key:'Escape'});fireEvent.keyDown(editor,{key:'Escape'});expect(call).toHaveBeenCalledExactlyOnceWith(session.id,'active-turn');
+    await act(async()=>stop.resolve({status:'accepted'}));
+  });
   it('keeps an uncertain stop from being retried until the turn state changes',async()=>{
     const call=vi.spyOn(api.agent,'stopTurn').mockRejectedValue(new Error('timeout'));const descriptor=sessionAgent(session);
     await mount({...session,agent:{...descriptor,capabilities:{...descriptor.capabilities,stopTurn:true}}});

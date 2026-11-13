@@ -1766,7 +1766,7 @@ export function SessionConversation({
       stoppingRef.current=null;setStoppingTurn(null);setStopError('');
     }
   },[busy,liveProgress.turn_id,session.id]);
-  async function stopCurrentTurn(){
+  const stopCurrentTurn=useCallback(async()=>{
     const turnId=liveProgress.turn_id;
     if(!turnId||stoppingRef.current||liveState!=='connected')return;
     const request={sessionId:session.id,turnId};stoppingRef.current=request;setStoppingTurn(turnId);setStopError('');
@@ -1776,8 +1776,20 @@ export function SessionConversation({
       if(error instanceof ApiError&&error.status>=400&&error.status<500){stoppingRef.current=null;setStoppingTurn(null);setStopError(error.message);}
       else setStopError('停止结果暂未确认，请等待会话状态更新。');
     }
-  }
-  const stopButton=busy&&canSend&&agentSupports(session,'stopTurn')?<button type="button" className="session-chat-stop" aria-label={stoppingTurn?'正在停止当前执行':'停止当前执行'} title={stoppingTurn?'停止请求已发送，等待状态更新':'停止当前执行，保留会话和草稿'} disabled={!!stoppingTurn||liveState!=='connected'||!liveProgress.turn_id} onClick={()=>void stopCurrentTurn()}>{stoppingTurn?<Loader2 size={17} className="animate-spin"/>:<Square size={16}/>}</button>:null;
+  },[liveProgress.turn_id,liveState,session.id]);
+  useEffect(()=>{
+    if(!active||!busy||!canSend||!agentSupports(session,'stopTurn')||liveState!=='connected'||!liveProgress.turn_id)return;
+    const onKeyDown=(event:KeyboardEvent)=>{
+      if(event.key!=='Escape'||event.defaultPrevented||event.repeat||event.isComposing||event.keyCode===229||event.altKey||event.ctrlKey||event.metaKey||event.shiftKey)return;
+      if(document.querySelector('[role="dialog"][aria-modal="true"], [role="alertdialog"], dialog[open]'))return;
+      const target=event.target;
+      if(target instanceof Element&&target.closest('select, [role="menu"], [role="listbox"], [role="combobox"]'))return;
+      if(target instanceof Element&&!readingRoot.current?.contains(target)&&target.closest('input, textarea, [contenteditable]:not([contenteditable="false"])'))return;
+      event.preventDefault();void stopCurrentTurn();
+    };
+    window.addEventListener('keydown',onKeyDown);return()=>window.removeEventListener('keydown',onKeyDown);
+  },[active,busy,canSend,session,liveState,liveProgress.turn_id,stopCurrentTurn]);
+  const stopButton=busy&&canSend&&agentSupports(session,'stopTurn')?<button type="button" className="session-chat-stop" aria-keyshortcuts="Escape" aria-label={stoppingTurn?'正在停止当前执行':'停止当前执行'} title={stoppingTurn?'停止请求已发送，等待状态更新':'停止当前执行（Esc），保留会话和草稿'} disabled={!!stoppingTurn||liveState!=='connected'||!liveProgress.turn_id} onClick={()=>void stopCurrentTurn()}>{stoppingTurn?<Loader2 size={17} className="animate-spin"/>:<Square size={16}/>}</button>:null;
   const waitingForText =
     !compaction.running && busy && !currentAnswer && !activeError && !waiting;
   const ignoredKey = JSON.stringify(page?.runtime?.ignored_question_ids || []);
