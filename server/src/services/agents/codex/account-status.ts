@@ -8,7 +8,7 @@ import {codexWeeklyQuotaFromResponse} from './quota.js';
 let timer:ReturnType<typeof setTimeout>|undefined,stopped=true;
 const pending=new Map<string,Promise<void>>();
 const identity=(id:string)=>{const e=getCodexEnvironment(id);return JSON.stringify(e.kind==='account'?[e.connection?.username,e.connection?.codexHome]:['native',localHome(e)]);};
-export function initAccountStatus(){getDb().exec('CREATE TABLE IF NOT EXISTS codex_account_status(account TEXT PRIMARY KEY,identity TEXT NOT NULL,data TEXT,checked_at TEXT,error TEXT)');}
+export function initAccountStatus(){getDb().exec(`CREATE TABLE IF NOT EXISTS codex_account_status(account TEXT PRIMARY KEY,identity TEXT NOT NULL,data TEXT,checked_at TEXT,error TEXT); CREATE TABLE IF NOT EXISTS codex_quota_samples(account TEXT NOT NULL,identity TEXT NOT NULL,email TEXT NOT NULL,checked_at TEXT NOT NULL,reset_at REAL NOT NULL,used REAL NOT NULL,PRIMARY KEY(account,checked_at)); CREATE INDEX IF NOT EXISTS codex_quota_samples_account ON codex_quota_samples(account,identity,checked_at);`);}
 /** Only the scheduler contacts account APIs. Both HTTP views read this snapshot. */
 export async function collectAccountStatus(id:string):Promise<void>{
  if(pending.has(id))return pending.get(id)!;
@@ -25,7 +25,14 @@ export async function collectAccountStatus(id:string):Promise<void>{
     return {account:{email:typeof auth.account.email==='string'?auth.account.email:null,plan:typeof auth.account.planType==='string'?auth.account.planType:typeof snapshot?.planType==='string'?snapshot.planType:null},quota,windows:[snapshot?.primary,snapshot?.secondary].filter(w=>w&&Number.isFinite(w.usedPercent)).map(w=>({usedPercent:w.usedPercent,windowDurationMins:finite(w.windowDurationMins),resetsAt:finite(w.resetsAt)})),resets:raw&&Number.isInteger(raw.availableCount)&&raw.availableCount>=0?{availableCount:raw.availableCount,credits:Array.isArray(raw.credits)?raw.credits.slice(0,100).map((c:any)=>({expiresAt:finite(c.expiresAt),grantedAt:finite(c.grantedAt),status:typeof c.status==='string'?c.status:null})):null}:null};
    }));
    if(identity(id)!==source||!getCodexEnvironment(id).enabled)return;
-   db.prepare('INSERT OR REPLACE INTO codex_account_status VALUES(?,?,?,?,NULL)').run(id,source,JSON.stringify(data),new Date().toISOString());
+   const checkedAt=new Date().toISOString();
+   db.transaction(()=>{
+    db.prepare('INSERT OR REPLACE INTO codex_account_status VALUES(?,?,?,?,NULL)').run(id,source,JSON.stringify(data),checkedAt);
+    const weekly=data.windows.find(w=>w.windowDurationMins===10080);
+    if(data.account.email&&weekly&&weekly.resetsAt!=null&&weekly.resetsAt*1000>Date.parse(checkedAt)&&weekly.usedPercent>=0&&weekly.usedPercent<=100)
+     db.prepare('INSERT OR IGNORE INTO codex_quota_samples VALUES(?,?,?,?,?,?)').run(id,source,data.account.email,checkedAt,weekly.resetsAt,weekly.usedPercent);
+    db.prepare('DELETE FROM codex_quota_samples WHERE checked_at < ?').run(new Date(Date.parse(checkedAt)-90*86400000).toISOString());
+   })();
   }catch{
    db.prepare("INSERT INTO codex_account_status(account,identity,error) VALUES(?,?,'账号状态采集失败，保留上次成功数据') ON CONFLICT(account) DO UPDATE SET data=CASE WHEN identity=excluded.identity THEN data ELSE NULL END,checked_at=CASE WHEN identity=excluded.identity THEN checked_at ELSE NULL END,identity=excluded.identity,error=excluded.error").run(id,source);
   }
@@ -36,6 +43,11 @@ export function cachedAccountStatus(id:string){
  const data=row?.data?JSON.parse(row.data):{account:{email:null,plan:null},windows:[],resets:null,quota:null};
  const stale=!!row?.error||!!row?.checked_at&&Date.now()-Date.parse(row.checked_at)>600000;
  return {...data,quota:data.quota?{...data.quota,...stale?{stale:true}:{}}:null,checked_at:row?.checked_at??null,error:row?.error??null,stale,pending:!row?.data};
+}
+export function quotaSamples(id:string){
+ const db=getDb();
+ if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='codex_quota_samples'").get())return [];
+ return db.prepare('SELECT checked_at,reset_at,used,email FROM codex_quota_samples WHERE account=? AND identity=? ORDER BY checked_at').all(id,identity(id)) as Array<{checked_at:string;reset_at:number;used:number;email:string}>;
 }
 export function startAccountStatus(){initAccountStatus();stopped=false;const tick=async()=>{try{for(const e of allCodexEnvironments()){if(stopped)break;if(e.enabled&&e.kind!=='provider')await collectAccountStatus(e.id);}}catch{/* Retry on the next scheduled pass. */}finally{if(!stopped){timer=setTimeout(()=>void tick(),300000);timer.unref();}}};timer=setTimeout(()=>void tick(),1000);timer.unref();}
 export async function stopAccountStatus(){stopped=true;clearTimeout(timer);await Promise.allSettled([...pending.values()]);}

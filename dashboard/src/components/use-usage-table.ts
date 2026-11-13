@@ -11,7 +11,7 @@ function periodKey(row:UsageRow,dimension:Dimension){const date=row.date;if(dime
 const collator=new Intl.Collator('zh-CN',{numeric:true,sensitivity:'base'});
 function value(group:UsageGroup,key:string):string|number|null{
  const m=group.metrics;
- switch(key){case 'label':return group.label;case 'cwd':return group.detail||null;case 'input':return number(m,'input_tokens');case 'cached':return number(m,'cached_input_tokens');case 'uncached':return uncached(m);case 'hit':return hit(m);case 'output':return number(m,'output_tokens');case 'total':return number(m,'total_tokens');case 'credits':case 'share':return m.estimated_credits??null;default:return null;}
+ switch(key){case 'label':return group.label;case 'cwd':return group.detail||null;case 'input':return number(m,'input_tokens');case 'cached':return number(m,'cached_input_tokens');case 'uncached':return uncached(m);case 'hit':return hit(m);case 'output':return number(m,'output_tokens');case 'total':return number(m,'total_tokens');case 'actual':return m.actual_quota??null;case 'credits':case 'share':return m.estimated_credits??null;default:return null;}
 }
 function sortGroups(groups:UsageGroup[],sort:{key:string;direction:'asc'|'desc'}|null):UsageGroup[]{
  const result=groups.map(group=>({...group,children:sortGroups(group.children,sort)}));if(!sort)return result;
@@ -29,6 +29,7 @@ export function useUsageTable(rows:UsageRow[],dimension:Dimension){
   {key:'hit',title:'Cache hit',kind:'number',filterMode:'range',value:hit},
   {key:'output',title:'Output tokens',kind:'number',filterMode:'range',value:r=>number(r,'output_tokens')},
   {key:'total',title:'Total tokens',kind:'number',filterMode:'range',value:r=>number(r,'total_tokens')},
+  {key:'actual',title:'耗用额度',kind:'number',filterMode:'range',value:r=>r.actual_quota??null},
   {key:'credits',title:'Est. credits',kind:'number',filterMode:'range',value:r=>r.estimated_credits??null},
  ],[dimension]);
  const base=useTableModel(leaves,columns);

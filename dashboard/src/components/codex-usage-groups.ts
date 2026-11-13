@@ -1,4 +1,4 @@
-export type Metrics={tokens:Record<string,number|null>;estimated_credits?:number|null;credit_coverage?:{covered:number;total:number}|null};
+export type Metrics={tokens:Record<string,number|null>;estimated_credits?:number|null;actual_quota?:number|null;credit_coverage?:{covered:number;total:number}|null};
 export type ModelUsage=Metrics&{model:string|null};
 export type UsageRow=Metrics&{date:string;hour?:string|null;cwd:string;project_name?:string;models?:ModelUsage[]};
 export type Dimension='hour'|'day'|'week'|'month'|'project'|'model';
@@ -9,7 +9,7 @@ export function aggregateMetrics(rows:Metrics[]):Metrics{
  const fields=new Set(rows.flatMap(r=>Object.keys(r.tokens)));
  const tokens=Object.fromEntries([...fields].map(k=>[k,rows.some(r=>r.tokens[k]==null)?null:rows.reduce((n,r)=>n+r.tokens[k]!,0)]));
  const known=rows.filter(r=>r.estimated_credits!=null);
- return {tokens,estimated_credits:known.length?known.reduce((n,r)=>n+r.estimated_credits!,0):null,credit_coverage:{covered:rows.reduce((n,r)=>n+(r.credit_coverage?.covered??(r.estimated_credits!=null?1:0)),0),total:rows.reduce((n,r)=>n+(r.credit_coverage?.total??1),0)}};
+ return {tokens,actual_quota:rows.some(r=>r.actual_quota!=null)?rows.reduce((n,r)=>n+(r.actual_quota??0),0):null,estimated_credits:known.length?known.reduce((n,r)=>n+r.estimated_credits!,0):null,credit_coverage:{covered:rows.reduce((n,r)=>n+(r.credit_coverage?.covered??(r.estimated_credits!=null?1:0)),0),total:rows.reduce((n,r)=>n+(r.credit_coverage?.total??1),0)}};
 }
 /** Keep counters and denominators consistent with the records visible in the UI. */
 export function estimatableUsageRows(rows:UsageRow[]):UsageRow[]{

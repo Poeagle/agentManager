@@ -1,4 +1,6 @@
 import {getDb} from '../../../db/index.js';
+import {quotaSamples} from './account-status.js';
+import {allocateQuota} from './quota-allocation.js';
 import {allCodexEnvironments,environmentConnection,getCodexEnvironment} from './environments.js';
 import {localHome} from './account-files.js';
 import {accountCommandInput,localCommandInput} from './account-transport.js';
@@ -34,6 +36,7 @@ export function initAccountUsage(){initUsageProvenance();getDb().exec(`
  CREATE TABLE IF NOT EXISTS codex_usage_events(account TEXT NOT NULL,event_key TEXT NOT NULL,day TEXT NOT NULL,cwd TEXT NOT NULL,model TEXT,tier TEXT,tokens TEXT NOT NULL,PRIMARY KEY(account,event_key));
  CREATE INDEX IF NOT EXISTS codex_usage_days ON codex_usage_events(account,day);
  CREATE TABLE IF NOT EXISTS codex_usage_status(account TEXT PRIMARY KEY,checked_at TEXT,error TEXT,partial INTEGER NOT NULL DEFAULT 1);
+ CREATE TABLE IF NOT EXISTS codex_usage_scan_boundary(account TEXT PRIMARY KEY,started_at TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS codex_usage_sources(account TEXT PRIMARY KEY,identity TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS codex_usage_progress(account TEXT PRIMARY KEY,data TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS codex_usage_event_ids(account TEXT NOT NULL,event_id BLOB NOT NULL,day TEXT NOT NULL,PRIMARY KEY(account,event_id));
@@ -45,6 +48,7 @@ export function initAccountUsage(){initUsageProvenance();getDb().exec(`
  initUsageTimeStorage();
  const db=getDb();
  if(!(db.prepare('PRAGMA table_info(codex_usage_dedup_events)').all() as {name:string}[]).some(column=>column.name==='hour'))db.exec('ALTER TABLE codex_usage_dedup_events ADD COLUMN hour TEXT');
+ if(!(db.prepare('PRAGMA table_info(codex_usage_dedup_events)').all() as {name:string}[]).some(column=>column.name==='at'))db.exec('ALTER TABLE codex_usage_dedup_events ADD COLUMN at TEXT');
  if(!(db.prepare('PRAGMA table_info(codex_usage_dedup_status)').all() as {name:string}[]).some(column=>column.name==='hour_backfilled'))db.exec('ALTER TABLE codex_usage_dedup_status ADD COLUMN hour_backfilled INTEGER NOT NULL DEFAULT 0');
 }
 export async function collectAccountUsage(id:string,options:{rebuild?:boolean}={}):Promise<void>{
@@ -59,7 +63,7 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean}={
    try{const old=JSON.parse(source.identity),current=JSON.parse(identity);if(Array.isArray(old[2])&&old[0]===current[0]&&old[1]===current[1]&&old[2].some((r:unknown)=>Array.isArray(r)&&r[0]===id&&r[1]===current[1]&&r[2]===current[2])){db.prepare('UPDATE codex_usage_sources SET identity=? WHERE account=?').run(identity,id);source={identity};}}catch{/* An incompatible source requires a fresh baseline. */}
   }
   if(!options.rebuild&&source?.identity!==identity)db.transaction(()=>{
-   for(const table of ['codex_usage_snapshots','codex_usage_events','codex_usage_status','codex_usage_progress','codex_usage_event_ids','codex_usage_ledger','codex_usage_dedup_events','codex_usage_dedup_status','codex_usage_unassigned'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
+   for(const table of ['codex_usage_snapshots','codex_usage_events','codex_usage_status','codex_usage_scan_boundary','codex_usage_progress','codex_usage_event_ids','codex_usage_ledger','codex_usage_dedup_events','codex_usage_dedup_status','codex_usage_unassigned'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
    if(source)db.prepare('DELETE FROM codex_usage_origins WHERE account=?').run(id);
    db.prepare('INSERT OR REPLACE INTO codex_usage_sources VALUES(?,?)').run(id,identity);
   })();
@@ -82,6 +86,7 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean}={
    if(known.length>2000000)throw Error('Usage identity limit exceeded');
    const input=JSON.stringify({home,mode,day,days,timezone,previous_timezone:previousTimezone,rebin,baseline_at:baseline,known_events:Buffer.concat(known.map(r=>r.event_id)).toString('base64'),origins:usageOrigins(id),includeEvents:true,rebuildEvents:initialized&&dedupStatus?.ready!==1});
    const commandOptions={timeoutMs:mode==='full'?300000:120000,maxOutputBytes:256*1024*1024,signal:controller.signal};
+   const scanStartedAt=new Date().toISOString();
    const result=JSON.parse(await (e.kind==='account'?accountCommandInput(environmentConnection(e),USAGE_SCAN,input,commandOptions):localCommandInput(USAGE_SCAN,input,commandOptions)));
    if(!Array.isArray(result.rows)||result.rows.length>50000||result.mode!==mode||result.day!==day)throw Error('Invalid usage response');
    const requestsPerDay=new Map<string,number>();
@@ -101,12 +106,12 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean}={
    }
    if(result.rows.reduce((n:number,r:any)=>n+r.requests,0)!==count)throw Error('Usage identity count mismatch');
    if(rebin&&(!Array.isArray(result.matched_rows)||result.matched_rows.length>50000||result.matched_rows.some((r:MatchedUsage)=>typeof r.legacy!=='boolean'||!/^\d{4}-\d{2}-\d{2}$/.test(r.day)||typeof r.cwd!=='string'||r.cwd.length>4096||!Number.isSafeInteger(r.requests)||r.requests<1||!r.tokens||tokenFields.some(k=>r.tokens[k]!==null&&(!Number.isFinite(r.tokens[k])||r.tokens[k]!<0)))))throw Error('Invalid timezone reconciliation');
-   if(!Array.isArray(result.events)||result.events.length>USAGE_EVENT_LIMIT||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||event.legacy_key!=null&&!/^[a-f0-9]{64}$/.test(event.legacy_key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||event.hour!=null&&(!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):00:00(?:Z|[+-]\d{2}:\d{2})$/.test(event.hour)||!event.hour.startsWith(event.day))||mode==='daily'&&!days.includes(event.day)||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
+   if(!Array.isArray(result.events)||result.events.length>USAGE_EVENT_LIMIT||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||event.legacy_key!=null&&!/^[a-f0-9]{64}$/.test(event.legacy_key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||event.at!=null&&(typeof event.at!=='string'||!Number.isFinite(Date.parse(event.at)))||event.hour!=null&&(!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):00:00(?:Z|[+-]\d{2}:\d{2})$/.test(event.hour)||!event.hour.startsWith(event.day))||mode==='daily'&&!days.includes(event.day)||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
    if(options.rebuild&&(result.events_truncated||result.events.length!==count||result.events.some((event:any)=>!event.hour)||(result.errors&&count===0)))throw Error('Rebuild incomplete');
    const current=getCodexEnvironment(id);if((!current.enabled&&!options.rebuild)||usageIdentity(current)!==identity){if(options.rebuild)throw Error('Environment changed');return;}
    db.transaction(()=>{
     if(options.rebuild){
-     for(const table of ['codex_usage_snapshots','codex_usage_events','codex_usage_status','codex_usage_progress','codex_usage_event_ids','codex_usage_ledger','codex_usage_dedup_events','codex_usage_dedup_status','codex_usage_unassigned'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
+     for(const table of ['codex_usage_snapshots','codex_usage_events','codex_usage_status','codex_usage_scan_boundary','codex_usage_progress','codex_usage_event_ids','codex_usage_ledger','codex_usage_dedup_events','codex_usage_dedup_status','codex_usage_unassigned'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
      db.prepare('INSERT OR REPLACE INTO codex_usage_sources VALUES(?,?)').run(id,identity);
     }
     // Request identities and aggregates commit together. Missing/truncated files
@@ -122,19 +127,36 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean}={
      const tokens=old?Object.fromEntries(tokenFields.map(k=>[k,old[k]==null||row.tokens[k]===null?null:old[k]+row.tokens[k]])):row.tokens;
      insert.run(id,key,row.day,row.cwd,row.model||null,row.tier||null,JSON.stringify({...tokens,requests:row.requests+(old?.requests??0)}));
     }
-    const eventInsert=db.prepare('INSERT INTO codex_usage_dedup_events(account,event_key,day,cwd,model,tier,provider,tokens,hour) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(account,event_key) DO UPDATE SET day=excluded.day,cwd=excluded.cwd,model=excluded.model,tier=excluded.tier,provider=excluded.provider,tokens=excluded.tokens,hour=COALESCE(excluded.hour,hour)');
-    for(const event of result.events)eventInsert.run(id,event.key,event.day,event.cwd,event.model||null,event.tier||null,event.provider||null,JSON.stringify({...event.tokens,_timezone:timezone,...event.legacy_key?{_legacy_key:event.legacy_key}:{}}),event.hour||null);
+    const eventInsert=db.prepare('INSERT INTO codex_usage_dedup_events(account,event_key,day,cwd,model,tier,provider,tokens,hour,at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account,event_key) DO UPDATE SET day=excluded.day,cwd=excluded.cwd,model=excluded.model,tier=excluded.tier,provider=excluded.provider,tokens=excluded.tokens,hour=COALESCE(excluded.hour,hour),at=COALESCE(excluded.at,at)');
+    for(const event of result.events)eventInsert.run(id,event.key,event.day,event.cwd,event.model||null,event.tier||null,event.provider||null,JSON.stringify({...event.tokens,_timezone:timezone,...event.legacy_key?{_legacy_key:event.legacy_key}:{}}),event.hour||null,event.at||null);
     db.prepare('INSERT INTO codex_usage_dedup_status(account,ready) VALUES(?,?) ON CONFLICT(account) DO UPDATE SET ready=excluded.ready').run(id,!result.events_truncated&&(mode==='full'||dedupStatus?.ready===1)?1:0);
     if(options.rebuild)db.prepare('UPDATE codex_usage_dedup_status SET hour_backfilled=1 WHERE account=?').run(id);
     db.prepare('INSERT INTO codex_usage_ledger(account,baseline_at,last_day,timezone) VALUES(?,?,?,?) ON CONFLICT(account) DO UPDATE SET last_day=excluded.last_day,timezone=excluded.timezone').run(id,baseline,day,timezone);
     db.prepare('INSERT OR REPLACE INTO codex_usage_snapshots VALUES(?,1)').run(id);
     const historicalIncomplete=mode==='daily'&&prior?.error==='部分记录不可读取或缺少统计字段';
     db.prepare('INSERT OR REPLACE INTO codex_usage_status VALUES(?,?,?,?)').run(id,new Date().toISOString(),result.errors||historicalIncomplete?'部分记录不可读取或缺少统计字段':null,result.partial||result.errors||historicalIncomplete?1:0);
+    db.prepare('INSERT OR REPLACE INTO codex_usage_scan_boundary VALUES(?,?)').run(id,scanStartedAt);
     if(result.progress)db.prepare('INSERT OR REPLACE INTO codex_usage_progress VALUES(?,?)').run(id,JSON.stringify(result.progress));
    })();
   }catch(error){const message=error instanceof Error&&error.message==='历史目录无法独立归属'?'历史目录与其他 Engine 共用或无法确认，未统计以避免重复':'采集失败，保留上次成功数据';if(options.rebuild)throw Object.assign(Error(message),{statusCode:409});db.prepare('INSERT INTO codex_usage_status(account,error,partial) VALUES(?,?,1) ON CONFLICT(account) DO UPDATE SET error=excluded.error,partial=1').run(id,message);}
   finally{controllers.delete(id);}
  })();pending.set(id,task);try{await task;}finally{pending.delete(id);}
+}
+function allocatedQuota(id:string){
+ const db=getDb(),samples=quotaSamples(id);
+ if(samples.length<2)return new Map<string,number>();
+ const status=db.prepare('SELECT checked_at,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;partial:number}|undefined;
+ const ready=db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
+ if(!ready?.ready||!status||status.partial)return new Map<string,number>();
+ const events=db.prepare('SELECT at,day,hour,cwd,model,tier,tokens FROM codex_usage_dedup_events WHERE account=? AND at IS NOT NULL AND julianday(at)>julianday(?) AND julianday(at)<=julianday(?) ORDER BY at LIMIT ?').all(id,samples[0].checked_at,samples[samples.length-1].checked_at,USAGE_EVENT_LIMIT+1) as Array<{at:string;day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;tokens:string}>;
+ if(events.length>USAGE_EVENT_LIMIT)return new Map<string,number>();
+ const boundary=db.prepare('SELECT started_at FROM codex_usage_scan_boundary WHERE account=?').get(id) as {started_at:string}|undefined;
+ const hourly=allocateQuota(samples,events,boundary?.started_at??null),result=new Map(hourly);
+ for(const [key,value] of hourly){const [day,,cwd,model]=JSON.parse(key);const daily=JSON.stringify([day,null,cwd,model]);result.set(daily,(result.get(daily)??0)+value);}
+ return result;
+}
+function quotaByModel(allocation:Map<string,number>,day:string,cwd:string,model:string|null,hour?:string|null){
+ return allocation.get(JSON.stringify([day,hour??null,cwd,model]))??null;
 }
 export function cachedAccountUsage(id:string){
  const db=getDb(),timezone=usageStoredTimezone(id),timezone_pending=timezone!==usageTimezone()?usageTimezone():null,unassigned=unassignedUsage(id);
@@ -156,13 +178,14 @@ export function cachedAccountUsage(id:string){
   model.credit_coverage.total+=row.requests;if(value!==null){model.estimated_credits=(model.estimated_credits??0)+value;model.credit_coverage.covered+=row.requests;}
   byModel.set(modelKey,model);models.set(key,byModel);
  }
+ const allocation=allocatedQuota(id);
  const projects=db.prepare('SELECT name,path FROM projects').all() as {name:string;path:string}[];
  const progress=db.prepare('SELECT data FROM codex_usage_progress WHERE account=?').get(id) as {data:string}|undefined;
  const initialized=!!db.prepare('SELECT account FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
  return {initialized,checked_at:status?.checked_at??null,error:status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:status?.partial!==0||rows.length>5000||!!timezone_pending||!!unassigned,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:rows.slice(0,5000).map(row=>{
   const match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];
   const estimate=estimates.get(JSON.stringify([row.day,row.cwd]));
-  return {date:row.day,cwd:row.cwd,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null,models:[...(models.get(JSON.stringify([row.day,row.cwd]))?.values()||[])].sort((a,b)=>(b.tokens.total_tokens??0)-(a.tokens.total_tokens??0))};
+  return {date:row.day,cwd:row.cwd,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null,models:[...(models.get(JSON.stringify([row.day,row.cwd]))?.values()||[])].map(model=>({...model,actual_quota:quotaByModel(allocation,row.day,row.cwd,model.model)})).sort((a,b)=>(b.tokens.total_tokens??0)-(a.tokens.total_tokens??0))};
  })};
 }
 /** Populate timestamps only for previously recorded event identities. Existing
@@ -250,8 +273,9 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   const knownHourly=[...grouped.values()].reduce((sum,row)=>sum+(row.tokens.total_tokens??0),0);
   if(knownDaily!==knownHourly||daily.rows.some(row=>row.tokens.total_tokens==null))partial=true;
  }
+ const allocation=single?allocatedQuota(ids[0]):new Map<string,number>();
  const projects=db.prepare('SELECT name,path FROM projects').all() as {name:string;path:string}[];
- return {initialized:checked.length>0,checked_at:checked.sort()[0]??null,timezone,unassigned:single?unassignedUsage(ids[0]):retained.requests?retained:null,credit_rate_date:CREDIT_RATE_DATE,partial,error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()],known=entries.filter(m=>m.estimated_credits!==null),match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];return {...row,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
+ return {initialized:checked.length>0,checked_at:checked.sort()[0]??null,timezone,unassigned:single?unassignedUsage(ids[0]):retained.requests?retained:null,credit_rate_date:CREDIT_RATE_DATE,partial,error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()].map(model=>({...model,actual_quota:quotaByModel(allocation,row.date,row.cwd,model.model,row.hour)})),known=entries.filter(m=>m.estimated_credits!==null),match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];return {...row,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
 }
 export function startAccountUsage(){initAccountUsage();stopped=false;const tick=async()=>{try{const environments=allCodexEnvironments();for(const e of environments){if(stopped)break;if(e.enabled)await collectAccountUsage(e.id);}for(const e of environments){if(stopped)break;if(e.enabled)await backfillUsageHours(e.id);}}catch{/* Configuration may be changing; retry on the next scheduled pass. */}finally{if(!stopped){timer=setTimeout(()=>void tick(),300000);timer.unref();}}};timer=setTimeout(()=>void tick(),1000);timer.unref();}
 export async function stopAccountUsage(){stopped=true;clearTimeout(timer);for(const controller of controllers.values())controller.abort();await Promise.allSettled([...pending.values(),...hourlyPending.values()]);}

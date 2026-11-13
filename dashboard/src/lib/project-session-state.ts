@@ -5,6 +5,21 @@ export interface TerminalInstance {
   customLabel?: string;
 }
 
+export function nextDefaultTabName(prefix: string, tabs: TerminalInstance[]): string {
+  const used = new Set(tabs.map(tab => (tab.customLabel?.trim() || tab.label).toLocaleLowerCase()));
+  let number = 1;
+  while (used.has(`${prefix} ${number}`.toLocaleLowerCase())) number++;
+  return `${prefix} ${number}`;
+}
+
+export function uniqueTabName(name: string, tabs: TerminalInstance[], id: string): string {
+  const used = new Set(tabs.filter(tab => tab.id !== id).map(tab => (tab.customLabel?.trim() || tab.label).toLocaleLowerCase()));
+  if (!used.has(name.toLocaleLowerCase())) return name;
+  let suffix = 2;
+  while (used.has(`${name} (${suffix})`.toLocaleLowerCase())) suffix++;
+  return `${name} (${suffix})`;
+}
+
 /**
  * Reconcile the fast localStorage snapshot with the cross-device server state.
  *

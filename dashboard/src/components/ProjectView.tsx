@@ -24,7 +24,7 @@ import { LiveSessionSignalDot } from '../lib/session-signal';
 import { SessionTabLabel } from '../lib/session-activity';
 import { promoteWarmTerminal, TERMINAL_COLD_DELAY_MS } from '../lib/warm-terminal-pool';
 import {
-  reconcileHydratedTerminalInstances,
+  reconcileHydratedTerminalInstances, uniqueTabName, nextDefaultTabName,
   type TerminalInstance,
 } from '../lib/project-session-state';
 import { moveItemByKey, orderItemsByKeys } from '../lib/reorder';
@@ -77,7 +77,7 @@ function sessionTabKind(session: Session): 'session' | 'terminal' {
 function nextSessionTabLabel(session: Session, tabs: TerminalInstance[]): string {
   const kind = sessionTabKind(session);
   const prefix = kind === 'terminal' ? 'Terminal' : 'Session';
-  return `${prefix} ${tabs.filter((tab) => tab.label.startsWith(prefix)).length + 1}`;
+  return nextDefaultTabName(prefix, tabs);
 }
 
 function loadPersistedState(userId: string, projectId: string): PersistedState | null {
@@ -221,6 +221,22 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const [terminalInstances, setTerminalInstances] = useState<TerminalInstance[]>(
     initialized?.terminalInstances ?? []
   );
+  useEffect(() => {
+    setTerminalInstances(previous => {
+      const seen: TerminalInstance[] = [];
+      let changed = false;
+      for (const tab of previous) {
+        const name = tab.customLabel?.trim() || tab.label;
+        const unique = uniqueTabName(name, seen, tab.id);
+        if (unique !== name) {
+          changed = true;
+          terminalLabelsRef.current[tab.id] = unique;
+          seen.push({ ...tab, customLabel: unique });
+        } else seen.push(tab);
+      }
+      return changed ? seen : previous;
+    });
+  }, [terminalInstances]);
   // Reordering the tab strip must not reorder the mounted xterm DOM nodes.
   // Moving a live WebGL canvas through the DOM can invalidate its painted
   // surface, leaving only the terminal background visible.
@@ -299,7 +315,9 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     setEditingTerminalValue(inst.customLabel?.trim() || inst.label);
   }, []);
   const commitTerminalRename = useCallback((id: string) => {
-    const v = editingTerminalValue.trim();
+    const requested = editingTerminalValue.trim();
+    const currentTab = terminalInstances.find(tab => tab.id === id);
+    const v = uniqueTabName(requested || currentTab?.label || '', terminalInstances, id);
     // Keep the synced label map in lockstep so reconciliation can re-apply it.
     if (v) terminalLabelsRef.current[id] = v;
     else delete terminalLabelsRef.current[id];
@@ -310,7 +328,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     );
     setEditingTerminalId(null);
     setEditingTerminalValue('');
-  }, [editingTerminalValue]);
+  }, [editingTerminalValue, terminalInstances]);
   const cancelTerminalRename = useCallback(() => {
     setEditingTerminalId(null);
     setEditingTerminalValue('');

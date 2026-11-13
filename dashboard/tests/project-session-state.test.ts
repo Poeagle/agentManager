@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
-  reconcileHydratedTerminalInstances,
+  reconcileHydratedTerminalInstances, nextDefaultTabName, uniqueTabName,
 } from '../src/lib/project-session-state';
+
+it('avoids existing displayed names when creating or renaming tabs', () => {
+  const tabs = [{id:'a',label:'Session 2'}, {id:'b',label:'Session 3',customLabel:'session 1'}, {id:'c',label:'other',customLabel:'Session 2 (2)'}];
+  expect(nextDefaultTabName('Session', tabs)).toBe('Session 3');
+  expect(uniqueTabName('Session 2', tabs, 'b')).toBe('Session 2 (3)');
+  expect(uniqueTabName('Session 2', tabs, 'a')).toBe('Session 2');
+});
 
 describe('project terminal state hydration', () => {
   it('does not resurrect ended tabs that exist only in stale localStorage', () => {

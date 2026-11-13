@@ -7,6 +7,12 @@ const first:DraftAttachment={id:'one',kind:'image',name:'first.png',size:100,sta
 function mount(){const submit=vi.fn();function Harness(){const [text,setText]=useState('我的问题'),[items,setItems]=useState([first,second]);return <ConversationImagePreviewRoot><ConversationComposerEditor value={text} items={items} disabled={false} placeholder="输入" projectId="p" projectPath="/project" onChange={setText} onRemove={id=>setItems(current=>current.filter(item=>item.id!==id))} onFiles={()=>{}} onSubmit={submit}/></ConversationImagePreviewRoot>;}render(<Harness/>);return submit;}
 function caret(node:Node,offset:number){const selection=window.getSelection()!,range=document.createRange();range.setStart(node,offset);range.collapse(true);selection.removeAllRanges();selection.addRange(range);}
 describe('attachment text in the composer',()=>{
+ it('previews the local image after upload when a thumbnail is available',()=>{
+  const item={...first,thumbnail:'blob:local-image'};
+  render(<ConversationImagePreviewRoot><ConversationComposerEditor value="" items={[item]} disabled={false} placeholder="输入" projectId="p" projectPath="/project" onChange={()=>{}} onRemove={()=>{}} onFiles={()=>{}} onSubmit={()=>{}}/></ConversationImagePreviewRoot>);
+  fireEvent.click(screen.getByRole('button',{name:'预览待发送图片 first.png'}));
+  expect(screen.getByRole('img',{name:'first.png'})).toHaveAttribute('src','blob:local-image');
+ });
  it('removes an attachment with its desktop button while keeping the text and the next attachment',()=>{
   const submit=mount(),editor=screen.getByRole('textbox');fireEvent.click(screen.getByRole('button',{name:'移除附件 first.png'}));
   expect(screen.queryByRole('button',{name:'预览待发送图片 first.png'})).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'预览待发送图片 second.png'})).toHaveTextContent('图片 1');expect(composerPlainText(editor)).toBe('我的问题');expect(submit).not.toHaveBeenCalled();
