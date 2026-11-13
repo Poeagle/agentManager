@@ -51,6 +51,7 @@ import {
   Copy,
   Loader2,
   Sparkles,
+  Square,
   ChevronDown,
 } from "lucide-react";
 import {
@@ -614,6 +615,8 @@ export function SessionConversation({
   const [older, setOlder] = useState(false);
   const [error, setError] = useState("");
   const [sendError, setSendError] = useState("");
+  const [stoppingTurn,setStoppingTurn]=useState<string|null>(null);
+  const stoppingRef=useRef<{sessionId:string;turnId:string}|null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectError, setReconnectError] = useState("");
   const reconnectAttempted = useRef(false),
@@ -1756,6 +1759,23 @@ export function SessionConversation({
   const elapsed = started
     ? Math.max(0, Math.floor((now - Date.parse(started)) / 1000))
     : 0;
+  useEffect(()=>{
+    if(stoppingRef.current&&(stoppingRef.current.sessionId!==session.id||!busy||liveProgress.turn_id!==stoppingRef.current.turnId)){
+      stoppingRef.current=null;setStoppingTurn(null);
+    }
+  },[busy,liveProgress.turn_id,session.id]);
+  async function stopCurrentTurn(){
+    const turnId=liveProgress.turn_id;
+    if(!turnId||stoppingRef.current||liveState!=='connected')return;
+    const request={sessionId:session.id,turnId};stoppingRef.current=request;setStoppingTurn(turnId);setSendError('');
+    try {await api.agent.stopTurn(session.id,turnId);}
+    catch(error){
+      if(stoppingRef.current!==request)return;
+      if(error instanceof ApiError&&error.status>=400&&error.status<500){stoppingRef.current=null;setStoppingTurn(null);setSendError(error.message);}
+      else setSendError('停止结果暂未确认，请等待会话状态更新。');
+    }
+  }
+  const stopButton=busy&&canSend&&agentSupports(session,'stopTurn')?<button type="button" aria-label={stoppingTurn?'正在停止当前执行':'停止当前执行'} title={stoppingTurn?'停止请求已发送，等待状态更新':'停止当前执行，保留会话和草稿'} disabled={!!stoppingTurn||liveState!=='connected'||!liveProgress.turn_id} onClick={()=>void stopCurrentTurn()}>{stoppingTurn?<Loader2 size={17} className="animate-spin"/>:<Square size={16}/>}</button>:null;
   const waitingForText =
     !compaction.running && busy && !currentAnswer && !activeError && !waiting;
   const ignoredKey = JSON.stringify(page?.runtime?.ignored_question_ids || []);
@@ -2387,6 +2407,7 @@ export function SessionConversation({
               )}
             </div>
           )}
+          {questionActive&&stopButton}
           <form
             hidden={questionActive}
             onSubmit={(event) => {
@@ -2463,6 +2484,7 @@ export function SessionConversation({
                 >
                   <Sparkles size={17} />
                 </button>
+                {!questionActive&&stopButton}
                 <button
                   type="submit"
                   aria-label="发送消息"

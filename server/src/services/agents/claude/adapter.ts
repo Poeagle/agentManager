@@ -39,6 +39,7 @@ export const claudeAdapter: AgentDefinition = {
       "newConversation",
       "reload",
       "interrupt",
+      "stopTurn",
       "usage",
       "launch",
       "resume",
@@ -141,6 +142,10 @@ export const claudeAdapter: AgentDefinition = {
           context.nativeId,
         );
     },
+    stopTurn: async (context, turnId) => {
+      const runtime=(await import("./sdk-runtime.js")).claudeRuntime(requireNative(context));
+      return runtime ? runtime.stopTurn(turnId) : false;
+    },
     interrupt: async (context) => {
       if (context.nativeId)
         await (
@@ -188,6 +193,7 @@ export const claudeAdapter: AgentDefinition = {
       "newConversation",
       "reload",
       "interrupt",
+      "stopTurn",
       "usage",
       "launch",
       "resume",

@@ -34,7 +34,7 @@ export function registerAgent(definition: AgentDefinition): () => void {
         ['controls', definition.controls?.read, 'controls.read'], ['serviceTier', definition.controls?.validate, 'controls.validate'], ['serviceTier', definition.controls?.apply, 'controls.apply'], ['model', definition.controls?.validate, 'controls.validate'], ['model', definition.controls?.apply, 'controls.apply'],
         ['usage', definition.telemetry?.read, 'telemetry.read'], ['statistics', definition.statistics?.read, 'statistics.read'], ['quota', definition.quota?.read, 'quota.read'],
         ['retry',definition.retry?.retryable,'retry.retryable'],['retry', definition.retry?.inspect, 'retry.inspect'], ['retry', definition.retry?.start, 'retry.start'], ['compact', definition.lifecycle?.compact, 'lifecycle.compact'],
-        ['newConversation', definition.lifecycle?.prepareFresh, 'lifecycle.prepareFresh'], ['interrupt', definition.lifecycle?.interrupt, 'lifecycle.interrupt'], ['launch', definition.launch?.prepare, 'launch.prepare'], ['resume', definition.launch?.prepare, 'launch.prepare'],
+        ['newConversation', definition.lifecycle?.prepareFresh, 'lifecycle.prepareFresh'], ['interrupt', definition.lifecycle?.interrupt, 'lifecycle.interrupt'], ['stopTurn', definition.lifecycle?.stopTurn, 'lifecycle.stopTurn'], ['launch', definition.launch?.prepare, 'launch.prepare'], ['resume', definition.launch?.prepare, 'launch.prepare'],
     ];
     for (const [feature, implementation, port] of features)
         if (adapter.descriptor.capabilities[feature])

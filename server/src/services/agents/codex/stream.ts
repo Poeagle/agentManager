@@ -110,6 +110,18 @@ export async function interruptStreamingCodexThread(threadId:string) {
   });
 }
 
+/** Interrupt only the native turn observed by the caller. */
+export async function stopStreamingCodexTurn(threadId:string,turnId:string):Promise<boolean> {
+  return withCodexConnection(async request=>{
+    const current=await request('thread/read',{threadId});
+    if(current.thread?.status?.type!=='active')return false;
+    const turns=await request('thread/turns/list',{threadId,limit:1,itemsView:'notLoaded'});
+    if(!turns.data?.some((turn:any)=>turn.id===turnId&&turn.status==='inProgress'))return false;
+    await request('turn/interrupt',{threadId,turnId});
+    return true;
+  });
+}
+
 /** Conversation text goes to the same engine, independently of terminal UI
  * menus, focus, and transport suspension. Embedded CLIs retain their PTY path. */
 type SubmissionResult=boolean|'queued';

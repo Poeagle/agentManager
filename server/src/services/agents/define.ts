@@ -11,7 +11,7 @@ export function resolveAgent(definition: AgentDefinition): AgentAdapter {
         controls: { read: async () => unsupported('controls'), validate: async () => unsupported('model'), apply: async () => unsupported('model'), ...definition.controls },
         telemetry: definition.telemetry ?? { read: async () => ({ usage: null, observed_at: null }) }, statistics: definition.statistics ?? { read: async () => [] },
         quota: definition.quota ?? { read: async () => unsupported('quota') }, retry: definition.retry ?? { retryable:()=>false,inspect: async () => unsupported('retry'), start: async () => unsupported('retry') },
-        lifecycle: { preflight: async () => null, bind: async () => { }, compact: async () => unsupported('compact'), prepareFresh: async () => unsupported('newConversation'), release: async () => { }, interrupt: async () => { }, ...definition.lifecycle },
+        lifecycle: { preflight: async () => null, bind: async () => { }, compact: async () => unsupported('compact'), prepareFresh: async () => unsupported('newConversation'), release: async () => { }, interrupt: async () => { }, stopTurn: async () => unsupported('stopTurn'), ...definition.lifecycle },
         launch: { prepare: async () => unsupported('launch'), ready: async () => { }, ...definition.launch },
         commands: { configure: command => command, build: () => unsupported('launch'), permissions: command => command, sharedResources: () => unsupported('sharedResources'), ...definition.commands },
         management: {

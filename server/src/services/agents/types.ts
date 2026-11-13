@@ -17,6 +17,7 @@ export const AGENT_FEATURES = [
   "newConversation",
   "reload",
   "interrupt",
+  "stopTurn",
   "questions",
   "usage",
   "statistics",
@@ -663,6 +664,7 @@ export interface AgentLifecyclePort {
   ): Promise<string>;
   release(context: AgentContext): Promise<void>;
   interrupt(context: AgentContext): Promise<void>;
+  stopTurn(context: AgentContext, turnId: string): Promise<boolean>;
 }
 export interface AgentTerminalProfile {home:string;readOnlyPaths:string[]}
 export interface AgentLaunchPlan {

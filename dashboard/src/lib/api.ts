@@ -691,6 +691,7 @@ export const api = {
       }),
   },
   agent: {
+    stopTurn:(sessionId:string,turnId:string)=>fetchJSON<{status:'accepted'}>(`/sessions/${encodeURIComponent(sessionId)}/conversation/stop`,{method:'POST',body:JSON.stringify({turn_id:turnId})}),
     cancelQueuedInput:(sessionId:string,clientId:string)=>fetchJSON<{ok:boolean}>(`/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(clientId)}`,{method:'DELETE'}),
     controls:(sessionId:string,refresh=false)=>fetchJSON<ConversationControlsData>(`/sessions/${encodeURIComponent(sessionId)}/controls${refresh?'?refresh=true':''}`),
     contextBreakdown:(sessionId:string,refresh=false,signal?:AbortSignal)=>fetchJSON<{context:ConversationContextBreakdown}>(`/sessions/${encodeURIComponent(sessionId)}/context-breakdown${refresh?'?refresh=true':''}`,{signal}),

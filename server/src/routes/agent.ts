@@ -106,7 +106,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.5.0',
+    version:'3.6.0',
     updatedAt:'2026-11-12',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -356,6 +356,12 @@ export function getAgentApiContract() {
           attachments: {type:'array',required:false,description:'Up to 8 {kind: image|file, name, path} references returned by this session’s paste-image/paste-file endpoints. Images total at most 10 MiB, each file at most 35 MiB, all attachments at most 50 MiB.'},
         },
         response: {id:'Session id',status:'submitted — handed to the terminal; not proof of agent acceptance or task completion'},
+      },
+      {
+        category:'Session control',method:'POST',path:'/api/sessions/:id/conversation/stop',
+        description:'Request interruption of the specified currently active native turn. Acceptance does not mean the turn has finished. A changed or inactive turn returns 409; only the session creator can stop it.',
+        request:{turn_id:{type:'string',required:true,description:'Opaque active turn identifier from the conversation stream.'}},
+        response:{status:'accepted — interruption requested; observe the stream for completion'},
       },
       {
         category: 'Session control',
@@ -990,6 +996,26 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     }
 
     return tracker.state;
+  });
+
+  app.post<{Params:{id:string};Body:{turn_id?:unknown}}>('/sessions/:id/conversation/stop',async(req,reply)=>{
+    const session=getSession(req.params.id);
+    if(!session||session.created_by_user_id!==req.user!.id||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
+    if(!['running','detached'].includes(session.status))return reply.code(409).send({error:'会话当前未运行'});
+    const turnId=req.body?.turn_id;
+    if(typeof turnId!=='string'||!turnId.trim()||turnId.length>512||/[\x00-\x1f\x7f]/.test(turnId))return reply.code(400).send({error:'Invalid turn_id'});
+    const adapter=agentForSession(session);
+    if(!adapter.descriptor.capabilities.stopTurn)return reply.code(409).send({error:'此 Agent 不支持停止当前执行'});
+    if(!nativeConversationId(session))return reply.code(409).send({error:'当前会话尚未绑定原生会话'});
+    try {
+      const accepted=await adapter.lifecycle.stopTurn(sessionAgentContext(session,{actorUserId:req.user!.id}),turnId);
+      if(!accepted)return reply.code(409).send({error:'该执行已结束或已切换，请刷新状态'});
+      if(nativeConversationId(session))retries.cancel(session.id,nativeConversationId(session)!,'interrupted');
+      return reply.code(202).send({status:'accepted'});
+    } catch (error) {
+      if(error instanceof Error&&(error as Error&{statusCode?:number}).statusCode===409)return reply.code(409).send({error:error.message});
+      return reply.code(503).send({error:'停止结果暂未确认，请等待会话状态更新'});
+    }
   });
 
   app.post<{Params:{id:string}}>('/sessions/:id/conversation/retry/cancel',async(req,reply)=>{

@@ -23,7 +23,7 @@ import {ensureCodexTerminalBridge} from './terminal-bridge.js';
 import {codexManagement} from './management.js';
 import {applyManagedCommandDefaults} from '../management-store.js';
 export const codexAdapter: AgentAdapter = {
-    descriptor: { launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) },
+    descriptor: { launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'stopTurn', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) },
     identity: { read: session => session.codex_session_id ?? null, legacyField: 'codex_session_id', purgeHistory: purgeCodexHistory, purge: context => { if (context.session.id)
             try {
                 unlinkSync(codexBindingFile(context.session.id));
@@ -79,6 +79,7 @@ export const codexAdapter: AgentAdapter = {
         preflight: async (context) => context.nativeId?inCodexThread(context.nativeId,async()=>(await import('./version.js')).prepareCodexReload(!!context.sharedAccess && !!currentCodexEngine().socket)):(await import('./version.js')).prepareCodexReload(!!context.sharedAccess && !!currentCodexEngine().socket),
         compact: async (context) => inCodexThread(requireNative(context),async()=>(await import('./actions.js')).compactCodexConversation(requireNative(context))),
         prepareFresh: async (context, instructions, preference) => inCodexThread(requireNative(context),async()=>(await import('./actions.js')).prepareFreshCodexConversation(requireNative(context), context.projectPath!, instructions,preference)),
+        stopTurn: async (context, turnId) => inCodexThread(requireNative(context),async()=>{if(!currentCodexEngine().socket)throw Object.assign(Error('此会话未连接支持停止的原生服务'),{statusCode:409});return (await import('./stream.js')).stopStreamingCodexTurn(requireNative(context),turnId);}),
         release: async (context) => inCodexThread(requireNative(context),async()=>(await import('./actions.js')).releaseCodexConversation(requireNative(context))),
         interrupt: async (context) => { if (context.nativeId && process.env.AGENTMANAGER_CODEX_STREAM_SOCKET)
             await inCodexThread(context.nativeId,async()=>(await import('./stream.js')).interruptStreamingCodexThread(context.nativeId!)); },
@@ -95,7 +96,7 @@ export const codexAdapter: AgentAdapter = {
         const configured=applyManagedCommandDefaults('codex',command);
         return streamSocket && projectPath ? configured.replace(/(?:^|\s)(?:--dangerously-bypass-approvals-and-sandbox|--yolo)(?=\s|$)/g, ' ').trim() + ` --cd ${shellSingleQuote(projectPath)}` : codexPermissions(configured);
     }, build: codexCommand, permissions: codexPermissions, sharedResources: codexResources },
-    management: codexManagement({ launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) }),
+    management: codexManagement({ launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'stopTurn', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) }),
 
 };
 async function prepareCodexLaunch(context:import('../types.js').AgentContext,task:string,instructions:string|undefined,resume?:boolean) {

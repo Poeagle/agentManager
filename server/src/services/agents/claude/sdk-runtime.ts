@@ -674,6 +674,11 @@ class ClaudeRuntime {
     }
   }
 
+  async stopTurn(turnId:string):Promise<boolean> {
+    if(!this.busy||this.turnId!==turnId)return false;
+    await this.interrupt();
+    return true;
+  }
   async interrupt() {
     this.abort?.abort();
     try {

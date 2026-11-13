@@ -1,13 +1,13 @@
 import {afterEach,describe,expect,it,vi} from 'vitest';
 
-const sdk=vi.hoisted(()=>({messages:[] as any[],queries:[] as any[]}));
+const sdk=vi.hoisted(()=>({messages:[] as any[],queries:[] as any[],interrupts:0}));
 vi.mock('@anthropic-ai/claude-agent-sdk',()=>({
   query:(request:any)=>{
     sdk.queries.push(request);
     return {
     async *[Symbol.asyncIterator](){for(const message of sdk.messages){await Promise.resolve();yield message;}},
     setModel:async(model:string)=>{sdk.queries.at(-1).setModel=model;},
-    interrupt:async()=>{},
+    interrupt:async()=>{sdk.interrupts++;},
     close:()=>{},
   };},
 }));
@@ -21,9 +21,16 @@ const assistant='019ff001-1212-7212-8212-121212121213';
 let uuid=0;
 const stream=(event:any)=>({type:'stream_event',uuid:`019ff001-1212-7212-8212-${String(++uuid).padStart(12,'0')}`,session_id:session,parent_tool_use_id:null,event});
 
-afterEach(()=>{releaseClaudeRuntime(session);sdk.queries=[];sdk.messages=[];uuid=0;});
+afterEach(()=>{releaseClaudeRuntime(session);sdk.queries=[];sdk.messages=[];sdk.interrupts=0;uuid=0;});
 
 describe('Claude Agent SDK runtime',()=>{
+  it('stops only the matching active turn',async()=>{
+    let resolve!:(value:any)=>void;sdk.messages=[new Promise(done=>{resolve=done;})];
+    const runtime=ensureClaudeRuntime(session,'/tmp');expect(await runtime.submit('Work')).toBe(true);
+    const turn=runtime.snapshot().turn_id!;expect(await runtime.stopTurn('old-turn')).toBe(false);expect(sdk.interrupts).toBe(0);
+    expect(await runtime.stopTurn(turn)).toBe(true);expect(sdk.interrupts).toBe(1);
+    resolve({type:'result',subtype:'success',uuid:assistant,session_id:session});await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));expect(await runtime.stopTurn(turn)).toBe(false);
+  });
   it('uses protocol envelopes instead of per-chunk UUIDs and preserves text around tools',async()=>{
     sdk.messages=[
       stream({type:'message_start',message:{id:'api-message-one'}}),

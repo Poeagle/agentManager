@@ -49,6 +49,14 @@ describe('conversation send transaction', () => {
     act(()=>Socket.latest.emit({type:'snapshot',messages:[live],busy:true,stage:'tools'}));expect(screen.getAllByText('terminal echo')).toHaveLength(1);
     await act(async()=>response.resolve({status:'submitted'} as SendResult));
   });
+  it('requests a stop only for the observed active turn and waits for its stream to finish',async()=>{
+    const stop=deferred<{status:'accepted'}>();const call=vi.spyOn(api.agent,'stopTurn').mockReturnValue(stop.promise);
+    const descriptor=sessionAgent(session);await mount({...session,agent:{...descriptor,capabilities:{...descriptor.capabilities,stopTurn:true}}});
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[],busy:true,stage:'tools',turn_id:'active-turn',started_at:new Date().toISOString()}));
+    const button=await screen.findByRole('button',{name:'停止当前执行'});expect(button).toBeEnabled();fireEvent.click(button);fireEvent.click(button);expect(call).toHaveBeenCalledExactlyOnceWith(session.id,'active-turn');expect(button).toBeDisabled();expect(button).toHaveAccessibleName('正在停止当前执行');
+    await act(async()=>stop.resolve({status:'accepted'}));expect(button).toBeDisabled();
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[],busy:false,stage:'idle',turn_id:'active-turn'}));expect(screen.queryByRole('button',{name:'停止当前执行'})).not.toBeInTheDocument();
+  });
   it('shows the shared progress summary while continuing after a follow-up',async()=>{
     await mount();const prior={id:'before-followup',role:'assistant',turn_id:'turn',phase:'commentary',text:'Prior work',timestamp:new Date(Date.now()-20000).toISOString()};const followup={id:'followup',role:'user',turn_id:'turn',text:'Continue please',timestamp:new Date(Date.now()-10000).toISOString()};
     act(()=>Socket.latest.emit({type:'snapshot',messages:[prior,followup],busy:true,stage:'waiting',turn_id:'turn',started_at:new Date(Date.now()-20000).toISOString(),activities:[]}));
