@@ -29,6 +29,18 @@ describe('directory conversation previews',()=>{
  it('shows empty directories without a download error',async()=>{
   vi.mocked(api.files.list).mockResolvedValue({path:file.path,files:[]});render(<ConversationFilePreview file={file} onClose={()=>{}}/>);expect(await screen.findByText('No files found')).toBeVisible();expect(api.files.read).not.toHaveBeenCalled();expect(screen.queryByText('下载原文件')).not.toBeInTheDocument();
  });
+ it('opens an authorized external file through unscoped read-only APIs',async()=>{
+  const path='/data/other/readme.md';vi.mocked(fetchJSON).mockResolvedValue({path,type:'file'});
+  render(<ConversationFilePreview file={{path,rootPath:'/data/other',projectId:null,name:'readme.md'}} onClose={()=>{}}/>);
+  expect(await screen.findByRole('heading',{name:'目录中的说明'},{timeout:3000})).toBeVisible();expect(api.files.read).toHaveBeenCalledWith(path);
+  expect(screen.queryByRole('button',{name:'上传文件',exact:true})).not.toBeInTheDocument();
+ });
+ it('checks an external path without inheriting the current project scope',async()=>{
+  const path='/tmp/outside.py';vi.mocked(fetchJSON).mockRejectedValueOnce(new ApiError('Forbidden',403));
+  render(<ConversationFilePreview file={{path,rootPath:'/tmp',projectId:null,name:'outside.py'}} onClose={()=>{}}/>);
+  expect(await screen.findByRole('alert')).toHaveTextContent('没有权限访问此路径');
+  expect(fetchJSON).toHaveBeenCalledWith(`/files/stat?path=${encodeURIComponent(path)}`,expect.objectContaining({signal:expect.any(AbortSignal)}));expect(api.files.read).not.toHaveBeenCalled();
+ });
  it('keeps files in the existing viewer',async()=>{
   vi.mocked(fetchJSON).mockResolvedValue({path:'/project/README.md',type:'file'});render(<ConversationFilePreview file={{...file,path:'/project/README.md',name:'README.md'}} onClose={()=>{}}/>);expect(await screen.findByRole('heading',{name:'目录中的说明'},{timeout:3000})).toBeVisible();expect(screen.getByRole('dialog',{name:'文件预览 · README.md'})).toBeVisible();
  });

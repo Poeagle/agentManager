@@ -1,6 +1,6 @@
 import {fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {describe,expect,it,vi} from 'vitest';
-import {ConversationMarkdown,conversationLocalPath} from '../src/components/ConversationMarkdown';
+import {ConversationMarkdown,conversationLocalPath,conversationFileLink} from '../src/components/ConversationMarkdown';
 import {ConversationMarkdownBlocks} from '../src/lib/conversation-markdown-blocks';
 
 vi.mock('../src/components/FileExplorer',()=>({FileExplorer:({openFileRequest}:{openFileRequest:{path:string}})=><div>{openFileRequest.path}</div>}));
@@ -32,9 +32,18 @@ describe('conversation Markdown',()=>{
     expect(screen.getAllByRole('checkbox')).toHaveLength(2);expect(view.container.querySelector('script')).toBeNull();
     fireEvent.click(screen.getByRole('link',{name:'说明'}));expect(onOpenFile).not.toHaveBeenCalled();expect(screen.getByRole('dialog',{name:'文件预览 · README.md'})).toBeVisible();
   });
-  it('shows project-external file paths without offering unauthorized preview',()=>{
-    const onOpenFile=vi.fn();render(<ConversationMarkdown {...props} onOpenFile={onOpenFile} content={'[查看截图](/tmp/ops945-collection-code-en.png)'}/>);
-    expect(screen.getByText('/tmp/ops945-collection-code-en.png')).toBeVisible();expect(screen.getByTitle('File path is outside the current project')).toHaveTextContent('查看截图');expect(screen.queryByRole('link',{name:'查看截图'})).not.toBeInTheDocument();expect(onOpenFile).not.toHaveBeenCalled();
+  it('opens external absolute paths and file URLs through the authorized file preview',()=>{
+    render(<ConversationMarkdown {...props} content={'[脚本](/data/ymchen/dolphindb_exporter/scripts/export_cpu_metrics.py)\n\n[截图](file:///tmp/ops945.png)'}/>);
+    fireEvent.click(screen.getByRole('link',{name:/脚本/}));expect(screen.getByRole('dialog',{name:'文件预览 · export_cpu_metrics.py'})).toBeVisible();
+    fireEvent.click(screen.getByRole('button',{name:'关闭文件预览 · export_cpu_metrics.py'}));
+    fireEvent.click(screen.getByRole('link',{name:/截图/}));expect(screen.getByRole('dialog',{name:'文件预览 · ops945.png'})).toBeVisible();
+  });
+  it('accepts local links without accepting remote file hosts or unsafe schemes',()=>{
+    expect(conversationFileLink('/data/project/x.py:24','/work/project')).toBe('/data/project/x.py');
+    expect(conversationFileLink('file:///tmp/a%20b.png','/work/project')).toBe('/tmp/a b.png');
+    expect(conversationFileLink('/tmp/100%.py','/work/project')).toBe('/tmp/100%.py');
+    expect(conversationFileLink('../../other/file.md','/work/project')).toBe('/other/file.md');
+    for(const value of ['javascript:alert(1)','file://otherhost/private','//example.com/path','#section','%00bad'])expect(conversationFileLink(value,'/work/project')).toBeNull();
   });
   it('repairs incomplete tables and resolves document-wide reference links and footnotes',()=>{
     const view=render(<ConversationMarkdown {...props} streaming content={'首段。\n\n| 名称 | 数值 |'}/>);

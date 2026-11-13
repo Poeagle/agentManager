@@ -27,6 +27,21 @@ describe('preview path metadata',()=>{
  it('rejects traversal and external symlinks even for administrators',async()=>{
   symlinkSync(outside,join(root,'escape'));for(const path of [outside,join(root,'..','outside'),join(root,'escape')])expect((await get(path)).statusCode).toBe(403);
  });
+ it('allows unscoped authorized files while rejecting unassigned paths and private resources',async()=>{
+  const path=join(outside,'external.py');writeFileSync(path,'print(42)');
+  const request=(route:string,target:string,auth=cookie)=>app.inject({url:`/api${route}?path=${encodeURIComponent(target)}`,headers:{cookie:auth}});
+  expect((await request('/files/stat',path)).json()).toEqual({path,type:'file'});
+  expect((await request('/files/read',path)).json().content).toBe('print(42)');
+  expect((await request('/files/stat',path,memberCookie)).statusCode).toBe(403);expect((await request('/files/stat',path,'')).statusCode).toBe(401);
+  const secret=join(outside,'.env');writeFileSync(secret,'secret');saveSharedResources(owner,{directory:outside,scope_path:outside,env_file:secret,instructions:'',enabled:true,revision:0});expect((await request('/files/stat',secret)).statusCode).toBe(403);
+ });
+ it('accepts an authorized project path through a filesystem alias without widening scoped reads',async()=>{
+  const file=join(root,'inside.py'),alias=join(outside,'project-alias');writeFileSync(file,'ok');symlinkSync(root,alias);
+  const member=createUser({username:'project-member',password:'password2'}).id;getDb().prepare('UPDATE projects SET owner_id=? WHERE id=?').run(member,'project');
+  const auth=`agentmanager_session=${createSession(member)}`,target=join(alias,'inside.py');
+  const unscoped=await app.inject({url:`/api/files/stat?path=${encodeURIComponent(target)}`,headers:{cookie:auth}});expect(unscoped.statusCode).toBe(200);expect(unscoped.json().type).toBe('file');
+  expect((await get(target,auth)).statusCode).toBe(403);
+ });
  it('protects credential paths from metadata access',async()=>{
   const path=join(root,'.env');writeFileSync(path,'PRIVATE_SECRET=must-not-leak');saveSharedResources(owner,{directory:root,scope_path:root,env_file:path,instructions:'instructions',enabled:true,revision:0});const response=await get(path);expect(response.statusCode).toBe(403);expect(response.body).not.toContain('must-not-leak');
  });

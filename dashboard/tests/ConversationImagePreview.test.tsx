@@ -1,9 +1,10 @@
 vi.mock('../src/lib/api',async()=>{const actual=await vi.importActual<typeof import('../src/lib/api')>('../src/lib/api');return {...actual,fetchJSON:vi.fn(async(url:string)=>({path:new URL(url,'http://test').searchParams.get('path'),type:'file'}))};});
-import {fireEvent,render,screen,within} from '@testing-library/react';
+import {fireEvent,render,screen,within,waitFor} from '@testing-library/react';
 import {describe,expect,it,vi} from 'vitest';
 import {ConversationMessageAttachments} from '../src/components/ConversationAttachments';
 import {ConversationImagePreviewRoot} from '../src/components/ConversationImagePreview';
 import {ConversationMarkdown} from '../src/components/ConversationMarkdown';
+import {api} from '../src/lib/api';
 vi.mock('../src/components/FileExplorer',()=>({FileExplorer:({openFileRequest,readOnly}:{openFileRequest:{path:string};readOnly:boolean})=><div data-testid="preview-file" data-readonly={readOnly}>{openFileRequest.path}</div>}));
 const image={kind:'image' as const,name:'截图.png',path:'/project/.agentmanager/pastes/test.png'};
 describe('conversation image preview',()=>{
@@ -32,6 +33,12 @@ describe('conversation image preview',()=>{
       const draft=screen.getByRole('textbox',{name:'对话草稿'});draft.focus();fireEvent.change(draft,{target:{value:'继续反馈'}});expect(draft).toHaveFocus();expect(draft).toHaveValue('继续反馈');expect(fireEvent.keyDown(side,{key:'Tab'})).toBe(true);
       fireEvent.click(within(side).getByRole('button',{name:'居中显示'}));expect(screen.getByRole('dialog')).toBeInTheDocument();expect(screen.getByTestId('preview-file')).toBe(reader);expect(document.body.style.overflow).toBe('hidden');
     }finally{size.mockRestore();}
+  });
+  it('checks external Markdown images with the user-scoped preview API',async()=>{
+    const preview=vi.spyOn(api.files,'preview').mockRejectedValue(new Error('Forbidden'));
+    try{render(<ConversationMarkdown content="![外部截图](/tmp/example.png)" messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      await waitFor(()=>expect(preview).toHaveBeenCalledWith('/tmp/example.png',expect.any(AbortSignal),undefined));expect(await screen.findByText('图片加载失败：外部截图')).toBeVisible();
+    }finally{preview.mockRestore();}
   });
   it('uses the same dialog for Markdown image links and reports loading failures',()=>{
     render(<ConversationMarkdown content="[![示意图](https://example.com/image.png)](https://example.com/full.png)" messageId="m" projectId="p" onNavigate={()=>{}}/>);

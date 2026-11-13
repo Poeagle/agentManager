@@ -3,7 +3,7 @@ export {copyConversationText} from '../lib/conversation-clipboard';
 import {MermaidDiagram,isMermaidCode} from './MermaidDiagram';
 import {ConversationImagePreviewRoot,useConversationImagePreview,useConversationFilePreview} from './ConversationImagePreview';
 import {Children,createContext,isValidElement,memo,useContext,useEffect,useMemo,useRef,useState,type ReactNode} from 'react';
-import ReactMarkdown,{type Components} from 'react-markdown';
+import ReactMarkdown,{defaultUrlTransform,type Components} from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {Check,Copy,Download,WrapText} from 'lucide-react';
 import {api} from '../lib/api';
@@ -18,7 +18,7 @@ const SourceOffset=createContext(0);
 const Trailing=createContext<{content:ReactNode;end:number;kind?:string}|null>(null);
 const MarkdownSegment=memo(function MarkdownSegment({source,offset,components,footer,kind}:{source:string;offset:number;components:Components;footer?:ReactNode;kind?:string}) {
   const trailing=useMemo(()=>footer?{content:footer,end:source.trimEnd().length,kind}:null,[footer,source,kind]);
-  return <SourceOffset.Provider value={offset}><Trailing.Provider value={trailing}><ReactMarkdown remarkPlugins={[remarkGfm,conversationCjkStrong]} components={components} skipHtml>{source}</ReactMarkdown></Trailing.Provider></SourceOffset.Provider>;
+  return <SourceOffset.Provider value={offset}><Trailing.Provider value={trailing}><ReactMarkdown remarkPlugins={[remarkGfm,conversationCjkStrong]} components={components} urlTransform={url=>/^file:/i.test(url)?url:defaultUrlTransform(url)} skipHtml>{source}</ReactMarkdown></Trailing.Provider></SourceOffset.Provider>;
 });
 const trailingKinds=new Set(['paragraph','list','blockquote']);
 function FooterParagraph({children,node,className,...props}:any){const trailing=useContext(Trailing),show=!!trailing&&['paragraph','blockquote','list'].includes(trailing.kind||'')&&node?.position?.end.offset===trailing.end;return <p {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{show?<span>{children}</span>:children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</p>;}
@@ -30,6 +30,21 @@ export function conversationLocalPath(source:string|undefined,root:string|undefi
     if(decoded.includes('\0'))return null;
     const path=normalizeExplorerPath(decoded.startsWith('/')?decoded:`${root}/${decoded}`);
     return path && isWithinExplorerRoot(path,root)?path:null;
+  }catch{return null;}
+}
+
+/** Resolve local link syntax; authorization is enforced by the file API on click. */
+export function conversationFileLink(source:string|undefined,root:string|undefined):string|null {
+  if(!source||source.startsWith('#')||source.startsWith('?')||source.startsWith('//'))return null;
+  try {
+    let raw=source;
+    if(/^file:/i.test(raw)){const url=new URL(raw);if(url.protocol!=='file:'||url.hostname||!url.pathname.startsWith('/'))return null;raw=url.pathname;}
+    else if(/^[a-z][a-z\d+.-]*:/i.test(raw))return null;
+    const encoded=raw.split(/[?#]/,1)[0];let decoded:string;
+    try{decoded=decodeURIComponent(encoded);}catch{decoded=encoded;}
+    decoded=decoded.replace(/:\d+(?::\d+)?$/,'');
+    if(decoded.includes('\0')||(!decoded.startsWith('/')&&!root))return null;
+    return normalizeExplorerPath(decoded.startsWith('/')?decoded:`${root}/${decoded}`);
   }catch{return null;}
 }
 
@@ -57,12 +72,12 @@ const PlainCodeBlock=memo(function PlainCodeBlock({source,language}:{source:stri
 });
 function MarkdownImage({src,alt,root,projectId}:{src?:string;alt?:string;root?:string;projectId:string|null}) {
   const openPreview=useConversationImagePreview();
-  const local=conversationLocalPath(src,root);const [preview,setPreview]=useState<{path:string;url:string}|null>(null);const [error,setError]=useState(false);
+  const local=conversationFileLink(src,root),inProject=!!local&&!!root&&isWithinExplorerRoot(local,root);const [preview,setPreview]=useState<{path:string;url:string}|null>(null);const [error,setError]=useState(false);
   useEffect(()=>{
     setError(false);if(!local)return;const controller=new AbortController();let objectUrl:string|undefined;
-    void api.files.preview(local,controller.signal,projectId||undefined).then(blob=>{if(controller.signal.aborted)return;objectUrl=URL.createObjectURL(blob);setPreview({path:local,url:objectUrl});}).catch(()=>{if(!controller.signal.aborted)setError(true);});
+    void api.files.preview(local,controller.signal,inProject?projectId||undefined:undefined).then(blob=>{if(controller.signal.aborted)return;objectUrl=URL.createObjectURL(blob);setPreview({path:local,url:objectUrl});}).catch(()=>{if(!controller.signal.aborted)setError(true);});
     return ()=>{controller.abort();if(objectUrl)URL.revokeObjectURL(objectUrl);};
-  },[local,projectId,src]);
+  },[local,projectId,src,inProject]);
   const url=local?(preview?.path===local?preview.url:undefined):src && /^https?:\/\//i.test(src)?src:undefined;
   return error?<span className="conversation-image-error">图片加载失败{alt?`：${alt}`:''}</span>:<button type="button" className="conversation-inline-image" aria-label={`预览图片 ${alt||'图片'}`} disabled={!url} onClick={event=>{event.preventDefault();event.stopPropagation();if(url)openPreview?.({src:url,name:alt||'图片'});}}><img src={url} alt={alt||'图片'} loading="lazy" onError={()=>setError(true)}/></button>;
 }
@@ -91,8 +106,12 @@ export const ConversationMarkdown=memo(function ConversationMarkdown({content,me
       a:({href,children,title,node})=>{
         const previewFile=useConversationFilePreview();
         if(node?.children.some(child=>child.type==='element'&&child.tagName==='img'))return <>{children}</>;
-        const path=conversationLocalPath(href,projectPath);
-        if(path)return <a href={href} title={title||path} onClick={event=>{event.preventDefault();if(previewFile&&projectPath)previewFile({path,rootPath:projectPath,projectId,name:path.split('/').pop()||path});else onOpenFile?.(path);}}>{children}</a>;
+        const path=conversationFileLink(href,projectPath);
+        if(path){
+          const inProject=!!projectPath&&isWithinExplorerRoot(path,projectPath);
+          const rootPath=inProject?projectPath!:path.slice(0,path.lastIndexOf('/'))||'/';
+          return <a href={href} title={title||path} onClick={event=>{event.preventDefault();if(previewFile)previewFile({path,rootPath,projectId:inProject?projectId:null,name:path.split('/').pop()||path});else if(inProject)onOpenFile?.(path);}}>{children}{!inProject&&<> (<code>{path}</code>)</>}</a>;
+        }
         if(href?.startsWith('#'))return <a href={href} onClick={event=>{
           const scope=event.currentTarget.closest('.session-chat-message');let fragment:string;try{fragment=decodeURIComponent(href.slice(1));}catch{return;}
           const target=[...(scope?.querySelectorAll<HTMLElement>('[id]')||[])].find(node=>node.id===fragment || node.id===`user-content-${fragment}` || node.dataset.chatHeading && (node.textContent||'').trim().toLowerCase().replace(/\s+/g,'-')===fragment);
