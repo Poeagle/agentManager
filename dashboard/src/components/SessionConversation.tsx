@@ -132,6 +132,7 @@ function ProgressSection({
   stepRunning,
   phaseSeconds,
   progressPhase,
+  callingLabel,
   turnDuration,
   children,
 }: {
@@ -144,6 +145,7 @@ function ProgressSection({
   stepRunning?: boolean;
   phaseSeconds?: number|null;
   progressPhase: 'calling'|'waiting'|'unknown';
+  callingLabel: string|null;
   turnDuration?: number|null;
   children: ReactNode;
 }) {
@@ -170,7 +172,7 @@ function ProgressSection({
           <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
           {progress && <span className="session-chat-message-statistics" title="Cumulative recorded usage since the previous conclusion. Rounds update after the following model request; incomplete history is a lower bound.">total · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} / {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
           {active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
-          {active&&<span className="session-chat-progress-time">{progressPhase}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
+          {active&&<span className="session-chat-progress-time">{progressPhase}{callingLabel&&<span title={callingLabel}> ({Array.from(callingLabel).length>18?`${Array.from(callingLabel).slice(0,18).join('')}…`:callingLabel})</span>}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
           {active&&turnDuration!=null&&<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time since the current user message or follow-up">Turn {formatElapsedEnglish(turnDuration)}</time>}
           {active && <span className="session-chat-progress-live">In progress</span>}
           <ChevronDown size={14} className="session-chat-progress-chevron" />
@@ -1829,6 +1831,7 @@ export function SessionConversation({
   const progressForTurn=progressStatistics&&liveProgress.turn_id&&progressStatistics.turn_id===liveProgress.turn_id?progressStatistics:null;
   const progressActivities=liveState==='connected'&&!reconnectable?liveProgress.activities||[]:[];
   const runningTool=progressActivities.find(item=>item.status==='running');
+  const callingLabel=runningTool?.label.split(' · ').slice(1).join(' · ')||null;
   const lastFinished=progressActivities.filter(item=>item.completed_at).sort((a,b)=>Date.parse(b.completed_at!)-Date.parse(a.completed_at!))[0];
   const progressPhase=liveState!=='connected'||reconnectable||(!runningTool&&!lastFinished&&liveProgress.stage==='tools')?'unknown':runningTool?'calling':'waiting';
   const phaseStart=progressPhase==='unknown'?null:runningTool?runningTool.started_at:lastFinished?.completed_at||liveProgress.started_at;
@@ -2025,6 +2028,7 @@ export function SessionConversation({
                     stepRunning={currentActivity?.status==='running'}
                     phaseSeconds={phaseSeconds}
                     progressPhase={progressPhase}
+                    callingLabel={callingLabel}
                     turnDuration={progressTimingVisible&&groups.at(-1)===group?turnDuration:null}
                     progress={busy && groups.at(-1)===group && progressStatistics && (!liveProgress.turn_id||progressStatistics.turn_id===liveProgress.turn_id) && (!group.messages.at(-1)?.turn_id||group.messages.at(-1)?.turn_id===progressStatistics.turn_id)?progressStatistics:null}
                   >
@@ -2060,7 +2064,7 @@ export function SessionConversation({
                           : `Waiting for ${agentName}`}
                     </span>
                     <time className="session-chat-elapsed" style={{color:timeColor(elapsed)}}>{elapsed}s</time>
-                    {continuingAfterFollowup&&!sending&&<span>[tools: {progressForTurn?(progressForTurn.complete?'':'≥')+progressForTurn.tool_calls:'—'} calls · {progressPhase}: <time style={{color:phaseSeconds===null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds===null?'—':`${phaseSeconds}s`}</time>]</span>}</div>
+                    {continuingAfterFollowup&&!sending&&<span>[tools: {progressForTurn?(progressForTurn.complete?'':'≥')+progressForTurn.tool_calls:'—'} calls · {progressPhase}{callingLabel&&<span title={callingLabel}> ({Array.from(callingLabel).length>18?`${Array.from(callingLabel).slice(0,18).join('')}…`:callingLabel})</span>}: <time style={{color:phaseSeconds===null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds===null?'—':`${phaseSeconds}s`}</time>]</span>}</div>
                     <p>
                       {continuingAfterFollowup
                         ? "The task is still running. Updates will appear here."
