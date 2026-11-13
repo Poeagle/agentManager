@@ -122,6 +122,13 @@ interface FailedDraft {
 
 const timeColor=(seconds:number)=>seconds>=60?'var(--error)':seconds>=30?'#e57b18':'var(--text-muted)';
 
+interface ProgressSummaryProps {
+  agent: AgentDescriptor; agentName: string; count: number; active: boolean;
+  progress?: import('../lib/api').ConversationProgressStatistics | null;
+  stepDuration?: number|null; stepRunning?: boolean; phaseSeconds?: number|null;
+  progressPhase: 'calling'|'waiting'|'unknown'; callingLabel: string|null; turnDuration?: number|null;
+}
+
 function ProgressSection({
   agent,
   agentName,
@@ -135,20 +142,7 @@ function ProgressSection({
   callingLabel,
   turnDuration,
   children,
-}: {
-  agent: AgentDescriptor;
-  agentName: string;
-  count: number;
-  active: boolean;
-  progress?: import('../lib/api').ConversationProgressStatistics | null;
-  stepDuration?: number|null;
-  stepRunning?: boolean;
-  phaseSeconds?: number|null;
-  progressPhase: 'calling'|'waiting'|'unknown';
-  callingLabel: string|null;
-  turnDuration?: number|null;
-  children: ReactNode;
-}) {
+}: ProgressSummaryProps & {children: ReactNode}) {
   const [preference, setPreference] = useState<boolean | null>(null);
   const open = preference ?? active;
   return (
@@ -166,6 +160,17 @@ function ProgressSection({
           aria-label={`${open ? "收起" : "展开"}进展（${count} 条）`}
           aria-expanded={open}
         >
+          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} progress={progress} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} callingLabel={callingLabel} turnDuration={turnDuration}/>
+          <ChevronDown size={14} className="session-chat-progress-chevron" />
+        </summary>
+        <div className="session-chat-progress-content">{children}</div>
+      </details>
+    </section>
+  );
+}
+
+function ProgressSummary({agent,agentName,count,active,progress,stepDuration,stepRunning,phaseSeconds,progressPhase,callingLabel,turnDuration}:ProgressSummaryProps) {
+  return <>
           <span aria-hidden="true"><AgentIcon session={{agent}} className="h-[13px] w-[13px]" /></span>
           <span>{agentName}</span>
           <span className="session-chat-kind">progress</span>
@@ -175,12 +180,7 @@ function ProgressSection({
           {active&&<span className="session-chat-progress-time">{progressPhase}{callingLabel&&<span title={callingLabel}> ({Array.from(callingLabel).length>18?`${Array.from(callingLabel).slice(0,18).join('')}…`:callingLabel})</span>}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
           {active&&turnDuration!=null&&<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time since the current user message or follow-up">Turn {formatElapsedEnglish(turnDuration)}</time>}
           {active && <span className="session-chat-progress-live">In progress</span>}
-          <ChevronDown size={14} className="session-chat-progress-chevron" />
-        </summary>
-        <div className="session-chat-progress-content">{children}</div>
-      </details>
-    </section>
-  );
+  </>;
 }
 
 const Bubble = memo(function Bubble({
@@ -2050,7 +2050,12 @@ export function SessionConversation({
                   </ProgressSection>
                 ),
               )}
-              {waitingForText && (
+              {waitingForText && continuingAfterFollowup && !sending && (
+                <div className="session-chat-agent session-chat-progress-toggle session-chat-pending-progress" role="status">
+                  <ProgressSummary agent={sessionAgent(session)} agentName={agentName} count={0} active progress={progressForTurn} stepDuration={stepDuration} stepRunning={currentActivity?.status==='running'} phaseSeconds={phaseSeconds} progressPhase={progressPhase} callingLabel={callingLabel} turnDuration={turnDuration}/>
+                </div>
+              )}
+              {waitingForText && (!continuingAfterFollowup || sending) && (
                 <div className="session-chat-thinking" role="status">
                   <span aria-hidden="true" className="session-chat-thinking-icon"><AgentIcon session={{agent:sessionAgent(session)}} className="h-[13px] w-[13px]" /></span>
                   <div>
@@ -2064,7 +2069,7 @@ export function SessionConversation({
                           : `Waiting for ${agentName}`}
                     </span>
                     <time className="session-chat-elapsed" style={{color:timeColor(elapsed)}}>{elapsed}s</time>
-                    {continuingAfterFollowup&&!sending&&<span>[tools: {progressForTurn?(progressForTurn.complete?'':'≥')+progressForTurn.tool_calls:'—'} calls · {progressPhase}{callingLabel&&<span title={callingLabel}> ({Array.from(callingLabel).length>18?`${Array.from(callingLabel).slice(0,18).join('')}…`:callingLabel})</span>}: <time style={{color:phaseSeconds===null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds===null?'—':`${phaseSeconds}s`}</time>]</span>}</div>
+                    </div>
                     <p>
                       {continuingAfterFollowup
                         ? "The task is still running. Updates will appear here."

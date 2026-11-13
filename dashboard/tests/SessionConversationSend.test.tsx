@@ -49,6 +49,12 @@ describe('conversation send transaction', () => {
     act(()=>Socket.latest.emit({type:'snapshot',messages:[live],busy:true,stage:'tools'}));expect(screen.getAllByText('terminal echo')).toHaveLength(1);
     await act(async()=>response.resolve({status:'submitted'} as SendResult));
   });
+  it('shows the shared progress summary while continuing after a follow-up',async()=>{
+    await mount();const prior={id:'before-followup',role:'assistant',turn_id:'turn',phase:'commentary',text:'Prior work',timestamp:new Date(Date.now()-20000).toISOString()};const followup={id:'followup',role:'user',turn_id:'turn',text:'Continue please',timestamp:new Date(Date.now()-10000).toISOString()};
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[prior,followup],busy:true,stage:'waiting',turn_id:'turn',started_at:new Date(Date.now()-20000).toISOString(),activities:[]}));
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:12345},tool_calls:7,tool_rounds:5,complete:true}}));
+    const status=(await screen.findByText('0 items')).closest('[role=status]')!;expect(status).toHaveTextContent('0 items');expect(status).toHaveTextContent('token: 12.3K');expect(status).toHaveTextContent('tools: 7 calls / 5 rounds');expect(status).toHaveTextContent('In progress');expect(status).not.toHaveTextContent('Follow-up sent');
+  });
   it('updates the active progress total without mixing other native sessions',async()=>{
     await mount();const item={id:'progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'working',timestamp:null};
     act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:true,stage:'tools',turn_id:'turn',started_at:new Date(Date.now()-120000).toISOString(),activities:[{id:'tool',label:'运行命令 · test',status:'completed',duration_ms:40000,started_at:null,completed_at:null}]}));await screen.findByText('working');
