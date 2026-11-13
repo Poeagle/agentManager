@@ -63,6 +63,16 @@ describe('document previews', () => {
     expect(response.headers['cache-control']).toBe('no-store');
   });
 
+  it('previews a canonical paste path when the registered project root is a symlink', async () => {
+    const alias=join(root,'..','project-alias');symlinkSync(root,alias);
+    getDb().prepare('UPDATE projects SET path=? WHERE id=?').run(alias,'p1');
+    const path=join(root,'screenshot.png'),bytes=Buffer.from([137,80,78,71,13,10,26,10]);writeFileSync(path,bytes);
+    const response=await request('preview',path);
+    expect(response.statusCode).toBe(200);expect(response.rawPayload.equals(bytes)).toBe(true);
+    const outside=join(root,'..','outside.png');writeFileSync(outside,bytes);
+    expect((await request('preview',outside)).statusCode).toBe(403);
+  });
+
   it('converts an authorized Office document and exposes converter errors as JSON', async () => {
     const path = join(root, 'test.docx');
     writeFileSync(path, 'docx fixture');

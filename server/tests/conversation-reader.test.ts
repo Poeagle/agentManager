@@ -26,6 +26,15 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app.close();vi.unstubAllEnvs();cleanup();});
 describe('public conversation pages',()=>{
+  it('restores inherited messages from a paginated native fork',async()=>{
+    const parent='019ff001-1111-7111-8111-111111111111';
+    const record=(ordinal:number,type:string,payload:unknown)=>JSON.stringify({ordinal,type,payload})+'\n';
+    const prefix=record(0,'session_meta',{id:parent})+record(1,'event_msg',{type:'user_message',message:'before switching'});
+    writeFileSync(join(dbDirPath,'sessions',`rollout-${parent}.jsonl`),prefix+record(2,'event_msg',{type:'user_message',message:'other branch'}));
+    writeFileSync(file,record(2,'session_meta',{id,history_base:{thread_id:parent,end_byte_offset:Buffer.byteLength(prefix),end_ordinal_exclusive:2}})+record(3,'event_msg',{type:'agent_message',message:'after switching'}));
+    const page=await readConversation({...binding,agent_environment_id:'native'});
+    expect(page.messages.map(message=>message.text)).toEqual(['before switching','after switching']);
+  });
   it('links duplicate native record statistics to the displayed conclusion',async()=>{
     const contents=[{type:'output_text',text:'最终答复'}],turn='turn-stats';
     const usage={total_token_usage:{total_tokens:200},last_token_usage:{total_tokens:200,input_tokens:180,cached_input_tokens:50,output_tokens:20,reasoning_output_tokens:5}};

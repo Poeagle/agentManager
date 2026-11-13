@@ -12,12 +12,13 @@ import {sshArguments,sshEnvironment,type AccountConnection,accountCommand} from 
 import {getCodexEnvironment,environmentConnection,type CodexEnvironment} from './environments.js';
 import {readAgentManagement} from '../management-store.js';
 import {runInCodexEngine,engineForThread} from './engine-context.js';
+import {findCodexRollout} from '../../prompt-context.js';
 const MAX_BYTES=1024*1024*1024;
 const cached=new Map<string,{until:number;path:string;signature:string}>();
 const pending=new Map<string,Promise<string|null>>();
 /** Drop a private history mirror after its source Codex rollout is deleted. */
 export async function forgetEnvironmentRollout(environmentId:string,nativeId:string):Promise<void> {
- const key=environmentId+':'+nativeId;
+ const key=JSON.stringify([config.dbPath,environmentId,nativeId]);
  await pending.get(key)?.catch(()=>null);
  const previous=cached.get(key);cached.delete(key);
  const directory=join(dirname(config.dbPath),'account-history',createHash('sha256').update(environmentId).digest('hex').slice(0,12));
@@ -64,21 +65,37 @@ export async function publishHistoryMirror(temporary:string,destination:string):
 export async function environmentRollout(context:{nativeId:string|null;session:{agent_environment_id?:string|null}}):Promise<string|null> {
  if(!context.nativeId)return null;
  const engine=await engineForThread(context.nativeId);
- if(!engine.environmentId)return null;
- const key=engine.environmentId+':'+context.nativeId;
+ const environmentId=engine.environmentId??(context.session.agent_environment_id||'native');
+ const key=JSON.stringify([config.dbPath,environmentId,context.nativeId]);
  const prior=cached.get(key);if(prior&&prior.until>Date.now())return prior.path;
  if(pending.has(key))return pending.get(key)!;
  const work=(async()=>{
-  const {withCodexConnection}=await import('./stream.js');
-  const response=await runInCodexEngine(engine,()=>withCodexConnection(request=>request('thread/read',{threadId:context.nativeId})));
-  const path=response.thread?.path;if(typeof path!=='string'||!path.startsWith('/')||!path.endsWith(context.nativeId+'.jsonl'))return null;
-  const e=getCodexEnvironment(engine.environmentId!);const c=e.kind==='account'?environmentConnection(e):null;
-  const home=e.kind==='account'?engine.accountHome!:localHome(e);
+  const e=getCodexEnvironment(environmentId);
+  let path:string|null=null;
+  if(e.kind==='native')path=await findCodexRollout(context.nativeId!);
+  else {
+   const {withCodexConnection}=await import('./stream.js');
+   const response=await runInCodexEngine(engine,()=>withCodexConnection(request=>request('thread/read',{threadId:context.nativeId})));
+   path=response.thread?.path??null;
+  }
+  if(typeof path!=='string'||!path.startsWith('/')||!path.endsWith(context.nativeId+'.jsonl'))return null;
+  const c=e.kind==='account'?environmentConnection(e):null;
+  let home=e.kind==='account'?engine.accountHome!:localHome(e);
   let metadata:{size:number;mtime:string|number;base:boolean}|undefined;
   try{
    const file=await realpath(path);
    let authorized=false;
    for(const name of ['sessions','archived_sessions']){try{const root=await realpath(join(home,name));if(file.startsWith(root+sep))authorized=true;}catch{}}
+   // Old records can lack an explicit provider binding; match only homes
+   // enumerated by the legacy rollout lookup, then project their ancestry too.
+   if(!authorized&&e.kind==='native'&&!context.session.agent_environment_id){
+    for(const provider of readAgentManagement('codex').providers){
+     const configured=provider.fields.codexHome;
+     const value=typeof configured==='string'&&configured.trim()?configured.trim():join(homedir(),`.codex-${provider.id}`);
+     const candidate=value==='~'?homedir():value.startsWith('~/')?join(homedir(),value.slice(2)):value;
+     try{const root=await realpath(join(candidate,'sessions'));if(file.startsWith(root+sep)){home=candidate;authorized=true;break;}}catch{/* Unavailable provider home. */}
+    }
+   }
    if(authorized){
     const handle=await open(file,'r');let base=false;
     try{const buffer=Buffer.alloc(1024*1024);const {bytesRead}=await handle.read(buffer,0,buffer.length,0);try{base=!!JSON.parse(buffer.subarray(0,bytesRead).toString().split('\n')[0]).payload?.history_base;}catch{}}finally{await handle.close();}

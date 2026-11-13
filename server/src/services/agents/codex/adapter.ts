@@ -18,7 +18,6 @@ import { subscribeCodexRuntimeSignals } from './runtime-signals.js';
 import { shellSingleQuote } from '../shell.js';
 import { codexCommand, codexPermissions, codexResources } from './commands.js';
 import { capabilities, requireNative, type AgentAdapter } from '../types.js';
-import { findCodexRollout } from '../../prompt-context.js';
 import {ensureCodexTerminalBridge} from './terminal-bridge.js';
 import {codexManagement} from './management.js';
 import {applyManagedCommandDefaults} from '../management-store.js';
@@ -29,7 +28,7 @@ export const codexAdapter: AgentAdapter = {
                 unlinkSync(codexBindingFile(context.session.id));
             }
             catch { } }, discoverTerminal: discoverCodexTerminal, recover: () => { ingestAllCodexSessionBindings(); backfillLegacyCodexSessionIds(); } },
-    history: { file: { turns: extractCodexPromptContext, relevant: line => /"type"\s*:\s*"(?:user_message|agent_message|task_complete|message|compacted)"/.test(line), locate: async context => { if(!context.nativeId)return null;const account=await (await import('./account-files.js')).environmentRollout(context);return account||findCodexRollout(context.nativeId); }, decode: decodeCodexText, project: parseCodexMessage, replacementHistory: codexHistoryReplacementIndexes, recordLimit: codexRecordLimitWithCompaction, questionCall: codexQuestionCall,turnBoundary:codexTurnBoundary }, read: async () => null },
+    history: { file: { turns: extractCodexPromptContext, relevant: line => /"type"\s*:\s*"(?:user_message|agent_message|task_complete|message|compacted)"/.test(line), locate: async context => context.nativeId?(await import('./account-files.js')).environmentRollout(context):null, decode: decodeCodexText, project: parseCodexMessage, replacementHistory: codexHistoryReplacementIndexes, recordLimit: codexRecordLimitWithCompaction, questionCall: codexQuestionCall,turnBoundary:codexTurnBoundary }, read: async () => null },
     runtime: { subscribe: (context, changed) => subscribeCodexRuntimeSignals(id => { if (id === context.nativeId)
             changed(); }), read: async (context) => {
             const module=await import('./runtime.js');

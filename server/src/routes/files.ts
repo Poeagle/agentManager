@@ -47,7 +47,9 @@ function withinDirectory(path: string, root: string): boolean {
 
 async function withinProjectScope(path: string, scope: ProjectFileScope): Promise<boolean> {
   const absolute = resolve(path);
-  if (!withinDirectory(absolute, scope.root)) return false;
+  // Uploads are returned under the canonical project root. Permit that path
+  // as well as the registered spelling, but do not admit arbitrary aliases.
+  if (!withinDirectory(absolute, scope.root) && !withinDirectory(absolute, scope.realRoot)) return false;
   try {
     let canonical: string;
     try {
