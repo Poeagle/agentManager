@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it} from 'vitest';
-import {mkdtempSync,writeFileSync,appendFileSync,rmSync} from 'fs';
+import {mkdtempSync,writeFileSync,appendFileSync,rmSync,copyFileSync} from 'fs';
 import {tmpdir} from 'os';import {join} from 'path';
 import {readConversationStatistics,readConversationProgress} from '../src/services/agents/codex/statistics.js';
 let dir:string,file:string;
@@ -14,6 +14,26 @@ describe('progress request intervals',()=>{
   writeFileSync(file,start()+message('a')+call('one')+usage(100,100));expect(await readConversationProgress(file)).toMatchObject({turn_id:'turn',tokens:{total_tokens:100},tool_calls:1,tool_rounds:1,complete:true});
   appendFileSync(file,call('two')+call('two'));expect(await readConversationProgress(file)).toMatchObject({tokens:{total_tokens:100},tool_calls:2,tool_rounds:1});
   appendFileSync(file,usage(300,200));expect(await readConversationProgress(file)).toMatchObject({tokens:{total_tokens:300},tool_calls:2,tool_rounds:2});
+ });
+ it('splits progress segments at follow-ups and stop boundaries and survives a cold read',async()=>{
+  const at=(second:number,type:string,payload:unknown)=>JSON.stringify({timestamp:new Date(Date.UTC(2026,10,13,0,0,second)).toISOString(),type,payload})+'\n';
+  writeFileSync(file,at(0,'event_msg',{type:'task_started',turn_id:'turn'})+at(1,'event_msg',{type:'user_message',message:'first',turn_id:'turn'})+message('a')+call('one')+usage(100,100));
+  const first=await readConversationProgress(file);expect(first?.segment).toMatchObject({tool_calls:1,requests:1,end_at:null});
+  appendFileSync(file,at(10,'event_msg',{type:'user_message',message:'follow-up',turn_id:'turn'})+message('b')+call('two')+usage(300,200)+message('c')+usage(400,100)+at(20,'event_msg',{type:'turn_aborted',turn_id:'turn'}));
+  const rows=await readConversationStatistics(file),a=rows.find(item=>item.sequence===rows[0].sequence)!,b=rows.at(-1)!;
+  expect(a.segment).toMatchObject({end_reason:'input',elapsed_ms:9000,tool_calls:1});
+  expect(b.segment).toMatchObject({end_reason:'interrupted',elapsed_ms:10000,tool_calls:1,requests:1,complete:false,tokens:{total_tokens:100}});
+  expect((await readConversationProgress(file))?.segment).toMatchObject({end_reason:'interrupted',tool_calls:1});
+  const fresh=join(dir,'fresh.jsonl');writeFileSync(fresh,require('fs').readFileSync(file));expect(await readConversationStatistics(fresh)).toEqual(rows);
+ });
+ it('does not invent a stop time when the next turn starts without an end event',async()=>{
+  const at=(second:number,type:string,payload:unknown)=>JSON.stringify({timestamp:new Date(Date.UTC(2026,10,13,0,0,second)).toISOString(),type,payload})+'\n';
+  writeFileSync(file,at(0,'event_msg',{type:'task_started',turn_id:'one'})+message('one','one')+usage(100,100)+at(30,'event_msg',{type:'task_started',turn_id:'two'})+message('two','two')+usage(200,100));
+  const [first]=await readConversationStatistics(file);expect(first.segment).toMatchObject({end_reason:'unknown',end_at:null,elapsed_ms:null,complete:false});
+ });
+ it('does not assign an unfinished first request to an early follow-up',async()=>{
+  writeFileSync(file,start()+row('event_msg',{type:'user_message',message:'first',turn_id:'turn'})+row('event_msg',{type:'user_message',message:'follow-up',turn_id:'turn'})+message('reply')+usage(300,300));
+  const progress=await readConversationProgress(file);expect(progress?.segment).toMatchObject({requests:0,tokens:null,complete:false});
  });
  it('reports each increment while keeping turn totals and deduplicating calls',async()=>{
   writeFileSync(file,start()+message('a')+call('one')+usage(100,100)+call('two')+call('two')+usage(300,200)+message('b')+usage(600,300));

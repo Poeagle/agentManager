@@ -57,34 +57,68 @@ describe('conversation send transaction', () => {
     await act(async()=>stop.resolve({status:'accepted'}));expect(button).toBeDisabled();
     act(()=>Socket.latest.emit({type:'snapshot',messages:[],busy:false,stage:'idle',turn_id:'active-turn'}));expect(screen.queryByRole('button',{name:'停止当前执行'})).not.toBeInTheDocument();
   });
+  it('keeps an uncertain stop from being retried until the turn state changes',async()=>{
+    const call=vi.spyOn(api.agent,'stopTurn').mockRejectedValue(new Error('timeout'));const descriptor=sessionAgent(session);
+    await mount({...session,agent:{...descriptor,capabilities:{...descriptor.capabilities,stopTurn:true}}});
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[],busy:true,stage:'tools',turn_id:'active-turn',started_at:new Date().toISOString()}));
+    fireEvent.click(await screen.findByRole('button',{name:'停止当前执行'}));expect(await screen.findByRole('alert')).toHaveTextContent('停止结果暂未确认');
+    expect(screen.getByRole('button',{name:'正在停止当前执行'})).toBeDisabled();expect(call).toHaveBeenCalledTimes(1);
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[],busy:false,stage:'idle',turn_id:'active-turn'}));await waitFor(()=>expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+  });
   it('shows the shared progress summary while continuing after a follow-up',async()=>{
     await mount();const prior={id:'before-followup',role:'assistant',turn_id:'turn',phase:'commentary',text:'Prior work',timestamp:new Date(Date.now()-20000).toISOString()};const followup={id:'followup',role:'user',turn_id:'turn',text:'Continue please',timestamp:new Date(Date.now()-10000).toISOString()};
     act(()=>Socket.latest.emit({type:'snapshot',messages:[prior,followup],busy:true,stage:'waiting',turn_id:'turn',started_at:new Date(Date.now()-20000).toISOString(),activities:[]}));
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:12345},tool_calls:7,tool_rounds:5,complete:true}}));
-    const status=(await screen.findByText('0 items')).closest('[role=status]')!;expect(status).toHaveTextContent('0 items');expect(status).toHaveTextContent('token: 12.3K');expect(status).toHaveTextContent('tools: 7 calls / 5 rounds');expect(status).toHaveTextContent('In progress');expect(status).not.toHaveTextContent('Follow-up sent');
+    const status=(await screen.findByText('0 items')).closest('[role=status]')!;expect(status).toHaveTextContent('0 items');expect(status).toHaveTextContent('segment · token: — · tools: —');expect(status).not.toHaveTextContent('12.3K');expect(status).toHaveTextContent('In progress');expect(status).not.toHaveTextContent('Follow-up sent');
+    const oldPart={id:'old-segment',start_at:new Date(Date.now()-20000).toISOString(),end_at:followup.timestamp,elapsed_ms:10000,end_reason:'input',tokens:{total_tokens:1000},requests:1,tool_calls:3,tool_rounds:1,complete:true};
+    const newPart={...oldPart,id:'new-segment',start_at:followup.timestamp,end_at:null,elapsed_ms:null,end_reason:null,tokens:{total_tokens:200},tool_calls:1};
+    act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:10,message_id:prior.id,turn_id:'turn',...oldPart,segment:oldPart}]}));
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:1200},requests:2,tool_calls:4,tool_rounds:2,complete:true,segment:newPart}}));
+    expect(status).toHaveTextContent('segment · token: 200 · tools: 1 call');expect(status).not.toHaveTextContent('1.2K');
   });
   it('updates the active progress total without mixing other native sessions',async()=>{
     await mount();const item={id:'progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'working',timestamp:null};
     act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:true,stage:'tools',turn_id:'turn',started_at:new Date(Date.now()-120000).toISOString(),activities:[{id:'tool',label:'运行命令 · test',status:'completed',duration_ms:40000,started_at:null,completed_at:null}]}));await screen.findByText('working');
-    const header=screen.getByText('progress').closest('summary')!;expect(within(header).getByText('Step 40s')).toHaveAttribute('title','Duration of the most recently completed tool step');expect(within(header).getByText(/^Turn /)).toHaveAttribute('title','Elapsed time since the current user message or follow-up');expect(within(screen.getByTestId('conversation-activity-line')).queryByText(/^Turn /)).not.toBeInTheDocument();
+    const header=screen.getByText('progress').closest('summary')!;expect(within(header).getByText('Step 40s')).toHaveAttribute('title','Duration of the most recently completed tool step');expect(within(header).getByText(/^Elapsed /)).toHaveAttribute('title','Elapsed time for this progress segment');expect(within(screen.getByTestId('conversation-activity-line')).queryByText(/^Turn /)).not.toBeInTheDocument();
     expect(header).toHaveTextContent('unknown: —');
     act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:true,stage:'tools',turn_id:'turn',started_at:new Date(Date.now()-120000).toISOString(),activities:[{id:'tool',label:'调用工具 · test',status:'running',started_at:new Date(Date.now()-35000).toISOString(),completed_at:null,duration_ms:null}]}));
     expect(header).toHaveTextContent(/calling \(test\): 3[45]s/);
     act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:true,stage:'tools',turn_id:'turn',started_at:new Date(Date.now()-120000).toISOString(),activities:[{id:'tool',label:'调用工具 · test',status:'completed',started_at:new Date(Date.now()-35000).toISOString(),completed_at:new Date(Date.now()-5000).toISOString(),duration_ms:30000}]}));
     expect(header).toHaveTextContent(/waiting: [45]s/);
+    const segment={id:'segment-one',start_at:new Date(Date.now()-120000).toISOString(),end_at:null,elapsed_ms:null,end_reason:null,tokens:{total_tokens:392100},requests:1,tool_calls:2,tool_rounds:2,complete:true};
+    act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:1,message_id:item.id,turn_id:'turn',tokens:{total_tokens:392100},requests:1,tool_calls:2,tool_rounds:2,complete:true,segment}]}));
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'other',progress:{turn_id:'turn',tokens:{total_tokens:999},tool_calls:9,tool_rounds:9,complete:true}}));expect(screen.queryByText(/token: 999/)).not.toBeInTheDocument();
-    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:392100},tool_calls:2,tool_rounds:2,complete:true}}));expect(await screen.findByText('total · token: 392.1K · tools: 2 calls / 2 rounds')).toBeVisible();
-    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:400000},tool_calls:3,tool_rounds:2,complete:true}}));expect(await screen.findByText('total · token: 400K · tools: 3 calls / 2 rounds')).toBeVisible();
-    act(()=>Socket.latest.emit({type:'snapshot',messages:[item,{id:'final',role:'assistant',turn_id:'turn',phase:'final',text:'Done',timestamp:new Date().toISOString()}],busy:false,stage:'idle',turn_id:'turn'}));
-    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:null}));
-    expect(header).toHaveTextContent('total · token: 400K · tools: 3 calls / 2 rounds');expect(header).toHaveTextContent('Completed');expect(header).not.toHaveTextContent('In progress');expect(header).not.toHaveTextContent('waiting:');
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'another-turn',tokens:{total_tokens:999},tool_calls:9,tool_rounds:9,complete:true,segment:{...segment,tokens:{total_tokens:999}}}}));expect(header).toHaveTextContent('segment · token: 392.1K');expect(header).not.toHaveTextContent('token: 999');
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:400000},tool_calls:3,tool_rounds:2,complete:true,segment:{...segment,tokens:{total_tokens:400000},tool_calls:3}}}));expect(await screen.findByText('segment · token: 400K · tools: 3 calls / 2 rounds')).toBeVisible();
+    const ended={...segment,end_at:new Date().toISOString(),elapsed_ms:120000,end_reason:'interrupted',tokens:{total_tokens:400000},tool_calls:3};
+    act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:1,message_id:item.id,turn_id:'turn',tokens:{total_tokens:400000},requests:1,tool_calls:3,tool_rounds:2,complete:true,segment:ended}]}));
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:false,stage:'idle',turn_id:'turn'}));
+    expect(header).toHaveTextContent('segment · token: 400K · tools: 3 calls / 2 rounds');expect(header).toHaveTextContent('Elapsed 2m 0s');expect(header).toHaveTextContent('Interrupted');expect(header).not.toHaveTextContent('waiting:');
   });
   it('restores completed progress totals and duration from recorded conclusion statistics',async()=>{
     const existing=await api.agent.conversation(session.id),item={id:'historical-progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'Earlier work',timestamp:'2026-01-01T00:00:05Z'},final={id:'historical-final',role:'assistant',turn_id:'turn',phase:'final',text:'Complete',timestamp:'2026-01-01T00:01:00Z'};
-    const total={tokens:{total_tokens:97400},requests:2,tool_calls:4,tool_rounds:3,complete:true,shared_messages:1,start_at:'2026-01-01T00:00:00Z',end_at:final.timestamp,elapsed_ms:60000};
-    vi.mocked(api.agent.conversation).mockResolvedValue({...existing,messages:[item,final],statistics:[{sequence:1,message_id:final.id,turn_id:'turn',...total,conclusion:total}]} as unknown as ConversationPage);
+    const total={id:'historical-segment',end_reason:'completed',tokens:{total_tokens:97400},requests:2,tool_calls:4,tool_rounds:3,complete:true,shared_messages:1,start_at:'2026-01-01T00:00:00Z',end_at:final.timestamp,elapsed_ms:60000};
+    vi.mocked(api.agent.conversation).mockResolvedValue({...existing,messages:[item,final],statistics:[{sequence:1,message_id:final.id,turn_id:'turn',...total,conclusion:total,segment:total}]} as unknown as ConversationPage);
     await mount();const header=(await screen.findByText('progress')).closest('summary')!;
-    expect(header).toHaveTextContent('total · token: 97.4K · tools: 4 calls / 3 rounds');expect(header).toHaveTextContent('Total 1m 0s');expect(header).toHaveTextContent('Completed');expect(header).not.toHaveTextContent('calling:');
+    expect(header).toHaveTextContent('segment · token: 97.4K · tools: 4 calls / 3 rounds');expect(header).toHaveTextContent('Elapsed 1m 0s');expect(header).toHaveTextContent('Completed');expect(header).not.toHaveTextContent('calling:');
+  });
+  it('does not mark a progress segment completed just because an async question follows it',async()=>{
+    const existing=await api.agent.conversation(session.id);
+    vi.mocked(api.agent.conversation).mockResolvedValue({...existing,messages:[{id:'progress-before-question',role:'assistant',turn_id:'turn',phase:'commentary',text:'Working',timestamp:null},{id:'question-after-progress',role:'assistant',turn_id:'turn',phase:'final',text:'Choose',timestamp:null,async_questions:[{id:'q',title:'Choose',options:['A','B']}]}]} as unknown as ConversationPage);
+    await mount();expect((await screen.findByText('progress')).closest('summary')).not.toHaveTextContent('Completed');
+  });
+  it('keeps follow-up segments separate when history is restored and the native turn is the same',async()=>{
+    const existing=await api.agent.conversation(session.id);
+    const first={id:'first-segment',role:'assistant',turn_id:'turn',phase:'commentary',text:'First progress',timestamp:'2026-01-01T00:00:05Z'};
+    const followup={id:'followup-boundary',role:'user',turn_id:'turn',text:'Continue',timestamp:'2026-01-01T00:00:10Z'};
+    const second={id:'second-segment',role:'assistant',turn_id:'turn',phase:'commentary',text:'Second progress',timestamp:'2026-01-01T00:00:15Z'};
+    const firstPart={id:'seg-a',start_at:'2026-01-01T00:00:00Z',end_at:'2026-01-01T00:00:10Z',elapsed_ms:10000,end_reason:'input',tokens:{total_tokens:1000},requests:1,tool_calls:2,tool_rounds:1,complete:true};
+    const secondPart={...firstPart,id:'seg-b',start_at:followup.timestamp,end_at:'2026-01-01T00:00:20Z',elapsed_ms:10000,end_reason:'interrupted',tokens:{total_tokens:300},tool_calls:1};
+    const stats=[{sequence:1,message_id:first.id,turn_id:'turn',...firstPart,segment:firstPart},{sequence:2,message_id:second.id,turn_id:'turn',...secondPart,segment:secondPart}];
+    vi.mocked(api.agent.conversation).mockResolvedValue({...existing,messages:[first,followup,second],statistics:stats} as unknown as ConversationPage);
+    await mount();const headers=(await screen.findAllByText('progress')).map(node=>node.closest('summary')!);
+    expect(headers[0]).toHaveTextContent('segment · token: 1K · tools: 2 calls');expect(headers[0]).toHaveTextContent('Elapsed 10s');
+    expect(headers[1]).toHaveTextContent('segment · token: 300 · tools: 1 call');expect(headers[1]).toHaveTextContent('Interrupted');expect(headers[1]).not.toHaveTextContent('1K');
   });
   it('reloads the baseline instead of dropping older messages when another reader replaced the history generation',async()=>{
     const original=await api.agent.conversation(session.id);

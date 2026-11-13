@@ -394,6 +394,10 @@ export interface AgentStatisticsInterval {
   complete: boolean;
   shared_messages: number;
 }
+export interface AgentProgressSegment {
+  id:string; start_at:string|null; end_at:string|null; elapsed_ms:number|null; end_reason:'input'|'completed'|'interrupted'|'unknown'|null;
+  tokens:Record<string,number|null>|null; requests:number; tool_calls:number; tool_rounds:number; complete:boolean;
+}
 export interface AgentStatistics {
   sequence: number;
   message_id?: string;
@@ -404,6 +408,7 @@ export interface AgentStatistics {
   tool_rounds: number;
   complete: boolean;
   interval?: AgentStatisticsInterval;
+  segment?: AgentProgressSegment;
   conclusion?: AgentStatisticsInterval & {
     start_at: string | null;
     end_at: string | null;
@@ -576,7 +581,7 @@ export interface AgentStatisticsPort {
   read(context: AgentContext, path: string): Promise<AgentStatistics[]>;
   readProgress?(context: AgentContext, path: string): Promise<AgentProgressStatistics | null>;
 }
-export interface AgentProgressStatistics {turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean}
+export interface AgentProgressStatistics {turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;segment?:AgentProgressSegment}
 export interface AgentQuotaPort {
   shutdown?(): void | Promise<void>;
   read(force?: boolean): Promise<{

@@ -126,7 +126,7 @@ const timeColor=(seconds:number)=>seconds>=60?'var(--error)':seconds>=30?'#e57b1
 interface ProgressSummaryProps {
   agent: AgentDescriptor; agentName: string; count: number; active: boolean;
   progress?: import('../lib/api').ConversationProgressStatistics | null;
-  progressScope?: 'total'|'turn'; completed?: boolean;
+  progressScope?: 'total'|'turn'|'segment'; completed?: boolean; interrupted?: boolean;
   stepDuration?: number|null; stepRunning?: boolean; phaseSeconds?: number|null;
   progressPhase: 'calling'|'waiting'|'unknown'; callingLabel: string|null; turnDuration?: number|null;
 }
@@ -139,6 +139,7 @@ function ProgressSection({
   progress,
   progressScope,
   completed,
+  interrupted,
   stepDuration,
   stepRunning,
   phaseSeconds,
@@ -164,7 +165,7 @@ function ProgressSection({
           aria-label={`${open ? "收起" : "展开"}进展（${count} 条）`}
           aria-expanded={open}
         >
-          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} progress={progress} progressScope={progressScope} completed={completed} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} callingLabel={callingLabel} turnDuration={turnDuration}/>
+          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} progress={progress} progressScope={progressScope} completed={completed} interrupted={interrupted} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} callingLabel={callingLabel} turnDuration={turnDuration}/>
           <ChevronDown size={14} className="session-chat-progress-chevron" />
         </summary>
         <div className="session-chat-progress-content">{children}</div>
@@ -173,17 +174,18 @@ function ProgressSection({
   );
 }
 
-function ProgressSummary({agent,agentName,count,active,progress,progressScope='total',completed,stepDuration,stepRunning,phaseSeconds,progressPhase,callingLabel,turnDuration}:ProgressSummaryProps) {
+function ProgressSummary({agent,agentName,count,active,progress,progressScope='total',completed,interrupted,stepDuration,stepRunning,phaseSeconds,progressPhase,callingLabel,turnDuration}:ProgressSummaryProps) {
   return <>
           <span aria-hidden="true"><AgentIcon session={{agent}} className="h-[13px] w-[13px]" /></span>
           <span>{agentName}</span>
           <span className="session-chat-kind">progress</span>
           <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
-          {progress && <span className="session-chat-message-statistics" title={progressScope==='total'?'Cumulative recorded usage since the previous conclusion. Incomplete history is a lower bound.':'Recorded usage for this native turn through its last progress update. Incomplete history is a lower bound.'}>{progressScope} · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} / {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
+          {progress && <span className="session-chat-message-statistics" title={progressScope==='segment'?'Usage recorded since this progress segment started; incomplete data is a lower bound.':progressScope==='total'?'Cumulative recorded usage since the previous conclusion. Incomplete history is a lower bound.':'Recorded usage for this native turn through its last progress update. Incomplete history is a lower bound.'}>{progressScope} · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} / {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
+          {!progress&&progressScope==='segment'&&<span className="session-chat-message-statistics" title="Segment usage is unavailable">segment · token: — · tools: —</span>}
           {active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
           {active&&<span className="session-chat-progress-time">{progressPhase}{callingLabel&&<span title={callingLabel}> ({Array.from(callingLabel).length>18?`${Array.from(callingLabel).slice(0,18).join('')}…`:callingLabel})</span>}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
-          {turnDuration!=null&&<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title={active?'Elapsed time since the current user message or follow-up':'Recorded time from the previous conclusion to this conclusion'}>{active?'Turn':'Total'} {formatElapsedEnglish(turnDuration)}</time>}
-          {active ? <span className="session-chat-progress-live">In progress</span> : completed ? <span className="session-chat-progress-time">Completed</span> : null}
+          {turnDuration!=null?<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time for this progress segment">Elapsed {formatElapsedEnglish(turnDuration)}</time>:progressScope==='segment'?<span className="session-chat-progress-time" title="Segment timing is unavailable">Elapsed —</span>:null}
+          {active ? <span className="session-chat-progress-live">In progress</span> : interrupted ? <span className="session-chat-progress-time">Interrupted</span> : completed ? <span className="session-chat-progress-time">Completed</span> : null}
   </>;
 }
 
@@ -616,7 +618,9 @@ export function SessionConversation({
   const [error, setError] = useState("");
   const [sendError, setSendError] = useState("");
   const [stoppingTurn,setStoppingTurn]=useState<string|null>(null);
+  const [stopError,setStopError]=useState('');
   const stoppingRef=useRef<{sessionId:string;turnId:string}|null>(null);
+  useEffect(()=>setStopError(''),[session.id]);
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectError, setReconnectError] = useState("");
   const reconnectAttempted = useRef(false),
@@ -1753,29 +1757,27 @@ export function SessionConversation({
         message.role === "assistant" &&
         message.turn_id === currentTurn,
     );
-  const started = continuingAfterFollowup
-    ? lastUserTime
-    : liveProgress.started_at || lastUserTime;
+  const started = messages[lastUserIndex]?.optimistic ? null : lastUserTime || liveProgress.started_at;
   const elapsed = started
     ? Math.max(0, Math.floor((now - Date.parse(started)) / 1000))
     : 0;
   useEffect(()=>{
     if(stoppingRef.current&&(stoppingRef.current.sessionId!==session.id||!busy||liveProgress.turn_id!==stoppingRef.current.turnId)){
-      stoppingRef.current=null;setStoppingTurn(null);
+      stoppingRef.current=null;setStoppingTurn(null);setStopError('');
     }
   },[busy,liveProgress.turn_id,session.id]);
   async function stopCurrentTurn(){
     const turnId=liveProgress.turn_id;
     if(!turnId||stoppingRef.current||liveState!=='connected')return;
-    const request={sessionId:session.id,turnId};stoppingRef.current=request;setStoppingTurn(turnId);setSendError('');
+    const request={sessionId:session.id,turnId};stoppingRef.current=request;setStoppingTurn(turnId);setStopError('');
     try {await api.agent.stopTurn(session.id,turnId);}
     catch(error){
       if(stoppingRef.current!==request)return;
-      if(error instanceof ApiError&&error.status>=400&&error.status<500){stoppingRef.current=null;setStoppingTurn(null);setSendError(error.message);}
-      else setSendError('停止结果暂未确认，请等待会话状态更新。');
+      if(error instanceof ApiError&&error.status>=400&&error.status<500){stoppingRef.current=null;setStoppingTurn(null);setStopError(error.message);}
+      else setStopError('停止结果暂未确认，请等待会话状态更新。');
     }
   }
-  const stopButton=busy&&canSend&&agentSupports(session,'stopTurn')?<button type="button" aria-label={stoppingTurn?'正在停止当前执行':'停止当前执行'} title={stoppingTurn?'停止请求已发送，等待状态更新':'停止当前执行，保留会话和草稿'} disabled={!!stoppingTurn||liveState!=='connected'||!liveProgress.turn_id} onClick={()=>void stopCurrentTurn()}>{stoppingTurn?<Loader2 size={17} className="animate-spin"/>:<Square size={16}/>}</button>:null;
+  const stopButton=busy&&canSend&&agentSupports(session,'stopTurn')?<button type="button" className="session-chat-stop" aria-label={stoppingTurn?'正在停止当前执行':'停止当前执行'} title={stoppingTurn?'停止请求已发送，等待状态更新':'停止当前执行，保留会话和草稿'} disabled={!!stoppingTurn||liveState!=='connected'||!liveProgress.turn_id} onClick={()=>void stopCurrentTurn()}>{stoppingTurn?<Loader2 size={17} className="animate-spin"/>:<Square size={16}/>}</button>:null;
   const waitingForText =
     !compaction.running && busy && !currentAnswer && !activeError && !waiting;
   const ignoredKey = JSON.stringify(page?.runtime?.ignored_question_ids || []);
@@ -1846,12 +1848,14 @@ export function SessionConversation({
         )
       : null;
   const groups = groupConversationProgress(displayed);
+  const displayedLastUser=displayed.reduce((index,message,current)=>message.role==='user'&&!message.queued&&!automaticConversationContext(message.text)?current:index,-1);
+  const previousSegment=[...displayed.slice(0,Math.max(0,displayedLastUser))].reverse().find(message=>message.role==='assistant'&&message.statistics?.segment)?.statistics?.segment;
+  const pendingSegment=continuingAfterFollowup&&previousSegment&&progressStatistics?.segment&&previousSegment.id!==progressStatistics.segment.id&&progressStatistics.turn_id===liveProgress.turn_id?progressStatistics.segment:null;
   const progressTimingVisible=busy&&!reconnectable&&!ended&&!waiting&&!activeError&&!compaction.state&&groups.at(-1)?.kind==='progress';
   const activityRunning=busy&&!reconnectable&&!ended&&!waiting&&!activeError;
   const currentActivities=liveState==='connected'&&!reconnectable&&liveProgress.stage==='tools'?liveProgress.activities||[]:[];
   const currentActivity=currentConversationActivity(currentActivities,activityRunning);
   const stepDuration=conversationActivityDuration(currentActivity,now);
-  const progressForTurn=progressStatistics&&liveProgress.turn_id&&progressStatistics.turn_id===liveProgress.turn_id?progressStatistics:null;
   const progressActivities=liveState==='connected'&&!reconnectable?liveProgress.activities||[]:[];
   const runningTool=progressActivities.find(item=>item.status==='running');
   const callingLabel=runningTool?.label.split(' · ').slice(1).join(' · ')||null;
@@ -2048,10 +2052,11 @@ export function SessionConversation({
               {groups.map((group, groupIndex) => {
                 if(group.kind === "message") return bubble(group.message);
                 const last=group.messages.at(-1),next=groups[groupIndex+1];
-                const final=next?.kind==='message'&&next.message.role==='assistant'&&next.message.phase==='final'&&!!next.message.turn_id&&next.message.turn_id===last?.turn_id?next.message:null;
-                const conclusion=final?.statistics?.conclusion;
-                const live=groupIndex>=groups.length-2&&progressStatistics&&last?.turn_id&&last.turn_id===progressStatistics.turn_id?progressStatistics:null;
-                const summary=conclusion?{...conclusion,turn_id:final!.turn_id!}:live||last?.statistics||null;
+                const final=next?.kind==='message'&&next.message.role==='assistant'&&next.message.phase==='final'&&!next.message.async_questions?.length&&!!next.message.turn_id&&next.message.turn_id===last?.turn_id?next.message:null;
+                const saved=final?.statistics?.segment||last?.statistics?.segment;
+                const live=progressStatistics?.segment;
+                const part=busy&&groups.at(-1)===group&&progressStatistics?.turn_id===last?.turn_id&&saved&&live?.id===saved.id&&!!saved.start_at&&live.start_at===saved.start_at?live:saved;
+                const summary=part?{...part,turn_id:last?.turn_id||''}:null;
                 return (
                   <ProgressSection
                     key={`progress-${group.id}`}
@@ -2064,9 +2069,10 @@ export function SessionConversation({
                     phaseSeconds={phaseSeconds}
                     progressPhase={progressPhase}
                     callingLabel={callingLabel}
-                    turnDuration={progressTimingVisible&&groups.at(-1)===group?turnDuration:conclusion?.elapsed_ms??null}
-                    completed={!!final}
-                    progressScope={conclusion||live?'total':'turn'}
+                    turnDuration={progressTimingVisible&&groups.at(-1)===group?(part?.start_at?elapsedBetween(part.start_at,now):turnDuration):part?.elapsed_ms??null}
+                    completed={part?part.end_reason==='completed':!!final}
+                    interrupted={part?.end_reason==='interrupted'}
+                    progressScope="segment"
                     progress={summary}
                   >
                     {group.messages.map((message, index) => (
@@ -2089,7 +2095,7 @@ export function SessionConversation({
               })}
               {waitingForText && continuingAfterFollowup && !sending && (
                 <div className="session-chat-agent session-chat-progress-toggle session-chat-pending-progress" role="status">
-                  <ProgressSummary agent={sessionAgent(session)} agentName={agentName} count={0} active progress={progressForTurn} stepDuration={stepDuration} stepRunning={currentActivity?.status==='running'} phaseSeconds={phaseSeconds} progressPhase={progressPhase} callingLabel={callingLabel} turnDuration={turnDuration}/>
+                  <ProgressSummary agent={sessionAgent(session)} agentName={agentName} count={0} active progressScope="segment" progress={pendingSegment?{...pendingSegment,turn_id:liveProgress.turn_id||''}:null} stepDuration={stepDuration} stepRunning={currentActivity?.status==='running'} phaseSeconds={phaseSeconds} progressPhase={progressPhase} callingLabel={callingLabel} turnDuration={pendingSegment?.start_at?elapsedBetween(pendingSegment.start_at,now):turnDuration}/>
                 </div>
               )}
               {waitingForText && (!continuingAfterFollowup || sending) && (
@@ -2336,6 +2342,7 @@ export function SessionConversation({
             </div>
           )}
           {ignoreError && <p role="alert">{ignoreError}</p>}
+          {stopError&&<p role="alert" className="session-chat-error">{stopError}</p>}
           {sendError && (
             <p role="alert" className="session-chat-error">
               {sendError}
