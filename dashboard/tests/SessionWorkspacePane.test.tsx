@@ -7,13 +7,14 @@ import {SessionWorkspacePane} from '../src/components/SessionWorkspacePane';
 import {api,type ConversationPage,type Session} from '../src/lib/api';
 vi.mock('../src/lib/api',async(original)=>{
   const actual=await original<typeof import('../src/lib/api')>();
-  return {...actual,api:{...actual.api,agent:{...actual.api.agent,conversation:vi.fn(),sendInput:vi.fn()},sessions:{...actual.api.sessions,reconnect:vi.fn(),pasteImage:vi.fn(),pasteFile:vi.fn()},rbac:{...actual.api.rbac,me:vi.fn()}}};
+  return {...actual,api:{...actual.api,agent:{...actual.api.agent,conversation:vi.fn(),sendInput:vi.fn(),checkSend:vi.fn()},sessions:{...actual.api.sessions,reconnect:vi.fn(),pasteImage:vi.fn(),pasteFile:vi.fn()},rbac:{...actual.api.rbac,me:vi.fn()}}};
 });
 const session={id:'chat',project_id:'p',task:'Work',status:'running',mode:'session',cli_type:'codex',codex_session_id:'native',pid:null,started_at:null,completed_at:null,exit_code:null,created_at:'2026-10-29T10:00:00Z'} satisfies Session;
 let client:QueryClient;let page:ConversationPage;
 function Raw({visible,suspended,ready}:{visible:boolean;suspended:boolean;ready:()=>void}) {useEffect(()=>{ready();},[]);return <div data-testid="raw" data-suspended={suspended} data-visible={visible}>raw tool result</div>;}
 beforeEach(()=>{
   localStorage.clear();vi.clearAllMocks();Element.prototype.scrollIntoView=vi.fn();
+  vi.mocked(api.agent.checkSend).mockResolvedValue({needs_confirmation:false,matched:false,enabled:false,context_tokens:null,context_window:null,context_percent:null,idle_minutes:null,last_completed_at:null,observed_at:null,native_id:'native',checked_at:'2026-11-14T00:00:00Z',can_compact:false,can_new:false,token:''});
   client=new QueryClient({defaultOptions:{queries:{retry:false}}});
   page={messages:[{id:'a'.repeat(32),role:'user',text:'检查代码',timestamp:null},{id:'b'.repeat(32),role:'assistant',text:'检查已完成。',timestamp:null}],has_more:false,available:true,reset:false,generation:'native',session_id:'chat',native_id:'native',session_active:true,session_status:'running',runtime:null,interaction:{processState:'idle',promptType:null,isPermission:false,choices:null}};
   vi.mocked(api.sessions.pasteImage).mockResolvedValue({ok:true,path:'/project/.agentmanager/pastes/image.png'});vi.mocked(api.sessions.pasteFile).mockResolvedValue({ok:true,path:'/project/.agentmanager/pastes/note.txt'});
@@ -209,7 +210,7 @@ describe('chat/raw terminal display',()=>{
     await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledWith('chat','继续修复',expect.any(String)));
     expect(api.agent.sendInput).toHaveBeenCalledTimes(1);await waitFor(()=>expect(input).toHaveTextContent(''));
   });
-  it('reserves send order immediately and reconciles an echo and streamed answer before the HTTP response',async()=>{
+  it('reserves send order after preflight and reconciles an echo and streamed answer before the HTTP response',async()=>{
     let acknowledge!:(result:{status:string})=>void;
     vi.mocked(api.agent.sendInput).mockImplementation(()=>new Promise(resolve=>{acknowledge=resolve;}));
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
@@ -219,6 +220,7 @@ describe('chat/raw terminal display',()=>{
     mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
     const input=screen.getByRole('textbox');typeDraft(input,'继续修复');
     fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));
+    await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledTimes(1));
     const order=()=>Array.from(document.querySelectorAll('.session-chat-message .session-chat-body')).map(node=>{const copy=node.cloneNode(true) as HTMLElement;copy.querySelectorAll('.session-chat-message-meta').forEach(meta=>meta.remove());return (copy.querySelector('.session-chat-user-text')||copy).textContent;});
     expect(order()).toEqual(['检查代码','检查已完成。','继续修复']);
     const clientId=vi.mocked(api.agent.sendInput).mock.calls[0][2];

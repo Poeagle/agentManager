@@ -36,9 +36,9 @@ describe('shared project creation dialog', () => {
   it('opens without sending project instructions or a greeting and adds the returned session to the shared cache', async () => {
     const user = userEvent.setup(), mounted = mount();
     try {
-      await user.click(screen.getByRole('button', { name: '新建会话' }));
+      const submit=screen.getByRole('button',{name:'新建会话'});await waitFor(()=>expect(submit).toBeEnabled());await user.click(submit);
       await waitFor(() => expect(mounted.onSessionCreated).toHaveBeenCalledWith(created));
-      expect(api.sessions.create).toHaveBeenCalledWith({project_id:'p1',project_path:project.path,mode:'session',cli_type:'codex'});
+      expect(api.sessions.create).toHaveBeenCalledWith({project_id:'p1',project_path:project.path,mode:'session',cli_type:'codex',environment_id:'native'});
       expect(mounted.client.getQueryData(['sessions'])).toEqual({ sessions: [created] });
     } finally { mounted.dispose(); }
   });
@@ -46,7 +46,7 @@ describe('shared project creation dialog', () => {
     const user = userEvent.setup(), mounted = mount();
     try {
       await user.click(screen.getByRole('radio', { name: 'Terminal' }));
-      await user.click(screen.getByRole('button', { name: '新建会话' }));
+      const submit=screen.getByRole('button',{name:'新建会话'});await waitFor(()=>expect(submit).toBeEnabled());await user.click(submit);
       await waitFor(() => expect(api.sessions.create).toHaveBeenCalledWith({ project_id: 'p1', project_path: project.path, mode: 'terminal' }));
     } finally { mounted.dispose(); }
   });
