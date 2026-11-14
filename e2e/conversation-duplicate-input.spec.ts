@@ -24,6 +24,7 @@ test('terminal input reconciles pasted line endings once and preserves two inten
    // This fixture exercises inputs to a legacy engine that is still busy.
    appendFileSync(log,row('event_msg',{type:'task_started',turn_id:`legacy-${index}`}));
    await editor.evaluate((node,text)=>{const data=new DataTransfer();data.setData('text/plain',text);node.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:data}));},text);
+   await expect(editor).toContainText('inet 192.168.1.31');
    const accepted=page.waitForResponse(response=>response.url().endsWith(`/sessions/${session.id}/input`)&&response.request().method()==='POST');await chat.getByRole('button',{name:'发送消息',exact:true}).click();expect((await accepted).status()).toBe(202);await expect(editor).toHaveText('');
    const normalized=text.replace(/\r\n/g,'\n').trim(),turn=`turn-${index}`;
    appendFileSync(log,row('response_item',{type:'message',role:'user',id:`native-${index}`,content:[{type:'input_text',text:normalized}],internal_chat_message_metadata_passthrough:{turn_id:turn}})+row('event_msg',{type:'user_message',message:normalized})+row('event_msg',{type:'task_complete',turn_id:turn,last_agent_message:`已处理 ${index}`}));

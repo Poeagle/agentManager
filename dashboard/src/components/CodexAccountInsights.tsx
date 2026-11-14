@@ -41,13 +41,14 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
  const timezone=data?.timezone||Intl.DateTimeFormat().resolvedOptions().timeZone;
  const collectionTime=(value:string)=>new Intl.DateTimeFormat('zh-CN',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date(value));
  const zoneLabel=data?.timezone_pending?`原缓存 ${timezone} · 本地日期重建中`:`本地时间（${timezone}）`;
- const filteredRows=useMemo(()=>{const dated=(data?.rows||[]).filter(r=>(!from||r.date>=from)&&(!to||r.date<=to));const hours=(data?.quota_hours||[]).filter(h=>(!from||h.hour.slice(0,10)>=from)&&(!to||h.hour.slice(0,10)<=to));const allocated=!apiMode&&data?.quota_hours?allocateUsagePeriods(dated,hours,dimension):dated;return allocated.filter(r=>!search||`${r.cwd} ${r.project_name||''}`.toLowerCase().includes(search.toLowerCase()));},[data,from,to,search,apiMode,dimension]);
- const {rows,groups,table}=useUsageTable(filteredRows,dimension);
+ const datedRows=useMemo(()=>(data?.rows||[]).filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)),[data,from,to]);
+ const filteredRows=useMemo(()=>{const dated=datedRows;const hours=(data?.quota_hours||[]).filter(h=>(!from||h.hour.slice(0,10)>=from)&&(!to||h.hour.slice(0,10)<=to));const allocated=!apiMode&&data?.quota_hours?allocateUsagePeriods(dated,hours,dimension):dated;return allocated.filter(r=>!search||`${r.cwd} ${r.project_name||''}`.toLowerCase().includes(search.toLowerCase()));},[data,datedRows,from,to,search,apiMode,dimension]);
+ const {rows,groups,table,creditTotals}=useUsageTable(filteredRows,dimension,datedRows);
  const pages=Math.max(1,Math.ceil(groups.length/10)),currentPage=Math.min(page,pages-1),shown=groups.slice(currentPage*10,currentPage*10+10);
  const input=sum(rows,'input_tokens'),cached=sum(rows,'cached_input_tokens'),cacheRate=input!==null&&input>0&&cached!==null&&cached<=input?cached/input*100:null;
  const incompleteCredits=!!data?.rows.some(row=>row.models?.length?row.models.some(model=>model.estimated_credits==null||!!model.credit_coverage&&model.credit_coverage.covered<model.credit_coverage.total):row.estimated_credits==null||!!row.credit_coverage&&row.credit_coverage.covered<row.credit_coverage.total);
  const summaryMetrics:Array<[string,number|null,string]>=[['总量',sum(rows,'total_tokens'),'筛选范围内原生日志记录的总 Token'],['输入',input,'筛选范围内输入 Token，包含缓存'],['缓存',cached,'筛选范围内命中缓存的输入 Token'],['推理',sum(rows,'reasoning_output_tokens'),'筛选范围内的推理 Token，包含在输出中'],['输出',sum(rows,'output_tokens'),'筛选范围内输出 Token，包含推理 Token']];
- const rangeTotal=credits(rows),byPeriod=['hour','day','week','month'].includes(dimension);
+ const rangeTotal=credits(datedRows),byPeriod=['hour','day','week','month'].includes(dimension);
  const columnWidths=useMemo(()=>{const widths=usageColumnWidths(groups);return apiMode?widths.slice(0,6):widths;},[groups,apiMode]);
  const displayTable=apiMode?{...table,columns:table.columns.filter(column=>!['actual','credits','share'].includes(column.key))}:table;
  const periodName=dimension==='hour'?'小时':dimension==='day'?'日期':dimension==='week'?'周期':'月份';
@@ -76,10 +77,10 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
     {rows.some(row=>!row.models?.length)&&<p className="ci-notice" role="status">部分项目的模型明细未返回，请刷新；若仍未恢复，请检查后台服务版本。</p>}
     <TableFrame label="用量统计" className="ci-table-scroll" tableClassName="ci-table ci-usage-table" style={{minWidth:485+columnWidths.reduce((s,w)=>s+w,0)}} columns={<colgroup><col style={{width:230}}/><col style={{width:255}}/>{columnWidths.map((width,k)=><col key={k} style={{width}}/>)}</colgroup>} header={<TableHeaders model={displayTable}/>}>
      {!groups.length&&<TableStateRow columnCount={apiMode?8:11}>{usage.isPending?'正在读取缓存…':'所选范围暂无用量记录'}</TableStateRow>}
-     {shown.map((node,index)=><Group key={node.key} node={node} creditTotal={byPeriod?node.metrics.estimated_credits??null:rangeTotal} depth={0} apiMode={apiMode} defaultOpen={currentPage===0&&index===0} expansion={expansion} setExpansion={setExpansion}/>)}
+     {shown.map((node,index)=><Group key={node.key} node={node} creditTotal={byPeriod?creditTotals.get(node.key)??null:rangeTotal} depth={0} apiMode={apiMode} defaultOpen={currentPage===0&&index===0} expansion={expansion} setExpansion={setExpansion}/>)}
     </TableFrame>
     <div className="ci-pagination"><span>{groups.length} 个{byPeriod?periodName:dimensionLabels[dimension]} · {new Set(rows.map(row=>JSON.stringify([row.date,row.cwd]))).size} 条日期｜项目记录</span><button className="ci-button" disabled={currentPage===0} onClick={()=>setPage(currentPage-1)}>上一页</button><span>{currentPage+1} ｜ {pages}</span><button className="ci-button" disabled={currentPage+1>=pages} onClick={()=>setPage(currentPage+1)}>下一页</button></div>
-    {apiMode?<p className="ci-footnote">日期按本地时间，周从周一开始。余额与实际扣费来自上游；Token 来自本地历史。</p>:<p className="ci-footnote">耗用额度以周额度百分点显示，只覆盖成功采样且能分配的区间；按所选周期内订阅参考值分配，读数未变化时显示 0，重置、采样中断及费率未知时不计入；其他未采集客户端的耗用或历史缺失也可能影响分配。宽表可横向滚动查看完整列。{'显示全部可归属记录；'}缓存命中率 = 缓存输入 ÷ 输入 Token；各汇总层按 Token 加权，输入为零或字段缺失时不计算。周从本地周一开始，日期筛选先于分组；占比以筛选后{byPeriod?`对应${periodName}`:'全部范围'}预估积分为分母。预估值按 {data?.credit_rate_date||'当前'} 官方费率与订阅速度倍率折算，用于比较而非实际扣费；未记录速度时按 Standard 估算，带 * 为部分覆盖。<a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noreferrer">费率依据</a></p>}
+    {apiMode?<p className="ci-footnote">日期按本地时间，周从周一开始。余额与实际扣费来自上游；Token 来自本地历史。</p>:<p className="ci-footnote">耗用额度以周额度百分点显示，只覆盖成功采样且能分配的区间；按所选周期内订阅参考值分配，读数未变化时显示 0，重置、采样中断及费率未知时不计入；其他未采集客户端的耗用或历史缺失也可能影响分配。宽表可横向滚动查看完整列。{'显示全部可归属记录；'}缓存命中率 = 缓存输入 ÷ 输入 Token；各汇总层按 Token 加权，输入为零或字段缺失时不计算。周从本地周一开始，日期筛选先于分组；占比以所选日期范围内{byPeriod?`对应${periodName}`:'全部范围'}全部项目及模型的预估积分为分母，搜索与字段筛选不改变分母。预估值按 {data?.credit_rate_date||'当前'} 官方费率与订阅速度倍率折算，用于比较而非实际扣费；未记录速度时按 Standard 估算，带 * 为部分覆盖。<a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noreferrer">费率依据</a></p>}
    </section>}
   </div>
  </Dialog>;

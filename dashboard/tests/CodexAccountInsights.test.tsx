@@ -24,7 +24,7 @@ it('orders estimated Credits before spend share and uses Credits rather than Tok
  expect(within(screen.getByText('/Alpha').closest('tr')!).getByText('0.25')).toBeVisible();expect(screen.getByText('/Alpha').closest('tr')!.lastElementChild).toHaveTextContent('10.0%');expect(screen.getByText('/Beta').closest('tr')!.lastElementChild).toHaveTextContent('90.0%');expect(screen.getByText('/Zero').closest('tr')!.lastElementChild).toHaveTextContent('0.0%');
  fireEvent.click(screen.getByRole('button',{name:'展开 Alpha 模型'}));expect(screen.getByText('cheap').closest('tr')!.lastElementChild).toHaveTextContent('10.0%');
  fireEvent.change(screen.getByRole('combobox',{name:'统计维度'}),{target:{value:'model'}});expect(screen.getByText('expensive').closest('tr')!.lastElementChild).toHaveTextContent('90.0%');
- fireEvent.change(screen.getByLabelText('搜索项目或目录'),{target:{value:'Zero'}});expect(screen.getByText('free').closest('tr')!.lastElementChild).toBeEmptyDOMElement();
+ fireEvent.change(screen.getByLabelText('搜索项目或目录'),{target:{value:'Zero'}});expect(screen.getByText('free').closest('tr')!.lastElementChild).toHaveTextContent('0.0%');
 });
 it('opens a centered dialog, exposes reset expiry and expands dates into project usage',async()=>{
  vi.mocked(fetchJSON).mockImplementation(async(path)=>path.endsWith('insights')?{usage:{checked_at:null,error:null,partial:true,timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/project',estimated_credits:1,tokens:{input_tokens:10,cached_input_tokens:null,output_tokens:0,total_tokens:10}}]}}:{account:{email:'fixture@example.invalid',plan:'pro'},resets:{availableCount:2,credits:[{status:'available',expiresAt:1800000000,grantedAt:1700000000}]}} as any);
@@ -70,7 +70,7 @@ it('filters leaves before grouping and sorts parents and children numerically',a
  await screen.findByText('/work/dolphindb_manager');expect(screen.getByText((_,element)=>element?.classList.contains('ci-token-summary')===true)).toBeVisible();expect(screen.getByLabelText('缓存率 0.0%')).toBeVisible();fireEvent.click(screen.getByRole('button',{name:'筛选工作目录'}));const filter=screen.getByRole('dialog',{name:'工作目录筛选'});fireEvent.change(within(filter).getByLabelText('工作目录关键词'),{target:{value:'dolphindb_manager'}});fireEvent.click(within(filter).getByRole('button',{name:'筛选'}));
  expect(screen.queryByText('/work/other')).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'总量排序'}));fireEvent.click(screen.getByRole('button',{name:'总量排序'}));expect(screen.getByRole('columnheader',{name:'总量'})).toHaveAttribute('aria-sort','descending');
  fireEvent.click(screen.getByRole('button',{name:'展开 dolphindb_manager 模型'}));const large=screen.getByText('large').closest('tr')!,small=screen.getByText('small').closest('tr')!;expect(large.compareDocumentPosition(small)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
- fireEvent.click(screen.getByRole('button',{name:'筛选总量'}));const numbers=screen.getByRole('dialog',{name:'总量筛选'});fireEvent.change(within(numbers).getByLabelText('总量最小值'),{target:{value:'10'}});fireEvent.click(within(numbers).getByRole('button',{name:'筛选'}));expect(screen.queryByText('small')).not.toBeInTheDocument();expect(screen.getAllByText('100.0%').length).toBeGreaterThan(0);
+ fireEvent.click(screen.getByRole('button',{name:'筛选总量'}));const numbers=screen.getByRole('dialog',{name:'总量筛选'});fireEvent.change(within(numbers).getByLabelText('总量最小值'),{target:{value:'10'}});fireEvent.click(within(numbers).getByRole('button',{name:'筛选'}));expect(screen.queryByText('small')).not.toBeInTheDocument();expect(within(screen.getByText('large').closest('tr')!).getAllByRole('cell')[10]).toHaveTextContent('82.7%');
  fireEvent.click(screen.getByRole('button',{name:'清除全部'}));expect(screen.getByText('/work/other')).toBeVisible();expect(screen.getByRole('columnheader',{name:'总量'})).toHaveAttribute('aria-sort','none');
 });
 it('leaves missing usage cells blank while retaining an actual zero',async()=>{
@@ -94,14 +94,14 @@ it('hides the historical reconciliation warning while keeping data available',as
 it('recomputes quota by the chosen period and does not redistribute after project search',async()=>{
  const item=(date:string,cwd:string,credit:number)=>({date,cwd,project_name:cwd.slice(1),estimated_credits:credit,tokens:{input_tokens:credit,cached_input_tokens:0,output_tokens:0,total_tokens:credit},models:[{model:'model',estimated_credits:credit,tokens:{input_tokens:credit,cached_input_tokens:0,output_tokens:0,total_tokens:credit}}]});
  const rows=[item('2026-11-09','/A',90),item('2026-11-09','/B',10),item('2026-11-10','/A',10),item('2026-11-10','/B',90)];
- vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:false,timezone:'UTC',quota_hours:[{hour:'2026-11-09T01:00:00+00:00',quota:1},{hour:'2026-11-10T01:00:00+00:00',quota:3}],rows}}:{account:{},resets:null} as any);
+ vi.mocked(fetchJSON).mockImplementation(async <T,>(path:string)=>(path.endsWith('insights')?{usage:{initialized:true,partial:false,timezone:'UTC',quota_hours:[{hour:'2026-11-09T01:00:00+00:00',quota:1},{hour:'2026-11-10T01:00:00+00:00',quota:3}],rows}}:{account:{},resets:null}) as T);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="period" name="Period" onClose={()=>{}}/></QueryClientProvider>);
  await screen.findByText('/A');let project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[8]).toHaveTextContent('0.3');
  fireEvent.change(screen.getByRole('combobox',{name:'统计维度'}),{target:{value:'week'}});project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[8]).toHaveTextContent('2');
- fireEvent.change(screen.getByLabelText('搜索项目或目录'),{target:{value:'A'}});project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[8]).toHaveTextContent('2');
+ fireEvent.change(screen.getByLabelText('搜索项目或目录'),{target:{value:'A'}});project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[8]).toHaveTextContent('2');expect(within(project).getAllByRole('cell')[10]).toHaveTextContent('50.0%');
 });
 
 it('omits the partial historical rule-refresh banner requested by the user',async()=>{
- vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:true,error:'历史部分记录不可读取；已核对的数据已按新规则更新',timezone:'UTC',rows:[]}}:{account:{},resets:null} as any);
+ vi.mocked(fetchJSON).mockImplementation(async <T,>(path:string)=>(path.endsWith('insights')?{usage:{initialized:true,partial:true,error:'历史部分记录不可读取；已核对的数据已按新规则更新',timezone:'UTC',rows:[]}}:{account:{},resets:null}) as T);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="partial-banner" name="Partial" onClose={()=>{}}/></QueryClientProvider>);await screen.findByText('所选范围暂无用量记录');expect(screen.queryByText('历史部分记录不可读取；已核对的数据已按新规则更新')).toBeNull();
 });
