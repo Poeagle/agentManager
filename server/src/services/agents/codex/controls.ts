@@ -156,9 +156,9 @@ export async function readCodexModels(force=false,userId?:string):Promise<ModelC
 }
 
 export {readModelPreference,saveModelPreference} from '../model-preferences.js';
-export async function validateModelPreference(value:unknown):Promise<ModelPreference> {
+export async function validateModelPreference(value:unknown, currentEngineOnly=false):Promise<ModelPreference> {
   if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(k=>!['model','effort','provider','service_tier'].includes(k)))throw Error('请选择模型和推理强度');
-  const p=value as ModelPreference,models=await readCodexModels(),model=models.find(m=>m.model===p.model&&(!p.provider||m.provider===p.provider));
+  const p=value as ModelPreference,models=currentEngineOnly?await readEngineModels():await readCodexModels(),model=models.find(m=>m.model===p.model&&(!p.provider||m.provider===p.provider));
   if(!model||!model.efforts.some(e=>e.value===p.effort))throw Error('该模型或推理强度当前不可用，请刷新后重新选择');
   if(p.service_tier!==undefined&&(typeof p.service_tier!=='string'||p.service_tier!=='default'&&!model.service_tiers?.some(tier=>tier.id===p.service_tier)))throw Error('当前模型不支持所选服务档位');
   if(p.provider)engineForProvider(p.provider);
@@ -209,7 +209,7 @@ export async function readConversationControls(threadId:string,sharedAccess:bool
         if(loaded&&(!codexSettings(threadId)||force)){const settings=await request('thread/resume',{threadId,excludeTurns:true});rememberCodexSettings(threadId,settings);}
         return response.thread;
       });
-      models=currentCodexEngine().environmentId?await readEngineModels(force):await readCodexModels(force,userId);
+      models=await readEngineModels(force);
       if(loaded) {
         const key=currentCodexEngine().socket;
         if(!force&&quota?.key===key&&quota.until>Date.now())limits=quota.data;

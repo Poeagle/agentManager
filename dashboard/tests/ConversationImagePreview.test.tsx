@@ -17,6 +17,13 @@ describe('conversation image preview',()=>{
     fireEvent.click(within(dialog).getByRole('button',{name:'适应窗口'}));expect(within(dialog).getByLabelText('图片缩放比例')).toHaveTextContent(initial!);
     fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(button).toHaveFocus();expect(document.body.style.overflow).toBe('');
   });
+  it('keeps a small image in a roomy dialog before and after it loads',()=>{
+    render(<ConversationMessageAttachments items={[image]} projectId="p"/>);fireEvent.click(screen.getByRole('button',{name:'打开附件 截图.png'}));
+    const dialog=screen.getByRole('dialog');expect(within(dialog).getByRole('group',{name:'图片缩放'}).closest('header')).toBe(within(dialog).getByRole('heading').closest('header'));expect(within(dialog).getByLabelText('图片预览区域')).toHaveStyle({height:'240px'});
+    const full=within(dialog).getByRole('img');Object.defineProperties(full,{naturalWidth:{value:312},naturalHeight:{value:171}});fireEvent.load(full);
+    expect(within(dialog).getByLabelText('图片预览区域')).toHaveStyle({height:'240px'});
+    expect(full).toHaveStyle({width:'312px',height:'171px'});
+  });
   it('previews files without changing tabs, closes on the backdrop and releases the modal when switching sessions',async()=>{
     const open=vi.fn();const view=render(<ConversationImagePreviewRoot active><ConversationMessageAttachments items={[image,{kind:'file',name:'说明.txt',path:'/project/note.txt'}]} projectId="p" onOpenFile={open}/></ConversationImagePreviewRoot>);
     fireEvent.click(screen.getByRole('button',{name:'打开附件 说明.txt'}));expect(open).not.toHaveBeenCalled();expect(await screen.findByTestId('preview-file')).toHaveTextContent('/project/note.txt');expect(screen.getByTestId('preview-file')).toHaveAttribute('data-readonly','true');fireEvent.keyDown(screen.getByRole('dialog'),{key:'Escape'});

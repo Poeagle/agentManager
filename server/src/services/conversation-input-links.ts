@@ -1,3 +1,4 @@
+import {decorateBatches} from './conversation-batches.js';
 import {nativeConversationId} from './session-identity.js';
 import {createHash} from 'node:crypto';
 import {stat} from 'node:fs/promises';
@@ -19,13 +20,13 @@ export function bindInputSourceMessage(sessionId:string,clientId:string,messageI
 function decorateInputSources(sessionId:string,messages:ConversationMessage[]):ConversationMessage[] {
   const lookup=getDb().prepare('SELECT kind,label FROM conversation_input_sources WHERE session_id=? AND (client_id=? OR message_id=?) LIMIT 1');
   const bind=getDb().prepare('UPDATE conversation_input_sources SET message_id=? WHERE session_id=? AND client_id=? AND message_id IS NULL');
-  return messages.map(message=>{
+  return decorateBatches(sessionId,messages.map(message=>{
     const {input_source:_source,...visible}=message;
     if(message.role!=='user')return visible;
     const source=lookup.get(sessionId,message.client_id||'',message.id) as {kind:string;label:string}|undefined;
     if(source&&message.client_id&&!message.queued)bind.run(message.id,sessionId,message.client_id);
     return source?{...visible,input_source:source}:visible;
-  });
+  }));
 }
 
 /** Terminal-backed engines do not echo the browser's client ID. Record only a
@@ -41,6 +42,7 @@ export async function rememberConversationInput(sessionId:string,binding:PromptC
     WHERE conversation_input_links.message_id IS NULL AND conversation_input_links.input_hash=?`).run(sessionId,nativeId,clientId,inputHash(text),boundary,previousFormat===undefined?'':inputHash(previousFormat));
   db.prepare(`DELETE FROM conversation_input_links WHERE session_id=? AND rowid NOT IN
     (SELECT rowid FROM conversation_input_links WHERE session_id=? ORDER BY rowid DESC LIMIT 256)
+    AND NOT EXISTS (SELECT 1 FROM conversation_batches b WHERE b.session_id=conversation_input_links.session_id AND b.client_id=conversation_input_links.client_id)
     AND NOT EXISTS (SELECT 1 FROM conversation_input_sources s WHERE s.session_id=conversation_input_links.session_id AND s.client_id=conversation_input_links.client_id)`).run(sessionId,sessionId);
   return true;
 }

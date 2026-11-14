@@ -4,8 +4,8 @@ import { X } from 'lucide-react';
 import './ManagerUI.css';
 
 /** Shared centered frame for workspace forms. */
-export function Dialog({ title, children, onClose, busy = false, size = 'md', initialFocus,actions,dock,width,appearance,wrapHeader=false,maxWidth }: {
-  title: string; children: ReactNode; onClose: () => void; busy?: boolean; size?: 'md' | 'lg' | 'image';initialFocus?:RefObject<HTMLElement|null>;actions?:ReactNode;dock?:{left:number;top:number;width:number;height:number};width?:number;appearance?:'manager';wrapHeader?:boolean;maxWidth?:string;
+export function Dialog({ title, children, onClose, busy = false, size = 'md', initialFocus,actions,dock,width,appearance,wrapHeader=false,maxWidth,className='' }: {
+  title: string; children: ReactNode; onClose: () => void; busy?: boolean; size?: 'md' | 'lg' | 'image';initialFocus?:RefObject<HTMLElement|null>;actions?:ReactNode;dock?:{left:number;top:number;width:number;height:number};width?:number;appearance?:'manager';wrapHeader?:boolean;maxWidth?:string;className?:string;
 }) {
   const titleId = useId();
   const frame = useRef<HTMLDivElement>(null);
@@ -48,7 +48,7 @@ export function Dialog({ title, children, onClose, busy = false, size = 'md', in
   return createPortal(<div className={`fixed inset-0 z-50 flex items-center justify-center p-4${appearance==='manager'?' manager-ui-host':''}`} style={dock?{inset:'auto',...dock,padding:0,pointerEvents:'none'}:{ background: 'rgb(0 0 0 / 45%)' }}
     onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <div ref={frame} role={dock?'complementary':'dialog'} aria-modal={dock?undefined:true} aria-labelledby={titleId} tabIndex={-1}
-      className={`flex w-full min-h-0 flex-col overflow-hidden rounded-lg border ${size === 'image' ? '' : size === 'lg' ? 'max-w-4xl' : 'max-w-md'}${appearance==='manager'?' manager-ui manager-dialog':''}`}
+      className={`flex w-full min-h-0 flex-col overflow-hidden rounded-lg border ${size === 'image' ? '' : size === 'lg' ? 'max-w-4xl' : 'max-w-md'}${appearance==='manager'?' manager-ui manager-dialog':''} ${className}`}
       style={{ width:!dock&&width?`min(${maxWidth||'92vw'},${width}px)`:undefined,maxHeight: dock?'100%':'calc(100dvh - 32px)',height:dock?'100%':undefined,pointerEvents:'auto', maxWidth:dock?'none':size==='image'?(maxWidth||'min(92vw,1600px)'):undefined, background: 'var(--bg-primary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}>
       <header className={`flex shrink-0 items-center justify-between gap-3 px-4 pt-4 pb-3${wrapHeader?' flex-wrap resource-dialog-header':''}`}>
         <h3 id={titleId} className={`min-w-0 truncate text-base font-semibold${wrapHeader?'':' flex-1'}`} title={title}>{title}</h3>

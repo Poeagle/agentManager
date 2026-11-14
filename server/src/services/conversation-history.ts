@@ -8,6 +8,7 @@ function moveHistoricalLinks(from:string,to:string) {
   for(const table of ['tasks','scheduled_task_runs','platform_ai_tasks']){
     if(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))db.prepare(`UPDATE ${table} SET session_id=? WHERE session_id=?`).run(to,from);
   }
+  db.prepare('UPDATE conversation_batches SET session_id=? WHERE session_id=?').run(to,from);
   db.prepare('UPDATE conversation_input_sources SET session_id=? WHERE session_id=?').run(to,from);
 }
 
@@ -28,7 +29,7 @@ export function activateFreshConversation(sessionId:string,historyId:string,nati
     const session=db.prepare('SELECT * FROM sessions WHERE id=?').get(sessionId) as AgentSession&{id:string};storeAgentNativeId(session,nativeId);
     db.prepare(`INSERT OR IGNORE INTO conversation_input_links(session_id,native_id,client_id,input_hash,after_offset,message_id)
       SELECT ?,l.native_id,l.client_id,l.input_hash,l.after_offset,l.message_id FROM conversation_input_links l
-      JOIN conversation_input_sources s ON s.session_id=l.session_id AND s.client_id=l.client_id WHERE l.session_id=?`).run(historyId,sessionId);
+      WHERE l.session_id=? AND (EXISTS (SELECT 1 FROM conversation_input_sources s WHERE s.session_id=l.session_id AND s.client_id=l.client_id) OR EXISTS (SELECT 1 FROM conversation_batches b WHERE b.session_id=l.session_id AND b.client_id=l.client_id))`).run(historyId,sessionId);
     db.prepare('UPDATE conversation_attachments SET session_id=? WHERE session_id=?').run(historyId,sessionId);
     db.prepare('UPDATE events SET session_id=? WHERE session_id=?').run(historyId,sessionId);
     moveHistoricalLinks(sessionId,historyId);
@@ -40,6 +41,7 @@ export function activateFreshConversation(sessionId:string,historyId:string,nati
 export function restoreConversationSnapshot(sessionId:string,historyId:string) {
   const db=getDb();db.transaction(()=>{
     db.prepare('DELETE FROM conversation_attachments WHERE session_id=?').run(sessionId);
+    db.prepare('DELETE FROM conversation_batches WHERE session_id=?').run(sessionId);
     db.prepare('DELETE FROM conversation_input_sources WHERE session_id=?').run(sessionId);
     db.prepare('UPDATE conversation_attachments SET session_id=? WHERE session_id=?').run(sessionId,historyId);
     db.prepare('UPDATE events SET session_id=? WHERE session_id=?').run(sessionId,historyId);

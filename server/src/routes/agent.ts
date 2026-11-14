@@ -1,3 +1,4 @@
+import {validateBatch,rememberBatch} from '../services/conversation-batches.js';
 import {conversationQuestionReply} from '../services/conversation-question-reply.js';
 import {closeAccountTransports} from '../services/agents/codex/account-transport.js';
 import {canControlEnvironment,assertEnvironmentUse,watchSessionEnvironment} from '../services/agents/environment-access.js';
@@ -106,8 +107,8 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.8.0',
-    updatedAt:'2026-11-12',
+    version:'3.9.0',
+    updatedAt:'2026-11-14',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
@@ -353,6 +354,7 @@ export function getAgentApiContract() {
           input: {type:'string',required:true,description:'Text, at most 64 KiB; may be empty when attachments are present.'},
           source: {type:'string',required:false,description:'Use conversation to submit directly to the bound native engine when available.'},
           client_id: {type:'string',required:false,description:'Client correlation ID for matching the native user-message echo. IDs already reserved by platform submissions are rejected with 409.'},
+          batch: {type:'array',required:false,description:'Optional 1–100 {length,attachments} segments of the input (UTF-16 lengths, attachment counts), separated by two newlines. Requires source=conversation and client_id. Persisted as message.batch parts for history and streaming cards.'},
           attachments: {type:'array',required:false,description:'Up to 8 {kind: image|file, name, path} references returned by this session’s paste-image/paste-file endpoints. Images total at most 10 MiB, each file at most 35 MiB, all attachments at most 50 MiB.'},
         },
         response: {id:'Session id',status:'submitted — handed to the terminal; not proof of agent acceptance or task completion'},
@@ -398,7 +400,7 @@ export function getAgentApiContract() {
         category: 'Session control',
         method: 'WS',
         path: '/api/sessions/:id/conversation/stream',
-        description: 'Cookie-authenticated conversation stream. User messages may include input_source {kind,label} when the platform has verified their submission identity; absent provenance is unknown. Supported agents can emit progress_statistics with cumulative recorded token and tool counts since the previous conclusion and an optional separate per-input segment with timing, status and recorded counts; missing or incomplete data remains unknown or a lower bound. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
+        description: 'Cookie-authenticated conversation stream. User messages may include batch [{text,attachments}] for verified batch submissions and input_source {kind,label} when the platform has verified their submission identity; absent provenance is unknown. Supported agents can emit progress_statistics with cumulative recorded token and tool counts since the previous conclusion and an optional separate per-input segment with timing, status and recorded counts; missing or incomplete data remains unknown or a lower bound. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
       },
       {
         category: 'Session control',
@@ -536,6 +538,7 @@ export function getAgentApiContract() {
       },
     ],
     tips: [
+      'Batch input example: POST /api/sessions/:id/input with '+JSON.stringify({input:'one\n\ntwo',source:'conversation',client_id:'unique-batch-id',batch:[{length:3,attachments:0},{length:3,attachments:0}]}),
       'The output fields from display and execute are CLEAN TEXT — read them directly; do not strip ANSI or parse raw PTY data.',
       'POST /api/sessions/:id/input submits a follow-up immediately, including while busy or execute is pending. It does not interrupt work. Use execute only when you need to wait for output.',
       'For interactive prompts, read promptType and choices from state to decide what to send.',
@@ -829,7 +832,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'取消排队失败，请刷新队列'});}
   });
 
-  app.post<{Params:{id:string};Body:{input?:unknown;source?:unknown;client_id?:unknown;attachments?:unknown}}>('/sessions/:id/input', async (req, reply) => {
+  app.post<{Params:{id:string};Body:{input?:unknown;source?:unknown;client_id?:unknown;attachments?:unknown;batch?:unknown}}>('/sessions/:id/input', async (req, reply) => {
     const {id} = req.params;
     if (!canAccessAgentSession(req.user!.id,id)) return reply.code(404).send({error:'Session not found'});
     const input = req.body?.input;
@@ -838,6 +841,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     if(clientId!==undefined && (typeof clientId!=='string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(clientId))) return reply.code(400).send({error:'Invalid client_id'});
     if(typeof clientId==='string'&&getDb().prepare('SELECT 1 FROM conversation_input_sources WHERE session_id=? AND client_id=?').get(id,clientId))return reply.code(409).send({error:'该输入标识已用于平台消息',submission:'rejected'});
     let attachments;try{attachments=await validateConversationAttachments(id,req.body?.attachments);}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'附件不可用'});}
+    let batch;
+    try{batch=validateBatch(req.body?.batch,input,attachments);if(batch&&(typeof clientId!=='string'||req.body?.source!=='conversation'))throw Error('Batch requires conversation source and client_id');}
+    catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid batch',submission:'rejected'});}
     const target=getSession(id);if(req.body?.source==='conversation'&&attachments.length&&target&&!agentForSession(target).descriptor.capabilities.attachments)return reply.code(409).send({error:'此 Agent 不支持附件',submission:'rejected'});
     // The server can restart after the browser's last ready snapshot. Reattach
     // the existing wrapper before submission; never replay an ambiguous send.
@@ -852,6 +858,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     // A second caller must not paste its text before the first caller's Enter.
     const prior = pendingInputs.get(id) || Promise.resolve();
     const submission = prior.catch(() => {}).then(async () => {
+      if(batch)rememberBatch(id,clientId as string,batch);
       const session=getSession(id);
       if(req.body?.source==='conversation'&&session&&nativeConversationId(session)) {
         if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,true);
