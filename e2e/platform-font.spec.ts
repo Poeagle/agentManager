@@ -4,7 +4,7 @@ test('platform font previews, reverts, persists and falls back',async({page},tes
  const auth=await(await page.request.get('/api/auth/status')).json();expect((await page.request.post(auth.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
  await page.request.put('/api/settings',{data:{settings:{app_font_family:'',app_theme:'light',statusline_prompted:'true'}}});await page.goto('/');
  const dialog=page.getByRole('dialog',{name:'平台管理'});
- const open=async()=>{await page.getByRole('button',{name:'平台管理',exact:true}).click();await dialog.getByRole('navigation',{name:'平台管理分类'}).getByRole('button',{name:'平台设置',exact:true}).click();await dialog.getByRole('button',{name:'外观',exact:true}).click();};
+ const open=async()=>{await page.getByTitle('My account').click();await dialog.getByRole('navigation',{name:'平台管理分类'}).getByRole('button',{name:'平台设置',exact:true}).click();await dialog.getByRole('button',{name:'外观',exact:true}).click();};
  const bodyFont=()=>page.locator('body').evaluate(node=>getComputedStyle(node).fontFamily);
  await open();await dialog.getByLabel('平台字体',{exact:true}).selectOption('yahei');await expect.poll(bodyFont).toContain('Microsoft YaHei');
  await expect.poll(()=>dialog.locator('.settings-panel-shell').evaluate(node=>getComputedStyle(node).fontFamily)).toContain('Microsoft YaHei');

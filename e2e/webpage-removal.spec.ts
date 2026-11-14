@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 test('removes the webpage entry and ignores old webpage state while preserving terminal tabs', async ({ page }) => {
-  await page.routeWebSocket((url) => url.port === '43111' && url.pathname === '/', () => {});
+  await page.routeWebSocket((url) => url.port === (process.env.E2E_UI_PORT || '43111') && url.pathname === '/', () => {});
   const status = await (await page.request.get('/api/auth/status')).json();
   const login = await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },

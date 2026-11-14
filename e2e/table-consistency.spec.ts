@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 test('project creation stays centered over the current list on desktop and mobile', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1800, height: 1000 });
-  await page.routeWebSocket((url) => url.port === '43111' && url.pathname === '/', () => {});
+  await page.routeWebSocket((url) => url.port === (process.env.E2E_UI_PORT || '43111') && url.pathname === '/', () => {});
   const status = await (await page.request.get('/api/auth/status')).json();
   expect((await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },
@@ -69,7 +69,7 @@ async function structure(table: Locator) {
 
 test('all platform lists and expanded lists retain the same table structure', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1800, height: 1000 });
-  await page.routeWebSocket((url) => url.port === '43111' && url.pathname === '/', () => {});
+  await page.routeWebSocket((url) => url.port === (process.env.E2E_UI_PORT || '43111') && url.pathname === '/', () => {});
   const status = await (await page.request.get('/api/auth/status')).json();
   const { user } = await (await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },
@@ -95,7 +95,7 @@ test('all platform lists and expanded lists retain the same table structure', as
   expect(await structure(sessions)).toEqual(baseline);
   await expect(sessions.locator('thead')).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('shared-project-tables.png') });
-  await page.getByRole('button', { name: '平台管理', exact: true }).click();
+  await page.getByTitle('My account').click();
   const platform = page.getByRole('dialog', { name: '平台管理', exact: true });
   const navigation = platform.getByRole('navigation', { name: '平台管理分类' });
   for (const [section, table] of [['用户管理', '用户列表'], ['角色与权限', '角色列表'], ['项目授权', '项目授权']] as const) {

@@ -9,7 +9,7 @@ test('deduplicates native conclusion echoes and shows actual usage and duration 
  const root=join(process.cwd(),'.test-data/e2e'),projectPath=join(root,'statistics-project');mkdirSync(projectPath,{recursive:true});
  const {project}=await(await page.request.post('/api/projects',{data:{name:'Statistics fixture',path:projectPath}})).json();
  const {session}=await(await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:projectPath,mode:'terminal'}})).json();
- const native='019ff001-bbbb-7bbb-8bbb-bbbbbbbbbbbb',dir=join(root,'home/.codex/sessions');mkdirSync(dir,{recursive:true});
+ const native='019ff001-dead-7bee-8bee-deadbeef1236',dir=join(root,'home/.codex/sessions');mkdirSync(dir,{recursive:true});
  const line=(timestamp:string,type:string,payload:unknown)=>JSON.stringify({timestamp,type,payload})+'\n';
  const content=[{type:'output_text',text:'测试结论'}];
  const usage={total_token_usage:{total_tokens:200},last_token_usage:{total_tokens:200,input_tokens:180,cached_input_tokens:50,output_tokens:20,reasoning_output_tokens:5}};
@@ -28,7 +28,7 @@ test('deduplicates native conclusion echoes and shows actual usage and duration 
  await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'统计测试'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
  await page.routeWebSocket('**/conversation/stream*',socket=>socket.send(JSON.stringify({type:'snapshot',messages:[],busy:false,stage:'idle'})));
  await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
- const verify=async()=>{await expect(chat.getByText('测试结论',{exact:true})).toHaveCount(1);await expect(chat.getByText('summary · token: 200 · tools: 1 call / 1 round')).toBeVisible();await expect(chat.getByText('Total: 1m 4s')).toBeVisible();};
+ const verify=async()=>{await expect(chat.getByText('测试结论',{exact:true})).toHaveCount(1);await expect(chat.getByText('summary · token: 200 · tools: 1 call ｜ 1 round')).toBeVisible();await expect(chat.getByText('Total: 1m 4s')).toBeVisible();};
  await verify();await page.reload();await verify();
  await page.request.delete(`/api/sessions/${session.id}`);
 });

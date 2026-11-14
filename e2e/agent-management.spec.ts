@@ -19,11 +19,12 @@ test('shows Agent-specific settings for Codex and Claude', async ({ page }) => {
     return route.fulfill({ json: { agents: [{ agent: descriptor('codex', 'Codex'), state: stateFor('codex') }, { agent: descriptor('claude', 'Claude'), state: stateFor('claude') }] } });
   });
   await page.goto('/');
-  await page.getByRole('button', { name: '平台管理' }).click();
+  await page.getByTitle('My account').click();
   await page.getByRole('button', { name: 'Agent 配置' }).click();
-  await expect(page.getByRole('heading', { name: 'Agent 配置' })).toBeVisible();
+  await expect(page.locator('.manager-section-heading')).toHaveText('Agent 配置');
   await expect(page.getByRole('button', { name: /^xindu\b/ })).toBeVisible();
   await expect(page.getByText('deepseek-v4.1-flash').first()).toBeVisible();
+  await page.getByRole('button', {name:'配置文件 (1)'}).click();
   await expect(page.getByText('/Users/ymchen/.codex-xindu/config.toml')).toBeVisible();
   await page.screenshot({ path: 'test-results/agent-management-codex.png', fullPage: true });
   await page.getByRole('button', { name: /Claude/ }).click();

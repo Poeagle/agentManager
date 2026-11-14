@@ -19,7 +19,7 @@ test('project notification settings persist, pause and delete through the platfo
   const {channel} = await channelResponse.json();
   expect((await page.request.post('/api/platform-ai/bindings',{data:{channel_id:channel.id,external_user_id:'notification-user',user_id:user.id}})).ok()).toBeTruthy();
   await page.goto('/');
-  await page.getByRole('button',{name:'平台管理',exact:true}).click();await page.getByRole('navigation',{name:'平台管理分类'}).getByRole('button',{name:'平台 AI',exact:true}).click();
+  await page.getByTitle('My account').click();await page.getByRole('navigation',{name:'平台管理分类'}).getByRole('button',{name:'平台 AI',exact:true}).click();
   const dialog = page.getByRole('dialog',{name:'平台管理'});
   await dialog.getByRole('button',{name:'项目通知',exact:true}).click();
   await dialog.getByRole('combobox',{name:'项目',exact:true}).selectOption(project.id);
@@ -31,7 +31,7 @@ test('project notification settings persist, pause and delete through the platfo
   let table = dialog.getByRole('table',{name:'项目通知规则'});
   await expect(table.getByRole('cell',{name:'需要输入',exact:true})).toBeVisible();
   await page.reload();
-  await page.getByRole('button',{name:'平台管理',exact:true}).click();await page.getByRole('navigation',{name:'平台管理分类'}).getByRole('button',{name:'平台 AI',exact:true}).click();
+  await page.getByTitle('My account').click();await page.getByRole('navigation',{name:'平台管理分类'}).getByRole('button',{name:'平台 AI',exact:true}).click();
   await dialog.getByRole('button',{name:'项目通知',exact:true}).click();
   table = dialog.getByRole('table',{name:'项目通知规则'});
   await expect(table.getByRole('cell',{name:'通知验证项目',exact:true})).toBeVisible();

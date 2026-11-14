@@ -6,7 +6,7 @@ import {mkdirSync,writeFileSync,appendFileSync} from 'fs';
 import {join} from 'path';
 const require=createRequire(import.meta.url),{WebSocketServer}=require('../server/node_modules/ws'),Database=require('../server/node_modules/better-sqlite3');
 test('reload preserves the same conversation, draft and atomic picture text while replacing only its client',async({page},testInfo)=>{
- const root=join(process.cwd(),'.test-data/e2e'),path=join(root,'reload-project'),native='019ff001-5656-7565-8565-565656565656';mkdirSync(path,{recursive:true});mkdirSync(join(root,'home/.codex/sessions'),{recursive:true});
+ const root=join(process.cwd(),'.test-data/e2e'),path=join(root,'reload-project'),native='019ff001-dead-7bee-8bee-deadbeef1238';mkdirSync(path,{recursive:true});mkdirSync(join(root,'home/.codex/sessions'),{recursive:true});
  const version=execFileSync('codex',['--version'],{encoding:'utf8'}).match(/\d+\.\d+\.\d+/)![0],record=(payload:any)=>JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload})+'\n',log=join(root,'home/.codex/sessions',`rollout-${native}.jsonl`);
  const auto='# AGENTS.md instructions for /test\n\n<INSTRUCTIONS>\n项目规则，自动上下文。\n</INSTRUCTIONS>';
  writeFileSync(log,record({type:'user_message',message:auto})+record({type:'user_message',message:'请核对这段短消息'})+record({type:'task_complete',last_agent_message:'结果已经核对。'}));
@@ -30,7 +30,7 @@ test('reload preserves the same conversation, draft and atomic picture text whil
   const current=(await(await page.request.get(`/api/sessions/${id}`)).json()).session;expect(current.codex_session_id).toBe(native);expect(current.status).toBe('running');await expect(input).toContainText('保留草稿并预览图片');await expect(input.locator('[data-attachment-id][data-status=ready]')).toHaveCount(2);await expect(chat.getByText('结果已经核对。',{exact:true})).toBeVisible();expect(inputs).toBe(0);
   await page.screenshot({path:testInfo.outputPath('inline-images-reloaded.png')});
   await input.evaluate(node=>{const token=node.querySelectorAll('[data-attachment-id]')[1],range=document.createRange();range.setStartAfter(token);range.collapse(true);const selection=window.getSelection()!;selection.removeAllRanges();selection.addRange(range);(node as HTMLElement).focus();});await page.keyboard.press('Backspace');await expect(input.locator('[data-attachment-id]')).toHaveCount(1);await expect(input).toContainText('图片 1');await expect(input).not.toContainText('图片 2');
-  const before=reads;await page.getByRole('button',{name:'刷新会话信息'}).click();await expect.poll(()=>reads).toBeGreaterThan(before);
+  const before=reads;await page.getByRole('button',{name:'Refresh session status'}).click();await expect.poll(()=>reads).toBeGreaterThan(before);
   const started=Date.now();appendFileSync(log,record({type:'agent_message',message:'文件变化实时显示',phase:'commentary'}));await expect(chat.getByText('文件变化实时显示',{exact:true})).toHaveCount(1,{timeout:1500});expect(Date.now()-started).toBeLessThan(1500);
- }finally {if(id)await page.request.delete(`/api/sessions/${id}`);await page.request.put('/api/settings',{data:{settings:{session_codex_command:'codex'}}});for(const client of wss.clients)client.terminate();await new Promise<void>(r=>wss.close(()=>r()));await new Promise<void>(r=>server.close(()=>r()));}
+ }finally {if(id)await page.request.delete(`/api/sessions/${id}`,{timeout:3000}).catch(()=>{});await page.request.put('/api/settings',{data:{settings:{session_codex_command:'codex'}},timeout:3000}).catch(()=>{});for(const client of wss.clients)client.terminate();await new Promise<void>(r=>wss.close(()=>r()));await new Promise<void>(r=>server.close(()=>r()));}
 });
