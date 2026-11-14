@@ -94,6 +94,24 @@ describe('conversation send transaction', () => {
     expect([...dialog.querySelectorAll('time')].map(t=>t.dateTime)).toEqual([sentAt,sentAt]);
     fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
+  it('sends the staged batch with Ctrl+Enter when the editor is empty',async()=>{
+    const response=deferred<SendResult>(),submit=vi.spyOn(api.agent,'sendInput').mockReturnValue(response.promise);await mount();
+    fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});const editor=input('staged');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
+    fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true});fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true});await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
+    expect(submit.mock.calls[0][1]).toBe('staged');expect(submit.mock.calls[0][4]).toEqual([{length:6,attachments:0}]);await act(async()=>response.resolve({status:'submitted'} as SendResult));
+    expect(screen.getByRole('button',{name:/批量消息/})).toBeInTheDocument();
+  });
+  it('sends the batch when focus remains on the add-to-batch button',async()=>{
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();
+    fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});input('staged');const button=screen.getByRole('button',{name:'加入批量'});fireEvent.click(button);expect(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveFocus();button.focus();
+    fireEvent.keyDown(button,{key:'Enter',ctrlKey:true});await waitFor(()=>expect(submit).toHaveBeenCalledOnce());expect(submit.mock.calls[0][1]).toBe('staged');expect(submit.mock.calls[0][4]).toEqual([{length:6,attachments:0}]);
+  });
+  it('handles Command+Enter on a focused batch button and does not resend unknown batches',async()=>{
+    const submit=vi.spyOn(api.agent,'sendInput').mockRejectedValue(new ApiError('unknown',503,'unknown'));await mount();
+    fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});const editor=input('staged');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
+    fireEvent.keyDown(screen.getByRole('button',{name:'发送批量内容'}),{key:'Enter',metaKey:true});await waitFor(()=>expect(screen.getByText('unknown')).toBeInTheDocument());
+    fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true});expect(submit).toHaveBeenCalledOnce();
+  });
   it('directly sends only the current input with Ctrl+Enter in batch mode as a plain message',async()=>{
     const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();
     fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
@@ -102,6 +120,13 @@ describe('conversation send transaction', () => {
     fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true,repeat:true});expect(submit).not.toHaveBeenCalled();
     fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true});await waitFor(()=>expect(submit).toHaveBeenCalledOnce());expect(submit.mock.calls[0][1]).toBe('direct');expect(submit.mock.calls[0][4]).toBeUndefined();
     expect(loadComposer(composerKey('local',session.id)).entries.map(e=>e.text)).toEqual(['staged']);expect(screen.queryByRole('button',{name:/批量消息/})).not.toBeInTheDocument();
+  });
+  it('sends an attachment-only input directly instead of consuming the staged batch',async()=>{
+    const file={kind:'file' as const,name:'fixture.txt',path:'/fixture/fixture.txt',offset:0};
+    saveComposer(composerKey('local',session.id),{...emptyComposer(),mode:'batch',draftAttachments:[file],entries:[{id:'staged',text:'keep staged',attachments:[]}]});
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();
+    fireEvent.keyDown(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'}),{key:'Enter',ctrlKey:true});await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
+    expect(submit.mock.calls[0][1]).toBe('');expect(submit.mock.calls[0][3]?.[0].path).toBe(file.path);expect(submit.mock.calls[0][4]).toBeUndefined();expect(loadComposer(composerKey('local',session.id)).entries[0].text).toBe('keep staged');
   });
   it('does not reuse an uncertain batch identity for an identical direct message',async()=>{
     const submit=vi.spyOn(api.agent,'sendInput').mockRejectedValueOnce(new ApiError('unknown',503,'unknown')).mockResolvedValue({status:'submitted'} as SendResult);await mount();
