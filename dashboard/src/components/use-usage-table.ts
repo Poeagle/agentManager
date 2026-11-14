@@ -21,7 +21,7 @@ export function useUsageTable(rows:UsageRow[],dimension:Dimension){
  const [sort,setSort]=useState<{key:string;direction:'asc'|'desc'}|null>(null);
  const leaves=useMemo<Leaf[]>(()=>rows.flatMap<Leaf>(row=>row.models?.length?row.models.map(m=>({...row,...m,modelName:m.model,models:[m],missing:false})): [{...row,modelName:null,missing:true}]),[rows]);
  const columns=useMemo<TableColumn<Leaf>[]>(()=>[
-  {key:'label',title:dimension==='project'?'项目 / 模型 / 日期':dimension==='model'?'模型 / 项目 / 日期':`${dimension==='hour'?'小时':dimension==='week'?'周':dimension==='month'?'月':'日期'} / 项目 / 模型`,filterMode:'text',value:r=>`${r.date} ${r.hour||''} ${r.project_name||''} ${r.modelName||''}`},
+  {key:'label',title:dimension==='project'?'项目 ｜ 模型 ｜ 日期':dimension==='model'?'模型 ｜ 项目 ｜ 日期':`${dimension==='hour'?'小时':dimension==='week'?'周':dimension==='month'?'月':'日期'} ｜ 项目 ｜ 模型`,filterMode:'text',value:r=>`${r.date} ${r.hour||''} ${r.project_name||''} ${r.modelName||''}`},
   {key:'cwd',title:'工作目录',filterMode:'text',value:r=>r.cwd},
   {key:'input',title:'输入',kind:'number',filterMode:'range',value:r=>number(r,'input_tokens')},
   {key:'cached',title:'缓存输入',kind:'number',filterMode:'range',value:r=>number(r,'cached_input_tokens')},

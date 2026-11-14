@@ -104,7 +104,7 @@
 .ci-toolbar>input{min-width:130px;}
 .ci-toolbar :is(input,select){height:28px;}
 .ci-observation{margin-bottom:4px;}
-.ci-usage-table .smart-table-heading{gap:3px;}
+.ci-usage-table .smart-table-heading{justify-content:flex-start;gap:1px;}
 .ci-usage-table .smart-table-sort{gap:2px;overflow:visible;}
 .ci-usage-table .smart-table-sort>span{overflow:visible;text-overflow:clip;}
 .ci-usage-table .smart-table-filter{padding:2px;}
