@@ -4,6 +4,7 @@ export type TableValue = string | number | boolean | null | undefined;
 export interface TableColumn<T> {
   key: string;
   title: string;
+  description?: string;
   value: (row: T) => TableValue;
   kind?: 'text' | 'number' | 'date';
   filterMode?: 'range' | 'text';

@@ -28,7 +28,7 @@ export function TableHeaders<T>({model}:{model:TableModel<T>}){
 /** Shared table frame for list models and hierarchical aggregate views. */
 export function TableFrame({label,header,children,columns,className='',tableClassName='data-table',loading=false,style}:{label:string;header:ReactNode;children:ReactNode;columns?:ReactNode;className?:string;tableClassName?:string;loading?:boolean;style?:CSSProperties}){
  return <div className={`table-wrap ${className}`} role="region" aria-label={`${label}，可横向滚动查看全部列`} tabIndex={0}><table className={tableClassName} aria-label={label} aria-busy={loading} style={style}
-  onMouseOver={event=>{if(!event.currentTarget.closest('.manager-ui'))return;const cell=(event.target as HTMLElement).closest('td');if(cell?.closest('table')!==event.currentTarget||cell.colSpan>1||cell.querySelector('button,input,select,textarea'))return;cell.title=cell.textContent?.trim()||'';}}>
+  onMouseOver={event=>{if(!event.currentTarget.closest('.manager-ui'))return;const cell=(event.target as HTMLElement).closest('td');if(cell?.closest('table')!==event.currentTarget||cell.colSpan>1||cell.querySelector('button,input,select,textarea'))return;cell.title=cell.dataset.fieldDescription?`${cell.dataset.fieldDescription} ${cell.textContent?.trim()||''}`:cell.textContent?.trim()||'';}}>
   {columns}<thead><tr>{header}</tr></thead><tbody>{children}</tbody>
  </table></div>;
 }

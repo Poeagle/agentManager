@@ -102,18 +102,18 @@ describe('conversation send transaction', () => {
     act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:1,message_id:item.id,turn_id:'turn',tokens:{total_tokens:392100},requests:1,tool_calls:2,tool_rounds:2,complete:true,segment}]}));
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'other',progress:{turn_id:'turn',tokens:{total_tokens:999},tool_calls:9,tool_rounds:9,complete:true}}));expect(screen.queryByText(/token: 999/)).not.toBeInTheDocument();
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'another-turn',tokens:{total_tokens:999},tool_calls:9,tool_rounds:9,complete:true,segment:{...segment,tokens:{total_tokens:999}}}}));expect(header).toHaveTextContent('segment · token: 392.1K');expect(header).not.toHaveTextContent('token: 999');
-    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:400000},tool_calls:3,tool_rounds:2,complete:true,segment:{...segment,tokens:{total_tokens:400000},tool_calls:3}}}));expect(await screen.findByText('segment · token: 400K · tools: 3 calls / 2 rounds')).toBeVisible();
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:400000},tool_calls:3,tool_rounds:2,complete:true,segment:{...segment,tokens:{total_tokens:400000},tool_calls:3}}}));expect(await screen.findByText('segment · token: 400K · tools: 3 calls ｜ 2 rounds')).toBeVisible();
     const ended={...segment,end_at:new Date().toISOString(),elapsed_ms:120000,end_reason:'interrupted',tokens:{total_tokens:400000},tool_calls:3};
     act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:1,message_id:item.id,turn_id:'turn',tokens:{total_tokens:400000},requests:1,tool_calls:3,tool_rounds:2,complete:true,segment:ended}]}));
     act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:false,stage:'idle',turn_id:'turn'}));
-    expect(header).toHaveTextContent('segment · token: 400K · tools: 3 calls / 2 rounds');expect(header).toHaveTextContent('Elapsed 2m 0s');expect(header).toHaveTextContent('Interrupted');expect(header).not.toHaveTextContent('waiting:');
+    expect(header).toHaveTextContent('segment · token: 400K · tools: 3 calls ｜ 2 rounds');expect(header).toHaveTextContent('Elapsed 2m 0s');expect(header).toHaveTextContent('Interrupted');expect(header).not.toHaveTextContent('waiting:');
   });
   it('restores completed progress totals and duration from recorded conclusion statistics',async()=>{
     const existing=await api.agent.conversation(session.id),item={id:'historical-progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'Earlier work',timestamp:'2026-01-01T00:00:05Z'},final={id:'historical-final',role:'assistant',turn_id:'turn',phase:'final',text:'Complete',timestamp:'2026-01-01T00:01:00Z'};
     const total={id:'historical-segment',end_reason:'completed',tokens:{total_tokens:97400},requests:2,tool_calls:4,tool_rounds:3,complete:true,shared_messages:1,start_at:'2026-01-01T00:00:00Z',end_at:final.timestamp,elapsed_ms:60000};
     vi.mocked(api.agent.conversation).mockResolvedValue({...existing,messages:[item,final],statistics:[{sequence:1,message_id:final.id,turn_id:'turn',...total,conclusion:total,segment:total}]} as unknown as ConversationPage);
     await mount();const header=(await screen.findByText('progress')).closest('summary')!;
-    expect(header).toHaveTextContent('segment · token: 97.4K · tools: 4 calls / 3 rounds');expect(header).toHaveTextContent('Elapsed 1m 0s');expect(header).toHaveTextContent('Completed');expect(header).not.toHaveTextContent('calling:');
+    expect(header).toHaveTextContent('segment · token: 97.4K · tools: 4 calls ｜ 3 rounds');expect(header).toHaveTextContent('Elapsed 1m 0s');expect(header).toHaveTextContent('Completed');expect(header).not.toHaveTextContent('calling:');
   });
   it('does not mark a progress segment completed just because an async question follows it',async()=>{
     const existing=await api.agent.conversation(session.id);

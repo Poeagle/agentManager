@@ -111,3 +111,17 @@
 .ci-usage-table .ci-group-title{white-space:normal;overflow-wrap:anywhere;}
 .manager-ui .ci-usage-table>tbody>tr:not(.table-detail-row)>td.ci-directory-cell{white-space:normal;overflow-wrap:anywhere;}
 @media(max-width:800px){.ci-token-summary{white-space:normal;overflow-wrap:anywhere;}.ci-toolbar .ci-tabs{width:100%;}}
+.manager-ui .ci-usage-table th,.manager-ui .ci-usage-table td,.manager-ui .ci-usage-table th:nth-child(n+3),.manager-ui .ci-usage-table td:nth-child(n+3){text-align:center;}
+.ci-usage-table .smart-table-heading,.ci-usage-table .ci-group-label{justify-content:center;}
+.ci-usage-table .smart-table-heading{gap:0;}
+.ci-usage-table .smart-table-filter{padding:1px;}
+.manager-ui .ci-header-details,.manager-ui .ci-header-details :is(span,strong,small,button,p){font-family:inherit;font-size:12px;font-weight:400;line-height:20px;}
+.manager-ui .ci-toolbar :is(input,select,button){box-sizing:border-box;height:28px;min-height:28px;font-family:inherit;font-size:12px;line-height:20px;}
+.manager-dialog header:has(.ci-header-details){padding:3px 8px;gap:4px;}
+.manager-ui .ci-header-details,.manager-ui .ci-header-details :is(span,strong,small,button,p){font-size:11px;line-height:18px;}
+.ci-header-details,.ci-header-details .ci-identity,.ci-header-details .ci-overview-account,.ci-header-details .ci-overview-account>section{gap:2px 5px;}
+.ci-toolbar{gap:3px;margin-bottom:3px;}
+.ci-toolbar .ci-tabs{gap:8px;margin-right:3px;}
+.manager-ui .ci-toolbar :is(input,select,button){height:25px;min-height:25px;font-size:11px;line-height:18px;}
+.manager-ui .ci-toolbar label,.ci-toolbar .ci-tabs button{font-size:11px;}
+.ci-toolbar .ci-button{padding:1px 6px;}

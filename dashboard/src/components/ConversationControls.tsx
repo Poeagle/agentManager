@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import {createPortal} from 'react-dom';
 import {ConversationEnvironmentSelector} from './ConversationEnvironmentSelector';
 import type {AgentFeature} from '../lib/agents';
@@ -15,6 +16,7 @@ const compact=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',max
 const choiceKey=(value:{provider?:string;model:string})=>value.provider?JSON.stringify([value.provider,value.model]):value.model;
 const permissions:Record<string,string>={'danger-full-access':'完整访问','workspace-write':'工作区可写','read-only':'只读'};
 const permissionsEn:Record<string,string>={'danger-full-access':'Full access','workspace-write':'Workspace write','read-only':'Read only'};
+const tokenMetricDescriptions:Record<string,string>={Window:'模型的上下文窗口容量',Total:'会话累计 Token，包含重复上下文',Input:'累计输入 Token，包含缓存输入',Cache:'累计命中缓存的输入 Token',Reasoning:'累计推理 Token，包含在输出中',Output:'累计输出 Token，包含推理 Token'};
 export function ConversationControls({sessionId,active,busy=false,compacting=false,onCompact,onNewConversation,toolbarTarget}:{toolbarTarget?:HTMLElement|null;sessionId:string;active:boolean;busy?:boolean;compacting?:boolean;onCompact?:()=>Promise<void>;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<void>}) {
   const queryClient=useQueryClient(),[expanded,setExpanded]=useState(false),[saving,setSaving]=useState(false),[applied,setApplied]=useState(false),[error,setError]=useState('');
   const [operation,setOperation]=useState<'compact'|'new'|null>(null),[newOpen,setNewOpen]=useState(false),[notice,setNotice]=useState('');
@@ -105,7 +107,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
           {data.permission&&<span title="Access permissions">{permissionsEn[data.permission]||data.permission}</span>}
           {data.approval&&<span title="Approval policy">Approval: {data.approval}</span>}
           {data.engine_version&&<span title="Running engine version">Engine {data.engine_version}</span>}
-          {tokenMetrics.length>0&&<span title={`Token counts: ${tokenMetrics.map(([name,value])=>`${name}: ${value.toLocaleString()}`).join(' · ')}. Total and input include cached and repeated context; output includes reasoning.`}>Tokens {tokenMetrics.map(([name])=>name).join('/')} : {tokenMetrics.map(([,value])=>compact(value)).join('/')}</span>}
+          {tokenMetrics.length>0&&<span>Tokens {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{name}</span></Fragment>)} : {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{compact(value)}</span></Fragment>)}</span>}
         </span>
         {(error&&!newOpen||notice)&&<span className="conversation-control-message" role={error&&!newOpen?'alert':'status'} title={error&&!newOpen?error:notice}>{error&&!newOpen?error:notice}</span>}
         <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>Details</button>
@@ -116,7 +118,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
       <strong>{modelLabel(model)}</strong>
       <dl>
         <dt>发布时间</dt><dd>{model.release_date||'未提供'}</dd>
-        <dt>计费标准</dt><dd>{referenceCredits?<>Credits / 1M：输入 {referenceCredits.input} · 缓存 {referenceCredits.cached} · 输出 {referenceCredits.output}<br/><small>参考费率 {referenceCredits.as_of}，非实际账单</small></>:'未提供'}</dd>
+        <dt>计费标准</dt><dd>{referenceCredits?<>Credits 每百万 Token：输入 {referenceCredits.input} · 缓存 {referenceCredits.cached} · 输出 {referenceCredits.output}<br/><small>参考费率 {referenceCredits.as_of}，非实际账单</small></>:'未提供'}</dd>
         <dt>上下文长度</dt><dd>{modelContext!=null?`${modelContext.toLocaleString()} tokens`:'未提供'}</dd>
         <dt>输入类型</dt><dd>{model.input_modalities?.length?model.input_modalities.join('、'):'未提供'}</dd>
         <dt>推理强度</dt><dd>{model.efforts.length?model.efforts.map(e=>e.value||'默认').join('、'):'未提供'}</dd>

@@ -37,9 +37,9 @@ export function TableColumnHeader<T>({ table, columnKey, className = '' }: {
     window.addEventListener('resize', close);
     return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', close); window.removeEventListener('resize', close); };
   }, [position]);
-  return <th className={className} aria-label={column.title} aria-sort={activeSort ? table.sort?.direction === 'asc' ? 'ascending' : 'descending' : 'none'}>
+  return <th className={className} title={column.description} aria-label={column.title} aria-sort={activeSort ? table.sort?.direction === 'asc' ? 'ascending' : 'descending' : 'none'}>
     <div className="smart-table-heading">
-      <button type="button" className="smart-table-sort" aria-label={`${column.title}排序`} title={column.title} onClick={() => table.toggleSort(columnKey)}
+      <button type="button" className="smart-table-sort" aria-label={`${column.title}排序`} title={column.description||column.title} onClick={() => table.toggleSort(columnKey)}
         style={{ color: activeSort ? 'var(--accent)' : undefined }}>
         <span>{column.title}</span>{activeSort ? table.sort?.direction === 'asc' ? <ArrowUp /> : <ArrowDown /> : <ArrowUpDown />}
       </button>

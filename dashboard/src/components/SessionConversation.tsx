@@ -180,7 +180,7 @@ function ProgressSummary({agent,agentName,count,active,progress,progressScope='t
           <span>{agentName}</span>
           <span className="session-chat-kind">progress</span>
           <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
-          {progress && <span className="session-chat-message-statistics" title={progressScope==='segment'?'Usage recorded since this progress segment started; incomplete data is a lower bound.':progressScope==='total'?'Cumulative recorded usage since the previous conclusion. Incomplete history is a lower bound.':'Recorded usage for this native turn through its last progress update. Incomplete history is a lower bound.'}>{progressScope} · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} / {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
+          {progress && <span className="session-chat-message-statistics" title={progressScope==='segment'?'Usage recorded since this progress segment started; incomplete data is a lower bound.':progressScope==='total'?'Cumulative recorded usage since the previous conclusion. Incomplete history is a lower bound.':'Recorded usage for this native turn through its last progress update. Incomplete history is a lower bound.'}>{progressScope} · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} ｜ {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
           {!progress&&progressScope==='segment'&&<span className="session-chat-message-statistics" title="Segment usage is unavailable">segment · token: — · tools: —</span>}
           {active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
           {active&&<span className="session-chat-progress-time">{progressPhase}{callingLabel&&<span title={callingLabel}> ({Array.from(callingLabel).length>18?`${Array.from(callingLabel).slice(0,18).join('')}…`:callingLabel})</span>}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
@@ -2217,7 +2217,7 @@ export function SessionConversation({
                 : "Agent 需要你确认或选择"}
             </strong>
             {interaction?.choices?.length ? (
-              <p>{interaction.choices.join(" / ")}</p>
+              <p>{interaction.choices.join(" ｜ ")}</p>
             ) : null}
             <button onClick={onRaw}>切到原始终端处理</button>
           </div>
