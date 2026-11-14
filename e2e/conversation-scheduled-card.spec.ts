@@ -3,7 +3,7 @@ import {mkdirSync,writeFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {join} from 'node:path';
 
-test('scheduled input remains a compact expandable card after reload at desktop and narrow widths',async({page})=>{
+test('scheduled input opens a centered dialog after reload at desktop and narrow widths',async({page})=>{
   const auth=await(await page.request.get('/api/auth/status')).json();
   expect((await page.request.post(auth.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
   const root=join(process.cwd(),'.test-data/e2e'),projectPath=join(root,'scheduled-card-project');mkdirSync(projectPath,{recursive:true});
@@ -20,11 +20,13 @@ test('scheduled input remains a compact expandable card after reload at desktop 
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'定时卡片'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
   await page.routeWebSocket('**/conversation/stream*',socket=>socket.send(JSON.stringify({type:'snapshot',messages:[],busy:false,stage:'idle'})));
   try{
-    await page.goto('/');const card=page.locator('.session-chat-sourced details');
-    await expect(card).toHaveCount(1);await expect(card).not.toHaveAttribute('open');await expect(card.locator('summary')).toContainText('每日巡检');
-    await card.locator('summary').click();await expect(card).toHaveAttribute('open');await expect(card.locator('.session-chat-sourced-content')).toContainText('定时提示正文');
-    await page.reload();await expect(card).not.toHaveAttribute('open');
-    await page.setViewportSize({width:390,height:844});await card.locator('summary').click();await expect(card.locator('.session-chat-sourced-content')).toBeVisible();
-    expect(await card.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
+    await page.goto('/');const card=page.locator('.session-chat-sourced .conversation-card-trigger');
+    await expect(card).toHaveCount(1);await expect(card).toContainText('每日巡检');await expect(page.getByRole('dialog',{name:'定时任务 · 每日巡检'})).toHaveCount(0);
+    await card.click();const dialog=page.getByRole('dialog',{name:'定时任务 · 每日巡检'});await expect(dialog).toBeVisible();await expect(dialog).toContainText('定时提示正文');
+    const box=(await dialog.boundingBox())!,viewport=page.viewportSize()!;expect(Math.abs(box.x+box.width/2-viewport.width/2)).toBeLessThan(2);
+    await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);await expect(card).toBeFocused();
+    await page.reload();await expect(card).toHaveCount(1);await expect(dialog).toHaveCount(0);
+    await page.setViewportSize({width:390,height:844});await card.click();await expect(dialog).toBeVisible();expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
+
   }finally{await page.request.delete(`/api/sessions/${session.id}`);await page.request.delete(`/api/projects/${project.id}`);}
 });
