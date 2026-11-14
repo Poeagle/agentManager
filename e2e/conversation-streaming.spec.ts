@@ -11,6 +11,7 @@ test('renders each native delta before the item completes and keeps one progress
  wss.on('connection',(socket:any)=>socket.on('message',(bytes:any)=>{
   const f=JSON.parse(bytes);if(!f.id||!f.method)return;
   if(f.method==='turn/start')submitted.push(f.params);
+  if(f.method==='turn/steer'){socket.send(JSON.stringify({id:f.id,error:{code:-32600,message:'cannot steer a compact turn'}}));return;}
   if(f.method==='thread/queue/add'){queue.push({clientUserMessageId:f.params.clientUserMessageId,input:f.params.input});emit('thread/queue/changed',{threadId:native});}
   socket.send(JSON.stringify({id:f.id,result:f.method==='thread/read'?{thread:{status:{type:nativeActive?'active':'idle'}}}:f.method==='thread/turns/list'?{data:nativeActive?[{id:'question-turn',status:'inProgress',items:nativeItems}]:[]}:f.method==='thread/queue/list'?{data:queue}: {}}));
  }));
@@ -24,7 +25,7 @@ test('renders each native delta before the item completes and keeps one progress
   const threadId=native,turnId='work',itemId='stream-step';emit('turn/started',{threadId,turn:{id:turnId,startedAt:Date.now()/1000}});emit('item/started',{threadId,turnId,startedAtMs:Date.now(),item:{type:'agentMessage',id:itemId,phase:'commentary',text:''}});emit('item/agentMessage/delta',{threadId,turnId,itemId,delta:'第一段已经到达。'});
   const first=chat.getByText('第一段已经到达。',{exact:true});await expect(first).toBeVisible({timeout:1000});const bubble=chat.getByRole('region',{name:'Codex 进展'}).locator('article');await expect(bubble).toHaveAttribute('data-streaming','true');await expect(bubble.locator('time')).toHaveCount(0);await expect(chat.getByText('第二段继续到达。',{exact:true})).toHaveCount(0);await page.screenshot({path:info.outputPath('first-delta-before-completion.png')});
   emit('item/agentMessage/delta',{threadId,turnId,itemId,delta:'第二段继续到达。'});await expect(chat.getByText('第一段已经到达。第二段继续到达。',{exact:true})).toBeVisible({timeout:1000});await expect(chat.getByRole('region',{name:'Codex 进展'}).locator('article')).toHaveCount(1);
-  emit('item/completed',{threadId,turnId,completedAtMs:Date.now(),item:{type:'agentMessage',id:itemId,phase:'commentary',text:'第一段已经到达。第二段继续到达。'}});await expect(bubble).toHaveAttribute('data-streaming','false');await expect(bubble.getByLabel('进展完成时间')).toBeVisible();emit('turn/completed',{threadId,turn:{id:turnId,status:'completed',completedAt:Date.now()/1000}});await expect(chat.getByText('可以继续发送消息',{exact:true})).toBeVisible();expect(submitted).toHaveLength(1);
+  emit('item/completed',{threadId,turnId,completedAtMs:Date.now(),item:{type:'agentMessage',id:itemId,phase:'commentary',text:'第一段已经到达。第二段继续到达。'}});await expect(bubble).toHaveAttribute('data-streaming','false');await expect(bubble.getByLabel('进展完成时间')).toBeVisible();emit('turn/completed',{threadId,turn:{id:turnId,status:'completed',completedAt:Date.now()/1000}});await expect(chat.getByText('Ready for your next message',{exact:true})).toBeVisible();expect(submitted).toHaveLength(1);
   // Keep the rollout unchanged while a reply waits through compaction. The
   // existing RPC stream must drive the tab state and distinguish queueing.
   const log=join(logs,`rollout-${native}.jsonl`),call='async-question',question='使用哪个测试邮箱？';
