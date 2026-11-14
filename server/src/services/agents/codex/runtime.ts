@@ -11,6 +11,7 @@ interface RuntimeCursor {
   last: string | null; state: CodexState; activeTurns: Set<string>; waitingCall: string | null;
   questions?:PendingQuestionGroup[];
   completedTurn?:string;
+  completedAt?:string;
 }
 const MAX_READ = 4 * 1024 * 1024;
 const cursors = new Map<string, RuntimeCursor>();
@@ -34,11 +35,11 @@ function applyRecord(cursor: RuntimeCursor, entry: any, sessionId: string): void
   if (cursor.state === 'ready') cursor.state='unknown';
   if (!cursor.last || stamp > Date.parse(cursor.last)) cursor.last = new Date(stamp).toISOString();
   const turn = typeof p.turn_id === 'string' ? p.turn_id : 'current';
-  if (event === 'task_started') { cursor.activeTurns.add(turn); cursor.state='running'; cursor.waitingCall=null; cursor.completedTurn=undefined; }
+  if (event === 'task_started') { cursor.activeTurns.add(turn); cursor.state='running'; cursor.waitingCall=null; cursor.completedTurn=undefined;cursor.completedAt=undefined; }
   if (event === 'task_complete' || event === 'turn_aborted') {
     cursor.activeTurns.delete(turn);
     cursor.state = cursor.activeTurns.size ? 'running' : event === 'task_complete' ? p.error?'failed':'idle' : 'interrupted';
-    if(!cursor.activeTurns.size&&typeof p.turn_id==='string')cursor.completedTurn=p.turn_id;
+    if(!cursor.activeTurns.size){cursor.completedAt=new Date(stamp).toISOString();if(typeof p.turn_id==='string')cursor.completedTurn=p.turn_id;}
     cursor.waitingCall = null;
   }
   if (['request_user_input','exec_approval_request','apply_patch_approval_request'].includes(event)) cursor.state='waiting_for_input';
@@ -88,7 +89,7 @@ export async function readCodexRuntime(sessionId: string | null | undefined): Pr
       // the independent question index and churning its bounded LRU cache.
       const questions = !changed&&cursor.questions ? cursor.questions : await readPendingQuestions(filePath, sessionId);
       cursor.questions=questions;cursors.set(filePath,cursor);
-      return projectCodexRuntime({source:'codex_rollout' as const,session_id:sessionId,state:cursor.state,last_activity_at:cursor.last,observed_at:new Date().toISOString(),...(cursor.completedTurn?{completed_turn_id:cursor.completedTurn}:{}),pending_question_count:questions.reduce((sum,group)=>sum+group.questions.length,0),pending_questions:questions,
+      return projectCodexRuntime({source:'codex_rollout' as const,session_id:sessionId,state:cursor.state,last_activity_at:cursor.last,last_turn_ended_at:cursor.completedAt??null,observed_at:new Date().toISOString(),...(cursor.completedTurn?{completed_turn_id:cursor.completedTurn}:{}),pending_question_count:questions.reduce((sum,group)=>sum+group.questions.length,0),pending_questions:questions,
         reason:cursor.state==='ready' ? '原生会话已创建，尚未开始执行' : cursor.last ? '依据 Codex 原生执行事件；本轮结束不代表业务任务验收完成' : '原生记录尚无可识别的执行事件'});
     } finally {await file.close();}
   })().catch(()=>unavailable('Codex 原生记录暂时无法读取')).finally(()=>inFlight.delete(filePath));

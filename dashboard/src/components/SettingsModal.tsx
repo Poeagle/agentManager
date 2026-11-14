@@ -1,3 +1,4 @@
+import {SendGuardSettings} from './SendGuardSettings';
 import {AiSourceFields} from './AiSourceFields';
 import type {AiSource} from '../lib/ai-source';
 import { useEffect, useRef, useState } from 'react';
@@ -12,6 +13,7 @@ import './SettingsPanel.css';
 interface SettingsModalProps {
   onClose: () => void;
   embedded?: boolean;
+  administrator?:boolean;
   readOnly?: boolean;
 }
 
@@ -70,7 +72,7 @@ function SettingsSection({
   );
 }
 
-export function SettingsModal({ onClose, readOnly = false, embedded = false }: SettingsModalProps) {
+export function SettingsModal({ onClose, readOnly = false, embedded = false, administrator=false }: SettingsModalProps) {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ['settings'],
@@ -88,7 +90,7 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
   const [memoryCleanupThreshold, setMemoryCleanupThreshold] = useState('85');
   const [memoryCleanupIdleMinutes, setMemoryCleanupIdleMinutes] = useState('10');
   const [saved, setSaved] = useState(false);
-  const [activePage, setActivePage] = useState<'session' | 'appearance' | 'enhancer' | 'server'>('session');
+  const [activePage, setActivePage] = useState<'session' | 'appearance' | 'enhancer' | 'server' | 'guard'>('session');
 
   // Appearance previews revert to the last successfully persisted settings.
   const persistedThemeRef = useRef(DEFAULT_THEME);
@@ -172,6 +174,7 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
     { id: 'session' as const, label: '普通会话', icon: Zap },
     { id: 'appearance' as const, label: '外观', icon: Type },
     { id: 'enhancer' as const, label: '提示词增强', icon: Sparkles },
+    { id:'guard' as const,label:'发送保护',icon:LockKeyhole },
     { id: 'server' as const, label: '服务器', icon: Globe },
   ];
 
@@ -248,6 +251,7 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
               当前为只读模式，需要平台设置的修改权限。
             </div>
           )}
+          {activePage==='guard'&&data?.settings&&<SendGuardSettings value={data.settings.conversation_send_guard} canEdit={administrator&&!readOnly}/>}
           <fieldset disabled={readOnly} className="block">
           {isLoading ? (
             <div className="flex items-center justify-center py-8">
@@ -409,7 +413,7 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false }: S
         </div>
 
         {/* Footer */}
-        {activePage !== 'enhancer' && (!embedded || !readOnly) && <div className="settings-panel-footer">
+        {activePage !== 'enhancer' && activePage!=='guard' && (!embedded || !readOnly) && <div className="settings-panel-footer">
           {mutation.isError && <p role="alert" className="mr-auto text-xs" style={{ color: 'var(--error)' }}>{mutation.error.message}</p>}
           {!embedded && <button
             onClick={onClose}

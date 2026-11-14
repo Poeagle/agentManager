@@ -347,6 +347,8 @@ export interface ModelPreference {
   effort: string;
 }
 export interface AgentRuntime {
+  /** Last native turn-end event; absent when the adapter cannot establish it. */
+  last_turn_ended_at?:string|null;
   source: string;
   session_id: string | null;
   state:

@@ -9,7 +9,9 @@ function fileEndpoint(url: string, projectId?: string): string {
   return projectId ? `${url}${url.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(projectId)}` : url;
 }
 
-export class ApiError extends Error {readonly status:number;readonly submission?:string;constructor(message:string,status:number,submission?:string){super(message);this.status=status;this.submission=submission;}}
+export interface SendGuardCheck {needs_confirmation:boolean;matched:boolean|null;enabled:boolean;context_tokens:number|null;context_window:number|null;context_percent:number|null;idle_minutes:number|null;last_completed_at:string|null;observed_at:string|null;native_id:string|null;checked_at:string;can_compact:boolean;can_new:boolean;token:string}
+export interface SendGuardPayload {input:string;attachments?:ConversationAttachment[];batch?:Array<{length:number;attachments:number}>}
+export class ApiError extends Error {readonly status:number;readonly submission?:string;readonly sendGuard?:SendGuardCheck;constructor(message:string,status:number,submission?:string,sendGuard?:SendGuardCheck){super(message);this.status=status;this.submission=submission;this.sendGuard=sendGuard;}}
 
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {};
@@ -20,7 +22,7 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new ApiError(body?.error || `API error: ${res.status}`,res.status,body?.submission);
+    throw new ApiError(body?.error || `API error: ${res.status}`,res.status,body?.submission,body?.send_guard);
   }
   return res.json();
 }
@@ -698,7 +700,8 @@ export const api = {
     contextBreakdown:(sessionId:string,refresh=false,signal?:AbortSignal)=>fetchJSON<{context:ConversationContextBreakdown}>(`/sessions/${encodeURIComponent(sessionId)}/context-breakdown${refresh?'?refresh=true':''}`,{signal}),
     setControls:(sessionId:string,value:AgentModelPreference|null)=>fetchJSON<{ok:boolean;pending:AgentModelPreference|null;pending_status?:'saved'|'submitted'|null;model?:string;effort?:string;provider?:string;service_tier?:string}>(`/sessions/${encodeURIComponent(sessionId)}/controls`,{method:'PUT',body:JSON.stringify(value)}),
     conversation:(sessionId:string,query:{after?:string;before?:string}={},signal?:AbortSignal)=>fetchJSON<ConversationPage>(`/sessions/${encodeURIComponent(sessionId)}/conversation?${new URLSearchParams(query)}`,{signal}),
-    sendInput:(sessionId:string,input:string,clientId?:string,attachments?:ConversationAttachment[],batch?:Array<{length:number;attachments:number}>)=>fetchJSON<{status:string}>(`/sessions/${encodeURIComponent(sessionId)}/input`,{method:'POST',body:JSON.stringify({input,source:'conversation',client_id:clientId,attachments,batch})}),
+    checkSend:(sessionId:string,payload:SendGuardPayload,signal?:AbortSignal)=>fetchJSON<SendGuardCheck>(`/sessions/${encodeURIComponent(sessionId)}/input-check`,{method:'POST',body:JSON.stringify(payload),signal}),
+    sendInput:(sessionId:string,input:string,clientId?:string,attachments?:ConversationAttachment[],batch?:Array<{length:number;attachments:number}>,guardToken?:string)=>fetchJSON<{status:string}>(`/sessions/${encodeURIComponent(sessionId)}/input`,{method:'POST',body:JSON.stringify({input,source:'conversation',client_id:clientId,attachments,batch,guard_token:guardToken})}),
     capabilities: () => fetchJSON<AgentApiContract>('/agent/capabilities'),
     execute: (sessionId: string, opts: {
       input: string;
@@ -887,7 +890,7 @@ export interface Session {
   agent_runtime?: {
     source: string; session_id: string | null;
     state: 'ready' | 'running' | 'idle' | 'waiting_for_input' | 'interrupted' | 'failed' | 'unknown';
-    last_activity_at: string | null; observed_at: string; reason: string;
+    last_activity_at: string | null; last_turn_ended_at?:string|null; observed_at: string; reason: string;
     compaction?:import('./agents').AgentCompaction|null;
     pending_question_count?: number;
     completed_turn_id?:string;

@@ -1,3 +1,5 @@
+import {isAdmin} from '../auth.js';
+import {DEFAULT_SEND_GUARD,SEND_GUARD_KEY,validateSendGuard} from '../services/send-guard-policy.js';
 import type { FastifyPluginAsync } from 'fastify';
 import { getDb } from '../db/index.js';
 import { homedir } from 'os';
@@ -13,6 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /** Default values for all settings */
 const DEFAULTS: Record<string, string> = {
   ...MEMORY_REAPER_DEFAULTS,
+  [SEND_GUARD_KEY]:JSON.stringify(DEFAULT_SEND_GUARD),
   session_claude_command: 'claude --dangerously-skip-permissions',
   session_codex_command: 'codex --dangerously-bypass-approvals-and-sandbox',
   terminal_font_size: '12',
@@ -62,6 +65,10 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
     const { settings } = req.body;
     if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
       return reply.status(400).send({ error: 'settings object is required' });
+    }
+    if(Object.hasOwn(settings,SEND_GUARD_KEY)){
+      if(!isAdmin(req.user!.id))return reply.code(403).send({error:'只有管理员可以设置发送保护'});
+      try{if(typeof settings[SEND_GUARD_KEY]!=='string'||settings[SEND_GUARD_KEY].length>20000)throw Error('发送保护配置过大或格式无效');validateSendGuard(JSON.parse(settings[SEND_GUARD_KEY]));}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'发送保护配置无效'});}
     }
     const cleanupError = memoryCleanupSettingError(settings);
     if (cleanupError) return reply.status(400).send({ error: cleanupError });

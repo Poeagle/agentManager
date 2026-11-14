@@ -34,6 +34,10 @@ flowchart TB
 
 终端输入的浏览器 ID 与原生客户端 ID 可能不同。平台只在同一会话和原生线程内，依据发送前的文件边界及输入指纹一对一关联持久回显；`input_reconciliation` 推送已确认的关联，`native_client_id` 保留原生 ID 以合并实时回显。不同 ID 的相同文本不会单独触发去重。
 
+### 发送前上下文保护
+
+平台统一评估管理员配置的且／或规则，使用 `telemetry.read` 的最近原生用量和 `runtime.read` 的可选 `last_turn_ended_at`，不向模型注入提示、不以用户输入或终端重绘推断结束时间。适配器无法提供的指标保持未知。压缩及新开沿用原有生命周期能力及权限，等待操作完成后再提交原草稿；详见 [发送保护](conversation-send-guard.md)。
+
 ### 批量消息展示
 
 平台将批量草稿合并为一次输入，向 Agent 适配器提交原始正文与附件。可选 API `batch` 边界由平台校验并保存，不需要 Agent 实现新能力；同一提交 ID 的实时流与历史可携带中立 `AgentMessage.batch: [{text,attachments}]`，用于卡片及居中详情。边界缺失的旧消息不推断分组。记录随历史快照迁移和会话删除清理，详情见 [批量发送](batch-composer.md)。

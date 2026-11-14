@@ -701,6 +701,7 @@ class ClaudeRuntime {
       session_id: this.id,
       state: this.busy ? "running" : "idle",
       last_activity_at: this.lastActivity,
+      last_turn_ended_at: this.completedAt,
       observed_at: new Date().toISOString(),
       reason: "Claude Agent SDK structured event stream",
       pending_question_count: 0,
