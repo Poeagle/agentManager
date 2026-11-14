@@ -1,3 +1,4 @@
+import {composerKey,loadComposer} from '../src/lib/batch-composer';
 import {sessionAgent} from '../src/lib/agents';
 import { act, fireEvent, render, screen, waitFor,within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -25,13 +26,16 @@ function deferred<T>() { let resolve!: (value: T) => void, reject!: (reason: Err
 type SendResult = Awaited<ReturnType<typeof api.agent.sendInput>>;
 function input(value: string) { const editor = screen.getByRole('textbox', { name: '发送给当前 Agent 的消息' }); editor.textContent = value; fireEvent.input(editor); return editor; }
 async function mount(target:Session=session) {
+  Socket.latest=undefined as unknown as Socket;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={client}><SessionConversation session={target} active onRaw={() => {}} /></QueryClientProvider>);
+  const view=render(<QueryClientProvider client={client}><SessionConversation session={target} active onRaw={() => {}} /></QueryClientProvider>);
   await waitFor(() => expect(Socket.latest?.onmessage).toBeTruthy());
   act(() => Socket.latest.emit({ type: 'snapshot', messages: [], busy: false, stage: 'idle' }));
   await waitFor(() => expect(screen.getByText('Event stream connected')).toBeInTheDocument());
+  return view;
 }
 beforeEach(() => {
+  localStorage.clear();
   Socket.latest = undefined as unknown as Socket;
   vi.stubGlobal('WebSocket', Socket);
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
@@ -40,6 +44,39 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('stages messages, restores draft and batch after reload, and sends one combined message',async()=>{
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);
+    const view=await mount();fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
+    input('first');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
+    input('second');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));input('unfinished');
+    expect(submit).not.toHaveBeenCalled();view.unmount();await mount();
+    expect(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveTextContent('unfinished');
+    expect(screen.getByRole('complementary',{name:'批量待发内容'})).toHaveTextContent('first');
+    fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));
+    await waitFor(()=>expect(submit).toHaveBeenCalledOnce());expect(submit.mock.calls[0][1]).toBe('first\n\nsecond');
+    await waitFor(()=>expect(loadComposer(composerKey('local',session.id)).entries).toHaveLength(0));
+    expect(loadComposer(composerKey('local',session.id)).draft).toBe('unfinished');
+  });
+  it('retains unknown submissions across reload without resending and reconciles the durable echo',async()=>{
+    const submit=vi.spyOn(api.agent,'sendInput').mockRejectedValue(new ApiError('unknown',503,'unknown'));
+    const view=await mount();fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
+    input('keep me');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));
+    await waitFor(()=>expect(submit).toHaveBeenCalledOnce());await waitFor(()=>expect(screen.getByRole('button',{name:'发送批量内容'})).toBeDisabled());
+    const id=submit.mock.calls[0][2];view.unmount();await mount();
+    expect(screen.getByRole('button',{name:'发送批量内容'})).toBeDisabled();expect(submit).toHaveBeenCalledOnce();
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[{id:'echo',role:'user',text:'keep me',client_id:id,timestamp:new Date().toISOString()}],busy:false,stage:'idle'}));
+    await waitFor(()=>expect(loadComposer(composerKey('local',session.id)).pending).toBeNull());
+    expect(loadComposer(composerKey('local',session.id)).entries).toHaveLength(0);
+  });
+  it('keeps rejected batch contents available and protects new input during an in-flight send',async()=>{
+    const response=deferred<SendResult>(),submit=vi.spyOn(api.agent,'sendInput').mockReturnValue(response.promise);
+    await mount();fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
+    input('batch');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));input('new input');
+    await act(async()=>response.reject(new ApiError('not accepted',409,'rejected')));
+    expect(loadComposer(composerKey('local',session.id)).draft).toBe('new input');
+    expect(loadComposer(composerKey('local',session.id)).entries[0].text).toBe('batch');
+    expect(screen.getByRole('button',{name:'发送批量内容'})).toBeEnabled();expect(submit).toHaveBeenCalledOnce();
+  });
   it('reconciles the terminal echo when its native ID differs from the browser ID',async()=>{
     const response=deferred<SendResult>(),submit=vi.spyOn(api.agent,'sendInput').mockReturnValue(response.promise);await mount();input('terminal echo');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
     const browser=submit.mock.calls[0][2],live={id:'live-terminal',client_id:'terminal-client',role:'user',text:'terminal echo',timestamp:new Date().toISOString()};
