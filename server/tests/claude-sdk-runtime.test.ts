@@ -24,6 +24,31 @@ const stream=(event:any)=>({type:'stream_event',uuid:`019ff001-1212-7212-8212-${
 afterEach(()=>{releaseClaudeRuntime(session);sdk.queries=[];sdk.messages=[];sdk.interrupts=0;uuid=0;});
 
 describe('Claude Agent SDK runtime',()=>{
+  it('injects only the bound Provider credentials and model into the SDK process',async()=>{
+    sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
+    const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-a',effort:''},false,{
+      id:'gateway',name:'Gateway',baseUrl:'https://gateway.example',authToken:'private-token',
+      models:['claude-a','claude-b'],defaultModel:'claude-a',contextWindow:200000,maxOutputTokens:64000,
+    });
+    await runtime.submit('provider-bound');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(sdk.queries).toHaveLength(1);
+    expect(sdk.queries[0].options).toMatchObject({
+      model:'claude-a',
+      env:{
+        ANTHROPIC_BASE_URL:'https://gateway.example',
+        ANTHROPIC_AUTH_TOKEN:'private-token',
+        ANTHROPIC_API_KEY:'',
+        ANTHROPIC_MODEL:'claude-a',
+        ANTHROPIC_DEFAULT_OPUS_MODEL:'claude-a',
+        ANTHROPIC_DEFAULT_SONNET_MODEL:'claude-a',
+        ANTHROPIC_DEFAULT_HAIKU_MODEL:'claude-a',
+        CLAUDE_CODE_MAX_CONTEXT_TOKENS:'200000',
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS:'64000',
+      },
+    });
+    expect(runtime.selectedModel()).toBe('claude-a');
+  });
   it('launches idle until the first manually supplied message',async()=>{
     const {createTestDatabase}=await import('./helpers/database.js');const database=createTestDatabase();
     let nativeId:string|undefined;

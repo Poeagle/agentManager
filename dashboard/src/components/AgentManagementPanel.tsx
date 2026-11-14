@@ -4,6 +4,7 @@ import {useProviderUsage} from '../lib/use-provider-usage';
 import {CodexAccountProvider} from './CodexAccountProvider';
 import {BalanceSummary,useEngineBalance} from './CodexEngineBalance';
 import {CodexAccountProviderEditor} from './CodexAccountProviderEditor';
+import {ClaudeProviderEditor} from './ClaudeProviderEditor';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -1685,6 +1686,7 @@ function ClaudeWorkspace({
   const [defaultModel, setDefaultModel] = useState(
     provider?.defaultModel || "",
   );
+  const [selectedProviderId,setSelectedProviderId]=useState('');
   const detect = useMutation({
     mutationFn: () => api.agentManagement.detectModels(agentId),
     onSuccess: (result) => {
@@ -1731,6 +1733,18 @@ function ClaudeWorkspace({
           {statusLabel[state.installation.status]}
         </span>
       </header>
+      <section className="agent-management-section">
+        <div className="agent-management-section-title"><div><h4>模型服务</h4><p>不同 Provider 使用独立地址、密钥和模型；切换只影响新会话。</p></div></div>
+        <div className="claude-provider-layout">
+         <div className="agent-management-provider-list claude-provider-list">
+          {state.providers.map(item=><button key={item.id} type="button" className="agent-management-provider" aria-current={selectedProviderId===item.id?'true':undefined} onClick={()=>setSelectedProviderId(item.id)}><span className={`agent-management-dot ${statusTone(item.status)}`}/><span className="agent-management-provider-copy"><strong>{item.name}</strong><small>{item.managed?item.authentication.status==='authenticated'?'API Key 已配置':'缺少 API Key':'由 Claude Code 原生管理'}</small><small>{item.statusText}</small></span><ChevronRight size={14}/></button>)}
+          {!readOnly&&<button type="button" className="agent-management-button claude-provider-add" onClick={()=>setSelectedProviderId('__new__')}><Plus size={13}/>添加 Provider</button>}
+         </div>
+         <div className="claude-provider-content">
+          {selectedProviderId==='__new__'?<ClaudeProviderEditor readOnly={readOnly} onCancel={()=>setSelectedProviderId('')} onSaved={id=>setSelectedProviderId(id||'')}/>:selectedProviderId?<ClaudeProviderEditor key={selectedProviderId} provider={state.providers.find(item=>item.id===selectedProviderId)} readOnly={readOnly} onCancel={()=>setSelectedProviderId('')} onSaved={id=>setSelectedProviderId(id||'')}/>:<div className="claude-provider-placeholder"><strong>选择一个模型服务</strong><span>查看地址、密钥和可用模型；或添加新的 Claude 兼容 Provider。</span></div>}
+         </div>
+        </div>
+      </section>
       <section className="agent-management-section">
         <div className="agent-management-section-title">
           <div>

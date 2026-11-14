@@ -24,6 +24,10 @@ import {
 } from "./controls.js";
 import { claudeManagement } from "./management.js";
 import { managedModelPreference } from "../management-store.js";
+import {
+  canControlClaudeEnvironment,
+  canUseClaudeEnvironment,
+} from "./providers.js";
 export const claudeAdapter: AgentDefinition = {
   descriptor: {
     sessionHost: "managed",
@@ -91,17 +95,30 @@ export const claudeAdapter: AgentDefinition = {
     validate: validateClaudeControls,
     apply: applyClaudeControls,
   },
+  environment: {
+    canUse: canUseClaudeEnvironment,
+    canControl: canControlClaudeEnvironment,
+  },
   telemetry: { read: readClaudeTelemetry },
   input: {
     supportsClientIdentity: true,
     messageId: clientId => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId) ? conversationMessageId('', 'user', clientId) : undefined,
     submit: async (context, text, clientId, attachments) => {
+      const provider = (
+        await import("./providers.js")
+      ).claudeRuntimeProvider(context.session, context.environmentAccess);
       const runtime = (await import("./sdk-runtime.js")).ensureClaudeRuntime(
         requireNative(context),
         context.projectPath!,
         undefined,
-        undefined,
+        provider
+          ? {
+              model: runtimeModel(provider, managedModelPreference("claude")),
+              effort: "",
+            }
+          : undefined,
         true,
+        provider,
       );
       const userId=clientId && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId) ? clientId : undefined;
       return runtime.submit(text, clientId, attachments, userId);
@@ -139,7 +156,13 @@ export const claudeAdapter: AgentDefinition = {
       return null;
     },
     compact: compactClaudeConversation,
-    prepareFresh: async () => randomUUID(),
+    prepareFresh: async (context,instructions,preference) => {
+      if(!context.projectPath)throw Error("Claude managed session is missing project context");
+      const nativeId=randomUUID();
+      const provider=(await import("./providers.js")).claudeRuntimeProvider(context.session,context.environmentAccess);
+      (await import("./sdk-runtime.js")).ensureClaudeRuntime(nativeId,context.projectPath,instructions,provider?{model:runtimeModel(provider,preference),effort:""}:preference,false,provider);
+      return nativeId;
+    },
     release: async (context) => {
       if (context.nativeId)
         (await import("./sdk-runtime.js")).releaseClaudeRuntime(
@@ -165,12 +188,21 @@ export const claudeAdapter: AgentDefinition = {
       const nativeId = resume ? context.nativeId || undefined : randomUUID();
       if (!nativeId || !context.projectPath)
         throw Error("Claude managed session is missing project context");
+      const provider = (
+        await import("./providers.js")
+      ).claudeRuntimeProvider(context.session, context.environmentAccess);
       const runtime = (await import("./sdk-runtime.js")).ensureClaudeRuntime(
         nativeId,
         context.projectPath,
         instructions,
-        managedModelPreference("claude") ?? undefined,
+        provider
+          ? {
+              model: runtimeModel(provider, managedModelPreference("claude")),
+              effort: "",
+            }
+          : managedModelPreference("claude") ?? undefined,
         !!resume,
+        provider,
       );
       const userId = !resume && task.trim() && initialClientId ? randomUUID() : undefined;
       if (!resume && task.trim()) await runtime.submit(task, initialClientId, [], userId);
@@ -232,4 +264,17 @@ function asyncObserve(
       },
     },
   );
+}
+
+function runtimeModel(
+  provider: { models: string[]; defaultModel: string | null },
+  preference: { model?: string } | null | undefined,
+): string {
+  const configured = preference && typeof preference.model === "string"
+    ? preference.model
+    : "";
+  if (provider.models.includes(configured)) return configured;
+  if (provider.defaultModel) return provider.defaultModel;
+  if (provider.models[0]) return provider.models[0];
+  throw Error("Claude Provider 没有可用模型");
 }

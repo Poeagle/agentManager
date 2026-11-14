@@ -16,6 +16,12 @@ import {transferCodexEnvironment} from '../services/agents/codex/environment-tra
 import {validateAccountConnection,probeAccountConnection} from '../services/agents/codex/account-transport.js';
 
 const errorStatus=(e:unknown)=>Number((e as {statusCode?:number})?.statusCode)||409;
+const claudeEnvironmentSummary=async(userId:string)=>import('../services/agents/claude/providers.js').then(({enabledClaudeProviders,claudeEnvironmentName,canControlClaudeEnvironment})=>({
+ environments:[
+  {id:'anthropic',name:'Anthropic 原生',kind:'native' as const,enabled:true,auth_mode:null,provider:'anthropic',can_control:(getDb().prepare('SELECT role FROM users WHERE id=?').get(userId) as {role?:string}|undefined)?.role==='admin'},
+  ...enabledClaudeProviders().map(provider=>{const id=claudeEnvironmentName(provider.id);return {id,name:provider.name,kind:'provider' as const,enabled:provider.enabled,auth_mode:'api' as const,provider:provider.id,can_control:canControlClaudeEnvironment(id,userId)};}),
+ ],
+}));
 export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
  initAccountUsage();
  initAccountStatus();
@@ -142,21 +148,43 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   if(req.body?.project_id&&!path)return reply.code(404).send({error:'项目不存在'});
   return preflightEnvironment(req.params.id,path);
  });
- const own=(id:string,userId:string)=>{const s=getSession(id);return s?.cli_type==='codex'&&s.created_by_user_id===userId&&userCanUseSessionTool(userId,id,'codex',s.mode==='terminal'?'terminal':'session')?s:null;};
+ const own=(id:string,userId:string)=>{const s=getSession(id);return s&&(s.cli_type==='codex'||s.cli_type==='claude')&&s.created_by_user_id===userId&&userCanUseSessionTool(userId,id,s.cli_type,s.mode==='terminal'?'terminal':'session')?s:null;};
  app.get<{Params:{id:string}}>('/sessions/:id/environments',async(req,reply)=>{
   const s=own(req.params.id,req.user!.id);if(!s)return reply.code(404).send({error:'Session not found'});
-  return {current:sessionEnvironmentId(s),environments:visibleCodexEnvironments(req.user!.id).map(e=>({...e,auth_mode:cachedEngineBalance(e.id).auth_mode,source:e.kind==='native'?'managed_host':e.kind==='provider'?'managed_provider':'system_user',can_control:canControlEnvironment(e.id,req.user!.id)}))};
+  if(s.cli_type==='claude'){
+   const {claudeProviderIdForSession,claudeEnvironmentName}=await import('../services/agents/claude/providers.js');
+   const current=claudeProviderIdForSession(s)?claudeEnvironmentName(claudeProviderIdForSession(s)!):'anthropic';
+   return {current,...await claudeEnvironmentSummary(req.user!.id)};
+  }
+  return {current:sessionEnvironmentId(s),environments:visibleCodexEnvironments(req.user!.id).map(e=>({...e,auth_mode:cachedEngineBalance(e.id).auth_mode,source:e.kind==='native'?'managed_host':e.kind==='provider'?'managed_provider':'system_user',can_control:canControlEnvironment(e.id,req.user!.id,s.cli_type||'codex')}))};
  });
  app.get<{Params:{id:string;environment:string}}>('/sessions/:id/environments/:environment/models',async(req,reply)=>{
   if(!own(req.params.id,req.user!.id))return reply.code(404).send({error:'Session not found'});
   if(!requirePermission(req,reply,'agent_api','read'))return;
-  try{assertEnvironmentUse('codex',req.params.environment,req.user!.id);return {models:await readEngineModelsForEnvironment(req.params.environment,true)};}
+  try{
+   const session=getSession(req.params.id)!;
+   if(session.cli_type==='claude'){
+    const {canUseClaudeEnvironment,claudeProviderModels}=await import('../services/agents/claude/providers.js');
+    if(req.params.environment!=='anthropic'&&!canUseClaudeEnvironment(req.params.environment,req.user!.id))throw Object.assign(Error('无权使用所选 Claude Provider'),{statusCode:403});
+    const models=req.params.environment==='anthropic'?[]:claudeProviderModels({agent_environment_id:req.params.environment});
+    return {models:models.map(model=>({provider:req.params.environment,model,name:model,description:'Claude 兼容网关模型',efforts:[{value:'',description:'由原生客户端决定'}],defaultEffort:''}))};
+   }
+   assertEnvironmentUse(session.cli_type||'codex',req.params.environment,req.user!.id);
+   return {models:await readEngineModelsForEnvironment(req.params.environment,true)};
+  }
   catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'模型预检失败'});}
  });
  app.post<{Params:{id:string;environment:string}}>('/sessions/:id/environments/:environment/preflight',async(req,reply)=>{
   const session=own(req.params.id,req.user!.id);if(!session)return reply.code(404).send({error:'Session not found'});
   if(!requirePermission(req,reply,'agent_api','write'))return;
   try{
+   if(session.cli_type==='claude'){
+    const {canUseClaudeEnvironment,claudeProviderModels}=await import('../services/agents/claude/providers.js');
+    if(req.params.environment==='anthropic')return {ok:true,checks:[{stage:'provider',ok:true,message:'使用 LaunchAgent 原生 Anthropic 配置'}],models:[]};
+    if(!canUseClaudeEnvironment(req.params.environment,req.user!.id))throw Object.assign(Error('无权使用所选 Claude Provider'),{statusCode:403});
+    const models=claudeProviderModels({agent_environment_id:req.params.environment});
+    return {ok:true,checks:[{stage:'provider',ok:true,message:`已读取 ${models.length} 个 Claude 模型`}],models:models.map(model=>({provider:req.params.environment,model,name:model,description:'Claude 兼容网关模型',efforts:[{value:'',description:'由原生客户端决定'}],defaultEffort:''}))};
+   }
    assertEnvironmentUse('codex',req.params.environment,req.user!.id);
    const path=session.project_id?(getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined)?.path:undefined;
    const result=await preflightEnvironment(req.params.environment,path);
@@ -165,9 +193,27 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
  });
  app.post<{Params:{id:string};Body:{environment_id:string;model:string;effort:string;provider?:string}}>('/sessions/:id/environment',async(req,reply)=>{
   if(!requirePermission(req,reply,'agent_api','write'))return;
-  if(!own(req.params.id,req.user!.id))return reply.code(404).send({error:'Session not found'});
-  const p=req.body;if(!p||typeof p.environment_id!=='string'||typeof p.model!=='string'||typeof p.effort!=='string'||p.model.length>200||p.effort.length>30||p.provider!==undefined&&typeof p.provider!=='string')return reply.code(400).send({error:'请选择 Codex 环境、模型和推理强度'});
-  try{const result=await transferCodexEnvironment(req.params.id,req.user!.id,p.environment_id,p);if(!result.ok)return reply.code(409).send({error:result.error});return {...result,session:getSession(req.params.id)};}
+  const session=own(req.params.id,req.user!.id);if(!session)return reply.code(404).send({error:'Session not found'});
+  const p=req.body;if(!p||typeof p.environment_id!=='string'||typeof p.model!=='string'||typeof p.effort!=='string'||p.model.length>200||p.effort.length>30||p.provider!==undefined&&typeof p.provider!=='string')return reply.code(400).send({error:'请选择环境、模型和推理强度'});
+  try{
+   if(session.cli_type==='claude'){
+    const {readAgentRuntime}=await import('../services/agents/session.js');
+    const {claudeProviderForEnvironment,canUseClaudeEnvironment}=await import('../services/agents/claude/providers.js');
+    if((await readAgentRuntime(session)).state==='running')return reply.code(409).send({error:'Claude 会话正在执行，请完成后切换 Provider'});
+    const provider=claudeProviderForEnvironment(p.environment_id);
+    if(provider&&!provider.models.includes(p.model))throw Object.assign(Error('模型不属于所选 Claude Provider'),{statusCode:400});
+    const environmentId=p.environment_id==='anthropic'?'':p.environment_id;
+    if(environmentId&&!canUseClaudeEnvironment(environmentId,req.user!.id))throw Object.assign(Error('无权使用所选 Claude Provider'),{statusCode:403});
+    const {newSessionConversation}=await import('../services/session-manager.js');
+    const {claudeAdapter}=await import('../services/agents/claude/adapter.js');
+    const preference=provider?{model:p.model,effort:''}:undefined;
+    if(!claudeAdapter.lifecycle?.prepareFresh)throw Error('Claude Agent 不支持新开会话');
+    const result=await newSessionConversation(req.params.id,preference,{environmentId:environmentId||'',prepare:context=>claudeAdapter.lifecycle!.prepareFresh!(context,undefined,preference)});
+    if(!result.ok)return reply.code(409).send({error:result.error});
+    return {...result,session:getSession(req.params.id)};
+   }
+   const result=await transferCodexEnvironment(req.params.id,req.user!.id,p.environment_id,p);if(!result.ok)return reply.code(409).send({error:result.error});return {...result,session:getSession(req.params.id)};
+  }
   catch(e){return reply.code(errorStatus(e)).send({error:e instanceof Error?e.message:'环境切换失败，原会话已保留'});}
  });
 };

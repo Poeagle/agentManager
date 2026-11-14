@@ -22,6 +22,7 @@ import type {
   ModelPreference,
 } from "../types.js";
 import type { AgentStreamSnapshot } from "../events.js";
+import type { ClaudeProviderRuntime } from "./providers.js";
 
 type Listener = (frame: AgentStreamSnapshot) => void;
 type Pending = {
@@ -132,6 +133,7 @@ class ClaudeRuntime {
   private model: string | undefined;
   private lastActivity: string | null = null;
   private resumeOnNextQuery: boolean;
+  private provider: ClaudeProviderRuntime | null;
 
   constructor(
     readonly id: string,
@@ -139,9 +141,11 @@ class ClaudeRuntime {
     private instructions?: string,
     preference?: ModelPreference,
     resume = false,
+    provider: ClaudeProviderRuntime | null = null,
   ) {
     this.model = preference?.model || undefined;
     this.resumeOnNextQuery = resume;
+    this.provider = provider;
   }
 
   snapshot(): AgentStreamSnapshot {
@@ -608,6 +612,20 @@ class ClaudeRuntime {
     })();
     const resume = this.resumeOnNextQuery;
     this.resumeOnNextQuery = true;
+    const providerEnvironment = this.provider
+      ? {
+          ...(await import("./providers.js")).claudeProviderEnvironment(
+            this.provider,
+            this.model,
+          ),
+          ANTHROPIC_DEFAULT_OPUS_MODEL:
+            this.model || this.provider.defaultModel || "",
+          ANTHROPIC_DEFAULT_SONNET_MODEL:
+            this.model || this.provider.defaultModel || "",
+          ANTHROPIC_DEFAULT_HAIKU_MODEL:
+            this.model || this.provider.defaultModel || "",
+        }
+      : undefined;
     const options: Options = {
       cwd: this.cwd,
       includePartialMessages: true,
@@ -617,6 +635,7 @@ class ClaudeRuntime {
       settingSources: ["user", "project", "local"],
       tools: { type: "preset", preset: "claude_code" },
       persistSession: true,
+      ...(providerEnvironment ? { env: providerEnvironment } : {}),
       ...(this.instructions
         ? {
             systemPrompt: {
@@ -708,6 +727,9 @@ class ClaudeRuntime {
       pending_questions: [],
     };
   }
+  selectedModel(): string | null {
+    return this.model || this.provider?.defaultModel || null;
+  }
 }
 
 const runtimes = new Map<string, ClaudeRuntime>();
@@ -718,10 +740,11 @@ export function ensureClaudeRuntime(
   instructions?: string,
   preference?: ModelPreference,
   resume = false,
+  provider: ClaudeProviderRuntime | null = null,
 ) {
   let runtime = runtimes.get(id);
   if (!runtime) {
-    runtime = new ClaudeRuntime(id, cwd, instructions, preference, resume);
+    runtime = new ClaudeRuntime(id, cwd, instructions, preference, resume, provider);
     runtimes.set(id, runtime);
   }
   return runtime;

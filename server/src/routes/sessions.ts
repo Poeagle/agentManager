@@ -485,7 +485,8 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const cliType = getAgent(cli_type||'claude').descriptor.id;
     if (mode !== undefined && mode !== 'session' && mode !== 'terminal') return reply.status(400).send({ error: 'mode must be session or terminal' });
     const environmentId=(req.body as {environment_id?:unknown}).environment_id;
-    if(environmentId!==undefined){if(cliType!=='codex'||typeof environmentId!=='string'||mode==='terminal')return reply.code(400).send({error:'Codex 环境仅适用于 Codex 会话'});try{assertEnvironmentUse('codex',environmentId,req.user!.id);}catch{return reply.code(403).send({error:'无权使用该 Codex 环境'});}}
+    const environmentCapability=getAgent(cliType).environment;
+    if(environmentId!==undefined){if(typeof environmentId!=='string'||mode==='terminal')return reply.code(400).send({error:'环境仅适用于会话模式'});if(cliType!=='codex'&&!environmentCapability)return reply.code(400).send({error:'当前 Agent 不支持选择环境'});try{assertEnvironmentUse(cliType,environmentId,req.user!.id);}catch{return reply.code(403).send({error:'无权使用所选环境'});}}
     if(cliType==='codex'&&mode!=='terminal'&&environmentId===undefined){try{assertEnvironmentUse('codex','native',req.user!.id);}catch{return reply.code(403).send({error:'无权使用默认 Codex 环境，请选择已授权的账号环境'});}}
     const requestedMode = mode === 'terminal' ? 'terminal' : 'session';
     if(requestedMode==='session'&&!getAgent(cliType).descriptor.capabilities.launch)return reply.code(409).send({error:'此 Agent 不支持创建会话'});

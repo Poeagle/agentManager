@@ -807,7 +807,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const session=getSession(req.params.id);
     if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
     const adapter=agentForSession(session),context=sessionAgentContext(session);if(!context.nativeId)return reply.code(409).send({error:'当前会话尚未绑定原生会话'});
-    const shared=session.agent_environment_id?canControlEnvironment(session.agent_environment_id,req.user!.id):req.user!.role==='admin'&&(!session.created_by_user_id||isAdmin(session.created_by_user_id));
+    const shared=session.agent_environment_id?canControlEnvironment(session.agent_environment_id,req.user!.id,adapter.descriptor.id):req.user!.role==='admin'&&(!session.created_by_user_id||isAdmin(session.created_by_user_id));
     if(req.query.refresh!==undefined&&req.query.refresh!=='true')return reply.code(400).send({error:'Invalid refresh flag'});
     const data=await adapter.controls.read({...context,actorUserId:req.user!.id,sharedAccess:shared,force:req.query.refresh==='true'});
     let pending=readModelPreference(req.user!.id,session.id);const submittedAt=modelPreferenceSubmittedAt(req.user!.id,session.id);
@@ -819,8 +819,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   app.put<{Params:{id:string};Body:unknown}>('/sessions/:id/controls',async(req,reply)=>{
     const session=getSession(req.params.id);
     if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
-    if((session.agent_environment_id?!canControlEnvironment(session.agent_environment_id,req.user!.id):req.user!.role!=='admin')||session.created_by_user_id&&session.created_by_user_id!==req.user!.id)return reply.code(403).send({error:'只能修改自己的会话设置'});
     const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:true});
+    if((session.agent_environment_id?!canControlEnvironment(session.agent_environment_id,req.user!.id,adapter.descriptor.id):req.user!.role!=='admin')||session.created_by_user_id&&session.created_by_user_id!==req.user!.id)return reply.code(403).send({error:'只能修改自己的会话设置'});
     if(!context.nativeId||!adapter.descriptor.capabilities.model)return reply.code(409).send({error:'当前会话不可修改，请先恢复会话'});
     if(req.body===null){saveModelPreference(req.user!.id,session.id,null);return {ok:true,pending:null};}
     try {

@@ -6,6 +6,7 @@ import { publicTokenCounters } from '../../conversation-usage.js';
 import type { AgentCompaction } from '../events.js';
 import type { AgentContext, AgentControls, AgentRuntime, ModelPreference } from '../types.js';
 import { managedEnv } from '../environment-store.js';
+import { claudeRuntimeProvider } from './providers.js';
 const cache = new Map<string, {
     size: number;
     inode: number;
@@ -97,7 +98,9 @@ const aliases = ['default', 'sonnet', 'opus', 'haiku'];
 /** Custom models reach Claude Code through the ANTHROPIC_* model env vars (a
  * gateway deployment) instead of an alias, so they must be offered explicitly
  * or the dashboard cannot select them at all. */
-function configuredModels(): string[] {
+function configuredModels(context?:Pick<AgentContext,'session'|'environmentAccess'>): string[] {
+    const providerModels=context?.session?claudeRuntimeProvider(context.session,context.environmentAccess)?.models:undefined;
+    if(providerModels?.length)return providerModels;
     return [...new Set(['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL']
         .map(key => managedEnv(key).trim())
         .filter((value): value is string => !!value && !value.startsWith('<') && !aliases.includes(value)))];
@@ -106,18 +109,22 @@ export async function readClaudeControls(context: AgentContext): Promise<AgentCo
     const value = await metadata(context);
     const runtime=context.nativeId?(await import('./sdk-runtime.js')).claudeRuntime(context.nativeId):undefined;
     const loaded=!!runtime;
+    const provider=claudeRuntimeProvider(context.session,context.environmentAccess);
     const seen = new Set<string>();
-    const models = [...configuredModels(), ...aliases]
+    const providerModels=provider?.models||[];
+    const models = [...providerModels, ...(provider?[]:aliases)]
         .filter(model => !seen.has(model) && (seen.add(model), true))
         .map(model => ({ model, name: model, description: aliases.includes(model) ? 'Claude 原生模型别名' : '网关配置的模型', efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' }));
-    if (value.model && !models.some(model => model.model === value.model))
+    if (!provider&&value.model && !models.some(model => model.model === value.model))
         models.unshift({ model: value.model, name: value.model, description: '当前原生模型', efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' });
-    return { model_observed_at: value.modelAt, model: value.model, effort: null, provider: 'anthropic', cwd: context.projectPath, cli_version: null, engine_version: null, installed_cli_version: null, git: null, state: loaded ? runtime!.runtime().state : 'notLoaded', permission: 'bypassPermissions', approval: null, service_tier: null, usage: value.usage, limits: [], usage_observed_at: value.last, models, loaded, warning: loaded ? null : 'Claude managed runtime is not connected; durable history remains available.', native_id: context.nativeId || '', checked_at: new Date().toISOString() };
+    return { supports_fresh_model:true, model_observed_at: value.modelAt, model: provider?(value.model&&provider.models.includes(value.model)?value.model:runtime?.selectedModel()||provider.defaultModel):value.model, effort: '', provider: provider?.id||'anthropic', cwd: context.projectPath, cli_version: null, engine_version: null, installed_cli_version: null, git: null, state: loaded ? runtime!.runtime().state : 'notLoaded', permission: 'bypassPermissions', approval: null, service_tier: null, usage: value.usage, limits: [], usage_observed_at: value.last, models, loaded, warning: loaded ? null : 'Claude managed runtime is not connected; durable history remains available.', native_id: context.nativeId || '', checked_at: new Date().toISOString() };
 }
-export async function validateClaudeControls(_context: AgentContext, value: unknown): Promise<ModelPreference> {
-    const p = value as ModelPreference;
-    const allowed = new Set([...aliases, ...configuredModels()]);
-    if (!p || typeof p !== 'object' || Object.keys(p).some(key => !['model', 'effort'].includes(key)) || typeof p.model !== 'string' || !allowed.has(p.model) || p.effort !== '')
+export async function validateClaudeControls(context: AgentContext, value: unknown): Promise<ModelPreference> {
+    const p = value && typeof value === 'object' ? value as Partial<ModelPreference> : null;
+    const provider=claudeRuntimeProvider(context.session,context.environmentAccess);
+    const allowed = new Set([...(provider?[]:aliases), ...configuredModels(context)]);
+    if(provider)return {model:typeof p?.model==='string'?p.model:provider.defaultModel||'',effort:''};
+    if (!p || typeof p !== 'object' || !Object.keys(p).every(key => ['model', 'effort'].includes(key)) || typeof p.model !== 'string' || !allowed.has(p.model) || p.effort !== '')
         throw Error('请选择 Claude 支持的模型；推理强度由原生客户端管理');
     return { model: p.model, effort: '' };
 }
@@ -125,6 +132,8 @@ export async function applyClaudeControls(context: AgentContext, value: ModelPre
     if(!context.nativeId)throw Error('会话尚未连接');
     const runtime=(await import('./sdk-runtime.js')).claudeRuntime(context.nativeId);
     if(!runtime)throw Error('Claude managed runtime is not connected');
+    const provider=claudeRuntimeProvider(context.session,context.environmentAccess);
+    if(provider&&!provider.models.includes(value.model))throw Error('模型不属于当前 Claude Provider');
     runtime.setModel(value);
     return {...value,pending:false};
 }
