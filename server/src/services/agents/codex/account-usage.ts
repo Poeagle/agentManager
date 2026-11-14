@@ -1,3 +1,4 @@
+import {usageCsvDirectory} from './usage-csv.js';
 import {getDb} from '../../../db/index.js';
 import {assertUsageRebuildPreserves} from './usage-rule-guard.js';
 // Increment when persisted interpretation of native usage records changes.
@@ -28,6 +29,12 @@ const pending=new Map<string,Promise<void>>();
 const hourlyPending=new Map<string,Promise<void>>();
 const controllers=new Map<string,AbortController>();
 function usageHome(e:ReturnType<typeof getCodexEnvironment>){if(e.kind!=='provider')return localHome(e);const provider=readAgentManagement('codex').providers.find(p=>p.id===e.provider);return provider?externalProviderCodexHome(provider):'';}
+/** Source locations only; never return account credentials or source identities. */
+export function accountUsageSources(id:string){
+ const environment=getCodexEnvironment(id);
+ const home=environment.kind==='account'?(environment.connection?.codexHome||'~/.codex'):usageHome(environment);
+ return {environment:environment.name,history:home?[`${home.replace(/\/$/,'')}/sessions`,`${home.replace(/\/$/,'')}/archived_sessions`]:[],cache:usageCsvDirectory(id)};
+}
 const balanceGroup=(id:string)=>{try{return cachedEngineBalance(id).groupKey??null;}catch{return null;}};
 const usageIdentity=(e:ReturnType<typeof getCodexEnvironment>)=>JSON.stringify(e.kind==='account'?[e.connection?.username,e.connection?.codexHome]:e.kind==='provider'?[e.kind,usageHome(e),balanceGroup(e.id)]:[e.kind,usageHome(e)]);
 function providerHistoryIsShared(id:string,home:string):boolean {

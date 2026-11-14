@@ -41,6 +41,20 @@ interface ProjectViewProps {
   focusSessionId?: string | null;
   onFocusSessionHandled?: () => void;
 }
+/** A restored tab can load independently of expensive list/history enrichment. */
+function RestoreSessionRecord({sessionId,projectId,onRestore}:{sessionId:string;projectId:string;onRestore:(session:Session)=>void}) {
+  const query=useQuery({queryKey:['session-record',sessionId],queryFn:()=>api.sessions.get(sessionId),retry:false});
+  useEffect(()=>{
+    const session=query.data?.session;
+    if(!session||session.project_id!==projectId)return;
+    onRestore(session);
+  },[query.data,onRestore,projectId]);
+  const failed=query.isError||query.isSuccess;
+  return <div role={failed?'alert':'status'} className="flex h-full items-center justify-center gap-2 p-3 text-xs" style={{color:'var(--text-secondary)'}}>
+    {failed?<><span>会话暂不可用</span><button type="button" disabled={query.isFetching} onClick={()=>void query.refetch()}>重试</button></>:<><Loader2 size={16} className="animate-spin"/>Loading session…</>}
+  </div>;
+}
+
 interface ExplorerInstance {
   id: string;
   label: string;
@@ -137,6 +151,9 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   });
   const project = projectsData?.projects.find((p) => p.id === projectId);
 
+  const [restoredRecords,setRestoredRecords]=useState<Record<string,Session>>({});
+  const restoreRecord=useCallback((session:Session)=>setRestoredRecords(current=>({...current,[session.id]:session})),[]);
+
   // Fetch running sessions for this project
   // No refetchInterval — driven by WebSocket invalidation (websocket.ts).
   const { data: sessionsData, isSuccess: sessionsLoaded } = useQuery({
@@ -151,10 +168,10 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     refetchInterval:(query)=>active && query.state.data?.sessions.some(session=>agentSupports(session,'runtime')) ? 5000 : false,
   });
   const projectSessions = useMemo(
-    () => [...new Map([...(projectHistoryData?.sessions||[]),...(sessionsData?.sessions||[])].map(session=>[session.id,session])).values()].filter(
+    () => [...new Map([...(!projectHistoryLoaded?Object.values(restoredRecords):[]),...(projectHistoryData?.sessions||[]),...(sessionsData?.sessions||[])].map(session=>[session.id,session])).values()].filter(
       (s) => s.project_id === projectId && isLiveSessionStatus(s.status)
     ),
-    [sessionsData, projectHistoryData, projectId]
+    [sessionsData, projectHistoryData, projectId, restoredRecords, projectHistoryLoaded]
   );
 
   // Lookup map for session metadata (cli_type, task, etc.) — used in tab rendering
@@ -167,10 +184,11 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   // also reflect completed/failed sessions that `projectSessions` filters out.
   const allSessionLookup = useMemo(
     () => new Map([
+      ...(!projectHistoryLoaded?Object.values(restoredRecords):[]),
       ...(projectHistoryData?.sessions || []),
       ...(sessionsData?.sessions || []),
     ].map((s) => [s.id, s])),
-    [sessionsData, projectHistoryData]
+    [sessionsData, projectHistoryData, restoredRecords, projectHistoryLoaded]
   );
   const [confirmBulkDeleteEnded, setConfirmBulkDeleteEnded] = useState(false);
   const [bulkDeletingEnded, setBulkDeletingEnded] = useState(false);
@@ -796,6 +814,14 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   }, [projHydrated, projectHistoryLoaded, projectId, terminalInstances, activeTerminalId, closedIdsVersion, explorerInstances]);
 
   function handleSessionCreated(session: Session) {
+    // Creation already returned authoritative metadata. Do not wait for history
+    // enrichment before mounting the new session (which may have no messages).
+    for (const queryKey of [['sessions'], ['project-sessions', projectId]]) {
+      void queryClient.cancelQueries({ queryKey, exact: true });
+      queryClient.setQueryData<{ sessions: Session[] }>(queryKey, current => ({
+        sessions: [session, ...(current?.sessions || []).filter(item => item.id !== session.id)],
+      }));
+    }
     locallyCreatedSessionIds.current.add(session.id);
     canonicalOpenSessionIdsRef.current?.add(session.id);
     setTerminalInstances((prev) => {
@@ -1604,7 +1630,11 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                             void queryClient.invalidateQueries({ queryKey: ['project-sessions', projectId] });
                           }}
                           onReady={(id) => { sessionResume.terminalReady(id); markReady(); }}
-                          onConnectionError={sessionResume.terminalFailed}
+                          onConnectionError={(id, message) => {
+                            sessionResume.terminalFailed(id, message);
+                            void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+                            void queryClient.invalidateQueries({ queryKey: ['project-sessions', projectId] });
+                          }}
                           onReconnect={resuming ? undefined : () => reconnectTerminal(term.id)}
                         />
                       )
@@ -1629,7 +1659,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         onNewConversation={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async(preference)=>{await sessionResume.newConversation(term.id,preference);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
                         onReload={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async()=>{await sessionResume.reload(term.id);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
                         onClose={isEnded ? () => closeEndedSession(term.id) : undefined}
-                      /> : <div role="status" className="flex h-full items-center justify-center gap-2 p-3 text-xs" style={{color:'var(--text-secondary)'}}><Loader2 size={16} className="animate-spin"/>Loading session…</div>)}
+                      /> : <RestoreSessionRecord sessionId={term.id} projectId={projectId} onRestore={restoreRecord}/>)}
                       {shouldMount && resumeState && <SessionResumeFeedback state={resumeState} onDismiss={() => sessionResume.forget(term.id)} />}
                     </div>
                   );

@@ -152,8 +152,13 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       .map(async (s: any) => {
         const st = getTracker(s.id)?.state;
         const preview=await readConversationPreview(s);
-        const native = nativeConversationId(s)?personalQuestionRuntime(await readAgentRuntime(s,true),req.user!.id):null;
-        if(native&&['running','pending','launching','detached','released'].includes(s.status))await watchSessionRuntime(s);
+        // Runtime/history can be absent before the first message or after a
+        // native process exits. One unavailable runtime must not hide the project.
+        let native: ReturnType<typeof personalQuestionRuntime> | null = null;
+        try {
+          if(nativeConversationId(s))native=personalQuestionRuntime(await readAgentRuntime(s,true),req.user!.id);
+          if(native&&['running','pending','launching','detached','released'].includes(s.status))await watchSessionRuntime(s);
+        } catch { /* Preserve the record; unknown runtime stays absent. */ }
 
         const lastActivityAt = st?.lastActivity
           ? new Date(st.lastActivity).toISOString()

@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProjectView } from '../src/components/ProjectView';
 import { api, type Project, type Session } from '../src/lib/api';
 
-vi.mock('../src/components/Terminal', () => ({ Terminal: ({ sessionId }: { sessionId: string }) => <div>Live terminal {sessionId}</div> }));
+vi.mock('../src/components/Terminal', () => ({ Terminal: ({ sessionId, onConnectionError }: { sessionId: string; onConnectionError?:(id:string,message:string)=>void }) => <div>Live terminal {sessionId}<button onClick={()=>onConnectionError?.(sessionId,'Session not found or not running')}>模拟连接失败</button></div> }));
 vi.mock('../src/components/SessionWorkspacePane', () => ({SessionWorkspacePane: ({renderTerminal}: {renderTerminal:(visible:boolean,suspend:boolean,onReady:()=>void)=>React.ReactNode})=>renderTerminal(true,false,()=>{})}));
 vi.mock('../src/components/HistoryViewer', () => ({ HistoryViewer: ({ sessionId }: { sessionId: string }) => <div>History {sessionId}</div> }));
 vi.mock('../src/components/FileExplorer', () => ({ FileExplorer: () => null }));
@@ -16,7 +16,7 @@ vi.mock('../src/lib/api', async (original) => {
   const actual = await original<typeof import('../src/lib/api')>();
   return { ...actual, api: { ...actual.api, codexEnvironments: { ...actual.api.codexEnvironments, list: vi.fn(async()=>({environments:[{id:"native",name:"默认 Codex",kind:"native",enabled:true,allowed_user_ids:null}]})) },
     projects: { ...actual.api.projects, list: vi.fn() },
-    sessions: { ...actual.api.sessions, list: vi.fn(), create: vi.fn() },
+    sessions: { ...actual.api.sessions, list: vi.fn(), create: vi.fn(), get: vi.fn() },
     userState: { ...actual.api.userState, getAll: vi.fn(), set: vi.fn() },
   } };
 });
@@ -120,4 +120,26 @@ describe('project workspace navigation', () => {
       expect(client.getQueryData(['sessions'])).toEqual({ sessions: [] });
     } finally { view.unmount(); client.clear(); }
   });
+});
+
+it('restores a session directly when list enrichment fails, without sending or creating anything',async()=>{
+ vi.mocked(api.sessions.list).mockRejectedValue(new Error('History unavailable'));
+ vi.mocked(api.sessions.get).mockResolvedValue({session:{...oldSession,status:'running',task:''}});
+ const saved={terminalInstances:[{id:oldSession.id,label:'Session 1'}],activeTerminalId:oldSession.id};
+ localStorage.setItem('agentmanager-project-u1-p1',JSON.stringify(saved));
+ vi.mocked(api.userState.getAll).mockResolvedValue({state:{'project:p1':saved}});
+ const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+ const view=render(<QueryClientProvider client={client}><ProjectView currentUserId="u1" projectId="p1" projectPath="/workspace/p1" projectName="P1"/></QueryClientProvider>);
+ try{expect(await screen.findByText('Live terminal old-session')).toBeVisible();expect(api.sessions.get).toHaveBeenCalledWith(oldSession.id);expect(api.sessions.create).not.toHaveBeenCalled();}finally{view.unmount();client.clear();}
+});
+
+it('refreshes ended session state after a terminal attach failure',async()=>{
+ let session:Session={...oldSession,status:'running'};
+ vi.mocked(api.sessions.list).mockImplementation(async()=>({sessions:[session]}));
+ const saved={terminalInstances:[{id:session.id,label:'Session 1'}],activeTerminalId:session.id};
+ localStorage.setItem('agentmanager-project-u1-p1',JSON.stringify(saved));
+ vi.mocked(api.userState.getAll).mockResolvedValue({state:{'project:p1':saved}});
+ const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+ const view=render(<QueryClientProvider client={client}><ProjectView currentUserId="u1" projectId="p1" projectPath="/workspace/p1" projectName="P1"/></QueryClientProvider>);
+ try{await screen.findByText('Live terminal old-session');session={...session,status:'failed'};await userEvent.click(screen.getByText('模拟连接失败'));expect(await screen.findByText('History old-session')).toBeVisible();expect(api.sessions.create).not.toHaveBeenCalled();}finally{view.unmount();client.clear();}
 });
