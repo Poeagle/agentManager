@@ -40,7 +40,7 @@ test('native questions and approvals survive refresh and submit through the actu
     await page.screenshot({path:testInfo.outputPath('native-question.png')});
     await submit.click();await expect(card).toHaveCount(0);expect(answers).toEqual([{id:3,result:{answers:{scope:{answers:['试用（推荐）']},note:{answers:[expect.stringMatching(/^刷新后仍保留\n\n附件：\n- evidence\.txt: .*\/\.agentmanager\/pastes\//)]}}}}]);
     // Already answered native requests disappear again after browser refresh.
-    await page.reload();await expect(page.getByText('事件通道已连接').filter({visible:true})).toBeVisible();await expect(card).toHaveCount(0);
+    await page.reload();await expect(page.getByText('Event stream connected').filter({visible:true})).toBeVisible();await expect(card).toHaveCount(0);
     pending={id:'permission',method:'item/commandExecution/requestApproval',params:{threadId:native,turnId:'turn',itemId:'exec',reason:'验证构建结果',command:'npm run build',cwd:'/preview'}};
     for(const client of wss.clients)client.send(JSON.stringify(pending));
     const approval=page.getByRole('region',{name:'确认执行命令'}).filter({visible:true});await expect(approval).toContainText('npm run build');

@@ -18,7 +18,7 @@ test('configures a private same-machine account and enforces visibility in brows
  // Connection stages are simulated; never use a real user's SSH or login.
  await page.route('**/api/codex/environments/check-connection',route=>route.fulfill({json:{ok:false,checks:[{stage:'codex_authentication',ok:false,message:'该系统用户尚未登录 Codex，请先以该用户运行 codex login'}]}}));
  await page.route('**/api/codex/environments/*/details',route=>route.fulfill({json:{details:accountDetails(decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-2)!))}}));
- await page.setViewportSize({width:1500,height:1100});await page.goto('/');await page.getByRole('button',{name:'平台管理'}).click();await page.getByRole('button',{name:'Agent 配置'}).click();
+ await page.setViewportSize({width:1500,height:1100});await page.goto('/');await page.getByTitle('My account').click();await page.getByRole('button',{name:'Agent 配置'}).click();
  await page.getByRole('button',{name:'添加 Provider',exact:true}).click();await page.getByRole('combobox',{name:'Provider 接入类型'}).selectOption('account');const dialog=page.getByRole('region',{name:'Codex 账号 Provider'});
  await dialog.getByRole('textbox',{name:'账号 Provider 名称',exact:true}).fill('ymchen private fixture');await dialog.getByRole('textbox',{name:'系统用户名',exact:true}).fill('fixture_user');
  await expect(dialog.getByRole('button',{name:'保存账号 Provider'})).toBeDisabled();await dialog.getByRole('combobox',{name:'SSH 认证方式'}).selectOption('key');
@@ -29,7 +29,7 @@ test('configures a private same-machine account and enforces visibility in brows
  await dialog.getByRole('button',{name:/Codex 配置/}).click();const fileDialog=page.getByRole('dialog',{name:'Codex 配置'});await fileDialog.getByRole('textbox',{name:'Codex 配置 内容'}).fill('model = "updated"');await fileDialog.getByRole('button',{name:'保存文件'}).click();await expect(fileDialog.getByRole('status')).toHaveText('已保存');await fileDialog.getByRole('button',{name:'关闭Codex 配置'}).click();await dialog.getByRole('button',{name:/Codex 凭据文件/}).click();const credential=page.getByRole('dialog',{name:'Codex 凭据文件'});await expect(credential).toContainText('凭据内容受保护');await expect(credential.locator('textarea')).toHaveCount(0);await credential.getByRole('button',{name:'关闭Codex 凭据文件'}).click();
  const visible=await (await page.request.get('/api/codex/environments')).json();const account=visible.environments.find((e:any)=>e.name==='ymchen private fixture');expect(account).toBeTruthy();expect(account.connection).toBeUndefined();
  const username='environment-member';expect((await page.request.post('/api/users',{data:{username,password:'test-password',role:'user'}})).ok()).toBeTruthy();
- const other=await playwrightRequest.newContext({baseURL:'http://127.0.0.1:43110'});
+ const other=await playwrightRequest.newContext({baseURL:`http://127.0.0.1:${process.env.E2E_API_PORT || '43110'}`});
  try{
   expect((await other.post('/api/auth/login',{data:{username,password:'test-password'}})).ok()).toBeTruthy();
   const response=await other.get('/api/codex/environments');expect(response.ok()).toBeTruthy();expect((await response.json()).environments.some((e:any)=>e.id===account.id)).toBe(false);
@@ -49,7 +49,7 @@ test('idle tabs appear in the Provider deletion dialog until removed',async({pag
  const connection={username:'fixture_user',port:22,authMethod:'key',identityFile:'',codexCommand:'codex',codexHome:''};
  const {environment}=await(await page.request.post('/api/codex/environments',{data:{name:'Occupancy account',connection,allowed_user_ids:[member.id]}})).json();
  const providerPath='/api/codex/environments/'+encodeURIComponent(environment.id);
- const other=await playwrightRequest.newContext({baseURL:'http://127.0.0.1:43110'});
+ const other=await playwrightRequest.newContext({baseURL:`http://127.0.0.1:${process.env.E2E_API_PORT || '43110'}`});
  try{
   expect((await other.post('/api/auth/login',{data:{username:'occupancy-member',password:'test-password'}})).ok()).toBeTruthy();
   const sessions=[];
@@ -67,7 +67,7 @@ test('idle tabs appear in the Provider deletion dialog until removed',async({pag
   await page.route('**/api/agent-management**',route=>route.fulfill({json:new URL(route.request().url()).pathname==='/api/agent-management'?{agents:[{agent:descriptor,state}]}:{state}}));
   await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true'}}});
   await page.route('**/api/codex/environments/*/details',route=>route.fulfill({json:{details:accountDetails(decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-2)!))}}));
- await page.goto('/');await page.getByRole('button',{name:'平台管理'}).click();await page.getByRole('button',{name:'Agent 配置'}).click();
+ await page.goto('/');await page.getByTitle('My account').click();await page.getByRole('button',{name:'Agent 配置'}).click();
   await page.getByRole('button').filter({hasText:'Occupancy account'}).click();const form=page.getByRole('region',{name:'Codex 账号 Provider'});
   await expect(form.getByRole('table',{name:'Provider 占用标签页列表'})).toHaveCount(0);
   await expect(form.getByRole('button',{name:'删除账号 Provider'})).toBeEnabled();
@@ -98,10 +98,10 @@ test('switches from account Providers to native and API Providers without becomi
  await page.route('**/api/agent-management**',route=>{const path=new URL(route.request().url()).pathname;if(path.includes('/providers/'))return route.fulfill({json:{provider:providers.find(p=>path.endsWith('/'+p.id))||providers[0]}});if(path.includes('/model-configs'))return route.fulfill({json:{models:[]}});return route.fulfill({json:path==='/api/agent-management'?{agents:[{agent:descriptor,state}]}:{state}})});
  await page.route('**/api/codex/environments**',route=>{const path=new URL(route.request().url()).pathname;if(path.endsWith('/config-files'))return route.fulfill({json:{files:[{id:'credentials',label:'Codex 凭据文件',description:'仅显示文件状态',format:'JSON',path:'/fixture/.codex/auth.json',exists:true,sensitive:true}]}});if(path.endsWith('/details'))return route.fulfill({json:{details:accountDetails(decodeURIComponent(path.split('/').at(-2)!))}});if(path.endsWith('/usage'))return route.fulfill({json:{tabs:[],busy:false,verified:true}});return route.fulfill({json:{environments,users:[]}})});
  await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});let unexpectedDialogs=0;page.on('dialog',async dialog=>{unexpectedDialogs++;await dialog.dismiss()});
- await page.setViewportSize({width:1500,height:1100});await page.goto('/');await page.getByRole('button',{name:'平台管理'}).click();await page.getByRole('button',{name:'Agent 配置'}).click();
+ await page.setViewportSize({width:1500,height:1100});await page.goto('/');await page.getByTitle('My account').click();await page.getByRole('button',{name:'Agent 配置'}).click();
  for(const name of ['账号 A','原生测试 Provider','账号 B','API 测试 Provider','账号 A']){await page.getByRole('button').filter({hasText:name}).click();await expect(page.getByRole('heading',{name,exact:true})).toBeVisible();await expect(page.locator('.agent-management-provider-list [aria-current="true"]')).toHaveCount(1);await expect(page.locator('.agent-management-provider-list [aria-current="true"]')).toContainText(name);}
  expect(unexpectedDialogs).toBe(0);await expect(page.getByRole('table',{name:'Provider 占用标签页列表'})).toHaveCount(0);await expect(page.getByText('fixture@example.invalid')).toBeVisible();
- const accountRegion=page.getByRole('region',{name:'Codex 账号 Provider'});const commonFields=['登录状态','账号身份','登录方式 / 套餐','Codex 引擎','周额度剩余','额度重置时间','执行用户','Codex 版本','默认模型','模型 Provider','默认推理强度','执行确认策略','沙箱模式','授权用户','本机连接'];
+ const accountRegion=page.getByRole('region',{name:'Codex 账号 Provider'});const commonFields=['登录状态','账号身份','登录方式 / 套餐','Codex 引擎','周额度剩余','额度重置时间','执行用户','Codex 版本','默认模型','模型 Provider','默认推理强度','执行确认策略','沙箱模式','本机连接'];
  for(const field of commonFields)await expect(accountRegion.getByText(field,{exact:true})).toBeVisible();await page.screenshot({path:testInfo.outputPath('ssh-account-details.png'),fullPage:true});
  await page.getByRole('button').filter({hasText:'原生测试 Provider'}).click();await expect(accountRegion.getByRole('heading',{name:'原生测试 Provider'})).toBeVisible();for(const field of commonFields)await expect(accountRegion.getByText(field,{exact:true})).toBeVisible();await page.screenshot({path:testInfo.outputPath('native-account-details.png'),fullPage:true});
  await expect(page.getByRole('table',{name:'Provider 占用标签页列表'})).toHaveCount(0);await accountRegion.getByRole('button',{name:/Codex 凭据文件/}).click();const nativeCredential=page.getByRole('dialog',{name:'Codex 凭据文件'});await expect(nativeCredential).toContainText('凭据内容受保护');await nativeCredential.getByRole('button',{name:'关闭Codex 凭据文件'}).click();await accountRegion.getByRole('button',{name:'编辑配置'}).click();await expect(page.getByRole('button',{name:'返回详情'})).toBeVisible();await page.getByRole('button',{name:'返回详情'}).click();await expect(accountRegion.getByRole('heading',{name:'原生测试 Provider'})).toBeVisible();

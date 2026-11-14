@@ -9,7 +9,7 @@ test('a detached chat reconnects independently of the raw terminal and preserves
  const root=join(process.cwd(),'.test-data/e2e'),path=join(root,'reconnect-project');mkdirSync(path,{recursive:true});
  const {project}=await(await page.request.post('/api/projects',{data:{name:'会话重连验证',path}})).json();
  const {session}=await(await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:path,mode:'terminal'}})).json();
- const native='019ff001-7373-7373-8373-737373737373',dir=join(root,'home/.codex/sessions');mkdirSync(dir,{recursive:true});
+ const native='019ff001-dead-7bee-8bee-deadbeef1237',dir=join(root,'home/.codex/sessions');mkdirSync(dir,{recursive:true});
  writeFileSync(join(dir,`rollout-${native}.jsonl`),JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_complete',last_agent_message:'原会话历史保持不变。'}})+'\n');
  const require=createRequire(import.meta.url),Database=require('../server/node_modules/better-sqlite3'),db=new Database(join(root,'agentmanager.db'));
  try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',native,session.id);}finally{db.close();}

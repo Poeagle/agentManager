@@ -6,7 +6,7 @@ test('aligns host telemetry and separates scheduled task display from daily wind
   await page.setViewportSize({ width: 1800, height: 1000 });
   // Dependency warming or concurrent source edits must not reload the page
   // and discard the unsaved editor while checking its layout.
-  await page.routeWebSocket((url) => url.port === '43111' && url.pathname === '/', () => {});
+  await page.routeWebSocket((url) => url.port === (process.env.E2E_UI_PORT || '43111') && url.pathname === '/', () => {});
   const status = await (await page.request.get('/api/auth/status')).json();
   expect((await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },
@@ -29,7 +29,7 @@ test('aligns host telemetry and separates scheduled task display from daily wind
   await page.goto('/');
   const resource = page.getByLabel('部署服务器资源', { exact: true });
   await expect(resource.getByText('CPU')).toBeVisible();
-  const monitor = page.getByTitle('平台管理', { exact: true });
+  const monitor = page.getByTitle('My account', { exact: true });
   const [left, right] = await Promise.all([resource.boundingBox(), monitor.boundingBox()]);
   expect(left!.height).toBe(24);
   expect(left!.y).toBe(right!.y);
@@ -105,7 +105,7 @@ test('aligns host telemetry and separates scheduled task display from daily wind
   const projectHeader = page.locator('.page-content.sticky').filter({ has: page.getByRole('heading', { name: '项目', exact: true }) });
   await expect(projectHeader).toBeVisible();
   expect((await projectHeader.boundingBox())!.width).toBeGreaterThan(1700);
-  await page.getByTitle('平台管理', { exact: true }).click();
+  await page.getByTitle('My account', { exact: true }).click();
   const platform = page.getByRole('dialog', { name: '平台管理', exact: true });
   await expect(platform).toBeVisible();
   expect((await platform.boundingBox())!.width).toBe(1752);

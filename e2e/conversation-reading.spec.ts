@@ -45,7 +45,7 @@ test('conversation shares its tab row, resizes, previews and navigates rich stre
   await answer.getByRole('button',{name:'代码自动换行'}).click();await expect(answer.locator('pre')).toHaveCSS('white-space','pre-wrap');
   await context.grantPermissions(['clipboard-read','clipboard-write']);await answer.getByRole('button',{name:'复制代码',exact:true}).click();expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe(code);
   await page.screenshot({path:testInfo.outputPath('reading-tools.png')});
-  await page.reload();await expect(widthHandle).toHaveAttribute('aria-valuenow',String(smaller));await expect(chat.getByText('事件通道已连接',{exact:true})).toBeVisible();
+  await page.reload();await expect(widthHandle).toHaveAttribute('aria-valuenow',String(smaller));await expect(chat.getByText('Event stream connected',{exact:true})).toBeVisible();
   const messages=(await(await page.request.get(`/api/sessions/${session.id}/conversation`)).json()).messages;const last=messages.filter((message:{role:string})=>message.role==='assistant').at(-1);
   push?.(JSON.stringify({type:'snapshot',busy:true,stage:'answering',turn_id:last.turn_id,messages:[{...last,text:last.text+'\n\n## 流式新增章节\n\n第一段',streaming:true}]}));
   await expect(chat.getByRole('heading',{name:'流式新增章节'})).toBeAttached();

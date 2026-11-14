@@ -27,7 +27,7 @@ test('sending, early native echoes, late history and reload preserve causal mess
     await route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({status:'submitted'})});
   });
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
-  await expect(chat.getByText('事件通道已连接')).toBeVisible();
+  await expect(chat.getByText('Event stream connected')).toBeVisible();
   const bodies=chat.locator('.session-chat-message .session-chat-body');
   const expectBodies=async(value:string[])=>expect.poll(()=>bodies.evaluateAll(nodes=>nodes.map(node=>{const clone=node.cloneNode(true) as HTMLElement;clone.querySelectorAll('.session-chat-message-meta').forEach(meta=>meta.remove());return clone.textContent?.trim()||'';}))).toEqual(value);
   const expected=['之前的问题','之前的答复'];await expectBodies(expected);
@@ -79,7 +79,7 @@ test('sending, early native echoes, late history and reload preserve causal mess
   expected.push(progress.text,final.text);await expectBodies(expected);
   push(JSON.stringify({type:'history',messages:history}));await expectBodies(expected);
   await page.getByRole('button',{name:'原始终端',exact:true}).click();await page.getByRole('button',{name:'对话',exact:true}).click();await expectBodies(expected);
-  await page.reload();await expect(chat.getByText('事件通道已连接')).toBeVisible();await expectBodies(expected);
+  await page.reload();await expect(chat.getByText('Event stream connected')).toBeVisible();await expectBodies(expected);
   await page.screenshot({path:testInfo.outputPath('message-order.png')});
   await page.request.delete(`/api/sessions/${session.id}`);
 });
