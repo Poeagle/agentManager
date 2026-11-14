@@ -80,19 +80,34 @@ describe('conversation send transaction', () => {
     expect(loadComposer(composerKey('local',session.id)).entries[0].text).toBe('batch');
     expect(screen.getByRole('button',{name:'发送批量内容'})).toBeEnabled();expect(submit).toHaveBeenCalledOnce();
   });
-  it('sends staged content with Ctrl+Enter and opens a centered batch detail dialog',async()=>{
+  it('sends staged content from its send button and opens a centered batch detail dialog',async()=>{
     const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();
     fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
     input('one');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));input('two');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
     const editor=screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'});
     fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true,isComposing:true});expect(submit).not.toHaveBeenCalled();
-    fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true});await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
     expect(submit.mock.calls[0][4]).toEqual([{length:3,attachments:0},{length:3,attachments:0}]);
     const sentAt='2026-11-14T06:00:00Z';act(()=>Socket.latest.emit({type:'snapshot',messages:[{id:'sent-batch',client_id:submit.mock.calls[0][2],role:'user',text:'one\n\ntwo',timestamp:sentAt}],busy:false,stage:'idle'}));
     fireEvent.click(screen.getByRole('button',{name:/批量消息/}));
     const dialog=screen.getByRole('dialog',{name:'批量消息 · 2 条'});expect(within(dialog).getByLabelText('第 1 条消息')).toHaveTextContent('one');expect(within(dialog).getByLabelText('第 2 条消息')).toHaveTextContent('two');
     expect([...dialog.querySelectorAll('time')].map(t=>t.dateTime)).toEqual([sentAt,sentAt]);
     fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+  it('directly sends only the current input with Ctrl+Enter in batch mode as a plain message',async()=>{
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();
+    fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
+    input('staged');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));const editor=input('direct');
+    fireEvent.compositionStart(editor);fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true});expect(submit).not.toHaveBeenCalled();fireEvent.compositionEnd(editor);
+    fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true,repeat:true});expect(submit).not.toHaveBeenCalled();
+    fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true});await waitFor(()=>expect(submit).toHaveBeenCalledOnce());expect(submit.mock.calls[0][1]).toBe('direct');expect(submit.mock.calls[0][4]).toBeUndefined();
+    expect(loadComposer(composerKey('local',session.id)).entries.map(e=>e.text)).toEqual(['staged']);expect(screen.queryByRole('button',{name:/批量消息/})).not.toBeInTheDocument();
+  });
+  it('does not reuse an uncertain batch identity for an identical direct message',async()=>{
+    const submit=vi.spyOn(api.agent,'sendInput').mockRejectedValueOnce(new ApiError('unknown',503,'unknown')).mockResolvedValue({status:'submitted'} as SendResult);await mount();
+    fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});input('same');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));
+    await waitFor(()=>expect(screen.getByText('unknown')).toBeInTheDocument());const editor=input('same');fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true});await waitFor(()=>expect(submit).toHaveBeenCalledTimes(2));
+    expect(submit.mock.calls[0][2]).not.toBe(submit.mock.calls[1][2]);expect(submit.mock.calls[1][4]).toBeUndefined();expect(loadComposer(composerKey('local',session.id)).pending?.id).toBe(submit.mock.calls[0][2]);
   });
   it('recalls one staged message into the existing draft without losing either text',async()=>{
     await mount();fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
