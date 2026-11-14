@@ -36,6 +36,7 @@ import { droppedFiles, isFileDrag, MAX_FILE_UPLOAD_BYTES, safeUploadPath, type F
 import { compareFileEntries, type FileSort } from '../lib/file-sort';
 import { isWithinExplorerRoot, normalizeExplorerPath } from '../lib/explorer-path';
 
+const UploadDirectoryPreview = lazy(() => import('./ConversationFilePreview').then(module=>({default:module.ConversationFilePreview})));
 const MarkdownVisualEditor = lazy(() => import('./MarkdownVisualEditor').then((module) => ({ default: module.MarkdownVisualEditor })));
 
 export interface FileRefreshRequest {
@@ -580,6 +581,7 @@ function TreeItem({
 }
 
 export function FileExplorer({ rootPath, projectId, instanceId, active = true, refreshFileRequest, openFileRequest, onFileSaved, readOnly = false, uploadRequest, workspace }: FileExplorerProps) {
+  const fileOnly=readOnly && workspace?.treeHost===null;
   const filesApi = useMemo(() => scopeProjectFiles(api.files, projectId), [projectId]);
   // Resolve initial path from persisted state or prop
   const [initialState] = useState(() => instanceId ? loadExplorerState(instanceId, rootPath) : null);
@@ -598,7 +600,9 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
   const uploadBusy = useRef(false);
   const lastUploadRequest = useRef<FileUploadRequest | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{ name: string; index: number; total: number; percent: number; directory: string } | null>(null);
-  const [uploadResult, setUploadResult] = useState<{ error: boolean; text: string } | null>(null);
+  const [uploadBrowsing,setUploadBrowsing]=useState(false);
+  const [uploadPreview,setUploadPreview]=useState<string|null>(null);
+  const [uploadResult, setUploadResult] = useState<{ error: boolean; text: string; path?:string } | null>(null);
   const restoringRef = useRef(false);
   const treeScrollRef = useRef<HTMLDivElement>(null);
 
@@ -1148,6 +1152,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
   const rootLoadSequence = useRef(0);
   const tabsRestoredRef = useRef(false);
   useEffect(() => {
+    if(fileOnly){setRootLoaded(true);return;}
     const requestSequence = ++rootLoadSequence.current;
     let cancelled = false;
 
@@ -1232,7 +1237,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
     return () => {
       cancelled = true;
     };
-  }, [currentPath, instanceId, showHidden, filesApi, rootPath]);
+  }, [currentPath, instanceId, showHidden, filesApi, rootPath, fileOnly]);
 
   function navigateTo(path: string) {
     const trimmed = normalizeExplorerPath(path.trim());
@@ -1372,8 +1377,8 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
     }
     if (!request.files.length && !request.tree) return;
     uploadBusy.current = true;
-    const sequence = rootLoadSequence.current;
     setUploadResult(null);
+    setUploadProgress({name:'正在准备平台上传目录…',index:0,total:request.files.length,percent:0,directory:'平台文件目录'});
     if(request.tree) setUploadProgress({name:'正在读取文件夹…',index:0,total:0,percent:0,directory});
     let succeeded = 0;
     const failures: string[] = [];
@@ -1385,14 +1390,15 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
         const parts=safeUploadPath(item.relativePath).split('/'); parts.pop();
         while(parts.length) {directories.add(parts.join('/')); parts.pop();}
       }
+      const {path:uploadDirectory}=await filesApi.createUploadDirectory(directory);
       const failedDirectories:string[]=[];
       for(const relative of [...directories].sort((a,b)=>a.split('/').length-b.split('/').length)) {
         safeUploadPath(relative);
-        try {await filesApi.createDirectory(`${directory}/${relative}`);}
+        try {await filesApi.createUploadDirectory(directory,relative);}
         catch(error) {failedDirectories.push(relative); failures.push(`${relative}：${getErrorMessage(error,'目录创建失败')}`);}
       }
       for (const [index, {file,relativePath}] of parsed.files.entries()) {
-        const parent=relativePath.includes('/') ? `${directory}/${relativePath.slice(0,relativePath.lastIndexOf('/'))}` : directory;
+        const parent=relativePath.includes('/') ? `${uploadDirectory}/${relativePath.slice(0,relativePath.lastIndexOf('/'))}` : uploadDirectory;
         setUploadProgress({ name: relativePath, index: index + 1, total: parsed.files.length, percent: 0, directory:parent });
         try {
           if(failedDirectories.some(path=>relativePath.startsWith(path+'/'))) throw new Error('目标目录创建失败，已跳过');
@@ -1405,17 +1411,17 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
           failures.push(`${relativePath}：${getErrorMessage(error, '上传失败')}`);
         }
       }
-      if ((succeeded || directories.size) && sequence === rootLoadSequence.current) await refreshDirectory(directory);
       setUploadResult({
         error: failures.length > 0,
-        text: `已上传 ${succeeded}/${parsed.files.length} 个文件到 ${directory}${directories.size ? `（包含 ${directories.size} 个目录）` : ''}${failures.length ? `；${failures.join('；')}` : ''}`,
+        path: uploadDirectory,
+        text: `已上传 ${succeeded}/${parsed.files.length} 个文件到平台目录 ${uploadDirectory}${directories.size ? `（包含 ${directories.size} 个目录）` : ''}${failures.length ? `；${failures.join('；')}` : ''}`,
       });
     } catch(error) {setUploadResult({error:true,text:getErrorMessage(error,'上传失败')});
     } finally {
       uploadBusy.current = false;
       setUploadProgress(null);
     }
-  }, [readOnly, refreshDirectory, filesApi]);
+  }, [readOnly, filesApi]);
 
   // The request identity prevents rerenders and StrictMode from uploading twice.
   useEffect(() => {
@@ -1676,8 +1682,9 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
           </select>
           <button type="button" aria-label="刷新目录和当前文件" title="刷新目录和当前文件（保留未保存编辑）" disabled={refreshing || !rootLoaded} onClick={()=>void refreshExplorer()} className="flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-[var(--bg-tertiary)]"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /></button>
           {!readOnly && <>
-            <button type="button" title="上传文件到当前目录" aria-label="上传文件" disabled={!!uploadProgress} onClick={()=>fileInputRef.current?.click()} className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--bg-tertiary)]"><Upload className="h-3.5 w-3.5" /></button>
-            <button type="button" title="上传文件夹到当前目录" aria-label="上传文件夹" disabled={!!uploadProgress} onClick={()=>folderInputRef.current?.click()} className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--bg-tertiary)]"><FolderOpen className="h-3.5 w-3.5" /></button>
+            <button type="button" title="查看平台上传文件" aria-label="查看平台上传文件" disabled={uploadBrowsing} onClick={async()=>{setUploadBrowsing(true);try{const result=await filesApi.createUploadDirectory(rootPath);setUploadPreview(result.path);}catch(error){setUploadResult({error:true,text:getErrorMessage(error,'无法打开平台上传目录')});}finally{setUploadBrowsing(false);}}} className="flex h-6 items-center gap-1 rounded px-1 hover:bg-[var(--bg-tertiary)]"><FolderOpen className="h-3.5 w-3.5"/><span>平台文件</span></button>
+            <button type="button" title="上传文件到平台目录" aria-label="上传文件" disabled={!!uploadProgress} onClick={()=>fileInputRef.current?.click()} className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--bg-tertiary)]"><Upload className="h-3.5 w-3.5" /></button>
+            <button type="button" title="上传文件夹到平台目录" aria-label="上传文件夹" disabled={!!uploadProgress} onClick={()=>folderInputRef.current?.click()} className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--bg-tertiary)]"><FolderOpen className="h-3.5 w-3.5" /></button>
             <input ref={fileInputRef} type="file" multiple className="hidden" aria-label="选择上传文件" onChange={event=>{void uploadFiles({files:Array.from(event.target.files || []),containsDirectories:false},currentPath);event.target.value='';}} />
             <input ref={folderInputRef} type="file" multiple {...{webkitdirectory:'',directory:''}} className="hidden" aria-label="选择上传文件夹" onChange={event=>{void uploadFiles({files:Array.from(event.target.files || []),containsDirectories:false},currentPath);event.target.value='';}} />
           </>}
@@ -1685,7 +1692,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
 
         {uploadTarget && (
           <div className="absolute bottom-0 inset-x-0 z-10 pointer-events-none px-2 py-2 text-xs break-all" style={{ color: 'var(--accent)', background: 'var(--bg-secondary)', borderTop: '1px solid var(--accent)' }}>
-            {readOnly ? '只读模式，不能上传' : uploadProgress ? '正在上传，请稍候' : `松开上传到：${uploadTarget}`}
+            {readOnly ? '只读模式，不能上传' : uploadProgress ? '正在上传，请稍候' : `松开上传到平台目录，对应：${uploadTarget}`}
           </div>
         )}
         {uploadProgress && (
@@ -1698,7 +1705,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
         )}
         {uploadResult && (
           <div role={uploadResult.error ? 'alert' : 'status'} className="px-2 py-2 text-xs break-words shrink-0 max-h-32 overflow-y-auto" style={{ color: uploadResult.error ? 'var(--error)' : 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
-            {uploadResult.text}
+            {uploadResult.text}{uploadResult.path&&<button type="button" className="ml-2 underline" onClick={()=>setUploadPreview(uploadResult.path!)}>查看上传文件</button>}
           </div>
         )}
         <div
@@ -1854,6 +1861,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
 
   return (
     <div ref={containerRef} className="h-full flex">
+      {uploadPreview&&<Suspense fallback={null}><UploadDirectoryPreview file={{path:uploadPreview,rootPath:uploadPreview,projectId:projectId||null,name:'上传文件'}} onClose={()=>setUploadPreview(null)}/></Suspense>}
       {workspace ? workspace.treeHost && createPortal(treePanel, workspace.treeHost) : treePanel}
 
       {/* File editor / preview with tab bar */}

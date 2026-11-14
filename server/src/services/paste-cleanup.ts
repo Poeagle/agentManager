@@ -1,5 +1,6 @@
-import { lstatSync, readdirSync, realpathSync, unlinkSync } from 'fs';
-import { isAbsolute, join, relative, sep } from 'path';
+import { lstatSync, readdirSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { projectAttachmentDirectory } from './attachment-storage.js';
 import { getDb } from '../db/index.js';
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -39,10 +40,7 @@ export function sweepAllPastes(): void {
   catch { return; }
   for (const project of projects) {
     try {
-      const root = realpathSync(project.path);
-      const dir = realpathSync(join(root, '.agentmanager', 'pastes'));
-      const child = relative(root, dir);
-      if (child && !isAbsolute(child) && child !== '..' && !child.startsWith(`..${sep}`)) prunePastesDir(dir);
+      prunePastesDir(projectAttachmentDirectory(project.path));
     } catch { /* project or paste directory is absent */ }
   }
 }

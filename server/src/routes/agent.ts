@@ -107,7 +107,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.9.1',
+    version:'3.10.1',
     updatedAt:'2026-11-14',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -327,6 +327,17 @@ export function getAgentApiContract() {
         },
       },
       {
+        category: 'Files', method: 'POST', path: '/api/files/upload-directory',
+        description: 'Create or resolve a central platform upload directory for an authorized project path. Never writes to the project or a Git working tree.',
+        request: {path:{type:'string',required:true,description:'Authorized project directory or its central upload directory'},relative_path:{type:'string',required:false,description:'Safe relative subdirectory; defaults to empty'}},
+        response: {ok:'boolean',path:'string — central platform directory; use with /api/files/upload'},
+      },
+      {
+        category: 'Files', method: 'POST', path: '/api/files/upload',
+        description: 'Upload raw application/octet-stream bytes (maximum 50 MiB). Query path selects an authorized project directory; the server maps it to central platform storage. Existing central files are never overwritten; project files are never changed.',
+        response: {ok:'boolean',path:'string — actual central file path',size:'number — bytes'},
+      },
+      {
         category: 'Session control',
         method: 'POST',
         path: '/api/sessions/:id/cancel',
@@ -355,7 +366,7 @@ export function getAgentApiContract() {
           source: {type:'string',required:false,description:'Use conversation to submit directly to the bound native engine when available.'},
           client_id: {type:'string',required:false,description:'Client correlation ID for matching the native user-message echo. IDs already reserved by platform submissions are rejected with 409.'},
           batch: {type:'array',required:false,description:'Optional 1–100 {length,attachments} segments of the input (UTF-16 lengths, attachment counts), separated by two newlines. Requires source=conversation and client_id. Persisted as message.batch parts for history and streaming cards.'},
-          attachments: {type:'array',required:false,description:'Up to 8 {kind: image|file, name, path} references returned by this session’s paste-image/paste-file endpoints. Images total at most 10 MiB, each file at most 35 MiB, all attachments at most 50 MiB.'},
+          attachments: {type:'array',required:false,description:'Up to 8 {kind: image|file, name, path} references returned by this session’s paste-image/paste-file endpoints. New uploads are stored outside project/Git directories; paths are opaque and project-authorized. Existing project-local attachments remain readable. Images total at most 10 MiB, each file and all attachments at most 100 MiB.'},
         },
         response: {id:'Session id',status:'submitted — handed to the terminal; not proof of agent acceptance or task completion'},
       },

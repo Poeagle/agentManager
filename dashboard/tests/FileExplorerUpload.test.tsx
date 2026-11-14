@@ -7,7 +7,7 @@ import { MAX_FILE_UPLOAD_BYTES } from '../src/lib/file-upload';
 
 vi.mock('../src/lib/api', async () => {
   const actual = await vi.importActual<typeof import('../src/lib/api')>('../src/lib/api');
-  return { ...actual, api: { ...actual.api, files: { ...actual.api.files, list: vi.fn(), upload: vi.fn() } } };
+  return { ...actual, api: { ...actual.api, files: { ...actual.api.files, list: vi.fn(), upload: vi.fn(), createUploadDirectory:vi.fn() } } };
 });
 
 function transfer(files: File[]) {
@@ -16,6 +16,7 @@ function transfer(files: File[]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.files.createUploadDirectory).mockImplementation(async(path,child='')=>({ok:true,path:'/platform/uploads'+path+(child?'/'+child:'')}));
   vi.mocked(api.files.list).mockImplementation(async path => ({
     path,
     files: path === '/project' ? [
@@ -23,7 +24,7 @@ beforeEach(() => {
       { name: 'notes.txt', type: 'file', size: 5, extension: 'txt' },
     ] : [],
   }));
-  vi.mocked(api.files.upload).mockResolvedValue({ ok: true, path: '/project/new.txt', size: 3 });
+  vi.mocked(api.files.upload).mockResolvedValue({ ok: true, path: '/platform/uploads/project/new.txt', size: 3 });
 });
 
 describe('FileExplorer drag-and-drop upload', () => {
@@ -32,10 +33,10 @@ describe('FileExplorer drag-and-drop upload', () => {
     await screen.findByText('notes.txt');
     const files = [new File(['a'], 'a.txt'), new File(['b'], 'b.txt')];
     fireEvent.drop(screen.getByLabelText('文件上传区域'), { dataTransfer: transfer(files) });
-    await screen.findByText('已上传 2/2 个文件到 /project');
-    expect(api.files.upload).toHaveBeenNthCalledWith(1, '/project', files[0], expect.any(Function));
-    expect(api.files.upload).toHaveBeenNthCalledWith(2, '/project', files[1], expect.any(Function));
-    expect(api.files.list).toHaveBeenCalledTimes(2);
+    await screen.findByText('已上传 2/2 个文件到平台目录 /platform/uploads/project');
+    expect(api.files.upload).toHaveBeenNthCalledWith(1, '/platform/uploads/project', files[0], expect.any(Function));
+    expect(api.files.upload).toHaveBeenNthCalledWith(2, '/platform/uploads/project', files[1], expect.any(Function));
+    expect(api.files.list).toHaveBeenCalledTimes(1);
   });
 
   it('uploads into a dropped-on folder, expands it, and shows uploaded files', async () => {
@@ -44,10 +45,10 @@ describe('FileExplorer drag-and-drop upload', () => {
     const file = new File(['a'], 'new.txt');
     vi.mocked(api.files.list).mockResolvedValue({ path: '/project/reports', files: [{ name: file.name, type: 'file', size: 1, extension: 'txt' }] });
     fireEvent.dragOver(folder, { dataTransfer: transfer([file]) });
-    expect(screen.getByText('松开上传到：/project/reports')).toBeVisible();
+    expect(screen.getByText('松开上传到平台目录，对应：/project/reports')).toBeVisible();
     fireEvent.drop(folder, { dataTransfer: transfer([file]) });
-    expect(await screen.findByText('new.txt')).toBeVisible();
-    expect(api.files.upload).toHaveBeenCalledWith('/project/reports', file, expect.any(Function));
+    expect(await screen.findByText('已上传 1/1 个文件到平台目录 /platform/uploads/project/reports')).toBeVisible();
+    expect(api.files.upload).toHaveBeenCalledWith('/platform/uploads/project/reports', file, expect.any(Function));
   });
 
   it('drops onto a file into its containing directory, never overwriting that row', async () => {
@@ -55,8 +56,8 @@ describe('FileExplorer drag-and-drop upload', () => {
     const row = await screen.findByText('notes.txt');
     const file = new File(['a'], 'new.txt');
     fireEvent.drop(row, { dataTransfer: transfer([file]) });
-    await screen.findByText('已上传 1/1 个文件到 /project');
-    expect(api.files.upload).toHaveBeenCalledWith('/project', file, expect.any(Function));
+    await screen.findByText('已上传 1/1 个文件到平台目录 /platform/uploads/project');
+    expect(api.files.upload).toHaveBeenCalledWith('/platform/uploads/project', file, expect.any(Function));
   });
 
   it('shows progress until the server finishes and prevents a duplicate in-flight upload', async () => {
@@ -70,10 +71,10 @@ describe('FileExplorer drag-and-drop upload', () => {
     const zone = screen.getByLabelText('文件上传区域');
     const dataTransfer = transfer([new File(['a'], 'new.txt')]);
     fireEvent.drop(zone, { dataTransfer });
-    expect(screen.getByRole('progressbar')).toHaveAttribute('value', '50');
+    await waitFor(()=>expect(screen.getByRole('progressbar')).toHaveAttribute('value', '50'));
     fireEvent.drop(zone, { dataTransfer });
     expect(api.files.upload).toHaveBeenCalledTimes(1);
-    await act(async () => { finish({ ok: true, path: '/project/new.txt', size: 1 }); });
+    await act(async () => { finish({ ok: true, path: '/platform/uploads/project/new.txt', size: 1 }); });
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   });
 
@@ -84,7 +85,7 @@ describe('FileExplorer drag-and-drop upload', () => {
     fireEvent.drop(screen.getByLabelText('文件上传区域'), {
       dataTransfer: transfer([new File(['a'], 'notes.txt'), new File(['b'], 'new.txt')]),
     });
-    expect(await screen.findByRole('alert')).toHaveTextContent('已上传 1/2 个文件到 /project；notes.txt：同名文件已存在，未覆盖');
+    expect(await screen.findByRole('alert')).toHaveTextContent('已上传 1/2 个文件到平台目录 /platform/uploads/project；notes.txt：同名文件已存在，未覆盖');
     expect(api.files.upload).toHaveBeenCalledTimes(2);
   });
 
@@ -113,10 +114,10 @@ describe('FileExplorer drag-and-drop upload', () => {
     localStorage.setItem('agentmanager-explorer-test', JSON.stringify({ currentPath: '/project/reports', expandedPaths: [] }));
     const request = { files: [new File(['a'], 'new.txt')], containsDirectories: false, key: 1 };
     const { rerender } = render(<StrictMode><FileExplorer rootPath="/project" instanceId="test" uploadRequest={request} /></StrictMode>);
-    await screen.findByText('已上传 1/1 个文件到 /project/reports');
+    await screen.findByText('已上传 1/1 个文件到平台目录 /platform/uploads/project/reports');
     rerender(<StrictMode><FileExplorer rootPath="/project" instanceId="test" uploadRequest={request} /></StrictMode>);
     expect(api.files.upload).toHaveBeenCalledTimes(1);
-    expect(api.files.upload).toHaveBeenCalledWith('/project/reports', request.files[0], expect.any(Function));
+    expect(api.files.upload).toHaveBeenCalledWith('/platform/uploads/project/reports', request.files[0], expect.any(Function));
   });
 
   it('does not replace a newly navigated directory with an old upload result', async () => {
@@ -129,7 +130,7 @@ describe('FileExplorer drag-and-drop upload', () => {
     fireEvent.change(input, { target: { value: '/project/reports' } });
     fireEvent.submit(input.closest('form')!);
     await waitFor(() => expect(api.files.list).toHaveBeenCalledWith('/project/reports', true));
-    await act(async () => { finish({ ok: true, path: '/project/new.txt', size: 1 }); });
+    await act(async () => { finish({ ok: true, path: '/platform/uploads/project/new.txt', size: 1 }); });
     expect(screen.getByDisplayValue('/project/reports')).toBeVisible();
     expect(api.files.list).toHaveBeenCalledTimes(2);
   });

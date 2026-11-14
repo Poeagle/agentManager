@@ -5,7 +5,7 @@ import {api} from '../src/lib/api';
 vi.mock('@uiw/react-codemirror',async(original)=>({...await original<typeof import('@uiw/react-codemirror')>(),default:({value,onChange}:{value:string;onChange:(value:string)=>void})=><textarea aria-label="文件编辑" value={value} onChange={event=>onChange(event.target.value)} />}));
 vi.mock('../src/lib/api',async(original)=>{
   const actual=await original<typeof import('../src/lib/api')>();
-  return {...actual,api:{...actual.api,files:{...actual.api.files,list:vi.fn(),read:vi.fn(),upload:vi.fn(),createDirectory:vi.fn()}}};
+  return {...actual,api:{...actual.api,files:{...actual.api.files,list:vi.fn(),read:vi.fn(),upload:vi.fn(),createDirectory:vi.fn(),createUploadDirectory:vi.fn()}}};
 });
 beforeEach(()=>{
   vi.clearAllMocks(); localStorage.clear(); Element.prototype.scrollIntoView=vi.fn();
@@ -14,6 +14,7 @@ beforeEach(()=>{
     {name:'z.txt',type:'file',size:3,extension:'txt',modified_at:'2026-10-29T00:00:00Z'},
   ]});
   vi.mocked(api.files.read).mockImplementation(async(path)=>({path,content:'old',extension:'txt',size:3}));
+  vi.mocked(api.files.createUploadDirectory).mockImplementation(async(_path,child='')=>({ok:true,path:'/platform/uploads/p'+(child?'/'+child:'')}));
   vi.mocked(api.files.createDirectory).mockResolvedValue({ok:true,created:true});
   vi.mocked(api.files.upload).mockResolvedValue({ok:true,path:'/p/x',size:1});
 });
@@ -58,7 +59,8 @@ describe('frequent explorer operations',()=>{
     const file=new File(['hi'],'note.txt');Object.defineProperty(file,'webkitRelativePath',{value:'folder/sub/note.txt'});
     fireEvent.change(screen.getByLabelText('选择上传文件夹'),{target:{files:[file]}});
     await screen.findByText(/已上传 1\/1/);
-    expect(vi.mocked(api.files.createDirectory).mock.calls.map(call=>call[0])).toEqual(['/p/folder','/p/folder/sub']);
-    expect(api.files.upload).toHaveBeenCalledWith('/p/folder/sub',file,expect.any(Function),'p');
+    expect(vi.mocked(api.files.createUploadDirectory).mock.calls.map(call=>call.slice(0,2))).toEqual([['/p',undefined],['/p','folder'],['/p','folder/sub']]);
+    expect(api.files.createDirectory).not.toHaveBeenCalled();
+    expect(api.files.upload).toHaveBeenCalledWith('/platform/uploads/p/folder/sub',file,expect.any(Function),'p');
   });
 });
