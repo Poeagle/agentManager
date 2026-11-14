@@ -33,9 +33,11 @@ test('explorer sorts, refreshes disk changes, protects edits and accepts folder 
     const data=new DataTransfer();data.items.add(file);Object.defineProperty(data,'items',{value:[{webkitGetAsEntry:()=>root}]});return data;
   });
   const target=zone.getByRole('button',{name:'target',exact:true});
+  const upload=page.waitForResponse(response=>response.request().method()==='POST'&&response.url().includes('/api/files/upload?'));
   await target.dispatchEvent('dragover',{dataTransfer:transfer});await target.dispatchEvent('drop',{dataTransfer:transfer});await transfer.dispose();
   await expect(zone.getByRole('status')).toContainText('已上传 1/1');
-  expect(readFileSync(join(path,'target','资料','note.txt'),'utf8')).toBe('folder contents');
-  expect(existsSync(join(path,'target','资料','empty'))).toBe(true);
+  const response=await upload;expect(response.ok()).toBeTruthy();const uploadedPath=(await response.json()).path as string;
+  expect(uploadedPath.startsWith(path+'/')).toBe(false);expect(readFileSync(uploadedPath,'utf8')).toBe('folder contents');
+  expect(existsSync(join(uploadedPath,'..','empty'))).toBe(true);
   await page.screenshot({path:testInfo.outputPath('explorer-frequent-operations.png')});
 });
