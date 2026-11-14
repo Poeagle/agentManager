@@ -42,7 +42,7 @@ export const codexAdapter: AgentAdapter = {
     controls: {
         confirmed: (_context,value,data) => data.loaded&&data.model===value.model&&data.effort===value.effort&&(!value.provider||value.provider===data.provider)&&(value.service_tier===undefined||value.service_tier===(data.service_tier||'default')),
         read: async (context) => inCodexThread(requireNative(context),async()=>(await import('./controls.js')).readConversationControls(requireNative(context), !!context.sharedAccess, context.force, context.actorUserId||context.session.created_by_user_id||undefined,context.projectPath)),
-        validate: async (context, value) => inCodexThread(requireNative(context),async()=>(await import('./controls.js')).validateModelPreference(value)),
+        validate: async (context, value) => inCodexThread(requireNative(context),async()=>(await import('./controls.js')).validateModelPreference(value,true)),
         apply: async (context, value) => inCodexThread(requireNative(context),async()=>(await import('./controls.js')).applyCodexModelSettings(requireNative(context), value)),
     },
     telemetry: { read: async (context) => (await import('./controls.js')).readConversationTelemetry(requireNative(context)),contextBreakdown:async context=>inCodexThread(requireNative(context),async()=>(await import('./context-breakdown.js')).readCodexContextBreakdown(context)) },

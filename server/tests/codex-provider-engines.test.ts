@@ -6,7 +6,7 @@ import {tmpdir} from 'os';
 import {join} from 'path';
 import {inCodexThread,engineForProvider,rememberCodexProvider,runInCodexEngine} from '../src/services/agents/codex/engine-context.js';
 import {withCodexConnection,publicCodexRpcMessage,createStreamingCodexThread} from '../src/services/agents/codex/stream.js';
-import {prepareCodexModelRecovery,readCodexModels} from '../src/services/agents/codex/controls.js';
+import {prepareCodexModelRecovery,readCodexModels,readConversationControls,validateModelPreference} from '../src/services/agents/codex/controls.js';
 import {codexAdapter} from '../src/services/agents/codex/adapter.js';
 import {agentContext} from '../src/services/agents/index.js';
 vi.mock('../src/services/agents/codex/terminal-bridge.js',()=>({ensureCodexTerminalBridge:vi.fn(async(path:string)=>path)}));
@@ -36,6 +36,11 @@ beforeEach(async()=>{
  }
 });
 afterEach(async()=>{for(const wss of sockets){for(const ws of wss.clients)ws.terminate();await new Promise<void>(r=>wss.close(()=>r()));}for(const server of servers)await new Promise<void>(r=>server.close(()=>r()));vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
+it('keeps conversation model choices and validation within its current engine',async()=>{
+ const result=await inCodexThread(native,()=>readConversationControls(native,true,true));
+ expect(result.models.map(m=>m.model)).toEqual(['a-model']);
+ await expect(inCodexThread(native,()=>validateModelPreference({provider:'provider-b',model:'b-model',effort:'high'},true))).rejects.toThrow('当前不可用');
+});
 it('scopes mixed catalogs to explicitly declared providers and creates/resumes a new provider thread on its engine',async()=>{
  const models=await readCodexModels();expect(models.map(m=>[m.provider,m.model])).toEqual([['provider-a','a-model'],['provider-b','b-model']]);
  await prepareFreshCodexConversation(native,'/work',undefined,{provider:'provider-b',model:'b-model',effort:'high'});
