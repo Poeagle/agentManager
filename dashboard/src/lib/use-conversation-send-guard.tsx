@@ -18,7 +18,7 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
    void api.agent.checkSend(sessionId,payload,p.controller.signal).then(check=>{if(current.current!==p)return;p.check=check;if(!check.needs_confirmation){finish(p,check.token);return;}p.phase='choice';publish(p);}).catch(error=>{if(current.current===p){current.current=null;setView(null);reject(error);}}).finally(()=>clearTimeout(timeout));
   });
  }
- const recheck=useCallback(async(p:Pending,fresh=false)=>{if(current.current!==p)return;const timeout=setTimeout(()=>p.controller.abort(),15000);try{const check=await api.agent.checkSend(sessionId,p.payload,p.controller.signal);if(fresh&&(!check.native_id||check.native_id===p.check?.native_id))throw Error('新会话身份尚未确认，消息未发送，请关闭后核对会话状态。');p.check=check;finish(p,check.token);}catch(error){if(current.current===p){p.phase='unknown';p.error=error instanceof Error?error.message:'会话状态未确认，消息尚未发送，草稿已保留';publish(p);}}finally{clearTimeout(timeout);}},[sessionId,finish,publish]);
+ const recheck=useCallback(async(p:Pending,fresh=false)=>{if(current.current!==p)return;const timeout=setTimeout(()=>p.controller.abort(),15000);try{const check=await api.agent.checkSend(sessionId,p.payload,p.controller.signal);if(p.detached&&check.native_id!==p.check?.native_id)throw Error('原生会话已变化，消息尚未发送，草稿已保留');if(fresh&&(!check.native_id||check.native_id===p.check?.native_id))throw Error('新会话身份尚未确认，消息未发送，请关闭后核对会话状态。');p.check=check;finish(p,check.token);}catch(error){if(current.current===p){p.phase='unknown';p.error=error instanceof Error?error.message:'会话状态未确认，消息尚未发送，草稿已保留';publish(p);}}finally{clearTimeout(timeout);}},[sessionId,finish,publish]);
  async function choose(action:'continue'|'compact'|'new'){
   const p=current.current;if(!p||p.phase!=='choice'||!p.check)return;
   if(action==='continue'){finish(p,p.check.token);return;}
@@ -36,7 +36,7 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
   const timer=setTimeout(()=>{if(current.current===p&&['compacting','new'].includes(p.phase)){p.phase='unknown';p.error='操作结果暂未确认，消息尚未发送，草稿已保留。请核对会话状态。';publish(p);}},120000);
   return()=>clearTimeout(timer);
  },[view?.phase,publish]);
- useEffect(()=>{if(!active&&current.current)finish(current.current,null);},[active,finish]);
+ useEffect(()=>{if(!active&&current.current&&!current.current.detached)finish(current.current,null);},[active,finish]);
  useEffect(()=>()=>{const p=current.current;current.current=null;if(p){p.controller.abort();p.resolve(null);}},[sessionId]);
  const check=view?.sessionId===sessionId?view.check:null;
  const notice=view?.detached&&check?<div className="session-chat-guard-status" role={view.error?'alert':'status'}><span>{view.error|| (view.phase==='checking'?'压缩完成，正在检查后发送…':'正在压缩，确认完成后自动发送。')}</span><button type="button" onClick={()=>{if(current.current)finish(current.current,null);}}>{view.error?'关闭提示':'取消后续发送'}</button></div>:null;
@@ -49,5 +49,5 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
   <div className="mt-4 flex flex-wrap justify-end gap-2"><button className="settings-panel-button" disabled={view.phase==='new'} onClick={()=>{if(current.current)finish(current.current,null);}}>取消</button><button className="settings-panel-button" disabled={view.phase!=='choice'||!check.can_new||!onNew} onClick={()=>void choose('new')}>新开后发送</button><button className="settings-panel-button" disabled={view.phase!=='choice'||!check.can_compact} onClick={()=>void choose('compact')}>压缩后发送</button><button className="settings-panel-button settings-panel-button--primary" disabled={view.phase!=='choice'} onClick={()=>void choose('continue')}>原样发送</button></div>
   {(!check.can_compact||!check.can_new)&&<p className="mt-2 text-xs" style={{color:'var(--text-muted)'}}>压缩和新开沿用现有会话权限，并要求当前轮次已结束。</p>}
  </Dialog>:null;
- return {confirm,blocking:!!view&&view.sessionId===sessionId,checking:view?.sessionId===sessionId&&view.phase==='checking',dialog,notice};
+ return {confirm,background:!!view&&view.sessionId===sessionId&&!!view.detached&&['compacting','checking'].includes(view.phase),blocking:!!view&&view.sessionId===sessionId,checking:view?.sessionId===sessionId&&view.phase==='checking',dialog,notice};
 }

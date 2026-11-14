@@ -672,6 +672,9 @@ export function SessionConversation({
   },[attachments.items,storageKey]);
   const attachmentPositions = useRef<(() => Map<string, number>) | null>(null);
   const [sending, setSending] = useState(false);
+  // A confirmed compact-and-send keeps its original subscription through dispatch,
+  // even while another tab or the raw terminal is visible.
+  const receiveUpdates=active||sendGuard.background||sending;
   const [unread, setUnread] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [liveRetrying, setLiveRetrying] = useState(false),
@@ -882,7 +885,7 @@ export function SessionConversation({
   }, [session.id, agentNativeId(session), session.claude_session_id]);
   const ended = ["completed", "failed", "cancelled"].includes(session.status);
   const observingStream =
-    active &&
+    receiveUpdates &&
     canRead &&
     !ended &&
     agentSupports(session, "stream") &&
@@ -974,7 +977,7 @@ export function SessionConversation({
   }, [ended]);
 
   useEffect(() => {
-    if (!active || !canRead) return;
+    if (!receiveUpdates || !canRead) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
@@ -1076,7 +1079,7 @@ export function SessionConversation({
       clearTimeout(timer);
     };
   }, [
-    active,
+    receiveUpdates,
     canRead,
     session.id,
     session.status,
@@ -1087,7 +1090,7 @@ export function SessionConversation({
 
   useEffect(() => {
     if (
-      !active ||
+      !receiveUpdates ||
       !canRead ||
       !agentSupports(session, "stream") ||
       !page?.native_id ||
@@ -1526,7 +1529,7 @@ export function SessionConversation({
       }
       pendingAnswers.current.clear();
     };
-  }, [active, canRead, session.id, session.cli_type, agentNativeId(session), page?.native_id, ended]);
+  }, [receiveUpdates, canRead, session.id, session.cli_type, agentNativeId(session), page?.native_id, ended]);
 
   async function loadOlder() {
     if (older) return;

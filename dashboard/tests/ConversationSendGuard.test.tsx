@@ -1,13 +1,13 @@
-import {act,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {useConversationSendGuard} from '../src/lib/use-conversation-send-guard';
 import {api,ApiError,type SendGuardCheck} from '../src/lib/api';
 import type {CompactionPresentation} from '../src/lib/use-conversation-compaction';
 const check:SendGuardCheck={needs_confirmation:true,matched:true,enabled:true,context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,last_completed_at:null,observed_at:null,native_id:'native',checked_at:'',can_compact:true,can_new:true,token:'original'};
 const done=vi.fn(),start=vi.fn(),newSession=vi.fn();
-function Harness({state=null,active=true,sessionId='s'}:{state?:CompactionPresentation|null;active?:boolean;sessionId?:string}){const guard=useConversationSendGuard(sessionId,active,{state,start},newSession);return <><button onClick={()=>void guard.confirm({input:'draft'}).then(result=>done(result?.token??null))}>发送</button>{guard.dialog}{guard.notice}</>;}
+function Harness({state=null,active=true,sessionId='s'}:{state?:CompactionPresentation|null;active?:boolean;sessionId?:string}){const guard=useConversationSendGuard(sessionId,active,{state,start},newSession);return <><output aria-label="后台等待">{String(guard.background)}</output><button onClick={()=>void guard.confirm({input:'draft'}).then(result=>done(result?.token??null))}>发送</button>{guard.dialog}{guard.notice}</>;}
 beforeEach(()=>{vi.spyOn(api.agent,'checkSend').mockResolvedValue(check);start.mockResolvedValue(undefined);newSession.mockResolvedValue(undefined);});
-afterEach(()=>{vi.restoreAllMocks();done.mockReset();start.mockReset();newSession.mockReset();});
+afterEach(async()=>{cleanup();await act(async()=>{});vi.restoreAllMocks();done.mockReset();start.mockReset();newSession.mockReset();});
 it('only submits after compaction completion, using a newly checked token',async()=>{
  const view=render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));fireEvent.click(await screen.findByRole('button',{name:'压缩后发送'}));await waitFor(()=>expect(start).toHaveBeenCalledOnce());expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(screen.getByText('正在压缩，确认完成后自动发送。')).toBeVisible();expect(done).not.toHaveBeenCalled();
  vi.mocked(api.agent.checkSend).mockResolvedValue({...check,token:'after-compact'});
@@ -47,4 +47,12 @@ it.each(['failed','interrupted','unknown','rejected'] as const)('keeps %s compac
 it('keeps a compaction timeout nonmodal and ignores a late completion',async()=>{
  const view=render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));const compact=await screen.findByRole('button',{name:'压缩后发送'});vi.useFakeTimers();
  try{fireEvent.click(compact);await act(async()=>vi.advanceTimersByTime(120000));expect(screen.getByRole('alert')).toHaveTextContent('操作结果暂未确认');expect(screen.queryByRole('dialog')).not.toBeInTheDocument();view.rerender(<Harness state={{id:'compact',status:'completed',started_at:null,completed_at:new Date().toISOString(),duration_ms:120000,before:80,after:20}}/>);expect(done).not.toHaveBeenCalled();}finally{vi.useRealTimers();}
+});
+
+it('continues confirmed compaction and recheck while the session tab is inactive',async()=>{
+ const view=render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));fireEvent.click(await screen.findByRole('button',{name:'压缩后发送'}));view.rerender(<Harness active={false}/>);expect(done).not.toHaveBeenCalled();expect(screen.getByLabelText('后台等待')).toHaveTextContent('true');
+ let release!:(value:SendGuardCheck)=>void;vi.mocked(api.agent.checkSend).mockReturnValueOnce(new Promise(r=>{release=r;}));view.rerender(<Harness active={false} state={{id:'compact',status:'completed',started_at:null,completed_at:new Date(Date.now()+1000).toISOString(),duration_ms:100,before:80,after:20}}/>);await screen.findByText('压缩完成，正在检查后发送…');expect(screen.getByLabelText('后台等待')).toHaveTextContent('true');await act(async()=>release({...check,token:'background-token'}));await waitFor(()=>expect(done).toHaveBeenCalledExactlyOnceWith('background-token'));expect(screen.getByLabelText('后台等待')).toHaveTextContent('false');
+});
+it('does not transfer compact-and-send to a replaced native conversation',async()=>{
+ const view=render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));fireEvent.click(await screen.findByRole('button',{name:'压缩后发送'}));vi.mocked(api.agent.checkSend).mockResolvedValue({...check,native_id:'replacement'});view.rerender(<Harness active={false} state={{id:'compact',status:'completed',started_at:null,completed_at:new Date(Date.now()+1000).toISOString(),duration_ms:100,before:80,after:20}}/>);expect(await screen.findByRole('alert')).toHaveTextContent('原生会话已变化');expect(done).not.toHaveBeenCalled();expect(screen.getByLabelText('后台等待')).toHaveTextContent('false');
 });
