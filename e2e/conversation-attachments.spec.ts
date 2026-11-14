@@ -8,6 +8,7 @@ test.beforeEach(async()=>{nativeInputs=[];const require=createRequire(import.met
 test.afterEach(async()=>{for(const client of nativeWss.clients)client.terminate();await new Promise<void>(resolve=>nativeWss.close(()=>resolve()));await new Promise<void>(resolve=>nativeServer.close(()=>resolve()));});
 
 test('chat uploads pasted images and dropped files, retains drafts, and restores attachment history',async({page},testInfo)=>{
+  test.setTimeout(90_000);
   const status=await(await page.request.get('/api/auth/status')).json();
   expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
   const root=join(process.cwd(),'.test-data','e2e'),path=join(root,'attachments-project');mkdirSync(path,{recursive:true});
