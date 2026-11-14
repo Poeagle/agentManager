@@ -208,6 +208,16 @@ it('retains upstream group consumption when sessions disappear and bridges legac
 it('catches up readable historical days after a multi-day shutdown without duplicate counts',async()=>{
  vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));respond([row]);await collectAccountUsage('native');
  vi.setSystemTime(new Date('2026-01-04T12:00:00Z'));respond([row,{...row,day:'2026-01-02'},{...row,day:'2026-01-03'}]);await collectAccountUsage('native');
- expect(JSON.parse(vi.mocked(localCommandInput).mock.calls.at(-1)![1]).mode).toBe('full');expect(cachedAccountUsage('native').rows.map(r=>r.tokens.total_tokens)).toEqual([10,10,10]);
+ expect(JSON.parse(vi.mocked(localCommandInput).mock.calls.at(-1)![1])).toMatchObject({mode:'catchup',since_day:'2026-01-01'});expect(cachedAccountUsage('native').rows.map(r=>r.tokens.total_tokens)).toEqual([10,10,10]);
  await collectAccountUsage('native');expect(cachedAccountUsage('native').rows.map(r=>r.tokens.total_tokens)).toEqual([10,10,10]);
+});
+
+it('retains the recovery checkpoint across partial scans and resumes without counting recovered requests twice',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));respond([row]);await collectAccountUsage('native');
+ vi.setSystemTime(new Date('2026-01-04T12:00:00Z'));respond([{...row,day:'2026-01-02'}],{partial:true,errors:1});await collectAccountUsage('native');
+ expect(getDb().prepare('SELECT last_day FROM codex_usage_ledger').get()).toEqual({last_day:'2026-01-01'});
+ respond([{...row,day:'2026-01-02'},{...row,day:'2026-01-03'}]);await collectAccountUsage('native');
+ expect(JSON.parse(vi.mocked(localCommandInput).mock.calls.at(-1)![1])).toMatchObject({mode:'catchup',since_day:'2026-01-01'});
+ expect(cachedAccountUsage('native').rows.map(r=>r.tokens.total_tokens)).toEqual([10,10,10]);
+ expect(getDb().prepare('SELECT last_day FROM codex_usage_ledger').get()).toEqual({last_day:'2026-01-04'});
 });

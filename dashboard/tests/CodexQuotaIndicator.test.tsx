@@ -42,7 +42,7 @@ describe('CodexQuotaIndicator', () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.getByLabelText('Codex 周额度剩余 65%')).toBeInTheDocument();
-    expect(screen.getByLabelText('Codex 周额度剩余 65%')).toHaveAttribute('title', expect.stringContaining('检测时间'));
+    expect(screen.getByLabelText('Codex 周额度剩余 65%')).toHaveAttribute('title', expect.stringContaining('额度采集完成时间'));
     expect(screen.queryByText(/检测 \d{2}:\d{2}:\d{2}/)).not.toBeInTheDocument();
     expect(api.codexQuota.read).toHaveBeenCalledTimes(1);
 

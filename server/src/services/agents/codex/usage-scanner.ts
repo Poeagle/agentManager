@@ -8,8 +8,10 @@ o=json.load(sys.stdin)
 zone=ZoneInfo(o.get('timezone') or 'UTC');previous_zone=ZoneInfo(o.get('previous_timezone') or 'UTC');rebin=bool(o.get('rebin'))
 home=pathlib.Path(o.get('home') or str(pathlib.Path.home()/'.codex')).resolve()
 mode=o.get('mode','full'); day=o.get('day')
-if mode not in ['full','daily']:raise ValueError('invalid mode')
+if mode not in ['full','daily','catchup']:raise ValueError('invalid mode')
 if mode=='daily':datetime.date.fromisoformat(day)
+since=o.get('since_day')
+if mode=='catchup' and (not since or datetime.date.fromisoformat(since)>datetime.date.fromisoformat(day)):raise ValueError('invalid catchup window')
 days=set(o.get('days') or [day])
 if mode=='daily' and (len(days)>2 or any(d not in [day,(datetime.date.fromisoformat(day)-datetime.timedelta(days=1)).isoformat()] for d in days)):raise ValueError('invalid daily window')
 roots=[home/'sessions',home/'archived_sessions']; paths=[]; index={};directories=0; inventory=0; errors=0; history_files=0; history_bytes=0
@@ -32,7 +34,7 @@ for root in roots:
    match=re.search(r'([0-9a-fA-F-]{36})\.jsonl$',name)
    if match:index.setdefault(match[1],[]).append((p,st.st_size))
    modified=datetime.datetime.fromtimestamp(st.st_mtime,zone).date().isoformat()
-   if mode=='full' or modified in days:paths.append((p,st.st_size))
+   if mode=='full' or mode=='catchup' and modified>=since or mode=='daily' and modified in days:paths.append((p,st.st_size))
    if len(paths)>20000:raise RuntimeError('history inventory exceeds limit')
 fields=['input_tokens','cached_input_tokens','output_tokens','reasoning_output_tokens','total_tokens']
 known=base64.b64decode(o.get('known_events',''),validate=True)
@@ -131,7 +133,7 @@ for path,size in paths:
     at=datetime.datetime.fromisoformat(stamp.replace('Z','+00:00'))
     if at.tzinfo is None:errors+=1;continue
     local_at=at.astimezone(zone);event_day=local_at.date().isoformat();event_hour=local_at.replace(minute=0,second=0,microsecond=0).isoformat()
-    if mode=='daily' and event_day not in days:continue
+    if mode=='daily' and event_day not in days or mode=='catchup' and not since<=event_day<=day:continue
     if after and at<=after or inherited_ordinal is not None and type(r.get('ordinal'))==int and r['ordinal']<inherited_ordinal:continue
     # Legacy aggregate caches have no request identities. Preserve their totals
     # as a baseline; only events after the last successful snapshot are new.

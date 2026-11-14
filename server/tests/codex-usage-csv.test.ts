@@ -45,3 +45,27 @@ it('keeps archived observed hours visible after raw samples have expired',async(
  const {initAccountUsage,cachedAccountUsage}=await import('../src/services/agents/codex/account-usage.js');initAccountUsage();const timezone=Intl.DateTimeFormat().resolvedOptions().timeZone;
  publishUsageCsv('native',{day:'2026-01-02',timezone,current:[],history:[],quota:[],observed:[['2025-01-01T00:00:00+00:00',2]]});expect(cachedAccountUsage('native').quota_hours).toEqual([{hour:'2025-01-01T00:00:00+00:00',quota:2}]);
 });
+
+it('revisits the closing day when a midnight quota interval becomes eligible on the following scan',async()=>{
+ const {vi}=await import('vitest');const {getDb}=await import('../src/db/index.js');
+ const {initAccountUsage}=await import('../src/services/agents/codex/account-usage.js');
+ const {initAccountStatus}=await import('../src/services/agents/codex/account-status.js');
+ const {exportUsageCsv}=await import('../src/services/agents/codex/usage-csv-export.js');
+ vi.useFakeTimers();vi.stubEnv('TZ','UTC');vi.setSystemTime(new Date('2026-01-02T23:59:00Z'));initAccountUsage();initAccountStatus();const db=getDb();
+ try{
+  const usage=(n:number)=>JSON.stringify({input_tokens:n,cached_input_tokens:0,output_tokens:0,reasoning_output_tokens:0,total_tokens:n,requests:1});
+  const add=(day:string,at:string,n:number)=>{db.prepare('INSERT INTO codex_usage_dedup_events(account,event_key,day,cwd,model,tier,tokens,hour,at) VALUES(?,?,?,?,?,?,?,?,?)').run('midnight',day,day,'/p','gpt-6.1-sol',null,usage(n),day+'T'+(day.endsWith('02')?'23':'00')+':00:00+00:00',at);db.prepare('INSERT INTO codex_usage_events VALUES(?,?,?,?,?,?,?)').run('midnight',day,day,'/p','gpt-6.1-sol',null,usage(n));};
+  const sample=(at:string,used:number)=>db.prepare('INSERT INTO codex_quota_samples VALUES(?,?,?,?,?,?)').run('midnight','identity','fixture@example.invalid',at,2000000000,used);
+  db.prepare('INSERT INTO codex_account_status(account,identity) VALUES(?,?)').run('midnight','identity');
+  db.prepare('INSERT INTO codex_quota_samples VALUES(?,?,?,?,?,?)').run('midnight','old-identity','fixture@example.invalid','2026-01-02T23:55:00Z',2000000000,80);
+  sample('2026-01-02T23:53:00Z',10);sample('2026-01-02T23:58:00Z',11);add('2026-01-02','2026-01-02T23:59:00Z',100);
+  db.prepare('INSERT OR REPLACE INTO codex_usage_scan_boundary VALUES(?,?)').run('midnight','2026-01-02T23:59:00Z');exportUsageCsv('midnight');
+  expect(readUsageCsv('midnight')?.observed).toEqual([['2026-01-02T23:00:00+00:00',1]]);
+  vi.setSystemTime(new Date('2026-01-03T00:03:00Z'));sample('2026-01-03T00:03:00Z',15);add('2026-01-03','2026-01-03T00:01:00Z',300);
+  db.prepare('INSERT OR REPLACE INTO codex_usage_scan_boundary VALUES(?,?)').run('midnight','2026-01-03T00:02:00Z');exportUsageCsv('midnight');
+  const history=readUsageCsv('midnight')!.history;expect(history).toHaveLength(1);
+  vi.setSystemTime(new Date('2026-01-03T00:08:00Z'));db.prepare('INSERT OR REPLACE INTO codex_usage_scan_boundary VALUES(?,?)').run('midnight','2026-01-03T00:08:00Z');
+  for(let i=0;i<2;i++){exportUsageCsv('midnight');expect(readUsageCsv('midnight')?.observed).toEqual([['2026-01-02T23:00:00+00:00',2],['2026-01-03T00:00:00+00:00',3]]);expect(readUsageCsv('midnight')?.history).toEqual(history);}
+  vi.setSystemTime(new Date('2026-01-04T00:08:00Z'));exportUsageCsv('midnight');expect(readUsageCsv('midnight')?.observed).toEqual([['2026-01-02T23:00:00+00:00',2],['2026-01-03T00:00:00+00:00',3]]);
+ }finally{vi.useRealTimers();vi.unstubAllEnvs();}
+});

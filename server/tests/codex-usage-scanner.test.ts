@@ -105,3 +105,14 @@ describe('account-scoped complete-file scanner',()=>{
   const result=await scan();expect(result.rows).toHaveLength(0);expect(result.errors).toBeGreaterThan(0);
  });
 });
+
+it('catches up a multi-day gap using modified files and stable identities without scanning cold history',async()=>{
+ const cold=join(home,'sessions','cold.jsonl');await writeFile(cold,meta+context+record('2025-12-01T12:00:00Z',100,100));await utimes(cold,new Date('2025-12-01T12:00:00Z'),new Date('2025-12-01T12:00:00Z'));
+ await writeFile(file,meta+context+record('2026-01-01T12:00:00Z',100,100)+record('2026-01-02T12:00:00Z',150,50)+record('2026-01-03T12:00:00Z',175,25));await utimes(file,new Date('2026-01-03T12:00:00Z'),new Date('2026-01-03T12:00:00Z'));
+ const initial=await scan('catchup','2026-01-01',{since_day:'2026-01-01',includeEvents:true});
+ const result=await scan('catchup','2026-01-04',{since_day:'2026-01-01',known_events:initial.event_keys['2026-01-01'],includeEvents:true});
+ expect(result.progress).toMatchObject({history_files:2,files_selected:1});expect(result.rows.map((r:any)=>[r.day,r.tokens.total_tokens])).toEqual([['2026-01-02',50],['2026-01-03',25]]);
+ const keys=Buffer.concat([Buffer.from(initial.event_keys['2026-01-01'],'base64'),...Object.values(result.event_keys).map(v=>Buffer.from(v as string,'base64'))]).toString('base64');
+ expect((await scan('catchup','2026-01-04',{since_day:'2026-01-01',known_events:keys})).rows).toEqual([]);
+ await expect(scan('catchup','2026-01-04',{since_day:'2026-01-05'})).rejects.toThrow();
+});

@@ -107,7 +107,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.9.0',
+    version:'3.9.1',
     updatedAt:'2026-11-14',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -528,7 +528,7 @@ export function getAgentApiContract() {
         category: 'Quota',
         method: 'GET',
         path: '/api/codex-quota',
-        description: 'Read the current Codex weekly quota snapshot and detection time.',
+        description: 'Read the persisted Codex weekly quota snapshot and acquisition completion time. Background collection runs every five minutes; refresh=true only rereads this cache and never contacts the upstream quota API.',
       },
       {
         category: 'Quota',

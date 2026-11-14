@@ -59,3 +59,10 @@ Keep tests deterministic and isolated. Never point a test at a developer DB,
 reuse the production ports, or depend on an installed/authenticated AI CLI.
 Bug fixes should add a regression test at the lowest useful layer, plus an E2E
 case only when the behavior crosses server/browser boundaries.
+
+E2E accepts `E2E_API_PORT` / `E2E_UI_PORT` overrides. Its Vite optimizer cache is
+kept under the worktree's `dashboard/.test-data/node_modules/`, separated by UI
+port. This also isolates worktrees that share dependency directories by symlink;
+sharing their optimizer cache can load two React runtimes in lazy editors.
+On loaded hosts, `npm --prefix dashboard run test:coverage -- --maxWorkers=2`
+limits concurrency while running the complete component suite and thresholds.

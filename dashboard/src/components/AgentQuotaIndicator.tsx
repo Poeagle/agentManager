@@ -39,8 +39,8 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApp
   const headerChip=display==='header-chip';
   const title = quota
     ? [`${label} 周额度剩余 ${quota.remainingPercent}% · 已用 ${quota.usedPercent}%`, resetTitle,
-      `${quota.stale ? '上次成功检测时间' : '检测时间'} ${new Date(quota.checkedAt).toLocaleString()}`,
-      '每 5 分钟刷新', ...(refreshFailed ? ['刷新失败，显示上次成功数据'] : [])].join('\n')
+      `${quota.stale ? '上次成功额度采集完成时间' : '额度采集完成时间'} ${new Date(quota.checkedAt).toLocaleString()}`,
+      '每 5 分钟后台采集，页面仅读缓存', ...(refreshFailed ? ['刷新失败，显示上次成功数据'] : [])].join('\n')
     : notApplicable ? (quotaQuery.data?.message ?? '当前认证方式不提供账号额度') : quotaQuery.isError
       ? `${label} 周额度读取失败 · 每 5 分钟重试`
       : `正在读取 ${label} 周额度`;
@@ -64,7 +64,7 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApp
       <strong className="text-[11px] font-medium tabular-nums" style={{ color }}>
         {quota ? `${quota.remainingPercent}%` : notApplicable ? 'N/A' : quotaQuery.isError ? 'Unavailable' : 'Loading'}
       </strong>
-      {canRefresh&&<button type="button" aria-label={`刷新 ${label} 额度`} title="刷新额度"
+      {canRefresh&&<button type="button" aria-label={`刷新 ${label} 额度`} title="重新读取后台额度缓存，不触发采集"
         disabled={refresh.isPending || quotaQuery.isFetching}
         onClick={() => refresh.mutate()}
         className="ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded hover:opacity-75 disabled:opacity-40"

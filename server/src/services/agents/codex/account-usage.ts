@@ -82,7 +82,8 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
   const day=usageDay(Date.now(),timezone),previousDay=new Date(Date.parse(day+'T00:00:00Z')-86400000).toISOString().slice(0,10);
   const previousLedger=db.prepare('SELECT last_day FROM codex_usage_ledger WHERE account=?').get(id) as {last_day:string}|undefined;
   const missedDays=!!previousLedger&&previousLedger.last_day<previousDay;
-  const mode=initialized&&dedupStatus?.ready===1&&!rebin&&!missedDays?'daily':'full';
+  const recoveryFrom=initialized&&dedupStatus?.ready===1&&!rebin&&missedDays?previousLedger!.last_day:null;
+  const mode=recoveryFrom?'catchup':initialized&&dedupStatus?.ready===1&&!rebin?'daily':'full';
   const controller=new AbortController();controllers.set(id,controller);
   try{
    const home=e.kind==='account'?e.connection?.codexHome:usageHome(e);
@@ -94,22 +95,23 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
    const yesterday=new Date(Date.parse(day+'T00:00:00Z')-86400000).toISOString().slice(0,10);
    const lastDay=ledger?.last_day??prior?.checked_at?.slice(0,10);
    const days=mode==='daily'&&lastDay&&lastDay<day?[yesterday,day]:[day];
-   const known=options.rebuild?[]:db.prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=? AND (? OR timezone!=? OR day IN (?,?)) LIMIT 2000001').all(id,rebin||mode==='full'?1:0,timezone,days[0],day) as {event_id:Buffer}[];
+   const known=options.rebuild?[]:db.prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=? AND (? OR timezone!=? OR day>=? AND day<=?) LIMIT 2000001').all(id,rebin||mode==='full'?1:0,timezone,recoveryFrom??days[0],day) as {event_id:Buffer}[];
    if(known.length>2000000)throw Error('Usage identity limit exceeded');
-   const input=JSON.stringify({home,mode,day,days,timezone,previous_timezone:previousTimezone,rebin,baseline_at:baseline,known_events:Buffer.concat(known.map(r=>r.event_id)).toString('base64'),origins:usageOrigins(id),includeEvents:true,rebuildEvents:initialized&&dedupStatus?.ready!==1});
-   const commandOptions={timeoutMs:mode==='full'?300000:120000,maxOutputBytes:256*1024*1024,signal:controller.signal};
+   const input=JSON.stringify({home,mode,day,days,since_day:recoveryFrom,timezone,previous_timezone:previousTimezone,rebin,baseline_at:baseline,known_events:Buffer.concat(known.map(r=>r.event_id)).toString('base64'),origins:usageOrigins(id),includeEvents:true,rebuildEvents:initialized&&dedupStatus?.ready!==1});
+   const commandOptions={timeoutMs:mode!=='daily'?300000:120000,maxOutputBytes:256*1024*1024,signal:controller.signal};
    const scanStartedAt=new Date().toISOString();
    const result=JSON.parse(await (e.kind==='account'?accountCommandInput(environmentConnection(e),USAGE_SCAN,input,commandOptions):localCommandInput(USAGE_SCAN,input,commandOptions)));
    if(!Array.isArray(result.rows)||result.rows.length>50000||result.mode!==mode||result.day!==day)throw Error('Invalid usage response');
+   const inWindow=(date:string)=>mode==='daily'?days.includes(date):mode==='catchup'?date>=recoveryFrom!&&date<=day:true;
    const requestsPerDay=new Map<string,number>();
    for(const row of result.rows){
-    if(!/^\d{4}-\d{2}-\d{2}$/.test(row.day)||mode==='daily'&&!days.includes(row.day)||typeof row.cwd!=='string'||row.cwd.length>4096||!Number.isSafeInteger(row.requests)||row.requests<1||!row.tokens||tokenFields.some(k=>row.tokens[k]!==null&&(!Number.isFinite(row.tokens[k])||row.tokens[k]<0)))throw Error('Invalid usage row');
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(row.day)||!inWindow(row.day)||typeof row.cwd!=='string'||row.cwd.length>4096||!Number.isSafeInteger(row.requests)||row.requests<1||!row.tokens||tokenFields.some(k=>row.tokens[k]!==null&&(!Number.isFinite(row.tokens[k])||row.tokens[k]<0)))throw Error('Invalid usage row');
     requestsPerDay.set(row.day,(requestsPerDay.get(row.day)??0)+row.requests);
    }
    if(!result.event_keys||typeof result.event_keys!=='object'||Array.isArray(result.event_keys))throw Error('Usage identities unavailable');
    const events:Array<{day:string;keys:Buffer}>=[];let count=0;
    for(const [eventDay,encoded]of Object.entries(result.event_keys)){
-    if(!/^\d{4}-\d{2}-\d{2}$/.test(eventDay)||mode==='daily'&&!days.includes(eventDay)||typeof encoded!=='string')throw Error('Invalid usage identities');
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(eventDay)||!inWindow(eventDay)||typeof encoded!=='string')throw Error('Invalid usage identities');
     const keys=Buffer.from(encoded,'base64');
     if(keys.length%32||keys.toString('base64')!==encoded)throw Error('Invalid usage identities');
     count+=keys.length/32;if(count>2000000)throw Error('Usage identity limit exceeded');
@@ -118,7 +120,7 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
    }
    if(result.rows.reduce((n:number,r:any)=>n+r.requests,0)!==count)throw Error('Usage identity count mismatch');
    if(rebin&&(!Array.isArray(result.matched_rows)||result.matched_rows.length>50000||result.matched_rows.some((r:MatchedUsage)=>typeof r.legacy!=='boolean'||!/^\d{4}-\d{2}-\d{2}$/.test(r.day)||typeof r.cwd!=='string'||r.cwd.length>4096||!Number.isSafeInteger(r.requests)||r.requests<1||!r.tokens||tokenFields.some(k=>r.tokens[k]!==null&&(!Number.isFinite(r.tokens[k])||r.tokens[k]!<0)))))throw Error('Invalid timezone reconciliation');
-   if(!Array.isArray(result.events)||result.events.length>USAGE_EVENT_LIMIT||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||event.legacy_key!=null&&!/^[a-f0-9]{64}$/.test(event.legacy_key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||event.at!=null&&(typeof event.at!=='string'||!Number.isFinite(Date.parse(event.at)))||event.hour!=null&&(!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):00:00(?:Z|[+-]\d{2}:\d{2})$/.test(event.hour)||!event.hour.startsWith(event.day))||mode==='daily'&&!days.includes(event.day)||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
+   if(!Array.isArray(result.events)||result.events.length>USAGE_EVENT_LIMIT||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||event.legacy_key!=null&&!/^[a-f0-9]{64}$/.test(event.legacy_key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||event.at!=null&&(typeof event.at!=='string'||!Number.isFinite(Date.parse(event.at)))||event.hour!=null&&(!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):00:00(?:Z|[+-]\d{2}:\d{2})$/.test(event.hour)||!event.hour.startsWith(event.day))||!inWindow(event.day)||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
    if(options.preserveExisting&&(result.events_truncated||result.events.length!==count||result.events.some((event:any)=>!event.hour)||previousTimezone!==timezone))throw Error('历史重读不完整');
    if(options.rebuild&&(result.events_truncated||result.events.length!==count||result.events.some((event:any)=>!event.hour)||(result.errors&&count===0)))throw Error('Rebuild incomplete');
    const current=getCodexEnvironment(id);if((!current.enabled&&!options.rebuild)||usageIdentity(current)!==identity){if(options.rebuild)throw Error('Environment changed');return;}
@@ -145,7 +147,7 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
     for(const event of result.events)eventInsert.run(id,event.key,event.day,event.cwd,event.model||null,event.tier||null,event.provider||null,JSON.stringify({...event.tokens,_timezone:timezone,...event.legacy_key?{_legacy_key:event.legacy_key}:{},_session:typeof event.session==='string'?event.session.slice(0,200):null}),event.hour||null,event.at||null);
     db.prepare('INSERT INTO codex_usage_dedup_status(account,ready) VALUES(?,?) ON CONFLICT(account) DO UPDATE SET ready=excluded.ready').run(id,!result.events_truncated&&(mode==='full'||dedupStatus?.ready===1)?1:0);
     if(options.rebuild)db.prepare('UPDATE codex_usage_dedup_status SET hour_backfilled=1 WHERE account=?').run(id);
-    db.prepare('INSERT INTO codex_usage_ledger(account,baseline_at,last_day,timezone) VALUES(?,?,?,?) ON CONFLICT(account) DO UPDATE SET last_day=excluded.last_day,timezone=excluded.timezone').run(id,baseline,day,timezone);
+    db.prepare('INSERT INTO codex_usage_ledger(account,baseline_at,last_day,timezone) VALUES(?,?,?,?) ON CONFLICT(account) DO UPDATE SET last_day=excluded.last_day,timezone=excluded.timezone').run(id,baseline,previousLedger&&(result.partial||result.errors||result.events_truncated)?previousLedger.last_day:day,timezone);
     db.prepare('INSERT OR REPLACE INTO codex_usage_snapshots VALUES(?,1)').run(id);
     if(options.rebuild||!initialized)db.prepare("INSERT OR REPLACE INTO codex_usage_rule_versions(account,version,state,retry_at,reason) VALUES(?,?,?,?,NULL)").run(id,USAGE_RULE_VERSION,options.preserveExisting&&result.partial?'ready_partial':'ready',options.preserveExisting&&result.partial?new Date(Date.now()+86400000).toISOString():null);
     const ruleState=db.prepare('SELECT state FROM codex_usage_rule_versions WHERE account=?').get(id) as {state:string}|undefined;

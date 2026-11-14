@@ -7,9 +7,10 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.9.0');
+    expect(contract.version).toBe('3.9.1');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request?.batch?.description).toContain('client_id');
     expect(contract.scope).toContain('scheduled tasks');
+    expect(contract.endpoints.find(e=>e.path==='/api/codex-quota')?.description).toContain('refresh=true only rereads this cache');
     expect(contract.endpoints.find(endpoint=>endpoint.path==='/api/sessions/:id/input')?.request?.client_id?.description).toContain('409');
 
     expect(keys).toEqual(expect.arrayContaining([
