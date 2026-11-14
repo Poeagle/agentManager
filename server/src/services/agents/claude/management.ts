@@ -13,8 +13,10 @@ import {
   deleteClaudeProvider,
   detectClaudeProviderModels,
   enabledClaudeProviders,
+  nativeClaudeProviderState,
   toggleClaudeProvider,
   updateClaudeProvider,
+  updateNativeClaudeProvider,
 } from './providers.js';
 import { readAgentManagement } from '../management-store.js';
 
@@ -78,21 +80,7 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
       }
     },
     providers: async (): Promise<AgentProviderState[]> => {
-      const models = (await readClaudeControls({ session: {}, nativeId: null, projectPath: process.cwd() })).models.map(item => item.model);
-      const providers: AgentProviderState[] = [{
-        id: 'anthropic',
-        name: 'Anthropic',
-        kind: 'official',
-        enabled: true,
-        managed: false,
-        status: 'ready',
-        statusText: '由 Claude Code / Agent SDK 原生配置管理',
-        authentication: { status: 'unknown', method: 'Claude 登录或 ANTHROPIC_API_KEY' },
-        models,
-        defaultModel: managedEnv('ANTHROPIC_MODEL') || null,
-        fields: [],
-      }];
-      providers.push(...enabledClaudeProviders());
+      const providers: AgentProviderState[] = enabledClaudeProviders();
       if (managedEnv('CLAUDE_CODE_USE_BEDROCK') === '1') providers.push({
         id: 'bedrock',
         name: 'Amazon Bedrock',
@@ -153,7 +141,7 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
     return {
       ...state,
       environment: environment(),
-      providers: [...state.providers.filter(provider => !provider.managed), ...stored.map(provider => claudeProviderState(provider))],
+      providers: state.providers,
       providerManagement: {
         ...state.providerManagement,
         create: true,
@@ -179,6 +167,8 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
       return inspect(true);
     },
     updateProvider: async (providerId, input) => {
+      if (providerId === 'anthropic') updateNativeClaudeProvider(input);
+      else
       updateClaudeProvider(providerId, input);
       return inspect(true);
     },
@@ -187,6 +177,7 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
       return inspect(true);
     },
     providerAction: async (providerId, action) => {
+      if(providerId==='anthropic')throw Object.assign(Error('原生 Provider 由 Claude Code 环境配置管理，不能停用或删除'),{statusCode:409});
       if (action === 'test') {
         await detectClaudeProviderModels({ providerId });
       } else if (action === 'enable') {
@@ -200,7 +191,7 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
     },
     inspectProvider: async providerId => {
       if (providerId === 'anthropic') {
-        return (await inspect(true)).providers.find(provider => provider.id === providerId) || null;
+        return nativeClaudeProviderState();
       }
       const provider = readAgentManagement('claude').providers.find(item => item.id === providerId);
       return provider ? claudeProviderState(provider) : null;

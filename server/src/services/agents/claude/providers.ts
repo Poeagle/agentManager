@@ -12,6 +12,7 @@ import type {
   AgentProviderState,
 } from '../types.js';
 import { environmentUserOverride } from '../environment-access.js';
+import { readManagedEnvironment, updateManagedEnvironment } from '../environment-store.js';
 
 const ID_RE = /^[a-z][a-z0-9_.-]{0,63}$/;
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/;
@@ -62,6 +63,49 @@ function configuredProviders(): StoredProvider[] {
   );
 }
 
+/** Legacy Anthropic setup is stored in LaunchAgent but presented through the
+ * same provider contract as managed gateways. No provider gets a special UI. */
+function nativeProviderState(): AgentProviderState {
+  const env = readManagedEnvironment();
+  const models = [
+    ...new Set(
+      [
+        env.ANTHROPIC_MODEL,
+        env.ANTHROPIC_DEFAULT_OPUS_MODEL,
+        env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+        env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+        'default',
+        'sonnet',
+        'opus',
+        'haiku',
+      ].filter((model): model is string => typeof model === 'string' && !!model.trim()),
+    ),
+  ];
+  const configured = !!env.ANTHROPIC_AUTH_TOKEN || !!env.ANTHROPIC_API_KEY;
+  const baseUrl = env.ANTHROPIC_BASE_URL || '';
+  return {
+    id: 'anthropic',
+    name: 'Anthropic',
+    kind: 'official',
+    enabled: true,
+    managed: true,
+    status: configured && baseUrl ? 'ready' : 'warning',
+    statusText: configured && baseUrl ? '原生配置可切换' : configured ? '缺少 API 地址' : '缺少 API Key',
+    authentication: { status: configured ? 'authenticated' : 'missing', method: 'ANTHROPIC_AUTH_TOKEN（原生配置）' },
+    models,
+    defaultModel: env.ANTHROPIC_MODEL || null,
+    fields: [
+      { key: 'baseUrl', label: 'API 地址', type: 'text', value: baseUrl, required: true, description: '此 Provider 的 Anthropic 兼容网关根地址。' },
+      { key: 'envKey', label: 'API Key', type: 'password', value: '', configured, required: true, description: '保存后写回此 Provider 的配置；密钥不会回显。' },
+      { key: 'models', label: '模型', type: 'string-list', value: models, required: true, description: '此 Provider 可用模型。' },
+      { key: 'defaultModel', label: '默认模型', type: 'text', value: env.ANTHROPIC_MODEL || models[0] || '', description: '新建会话默认模型。' },
+      { key: 'contextWindow', label: '上下文窗口', type: 'text', value: env.CLAUDE_CODE_MAX_CONTEXT_TOKENS || '', placeholder: '可选，例如 200000' },
+      { key: 'maxOutputTokens', label: '最大输出 Token', type: 'text', value: env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '', placeholder: '可选' },
+    ],
+    configFiles: [],
+  };
+}
+
 function providerOrThrow(providerId: string): StoredProvider {
   const provider = configuredProviders().find((item) => item.id === providerId);
   if (!provider)
@@ -78,6 +122,58 @@ export function claudeProviderApiKey(providerId: string): string {
   return row?.value
     ? openAgentSecret(row.value, secretPurpose(providerId))
     : '';
+}
+
+export function nativeClaudeProviderState(): AgentProviderState {
+  return nativeProviderState();
+}
+
+export function updateNativeClaudeProvider(input: AgentProviderInput): void {
+  const env = readManagedEnvironment();
+  const models = Array.isArray(input.fields?.models)
+    ? (input.fields!.models as unknown[]).filter(
+        (model): model is string =>
+          typeof model === 'string' && MODEL_RE.test(model.trim()),
+      )
+    : [];
+  const baseUrl =
+    typeof input.fields?.baseUrl === 'string'
+      ? validEndpoint(input.fields.baseUrl)
+      : env.ANTHROPIC_BASE_URL || '';
+  const defaultModel =
+    typeof input.fields?.defaultModel === 'string'
+      ? input.fields.defaultModel.trim()
+      : env.ANTHROPIC_MODEL || models[0] || '';
+  if (!baseUrl) throw Object.assign(Error('请填写 API 地址'), { statusCode: 400 });
+  if (!models.length) throw Object.assign(Error('至少选择一个 Claude 模型'), { statusCode: 400 });
+  if (defaultModel && !models.includes(defaultModel))
+    throw Object.assign(Error('默认模型必须来自已选模型'), { statusCode: 400 });
+  const contextWindow =
+    typeof input.fields?.contextWindow === 'string'
+      ? input.fields.contextWindow.trim()
+      : env.CLAUDE_CODE_MAX_CONTEXT_TOKENS || '';
+  const maxOutputTokens =
+    typeof input.fields?.maxOutputTokens === 'string'
+      ? input.fields.maxOutputTokens.trim()
+      : env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '';
+  boundedNumber(contextWindow, '上下文窗口', 1, 10_000_000);
+  boundedNumber(maxOutputTokens, '最大输出 Token', 1, 10_000_000);
+  const values: Record<string, string> = {
+    ANTHROPIC_BASE_URL: baseUrl,
+    ANTHROPIC_MODEL: defaultModel || models[0],
+    ANTHROPIC_DEFAULT_OPUS_MODEL: models[0] || defaultModel,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: models[1] || models[0] || defaultModel,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: models[2] || models[1] || models[0] || defaultModel,
+    ...(contextWindow ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: contextWindow } : {}),
+    ...(maxOutputTokens ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: maxOutputTokens } : {}),
+    ...(input.apiKey?.trim() ? { ANTHROPIC_AUTH_TOKEN: input.apiKey.trim(), ANTHROPIC_API_KEY: '' } : {}),
+  };
+  const clear: string[] = [];
+  if (!contextWindow) clear.push('CLAUDE_CODE_MAX_CONTEXT_TOKENS');
+  if (!maxOutputTokens) clear.push('CLAUDE_CODE_MAX_OUTPUT_TOKENS');
+  updateManagedEnvironment({ values, clear });
+  for (const [key, value] of Object.entries(values)) process.env[key] = value;
+  for (const key of clear) delete process.env[key];
 }
 
 function saveProviderApiKey(providerId: string, apiKey?: string): void {
@@ -184,9 +280,9 @@ function validateFields(
 }
 
 export function enabledClaudeProviders(): AgentProviderState[] {
-  return configuredProviders()
+  return [nativeProviderState(), ...configuredProviders()
     .filter((provider) => provider.enabled)
-    .map((provider) => claudeProviderState(provider));
+    .map((provider) => claudeProviderState(provider))];
 }
 
 export function claudeProviderState(

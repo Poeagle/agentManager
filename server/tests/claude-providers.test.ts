@@ -11,6 +11,7 @@ import {
   createClaudeProvider,
   deleteClaudeProvider,
   detectClaudeProviderModels,
+  nativeClaudeProviderState,
 } from '../src/services/agents/claude/providers.js';
 
 let database:ReturnType<typeof createTestDatabase>;
@@ -23,6 +24,21 @@ const create=(id='gateway')=>createClaudeProvider({
 });
 
 describe('Claude managed providers',()=>{
+ it('presents native Anthropic and managed gateways through the same provider fields',()=>{
+  create();
+  expect(nativeClaudeProviderState()).toMatchObject({
+   id:'anthropic',
+   managed:true,
+   fields:expect.arrayContaining([
+    expect.objectContaining({key:'baseUrl'}),
+    expect.objectContaining({key:'envKey'}),
+    expect.objectContaining({key:'models'}),
+   ]),
+  });
+  expect(claudeManagementProviderState('gateway')?.fields.map(field=>field.key)).toEqual(
+   nativeClaudeProviderState().fields.map(field=>field.key),
+  );
+ });
  it('stores independent encrypted endpoints and resolves only the bound provider',()=>{
   create();
   const owner=createUser({username:'claude-owner',password:'password1'});
