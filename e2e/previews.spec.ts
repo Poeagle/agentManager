@@ -34,7 +34,7 @@ test('previews diagrams, tables, images, PDF, and readable wrapped text locally'
   expect((await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },
   })).ok()).toBeTruthy();
-  const root = join(process.cwd(), '.test-data', 'e2e', 'preview-project');
+  const root = join(process.cwd(), '.test-data', 'e2e', 'previews-local-project');
   mkdirSync(root, { recursive: true });
   const model = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="2" value="开始 Start" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1"><mxGeometry x="40" y="40" width="140" height="60" as="geometry"/></mxCell><mxCell id="3" value="完成 Finish" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1"><mxGeometry x="260" y="40" width="140" height="60" as="geometry"/></mxCell><mxCell id="4" style="edgeStyle=orthogonalEdgeStyle;endArrow=block;" edge="1" source="2" target="3" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell></root></mxGraphModel>';
   writeFileSync(join(root, 'flow.drawio'), `<mxfile><diagram name="Flow">${model}</diagram><diagram name="Second">${deflateRawSync(Buffer.from(encodeURIComponent(model.replace('开始 Start', '第二页 Second')))).toString('base64')}</diagram></mxfile>`);
