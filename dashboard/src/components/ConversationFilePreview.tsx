@@ -7,28 +7,34 @@ import './ConversationFilePreview.css';
 const FileExplorer=lazy(()=>import('./FileExplorer').then(module=>({default:module.FileExplorer})));
 export interface ConversationPreviewFile {path:string;rootPath:string;projectId:string|null;name:string;fileOnly?:boolean}
 interface PathInfo {path:string;type:'file'|'directory'|'other'}
+interface PreviewProps {file:ConversationPreviewFile;onClose:()=>void;dock?:{left:number;top:number;width:number;height:number};onDock?:()=>void;canDock?:boolean}
 /** Reuse the workspace's read-only tree and renderers without changing its tabs. */
-export function ConversationFilePreview({file,onClose,dock,onDock,canDock=true}:{file:ConversationPreviewFile;onClose:()=>void;dock?:{left:number;top:number;width:number;height:number};onDock?:()=>void;canDock?:boolean}) {
+export function ConversationFilePreview(props:PreviewProps) {
+  const {file}=props;
+  return <ScopedFilePreview key={JSON.stringify([file.path,file.rootPath,file.projectId,!!file.fileOnly])} {...props}/>;
+}
+function ScopedFilePreview({file,onClose,dock,onDock,canDock=true}:PreviewProps) {
   const rootPath=file.fileOnly?file.path:file.rootPath;
   const [tabsHost,setTabsHost]=useState<HTMLDivElement|null>(null);
-  const [result,setResult]=useState<{requestedPath:string;info?:PathInfo;error?:string}|null>(null);
+  const [result,setResult]=useState<{requestKey:string;info?:PathInfo;error?:string}|null>(null);
   const [revision,setRevision]=useState(0);
+  const allowed=isWithinExplorerRoot(file.path,rootPath);
+  const requestKey=JSON.stringify([file.path,rootPath,file.projectId,file.fileOnly,revision]);
   useEffect(()=>{
-    const controller=new AbortController();setResult(null);
-    if(!isWithinExplorerRoot(file.path,rootPath)){
-      setResult({requestedPath:file.path,error:'只能访问当前项目目录及其子目录'});return;
-    }
+    if(!allowed)return;
+    const controller=new AbortController();
     const query=new URLSearchParams({path:file.path});if(file.projectId)query.set('project_id',file.projectId);
     void fetchJSON<PathInfo>(`/files/stat?${query}`,{signal:controller.signal}).then(info=>{
-      if(!controller.signal.aborted)setResult((info.type==='other'||file.fileOnly&&info.type!=='file')?{requestedPath:file.path,error:'该路径不是普通文件或目录，暂不支持预览'}:{requestedPath:file.path,info});
+      if(!controller.signal.aborted)setResult((info.type==='other'||file.fileOnly&&info.type!=='file')?{requestKey,error:'该路径不是普通文件或目录，暂不支持预览'}:{requestKey,info});
     }).catch(error=>{
-      if(!controller.signal.aborted)setResult({requestedPath:file.path,error:error instanceof ApiError&&error.status===404?'路径不存在或已被删除':error instanceof ApiError&&error.status===403?'没有权限访问此路径':error instanceof Error?error.message:'无法读取路径信息'});
+      if(!controller.signal.aborted)setResult({requestKey,error:error instanceof ApiError&&error.status===404?'路径不存在或已被删除':error instanceof ApiError&&error.status===403?'没有权限访问此路径':error instanceof Error?error.message:'无法读取路径信息'});
     });
     return ()=>controller.abort();
-  },[file.path,rootPath,file.projectId,file.fileOnly,revision]);
-  const current=result?.requestedPath===file.path?result:null;
+  },[file.path,file.projectId,file.fileOnly,requestKey,allowed]);
+  const current=!allowed?{error:'只能访问当前项目目录及其子目录',info:undefined}:result?.requestKey===requestKey?result:null;
   const directory=current?.info?.type==='directory';
-  const request=useMemo(()=>current?.info?.type==='file'?{path:current.info.path,key:1}:null,[current?.info?.path,current?.info?.type]);
+  const info=current?.info;
+  const request=useMemo(()=>info?.type==='file'?{path:info.path,key:1}:null,[info]);
   return <Dialog title={`${directory?'目录':'文件'}预览 · ${file.name}`} size="image" onClose={onClose} dock={dock} actions={onDock&&<button type="button" className="conversation-preview-dock" onClick={onDock} disabled={!dock&&!canDock} title={!canDock&&!dock?'窗口较窄，请使用居中预览':undefined}>{dock?<Maximize2 size={15}/>:<PanelRight size={15}/>}<span>{dock?'居中显示':'显示到侧边'}</span></button>}>
     {!directory&&<div ref={setTabsHost} className="flex shrink-0 overflow-x-auto border-b" style={{borderColor:'var(--border)'}} aria-label="预览文件标签"/>}
     <div className={`conversation-file-preview-stage${directory?' conversation-directory-preview':''}`} style={{height:dock?undefined:'min(74dvh,950px)',flex:dock?1:undefined,minHeight:0,position:'relative',overflow:'hidden'}}>

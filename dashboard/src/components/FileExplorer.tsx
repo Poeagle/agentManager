@@ -1,7 +1,7 @@
 import {HtmlPreview} from './HtmlPreview';
 import {ImagePreview} from './ConversationImagePreview';
 import {MarkdownDiagramPre} from './MermaidDiagram';
-import { useState, useCallback, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo, lazy, Suspense } from 'react';
 import {followDocumentLink,scrollDocumentFragment} from '../lib/document-links';
 import { createPortal } from 'react-dom';
 import { Folder, FolderOpen, File, ChevronRight, ChevronDown, ChevronUp, Loader2, Save, Circle, Eye, EyeOff, Pencil, Home, X, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, GitCompareArrows, Scissors, Copy as CopyIcon, Clipboard, Trash2, Edit3, Download, RefreshCw, Upload } from 'lucide-react';
@@ -210,7 +210,8 @@ function MarkdownImage({ src, alt, documentPath, rootPath, filesApi }: {
 /** Stable renderer component identities keep image Blob URLs and scroll
  * position alive when session events rerender the surrounding workspace. */
 function ReadonlyMarkdownPreview({body,documentPath,rootPath,filesApi,onLink}:{body:string;documentPath:string;rootPath:string;filesApi:typeof api.files;onLink:(href:string,container:HTMLElement)=>void}){
-  const follow=useRef(onLink);follow.current=onLink;
+  const follow=useRef(onLink);
+  useLayoutEffect(()=>{follow.current=onLink;},[onLink]);
   const components=useMemo<Components>(()=>({
     pre:MarkdownDiagramPre,
     img:({src,alt})=><MarkdownImage src={src} alt={alt} documentPath={documentPath} rootPath={rootPath} filesApi={filesApi}/>,
@@ -373,7 +374,6 @@ function ContextMenu({ x, y, items, onClose }: ContextMenuState & { onClose: () 
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [x,y,onClose]);
 
   return (
@@ -675,11 +675,12 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
   const [actionMessage, setActionMessage] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
   const exportInProgress = useExportTransferStore((state) => isExportTransferActive(state.task));
 
+  const hasTree=workspace===undefined || !!workspace.treeHost;
   useEffect(()=>{
-    if(!active || (workspace && !workspace.treeHost)) {
+    if(!active || !hasTree) {
       setContextMenu(null);setPendingDelete(null);
     }
-  },[active,workspace?.treeHost]);
+  },[active,hasTree]);
 
   useEffect(() => {
     if (!actionMessage) return;
@@ -1071,16 +1072,17 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
   }, [activeTab, isDirty, onFileSaved, readOnly, updateTab, filesApi]);
 
   // Ctrl+S / Cmd+S keyboard shortcut
+  const editorActive=workspace===undefined || workspace.editorActive;
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (active && (!workspace || workspace.editorActive) && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      if (active && editorActive && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         void handleSave();
       }
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [active, handleSave, workspace?.editorActive]);
+  }, [active, handleSave, editorActive]);
 
   // External "open this file" request — e.g. user clicked an icon in the git panel
   const lastOpenRequestKey = useRef<number | null>(null);

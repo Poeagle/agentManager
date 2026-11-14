@@ -1,6 +1,8 @@
 import {useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {ConversationComposerEditor} from './ConversationComposerEditor';
-import {ConversationAttachmentPicker,useConversationAttachments,type DraftAttachment} from './ConversationAttachments';
+import {ConversationAttachmentPicker} from './ConversationAttachments';
+import {useConversationAttachments} from '../lib/use-conversation-attachments';
+import type {DraftAttachment} from '../lib/conversation-attachments';
 import type {ConversationAttachment} from '../lib/conversation-attachments';
 
 export interface QuestionAttachmentContext {sessionId:string;projectId:string|null;projectPath?:string;enabled:boolean}

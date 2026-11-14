@@ -2,7 +2,8 @@ import {useEffect,useRef,useState} from 'react';
 import {api} from '../lib/api';
 import {Dialog} from './Dialog';
 import {copyConversationText} from './ConversationMarkdown';
-import type {DraftAttachment} from './ConversationAttachments';
+
+import type {DraftAttachment} from '../lib/conversation-attachments';
 
 /** Optimize the active chat draft; preview and explicit apply never submit it. */
 export function ConversationPromptEnhancer({sessionId,active,canEdit,value,onApply,attachments=[]}:{sessionId:string;active:boolean;canEdit:boolean;value:string;onApply:(text:string)=>void;attachments?:DraftAttachment[]}) {

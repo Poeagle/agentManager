@@ -12,3 +12,5 @@ export function parseConversationInput(text:string):{text:string;attachments:Con
     return {text:text.slice(0,position),attachments:items};
   }catch{return {text,attachments:[]};}
 }
+
+export interface DraftAttachment {id:string;name:string;kind:'image'|'file';size:number;path?:string;thumbnail?:string;status:'queued'|'packing'|'uploading'|'ready'|'error';error?:string;offset?:number;progress?:number}

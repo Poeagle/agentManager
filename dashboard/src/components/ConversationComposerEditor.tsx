@@ -1,18 +1,10 @@
 import {useLayoutEffect,useRef} from 'react';
 import {api} from '../lib/api';
-import type {DraftAttachment} from './ConversationAttachments';
+
+import type {DraftAttachment} from '../lib/conversation-attachments';
 import {useConversationImagePreview,useConversationFilePreview,useConversationImageHover} from './ConversationImagePreview';
+import {composerAttachmentPositions,composerPlainText} from '../lib/conversation-composer';
 const SPACE='\u200b';
-function composerContents(root:Node):{text:string;positions:Array<[string,number]>} {
-  if(root.nodeType===Node.TEXT_NODE)return {text:(root.textContent||'').replaceAll(SPACE,''),positions:[]};
-  if(root instanceof HTMLElement&&root.dataset.attachmentId)return {text:'',positions:[[root.dataset.attachmentId,0]]};
-  if(root instanceof HTMLBRElement)return {text:'\n',positions:[]};
-  let text='',previousBlock=false,occupied=false;const positions:Array<[string,number]>=[];
-  for(const child of root.childNodes){const part=composerContents(child);if(!part.text&&!part.positions.length)continue;const block=child instanceof HTMLElement&&['DIV','P'].includes(child.tagName);if(occupied&&(block||previousBlock)&&!text.endsWith('\n'))text+='\n';for(const [id,offset] of part.positions)positions.push([id,text.length+offset]);text+=part.text;previousBlock=block;occupied=true;}
-  return {text,positions};
-}
-export function composerPlainText(root:Node):string{return composerContents(root).text;}
-export function composerAttachmentPositions(root:Node){return new Map(composerContents(root).positions);}
 function rangeAtTextOffset(root:HTMLElement,offset:number) {
   const range=document.createRange(),walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,{acceptNode:node=>node.parentElement?.closest('[data-attachment-id]')?NodeFilter.FILTER_REJECT:NodeFilter.FILTER_ACCEPT});
   let remaining=Math.max(0,offset),node:Node|null;
@@ -26,9 +18,8 @@ function rangeAtTextOffset(root:HTMLElement,offset:number) {
 export function ConversationComposerEditor({value,items,disabled,placeholder,projectId,projectPath,onChange,onRemove,onRetry,onFiles,onSubmit,onDirectSubmit,snapshotRef,label='发送给当前 Agent 的消息'}:{label?:string;snapshotRef?:{current:(()=>Map<string,number>)|null};value:string;items:DraftAttachment[];disabled:boolean;placeholder:string;projectId:string|null;projectPath?:string;onChange:(value:string)=>void;onRemove:(id:string)=>void;onRetry?:(id:string,offset?:number)=>void;onFiles:(files:File[])=>void;onSubmit:()=>void;onDirectSubmit?:()=>void}) {
   const root=useRef<HTMLDivElement>(null),composing=useRef(false),known=useRef(new Set<string>()),savedRange=useRef<Range|null>(null);
   const preview=useConversationImagePreview(),filePreview=useConversationFilePreview(),hover=useConversationImageHover();
-  const props=useRef({value,items,disabled,onChange,onRemove,onFiles,onSubmit,projectId,projectPath});props.current={value,items,disabled,onChange,onRemove,onFiles,onSubmit,projectId,projectPath};
   function rememberCaret(){const selection=window.getSelection(),node=root.current;if(node&&selection?.rangeCount&&node.contains(selection.anchorNode))savedRange.current=selection.getRangeAt(0).cloneRange();}
-  function syncText(){const node=root.current;if(!node)return;const ids=new Set([...node.querySelectorAll<HTMLElement>('[data-attachment-id]')].map(token=>token.dataset.attachmentId!));for(const id of known.current)if(!ids.has(id))props.current.onRemove(id);for(const token of node.querySelectorAll<HTMLElement>('[data-attachment-id]'))if(!props.current.items.some(item=>item.id===token.dataset.attachmentId))token.remove();props.current.onChange(composerPlainText(node));}
+  function syncText(){const node=root.current;if(!node)return;const ids=new Set([...node.querySelectorAll<HTMLElement>('[data-attachment-id]')].map(token=>token.dataset.attachmentId!));for(const id of known.current)if(!ids.has(id))onRemove(id);for(const token of node.querySelectorAll<HTMLElement>('[data-attachment-id]'))if(!items.some(item=>item.id===token.dataset.attachmentId))token.remove();onChange(composerPlainText(node));}
   useLayoutEffect(()=>{
     const node=root.current;if(!node||composing.current)return;if(snapshotRef)snapshotRef.current=()=>composerAttachmentPositions(node);
     if(composerPlainText(node)!==value){node.textContent=value;savedRange.current=null;}
@@ -51,8 +42,8 @@ export function ConversationComposerEditor({value,items,disabled,placeholder,pro
     }
     known.current=new Set(items.map(item=>item.id));
     if(added&&last&&!disabled){node.focus({preventScroll:true});const range=document.createRange();range.setStartAfter(last);range.collapse(true);const selection=window.getSelection();selection?.removeAllRanges();selection?.addRange(range);savedRange.current=range.cloneRange();}
-  },[value,items,disabled]);
-  function open(token:HTMLElement){hover?.hide();const item=props.current.items.find(item=>item.id===token.dataset.attachmentId);if(!item)return;if(item.kind==='image'){const src=item.thumbnail||(item.path?api.files.previewUrl(item.path,projectId||undefined):undefined);if(src)preview?.({src,name:item.name});}else if(item.path&&projectPath)filePreview?.({path:item.path,rootPath:projectPath,projectId,name:item.name,fileOnly:true});}
+  },[value,items,disabled,snapshotRef]);
+  function open(token:HTMLElement){hover?.hide();const item=items.find(item=>item.id===token.dataset.attachmentId);if(!item)return;if(item.kind==='image'){const src=item.thumbnail||(item.path?api.files.previewUrl(item.path,projectId||undefined):undefined);if(src)preview?.({src,name:item.name});}else if(item.path&&projectPath)filePreview?.({path:item.path,rootPath:projectPath,projectId,name:item.name,fileOnly:true});}
   function insert(text:string){const node=root.current,selection=window.getSelection();if(!node||!selection)return;node.focus();const range=selection.rangeCount&&node.contains(selection.anchorNode)?selection.getRangeAt(0):document.createRange();if(!node.contains(range.startContainer)){range.selectNodeContents(node);range.collapse(false);}range.deleteContents();const textNode=document.createTextNode(text);range.insertNode(textNode);range.setStartAfter(textNode);range.collapse(true);selection.removeAllRanges();selection.addRange(range);syncText();}
   function deleteToken(event:React.KeyboardEvent<HTMLDivElement>){
     const node=root.current,selection=window.getSelection();if(!node||!selection)return;
@@ -62,12 +53,12 @@ export function ConversationComposerEditor({value,items,disabled,placeholder,pro
     if(!token&&selection.isCollapsed){const atoms=[...node.querySelectorAll<HTMLElement>('[data-attachment-id]')];if(event.key==='Backspace')atoms.reverse();for(const atom of atoms){try{const relation=caret.comparePoint(atom,0);if(event.key==='Backspace'?relation>=0:relation<=0)continue;const between=document.createRange();if(event.key==='Backspace'){between.setStartAfter(atom);between.setEnd(caret.startContainer,caret.startOffset);}else{between.setStart(caret.startContainer,caret.startOffset);between.setEndBefore(atom);}const fragment=between.cloneContents();if(!(fragment.textContent||'').replaceAll(SPACE,'')&&!fragment.querySelector('[data-attachment-id]')){token=atom;break;}}catch{/* Caret and token can move during an IME update. */}}}
     if(!token)return;event.preventDefault();removeToken(token);
   }
-  function removeToken(token:HTMLElement){const node=root.current,selection=window.getSelection();if(!node||!selection||props.current.disabled)return;hover?.hide();const parent=token.parentNode!,offset=[...parent.childNodes].indexOf(token);const id=token.dataset.attachmentId!;token.remove();props.current.onRemove(id);known.current.delete(id);node.focus({preventScroll:true});const next=document.createRange();next.setStart(parent,Math.min(offset,parent.childNodes.length));next.collapse(true);selection.removeAllRanges();selection.addRange(next);props.current.onChange(composerPlainText(node));
+  function removeToken(token:HTMLElement){const node=root.current,selection=window.getSelection();if(!node||!selection||disabled)return;hover?.hide();const parent=token.parentNode!,offset=[...parent.childNodes].indexOf(token);const id=token.dataset.attachmentId!;token.remove();onRemove(id);known.current.delete(id);node.focus({preventScroll:true});const next=document.createRange();next.setStart(parent,Math.min(offset,parent.childNodes.length));next.collapse(true);selection.removeAllRanges();selection.addRange(next);onChange(composerPlainText(node));
   }
   return <><div ref={root} className="session-chat-editor" role="textbox" aria-label={label} aria-multiline="true" aria-keyshortcuts={onDirectSubmit?"Control+Enter Meta+Enter":undefined} aria-disabled={disabled} contentEditable={!disabled} suppressContentEditableWarning tabIndex={disabled?-1:0} spellCheck={false} data-placeholder={placeholder}
     onInput={()=>{if(!composing.current)syncText();rememberCaret();}} onKeyUp={rememberCaret} onMouseUp={rememberCaret} onBlur={rememberCaret}
     onCompositionStart={()=>{composing.current=true;}} onCompositionEnd={()=>{composing.current=false;syncText();}}
-    onMouseOver={event=>{if(event.target instanceof HTMLElement&&event.target.closest('[data-attachment-remove]')){hover?.hide();return;}const token=event.target instanceof HTMLElement?event.target.closest<HTMLElement>('[data-attachment-id]'):null;if(!token)return;const item=props.current.items.find(item=>item.id===token.dataset.attachmentId);if(item?.kind==='image'){const src=item.thumbnail||(item.path?api.files.previewUrl(item.path,projectId||undefined):undefined);if(src)hover?.show({src,name:item.name},token);}}} onMouseOut={()=>hover?.hide()}
+    onMouseOver={event=>{if(event.target instanceof HTMLElement&&event.target.closest('[data-attachment-remove]')){hover?.hide();return;}const token=event.target instanceof HTMLElement?event.target.closest<HTMLElement>('[data-attachment-id]'):null;if(!token)return;const item=items.find(item=>item.id===token.dataset.attachmentId);if(item?.kind==='image'){const src=item.thumbnail||(item.path?api.files.previewUrl(item.path,projectId||undefined):undefined);if(src)hover?.show({src,name:item.name},token);}}} onMouseOut={()=>hover?.hide()}
     onClick={event=>{const target=event.target instanceof HTMLElement?event.target:null,token=target?.closest<HTMLElement>('[data-attachment-id]');if(!token)return;event.preventDefault();if(target?.closest('[data-attachment-remove]'))removeToken(token);else open(token);}}
     onPaste={event=>{event.preventDefault();if(disabled)return;const files=Array.from(event.clipboardData.files);if(files.length){rememberCaret();onFiles(files);}else insert(event.clipboardData.getData('text/plain'));}}
     onDrop={event=>{if(!Array.from(event.dataTransfer.types).includes('Files')){event.preventDefault();if(!disabled)insert(event.dataTransfer.getData('text/plain'));}}}
