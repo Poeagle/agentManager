@@ -82,12 +82,8 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
     ].filter(Boolean).join('\n')}>
       <span className={`ci-dot${data?.partial?' pending':''}`}/>
       <span>{usage.isError?'读取失败':usage.isPending?'读取中…':data?.initialized===false?'等待首次采集':data?.partial?'数据不完整':'已更新'}</span>
-      <span className="ci-source" title={[
-        data?.storage && `实际读取：${data.storage.kind==='csv'?'CSV':'数据库'} ${data.storage.path}`,
-        ...(usage.data?.sources||[]).map(source=>`${source.environment} 原始日志：${source.history.join('、')||'未知'}`),
-      ].filter(Boolean).join('\n')}>{data?.storage?<>统计来源：{data.storage.kind==='csv'?'CSV':'数据库'} {data.storage.path}</>:'统计来源待确认'}</span>
+      <span className="ci-source" title={data?.storage?.path}>{data?.storage?<>{data.storage.kind==='csv'?'CSV 目录':'数据库'}：{data.storage.path}</>:'统计来源待确认'}</span>
       <span title="这份用量统计最近一次成功采集的完成时间；合并多个环境时采用最早检查点">最新采集：{data?.checked_at?collectionTime(data.checked_at):'尚未完成'}</span>
-      {data?.progress&&<span>读取 {numeric(data.progress.files_complete)} 个文件</span>}
     </div>
     {rows.some(row=>!row.models?.length)&&<p className="ci-notice" role="status">部分项目的模型明细未返回，请刷新；若仍未恢复，请检查后台服务版本。</p>}
     <TableFrame label="用量统计" className="ci-table-scroll" tableClassName="ci-table ci-usage-table" style={{minWidth:485+columnWidths.reduce((s,w)=>s+w,0)}} columns={<colgroup><col style={{width:230}}/><col style={{width:255}}/>{columnWidths.map((width,k)=><col key={k} style={{width}}/>)}</colgroup>} header={<TableHeaders model={displayTable}/>}>

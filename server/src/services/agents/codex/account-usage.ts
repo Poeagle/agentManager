@@ -29,6 +29,7 @@ let stopped=true;
 const pending=new Map<string,Promise<void>>();
 const hourlyPending=new Map<string,Promise<void>>();
 const controllers=new Map<string,AbortController>();
+function safeUsageCsv(id:string){try{return readUsageCsv(id);}catch{try{return readUsageCsv(id,true);}catch{return null;}}}
 const databaseStorage=()=>({kind:'database' as const,path:config.dbPath});
 const csvStorage=(id:string)=>({kind:'csv' as const,path:usageCsvDirectory(id)});
 function usageHome(e:ReturnType<typeof getCodexEnvironment>){if(e.kind!=='provider')return localHome(e);const provider=readAgentManagement('codex').providers.find(p=>p.id===e.provider);return provider?externalProviderCodexHome(provider):'';}
@@ -173,7 +174,7 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
 }
 function allocatedQuota(id:string,range?:{start:string|null;end:string|null;gaps?:number},periods?:Array<{hour:string;quota:number}>,timezone=usageStoredTimezone(id)){
  const db=getDb(),samples=quotaSamples(id);
- const restoreArchive=()=>{const saved=periods?readUsageCsv(id):null;if(saved?.timezone===timezone)periods?.push(...(saved.observed??[]).map(([hour,quota])=>({hour:hour as string,quota:quota as number})));return new Map<string,number>();};
+ const restoreArchive=()=>{const saved=periods?safeUsageCsv(id):null;if(saved?.timezone===timezone)periods?.push(...(saved.observed??[]).map(([hour,quota])=>({hour:hour as string,quota:quota as number})));return new Map<string,number>();};
  if(samples.length<2)return restoreArchive();
  const status=db.prepare('SELECT checked_at,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;partial:number}|undefined;
  const ready=db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
@@ -185,7 +186,7 @@ function allocatedQuota(id:string,range?:{start:string|null;end:string|null;gaps
  const events=db.prepare('SELECT at,day,hour,cwd,model,tier,tokens FROM codex_usage_dedup_events WHERE account=? AND at IS NOT NULL AND julianday(at)>julianday(?) AND julianday(at)<=julianday(?) ORDER BY at LIMIT ?').all(id,samples[0].checked_at,samples[samples.length-1].checked_at,USAGE_EVENT_LIMIT+1) as Array<{at:string;day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;tokens:string}>;
  if(events.length>USAGE_EVENT_LIMIT)return restoreArchive();
  const boundary=db.prepare('SELECT started_at FROM codex_usage_scan_boundary WHERE account=?').get(id) as {started_at:string}|undefined;
- if(periods){const observed=quotaHours(samples,events,boundary?.started_at??null,timezone);const saved=readUsageCsv(id);periods.push(...(saved?.observed?.length&&saved.checkpoint===status.checked_at?saved.observed.map(([hour,quota])=>({hour:hour as string,quota:quota as number})):observed.hours));if(range)Object.assign(range,observed.range,{gaps:observed.gaps});return new Map<string,number>();}
+ if(periods){const observed=quotaHours(samples,events,boundary?.started_at??null,timezone);const saved=safeUsageCsv(id);periods.push(...(saved?.observed?.length&&saved.checkpoint===status.checked_at?saved.observed.map(([hour,quota])=>({hour:hour as string,quota:quota as number})):observed.hours));if(range)Object.assign(range,observed.range,{gaps:observed.gaps});return new Map<string,number>();}
  const hourly=allocateQuota(samples,events,boundary?.started_at??null,(start,end)=>{if(range&&!periods){range.start??=start;range.end=end;}}),result=new Map(hourly);
  for(const [key,value] of hourly){const [day,,cwd,model]=JSON.parse(key);const daily=JSON.stringify([day,null,cwd,model]);result.set(daily,(result.get(daily)??0)+value);}
  return result;
@@ -203,7 +204,7 @@ export function cachedAccountUsage(id:string){
  const rule=db.prepare('SELECT version,state,reason FROM codex_usage_rule_versions WHERE account=?').get(id) as {version:number;state:string;reason:string|null}|undefined;
  const ruleWarning=!rule||rule.version!==USAGE_RULE_VERSION?'统计规则已更新，历史缓存等待校验':rule.state==='blocked'?`历史缓存无法完整核对（${rule.reason||'原因未知'}），已保留旧数据；部分估算可能使用旧规则`:rule.state==='ready_partial'?'历史部分记录不可读取；已核对的数据已按新规则更新':rule.state==='pending'?'正在校验统计规则和历史缓存':null;
  const sums=tokenFields.map(k=>`CASE WHEN COUNT(json_extract(tokens,'$.${k}'))=COUNT(*) THEN SUM(json_extract(tokens,'$.${k}')) ELSE NULL END AS ${k}`).join(',');
- const fileBreakdown=rule?.version===USAGE_RULE_VERSION&&rule.state==='ready'&&status?.partial===0?csvUsageBreakdown(id,status?.checked_at??null,timezone):null;
+ const fileBreakdown=status?.checked_at?csvUsageBreakdown(id,status.checked_at,timezone):null;
  const rows=fileBreakdown?(()=>{const groups=new Map<string,Record<string,any>>();for(const row of fileBreakdown){const key=JSON.stringify([row.day,row.cwd]);let group=groups.get(key);if(!group){group={day:row.day,cwd:row.cwd,...Object.fromEntries(tokenFields.map(k=>[k,row[k]??null]))};groups.set(key,group);}else for(const k of tokenFields)group[k]=group[k]==null||row[k]==null?null:group[k]+row[k];}return [...groups.values()].sort((a,b)=>b.day.localeCompare(a.day)||a.cwd.localeCompare(b.cwd)).slice(0,5001);})():db.prepare(`SELECT day,cwd,${sums} FROM codex_usage_events WHERE account=? GROUP BY day,cwd ORDER BY day DESC,cwd LIMIT 5001`).all(id) as Array<Record<string,any>>;
  const estimates=new Map<string,{value:number;covered:number;requests:number}>();
  const models=new Map<string,Map<string,{model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number}}>>();
@@ -276,7 +277,7 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   const snapshot=cachedAccountUsage(id);
   const ready=db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
   if(!snapshot.initialized||!ready?.ready||snapshot.timezone!==timezone){partial=true;continue;}if(snapshot.partial)partial=true;if(snapshot.checked_at)checked.push(snapshot.checked_at);
-  const fileRows=single&&!snapshot.partial?csvHourlyEvents(id,snapshot.checked_at,timezone):null;
+  const fileRows=single&&snapshot.checked_at?csvHourlyEvents(id,snapshot.checked_at,timezone):null;
   if(fileRows!==null)storage=csvStorage(id);
   const rows=fileRows??db.prepare(`SELECT event_key,day,hour,cwd,model,tier,provider,tokens FROM codex_usage_dedup_events WHERE account=? LIMIT ${USAGE_EVENT_LIMIT+1}`).all(id) as Array<{event_key:string;day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string}>;
   if(rows.length>USAGE_EVENT_LIMIT){partial=true;continue;}

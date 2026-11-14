@@ -47,11 +47,11 @@ export function readUsageCsv(account:string,previous=false):UsageCsvSnapshot|nul
  return {day:manifest.day,timezone:manifest.timezone,checkpoint:manifest.checkpoint??null,source:manifest.source??null,current:decodeCsv(contents.current),history:decodeCsv(contents.history),quota:decodeCsv(contents.quota),observed:decodeCsv(contents.observed)};
 }
 export function csvUsageBreakdown(account:string,checkpoint?:string|null,timezone?:string):Array<Record<string,any>>|null{
- const snapshot=readUsageCsv(account);if(!snapshot||checkpoint!==undefined&&snapshot.checkpoint!==checkpoint||timezone!==undefined&&snapshot.timezone!==timezone)return null;
+ let snapshot:UsageCsvSnapshot|null;try{snapshot=readUsageCsv(account);}catch{return null;}if(!snapshot||checkpoint!==undefined&&snapshot.checkpoint!==checkpoint||timezone!==undefined&&snapshot.timezone!==timezone)return null;
  return [...snapshot.history,...snapshot.current].map(([day,,cwd,model,tier,tokens,requests])=>({day:day as string,cwd:cwd as string,model:model as string|null,tier:tier as string|null,requests:requests as number,...tokens as Record<string,number|null>}));
 }
 export function csvHourlyEvents(account:string,checkpoint?:string|null,timezone?:string){
- const snapshot=readUsageCsv(account);if(!snapshot||checkpoint!==undefined&&snapshot.checkpoint!==checkpoint||timezone!==undefined&&snapshot.timezone!==timezone)return null;
+ let snapshot:UsageCsvSnapshot|null;try{snapshot=readUsageCsv(account);}catch{return null;}if(!snapshot||checkpoint!==undefined&&snapshot.checkpoint!==checkpoint||timezone!==undefined&&snapshot.timezone!==timezone)return null;
  const formatter=new Intl.DateTimeFormat('en-CA',{timeZone:snapshot.timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23',timeZoneName:'longOffset'});
  return [...snapshot.history,...snapshot.current].map(([day,at,cwd,model,tier,tokens,requests],i)=>{let hour:string|null=null;if(typeof at==='string'){const p=Object.fromEntries(formatter.formatToParts(new Date(at)).map(p=>[p.type,p.value]));hour=`${p.year}-${p.month}-${p.day}T${p.hour}:00:00${p.timeZoneName==='GMT'?'+00:00':p.timeZoneName.replace('GMT','')}`;}return {event_key:`csv:${i}`,day:day as string,hour,cwd:cwd as string,model:model as string|null,tier:tier as string|null,provider:null,tokens:JSON.stringify({...tokens as object,requests,_timezone:snapshot.timezone})};});
 }
