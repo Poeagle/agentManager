@@ -24,6 +24,11 @@ afterEach(()=>{client.clear();vi.unstubAllGlobals();});
 function typeDraft(node:HTMLElement,value:string){node.textContent=value;fireEvent.input(node);}
 function mount(onReload?:()=>Promise<void>) {return render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active onReload={onReload} renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);}
 describe('chat/raw terminal display',()=>{
+  it('mounts a plain terminal even when its default agent descriptor uses a managed host',async()=>{
+    const plain={...session,mode:'terminal' as const,cli_type:'claude',codex_session_id:null,native_session_id:null,agent:{...sessionAgent(session),id:'claude',sessionHost:'managed' as const}};
+    render(<QueryClientProvider client={client}><SessionWorkspacePane session={plain} userId="u" active renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);
+    expect(await screen.findByTestId('raw')).toHaveAttribute('data-visible','true');
+  });
   it('renders a service-backed agent without mounting a terminal or showing terminal controls',async()=>{
     const remote={...session,cli_type:'remote_agent',native_session_id:'opaque/session',agent:{...sessionAgent(session),id:'remote_agent',label:'Remote Agent',sessionHost:'managed' as const}};page.native_id='opaque/session';
     const terminal=vi.fn(()=>null);render(<QueryClientProvider client={client}><SessionWorkspacePane session={remote} userId="u" active renderTerminal={terminal}/></QueryClientProvider>);
@@ -39,7 +44,7 @@ describe('chat/raw terminal display',()=>{
     send(message);let bubble=document.querySelector('[data-chat-message-id="streaming-progress"]')!;
     expect(bubble.querySelector('time')).toBeNull();expect(bubble.querySelector('.session-chat-message-statistics')).toBeNull();
     send({...message,text:'检查结束',streaming:false,timestamp:'2026-11-03T00:00:05Z'});bubble=document.querySelector('[data-chat-message-id="streaming-progress"]')!;
-    expect(bubble.querySelector('time')).toHaveAttribute('datetime','2026-11-03T00:00:05Z');expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('token: 500 · tools: 3/2');
+    expect(bubble.querySelector('time')).toHaveAttribute('datetime','2026-11-03T00:00:05Z');expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('token: 500 · tools: 3｜2');
   });
   it('uses newer durable completion to clear a lost RPC busy snapshot while rejecting older completion',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];

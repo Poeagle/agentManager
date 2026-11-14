@@ -18,7 +18,7 @@ export function SessionWorkspacePane({session,userId,active,renderTerminal,onRes
 }) {
   const queryClient=useQueryClient();
   function terminalReady(){setReady(true);const key=['conversation-controls',session.id],cached=queryClient.getQueryData<ConversationControlsData>(key);if(cached?.loaded&&!cached.can_edit)void queryClient.invalidateQueries({queryKey:key});}
-  const terminalAvailable=sessionAgent(session).sessionHost!=='managed';
+  const terminalAvailable=session.mode==='terminal'||sessionAgent(session).sessionHost!=='managed';
   const canChat=session.mode!=='terminal'||!!agentNativeId(session);
   const key=`agentmanager-session-view:${userId}:${session.id}`;
   const [view,setView]=useState<'chat'|'terminal'>(()=>{
