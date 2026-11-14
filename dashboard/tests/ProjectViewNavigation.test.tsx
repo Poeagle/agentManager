@@ -6,7 +6,7 @@ import { ProjectView } from '../src/components/ProjectView';
 import { api, type Project, type Session } from '../src/lib/api';
 
 vi.mock('../src/components/Terminal', () => ({ Terminal: ({ sessionId, onConnectionError }: { sessionId: string; onConnectionError?:(id:string,message:string)=>void }) => <div>Live terminal {sessionId}<button onClick={()=>onConnectionError?.(sessionId,'Session not found or not running')}>模拟连接失败</button></div> }));
-vi.mock('../src/components/SessionWorkspacePane', () => ({SessionWorkspacePane: ({renderTerminal}: {renderTerminal:(visible:boolean,suspend:boolean,onReady:()=>void)=>React.ReactNode})=>renderTerminal(true,false,()=>{})}));
+vi.mock('../src/components/SessionWorkspacePane', () => ({SessionWorkspacePane: ({session,renderTerminal}: {session:Session;renderTerminal:(visible:boolean,suspend:boolean,onReady:()=>void)=>React.ReactNode})=><div data-testid="session-pane" data-native-id={session.codex_session_id||''}>{renderTerminal(true,false,()=>{})}</div>}));
 vi.mock('../src/components/HistoryViewer', () => ({ HistoryViewer: ({ sessionId }: { sessionId: string }) => <div>History {sessionId}</div> }));
 vi.mock('../src/components/FileExplorer', () => ({ FileExplorer: () => null }));
 vi.mock('../src/components/GitPanel', () => ({ GitPanel: () => null }));
@@ -35,6 +35,18 @@ beforeEach(() => {
 });
 
 describe('project workspace navigation', () => {
+  it('uses a newer project snapshot to bind a newly launched session despite a stale global cache',async()=>{
+    const pending={...oldSession,id:'fresh',status:'pending' as const,codex_session_id:null};
+    vi.mocked(api.sessions.list).mockImplementation(async(_status,projectId)=>({sessions:projectId?[{...pending,status:'running',codex_session_id:'bound-native'}]:[pending]}));
+    const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+    client.setQueryData(['sessions'],{sessions:[pending]});
+    localStorage.setItem('agentmanager-project-u1-p1',JSON.stringify({terminalInstances:[{id:'fresh',label:'Fresh'}],activeTerminalId:'fresh',explorerInstances:[]}));
+    const view=render(<QueryClientProvider client={client}><ProjectView currentUserId="u1" projectId="p1" projectPath="/workspace/p1" projectName="P1"/></QueryClientProvider>);
+    try{
+      await waitFor(()=>expect(screen.getByTestId('session-pane')).toHaveAttribute('data-native-id','bound-native'));
+      expect(client.getQueryData<{sessions:Session[]}>(['sessions'])?.sessions[0].codex_session_id).toBeNull();
+    }finally{view.unmount();client.clear();}
+  });
   it.each(['detached','launching'] as const)('keeps an old %s tab omitted from the global window through delayed hydration and refresh',async status=>{
     const jira={...oldSession,id:'jira',status};let hydrate!:(value:{state:Record<string,unknown>})=>void;
     const saved={terminalInstances:[{id:'jira',label:'Jira',customLabel:'Jira'}],activeTerminalId:'jira',hiddenSessionIds:[],explorerInstances:[]};localStorage.setItem('agentmanager-project-u1-p1',JSON.stringify(saved));

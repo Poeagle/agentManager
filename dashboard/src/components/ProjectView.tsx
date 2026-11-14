@@ -156,22 +156,26 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
 
   // Fetch running sessions for this project
   // No refetchInterval — driven by WebSocket invalidation (websocket.ts).
-  const { data: sessionsData, isSuccess: sessionsLoaded } = useQuery({
+  const { data: sessionsData, isSuccess: sessionsLoaded, dataUpdatedAt: sessionsUpdatedAt } = useQuery({
     queryKey: ['sessions'],
     queryFn: () => api.sessions.list(),
   });
   // Keep the complete project record set available for the project sessions
   // view and for naming/restoring older tabs beyond the global history window.
-  const { data: projectHistoryData, isSuccess: projectHistoryLoaded } = useQuery({
+  const { data: projectHistoryData, isSuccess: projectHistoryLoaded, dataUpdatedAt: projectHistoryUpdatedAt } = useQuery({
     queryKey: ['project-sessions', projectId],
     queryFn: () => api.sessions.list(undefined, projectId),
     refetchInterval:(query)=>active && query.state.data?.sessions.some(session=>agentSupports(session,'runtime')) ? 5000 : false,
   });
+  // A newly launched session first appears as pending in the global cache.
+  // Let the most recently fetched snapshot supply its native binding/status.
+  const allSessionLookup = useMemo(() => {
+    const global=sessionsData?.sessions||[],project=projectHistoryData?.sessions||[];
+    return new Map([...(!projectHistoryLoaded?Object.values(restoredRecords):[]),...(projectHistoryUpdatedAt>=sessionsUpdatedAt?[...global,...project]:[...project,...global])].map(session=>[session.id,session]));
+  },[sessionsData,projectHistoryData,sessionsUpdatedAt,projectHistoryUpdatedAt,restoredRecords,projectHistoryLoaded]);
   const projectSessions = useMemo(
-    () => [...new Map([...(!projectHistoryLoaded?Object.values(restoredRecords):[]),...(projectHistoryData?.sessions||[]),...(sessionsData?.sessions||[])].map(session=>[session.id,session])).values()].filter(
-      (s) => s.project_id === projectId && isLiveSessionStatus(s.status)
-    ),
-    [sessionsData, projectHistoryData, projectId, restoredRecords, projectHistoryLoaded]
+    () => [...allSessionLookup.values()].filter(s=>s.project_id===projectId&&isLiveSessionStatus(s.status)),
+    [allSessionLookup,projectId],
   );
 
   // Lookup map for session metadata (cli_type, task, etc.) — used in tab rendering
@@ -180,16 +184,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     [projectSessions]
   );
 
-  // All sessions (any status) keyed by id — for tab signal lights, which must
-  // also reflect completed/failed sessions that `projectSessions` filters out.
-  const allSessionLookup = useMemo(
-    () => new Map([
-      ...(!projectHistoryLoaded?Object.values(restoredRecords):[]),
-      ...(projectHistoryData?.sessions || []),
-      ...(sessionsData?.sessions || []),
-    ].map((s) => [s.id, s])),
-    [sessionsData, projectHistoryData, restoredRecords, projectHistoryLoaded]
-  );
   const [confirmBulkDeleteEnded, setConfirmBulkDeleteEnded] = useState(false);
   const [bulkDeletingEnded, setBulkDeletingEnded] = useState(false);
   const [bulkDeleteEndedError, setBulkDeleteEndedError] = useState<string | null>(null);

@@ -44,6 +44,19 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('connects when the native binding arrives after the initial conversation response',async()=>{
+    const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+    const view=render(<QueryClientProvider client={client}><SessionConversation session={{...session,codex_session_id:null,native_session_id:null}} active onRaw={()=>{}}/></QueryClientProvider>);
+    try{
+      await waitFor(()=>expect(api.agent.conversation).toHaveBeenCalled());
+      await waitFor(()=>expect(screen.queryByText('正在加载对话…')).not.toBeInTheDocument());
+      expect(Socket.latest).toBeUndefined();
+      view.rerender(<QueryClientProvider client={client}><SessionConversation session={session} active onRaw={()=>{}}/></QueryClientProvider>);
+      await waitFor(()=>expect(Socket.latest?.onmessage).toBeTruthy());
+      act(()=>Socket.latest.emit({type:'snapshot',messages:[],busy:false,stage:'idle'}));
+      expect(await screen.findByText('Event stream connected')).toBeVisible();
+    }finally{view.unmount();client.clear();}
+  });
   it('stages messages, restores draft and batch after reload, and sends one combined message',async()=>{
     const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);
     const view=await mount();fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});

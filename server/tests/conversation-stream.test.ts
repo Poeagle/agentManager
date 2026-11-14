@@ -26,7 +26,7 @@ beforeEach(async()=>{
       if((method==='turn/start'||method==='turn/steer')&&dropDispatch){socket.terminate();return;}
       if(method==='thread/queue/add')queueEntries.push({id:`queued-${queueEntries.length}`,clientUserMessageId:params.clientUserMessageId,input:params.input});
       if(method==='thread/queue/add'||method==='thread/queue/list'){socket.send(JSON.stringify({id,result:method==='thread/queue/add'?{queuedSubmission:queueEntries.at(-1)}:{data:queueEntries}}));return;}
-      const result=method==='turn/steer'?{turnId:params.expectedTurnId}:method==='thread/start'?{thread:{id:'019ff001-8888-7888-8888-888888888888'}}:method==='thread/read'?{thread:{status:{type:active?'active':loaded?'idle':'notLoaded'}}}:method==='thread/turns/list'?{data:active?[{id:'turn',status:'inProgress',items:params.itemsView==='summary'&&!oversizedSummary?baselineItems.map(item=>{const {aggregatedOutput,...summary}=item;return summary;}):baselineItems}]:baselineFailure?[{id:'turn',status:'failed',error:baselineFailure,completedAt:1793340000,items:[]}]:[]}:{};
+      const result=method==='turn/steer'?{turnId:params.expectedTurnId}:method==='thread/start'?{thread:{id:'019ff001-8888-7888-8888-888888888888'}}:method==='thread/resume'?{thread:{id:params.threadId,status:{type:'idle'}}}:method==='thread/read'?{thread:{status:{type:active?'active':loaded?'idle':'notLoaded'}}}:method==='thread/turns/list'?{data:active?[{id:'turn',status:'inProgress',items:params.itemsView==='summary'&&!oversizedSummary?baselineItems.map(item=>{const {aggregatedOutput,...summary}=item;return summary;}):baselineItems}]:baselineFailure?[{id:'turn',status:'failed',error:baselineFailure,completedAt:1793340000,items:[]}]:[]}:{};
       socket.send(JSON.stringify({id,result}));
     });
   });
@@ -245,7 +245,8 @@ describe('native Codex conversation streaming',()=>{
   it.each(['', '   '])('creates an idle thread without submitting blank input %j',async task=>{
     const id=await createStreamingCodexThread('/project',task);
     expect(id).toBe('019ff001-8888-7888-8888-888888888888');
-    expect(requests).toContain('thread/start');expect(submissions).toEqual([]);
+    expect(requests).toContain('thread/start');expect(requests).toContain('thread/inject_items');expect(requests).toContain('thread/resume');expect(submissions).toEqual([]);
+    expect(requestParams.find(frame=>frame.method==='thread/inject_items')?.params.items).toMatchObject([{role:'developer'}]);
     await submitStreamingCodexInput(id,'first manual message');
     expect(submissions).toHaveLength(1);expect(submissions[0].input[0].text).toBe('first manual message');
   });

@@ -2,7 +2,7 @@ import {submissionFailure,AgentSubmissionError} from '../submission.js';
 import {runInCodexEngine,engineForProvider,currentCodexEngine} from './engine-context.js';
 import {validateModelPreference,readCodexModels} from './controls.js';
 import type {ModelPreference} from '../types.js';
-import {withCodexConnection,rememberStreamingSharedResources} from './stream.js';
+import {withCodexConnection,rememberStreamingSharedResources,persistIdleCodexThread} from './stream.js';
 
 /** Native RPCs only: no PTY keystrokes and no synthetic model turn. */
 export async function compactCodexConversation(threadId:string) {
@@ -47,9 +47,7 @@ export async function prepareFreshCodexConversation(threadId:string,cwd:string,s
     const id=result.thread?.id;
     if(typeof id!=='string'||!/^[a-f0-9-]{36}$/i.test(id)||id===threadId)throw Error('新会话未创建，原会话已保留');
     try {
-      await target('thread/inject_items',{threadId:id,items:[{type:'message',role:'developer',content:[{type:'input_text',text:'A fresh conversation was opened in this platform tab. Wait for the user to provide a task. Previous conversation history has not been carried over.'}]}]});
-      const verified=await target('thread/resume',{threadId:id,excludeTurns:true});
-      if(verified.thread?.id!==id||verified.thread?.status?.type==='notLoaded')throw Error('新会话尚不可恢复');
+      await persistIdleCodexThread(target,id);
       if(sharedInstructions)rememberStreamingSharedResources(id,sharedInstructions);
       return id;
     } catch(error){await target('thread/archive',{threadId:id}).catch(()=>{});throw error;}
