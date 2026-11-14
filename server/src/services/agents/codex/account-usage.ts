@@ -1,7 +1,7 @@
 import {getDb} from '../../../db/index.js';
 import {assertUsageRebuildPreserves} from './usage-rule-guard.js';
 // Increment when persisted interpretation of native usage records changes.
-export const USAGE_RULE_VERSION=4;
+export const USAGE_RULE_VERSION=5;
 import {quotaSamples} from './account-status.js';
 import {allocateQuota} from './quota-allocation.js';
 import {allCodexEnvironments,environmentConnection,getCodexEnvironment} from './environments.js';
@@ -147,7 +147,7 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
     db.prepare('INSERT OR REPLACE INTO codex_usage_scan_boundary VALUES(?,?)').run(id,scanStartedAt);
     if(result.progress)db.prepare('INSERT OR REPLACE INTO codex_usage_progress VALUES(?,?)').run(id,JSON.stringify(result.progress));
    })();
-  }catch(error){const message=error instanceof Error&&error.message==='历史目录无法独立归属'?'历史目录与其他 Engine 共用或无法确认，未统计以避免重复':'采集失败，保留上次成功数据';if(options.preserveExisting){const reasons=new Set(['历史重读不完整','历史记录存在未归属数据','历史请求身份不完整','重读请求身份重复','历史请求缺失或内容不一致','历史计数不可验证','历史计数超限','历史请求身份缺失','历史聚合无法核对']);const reason=error instanceof Error&&reasons.has(error.message)?error.message:'无法完整扫描或验证原始历史';throw Object.assign(Error(reason),{statusCode:409});}if(options.rebuild)throw Object.assign(Error(message),{statusCode:409});db.prepare('INSERT INTO codex_usage_status(account,error,partial) VALUES(?,?,1) ON CONFLICT(account) DO UPDATE SET error=excluded.error,partial=1').run(id,message);}
+  }catch(error){const message=error instanceof Error&&error.message==='历史目录无法独立归属'?'历史目录与其他 Engine 共用或无法确认，未统计以避免重复':'采集失败，保留上次成功数据';if(options.preserveExisting){const reasons=new Set(['历史重读不完整','历史记录存在未归属数据','历史请求身份不完整','重读请求身份重复','部分历史请求无法从原始文件中找到','历史请求的归属或 Token 与缓存不一致','历史计数不可验证','历史计数超限','历史请求身份缺失','历史聚合无法核对']);const reason=error instanceof Error&&reasons.has(error.message)?error.message:'无法完整扫描或验证原始历史';throw Object.assign(Error(reason),{statusCode:409});}if(options.rebuild)throw Object.assign(Error(message),{statusCode:409});db.prepare('INSERT INTO codex_usage_status(account,error,partial) VALUES(?,?,1) ON CONFLICT(account) DO UPDATE SET error=excluded.error,partial=1').run(id,message);}
   finally{controllers.delete(id);}
  })();pending.set(id,task);try{await task;}finally{pending.delete(id);}
 }
@@ -156,7 +156,11 @@ function allocatedQuota(id:string){
  if(samples.length<2)return new Map<string,number>();
  const status=db.prepare('SELECT checked_at,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;partial:number}|undefined;
  const ready=db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
- if(!ready?.ready||!status||status.partial)return new Map<string,number>();
+ // Keep observed allocations visible when unrelated history is incomplete.
+ // The public usage response remains partial so callers can signal that the
+ // allocation weights may be incomplete; individual intervals still require
+ // matching samples, known credits and a completed subsequent scan.
+ if(!ready?.ready||!status)return new Map<string,number>();
  const events=db.prepare('SELECT at,day,hour,cwd,model,tier,tokens FROM codex_usage_dedup_events WHERE account=? AND at IS NOT NULL AND julianday(at)>julianday(?) AND julianday(at)<=julianday(?) ORDER BY at LIMIT ?').all(id,samples[0].checked_at,samples[samples.length-1].checked_at,USAGE_EVENT_LIMIT+1) as Array<{at:string;day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;tokens:string}>;
  if(events.length>USAGE_EVENT_LIMIT)return new Map<string,number>();
  const boundary=db.prepare('SELECT started_at FROM codex_usage_scan_boundary WHERE account=?').get(id) as {started_at:string}|undefined;
@@ -293,6 +297,7 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
 export async function refreshUsageRules(id:string):Promise<void>{
  const db=getDb();
  const current=db.prepare('SELECT version,state,retry_at FROM codex_usage_rule_versions WHERE account=?').get(id) as {version:number;state:string;retry_at:string|null}|undefined;
+ if(current?.version===4&&['ready','ready_partial'].includes(current.state)){db.prepare('UPDATE codex_usage_rule_versions SET version=? WHERE account=?').run(USAGE_RULE_VERSION,id);return;}
  if(current?.version===3&&current.state==='ready'){const previous=db.prepare('SELECT partial,error FROM codex_usage_status WHERE account=?').get(id) as {partial:number;error:string|null}|undefined;const partial=!!previous?.partial&&previous.error==='部分记录不可读取或缺少统计字段';db.prepare('UPDATE codex_usage_rule_versions SET version=?,state=?,retry_at=? WHERE account=?').run(USAGE_RULE_VERSION,partial?'ready_partial':'ready',partial?new Date(Date.now()+86400000).toISOString():null,id);return;}
  if(current?.version===USAGE_RULE_VERSION&&(current.state==='ready'||['blocked','ready_partial'].includes(current.state)&&current.retry_at&&Date.parse(current.retry_at)>Date.now()))return;
  db.prepare("INSERT OR REPLACE INTO codex_usage_rule_versions(account,version,state,retry_at,reason) VALUES(?,?,'pending',NULL,NULL)").run(id,USAGE_RULE_VERSION);

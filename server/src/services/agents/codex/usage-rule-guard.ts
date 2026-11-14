@@ -18,7 +18,8 @@ export function assertUsageRebuildPreserves(db:Database.Database,account:string,
  for(const row of db.prepare('SELECT event_key,day,cwd,model,tokens FROM codex_usage_dedup_events WHERE account=?').iterate(account) as Iterable<{event_key:string;day:string;cwd:string;model:string|null;tokens:string}>){
   oldIds.add(row.event_key);
   const prior=JSON.parse(row.tokens) as Record<string,number|null>,next=fresh.get(row.event_key);
-  if(!next||next.day!==row.day||next.cwd!==row.cwd||next.model!==row.model||tokenFields.some(k=>next.tokens[k]!==prior[k]))throw Error('历史请求缺失或内容不一致');
+  if(!next)throw Error('部分历史请求无法从原始文件中找到');
+  if(next.day!==row.day||next.cwd!==row.cwd||next.model!==row.model||tokenFields.some(k=>next.tokens[k]!==prior[k]))throw Error('历史请求的归属或 Token 与缓存不一致');
   const key=keyFor(row.day,row.cwd,row.model,prior),group=groups.get(key)||{requests:0,tokens:Object.fromEntries(tokenFields.map(k=>[k,prior[k]===null?null:0]))};
   group.requests++;
   for(const field of tokenFields){if(group.tokens[field]!==null){const value=prior[field];if(typeof value!=='number'||!Number.isSafeInteger(value)||value<0)throw Error('历史计数不可验证');group.tokens[field]!+=value;if(!Number.isSafeInteger(group.tokens[field]))throw Error('历史计数超限');}}
