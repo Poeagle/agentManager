@@ -91,6 +91,15 @@ function createCurrentSchema(): void {
       UNIQUE (session_id,native_id,message_id)
     );
 
+    CREATE TABLE IF NOT EXISTS conversation_batches (
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      client_id TEXT NOT NULL,
+      parts TEXT NOT NULL,
+      message_id TEXT,
+      PRIMARY KEY(session_id,client_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_conversation_batch_message ON conversation_batches(session_id,message_id);
+
     CREATE TABLE IF NOT EXISTS conversation_input_sources (
       session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
       client_id TEXT NOT NULL,

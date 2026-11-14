@@ -1,4 +1,4 @@
-import {composerKey,loadComposer} from '../src/lib/batch-composer';
+import {composerKey,loadComposer,saveComposer,emptyComposer} from '../src/lib/batch-composer';
 import {sessionAgent} from '../src/lib/agents';
 import { act, fireEvent, render, screen, waitFor,within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -76,6 +76,34 @@ describe('conversation send transaction', () => {
     expect(loadComposer(composerKey('local',session.id)).draft).toBe('new input');
     expect(loadComposer(composerKey('local',session.id)).entries[0].text).toBe('batch');
     expect(screen.getByRole('button',{name:'发送批量内容'})).toBeEnabled();expect(submit).toHaveBeenCalledOnce();
+  });
+  it('sends staged content with Ctrl+Enter and opens a centered batch detail dialog',async()=>{
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();
+    fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
+    input('one');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));input('two');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
+    const editor=screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'});
+    fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true,isComposing:true});expect(submit).not.toHaveBeenCalled();
+    fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true});await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
+    expect(submit.mock.calls[0][4]).toEqual([{length:3,attachments:0},{length:3,attachments:0}]);
+    fireEvent.click(screen.getByRole('button',{name:/批量消息/}));
+    const dialog=screen.getByRole('dialog',{name:'批量消息 · 2 条'});expect(within(dialog).getByLabelText('第 1 条消息')).toHaveTextContent('one');expect(within(dialog).getByLabelText('第 2 条消息')).toHaveTextContent('two');
+    fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+  it('recalls one staged message into the existing draft without losing either text',async()=>{
+    await mount();fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
+    input('staged');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));input('editing');
+    fireEvent.click(screen.getByRole('button',{name:'撤回第 1 条消息'}));
+    const stored=loadComposer(composerKey('local',session.id));expect(stored.entries).toEqual([]);expect(stored.draft).toBe('editing\n\nstaged');
+    expect(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveTextContent('editing');
+  });
+  it('uses the conversation image preview in staged entries and restores recalled attachments after reload',async()=>{
+    const image={kind:'image' as const,name:'fixture.png',path:'/fixture/fixture.png',offset:3};
+    saveComposer(composerKey('local',session.id),{...emptyComposer(),mode:'batch',entries:[{id:'image',text:'pic',attachments:[image]}]});
+    const view=await mount();fireEvent.click(screen.getByRole('button',{name:'打开附件 fixture.png'}));
+    expect(screen.getByRole('dialog',{name:'图片预览 · fixture.png'})).toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'关闭图片预览 · fixture.png'}));
+    fireEvent.click(screen.getByRole('button',{name:'撤回第 1 条消息'}));
+    expect(loadComposer(composerKey('local',session.id)).draftAttachments).toEqual([image]);view.unmount();await mount();
+    expect(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveTextContent('pic');expect(loadComposer(composerKey('local',session.id)).draftAttachments).toEqual([image]);
   });
   it('reconciles the terminal echo when its native ID differs from the browser ID',async()=>{
     const response=deferred<SendResult>(),submit=vi.spyOn(api.agent,'sendInput').mockReturnValue(response.promise);await mount();input('terminal echo');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await waitFor(()=>expect(submit).toHaveBeenCalledOnce());

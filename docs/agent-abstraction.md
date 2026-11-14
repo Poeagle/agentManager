@@ -34,6 +34,10 @@ flowchart TB
 
 终端输入的浏览器 ID 与原生客户端 ID 可能不同。平台只在同一会话和原生线程内，依据发送前的文件边界及输入指纹一对一关联持久回显；`input_reconciliation` 推送已确认的关联，`native_client_id` 保留原生 ID 以合并实时回显。不同 ID 的相同文本不会单独触发去重。
 
+### 批量消息展示
+
+平台将批量草稿合并为一次输入，向 Agent 适配器提交原始正文与附件。可选 API `batch` 边界由平台校验并保存，不需要 Agent 实现新能力；同一提交 ID 的实时流与历史可携带中立 `AgentMessage.batch: [{text,attachments}]`，用于卡片及居中详情。边界缺失的旧消息不推断分组。记录随历史快照迁移和会话删除清理，详情见 [批量发送](batch-composer.md)。
+
 ### 输入来源与折叠卡片
 
 ```mermaid

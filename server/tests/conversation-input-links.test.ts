@@ -1,3 +1,4 @@
+import {rememberBatch,validateBatch} from '../src/services/conversation-batches.js';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {mkdirSync,writeFileSync,appendFileSync,statSync} from 'node:fs';
 import {join} from 'node:path';
@@ -70,4 +71,16 @@ it('repairs previously journalled attachment fallbacks without guessing from dis
  const attachments=[{kind:'image' as const,name:'picture.png',path:'/project/image.png',offset:0},{kind:'file' as const,name:'note.txt',path:'/project/note.txt'}],text='hello';
  const boundary=statSync(file).size;rememberConversationAttachments('s','browser',text,attachments,true);await rememberConversationInput('s',binding,'browser',nativeConversationInput(text,attachments)[0].text);
  expect(linkConversationInputs('s',native,[{...message('native',boundary,formatConversationInput(text,attachments,true)),client_id:'terminal'}])[0]).toMatchObject({client_id:'browser',native_client_id:'terminal'});
+});
+
+it('restores batch parts from durable history after moving and rolling back a conversation',async()=>{
+ getDb().prepare("UPDATE sessions SET cli_type='codex',agent_id='codex',native_session_id=?,codex_session_id=? WHERE id='s'").run(native,native);
+ const text='one\n\ntwo',boundary=statSync(file).size;
+ const parts=validateBatch([{length:3,attachments:0},{length:3,attachments:0}],text,[])!;
+ rememberBatch('s','batch',parts);await rememberConversationInput('s',binding,'batch',text);
+ const history=snapshotConversation('s');activateFreshConversation('s',history,'019ff001-1234-7234-8234-123456789abd');
+ expect(linkConversationInputs(history,native,[message('batch-native',boundary,text)])[0].batch).toEqual(parts);
+ restoreConversationSnapshot('s',history);
+ expect(linkConversationInputs('s',native,[message('batch-native',boundary,text)])[0].batch).toEqual(parts);
+ expect(linkConversationInputs('other',native,[message('batch-native',boundary,text)])[0].batch).toBeUndefined();
 });

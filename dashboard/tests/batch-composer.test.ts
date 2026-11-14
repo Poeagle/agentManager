@@ -16,3 +16,7 @@ it('surfaces storage failures to the caller before content is discarded',()=>{
  const spy=vi.spyOn(Storage.prototype,'setItem').mockImplementation(()=>{throw Error('quota');});
  try{expect(()=>saveComposer('key',emptyComposer())).toThrow('quota');}finally{spy.mockRestore();}
 });
+
+it('preserves the separator after an attachment-only first entry',()=>{
+ expect(combinedBatch([{id:'1',text:'',attachments:[{kind:'image',name:'image',path:'/fixture/image',offset:0}]},{id:'2',text:'next',attachments:[]}]).text).toBe('\n\nnext');
+});

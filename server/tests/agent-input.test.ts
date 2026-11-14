@@ -1,3 +1,4 @@
+import {decorateBatches} from '../src/services/conversation-batches.js';
 import Fastify, {type FastifyInstance} from 'fastify';
 import websocket from '@fastify/websocket';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
@@ -137,6 +138,16 @@ describe('immediate session input',()=>{
       getDb().prepare("UPDATE sessions SET created_by_user_id=? WHERE id='own'").run(user.id);getDb().prepare('DELETE FROM auth_sessions WHERE user_id=?').run(user.id);received.length=0;send();await vi.waitFor(()=>expect(received.findLast(frame=>frame.type==='interaction_result')).toMatchObject({ok:false}));expect(respond).toHaveBeenCalledOnce();
     }finally {await new Promise<void>(resolve=>{socket.once('close',()=>resolve());socket.close();});}
     expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
+  it('validates and persists batch boundaries without changing the submitted prompt',async()=>{
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
+    const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue(true);
+    const payload={input:'one\n\ntwo',source:'conversation',client_id:'batch-one',batch:[{length:3,attachments:0},{length:3,attachments:0}]};
+    const rejected=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{...payload,batch:[{length:99,attachments:0}]}});
+    expect(rejected.statusCode).toBe(400);expect(submit).not.toHaveBeenCalled();
+    const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload});
+    expect(result.statusCode).toBe(202);expect(submit.mock.calls[0][1]).toBe(payload.input);
+    expect(decorateBatches('own',[{id:'native-message',role:'user',text:payload.input,timestamp:null,client_id:'batch-one'}])[0].batch).toEqual([{text:'one',attachments:[]},{text:'two',attachments:[]}]);
   });
   it('routes chat followups directly to the existing native engine instead of a terminal menu',async()=>{
     vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');

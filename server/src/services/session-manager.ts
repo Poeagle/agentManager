@@ -2943,6 +2943,7 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
         if(replacement){
           getDb().prepare('UPDATE sessions SET agent_environment_id=?,task=?,created_at=? WHERE id=?').run(replacement.environmentId,session.task,session.created_at,sessionId);
           getDb().prepare('INSERT OR IGNORE INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments) SELECT ?,client_id,input_key,input_text,attachments FROM conversation_attachments WHERE session_id=?').run(sessionId,history);
+          getDb().prepare('INSERT OR IGNORE INTO conversation_batches(session_id,client_id,parts,message_id) SELECT ?,client_id,parts,message_id FROM conversation_batches WHERE session_id=?').run(sessionId,history);
           getDb().prepare('INSERT OR IGNORE INTO conversation_input_sources(session_id,client_id,kind,label,message_id) SELECT ?,client_id,kind,label,message_id FROM conversation_input_sources WHERE session_id=?').run(sessionId,history);
           getDb().prepare('UPDATE conversation_input_links SET native_id=? WHERE session_id=?').run(fresh,sessionId);
         }

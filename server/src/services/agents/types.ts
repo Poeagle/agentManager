@@ -321,6 +321,7 @@ export interface AgentMessage {
   };
   client_id?: string;
   /** Platform-owned provenance, attached only after submission identity is verified. */
+  batch?: Array<{text:string;attachments:ConversationAttachment[]}>;
   input_source?: { kind: string; label: string };
   /** Native echo identity, when a terminal generated a different client ID. */
   native_client_id?: string;
