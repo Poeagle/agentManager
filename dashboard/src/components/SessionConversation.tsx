@@ -77,12 +77,9 @@ import {
   parseConversationInput,
   type ConversationAttachment,
 } from "../lib/conversation-attachments";
-import {
-  ConversationAttachmentPicker,
-  ConversationMessageAttachments,
-  useConversationAttachments,
-  type DraftAttachment,
-} from "./ConversationAttachments";
+import {ConversationAttachmentPicker, ConversationMessageAttachments} from "./ConversationAttachments";
+import {useConversationAttachments} from '../lib/use-conversation-attachments';
+import type {DraftAttachment} from '../lib/conversation-attachments';
 import { ConversationMarkdown } from "./ConversationMarkdown";
 import {
   ConversationWidthHandles,

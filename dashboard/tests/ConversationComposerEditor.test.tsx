@@ -1,12 +1,23 @@
 import {useState} from 'react';import{act,fireEvent,render,screen}from'@testing-library/react';import{describe,it,expect,vi}from'vitest';
-import {ConversationComposerEditor,composerPlainText} from '../src/components/ConversationComposerEditor';
+import {ConversationComposerEditor} from '../src/components/ConversationComposerEditor';
+import {composerPlainText} from '../src/lib/conversation-composer';
 import {ConversationImagePreviewRoot} from '../src/components/ConversationImagePreview';
-import type{DraftAttachment}from'../src/components/ConversationAttachments';
+
+import type {DraftAttachment} from '../src/lib/conversation-attachments';
 vi.mock('../src/lib/api',()=>({api:{files:{previewUrl:(path:string)=>path}}}));
 const first:DraftAttachment={id:'one',kind:'image',name:'first.png',size:100,status:'ready',path:'/project/one.png'},second:DraftAttachment={...first,id:'two',name:'second.png',path:'/project/two.png'};
 function mount(){const submit=vi.fn();function Harness(){const [text,setText]=useState('我的问题'),[items,setItems]=useState([first,second]);return <ConversationImagePreviewRoot><ConversationComposerEditor value={text} items={items} disabled={false} placeholder="输入" projectId="p" projectPath="/project" onChange={setText} onRemove={id=>setItems(current=>current.filter(item=>item.id!==id))} onFiles={()=>{}} onSubmit={submit}/></ConversationImagePreviewRoot>;}render(<Harness/>);return submit;}
 function caret(node:Node,offset:number){const selection=window.getSelection()!,range=document.createRange();range.setStart(node,offset);range.collapse(true);selection.removeAllRanges();selection.addRange(range);}
 describe('attachment text in the composer',()=>{
+ it('uses the latest committed text and callbacks when removing an existing token',()=>{
+  const oldChange=vi.fn(),oldRemove=vi.fn(),onChange=vi.fn(),onRemove=vi.fn();
+  const props={value:'原文',items:[first],disabled:false,placeholder:'输入',projectId:'p',onFiles:()=>{},onSubmit:()=>{}};
+  const view=render(<ConversationComposerEditor {...props} onChange={oldChange} onRemove={oldRemove}/>);
+  view.rerender(<ConversationComposerEditor {...props} value="更新后的正文" onChange={onChange} onRemove={onRemove}/>);
+  fireEvent.click(screen.getByRole('button',{name:'移除附件 first.png'}));
+  expect(onRemove).toHaveBeenCalledExactlyOnceWith('one');expect(onChange).toHaveBeenCalledExactlyOnceWith('更新后的正文');
+  expect(oldChange).not.toHaveBeenCalled();expect(oldRemove).not.toHaveBeenCalled();
+ });
  it('previews the local image after upload when a thumbnail is available',()=>{
   const item={...first,thumbnail:'blob:local-image'};
   render(<ConversationImagePreviewRoot><ConversationComposerEditor value="" items={[item]} disabled={false} placeholder="输入" projectId="p" projectPath="/project" onChange={()=>{}} onRemove={()=>{}} onFiles={()=>{}} onSubmit={()=>{}}/></ConversationImagePreviewRoot>);

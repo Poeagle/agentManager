@@ -2,7 +2,8 @@ import {useDisplayClock} from '../lib/display-clock';
 import type {ConversationMessage} from '../lib/api';
 import {encodeQuestionReply} from '../lib/conversation-question-reply';
 import {ConversationQuestionEditor,type QuestionAttachmentContext,type QuestionAttachmentMap,type QuestionAttachmentState} from './ConversationQuestionEditor';
-import type {DraftAttachment} from './ConversationAttachments';
+
+import type {DraftAttachment} from '../lib/conversation-attachments';
 import type {ConversationAttachment} from '../lib/conversation-attachments';
 import {formatConversationTimestamp} from '../lib/conversation-timing';
 import {memo,useCallback,useRef,useState} from 'react';

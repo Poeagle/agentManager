@@ -1,4 +1,4 @@
-import {fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {act,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
 import {ConversationFilePreview} from '../src/components/ConversationFilePreview';
 import {api,ApiError,fetchJSON} from '../src/lib/api';
@@ -18,6 +18,24 @@ beforeEach(()=>{
  vi.mocked(api.files.read).mockImplementation(async path=>({path,content:'# 目录中的说明',extension:'md',size:25}));
 });
 describe('directory conversation previews',()=>{
+ it('clears the visible file immediately when its authorization scope changes',async()=>{
+  const path='/project/README.md';vi.mocked(fetchJSON).mockResolvedValue({path,type:'file'});
+  const props={file:{...file,path,name:'README.md'},onClose:()=>{}};
+  const view=render(<ConversationFilePreview {...props}/>);
+  expect(await screen.findByRole('heading',{name:'目录中的说明'})).toBeVisible();
+  const reject:Array<(error:Error)=>void>=[];
+  vi.mocked(fetchJSON).mockImplementation(()=>new Promise((_resolve,fail)=>{reject.push(fail);}));
+  view.rerender(<ConversationFilePreview {...props} file={{...props.file,projectId:'other-project'}}/>);
+  expect(screen.queryByRole('heading',{name:'目录中的说明'})).not.toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent('正在读取路径信息');
+  // Returning before the intervening request completes must not reuse its old result.
+  view.rerender(<ConversationFilePreview {...props}/>);
+  expect(screen.queryByRole('heading',{name:'目录中的说明'})).not.toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent('正在读取路径信息');
+  await act(async()=>{for(const fail of reject)fail(new ApiError('Forbidden',403));});
+  expect(await screen.findByRole('alert')).toHaveTextContent('没有权限访问此路径');
+  expect(api.files.read).not.toHaveBeenCalledWith(path,'other-project');
+ });
  it('previews an external attachment with project authorization and no directory listing',async()=>{
   const path='/platform/attachments/project/pastes/paste-report.md';
   vi.mocked(fetchJSON).mockResolvedValue({path,type:'file'});
