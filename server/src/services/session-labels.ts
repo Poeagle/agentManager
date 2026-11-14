@@ -1,3 +1,4 @@
+import {nativeSessionTitle} from './native-session-titles.js';
 import { getDb } from '../db/index.js';
 
 interface LabelledSession {
@@ -24,12 +25,12 @@ export function sessionPresenter(viewerId: string) {
     return states.get(key)!;
   };
   return (session: LabelledSession) => {
-    let name = '', isOpen = false;
+    let name = '', isOpen = false;const nativeTitle=nativeSessionTitle(session.id);
     if (session.project_id) {
       for (const userId of [...new Set([viewerId, session.created_by_user_id].filter(Boolean) as string[])]) {
         const state = readState(userId, session.project_id);
         const tab = Array.isArray(state.terminalInstances) ? state.terminalInstances.find(tab => tab?.id === session.id) : undefined;
-        name = text(tab?.customLabel) || text(state.terminalLabels?.[session.id]) || text(tab?.label);
+        name = text(tab?.customLabel) || text(state.terminalLabels?.[session.id]) || nativeTitle || text(tab?.label);
         isOpen = !!tab && !(Array.isArray(state.hiddenSessionIds) && state.hiddenSessionIds.includes(session.id));
         if (name) break;
       }
@@ -38,7 +39,8 @@ export function sessionPresenter(viewerId: string) {
         projects.set(session.project_id, project?.name || '');
       }
     }
+    if (!name&&nativeTitle) name=nativeTitle;
     if (!name) name = session.task && session.task !== 'Terminal' ? session.task.split('\n')[0].slice(0,100) : session.mode === 'terminal' ? '终端' : '工作会话';
-    return {display_name: name, tab_name: name, project_name: session.project_id ? projects.get(session.project_id) || '' : '', is_open_tab: isOpen};
+    return {native_title:nativeTitle,display_name: name, tab_name: name, project_name: session.project_id ? projects.get(session.project_id) || '' : '', is_open_tab: isOpen};
   };
 }

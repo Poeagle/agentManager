@@ -863,6 +863,7 @@ export function scopeProjectFiles(files: typeof api.files, projectId?: string): 
 
 // Types
 export interface Session {
+  native_title?:string|null;
   agent_environment_id?: string | null;
   id: string;
   project_id: string | null;

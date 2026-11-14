@@ -1,3 +1,4 @@
+import {rememberCodexTitle} from './thread-title.js';
 import {getDb} from '../../../db/index.js';
 import {AsyncLocalStorage} from 'async_hooks';
 import {open} from 'fs/promises';
@@ -69,6 +70,7 @@ export function rememberCodexProvider(provider:unknown):void {
 }
 export function rememberCodexThread(thread:any):void {
  if(typeof thread?.id!=='string')return;
+ rememberCodexTitle(thread.id,thread.name,currentCodexEngine().environmentId??'native');
  if(currentCodexEngine().environmentId){threads.set(threadKey(thread.id),currentCodexEngine());while(threads.size>1024)threads.delete(threads.keys().next().value!);return;}
  const engine=currentCodexEngine();
  const provider=typeof thread.modelProvider==='string'?thread.modelProvider:engine.provider;

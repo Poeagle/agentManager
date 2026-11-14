@@ -65,3 +65,10 @@ export function reconcileHydratedTerminalInstances(
 
   return reconciled;
 }
+
+/** Native metadata updates automatic labels; explicit user names remain authoritative. */
+export function applyNativeTabTitles(tabs:TerminalInstance[],titles:Record<string,string|null|undefined>):TerminalInstance[]{
+ const result:TerminalInstance[]=[];
+ for(const tab of tabs){const title=titles[tab.id]?.trim();const label=!tab.customLabel?.trim()&&title?uniqueTabName(title,[...tabs,...result],tab.id):tab.label;result.push(label===tab.label?tab:{...tab,label});}
+ return result;
+}
