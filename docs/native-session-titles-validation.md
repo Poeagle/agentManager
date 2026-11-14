@@ -1,6 +1,6 @@
 # 原生会话标题验证
 
-分支 `fix/native-session-titles`，未合入、未部署。
+原独立验证分支 `fix/native-session-titles`；现已并入用量功能分支统一验证，最终结果见 [用量统计验证记录](usage-statistics-validation.md)。
 
 - 使用 Codex `Thread.name` 与 `thread/name/updated.threadName`（通过本机 0.169.0 协议生成器核对）。
 - 订阅与 API Engine 使用相同适配路径，原生身份按 Engine 隔离。
@@ -20,4 +20,4 @@
 | `npm --prefix server run build` | 通过 |
 | `npm --prefix dashboard run build` | 通过，存在大 chunk 提示 |
 
-没有为此独立分支执行完整浏览器套件；用量分支的完整浏览器结果见该分支验证记录，不能将其结果视为本分支全量浏览器通过。
+独立分支阶段未单独执行完整浏览器套件；合并后的完整浏览器结果统一记入用量统计验证记录。

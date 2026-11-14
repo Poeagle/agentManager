@@ -1,74 +1,71 @@
-# 用量统计调整验证记录
+# 用量统计修复验证记录
 
-本记录对应独立分支 `feat/usage-period-csv`；未合入、未部署。
+验证分支：`feat/usage-period-csv`。本轮验证同时包含主分支已有的附件、编辑器与批量输入修复，避免覆盖并行任务的改动。
 
-## 计算与存储验证
+## 计算规则
 
-- 按小时、日、周、月独立分配；筛选不重新分配隐藏项；四位小数最大余数分配守恒。
-- 覆盖午夜、跨年/月/周、时区及夏令时重复小时、等价 UTC 时间表示、未知值和零分母。
-- CSV 覆盖转义、原子切换、重启、跨日归档、校验损坏、上一代恢复、旧缓存转换、状态检查点及采样过期。
-- SQLite 原始采集和去重索引保留作兼容与恢复来源；生产库尚未执行迁移。
+```mermaid
+flowchart LR
+  A[选定日期与统计周期] --> B[汇总该周期账号观测耗用]
+  A --> C[汇总同周期全部项目及模型 Credit]
+  B --> D[耗用 × 当前项 Credit ÷ 周期完整 Credit]
+  C --> D
+  D --> E[四位小数守恒分配]
+  E --> F[搜索与列筛选：仅隐藏记录]
+```
 
-## 命令与结果
+| 示例 | 项目 A Credit | 项目 B Credit | 账号观测耗用 | A 分配 | B 分配 |
+|---|---:|---:|---:|---:|---:|
+| 第一天 | 90 | 10 | 1 | 0.9 | 0.1 |
+| 第二天 | 10 | 90 | 3 | 0.3 | 2.7 |
+| 两天所属周 | 100 | 100 | 4 | 2 | 2 |
+
+周分配重新计算，不能使用日分配相加得到的 1.2 / 2.8。搜索和模型、数值列筛选不改变额度或占比的周期分母。
+
+## 验证范围
+
+- 小时、日、周、月以及项目、模型分组；本地日期、午夜、跨年/月/周、夏令时重复小时与等价 UTC 表示。
+- 跨界额度采样按已知 Credit 估算拆分；负向变化、超过 15 分钟空档及缺少计算依据的区间不计入，未知不当作零。
+- 四位小数最大余数分配守恒；真实零保留，未知为空；未知权重明确为部分覆盖。
+- 午夜后响应晚于扫描时，下一轮补算前一天末尾区间；重复补算不累计，后续归档保留正确总量。
+- CSV 转义、原子发布、校验损坏、上一代恢复、检查点不一致、跨天归档、旧数据库兼容及原始采样过期。
+- 停机后的修改文件增量补采、请求去重、部分失败保留检查点、再次重试和跨 Engine 来源隔离。
+- API Engine Token、模型、目录与共享请求去重；API 钱包实际扣费不使用订阅周额度公式。
+- 用户手动标签优先；Codex 原生标题更新、持久化、重启恢复与 API Engine 隔离。
+- 所有前端额度读取均使用后台快照，包含手动刷新及缓存过期；每账号每轮仅一次额度请求，额度和日志扫描同轮启动。
+
+## 完整检查
 
 | 命令 | 结果 |
 |---|---|
-| `npm --prefix server test` | 最近完整运行 1070 通过，1 跳过；随后修改的相关模块另跑定向回归 |
-| `npm --prefix dashboard test` | 最近完整运行 572 通过；随后增加的边界测试定向通过 |
+| `npm --prefix server run test:coverage` | 140 文件，1091 通过，1 跳过；覆盖率门槛通过 |
+| `npm --prefix dashboard run test:coverage -- --maxWorkers=2` | 105 文件，604 通过；覆盖率门槛通过 |
+| `npm run build` | 前后端类型检查与生产构建通过，存在既有大 chunk 提示 |
 | `npm run test:update-security` | 5 通过 |
-| `npm --prefix server run build` | 通过 |
-| `npm --prefix dashboard run build` | 通过，存在既有大 chunk 提示 |
-| `npm exec playwright test -- --config playwright.usage.config.ts` | 用量专项通过，覆盖小时/日/周/月切换、展开与搜索 |
-| `npm run test:e2e` | 64 项完整执行：39 通过、25 失败；用量专项包含在通过项中 |
+| `E2E_API_PORT=43510 E2E_UI_PORT=43511 npm run test:e2e` | 64 项 Chromium 用例全部通过，无重试 |
+| `git diff --check` | 通过 |
+| `npm --prefix dashboard run lint -- --ignore-pattern '.test-data/**'` | 未通过：95 项既有错误、33 警告；改动文件逐项与 main 对照，无新增错误 |
 
-## 完整浏览器套件失败清单
+唯一环境跳过项为 `document-conversion.test.ts` 的真实 XLSX 转换：本机缺少 `/usr/lib/libreoffice/program/libsclo.so`。用量统计测试没有跳过。全量 ESLint 的既有错误主要为 React Hooks 规则和显式 any；本次没有关闭规则或降低门槛。
 
-以下为该次完整运行的实际错误，未断言所有问题均为本次改动引入或均为基线问题。两个已修正的旧 UI 断言另行复测。
+此前浏览器运行暴露并修正了独立工作区共用 Vite 优化缓存、测试目录冲突、外置附件旧路径断言、额度页面旧直连断言以及异步路由响应对象复用问题。最终结果只以表中的最后完整运行计数为准，不把不同运行的通过数相加冒充一次全绿。
 
-| 用例 | 实际错误摘要 |
-|---|---|
-| `platform-rbac.spec.ts:4` Platform management provides role configuration and enforces a monitoring-only account | Error: expect(locator).toBeVisible() failed; Locator: getByRole('dialog', { name: '平台管理' }).getByRole('navigation', { name: '平台管理分类' }).getByRole('button', { name: '用户管理', exact: true }); Expected: visible; Error: element(s) not found |
-| `platform-rbac.spec.ts:59` Project ownership, client selection and monitoring all use compact expandable tables | Test timeout of 90000ms exceeded. Error: apiRequestContext.delete: Test timeout of 90000ms exceeded. |
-| `agent-management.spec.ts:3` shows Agent-specific settings for Codex and Claude | Error: expect(locator).toBeVisible() failed; Locator: getByRole('heading', { name: 'Agent 配置' }); Expected: visible; Error: element(s) not found |
-| `codex-environments.spec.ts:91` switches from account Providers to native and API Providers without becoming stuck or inventing unsaved changes | Error: expect(locator).toBeVisible() failed; Locator: getByRole('region', { name: 'Codex 账号 Provider' }).getByText('授权用户', { exact: true }); Expected: visible; Error: element(s) not found |
-| `conversation-activity.spec.ts:6` one-line tool activity scrolls, keeps real timers and never enters public conversation messages | Error: expect(locator).toContainText(expected) failed; Locator: getByRole('region', { name: '会话对话' }).filter({ visible: true }).getByTestId('conversation-activity-line') |
-| `conversation-clock.spec.ts:8` progress uses the browser clock across reload, shows completion metadata and aligns with its number | Error: expect(locator).toHaveText(expected) failed; Locator:  getByRole('region', { name: '会话对话' }).filter({ visible: true }).locator('[data-chat-message-id="live-time"]').locator('.session-chat-message-statistics'); Expected: "token: ≥500 · tools: ≥2/≥1"; Received: "token: ≥500 · tools: ≥2｜≥1" |
-| `conversation-controls.spec.ts:7` model controls use native capabilities and a docked file stays readable while feedback is sent | Error: expect(locator).toBeVisible() failed; Locator: getByText('上下文 30%', { exact: true }); Expected: visible; Error: element(s) not found |
-| `conversation-errors.spec.ts:7` native failures appear live, stop busy indicators and survive history reconciliation and reload | Error: expect(locator).toBeVisible() failed; Locator: getByRole('region', { name: '会话对话' }).filter({ visible: true }).getByText('执行验证任务', { exact: true }); Expected: visible; Error: element(s) not found |
-| `conversation-implicit-final.spec.ts:7` renders an unphased Codex completion as the conclusion across reload | Error: expect(locator).toBeVisible() failed; Locator: getByRole('region', { name: '会话对话' }).filter({ visible: true }).getByText('事件通道已连接', { exact: true }); Expected: visible; Error: element(s) not found |
-| `conversation-interactions.spec.ts:10` native questions and approvals survive refresh and submit through the actual authenticated bridge | Error: expect(locator).toBeVisible() failed; Locator: getByText('事件通道已连接').filter({ visible: true }); Expected: visible; Error: element(s) not found |
-| `conversation-legacy-identity.spec.ts:7` legacy rollout echoes reconcile live conclusions once across turns, tab switches and reload | Error: expect(locator).toBeVisible() failed; Locator: getByRole('region', { name: '会话对话' }).filter({ visible: true }).getByText('事件通道已连接', { exact: true }); Expected: visible; Error: element(s) not found |
-| `conversation-order.spec.ts:7` sending, early native echoes, late history and reload preserve causal message order | Error: expect(locator).toBeVisible() failed; Locator: getByRole('region', { name: '会话对话' }).filter({ visible: true }).getByText('事件通道已连接'); Expected: visible; Error: element(s) not found |
-| `conversation-reading.spec.ts:6` conversation shares its tab row, resizes, previews and navigates rich streamed content | Error: expect(locator).toBeVisible() failed; Locator: getByRole('region', { name: '会话对话' }).filter({ visible: true }).getByText('事件通道已连接', { exact: true }); Expected: visible; Error: element(s) not found |
-| `conversation-reload.spec.ts:8` reload preserves the same conversation, draft and atomic picture text while replacing only its client | Test timeout of 45000ms exceeded. Error: apiRequestContext.delete: Test timeout of 45000ms exceeded. |
-| `conversation-statistics-duplicates.spec.ts:6` deduplicates native conclusion echoes and shows actual usage and duration after reload | Error: expect(locator).toHaveCount(expected) failed; Locator:  getByRole('region', { name: '会话对话' }).filter({ visible: true }).getByText('测试结论', { exact: true }); Expected: 1; Received: 0 |
-| `conversation-streaming.spec.ts:7` renders each native delta before the item completes and keeps one progress bubble | Error: listen EADDRINUSE: address already in use /home/xlli/.codex/worktrees/usage-period-csv/.test-data/e2e/codex.sock |
-| `conversation-view.spec.ts:11` chat hides tool logs, sends to the same live session and switches to its original terminal | Error: listen EADDRINUSE: address already in use /home/xlli/.codex/worktrees/usage-period-csv/.test-data/e2e/codex.sock |
-| `platform-ai.spec.ts:9` Platform AI chats through real platform tools and a signed external gateway | TypeError: Cannot read properties of undefined (reading 'some')    105 \|     expect(modelRequests.length).toBe(2);   106 \|     const tool=JSON.parse(modelRequests[1].messages.find((message: any) => message.role==='tool') |
-| `previews.spec.ts:32` previews diagrams, tables, images, PDF, and readable wrapped text locally | TypeError: Cannot read properties of undefined (reading 'id')    50 \|   await page.request.put('/api/settings', { data: { settings: { statusline_prompted: 'true' } } });   51 \|   await page.request.put('/api/user-state/a |
-| `progress-intervals.spec.ts:6` progress badges and folding keep metadata separate from the message content | Error: expect(locator).toBeVisible() failed; Locator: getByRole('region', { name: '会话对话' }).filter({ visible: true }).getByText('step · token: 100 · tools: 1 call / 1 round', { exact: true }); Expected: visible; Error: element(s) not found |
-| `prompt-enhancement-copy.spec.ts:20` copying an enhanced prompt keeps the preview open and never writes to the terminal | Test timeout of 45000ms exceeded. Error: locator.click: Test timeout of 45000ms exceeded. |
-| `question-terminal-sync.spec.ts:8` an attached answer clears only its native terminal question and stays resolved after replay | Error: listen EADDRINUSE: address already in use /home/xlli/.codex/worktrees/usage-period-csv/.test-data/e2e/codex.sock |
-| `scheduled-windows.spec.ts:5` aligns host telemetry and separates scheduled task display from daily window settings | Test timeout of 45000ms exceeded. Error: locator.boundingBox: Test timeout of 45000ms exceeded. |
-| `session-resume.spec.ts:52` Resume shows failure, immediate retry feedback, and progress until terminal readiness | Error: expect(locator).toContainText(expected) failed; Locator: getByRole('alert'); Error: strict mode violation: getByRole('alert') resolved to 2 elements: |
-| `table-consistency.spec.ts:70` all platform lists and expanded lists retain the same table structure | Test timeout of 45000ms exceeded. Error: locator.click: Test timeout of 45000ms exceeded. |
+## 性能样本
 
-## 合成性能样本
+以下为本机合成数据，独立运行，不能视为生产延迟保证。
 
-- 100000 请求转为小时 CSV，首次测得约 629 ms，归档总 Token 校验一致。
-- 300000 请求、5000 额度采样，首次测得计算约 687 ms。
-- 均为本机合成数据，包含测试进程和负载差异，不作为生产延迟保证。
+| 场景 | 样本 | 结果 |
+|---|---|---:|
+| 小时 CSV 归档 | 100000 请求 | 755 ms，总 Token 守恒 |
+| 额度区间计算 | 300000 请求、5000 次采样 | 725 ms，总观测变化守恒 |
+| 日周期分配 | 5000 行、50000 个模型项，5 次 | 中位 57 ms |
+| 周周期分配 | 同上 | 中位 91 ms |
+| 月周期分配 | 同上 | 中位 91 ms |
 
-## 最终复核补充
+性能测试命令：`npm --prefix server test -- --run tests/codex-usage-csv.test.ts tests/codex-quota-periods.test.ts -t 'archives 100000|handles large' --disableConsoleIntercept`。项目/模型分母汇总采用单次遍历，避免反复复制增长数组。
 
-- 最后一轮完整服务端：137 文件通过，1071 用例通过，1 用例跳过。
-- 最后一轮完整前端：102 文件通过，574 用例通过。随后新增的提示隐藏回归单独通过（账户详情 13 项）。
-- 两个旧界面断言修复后分别复测通过：`agent-management.spec.ts` 和 `codex-environments.spec.ts` 的 Provider 切换用例。完整运行本身仍记录为 39 通过、25 失败，未将定向复测混算为一次全绿运行。
-- 完整浏览器剩余失败未在本次用量统计改动中解决，范围和原始错误见上表；不能宣称全套浏览器通过。
-- SQLite 的采集和去重索引保留，CSV 已接入正常日／小时读取。尚未合入／部署，因此现有运行实例的生产库与文件没有被本分支转换。
-- 每轮只更新当天或跨天需收尾的日期；历史文件按内容哈希复用。跨多日停机恢复执行有界全量补采并去重。
-- 用户要求隐藏的“历史部分记录不可读取；已核对的数据已按新规则更新”说明已移除，相关组件回归通过。
+## 存储与恢复边界
 
-## API Engine 兼容复核
+CSV 位于数据库同目录 `usage-csv/<账号 ID 的 SHA-256>/`。当天请求和额度采样、历史小时归档、账号小时观测变化由同代 manifest 原子发布，并保留上一代。SQLite 采集、请求身份去重和跨 Engine 索引继续保留，作为兼容与恢复来源；这次并非完全移除 SQLite。
 
-`npm --prefix server test -- --run tests/codex-usage-csv.test.ts tests/codex-account-usage.test.ts tests/codex-environments.test.ts tests/codex-environment-usage.test.ts tests/codex-engine-balance.test.ts`：5 文件、64 项通过。覆盖 API 历史归属、共享目录保护、跨 Engine 请求去重、上游余额，以及 CSV 中 Provider、模型和速度元数据保留。API 钱包实际扣费仍来自上游，订阅周额度公式不用于 API 钱包。
+可读 JSONL 支持停机补采；已经删除的原始文件不能凭空恢复。停机期间的周额度历史读数无法通过当前接口回补，不将重启后的读数差伪装成逐小时精确扣费。跨界拆分和项目分配是参考估算。
