@@ -14,7 +14,7 @@ it('loads and groups precise UTC hourly records without changing daily statistic
 it('shows local-day usage, formats collection time in the same zone and explicitly retains unassigned history',async()=>{
  vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:true,timezone:'Asia/Taipei',quota_range:{start:'2026-11-11T16:00:00Z',end:'2026-11-11T16:30:00Z'},checked_at:'2026-11-11T16:34:39Z',unassigned:{tokens:{total_tokens:100},requests:1,estimated_credits:1},rows:[{date:'2026-11-12',cwd:'/local',estimated_credits:2,tokens:{input_tokens:20,cached_input_tokens:10,output_tokens:0,total_tokens:20}}]}}:{account:{},resets:null} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="local" name="Local" onClose={()=>{}}/></QueryClientProvider>);
- expect(await screen.findByText('/local')).toBeVisible();expect(screen.getByText(/更新于/)).toHaveTextContent('2026/11/12 00:34:39');expect(screen.getByText('数据不完整').closest('.ci-observation')).toHaveAttribute('title',expect.stringContaining('Asia/Taipei'));expect(screen.getByText('2026-11-12')).toBeVisible();expect(screen.queryByText(/已保留 100 Token/)).toBeNull();expect(screen.getByText(/周从本地周一开始/)).toBeVisible();
+ expect(await screen.findByText('/local')).toBeVisible();expect(screen.getByText(/最新采集：/)).toHaveTextContent('2026/11/12 00:34:39');expect(screen.getByText('数据不完整').closest('.ci-observation')).toHaveAttribute('title',expect.stringContaining('Asia/Taipei'));expect(screen.getByText('2026-11-12')).toBeVisible();expect(screen.queryByText(/已保留 100 Token/)).toBeNull();expect(screen.getByText(/周从本地周一开始/)).toBeVisible();
 });
 it('orders estimated Credits before spend share and uses Credits rather than Token ratios at each level',async()=>{
  const item=(cwd:string,model:string,n:number,credit:number)=>({date:'2026-11-11',cwd,project_name:cwd.slice(1),estimated_credits:credit,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n},models:[{model,estimated_credits:credit,actual_quota:0.25,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n}}]});
@@ -107,8 +107,15 @@ it('omits the partial historical rule-refresh banner requested by the user',asyn
 });
 
 it('shows source paths compactly and keeps full log and cache paths available',async()=>{
- vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{sources:[{environment:'Fixture',history:['/fixture/.codex/sessions','/fixture/.codex/archived_sessions'],cache:'/fixture/usage-csv/account'}],usage:{initialized:true,partial:false,checked_at:null,timezone:'UTC',rows:[]}}:{account:{},resets:null} as any);
+ vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{sources:[{environment:'Fixture',history:['/fixture/.codex/sessions','/fixture/.codex/archived_sessions'],cache:'/fixture/usage-csv/account'}],usage:{storage:{kind:'csv',path:'/fixture/usage-csv/account'},initialized:true,partial:false,checked_at:null,timezone:'UTC',rows:[]}}:{account:{},resets:null} as any);
  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
  const view=render(<QueryClientProvider client={client}><CodexAccountInsights id="sources" name="Sources" onClose={()=>{}}/></QueryClientProvider>);
- try{const source=await screen.findByText(/来源：/);expect(source).toHaveTextContent('/fixture/.codex/sessions');expect(source).toHaveAttribute('title',expect.stringContaining('/fixture/usage-csv/account'));expect(screen.queryByRole('progressbar')).toBeNull();}finally{view.unmount();client.clear();}
+ try{const source=await screen.findByText(/来源：/);expect(source).toHaveTextContent('CSV /fixture/usage-csv/account');expect(source).toHaveAttribute('title',expect.stringContaining('/fixture/.codex/sessions'));expect(screen.queryByRole('progressbar')).toBeNull();}finally{view.unmount();client.clear();}
+});
+
+it.each(['csv','database'] as const)('shows the actual %s storage path and latest successful collection time',async kind=>{
+ const path=kind==='csv'?'/data/usage-csv/account':'/data/agentmanager.db';
+ vi.mocked(fetchJSON).mockImplementation(async <T,>(url:string)=>(url.includes('/insights')?{usage:{storage:{kind,path},initialized:true,partial:false,checked_at:'2026-11-14T08:00:00Z',timezone:'UTC',rows:[]}}:{account:{},resets:null}) as T);
+ const client=new QueryClient({defaultOptions:{queries:{retry:false}}});const view=render(<QueryClientProvider client={client}><CodexAccountInsights id="storage" name="Storage" onClose={()=>{}}/></QueryClientProvider>);
+ try{const source=await screen.findByText(/统计来源：/);expect(source).toHaveTextContent(`${kind==='csv'?'CSV':'数据库'} ${path}`);expect(screen.getByText(/最新采集：/)).toHaveTextContent('2026/11/14 08:00:00');expect(source.closest('.ci-observation')).toContainElement(screen.getByText(/最新采集：/));}finally{view.unmount();client.clear();}
 });
