@@ -127,3 +127,7 @@
 .ci-toolbar .ci-button{padding:1px 6px;}
 /* Tree levels need a common left edge so indentation remains visible. */
 .ci-usage-table .ci-group-label{justify-content:flex-start;}
+
+.ci-usage-table th:first-child .smart-table-heading{justify-content:flex-start;}
+.ci-model-toggle-spacer{width:16px;height:16px;flex:none;}
+.ci-toolbar select[aria-label="统计维度"]{text-align:center;text-align-last:center;}
