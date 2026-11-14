@@ -1,3 +1,4 @@
+import {config} from '../../../config.js';
 import {usageAggregates} from './usage-aggregates.js';
 import {usageCsvDirectory} from './usage-csv.js';
 import {getDb} from '../../../db/index.js';
@@ -29,8 +30,18 @@ let stopped=true;
 const pending=new Map<string,Promise<void>>();
 const hourlyPending=new Map<string,Promise<void>>();
 const controllers=new Map<string,AbortController>();
+const databaseStorage=()=>({kind:'database' as const,path:config.dbPath});
+const csvStorage=(id:string)=>({kind:'csv' as const,path:usageCsvDirectory(id)});
 function safeUsageCsv(id:string){try{return readUsageCsv(id);}catch{try{return readUsageCsv(id,true);}catch{return null;}}}
 function usageHome(e:ReturnType<typeof getCodexEnvironment>){if(e.kind!=='provider')return localHome(e);const provider=readAgentManagement('codex').providers.find(p=>p.id===e.provider);return provider?externalProviderCodexHome(provider):'';}
+/** Resolve aliases only for report grouping. Raw event paths and fingerprints
+ * remain unchanged so normalization cannot merge distinct request identities. */
+function usageDirectoryPresenter(){
+ const resolved=new Map<string,string>();
+ const canonical=(path:string)=>{if(resolved.has(path))return resolved.get(path)!;let value=path;if(path.startsWith('/'))try{value=realpathSync(path);}catch{}resolved.set(path,value);return value;};
+ const projects=(getDb().prepare('SELECT name,path FROM projects').all() as {name:string;path:string}[]).map(project=>({...project,canonical:canonical(project.path)})).sort((a,b)=>b.canonical.length-a.canonical.length);
+ return (path:string)=>{const value=canonical(path),project=projects.find(project=>value===project.canonical||value.startsWith(project.canonical.replace(/\/$/,'')+'/'));return {cwd:project&&value===project.canonical?project.path:value,project_name:project?.name??(value.split('/').filter(Boolean).pop()||'未归属')};};
+}
 /** Source locations only; never return account credentials or source identities. */
 export function accountUsageSources(id:string){
  const environment=getCodexEnvironment(id);
@@ -200,13 +211,14 @@ export function cachedAccountUsage(id:string){
  const db=getDb(),timezone=usageStoredTimezone(id),timezone_pending=timezone!==usageTimezone()?usageTimezone():null;
  const environment=getCodexEnvironment(id),basis=environment.kind==='provider'?'credits':'subscription',unassigned=unassignedUsage(id,basis);
  const source=db.prepare('SELECT identity FROM codex_usage_sources WHERE account=?').get(id) as {identity:string}|undefined;
- if(source&&source.identity!==usageIdentity(getCodexEnvironment(id)))return {initialized:false,checked_at:null,error:null,partial:true,progress:null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:[]};
- if(environment.kind==='provider'&&(!usageHome(environment)||providerHistoryIsShared(id,usageHome(environment))))return {initialized:false,checked_at:null,error:'历史目录与其他 Engine 共用或无法确认，未统计以避免重复',partial:true,progress:null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:[]};
+ if(source&&source.identity!==usageIdentity(getCodexEnvironment(id)))return {storage:databaseStorage(),initialized:false,checked_at:null,error:null,partial:true,progress:null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:[]};
+ if(environment.kind==='provider'&&(!usageHome(environment)||providerHistoryIsShared(id,usageHome(environment))))return {storage:databaseStorage(),initialized:false,checked_at:null,error:'历史目录与其他 Engine 共用或无法确认，未统计以避免重复',partial:true,progress:null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:[]};
  const status=db.prepare('SELECT checked_at,error,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;error:string|null;partial:number}|undefined;
  const rule=db.prepare('SELECT version,state,reason FROM codex_usage_rule_versions WHERE account=?').get(id) as {version:number;state:string;reason:string|null}|undefined;
  const ruleWarning=!rule||rule.version!==USAGE_RULE_VERSION?'统计规则已更新，历史缓存等待校验':rule.state==='blocked'?`历史缓存无法完整核对（${rule.reason||'原因未知'}），已保留旧数据；部分估算可能使用旧规则`:rule.state==='ready_partial'?'历史部分记录不可读取；已核对的数据已按新规则更新':rule.state==='pending'?'正在校验统计规则和历史缓存':null;
- const fileBreakdown=rule?.version===USAGE_RULE_VERSION&&rule.state==='ready'&&status?.partial===0?csvUsageBreakdown(id,status?.checked_at??null,timezone):null;
- const breakdown=fileBreakdown??usageAggregates(id).map(row=>{const tokens=JSON.parse(row.tokens);return {...row,...tokens,requests:tokens.requests??1};});
+ const fileBreakdown=status?.checked_at?csvUsageBreakdown(id,status.checked_at,timezone):null;
+ const directoryFor=usageDirectoryPresenter();
+ const breakdown=(fileBreakdown??usageAggregates(id).map(row=>{const tokens=JSON.parse(row.tokens);return {...row,...tokens,requests:tokens.requests??1};})).map(row=>({...row,cwd:directoryFor(row.cwd).cwd}));
  const groups=new Map<string,Record<string,any>>();for(const row of breakdown){const key=JSON.stringify([row.day,row.cwd]);let group=groups.get(key);if(!group){group={day:row.day,cwd:row.cwd,...Object.fromEntries(tokenFields.map(k=>[k,row[k]??null]))};groups.set(key,group);}else for(const k of tokenFields)group[k]=group[k]==null||row[k]==null?null:group[k]+row[k];}
  const rows=[...groups.values()].sort((a,b)=>b.day.localeCompare(a.day)||a.cwd.localeCompare(b.cwd)).slice(0,5001);
  const estimates=new Map<string,{value:number;covered:number;requests:number}>();
@@ -221,13 +233,13 @@ export function cachedAccountUsage(id:string){
  const quota_range:{start:string|null;end:string|null}={start:null,end:null},quota_hours:Array<{hour:string;quota:number}>=[],allocation=allocatedQuota(id,quota_range,quota_hours,timezone);
  const dailyQuota=new Map<string,number>(),dailyCredits=new Map<string,number>();for(const h of quota_hours)dailyQuota.set(h.hour.slice(0,10),(dailyQuota.get(h.hour.slice(0,10))??0)+h.quota);for(const [key,value] of estimates){const [day]=JSON.parse(key);dailyCredits.set(day,(dailyCredits.get(day)??0)+value.value);}
  allocation.clear();for(const [key,entries] of models){const [day,cwd]=JSON.parse(key),total=dailyQuota.get(day),denominator=dailyCredits.get(day);if(total!==undefined&&denominator)for(const model of entries.values())if(model.estimated_credits!==null)allocation.set(JSON.stringify([day,null,cwd,model.model]),total*model.estimated_credits/denominator);}
- const projects=db.prepare('SELECT name,path FROM projects').all() as {name:string;path:string}[];
+
  const progress=db.prepare('SELECT data FROM codex_usage_progress WHERE account=?').get(id) as {data:string}|undefined;
  const initialized=!!db.prepare('SELECT account FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
- return {initialized,checked_at:status?.checked_at??null,quota_range,quota_hours,error:ruleWarning??status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:!!ruleWarning||status?.partial!==0||rows.length>5000||!!timezone_pending||!!unassigned,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:rows.slice(0,5000).map(row=>{
-  const match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];
+ return {storage:fileBreakdown!==null?csvStorage(id):databaseStorage(),initialized,checked_at:status?.checked_at??null,quota_range,quota_hours,error:ruleWarning??status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:!!ruleWarning||status?.partial!==0||rows.length>5000||!!timezone_pending||!!unassigned,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:rows.slice(0,5000).map(row=>{
+
   const estimate=estimates.get(JSON.stringify([row.day,row.cwd]));
-  return {date:row.day,cwd:row.cwd,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null,models:[...(models.get(JSON.stringify([row.day,row.cwd]))?.values()||[])].map(model=>({...model,actual_quota:quotaByModel(allocation,row.day,row.cwd,model.model)})).sort((a,b)=>(b.tokens.total_tokens??0)-(a.tokens.total_tokens??0))};
+  return {date:row.day,...directoryFor(row.cwd),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null,models:[...(models.get(JSON.stringify([row.day,row.cwd]))?.values()||[])].map(model=>({...model,actual_quota:quotaByModel(allocation,row.day,row.cwd,model.model)})).sort((a,b)=>(b.tokens.total_tokens??0)-(a.tokens.total_tokens??0))};
  })};
 }
 /** Populate timestamps only for previously recorded event identities. Existing
@@ -265,6 +277,7 @@ export async function backfillUsageHours(id:string):Promise<void>{
 export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',single=false){
  type GroupEvent={day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string};
  const basis=single&&getCodexEnvironment(ids[0]).kind!=='provider'?'subscription':'credits';
+ let storage:ReturnType<typeof databaseStorage>|ReturnType<typeof csvStorage>=databaseStorage();
  const db=getDb(),events=new Map<string,GroupEvent|null>(),legacy:Array<{key:string;event:GroupEvent;unassigned?:boolean}>=[],aliases=new Map<string,string|null>();let partial=false,processed=0;const checked:string[]=[],timezone=usageTimezone(),unassignedEvents=new Map<string,GroupEvent|null>();
  const merge=(key:string,event:GroupEvent)=>{if(!events.has(key)){events.set(key,event);return;}const current=events.get(key);if(!current)return;const {hour:a,...left}=current,{hour:b,...right}=event;if(JSON.stringify(left)!==JSON.stringify(right)||a&&b&&a!==b){events.set(key,null);partial=true;}else if(!a&&b)current.hour=b;};
  const all=allCodexEnvironments().filter(e=>e.enabled);
@@ -277,7 +290,9 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   const snapshot=cachedAccountUsage(id);
   const ready=db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
   if(!snapshot.initialized||!ready?.ready||snapshot.timezone!==timezone){partial=true;continue;}if(snapshot.partial)partial=true;if(snapshot.checked_at)checked.push(snapshot.checked_at);
-  const rows=(single&&!snapshot.partial?csvHourlyEvents(id,snapshot.checked_at,timezone):null)??db.prepare(`SELECT event_key,day,hour,cwd,model,tier,provider,tokens FROM codex_usage_dedup_events WHERE account=? LIMIT ${USAGE_EVENT_LIMIT+1}`).all(id) as Array<{event_key:string;day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string}>;
+  const fileRows=single&&snapshot.checked_at?csvHourlyEvents(id,snapshot.checked_at,timezone):null;
+  if(fileRows!==null)storage=csvStorage(id);
+  const rows=fileRows??db.prepare(`SELECT event_key,day,hour,cwd,model,tier,provider,tokens FROM codex_usage_dedup_events WHERE account=? LIMIT ${USAGE_EVENT_LIMIT+1}`).all(id) as Array<{event_key:string;day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string}>;
   if(rows.length>USAGE_EVENT_LIMIT){partial=true;continue;}
   for(const {event_key,...raw} of rows){
    if(!single&&!raw.provider){partial=true;continue;}if(!single&&raw.provider!==providerId)continue;
@@ -300,10 +315,11 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
  }
  const retained={tokens:Object.fromEntries(tokenFields.map(k=>[k,0])) as Record<string,number|null>,requests:0,estimated_credits:null as number|null};
  for(const event of unassignedEvents.values())if(event){const counters=JSON.parse(event.tokens);retained.requests++;for(const k of tokenFields)retained.tokens[k]=retained.tokens[k]===null||counters[k]===null?null:retained.tokens[k]!+counters[k];const amount=estimateUsageCredits(event.model,event.tier,counters,basis);if(amount!==null)retained.estimated_credits=(retained.estimated_credits??0)+amount;}
+ const directoryFor=usageDirectoryPresenter();
  const grouped=new Map<string,{date:string;hour?:string|null;cwd:string;tokens:Record<string,number|null>;requests:number;models:Map<string,{model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number}}>}>();
  for(const event of events.values()){
-  if(!event)continue;const hour=granularity==='hour'?event.hour:null;if(granularity==='hour'&&!hour)partial=true;const key=JSON.stringify([event.day,hour,event.cwd]);let row=grouped.get(key);
-  if(!row){row={date:event.day,...granularity==='hour'?{hour}:{},cwd:event.cwd,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),requests:0,models:new Map()};grouped.set(key,row);}
+  if(!event)continue;const cwd=directoryFor(event.cwd).cwd,hour=granularity==='hour'?event.hour:null;if(granularity==='hour'&&!hour)partial=true;const key=JSON.stringify([event.day,hour,cwd]);let row=grouped.get(key);
+  if(!row){row={date:event.day,...granularity==='hour'?{hour}:{},cwd,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),requests:0,models:new Map()};grouped.set(key,row);}
   const tokens=JSON.parse(event.tokens);const requests=tokens.requests??1;row.requests+=requests;
   const modelKey=JSON.stringify(event.model);let model=row.models.get(modelKey);
   if(!model){model={model:event.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0}};row.models.set(modelKey,model);}
@@ -320,8 +336,8 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
  const quota_range:{start:string|null;end:string|null}={start:null,end:null},quota_hours:Array<{hour:string;quota:number}>=[],allocation=single?allocatedQuota(ids[0],quota_range,quota_hours,timezone):new Map<string,number>();
  const hourTotals=new Map(quota_hours.map(h=>[h.hour,h.quota])),hourCredits=new Map<string,number>();for(const r of grouped.values())for(const m of r.models.values())if(r.hour&&m.estimated_credits!==null)hourCredits.set(r.hour,(hourCredits.get(r.hour)??0)+m.estimated_credits);
  if(single&&granularity==='hour'){allocation.clear();for(const r of grouped.values()){const total=r.hour?hourTotals.get(r.hour):undefined,denominator=r.hour?hourCredits.get(r.hour):undefined;if(total!==undefined&&denominator)for(const m of r.models.values())if(m.estimated_credits!==null)allocation.set(JSON.stringify([r.date,r.hour,r.cwd,m.model]),total*m.estimated_credits/denominator);}}
- const projects=db.prepare('SELECT name,path FROM projects').all() as {name:string;path:string}[];
- return {initialized:checked.length>0,checked_at:checked.sort()[0]??null,quota_range,quota_hours,timezone,unassigned:single?unassignedUsage(ids[0],basis):retained.requests?retained:null,credit_rate_date:CREDIT_RATE_DATE,partial,error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()].map(model=>({...model,actual_quota:quotaByModel(allocation,row.date,row.cwd,model.model,row.hour)})),known=entries.filter(m=>m.estimated_credits!==null),match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];return {...row,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
+
+ return {storage,initialized:checked.length>0,checked_at:checked.sort()[0]??null,quota_range,quota_hours,timezone,unassigned:single?unassignedUsage(ids[0],basis):retained.requests?retained:null,credit_rate_date:CREDIT_RATE_DATE,partial,error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()].map(model=>({...model,actual_quota:quotaByModel(allocation,row.date,row.cwd,model.model,row.hour)})),known=entries.filter(m=>m.estimated_credits!==null);return {...row,...directoryFor(row.cwd),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
 }
 /** Re-read with the current rule version, replacing only a proven superset of
  * the existing cache. A failed check retains all old data and retries later. */

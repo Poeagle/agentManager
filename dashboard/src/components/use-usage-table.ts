@@ -3,7 +3,7 @@ import {useMemo,useState} from 'react';
 import {useTableModel,type TableColumn,type TableModel} from './table/use-table-model';
 import {groupUsage,type Dimension,type Metrics,type UsageGroup,type UsageRow} from './codex-usage-groups';
 
-export const usageFieldDescriptions:Record<string,string>={'label':'按所选维度分组；日期使用平台本地时区，项目按工作目录区分。','cwd':'请求记录中的工作目录；项目名称按平台登记目录匹配。','input':'各请求的输入 Token 累加，包含缓存输入和重复上下文。','cached':'输入 Token 中命中缓存的部分。','uncached':'输入减去缓存输入；缺失或数值异常时显示未知。','hit':'缓存输入除以输入；汇总时先相加再计算。','output':'输出 Token 累加；推理 Token 包含在输出中。','total':'原生日志中记录的总 Token 累加。','actual':'周额度已用百分比的采样变化，按所选周期订阅参考值分配；只覆盖可采集且可分配的区间；数据不完整时按已有记录分配，可能存在偏差。读数未变时为零，但不能证明没有耗用。数值单位为百分点。','credits':'以标准 Credits 费率为基准估算订阅额度相对用量；Fast 按 2.5 倍，未记录档位按标准估算，不是实际账单。','share':'该项预估积分占所选日期范围内同周期全部项目和模型预估积分的比例；搜索和字段筛选不改变分母。'};
+export const usageFieldDescriptions:Record<string,string>={'label':'按所选维度分组；日期使用平台本地时区，项目按工作目录区分。','cwd':'可解析的软链接别名按真实工作目录合并；显示平台登记目录或真实目录，原始路径仍保留在日志和 CSV 中。','input':'各请求的输入 Token 累加，包含缓存输入和重复上下文。','cached':'输入 Token 中命中缓存的部分。','uncached':'输入减去缓存输入；缺失或数值异常时显示未知。','hit':'缓存输入除以输入；汇总时先相加再计算。','output':'输出 Token 累加；推理 Token 包含在输出中。','total':'原生日志中记录的总 Token 累加。','actual':'周额度已用百分比的采样变化，按所选周期订阅参考值分配；只覆盖可采集且可分配的区间；数据不完整时按已有记录分配，可能存在偏差。读数未变时为零，但不能证明没有耗用。数值单位为百分点。','credits':'以标准 Credits 费率为基准估算订阅额度相对用量；Fast 按 2.5 倍，未记录档位按标准估算，不是实际账单。','share':'该项预估积分占所选日期范围内同周期全部项目和模型预估积分的比例；搜索和字段筛选不改变分母。'};
 type Leaf=UsageRow&{modelName:string|null;missing:boolean};
 const number=(m:Metrics,key:string)=>m.tokens[key]??null;
 const uncached=(m:Metrics)=>{const a=number(m,'input_tokens'),b=number(m,'cached_input_tokens');return a!==null&&b!==null&&b<=a?a-b:null;};

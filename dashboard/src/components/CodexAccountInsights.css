@@ -138,3 +138,7 @@
 
 .ci-observation{flex-wrap:nowrap;min-width:0;white-space:nowrap;overflow:hidden;}
 .ci-source{min-width:0;overflow:hidden;text-overflow:ellipsis;}
+
+.ci-observation{overflow-x:auto;overflow-y:hidden;}
+.ci-observation>span{flex-shrink:0;}
+.ci-observation .ci-source{flex:0 0 auto;overflow:visible;text-overflow:clip;}

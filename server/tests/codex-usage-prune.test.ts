@@ -1,10 +1,10 @@
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
-import {writeFileSync,readFileSync} from 'node:fs';
+import {writeFileSync,readFileSync,mkdirSync,symlinkSync} from 'node:fs';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
-import {initAccountUsage,cachedAccountUsage,collectAccountUsage,stopAccountUsage,USAGE_RULE_VERSION} from '../src/services/agents/codex/account-usage.js';
+import {initAccountUsage,cachedAccountUsage,cachedGroupUsage,collectAccountUsage,stopAccountUsage,USAGE_RULE_VERSION} from '../src/services/agents/codex/account-usage.js';
 import {initAccountStatus} from '../src/services/agents/codex/account-status.js';
 import {exportUsageCsv} from '../src/services/agents/codex/usage-csv-export.js';
 import {pruneUsageCsvDuplicates} from '../src/services/agents/codex/usage-csv-prune.js';
@@ -15,8 +15,8 @@ import * as transport from '../src/services/agents/codex/account-transport.js';
 let fixture:ReturnType<typeof createTestDatabase>,source:string;
 const checked='2026-01-05T12:00:00.000Z';
 const counters=(n:number)=>({input_tokens:n,cached_input_tokens:0,output_tokens:0,reasoning_output_tokens:0,total_tokens:n});
-function add(day:string,n:number,unknown=false,legacy=false){
- const db=getDb(),tokens={...counters(n),cached_input_tokens:unknown?null:0},row={day,cwd:'/p',model:'gpt-6.1-sol',tier:null};
+function add(day:string,n:number,unknown=false,legacy=false,cwd='/p'){
+ const db=getDb(),tokens={...counters(n),cached_input_tokens:unknown?null:0},row={day,cwd,model:'gpt-6.1-sol',tier:null};
  const key=aggregateKey(row,tokens),id=createHash('sha256').update(day+String(n)).digest('hex');
  db.prepare('INSERT INTO codex_usage_events VALUES(?,?,?,?,?,?,?)').run('native',legacy?'legacy':key,day,row.cwd,row.model,null,JSON.stringify({...tokens,requests:1}));
  db.prepare('INSERT INTO codex_usage_dedup_events(account,event_key,day,cwd,model,tier,tokens,hour,at) VALUES(?,?,?,?,?,?,?,?,?)').run('native',id,day,row.cwd,row.model,null,JSON.stringify({...tokens,_timezone:'UTC'}),day+'T12:00:00+00:00',day+'T12:01:00Z');
@@ -37,9 +37,9 @@ beforeEach(()=>{
 });
 afterEach(async()=>{await stopAccountUsage();fixture.cleanup();vi.restoreAllMocks();vi.useRealTimers();vi.unstubAllEnvs();});
 it('removes verified cold summaries without changing reports, preserves live days and supports repeated exports and rule rebuilds',()=>{
- const events=[add('2026-01-01',100),add('2026-01-04',200),add('2026-01-05',300)];const before=cachedAccountUsage('native');
+ const events=[add('2026-01-01',100),add('2026-01-04',200),add('2026-01-05',300)];const before=cachedAccountUsage('native');expect(before.storage.kind).toBe('database');
  exportUsageCsv('native');expect(getDb().prepare('SELECT day FROM codex_usage_events ORDER BY day').all()).toEqual([{day:'2026-01-04'},{day:'2026-01-05'}]);
- expect(cachedAccountUsage('native').rows).toEqual(before.rows);expect(usageAggregates('native')).toHaveLength(3);
+ expect(cachedAccountUsage('native').rows).toEqual(before.rows);expect(cachedAccountUsage('native').storage).toEqual({kind:'csv',path:usageCsvDirectory('native')});getDb().prepare('UPDATE codex_usage_status SET partial=1').run();expect(cachedAccountUsage('native').storage.kind).toBe('csv');expect(cachedAccountUsage('native').rows).toEqual(before.rows);getDb().prepare('UPDATE codex_usage_status SET partial=0').run();expect(usageAggregates('native')).toHaveLength(3);
  expect(()=>assertUsageRebuildPreserves(getDb(),'native',events,500000)).not.toThrow();
  exportUsageCsv('native');exportUsageCsv('native',{rebuild:true});expect(cachedAccountUsage('native').rows).toEqual(before.rows);expect(getDb().prepare('SELECT COUNT(*) n FROM codex_usage_archived_aggregates').get()).toEqual({n:1});
 });
@@ -55,7 +55,7 @@ it.each(['checkpoint','source','timezone','corrupt','projection','counter'] as c
 });
 it('keeps historical data available after CSV corruption and repairs the archive from retained request identities',()=>{
  add('2026-01-01',100);const before=cachedAccountUsage('native').rows;exportUsageCsv('native');const dir=usageCsvDirectory('native'),manifest=JSON.parse(readFileSync(join(dir,'manifest.json'),'utf8'));writeFileSync(join(dir,manifest.files.history),'bad');
- expect(cachedAccountUsage('native').rows).toEqual(before);exportUsageCsv('native',{rebuild:true});expect(readUsageCsv('native')?.history).toHaveLength(1);expect(cachedAccountUsage('native').rows).toEqual(before);
+ expect(cachedAccountUsage('native').rows).toEqual(before);expect(cachedAccountUsage('native').storage.kind).toBe('database');exportUsageCsv('native',{rebuild:true});expect(readUsageCsv('native')?.history).toHaveLength(1);expect(cachedAccountUsage('native').rows).toEqual(before);
 });
 it('preserves unknown counters and retains legacy summaries that lack a canonical recoverable identity',()=>{
  add('2026-01-01',100,true);add('2026-01-02',200,false,true);const before=cachedAccountUsage('native').rows;exportUsageCsv('native');
@@ -65,4 +65,18 @@ it('adds a late recovered request to a previously pruned day without replacing o
  add('2026-01-01',100);exportUsageCsv('native');getDb().prepare('UPDATE codex_usage_dedup_status SET ready=0').run();const key='b'.repeat(64),tokens=counters(50);
  vi.spyOn(transport,'localCommandInput').mockImplementation(async(_script,input)=>JSON.stringify({...JSON.parse(input),rows:[{day:'2026-01-01',cwd:'/p',model:'gpt-6.1-sol',tier:null,tokens,requests:1}],event_keys:{'2026-01-01':Buffer.from(key,'hex').toString('base64')},events:[{key,day:'2026-01-01',cwd:'/p',model:'gpt-6.1-sol',tier:null,tokens,hour:'2026-01-01T12:00:00+00:00',at:'2026-01-01T12:02:00Z'}],events_truncated:false,partial:false,errors:0}));
  await collectAccountUsage('native');expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(150);expect(readUsageCsv('native')?.history.reduce((sum,row)=>sum+(row[5] as ReturnType<typeof counters>).total_tokens,0)).toBe(150);expect(getDb().prepare('SELECT COUNT(*) n FROM codex_usage_events').get()).toEqual({n:0});
+});
+
+it('merges a real directory and its symlink under the registered project without changing stored paths or totals',()=>{
+ const real=join(fixture.dir,'real-project'),alias=join(fixture.dir,'project-link');mkdirSync(real);symlinkSync(real,alias,'dir');
+ getDb().prepare('INSERT INTO projects(id,name,path) VALUES(?,?,?)').run('alias-project','Alias Project',alias);
+ add('2026-01-01',100,false,false,real);add('2026-01-01',200,false,false,alias);
+ const before=cachedAccountUsage('native');expect(before.rows).toHaveLength(1);expect(before.rows[0]).toMatchObject({cwd:alias,project_name:'Alias Project',tokens:{input_tokens:300,total_tokens:300},models:[{model:'gpt-6.1-sol',tokens:{total_tokens:300}}]});
+ expect(getDb().prepare('SELECT COUNT(DISTINCT cwd) n FROM codex_usage_dedup_events').get()).toEqual({n:2});
+ exportUsageCsv('native');expect(cachedAccountUsage('native').rows).toEqual(before.rows);expect(new Set(readUsageCsv('native')!.history.map(row=>row[2]))).toEqual(new Set([real,alias]));
+ const hour=cachedGroupUsage(['native'],'hour',true);expect(hour.rows).toHaveLength(1);expect(hour.rows[0]).toMatchObject({cwd:alias,project_name:'Alias Project',tokens:{total_tokens:300}});
+});
+it('does not merge different physical directories just because their names match',()=>{
+ const left=join(fixture.dir,'left','project'),right=join(fixture.dir,'right','project');mkdirSync(left,{recursive:true});mkdirSync(right,{recursive:true});add('2026-01-01',100,false,false,left);add('2026-01-01',200,false,false,right);
+ const rows=cachedAccountUsage('native').rows;expect(rows).toHaveLength(2);expect(new Set(rows.map(row=>row.cwd))).toEqual(new Set([left,right]));expect(rows.reduce((sum,row)=>sum+(row.tokens.total_tokens??0),0)).toBe(300);
 });
