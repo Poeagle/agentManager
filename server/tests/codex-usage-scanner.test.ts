@@ -12,6 +12,13 @@ const record=(stamp:string,total:number,last:number)=>JSON.stringify({type:'even
 beforeEach(async()=>{home=await mkdtemp(join(tmpdir(),'codex-usage-test-'));await mkdir(join(home,'sessions'));file=join(home,'sessions','rollout-test.jsonl');});
 afterEach(async()=>{await rm(home,{recursive:true,force:true});});
 describe('account-scoped complete-file scanner',()=>{
+ it('uses native settings events to attribute Fast and standard requests separately',async()=>{
+  const setting=(tier:string)=>JSON.stringify({type:'event_msg',payload:{type:'thread_settings_applied',thread_settings:{service_tier:tier}}})+'\n';
+  await writeFile(file,meta+context+setting('priority')+record('2026-01-02T12:00:00Z',10,10)+setting('default')+record('2026-01-02T12:01:00Z',30,20));
+  const result=await scan('full','2026-01-02',{includeEvents:true});
+  expect(result.rows.map((row:any)=>[row.tier,row.tokens.total_tokens])).toEqual([['priority',10],['default',20]]);
+  expect(result.events.map((event:any)=>event.tier)).toEqual(['priority','default']);
+ });
  it('uses the requested local zone for both file modification dates and event attribution',async()=>{
   await writeFile(file,meta+context+record('2026-11-11T15:59:59Z',10,10)+record('2026-11-11T16:00:00Z',30,20));await utimes(file,new Date('2026-11-11T16:34:00Z'),new Date('2026-11-11T16:34:00Z'));
   const local=await scan('daily','2026-11-12',{timezone:'Asia/Taipei',includeEvents:true});expect(local.progress.files_selected).toBe(1);expect(local.rows[0]).toMatchObject({day:'2026-11-12',tokens:{total_tokens:20}});expect(local.rows).toHaveLength(1);expect(local.events[0].hour).toBe('2026-11-12T00:00:00+08:00');

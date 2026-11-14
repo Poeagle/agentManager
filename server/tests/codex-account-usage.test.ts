@@ -6,7 +6,7 @@ import {execFile} from 'node:child_process';
 import {mkdtemp,mkdir,writeFile,appendFile,utimes,rm,copyFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {initAccountUsage,collectAccountUsage,cachedAccountUsage,cachedGroupUsage,backfillUsageHours,startAccountUsage,stopAccountUsage} from '../src/services/agents/codex/account-usage.js';
+import {initAccountUsage,collectAccountUsage,cachedAccountUsage,cachedGroupUsage,backfillUsageHours,startAccountUsage,stopAccountUsage,refreshUsageRules,USAGE_RULE_VERSION} from '../src/services/agents/codex/account-usage.js';
 import {accountCommandInput,localCommandInput} from '../src/services/agents/codex/account-transport.js';
 vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),accountCommandInput:vi.fn(),localCommandInput:vi.fn()}));
 import {updateAgentManagement} from '../src/services/agents/management-store.js';
@@ -47,6 +47,21 @@ function response(input:string,rows:any[],options:Record<string,unknown>={}){
 function respond(rows:any[]=[row],options:Record<string,unknown>={}){vi.mocked(localCommandInput).mockImplementation(async(_script,input)=>response(input,rows,options));}
 beforeEach(()=>{vi.stubEnv('TZ','UTC');fixture=createTestDatabase();initAccountUsage();respond();vi.mocked(accountCommandInput).mockImplementation(async(_c,_s,input)=>response(input,[row]));});
 afterEach(async()=>{await stopAccountUsage();fixture.cleanup();vi.restoreAllMocks();vi.resetAllMocks();vi.useRealTimers();vi.unstubAllEnvs();});
+it('reprocesses old Fast metadata on a rule upgrade and preserves data if history is missing',async()=>{
+ const home=await mkdtemp(join(tmpdir(),'usage-rule-refresh-'));vi.stubEnv('CODEX_HOME',home);vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-02T12:00:00Z'));
+ const entry=(type:string,payload:unknown,timestamp?:string)=>JSON.stringify({type,payload,...timestamp?{timestamp}:{}})+'\n';
+ const tokens={input_tokens:100,cached_input_tokens:0,output_tokens:10,reasoning_output_tokens:0,total_tokens:110};
+ const path=join(home,'sessions','rollout-fixture.jsonl');
+ try{
+  await mkdir(join(home,'sessions'));await writeFile(path,entry('session_meta',{cwd:'/project'})+entry('turn_context',{model:'gpt-6.1-sol'})+entry('event_msg',{type:'thread_settings_applied',thread_settings:{service_tier:'priority'}})+entry('event_msg',{type:'token_count',info:{total_token_usage:tokens,last_token_usage:tokens}},'2026-01-02T11:59:00Z'));
+  vi.mocked(localCommandInput).mockImplementation((script,input)=>new Promise((resolve,reject)=>{const child=execFile('python3',['-c',script],{maxBuffer:1024*1024},(error,out)=>error?reject(error):resolve(out));child.stdin!.end(input);}));
+  await collectAccountUsage('native');const db=getDb();db.prepare('UPDATE codex_usage_events SET tier=NULL').run();db.prepare('UPDATE codex_usage_dedup_events SET tier=NULL').run();db.prepare('DELETE FROM codex_usage_rule_versions').run();
+  const before=cachedAccountUsage('native');expect(before.partial).toBe(true);const old=before.rows[0].estimated_credits!;
+  await refreshUsageRules('native');const updated=cachedAccountUsage('native');expect(updated.rows[0].estimated_credits).toBeCloseTo(old*2);expect(updated.rows[0].tokens.total_tokens).toBe(110);expect(db.prepare('SELECT version,state FROM codex_usage_rule_versions').get()).toEqual({version:USAGE_RULE_VERSION,state:'ready'});
+  db.prepare('DELETE FROM codex_usage_rule_versions').run();db.prepare("UPDATE codex_usage_dedup_events SET tokens=json_set(tokens,'$.input_tokens',101)").run();await refreshUsageRules('native');expect(cachedAccountUsage('native').error).toContain('保留旧数据');expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(110);
+  db.prepare("UPDATE codex_usage_dedup_events SET tokens=json_set(tokens,'$.input_tokens',100)").run();db.prepare('DELETE FROM codex_usage_rule_versions').run();await rm(path);await refreshUsageRules('native');const retained=cachedAccountUsage('native');expect(retained.rows[0].tokens.total_tokens).toBe(110);expect(retained.rows[0].estimated_credits).toBeCloseTo(old*2);expect(retained.partial).toBe(true);expect(retained.error).toContain('保留旧数据');
+ }finally{await rm(home,{recursive:true,force:true});}
+});
 it('returns hourly usage beyond the old 200000-event limit without truncation',()=>{
  const db=getDb();db.prepare('INSERT OR REPLACE INTO codex_usage_snapshots VALUES(?,1)').run('native');
  db.prepare('INSERT OR REPLACE INTO codex_usage_status VALUES(?,?,?,?)').run('native','2026-01-01T03:00:00Z',null,0);

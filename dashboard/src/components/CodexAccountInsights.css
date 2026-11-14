@@ -125,3 +125,5 @@
 .manager-ui .ci-toolbar :is(input,select,button){height:25px;min-height:25px;font-size:11px;line-height:18px;}
 .manager-ui .ci-toolbar label,.ci-toolbar .ci-tabs button{font-size:11px;}
 .ci-toolbar .ci-button{padding:1px 6px;}
+/* Tree levels need a common left edge so indentation remains visible. */
+.ci-usage-table .ci-group-label{justify-content:flex-start;}

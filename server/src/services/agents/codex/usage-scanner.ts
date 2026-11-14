@@ -116,6 +116,9 @@ for path,size in paths:
      if isinstance(p.get('model'),str):model=p['model'][:120]
      if isinstance(p.get('model_provider'),str):provider=p['model_provider'][:120]
      if 'service_tier' in p:tier=p['service_tier'][:120] if isinstance(p['service_tier'],str) else None
+    if kind=='event_msg' and p.get('type')=='thread_settings_applied' and isinstance(p.get('thread_settings'),dict):
+     settings=p['thread_settings']
+     if 'service_tier' in settings:tier=settings['service_tier'][:120] if isinstance(settings['service_tier'],str) else None
     if kind=='turn_context' or kind=='event_msg' and p.get('type')=='task_started':
      if isinstance(p.get('turn_id'),str):turn=p['turn_id'][:200]
     if kind!='event_msg' or p.get('type')!='token_count' or not p.get('info'):continue
