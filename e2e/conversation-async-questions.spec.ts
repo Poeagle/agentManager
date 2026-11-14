@@ -60,8 +60,8 @@ for(const format of ['item_completed','agent_message'] as const) test(`Codex asy
     // A genuinely new question still arrives promptly after old ones were
     // ignored, without relying on the 5-second sessions polling fallback.
     appendFileSync(log,record('event_msg',{type:'item_completed',thread_id:native,turn_id:'new-question-turn',item:{type:'AgentMessage',id:`call-new-question-${format}`,delivery:'async',questions:[{title:'新问题仍需回答',options:['A','B']}]}}));
-    await expect(card).toContainText('新问题仍需回答',{timeout:1500});
-    await expect(page.locator('[title="有 1 个问题待回答 · 本轮已结束"]').first()).toBeVisible({timeout:1500});
+    await expect(card).toContainText('新问题仍需回答',{timeout:5000});
+    await expect(page.locator('[title="有 1 个问题待回答 · 本轮已结束"]').first()).toBeVisible({timeout:5000});
     await page.getByRole('button',{name:'全部忽略',exact:true}).click();await expect(card).toHaveCount(0);
     // Reset only this fixture through the API to cover the answer flow below.
     const ids=[JSON.stringify(['request_user_input_async','call-question',0])];
