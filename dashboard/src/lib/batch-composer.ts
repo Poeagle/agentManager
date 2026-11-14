@@ -1,5 +1,5 @@
 import type {ConversationAttachment} from './conversation-attachments';
-export interface BatchEntry {id:string;text:string;attachments:ConversationAttachment[]}
+export interface BatchEntry {createdAt?:string;id:string;text:string;attachments:ConversationAttachment[]}
 export interface ComposerState {mode:'immediate'|'batch';draft:string;draftAttachments?:ConversationAttachment[];entries:BatchEntry[];pending:{id:string;entryIds:string[];nativeId:string|null}|null}
 export const emptyComposer=():ComposerState=>({mode:'immediate',draft:'',entries:[],pending:null});
 export const composerKey=(userId:string|undefined,sessionId:string)=>`agentmanager-composer:${JSON.stringify([userId||'anonymous',sessionId])}`;

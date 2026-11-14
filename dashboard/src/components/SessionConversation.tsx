@@ -108,7 +108,7 @@ import {
   type ConversationActivity,
 } from "./ConversationActivityLine";
 import { ConversationToolCall } from "./ConversationToolCall";
-import { useDisplayClock, estimatedServerNow } from "../lib/display-clock";
+import { useDisplayClock, estimatedServerNow, formatDisplayTimestamp } from "../lib/display-clock";
 import "./SessionConversation.css";
 
 interface LiveProgress {
@@ -486,7 +486,7 @@ const Bubble = memo(function Bubble({
         {message.role === "user" ? (
           <>
             <div className="session-chat-user-text">
-              {message.batch?.length?<ConversationBatchCard parts={message.batch} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>:<ConversationMessageAttachments
+              {message.batch?.length?<ConversationBatchCard sentAt={message.timestamp} parts={message.batch} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>:<ConversationMessageAttachments
                 text={
                   parsed.attachments.length &&
                   !parsed.attachments.some((item) => item.offset !== undefined)
@@ -763,7 +763,7 @@ export function SessionConversation({
     if(!canSend||attachments.uploading||attachments.failed||sendingRef.current)return;
     const text=draftRef.current,values=attachments.values().map((a,index)=>({...a,offset:attachmentPositions.current?.().get(attachments.items.filter(i=>i.status==='ready'&&i.path)[index]?.id)??text.length}));
     if(!text.trim()&&!values.length)return;
-    const entries=[...composerRef.current.value.entries,{id:conversationClientId(),text,attachments:values}];
+    const entries=[...composerRef.current.value.entries,{id:conversationClientId(),createdAt:new Date(estimatedServerNow()).toISOString(),text,attachments:values}];
     const combined=combinedBatch(entries);
     if(entries.length>100||new TextEncoder().encode(combined.text).byteLength>64*1024||combined.attachments.length>8){setSendError('批量内容最多 100 条、64 KB、8 个附件，请先发送已有内容。');return;}
     if(!persistComposer({entries,draft:'',draftAttachments:[]}))return;
@@ -2621,7 +2621,7 @@ export function SessionConversation({
       </section>
         {composer.mode==='batch'&&<aside className="session-chat-batch" aria-label="批量待发内容">
           <header className="session-batch-header"><span>批量待发</span><small>{composer.entries.length} 条</small></header>
-          <div className="session-chat-batch-content">{composer.entries.length?composer.entries.map((entry,index)=><article key={entry.id}><header><small>消息 {index+1}</small><button type="button" className="session-batch-recall" aria-label={`撤回第 ${index+1} 条消息`} disabled={!canSend||sending||!!composer.pending?.entryIds.includes(entry.id)||attachments.uploading||attachments.failed} onClick={()=>recallBatch(entry)}>撤回</button></header><ConversationMessageAttachments text={entry.text} items={entry.attachments} projectId={session.project_id} projectPath={projectPath} onOpenFile={onOpenFile}/></article>):<div className="session-batch-empty"><span>暂未添加消息</span><p>在输入框编写内容，按 Enter 加入这里，整理完成后一起发送。</p></div>}</div>
+          <div className="session-chat-batch-content">{composer.entries.length?composer.entries.map((entry,index)=><article key={entry.id}><header><small>消息 {index+1}</small><time dateTime={entry.createdAt} title="加入待发区时间">{formatDisplayTimestamp(entry.createdAt)}</time><button type="button" className="session-batch-recall" aria-label={`撤回第 ${index+1} 条消息`} disabled={!canSend||sending||!!composer.pending?.entryIds.includes(entry.id)||attachments.uploading||attachments.failed} onClick={()=>recallBatch(entry)}>撤回</button></header><ConversationMessageAttachments text={entry.text} items={entry.attachments} projectId={session.project_id} projectPath={projectPath} onOpenFile={onOpenFile}/></article>):<div className="session-batch-empty"><span>暂未添加消息</span><p>在输入框编写内容，按 Enter 加入这里，整理完成后一起发送。</p></div>}</div>
           {composer.pending&&<p role="status">发送结果待确认。恢复连接后自动核对，请勿重复发送。</p>}
           <footer className="session-batch-footer"><button type="button" className="session-batch-send" aria-label="发送批量内容" aria-keyshortcuts="Control+Enter Meta+Enter" onClick={()=>void sendBatch()} disabled={!composer.entries.length||!!composer.pending||sending||!canSend||!page?.session_active||ended||waiting}>{sending?<Loader2 size={15} className="animate-spin"/>:<ArrowUp size={15}/>}<span>{sending?'正在发送…':'发送批量内容'}</span><kbd>Ctrl ↵</kbd></button></footer>
         </aside>}

@@ -49,7 +49,9 @@ describe('conversation send transaction', () => {
     const view=await mount();fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
     input('first');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
     input('second');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));input('unfinished');
+    const staged=loadComposer(composerKey('local',session.id)).entries;expect(staged.every(entry=>Number.isFinite(Date.parse(entry.createdAt!)))).toBe(true);
     expect(submit).not.toHaveBeenCalled();view.unmount();await mount();
+    expect([...screen.getByRole('complementary',{name:'批量待发内容'}).querySelectorAll('time')].map(t=>t.dateTime)).toEqual(staged.map(e=>e.createdAt));
     expect(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveTextContent('unfinished');
     expect(screen.getByRole('complementary',{name:'批量待发内容'})).toHaveTextContent('first');
     fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));
@@ -85,8 +87,10 @@ describe('conversation send transaction', () => {
     fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true,isComposing:true});expect(submit).not.toHaveBeenCalled();
     fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true});await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
     expect(submit.mock.calls[0][4]).toEqual([{length:3,attachments:0},{length:3,attachments:0}]);
+    const sentAt='2026-11-14T06:00:00Z';act(()=>Socket.latest.emit({type:'snapshot',messages:[{id:'sent-batch',client_id:submit.mock.calls[0][2],role:'user',text:'one\n\ntwo',timestamp:sentAt}],busy:false,stage:'idle'}));
     fireEvent.click(screen.getByRole('button',{name:/批量消息/}));
     const dialog=screen.getByRole('dialog',{name:'批量消息 · 2 条'});expect(within(dialog).getByLabelText('第 1 条消息')).toHaveTextContent('one');expect(within(dialog).getByLabelText('第 2 条消息')).toHaveTextContent('two');
+    expect([...dialog.querySelectorAll('time')].map(t=>t.dateTime)).toEqual([sentAt,sentAt]);
     fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
   it('recalls one staged message into the existing draft without losing either text',async()=>{

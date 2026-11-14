@@ -113,7 +113,7 @@ export function ImagePreview({image,onClose}:{image:PreviewImage;onClose:()=>voi
   const maxWidth=Math.max(100,Math.min(1600,viewport.width*.92)-34),maxHeight=Math.max(80,Math.min(900,viewport.height*.72,viewport.height-190));
   const fit=natural.width?Math.min(1,(maxWidth-24)/natural.width,(maxHeight-24)/natural.height):1;
   const scale=zoom??fit;
-  const width=natural.width?Math.max(360,natural.width*scale+58):420,height=natural.height?Math.min(maxHeight,Math.max(48,natural.height*scale+24)):120;
+  const width=natural.width?Math.max(720,natural.width*scale+58):720,height=natural.height?Math.min(maxHeight,Math.max(240,natural.height*scale+24)):Math.min(240,maxHeight);
   return <Dialog title={`图片预览 · ${image.name}`} size="image" width={width} onClose={onClose} busy={exporting}>
     <div className="conversation-image-preview-toolbar" role="group" aria-label="图片缩放">
       <span>{natural.width?`${natural.width} × ${natural.height}`:'正在加载…'}</span>

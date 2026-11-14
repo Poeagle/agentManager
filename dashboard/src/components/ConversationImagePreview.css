@@ -1,6 +1,7 @@
-.conversation-image-preview-toolbar {display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px;margin:0 0 10px;font-size:12px;}
+.conversation-image-preview-toolbar {display:flex;flex-wrap:nowrap;overflow-x:auto;white-space:nowrap;align-items:center;justify-content:flex-start;gap:8px;margin:0 0 10px;font-size:12px;}
 .conversation-image-export-format select {padding:5px 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg-primary);color:var(--text-primary);font:inherit;}
 .conversation-image-export-error {margin-top:8px;font-size:12px;color:var(--error);}
+.conversation-image-preview-toolbar>* {flex-shrink:0;}
 .conversation-image-preview-toolbar>span {margin-right:auto;color:var(--text-muted);}
 .conversation-image-preview-toolbar button {display:flex;align-items:center;justify-content:center;gap:5px;padding:5px 7px;border:1px solid var(--border);border-radius:5px;}
 .conversation-image-preview-toolbar button:disabled {opacity:.4;}
