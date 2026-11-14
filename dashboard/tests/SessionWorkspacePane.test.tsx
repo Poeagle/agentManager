@@ -156,9 +156,19 @@ describe('chat/raw terminal display',()=>{
     mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
     const failure={id:'retry-error',role:'assistant',phase:'error',text:'Network connection interrupted',turn_id:'retry',timestamp:null,error:{code:'response_stream_disconnected',will_retry:true}};
     act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'waiting',turn_id:'retry',messages:[failure]})}));
-    expect(screen.getByRole('alert')).toHaveTextContent('Agent 正在自动重试');expect(screen.queryByText('Turn failed; resolve the error and retry')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('正在自动重试');expect(screen.queryByText('Turn failed; resolve the error and retry')).not.toBeInTheDocument();
     act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'answering',turn_id:'retry',messages:[failure,{id:'recovered',role:'assistant',phase:'commentary',text:'连接已恢复，继续检查',turn_id:'retry',timestamp:null,streaming:true}]})}));
     expect(screen.getByRole('alert')).toHaveTextContent('重试已结束');expect(screen.getByText('连接已恢复，继续检查')).toBeVisible();expect(screen.getByText('Receiving response…')).toBeVisible();
+  });
+  it('updates one compact retry notice and reconstructs it from history',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    const view=mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const failure=(n:number)=>({id:`reconnect-${n}`,role:'assistant' as const,phase:'error' as const,text:`Reconnecting... ${n}/5`,turn_id:'turn-1',timestamp:null,error:{code:'response_stream_disconnected',will_retry:true}});
+    const send=(messages:unknown[])=>act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'waiting',turn_id:'turn-1',messages})}));
+    send([failure(2)]);const card=screen.getByRole('alert');expect(card).toHaveTextContent('Reconnecting... 2/5');
+    send([failure(2),failure(3),failure(4)]);expect(screen.getAllByRole('alert')).toHaveLength(1);expect(screen.getByRole('alert')).toBe(card);expect(card).toHaveTextContent('Reconnecting... 4/5');expect(card).not.toHaveTextContent('Reconnecting... 2/5');
+    page.messages=[...page.messages,failure(2),failure(3),failure(4)];view.unmount();mount();await screen.findByText('检查已完成。');expect(screen.getAllByRole('alert')).toHaveLength(1);expect(screen.getByRole('alert')).toHaveTextContent('Reconnecting... 4/5');
   });
   it('shows only dialogue by default and switches the same terminal without remounting it',async()=>{
     mount();expect(await screen.findByText('检查已完成。')).toBeVisible();expect(screen.getByText('raw tool result')).not.toBeVisible();

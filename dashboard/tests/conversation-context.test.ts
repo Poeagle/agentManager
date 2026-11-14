@@ -3,6 +3,16 @@ import {automaticConversationContext,automaticContextMarkdown} from '../src/lib/
 import {conversationTimings} from '../src/lib/conversation-timing';
 import {conversationOutline} from '../src/components/ConversationReadingTools';
 import {groupConversationProgress} from '../src/lib/conversation-progress';
+it('collapses only consecutive retry errors from the same known turn while preserving the latest state',()=>{
+ const retry=(id:string,turn_id:string|undefined,code:string|undefined,will_retry=true)=>({id,role:'assistant' as const,phase:'error' as const,text:id,timestamp:null,turn_id,error:{code,will_retry}});
+ const first=retry('first','one','network'),second=retry('second','one','network'),final=retry('final','one','network',false);
+ const groups=groupConversationProgress([first,second,final]);expect(groups).toHaveLength(1);expect(groups[0]).toEqual({kind:'message',id:'first',message:final});
+ expect(groupConversationProgress([first,retry('different','one','other')])).toHaveLength(2);
+ expect(groupConversationProgress([first,retry('other-turn','two','network')])).toHaveLength(2);
+ expect(groupConversationProgress([retry('unknown-a',undefined,'network'),retry('unknown-b',undefined,'network')])).toHaveLength(2);
+ expect(groupConversationProgress([final,second])).toHaveLength(2);
+ expect(groupConversationProgress([first,{id:'user',role:'user',text:'continue',timestamp:null},second])).toHaveLength(3);
+});
 const rules='# AGENTS.md instructions for /project\n\n<INSTRUCTIONS>\n# 项目治理\n自动规则\n</INSTRUCTIONS>';
 describe('native automatic context',()=>{
  it('unwraps complete native blocks without stripping user examples and displays environment XML faithfully',()=>{

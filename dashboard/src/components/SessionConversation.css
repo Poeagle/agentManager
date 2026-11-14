@@ -108,11 +108,14 @@
 .session-chat-input-tools>button {display:flex;width:30px;height:30px;align-items:center;justify-content:center;border-radius:50%;background:var(--accent);color:white;}
 .session-chat-input-tools>button:disabled {background:var(--bg-tertiary);color:var(--text-muted);opacity:1;cursor:default;}
 .session-chat-error {color:var(--error);font-size:12px;margin-bottom:7px;}
-.session-chat-error-notice {padding:13px 15px;border:1px solid color-mix(in srgb,var(--error) 40%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--error) 5%,var(--bg-primary));font-size:12px;}
-.session-chat-error-heading {display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-bottom:8px;color:var(--error);}
+.session-chat-error-notice {display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;padding:6px 10px;border:1px solid color-mix(in srgb,var(--error) 40%,var(--border));border-radius:8px;background:color-mix(in srgb,var(--error) 5%,var(--bg-primary));font-size:12px;}
+.session-chat-error-heading {display:contents;color:var(--error);}
 .session-chat-error-heading time {margin-left:auto;font-size:11px;color:var(--text-secondary);font-variant-numeric:tabular-nums;}
-.session-chat-error-original {white-space:pre-wrap;overflow-wrap:anywhere;font-family:ui-monospace,monospace;margin-bottom:6px;}
-.session-chat-error-actions {display:flex;gap:16px;margin-top:9px;}
+.session-chat-error-original {flex:1 1 100px;min-width:0;font-family:ui-monospace,monospace;}
+.session-chat-error-original summary {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;}
+.session-chat-error-original p {max-height:160px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0 0;}
+.session-chat-error-notice>p:not(.session-chat-error-original) {margin:0;}
+.session-chat-error-actions {display:flex;flex-wrap:wrap;gap:4px 12px;margin-left:auto;}
 .session-chat-error-actions button {color:var(--accent);text-decoration:underline;text-underline-offset:3px;}
 .session-chat-error-notice[data-retrying="true"] {border-color:color-mix(in srgb,#b7791f 45%,var(--border));background:color-mix(in srgb,#b7791f 5%,var(--bg-primary));}
 .session-chat-error-notice[data-retrying="true"] .session-chat-error-heading {color:#b7791f;}

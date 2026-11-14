@@ -425,21 +425,17 @@ const Bubble = memo(function Bubble({
             </time>
           )}
         </div>
-        <p className="session-chat-error-original">{message.text}</p>
+        <details className="session-chat-error-original"><summary title={message.text}>{message.text}</summary><p>{message.text}</p></details>
         {autoRetry ? (
           <ConversationRetryStatus retry={autoRetry} onCancel={onCancelRetry} />
-        ) : (
+        ) : !message.error?.will_retry ? (
           <p>
-            {message.error?.will_retry
-              ? retrying
-                ? "Agent 正在自动重试，无需重复发送。"
-                : "该次重试过程已结束。"
-              : message.error?.code === "server_overloaded" ||
+            {message.error?.code === "server_overloaded" ||
                   /at capacity/i.test(message.text)
                 ? "当前模型繁忙，本轮已停止。可稍后重试，或在原始终端切换模型。"
                 : "本轮已停止。请根据错误信息处理后再试。"}
           </p>
-        )}
+        ) : null}
         <div className="session-chat-error-actions">
           {allowRaw && (
             <button type="button" onClick={onRaw}>
@@ -1968,11 +1964,11 @@ export function SessionConversation({
     if(!answers)continue;
     question.async_questions.forEach((item,index)=>{if(item.id)visibleQuestionAnswers.set(item.id,answers[index]);});
   }
-  const bubble = (message: ConversationMessage, compact = false) =>
+  const bubble = (message: ConversationMessage, compact = false, stableKey = message.id) =>
     message.role==='user'&&!message.queued&&!(message as TimelineMessage).optimistic&&!message.attachments?.length&&message.question_replies?.length&&message.question_replies.every(reply=>visibleQuestionAnswers.get(reply.question_id)===reply.answer) ? null :
     message.async_questions?.length ? (
       <ConversationQuestionSummary
-        key={message.id}
+        key={stableKey}
         message={message}
         state={questionIndex.state(
           message,
@@ -1983,7 +1979,7 @@ export function SessionConversation({
       />
     ) : (
       <Bubble
-        key={message.id}
+        key={stableKey}
         message={message}
         streaming={message.id === streamingId}
         retrying={
@@ -2062,7 +2058,7 @@ export function SessionConversation({
                 </p>
               )}
               {groups.map((group, groupIndex) => {
-                if(group.kind === "message") return bubble(group.message);
+                if(group.kind === "message") return bubble(group.message,false,group.id);
                 const last=group.messages.at(-1),next=groups[groupIndex+1];
                 const final=next?.kind==='message'&&next.message.role==='assistant'&&next.message.phase==='final'&&!next.message.async_questions?.length&&!!next.message.turn_id&&next.message.turn_id===last?.turn_id?next.message:null;
                 const saved=final?.statistics?.segment||last?.statistics?.segment;
