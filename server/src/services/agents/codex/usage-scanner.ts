@@ -80,7 +80,7 @@ def inherited_snapshot(base,visited=None):
  baseline_cache[cache_key]=answers[0]
  return answers[0]
 for path,size in paths:
- cwd=None;model=None;tier=None;provider=None;previous=None;turn=None;after=None;inherited_ordinal=None
+ cwd=None;model=None;tier=None;provider=None;previous=None;turn=None;after=None;inherited_ordinal=None;session=None
  # One bounded line at a time. Modern metadata may be up to 4 MiB;
  # oversized message/tool records are discarded in 256 KiB chunks.
  with path.open('rb') as f:
@@ -100,6 +100,7 @@ for path,size in paths:
    try:
     r=json.loads(line);p=r.get('payload') or {};kind=r.get('type')
     if kind=='session_meta':
+     session=p.get('id') if isinstance(p.get('id'),str) else None
      origin=origins.get(p.get('id')) or {}
      if origin.get('exclude') or '.agentmanager-imports' in path.relative_to(home).parts:break
      if origin.get('after'):after=timestamp(origin['after'])
@@ -142,13 +143,13 @@ for path,size in paths:
     legacy_key=hashlib.sha256(json.dumps([stamp,cwd,total],sort_keys=True,separators=(',',':')).encode()).hexdigest()
     if o.get('includeEvents') and o.get('rebuildEvents') and key not in projection_seen:
      if len(events)<${USAGE_EVENT_LIMIT}:
-      projection_seen.add(key);events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'hour':event_hour,'at':at.astimezone(datetime.timezone.utc).isoformat(),'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
+      projection_seen.add(key);events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'hour':event_hour,'at':at.astimezone(datetime.timezone.utc).isoformat(),'session':session,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
      else:events_truncated=True
     if not rebin and cutoff and at<=cutoff:continue
     if key in seen:continue
     seen.add(key)
     if o.get('includeEvents') and not o.get('rebuildEvents'):
-     if len(events)<${USAGE_EVENT_LIMIT}:events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'hour':event_hour,'at':at.astimezone(datetime.timezone.utc).isoformat(),'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
+     if len(events)<${USAGE_EVENT_LIMIT}:events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'hour':event_hour,'at':at.astimezone(datetime.timezone.utc).isoformat(),'session':session,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
      else:events_truncated=True
     if len(seen)>2000000:raise RuntimeError('usage event limit exceeded')
     if rebin and (key in previous_known or cutoff and at<=cutoff):

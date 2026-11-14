@@ -203,3 +203,9 @@ it('retains upstream group consumption when sessions disappear and bridges legac
  respond([]);await collectAccountUsage('provider:a');await collectAccountUsage('provider:b');expect(cachedGroupUsage(['provider:a','provider:b']).rows[0].tokens.total_tokens).toBe(10);
  respond([],{events:[{...event,key:'c'.repeat(64),legacy_key:event.key}]});await collectAccountUsage('provider:b');expect(cachedGroupUsage(['provider:a','provider:b'])).toMatchObject({partial:true,rows:[{requests:2,tokens:{total_tokens:20}}]});
 });
+it('catches up readable historical days after a multi-day shutdown without duplicate counts',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));respond([row]);await collectAccountUsage('native');
+ vi.setSystemTime(new Date('2026-01-04T12:00:00Z'));respond([row,{...row,day:'2026-01-02'},{...row,day:'2026-01-03'}]);await collectAccountUsage('native');
+ expect(JSON.parse(vi.mocked(localCommandInput).mock.calls.at(-1)![1]).mode).toBe('full');expect(cachedAccountUsage('native').rows.map(r=>r.tokens.total_tokens)).toEqual([10,10,10]);
+ await collectAccountUsage('native');expect(cachedAccountUsage('native').rows.map(r=>r.tokens.total_tokens)).toEqual([10,10,10]);
+});

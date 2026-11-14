@@ -41,6 +41,6 @@ it('exposes observed usage on the matching project and model after both collecto
  db.prepare('INSERT INTO codex_usage_status VALUES(?,?,?,?)').run('native','2026-01-01T00:06:00.000Z',null,0);
  db.prepare('INSERT INTO codex_usage_scan_boundary VALUES(?,?)').run('native','2026-01-01T00:06:00.000Z');
  db.prepare('INSERT INTO codex_usage_snapshots VALUES(?,1)').run('native');db.prepare('INSERT INTO codex_usage_dedup_status(account,ready) VALUES(?,1)').run('native');
- expect(cachedAccountUsage('native').rows[0].models[0].actual_quota).toBeCloseTo(2);
+ const accountUsage=cachedAccountUsage('native');expect(accountUsage.rows[0].models[0].actual_quota).toBeCloseTo(2);expect(accountUsage.quota_hours).toEqual([{hour:'2026-01-01T00:00:00+00:00',quota:2}]);
  db.prepare('UPDATE codex_usage_status SET partial=1,error=? WHERE account=?').run('部分记录不可读取或缺少统计字段','native');const partial=cachedAccountUsage('native');expect(partial.partial).toBe(true);expect(partial.rows[0].models[0].actual_quota).toBeCloseTo(2);
 });

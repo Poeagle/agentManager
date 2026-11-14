@@ -91,3 +91,17 @@ it('hides the historical reconciliation warning while keeping data available',as
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="retained" name="Retained" onClose={()=>{}}/></QueryClientProvider>);
  expect(await screen.findByText('/retained')).toBeVisible();expect(screen.queryByText(/历史缓存无法完整核对/)).toBeNull();
 });
+it('recomputes quota by the chosen period and does not redistribute after project search',async()=>{
+ const item=(date:string,cwd:string,credit:number)=>({date,cwd,project_name:cwd.slice(1),estimated_credits:credit,tokens:{input_tokens:credit,cached_input_tokens:0,output_tokens:0,total_tokens:credit},models:[{model:'model',estimated_credits:credit,tokens:{input_tokens:credit,cached_input_tokens:0,output_tokens:0,total_tokens:credit}}]});
+ const rows=[item('2026-11-09','/A',90),item('2026-11-09','/B',10),item('2026-11-10','/A',10),item('2026-11-10','/B',90)];
+ vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:false,timezone:'UTC',quota_hours:[{hour:'2026-11-09T01:00:00+00:00',quota:1},{hour:'2026-11-10T01:00:00+00:00',quota:3}],rows}}:{account:{},resets:null} as any);
+ render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="period" name="Period" onClose={()=>{}}/></QueryClientProvider>);
+ await screen.findByText('/A');let project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[8]).toHaveTextContent('0.3');
+ fireEvent.change(screen.getByRole('combobox',{name:'统计维度'}),{target:{value:'week'}});project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[8]).toHaveTextContent('2');
+ fireEvent.change(screen.getByLabelText('搜索项目或目录'),{target:{value:'A'}});project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[8]).toHaveTextContent('2');
+});
+
+it('omits the partial historical rule-refresh banner requested by the user',async()=>{
+ vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:true,error:'历史部分记录不可读取；已核对的数据已按新规则更新',timezone:'UTC',rows:[]}}:{account:{},resets:null} as any);
+ render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="partial-banner" name="Partial" onClose={()=>{}}/></QueryClientProvider>);await screen.findByText('所选范围暂无用量记录');expect(screen.queryByText('历史部分记录不可读取；已核对的数据已按新规则更新')).toBeNull();
+});

@@ -7,7 +7,7 @@ test('Platform management provides role configuration and enforces a monitoring-
   expect((await page.request.post(auth.needsSetup ? '/api/auth/setup' : '/api/auth/login', { data: { username: 'e2e-admin', password: 'test-password' } })).ok()).toBeTruthy();
   await page.request.put('/api/settings', { data: { settings: { statusline_prompted: 'true' } } });
   await page.goto('/');
-  await page.getByRole('button', { name: '平台管理', exact: true }).click();
+  await page.getByTitle('My account', { exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '平台管理' });
   const nav = dialog.getByRole('navigation', { name: '平台管理分类' });
   await expect(nav.getByRole('button', { name: '用户管理', exact: true })).toBeVisible();
@@ -39,7 +39,7 @@ test('Platform management provides role configuration and enforces a monitoring-
   await page.request.post('/api/auth/logout');
   expect((await page.request.post('/api/auth/login', { data: { username: 'e2e-observer', password: 'test-password' } })).ok()).toBeTruthy();
   await page.reload();
-  await page.getByRole('button', { name: '平台管理', exact: true }).click();
+  await page.getByTitle('My account', { exact: true }).click();
   await expect(nav.getByRole('button', { name: '用户监控', exact: true })).toBeVisible();
   for (const name of ['用户管理', '角色与权限', '项目授权', 'Agent API']) await expect(nav.getByRole('button', { name, exact: true })).toBeHidden();
   await expect(dialog.getByRole('button', { name: /^重命名会话标签/ })).toBeHidden();
@@ -82,7 +82,7 @@ test('Project ownership, client selection and monitoring all use compact expanda
     await expect(projectsTable.getByText(`@${admin.username}`, { exact: true }).first()).toBeVisible();
     await expect(projectsTable.getByRole('button', { name: /Agent/, exact: false })).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath('compact-projects.png') });
-    await page.getByRole('button', { name: '平台管理', exact: true }).click();
+    await page.getByTitle('My account', { exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '平台管理' });
     const nav = dialog.getByRole('navigation', { name: '平台管理分类' });
     await nav.getByRole('button', { name: '项目授权', exact: true }).click();
