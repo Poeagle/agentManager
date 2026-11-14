@@ -1,3 +1,5 @@
+import {usageAggregates} from './usage-aggregates.js';
+import {pruneUsageCsvDuplicates} from './usage-csv-prune.js';
 import {getDb} from '../../../db/index.js';
 import {quotaHours} from './quota-periods.js';
 import {readUsageCsv,publishUsageCsv} from './usage-csv.js';
@@ -23,7 +25,7 @@ export function exportUsageCsv(account:string,options:{rebuild?:boolean}={}){
  const current:unknown[][]=[],history:unknown[][]=from?(prior?.history??[]).filter(r=>typeof r[0]==='string'&&r[0]<from):[];
  for(const entry of groups.values())(entry[0]===today?current:history).push(entry);
  // Preserve legacy daily totals when detailed projections cannot represent them.
- const aggregates=db.prepare('SELECT day,cwd,model,tier,tokens FROM codex_usage_events WHERE account=? AND (? IS NULL OR day>=?)').all(account,from,from) as Array<{day:string;cwd:string;model:string|null;tier:string|null;tokens:string}>;
+ const aggregates=usageAggregates(account,from);
  const detailed=new Map<string,Record<string,number|null>>();
  for(const entry of groups.values()){const key=JSON.stringify([entry[0],entry[2],entry[3],entry[4]]),old=detailed.get(key);if(!old)detailed.set(key,{...entry[5],requests:entry[6]});else{old.requests=(old.requests??0)+entry[6];for(const k of tokenFields)old[k]=old[k]==null||entry[5][k]==null?null:old[k]!+entry[5][k];}}
  const fallback=new Set<string>(),aggregateTotals=new Map<string,Record<string,number|null>>();
@@ -43,4 +45,5 @@ export function exportUsageCsv(account:string,options:{rebuild?:boolean}={}){
  for(const row of observed.hours)if((!quotaFrom||row.hour.slice(0,10)>=quotaFrom)&&!hours.has(row.hour))hours.set(row.hour,row.quota);
  const checkpoint=(db.prepare('SELECT checked_at FROM codex_usage_status WHERE account=?').get(account) as {checked_at:string|null}|undefined)?.checked_at??null;
  publishUsageCsv(account,{day:today,timezone,checkpoint,source,current,history,quota:quota.filter(r=>usageDay(Date.parse(r.checked_at),timezone)===today).map(r=>[r.checked_at,r.used,r.reset_at,r.email]),observed:[...hours]});
+ pruneUsageCsvDuplicates(account);
 }

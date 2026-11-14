@@ -1,3 +1,4 @@
+import {usageAggregates} from './usage-aggregates.js';
 import type Database from 'better-sqlite3';
 import {tokenFields} from '../../conversation-usage.js';
 
@@ -28,7 +29,7 @@ export function assertUsageRebuildPreserves(db:Database.Database,account:string,
  const originals=new Set<string>();
  for(const row of db.prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=?').iterate(account) as Iterable<{event_id:Buffer}>){const id=row.event_id.toString('hex');if(!oldIds.has(id))throw Error('历史请求身份缺失');originals.add(id);}
  if(originals.size!==original.n)throw Error('历史请求身份不完整');
- for(const row of db.prepare('SELECT day,cwd,model,tokens FROM codex_usage_events WHERE account=?').iterate(account) as Iterable<{day:string;cwd:string;model:string|null;tokens:string}>){
+ for(const row of usageAggregates(account)){
   const prior=JSON.parse(row.tokens) as Record<string,number|null>,key=keyFor(row.day,row.cwd,row.model,prior),group=groups.get(key),requests=prior.requests??1;
   if(!group||!Number.isSafeInteger(requests)||requests!<0||requests!>group.requests)throw Error('历史聚合无法核对');
   group.requests-=requests!;

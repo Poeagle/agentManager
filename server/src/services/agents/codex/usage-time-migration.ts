@@ -1,3 +1,4 @@
+import {usageAggregates} from './usage-aggregates.js';
 import {getDb} from '../../../db/index.js';
 import {tokenFields} from '../../conversation-usage.js';
 import {estimateUsageCredits} from './usage-credits.js';
@@ -23,7 +24,7 @@ export function usageStoredTimezone(account:string){
  * explicit instead of being guessed into one of two possible local dates. */
 export function retainUnassignedUsage(account:string,timezone:string,matches:MatchedUsage[]){
  const db=getDb(),byKey=new Map(matches.map(row=>[usageAggregateKey(row,row.legacy),row]));
- const rows=db.prepare('SELECT event_key,day,cwd,model,tier,tokens FROM codex_usage_events WHERE account=?').all(account) as {event_key:string;day:string;cwd:string;model:string|null;tier:string|null;tokens:string}[];
+ const rows=usageAggregates(account);
  const insert=db.prepare('INSERT OR IGNORE INTO codex_usage_unassigned VALUES(?,?,?,?,?,?,?,?)');
  for(const row of rows){
   const old=JSON.parse(row.tokens) as Counters&{requests:number},matched=byKey.get(row.event_key);
