@@ -166,3 +166,9 @@ describe('Codex native execution status',()=>{
     } finally {await app.close();database.cleanup();}
   });
 });
+
+it('keeps the turn-end clock separate from later activity timestamps',async()=>{
+ writeFileSync(file,event('task_started',1)+event('task_complete',2)+event('agent_message',5));
+ const runtime=await readCodexRuntime(id);expect(runtime.last_turn_ended_at).toBe('2026-10-29T10:00:02.000Z');expect(runtime.last_activity_at).toBe('2026-10-29T10:00:05.000Z');
+ appendFileSync(file,event('task_started',6));expect((await readCodexRuntime(id)).last_turn_ended_at).toBeNull();
+});

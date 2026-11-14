@@ -34,7 +34,7 @@ export const codexAdapter: AgentAdapter = {
             const module=await import('./runtime.js');
             const tracker=context.session.id?(await import('../../session-state.js')).getTracker(context.session.id)?.state:undefined;
             if(tracker?.processState==='waiting_for_input'&&module.codexStartupConflict(tracker.choices))return {source:'codex_terminal',session_id:context.nativeId,state:'waiting_for_input',last_activity_at:new Date(tracker.lastActivity).toISOString(),observed_at:new Date().toISOString(),reason:'Codex 启动配置与后台服务冲突，请在原始终端选择不使用 daemon；平台不会自动重启共享服务'};
-            const runtime = await module.readCodexRuntime(context.nativeId);
+            const runtime = context.nativeId?await inCodexThread(requireNative(context),()=>module.readCodexRuntime(context.nativeId)):await module.readCodexRuntime(null);
             if (context.verifyProcess && context.session.id && runtime.source === 'codex_rollout' && ['running', 'waiting_for_input'].includes(runtime.state) && await (await import('../../session-manager.js')).getLiveWorkAgent(context.session.id) !== 'codex')
                 return { ...runtime, state: 'unknown', reason: '原生记录尚未结束，但未确认到对应 Codex 进程' };
             return runtime;
@@ -45,7 +45,7 @@ export const codexAdapter: AgentAdapter = {
         validate: async (context, value) => inCodexThread(requireNative(context),async()=>(await import('./controls.js')).validateModelPreference(value,true)),
         apply: async (context, value) => inCodexThread(requireNative(context),async()=>(await import('./controls.js')).applyCodexModelSettings(requireNative(context), value)),
     },
-    telemetry: { read: async (context) => (await import('./controls.js')).readConversationTelemetry(requireNative(context)),contextBreakdown:async context=>inCodexThread(requireNative(context),async()=>(await import('./context-breakdown.js')).readCodexContextBreakdown(context)) },
+    telemetry: { read: async (context) => inCodexThread(requireNative(context),async()=> (await import('./controls.js')).readConversationTelemetry(requireNative(context))),contextBreakdown:async context=>inCodexThread(requireNative(context),async()=>(await import('./context-breakdown.js')).readCodexContextBreakdown(context)) },
     statistics: { read: async (_context, path) => (await import('./statistics.js')).readConversationStatistics(path),readProgress:async (_context,path)=>(await import('./statistics.js')).readConversationProgress(path) },
     quota: { read: async (force) => (await import('./quota.js')).readCodexWeeklyQuota({ force }) },
     retry: { retryable:retryableConversationError,inspect: async (id) => inCodexThread(id,async()=>(await import('./retry.js')).inspectCodexRetry(id)), start: async (id, failed, client) => inCodexThread(id,async()=>(await import('./retry.js')).startRetryTurn(id, failed, client)) },

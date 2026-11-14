@@ -1,3 +1,4 @@
+import {useConversationSendGuard} from '../lib/use-conversation-send-guard';
 import {ConversationBatchCard} from './ConversationBatchCard';
 import {composerKey,loadComposer,saveComposer,emptyComposer,combinedBatch,type ComposerState,type BatchEntry} from '../lib/batch-composer';
 import {
@@ -579,6 +580,7 @@ export function SessionConversation({
     session.id,
     agentNativeId(session),
   );
+  const sendGuard=useConversationSendGuard(session.id,active,compaction,onNewConversation?()=>onNewConversation():undefined);
   const permissions = usePermissions();
   const queryClient = useQueryClient();
   const canRead = hasPermission(permissions.data, "agent_api");
@@ -761,7 +763,7 @@ export function SessionConversation({
     }
   },[messages]);
   function stageBatch(){
-    if(!canSend||attachments.uploading||attachments.failed||sendingRef.current)return;
+    if(!canSend||sendGuard.blocking||attachments.uploading||attachments.failed||sendingRef.current)return;
     const text=draftRef.current,values=attachments.values().map((a,index)=>({...a,offset:attachmentPositions.current?.().get(attachments.items.filter(i=>i.status==='ready'&&i.path)[index]?.id)??text.length}));
     if(!text.trim()&&!values.length)return;
     const entries=[...composerRef.current.value.entries,{id:conversationClientId(),createdAt:new Date(estimatedServerNow()).toISOString(),text,attachments:values}];
@@ -775,7 +777,7 @@ export function SessionConversation({
     readingRoot.current?.querySelector<HTMLElement>('.session-chat-editor')?.focus({preventScroll:true});
   }
   function recallBatch(entry:BatchEntry){
-    if(composerRef.current.value.pending?.entryIds.includes(entry.id)||sendingRef.current||attachments.uploading||attachments.failed)return;
+    if(sendGuard.blocking||composerRef.current.value.pending?.entryIds.includes(entry.id)||sendingRef.current||attachments.uploading||attachments.failed)return;
     if(attachments.items.length+entry.attachments.length>8){setSendError('输入框最多支持 8 个附件，请先处理现有输入。');return;}
     const current=draftRef.current,prefix=current?current+'\n\n':'',text=prefix+entry.text;
     const restored=entry.attachments.map(a=>({...a,offset:prefix.length+(a.offset??entry.text.length)}));
@@ -784,7 +786,7 @@ export function SessionConversation({
     attachments.restore(restored.map(a=>({...a,id:conversationClientId(),size:0,status:'ready' as const})));
   }
   function deleteBatch(entry:BatchEntry){
-    if(!canSend||sendingRef.current||composerRef.current.value.pending?.entryIds.includes(entry.id))return;
+    if(!canSend||sendGuard.blocking||sendingRef.current||composerRef.current.value.pending?.entryIds.includes(entry.id))return;
     persistComposer({entries:composerRef.current.value.entries.filter(e=>e.id!==entry.id)});
   }
   async function sendBatch(){
@@ -1626,6 +1628,7 @@ export function SessionConversation({
       (!text.trim() && !attached.length) ||
       (!fromQuestion && (attachments.uploading || attachments.failed)) ||
       sendingRef.current ||
+      sendGuard.blocking ||
       !canSend ||
       !page?.session_active ||
       ended ||
@@ -1657,13 +1660,19 @@ export function SessionConversation({
       setSendError("消息超过 64 KB，请缩短后发送。");
       return;
     }
+    const guardVersion=draftVersion.current,guardEntries=JSON.stringify(composerRef.current.value.entries.map(e=>e.id));
+    let guardToken:string|undefined,sendNativeId=agentNativeId(session);
+    if(!fromQuestion||fromBatch){
+      try{const confirmation=await sendGuard.confirm({input:text,attachments:attached,...fromBatch?{batch:composerRef.current.value.entries.map(e=>({length:e.text.length,attachments:e.attachments.length}))}:{}});if(confirmation===null)return;guardToken=confirmation.token;sendNativeId=confirmation.nativeId;}
+      catch(failure){setSendError(failure instanceof Error?failure.message:'发送前检查失败，草稿已保留');return;}
+    }
+    if(!fromQuestion&&draftVersion.current!==guardVersion||fromBatch&&guardEntries!==JSON.stringify(composerRef.current.value.entries.map(e=>e.id))){setSendError('输入内容已变化，请重新发送以检查最新草稿。');return;}
     sendingRef.current = true;
     setSending(true);
     setSendError("");
     const fingerprint = JSON.stringify([
       fromBatch,
-      agentNativeId(session),
-      session.claude_session_id,
+      sendNativeId,
       text,
       attached,
     ]);
@@ -1671,7 +1680,7 @@ export function SessionConversation({
       submissionIdentity.current?.fingerprint === fingerprint
         ? submissionIdentity.current.id
         : conversationClientId();
-    if(fromBatch&&!persistComposer({pending:{id:clientId,entryIds:composerRef.current.value.entries.map(e=>e.id),nativeId:agentNativeId(session)}})){
+    if(fromBatch&&!persistComposer({pending:{id:clientId,entryIds:composerRef.current.value.entries.map(e=>e.id),nativeId:sendNativeId}})){
       sendingRef.current=false;setSending(false);return;
     }
     submissionIdentity.current = { fingerprint, id: clientId };
@@ -1758,7 +1767,7 @@ export function SessionConversation({
     try {
       const response = accepted
         ? { status: accepted.queued ? "queued" : "submitted" }
-        : await (batchParts?api.agent.sendInput(session.id,text,clientId,attached,batchParts.map(p=>({length:p.text.length,attachments:p.attachments.length}))):attached.length
+        : await (guardToken?api.agent.sendInput(session.id,text,clientId,attached,batchParts?.map(p=>({length:p.text.length,attachments:p.attachments.length})),guardToken):batchParts?api.agent.sendInput(session.id,text,clientId,attached,batchParts.map(p=>({length:p.text.length,attachments:p.attachments.length}))):attached.length
             ? api.agent.sendInput(session.id, text, clientId, attached)
             : api.agent.sendInput(session.id, text, clientId));
       acknowledged(response.status);
@@ -2115,7 +2124,7 @@ export function SessionConversation({
         <ConversationPromptEnhancer
           sessionId={session.id}
           active={active}
-          canEdit={canSend && !ended && !waiting}
+          canEdit={canSend && !ended && !waiting && !sendGuard.blocking}
           value={draft}
           attachments={attachments.items}
           onApply={changeDraft}
@@ -2532,7 +2541,7 @@ export function SessionConversation({
               if (Array.from(event.dataTransfer.types).includes("Files")) {
                 event.preventDefault();
                 event.dataTransfer.dropEffect =
-                  canAttach && canSend && !ended && !sending ? "copy" : "none";
+                  canAttach && canSend && !ended && !sending && !sendGuard.blocking ? "copy" : "none";
               }
             }}
             onDrop={(event) => {
@@ -2540,7 +2549,7 @@ export function SessionConversation({
                 return;
               event.preventDefault();
               event.stopPropagation();
-              if (canAttach && canSend && !ended && !sending)
+              if (canAttach && canSend && !ended && !sending && !sendGuard.blocking)
                 attachments.enqueueTransfer(event.dataTransfer);
             }}
           >
@@ -2548,7 +2557,7 @@ export function SessionConversation({
               snapshotRef={attachmentPositions}
               value={draft}
               items={attachments.items}
-              disabled={!canSend || ended || waiting}
+              disabled={!canSend || ended || waiting || sendGuard.blocking}
               placeholder={
                 waiting
                   ? "请先处理上方交互"
@@ -2575,10 +2584,10 @@ export function SessionConversation({
 
             <div className="session-chat-input-tools">
               <ConversationAttachmentPicker
-                disabled={!canAttach || !canSend || ended || sending}
+                disabled={!canAttach || !canSend || ended || sending || sendGuard.blocking}
                 onFiles={attachments.enqueue}
               />
-              <div className="session-chat-controls-slot conversation-toolbar"><label className="conversation-control-select conversation-composer-mode"><span>模式</span><select aria-label="发送模式" value={composer.mode} disabled={sending||!!composer.pending} onChange={e=>persistComposer({mode:e.target.value as ComposerState['mode']})}><option value="immediate">立即发送</option><option value="batch">批量发送</option></select><ChevronDown size={12}/></label><div ref={setToolbarTarget}/></div>
+              <div className="session-chat-controls-slot conversation-toolbar"><label className="conversation-control-select conversation-composer-mode"><span>模式</span><select aria-label="发送模式" value={composer.mode} disabled={sending||sendGuard.blocking||!!composer.pending} onChange={e=>persistComposer({mode:e.target.value as ComposerState['mode']})}><option value="immediate">立即发送</option><option value="batch">批量发送</option></select><ChevronDown size={12}/></label><div ref={setToolbarTarget}/></div>
               <span className="session-chat-send-hint">{composer.mode==='batch'?'Enter 加入批量 · Ctrl+Enter 发送':'Enter 发送 · Shift+Enter 换行'}</span>
               <div className="session-chat-send-actions">
                 <button
@@ -2604,7 +2613,7 @@ export function SessionConversation({
                   type="submit"
                   aria-label={composer.mode==='batch'?'加入批量':'发送消息'}
                   disabled={
-                    sending ||
+                    sending || sendGuard.blocking ||
                     attachments.uploading ||
                     attachments.failed ||
                     !canSend ||
@@ -2614,7 +2623,7 @@ export function SessionConversation({
                     waiting
                   }
                 >
-                  {sending ? (
+                  {sending || sendGuard.checking ? (
                     <Loader2 size={17} className="animate-spin" />
                   ) : (
                     <ArrowUp size={18} />
@@ -2630,7 +2639,7 @@ export function SessionConversation({
                 toolbarTarget={toolbarTarget}
                 sessionId={session.id}
                 active={active}
-                busy={busy || sending || resuming}
+                busy={busy || sending || resuming || sendGuard.blocking}
                 compacting={compaction.running}
                 onCompact={compaction.start}
                 onNewConversation={onNewConversation}
@@ -2640,11 +2649,12 @@ export function SessionConversation({
       </section>
         {composer.mode==='batch'&&<aside className="session-chat-batch" aria-label="批量待发内容">
           <header className="session-batch-header"><span>批量待发</span><small>{composer.entries.length} 条</small></header>
-          <div className="session-chat-batch-content">{composer.entries.length?composer.entries.map((entry,index)=><article key={entry.id}><header><small>消息 {index+1}</small><time dateTime={entry.createdAt} title="加入待发区时间">{formatDisplayTimestamp(entry.createdAt)}</time><button type="button" className="session-batch-recall" aria-label={`撤回第 ${index+1} 条消息`} disabled={!canSend||sending||!!composer.pending?.entryIds.includes(entry.id)||attachments.uploading||attachments.failed} onClick={()=>recallBatch(entry)}>撤回</button><button type="button" className="session-batch-delete" aria-label={`删除第 ${index+1} 条消息`} disabled={!canSend||sending||!!composer.pending?.entryIds.includes(entry.id)} onClick={()=>deleteBatch(entry)}>删除</button></header><ConversationMessageAttachments text={entry.text} items={entry.attachments} projectId={session.project_id} projectPath={projectPath} onOpenFile={onOpenFile}/></article>):<div className="session-batch-empty"><span>暂未添加消息</span><p>在输入框编写内容，按 Enter 加入这里，整理完成后一起发送。</p></div>}</div>
+          <div className="session-chat-batch-content">{composer.entries.length?composer.entries.map((entry,index)=><article key={entry.id}><header><small>消息 {index+1}</small><time dateTime={entry.createdAt} title="加入待发区时间">{formatDisplayTimestamp(entry.createdAt)}</time><button type="button" className="session-batch-recall" aria-label={`撤回第 ${index+1} 条消息`} disabled={!canSend||sending||sendGuard.blocking||!!composer.pending?.entryIds.includes(entry.id)||attachments.uploading||attachments.failed} onClick={()=>recallBatch(entry)}>撤回</button><button type="button" className="session-batch-delete" aria-label={`删除第 ${index+1} 条消息`} disabled={!canSend||sending||sendGuard.blocking||!!composer.pending?.entryIds.includes(entry.id)} onClick={()=>deleteBatch(entry)}>删除</button></header><ConversationMessageAttachments text={entry.text} items={entry.attachments} projectId={session.project_id} projectPath={projectPath} onOpenFile={onOpenFile}/></article>):<div className="session-batch-empty"><span>暂未添加消息</span><p>在输入框编写内容，按 Enter 加入这里，整理完成后一起发送。</p></div>}</div>
           {composer.pending&&<p role="status">发送结果待确认。恢复连接后自动核对，请勿重复发送。</p>}
-          <footer className="session-batch-footer"><button type="button" className="session-batch-send" aria-label="发送批量内容" aria-keyshortcuts="Control+Enter Meta+Enter" onKeyDown={event=>{if(active&&event.key==='Enter'&&(event.ctrlKey||event.metaKey)&&!event.nativeEvent.isComposing){event.preventDefault();if(!event.repeat)void sendBatch();}}} onClick={()=>void sendBatch()} disabled={!composer.entries.length||!!composer.pending||sending||!canSend||!page?.session_active||ended||waiting}>{sending?<Loader2 size={15} className="animate-spin"/>:<ArrowUp size={15}/>}<span>{sending?'正在发送…':'发送批量内容'}</span><kbd title="输入框为空时使用">Ctrl ↵</kbd></button></footer>
+          <footer className="session-batch-footer"><button type="button" className="session-batch-send" aria-label="发送批量内容" aria-keyshortcuts="Control+Enter Meta+Enter" onKeyDown={event=>{if(active&&event.key==='Enter'&&(event.ctrlKey||event.metaKey)&&!event.nativeEvent.isComposing){event.preventDefault();if(!event.repeat)void sendBatch();}}} onClick={()=>void sendBatch()} disabled={!composer.entries.length||!!composer.pending||sending||sendGuard.blocking||!canSend||!page?.session_active||ended||waiting}>{sending||sendGuard.checking?<Loader2 size={15} className="animate-spin"/>:<ArrowUp size={15}/>}<span>{sendGuard.checking?'检查中…':sending?'正在发送…':'发送批量内容'}</span><kbd title="输入框为空时使用">Ctrl ↵</kbd></button></footer>
         </aside>}
       </div></div>
+      {sendGuard.dialog}
     </ConversationImagePreviewRoot>
   );
 }

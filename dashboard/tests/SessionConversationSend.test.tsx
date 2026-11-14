@@ -35,6 +35,7 @@ async function mount(target:Session=session) {
   return view;
 }
 beforeEach(() => {
+  vi.spyOn(api.agent,'checkSend').mockResolvedValue({needs_confirmation:false,token:undefined} as any);
   localStorage.clear();
   Socket.latest = undefined as unknown as Socket;
   vi.stubGlobal('WebSocket', Socket);
@@ -56,6 +57,17 @@ describe('conversation send transaction', () => {
       act(()=>Socket.latest.emit({type:'snapshot',messages:[],busy:false,stage:'idle'}));
       expect(await screen.findByText('Event stream connected')).toBeVisible();
     }finally{view.unmount();client.clear();}
+  });
+  it('keeps the draft until risk confirmation and submits the confirmed payload once',async()=>{
+    vi.mocked(api.agent.checkSend).mockResolvedValue({needs_confirmation:true,matched:true,token:'confirmed',context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,observed_at:null,can_compact:false,can_new:false} as any);
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();input('protected draft');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+    const dialog=await screen.findByRole('dialog',{name:'发送前检查'});expect(submit).not.toHaveBeenCalled();expect(loadComposer(composerKey('local',session.id)).draft).toBe('protected draft');
+    fireEvent.click(within(dialog).getByRole('button',{name:'原样发送'}));await waitFor(()=>expect(submit).toHaveBeenCalledOnce());expect(submit.mock.calls[0][1]).toBe('protected draft');expect(submit.mock.calls[0][5]).toBe('confirmed');
+  });
+  it('cancels a batch warning and restores it after remount without dispatching',async()=>{
+    vi.mocked(api.agent.checkSend).mockResolvedValue({needs_confirmation:true,token:'confirmed',context_tokens:800,context_window:1000,context_percent:80,idle_minutes:null,observed_at:null,can_compact:false,can_new:false} as any);
+    const submit=vi.spyOn(api.agent,'sendInput');const view=await mount();fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});input('staged risk');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));
+    fireEvent.click(within(await screen.findByRole('dialog',{name:'发送前检查'})).getByRole('button',{name:'取消'}));expect(submit).not.toHaveBeenCalled();view.unmount();await mount();expect(loadComposer(composerKey('local',session.id)).entries[0].text).toBe('staged risk');expect(submit).not.toHaveBeenCalled();
   });
   it('stages messages, restores draft and batch after reload, and sends one combined message',async()=>{
     const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);
@@ -327,7 +339,7 @@ describe('conversation send transaction', () => {
     const send = deferred<SendResult>(); vi.spyOn(api.agent, 'sendInput').mockReturnValue(send.promise);
     await mount();
     const editor = input('立即发送'); fireEvent.click(screen.getByRole('button', { name: '发送消息', exact: true }));
-    expect(api.agent.sendInput).toHaveBeenCalledOnce();
+    await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledOnce());
     expect(editor.textContent).toBe('');
     input('下一条草稿');
     await act(async () => send.resolve({ status: 'submitted' } as SendResult));
@@ -336,13 +348,14 @@ describe('conversation send transaction', () => {
   it('does not erase a new draft that happens to match the submitted text', async () => {
     const send = deferred<SendResult>(); vi.spyOn(api.agent, 'sendInput').mockReturnValue(send.promise); await mount();
     const editor = input('相同文字'); fireEvent.keyDown(editor, { key: 'Enter' });
-    expect(editor.textContent).toBe(''); input('相同文字');
+    await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledOnce());expect(editor.textContent).toBe(''); input('相同文字');
     await act(async () => send.resolve({ status: 'queued' } as SendResult));
     expect(editor).toHaveTextContent('相同文字');
   });
   it('restores a rejected draft and reuses its submission identity for an intentional retry', async () => {
     const send = deferred<SendResult>(); const submit = vi.spyOn(api.agent, 'sendInput').mockReturnValue(send.promise); await mount();
     const editor = input('保留失败内容'); fireEvent.keyDown(editor, { key: 'Enter' });
+    await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
     const clientId = submit.mock.calls[0][2]; expect(editor.textContent).toBe('');
     await act(async () => send.reject(new ApiError('消息未受理', 409, 'rejected')));
     expect(editor).toHaveTextContent('保留失败内容'); expect(screen.getByRole('alert')).toHaveTextContent('消息未受理');
@@ -352,7 +365,7 @@ describe('conversation send transaction', () => {
   });
   it('keeps a newer draft and exposes the failed one for explicit recovery', async () => {
     const send = deferred<SendResult>(); vi.spyOn(api.agent, 'sendInput').mockReturnValue(send.promise); await mount();
-    const editor = input('发送失败的原文'); fireEvent.keyDown(editor, { key: 'Enter' }); input('等待时写的新内容');
+    const editor = input('发送失败的原文'); fireEvent.keyDown(editor, { key: 'Enter' }); await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledOnce());input('等待时写的新内容');
     await act(async () => send.reject(new ApiError('消息未受理', 409, 'rejected')));
     expect(editor).toHaveTextContent('等待时写的新内容'); expect(screen.getByRole('button', { name: '恢复未发送内容' })).toBeDisabled();
     input(''); fireEvent.click(screen.getByRole('button', { name: '恢复未发送内容' }));
@@ -360,7 +373,7 @@ describe('conversation send transaction', () => {
   });
   it('does not restore or duplicate a message confirmed by the native echo when HTTP later fails', async () => {
     const send = deferred<SendResult>(); const submit = vi.spyOn(api.agent, 'sendInput').mockReturnValue(send.promise); await mount();
-    const editor = input('原生已受理'); fireEvent.keyDown(editor, { key: 'Enter' });
+    const editor = input('原生已受理'); fireEvent.keyDown(editor, { key: 'Enter' });await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
     act(() => Socket.latest.emit({ type: 'snapshot', messages: [{ id: 'native-echo', client_id: submit.mock.calls[0][2], role: 'user', text: '原生已受理', timestamp: new Date().toISOString() }], busy: true, stage: 'waiting' }));
     await waitFor(() => expect(document.querySelector('[data-chat-message-id="native-echo"]')).toBeInTheDocument());
     await act(async () => send.reject(new ApiError('响应超时', 503, 'unknown')));
@@ -382,7 +395,7 @@ describe('conversation send transaction', () => {
     await waitFor(() => expect(editor.querySelector('[data-status="ready"]')).toBeTruthy());
     expect(editor.textContent?.replaceAll('\u200b', '')).toBe('前文文件 1后文');
     fireEvent.click(screen.getByRole('button', { name: '发送消息', exact: true }));
-    expect(editor.textContent).toBe(''); expect(submit.mock.calls[0][3]?.[0]).toMatchObject({ path: '/project/note.txt', offset: 2 });
+    await waitFor(()=>expect(submit).toHaveBeenCalledOnce());expect(editor.textContent).toBe(''); expect(submit.mock.calls[0][3]?.[0]).toMatchObject({ path: '/project/note.txt', offset: 2 });
     await act(async () => send.reject(new ApiError('消息未受理', 409, 'rejected')));
     expect(editor.textContent?.replaceAll('\u200b', '')).toBe('前文文件 1后文'); expect(upload).toHaveBeenCalledOnce();
   });

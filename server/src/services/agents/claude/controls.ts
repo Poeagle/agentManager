@@ -13,6 +13,7 @@ const cache = new Map<string, {
     partial: Buffer;
     model: string | null;
     modelAt: string | null;
+    endedAt:string|null;
     last: string | null;
     state: AgentRuntime['state'];
     usage: AgentControls['usage'];
@@ -20,7 +21,7 @@ const cache = new Map<string, {
 }>();
 async function metadata(context: AgentContext) {
     const directory = context.projectPath ? resolveClaudeDir(context.projectPath) : null;
-    const empty = { compaction: null as AgentCompaction | null, model: null as string | null, modelAt: null as string | null, last: null as string | null, state: 'unknown' as AgentRuntime['state'], usage: null as AgentControls['usage'] };
+    const empty = { endedAt:null as string|null, compaction: null as AgentCompaction | null, model: null as string | null, modelAt: null as string | null, last: null as string | null, state: 'unknown' as AgentRuntime['state'], usage: null as AgentControls['usage'] };
     if (!directory || !context.nativeId || !NATIVE_SESSION_ID_RE.test(context.nativeId))
         return empty;
     const path = join(directory, `${context.nativeId}.jsonl`);
@@ -65,11 +66,10 @@ async function metadata(context: AgentContext) {
                     state.usage = { total: publicTokenCounters(null), last: publicTokenCounters({ input_tokens: input + read + write, cached_input_tokens: read, output_tokens: output, total_tokens: input + read + write + output }), window: null };
                 }
                 state.state = record.message?.stop_reason === 'end_turn' ? 'idle' : 'running';
+                state.endedAt=state.state==='idle'&&typeof record.timestamp==='string'?record.timestamp:null;
             }
-            else if (record.type === 'user' && typeof record.message?.content === 'string')
-                state.state = 'running';
-            else if (record.type === 'system' && record.subtype === 'turn_duration')
-                state.state = 'idle';
+            else if (record.type === 'user' && typeof record.message?.content === 'string'){state.state='running';state.endedAt=null;}
+            else if (record.type === 'system' && record.subtype === 'turn_duration'){state.state='idle';state.endedAt=typeof record.timestamp==='string'?record.timestamp:null;}
             else if (record.type === 'system' && record.subtype === 'compact_boundary') {
                 state.state = 'idle';
                 state.compaction = { id: record.uuid || `compact:${record.timestamp}`, status: 'completed', started_at: null, completed_at: record.timestamp || null, duration_ms: null };
@@ -90,7 +90,7 @@ export async function readClaudeRuntime(context: AgentContext): Promise<AgentRun
     const { getTracker } = await import('../../session-state.js');
     const tracker = context.session.id ? getTracker(context.session.id)?.state : null;
     const state = tracker?.processState === 'waiting_for_input' ? 'waiting_for_input' : tracker?.processState === 'busy' ? 'running' : value.state;
-    return { source: 'claude_history', session_id: context.nativeId, state, last_activity_at: value.last, observed_at: new Date().toISOString(), reason: '依据 Claude 原生历史和当前客户端状态', pending_question_count: 0, pending_questions: [], compaction: value.compaction };
+    return { source: 'claude_history', session_id: context.nativeId, state, last_activity_at: value.last, last_turn_ended_at:value.endedAt, observed_at: new Date().toISOString(), reason: '依据 Claude 原生历史和当前客户端状态', pending_question_count: 0, pending_questions: [], compaction: value.compaction };
 }
 /** Claude Code's built-in aliases. */
 const aliases = ['default', 'sonnet', 'opus', 'haiku'];

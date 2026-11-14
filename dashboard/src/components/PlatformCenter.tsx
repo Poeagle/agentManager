@@ -85,7 +85,7 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
                   </div>}
                   {current.id === 'resources' && <SharedResources userId={currentUser.id} />}
                   {current.id === 'users' && query.data && <PermissionCenter currentUser={currentUser} permissions={query.data} />}
-                  {current.id === 'settings' && <SettingsPanel embedded onClose={onClose} readOnly={!hasPermission(query.data, 'settings', 'write')} />}
+                  {current.id === 'settings' && <SettingsPanel administrator={currentUser.role==='admin'} embedded onClose={onClose} readOnly={!hasPermission(query.data, 'settings', 'write')} />}
                   {current.id === 'agents' && <AgentManagement readOnly={!hasPermission(query.data, 'settings', 'write')} />}
                   {current.id === 'assistant' && query.data && <PlatformAi permissions={query.data} onOpenSession={onOpenSession} />}
                   {current.id === 'agent' && <AgentGuide embedded onClose={onClose} />}
