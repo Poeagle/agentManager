@@ -119,7 +119,7 @@ test('Resume shows failure, immediate retry feedback, and progress until termina
 
   await page.goto('/');
   await page.getByRole('button', { name: '恢复会话', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('Test restore failure');
+  await expect(page.getByRole('alert').filter({hasText:'Test restore failure'})).toBeVisible();
   await page.getByRole('button', { name: '重试恢复会话', exact: true }).click();
   await expect(page.getByRole('button', { name: '正在恢复…' })).toBeDisabled();
   await expect(page.getByRole('status').filter({ hasText: /Resuming|Session resumed/ })).toContainText('starting session');
@@ -138,7 +138,7 @@ test('Resume shows failure, immediate retry feedback, and progress until termina
   const connectionsBeforeRetry = connections;
   const handshakesBeforeRetry = handshakes;
   terminalError();
-  await expect(page.getByRole('alert')).toContainText('Test connection failure');
+  await expect(page.getByRole('alert').filter({hasText:'Test connection failure'})).toBeVisible();
   await page.getByRole('button', { name: 'Reconnect', exact: true }).click();
   await expect.poll(() => connections).toBeGreaterThan(connectionsBeforeRetry);
   await expect.poll(() => handshakes).toBeGreaterThan(handshakesBeforeRetry);

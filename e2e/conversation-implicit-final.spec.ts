@@ -41,7 +41,7 @@ test('renders an unphased Codex completion as the conclusion across reload',asyn
     await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'无阶段最终回答'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
     await page.goto('/');
     const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
-    await expect(chat.getByText('事件通道已连接',{exact:true})).toBeVisible();
+    await expect(chat.getByText('Event stream connected',{exact:true})).toBeVisible();
     appendFileSync(log,
       record('event_msg',{type:'task_started',turn_id:turn})
       +record('event_msg',{type:'user_message',message:'介绍你自己'})
@@ -51,15 +51,15 @@ test('renders an unphased Codex completion as the conclusion across reload',asyn
       +record('event_msg',{type:'task_complete',turn_id:turn,last_agent_message:answer}));
     const conclusions=chat.locator('article[data-phase="final"]').filter({hasText:answer});
     await expect(conclusions).toHaveCount(1);
-    await expect(conclusions.getByText('结论',{exact:true})).toBeVisible();
-    await expect(chat.getByRole('region',{name:'Codex 进展'})).not.toContainText(answer);
+    await expect(conclusions.getByText('final',{exact:true})).toBeVisible();
+    await expect(chat.locator('.session-chat-progress-entry').filter({hasText:answer})).toHaveCount(0);
     const history=await(await page.request.get(`/api/sessions/${sessionId}/conversation`)).json();
     const replies=history.messages.filter((message:any)=>message.role==='assistant'&&message.text===answer);
     expect(replies).toHaveLength(1);
     expect(replies[0].phase).toBe('final');
     await page.reload();
     await expect(chat.locator('article[data-phase="final"]').filter({hasText:answer})).toHaveCount(1);
-    await expect(chat.getByRole('region',{name:'Codex 进展'})).not.toContainText(answer);
+    await expect(chat.locator('.session-chat-progress-entry').filter({hasText:answer})).toHaveCount(0);
   }finally{
     if(sessionId)await page.request.delete(`/api/sessions/${sessionId}`).catch(()=>{});
     for(const client of wss.clients)client.terminate();

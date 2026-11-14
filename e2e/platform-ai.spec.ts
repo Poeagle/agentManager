@@ -15,6 +15,7 @@ test('Platform AI chats through real platform tools and a signed external gatewa
   const deliveries: Array<{body: string; headers: Record<string, unknown>}> = [];
   const modelRequests: any[] = [];
   const probeRequests: any[] = [];
+  let projectId='';
   let releaseFirstReply: (()=>void) | undefined;
   let pauseFirstReply = true;
   const replyText='当前可访问项目包含：平台 AI 验证项目。你可以指定项目并下发开发需求。\n\n当前可见 **1 个**项目：\n\n| 项目 | ID | 路径 | 可用客户端 | 会话权限 |\n| --- | --- | --- | --- | --- |\n| 平台 AI 验证项目 | project-test | `/workspace/'+ 'nested-project/'.repeat(12) +'src/index.ts` | **Codex** | 可创建会话、可开终端 |';
@@ -41,7 +42,7 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     const last=payload.messages.at(-1);
     const message=last.role==='tool'
       ? {content:replyText}
-      : {content:null,tool_calls:[{id:'list-projects',type:'function',function:{name:'platform_request',arguments:JSON.stringify({endpoint_id:'GET /api/projects'})}}]};
+      : {content:null,tool_calls:[{id:'list-projects',type:'function',function:{name:'platform_request',arguments:JSON.stringify({endpoint_id:'GET /api/projects/:id',path_params:{id:projectId}})}}]};
     if (payload.stream) {
       response.setHeader('Content-Type','text/event-stream');
       const emit=(delta: unknown,finish_reason: string | null=null)=>response.write(`data: ${JSON.stringify({choices:[{delta,finish_reason}]})}\n\n`);
@@ -67,9 +68,9 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     const projectPath=join(resolve(dirname(fileURLToPath(import.meta.url)),'..'),'.test-data','e2e','platform-ai-project');
     mkdirSync(projectPath,{recursive:true});
     const created=await page.request.post('/api/projects',{data:{name:'平台 AI 验证项目',path:projectPath}});
-    expect(created.ok()).toBeTruthy();
+    expect(created.ok()).toBeTruthy();projectId=(await created.json()).project.id;
     await page.goto('/');
-    await page.getByTitle('My account', { exact: true }).click();await page.getByRole('navigation',{name:'平台管理分类'}).getByRole('button',{name:'平台 AI',exact:true}).click();
+    await page.getByTitle('My account').click();await page.getByRole('navigation',{name:'平台管理分类'}).getByRole('button',{name:'平台 AI',exact:true}).click();
     const dialog=page.getByRole('dialog',{name:'平台管理'});
     await dialog.getByRole('button',{name:'模型配置',exact:true}).click();
     await dialog.getByRole('radio',{name:/外部 API/}).check();
@@ -104,7 +105,7 @@ test('Platform AI chats through real platform tools and a signed external gatewa
     expect(await dialog.getByText('1 个',{exact:true}).evaluate(element=>element.tagName)).toBe('STRONG');
     expect(modelRequests.length).toBe(2);
     const tool=JSON.parse(modelRequests[1].messages.find((message: any) => message.role==='tool').content);
-    expect(tool.projects.some((project: any) => project.name==='平台 AI 验证项目')).toBeTruthy();
+    expect(tool.project).toMatchObject({id:projectId,name:'平台 AI 验证项目'});
     expect(JSON.stringify(modelRequests)).not.toContain('agentmanager_session');
     await page.screenshot({path:testInfo.outputPath('platform-ai-chat.png')});
     await dialog.getByLabel('发送给平台 AI 的消息').fill('你是什么模型');await dialog.getByRole('button',{name:'发送消息'}).click();await expect(dialog.getByText('e2e-tools-model',{exact:true})).toBeVisible();expect(modelRequests.length).toBe(2);await dialog.getByLabel('发送给平台 AI 的消息').fill('现在有哪些项目');await dialog.getByRole('button',{name:'发送消息'}).click();await expect(dialog.getByText(/^当前可访问的项目共有/)).toBeVisible();expect(modelRequests.length).toBe(2);
@@ -180,7 +181,7 @@ test('Platform AI displays persisted channel images through the authenticated at
     db.prepare("INSERT INTO platform_ai_attachments (id,message_id,status,mime,bytes,data) VALUES ('image-fixture','image-message','ready','image/png',?,?)").run(png.length, png);
   } finally {db.close();}
   await page.goto('/');
-  await page.getByTitle('My account', { exact: true }).click();await page.getByRole('navigation',{name:'平台管理分类'}).getByRole('button',{name:'平台 AI',exact:true}).click();
+  await page.getByTitle('My account').click();await page.getByRole('navigation',{name:'平台管理分类'}).getByRole('button',{name:'平台 AI',exact:true}).click();
   const dialog = page.getByRole('dialog', {name: '平台管理'});
   await dialog.getByRole('button').filter({hasText: '机器人截图需求'}).click();
   const image = dialog.getByRole('img', {name: '用户发送的图片 1'});

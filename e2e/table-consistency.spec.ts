@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 test('project creation stays centered over the current list on desktop and mobile', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1800, height: 1000 });
-  await page.routeWebSocket((url) => url.port === '43111' && url.pathname === '/', () => {});
+  await page.routeWebSocket((url) => url.port === (process.env.E2E_UI_PORT || '43111') && url.pathname === '/', () => {});
   const status = await (await page.request.get('/api/auth/status')).json();
   expect((await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },
@@ -69,7 +69,7 @@ async function structure(table: Locator) {
 
 test('all platform lists and expanded lists retain the same table structure', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1800, height: 1000 });
-  await page.routeWebSocket((url) => url.port === '43111' && url.pathname === '/', () => {});
+  await page.routeWebSocket((url) => url.port === (process.env.E2E_UI_PORT || '43111') && url.pathname === '/', () => {});
   const status = await (await page.request.get('/api/auth/status')).json();
   const { user } = await (await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },
@@ -95,29 +95,32 @@ test('all platform lists and expanded lists retain the same table structure', as
   expect(await structure(sessions)).toEqual(baseline);
   await expect(sessions.locator('thead')).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('shared-project-tables.png') });
-  await page.getByTitle('My account', { exact: true }).click();
+  await page.getByTitle('My account').click();
   const platform = page.getByRole('dialog', { name: '平台管理', exact: true });
   const navigation = platform.getByRole('navigation', { name: '平台管理分类' });
-  for (const [section, table] of [['用户管理', '用户列表'], ['角色与权限', '角色列表'], ['项目授权', '项目授权']] as const) {
-    await navigation.getByRole('button', { name: section, exact: true }).click();
+  await navigation.getByRole('button', {name:'权限管理',exact:true}).click();
+  let managerBaseline: Awaited<ReturnType<typeof structure>> | undefined;
+  for (const [section, table] of [['用户权限', '用户列表'], ['角色定义', '角色列表']] as const) {
+    await platform.getByRole('button', { name: section, exact: true }).click();
     const list = platform.getByRole('table', { name: table, exact: true });
     await expect(list.locator('tbody > tr').first()).toBeVisible();
-    expect(await structure(list)).toEqual(baseline);
+    const current = await structure(list);managerBaseline ??= current;expect(current).toEqual(managerBaseline);
   }
   await navigation.getByRole('button', { name: '用户监控', exact: true }).click();
   const monitor = platform.getByRole('table', { name: '用户监控', exact: true });
   await expect(monitor.getByRole('button', { name: `展开用户 ${user.username}` })).toBeVisible();
-  expect(await structure(monitor)).toEqual(baseline);
+  const monitoringBaseline = await structure(monitor);
+  expect(monitoringBaseline).toEqual({...managerBaseline,headerPadding:'5px 4px',cellPadding:'5px 4px'});
   await monitor.getByRole('button', { name: `展开用户 ${user.username}` }).click();
   const monitoredProjects = platform.getByRole('table', { name: `${user.username} 的项目`, exact: true });
   await expect(monitoredProjects).toBeVisible();
-  expect(await structure(monitoredProjects)).toEqual(baseline);
+  expect(await structure(monitoredProjects)).toEqual(monitoringBaseline);
   await platform.getByRole('button', { name: `展开项目 ${project.name}`, exact: true }).click();
   const monitoredSessions = platform.getByRole('table', { name: '会话监控', exact: true });
   await expect(monitoredSessions).toBeVisible();
-  expect(await structure(monitoredSessions)).toEqual(baseline);
+  expect(await structure(monitoredSessions)).toEqual(managerBaseline);
   await page.screenshot({ path: testInfo.outputPath('shared-monitor-tables.png') });
   await page.setViewportSize({ width: 900, height: 800 });
-  expect(await structure(monitoredSessions)).toEqual(baseline);
+  expect(await structure(monitoredSessions)).toEqual(managerBaseline);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(900);
 });

@@ -43,7 +43,7 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   const answerMeta=chat.locator('.session-chat-message[data-phase="final"] .session-chat-message-meta').first();
   await expect(answerMeta).toHaveCSS('opacity','1');
   await expect(answerMeta.getByRole('button',{name:'复制Agent 回复'})).toBeVisible();
-  appendFileSync(log,counters(1500,300)+entry('event_msg',{type:'task_complete',turn_id:turn}));await expect(answerMeta).toContainText('token: 600 · tools: 4 calls / 2 rounds');await expect(progress).toContainText('token: 100 · tools: 3 calls / 1 round');
+  appendFileSync(log,counters(1500,300)+entry('event_msg',{type:'task_complete',turn_id:turn}));await expect(answerMeta).toContainText('token: 600 · tools: 4 calls ｜ 2 rounds');await expect(progress).toContainText('token: 100 · tools: 3 calls ｜ 1 round');
   await expect(chat.locator('.conversation-inline-meta')).toHaveCount(0);
   for(const article of await chat.locator('.session-chat-message.assistant').all()){
     const geometry=await article.evaluate(node=>{const meta=node.querySelector('.session-chat-metadata-row')!.getBoundingClientRect(),body=node.querySelector('.conversation-markdown')!.getBoundingClientRect();return {metaBottom:meta.bottom,bodyTop:body.top};});
@@ -58,7 +58,7 @@ await expect(progress).not.toContainText('检查已完成。');
   expect(await chat.locator('.session-chat-message.user .session-chat-body').evaluate(node=>getComputedStyle(node).backgroundColor)).not.toBe(await chat.locator('.session-chat-message.assistant').first().evaluate(node=>getComputedStyle(node).backgroundColor));
   await expect.poll(async()=>{const data=await(await page.request.get('/api/sessions')).json();return data.sessions.find((item:{id:string})=>item.id===session.id)?.status;}).toBe('running');
   const pid=(await(await page.request.get('/api/sessions')).json()).sessions.find((item:{id:string})=>item.id===session.id).pid;
-  await expect(chat.getByRole('status').last()).toContainText('可以继续发送消息');
+  await expect(chat.getByRole('status').last()).toContainText('Ready for your next message');
   await chat.getByRole('textbox',{name:'发送给当前 Agent 的消息'}).fill("printf 'chat-input-ok\\n'");
   const sent=page.waitForResponse(response=>response.url().endsWith(`/api/sessions/${session.id}/input`)&&response.request().method()==='POST');
   // Exercise the legacy busy-engine fallback; idle engines now migrate before sending.

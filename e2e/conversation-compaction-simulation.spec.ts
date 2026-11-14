@@ -26,7 +26,7 @@ test('compaction refreshes the timeline and shows its summary once',async({page}
   await expect(chat.getByText('Conversation summary',{exact:true})).toBeVisible();
   await expect(chat.getByText('压缩前消息',{exact:true})).toHaveCount(1);
   await expect(chat.getByText('压缩前回答',{exact:true})).toHaveCount(1);
-  await chat.getByText('Conversation summary',{exact:true}).click();await expect(chat.getByText('压缩内容由 Codex 加密保存，无法显示摘要正文。',{exact:true})).toBeVisible();
+  await chat.getByText('Conversation summary',{exact:true}).click();await expect(page.getByRole('dialog',{name:'Conversation summary'}).getByText('压缩内容由 Codex 加密保存，无法显示摘要正文。',{exact:true})).toBeVisible();await page.getByRole('button',{name:'关闭Conversation summary'}).click();
   appendFileSync(file,record('response_item',user('after','压缩后发送')));
   await expect(chat.getByText('压缩后发送',{exact:true})).toHaveCount(1);
   await page.reload();await expect(chat.getByText('压缩后发送',{exact:true})).toHaveCount(1);await expect(chat.getByText('Conversation summary',{exact:true})).toHaveCount(1);await expect(chat.getByText('压缩前回答',{exact:true})).toHaveCount(1);

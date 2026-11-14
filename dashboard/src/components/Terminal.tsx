@@ -15,6 +15,7 @@ import {
   AlertCircle,
   Copy,
   ShieldCheck,
+  Sparkles,
   Undo2,
   X,
 } from 'lucide-react';
@@ -935,7 +936,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         onReadyRef.current?.(sessionId);
         fitAddon.fit();
         sendCurrentSize();
-        if (visibleRef.current && !promptPreviewOpenRef.current) term.focus();
+        if (visibleRef.current && !promptPreviewOpenRef.current && !document.querySelector('[role="dialog"][aria-modal="true"]')) term.focus();
         const bufferedInput = pendingTerminalInput.drain();
         for (let index = 0; index < bufferedInput.length; index++) {
           const input = bufferedInput[index];
@@ -1232,7 +1233,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
   useEffect(() => {
     if (visible && !suspended && termRef.current) {
       termRef.current.scrollToBottom();
-      if (!promptPreviewOpenRef.current) termRef.current.focus();
+      if (!promptPreviewOpenRef.current && !document.querySelector('[role="dialog"][aria-modal="true"]')) termRef.current.focus();
       let cancelled = false;
       requestAnimationFrame(() => {
         if (cancelled) return;
@@ -1365,6 +1366,9 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
       <div className="absolute top-2 right-5 z-10 flex items-center gap-2">
         {connected && !suspended && (
           <>
+            <button type="button" aria-label="优化当前输入" title="优化当前输入" onClick={(event) => { event.stopPropagation(); enhanceNativePromptRef.current?.(); }}
+              className="flex items-center gap-1 px-1.5 py-1 rounded text-xs transition-all opacity-70 hover:!opacity-100"
+              style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}><Sparkles className="w-3 h-3" /></button>
             <button
               onClick={() => {
                 const term = termRef.current;

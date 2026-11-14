@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 test('project history deletes a confirmed ended record and removes its persisted tab', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1800, height: 1000 });
-  await page.routeWebSocket((url) => url.port === '43111' && url.pathname === '/', () => {});
+  await page.routeWebSocket((url) => url.port === (process.env.E2E_UI_PORT || '43111') && url.pathname === '/', () => {});
   const status = await (await page.request.get('/api/auth/status')).json();
   const { user } = await (await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },
