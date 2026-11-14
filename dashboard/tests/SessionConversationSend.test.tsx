@@ -45,6 +45,12 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('closes the guard modal on compact-and-send and keeps a cancellable inline status',async()=>{
+    vi.mocked(api.agent.checkSend).mockResolvedValue({needs_confirmation:true,matched:true,token:'confirmed',native_id:'native',context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,observed_at:null,can_compact:true,can_new:false} as any);
+    const submit=vi.spyOn(api.agent,'sendInput');await mount();input('preserved while compacting');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));fireEvent.click(await screen.findByRole('button',{name:'压缩后发送'}));expect(screen.queryByRole('dialog',{name:'发送前检查'})).not.toBeInTheDocument();expect(screen.getByText('正在压缩，确认完成后自动发送。')).toBeVisible();expect(submit).not.toHaveBeenCalled();expect(loadComposer(composerKey('local',session.id)).draft).toBe('preserved while compacting');
+    fireEvent.click(screen.getByRole('button',{name:'取消后续发送'}));await waitFor(()=>expect(screen.getByRole('button',{name:'发送消息'})).toBeEnabled());expect(submit).not.toHaveBeenCalled();expect(loadComposer(composerKey('local',session.id)).draft).toBe('preserved while compacting');
+  });
+
   it('connects when the native binding arrives after the initial conversation response',async()=>{
     const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
     const view=render(<QueryClientProvider client={client}><SessionConversation session={{...session,codex_session_id:null,native_session_id:null}} active onRaw={()=>{}}/></QueryClientProvider>);

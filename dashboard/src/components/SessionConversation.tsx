@@ -2458,6 +2458,7 @@ export function SessionConversation({
             </div>
           )}
           {ignoreError && <p role="alert">{ignoreError}</p>}
+          {sendGuard.notice}
           {stopError&&<p role="alert" className="session-chat-error">{stopError}</p>}
           {sendError && (
             <p role="alert" className="session-chat-error">
