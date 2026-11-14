@@ -1650,6 +1650,7 @@ export function SessionConversation({
     setSending(true);
     setSendError("");
     const fingerprint = JSON.stringify([
+      fromBatch,
       agentNativeId(session),
       session.claude_session_id,
       text,
@@ -2094,10 +2095,7 @@ export function SessionConversation({
   return (
     <ConversationImagePreviewRoot active={active} onOpen={navigate}>
       <div className="session-chat-container"><div className="session-chat-layout">
-      <section ref={readingRoot} onKeyDownCapture={event=>{
-        if(!active||composer.mode!=='batch'||event.key!=='Enter'||!(event.ctrlKey||event.metaKey)||event.nativeEvent.isComposing||event.repeat||document.querySelector('[aria-modal="true"]'))return;
-        event.preventDefault();event.stopPropagation();void sendBatch();
-      }} className="session-chat" aria-label="会话对话">
+      <section ref={readingRoot} className="session-chat" aria-label="会话对话">
         <ConversationPromptEnhancer
           sessionId={session.id}
           active={active}
@@ -2538,7 +2536,7 @@ export function SessionConversation({
               placeholder={
                 waiting
                   ? "请先处理上方交互"
-                  : composer.mode==='batch'?"输入消息，Enter 加入批量，Shift+Enter 换行":"输入消息，Enter 发送，Shift+Enter 换行"
+                  : composer.mode==='batch'?"输入消息，Enter 加入批量，Ctrl+Enter 立即发送，Shift+Enter 换行":"输入消息，Enter 发送，Shift+Enter 换行"
               }
               projectId={session.project_id}
               projectPath={projectPath}
@@ -2550,6 +2548,7 @@ export function SessionConversation({
                   ? attachments.enqueue
                   : () => setSendError("此 Agent 不支持附件")
               }
+              onDirectSubmit={() => {if(active)void send();}}
               onSubmit={() => {if(composer.mode==='batch')stageBatch();else void send();}}
             />
             {attachments.error && (
@@ -2564,7 +2563,7 @@ export function SessionConversation({
                 onFiles={attachments.enqueue}
               />
               <div className="session-chat-controls-slot conversation-toolbar"><label className="conversation-control-select conversation-composer-mode"><span>模式</span><select aria-label="发送模式" value={composer.mode} disabled={sending||!!composer.pending} onChange={e=>persistComposer({mode:e.target.value as ComposerState['mode']})}><option value="immediate">立即发送</option><option value="batch">批量发送</option></select><ChevronDown size={12}/></label><div ref={setToolbarTarget}/></div>
-              <span className="session-chat-send-hint">{composer.mode==='batch'?'Enter 加入批量 · Shift+Enter 换行':'Enter 发送 · Shift+Enter 换行'}</span>
+              <span className="session-chat-send-hint">{composer.mode==='batch'?'Enter 加入批量 · Ctrl+Enter 立即发送':'Enter 发送 · Shift+Enter 换行'}</span>
               <div className="session-chat-send-actions">
                 <button
                   type="button"
@@ -2627,7 +2626,7 @@ export function SessionConversation({
           <header className="session-batch-header"><span>批量待发</span><small>{composer.entries.length} 条</small></header>
           <div className="session-chat-batch-content">{composer.entries.length?composer.entries.map((entry,index)=><article key={entry.id}><header><small>消息 {index+1}</small><time dateTime={entry.createdAt} title="加入待发区时间">{formatDisplayTimestamp(entry.createdAt)}</time><button type="button" className="session-batch-recall" aria-label={`撤回第 ${index+1} 条消息`} disabled={!canSend||sending||!!composer.pending?.entryIds.includes(entry.id)||attachments.uploading||attachments.failed} onClick={()=>recallBatch(entry)}>撤回</button><button type="button" className="session-batch-delete" aria-label={`删除第 ${index+1} 条消息`} disabled={!canSend||sending||!!composer.pending?.entryIds.includes(entry.id)} onClick={()=>deleteBatch(entry)}>删除</button></header><ConversationMessageAttachments text={entry.text} items={entry.attachments} projectId={session.project_id} projectPath={projectPath} onOpenFile={onOpenFile}/></article>):<div className="session-batch-empty"><span>暂未添加消息</span><p>在输入框编写内容，按 Enter 加入这里，整理完成后一起发送。</p></div>}</div>
           {composer.pending&&<p role="status">发送结果待确认。恢复连接后自动核对，请勿重复发送。</p>}
-          <footer className="session-batch-footer"><button type="button" className="session-batch-send" aria-label="发送批量内容" aria-keyshortcuts="Control+Enter Meta+Enter" onClick={()=>void sendBatch()} disabled={!composer.entries.length||!!composer.pending||sending||!canSend||!page?.session_active||ended||waiting}>{sending?<Loader2 size={15} className="animate-spin"/>:<ArrowUp size={15}/>}<span>{sending?'正在发送…':'发送批量内容'}</span><kbd>Ctrl ↵</kbd></button></footer>
+          <footer className="session-batch-footer"><button type="button" className="session-batch-send" aria-label="发送批量内容" onClick={()=>void sendBatch()} disabled={!composer.entries.length||!!composer.pending||sending||!canSend||!page?.session_active||ended||waiting}>{sending?<Loader2 size={15} className="animate-spin"/>:<ArrowUp size={15}/>}<span>{sending?'正在发送…':'发送批量内容'}</span></button></footer>
         </aside>}
       </div></div>
     </ConversationImagePreviewRoot>
