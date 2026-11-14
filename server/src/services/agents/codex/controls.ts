@@ -1,3 +1,4 @@
+import {cachedAccountStatus} from './account-status.js';
 import {canUseEnvironment} from '../environment-access.js';
 import {rememberCodexSettings,codexSettings} from './settings-state.js';
 import {currentCodexEngine,defaultCodexEngine,configuredCodexEngines,runInCodexEngine,rememberCodexProvider,engineForProvider} from './engine-context.js';
@@ -184,7 +185,6 @@ export function applyCodexModelSettings(threadId:string,value:ModelPreference):P
   }));settingWrites.set(threadId,work);return work.finally(()=>{if(settingWrites.get(threadId)===work)settingWrites.delete(threadId);});
 }
 
-let quota:{key:string;until:number;data:ReturnType<typeof windows>}|undefined;
 const gitCache=new Map<string,{until:number;data:{branch:string;changes:number}|null}>();
 async function readGitInfo(cwd:string|null,force=false,projectPath?:string|null) {
   if(!cwd)return null;const key=JSON.stringify([cwd,projectPath]);const cached=gitCache.get(key);if(!force&&cached&&cached.until>Date.now())return cached.data;
@@ -198,7 +198,7 @@ async function readGitInfo(cwd:string|null,force=false,projectPath?:string|null)
 }
 export async function readConversationControls(threadId:string,sharedAccess:boolean,force=false,userId?:string,projectPath?:string|null) {
   const telemetry=await readConversationTelemetry(threadId).catch(()=>empty());
-  let native:any=null,loaded=false,models:ModelChoice[]=[],warning:string|null=null,limits=telemetry.limits,engineVersion:string|null=null;
+  let native:any=null,loaded=false,models:ModelChoice[]=[],warning:string|null=null,limits:Telemetry['limits']=[],engineVersion:string|null=null;
   if(sharedAccess&&process.env.AGENTMANAGER_CODEX_STREAM_SOCKET) {
     try {
       native=await withCodexConnection(async(request,server)=>{
@@ -210,13 +210,13 @@ export async function readConversationControls(threadId:string,sharedAccess:bool
         return response.thread;
       });
       models=await readEngineModels(force);
-      if(loaded) {
-        const key=currentCodexEngine().socket;
-        if(!force&&quota?.key===key&&quota.until>Date.now())limits=quota.data;
-        else try {const current=await withCodexConnection(async request=>{const response=await request('account/rateLimits/read',{});return windows(response.rateLimitsByLimitId?.codex??response.rateLimits,true);});if(current.length){limits=current;quota={key,until:Date.now()+300000,data:limits};}}catch{/* Last native usage still has timestamped limits. */}
-      }
+
     }catch(error){warning=error instanceof Error?error.message:'实时设置暂不可用，可稍后刷新';}
   }
+  if(sharedAccess)try {
+    const snapshot=cachedAccountStatus(currentCodexEngine().environmentId??'native');
+    limits=(snapshot.windows??[]).map((w:any)=>({used_percent:w.usedPercent,minutes:w.windowDurationMins,resets_at:w.resetsAt}));
+  }catch{/* Before scheduler initialization, account usage remains unknown. */}
   // Host account quotas are never exposed through an ordinary member session.
   if(!sharedAccess)limits=[];
   const cwd=typeof native?.cwd==='string'?native.cwd:null;

@@ -2,7 +2,7 @@ import {getDb} from '../../../db/index.js';
 import {assertUsageRebuildPreserves} from './usage-rule-guard.js';
 // Increment when persisted interpretation of native usage records changes.
 export const USAGE_RULE_VERSION=5;
-import {quotaSamples} from './account-status.js';
+import {quotaSamples,initAccountStatus,collectAccountStatus,stopAccountStatus} from './account-status.js';
 import {allocateQuota} from './quota-allocation.js';
 import {quotaHours} from './quota-periods.js';
 import {exportUsageCsv} from './usage-csv-export.js';
@@ -321,5 +321,31 @@ export async function refreshUsageRules(id:string):Promise<void>{
  try{await collectAccountUsage(id,{rebuild:true,preserveExisting:true});}
  catch(error){const reason=error instanceof Error?error.message:'无法完整扫描或验证原始历史';db.prepare("INSERT OR REPLACE INTO codex_usage_rule_versions(account,version,state,retry_at,reason) VALUES(?,?,'blocked',?,?)").run(id,USAGE_RULE_VERSION,new Date(Date.now()+86400000).toISOString(),reason);}
 }
-export function startAccountUsage(){initAccountUsage();stopped=false;const tick=async()=>{try{const environments=allCodexEnvironments();for(const e of environments){if(stopped)break;if(e.enabled){await collectAccountUsage(e.id);await refreshUsageRules(e.id);}}for(const e of environments){if(stopped)break;if(e.enabled)await backfillUsageHours(e.id);}}catch{/* Configuration may be changing; retry on the next scheduled pass. */}finally{if(!stopped){timer=setTimeout(()=>void tick(),300000);timer.unref();}}};timer=setTimeout(()=>void tick(),1000);timer.unref();}
-export async function stopAccountUsage(){stopped=true;clearTimeout(timer);for(const controller of controllers.values())controller.abort();await Promise.allSettled([...pending.values(),...hourlyPending.values()]);}
+/** One background clock owns both quota acquisition and usage scanning.
+ * Frontend reads are inert. Never overlap cycles or replay missed ticks. */
+export function startAccountUsage(){
+ if(!stopped)return;
+ initAccountUsage();initAccountStatus();stopped=false;
+ const tick=async()=>{
+  const triggeredAt=Date.now();
+  try{
+   const environments=allCodexEnvironments();
+   for(const e of environments){
+    if(stopped)break;
+    if(!e.enabled)continue;
+    // Start both acquisitions in the same tick. They retain their own actual
+    // completion timestamps; this does not imply an atomic upstream snapshot.
+    await Promise.all([collectAccountStatus(e.id,new Date().toISOString()),collectAccountUsage(e.id)]);
+    if(stopped)break;
+    await refreshUsageRules(e.id);
+    // Republish after both collectors finish, even if quota returned after the
+    // scan exported its first snapshot. No consumer triggers this operation.
+    exportUsageCsv(e.id);
+   }
+   for(const e of environments){if(stopped)break;if(e.enabled)await backfillUsageHours(e.id);}
+  }catch{/* Retry configuration changes and partial failures next cycle. */}
+  finally{if(!stopped){timer=setTimeout(()=>void tick(),Math.max(1000,300000-(Date.now()-triggeredAt)));timer.unref();}}
+ };
+ timer=setTimeout(()=>void tick(),1000);timer.unref();
+}
+export async function stopAccountUsage(){stopped=true;clearTimeout(timer);for(const controller of controllers.values())controller.abort();await Promise.allSettled([...pending.values(),...hourlyPending.values(),stopAccountStatus()]);}

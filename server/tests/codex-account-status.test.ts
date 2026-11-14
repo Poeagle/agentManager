@@ -2,7 +2,7 @@ import {beforeEach,afterEach,it,expect,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
 import * as stream from '../src/services/agents/codex/stream.js';
-import {initAccountStatus,collectAccountStatus,cachedAccountStatus,startAccountStatus,stopAccountStatus} from '../src/services/agents/codex/account-status.js';
+import {initAccountStatus,collectAccountStatus,cachedAccountStatus,stopAccountStatus} from '../src/services/agents/codex/account-status.js';
 vi.mock('../src/services/agents/codex/environments.js',async original=>({...await original<typeof import('../src/services/agents/codex/environments.js')>(),engineForEnvironment:vi.fn(async(id:string)=>({environmentId:id}))}));
 let fixture:ReturnType<typeof createTestDatabase>;
 const read=vi.fn();
@@ -19,10 +19,11 @@ it('retains successful data on failures, marks it stale and replaces it when log
  read.mockRejectedValueOnce(Error('private failure'));await collectAccountStatus('native');expect(cachedAccountStatus('native')).toMatchObject({checked_at:checked,stale:true,quota:{remainingPercent:70,stale:true},resets:{availableCount:2},error:'账号状态采集失败，保留上次成功数据'});
  read.mockResolvedValueOnce({account:null});await collectAccountStatus('native');expect(cachedAccountStatus('native')).toMatchObject({reason:'not_applicable',quota:null,resets:null});
 });
-it('refreshes only on the five minute schedule, independent of cache reads',async()=>{
- vi.useFakeTimers();startAccountStatus();await vi.advanceTimersByTimeAsync(1000);expect(read).toHaveBeenCalledTimes(2);
- for(let n=0;n<10;n++)cachedAccountStatus('native');await vi.advanceTimersByTimeAsync(299999);expect(read).toHaveBeenCalledTimes(2);
- await vi.advanceTimersByTimeAsync(1);expect(read).toHaveBeenCalledTimes(4);
+it('never refreshes on cache reads, even after the five minute interval',async()=>{
+ vi.useFakeTimers();await collectAccountStatus('native');expect(read).toHaveBeenCalledTimes(2);
+ await vi.advanceTimersByTimeAsync(900000);
+ for(let n=0;n<10;n++)expect(cachedAccountStatus('native').stale).toBe(true);
+ expect(read).toHaveBeenCalledTimes(2);
 });
 it('records bounded weekly samples without persisting unrelated account fields',async()=>{
  vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));

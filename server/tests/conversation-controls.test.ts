@@ -1,3 +1,4 @@
+import {initAccountStatus,collectAccountStatus} from '../src/services/agents/codex/account-status.js';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import Fastify,{type FastifyInstance} from 'fastify';
 import websocket from '@fastify/websocket';
@@ -22,7 +23,7 @@ let app:FastifyInstance,server:Server,wss:WebSocketServer,cleanup:()=>void,cooki
 let inputs:any[],methods:string[],active:boolean,loaded:boolean,fail:boolean,noModels:boolean,model:string,effort:string,tier:string,nativeCwd:string;
 const record=(type:string,payload:unknown)=>JSON.stringify({type,payload,timestamp:'2026-10-31T02:00:00Z'})+'\n';
 beforeEach(async()=>{
-  const fixture=createTestDatabase();cleanup=fixture.cleanup;dir=fixture.dir;vi.stubEnv('CODEX_HOME',dir);vi.stubEnv('AGENTMANAGER_CODEX_PROVIDER_ENGINES','');const socket=join(dir,'controls.sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',socket);
+  const fixture=createTestDatabase();initAccountStatus();cleanup=fixture.cleanup;dir=fixture.dir;vi.stubEnv('CODEX_HOME',dir);vi.stubEnv('AGENTMANAGER_CODEX_PROVIDER_ENGINES','');const socket=join(dir,'controls.sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',socket);
   writeFileSync(join(dir,'models_cache.json'),JSON.stringify({models:[{slug:'model-a',context_window:128000,input_modalities:['text','image'],release_date:'2026-01-01',private_token:'PRIVATE MODEL SECRET'}]}));
   mkdirSync(join(dir,'sessions'));log=join(dir,'sessions',`rollout-${native}.jsonl`);
   writeFileSync(log,record('turn_context',{model:'model-a',effort:'high',approval_policy:'never',sandbox_policy:{type:'workspace-write',private:'PRIVATE CONFIG'},service_tier:'priority'})+record('event_msg',{type:'token_count',info:{total_token_usage:{input_tokens:1000000,cached_input_tokens:900000,output_tokens:12000,total_tokens:1012000},last_token_usage:{input_tokens:11000,cached_input_tokens:9000,output_tokens:1000,total_tokens:12000},model_context_window:40000},rate_limits:{primary:{used_percent:25,window_minutes:10080,resets_at:1900000000},credits:{balance:'PRIVATE BALANCE'}}})+record('response_item',{type:'function_call_output',output:'PRIVATE TOOL OUTPUT'}));
@@ -32,6 +33,7 @@ beforeEach(async()=>{
     if(f.method==='model/list')result={data:[{model:'model-a',displayName:'Model A',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high',serviceTiers:[{id:'priority',name:'Fast',description:'Faster requests'}]},{model:'model-b',displayName:'Model B',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'}],defaultReasoningEffort:'low'},{model:'hidden',displayName:'Hidden',hidden:true,supportedReasoningEfforts:[{reasoningEffort:'low'}]}]};
     if(f.method==='model/list'&&noModels)result={data:[]};
     if(f.method==='thread/resume')result={serviceTier:tier};
+    if(f.method==='account/read')result={account:{type:'chatgpt',email:'fixture@example.invalid'}};
     if(f.method==='account/rateLimits/read')result={rateLimits:{primary:{usedPercent:30,windowDurationMins:10080,resetsAt:1900000000},credits:{balance:'PRIVATE BALANCE'}}};
     if(f.method==='thread/settings/update'){if(fail){ws.send(JSON.stringify({id:f.id,error:{message:'failed'}}));return;}model=f.params.model;effort=f.params.effort;if(f.params.serviceTier!==undefined)tier=f.params.serviceTier;}
     if(f.method==='turn/start'){inputs.push(f.params);if(fail){ws.send(JSON.stringify({id:f.id,error:{message:'failed'}}));return;}if(f.params.model)model=f.params.model;if(f.params.effort)effort=f.params.effort;}
@@ -73,13 +75,13 @@ describe('native conversation controls',()=>{
   expect((await app.inject({url:'/api/sessions/missing/context-breakdown',headers:{cookie}})).statusCode).toBe(404);
   expect((await app.inject({url:'/api/sessions/s/context-breakdown?refresh=false',headers:{cookie}})).statusCode).toBe(400);
  });
- it('keeps external model and quota reads cached for five minutes while local counters can change immediately',async()=>{
+ it('refreshes models after five minutes while usage reads never query account quota',async()=>{
   let now=Date.now();vi.spyOn(Date,'now').mockImplementation(()=>now);
   await get();methods=[];now+=120000;
   appendFileSync(log,record('event_msg',{type:'token_count',info:{last_token_usage:{total_tokens:2400},model_context_window:40000}}));
   const local=await get();expect(local.json().usage.last.total_tokens).toBe(2400);
   expect(methods).not.toContain('model/list');expect(methods).not.toContain('account/rateLimits/read');
-  methods=[];now+=180001;await get();expect(methods).toContain('model/list');expect(methods).toContain('account/rateLimits/read');
+  methods=[];now+=180001;await get();expect(methods).toContain('model/list');expect(methods).not.toContain('account/rateLimits/read');
  });
  it('waits for a complete appended usage record rather than caching a partial JSON line',async()=>{
   await readConversationTelemetry(native);
@@ -87,11 +89,16 @@ describe('native conversation controls',()=>{
   appendFileSync(log,next.slice(0,40));expect((await readConversationTelemetry(native)).usage?.last.total_tokens).toBe(12000);
   appendFileSync(log,next.slice(40));expect((await readConversationTelemetry(native)).usage?.last.total_tokens).toBe(2400);
  });
+ it('reads the same persisted quota as account pages without any additional account request',async()=>{
+  await collectAccountStatus('native');methods=[];
+  for(let i=0;i<3;i++)expect((await get()).json()).toMatchObject({limits:[{used_percent:30}]});
+  expect(methods).not.toContain('account/rateLimits/read');expect(methods).not.toContain('account/read');
+ });
  it('returns actual dynamic model capabilities and allowlisted counters without tools, credentials or quota balances',async()=>{
-  const response=await get();expect(response.statusCode).toBe(200);expect(response.json()).toMatchObject({model:'model-a',effort:'high',can_edit:true,usage:{last:{total_tokens:12000},window:40000},limits:[{used_percent:30}]});expect(response.json().models.map((m:any)=>m.model)).toEqual(['model-a','model-b']);expect(response.body).not.toContain('PRIVATE');expect(methods.filter(m=>m==='thread/resume')).toHaveLength(1);expect(methods).not.toContain('turn/start');
+  const response=await get();expect(response.statusCode).toBe(200);expect(response.json()).toMatchObject({model:'model-a',effort:'high',can_edit:true,usage:{last:{total_tokens:12000},window:40000},limits:[]});expect(response.json().models.map((m:any)=>m.model)).toEqual(['model-a','model-b']);expect(response.body).not.toContain('PRIVATE');expect(methods.filter(m=>m==='thread/resume')).toHaveLength(1);expect(methods).not.toContain('turn/start');
  });
  it('does not cache an empty model catalog as a successful result and recovers on the next read',async()=>{
-  noModels=true;const first=await get();expect(first.json()).toMatchObject({can_edit:false,models:[]});noModels=false;const second=await get();expect(second.json()).toMatchObject({can_edit:true,models:[{model:'model-a'},{model:'model-b'}],limits:[{used_percent:30}]});expect(methods.filter(m=>m==='model/list')).toHaveLength(2);
+  noModels=true;const first=await get();expect(first.json()).toMatchObject({can_edit:false,models:[]});noModels=false;const second=await get();expect(second.json()).toMatchObject({can_edit:true,models:[{model:'model-a'},{model:'model-b'}],limits:[]});expect(methods.filter(m=>m==='model/list')).toHaveLength(2);
  });
  it('applies settings immediately through the TUI settings-only RPC without submitting a user turn',async()=>{
   expect((await set({model:'model-b',effort:'medium'})).statusCode).toBe(200);expect(inputs).toHaveLength(0);expect(methods).toContain('thread/settings/update');expect((await get()).json()).toMatchObject({model:'model-b',effort:'medium',pending:null});expect(readModelPreference(owner,'s')).toBeNull();
@@ -108,8 +115,8 @@ describe('native conversation controls',()=>{
  it('does not claim a failed update applied or send it through the terminal, and clears legacy pending state only on success',async()=>{
   saveModelPreference(owner,'s',{model:'model-b',effort:'low'});fail=true;expect((await set({model:'model-b',effort:'low'})).statusCode).toBe(503);expect(readModelPreference(owner,'s')).not.toBeNull();expect(manager.writeToSession).not.toHaveBeenCalled();expect(inputs).toHaveLength(0);fail=false;expect((await set({model:'model-b',effort:'low'})).statusCode).toBe(200);expect(readModelPreference(owner,'s')).toBeNull();
  });
- it('manual refresh bypasses catalog and quota caches',async()=>{
-  await get();methods=[];const response=await app.inject({url:'/api/sessions/s/controls?refresh=true',headers:{cookie}});expect(response.statusCode).toBe(200);expect(methods).toContain('model/list');expect(methods).toContain('account/rateLimits/read');
+ it('manual refresh updates the catalog without querying account quota',async()=>{
+  await get();methods=[];const response=await app.inject({url:'/api/sessions/s/controls?refresh=true',headers:{cookie}});expect(response.statusCode).toBe(200);expect(methods).toContain('model/list');expect(methods).not.toContain('account/rateLimits/read');
  });
  it('rejects unsupported effort, hidden models and permission injection, and allows undo',async()=>{
   for(const value of [{model:'model-b',effort:'high'},{model:'hidden',effort:'low'},{model:'model-a',effort:'high',approvalPolicy:'never'}])expect((await set(value)).statusCode).toBe(400);

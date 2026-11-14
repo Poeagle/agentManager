@@ -1,16 +1,15 @@
 import {getDb} from '../../../db/index.js';
-import {allCodexEnvironments,getCodexEnvironment,engineForEnvironment} from './environments.js';
+import {getCodexEnvironment,engineForEnvironment} from './environments.js';
 import {localHome} from './account-files.js';
 import {runInCodexEngine} from './engine-context.js';
 import {withCodexConnection} from './stream.js';
 import {codexWeeklyQuotaFromResponse} from './quota.js';
 
-let timer:ReturnType<typeof setTimeout>|undefined,stopped=true;
 const pending=new Map<string,Promise<void>>();
 const identity=(id:string)=>{const e=getCodexEnvironment(id);return JSON.stringify(e.kind==='account'?[e.connection?.username,e.connection?.codexHome]:['native',localHome(e)]);};
 export function initAccountStatus(){getDb().exec(`CREATE TABLE IF NOT EXISTS codex_account_status(account TEXT PRIMARY KEY,identity TEXT NOT NULL,data TEXT,checked_at TEXT,error TEXT); CREATE TABLE IF NOT EXISTS codex_quota_samples(account TEXT NOT NULL,identity TEXT NOT NULL,email TEXT NOT NULL,checked_at TEXT NOT NULL,reset_at REAL NOT NULL,used REAL NOT NULL,PRIMARY KEY(account,checked_at)); CREATE INDEX IF NOT EXISTS codex_quota_samples_account ON codex_quota_samples(account,identity,checked_at);`);}
 /** Only the scheduler contacts account APIs. Both HTTP views read this snapshot. */
-export async function collectAccountStatus(id:string):Promise<void>{
+export async function collectAccountStatus(id:string,collectionStartedAt=new Date().toISOString()):Promise<void>{
  if(pending.has(id))return pending.get(id)!;
  const task=(async()=>{
   const e=getCodexEnvironment(id);if(!e.enabled||e.kind==='provider')return;
@@ -26,8 +25,9 @@ export async function collectAccountStatus(id:string):Promise<void>{
    }));
    if(identity(id)!==source||!getCodexEnvironment(id).enabled)return;
    const checkedAt=new Date().toISOString();
+   if(data.quota)data.quota.checkedAt=checkedAt;
    db.transaction(()=>{
-    db.prepare('INSERT OR REPLACE INTO codex_account_status VALUES(?,?,?,?,NULL)').run(id,source,JSON.stringify(data),checkedAt);
+    db.prepare('INSERT OR REPLACE INTO codex_account_status VALUES(?,?,?,?,NULL)').run(id,source,JSON.stringify({...data,collection_started_at:collectionStartedAt}),checkedAt);
     const weekly=data.windows.find(w=>w.windowDurationMins===10080);
     if(data.account.email&&weekly&&weekly.resetsAt!=null&&weekly.resetsAt*1000>Date.parse(checkedAt)&&weekly.usedPercent>=0&&weekly.usedPercent<=100)
      db.prepare('INSERT OR IGNORE INTO codex_quota_samples VALUES(?,?,?,?,?,?)').run(id,source,data.account.email,checkedAt,weekly.resetsAt,weekly.usedPercent);
@@ -49,5 +49,4 @@ export function quotaSamples(id:string){
  if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='codex_quota_samples'").get())return [];
  return db.prepare('SELECT checked_at,reset_at,used,email FROM codex_quota_samples WHERE account=? AND identity=? ORDER BY checked_at').all(id,identity(id)) as Array<{checked_at:string;reset_at:number;used:number;email:string}>;
 }
-export function startAccountStatus(){initAccountStatus();stopped=false;const tick=async()=>{try{for(const e of allCodexEnvironments()){if(stopped)break;if(e.enabled&&e.kind!=='provider')await collectAccountStatus(e.id);}}catch{/* Retry on the next scheduled pass. */}finally{if(!stopped){timer=setTimeout(()=>void tick(),300000);timer.unref();}}};timer=setTimeout(()=>void tick(),1000);timer.unref();}
-export async function stopAccountStatus(){stopped=true;clearTimeout(timer);await Promise.allSettled([...pending.values()]);}
+export async function stopAccountStatus(){await Promise.allSettled([...pending.values()]);}

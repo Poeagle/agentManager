@@ -29,3 +29,6 @@ it('keeps month and year boundaries distinct while recomputing a spanning week',
 it('matches equivalent UTC hour timestamps without merging different instants',()=>{
  const rows=[{...row('2026-01-05','a',1),hour:'2026-01-05T10:00:00Z'}];const result=allocateUsagePeriods(rows,[{hour:'2026-01-05T10:00:00+00:00',quota:1}],'hour');expect(result[0].actual_quota).toBe(1);
 });
+it('allocates the screenshot daily total to every project with positive credit weight',()=>{
+ const rows=[row('2026-11-14','octoally-app',812.77),row('2026-11-14','collectreport',90.81),row('2026-11-14','aizhaopin',78.86)];const result=allocateUsagePeriods(rows,[{hour:'2026-11-14T13:00:00+08:00',quota:3}],'day');expect(result.map(r=>r.actual_quota)).toEqual([2.4819,.2773,.2408]);
+});

@@ -1,3 +1,4 @@
+import * as stream from '../src/services/agents/codex/stream.js';
 import {beforeEach,afterEach,it,expect,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
@@ -141,9 +142,10 @@ it('retains the last snapshot on failure or invalid response and retries the ful
  expect(cachedAccountUsage('native')).toMatchObject({initialized:true,partial:true,error:'采集失败，保留上次成功数据'});expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(10);
 });
 it('schedules one pass every five minutes without batch loops',async()=>{
- vi.useFakeTimers();respond([]);startAccountUsage();await vi.advanceTimersByTimeAsync(1000);expect(localCommandInput).toHaveBeenCalledTimes(1);
+ vi.useFakeTimers();respond([]);const quotaRequest=vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt',email:'fixture@example.invalid'}}:{rateLimits:{secondary:{usedPercent:30,windowDurationMins:10080,resetsAt:Date.now()/1000+604800}}});vi.spyOn(stream,'withCodexConnection').mockImplementation(async callback=>callback(quotaRequest));startAccountUsage();startAccountUsage();await vi.advanceTimersByTimeAsync(1000);expect(localCommandInput).toHaveBeenCalledTimes(1);expect(quotaRequest.mock.calls.filter(([method])=>method==='account/rateLimits/read')).toHaveLength(1);
  await vi.advanceTimersByTimeAsync(299999);expect(localCommandInput).toHaveBeenCalledTimes(1);
- await vi.advanceTimersByTimeAsync(1);expect(localCommandInput).toHaveBeenCalledTimes(2);expect(JSON.parse(vi.mocked(localCommandInput).mock.calls[1][1]).mode).toBe('daily');
+ await vi.advanceTimersByTimeAsync(1);expect(localCommandInput).toHaveBeenCalledTimes(2);expect(JSON.parse(vi.mocked(localCommandInput).mock.calls[1][1]).mode).toBe('daily');expect(quotaRequest.mock.calls.filter(([method])=>method==='account/rateLimits/read')).toHaveLength(2);
+ const {readUsageCsv}=await import('../src/services/agents/codex/usage-csv.js');expect(readUsageCsv('native')?.quota).toHaveLength(2);
 });
 it('aborts the active file scan during shutdown and preserves the cache',async()=>{
  let signal:AbortSignal|undefined;
