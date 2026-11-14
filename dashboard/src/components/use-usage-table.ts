@@ -2,7 +2,7 @@ import {useMemo,useState} from 'react';
 import {useTableModel,type TableColumn,type TableModel} from './table/use-table-model';
 import {groupUsage,type Dimension,type Metrics,type UsageGroup,type UsageRow} from './codex-usage-groups';
 
-export const usageFieldDescriptions:Record<string,string>={'label':'按所选维度分组；日期使用平台本地时区，项目按工作目录区分。','cwd':'请求记录中的工作目录；项目名称按平台登记目录匹配。','input':'各请求的输入 Token 累加，包含缓存输入和重复上下文。','cached':'输入 Token 中命中缓存的部分。','uncached':'输入减去缓存输入；缺失或数值异常时显示未知。','hit':'缓存输入除以输入；汇总时先相加再计算。','output':'输出 Token 累加；推理 Token 包含在输出中。','total':'原生日志中记录的总 Token 累加。','actual':'周额度已用百分比的采样变化，按区间预估 Credits 分配；只覆盖可采集且可分配的区间。数值单位为百分点。','credits':'按模型和服务档位费率折算 Token；Fast 和 priority 按双倍估算，未记录档位按标准估算，不是实际账单。','share':'该项预估 Credits 占筛选后对应时间段或全部范围预估 Credits 的比例。'};
+export const usageFieldDescriptions:Record<string,string>={'label':'按所选维度分组；日期使用平台本地时区，项目按工作目录区分。','cwd':'请求记录中的工作目录；项目名称按平台登记目录匹配。','input':'各请求的输入 Token 累加，包含缓存输入和重复上下文。','cached':'输入 Token 中命中缓存的部分。','uncached':'输入减去缓存输入；缺失或数值异常时显示未知。','hit':'缓存输入除以输入；汇总时先相加再计算。','output':'输出 Token 累加；推理 Token 包含在输出中。','total':'原生日志中记录的总 Token 累加。','actual':'周额度已用百分比的采样变化，按区间预估 Credits 分配；只覆盖读数增加且可分配的区间；读数未变不能证明没有耗用。数值单位为百分点。','credits':'按模型和服务档位费率折算 Token；Fast 和 priority 按双倍估算，未记录档位按标准估算，不是实际账单。','share':'该项预估 Credits 占筛选后对应时间段或全部范围预估 Credits 的比例。'};
 type Leaf=UsageRow&{modelName:string|null;missing:boolean};
 const number=(m:Metrics,key:string)=>m.tokens[key]??null;
 const uncached=(m:Metrics)=>{const a=number(m,'input_tokens'),b=number(m,'cached_input_tokens');return a!==null&&b!==null&&b<=a?a-b:null;};

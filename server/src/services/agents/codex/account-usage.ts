@@ -1,7 +1,7 @@
 import {getDb} from '../../../db/index.js';
 import {assertUsageRebuildPreserves} from './usage-rule-guard.js';
 // Increment when persisted interpretation of native usage records changes.
-export const USAGE_RULE_VERSION=2;
+export const USAGE_RULE_VERSION=3;
 import {quotaSamples} from './account-status.js';
 import {allocateQuota} from './quota-allocation.js';
 import {allCodexEnvironments,environmentConnection,getCodexEnvironment} from './environments.js';
@@ -111,7 +111,7 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
    if(result.rows.reduce((n:number,r:any)=>n+r.requests,0)!==count)throw Error('Usage identity count mismatch');
    if(rebin&&(!Array.isArray(result.matched_rows)||result.matched_rows.length>50000||result.matched_rows.some((r:MatchedUsage)=>typeof r.legacy!=='boolean'||!/^\d{4}-\d{2}-\d{2}$/.test(r.day)||typeof r.cwd!=='string'||r.cwd.length>4096||!Number.isSafeInteger(r.requests)||r.requests<1||!r.tokens||tokenFields.some(k=>r.tokens[k]!==null&&(!Number.isFinite(r.tokens[k])||r.tokens[k]!<0)))))throw Error('Invalid timezone reconciliation');
    if(!Array.isArray(result.events)||result.events.length>USAGE_EVENT_LIMIT||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||event.legacy_key!=null&&!/^[a-f0-9]{64}$/.test(event.legacy_key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||event.at!=null&&(typeof event.at!=='string'||!Number.isFinite(Date.parse(event.at)))||event.hour!=null&&(!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):00:00(?:Z|[+-]\d{2}:\d{2})$/.test(event.hour)||!event.hour.startsWith(event.day))||mode==='daily'&&!days.includes(event.day)||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
-   if(options.preserveExisting&&(result.errors||result.partial||result.events_truncated||result.events.length!==count||result.events.some((event:any)=>!event.hour)||previousTimezone!==timezone))throw Error('历史重读不完整');
+   if(options.preserveExisting&&(result.events_truncated||result.events.length!==count||result.events.some((event:any)=>!event.hour)||previousTimezone!==timezone))throw Error('历史重读不完整');
    if(options.rebuild&&(result.events_truncated||result.events.length!==count||result.events.some((event:any)=>!event.hour)||(result.errors&&count===0)))throw Error('Rebuild incomplete');
    const current=getCodexEnvironment(id);if((!current.enabled&&!options.rebuild)||usageIdentity(current)!==identity){if(options.rebuild)throw Error('Environment changed');return;}
    db.transaction(()=>{
