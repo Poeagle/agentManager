@@ -24,6 +24,17 @@ const stream=(event:any)=>({type:'stream_event',uuid:`019ff001-1212-7212-8212-${
 afterEach(()=>{releaseClaudeRuntime(session);sdk.queries=[];sdk.messages=[];sdk.interrupts=0;uuid=0;});
 
 describe('Claude Agent SDK runtime',()=>{
+  it('launches idle until the first manually supplied message',async()=>{
+    const {createTestDatabase}=await import('./helpers/database.js');const database=createTestDatabase();
+    let nativeId:string|undefined;
+    try{
+      const {claudeAdapter}=await import('../src/services/agents/claude/adapter.js');
+      const launch=await claudeAdapter.launch.prepare({session:{id:'empty'},projectPath:database.dir} as any,'');nativeId=launch.nativeId;
+      expect(sdk.queries).toEqual([]);expect(launch.initialMessageId).toBeUndefined();
+      await ensureClaudeRuntime(nativeId!,database.dir).submit('manual input');
+      await vi.waitFor(()=>expect(sdk.queries).toHaveLength(1));
+    }finally{if(nativeId)releaseClaudeRuntime(nativeId);database.cleanup();}
+  });
   it('preserves the supplied native user identity for live messages and persisted history',async()=>{
     const userId='d3587c44-6f5d-4d52-9a6c-484eac61880f';
     const runtime=ensureClaudeRuntime(session,'/tmp');await runtime.submit('scheduled','client-id',[],userId);

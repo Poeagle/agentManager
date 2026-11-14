@@ -33,12 +33,12 @@ describe('shared project creation dialog', () => {
       expect(mounted.onClose).toHaveBeenCalled(); expect(api.sessions.create).not.toHaveBeenCalled();
     } finally { mounted.dispose(); }
   });
-  it('preserves project instructions and adds the returned session to the shared cache', async () => {
+  it('opens without sending project instructions or a greeting and adds the returned session to the shared cache', async () => {
     const user = userEvent.setup(), mounted = mount();
     try {
       await user.click(screen.getByRole('button', { name: '新建会话' }));
       await waitFor(() => expect(mounted.onSessionCreated).toHaveBeenCalledWith(created));
-      expect(api.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ project_id: 'p1', mode: 'session', cli_type: 'codex', task: expect.stringContaining('Follow project rules') }));
+      expect(api.sessions.create).toHaveBeenCalledWith({project_id:'p1',project_path:project.path,mode:'session',cli_type:'codex'});
       expect(mounted.client.getQueryData(['sessions'])).toEqual({ sessions: [created] });
     } finally { mounted.dispose(); }
   });

@@ -15,6 +15,9 @@ describe('CLI command construction', () => {
   });
   afterEach(() => vi.unstubAllEnvs());
 
+  it('opens an empty embedded Codex session without a positional prompt',()=>{
+    expect(buildSessionCommand('',false,'codex','codex',undefined,undefined,undefined,null)).toBe('codex --no-alt-screen');
+  });
   it('attaches a remote terminal without submitting the initial task again',()=>{
     vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/chat-preview.sock');
     try {

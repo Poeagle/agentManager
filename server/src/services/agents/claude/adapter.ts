@@ -172,8 +172,8 @@ export const claudeAdapter: AgentDefinition = {
         managedModelPreference("claude") ?? undefined,
         !!resume,
       );
-      const userId = initialClientId ? randomUUID() : undefined;
-      if (!resume) await runtime.submit(task, initialClientId, [], userId);
+      const userId = !resume && task.trim() && initialClientId ? randomUUID() : undefined;
+      if (!resume && task.trim()) await runtime.submit(task, initialClientId, [], userId);
       return { nativeId, ...userId ? {initialMessageId:conversationMessageId('', 'user', userId)} : {} };
     },
     ready: async () => {},

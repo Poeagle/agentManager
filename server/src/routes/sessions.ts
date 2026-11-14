@@ -469,7 +469,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.post<{
     Body: {
       project_path: string;
-      task: string;
+      task?: string;
       project_id?: string;
       mode?: 'session' | 'terminal';
       cli_type?: string;
@@ -515,14 +515,13 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       return { ok: true, session };
     }
 
-    if (!project_path || !task) {
-      return reply.status(400).send({ error: 'project_path and task are required' });
-    }
+    if (task !== undefined && typeof task !== 'string') return reply.status(400).send({ error: 'task must be a string' });
+    const initialTask = task ?? '';
 
-    const session = sessionManager.createSession(canonicalProjectPath, task, resolvedProjectId, cliType, req.user!.id, 'session');
+    const session = sessionManager.createSession(canonicalProjectPath, initialTask, resolvedProjectId, cliType, req.user!.id, 'session');
     if(typeof environmentId==='string')getDb().prepare('UPDATE sessions SET agent_environment_id=? WHERE id=?').run(environmentId,session.id);
-    if(getAgent(cliType).descriptor.sessionHost==='managed')await sessionManager.spawnSession(session.id,canonicalProjectPath,task,120,40,cliType);
-    else registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task, mode: 'session', projectId: resolvedProjectId, cliType });
+    if(getAgent(cliType).descriptor.sessionHost==='managed')await sessionManager.spawnSession(session.id,canonicalProjectPath,initialTask,120,40,cliType);
+    else registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task: initialTask, mode: 'session', projectId: resolvedProjectId, cliType });
 
     return {ok:true,session:sessionManager.getSession(session.id)};
   });

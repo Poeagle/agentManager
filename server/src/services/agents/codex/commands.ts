@@ -44,6 +44,6 @@ export function codexCommand(options: AgentCommandOptions) {
     else if (assignId)
         cmd = `${codexTransport(base, streamSocket)} resume --no-alt-screen ${shellSingleQuote(assignId)}`;
     else
-        cmd = `${codexTransport(base, streamSocket)}${codexIdentityFlags(bindingPath)} --no-alt-screen ${shellSingleQuote(task)}`;
+        cmd = `${codexTransport(base, streamSocket)}${codexIdentityFlags(bindingPath)} --no-alt-screen${task.trim() ? ` ${shellSingleQuote(task)}` : ''}`;
     return direct ? `command bash -c ${shellSingleQuote(cmd)}` : cmd;
 }

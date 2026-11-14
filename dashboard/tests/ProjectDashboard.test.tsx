@@ -173,7 +173,7 @@ describe('project table interactions', () => {
     expect(api.sessions.create).not.toHaveBeenCalled();
     await user.click(within(dialog).getByRole('button', { name: '新建会话' }));
     await waitFor(() => expect(api.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ project_id: 'p2', mode: 'session', cli_type: 'codex' })));
-    expect(vi.mocked(api.sessions.create).mock.calls[0][0].task).toContain('Follow project rules');
+    expect(vi.mocked(api.sessions.create).mock.calls[0][0]).not.toHaveProperty('task');
     await waitFor(() => expect(open).toHaveBeenCalledWith('p2', 'new-session'));
     expect(screen.getByRole('button', { name: '打开项目 Denied' })).toBeDisabled();
   });

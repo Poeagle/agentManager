@@ -107,7 +107,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.10.1',
+    version:'3.10.2',
     updatedAt:'2026-11-14',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -262,7 +262,7 @@ export function getAgentApiContract() {
         request: {
           project_id: { type: 'string', required: false, recommended: true, description: 'ID returned by GET /api/projects.' },
           project_path: { type: 'string', required: true, description: 'Must match the registered project path.' },
-          task: { type: 'string', required: false, description: 'Required for Session mode; ignored for terminal mode.' },
+          task: { type: 'string', required: false, description: 'Optional initial message for Session mode. Omit or leave blank to open an idle session without sending input; ignored for terminal mode.' },
           mode: { type: 'session | terminal', required: false, default: 'session' },
           cli_type: { type:'registered Agent ID', required: false, default: 'claude', description: 'Used by Session mode.' },
           environment_id: { type:'string', required:false, description:'Authorized Codex Engine ID for a new Codex session. If omitted, the default native environment must be authorized.' },

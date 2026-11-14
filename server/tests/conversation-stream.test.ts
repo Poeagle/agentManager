@@ -242,6 +242,13 @@ describe('native Codex conversation streaming',()=>{
     active=true;await interruptStreamingCodexThread('thread');
     expect(requests).toContain('turn/interrupt');expect(requests).not.toContain('thread/resume');expect(requests).not.toContain('turn/start');
   });
+  it.each(['', '   '])('creates an idle thread without submitting blank input %j',async task=>{
+    const id=await createStreamingCodexThread('/project',task);
+    expect(id).toBe('019ff001-8888-7888-8888-888888888888');
+    expect(requests).toContain('thread/start');expect(submissions).toEqual([]);
+    await submitStreamingCodexInput(id,'first manual message');
+    expect(submissions).toHaveLength(1);expect(submissions[0].input[0].text).toBe('first manual message');
+  });
   it('starts the initial prompt once and returns the exact identity used by the terminal',async()=>{
     expect(await createStreamingCodexThread('/project','initial request')).toBe('019ff001-8888-7888-8888-888888888888');
     expect(requests.filter(method=>method==='thread/start')).toHaveLength(1);expect(requests.filter(method=>method==='turn/start')).toHaveLength(1);

@@ -75,6 +75,21 @@ describe('provider-neutral agent features',()=>{
    const other=createUser({username:'adapter-other',password:'password1'});expect((await app.inject({url:'/api/sessions/adapter-s/controls',headers:{cookie:`agentmanager_session=${createSession(other.id)}`}})).statusCode).toBe(404);
   }finally{await app.close();database.cleanup();}
  });
+ it('creates a session without an initial task and still accepts explicit API tasks',async()=>{
+  const database=createTestDatabase(),app=Fastify();
+  try{
+   const adapter=fixture(join(database.dir,'history'));unregister=registerAgent(adapter);
+   const user=createUser({username:'empty-admin',password:'password1',role:'admin'}),headers={cookie:`agentmanager_session=${createSession(user.id)}`};
+   getDb().prepare("INSERT INTO projects(id,name,path,owner_id) VALUES('empty-p','Empty',?,?)").run(database.dir,user.id);
+   app.addHook('onRequest',authHook);await app.register(sessionRoutes,{prefix:'/api'});
+   const create=(task?:unknown)=>app.inject({method:'POST',url:'/api/sessions',headers,payload:{project_path:database.dir,project_id:'empty-p',mode:'session',cli_type:'fixture_agent',...(task===undefined?{}:{task})}});
+   for(const task of [undefined,'','explicit requirement']){
+    const response=await create(task);expect(response.statusCode).toBe(200);expect(response.json().session.task).toBe(task??'');
+    expect(isManagedAgentActive(response.json().session.id)).toBe(true);
+   }
+   expect((await create({bad:true})).statusCode).toBe(400);
+  }finally{await app.close();database.cleanup();}
+ });
  it('reads service-backed history without requiring a local file or native CLI format',async()=>{
   const adapter=fixture('/not-a-local-file');adapter.history.file={...adapter.history.file!,locate:async()=>{throw Error('Local history must not be read');}};
   adapter.history.read=async()=>({messages:[{id:'remote-message',role:'assistant',text:'Remote reply',timestamp:null,phase:'final'}],has_more:false,available:true,reset:false,generation:'service'});

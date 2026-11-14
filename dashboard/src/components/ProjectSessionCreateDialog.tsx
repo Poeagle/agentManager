@@ -14,11 +14,9 @@ export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated,
   const mutation = useMutation({
     mutationFn: ({ mode, cli }: { mode: 'session' | 'terminal'; cli?: string }) => {
       if (!projectOpenModes(project).some((option) => option.mode === mode && option.cli === cli)) throw new Error('该打开方式未获授权');
-      const prompt = 'Start up and ask me what I want you to do and NOTHING ELSE';
-      const instructions = project.session_prompt?.trim();
       return api.sessions.create({ project_id: project.id, project_path: project.path, mode,
         ...(mode==='session'&&cli==='codex'&&environmentId?{environment_id:environmentId}:{}),
-        ...(mode === 'session' ? { cli_type: cli, task: instructions ? `${prompt}\n\n---\nAdditional Instructions:\n${instructions}` : prompt } : {}),
+        ...(mode === 'session' ? { cli_type: cli } : {}),
       });
     },
     onSuccess: ({ session }) => {

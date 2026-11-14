@@ -590,14 +590,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           })
           .catch((err) => console.error(`[QuickLaunch] Failed to create terminal:`, err));
       } else {
-        const cfPrompt = (project?.session_prompt ?? '').trim();
-        const defaultTask = 'Start up and ask me what I want you to do and NOTHING ELSE';
-        const task = cfPrompt
-          ? `${defaultTask}\n\n---\nAdditional Instructions:\n${cfPrompt}`
-          : defaultTask;
         api.sessions.create({
           project_path: projectPath,
-          task,
           mode: 'session',
           project_id: projectId,
           cli_type: cliType,
@@ -638,7 +632,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       onFocusSessionHandled?.();
       focusTerminalById(focusSessionId);
     }
-  }, [focusSessionId, onFocusSessionHandled, project?.session_prompt, projectId, projectPath, queryClient, allSessionLookup, terminalInstances, projHydrated]);
+  }, [focusSessionId, onFocusSessionHandled, projectId, projectPath, queryClient, allSessionLookup, terminalInstances, projHydrated]);
 
   // Explorer instances
   const [explorerInstances, setExplorerInstances] = useState<ExplorerInstance[]>(() => {
@@ -1080,7 +1074,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
 
       const result = await api.sessions.create({
         project_path: projectPath,
-        task: 'Interactive session',
+        project_id: projectId,
       });
       const newId = result.session.id;
       setTerminalInstances((prev) =>
