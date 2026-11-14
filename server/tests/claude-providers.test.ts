@@ -12,6 +12,8 @@ import {
   deleteClaudeProvider,
   detectClaudeProviderModels,
   nativeClaudeProviderState,
+  updateNativeClaudeProvider,
+  ensureNativeClaudeProvider,
 } from '../src/services/agents/claude/providers.js';
 
 let database:ReturnType<typeof createTestDatabase>;
@@ -38,6 +40,22 @@ describe('Claude managed providers',()=>{
   expect(claudeManagementProviderState('gateway')?.fields.map(field=>field.key)).toEqual(
    nativeClaudeProviderState().fields.map(field=>field.key),
   );
+ });
+ it('stores native Anthropic in the encrypted provider runtime instead of stale LaunchAgent aliases',()=>{
+  updateNativeClaudeProvider({
+   apiKey:'native-token',
+   fields:{
+    baseUrl:'https://native.example',
+    models:['claude-fable-5','opus','sonnet','haiku'],
+    defaultModel:'claude-fable-5',
+    contextWindow:'1000000',
+   },
+  });
+  const stored=readAgentManagement('claude').providers.find(provider=>provider.id==='anthropic');
+  expect(stored).toMatchObject({fields:{baseUrl:'https://native.example',models:['claude-fable-5','opus','sonnet','haiku'],defaultModel:'claude-fable-5'}});
+  expect(nativeClaudeProviderState()).toMatchObject({status:'ready',authentication:{status:'authenticated'}});
+  expect(claudeProviderForEnvironment('claude-provider:anthropic')).toMatchObject({authToken:'native-token',defaultModel:'claude-fable-5'});
+  expect(ensureNativeClaudeProvider()).toBeUndefined();
  });
  it('stores independent encrypted endpoints and resolves only the bound provider',()=>{
   create();

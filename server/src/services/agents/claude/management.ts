@@ -8,6 +8,7 @@ import { readClaudeControls } from './controls.js';
 import { managedEnv, updateManagedEnvironment } from '../environment-store.js';
 import type { AgentEnvironmentVariable } from '../types.js';
 import {
+  claudeEnvironmentName,
   claudeProviderState,
   createClaudeProvider,
   deleteClaudeProvider,

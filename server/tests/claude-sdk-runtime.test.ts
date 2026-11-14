@@ -49,6 +49,19 @@ describe('Claude Agent SDK runtime',()=>{
     });
     expect(runtime.selectedModel()).toBe('claude-a');
   });
+  it('does not reuse a stale alias mapping when a concrete model is selected',async()=>{
+    sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
+    const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-fable-5',effort:''},false,{
+      id:'anthropic',name:'Anthropic',baseUrl:'https://xindu.xyz',authToken:'private-token',
+      models:['claude-fable-5','opus','sonnet','haiku'],defaultModel:'claude-fable-5',contextWindow:null,maxOutputTokens:null,
+    });
+    await runtime.submit('reply ok');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(sdk.queries.at(-1)?.options).toMatchObject({
+      model:'claude-fable-5',
+      env:{ANTHROPIC_DEFAULT_OPUS_MODEL:'opus',ANTHROPIC_DEFAULT_SONNET_MODEL:'sonnet',ANTHROPIC_DEFAULT_HAIKU_MODEL:'haiku'},
+    });
+  });
   it('launches idle until the first manually supplied message',async()=>{
     const {createTestDatabase}=await import('./helpers/database.js');const database=createTestDatabase();
     let nativeId:string|undefined;

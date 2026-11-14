@@ -104,9 +104,11 @@ export const claudeAdapter: AgentDefinition = {
     supportsClientIdentity: true,
     messageId: clientId => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId) ? conversationMessageId('', 'user', clientId) : undefined,
     submit: async (context, text, clientId, attachments) => {
-      const provider = (
+      let provider = (
         await import("./providers.js")
       ).claudeRuntimeProvider(context.session, context.environmentAccess);
+      if (!provider && !context.session.agent_environment_id)
+        provider = (await import("./providers.js")).claudeNativeRuntimeProvider(context.environmentAccess);
       const runtime = (await import("./sdk-runtime.js")).ensureClaudeRuntime(
         requireNative(context),
         context.projectPath!,
@@ -159,7 +161,8 @@ export const claudeAdapter: AgentDefinition = {
     prepareFresh: async (context,instructions,preference) => {
       if(!context.projectPath)throw Error("Claude managed session is missing project context");
       const nativeId=randomUUID();
-      const provider=(await import("./providers.js")).claudeRuntimeProvider(context.session,context.environmentAccess);
+      let provider=(await import("./providers.js")).claudeRuntimeProvider(context.session,context.environmentAccess);
+      if(!provider&&!context.session.agent_environment_id)provider=(await import("./providers.js")).claudeNativeRuntimeProvider(context.environmentAccess);
       (await import("./sdk-runtime.js")).ensureClaudeRuntime(nativeId,context.projectPath,instructions,provider?{model:runtimeModel(provider,preference),effort:""}:preference,false,provider);
       return nativeId;
     },
@@ -188,9 +191,11 @@ export const claudeAdapter: AgentDefinition = {
       const nativeId = resume ? context.nativeId || undefined : randomUUID();
       if (!nativeId || !context.projectPath)
         throw Error("Claude managed session is missing project context");
-      const provider = (
+      let provider = (
         await import("./providers.js")
       ).claudeRuntimeProvider(context.session, context.environmentAccess);
+      if (!provider && !context.session.agent_environment_id)
+        provider = (await import("./providers.js")).claudeNativeRuntimeProvider(context.environmentAccess);
       const runtime = (await import("./sdk-runtime.js")).ensureClaudeRuntime(
         nativeId,
         context.projectPath,

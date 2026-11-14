@@ -618,12 +618,9 @@ class ClaudeRuntime {
             this.provider,
             this.model,
           ),
-          ANTHROPIC_DEFAULT_OPUS_MODEL:
-            this.model || this.provider.defaultModel || "",
-          ANTHROPIC_DEFAULT_SONNET_MODEL:
-            this.model || this.provider.defaultModel || "",
-          ANTHROPIC_DEFAULT_HAIKU_MODEL:
-            this.model || this.provider.defaultModel || "",
+          ANTHROPIC_DEFAULT_OPUS_MODEL:this.provider.models.find(model=>model.toLowerCase()==='opus')||this.model||this.provider.defaultModel||"",
+          ANTHROPIC_DEFAULT_SONNET_MODEL:this.provider.models.find(model=>model.toLowerCase()==='sonnet')||this.model||this.provider.defaultModel||"",
+          ANTHROPIC_DEFAULT_HAIKU_MODEL:this.provider.models.find(model=>model.toLowerCase()==='haiku')||this.model||this.provider.defaultModel||"",
         }
       : undefined;
     const options: Options = {

@@ -58,14 +58,13 @@ function modelField(provider: StoredProvider): string[] {
 }
 
 function configuredProviders(): StoredProvider[] {
-  return readAgentManagement('claude').providers.filter(
-    (provider) => provider.id !== 'anthropic',
-  );
+  return readAgentManagement('claude').providers;
 }
 
-/** Legacy Anthropic setup is stored in LaunchAgent but presented through the
- * same provider contract as managed gateways. No provider gets a special UI. */
+/** Native Anthropic uses the same encrypted provider store after migration. */
 function nativeProviderState(): AgentProviderState {
+  const stored=readAgentManagement('claude').providers.find(provider=>provider.id==='anthropic');
+  if(stored)return claudeProviderState(stored);
   const env = readManagedEnvironment();
   const models = [
     ...new Set(
@@ -128,6 +127,36 @@ export function nativeClaudeProviderState(): AgentProviderState {
   return nativeProviderState();
 }
 
+export function nativeClaudeProviderApiKey(): string {
+  return claudeProviderApiKey('anthropic')
+    || readManagedEnvironment().ANTHROPIC_AUTH_TOKEN
+    || readManagedEnvironment().ANTHROPIC_API_KEY
+    || '';
+}
+
+/** Materialize an unmigrated native environment without changing it. This lets
+ * old sessions and every new native session use the same resolved provider. */
+export function ensureNativeClaudeProvider(): void {
+  if(readAgentManagement('claude').providers.some(provider=>provider.id==='anthropic'))return;
+  const env=readManagedEnvironment();
+  const models=[...new Set([
+    env.ANTHROPIC_MODEL,
+    env.ANTHROPIC_DEFAULT_OPUS_MODEL,
+    env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+    'default','sonnet','opus','haiku',
+  ].filter((model):model is string=>typeof model==='string'&&!!model.trim()))];
+  const baseUrl=env.ANTHROPIC_BASE_URL;
+  const apiKey=env.ANTHROPIC_AUTH_TOKEN||env.ANTHROPIC_API_KEY;
+  if(!baseUrl||!models.length||!apiKey)return;
+  const fields=validateFields({baseUrl,models,defaultModel:env.ANTHROPIC_MODEL||models[0]});
+  updateAgentManagement('claude',current=>({
+    ...current,
+    providers:[...current.providers.filter(provider=>provider.id!=='anthropic'),{id:'anthropic',name:'Anthropic',kind:'official',enabled:true,fields}],
+  }));
+  saveProviderApiKey('anthropic',apiKey);
+}
+
 export function updateNativeClaudeProvider(input: AgentProviderInput): void {
   const env = readManagedEnvironment();
   const models = Array.isArray(input.fields?.models)
@@ -158,22 +187,17 @@ export function updateNativeClaudeProvider(input: AgentProviderInput): void {
       : env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '';
   boundedNumber(contextWindow, '上下文窗口', 1, 10_000_000);
   boundedNumber(maxOutputTokens, '最大输出 Token', 1, 10_000_000);
-  const values: Record<string, string> = {
-    ANTHROPIC_BASE_URL: baseUrl,
-    ANTHROPIC_MODEL: defaultModel || models[0],
-    ANTHROPIC_DEFAULT_OPUS_MODEL: models[0] || defaultModel,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: models[1] || models[0] || defaultModel,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: models[2] || models[1] || models[0] || defaultModel,
-    ...(contextWindow ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: contextWindow } : {}),
-    ...(maxOutputTokens ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: maxOutputTokens } : {}),
-    ...(input.apiKey?.trim() ? { ANTHROPIC_AUTH_TOKEN: input.apiKey.trim(), ANTHROPIC_API_KEY: '' } : {}),
-  };
-  const clear: string[] = [];
-  if (!contextWindow) clear.push('CLAUDE_CODE_MAX_CONTEXT_TOKENS');
-  if (!maxOutputTokens) clear.push('CLAUDE_CODE_MAX_OUTPUT_TOKENS');
-  updateManagedEnvironment({ values, clear });
-  for (const [key, value] of Object.entries(values)) process.env[key] = value;
-  for (const key of clear) delete process.env[key];
+  updateAgentManagement('claude',(current)=>({
+    ...current,
+    providers:[
+      ...current.providers.filter(provider=>provider.id!=='anthropic'),
+      {
+        id:'anthropic',name:'Anthropic',kind:'official',enabled:true,
+        fields:validateFields({baseUrl,models,defaultModel,contextWindow,maxOutputTokens}),
+      },
+    ],
+  }));
+  saveProviderApiKey('anthropic',input.apiKey);
 }
 
 function saveProviderApiKey(providerId: string, apiKey?: string): void {
@@ -280,7 +304,10 @@ function validateFields(
 }
 
 export function enabledClaudeProviders(): AgentProviderState[] {
-  return [nativeProviderState(), ...configuredProviders()
+  ensureNativeClaudeProvider();
+  const stored=configuredProviders();
+  return [stored.some(provider=>provider.id==='anthropic')?claudeProviderState(stored.find(provider=>provider.id==='anthropic')!):nativeProviderState(), ...stored
+    .filter(provider=>provider.id!=='anthropic')
     .filter((provider) => provider.enabled)
     .map((provider) => claudeProviderState(provider))];
 }
@@ -474,6 +501,7 @@ export function claudeProviderIdForSession(
   session: { agent_environment_id?: string | null },
 ): string | null {
   const id = session.agent_environment_id || '';
+  if(id==='claude-provider:anthropic')return 'anthropic';
   return id.startsWith('claude-provider:') ? id.slice(16) : null;
 }
 
@@ -518,6 +546,7 @@ export function claudeRuntimeProvider(
   session: { agent_environment_id?: string | null },
   environmentAccess?: (environmentId: string) => boolean,
 ): ClaudeProviderRuntime | null {
+  ensureNativeClaudeProvider();
   const providerId = claudeProviderIdForSession(session);
   if (!providerId) return null;
   if (environmentAccess && !environmentAccess(`claude-provider:${providerId}`))
@@ -529,7 +558,9 @@ export function claudeRuntimeProvider(
     throw Object.assign(Error('Claude Provider 不存在或已停用'), {
       statusCode: 409,
     });
-  const authToken = claudeProviderApiKey(providerId);
+  const authToken = providerId==='anthropic'
+    ? nativeClaudeProviderApiKey()
+    : claudeProviderApiKey(providerId);
   const baseUrl = stringField(provider, 'baseUrl');
   if (!authToken || !baseUrl)
     throw Object.assign(Error('Claude Provider 缺少 API 地址或密钥'), {
@@ -557,6 +588,15 @@ export function claudeRuntimeProvider(
       10_000_000,
     ),
   };
+}
+
+export function claudeNativeRuntimeProvider(
+  environmentAccess?: (environmentId: string) => boolean,
+): ClaudeProviderRuntime | null {
+  ensureNativeClaudeProvider();
+  const stored=readAgentManagement('claude').providers.find(provider=>provider.id==='anthropic');
+  if(stored)return claudeRuntimeProvider({agent_environment_id:'claude-provider:anthropic'},environmentAccess);
+  return null;
 }
 
 export function claudeProviderForEnvironment(
