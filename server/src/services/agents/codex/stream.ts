@@ -113,7 +113,12 @@ export async function configureStreamingSharedResources(threadId: string, instru
  * cancellation must interrupt that engine before detaching the terminal. */
 export async function interruptStreamingCodexThread(threadId:string) {
   await withCodexConnection(async request=>{
-    const current=await request('thread/read',{threadId});
+    let current;
+    try { current=await request('thread/read',{threadId}); } catch(error) {
+      // The engine confirms no loaded work exists; local cleanup may proceed.
+      if(error instanceof CodexRpcError && error.nativeMessage===`thread not loaded: ${threadId}`)return;
+      throw error;
+    }
     if(current.thread?.status?.type!=='active')return;
     const turns=await request('thread/turns/list',{threadId,limit:1,itemsView:'notLoaded'});
     const turn=turns.data?.find((item:any)=>item.status==='inProgress');

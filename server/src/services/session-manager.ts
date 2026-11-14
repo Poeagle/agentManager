@@ -2249,7 +2249,9 @@ function killPidTree(pid: number): void {
 export async function killSession(sessionId: string, options?:{preserveLifecycle?:boolean}): Promise<boolean> {
   const session = getSession(sessionId);
   if (!session) return false;
-  if(nativeConversationId(session))await agentForSession(session).lifecycle.interrupt(sessionAgentContext(session));
+  // Ended sessions may retain an identity whose native runtime is gone.
+  // Their local cleanup must not depend on contacting that old runtime.
+  if(nativeConversationId(session) && (sessionStatusMayHaveProcess(session.status) || activeSessions.has(sessionId) || isManagedAgentActive(sessionId)))await agentForSession(session).lifecycle.interrupt(sessionAgentContext(session));
   detachManagedAgent(sessionId);
   const active = activeSessions.get(sessionId);
   console.log(`[KILL] Killing session ${sessionId} (active=${!!active})`);

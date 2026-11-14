@@ -10,17 +10,20 @@ import {conversationMessageId} from '../src/services/conversation-reader.js';
 let server:Server,wss:WebSocketServer,peer:WebSocket,dir:string,stop:(()=>void)|undefined;
 let submissions:any[],requests:string[],frames:ConversationStreamFrame[],loaded:boolean;
 let active=false,oversizedSummary=false,dropDispatch=false;
+let missingThread=false,persistFailure=false;
 let humanRequests:any[]=[],humanResponses:any[]=[];
 let baselineItems:any[]=[];
 let baselineFailure:any=null;
 let queueEntries:any[]=[],turnStartFailure:string|null=null;
 let requestParams: Array<{method:string;params:any}> = [];
 beforeEach(async()=>{
-  dir=mkdtempSync(join(tmpdir(),'chat-stream-'));const path=join(dir,'sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',path);
+  missingThread=false;persistFailure=false;dir=mkdtempSync(join(tmpdir(),'chat-stream-'));const path=join(dir,'sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',path);
   server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;baselineItems=[];baselineFailure=null;queueEntries=[];turnStartFailure=null;humanRequests=[];humanResponses=[];requestParams=[];oversizedSummary=false;dropDispatch=false;
   wss.on('connection',socket=>{
     peer=socket;socket.on('message',bytes=>{
       const frame=JSON.parse(bytes.toString());const {id,method,params}=frame;if(!method){humanResponses.push(frame);return;}requests.push(method);requestParams.push({method,params});if(method==='thread/resume')for(const request of humanRequests)socket.send(JSON.stringify(request));if(method==='turn/start'||method==='turn/steer')submissions.push(params);if(!id) return;
+      if(method==='thread/read'&&missingThread){socket.send(JSON.stringify({id,error:{message:`thread not loaded: ${params.threadId}`,code:-32600}}));return;}
+      if(method==='thread/inject_items'&&persistFailure){socket.send(JSON.stringify({id,error:{message:'Storage unavailable',code:-32600}}));return;}
       if(method==='turn/steer'&&active&&baselineItems.some(item=>item.type==='contextCompaction'&&item.status!=='completed')){socket.send(JSON.stringify({id,error:{message:'cannot steer a compact turn',code:-32600}}));return;}
       if((method==='turn/start'||method==='turn/steer')&&turnStartFailure){socket.send(JSON.stringify({id,error:{message:turnStartFailure,code:-32600}}));return;}
       if((method==='turn/start'||method==='turn/steer')&&dropDispatch){socket.terminate();return;}
@@ -237,6 +240,14 @@ describe('native Codex conversation streaming',()=>{
   });
   it('retains the terminal input path for an embedded CLI',async()=>{
     loaded=false;expect(await submitStreamingCodexInput('thread','followup')).toBe(false);expect(requests).not.toContain('turn/start');
+  });
+  it('allows cleanup when the engine confirms the thread is not loaded',async()=>{
+    missingThread=true;await expect(interruptStreamingCodexThread('missing')).resolves.toBeUndefined();
+    expect(requests).not.toContain('turn/interrupt');expect(requests).not.toContain('thread/resume');
+  });
+  it('rejects an unpersisted empty thread and reclaims only the newly created thread',async()=>{
+    persistFailure=true;await expect(createStreamingCodexThread('/project','')).rejects.toThrow('Storage unavailable');
+    expect(requests).toContain('thread/archive');expect(submissions).toEqual([]);
   });
   it('interrupts a running engine when its terminal session is explicitly stopped',async()=>{
     active=true;await interruptStreamingCodexThread('thread');
