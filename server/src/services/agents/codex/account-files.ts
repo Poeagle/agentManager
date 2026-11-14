@@ -75,8 +75,14 @@ export async function environmentRollout(context:{nativeId:string|null;session:{
   if(e.kind==='native')path=await findCodexRollout(context.nativeId!);
   else {
    const {withCodexConnection}=await import('./stream.js');
-   const response=await runInCodexEngine(engine,()=>withCodexConnection(request=>request('thread/read',{threadId:context.nativeId})));
-   path=response.thread?.path??null;
+   try{
+    const response=await runInCodexEngine(engine,()=>withCodexConnection(request=>request('thread/read',{threadId:context.nativeId})));
+    path=response.thread?.path??null;
+   }catch(error){
+    const {CodexRpcError}=await import('./stream.js');
+    if(error instanceof CodexRpcError&&error.nativeMessage===`thread not loaded: ${context.nativeId}`)return null;
+    throw error;
+   }
   }
   if(typeof path!=='string'||!path.startsWith('/')||!path.endsWith(context.nativeId+'.jsonl'))return null;
   const c=e.kind==='account'?environmentConnection(e):null;

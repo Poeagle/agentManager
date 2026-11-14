@@ -68,7 +68,7 @@ describe('Codex account environments and platform ACLs',()=>{
   expect((await app.inject({method:'POST',url:path,headers:{cookie:cookies.admin}})).statusCode).toBe(200);
   const key='amk_'+Buffer.alloc(32,9).toString('base64url');getDb().prepare('INSERT INTO api_keys(id,user_id,name,token_hash,grants,created_at,expires_at) VALUES(?,?,?,?,?,?,?)').run('fixture-key',admin.id,'fixture',hashApiKey(key),JSON.stringify({settings:'write',agent_api:'write'}),new Date().toISOString(),new Date(Date.now()+3600000).toISOString());
   expect((await app.inject({method:'POST',url:path,headers:{authorization:`Bearer ${key}`}})).statusCode).toBe(200);
-  const hourly=await app.inject({url:'/api/codex/environments/native/insights?granularity=hour',headers:{cookie:cookies.admin}});expect(hourly.statusCode).toBe(200);expect(hourly.json().usage.rows).toEqual([]);
+  const hourly=await app.inject({url:'/api/codex/environments/native/insights?granularity=hour',headers:{cookie:cookies.admin}});expect(hourly.statusCode).toBe(200);expect(hourly.json().usage.rows).toEqual([]);expect(hourly.json().sources).toEqual([expect.objectContaining({history:[expect.stringMatching(/\/sessions$/),expect.stringMatching(/\/archived_sessions$/)],cache:expect.stringContaining('/usage-csv/')})]);
  });
  it('restores only enabled account tunnels used by running or detached sessions',async()=>{
   const active=await create(),disabled=await create(),closed=await create();

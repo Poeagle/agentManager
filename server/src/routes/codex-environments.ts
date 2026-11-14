@@ -1,5 +1,5 @@
 import {accountConfigFiles} from '../services/agents/codex/account-config-files.js';
-import {cachedAccountUsage,cachedGroupUsage,collectAccountUsage,initAccountUsage} from '../services/agents/codex/account-usage.js';
+import {accountUsageSources,cachedAccountUsage,cachedGroupUsage,collectAccountUsage,initAccountUsage} from '../services/agents/codex/account-usage.js';
 import {cachedAccountStatus,initAccountStatus} from '../services/agents/codex/account-status.js';
 import {cachedEngineBalance,initEngineBalance} from '../services/agents/codex/engine-balance.js';
 import {readCodexAccountDetails} from '../services/agents/codex/account-details.js';
@@ -27,7 +27,7 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   if(!account||account.kind==='native'&&!canControlEnvironment(account.id,req.user!.id))return reply.code(404).send({error:'账号不存在或无权访问'});
   if(req.user!.role!=='admin')return reply.code(403).send({error:'仅管理员可查看账号详情'});
   reply.header('Cache-Control','private, no-store');
-  return {usage:req.query.granularity==='hour'?cachedGroupUsage([account.id],'hour',true):cachedAccountUsage(account.id)};
+  return {sources:[accountUsageSources(account.id)],usage:req.query.granularity==='hour'?cachedGroupUsage([account.id],'hour',true):cachedAccountUsage(account.id)};
  });
  app.get<{Params:{id:string}}>('/codex/environments/:id/reset-credits',async(req,reply)=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;
@@ -75,7 +75,7 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   if(!/^[a-f0-9]{64}$/.test(req.params.group))return reply.code(404).send({error:'上游不存在或无权访问'});
   const members=visibleCodexEnvironments(req.user!.id).filter(e=>e.enabled&&cachedEngineBalance(e.id).auth_mode==='api'&&cachedEngineBalance(e.id).groupKey===req.params.group);
   if(!members.length||members.length>100)return reply.code(404).send({error:'上游不存在或无权访问'});
-  reply.header('Cache-Control','private, no-store');return {usage:cachedGroupUsage(members.map(e=>e.id),req.query.granularity==='hour'?'hour':'day')};
+  reply.header('Cache-Control','private, no-store');return {sources:members.map(e=>accountUsageSources(e.id)),usage:cachedGroupUsage(members.map(e=>e.id),req.query.granularity==='hour'?'hour':'day')};
  });
  app.get<{Params:{id:string}}>('/codex/environments/:id/quota',async(req,reply)=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;

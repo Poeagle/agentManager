@@ -58,6 +58,14 @@ export async function withCodexConnection<T>(action:(request:CodexRequest,server
   } finally {rejectPending();if(socket.readyState===WebSocket.CONNECTING)socket.terminate();else socket.close();}
 }
 
+/** Flush native storage without a user message or a model turn so the TUI
+ * can resume the otherwise empty thread after this RPC connection closes. */
+export async function persistIdleCodexThread(request:CodexRequest,id:string):Promise<void> {
+  await request('thread/inject_items',{threadId:id,items:[{type:'message',role:'developer',content:[{type:'input_text',text:'A fresh conversation was opened in this platform tab. Wait for the user to provide a task. Previous conversation history has not been carried over.'}]}]});
+  const verified=await request('thread/resume',{threadId:id,excludeTurns:true});
+  if(verified.thread?.id!==id||verified.thread?.status?.type==='notLoaded')throw Error('新会话尚不可恢复');
+}
+
 /** Create the thread without a model turn when no initial task was supplied.
  * The terminal attaches to the same native identity. */
 export async function createStreamingCodexThread(cwd:string,task:string,sharedInstructions?:string,preference?:import('../types.js').ModelPreference|null,initialClientId?:string):Promise<string> {
@@ -66,7 +74,9 @@ export async function createStreamingCodexThread(cwd:string,task:string,sharedIn
     const result=await request('thread/start',{cwd,approvalPolicy:'never',sandbox:'danger-full-access',...(sharedInstructions?{developerInstructions:sharedInstructions}:{}),...(preference?{model:preference.model,...preference.provider?{modelProvider:preference.provider}:{},config:{model_reasoning_effort:preference.effort},...preference.service_tier?{serviceTier:preference.service_tier}:{}}:{})});
     const id=result.thread?.id;
     if(typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Codex 未返回原生会话标识');
-    if(task.trim())await request('turn/start',{threadId:id,...initialClientId?{clientUserMessageId:initialClientId}:{},input:[{type:'text',text:task,text_elements:[]}],...(preference?{model:preference.model,effort:preference.effort,...preference.service_tier?{serviceTier:preference.service_tier}:{}}:{})});
+    if(!task.trim()){
+      try{await persistIdleCodexThread(request,id);}catch(error){await request('thread/archive',{threadId:id}).catch(()=>{});throw error;}
+    }else await request('turn/start',{threadId:id,...initialClientId?{clientUserMessageId:initialClientId}:{},input:[{type:'text',text:task,text_elements:[]}],...(preference?{model:preference.model,effort:preference.effort,...preference.service_tier?{serviceTier:preference.service_tier}:{}}:{})});
     if(sharedInstructions)rememberStreamingSharedResources(id,sharedInstructions);
     return id;
   });
@@ -103,7 +113,12 @@ export async function configureStreamingSharedResources(threadId: string, instru
  * cancellation must interrupt that engine before detaching the terminal. */
 export async function interruptStreamingCodexThread(threadId:string) {
   await withCodexConnection(async request=>{
-    const current=await request('thread/read',{threadId});
+    let current;
+    try { current=await request('thread/read',{threadId}); } catch(error) {
+      // The engine confirms no loaded work exists; local cleanup may proceed.
+      if(error instanceof CodexRpcError && error.nativeMessage===`thread not loaded: ${threadId}`)return;
+      throw error;
+    }
     if(current.thread?.status?.type!=='active')return;
     const turns=await request('thread/turns/list',{threadId,limit:1,itemsView:'notLoaded'});
     const turn=turns.data?.find((item:any)=>item.status==='inProgress');

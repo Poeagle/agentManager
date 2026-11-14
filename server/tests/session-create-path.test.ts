@@ -1,7 +1,9 @@
+import * as agentSession from '../src/services/agents/session.js';
+import * as previews from '../src/services/conversation-preview.js';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { authHook, createSession as createAuthSession, createUser } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
 import { sessionRoutes } from '../src/routes/sessions.js';
@@ -35,6 +37,18 @@ describe('session creation project identity', () => {
   afterEach(async () => {
     await app.close();
     cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('keeps empty and healthy records visible when one native runtime is unavailable',async()=>{
+    vi.spyOn(previews,'readConversationPreview').mockResolvedValue(null);
+    vi.spyOn(agentSession,'readAgentRuntime').mockRejectedValue(new Error('Thread has no history yet'));
+    const insert=getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,native_session_id,created_by_user_id) VALUES(?,'project-1',?,'running','codex',?,?)");
+    insert.run('empty','','unstarted-native',adminId);insert.run('healthy','Existing work',null,adminId);
+    const response=await app.inject({url:'/api/sessions?project_id=project-1',headers:{cookie}});
+    expect(response.statusCode).toBe(200);
+    expect(response.json().sessions).toEqual(expect.arrayContaining([expect.objectContaining({id:'empty',task:''}),expect.objectContaining({id:'healthy'})]));
+    expect(response.json().sessions.find((s:{id:string})=>s.id==='empty')).not.toHaveProperty('agent_runtime');
   });
 
   it('rejects a project_id paired with a different filesystem path', async () => {

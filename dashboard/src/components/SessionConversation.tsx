@@ -1524,7 +1524,7 @@ export function SessionConversation({
       }
       pendingAnswers.current.clear();
     };
-  }, [active, canRead, session.id, session.cli_type, page?.native_id, ended]);
+  }, [active, canRead, session.id, session.cli_type, agentNativeId(session), page?.native_id, ended]);
 
   async function loadOlder() {
     if (older) return;

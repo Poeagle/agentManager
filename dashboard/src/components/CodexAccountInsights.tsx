@@ -35,7 +35,7 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
  const [search,setSearch]=useState(''),[from,setFrom]=useState(''),[to,setTo]=useState(''),[page,setPage]=useState(0),[tab,setTab]=useState<'usage'|'cards'>('usage');
  const base='/codex/environments/'+encodeURIComponent(id);
  const hourly=dimension==='hour';
- const usage=useQuery({queryKey:groupId?['codex-group-insights',groupId,hourly]:['codex-insights',id,hourly],queryFn:()=>fetchJSON<{usage:Usage}>((groupId?'/codex/balance-groups/'+encodeURIComponent(groupId)+'/insights':base+'/insights')+(hourly?'?granularity=hour':'')),retry:false,refetchInterval:300000});
+ const usage=useQuery({queryKey:groupId?['codex-group-insights',groupId,hourly]:['codex-insights',id,hourly],queryFn:()=>fetchJSON<{usage:Usage;sources?:Array<{environment:string;history:string[];cache:string}>}>((groupId?'/codex/balance-groups/'+encodeURIComponent(groupId)+'/insights':base+'/insights')+(hourly?'?granularity=hour':'')),retry:false,refetchInterval:300000});
  const resets=useQuery({queryKey:['codex-reset-credits',id],queryFn:()=>fetchJSON<Resets>(base+'/reset-credits'),retry:false,refetchInterval:300000,staleTime:300000,enabled:!apiMode});
  const data=usage.data?.usage;
  const timezone=data?.timezone||Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -72,8 +72,20 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
     {cards?.credits&&cards.credits.length<cards.availableCount&&<p className="ci-muted">服务未返回全部卡片明细。</p>}
    </section>:<section aria-label="每日项目用量" className="ci-section">
     <div className="ci-toolbar">{!apiMode&&tabs}<label>统计维度 <select aria-label="统计维度" value={dimension} onChange={e=>{setDimension(e.target.value as Dimension);setPage(0);setExpansion({});}}>{Object.entries(dimensionLabels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><input aria-label="搜索项目或目录" placeholder="搜索项目名称或工作目录" value={search} onChange={e=>{setSearch(e.target.value);setPage(0);}}/><label>日期 <input type="date" aria-label="开始日期" value={from} onChange={e=>{setFrom(e.target.value);setPage(0);}}/>—<input type="date" aria-label="结束日期" value={to} onChange={e=>{setTo(e.target.value);setPage(0);}}/></label><button className="ci-button" onClick={()=>{table.reset();setSearch('');setFrom('');setTo('');setPage(0);}}>清除全部</button><button className="ci-button" onClick={()=>setExpansion(Object.fromEntries(treeKeys(shown).map(key=>[key,true])))}>展开本页</button><button className="ci-button" onClick={()=>setExpansion(Object.fromEntries(treeKeys(groups).map(key=>[key,false])))}>收起全部</button></div>
-    <div className="ci-observation"><span className={`ci-dot${data?.partial?' pending':''}`}/>{data?.initialized===false?'首次全量采集尚未完成':data?.partial?'部分记录不可用 ｜ 数据未完整':'缓存已更新'}{data?.progress&&<span className="ci-collection-progress" title={`已读取 ${numeric(data.progress.bytes_read/1048576)} ｜ ${numeric(data.progress.bytes_total/1048576)} MB`}><progress aria-label="本轮采集进度" max={Math.max(1,data.progress.bytes_total)} value={data.progress.bytes_read}/><span>历史文件 {numeric(data.progress.history_files)} · 本轮读取 {numeric(data.progress.files_complete)} ｜ {numeric(data.progress.files_selected??data.progress.files_total)} 个文件 · {numeric(data.progress.bytes_read/1048576)} MB</span></span>}{!apiMode&&data?.quota_range?.start&&data.quota_range.end&&<span title="首次至末次可计入统计的额度采样时间；这是已观测数据的覆盖范围，并非周额度周期，中间可能有未覆盖时段">额度采样覆盖 {collectionTime(data.quota_range.start)} ～ {collectionTime(data.quota_range.end)}</span>}{!apiMode&&!!data?.quota_range?.gaps&&<span title="额度回升、采集断档或跨小时区间缺少计算依据时不计入">耗用额度部分时段未覆盖</span>}{!apiMode&&incompleteCredits&&<span title="部分请求缺少模型、速度或 Token，分配只使用可估算的请求">部分请求无法计算权重</span>}<span className="ci-last-collection">{!apiMode&&<span title={`最近成功一轮的额度采集启动：${resets.data?.collection_started_at?collectionTime(resets.data.collection_started_at):'未记录'}；显示值为接口读取完成时间；前端仅读缓存`}>额度读取完成 {resets.data?.checked_at?collectionTime(resets.data.checked_at):'尚未完成'} · </span>}<span title="最近一次成功扫描会话日志的完成时间；不代表最后一次 Token 使用时间">用量扫描完成 {data?.checked_at?collectionTime(data.checked_at):'尚未完成'}</span> · 每 5 分钟后台采集 · {zoneLabel}</span></div>
-    {data?.error&&data.error!=='历史部分记录不可读取；已核对的数据已按新规则更新'&&!data.error.startsWith('历史缓存无法完整核对')&&data.error!=='部分历史原始日志缺失，已保留用量但无法按本地日期归属'&&data.error!=='部分记录不可读取或缺少统计字段'&&!data.error.startsWith('小时统计尚未完整：')&&<p className="ci-notice" role="status">{data.error}</p>}{usage.isError&&<p className="ci-notice" role="alert">缓存读取失败，请刷新重试。</p>}
+    <div className="ci-observation" title={[
+      data?.error,
+      data?.progress && `历史文件 ${numeric(data.progress.history_files)}；本轮读取 ${numeric(data.progress.bytes_read/1048576)} MB`,
+      !apiMode && data?.quota_range?.start && data.quota_range.end && `额度采样 ${collectionTime(data.quota_range.start)} ～ ${collectionTime(data.quota_range.end)}`,
+      !apiMode && data?.quota_range?.gaps && '部分额度时段未覆盖',
+      !apiMode && incompleteCredits && '部分请求缺少模型或 Token，无法计算权重',
+      `每 5 分钟后台采集 · ${zoneLabel}`,
+    ].filter(Boolean).join('\n')}>
+      <span className={`ci-dot${data?.partial?' pending':''}`}/>
+      <span>{usage.isError?'读取失败':usage.isPending?'读取中…':data?.initialized===false?'等待首次采集':data?.partial?'数据不完整':'已更新'}</span>
+      {data?.checked_at&&<span>更新于 {collectionTime(data.checked_at)}</span>}
+      {data?.progress&&<span>读取 {numeric(data.progress.files_complete)} 个文件</span>}
+      {!!usage.data?.sources?.length&&<span className="ci-source" title={usage.data.sources.map(source=>`${source.environment}\n原始日志：${source.history.join('、')||'未知'}\n统计缓存：${source.cache}`).join('\n\n')}>来源：{usage.data.sources.map(source=>source.history.join('、')||'未知').join('；')}</span>}
+    </div>
     {rows.some(row=>!row.models?.length)&&<p className="ci-notice" role="status">部分项目的模型明细未返回，请刷新；若仍未恢复，请检查后台服务版本。</p>}
     <TableFrame label="用量统计" className="ci-table-scroll" tableClassName="ci-table ci-usage-table" style={{minWidth:485+columnWidths.reduce((s,w)=>s+w,0)}} columns={<colgroup><col style={{width:230}}/><col style={{width:255}}/>{columnWidths.map((width,k)=><col key={k} style={{width}}/>)}</colgroup>} header={<TableHeaders model={displayTable}/>}>
      {!groups.length&&<TableStateRow columnCount={apiMode?8:11}>{usage.isPending?'正在读取缓存…':'所选范围暂无用量记录'}</TableStateRow>}

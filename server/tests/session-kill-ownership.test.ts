@@ -46,6 +46,24 @@ describe('session kill ownership', () => {
     cleanup();
   });
 
+  it.each(['failed','completed','cancelled'])('deletes an ended %s session even when its native runtime is gone',async status=>{
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,native_session_id,created_by_user_id) VALUES('broken','project-1','',?,'codex','019ff001-3434-7434-8434-343434343434',?)").run(status,ownerId);
+    const {getAgent}=await import('../src/services/agents/index.js');
+    const codex=getAgent('codex');
+    const interrupt=vi.spyOn(codex.lifecycle,'interrupt').mockRejectedValue(new Error('thread not loaded'));
+    vi.spyOn(codex.identity,'purgeHistory').mockResolvedValue();
+    const response=await app.inject({method:'DELETE',url:'/api/sessions/broken/record?stop=true',headers:{cookie:ownerCookie}});
+    expect(response.statusCode).toBe(200);expect(interrupt).not.toHaveBeenCalled();expect(sessionManager.getSession('broken')).toBeNull();
+  });
+
+  it('retains a running record when its native interrupt fails for an unknown reason',async()=>{
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,native_session_id,created_by_user_id) VALUES('uncertain','project-1','Task','running','codex','019ff001-3434-7434-8434-343434343434',?)").run(ownerId);
+    const {getAgent}=await import('../src/services/agents/index.js');
+    vi.spyOn(getAgent('codex').lifecycle,'interrupt').mockRejectedValue(new Error('Engine unavailable'));
+    const response=await app.inject({method:'DELETE',url:'/api/sessions/uncertain/record?stop=true',headers:{cookie:ownerCookie}});
+    expect(response.statusCode).toBe(503);expect(sessionManager.getSession('uncertain')?.status).toBe('running');
+  });
+
   it('reconnect is idempotent for an already attached tab and returns current session data',async()=>{
     getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES('attached','project-1','Work','running','session','codex',?)").run(ownerId);
     vi.spyOn(sessionManager,'isSessionActive').mockReturnValue(true);const reconnect=vi.spyOn(sessionManager,'reconnectSession');
