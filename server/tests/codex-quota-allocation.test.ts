@@ -14,6 +14,6 @@ describe('observed quota allocation',()=>{
   expect(allocateQuota([sample(0,1),sample(5,2,{reset_at:1})],events,sample(6,0).checked_at).size).toBe(0);
   expect(allocateQuota([sample(0,1),sample(5,2)],[...events,event(2,'b',10,'unknown')],sample(6,0).checked_at).size).toBe(0);
   expect(allocateQuota([sample(0,1),sample(5,2)],events,sample(4,0).checked_at).size).toBe(0);
-  expect(allocateQuota([sample(0,1),sample(5,1)],events,sample(6,0).checked_at).size).toBe(0);
+  expect(allocateQuota([sample(0,1),sample(5,1)],events,sample(6,0).checked_at).get(key('a'))).toBe(0);
  });
 });

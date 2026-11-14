@@ -13,7 +13,7 @@ export function allocateQuota(samples:QuotaSample[],events:QuotaEvent[],checkedA
   while(cursor<ordered.length&&Date.parse(ordered[cursor].at)<=start)cursor++;
   let next=cursor;while(next<ordered.length&&Date.parse(ordered[next].at)<=end)next++;
   const batch=ordered.slice(cursor,next);cursor=next;
-  if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start||end-start>900000||!checkedAt||Date.parse(checkedAt)<end||before.email!==after.email||before.reset_at!==after.reset_at||end>=after.reset_at*1000||after.used<=before.used)continue;
+  if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start||end-start>900000||!checkedAt||Date.parse(checkedAt)<end||before.email!==after.email||before.reset_at!==after.reset_at||end>=after.reset_at*1000||after.used<before.used)continue;
   const amounts=batch.map(e=>{try{return estimateUsageCredits(e.model,e.tier,JSON.parse(e.tokens));}catch{return null;}});
   if(!batch.length||amounts.some(v=>v===null))continue;
   const total=amounts.reduce<number>((n,v)=>n+v!,0);if(total<=0)continue;

@@ -131,3 +131,7 @@
 .ci-usage-table th:first-child .smart-table-heading{justify-content:flex-start;}
 .ci-model-toggle-spacer{width:16px;height:16px;flex:none;}
 .ci-toolbar select[aria-label="统计维度"]{text-align:center;text-align-last:center;}
+
+.ci-header-details .ci-refresh-action{order:2;margin-left:auto;border:0;background:transparent;padding:0 2px;box-shadow:none;white-space:nowrap;}
+.ci-header-details .ci-refresh-action:hover:not(:disabled){color:var(--accent);}
+.ci-header-details .ci-refresh-action:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
