@@ -1,4 +1,5 @@
-import {afterEach,expect,it,vi} from 'vitest';
+import {afterEach,beforeEach,expect,it,vi} from 'vitest';
+import {createTestDatabase} from './helpers/database.js';
 import {mkdtempSync,mkdirSync,writeFileSync,appendFileSync,rmSync} from 'fs';
 import {tmpdir} from 'os';
 import {join} from 'path';
@@ -6,7 +7,9 @@ import {observeConversationFile,type ConversationHistoryFrame,type ConversationS
 import type {ConversationUsageFrame} from '../src/services/conversation-usage.js';
 import {rememberCodexQuestionReply,syncQueuedCodexQuestionReplies} from '../src/services/agents/codex/runtime-signals.js';
 let close:(()=>void)|undefined,dir:string|undefined;
-afterEach(()=>{close?.();vi.unstubAllEnvs();if(dir)rmSync(dir,{recursive:true,force:true});});
+let cleanup:()=>void;
+beforeEach(()=>{cleanup=createTestDatabase().cleanup;});
+afterEach(()=>{close?.();vi.unstubAllEnvs();if(dir)rmSync(dir,{recursive:true,force:true});cleanup();});
 it('pushes live cumulative progress as tools and usage are appended',async()=>{
  dir=mkdtempSync(join(tmpdir(),'conversation-progress-live-'));vi.stubEnv('CODEX_HOME',dir);mkdirSync(join(dir,'sessions'));
  const native='019ff001-1111-7111-8111-111111111111',file=join(dir,'sessions',`rollout-${native}.jsonl`),row=(type:string,payload:unknown)=>JSON.stringify({type,payload})+'\n';

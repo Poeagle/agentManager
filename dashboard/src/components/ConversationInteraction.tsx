@@ -117,13 +117,13 @@ export const ConversationQuestionSummary=memo(function ConversationQuestionSumma
   const status=state??(answers!==null?'answered':'pending'),settled=status!=='pending';
   const labels={pending:'待回答',sending:'正在提交',submitted:'已提交 · 等待接收',queued:'回答已排队',answered:'已回答'};
   return <article className="session-chat-question-summary" data-chat-message-id={message.id}>
-    <details key={settled?'answered':'pending'}>
-      <summary><MessageCircleQuestion size={14}/><span className="conversation-question-state">{labels[status]}</span><strong>{questions[0]?.title}</strong><span className="conversation-question-expand">查看详情</span></summary>
+    <ConversationCard key={settled?'answered':'pending'} summary={<><MessageCircleQuestion size={14}/><span className="conversation-question-state">{labels[status]}</span><strong>{questions[0]?.title}</strong><span className="conversation-question-expand">查看详情</span></>}>
       <dl>{questions.map((q,index)=><div key={q.id||index}><dt>{q.title}</dt><dd>{answers?.[index]!==undefined?`回答：${answers[index]}`:q.options?.length?q.options.join(' · '):settled?'文字回答':'自由回答'}</dd></div>)}</dl>
       {status==='queued'&&<p>回答已进入原生队列，等待 Agent 接收；上下文压缩期间需等待压缩结束，无需重复提交。</p>}
       {status==='submitted'&&<p>原生服务已接受提交，正在等待回答进入会话记录，无需重复提交。</p>}
       {!settled&&<button type="button" onClick={()=>onAnswer(message.id)}>回答问题</button>}
-    </details>
+    </ConversationCard>
     {message.timestamp&&<div className="session-chat-message-meta"><time dateTime={message.timestamp}>{formatConversationTimestamp(message.timestamp)}</time></div>}
   </article>;
 });
+import {ConversationCard} from './ConversationCard';

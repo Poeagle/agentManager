@@ -97,7 +97,24 @@ describe('chat/raw terminal display',()=>{
     page.messages=[{id:'image-user',role:'user',text:'前文后文',timestamp:null,attachments:[{kind:'image',name:'image.png',path:'/project/image.png',offset}]}];mount();const image=await screen.findByRole('button',{name:'打开附件 image.png'});expect(image.previousSibling?.textContent||'').toBe('前文后文'.slice(0,offset));expect(image.closest('.session-chat-user-text')?.textContent).toBe('前文后文'.slice(0,offset)+'图片 1'+'前文后文'.slice(offset));
   });
   it('folds injected project instructions with a clear automatic category',async()=>{
-    page.messages.splice(1,0,{id:'rules',role:'user',text:'# AGENTS.md instructions for /project\n\n<INSTRUCTIONS>\n'+('项目规则\n'.repeat(50))+'</INSTRUCTIONS>',timestamp:'2026-10-31T03:00:00Z'});mount();const label=await screen.findByText('自动信息 · 项目规则');expect(screen.queryByRole('dialog',{name:'自动信息 · 项目规则'})).not.toBeInTheDocument();fireEvent.click(label);expect(screen.getByRole('dialog',{name:'自动信息 · 项目规则'})).toHaveTextContent('项目规则');
+    page.messages.splice(1,0,{id:'rules',role:'user',text:'# AGENTS.md instructions for /project\n\n<INSTRUCTIONS>\n'+('项目规则\n'.repeat(50))+'</INSTRUCTIONS>',timestamp:'2026-10-31T03:00:00Z'});mount();const label=await screen.findByText('自动信息 · 项目规则');const card=label.closest('details')!;expect(card.open).toBe(false);fireEvent.click(label);expect(card.open).toBe(true);expect(card).toHaveTextContent('项目规则');
+  });
+  it('shows verified scheduled inputs as folded cards without folding ordinary messages',async()=>{
+    page.messages=[{id:'ordinary',role:'user',text:'普通消息',timestamp:null},{id:'scheduled',role:'user',text:'定时提示正文\n第二行',timestamp:'2026-10-31T03:00:00Z',input_source:{kind:'scheduled',label:'每日检查'}}];
+    mount();const label=await screen.findByText('每日检查');const card=label.closest('details')!;
+    expect(card.open).toBe(false);expect(card).toHaveTextContent('定时任务');expect(screen.getByText('普通消息').closest('details')).toBeNull();
+    fireEvent.click(label);expect(card.open).toBe(true);expect(card).toHaveTextContent('定时提示正文');
+    fireEvent.click(label);expect(card.open).toBe(false);
+  });
+  it('updates a live input to a sourced card on durable reconciliation without duplication',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const message={id:'live-input',role:'user',text:'巡检正文',timestamp:null,client_id:'schedule'};
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'waiting',turn_id:'work',messages:[message]})}));
+    expect(screen.getByText('巡检正文').closest('details')).toBeNull();
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'input_reconciliation',native_id:'native',messages:[{...message,sequence:100,input_source:{kind:'scheduled',label:'定时巡检'}}]})}));
+    expect(screen.getAllByText('巡检正文')).toHaveLength(1);expect(screen.getByText('定时巡检').closest('details')?.open).toBe(false);
   });
   it('confirms reload once, retains draft text, and keeps a failed reload reviewable',async()=>{
     let finish!:()=>void;const reload=vi.fn(()=>new Promise<void>(resolve=>finish=resolve));mount(reload);await screen.findByText('检查已完成。');const input=screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'});typeDraft(input,'尚未发送的反馈');fireEvent.click(screen.getByRole('button',{name:'重载标签页',exact:true}));expect(screen.getByRole('button',{name:'取消',exact:true})).toHaveFocus();expect(reload).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'重载并保留对话'}));expect(reload).toHaveBeenCalledTimes(1);expect(screen.getByRole('button',{name:'正在重载…'})).toBeDisabled();await act(async()=>finish());expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(input).toHaveTextContent('尚未发送的反馈');

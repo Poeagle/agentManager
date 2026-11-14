@@ -9,25 +9,46 @@ import type {ConversationMessage} from './conversation-reader.js';
 
 function inputHash(text:string){return createHash('sha256').update(text.replace(/\r\n?/g,'\n').trim()).digest('hex');}
 
+export function rememberInputSource(sessionId:string,clientId:string,source:{kind:string;label:string}) {
+  getDb().prepare('INSERT INTO conversation_input_sources(session_id,client_id,kind,label) VALUES(?,?,?,?)').run(sessionId,clientId,source.kind,source.label);
+}
+export function bindInputSourceMessage(sessionId:string,clientId:string,messageId:string) {
+  getDb().prepare('UPDATE conversation_input_sources SET message_id=? WHERE session_id=? AND client_id=?').run(messageId,sessionId,clientId);
+}
+
+function decorateInputSources(sessionId:string,messages:ConversationMessage[]):ConversationMessage[] {
+  const lookup=getDb().prepare('SELECT kind,label FROM conversation_input_sources WHERE session_id=? AND (client_id=? OR message_id=?) LIMIT 1');
+  const bind=getDb().prepare('UPDATE conversation_input_sources SET message_id=? WHERE session_id=? AND client_id=? AND message_id IS NULL');
+  return messages.map(message=>{
+    const {input_source:_source,...visible}=message;
+    if(message.role!=='user')return visible;
+    const source=lookup.get(sessionId,message.client_id||'',message.id) as {kind:string;label:string}|undefined;
+    if(source&&message.client_id&&!message.queued)bind.run(message.id,sessionId,message.client_id);
+    return source?{...visible,input_source:source}:visible;
+  });
+}
+
 /** Terminal-backed engines do not echo the browser's client ID. Record only a
  * fingerprint and file boundary before writing, then bind the new native user
  * record once. No extra log scan, prompt copy or model message is needed. */
 export async function rememberConversationInput(sessionId:string,binding:PromptContextSession,clientId:string,text:string,previousFormat?:string){
   const nativeId=nativeConversationId(binding);
-  if(!nativeId)return;
-  const file=await nativeConversationFile(binding);if(!file)return;
+  if(!nativeId)return false;
+  const file=await nativeConversationFile(binding);if(!file)return false;
   const boundary=(await stat(file.path)).size,db=getDb();
   db.prepare(`INSERT INTO conversation_input_links(session_id,native_id,client_id,input_hash,after_offset)
     VALUES(?,?,?,?,?) ON CONFLICT(session_id,native_id,client_id) DO UPDATE SET input_hash=excluded.input_hash
     WHERE conversation_input_links.message_id IS NULL AND conversation_input_links.input_hash=?`).run(sessionId,nativeId,clientId,inputHash(text),boundary,previousFormat===undefined?'':inputHash(previousFormat));
   db.prepare(`DELETE FROM conversation_input_links WHERE session_id=? AND rowid NOT IN
-    (SELECT rowid FROM conversation_input_links WHERE session_id=? ORDER BY rowid DESC LIMIT 256)`).run(sessionId,sessionId);
+    (SELECT rowid FROM conversation_input_links WHERE session_id=? ORDER BY rowid DESC LIMIT 256)
+    AND NOT EXISTS (SELECT 1 FROM conversation_input_sources s WHERE s.session_id=conversation_input_links.session_id AND s.client_id=conversation_input_links.client_id)`).run(sessionId,sessionId);
+  return true;
 }
 
 /** The native record remains authoritative. Repeated user sends are matched
  * one for one, scoped to the platform session and native conversation. */
 export function linkConversationInputs(sessionId:string,nativeId:string|null|undefined,messages:ConversationMessage[]):ConversationMessage[]{
-  if(!nativeId||!messages.some(message=>message.role==='user'&&message.sequence!==undefined))return messages;
+  if(!nativeId||!messages.some(message=>message.role==='user'&&message.sequence!==undefined))return decorateInputSources(sessionId,messages);
   const db=getDb();
   const find=db.prepare(`SELECT client_id,message_id FROM conversation_input_links WHERE session_id=? AND native_id=?
     AND (message_id=? OR (message_id IS NULL AND input_hash=? AND after_offset<=?))
@@ -38,7 +59,7 @@ export function linkConversationInputs(sessionId:string,nativeId:string|null|und
     JOIN conversation_attachments a ON a.session_id=l.session_id AND a.client_id=l.client_id
     WHERE l.session_id=? AND l.native_id=? AND l.message_id IS NULL AND l.after_offset<=?
     ORDER BY l.after_offset DESC,l.rowid ASC LIMIT 256`);
-  return db.transaction(()=>messages.map(message=>{
+  return decorateInputSources(sessionId,db.transaction(()=>messages.map(message=>{
     if(message.role!=='user'||message.sequence===undefined)return message;
     // A browser identity from a different submission is authoritative even if
     // two intentionally repeated prompts have identical content.
@@ -60,7 +81,7 @@ export function linkConversationInputs(sessionId:string,nativeId:string|null|und
     if(!row)return message;
     if(!row.message_id)bind.run(message.id,sessionId,nativeId,row.client_id);
     return {...message,client_id:row.client_id,...message.client_id&&message.client_id!==row.client_id?{native_client_id:message.client_id}:{}};
-  }))();
+  }))());
 }
 
 /** Forward only records already bound to an actual browser submission. */

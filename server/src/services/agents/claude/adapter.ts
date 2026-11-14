@@ -5,6 +5,7 @@ import { parseClaudeMessage, claudeRecordLimit } from "./history.js";
 import { NATIVE_SESSION_ID_RE } from "../native-identifiers.js";
 import { join } from "path";
 import { randomUUID } from "crypto";
+import { conversationMessageId } from "../../conversation-reader.js";
 import { resolveClaudeDir } from "./archive.js";
 import {
   claudeCommand,
@@ -92,6 +93,8 @@ export const claudeAdapter: AgentDefinition = {
   },
   telemetry: { read: readClaudeTelemetry },
   input: {
+    supportsClientIdentity: true,
+    messageId: clientId => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId) ? conversationMessageId('', 'user', clientId) : undefined,
     submit: async (context, text, clientId, attachments) => {
       const runtime = (await import("./sdk-runtime.js")).ensureClaudeRuntime(
         requireNative(context),
@@ -100,7 +103,8 @@ export const claudeAdapter: AgentDefinition = {
         undefined,
         true,
       );
-      return runtime.submit(text, clientId, attachments);
+      const userId=clientId && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId) ? clientId : undefined;
+      return runtime.submit(text, clientId, attachments, userId);
     },
     afterTerminalSubmit: async () => {},
   },
@@ -156,7 +160,8 @@ export const claudeAdapter: AgentDefinition = {
     },
   },
   launch: {
-    prepare: async (context, task, instructions, resume) => {
+    supportsInitialClientId: true,
+    prepare: async (context, task, instructions, resume, initialClientId) => {
       const nativeId = resume ? context.nativeId || undefined : randomUUID();
       if (!nativeId || !context.projectPath)
         throw Error("Claude managed session is missing project context");
@@ -167,8 +172,9 @@ export const claudeAdapter: AgentDefinition = {
         managedModelPreference("claude") ?? undefined,
         !!resume,
       );
-      if (!resume) await runtime.submit(task);
-      return { nativeId };
+      const userId = initialClientId ? randomUUID() : undefined;
+      if (!resume) await runtime.submit(task, initialClientId, [], userId);
+      return { nativeId, ...userId ? {initialMessageId:conversationMessageId('', 'user', userId)} : {} };
     },
     ready: async () => {},
   },

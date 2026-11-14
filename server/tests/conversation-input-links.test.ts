@@ -3,14 +3,37 @@ import {mkdirSync,writeFileSync,appendFileSync,statSync} from 'node:fs';
 import {join} from 'node:path';
 import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
-import {rememberConversationInput,linkConversationInputs,boundConversationInputs} from '../src/services/conversation-input-links.js';
+import {rememberConversationInput,linkConversationInputs,boundConversationInputs,rememberInputSource,bindInputSourceMessage} from '../src/services/conversation-input-links.js';
 import {rememberConversationAttachments,formatConversationInput,nativeConversationInput} from '../src/services/conversation-attachments.js';
 import type {ConversationMessage} from '../src/services/conversation-reader.js';
+import {snapshotConversation,activateFreshConversation,restoreConversationSnapshot} from '../src/services/conversation-history.js';
 const native='019ff001-1234-7234-8234-123456789abc',binding={cli_type:'codex' as const,codex_session_id:native,claude_session_id:null,project_path:'/project'};
 let cleanup:()=>void,file:string;
 beforeEach(()=>{const test=createTestDatabase();cleanup=test.cleanup;vi.stubEnv('CODEX_HOME',test.dir);mkdirSync(join(test.dir,'sessions'));file=join(test.dir,'sessions',`rollout-${native}.jsonl`);writeFileSync(file,'older history\n');getDb().prepare("INSERT INTO sessions(id,task,status) VALUES('s','test','running'),('other','test','running')").run();});
 afterEach(()=>{vi.unstubAllEnvs();cleanup();});
 const message=(id:string,sequence:number,text='ifconfig\n  inet 192.168.1.31'):ConversationMessage=>({id,sequence,text,role:'user',timestamp:null});
+it('projects verified source through live, durable and recovered messages without labelling repeated inputs',async()=>{
+ const boundary=statSync(file).size;
+ rememberInputSource('s','schedule-1',{kind:'scheduled',label:'检查服务'});
+ await rememberConversationInput('s',binding,'schedule-1','same');
+ const live={...message('native',boundary,'same'),client_id:'schedule-1',sequence:undefined};
+ expect(linkConversationInputs('s',native,[live])[0].input_source).toEqual({kind:'scheduled',label:'检查服务'});
+ const durable=message('native',boundary,'same');
+ expect(linkConversationInputs('s',native,[durable])[0]).toMatchObject({client_id:'schedule-1',input_source:{kind:'scheduled',label:'检查服务'}});
+ expect(linkConversationInputs('s',native,[message('later',boundary+50,'same')])[0].input_source).toBeUndefined();
+ expect(linkConversationInputs('other',native,[durable])[0].input_source).toBeUndefined();
+ expect(linkConversationInputs('other',native,[{...durable,input_source:{kind:'scheduled',label:'伪造'}}])[0].input_source).toBeUndefined();
+ rememberInputSource('s','initial',{kind:'scheduled',label:'新会话'});bindInputSourceMessage('s','initial','first');
+ expect(linkConversationInputs('s',native,[message('first',0,'initial')])[0].input_source).toEqual({kind:'scheduled',label:'新会话'});
+});
+it('preserves pending source associations when moving history and rolling back a new conversation',async()=>{
+ getDb().prepare("UPDATE sessions SET cli_type='codex',agent_id='codex',native_session_id=?,codex_session_id=? WHERE id='s'").run(native,native);
+ const boundary=statSync(file).size;rememberInputSource('s','scheduled',{kind:'scheduled',label:'备份'});await rememberConversationInput('s',binding,'scheduled','same');
+ const history=snapshotConversation('s');activateFreshConversation('s',history,'019ff001-1234-7234-8234-123456789abd');
+ expect(linkConversationInputs(history,native,[message('native-message',boundary,'same')])[0].input_source).toEqual({kind:'scheduled',label:'备份'});
+ restoreConversationSnapshot('s',history);
+ expect(linkConversationInputs('s',native,[message('native-message',boundary,'same')])[0].input_source).toEqual({kind:'scheduled',label:'备份'});
+});
 it('restores a terminal input client ID through line ending normalization and later replays',async()=>{
   const boundary=statSync(file).size;await rememberConversationInput('s',binding,'client-one','ifconfig\r\n  inet 192.168.1.31\r\n');
   const echo=message('native-one',boundary),result=linkConversationInputs('s',native,[message('older',0),echo]);

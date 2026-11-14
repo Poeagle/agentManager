@@ -24,6 +24,16 @@ const stream=(event:any)=>({type:'stream_event',uuid:`019ff001-1212-7212-8212-${
 afterEach(()=>{releaseClaudeRuntime(session);sdk.queries=[];sdk.messages=[];sdk.interrupts=0;uuid=0;});
 
 describe('Claude Agent SDK runtime',()=>{
+  it('preserves the supplied native user identity for live messages and persisted history',async()=>{
+    const userId='d3587c44-6f5d-4d52-9a6c-484eac61880f';
+    const runtime=ensureClaudeRuntime(session,'/tmp');await runtime.submit('scheduled','client-id',[],userId);
+    const live=runtime.snapshot().messages.find(message=>message.role==='user')!;
+    expect(live).toMatchObject({id:conversationMessageId('','user',userId),client_id:'client-id',text:'scheduled'});
+    await vi.waitFor(()=>expect(sdk.queries).toHaveLength(1));
+    const native=await sdk.queries[0].prompt[Symbol.asyncIterator]().next();expect(native.value.uuid).toBe(userId);
+    const history=parseClaudeMessage(Buffer.from(JSON.stringify({type:'user',uuid:userId,message:{role:'user',content:'scheduled'},timestamp:'2026-11-01T00:00:00Z'})));
+    expect(history?.itemId).toBe(userId);expect(conversationMessageId('',history!.message.role,history!.itemId)).toBe(live.id);
+  });
   it('stops only the matching active turn',async()=>{
     let resolve!:(value:any)=>void;sdk.messages=[new Promise(done=>{resolve=done;})];
     const runtime=ensureClaudeRuntime(session,'/tmp');expect(await runtime.submit('Work')).toBe(true);

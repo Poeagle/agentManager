@@ -179,8 +179,9 @@ class ClaudeRuntime {
     text: string,
     clientId?: string,
     attachments: ConversationAttachment[] = [],
+    userId?: string,
   ): Promise<boolean | "queued"> {
-    const pending = { text, clientId, attachments, userId: randomUUID() };
+    const pending = { text, clientId, attachments, userId: userId || randomUUID() };
     if (this.busy) {
       this.queue.push(pending);
       return "queued";

@@ -81,6 +81,7 @@ describe('Codex native execution status',()=>{
     expect((await readCodexRuntime(id)).pending_question_count).toBe(0);
   });
   it('uses the same public text as the conversation when native images have surrounding text wrappers',async()=>{
+    const database=createTestDatabase();try {
     const call='wrapped-image-question',questionItemId=JSON.stringify(['request_user_input_async',call,0]);
     const answer='<send_user_message_question_reply>'+JSON.stringify([{questionItemId,question:'查看截图？',answer:'已确认'}])+'</send_user_message_question_reply>[Image #1]';
     const content=[{type:'input_text',text:answer},{type:'input_text',text:'<image name=[Image #1] path="/project/screenshot.png">'},{type:'input_image',image_url:'data:image/png;base64,AAAA'},{type:'input_text',text:'</image>'}];
@@ -90,6 +91,7 @@ describe('Codex native execution status',()=>{
     expect((await readCodexRuntime(id)).pending_question_count).toBe(0);
     appendFileSync(file,event('item_completed',4,{item:{type:'AgentMessage',id:'new-unanswered',delivery:'async',questions:[{title:'另一个问题',options:null}]}}));
     expect((await readCodexRuntime(id)).pending_questions?.map(group=>group.id)).toEqual(['new-unanswered']);
+    } finally { database.cleanup(); }
   });
   it('recognizes a large image answer across partial appends without retaining image data in runtime state',async()=>{
     const call='large-image-question',questionItemId=JSON.stringify(['request_user_input_async',call,0]);

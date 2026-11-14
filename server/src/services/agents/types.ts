@@ -320,6 +320,8 @@ export interface AgentMessage {
     will_retry: boolean;
   };
   client_id?: string;
+  /** Platform-owned provenance, attached only after submission identity is verified. */
+  input_source?: { kind: string; label: string };
   /** Native echo identity, when a terminal generated a different client ID. */
   native_client_id?: string;
   sequence?: number;
@@ -619,6 +621,10 @@ export interface AgentControlResult extends ModelPreference {
   pending?: boolean;
 }
 export interface AgentInputPort {
+  /** Submit preserves platform-generated UUIDs in live and durable message identities. */
+  supportsClientIdentity?: boolean;
+  /** When supported, map a platform client ID to the durable native message ID. */
+  messageId?(clientId: string): string | undefined;
   cancelQueued?(context: AgentContext, clientId: string): Promise<void>;
   submit(
     context: AgentContext,
@@ -673,6 +679,8 @@ export interface AgentLifecyclePort {
 }
 export interface AgentTerminalProfile {home:string;readOnlyPaths:string[]}
 export interface AgentLaunchPlan {
+  /** Durable public message identity for the first submitted input, when known. */
+  initialMessageId?: string;
   /** Thin terminal clients use a separate HOME and only their authorized transport paths. */
   terminalProfile?:AgentTerminalProfile;
   nativeId?: string;
@@ -682,11 +690,14 @@ export interface AgentLaunchPlan {
   preSpawnFiles?: Set<string>;
 }
 export interface AgentLaunchPort {
+  /** Fresh launch preserves a platform-generated UUID for its first user message. */
+  supportsInitialClientId?: boolean;
   prepare(
     context: AgentContext,
     task: string,
     instructions?: string,
     resume?: boolean,
+    initialClientId?: string,
   ): Promise<AgentLaunchPlan>;
   ready(context: AgentContext): Promise<void>;
 }

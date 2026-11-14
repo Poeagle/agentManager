@@ -34,6 +34,22 @@ flowchart TB
 
 终端输入的浏览器 ID 与原生客户端 ID 可能不同。平台只在同一会话和原生线程内，依据发送前的文件边界及输入指纹一对一关联持久回显；`input_reconciliation` 推送已确认的关联，`native_client_id` 保留原生 ID 以合并实时回显。不同 ID 的相同文本不会单独触发去重。
 
+### 输入来源与折叠卡片
+
+```mermaid
+flowchart LR
+  S[定时任务] -->|提交 ID 和原始正文| P[平台来源记录]
+  P --> A[Agent 输入 / 启动适配器]
+  A -->|原生回执或日志关联| M[中立消息 input_source]
+  M --> C[统一折叠卡片]
+```
+
+平台在发送前记录提交 ID、来源类型和显示名称；正文与模型输入不添加展示标记。消息仅在提交 ID 或经验证的原生消息 ID 匹配时携带可选 `input_source: {kind,label}`，未知来源保持空值；旧消息不回填。实时流、历史分页和重连使用同一投影。重复正文不能单独证明来源。来源记录随会话删除及历史快照迁移。
+
+新 Agent 的输入适配器声明 `input.supportsClientIdentity`，并在原生事件中保留客户端提交 ID，或通过可选 `input.messageId` 将提交 ID 映射到可靠的持久消息 ID。新建会话的 `launch.prepare` 接受可选的首次提交 ID，支持该能力的适配器声明 `launch.supportsInitialClientId`；若适配器掌握首次输入的持久消息 ID，可在启动结果中返回 `initialMessageId`。未声明首次输入身份支持的 Agent 不接收新建会话的定时任务。终端回退使用发送前文件边界和指纹关联；无法建立关联时拒绝发送，避免把其他输入误标为平台消息。Codex 首次定时输入需要可用的原生会话连接，Claude 使用 SDK 原生用户消息 ID。已绑定 Agent 的终端标签也使用来源关联；没有原生会话的纯终端任务仍是终端输入，没有结构化会话卡片。
+
+前端的 `ConversationCard` 统一问题、工具、自动上下文和有来源输入的折叠框架；内容、状态和默认展开行为由各自调用方提供。卡片不依赖 Agent 名称，新来源类型可以复用同一平台展示路径。
+
 已登记会话的 Engine 绑定优先于线程路由缓存；旧记录中空绑定按界面与权限规则解释为 `native`。若同一原生 ID 同时绑定多个 Engine，平台拒绝猜测。原生会话已有其他写入者时，恢复明确失败，不切换账号、不终止占用者；需要用户回到原会话继续，或先在原位置停止它。
 
 `identity` 的可选 `purgeHistory` 在移除平台会话行前异步清理 Agent 原始历史。Codex 按历史行绑定的 Engine 和原生会话 ID 删除 `sessions` 或 `archived_sessions` 中对应的 rollout；跨 Provider 副本、新开后的历史行各自保留其环境和 ID。压缩可能共享的 `history_base` 祖先不会随子会话删除，以免破坏其他会话。

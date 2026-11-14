@@ -36,12 +36,18 @@ describe('immediate session input',()=>{
   it('pushes a journal-verified terminal echo as an input reconciliation',async()=>{
     getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();
     getDb().prepare('INSERT INTO conversation_input_links(session_id,native_id,client_id,input_hash,after_offset) VALUES(?,?,?,?,?)').run('own','native','browser',createHash('sha256').update('hello').digest('hex'),10);
+    getDb().prepare('INSERT INTO conversation_input_sources(session_id,client_id,kind,label) VALUES(?,?,?,?)').run('own','browser','scheduled','巡检');
     let fileEmit!:(frame:any)=>void;vi.spyOn(fileStream,'observeConversationFile').mockImplementation((_binding,emit)=>{fileEmit=emit;return vi.fn();});
     vi.spyOn(conversation,'observeCodexConversation').mockImplementation(()=>Object.assign(vi.fn(),{respond:vi.fn()}));
     const received:any[]=[],socket=await app.injectWS('/api/sessions/own/conversation/stream?protocol=2',{headers:{cookie}},{onInit:ws=>ws.on('message',bytes=>received.push(JSON.parse(bytes.toString())))});
     try{await vi.waitFor(()=>expect(fileEmit).toBeTypeOf('function'));fileEmit({type:'history',runtime:{},messages:[{id:'durable',sequence:20,role:'user',text:'hello',timestamp:null,client_id:'terminal'}]});
-      await vi.waitFor(()=>expect(received.find(frame=>frame.type==='input_reconciliation')).toMatchObject({native_id:'native',messages:[{id:'durable',client_id:'browser',native_client_id:'terminal'}]}));
+      await vi.waitFor(()=>expect(received.find(frame=>frame.type==='input_reconciliation')).toMatchObject({native_id:'native',messages:[{id:'durable',client_id:'browser',native_client_id:'terminal',input_source:{kind:'scheduled',label:'巡检'}}]}));
     }finally{await new Promise<void>(resolve=>{socket.once('close',()=>resolve());socket.close();});}
+  });
+  it('rejects browser reuse of a platform submission identity',async()=>{
+    getDb().prepare('INSERT INTO conversation_input_sources(session_id,client_id,kind,label) VALUES(?,?,?,?)').run('own','platform-id','scheduled','巡检');
+    const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'伪造',source:'conversation',client_id:'platform-id'}});
+    expect(result.statusCode).toBe(409);expect(result.json().submission).toBe('rejected');expect(manager.writeToSession).not.toHaveBeenCalled();
   });
   it('projects personal ignored questions on every history replay after reconnect',async()=>{
     getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();

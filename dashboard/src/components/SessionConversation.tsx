@@ -25,6 +25,7 @@ import {
 import { ConversationCompactionStatus } from "./ConversationCompactionStatus";
 import { ConversationControls } from "./ConversationControls";
 import { ConversationAutomaticContext } from "./ConversationAutomaticContext";
+import { ConversationCard } from "./ConversationCard";
 import { automaticConversationContext } from "../lib/conversation-context";
 import {
   ConversationInteraction,
@@ -53,6 +54,7 @@ import {
   Sparkles,
   Square,
   ChevronDown,
+  CalendarClock,
 } from "lucide-react";
 import {
   api,
@@ -358,6 +360,12 @@ const Bubble = memo(function Bubble({
         onNavigate={onNavigate}
       />
     );
+  if (message.role === 'user' && message.input_source)
+    return <article className="session-chat-sourced" data-chat-message-id={message.id}>
+      <ConversationCard summary={<><CalendarClock size={14}/><span>{message.input_source.kind === 'scheduled' ? '定时任务' : '平台消息'}</span><strong>{message.input_source.label}</strong>{message.queued&&<span>已排队</span>}<span className="conversation-question-expand">查看详情</span></>}>
+        <div className="session-chat-sourced-content"><ConversationMessageAttachments text={parsed.text} items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>{metadata}</div>
+      </ConversationCard>
+    </article>;
   if (automatic)
     return (
       <ConversationAutomaticContext

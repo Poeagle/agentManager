@@ -106,7 +106,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.7.0',
+    version:'3.8.0',
     updatedAt:'2026-11-12',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -352,7 +352,7 @@ export function getAgentApiContract() {
         request: {
           input: {type:'string',required:true,description:'Text, at most 64 KiB; may be empty when attachments are present.'},
           source: {type:'string',required:false,description:'Use conversation to submit directly to the bound native engine when available.'},
-          client_id: {type:'string',required:false,description:'Client correlation ID for matching the native user-message echo.'},
+          client_id: {type:'string',required:false,description:'Client correlation ID for matching the native user-message echo. IDs already reserved by platform submissions are rejected with 409.'},
           attachments: {type:'array',required:false,description:'Up to 8 {kind: image|file, name, path} references returned by this session’s paste-image/paste-file endpoints. Images total at most 10 MiB, each file at most 35 MiB, all attachments at most 50 MiB.'},
         },
         response: {id:'Session id',status:'submitted — handed to the terminal; not proof of agent acceptance or task completion'},
@@ -398,7 +398,7 @@ export function getAgentApiContract() {
         category: 'Session control',
         method: 'WS',
         path: '/api/sessions/:id/conversation/stream',
-        description: 'Cookie-authenticated conversation stream. Supported agents can emit progress_statistics with cumulative recorded token and tool counts since the previous conclusion and an optional separate per-input segment with timing, status and recorded counts; missing or incomplete data remains unknown or a lower bound. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
+        description: 'Cookie-authenticated conversation stream. User messages may include input_source {kind,label} when the platform has verified their submission identity; absent provenance is unknown. Supported agents can emit progress_statistics with cumulative recorded token and tool counts since the previous conclusion and an optional separate per-input segment with timing, status and recorded counts; missing or incomplete data remains unknown or a lower bound. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
       },
       {
         category: 'Session control',
@@ -836,6 +836,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     if (typeof input !== 'string' || (!input.trim() && !(Array.isArray(req.body?.attachments) && req.body.attachments.length)) || Buffer.byteLength(input) > MAX_EXECUTE_INPUT_BYTES) return reply.code(400).send({error:'input must be text of at most 64 KiB, with text or at least one attachment'});
     const clientId=req.body?.client_id;
     if(clientId!==undefined && (typeof clientId!=='string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(clientId))) return reply.code(400).send({error:'Invalid client_id'});
+    if(typeof clientId==='string'&&getDb().prepare('SELECT 1 FROM conversation_input_sources WHERE session_id=? AND client_id=?').get(id,clientId))return reply.code(409).send({error:'该输入标识已用于平台消息',submission:'rejected'});
     let attachments;try{attachments=await validateConversationAttachments(id,req.body?.attachments);}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'附件不可用'});}
     const target=getSession(id);if(req.body?.source==='conversation'&&attachments.length&&target&&!agentForSession(target).descriptor.capabilities.attachments)return reply.code(409).send({error:'此 Agent 不支持附件',submission:'rejected'});
     // The server can restart after the browser's last ready snapshot. Reattach

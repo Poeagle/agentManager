@@ -22,11 +22,13 @@ vi.mock('../src/services/agents/codex/controls.js', async (original) => ({ ...(a
 vi.mock('../src/services/session-manager.js', () => manager);
 vi.mock('../src/services/agents/codex/quota.js', () => quota);
 vi.mock('../src/services/session-state.js', () => tracker);
+vi.mock('../src/services/conversation-input-links.js', async original => ({...(await original<typeof import('../src/services/conversation-input-links.js')>()),rememberConversationInput:vi.fn(async()=>true)}));
 
 import { authHook, createSession as createAuthSession, createUser, setProjectToolAccess } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
 import { scheduledTaskRoutes } from '../src/routes/scheduled-tasks.js';
 import { tickScheduledTasks } from '../src/services/scheduled-task-runner.js';
+import {getAgent} from '../src/services/agents/index.js';
 import { createTestDatabase } from './helpers/database.js';
 
 describe('scheduled task API', () => {
@@ -83,8 +85,10 @@ describe('scheduled task API', () => {
     expect(created.json().task).toMatchObject({new_environment_id:'native',new_model_preference:preference});
     getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('scheduled-codex','project-1','Work','pending','session','codex',?)`).run(ownerId);
     manager.createSession.mockReturnValue({id:'scheduled-codex'});
-    manager.spawnSession.mockImplementation(async()=>{
+    manager.spawnSession.mockImplementation(async(...args)=>{
       expect(getDb().prepare('SELECT agent_environment_id FROM sessions WHERE id=?').get('scheduled-codex')).toEqual({agent_environment_id:'native'});
+      const source=getDb().prepare('SELECT client_id,kind,label FROM conversation_input_sources WHERE session_id=?').get('scheduled-codex');
+      expect(source).toEqual({client_id:args[6],kind:'scheduled',label:'Codex'});expect(args[2]).toBe('inspect');
       const state=getDb().prepare('SELECT value FROM user_ui_state WHERE user_id=? AND key=?').get(ownerId,'session-control:scheduled-codex') as {value:string};
       expect(JSON.parse(state.value)).toEqual(preference);
     });
@@ -123,8 +127,8 @@ describe('scheduled task API', () => {
   it('skips a busy target once, keeps the fixed interval, and never backfills on idle', async () => {
     const now = Date.parse('2026-10-13T10:00:05Z');
     vi.spyOn(Date, 'now').mockReturnValue(now);
-    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('busy-tab','project-1','Work','running','session','claude',?)`).run(ownerId);
-    manager.getSession.mockReturnValue({ id: 'busy-tab', project_id: 'project-1', created_by_user_id: ownerId, status: 'running', mode: 'session', cli_type: 'claude' });
+    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('busy-tab','project-1','Work','running','session','codex',?)`).run(ownerId);
+    manager.getSession.mockReturnValue({ id: 'busy-tab', project_id: 'project-1', created_by_user_id: ownerId, status: 'running', mode: 'session', cli_type: 'codex' });
     tracker.getTracker.mockReturnValue({ state: { processState: 'busy' }, hasPendingExecute: false });
     const created = await app.inject({ method: 'POST', url: '/api/scheduled-tasks', headers: { cookie }, payload: {
       project_id: 'project-1', name: 'Busy target', prompt: 'inspect', schedule_kind: 'interval', schedule_value: '30', timezone: 'UTC',
@@ -145,6 +149,26 @@ describe('scheduled task API', () => {
     await tickScheduledTasks(Date.now());
     await vi.waitFor(() => expect(manager.writeToSession).toHaveBeenCalledWith('busy-tab', 'inspect', true));
     await vi.waitFor(() => expect(getDb().prepare('SELECT last_status FROM scheduled_tasks WHERE id = ?').get(id)).toEqual({ last_status: 'success' }));
+    expect(getDb().prepare('SELECT kind,label FROM conversation_input_sources WHERE session_id=?').get('busy-tab')).toEqual({kind:'scheduled',label:'Busy target'});
+  });
+  it('does not send or leave source metadata when a managed target cannot accept an identified input',async()=>{
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('unbound','project-1','Work','running','session','claude',?)").run(ownerId);
+    manager.getSession.mockReturnValue({id:'unbound',project_id:'project-1',created_by_user_id:ownerId,status:'running',mode:'session',cli_type:'claude'});
+    const created=await app.inject({method:'POST',url:'/api/scheduled-tasks',headers:{cookie},payload:{project_id:'project-1',name:'无绑定',prompt:'inspect',schedule_kind:'daily',schedule_value:'09:00',timezone:'UTC',target_type:'existing',target_session_id:'unbound'}});
+    const result=await app.inject({method:'POST',url:`/api/scheduled-tasks/${created.json().task.id}/run`,headers:{cookie}});
+    expect(result.statusCode).toBe(409);expect(manager.writeToSession).not.toHaveBeenCalled();
+    expect(getDb().prepare("SELECT count(*) n FROM conversation_input_sources WHERE session_id='unbound'").get()).toEqual({n:0});
+  });
+  it('tracks scheduled input in a terminal tab already bound to an Agent',async()=>{
+    const native='019ff001-1111-7111-8111-111111111111';
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES ('bound-terminal','project-1','Work','running','terminal','codex',?,?)").run(native,ownerId);
+    manager.getSession.mockReturnValue({id:'bound-terminal',project_id:'project-1',created_by_user_id:ownerId,status:'running',mode:'terminal',cli_type:'codex',codex_session_id:native});
+    const submit=vi.spyOn(getAgent('codex').input,'submit').mockResolvedValue(true);
+    const created=await app.inject({method:'POST',url:'/api/scheduled-tasks',headers:{cookie},payload:{project_id:'project-1',name:'终端巡检',prompt:'inspect',schedule_kind:'daily',schedule_value:'09:00',timezone:'UTC',target_type:'existing',target_session_id:'bound-terminal'}});
+    const result=await app.inject({method:'POST',url:`/api/scheduled-tasks/${created.json().task.id}/run`,headers:{cookie}});
+    expect(result.statusCode).toBe(200);expect(submit).toHaveBeenCalledOnce();expect(manager.writeToSession).not.toHaveBeenCalled();
+    const source=getDb().prepare("SELECT client_id,kind,label FROM conversation_input_sources WHERE session_id='bound-terminal'").get() as {client_id:string;kind:string;label:string};
+    expect(source).toMatchObject({kind:'scheduled',label:'终端巡检'});expect(submit.mock.calls[0][2]).toBe(source.client_id);
   });
 
   it('pauses only the current day and resumes the next day without re-enabling', async () => {
@@ -163,7 +187,7 @@ describe('scheduled task API', () => {
     expect(manager.createSession).not.toHaveBeenCalled();
     const morning = Date.parse('2026-10-14T01:00:00Z');
     vi.mocked(Date.now).mockReturnValue(morning);
-    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('daily-new','project-1','Work','running','session','claude',?)`).run(ownerId);
+    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('daily-new','project-1','Work','running','session','codex',?)`).run(ownerId);
     manager.createSession.mockReturnValue({ id: 'daily-new' });
     await tickScheduledTasks(morning);
     await vi.waitFor(() => expect(manager.spawnSession).toHaveBeenCalled());
@@ -193,8 +217,8 @@ describe('scheduled task API', () => {
 
   it('counts daily successes by the task timezone and resets the guard the next day', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-13T15:30:00Z'));
-    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('count-tab','project-1','Work','running','session','claude',?)`).run(ownerId);
-    manager.getSession.mockReturnValue({ id: 'count-tab', project_id: 'project-1', created_by_user_id: ownerId, status: 'running', mode: 'session', cli_type: 'claude' });
+    getDb().prepare(`INSERT INTO sessions (id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES ('count-tab','project-1','Work','running','session','codex',?)`).run(ownerId);
+    manager.getSession.mockReturnValue({ id: 'count-tab', project_id: 'project-1', created_by_user_id: ownerId, status: 'running', mode: 'session', cli_type: 'codex' });
     const created = await app.inject({ method: 'POST', url: '/api/scheduled-tasks', headers: { cookie }, payload: {
       project_id: 'project-1', name: 'Daily sends', prompt: 'inspect', schedule_kind: 'interval', schedule_value: '30', timezone: 'Asia/Shanghai',
       target_type: 'existing', target_session_id: 'count-tab',
@@ -274,7 +298,7 @@ describe('scheduled task API', () => {
     expect(manager.writeToSession).not.toHaveBeenCalled();
     expect(getDb().prepare('SELECT enabled,next_run_at,consecutive_failures FROM scheduled_tasks WHERE id = ?').get(id)).toEqual({ enabled: 1, next_run_at: nextMorning, consecutive_failures: 0 });
 
-    manager.getSession.mockReturnValue({ id: 'window-tab', project_id: 'project-1', created_by_user_id: ownerId, status: 'running', mode: 'session', cli_type: 'claude' });
+    manager.getSession.mockReturnValue({ id: 'window-tab', project_id: 'project-1', created_by_user_id: ownerId, status: 'running', mode: 'session', cli_type: 'codex' });
     vi.mocked(Date.now).mockReturnValue(Date.parse(nextMorning) + 15000);
     await tickScheduledTasks(Date.now());
     await vi.waitFor(() => expect(manager.writeToSession).toHaveBeenCalledWith('window-tab', 'inspect', true));
@@ -419,7 +443,7 @@ describe('scheduled task API', () => {
   it('claims a due occurrence once and advances its next run before executing', async () => {
     getDb().prepare(`
       INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
-      VALUES ('scheduled-tab', 'project-1', 'Work', 'running', 'session', 'claude', ?)
+      VALUES ('scheduled-tab', 'project-1', 'Work', 'running', 'session', 'codex', ?)
     `).run(ownerId);
     const created = await app.inject({
       method: 'POST', url: '/api/scheduled-tasks', headers: { cookie },
@@ -433,7 +457,7 @@ describe('scheduled task API', () => {
       .run('2026-08-13T00:00:00.000Z', taskId);
     manager.getSession.mockReturnValue({
       id: 'scheduled-tab', project_id: 'project-1', created_by_user_id: ownerId,
-      status: 'running', mode: 'session', cli_type: 'claude',
+      status: 'running', mode: 'session', cli_type: 'codex',
     });
 
     await tickScheduledTasks(Date.parse('2026-08-13T00:01:00Z'));
@@ -477,11 +501,11 @@ describe('scheduled task API', () => {
   it('stops after the configured successful-run and failure thresholds', async () => {
     getDb().prepare(`
       INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
-      VALUES ('limit-tab', 'project-1', 'Work', 'running', 'session', 'claude', ?)
+      VALUES ('limit-tab', 'project-1', 'Work', 'running', 'session', 'codex', ?)
     `).run(ownerId);
     manager.getSession.mockReturnValue({
       id: 'limit-tab', project_id: 'project-1', created_by_user_id: ownerId,
-      status: 'running', mode: 'session', cli_type: 'claude',
+      status: 'running', mode: 'session', cli_type: 'codex',
     });
     const successTask = await app.inject({
       method: 'POST', url: '/api/scheduled-tasks', headers: { cookie },
@@ -557,7 +581,7 @@ describe('scheduled task API', () => {
   it('stops permanently when an existing target is unavailable and the guard is enabled', async () => {
     getDb().prepare(`
       INSERT INTO sessions (id, project_id, task, status, mode, cli_type, created_by_user_id)
-      VALUES ('missing-tab', 'project-1', 'Work', 'running', 'session', 'claude', ?)
+      VALUES ('missing-tab', 'project-1', 'Work', 'running', 'session', 'codex', ?)
     `).run(ownerId);
     const created = await app.inject({
       method: 'POST', url: '/api/scheduled-tasks', headers: { cookie },

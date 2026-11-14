@@ -25,19 +25,19 @@ function mount(canWrite = true, enabled = true) {
 describe('project notification configuration', () => {
   it('saves the selected project, recipient and independent event switches', async () => {
     mount();
-    fireEvent.change(await screen.findByLabelText('项目'),{target:{value:'p2'}});
-    fireEvent.change(screen.getByLabelText('接收渠道'),{target:{value:'binding:b1'}});
+    fireEvent.change(await screen.findByRole('combobox',{name:'项目'}),{target:{value:'p2'}});
+    fireEvent.change(screen.getByRole('combobox',{name:'接收渠道'}),{target:{value:'binding:b1'}});
     fireEvent.click(screen.getByLabelText('任务完成时通知'));
     fireEvent.click(screen.getByRole('button',{name:'保存通知规则'}));
     await screen.findByText('通知规则已保存');
     expect(platformAiApi.saveProjectNotification).toHaveBeenCalledWith({project_id:'p2',recipient_id:'binding:b1',enabled:true,on_complete:false,on_input:true},undefined);
-    expect(screen.getByLabelText('项目')).toHaveValue('');
+    expect(screen.getByRole('combobox',{name:'项目'})).toHaveValue('');
   });
   it('edits, pauses and deletes a saved rule', async () => {
     const rule={id:'r1',project_id:'p1',recipient_id:'binding:b1',enabled:1,on_complete:1,on_input:0};
     settings.rules=[rule]; mount();
     fireEvent.click(await screen.findByRole('button',{name:'编辑'}));
-    expect(screen.getByLabelText('项目')).toHaveValue('p1');
+    expect(screen.getByRole('combobox',{name:'项目'})).toHaveValue('p1');
     expect(screen.getByLabelText('需要输入时通知')).not.toBeChecked();
     fireEvent.click(screen.getByRole('button',{name:'暂停'}));
     await screen.findByText('已暂停通知');
@@ -49,11 +49,11 @@ describe('project notification configuration', () => {
   it('keeps failed drafts available for correction and reports server errors', async () => {
     vi.mocked(platformAiApi.saveProjectNotification).mockRejectedValue(new Error('此项目已配置该通知渠道'));
     mount();
-    fireEvent.change(await screen.findByLabelText('项目'),{target:{value:'p1'}});
-    fireEvent.change(screen.getByLabelText('接收渠道'),{target:{value:'binding:b1'}});
+    fireEvent.change(await screen.findByRole('combobox',{name:'项目'}),{target:{value:'p1'}});
+    fireEvent.change(screen.getByRole('combobox',{name:'接收渠道'}),{target:{value:'binding:b1'}});
     fireEvent.click(screen.getByRole('button',{name:'保存通知规则'}));
     expect(await screen.findByRole('alert')).toHaveTextContent('此项目已配置该通知渠道');
-    expect(screen.getByLabelText('项目')).toHaveValue('p1');
+    expect(screen.getByRole('combobox',{name:'项目'})).toHaveValue('p1');
     expect(screen.getByRole('button',{name:'保存通知规则'})).toBeEnabled();
   });
   it('prevents empty-event rules and explains missing channels and disabled platform AI', async () => {
@@ -72,12 +72,12 @@ describe('project notification configuration', () => {
     expect(screen.getByRole('button',{name:'编辑'})).toBeDisabled();
     expect(screen.getByRole('button',{name:'暂停'})).toBeDisabled();
     expect(screen.getByRole('button',{name:'删除'})).toBeDisabled();
-    expect(screen.getByLabelText('项目')).toBeDisabled();
+    expect(screen.getByRole('combobox',{name:'项目'})).toBeDisabled();
   });
   it('recovers from a failed settings load', async () => {
     vi.mocked(platformAiApi.projectNotifications).mockRejectedValueOnce(new Error('网络错误'));
     mount(); expect(await screen.findByRole('alert')).toHaveTextContent('网络错误');
     fireEvent.click(screen.getByRole('button',{name:'重试'}));
-    await waitFor(() => expect(screen.getByLabelText('项目')).toBeVisible());
+    await waitFor(() => expect(screen.getByRole('combobox',{name:'项目'})).toBeVisible());
   });
 });

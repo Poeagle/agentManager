@@ -50,6 +50,7 @@ export const codexAdapter: AgentAdapter = {
     quota: { shutdown: async () => { await (await import('./quota.js')).shutdownCodexQuotaReader(); }, read: async (force) => (await import('./quota.js')).readCodexWeeklyQuota({ force }) },
     retry: { retryable:retryableConversationError,inspect: async (id) => inCodexThread(id,async()=>(await import('./retry.js')).inspectCodexRetry(id)), start: async (id, failed, client) => inCodexThread(id,async()=>(await import('./retry.js')).startRetryTurn(id, failed, client)) },
     input: {
+        supportsClientIdentity: true,
         cancelQueued: async(context,clientId)=>inCodexThread(requireNative(context),async()=>(await import('./queue.js')).cancelCodexQueuedInput(requireNative(context),clientId)),
         submit: async (context, text, clientId, attachments) => {
             assertSessionEnvironment(context.session,context.actorUserId);
@@ -83,12 +84,12 @@ export const codexAdapter: AgentAdapter = {
         interrupt: async (context) => { if (context.nativeId && process.env.AGENTMANAGER_CODEX_STREAM_SOCKET)
             await inCodexThread(context.nativeId,async()=>(await import('./stream.js')).interruptStreamingCodexThread(context.nativeId!)); },
     },
-    launch: { prepare: async (context, task, instructions, resume) => {
+    launch: { supportsInitialClientId:true, prepare: async (context, task, instructions, resume, initialClientId) => {
             assertSessionEnvironment(context.session);
             const owner=context.session.created_by_user_id;
             if(context.session.agent_environment_id&&owner&&canControlEnvironment(context.session.agent_environment_id,owner))context={...context,sharedAccess:true};
-            if(context.session.agent_environment_id)return runInCodexEngine(await engineForEnvironment(context.session.agent_environment_id),()=>prepareCodexLaunch(context,task,instructions,resume));
-            return prepareCodexLaunch(context,task,instructions,resume);
+            if(context.session.agent_environment_id)return runInCodexEngine(await engineForEnvironment(context.session.agent_environment_id),()=>prepareCodexLaunch(context,task,instructions,resume,initialClientId));
+            return prepareCodexLaunch(context,task,instructions,resume,initialClientId);
         }, ready: async (context) => { if (context.session.id)
             (await import('../../session-manager.js')).watchCodexSessionBinding(context.session.id); } },
     commands: { configure: (command, projectPath, streamSocket) => {
@@ -98,8 +99,9 @@ export const codexAdapter: AgentAdapter = {
     management: codexManagement({ launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'stopTurn', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) }),
 
 };
-async function prepareCodexLaunch(context:import('../types.js').AgentContext,task:string,instructions:string|undefined,resume?:boolean) {
+async function prepareCodexLaunch(context:import('../types.js').AgentContext,task:string,instructions:string|undefined,resume?:boolean,initialClientId?:string) {
             const streamSocket = context.sharedAccess ? (resume&&context.nativeId?(await engineForThread(context.nativeId)).socket:currentCodexEngine().socket)||null : null;
+            if(initialClientId && !resume && !streamSocket)throw Error('当前 Codex 环境无法关联定时消息，请先启用原生会话连接');
             const terminalSocket=streamSocket?await ensureCodexTerminalBridge(streamSocket):null;
             const module = await import('./stream.js');
             let nativeId = resume ? context.nativeId || undefined : undefined;
@@ -118,7 +120,7 @@ async function prepareCodexLaunch(context:import('../types.js').AgentContext,tas
                 }
                 else if (!resume) {
                     const preference=context.session.created_by_user_id&&context.session.id?(await import('./controls.js')).readModelPreference(context.session.created_by_user_id,context.session.id):null;
-                    nativeId = await module.createStreamingCodexThread(context.projectPath!, task, instructions, preference);
+                    nativeId = await module.createStreamingCodexThread(context.projectPath!, task, instructions, preference,initialClientId);
                 }
             }
             if (!streamSocket && !resume && context.session.created_by_user_id && context.session.id && (await import('./controls.js')).readModelPreference(context.session.created_by_user_id,context.session.id)) throw Error('所选模型无法在当前 Engine 启动');

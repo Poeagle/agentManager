@@ -7,14 +7,16 @@ import {subscribe} from '../src/services/event-store.js';
 import * as manager from '../src/services/session-manager.js';
 import * as promptContext from '../src/services/prompt-context.js';
 import {setLiveCodexRuntime,clearLiveCodexRuntime,rememberCodexQuestionReply,syncQueuedCodexQuestionReplies} from '../src/services/agents/codex/runtime-signals.js';
+import {createTestDatabase} from './helpers/database.js';
 const native='019ff001-4545-7454-8454-454545454545';
-let dir:string,file:string,unsubscribe:()=>void,events:any[];
+let dir:string,file:string,unsubscribe:()=>void,events:any[],cleanup:()=>void;
 const record=(type:string,second:number,extra={})=>JSON.stringify({type:'event_msg',timestamp:`2026-11-03T00:00:${String(second).padStart(2,'0')}Z`,payload:{type,...extra}})+'\n';
 beforeEach(()=>{
+ cleanup=createTestDatabase().cleanup;
  dir=mkdtempSync(join(tmpdir(),'runtime-watch-'));mkdirSync(join(dir,'sessions'));vi.stubEnv('CODEX_HOME',dir);file=join(dir,'sessions',`rollout-${native}.jsonl`);
  vi.spyOn(manager,'getLiveWorkAgent').mockResolvedValue('codex');events=[];unsubscribe=subscribe(event=>{if(event.type==='session.runtime')events.push(JSON.parse(event.data!));});
 });
-afterEach(()=>{stopSessionRuntimeWatches();unsubscribe();vi.restoreAllMocks();vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
+afterEach(()=>{stopSessionRuntimeWatches();unsubscribe();vi.restoreAllMocks();vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});cleanup();});
 it('shares the native observer, coalesces write bursts and emits state and question changes without polling',async()=>{
  writeFileSync(file,record('task_started',1));const binding={id:'s',project_id:'p',codex_session_id:native};
  await Promise.all(Array.from({length:20},()=>watchSessionRuntime(binding)));

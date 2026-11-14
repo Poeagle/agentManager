@@ -1605,12 +1605,13 @@ function projectCliCommand(settingKey: string, cliType: string,projectPath?:stri
   return getAgent(cliType).commands.configure(command,projectPath,streamSocket);
 }
 
-async function spawnSessionUnlocked(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: string = 'claude'): Promise<void> {
+async function spawnSessionUnlocked(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: string = 'claude',initialClientId?:string): Promise<void> {
   if (activeSessions.has(sessionId)||isManagedAgentActive(sessionId)) return;
   const creator = getDb().prepare('SELECT created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as { created_by_user_id: string | null } | undefined;
   const adapter=getAgent(cliType),shared=adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(creator?.created_by_user_id,projectPath):null;
   const context=sessionAgentContext({...getSession(sessionId)!,cli_type:cliType,agent_id:cliType},{projectPath,sharedAccess:!creator?.created_by_user_id||isAdmin(creator.created_by_user_id)});
-  const launch=await adapter.launch.prepare(context,task,shared?.instructions),streamSocket=launch.streamSocket;
+  const launch=await adapter.launch.prepare(context,task,shared?.instructions,false,initialClientId),streamSocket=launch.streamSocket;
+  if(initialClientId&&launch.initialMessageId)(await import('./conversation-input-links.js')).bindInputSourceMessage(sessionId,initialClientId,launch.initialMessageId);
   if(launch.nativeId)storeAgentNativeId({...context.session,id:sessionId},launch.nativeId);
   const preSpawnFiles=launch.preSpawnFiles;
   if(adapter.descriptor.sessionHost==='managed'){
@@ -1671,10 +1672,10 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
   pushSystemEvent(`[AgentManager] Session ${sessionId} started: ${task.slice(0, 60)}`);
 }
 
-export function spawnSession(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: string = 'claude'): Promise<void> {
+export function spawnSession(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: string = 'claude',initialClientId?:string): Promise<void> {
   return runSessionLifecycle(
     sessionId,
-    () => spawnSessionUnlocked(sessionId, projectPath, task, cols, rows, cliType),
+    () => spawnSessionUnlocked(sessionId, projectPath, task, cols, rows, cliType,initialClientId),
     () => undefined,
   );
 }
@@ -2942,6 +2943,7 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
         if(replacement){
           getDb().prepare('UPDATE sessions SET agent_environment_id=?,task=?,created_at=? WHERE id=?').run(replacement.environmentId,session.task,session.created_at,sessionId);
           getDb().prepare('INSERT OR IGNORE INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments) SELECT ?,client_id,input_key,input_text,attachments FROM conversation_attachments WHERE session_id=?').run(sessionId,history);
+          getDb().prepare('INSERT OR IGNORE INTO conversation_input_sources(session_id,client_id,kind,label,message_id) SELECT ?,client_id,kind,label,message_id FROM conversation_input_sources WHERE session_id=?').run(sessionId,history);
           getDb().prepare('UPDATE conversation_input_links SET native_id=? WHERE session_id=?').run(fresh,sessionId);
         }
       })();activated=true;

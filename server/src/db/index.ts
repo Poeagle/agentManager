@@ -6,7 +6,7 @@ import {migrateRbac} from '../services/rbac.js';
 import {migratePlatformAi} from '../services/platform-ai/schema.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 26;
+const SCHEMA_VERSION = 27;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -90,6 +90,16 @@ function createCurrentSchema(): void {
       PRIMARY KEY (session_id,native_id,client_id),
       UNIQUE (session_id,native_id,message_id)
     );
+
+    CREATE TABLE IF NOT EXISTS conversation_input_sources (
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      client_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      label TEXT NOT NULL,
+      message_id TEXT,
+      PRIMARY KEY(session_id, client_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_conversation_input_source_message ON conversation_input_sources(session_id,message_id);
 
     CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

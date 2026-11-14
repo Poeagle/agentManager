@@ -5,10 +5,15 @@ import {getAgent,agentForSession} from './agents/index.js';
 import {taskAgent,targetSupportsQuota} from './agents/scheduling.js';
 import {captureScheduledBaseline,PlatformAiScheduleBusyError,scheduledObservationPrompt} from './platform-ai/scheduled-observation.js';
 import {nanoid} from 'nanoid';
+import {randomUUID} from 'node:crypto';
 import {getDb} from '../db/index.js';
 import {getUserTabUsage,userCanUseToolForProject} from '../auth.js';
 import * as sessionManager from './session-manager.js';
 import {isWithinDailyWindow,nextScheduledAt,type ScheduleKind} from './schedule.js';
+import {rememberConversationInput,rememberInputSource,bindInputSourceMessage} from './conversation-input-links.js';
+import {sessionAgentContext} from './agents/session.js';
+import {withTerminalInput} from './agents/terminal-input.js';
+import {nativeConversationId} from './session-identity.js';
 
 import {getTracker} from './session-state.js';
 import {evaluateTaskConditions,flattenTaskConditions,localDateKey,nextConditionDay,parseTaskConditions,type ConditionContext} from './scheduled-task-conditions.js';
@@ -225,6 +230,7 @@ async function createScheduledSession(task: ScheduledTaskRow, projectPath: strin
   assertExecutionWindow(task);
   const mode = task.new_mode ?? 'session';
   const cliType = getAgent(task.new_cli_type||'claude').descriptor.id;
+  if(mode==='session'&&!getAgent(cliType).launch.supportsInitialClientId)throw new Error('此 Agent 不支持关联新会话的定时输入');
   if (!userCanUseToolForProject(task.user_id, task.project_id, mode, mode === 'terminal' ? 'claude' : cliType)) {
     throw new Error('用户已无权在该项目创建此类标签页');
   }
@@ -268,7 +274,9 @@ async function createScheduledSession(task: ScheduledTaskRow, projectPath: strin
       }
 
     } else {
-      await sessionManager.spawnSession(session.id, projectPath, task.prompt, 120, 40, cliType);
+      const clientId=randomUUID();
+      rememberInputSource(session.id,clientId,{kind:'scheduled',label:task.name});
+      await sessionManager.spawnSession(session.id, projectPath, task.prompt, 120, 40, cliType,clientId);
     }
     return session.id;
   } catch (error) {
@@ -325,10 +333,42 @@ async function sendToExistingSession(task: ScheduledTaskRow): Promise<string> {
   }
   assertExecutionWindow(task);
   await assertStartConditions(task);
-  if (!sessionManager.writeToSession(session.id, task.prompt, true)
-    || !sessionManager.writeToSession(session.id, '\r')) {
-    throw new TargetUnavailableError('目标标签页提示词发送失败');
+  let fallback:{clientId:string;binding:Parameters<typeof rememberConversationInput>[1]}|undefined;
+  const current=sessionManager.getSession(session.id)!;
+  if(mode==='session'||!!nativeConversationId(current)) {
+    const context=sessionAgentContext(current),adapter=agentForSession(current);
+    const clientId=randomUUID();
+    rememberInputSource(session.id,clientId,{kind:'scheduled',label:task.name});
+    const messageId=adapter.input.messageId?.(clientId);
+    if(messageId)bindInputSourceMessage(session.id,clientId,messageId);
+    const binding={...current,cli_type:current.cli_type||'claude',codex_session_id:current.codex_session_id||null,claude_session_id:current.claude_session_id||null,project_path:context.projectPath};
+    if(context.nativeId && adapter.input.supportsClientIdentity)await rememberConversationInput(session.id,binding,clientId,task.prompt).catch(()=>false);
+    if(context.nativeId && adapter.input.supportsClientIdentity) {
+      const result=await adapter.input.submit(context,task.prompt,clientId);
+      if(result)return session.id;
+      if(adapter.descriptor.sessionHost==='managed'){
+        getDb().prepare('DELETE FROM conversation_input_sources WHERE session_id=? AND client_id=?').run(session.id,clientId);
+        throw new TargetUnavailableError('目标 Agent 未接受提示词');
+      }
+    }
+    if(adapter.descriptor.sessionHost==='managed'){
+      getDb().prepare('DELETE FROM conversation_input_sources WHERE session_id=? AND client_id=?').run(session.id,clientId);
+      throw new TargetUnavailableError('此 Agent 不支持关联定时输入');
+    }
+    fallback={clientId,binding};
   }
+  await withTerminalInput(session.id,async()=>{
+    if(fallback){
+      getDb().prepare('DELETE FROM conversation_input_links WHERE session_id=? AND client_id=? AND message_id IS NULL').run(session.id,fallback.clientId);
+      const linked=await rememberConversationInput(session.id,fallback.binding,fallback.clientId,task.prompt).catch(()=>false);
+      if(!linked){getDb().prepare('DELETE FROM conversation_input_sources WHERE session_id=? AND client_id=?').run(session.id,fallback.clientId);throw new TargetUnavailableError('无法关联定时消息的原生记录，提示词未发送');}
+    }
+    if (!sessionManager.writeToSession(session.id, task.prompt, true)) {
+      throw new TargetUnavailableError('目标标签页提示词发送失败');
+    }
+    await new Promise(resolve=>setTimeout(resolve,50));
+    if (!sessionManager.writeToSession(session.id, '\r')) throw new Error('提示词已粘贴，但提交结果未知');
+  });
   return session.id;
 }
 

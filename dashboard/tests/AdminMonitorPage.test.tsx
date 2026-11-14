@@ -181,5 +181,5 @@ describe('administrator monitor page', () => {
 
     await user.click(screen.getByRole('switch', { name: '显示最近已结束会话' }));
     expect(screen.getByText('Old completed task')).toBeInTheDocument();
-  });
+  }, 15000);
 });

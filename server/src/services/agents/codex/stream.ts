@@ -59,13 +59,13 @@ export async function withCodexConnection<T>(action:(request:CodexRequest,server
 
 /** Submit the initial turn once. The terminal attaches to this exact thread
  * without resubmitting input. An empty thread has no resumable rollout yet. */
-export async function createStreamingCodexThread(cwd:string,task:string,sharedInstructions?:string,preference?:import('../types.js').ModelPreference|null):Promise<string> {
+export async function createStreamingCodexThread(cwd:string,task:string,sharedInstructions?:string,preference?:import('../types.js').ModelPreference|null,initialClientId?:string):Promise<string> {
   return withCodexConnection(async request=>{
     if (!preference) await (await import('./controls.js')).assertCodexLaunchModel(request);
     const result=await request('thread/start',{cwd,approvalPolicy:'never',sandbox:'danger-full-access',...(sharedInstructions?{developerInstructions:sharedInstructions}:{}),...(preference?{model:preference.model,...preference.provider?{modelProvider:preference.provider}:{},config:{model_reasoning_effort:preference.effort},...preference.service_tier?{serviceTier:preference.service_tier}:{}}:{})});
     const id=result.thread?.id;
     if(typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Codex 未返回原生会话标识');
-    await request('turn/start',{threadId:id,input:[{type:'text',text:task,text_elements:[]}],...(preference?{model:preference.model,effort:preference.effort,...preference.service_tier?{serviceTier:preference.service_tier}:{}}:{})});
+    await request('turn/start',{threadId:id,...initialClientId?{clientUserMessageId:initialClientId}:{},input:[{type:'text',text:task,text_elements:[]}],...(preference?{model:preference.model,effort:preference.effort,...preference.service_tier?{serviceTier:preference.service_tier}:{}}:{})});
     if(sharedInstructions)rememberStreamingSharedResources(id,sharedInstructions);
     return id;
   });

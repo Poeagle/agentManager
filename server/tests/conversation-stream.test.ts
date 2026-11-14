@@ -251,6 +251,10 @@ describe('native Codex conversation streaming',()=>{
     expect(requestParams.find(frame=>frame.method==='thread/start')?.params).toMatchObject({model:'chosen',modelProvider:'provider',config:{model_reasoning_effort:'high'},serviceTier:'fast'});
     expect(requestParams.find(frame=>frame.method==='turn/start')?.params).toMatchObject({model:'chosen',effort:'high',serviceTier:'fast',input:[{text:'initial'}]});
   });
+  it('carries the platform submission identity on an initial turn without changing the prompt',async()=>{
+    await createStreamingCodexThread('/project','scheduled prompt',undefined,undefined,'scheduled-client');
+    expect(requestParams.find(frame=>frame.method==='turn/start')?.params).toMatchObject({clientUserMessageId:'scheduled-client',input:[{text:'scheduled prompt'}]});
+  });
   it('passes shared-resource discovery as configuration, never as a human message or extra model turn',async()=>{
     requestParams=[];
     const instructions='<octoally_shared_resources>entry only</octoally_shared_resources>';

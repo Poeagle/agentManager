@@ -23,12 +23,12 @@ test('compaction refreshes the timeline and shows its summary once',async({page}
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
   await expect(chat.getByText('压缩前消息',{exact:true})).toBeVisible();
   appendFileSync(file,record('compacted',{message:'',replacement_history:[user('old','压缩前消息'),{type:'compaction',id:'encrypted-summary',encrypted_content:'opaque'}]}));
-  await expect(chat.getByText('会话压缩摘要',{exact:true})).toBeVisible();
+  await expect(chat.getByText('Conversation summary',{exact:true})).toBeVisible();
   await expect(chat.getByText('压缩前消息',{exact:true})).toHaveCount(1);
   await expect(chat.getByText('压缩前回答',{exact:true})).toHaveCount(1);
-  await chat.getByText('会话压缩摘要',{exact:true}).click();await expect(chat.getByText('压缩内容由 Codex 加密保存，无法显示摘要正文。',{exact:true})).toBeVisible();
+  await chat.getByText('Conversation summary',{exact:true}).click();await expect(chat.getByText('压缩内容由 Codex 加密保存，无法显示摘要正文。',{exact:true})).toBeVisible();
   appendFileSync(file,record('response_item',user('after','压缩后发送')));
   await expect(chat.getByText('压缩后发送',{exact:true})).toHaveCount(1);
-  await page.reload();await expect(chat.getByText('压缩后发送',{exact:true})).toHaveCount(1);await expect(chat.getByText('会话压缩摘要',{exact:true})).toHaveCount(1);await expect(chat.getByText('压缩前回答',{exact:true})).toHaveCount(1);
+  await page.reload();await expect(chat.getByText('压缩后发送',{exact:true})).toHaveCount(1);await expect(chat.getByText('Conversation summary',{exact:true})).toHaveCount(1);await expect(chat.getByText('压缩前回答',{exact:true})).toHaveCount(1);
  }finally{await page.request.delete(`/api/sessions/${session.id}`);}
 });
