@@ -22,7 +22,7 @@ beforeEach(()=>{
 const mount=(props:Partial<Parameters<typeof ClaudeProviderEditor>[0]>={})=>render(<QueryClientProvider client={client}><ClaudeProviderEditor provider={provider} readOnly={false} onSaved={vi.fn()} {...props}/></QueryClientProvider>);
 it('keeps a configured key masked and saves only a replacement value',async()=>{
  vi.mocked(api.agentManagement.updateProvider).mockResolvedValue({state:{agent:{id:'claude',label:'Claude'},providers:[provider]} as any});
- mount();const key=screen.getByLabelText('Claude API Key');expect(key).toHaveValue('');expect(key).toHaveAttribute('placeholder','输入新值可替换，留空保持不变');expect(screen.getByText('已配置')).toBeVisible();
+ mount();const key=screen.getByLabelText('Claude API Key');expect(key).toHaveValue('');expect(key).toHaveAttribute('placeholder','留空保持不变');expect(screen.getByText('已配置')).toBeVisible();
  fireEvent.change(screen.getByLabelText('Claude Provider 名称'),{target:{value:'Gateway updated'}});fireEvent.click(screen.getByRole('button',{name:'保存 Provider'}));
  await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('claude','gateway',expect.objectContaining({name:'Gateway updated'})));
  expect(vi.mocked(api.agentManagement.updateProvider).mock.calls[0][2]).not.toHaveProperty('apiKey');
