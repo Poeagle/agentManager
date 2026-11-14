@@ -16,8 +16,9 @@ import {getUserTabUsage,isAdmin,userCanUseSessionTool,userCanUseToolForProject,u
 import {listClaudeSessions,deleteClaudeSession} from '../services/claude-history.js';
 
 import {randomUUID} from 'crypto';
-import {existsSync,mkdirSync,realpathSync,writeFileSync} from 'fs';
-import {isAbsolute,join,relative,sep} from 'path';
+import {writeFileSync} from 'fs';
+import {projectAttachmentDirectory} from '../services/attachment-storage.js';
+import {join} from 'path';
 import {prunePastesDir} from '../services/paste-cleanup.js';
 import {pasteUploadError} from '../services/paste-error.js';
 import {sessionPresenter} from '../services/session-labels.js';
@@ -47,30 +48,6 @@ function imageExtension(mime: string, bytes: Buffer): string | null {
   if (mime === 'image/gif' && (bytes.subarray(0, 6).toString() === 'GIF87a' || bytes.subarray(0, 6).toString() === 'GIF89a')) return 'gif';
   if (mime === 'image/webp' && bytes.subarray(0, 4).toString() === 'RIFF' && bytes.subarray(8, 12).toString() === 'WEBP') return 'webp';
   return null;
-}
-
-function sessionPastesDir(projectPath: string): string {
-  const projectRoot = realpathSync(projectPath);
-  const managerDir = join(projectRoot, '.agentmanager');
-  mkdirSync(managerDir, { recursive: true });
-  const realManagerDir = realpathSync(managerDir);
-  const managerChild = relative(projectRoot, realManagerDir);
-  if (!managerChild || isAbsolute(managerChild) || managerChild === '..' || managerChild.startsWith(`..${sep}`)) {
-    throw new Error('Paste directory is outside the project');
-  }
-  const dir = join(realManagerDir, 'pastes');
-  mkdirSync(dir, { recursive: true });
-  const realDir = realpathSync(dir);
-  const child = relative(projectRoot, realDir);
-  if (!child || isAbsolute(child) || child === '..' || child.startsWith(`..${sep}`)) {
-    throw new Error('Paste directory is outside the project');
-  }
-  const ignore = join(realManagerDir, '.gitignore');
-  if (!existsSync(ignore)) {
-    try { writeFileSync(ignore, '*\n', { flag: 'wx' }); }
-    catch (error: any) { if (error?.code !== 'EEXIST') throw error; }
-  }
-  return realDir;
 }
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
@@ -254,7 +231,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return {ok:true,ignored_question_ids:ignored};
   });
 
-  // Clipboard data is stored inside the session's project; the terminal only
+  // Clipboard data is stored outside the project; the terminal only
   // receives the resulting path after the upload succeeds.
   app.post<{ Params: { id: string }; Body: { dataUrl?: string } }>(
     '/sessions/:id/paste-image', { bodyLimit: 15 * 1024 * 1024 }, async (req, reply) => {
@@ -272,9 +249,9 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       if (!ext) return reply.status(400).send({ error: 'Unsupported or invalid image (png/jpeg/gif/webp)' });
 
       try {
-        const dir = sessionPastesDir(project.path);
+        const dir = projectAttachmentDirectory(project.path, true);
         const path = join(dir, `paste-${randomUUID()}.${ext}`);
-        writeFileSync(path, data.bytes, { flag: 'wx' });
+        writeFileSync(path, data.bytes, { flag: 'wx', mode: 0o644 });
         prunePastesDir(dir);
         return { ok: true, path };
       } catch (error: any) {
@@ -300,9 +277,9 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       const safeName = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(0, 100) || 'file';
 
       try {
-        const dir = sessionPastesDir(project.path);
+        const dir = projectAttachmentDirectory(project.path, true);
         const path = join(dir, `paste-${randomUUID()}-${safeName}`);
-        writeFileSync(path, data.bytes, { flag: 'wx' });
+        writeFileSync(path, data.bytes, { flag: 'wx', mode: 0o644 });
         prunePastesDir(dir);
         return { ok: true, path };
       } catch (error: any) {

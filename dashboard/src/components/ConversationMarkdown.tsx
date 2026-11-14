@@ -1,3 +1,4 @@
+import {conversationFilePaths} from '../lib/conversation-file-paths';
 import {copyConversationText} from '../lib/conversation-clipboard';
 export {copyConversationText} from '../lib/conversation-clipboard';
 import {MermaidDiagram,isMermaidCode} from './MermaidDiagram';
@@ -18,7 +19,7 @@ const SourceOffset=createContext(0);
 const Trailing=createContext<{content:ReactNode;end:number;kind?:string}|null>(null);
 const MarkdownSegment=memo(function MarkdownSegment({source,offset,components,footer,kind}:{source:string;offset:number;components:Components;footer?:ReactNode;kind?:string}) {
   const trailing=useMemo(()=>footer?{content:footer,end:source.trimEnd().length,kind}:null,[footer,source,kind]);
-  return <SourceOffset.Provider value={offset}><Trailing.Provider value={trailing}><ReactMarkdown remarkPlugins={[remarkGfm,conversationCjkStrong]} components={components} urlTransform={url=>/^file:/i.test(url)?url:defaultUrlTransform(url)} skipHtml>{source}</ReactMarkdown></Trailing.Provider></SourceOffset.Provider>;
+  return <SourceOffset.Provider value={offset}><Trailing.Provider value={trailing}><ReactMarkdown remarkPlugins={[remarkGfm,conversationCjkStrong,conversationFilePaths]} components={components} urlTransform={url=>/^(?:file:|sandbox:\/)/i.test(url)?url:defaultUrlTransform(url)} skipHtml>{source}</ReactMarkdown></Trailing.Provider></SourceOffset.Provider>;
 });
 const trailingKinds=new Set(['paragraph','list','blockquote']);
 function FooterParagraph({children,node,className,...props}:any){const trailing=useContext(Trailing),show=!!trailing&&['paragraph','blockquote','list'].includes(trailing.kind||'')&&node?.position?.end.offset===trailing.end;return <p {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{show?<span>{children}</span>:children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</p>;}
@@ -38,6 +39,7 @@ export function conversationFileLink(source:string|undefined,root:string|undefin
   if(!source||source.startsWith('#')||source.startsWith('?')||source.startsWith('//'))return null;
   try {
     let raw=source;
+    if(/^sandbox:\//i.test(raw))raw=raw.slice('sandbox:'.length);
     if(/^file:/i.test(raw)){const url=new URL(raw);if(url.protocol!=='file:'||url.hostname||!url.pathname.startsWith('/'))return null;raw=url.pathname;}
     else if(/^[a-z][a-z\d+.-]*:/i.test(raw))return null;
     const encoded=raw.split(/[?#]/,1)[0];let decoded:string;
@@ -103,6 +105,15 @@ export const ConversationMarkdown=memo(function ConversationMarkdown({content,me
         return <CodeBlock source={source} language={language}/>;
       },
       table:({children})=><MarkdownTable className="conversation-table-scroll">{children}</MarkdownTable>,
+      code:({children,className})=>{
+        const previewFile=useConversationFilePreview();
+        const value=String(children??'');
+        const looksLikePath=/^(?:\/|\.{1,2}\/|file:|sandbox:\/)/i.test(value)||/^[^\s]+\/[\w.-]+$/.test(value)||/^[^\s]+\.(?:tsx?|jsx?|py|go|rs|java|cpp|c|h|mdx?|txt|json|ya?ml|toml|ini|conf|csv|tsv|pdf|docx?|xlsx?|pptx?|png|jpe?g|gif|webp|svg|zip|tar|gz|sh|sql|log|html|css|ipynb|parquet|dos)(?::\d+(?::\d+)?)?$/i.test(value);
+        const path=!className&&looksLikePath?conversationFileLink(value,projectPath):null;
+        if(!path)return <code className={className}>{children}</code>;
+        const inProject=!!projectPath&&isWithinExplorerRoot(path,projectPath);
+        return <code><a href={path} onClick={event=>{event.preventDefault();previewFile?.({path,rootPath:inProject?projectPath!:path.slice(0,path.lastIndexOf('/'))||'/',projectId:inProject?projectId:null,name:path.split('/').pop()||path});}}>{children}</a></code>;
+      },
       a:({href,children,title,node})=>{
         const previewFile=useConversationFilePreview();
         if(node?.children.some(child=>child.type==='element'&&child.tagName==='img'))return <>{children}</>;

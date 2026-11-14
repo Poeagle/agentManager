@@ -38,6 +38,14 @@ describe('conversation Markdown',()=>{
     fireEvent.click(screen.getByRole('button',{name:'关闭文件预览 · export_cpu_metrics.py'}));
     fireEvent.click(screen.getByRole('link',{name:/截图/}));expect(screen.getByRole('dialog',{name:'文件预览 · ops945.png'})).toBeVisible();
   });
+  it('opens plain paths, inline-code files and sandbox image links through server authorization',()=>{
+    render(<ConversationMarkdown {...props} content={'文件在 /tmp/output.csv。源码：`/data/source.py:24`，图片：[查看](sandbox:/tmp/chart.png)。命令：`Object.values`。'}/>);
+    for(const [name,title] of [[/output.csv/,'output.csv'],['/data/source.py:24','source.py'],[/查看/,'chart.png']] as const){
+      fireEvent.click(screen.getByRole('link',{name}));expect(screen.getByRole('dialog',{name:'文件预览 · '+title})).toBeVisible();
+      fireEvent.click(screen.getByRole('button',{name:'关闭文件预览 · '+title}));
+    }
+    expect(screen.getByText('Object.values').closest('a')).toBeNull();
+  });
   it('accepts local links without accepting remote file hosts or unsafe schemes',()=>{
     expect(conversationFileLink('/data/project/x.py:24','/work/project')).toBe('/data/project/x.py');
     expect(conversationFileLink('file:///tmp/a%20b.png','/work/project')).toBe('/tmp/a b.png');

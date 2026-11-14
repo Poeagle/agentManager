@@ -1,10 +1,11 @@
 import { installPlatformApiRegistry } from '../src/services/platform-ai/api-registry.js';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { createCipheriv, createHash, createPrivateKey, randomBytes, sign } from 'crypto';
-import { readFileSync, statSync } from 'fs';
+import { mkdirSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { authHook, createSession as createAuthSession, createUser, setProjectToolAccess, userCanUseSessionTool } from '../src/auth.js';
+import { projectAttachmentDirectory } from '../src/services/attachment-storage.js';
 import { getDb } from '../src/db/index.js';
 import { platformAiRoutes } from '../src/routes/platform-ai.js';
 import { projectRoutes } from '../src/routes/projects.js';
@@ -44,13 +45,13 @@ beforeEach(async () => {
   vi.spyOn(agents, 'detectWorkAgent').mockImplementation(async cli => ({cli_type: cli, label: cli, status:'available',reason:'Test fixture'}));
   vi.spyOn(agents, 'detectWorkAgents').mockResolvedValue([{cli_type:'codex',label:'Codex',status:'available',reason:'Test fixture'},{cli_type:'claude',label:'Claude',status:'unavailable',reason:'Test fixture'}]);
   const database = createTestDatabase();
-  cleanup = database.cleanup; databaseDir = database.dir;
+  cleanup = database.cleanup; databaseDir = database.dir; mkdirSync(join(databaseDir,'project'));
   admin = createUser({username: 'admin', password: 'password1', role: 'admin'}).id;
   member = createUser({username: 'member', password: 'password1'}).id;
   other = createUser({username: 'other', password: 'password1'}).id;
   adminCookie = `agentmanager_session=${createAuthSession(admin)}`;
   cookie = `agentmanager_session=${createAuthSession(member)}`;
-  getDb().prepare("INSERT INTO projects (id,name,path,owner_id) VALUES ('p','Project',?,?)").run(databaseDir, member);
+  getDb().prepare("INSERT INTO projects (id,name,path,owner_id) VALUES ('p','Project',?,?)").run(join(databaseDir,'project'), member);
   setProjectToolAccess({projectId: 'p', userId: member, canSession: true, canTerminal: true, sessionClients: ['codex','claude'], grantedBy: admin});
   app = Fastify();
   installPlatformApiRegistry(app);
@@ -502,7 +503,7 @@ describe('durable platform AI tool execution', () => {
     await executePlatformTool(app,conversation,'send_to_session',JSON.stringify({session_id:'session-1',instruction:'只查 v1.0.1'}),'terminal',received.message_id);
     expect(inputRequests).toEqual([{input:'只查 v1.0.1\n\n[Platform task reference: terminal]'}]);
   });
-  it('copies the current screenshots into the authorized project before spawning the work agent', async () => {
+  it('stores current screenshots outside the authorized project before spawning the work agent', async () => {
     configure(); const received = inbound('根据截图修复项目');
     const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6CsAAAAAASUVORK5CYII=', 'base64');
     getDb().prepare("INSERT INTO platform_ai_attachments (id,message_id,status,mime,bytes,data) VALUES (?,?,'ready','image/png',?,?)").run('screenshot-1', received.message_id, png.length, png);
@@ -513,7 +514,7 @@ describe('durable platform AI tool execution', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
     const prompt = spawn.mock.calls[0][2];
     const path = prompt.match(/图片 1：([^\n]+)/)?.[1];
-    expect(path).toContain(databaseDir + '/.agentmanager/pastes/');
+    expect(path).toContain(projectAttachmentDirectory(join(databaseDir,'project')) + '/');
     expect(readFileSync(path!).equals(png)).toBe(true);
     expect(prompt).toContain('[Platform task reference:');
     expect((getDb().prepare('SELECT task FROM sessions').get() as {task: string}).task).toBe(prompt);

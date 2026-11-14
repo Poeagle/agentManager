@@ -1,7 +1,8 @@
 import {open,realpath,stat} from 'fs/promises';
-import {dirname,extname,isAbsolute,join,relative,sep} from 'path';
+import {extname} from 'path';
 import {getDb} from '../db/index.js';
 import {createHash} from 'crypto';
+import {isProjectAttachment} from './attachment-storage.js';
 import {conversationQuestionReply} from './conversation-question-reply.js';
 
 export interface ConversationAttachment {kind:'image'|'file';name:string;path:string;offset?:number}
@@ -86,12 +87,10 @@ export async function validateConversationAttachments(sessionId:string,value:unk
   const project=getDb().prepare('SELECT p.path FROM sessions s JOIN projects p ON p.id=s.project_id WHERE s.id=?').get(sessionId) as {path:string}|undefined;
   if(!project)throw new Error('当前会话没有可用的项目目录');
   try {
-    const root=await realpath(project.path),directory=await realpath(join(root,'.agentmanager','pastes'));
-    const child=relative(root,directory);if(!child||isAbsolute(child)||child==='..'||child.startsWith(`..${sep}`))throw new Error();
     const attachments:ConversationAttachment[]=[];let total=0,images=0;
     for(const item of value) {
       if(!item || !['image','file'].includes(item.kind) || typeof item.name!=='string' || !item.name.trim() || item.name.length>255 || /[\0\r\n]/.test(item.name) || typeof item.path!=='string' || item.path.length>4096)throw new Error();
-      const path=await realpath(item.path);if(dirname(path)!==directory)throw new Error();
+      const path=await realpath(item.path);if(!isProjectAttachment(path,project.path,true))throw new Error();
       const info=await stat(path);if(!info.isFile()||info.size>100*MIB)throw new Error();
       total+=info.size;
       if(item.kind==='image') {

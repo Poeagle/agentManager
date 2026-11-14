@@ -18,6 +18,14 @@ beforeEach(()=>{
  vi.mocked(api.files.read).mockImplementation(async path=>({path,content:'# 目录中的说明',extension:'md',size:25}));
 });
 describe('directory conversation previews',()=>{
+ it('previews an external attachment with project authorization and no directory listing',async()=>{
+  const path='/platform/attachments/project/pastes/paste-report.md';
+  vi.mocked(fetchJSON).mockResolvedValue({path,type:'file'});
+  render(<ConversationFilePreview file={{path,rootPath:'/project',projectId:'project-1',name:'report.md',fileOnly:true}} onClose={()=>{}}/>);
+  expect(await screen.findByRole('heading',{name:'目录中的说明'},{timeout:3000})).toBeVisible();
+  expect(fetchJSON).toHaveBeenCalledWith(`/files/stat?path=${encodeURIComponent(path)}&project_id=project-1`,expect.anything());
+  expect(api.files.read).toHaveBeenCalledWith(path,'project-1');expect(api.files.list).not.toHaveBeenCalled();
+ });
  it('expands folders lazily and opens a file without trying to read the directory as a file',async()=>{
   render(<ConversationFilePreview file={file} onClose={()=>{}}/>);
   const folder=await screen.findByText('nested');expect(screen.getByRole('dialog',{name:'目录预览 · reports'})).toBeVisible();expect(api.files.read).not.toHaveBeenCalled();expect(api.files.list).toHaveBeenCalledTimes(1);

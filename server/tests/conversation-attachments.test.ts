@@ -2,14 +2,16 @@ import {afterEach,beforeEach,describe,expect,it} from 'vitest';
 import {mkdirSync,writeFileSync,truncateSync,symlinkSync} from 'fs';
 import {join} from 'path';
 import {createTestDatabase} from './helpers/database.js';
+import {projectAttachmentDirectory} from '../src/services/attachment-storage.js';
 import {getDb} from '../src/db/index.js';
 import {conversationImagePaths,decorateConversationAttachments,rememberConversationAttachments,nativeConversationInput,formatConversationInput,validateConversationAttachments,validateConversationAnswerAttachments} from '../src/services/conversation-attachments.js';
 import {conversationQuestionReply} from '../src/services/conversation-question-reply.js';
 let cleanup:()=>void,root:string,directory:string;
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9hZsEAAAAASUVORK5CYII=','base64');
 beforeEach(()=>{
-  const fixture=createTestDatabase();cleanup=fixture.cleanup;root=join(fixture.dir,'project');directory=join(root,'.agentmanager','pastes');mkdirSync(directory,{recursive:true});
+  const fixture=createTestDatabase();cleanup=fixture.cleanup;root=join(fixture.dir,'project');mkdirSync(root,{recursive:true});
   getDb().prepare("INSERT INTO projects(id,name,path) VALUES('p','P',?)").run(root);getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode) VALUES('s','p','Test','running','session')").run();
+  directory=projectAttachmentDirectory(root,true);
   writeFileSync(join(directory,'image.png'),png);writeFileSync(join(directory,'note.txt'),'test attachment');
 });
 afterEach(()=>cleanup());

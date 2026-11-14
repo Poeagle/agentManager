@@ -2,6 +2,10 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { join, relative } from 'path';
 import {userInfo} from 'os';
+import {execFileSync} from 'child_process';
+import {projectAttachmentDirectory} from '../src/services/attachment-storage.js';
+import {fileRoutes} from '../src/routes/files.js';
+import {sweepAllPastes} from '../src/services/paste-cleanup.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { authHook, createSession, createUser } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
@@ -34,6 +38,7 @@ describe('session clipboard uploads', () => {
     app = Fastify({ logger: false });
     app.addHook('onRequest', authHook);
     await app.register(sessionRoutes, { prefix: '/api' });
+    await app.register(fileRoutes, { prefix: '/api' });
   });
 
   afterEach(async () => { await app.close(); cleanup(); });
@@ -43,26 +48,27 @@ describe('session clipboard uploads', () => {
     return app.inject({ method: 'POST', url: `/api/sessions/paste-session/paste-${kind}`, headers: { cookie }, payload: body });
   }
 
-  it.skipIf(process.getuid?.()===0).each(['image','file'] as const)('identifies the actual service user when the project attachment directory denies %s uploads',async kind=>{
-    const directory=join(project,'.agentmanager','pastes');mkdirSync(directory,{recursive:true});chmodSync(directory,0o500);
+  it.skipIf(process.getuid?.()===0).each(['image','file'] as const)('identifies the actual service user when the platform attachment directory denies %s uploads',async kind=>{
+    const directory=projectAttachmentDirectory(project,true);chmodSync(directory,0o500);
     try {
       const response=await upload(kind,kind==='image'?{dataUrl:dataUrl('image/png',png)}:{dataUrl:dataUrl('text/plain',Buffer.from('hello')),filename:'notes.txt'});
       expect(response.statusCode).toBe(500);expect(response.json().error).toContain('平台运行用户 '+userInfo().username);expect(response.json().error).toContain(directory);expect(response.json().error).toContain('目录读写权限');
     }finally{chmodSync(directory,0o700);}
   });
 
-  it('saves pasted screenshots inside the project with unique names', async () => {
+  it('saves pasted screenshots outside the project with unique names', async () => {
     const first = await upload('image', { dataUrl: dataUrl('image/png', png) });
     const second = await upload('image', { dataUrl: dataUrl('image/png', png) });
-    expect(first.statusCode).toBe(200);
+    expect(first.statusCode,first.body).toBe(200);
     expect(second.statusCode).toBe(200);
     const paths = [first.json().path, second.json().path] as string[];
     expect(paths[0]).not.toBe(paths[1]);
     for (const path of paths) {
-      expect(relative(project, path)).toMatch(/^\.agentmanager\/pastes\/paste-[\w-]+\.png$/);
+      expect(relative(projectAttachmentDirectory(project), path)).toMatch(/^paste-[\w-]+\.png$/);
+      expect(path.startsWith(project + '/')).toBe(false);
       expect(readFileSync(path)).toEqual(png);
     }
-    expect(readFileSync(join(project, '.agentmanager', '.gitignore'), 'utf8')).toBe('*\n');
+    expect(readdirSync(project)).toEqual([]);
   });
 
   it('rejects inaccessible sessions and invalid or oversized images', async () => {
@@ -80,7 +86,7 @@ describe('session clipboard uploads', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().path).toMatch(/paste-[\w-]+-notes\.txt$/);
     expect(readFileSync(response.json().path, 'utf8')).toBe('hello');
-    expect(readdirSync(join(project, '.agentmanager', 'pastes'))).toHaveLength(1);
+    expect(readdirSync(projectAttachmentDirectory(project))).toHaveLength(1);
   });
 
   it('accepts a 100 MB file including its base64 request overhead', async () => {
@@ -100,23 +106,54 @@ describe('session clipboard uploads', () => {
     expect(existsSync(join(project, '.agentmanager', 'pastes'))).toBe(false);
   }, 30_000);
 
-  it('does not write through a symlinked paste directory', async () => {
-    const outside = join(project, '..', 'outside');
-    mkdirSync(outside);
-    mkdirSync(join(project, '.agentmanager'));
-    symlinkSync(outside, join(project, '.agentmanager', 'pastes'));
-    const response = await upload('image', { dataUrl: dataUrl('image/png', png) });
-    expect(response.statusCode).toBe(500);
-    expect(readdirSync(outside)).toHaveLength(0);
+  it.each(['', 'ignored', 'tracked'])('keeps Git status and existing manager files unchanged (%s)', async mode => {
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'safe.directory=' + project, '-C', project, ...args], {encoding:'utf8'});
+    git('init', '--quiet');
+    if (mode) {
+      mkdirSync(join(project,'.agentmanager'));
+      writeFileSync(join(project,'.agentmanager','.gitignore'),mode==='ignored'?'*\n':'!pastes/\n');
+      writeFileSync(join(project,'.agentmanager','keep.txt'),'existing');
+      if(mode==='tracked')git('add','.agentmanager');
+    }
+    const before=git('status','--porcelain','--untracked-files=all');
+    const names=readdirSync(project);
+    for(const kind of ['image','file'] as const) {
+      const response=await upload(kind,kind==='image'?{dataUrl:dataUrl('image/png',png)}:{dataUrl:dataUrl('text/plain',Buffer.from('hello')),filename:'note.txt'});
+      expect(response.statusCode).toBe(200);
+    }
+    expect(git('status','--porcelain','--untracked-files=all')).toBe(before);
+    expect(readdirSync(project)).toEqual(names);
+    if(mode)expect(readFileSync(join(project,'.agentmanager','.gitignore'),'utf8')).toBe(mode==='ignored'?'*\n':'!pastes/\n');
   });
 
-  it('does not create a paste directory through a symlinked manager directory', async () => {
-    const outside = join(project, '..', 'outside');
-    mkdirSync(outside);
-    symlinkSync(outside, join(project, '.agentmanager'));
-    const response = await upload('image', { dataUrl: dataUrl('image/png', png) });
-    expect(response.statusCode).toBe(500);
-    expect(readdirSync(outside)).toHaveLength(0);
+  it('does not touch project-local symlinks during uploads or cleanup', async () => {
+    const outside=join(project,'..','outside');mkdirSync(outside);
+    symlinkSync(outside,join(project,'.agentmanager'));
+    expect((await upload('image',{dataUrl:dataUrl('image/png',png)})).statusCode).toBe(200);
+    sweepAllPastes();
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it.skipIf(process.getuid?.()===0)('uploads successfully without write access to the project',async()=>{
+    chmodSync(project,0o500);
+    try {
+      expect((await upload('image',{dataUrl:dataUrl('image/png',png)})).statusCode).toBe(200);
+      expect(readdirSync(project)).toEqual([]);
+    }finally{chmodSync(project,0o700);}
+  });
+
+  it('scopes external attachment preview, download and validation to its project',async()=>{
+    const result=await upload('image',{dataUrl:dataUrl('image/png',png)}),path=result.json().path;
+    for(const endpoint of ['read','preview','stat','export']) {
+      const url='/api/files/'+endpoint+'?'+new URLSearchParams({path,project_id:'project-1'});
+      expect((await app.inject({url,headers:{cookie:ownerCookie}})).statusCode).toBe(200);
+      expect((await app.inject({url,headers:{cookie:otherCookie}})).statusCode).toBe(403);
+      expect((await app.inject({url:url.replace('project-1','other-project'),headers:{cookie:ownerCookie}})).statusCode).toBe(403);
+    }
+    const url='/api/files/read?'+new URLSearchParams({path});
+    expect((await app.inject({url,headers:{cookie:ownerCookie}})).statusCode).toBe(200);
+    expect((await app.inject({url,headers:{cookie:otherCookie}})).statusCode).toBe(403);
+    expect((await app.inject({method:'POST',url:'/api/files/delete?project_id=project-1',headers:{cookie:ownerCookie},payload:{path}})).statusCode).toBe(403);
   });
 
   it('prunes old pasted files while keeping unrelated files', () => {

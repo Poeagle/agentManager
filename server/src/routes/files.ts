@@ -1,10 +1,11 @@
 import { FastifyPluginAsync, type FastifyRequest } from 'fastify';
 import { readdir, stat, lstat, readFile, writeFile, rm, rename, cp, open, realpath, mkdir } from 'fs/promises';
-import { createReadStream } from 'fs';
+import { createReadStream, realpathSync } from 'fs';
 import { join, resolve, extname, dirname, basename, relative, isAbsolute, sep } from 'path';
 import { execFile } from 'child_process';
-import { userOwnsFilesystemPath, userOwnsProject } from '../auth.js';
+import { userOwnsFilesystemPath, userOwnsProject, userProjectIds } from '../auth.js';
 import { getDb } from '../db/index.js';
+import { isProjectAttachment, isProjectUploadPath, projectUploadDirectory } from '../services/attachment-storage.js';
 import { privateResourcePath } from '../services/shared-resources/path-guard.js';
 import { createDirectoryExport } from '../services/file-export-process.js';
 import { DocumentPreviewError, previewOfficeDocumentDetailed, OFFICE_EXTENSIONS, SPREADSHEET_EXTENSIONS } from '../services/document-preview.js';
@@ -76,11 +77,21 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
     const body = (req.body || {}) as Record<string, unknown>;
     const paths = [query.path, body.path, body.pathA, body.pathB, body.src, body.destDir]
       .filter((value): value is string => typeof value === 'string' && value.length > 0);
-    if (typeof query.path === 'string' && typeof query.filename === 'string') paths.push(join(query.path, query.filename));
+    if (typeof query.path === 'string' && typeof query.filename === 'string' && !req.routeOptions.url?.endsWith('/files/upload')) paths.push(join(query.path, query.filename));
     if (typeof body.path === 'string' && typeof body.newName === 'string') paths.push(join(dirname(resolve(body.path)), body.newName));
     const recursiveOperation = /\/files\/(?:export|copy|move|delete|rename)$/.test(req.routeOptions.url || '');
     if (paths.some(path => privateResourcePath(path, recursiveOperation))) {
       return reply.code(403).send({ error: '个人共享资源须通过当前账号的共享资源页面管理' });
+    }
+    // External attachments grant only individual-file reads, scoped to an
+    // authorized project. Never turn this exception into directory/write access.
+    if (req.method === 'GET' && /\/files\/(?:read|preview|stat|export)$/.test(req.routeOptions.url || '')
+      && typeof query.path === 'string') {
+      const ids = userProjectIds(req.user!.id);
+      const projects = getDb().prepare('SELECT id,path FROM projects').all() as Array<{id:string;path:string}>;
+      if (projects.some(project => ids.has(project.id)
+        && (query.project_id === undefined || query.project_id === project.id)
+        && isProjectAttachment(query.path as string, project.path))) return;
     }
     // Project explorers carry their project id; the server, not the browser,
     // determines the root. Even administrators cannot escape this view's root.
@@ -98,9 +109,9 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
       const checkedPaths = [...paths];
       if (typeof body.path === 'string' && typeof body.newName === 'string') checkedPaths.push(join(dirname(resolve(body.path)), body.newName));
       if (typeof body.src === 'string' && typeof body.destDir === 'string') checkedPaths.push(join(body.destDir, basename(body.src)));
-      if (typeof query.path === 'string' && typeof query.filename === 'string') checkedPaths.push(join(query.path, query.filename));
+      if (typeof query.path === 'string' && typeof query.filename === 'string' && !req.routeOptions.url?.endsWith('/files/upload')) checkedPaths.push(join(query.path, query.filename));
       for (const path of checkedPaths) {
-        if (!(await withinProjectScope(path, scope))) {
+        if (!(await withinProjectScope(path, scope)) && !isProjectUploadPath(path, scope.realRoot)) {
           return reply.status(403).send({ error: '只能访问当前项目目录及其子目录' });
         }
       }
@@ -110,9 +121,46 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(403).send({ error: '不能删除、重命名或移动项目根目录' });
       }
     }
-    if (paths.some((path) => !userOwnsFilesystemPath(req.user!.id, path))) {
+    const allowedProjects = userProjectIds(req.user!.id);
+    const uploadProjects = getDb().prepare('SELECT id,path FROM projects').all() as Array<{id:string;path:string}>;
+    if (paths.some((path) => !userOwnsFilesystemPath(req.user!.id, path)
+      && !uploadProjects.some(project => allowedProjects.has(project.id) && isProjectUploadPath(path, project.path)))) {
       return reply.status(403).send({ error: 'Path is outside your assigned projects' });
     }
+  });
+
+  async function uploadDirectory(req: FastifyRequest, directory: string): Promise<string> {
+    const query = req.query as {project_id?:string};
+    const scopes = getDb().prepare('SELECT id,path FROM projects').all() as Array<{id:string;path:string}>;
+    const absolute = await realpath(resolve(directory));
+    const candidates = scopes.flatMap(project => {
+      if (query.project_id && query.project_id !== project.id) return [];
+      try {
+        const root = realpathSync(project.path);
+        return withinDirectory(absolute, root) || isProjectUploadPath(absolute, root) ? [{...project,root}] : [];
+      } catch { return []; }
+    }).sort((a,b)=>b.root.length-a.root.length);
+    const project = candidates[0];
+    if (!project || !userOwnsProject(req.user!.id, project.id)) throw Object.assign(new Error('Project access denied'),{code:'EACCES'});
+    if (!(await stat(absolute)).isDirectory()) throw Object.assign(new Error('Upload path is not a directory'),{code:'ENOTDIR'});
+    const target = isProjectUploadPath(absolute, project.root) ? absolute
+      : join(projectUploadDirectory(project.root, true), relative(project.root, absolute));
+    if (!isProjectUploadPath(target, project.root)) throw Object.assign(new Error('Unsafe upload directory'),{code:'EACCES'});
+    await mkdir(target,{recursive:true,mode:0o711});
+    return target;
+  }
+
+  app.post<{Body:{path:string;relative_path?:string}}>('/files/upload-directory',async(req,reply)=>{
+    const {path,relative_path: child=''}=req.body||{};
+    if(typeof path!=='string'||path.length>4096||typeof child!=='string'||child.length>4096||child.includes('\\')||child.includes('\0')||isAbsolute(child)||child.split('/').some(p=>p==='..'||p==='.'))return reply.code(400).send({error:'上传路径无效'});
+    try {
+      const root=await uploadDirectory(req,path),target=join(root,child);
+      // Check existing symlinks and nested Git repositories before creating paths.
+      const projects=getDb().prepare('SELECT path FROM projects').all() as Array<{path:string}>;
+      if(!projects.some(project=>isProjectUploadPath(target,project.path)))return reply.code(403).send({error:'上传路径无效'});
+      await mkdir(target,{recursive:true,mode:0o711});
+      return {ok:true,path:target};
+    }catch(error:any){return reply.code(error.code==='EACCES'?403:400).send({error:'无法创建平台上传目录'});}
   });
 
   app.post<{
@@ -132,14 +180,8 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      const targetDirectory = await realpath(resolve(directory));
-      if (!(await stat(targetDirectory)).isDirectory()) {
-        return reply.status(400).send({ error: 'Upload path is not a directory' });
-      }
+      const targetDirectory = await uploadDirectory(req, directory);
       const target = join(targetDirectory, filename);
-      if (!userOwnsFilesystemPath(req.user!.id, target)) {
-        return reply.status(403).send({ error: 'Path is outside your assigned projects' });
-      }
       // Exclusive creation also rejects existing symlinks and concurrent uploads.
       const handle = await open(target, 'wx', 0o600);
       try {
@@ -202,7 +244,7 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
           const fullPath = join(resolved, entry.name);
           if (privateResourcePath(fullPath)) continue;
           const scope = projectScopes.get(req);
-          if (scope && !(await withinProjectScope(fullPath, scope))) continue;
+          if (scope && !(await withinProjectScope(fullPath, scope)) && !isProjectUploadPath(fullPath,scope.realRoot)) continue;
           const stats = await stat(fullPath);
           files.push({
             name: entry.name,

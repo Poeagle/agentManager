@@ -336,6 +336,7 @@ Optional — copy `server/.env.example` to `server/.env`:
 | `PORT` | `42010` | Server port |
 | `HOST` | `127.0.0.1` | Explicit listen address (overrides `AGENTMANAGER_ALLOW_LAN`) |
 | `AGENTMANAGER_ALLOW_LAN` | `false` | Listen on all interfaces when `true` |
+| `AGENTMANAGER_ATTACHMENTS_DIR` | `attachments/` beside the database | Attachment storage outside all projects and Git working trees |
 | `AGENTMANAGER_DB_PATH` | `~/.agentmanager/agentmanager.db` | SQLite database path |
 | `AGENTMANAGER_HTTPS` | `false` | Mark login cookies `Secure`; enable behind HTTPS only |
 | `AGENTMANAGER_HOOK_SECRET` | generated | Master secret used to authenticate project event hooks |

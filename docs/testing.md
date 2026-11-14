@@ -35,7 +35,7 @@ npx playwright install chromium
   API payloads, themes and keyboard interaction.
 - `e2e`: Playwright runs the real Fastify and Vite applications against
   `.test-data/e2e`. The runner supplies a fake HOME, disables tmux/dtach, uses
-  ports 43110/43111, and deletes only that test directory before startup.
+  ports 43110/43111, and deletes only that test directory before startup. Uploaded attachments use a separate, temporary directory outside the repository, which the runner removes on shutdown.
 
 ## Session recovery coverage
 

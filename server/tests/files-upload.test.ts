@@ -1,8 +1,10 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { join, relative } from 'path';
+import {execFileSync} from 'child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { authHook, createSession, createUser } from '../src/auth.js';
+import {projectUploadDirectory} from '../src/services/attachment-storage.js';
 import { getDb } from '../src/db/index.js';
 import { fileRoutes } from '../src/routes/files.js';
 import { createTestDatabase } from './helpers/database.js';
@@ -43,7 +45,25 @@ function upload(path: string, filename: string, payload = Buffer.from([0, 1, 255
   });
 }
 
+function destination(directory:string,name:string){return join(projectUploadDirectory(project),relative(project,directory),name);}
+
 describe('file upload API', () => {
+  it('keeps a Git project unchanged when uploading folders and previews the central copy',async()=>{
+    execFileSync('git',['init','--quiet',project]);
+    writeFileSync(join(project,'tracked.txt'),'original');
+    execFileSync('git',['-c','safe.directory='+project,'-C',project,'add','tracked.txt']);
+    const gitStatus=()=>execFileSync('git',['-c','safe.directory='+project,'-C',project,'status','--porcelain','--untracked-files=all'],{encoding:'utf8'});
+    const before=gitStatus();
+    const create=(relative_path:string)=>app.inject({method:'POST',url:'/api/files/upload-directory?project_id=project-1',headers:{cookie},payload:{path:project,relative_path}});
+    const created=await create('folder/nested');expect(created.statusCode).toBe(200);
+    const uploaded=await upload(created.json().path,'note.txt',Buffer.from('central content'));
+    expect(uploaded.statusCode).toBe(200);expect(uploaded.json().path.startsWith(project+'/')).toBe(false);
+    expect((await app.inject({url:'/api/files/read?'+new URLSearchParams({project_id:'project-1',path:uploaded.json().path}),headers:{cookie}})).json().content).toBe('central content');
+    expect((await create('../escape')).statusCode).toBe(400);
+    expect(gitStatus()).toBe(before);expect(existsSync(join(project,'folder'))).toBe(false);
+    expect((await upload(project,'tracked.txt',Buffer.from('uploaded'))).statusCode).toBe(200);
+    expect(readFileSync(join(project,'tracked.txt'),'utf8')).toBe('original');expect(gitStatus()).toBe(before);
+  });
   it('creates folder hierarchies and empty directories without overwriting existing paths', async()=>{
     const create=(path:string)=>app.inject({method:'POST',url:'/api/files/directory?project_id=project-1',headers:{cookie},payload:{path}});
     const root=join(project,'资料');
@@ -51,8 +71,8 @@ describe('file upload API', () => {
     expect((await create(join(root,'空文件夹'))).statusCode).toBe(200);
     expect((await create(root)).json()).toEqual({ok:true,created:false});
     expect((await upload(root,'note.txt',Buffer.from('keep'))).statusCode).toBe(200);
-    expect((await create(join(root,'note.txt'))).statusCode).toBe(409);
-    expect(readFileSync(join(root,'note.txt'),'utf8')).toBe('keep');
+    expect((await create(join(root,'note.txt'))).statusCode).toBe(200);
+    expect(readFileSync(destination(root,'note.txt'),'utf8')).toBe('keep');
     expect((await create(outside+'/escape')).statusCode).toBe(403);
     symlinkSync(outside,join(project,'unsafe'));
     expect((await create(join(project,'unsafe','escape'))).statusCode).toBe(403);
@@ -64,29 +84,30 @@ describe('file upload API', () => {
     const entry=response.json().files.find((file:{name:string})=>file.name==='time.txt');
     expect(Number.isFinite(Date.parse(entry.modified_at))).toBe(true);
   });
-  it('saves binary bytes with the original Unicode filename in the requested directory', async () => {
+  it('saves binary bytes with the original Unicode filename in platform storage outside the requested project', async () => {
     const payload = Buffer.from([0, 1, 255, 128]);
     const response = await upload(join(project, 'reports'), '报表 & 数据.png', payload);
-    const destination = join(project, 'reports', '报表 & 数据.png');
+    const target = destination(join(project,'reports'),'报表 & 数据.png');
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ ok: true, path: destination, size: payload.length });
-    expect(readFileSync(destination)).toEqual(payload);
+    expect(response.json()).toEqual({ ok: true, path: target, size: payload.length });
+    expect(readFileSync(target)).toEqual(payload);
     expect(existsSync(join(project, '报表 & 数据.png'))).toBe(false);
   });
 
   it('accepts empty files and files larger than the default 1 MB parser limit', async () => {
     expect((await upload(project, 'empty.txt', Buffer.alloc(0))).statusCode).toBe(200);
-    expect(readFileSync(join(project, 'empty.txt')).length).toBe(0);
+    expect(readFileSync(destination(project,'empty.txt')).length).toBe(0);
     const payload = Buffer.alloc(2 * 1024 * 1024, 42);
     expect((await upload(project, 'data.bin', payload)).statusCode).toBe(200);
-    expect(readFileSync(join(project, 'data.bin')).equals(payload)).toBe(true);
+    expect(readFileSync(destination(project,'data.bin')).equals(payload)).toBe(true);
   });
 
   it('never overwrites existing files or directories', async () => {
     writeFileSync(join(project, 'keep.txt'), 'original');
+    expect((await upload(project, 'keep.txt')).statusCode).toBe(200);
     expect((await upload(project, 'keep.txt')).statusCode).toBe(409);
     expect(readFileSync(join(project, 'keep.txt'), 'utf8')).toBe('original');
-    expect((await upload(project, 'reports')).statusCode).toBe(409);
+    expect((await upload(project, 'reports')).statusCode).toBe(200);
   });
 
   it('allows only one concurrent upload to create the same name', async () => {
@@ -94,7 +115,7 @@ describe('file upload API', () => {
     expect(responses.map(response => response.statusCode).sort()).toEqual([200, 409]);
   });
 
-  it.each([['',400],['..',403],['.',400],['../escape.txt',403],['/absolute.txt',400],['sub/file.txt',403],['sub\\file.txt',400],['bad\0.txt',400]] as const)('rejects unsafe filename %j', async (filename,status) => {
+  it.each([['',400],['..',400],['.',400],['../escape.txt',400],['/absolute.txt',400],['sub/file.txt',400],['sub\\file.txt',400],['bad\0.txt',400]] as const)('rejects unsafe filename %j', async (filename,status) => {
     expect((await upload(project, filename)).statusCode).toBe(status);
   });
 
@@ -104,7 +125,7 @@ describe('file upload API', () => {
     expect((await upload(join(project, 'escape'), 'new.txt')).statusCode).toBe(403);
     writeFileSync(join(outside, 'secret.txt'), 'secret');
     symlinkSync(join(outside, 'secret.txt'), join(project, 'secret-link'));
-    expect((await upload(project, 'secret-link')).statusCode).toBe(403);
+    expect((await upload(project, 'secret-link')).statusCode).toBe(200);
     expect(readFileSync(join(outside, 'secret.txt'), 'utf8')).toBe('secret');
     expect(existsSync(join(outside, 'new.txt'))).toBe(false);
   });
@@ -112,7 +133,7 @@ describe('file upload API', () => {
   it('does not follow an existing symlink within the project', async () => {
     writeFileSync(join(project, 'keep.txt'), 'original');
     symlinkSync(join(project, 'keep.txt'), join(project, 'link.txt'));
-    expect((await upload(project, 'link.txt')).statusCode).toBe(409);
+    expect((await upload(project, 'link.txt')).statusCode).toBe(200);
     expect(readFileSync(join(project, 'keep.txt'), 'utf8')).toBe('original');
   });
 
@@ -128,8 +149,8 @@ describe('file upload API', () => {
   });
 
   it('rejects a missing path, nonexistent directory, or file used as a directory', async () => {
-    expect((await upload('', 'new.txt')).statusCode).toBe(403);
-    expect((await upload(join(project, 'missing'), 'new.txt')).statusCode).toBe(403);
+    expect((await upload('', 'new.txt')).statusCode).toBe(400);
+    expect((await upload(join(project, 'missing'), 'new.txt')).statusCode).toBe(404);
     writeFileSync(join(project, 'file.txt'), 'not a directory');
     expect((await upload(join(project, 'file.txt'), 'new.txt')).statusCode).toBe(400);
   });

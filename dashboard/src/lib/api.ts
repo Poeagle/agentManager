@@ -555,6 +555,7 @@ export const api = {
       fetchJSON<{ ok: boolean }>(`/skills/${tool}/${scope}/${encodeURIComponent(name)}?project_id=${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
   },
   files: {
+    createUploadDirectory: (path: string, relativePath = '', projectId?: string) => fetchJSON<{ok:boolean;path:string}>(fileEndpoint('/files/upload-directory',projectId),{method:'POST',body:JSON.stringify({path,relative_path:relativePath})}),
     createDirectory: (path: string, projectId?: string) => fetchJSON<{ok:boolean;created:boolean}>(fileEndpoint('/files/directory',projectId),{method:'POST',body:JSON.stringify({path})}),
     upload: (path: string, file: File, onProgress?: (fraction: number) => void, projectId?: string) =>
       uploadWithProgress<{ ok: boolean; path: string; size: number }>(
@@ -845,6 +846,7 @@ export const api = {
 export function scopeProjectFiles(files: typeof api.files, projectId?: string): typeof api.files {
   if (!projectId) return files;
   return {
+    createUploadDirectory: (path, child) => files.createUploadDirectory(path,child,projectId),
     createDirectory: (path) => files.createDirectory(path, projectId),
     list: (path, hidden) => files.list(path, hidden, projectId),
     read: (path) => files.read(path, projectId),

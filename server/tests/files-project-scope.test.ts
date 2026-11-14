@@ -91,8 +91,8 @@ describe('project-scoped file API (including administrators)', () => {
       headers: { cookie, 'content-type': 'application/octet-stream' }, payload: Buffer.from('new') });
     expect(response.statusCode).toBe(200);
     expect((await app.inject({ method: 'PUT', url: '/api/files/write?project_id=project-1', headers: { cookie },
-      payload: { path: join(project, 'new.txt'), content: 'updated' } })).statusCode).toBe(200);
-    expect(readFileSync(join(project, 'new.txt'), 'utf8')).toBe('updated');
+      payload: { path: response.json().path, content: 'updated' } })).statusCode).toBe(200);
+    expect(readFileSync(response.json().path, 'utf8')).toBe('updated');
   });
 
   it('denies members without access to the selected project', async () => {

@@ -46,7 +46,7 @@ test('chat uploads pasted images and dropped files, retains drafts, and restores
   await page.route(`**/api/sessions/${session.id}/input`,async route=>{posted=route.request().postDataJSON();await route.fulfill({response:await route.fetch()});});
   await send.click();await expect(input.locator('[data-attachment-id]')).toHaveCount(0);
   expect(posted.input).toBe('前文后文');expect(posted.attachments.map((item:any)=>item.offset)).toEqual([2,2]);expect(posted.attachments.map((item:any)=>item.kind)).toEqual(['image','file']);
-  for(const attachment of posted.attachments)expect(attachment.path.startsWith(join(path,'.agentmanager','pastes')+'/')).toBe(true);
+  for(const attachment of posted.attachments){expect(attachment.path.startsWith(path+'/')).toBe(false);expect(attachment.path).toContain('/pastes/paste-');}
   expect(readFileSync(posted.attachments[1].path,'utf8')).toBe('attachment payload');
   const text=nativeInputs.at(-1).input[0].text;expect(text).toContain('前文[Image #1]后文');expect(nativeInputs.at(-1).input[0].text_elements).toEqual([{byteRange:{start:6,end:16},placeholder:'[Image #1]'}]);
   appendFileSync(log,entry('response_item',{type:'message',role:'user',content:[{type:'input_text',text},...posted.attachments.filter((item:any)=>item.kind==='image').flatMap((item:any,index:number)=>[{type:'input_text',text:`<image name=[Image #${index+1}] path="${item.path}">`},{type:'input_image',image_url:'data:image/png;base64,'}])]})+entry('event_msg',{type:'task_complete',last_agent_message:'已接收图片和文件。'}));
