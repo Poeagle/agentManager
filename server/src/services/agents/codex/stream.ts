@@ -1,3 +1,4 @@
+import {rememberCodexTitle} from './thread-title.js';
 import {submissionFailure} from '../submission.js';
 import {rememberCodexSettings} from './settings-state.js';
 import {currentCodexEngine,rememberCodexThread} from './engine-context.js';
@@ -372,6 +373,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(waiting) {pending.delete(frame.id);clearTimeout(waiting.timer);if(frame.error) waiting.reject(new Error('Codex 事件接口不可用'));else {if(frame.result?.thread)rememberCodexThread(frame.result.thread);waiting.resolve(frame.result);}return;}
     const data=frame.params;
     if(data?.threadId!==threadId) return;
+    if(frame.method==='thread/name/updated'){rememberCodexTitle(threadId,data.threadName,currentCodexEngine().environmentId??'native');return;}
     if(frame.method==='thread/queue/changed'){void readQueue();return;}
     if(frame.method==='thread/tokenUsage/updated') {
       const usage=nativeUsageFrame(threadId,data.tokenUsage);

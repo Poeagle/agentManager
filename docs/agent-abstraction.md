@@ -255,3 +255,5 @@ Codex 登录账号的文件由其系统用户通过 SSH 读取和保存，与平
 # Codex Engine 认证和余额
 
 Codex 环境沿用 `native`、`provider:*` 和 `account:*` 标识以恢复既有会话。对外环境摘要增加 `source` 表示本机托管、本机托管 Provider 或系统用户；`auth_mode` 由后台运行时认证探测提供，在不能确认时为 `null`。来源不决定认证类型。账号额度和 API 钱包是不同数据源，余额查询由 Codex 适配器负责，不属于通用 Agent 额度契约。
+
+原生会话标题作为可选的中立 `native_title` 元数据提供给标签展示。Codex 适配器从 `thread/read` 的 `name` 和 `thread/name/updated` 的 `threadName` 采集，按 Engine 与原生会话身份匹配平台会话并持久化。订阅与 API Provider 使用相同路径；未提供标题时保持默认标签。用户 `customLabel` 始终优先，自动去重不把自动名称转成用户手动名称。

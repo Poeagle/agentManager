@@ -24,7 +24,7 @@ import { LiveSessionSignalDot } from '../lib/session-signal';
 import { SessionTabLabel } from '../lib/session-activity';
 import { promoteWarmTerminal, TERMINAL_COLD_DELAY_MS } from '../lib/warm-terminal-pool';
 import {
-  reconcileHydratedTerminalInstances, uniqueTabName, nextDefaultTabName,
+  reconcileHydratedTerminalInstances, uniqueTabName, nextDefaultTabName, applyNativeTabTitles,
   type TerminalInstance,
 } from '../lib/project-session-state';
 import { moveItemByKey, orderItemsByKeys } from '../lib/reorder';
@@ -75,6 +75,7 @@ function sessionTabKind(session: Session): 'session' | 'terminal' {
 }
 
 function nextSessionTabLabel(session: Session, tabs: TerminalInstance[]): string {
+  if(session.native_title?.trim())return uniqueTabName(session.native_title.trim(),tabs,session.id);
   const kind = sessionTabKind(session);
   const prefix = kind === 'terminal' ? 'Terminal' : 'Session';
   return nextDefaultTabName(prefix, tabs);
@@ -230,8 +231,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         const unique = uniqueTabName(name, seen, tab.id);
         if (unique !== name) {
           changed = true;
-          terminalLabelsRef.current[tab.id] = unique;
-          seen.push({ ...tab, customLabel: unique });
+          if(tab.customLabel?.trim()){terminalLabelsRef.current[tab.id] = unique;seen.push({ ...tab, customLabel: unique });}
+          else seen.push({ ...tab, label: unique });
         } else seen.push(tab);
       }
       return changed ? seen : previous;
@@ -535,15 +536,16 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       // seen by the server (just created locally, not in the poll response yet).
       const filtered = prev.filter((t) => aliveIds.has(t.id) || endedIds.has(t.id) || (!sessionsLoaded && !allServerIds.has(t.id)));
 
-      // The label belongs to the user's tab state. Session metadata must not
-      // overwrite an unrenamed tab's existing display name.
-      const relabeled = filtered.map((t) => {
+      // Explicit user names win. Native titles update only automatic labels.
+      const customTabs = filtered.map((t) => {
         // Restore a synced custom name if one arrived from the server after this
         // instance was first created locally.
         const synced = terminalLabelsRef.current[t.id];
         const withCustom = synced && synced !== t.customLabel ? { ...t, customLabel: synced } : t;
         return withCustom;
       });
+
+      const relabeled=applyNativeTabTitles(customTabs,Object.fromEntries(knownSessions.map(s=>[s.id,s.native_title])));
 
       // Add new sessions not yet tracked (skip user-closed sessions)
       const newTerminals: TerminalInstance[] = [];
