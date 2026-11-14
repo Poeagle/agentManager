@@ -52,7 +52,7 @@ flowchart LR
 
 新 Agent 的输入适配器声明 `input.supportsClientIdentity`，并在原生事件中保留客户端提交 ID，或通过可选 `input.messageId` 将提交 ID 映射到可靠的持久消息 ID。新建会话的 `launch.prepare` 接受可选的首次提交 ID，支持该能力的适配器声明 `launch.supportsInitialClientId`；若适配器掌握首次输入的持久消息 ID，可在启动结果中返回 `initialMessageId`。未声明首次输入身份支持的 Agent 不接收新建会话的定时任务。终端回退使用发送前文件边界和指纹关联；无法建立关联时拒绝发送，避免把其他输入误标为平台消息。Codex 首次定时输入需要可用的原生会话连接，Claude 使用 SDK 原生用户消息 ID。已绑定 Agent 的终端标签也使用来源关联；没有原生会话的纯终端任务仍是终端输入，没有结构化会话卡片。
 
-前端的 `ConversationCard` 统一问题、工具、自动上下文和有来源输入的折叠框架；内容、状态和默认展开行为由各自调用方提供。卡片不依赖 Agent 名称，新来源类型可以复用同一平台展示路径。
+前端的问题和工具使用 `ConversationCard` 内联折叠；自动上下文与有来源输入使用 `ConversationDialogCard` 打开居中、可滚动的详情窗口。卡片不依赖 Agent 名称，新来源类型可以复用同一平台展示路径。
 
 已登记会话的 Engine 绑定优先于线程路由缓存；旧记录中空绑定按界面与权限规则解释为 `native`。若同一原生 ID 同时绑定多个 Engine，平台拒绝猜测。原生会话已有其他写入者时，恢复明确失败，不切换账号、不终止占用者；需要用户回到原会话继续，或先在原位置停止它。
 
