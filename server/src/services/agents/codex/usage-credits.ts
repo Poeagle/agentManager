@@ -1,7 +1,7 @@
 /** Current-rate equivalent, not an invoice or historical price reconstruction.
- * Source: https://learn.chatgpt.com/docs/pricing (verified 2026-11-11).
+ * Source: https://learn.chatgpt.com/docs/pricing (verified 2026-11-14).
  * Values are credits per million uncached input / cached input / output. */
-export const CREDIT_RATE_DATE='2026-11-11';
+export const CREDIT_RATE_DATE='2026-11-14';
 export const CREDIT_RATES:Record<string,readonly [number,number,number]>={
  'gpt-6-astra':[250,25,1250],
  'gpt-6.1-sol':[50,2.5,250],
@@ -12,10 +12,11 @@ export const CREDIT_RATES:Record<string,readonly [number,number,number]>={
  'gpt-5.6-terra':[50,5,300],
  'gpt-5.6-luna':[5,0.5,30],
 };
-export function estimateUsageCredits(model:string|null,tier:string|null,tokens:Record<string,number|null>):number|null{
+export type UsageEstimateBasis='credits'|'subscription';
+export function estimateUsageCredits(model:string|null,tier:string|null,tokens:Record<string,number|null>,basis:UsageEstimateBasis='credits'):number|null{
  const rate=model?CREDIT_RATES[model]:null;
  const input=tokens.input_tokens,cached=tokens.cached_input_tokens,output=tokens.output_tokens;
  if(!rate||[input,cached,output].some(v=>typeof v!=='number'||!Number.isFinite(v)||v<0)||cached!>input!)return null;
- const multiplier=tier==='fast'||tier==='priority'?2:tier==='ultrafast'?6:!tier||tier==='default'||tier==='standard'?1:null;
+ const multiplier=tier==='fast'||tier==='priority'?(basis==='subscription'?2.5:2):tier==='ultrafast'?(basis==='subscription'?8:6):!tier||tier==='default'||tier==='standard'?1:null;
  return multiplier===null?null:((input!-cached!)*rate[0]+cached!*rate[1]+output!*rate[2])*multiplier/1e6;
 }

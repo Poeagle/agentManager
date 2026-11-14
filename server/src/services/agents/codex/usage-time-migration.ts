@@ -33,10 +33,10 @@ export function retainUnassignedUsage(account:string,timezone:string,matches:Mat
   if(requests>0||(tokens.total_tokens??0)>0)insert.run(account,JSON.stringify([timezone,row.event_key]),timezone,row.day,row.cwd,row.model,row.tier,JSON.stringify({...tokens,requests}));
  }
 }
-export function unassignedUsage(account:string){
+export function unassignedUsage(account:string,basis:import('./usage-credits.js').UsageEstimateBasis='credits'){
  const rows=getDb().prepare('SELECT model,tier,tokens FROM codex_usage_unassigned WHERE account=?').all(account) as {model:string|null;tier:string|null;tokens:string}[];
  if(!rows.length)return null;
  const tokens:Counters=Object.fromEntries(tokenFields.map(k=>[k,0]));let requests=0,credits:number|null=null;
- for(const row of rows){const value=JSON.parse(row.tokens);requests+=value.requests;for(const k of tokenFields)tokens[k]=tokens[k]===null||value[k]===null?null:tokens[k]!+value[k];const amount=estimateUsageCredits(row.model,row.tier,value);if(amount!==null)credits=(credits??0)+amount;}
+ for(const row of rows){const value=JSON.parse(row.tokens);requests+=value.requests;for(const k of tokenFields)tokens[k]=tokens[k]===null||value[k]===null?null:tokens[k]!+value[k];const amount=estimateUsageCredits(row.model,row.tier,value,basis);if(amount!==null)credits=(credits??0)+amount;}
  return {tokens,requests,estimated_credits:credits};
 }

@@ -151,7 +151,7 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
   finally{controllers.delete(id);}
  })();pending.set(id,task);try{await task;}finally{pending.delete(id);}
 }
-function allocatedQuota(id:string){
+function allocatedQuota(id:string,range?:{start:string|null;end:string|null}){
  const db=getDb(),samples=quotaSamples(id);
  if(samples.length<2)return new Map<string,number>();
  const status=db.prepare('SELECT checked_at,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;partial:number}|undefined;
@@ -164,7 +164,7 @@ function allocatedQuota(id:string){
  const events=db.prepare('SELECT at,day,hour,cwd,model,tier,tokens FROM codex_usage_dedup_events WHERE account=? AND at IS NOT NULL AND julianday(at)>julianday(?) AND julianday(at)<=julianday(?) ORDER BY at LIMIT ?').all(id,samples[0].checked_at,samples[samples.length-1].checked_at,USAGE_EVENT_LIMIT+1) as Array<{at:string;day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;tokens:string}>;
  if(events.length>USAGE_EVENT_LIMIT)return new Map<string,number>();
  const boundary=db.prepare('SELECT started_at FROM codex_usage_scan_boundary WHERE account=?').get(id) as {started_at:string}|undefined;
- const hourly=allocateQuota(samples,events,boundary?.started_at??null),result=new Map(hourly);
+ const hourly=allocateQuota(samples,events,boundary?.started_at??null,(start,end)=>{if(range){range.start??=start;range.end=end;}}),result=new Map(hourly);
  for(const [key,value] of hourly){const [day,,cwd,model]=JSON.parse(key);const daily=JSON.stringify([day,null,cwd,model]);result.set(daily,(result.get(daily)??0)+value);}
  return result;
 }
@@ -172,10 +172,10 @@ function quotaByModel(allocation:Map<string,number>,day:string,cwd:string,model:
  return allocation.get(JSON.stringify([day,hour??null,cwd,model]))??null;
 }
 export function cachedAccountUsage(id:string){
- const db=getDb(),timezone=usageStoredTimezone(id),timezone_pending=timezone!==usageTimezone()?usageTimezone():null,unassigned=unassignedUsage(id);
+ const db=getDb(),timezone=usageStoredTimezone(id),timezone_pending=timezone!==usageTimezone()?usageTimezone():null;
+ const environment=getCodexEnvironment(id),basis=environment.kind==='provider'?'credits':'subscription',unassigned=unassignedUsage(id,basis);
  const source=db.prepare('SELECT identity FROM codex_usage_sources WHERE account=?').get(id) as {identity:string}|undefined;
  if(source&&source.identity!==usageIdentity(getCodexEnvironment(id)))return {initialized:false,checked_at:null,error:null,partial:true,progress:null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:[]};
- const environment=getCodexEnvironment(id);
  if(environment.kind==='provider'&&(!usageHome(environment)||providerHistoryIsShared(id,usageHome(environment))))return {initialized:false,checked_at:null,error:'历史目录与其他 Engine 共用或无法确认，未统计以避免重复',partial:true,progress:null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:[]};
  const status=db.prepare('SELECT checked_at,error,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;error:string|null;partial:number}|undefined;
  const rule=db.prepare('SELECT version,state,reason FROM codex_usage_rule_versions WHERE account=?').get(id) as {version:number;state:string;reason:string|null}|undefined;
@@ -187,17 +187,17 @@ export function cachedAccountUsage(id:string){
  const counterColumns=tokenFields.map(k=>`json_extract(tokens,'$.${k}') AS ${k}`).join(',');
  const breakdown=db.prepare(`SELECT day,cwd,model,tier,COALESCE(json_extract(tokens,'$.requests'),1) requests,${counterColumns} FROM codex_usage_events WHERE account=?`).all(id) as Array<Record<string,any>>;
  for(const row of breakdown){
-  const key=JSON.stringify([row.day,row.cwd]),group=estimates.get(key)||{value:0,covered:0,requests:0};const value=estimateUsageCredits(row.model,row.tier,row);group.requests+=row.requests;if(value!==null){group.value+=value;group.covered+=row.requests;}estimates.set(key,group);
+  const key=JSON.stringify([row.day,row.cwd]),group=estimates.get(key)||{value:0,covered:0,requests:0};const value=estimateUsageCredits(row.model,row.tier,row,basis);group.requests+=row.requests;if(value!==null){group.value+=value;group.covered+=row.requests;}estimates.set(key,group);
   const byModel=models.get(key)||new Map(),modelKey=JSON.stringify(row.model),model=byModel.get(modelKey)||{model:row.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0}};
   for(const field of tokenFields)model.tokens[field]=model.tokens[field]===null||row[field]===null?null:model.tokens[field]!+row[field];
   model.credit_coverage.total+=row.requests;if(value!==null){model.estimated_credits=(model.estimated_credits??0)+value;model.credit_coverage.covered+=row.requests;}
   byModel.set(modelKey,model);models.set(key,byModel);
  }
- const allocation=allocatedQuota(id);
+ const quota_range:{start:string|null;end:string|null}={start:null,end:null},allocation=allocatedQuota(id,quota_range);
  const projects=db.prepare('SELECT name,path FROM projects').all() as {name:string;path:string}[];
  const progress=db.prepare('SELECT data FROM codex_usage_progress WHERE account=?').get(id) as {data:string}|undefined;
  const initialized=!!db.prepare('SELECT account FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
- return {initialized,checked_at:status?.checked_at??null,error:ruleWarning??status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:!!ruleWarning||status?.partial!==0||rows.length>5000||!!timezone_pending||!!unassigned,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:rows.slice(0,5000).map(row=>{
+ return {initialized,checked_at:status?.checked_at??null,quota_range,error:ruleWarning??status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:!!ruleWarning||status?.partial!==0||rows.length>5000||!!timezone_pending||!!unassigned,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:rows.slice(0,5000).map(row=>{
   const match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];
   const estimate=estimates.get(JSON.stringify([row.day,row.cwd]));
   return {date:row.day,cwd:row.cwd,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null,models:[...(models.get(JSON.stringify([row.day,row.cwd]))?.values()||[])].map(model=>({...model,actual_quota:quotaByModel(allocation,row.day,row.cwd,model.model)})).sort((a,b)=>(b.tokens.total_tokens??0)-(a.tokens.total_tokens??0))};
@@ -236,6 +236,7 @@ export async function backfillUsageHours(id:string):Promise<void>{
  * copies are excluded and marked partial rather than counted twice. */
 export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',single=false){
  type GroupEvent={day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string};
+ const basis=single&&getCodexEnvironment(ids[0]).kind!=='provider'?'subscription':'credits';
  const db=getDb(),events=new Map<string,GroupEvent|null>(),legacy:Array<{key:string;event:GroupEvent;unassigned?:boolean}>=[],aliases=new Map<string,string|null>();let partial=false,processed=0;const checked:string[]=[],timezone=usageTimezone(),unassignedEvents=new Map<string,GroupEvent|null>();
  const merge=(key:string,event:GroupEvent)=>{if(!events.has(key)){events.set(key,event);return;}const current=events.get(key);if(!current)return;const {hour:a,...left}=current,{hour:b,...right}=event;if(JSON.stringify(left)!==JSON.stringify(right)||a&&b&&a!==b){events.set(key,null);partial=true;}else if(!a&&b)current.hour=b;};
  const all=allCodexEnvironments().filter(e=>e.enabled);
@@ -270,7 +271,7 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   partial=true;if(!unassignedEvents.has(resolved))unassignedEvents.set(resolved,event);else if(JSON.stringify(unassignedEvents.get(resolved))!==JSON.stringify(event))unassignedEvents.set(resolved,null);
  }
  const retained={tokens:Object.fromEntries(tokenFields.map(k=>[k,0])) as Record<string,number|null>,requests:0,estimated_credits:null as number|null};
- for(const event of unassignedEvents.values())if(event){const counters=JSON.parse(event.tokens);retained.requests++;for(const k of tokenFields)retained.tokens[k]=retained.tokens[k]===null||counters[k]===null?null:retained.tokens[k]!+counters[k];const amount=estimateUsageCredits(event.model,event.tier,counters);if(amount!==null)retained.estimated_credits=(retained.estimated_credits??0)+amount;}
+ for(const event of unassignedEvents.values())if(event){const counters=JSON.parse(event.tokens);retained.requests++;for(const k of tokenFields)retained.tokens[k]=retained.tokens[k]===null||counters[k]===null?null:retained.tokens[k]!+counters[k];const amount=estimateUsageCredits(event.model,event.tier,counters,basis);if(amount!==null)retained.estimated_credits=(retained.estimated_credits??0)+amount;}
  const grouped=new Map<string,{date:string;hour?:string|null;cwd:string;tokens:Record<string,number|null>;requests:number;models:Map<string,{model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number}}>}>();
  for(const event of events.values()){
   if(!event)continue;const hour=granularity==='hour'?event.hour:null;if(granularity==='hour'&&!hour)partial=true;const key=JSON.stringify([event.day,hour,event.cwd]);let row=grouped.get(key);
@@ -278,7 +279,7 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   const tokens=JSON.parse(event.tokens);row.requests++;
   const modelKey=JSON.stringify(event.model);let model=row.models.get(modelKey);
   if(!model){model={model:event.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0}};row.models.set(modelKey,model);}
-  model.credit_coverage.total++;const estimate=estimateUsageCredits(event.model,event.tier,tokens);if(estimate!==null){model.estimated_credits=(model.estimated_credits??0)+estimate;model.credit_coverage.covered++;}
+  model.credit_coverage.total++;const estimate=estimateUsageCredits(event.model,event.tier,tokens,basis);if(estimate!==null){model.estimated_credits=(model.estimated_credits??0)+estimate;model.credit_coverage.covered++;}
   for(const field of tokenFields){row.tokens[field]=row.tokens[field]===null||tokens[field]===null?null:row.tokens[field]!+tokens[field];model.tokens[field]=model.tokens[field]===null||tokens[field]===null?null:model.tokens[field]!+tokens[field];}
  }
  if(grouped.size>5000)partial=true;
@@ -288,9 +289,9 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   const knownHourly=[...grouped.values()].reduce((sum,row)=>sum+(row.tokens.total_tokens??0),0);
   if(knownDaily!==knownHourly||daily.rows.some(row=>row.tokens.total_tokens==null))partial=true;
  }
- const allocation=single?allocatedQuota(ids[0]):new Map<string,number>();
+ const quota_range:{start:string|null;end:string|null}={start:null,end:null},allocation=single?allocatedQuota(ids[0],quota_range):new Map<string,number>();
  const projects=db.prepare('SELECT name,path FROM projects').all() as {name:string;path:string}[];
- return {initialized:checked.length>0,checked_at:checked.sort()[0]??null,timezone,unassigned:single?unassignedUsage(ids[0]):retained.requests?retained:null,credit_rate_date:CREDIT_RATE_DATE,partial,error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()].map(model=>({...model,actual_quota:quotaByModel(allocation,row.date,row.cwd,model.model,row.hour)})),known=entries.filter(m=>m.estimated_credits!==null),match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];return {...row,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
+ return {initialized:checked.length>0,checked_at:checked.sort()[0]??null,quota_range,timezone,unassigned:single?unassignedUsage(ids[0],basis):retained.requests?retained:null,credit_rate_date:CREDIT_RATE_DATE,partial,error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()].map(model=>({...model,actual_quota:quotaByModel(allocation,row.date,row.cwd,model.model,row.hour)})),known=entries.filter(m=>m.estimated_credits!==null),match=projects.filter(p=>row.cwd===p.path||row.cwd.startsWith(p.path.replace(/\/$/,'')+'/')).sort((a,b)=>b.path.length-a.path.length)[0];return {...row,project_name:match?.name??(row.cwd.split('/').filter(Boolean).pop()||'未归属'),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
 }
 /** Re-read with the current rule version, replacing only a proven superset of
  * the existing cache. A failed check retains all old data and retries later. */

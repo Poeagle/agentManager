@@ -12,9 +12,9 @@ it('loads and groups precise UTC hourly records without changing daily statistic
  expect(await screen.findByText('2026-11-11 12:00')).toBeVisible();expect(vi.mocked(fetchJSON).mock.calls.some(([url])=>url.includes('granularity=hour'))).toBe(true);
 });
 it('shows local-day usage, formats collection time in the same zone and explicitly retains unassigned history',async()=>{
- vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:true,timezone:'Asia/Taipei',checked_at:'2026-11-11T16:34:39Z',unassigned:{tokens:{total_tokens:100},requests:1,estimated_credits:1},rows:[{date:'2026-11-12',cwd:'/local',estimated_credits:2,tokens:{input_tokens:20,cached_input_tokens:10,output_tokens:0,total_tokens:20}}]}}:{account:{},resets:null} as any);
+ vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:true,timezone:'Asia/Taipei',quota_range:{start:'2026-11-11T16:00:00Z',end:'2026-11-11T16:30:00Z'},checked_at:'2026-11-11T16:34:39Z',unassigned:{tokens:{total_tokens:100},requests:1,estimated_credits:1},rows:[{date:'2026-11-12',cwd:'/local',estimated_credits:2,tokens:{input_tokens:20,cached_input_tokens:10,output_tokens:0,total_tokens:20}}]}}:{account:{},resets:null} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="local" name="Local" onClose={()=>{}}/></QueryClientProvider>);
- expect(await screen.findByText('/local')).toBeVisible();expect(screen.getByText(/上次采集/)).toHaveTextContent('2026/11/12 00:34:39');expect(screen.getByText(/上次采集/)).toHaveTextContent('本地时间（Asia/Taipei）');expect(screen.getByText('2026-11-12')).toBeVisible();expect(screen.queryByText(/已保留 100 Token/)).toBeNull();expect(screen.getByText(/周从本地周一开始/)).toBeVisible();
+ expect(await screen.findByText('/local')).toBeVisible();expect(screen.getByText(/上次采集/)).toHaveTextContent('2026/11/12 00:34:39');expect(screen.getByText(/上次采集/)).toHaveTextContent('本地时间（Asia/Taipei）');expect(screen.getByText(/耗用率统计/)).toHaveTextContent('2026/11/12 00:00:00 ～ 2026/11/12 00:30:00');expect(screen.getByText('2026-11-12')).toBeVisible();expect(screen.queryByText(/已保留 100 Token/)).toBeNull();expect(screen.getByText(/周从本地周一开始/)).toBeVisible();
 });
 it('orders estimated Credits before spend share and uses Credits rather than Token ratios at each level',async()=>{
  const item=(cwd:string,model:string,n:number,credit:number)=>({date:'2026-11-11',cwd,project_name:cwd.slice(1),estimated_credits:credit,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n},models:[{model,estimated_credits:credit,actual_quota:0.25,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n}}]});
@@ -24,7 +24,7 @@ it('orders estimated Credits before spend share and uses Credits rather than Tok
  expect(within(screen.getByText('/Alpha').closest('tr')!).getByText('0.25')).toBeVisible();expect(screen.getByText('/Alpha').closest('tr')!.lastElementChild).toHaveTextContent('10.0%');expect(screen.getByText('/Beta').closest('tr')!.lastElementChild).toHaveTextContent('90.0%');expect(screen.getByText('/Zero').closest('tr')!.lastElementChild).toHaveTextContent('0.0%');
  fireEvent.click(screen.getByRole('button',{name:'展开 Alpha 模型'}));expect(screen.getByText('cheap').closest('tr')!.lastElementChild).toHaveTextContent('10.0%');
  fireEvent.change(screen.getByRole('combobox',{name:'统计维度'}),{target:{value:'model'}});expect(screen.getByText('expensive').closest('tr')!.lastElementChild).toHaveTextContent('90.0%');
- fireEvent.change(screen.getByLabelText('搜索项目或目录'),{target:{value:'Zero'}});expect(screen.getByText('free').closest('tr')!.lastElementChild).toHaveTextContent('—');
+ fireEvent.change(screen.getByLabelText('搜索项目或目录'),{target:{value:'Zero'}});expect(screen.getByText('free').closest('tr')!.lastElementChild).toBeEmptyDOMElement();
 });
 it('opens a centered dialog, exposes reset expiry and expands dates into project usage',async()=>{
  vi.mocked(fetchJSON).mockImplementation(async(path)=>path.endsWith('insights')?{usage:{checked_at:null,error:null,partial:true,timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/project',estimated_credits:1,tokens:{input_tokens:10,cached_input_tokens:null,output_tokens:0,total_tokens:10}}]}}:{account:{email:'fixture@example.invalid',plan:'pro'},resets:{availableCount:2,credits:[{status:'available',expiresAt:1800000000,grantedAt:1700000000}]}} as any);
@@ -72,4 +72,22 @@ it('filters leaves before grouping and sorts parents and children numerically',a
  fireEvent.click(screen.getByRole('button',{name:'展开 dolphindb_manager 模型'}));const large=screen.getByText('large').closest('tr')!,small=screen.getByText('small').closest('tr')!;expect(large.compareDocumentPosition(small)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
  fireEvent.click(screen.getByRole('button',{name:'筛选总量'}));const numbers=screen.getByRole('dialog',{name:'总量筛选'});fireEvent.change(within(numbers).getByLabelText('总量最小值'),{target:{value:'10'}});fireEvent.click(within(numbers).getByRole('button',{name:'筛选'}));expect(screen.queryByText('small')).not.toBeInTheDocument();expect(screen.getAllByText('100.0%').length).toBeGreaterThan(0);
  fireEvent.click(screen.getByRole('button',{name:'清除全部'}));expect(screen.getByText('/work/other')).toBeVisible();expect(screen.getByRole('columnheader',{name:'总量'})).toHaveAttribute('aria-sort','none');
+});
+it('leaves missing usage cells blank while retaining an actual zero',async()=>{
+ const tokens={input_tokens:10,cached_input_tokens:null,output_tokens:0,total_tokens:10};
+ vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:false,timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/blank',tokens,models:[{model:'model',tokens,estimated_credits:null,actual_quota:0}]}]}}:{account:{},resets:null} as any);
+ render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="blank" name="Blank" onClose={()=>{}}/></QueryClientProvider>);
+ const row=(await screen.findByText('/blank')).closest('tr')!,cells=within(row).getAllByRole('cell');expect(cells[3]).toBeEmptyDOMElement();expect(cells[4]).toBeEmptyDOMElement();expect(cells[5]).toBeEmptyDOMElement();expect(cells[8]).toHaveTextContent('0');expect(cells[9]).toBeEmptyDOMElement();expect(cells[10]).toBeEmptyDOMElement();
+});
+it('omits account quota and estimated allocation columns for API engines',async()=>{
+ const tokens={input_tokens:10,cached_input_tokens:0,output_tokens:0,total_tokens:10};
+ vi.mocked(fetchJSON).mockResolvedValue({usage:{initialized:true,partial:false,timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/api',tokens,models:[{model:'api-model',tokens}]}]}} as any);
+ render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="api" name="API" groupId="group" apiOverview={<span>API</span>} onClose={()=>{}}/></QueryClientProvider>);
+ const row=(await screen.findByText('/api')).closest('tr')!;expect(within(row).getAllByRole('cell')).toHaveLength(8);for(const label of ['耗用率','预估额度','占比'])expect(screen.queryByRole('columnheader',{name:label})).toBeNull();
+});
+it('hides the historical reconciliation warning while keeping data available',async()=>{
+ const tokens={input_tokens:10,cached_input_tokens:0,output_tokens:0,total_tokens:10};
+ vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:true,error:'历史缓存无法完整核对（部分历史请求无法从原始文件中找到），已保留旧数据；部分估算可能使用旧规则',timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/retained',tokens,models:[{model:'model',tokens}]}]}}:{account:{},resets:null} as any);
+ render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="retained" name="Retained" onClose={()=>{}}/></QueryClientProvider>);
+ expect(await screen.findByText('/retained')).toBeVisible();expect(screen.queryByText(/历史缓存无法完整核对/)).toBeNull();
 });

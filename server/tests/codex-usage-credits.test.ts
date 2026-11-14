@@ -6,6 +6,8 @@ describe('current-rate Codex credit equivalents',()=>{
   expect(estimateUsageCredits('gpt-6.1-sol',null,tokens)).toBe(46.5);
   expect(estimateUsageCredits('gpt-6.1-sol','fast',tokens)).toBe(93);
   expect(estimateUsageCredits('gpt-6.1-sol','ultrafast',tokens)).toBe(279);
+  expect(estimateUsageCredits('gpt-6.1-sol','fast',tokens,'subscription')).toBe(116.25);
+  expect(estimateUsageCredits('gpt-6.1-sol','ultrafast',tokens,'subscription')).toBe(372);
  });
  it('keeps unsupported models, unknown modes and invalid counters unknown',()=>{
   expect(estimateUsageCredits('future-model',null,tokens)).toBeNull();
