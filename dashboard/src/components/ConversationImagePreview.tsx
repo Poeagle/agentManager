@@ -114,7 +114,7 @@ export function ImagePreview({image,onClose}:{image:PreviewImage;onClose:()=>voi
   const fit=natural.width?Math.min(1,(maxWidth-24)/natural.width,(maxHeight-24)/natural.height):1;
   const scale=zoom??fit;
   const width=natural.width?Math.max(720,natural.width*scale+58):720,height=natural.height?Math.min(maxHeight,Math.max(240,natural.height*scale+24)):Math.min(240,maxHeight);
-  return <Dialog title={`图片预览 · ${image.name}`} size="image" width={width} onClose={onClose} busy={exporting}>
+  const toolbar=(
     <div className="conversation-image-preview-toolbar" role="group" aria-label="图片缩放">
       <span>{natural.width?`${natural.width} × ${natural.height}`:'正在加载…'}</span>
       <button type="button" disabled={!natural.width||scale<=.1} aria-label="缩小图片" onClick={()=>setZoom(Math.max(.1,scale/1.25))}><Minus size={15}/></button>
@@ -124,6 +124,8 @@ export function ImagePreview({image,onClose}:{image:PreviewImage;onClose:()=>voi
       <label className="conversation-image-export-format"><span className="sr-only">图片下载格式</span><select aria-label="图片下载格式" value={format} disabled={exporting} onChange={event=>{setFormat(event.target.value as ImageExportFormat);setExportNotice('');setExportError('');}}><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option>{isSvgImage(image)&&<option value="svg">SVG（矢量）</option>}<option value="original">原图</option></select></label>
       <button type="button" aria-label="下载图片" disabled={!natural.width||failed||exporting} onClick={()=>void download()}>{exporting?<Loader2 size={15} className="animate-spin"/>:<Download size={15}/>}下载</button>
     </div>
+  );
+  return <Dialog title={`图片预览 · ${image.name}`} size="image" width={width} onClose={onClose} busy={exporting} className="conversation-image-dialog" actions={toolbar}>
     <div ref={stage} className="conversation-image-preview-stage" style={{height}} tabIndex={0} aria-label="图片预览区域">
       {failed?<p role="alert">图片加载失败，请关闭后重试。</p>:<div className="conversation-image-preview-canvas" style={{width:Math.max(available.width,natural.width*scale),height:Math.max(available.height,natural.height*scale)}}>
         <img src={image.src} alt={image.name} draggable={false} onLoad={event=>setNatural({width:event.currentTarget.naturalWidth,height:event.currentTarget.naturalHeight})} onError={()=>setFailed(true)} style={{width:natural.width?natural.width*scale:undefined,height:natural.height?natural.height*scale:undefined}}/>

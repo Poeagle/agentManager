@@ -19,7 +19,7 @@ describe('conversation image preview',()=>{
   });
   it('keeps a small image in a roomy dialog before and after it loads',()=>{
     render(<ConversationMessageAttachments items={[image]} projectId="p"/>);fireEvent.click(screen.getByRole('button',{name:'打开附件 截图.png'}));
-    const dialog=screen.getByRole('dialog');expect(within(dialog).getByLabelText('图片预览区域')).toHaveStyle({height:'240px'});
+    const dialog=screen.getByRole('dialog');expect(within(dialog).getByRole('group',{name:'图片缩放'}).closest('header')).toBe(within(dialog).getByRole('heading').closest('header'));expect(within(dialog).getByLabelText('图片预览区域')).toHaveStyle({height:'240px'});
     const full=within(dialog).getByRole('img');Object.defineProperties(full,{naturalWidth:{value:312},naturalHeight:{value:171}});fireEvent.load(full);
     expect(within(dialog).getByLabelText('图片预览区域')).toHaveStyle({height:'240px'});
     expect(full).toHaveStyle({width:'312px',height:'171px'});

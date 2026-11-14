@@ -64,6 +64,7 @@ describe('conversation send transaction', () => {
     const view=await mount();fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
     input('keep me');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));
     await waitFor(()=>expect(submit).toHaveBeenCalledOnce());await waitFor(()=>expect(screen.getByRole('button',{name:'发送批量内容'})).toBeDisabled());
+    expect(screen.getByRole('button',{name:'撤回第 1 条消息'})).toBeDisabled();expect(screen.getByRole('button',{name:'删除第 1 条消息'})).toBeDisabled();
     const id=submit.mock.calls[0][2];view.unmount();await mount();
     expect(screen.getByRole('button',{name:'发送批量内容'})).toBeDisabled();expect(submit).toHaveBeenCalledOnce();
     act(()=>Socket.latest.emit({type:'snapshot',messages:[{id:'echo',role:'user',text:'keep me',client_id:id,timestamp:new Date().toISOString()}],busy:false,stage:'idle'}));
@@ -108,6 +109,13 @@ describe('conversation send transaction', () => {
     fireEvent.click(screen.getByRole('button',{name:'撤回第 1 条消息'}));
     expect(loadComposer(composerKey('local',session.id)).draftAttachments).toEqual([image]);view.unmount();await mount();
     expect(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveTextContent('pic');expect(loadComposer(composerKey('local',session.id)).draftAttachments).toEqual([image]);
+  });
+  it('deletes a staged entry without changing the current input and persists the removal',async()=>{
+    const view=await mount();fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
+    input('remove');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));input('keep');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));input('editing');
+    fireEvent.click(screen.getByRole('button',{name:'删除第 1 条消息'}));
+    const saved=loadComposer(composerKey('local',session.id));expect(saved.entries.map(e=>e.text)).toEqual(['keep']);expect(saved.draft).toBe('editing');view.unmount();await mount();
+    expect(screen.getByRole('complementary',{name:'批量待发内容'})).toHaveTextContent('keep');expect(screen.getByRole('complementary',{name:'批量待发内容'})).not.toHaveTextContent('remove');
   });
   it('reconciles the terminal echo when its native ID differs from the browser ID',async()=>{
     const response=deferred<SendResult>(),submit=vi.spyOn(api.agent,'sendInput').mockReturnValue(response.promise);await mount();input('terminal echo');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await waitFor(()=>expect(submit).toHaveBeenCalledOnce());

@@ -1,11 +1,11 @@
-.conversation-image-preview-toolbar {display:flex;flex-wrap:nowrap;overflow-x:auto;white-space:nowrap;align-items:center;justify-content:flex-start;gap:8px;margin:0 0 10px;font-size:12px;}
+.conversation-image-preview-toolbar {display:flex;flex-wrap:nowrap;overflow-x:auto;white-space:nowrap;align-items:center;justify-content:flex-start;gap:6px;margin:0;font:500 11px/18px var(--app-font-family);min-width:0;flex:1 1 auto;}
 .conversation-image-export-format select {padding:5px 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg-primary);color:var(--text-primary);font:inherit;}
 .conversation-image-export-error {margin-top:8px;font-size:12px;color:var(--error);}
 .conversation-image-preview-toolbar>* {flex-shrink:0;}
 .conversation-image-preview-toolbar>span {margin-right:auto;color:var(--text-muted);}
 .conversation-image-preview-toolbar button {display:flex;align-items:center;justify-content:center;gap:5px;padding:5px 7px;border:1px solid var(--border);border-radius:5px;}
 .conversation-image-preview-toolbar button:disabled {opacity:.4;}
-.conversation-image-preview-toolbar output {min-width:38px;text-align:center;}
+.conversation-image-preview-toolbar output {min-width:32px;text-align:center;}
 .conversation-image-preview-stage {width:100%;height:min(72dvh,900px);overflow:auto;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;overscroll-behavior:contain;}
 .conversation-image-preview-canvas {display:flex;align-items:center;justify-content:center;}
 .conversation-image-preview-canvas img {display:block;max-width:none;max-height:none;object-fit:contain;flex-shrink:0;}
@@ -23,3 +23,12 @@
 .conversation-image-hover>span {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .conversation-preview-dock {display:flex;align-items:center;gap:5px;font-size:12px;color:var(--accent);white-space:nowrap;}
 .conversation-preview-dock:disabled {opacity:.45;cursor:not-allowed;}
+
+.conversation-image-dialog>header {gap:8px;padding:10px 12px;}
+.conversation-image-dialog>header>h3 {flex:0 1 160px;min-width:80px;font:500 11px/18px var(--app-font-family);}
+.conversation-image-dialog>header>button {display:flex;align-items:center;justify-content:center;width:24px;height:26px;color:var(--text-secondary);}
+.conversation-image-dialog .conversation-image-preview-toolbar button,
+.conversation-image-dialog .conversation-image-export-format select {height:26px;padding:3px 6px;border:1px solid var(--border);border-radius:5px;background:var(--bg-primary);color:var(--text-primary);font:inherit;}
+.conversation-image-dialog .conversation-image-preview-toolbar svg {width:13px;height:13px;}
+.conversation-image-preview-toolbar button:focus-visible,
+.conversation-image-export-format select:focus-visible {outline:2px solid var(--accent);outline-offset:1px;}
