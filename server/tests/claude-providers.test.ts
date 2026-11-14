@@ -3,17 +3,22 @@ import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
 import {createUser} from '../src/auth.js';
 import {readAgentManagement} from '../src/services/agents/management-store.js';
+import {claudeManagement} from '../src/services/agents/claude/management.js';
+import {capabilities} from '../src/services/agents/types.js';
 import {
   canUseClaudeEnvironment,
   claudeEnvironmentName,
   claudeManagementProviderState,
   claudeProviderForEnvironment,
+  claudeProviderModelsForEnvironment,
   createClaudeProvider,
   deleteClaudeProvider,
   detectClaudeProviderModels,
   nativeClaudeProviderState,
   updateNativeClaudeProvider,
+  updateClaudeProvider,
   ensureNativeClaudeProvider,
+  persistDetectedClaudeModels,
 } from '../src/services/agents/claude/providers.js';
 
 let database:ReturnType<typeof createTestDatabase>;
@@ -69,7 +74,15 @@ describe('Claude managed providers',()=>{
    id:'gateway',baseUrl:'https://gateway.example',authToken:'secret-token',defaultModel:'claude-a',contextWindow:200000,
   });
   expect(claudeManagementProviderState('gateway')).toMatchObject({status:'ready',models:['claude-a','claude-b']});
+  expect(claudeProviderModelsForEnvironment('claude-provider:gateway')).toEqual(['claude-a','claude-b']);
   expect(canUseClaudeEnvironment(id,owner.id)).toBe(true);
+  expect(canUseClaudeEnvironment('',owner.id)).toBe(true);
+  getDb()
+   .prepare(
+    "INSERT INTO agent_environment_user_access(environment_id,user_id,allowed) VALUES(?,?,0)",
+   )
+   .run(id,owner.id);
+  expect(canUseClaudeEnvironment(id,owner.id)).toBe(false);
  });
  it('rejects credential mixing and keeps the native environment compatible',()=>{
   create();
@@ -97,5 +110,58 @@ describe('Claude managed providers',()=>{
   expect(fetchMock).toHaveBeenCalledWith('https://gateway.example/models',expect.objectContaining({headers:expect.objectContaining({Authorization:'Bearer secret-token','anthropic-version':'2023-06-01'})}));
   fetchMock.mockResolvedValueOnce(new Response('private upstream body',{status:502}));
   await expect(detectClaudeProviderModels({providerId:'gateway'})).rejects.toThrow('502');
+ });
+ it('replaces stale aliases with only models returned by discovery',async()=>{
+  create();
+  persistDetectedClaudeModels('gateway',[
+   {model:'claude-fable-5',name:'Claude Fable'},
+   {model:'claude-fable-5-1',name:'Claude Fable 1'},
+  ]);
+  const provider=readAgentManagement('claude').providers.find(item=>item.id==='gateway');
+  expect(provider?.fields).toMatchObject({
+   models:['claude-fable-5','claude-fable-5-1'],
+   defaultModel:'claude-fable-5',
+  });
+  expect(provider?.fields.models).not.toContain('grok-4.5');
+ });
+ it('persists only the gateway catalog for native and custom Provider discovery',async()=>{
+  create();
+  updateClaudeProvider('gateway',{
+   fields:{models:['grok-4.5','opus'],defaultModel:'opus'},
+  });
+  updateNativeClaudeProvider({
+   apiKey:'native-token',
+   fields:{baseUrl:'https://native.example',models:['grok-4.5','opus'],defaultModel:'opus'},
+  });
+  const fetchMock=vi.fn(async (url:string)=>
+   new Response(JSON.stringify({data:[
+    {id:url.startsWith('https://native.example')?'claude-native':'claude-gateway'},
+   ]}),{status:200}),
+  );
+  vi.stubGlobal('fetch',fetchMock);
+  const management=claudeManagement({
+   id:'claude',label:'Claude',sessionHost:'managed',
+   capabilities:capabilities(['history','runtime','input','stream']),
+   presentation:{icon:'claude',color:'#d97757'},
+  });
+
+  expect(await management.detectModels?.({providerId:'anthropic'}))
+   .toEqual([expect.objectContaining({model:'claude-native'})]);
+  expect(nativeClaudeProviderState()).toMatchObject({
+   models:['claude-native'],defaultModel:'claude-native',
+  });
+  expect(await management.detectModels?.({providerId:'gateway'}))
+   .toEqual([expect.objectContaining({model:'claude-gateway'})]);
+  expect(readAgentManagement('claude').providers.find(item=>item.id==='gateway')?.fields)
+   .toMatchObject({models:['claude-gateway'],defaultModel:'claude-gateway'});
+  expect(claudeProviderModelsForEnvironment('claude-provider:gateway')).toEqual(['claude-gateway']);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+ });
+ it('clears a stale catalog when discovery succeeds with no models',()=>{
+  create();
+  persistDetectedClaudeModels('gateway',[]);
+  expect(readAgentManagement('claude').providers[0].fields).toMatchObject({
+   models:[],defaultModel:'',
+  });
  });
 });

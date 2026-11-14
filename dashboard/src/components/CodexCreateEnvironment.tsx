@@ -7,7 +7,7 @@ export function CodexCreateEnvironment({projectId,onChange,onReady}:{projectId:s
  const query=useQuery({queryKey:['codex-environments'],queryFn:()=>api.codexEnvironments.list(),retry:false});
  const [chosen,setChosen]=useState(''),[checking,setChecking]=useState(false),[checks,setChecks]=useState<EnvironmentCheck[]>([]),[error,setError]=useState('');
  const selected=chosen||query.data?.environments.find(e=>e.enabled)?.id||'';
- useEffect(()=>{onChange(selected||undefined);onReady(!!selected&&!query.isError);},[selected,query.isError,onChange,onReady]);
+ useEffect(()=>{if(query.isPending)return;onChange(selected||undefined);onReady(!!selected&&!query.isError);},[selected,query.isError,query.isPending,onChange,onReady]);
  async function check(){setChecking(true);setChecks([]);setError('');try{const result=await api.codexEnvironments.preflight(selected,projectId);setChecks(result.checks);}catch(e){setError(e instanceof Error?e.message:'预检失败');}finally{setChecking(false);}}
  return <div className="project-open-environment">
   <label className="project-open-environment-label" htmlFor="project-open-environment">Codex 账号 / 接入</label>

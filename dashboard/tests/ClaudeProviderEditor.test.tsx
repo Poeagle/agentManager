@@ -28,10 +28,13 @@ it('keeps a configured key masked and saves only a replacement value',async()=>{
  await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('claude','gateway',expect.objectContaining({name:'Gateway updated'})));
  expect(vi.mocked(api.agentManagement.updateProvider).mock.calls[0][2]).not.toHaveProperty('apiKey');
 });
-it('discovers models in place and adds only the selected result without dropping existing models',async()=>{
- vi.mocked(api.agentManagement.detectModels).mockResolvedValue({models:[{model:'claude-c',name:'Claude C',description:''}]});
+it('replaces stale aliases with only the gateway discovery result',async()=>{
+ provider={...provider,models:['grok-4.5','opus','sonnet','haiku'],defaultModel:'opus'};
+ vi.mocked(api.agentManagement.detectModels).mockResolvedValue({models:[{model:'claude-fable-5',name:'Claude Fable',description:''},{model:'claude-fable-5-1',name:'Claude Fable 1',description:''}]});
  mount();fireEvent.change(screen.getByLabelText('Claude API Key'),{target:{value:'new-token'}});fireEvent.click(screen.getByRole('button',{name:'探测模型'}));
- const option=await screen.findByRole('checkbox',{name:'启用模型 claude-c'});expect(option).toBeChecked();expect(screen.getByText('已探测 3 个，勾选此 Provider 可用的模型。')).toBeVisible();
+ const option=await screen.findByRole('checkbox',{name:'启用模型 claude-fable-5'});expect(option).toBeChecked();
+ expect(screen.queryByText('grok-4.5')).toBeNull();expect(screen.queryByRole('checkbox',{name:'启用模型 opus'})).toBeNull();
+ expect(screen.getByText('已探测 2 个，勾选此 Provider 可用的模型。')).toBeVisible();
  expect(api.agentManagement.detectModels).toHaveBeenCalledWith('claude',{endpoint:'https://gateway.example',apiKey:'new-token',providerId:'gateway'});
 });
 it('creates a Provider from one page and uses a fixed primary action',async()=>{
@@ -39,7 +42,7 @@ it('creates a Provider from one page and uses a fixed primary action',async()=>{
  vi.mocked(api.agentManagement.createProvider).mockResolvedValue({state:{agent:{id:'claude',label:'Claude'},providers:[provider]} as any});
  const onSaved=vi.fn();render(<QueryClientProvider client={client}><ClaudeProviderEditor readOnly={false} onSaved={onSaved}/></QueryClientProvider>);
  fireEvent.change(screen.getByLabelText('Claude Provider ID'),{target:{value:'second'}});fireEvent.change(screen.getByLabelText('Claude Provider 名称'),{target:{value:'Second'}});fireEvent.change(screen.getByLabelText('Claude API 地址'),{target:{value:'https://second.example'}});fireEvent.change(screen.getByLabelText('Claude API Key'),{target:{value:'secret'}});
- expect(screen.getByRole('button',{name:'添加 Provider'})).toBeDisabled();fireEvent.click(screen.getByRole('button',{name:'探测模型'}));await screen.findByRole('checkbox',{name:'启用模型 claude-a'});fireEvent.click(screen.getByRole('button',{name:'添加 Provider'}));
+ expect(screen.getByRole('button',{name:'添加 Provider'})).toBeDisabled();fireEvent.click(screen.getByRole('button',{name:'探测模型'}));await screen.findByRole('checkbox',{name:'启用模型 claude-a'});expect(screen.getByRole('button',{name:'添加 Provider'})).toBeEnabled();fireEvent.click(screen.getByRole('button',{name:'添加 Provider'}));
  await waitFor(()=>expect(api.agentManagement.createProvider).toHaveBeenCalledWith('claude',expect.objectContaining({id:'second',name:'Second',apiKey:'secret',fields:expect.objectContaining({baseUrl:'https://second.example',models:['claude-a']})})));
  expect(onSaved).toHaveBeenCalledWith('second');
 });

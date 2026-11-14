@@ -315,6 +315,9 @@ export const api = {
     sessionPreflight:(id:string,environment:string)=>fetchJSON<EnvironmentPreflight>('/sessions/'+encodeURIComponent(id)+'/environments/'+encodeURIComponent(environment)+'/preflight',{method:'POST',body:'{}'}),
     transfer:(id:string,input:{environment_id:string;model:string;effort:string;provider?:string})=>fetchJSON<{ok:boolean;session:Session;history_id?:string}>('/sessions/'+encodeURIComponent(id)+'/environment',{method:'POST',body:JSON.stringify(input)}),
   },
+  claudeEnvironments: {
+    list:()=>fetchJSON<{current:string;environments:CodexEnvironment[]}>('/claude/environments'),
+  },
 
   sharedResources: {
     get: () => fetchJSON<{ resources: SharedResources }>('/me/shared-resources'),

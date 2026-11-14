@@ -18,8 +18,8 @@ import {validateAccountConnection,probeAccountConnection} from '../services/agen
 const errorStatus=(e:unknown)=>Number((e as {statusCode?:number})?.statusCode)||409;
 const claudeEnvironmentSummary=async(userId:string)=>import('../services/agents/claude/providers.js').then(({enabledClaudeProviders,claudeEnvironmentName,canControlClaudeEnvironment})=>({
  environments:[
-  {id:'anthropic',name:'Anthropic 原生',kind:'native' as const,enabled:true,auth_mode:null,provider:'anthropic',can_control:(getDb().prepare('SELECT role FROM users WHERE id=?').get(userId) as {role?:string}|undefined)?.role==='admin'},
-  ...enabledClaudeProviders().map(provider=>{const id=claudeEnvironmentName(provider.id);return {id,name:provider.name,kind:'provider' as const,enabled:provider.enabled,auth_mode:'api' as const,provider:provider.id,can_control:canControlClaudeEnvironment(id,userId)};}),
+  {id:'anthropic',name:'Anthropic 原生',kind:'native' as const,enabled:true,auth_mode:'api' as const,provider:'anthropic',can_control:canControlClaudeEnvironment('claude-provider:anthropic',userId)},
+  ...enabledClaudeProviders().filter(provider=>provider.id!=='anthropic').map(provider=>{const id=claudeEnvironmentName(provider.id);return {id,name:provider.name,kind:'provider' as const,enabled:provider.enabled,auth_mode:'api' as const,provider:provider.id,can_control:canControlClaudeEnvironment(id,userId)};}),
  ],
 }));
 export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
@@ -27,6 +27,24 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
  initAccountStatus();
  initEngineBalance();
  const describe=(e:ReturnType<typeof allCodexEnvironments>[number])=>({...e,auth_mode:cachedEngineBalance(e.id).auth_mode,balance_group:cachedEngineBalance(e.id).groupKey??null,source:e.kind==='native'?'managed_host':e.kind==='provider'?'managed_provider':'system_user'});
+ app.get('/claude/environments',async(req,reply)=>{
+  if(!requirePermission(req,reply,'agent_api','read'))return;
+  const {enabledClaudeProviders,claudeEnvironmentName,canUseClaudeEnvironment}=await import('../services/agents/claude/providers.js');
+  return {
+   current:'anthropic',
+   environments:[
+    {id:'anthropic',name:'Anthropic 原生',kind:'native' as const,enabled:true,auth_mode:'api' as const,provider:'anthropic',can_control:canUseClaudeEnvironment('',req.user!.id)},
+    ...enabledClaudeProviders().filter(provider=>provider.id!=='anthropic').map(provider=>({
+    id:claudeEnvironmentName(provider.id),
+    name:provider.name,
+    kind:'provider' as const,
+    enabled:provider.enabled,
+    auth_mode:provider.authentication.status==='authenticated'?'api' as const:null,
+    provider:provider.id,
+    can_control:canUseClaudeEnvironment(claudeEnvironmentName(provider.id),req.user!.id),
+   }))],
+  };
+ });
  app.get<{Params:{id:string};Querystring:{granularity?:string}}>('/codex/environments/:id/insights',async(req,reply)=>{
   if(!requirePermission(req,reply,'agent_api','read'))return;
   const account=visibleCodexEnvironments(req.user!.id).find(e=>e.id===req.params.id&&e.enabled);
@@ -164,10 +182,10 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   try{
    const session=getSession(req.params.id)!;
    if(session.cli_type==='claude'){
-    const {canUseClaudeEnvironment,claudeProviderModels}=await import('../services/agents/claude/providers.js');
+    const {canUseClaudeEnvironment,claudeProviderModelsForEnvironment,claudeModelChoice}=await import('../services/agents/claude/providers.js');
     if(req.params.environment!=='anthropic'&&!canUseClaudeEnvironment(req.params.environment,req.user!.id))throw Object.assign(Error('无权使用所选 Claude Provider'),{statusCode:403});
-    const models=req.params.environment==='anthropic'?[]:claudeProviderModels({agent_environment_id:req.params.environment});
-    return {models:models.map(model=>({provider:req.params.environment,model,name:model,description:'Claude 兼容网关模型',efforts:[{value:'',description:'由原生客户端决定'}],defaultEffort:''}))};
+    const models=claudeProviderModelsForEnvironment(req.params.environment);
+    return {models:models.map(model=>claudeModelChoice(req.params.environment,model))};
    }
    assertEnvironmentUse(session.cli_type||'codex',req.params.environment,req.user!.id);
    return {models:await readEngineModelsForEnvironment(req.params.environment,true)};
@@ -179,11 +197,14 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   if(!requirePermission(req,reply,'agent_api','write'))return;
   try{
    if(session.cli_type==='claude'){
-    const {canUseClaudeEnvironment,claudeProviderModels}=await import('../services/agents/claude/providers.js');
-    if(req.params.environment==='anthropic')return {ok:true,checks:[{stage:'provider',ok:true,message:'使用 LaunchAgent 原生 Anthropic 配置'}],models:[]};
+   const {canUseClaudeEnvironment,claudeProviderModelsForEnvironment,claudeModelChoice}=await import('../services/agents/claude/providers.js');
+    if(req.params.environment==='anthropic'){
+     const models=claudeProviderModelsForEnvironment('anthropic');
+     return {ok:true,checks:[{stage:'provider',ok:true,message:`使用原生 Anthropic 配置，已读取 ${models.length} 个模型`}],models:models.map(model=>claudeModelChoice('anthropic',model))};
+    }
     if(!canUseClaudeEnvironment(req.params.environment,req.user!.id))throw Object.assign(Error('无权使用所选 Claude Provider'),{statusCode:403});
-    const models=claudeProviderModels({agent_environment_id:req.params.environment});
-    return {ok:true,checks:[{stage:'provider',ok:true,message:`已读取 ${models.length} 个 Claude 模型`}],models:models.map(model=>({provider:req.params.environment,model,name:model,description:'Claude 兼容网关模型',efforts:[{value:'',description:'由原生客户端决定'}],defaultEffort:''}))};
+    const models=claudeProviderModelsForEnvironment(req.params.environment);
+    return {ok:true,checks:[{stage:'provider',ok:true,message:`已读取 ${models.length} 个 Claude 模型`}],models:models.map(model=>claudeModelChoice(req.params.environment,model))};
    }
    assertEnvironmentUse('codex',req.params.environment,req.user!.id);
    const path=session.project_id?(getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined)?.path:undefined;
@@ -198,15 +219,15 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   try{
    if(session.cli_type==='claude'){
     const {readAgentRuntime}=await import('../services/agents/session.js');
-    const {claudeProviderForEnvironment,canUseClaudeEnvironment}=await import('../services/agents/claude/providers.js');
+    const {claudeProviderModelsForEnvironment,canUseClaudeEnvironment}=await import('../services/agents/claude/providers.js');
     if((await readAgentRuntime(session)).state==='running')return reply.code(409).send({error:'Claude 会话正在执行，请完成后切换 Provider'});
-    const provider=claudeProviderForEnvironment(p.environment_id);
-    if(provider&&!provider.models.includes(p.model))throw Object.assign(Error('模型不属于所选 Claude Provider'),{statusCode:400});
+    const providerModels=claudeProviderModelsForEnvironment(p.environment_id);
+    if(!providerModels.includes(p.model))throw Object.assign(Error('模型不属于所选 Claude Provider'),{statusCode:400});
     const environmentId=p.environment_id==='anthropic'?'':p.environment_id;
     if(environmentId&&!canUseClaudeEnvironment(environmentId,req.user!.id))throw Object.assign(Error('无权使用所选 Claude Provider'),{statusCode:403});
     const {newSessionConversation}=await import('../services/session-manager.js');
     const {claudeAdapter}=await import('../services/agents/claude/adapter.js');
-    const preference=provider?{model:p.model,effort:''}:undefined;
+    const preference={model:p.model,effort:''};
     if(!claudeAdapter.lifecycle?.prepareFresh)throw Error('Claude Agent 不支持新开会话');
     const result=await newSessionConversation(req.params.id,preference,{environmentId:environmentId||'',prepare:context=>claudeAdapter.lifecycle!.prepareFresh!(context,undefined,preference)});
     if(!result.ok)return reply.code(409).send({error:result.error});

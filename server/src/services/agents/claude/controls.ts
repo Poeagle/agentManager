@@ -6,7 +6,7 @@ import { publicTokenCounters } from '../../conversation-usage.js';
 import type { AgentCompaction } from '../events.js';
 import type { AgentContext, AgentControls, AgentRuntime, ModelPreference } from '../types.js';
 import { managedEnv } from '../environment-store.js';
-import { claudeRuntimeProvider } from './providers.js';
+import { readClaudeRuntimeProvider } from './providers.js';
 const cache = new Map<string, {
     size: number;
     inode: number;
@@ -99,7 +99,7 @@ const aliases = ['default', 'sonnet', 'opus', 'haiku'];
  * gateway deployment) instead of an alias, so they must be offered explicitly
  * or the dashboard cannot select them at all. */
 function configuredModels(context?:Pick<AgentContext,'session'|'environmentAccess'>): string[] {
-    const providerModels=context?.session?claudeRuntimeProvider(context.session,context.environmentAccess)?.models:undefined;
+    const providerModels=context?.session?readClaudeRuntimeProvider(context.session,context.environmentAccess)?.models:undefined;
     if(providerModels?.length)return providerModels;
     return [...new Set(['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL']
         .map(key => managedEnv(key).trim())
@@ -109,7 +109,7 @@ export async function readClaudeControls(context: AgentContext): Promise<AgentCo
     const value = await metadata(context);
     const runtime=context.nativeId?(await import('./sdk-runtime.js')).claudeRuntime(context.nativeId):undefined;
     const loaded=!!runtime;
-    const provider=claudeRuntimeProvider(context.session,context.environmentAccess);
+    const provider=readClaudeRuntimeProvider(context.session,context.environmentAccess);
     const seen = new Set<string>();
     const providerModels=provider?.models||[];
     const models = [...providerModels, ...(provider?[]:aliases)]
@@ -121,7 +121,7 @@ export async function readClaudeControls(context: AgentContext): Promise<AgentCo
 }
 export async function validateClaudeControls(context: AgentContext, value: unknown): Promise<ModelPreference> {
     const p = value && typeof value === 'object' ? value as Partial<ModelPreference> : null;
-    const provider=claudeRuntimeProvider(context.session,context.environmentAccess);
+    const provider=readClaudeRuntimeProvider(context.session,context.environmentAccess);
     const allowed = new Set([...(provider?[]:aliases), ...configuredModels(context)]);
     if(provider)return {model:typeof p?.model==='string'?p.model:provider.defaultModel||'',effort:''};
     if (!p || typeof p !== 'object' || !Object.keys(p).every(key => ['model', 'effort'].includes(key)) || typeof p.model !== 'string' || !allowed.has(p.model) || p.effort !== '')
@@ -132,7 +132,7 @@ export async function applyClaudeControls(context: AgentContext, value: ModelPre
     if(!context.nativeId)throw Error('会话尚未连接');
     const runtime=(await import('./sdk-runtime.js')).claudeRuntime(context.nativeId);
     if(!runtime)throw Error('Claude managed runtime is not connected');
-    const provider=claudeRuntimeProvider(context.session,context.environmentAccess);
+    const provider=readClaudeRuntimeProvider(context.session,context.environmentAccess);
     if(provider&&!provider.models.includes(value.model))throw Error('模型不属于当前 Claude Provider');
     runtime.setModel(value);
     return {...value,pending:false};

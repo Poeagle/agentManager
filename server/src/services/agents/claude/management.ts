@@ -4,7 +4,6 @@ import { join } from 'path';
 import type { AgentDescriptor, AgentManagementPort, AgentProviderState } from '../types.js';
 import { commonManagement } from '../management-common.js';
 import { findExecutable, runCli } from '../management-cli.js';
-import { readClaudeControls } from './controls.js';
 import { managedEnv, updateManagedEnvironment } from '../environment-store.js';
 import type { AgentEnvironmentVariable } from '../types.js';
 import {
@@ -14,7 +13,10 @@ import {
   deleteClaudeProvider,
   detectClaudeProviderModels,
   enabledClaudeProviders,
+  ensureNativeClaudeProvider,
   nativeClaudeProviderState,
+  nativeClaudeProviderApiKey,
+  persistDetectedClaudeModels,
   toggleClaudeProvider,
   updateClaudeProvider,
   updateNativeClaudeProvider,
@@ -207,11 +209,19 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
       return environment();
     },
     detectModels: async input => {
-      if (input?.providerId && input.providerId !== 'anthropic') {
-        return detectClaudeProviderModels(input);
-      }
-      const controls = await readClaudeControls({ session: {}, nativeId: null, projectPath: process.cwd() });
-      return controls.models.map(item => ({ model: item.model, name: item.name, description: item.description }));
+      const providerId = input?.providerId;
+      const native = providerId === 'anthropic';
+      if (native) ensureNativeClaudeProvider();
+      const models = await detectClaudeProviderModels({
+        ...input,
+        endpoint:
+          input?.endpoint ||
+          (native ? claudeProviderStateForDetection() : undefined),
+        apiKey:
+          input?.apiKey || (native ? nativeClaudeProviderApiKey() : undefined),
+      });
+      if (providerId) await persistDetectedClaudeModels(providerId, models);
+      return models;
     },
     saveSelectedModels: async (models, defaultModel) => {
       const aliases = new Set(['default', 'sonnet', 'opus', 'haiku']);
@@ -228,4 +238,9 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
       return environment();
     },
   };
+}
+
+function claudeProviderStateForDetection(): string {
+  const field = nativeClaudeProviderState().fields.find(item => item.key === 'baseUrl');
+  return typeof field?.value === 'string' ? field.value : '';
 }

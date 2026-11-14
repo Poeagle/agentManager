@@ -73,10 +73,6 @@ function nativeProviderState(): AgentProviderState {
         env.ANTHROPIC_DEFAULT_OPUS_MODEL,
         env.ANTHROPIC_DEFAULT_SONNET_MODEL,
         env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
-        'default',
-        'sonnet',
-        'opus',
-        'haiku',
       ].filter((model): model is string => typeof model === 'string' && !!model.trim()),
     ),
   ];
@@ -144,7 +140,6 @@ export function ensureNativeClaudeProvider(): void {
     env.ANTHROPIC_DEFAULT_OPUS_MODEL,
     env.ANTHROPIC_DEFAULT_SONNET_MODEL,
     env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
-    'default','sonnet','opus','haiku',
   ].filter((model):model is string=>typeof model==='string'&&!!model.trim()))];
   const baseUrl=env.ANTHROPIC_BASE_URL;
   const apiKey=env.ANTHROPIC_AUTH_TOKEN||env.ANTHROPIC_API_KEY;
@@ -513,16 +508,15 @@ export function canUseClaudeEnvironment(
     (getDb()
       .prepare('SELECT role FROM users WHERE id=? AND disabled=0')
       .get(userId) as { role?: string } | undefined)?.role === 'admin';
-  if (!environmentId) return admin;
+  if (!environmentId) return true;
   const providerId = environmentId.startsWith('claude-provider:')
     ? environmentId.slice(16)
     : '';
   const provider = configuredProviders().find(
     (item) => item.id === providerId,
   );
-  if (!provider) return false;
+  if (!provider || !provider.enabled) return false;
   if (admin) return true;
-  if (!provider.enabled) return false;
   const override = environmentUserOverride(environmentId, userId);
   return override === null ? true : override;
 }
@@ -545,8 +539,9 @@ export function canControlClaudeEnvironment(
 export function claudeRuntimeProvider(
   session: { agent_environment_id?: string | null },
   environmentAccess?: (environmentId: string) => boolean,
+  options: { materializeNative?: boolean } = { materializeNative: true },
 ): ClaudeProviderRuntime | null {
-  ensureNativeClaudeProvider();
+  if (options.materializeNative !== false) ensureNativeClaudeProvider();
   const providerId = claudeProviderIdForSession(session);
   if (!providerId) return null;
   if (environmentAccess && !environmentAccess(`claude-provider:${providerId}`))
@@ -610,6 +605,17 @@ export function claudeProviderForEnvironment(
   return claudeRuntimeProvider({ agent_environment_id: environmentId });
 }
 
+/** Read the selected provider without migrating native environment state.
+ * Control reads can run while only the native history is available. */
+export function readClaudeRuntimeProvider(
+  session: { agent_environment_id?: string | null },
+  environmentAccess?: (environmentId: string) => boolean,
+): ClaudeProviderRuntime | null {
+  return claudeRuntimeProvider(session, environmentAccess, {
+    materializeNative: false,
+  });
+}
+
 /** Read the bound provider without materializing credentials for status routes. */
 export function claudeProviderChoiceForEnvironment(
   environmentId: string,
@@ -646,6 +652,38 @@ export function claudeProviderChoiceForEnvironment(
       1,
       10_000_000,
     ),
+  };
+}
+
+export function claudeProviderModelsForEnvironment(
+  environmentId: string,
+): string[] {
+  if (environmentId === 'anthropic') {
+    ensureNativeClaudeProvider();
+    const provider = enabledClaudeProviders().find(item => item.id === 'anthropic');
+    return provider?.models || [];
+  }
+  return claudeProviderForEnvironment(environmentId)?.models || [];
+}
+
+export function claudeModelChoice(
+  provider: string,
+  model: string,
+): {
+  provider: string;
+  model: string;
+  name: string;
+  description: string;
+  efforts: Array<{ value: string; description: string }>;
+  defaultEffort: string;
+} {
+  return {
+    provider,
+    model,
+    name: model,
+    description: 'Claude 兼容网关模型',
+    efforts: [{ value: '', description: '由原生客户端决定' }],
+    defaultEffort: '',
   };
 }
 
@@ -738,4 +776,36 @@ export async function detectClaudeProviderModels(
           : model;
     return [{ model, name, description: '由 Claude 兼容网关返回' }];
   });
+}
+
+export async function persistDetectedClaudeModels(
+  providerId: string,
+  models: Array<{ model: string; name: string }>,
+): Promise<void> {
+  const provider = providerOrThrow(providerId);
+  const discovered = [
+    ...new Set(
+      models
+        .map((item) => item.model.trim())
+        .filter((model) => MODEL_RE.test(model)),
+    ),
+  ];
+  const currentDefault = stringField(provider, 'defaultModel');
+  updateAgentManagement('claude', (value) => ({
+    ...value,
+    providers: value.providers.map((item) =>
+      item.id === providerId
+        ? {
+            ...item,
+            fields: {
+              ...item.fields,
+              models: discovered,
+              defaultModel: discovered.includes(currentDefault)
+                ? currentDefault
+                : discovered[0] || '',
+            },
+          }
+        : item,
+    ),
+  }));
 }
