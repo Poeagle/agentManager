@@ -1,7 +1,7 @@
 import {getDb} from '../../../db/index.js';
 import {assertUsageRebuildPreserves} from './usage-rule-guard.js';
 // Increment when persisted interpretation of native usage records changes.
-export const USAGE_RULE_VERSION=3;
+export const USAGE_RULE_VERSION=4;
 import {quotaSamples} from './account-status.js';
 import {allocateQuota} from './quota-allocation.js';
 import {allCodexEnvironments,environmentConnection,getCodexEnvironment} from './environments.js';
@@ -51,6 +51,7 @@ export function initAccountUsage(){initUsageProvenance();getDb().exec(`
 `);
  initUsageTimeStorage();
  const db=getDb();
+ if(!(db.prepare('PRAGMA table_info(codex_usage_rule_versions)').all() as {name:string}[]).some(column=>column.name==='reason'))db.exec('ALTER TABLE codex_usage_rule_versions ADD COLUMN reason TEXT');
  if(!(db.prepare('PRAGMA table_info(codex_usage_dedup_events)').all() as {name:string}[]).some(column=>column.name==='hour'))db.exec('ALTER TABLE codex_usage_dedup_events ADD COLUMN hour TEXT');
  if(!(db.prepare('PRAGMA table_info(codex_usage_dedup_events)').all() as {name:string}[]).some(column=>column.name==='at'))db.exec('ALTER TABLE codex_usage_dedup_events ADD COLUMN at TEXT');
  if(!(db.prepare('PRAGMA table_info(codex_usage_dedup_status)').all() as {name:string}[]).some(column=>column.name==='hour_backfilled'))db.exec('ALTER TABLE codex_usage_dedup_status ADD COLUMN hour_backfilled INTEGER NOT NULL DEFAULT 0');
@@ -139,13 +140,14 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
     if(options.rebuild)db.prepare('UPDATE codex_usage_dedup_status SET hour_backfilled=1 WHERE account=?').run(id);
     db.prepare('INSERT INTO codex_usage_ledger(account,baseline_at,last_day,timezone) VALUES(?,?,?,?) ON CONFLICT(account) DO UPDATE SET last_day=excluded.last_day,timezone=excluded.timezone').run(id,baseline,day,timezone);
     db.prepare('INSERT OR REPLACE INTO codex_usage_snapshots VALUES(?,1)').run(id);
-    if(options.rebuild||!initialized)db.prepare("INSERT OR REPLACE INTO codex_usage_rule_versions VALUES(?,?,'ready',NULL)").run(id,USAGE_RULE_VERSION);
-    const historicalIncomplete=mode==='daily'&&prior?.error==='部分记录不可读取或缺少统计字段';
+    if(options.rebuild||!initialized)db.prepare("INSERT OR REPLACE INTO codex_usage_rule_versions(account,version,state,retry_at,reason) VALUES(?,?,?,?,NULL)").run(id,USAGE_RULE_VERSION,options.preserveExisting&&result.partial?'ready_partial':'ready',options.preserveExisting&&result.partial?new Date(Date.now()+86400000).toISOString():null);
+    const ruleState=db.prepare('SELECT state FROM codex_usage_rule_versions WHERE account=?').get(id) as {state:string}|undefined;
+    const historicalIncomplete=mode==='daily'&&prior?.error==='部分记录不可读取或缺少统计字段'&&ruleState?.state!=='ready_partial';
     db.prepare('INSERT OR REPLACE INTO codex_usage_status VALUES(?,?,?,?)').run(id,new Date().toISOString(),result.errors||historicalIncomplete?'部分记录不可读取或缺少统计字段':null,result.partial||result.errors||historicalIncomplete?1:0);
     db.prepare('INSERT OR REPLACE INTO codex_usage_scan_boundary VALUES(?,?)').run(id,scanStartedAt);
     if(result.progress)db.prepare('INSERT OR REPLACE INTO codex_usage_progress VALUES(?,?)').run(id,JSON.stringify(result.progress));
    })();
-  }catch(error){const message=error instanceof Error&&error.message==='历史目录无法独立归属'?'历史目录与其他 Engine 共用或无法确认，未统计以避免重复':'采集失败，保留上次成功数据';if(options.rebuild)throw Object.assign(Error(message),{statusCode:409});db.prepare('INSERT INTO codex_usage_status(account,error,partial) VALUES(?,?,1) ON CONFLICT(account) DO UPDATE SET error=excluded.error,partial=1').run(id,message);}
+  }catch(error){const message=error instanceof Error&&error.message==='历史目录无法独立归属'?'历史目录与其他 Engine 共用或无法确认，未统计以避免重复':'采集失败，保留上次成功数据';if(options.preserveExisting){const reasons=new Set(['历史重读不完整','历史记录存在未归属数据','历史请求身份不完整','重读请求身份重复','历史请求缺失或内容不一致','历史计数不可验证','历史计数超限','历史请求身份缺失','历史聚合无法核对']);const reason=error instanceof Error&&reasons.has(error.message)?error.message:'无法完整扫描或验证原始历史';throw Object.assign(Error(reason),{statusCode:409});}if(options.rebuild)throw Object.assign(Error(message),{statusCode:409});db.prepare('INSERT INTO codex_usage_status(account,error,partial) VALUES(?,?,1) ON CONFLICT(account) DO UPDATE SET error=excluded.error,partial=1').run(id,message);}
   finally{controllers.delete(id);}
  })();pending.set(id,task);try{await task;}finally{pending.delete(id);}
 }
@@ -172,8 +174,8 @@ export function cachedAccountUsage(id:string){
  const environment=getCodexEnvironment(id);
  if(environment.kind==='provider'&&(!usageHome(environment)||providerHistoryIsShared(id,usageHome(environment))))return {initialized:false,checked_at:null,error:'历史目录与其他 Engine 共用或无法确认，未统计以避免重复',partial:true,progress:null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:[]};
  const status=db.prepare('SELECT checked_at,error,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;error:string|null;partial:number}|undefined;
- const rule=db.prepare('SELECT version,state FROM codex_usage_rule_versions WHERE account=?').get(id) as {version:number;state:string}|undefined;
- const ruleWarning=!rule||rule.version!==USAGE_RULE_VERSION?'统计规则已更新，历史缓存等待校验':rule.state==='blocked'?'历史缓存无法完整核对，已保留旧数据；部分估算可能使用旧规则':rule.state==='pending'?'正在校验统计规则和历史缓存':null;
+ const rule=db.prepare('SELECT version,state,reason FROM codex_usage_rule_versions WHERE account=?').get(id) as {version:number;state:string;reason:string|null}|undefined;
+ const ruleWarning=!rule||rule.version!==USAGE_RULE_VERSION?'统计规则已更新，历史缓存等待校验':rule.state==='blocked'?`历史缓存无法完整核对（${rule.reason||'原因未知'}），已保留旧数据；部分估算可能使用旧规则`:rule.state==='ready_partial'?'历史部分记录不可读取；已核对的数据已按新规则更新':rule.state==='pending'?'正在校验统计规则和历史缓存':null;
  const sums=tokenFields.map(k=>`CASE WHEN COUNT(json_extract(tokens,'$.${k}'))=COUNT(*) THEN SUM(json_extract(tokens,'$.${k}')) ELSE NULL END AS ${k}`).join(',');
  const rows=db.prepare(`SELECT day,cwd,${sums} FROM codex_usage_events WHERE account=? GROUP BY day,cwd ORDER BY day DESC,cwd LIMIT 5001`).all(id) as Array<Record<string,any>>;
  const estimates=new Map<string,{value:number;covered:number;requests:number}>();
@@ -291,10 +293,11 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
 export async function refreshUsageRules(id:string):Promise<void>{
  const db=getDb();
  const current=db.prepare('SELECT version,state,retry_at FROM codex_usage_rule_versions WHERE account=?').get(id) as {version:number;state:string;retry_at:string|null}|undefined;
- if(current?.version===USAGE_RULE_VERSION&&(current.state==='ready'||current.state==='blocked'&&current.retry_at&&Date.parse(current.retry_at)>Date.now()))return;
- db.prepare("INSERT OR REPLACE INTO codex_usage_rule_versions VALUES(?,?,'pending',NULL)").run(id,USAGE_RULE_VERSION);
+ if(current?.version===3&&current.state==='ready'){const previous=db.prepare('SELECT partial,error FROM codex_usage_status WHERE account=?').get(id) as {partial:number;error:string|null}|undefined;const partial=!!previous?.partial&&previous.error==='部分记录不可读取或缺少统计字段';db.prepare('UPDATE codex_usage_rule_versions SET version=?,state=?,retry_at=? WHERE account=?').run(USAGE_RULE_VERSION,partial?'ready_partial':'ready',partial?new Date(Date.now()+86400000).toISOString():null,id);return;}
+ if(current?.version===USAGE_RULE_VERSION&&(current.state==='ready'||['blocked','ready_partial'].includes(current.state)&&current.retry_at&&Date.parse(current.retry_at)>Date.now()))return;
+ db.prepare("INSERT OR REPLACE INTO codex_usage_rule_versions(account,version,state,retry_at,reason) VALUES(?,?,'pending',NULL,NULL)").run(id,USAGE_RULE_VERSION);
  try{await collectAccountUsage(id,{rebuild:true,preserveExisting:true});}
- catch{db.prepare("INSERT OR REPLACE INTO codex_usage_rule_versions VALUES(?,?,'blocked',?)").run(id,USAGE_RULE_VERSION,new Date(Date.now()+86400000).toISOString());}
+ catch(error){const reason=error instanceof Error?error.message:'无法完整扫描或验证原始历史';db.prepare("INSERT OR REPLACE INTO codex_usage_rule_versions(account,version,state,retry_at,reason) VALUES(?,?,'blocked',?,?)").run(id,USAGE_RULE_VERSION,new Date(Date.now()+86400000).toISOString(),reason);}
 }
 export function startAccountUsage(){initAccountUsage();stopped=false;const tick=async()=>{try{const environments=allCodexEnvironments();for(const e of environments){if(stopped)break;if(e.enabled){await collectAccountUsage(e.id);await refreshUsageRules(e.id);}}for(const e of environments){if(stopped)break;if(e.enabled)await backfillUsageHours(e.id);}}catch{/* Configuration may be changing; retry on the next scheduled pass. */}finally{if(!stopped){timer=setTimeout(()=>void tick(),300000);timer.unref();}}};timer=setTimeout(()=>void tick(),1000);timer.unref();}
 export async function stopAccountUsage(){stopped=true;clearTimeout(timer);for(const controller of controllers.values())controller.abort();await Promise.allSettled([...pending.values(),...hourlyPending.values()]);}
