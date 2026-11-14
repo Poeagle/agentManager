@@ -442,10 +442,14 @@ const Bubble = memo(function Bubble({
           <ConversationRetryStatus retry={autoRetry} onCancel={onCancelRetry} />
         ) : !message.error?.will_retry ? (
           <p>
-            {message.error?.code === "server_overloaded" ||
-                  /at capacity/i.test(message.text)
+            {/insufficient_balance|insufficient balance/i.test(message.text)
+              ? "当前 Provider 余额不足，本轮已停止。请在 Agent 配置中充值或切换到其他 Provider，然后新开会话。"
+              : message.error?.code === "server_overloaded" ||
+                    /at capacity/i.test(message.text)
                 ? "当前模型繁忙，本轮已停止。可稍后重试，或在原始终端切换模型。"
-                : "本轮已停止。请根据错误信息处理后再试。"}
+                : /selected model.*(?:does not exist|may not exist|access)/i.test(message.text)
+                  ? "当前模型不存在或该 Provider 无访问权限，请检查 Provider 模型配置。"
+                  : "本轮已停止。请根据错误信息处理后再试。"}
           </p>
         ) : null}
         <div className="session-chat-error-actions">

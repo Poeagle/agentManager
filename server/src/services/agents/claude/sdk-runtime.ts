@@ -548,6 +548,11 @@ class ClaudeRuntime {
           "errors" in message && message.errors.length
             ? message.errors.join("\n")
             : "Claude 执行失败";
+        const code = /insufficient_balance|insufficient balance/i.test(text)
+          ? "insufficient_balance"
+          : /selected model.*(?:does not exist|may not exist|access)/i.test(text)
+            ? "model_unavailable"
+            : undefined;
         this.upsert({
           id: conversationMessageId(
             this.turnId || "claude",
@@ -560,7 +565,7 @@ class ClaudeRuntime {
           turn_id: this.turnId || undefined,
           phase: "error",
           streaming: false,
-          error: { will_retry: false },
+          error: { ...(code ? { code } : {}), will_retry: false },
         });
       }
     }

@@ -174,6 +174,23 @@ describe('chat/raw terminal display',()=>{
     fireEvent.click(screen.getByRole('button',{name:'查看原始终端',exact:true}));expect(screen.getByTestId('raw')).toBeVisible();
     fireEvent.click(screen.getByRole('button',{name:'对话',exact:true}));expect(await screen.findAllByRole('alert')).toHaveLength(1);
   });
+  it('explains provider balance exhaustion and points to switching providers',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const failure={id:'balance-error',role:'assistant' as const,phase:'error' as const,text:'API Error: 402 {"error":{"message":"insufficient balance","type":"insufficient_balance"}}',turn_id:'balance',timestamp:null,error:{code:'insufficient_balance',will_retry:false}};
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:false,stage:'idle',turn_id:'balance',messages:[failure]})}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('当前 Provider 余额不足');
+    expect(screen.getByRole('alert')).toHaveTextContent('切换到其他 Provider');
+  });
+  it('explains an unavailable selected model without suggesting a provider retry loop',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const failure={id:'model-error',role:'assistant' as const,phase:'error' as const,text:"There's an issue with the selected model (grok-4.5). It may not exist or you may not have access to it.",turn_id:'model',timestamp:null,error:{code:'model_unavailable',will_retry:false}};
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:false,stage:'idle',turn_id:'model',messages:[failure]})}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('当前模型不存在或该 Provider 无访问权限');
+  });
   it('distinguishes automatic retry from a final error and ends the retry notice after progress resumes',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
     vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});

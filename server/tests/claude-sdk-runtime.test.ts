@@ -24,6 +24,25 @@ const stream=(event:any)=>({type:'stream_event',uuid:`019ff001-1212-7212-8212-${
 afterEach(()=>{releaseClaudeRuntime(session);sdk.queries=[];sdk.messages=[];sdk.interrupts=0;uuid=0;});
 
 describe('Claude Agent SDK runtime',()=>{
+  it('classifies insufficient balance and unavailable models as terminal errors',async()=>{
+    sdk.messages=[
+      {type:'result',subtype:'error_during_execution',uuid:assistant,session_id:session,errors:['API Error: 402 {"error":{"message":"insufficient balance","type":"insufficient_balance"}}']},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('balance check');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.snapshot().messages.find(message=>message.phase==='error')).toMatchObject({
+      error:{code:'insufficient_balance',will_retry:false},
+    });
+    sdk.messages=[
+      {type:'result',subtype:'error_during_execution',uuid:assistant,session_id:session,errors:["There's an issue with the selected model (grok-4.5). It may not exist or you may not have access to it."]},
+    ];
+    await runtime.submit('model check');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.snapshot().messages.filter(message=>message.phase==='error').at(-1)).toMatchObject({
+      error:{code:'model_unavailable',will_retry:false},
+    });
+  });
   it('injects only the bound Provider credentials and model into the SDK process',async()=>{
     sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-a',effort:''},false,{
