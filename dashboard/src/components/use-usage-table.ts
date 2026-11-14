@@ -21,20 +21,20 @@ export function useUsageTable(rows:UsageRow[],dimension:Dimension){
  const [sort,setSort]=useState<{key:string;direction:'asc'|'desc'}|null>(null);
  const leaves=useMemo<Leaf[]>(()=>rows.flatMap<Leaf>(row=>row.models?.length?row.models.map(m=>({...row,...m,modelName:m.model,models:[m],missing:false})): [{...row,modelName:null,missing:true}]),[rows]);
  const columns=useMemo<TableColumn<Leaf>[]>(()=>[
-  {key:'label',title:dimension==='project'?'Project / Model / Date':dimension==='model'?'Model / Project / Date':`${dimension==='hour'?'Hour':dimension==='week'?'Week':dimension==='month'?'Month':'Date'} / Project / Model`,filterMode:'text',value:r=>`${r.date} ${r.hour||''} ${r.project_name||''} ${r.modelName||''}`},
-  {key:'cwd',title:'Working directory',filterMode:'text',value:r=>r.cwd},
-  {key:'input',title:'Input tokens',kind:'number',filterMode:'range',value:r=>number(r,'input_tokens')},
-  {key:'cached',title:'Cached input',kind:'number',filterMode:'range',value:r=>number(r,'cached_input_tokens')},
-  {key:'uncached',title:'Uncached input',kind:'number',filterMode:'range',value:uncached},
-  {key:'hit',title:'Cache hit',kind:'number',filterMode:'range',value:hit},
-  {key:'output',title:'Output tokens',kind:'number',filterMode:'range',value:r=>number(r,'output_tokens')},
-  {key:'total',title:'Total tokens',kind:'number',filterMode:'range',value:r=>number(r,'total_tokens')},
+  {key:'label',title:dimension==='project'?'项目 / 模型 / 日期':dimension==='model'?'模型 / 项目 / 日期':`${dimension==='hour'?'小时':dimension==='week'?'周':dimension==='month'?'月':'日期'} / 项目 / 模型`,filterMode:'text',value:r=>`${r.date} ${r.hour||''} ${r.project_name||''} ${r.modelName||''}`},
+  {key:'cwd',title:'工作目录',filterMode:'text',value:r=>r.cwd},
+  {key:'input',title:'输入',kind:'number',filterMode:'range',value:r=>number(r,'input_tokens')},
+  {key:'cached',title:'缓存输入',kind:'number',filterMode:'range',value:r=>number(r,'cached_input_tokens')},
+  {key:'uncached',title:'非缓存输入',kind:'number',filterMode:'range',value:uncached},
+  {key:'hit',title:'缓存率',kind:'number',filterMode:'range',value:hit},
+  {key:'output',title:'输出',kind:'number',filterMode:'range',value:r=>number(r,'output_tokens')},
+  {key:'total',title:'总量',kind:'number',filterMode:'range',value:r=>number(r,'total_tokens')},
   {key:'actual',title:'耗用额度',kind:'number',filterMode:'range',value:r=>r.actual_quota??null},
-  {key:'credits',title:'Est. credits',kind:'number',filterMode:'range',value:r=>r.estimated_credits??null},
+  {key:'credits',title:'预估额度',kind:'number',filterMode:'range',value:r=>r.estimated_credits??null},
  ],[dimension]);
  const base=useTableModel(leaves,columns);
  const denominators=useMemo(()=>{const groups=new Map<string,Leaf[]>();for(const row of base.rows){const key=periodKey(row,dimension);groups.set(key,[...groups.get(key)||[],row]);}return new Map([...groups].map(([key,items])=>[key,totalCredits(items)]));},[base.rows,dimension]);
- const shareColumns=useMemo<TableColumn<Leaf>[]>(()=>[{key:'share',title:'Share',kind:'number',filterMode:'range',value:r=>{const denominator=denominators.get(periodKey(r,dimension));return denominator&&r.estimated_credits!=null?100*r.estimated_credits/denominator:null;}}],[denominators,dimension]);
+ const shareColumns=useMemo<TableColumn<Leaf>[]>(()=>[{key:'share',title:'占比',kind:'number',filterMode:'range',value:r=>{const denominator=denominators.get(periodKey(r,dimension));return denominator&&r.estimated_credits!=null?100*r.estimated_credits/denominator:null;}}],[denominators,dimension]);
  const share=useTableModel(base.rows,shareColumns);
  const selected=useMemo<UsageRow[]>(()=>share.rows.map(({modelName:_,missing:__,...row})=>row),[share.rows]);
  const groups=useMemo(()=>sortGroups(groupUsage(selected,dimension),sort),[selected,dimension,sort]);

@@ -89,3 +89,25 @@
 .ci-header-details .ci-overview-account>section,.ci-header-details .ci-usage-breakdown{gap:3px 7px;font-size:11px;}
 .ci-header-details .ci-label{font-size:11px;}
 .ci-usage-table th,.ci-usage-table td{padding-left:4px!important;padding-right:4px!important;}
+/* Compact account controls and keep every heading readable. */
+.manager-dialog header:has(.ci-header-details)>h3{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
+.ci-header-details,.ci-header-details :is(.ci-identity,.ci-tag,.ci-quota,.ci-quota small,.ci-button,.ci-token-summary,.ci-cache-rate){font-size:12px;line-height:20px;font-weight:400;}
+.ci-header-details .ci-quota strong{font-weight:400;}
+.ci-token-summary{white-space:nowrap;font-variant-numeric:tabular-nums;}
+.ci-cache-rate{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;color:var(--text-secondary);}
+.ci-cache-rate strong{color:#16a34a;font-weight:400;}
+.ci-cache-rate>span{width:11px;height:11px;border:2px solid #16a34a;border-radius:50%;}
+.ci-toolbar{gap:5px;margin-bottom:4px;}
+.ci-toolbar .ci-tabs{flex:none;gap:12px;margin:0 6px 0 0;border:0;}
+.ci-toolbar .ci-tabs button{padding:2px 3px;line-height:22px;font-size:12px;white-space:nowrap;}
+.ci-toolbar .ci-button{height:28px;padding:2px 8px;}
+.ci-toolbar>input{min-width:130px;}
+.ci-toolbar :is(input,select){height:28px;}
+.ci-observation{margin-bottom:4px;}
+.ci-usage-table .smart-table-heading{gap:3px;}
+.ci-usage-table .smart-table-sort{gap:2px;overflow:visible;}
+.ci-usage-table .smart-table-sort>span{overflow:visible;text-overflow:clip;}
+.ci-usage-table .smart-table-filter{padding:2px;}
+.ci-usage-table .ci-group-title{white-space:normal;overflow-wrap:anywhere;}
+.manager-ui .ci-usage-table>tbody>tr:not(.table-detail-row)>td.ci-directory-cell{white-space:normal;overflow-wrap:anywhere;}
+@media(max-width:800px){.ci-token-summary{white-space:normal;overflow-wrap:anywhere;}.ci-toolbar .ci-tabs{width:100%;}}
