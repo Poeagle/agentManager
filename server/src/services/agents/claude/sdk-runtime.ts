@@ -979,8 +979,10 @@ class ClaudeRuntime {
         this.consume(message, current);
         if (message.type === "result") {
           completed = true;
-          this.publish();
-          if (this.pending.length) break;
+          // A Claude result is the end of the current native turn. The SDK
+          // input stream can remain open after it, so do not wait for closure
+          // before releasing the runtime or starting an accepted follow-up.
+          break;
         }
       }
     } catch (error) {

@@ -175,13 +175,19 @@ describe('Claude Agent SDK runtime',()=>{
       stream({type:'message_start',message:{id:'result-first'}}),
       stream({type:'content_block_start',index:0,content_block:{type:'text',text:'Complete.'}}),
       {type:'result',subtype:'success',uuid:assistant,session_id:session},
+      new Promise(()=>{}),
     ];
     const runtime=ensureClaudeRuntime(session,'/tmp');
     await runtime.submit('Complete');
-    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'),{timeout:1000});
     expect(runtime.snapshot().busy).toBe(false);
+    expect(runtime.snapshot().stage).toBe('idle');
     expect(runtime.runtime().state).toBe('idle');
     expect(runtime.runtime().completed_turn_id).toBeTruthy();
+    expect(runtime.snapshot().messages.find(message=>message.text==='Complete.')).toMatchObject({
+      phase:'final',
+      streaming:false,
+    });
   });
   it('queues a running follow-up and resumes the same Claude session after the current query',async()=>{
     let release!:(value:any)=>void;sdk.messages=[new Promise(done=>{release=done;})];
