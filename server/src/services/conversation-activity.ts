@@ -4,6 +4,7 @@ export interface ConversationActivity {
   /** Presentation boundary, never a persisted assistant message. */
   after_message_id?: string | null; turn_id?: string | null;
   result_preview?: string;
+  input_preview?: string;
 }
 
 /** Bounded, redacted plain text only; never forward raw structured tool data. */
@@ -38,8 +39,10 @@ export function conversationActivity(item: any, completed: boolean, previous?: C
   const ended = completed ? typeof item.completedAtMs === 'number' && Number.isFinite(item.completedAtMs) ? item.completedAtMs : observedAt : null;
   const output = item.aggregatedOutput ?? (Array.isArray(item.result?.content)?item.result.content.filter((block:any)=>block?.type==='text' && typeof block.text==='string').map((block:any)=>block.text).join('\n'):undefined);
   const preview = activityResultPreview(output) ?? previous?.result_preview;
+  const input = (item.type==='commandExecution'?activityResultPreview(item.command):undefined)??previous?.input_preview;
   return {id: item.id, label, status: completed ? ['failed','declined'].includes(item.status) ? 'failed' : 'completed' : 'running',
     ...(preview ? {result_preview:preview} : {}),
+    ...(input ? {input_preview:input} : {}),
     started_at: started === null ? null : new Date(started).toISOString(), completed_at: ended === null ? null : new Date(ended).toISOString(),
     duration_ms: typeof item.durationMs === 'number' && item.durationMs >= 0 ? item.durationMs : started !== null && ended !== null ? Math.max(0, ended - started) : null};
 }

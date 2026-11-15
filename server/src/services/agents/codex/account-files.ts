@@ -4,8 +4,8 @@ import {mkdir,unlink,access,copyFile,rename,stat,chmod,realpath,open} from 'fs/p
 import {dirname,join,sep} from 'path';
 import {randomUUID,createHash} from 'crypto';
 import {homedir} from 'os';
-import {pipeline} from 'stream/promises';
-import {Transform} from 'stream';
+import {pipeline} from 'node:stream/promises';
+import {Transform} from 'node:stream';
 import {config} from '../../../config.js';
 import {shellSingleQuote} from '../shell.js';
 import {sshArguments,sshEnvironment,type AccountConnection,accountCommand} from './account-transport.js';

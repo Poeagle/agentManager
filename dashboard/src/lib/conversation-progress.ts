@@ -1,4 +1,18 @@
-import type {ConversationMessage} from './api';
+import type {ConversationMessage,ConversationProgressStatistics,ConversationProgressSegment,ConversationStatistics} from './api';
+
+/** Difference only matching recorded segment counters, never cumulative totals
+ * from different turns or a subtraction of two incomplete lower bounds. */
+export function pendingProgressStatistics(live:ConversationProgressStatistics|null,previous:ConversationProgressSegment|undefined,hasPrevious:boolean):ConversationStatistics|null {
+  const current=live?.segment;
+  if(!current||current.end_reason||hasPrevious&&(!previous||!previous.complete||previous.id!==current.id||previous.start_at!==current.start_at))return null;
+  const requests=current.requests-(previous?.requests??0),calls=current.tool_calls-(previous?.tool_calls??0),rounds=current.tool_rounds-(previous?.tool_rounds??0);
+  if(Math.min(requests,calls,rounds)<0)return null;
+  const tokens=requests&&current.tokens?Object.fromEntries(Object.entries(current.tokens).map(([key,value])=>{
+    const before=previous?previous.tokens?.[key]:0;
+    return [key,value!=null&&before!=null&&value>=before?value-before:null];
+  })):null;
+  return {sequence:0,turn_id:live!.turn_id,tokens,requests,tool_calls:calls,tool_rounds:rounds,complete:current.complete,interval:{tokens,requests,tool_calls:calls,tool_rounds:rounds,complete:current.complete,shared_messages:1}};
+}
 
 type ConversationGroup={kind:'progress';id:string;messages:ConversationMessage[]}|{kind:'message';id:string;message:ConversationMessage};
 

@@ -3,7 +3,7 @@ import {activityResultPreview,conversationActivity} from '../src/services/conver
 it('shows bounded tool labels and real elapsed time without output, reasoning or credentials',()=>{
   const item={id:'tool',type:'commandExecution',command:'curl --token my-private-token https://example.test',output:'PRIVATE_OUTPUT'};
   const start=conversationActivity(item,false,undefined,1000)!;
-  expect(start.label).toContain('[隐藏]');expect(JSON.stringify(start)).not.toMatch(/my-private-token|PRIVATE_OUTPUT/);
+  expect(start.label).toContain('[隐藏]');expect(start.input_preview).toContain('curl');expect(start.input_preview).not.toContain('my-private-token');expect(JSON.stringify(start)).not.toMatch(/my-private-token|PRIVATE_OUTPUT/);
   expect(conversationActivity(item,true,start,4500)).toMatchObject({status:'completed',duration_ms:3500});
   expect(conversationActivity({id:'reason',type:'reasoning',text:'private'},false)).toBeNull();
   expect(conversationActivity({id:'mcp',type:'mcpToolCall',server:'tools',tool:'exec',arguments:'PRIVATE_ARGUMENTS'},false)?.label).toBe('调用工具 · tools / exec');

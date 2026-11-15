@@ -108,7 +108,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.12.0',
+    version:'3.13.0',
     updatedAt:'2026-11-15',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -414,7 +414,7 @@ export function getAgentApiContract() {
         category: 'Session control',
         method: 'WS',
         path: '/api/sessions/:id/conversation/stream',
-        description: 'Cookie-authenticated conversation stream. Optional UI-only activities carry turn_id, after_message_id and a bounded, redacted result_preview (up to 2000 characters); they are transient and never become conversation messages. User messages may include batch [{text,attachments}] for verified batch submissions and input_source {kind,label} when the platform has verified their submission identity; absent provenance is unknown. Supported agents can emit progress_statistics with cumulative recorded token and tool counts since the previous conclusion and an optional separate per-input segment with timing, status and recorded counts; missing or incomplete data remains unknown or a lower bound. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
+        description: 'Cookie-authenticated conversation stream. Optional UI-only activities carry turn_id, after_message_id and bounded, redacted input_preview (commands only) and result_preview (up to 2000 characters); they are transient and never become conversation messages. User messages may include batch [{text,attachments}] for verified batch submissions and input_source {kind,label} when the platform has verified their submission identity; absent provenance is unknown. Supported agents can emit progress_statistics with cumulative recorded token and tool counts since the previous conclusion and an optional separate per-input segment with timing, status and recorded counts; missing or incomplete data remains unknown or a lower bound. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
       },
       {
         category: 'Session control',

@@ -235,10 +235,14 @@ describe('conversation send transaction', () => {
     push(prior,[tool]);
     const pending=await screen.findByRole('status',{name:'正在执行的进展 5'});
     expect(pending.closest('.session-chat-progress')).toHaveTextContent('5 items');
-    expect(within(pending).getByText('Run command · npm run build')).toBeVisible();
+    expect(pending.querySelector('.session-chat-live-tool>summary')).toHaveTextContent('Run command · npm run build');
+    expect(pending.querySelector('time')).toHaveAttribute('dateTime',stamp);expect(pending.querySelector('.session-chat-metadata-row')).toHaveTextContent('token:');
     expect(screen.getByTestId('conversation-activity-line')).not.toHaveTextContent('npm run build');
     push(prior,[{...tool,result_preview:'Compiling modules…'}]);expect(pending).toHaveTextContent('Compiling modules…');
-    push(prior,[{...tool,status:'completed',result_preview:'Build succeeded',completed_at:stamp}]);expect(pending).toHaveTextContent('Build succeeded');expect(pending).toHaveTextContent('Completed');
+    push(prior,[{...tool,status:'completed',result_preview:'Build succeeded',completed_at:stamp}]);expect(pending).toHaveTextContent('Build succeeded');expect(pending.querySelector('.session-chat-live-tool>summary')).toHaveTextContent('Waiting');
+    expect(pending.querySelectorAll('.session-chat-live-tool')).toHaveLength(1);
+    push(prior,[{...tool,status:'completed',result_preview:'Build succeeded'}, {...tool,id:'second',label:'运行命令 · npm test'}]);
+    expect(pending.querySelector('.session-chat-live-tool>summary')).toHaveTextContent('npm test');expect(pending).not.toHaveTextContent('Build succeeded');
     push([...prior,{id:'round-5',role:'assistant',turn_id:'turn',phase:'commentary',text:'The build passed.',timestamp:stamp,streaming:true}],[tool],'answering');
     expect(await screen.findByText('The build passed.')).toBeVisible();expect(screen.queryByText('Build succeeded')).not.toBeInTheDocument();expect(screen.queryByRole('status',{name:'正在执行的进展 5'})).not.toBeInTheDocument();
     push([...prior,{id:'round-5',role:'assistant',turn_id:'turn',phase:'commentary',text:'The build passed.',timestamp:stamp,streaming:false}],[tool]);
@@ -261,7 +265,7 @@ describe('conversation send transaction', () => {
     await mount();const prior={id:'before-followup',role:'assistant',turn_id:'turn',phase:'commentary',text:'Prior work',timestamp:new Date(Date.now()-20000).toISOString()};const followup={id:'followup',role:'user',turn_id:'turn',text:'Continue please',timestamp:new Date(Date.now()-10000).toISOString()};
     act(()=>Socket.latest.emit({type:'snapshot',messages:[prior,followup],busy:true,stage:'waiting',turn_id:'turn',started_at:new Date(Date.now()-20000).toISOString(),activities:[]}));
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:12345},tool_calls:7,tool_rounds:5,complete:true}}));
-    const status=(await screen.findByRole('status',{name:'正在执行的进展 1'})).closest('.session-chat-progress')!.querySelector('summary')!;expect(status).toHaveTextContent('1 item');expect(status).toHaveTextContent('segment · token: — · tools: —');expect(status).not.toHaveTextContent('12.3K');expect(status).toHaveTextContent('In progress');expect(status).not.toHaveTextContent('Follow-up sent');
+    const status=(await screen.findByRole('status',{name:'正在执行的进展 1'})).closest('.session-chat-progress')!.querySelector('summary')!;expect(status).toHaveTextContent('1 item');expect(status).toHaveTextContent('segment · token: — · tools: —');expect(status).not.toHaveTextContent('12.3K');expect(status.closest('.session-chat-progress')!.querySelector('.session-chat-metadata-row')).not.toHaveTextContent('12.3K');expect(status).toHaveTextContent('In progress');expect(status).not.toHaveTextContent('Follow-up sent');
     const oldPart={id:'old-segment',start_at:new Date(Date.now()-20000).toISOString(),end_at:followup.timestamp,elapsed_ms:10000,end_reason:'input',tokens:{total_tokens:1000},requests:1,tool_calls:3,tool_rounds:1,complete:true};
     const newPart={...oldPart,id:'new-segment',start_at:followup.timestamp,end_at:null,elapsed_ms:null,end_reason:null,tokens:{total_tokens:200},tool_calls:1};
     act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:10,message_id:prior.id,turn_id:'turn',...oldPart,segment:oldPart}]}));

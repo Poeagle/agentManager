@@ -92,7 +92,7 @@ import {
   mergeConversationTimeline,
   type TimelineMessage,
 } from "../lib/conversation-timeline";
-import { groupConversationProgress } from "../lib/conversation-progress";
+import { groupConversationProgress, pendingProgressStatistics } from "../lib/conversation-progress";
 import {
   conversationTimings,
   elapsedBetween,
@@ -101,11 +101,11 @@ import {
 } from "../lib/conversation-timing";
 import {
   ConversationActivityLine,
-  englishActivity,
   currentConversationActivity,
   conversationActivityDuration,
   type ConversationActivity,
 } from "./ConversationActivityLine";
+import { ConversationProgressPending } from "./ConversationProgressPending";
 import { ConversationToolCall } from "./ConversationToolCall";
 import { useDisplayClock, estimatedServerNow, formatDisplayTimestamp } from "../lib/display-clock";
 import "./SessionConversation.css";
@@ -2237,14 +2237,9 @@ export function SessionConversation({
                         {bubble(message, true)}
                       </div>
                     ))}
-                    {pending&&<div className="session-chat-progress-entry session-chat-progress-pending" data-active="true" role="status" aria-label={`正在执行的进展 ${group.messages.length+1}`}>
-                      <span className="session-chat-progress-number" aria-label={`进展序号 ${group.messages.length+1}`}>{group.messages.length+1}</span>
-                      <div className="session-chat-progress-execution"><Loader2 size={13} className={liveState==='connected'?'animate-spin':undefined}/><span>{liveState!=='connected'?'Reconnecting…':slotActivities.some(item=>item.status==='running')?'Running tools…':'Waiting for update…'}</span></div>
-                      {slotActivities.map(item=><div key={item.id} className="session-chat-progress-tool" data-status={item.status}>
-                        <div className="session-chat-progress-tool-label"><span>{englishActivity(item.label)}</span><span>{item.status==='running'?'Running':item.status==='failed'?'Failed':'Completed'}</span></div>
-                        {item.result_preview&&<pre className="session-chat-progress-tool-output">{item.result_preview}</pre>}
-                      </div>)}
-                    </div>}
+                    {pending&&<ConversationProgressPending number={group.messages.length+1} tool={currentConversationActivity(slotActivities,true)||undefined}
+                      startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
+                      statistics={pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||!!last||!!pendingSegment)?progressStatistics:null,last?.statistics?.segment,!!last)} now={now} connected={liveState==='connected'}/>}
                   </ProgressSection>
                 );
               })}
