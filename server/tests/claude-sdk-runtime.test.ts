@@ -107,7 +107,19 @@ describe('Claude Agent SDK runtime',()=>{
     const runtime=ensureClaudeRuntime(session,'/tmp');expect(await runtime.submit('Work')).toBe(true);
     const turn=runtime.snapshot().turn_id!;expect(await runtime.stopTurn('old-turn')).toBe(false);expect(sdk.interrupts).toBe(0);
     expect(await runtime.stopTurn(turn)).toBe(true);expect(sdk.interrupts).toBe(1);
+    expect(runtime.runtime()).toMatchObject({state:'idle',completed_turn_id:expect.any(String)});
     resolve({type:'result',subtype:'success',uuid:assistant,session_id:session});await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));expect(await runtime.stopTurn(turn)).toBe(false);
+  });
+  it('finishes the turn when result arrives before the streaming input closes',async()=>{
+    sdk.messages=[
+      stream({type:'message_start',message:{id:'result-first'}}),
+      stream({type:'content_block_start',index:0,content_block:{type:'text',text:'Complete.'}}),
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Complete');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.snapshot().busy).toBe(false);
   });
   it('injects a running follow-up into the same SDK input stream',async()=>{
     let release!:(value:any)=>void;sdk.messages=[new Promise(done=>{release=done;})];

@@ -88,10 +88,18 @@ async function metadata(context: AgentContext) {
 }
 export async function readClaudeRuntime(context: AgentContext): Promise<AgentRuntime> {
     const value = await metadata(context);
+    // A managed SDK session has no PTY. Only a detached native transcript may be
+    // augmented by terminal prompt detection; a stale tracker cannot keep a
+    // completed managed turn running.
     const { getTracker } = await import('../../session-state.js');
     const tracker = context.session.id ? getTracker(context.session.id)?.state : null;
-    const state = tracker?.processState === 'waiting_for_input' ? 'waiting_for_input' : tracker?.processState === 'busy' ? 'running' : value.state;
-    return { source: 'claude_history', session_id: context.nativeId, state, last_activity_at: value.last, last_turn_ended_at:value.endedAt, observed_at: new Date().toISOString(), reason: '依据 Claude 原生历史和当前客户端状态', pending_question_count: 0, pending_questions: [], compaction: value.compaction };
+    const state =
+      value.state === 'unknown' && tracker?.processState === 'waiting_for_input'
+        ? 'waiting_for_input'
+        : value.state === 'unknown' && tracker?.processState === 'busy'
+          ? 'running'
+          : value.state;
+    return { source: 'claude_history', session_id: context.nativeId, state, last_activity_at: value.last, last_turn_ended_at:value.endedAt, observed_at: new Date().toISOString(), reason: '依据 Claude 原生历史', pending_question_count: 0, pending_questions: [], compaction: value.compaction };
 }
 /** Claude Code's built-in aliases. */
 const aliases = ['default', 'sonnet', 'opus', 'haiku'];

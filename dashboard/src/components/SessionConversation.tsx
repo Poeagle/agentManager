@@ -542,7 +542,7 @@ const Bubble = memo(function Bubble({
                     className={claudian ? "claudian-thinking-block" : "session-chat-thinking-block"}
                   >
                     <summary className={claudian ? "claudian-thinking-header" : undefined}>
-                      <span className={claudian ? "claudian-thinking-label" : "session-chat-thinking-spark"} aria-hidden={claudian ? undefined : "true"}>{claudian ? (streaming ? "Thinking..." : "Thought") : null}</span>
+                      <span className={claudian ? "claudian-thinking-label" : "session-chat-thinking-spark"} aria-hidden={claudian ? undefined : "true"}>{claudian ? (streaming && message.phase !== "final" ? "Thinking..." : "Thought") : null}</span>
                       {!claudian && <><span>{streaming ? "Claude 正在思考" : "Claude 的思考过程"}</span><small>{streaming ? "实时输出" : "已完成"}</small></>}
                     </summary>
                     <div className={claudian ? "claudian-thinking-content" : undefined}>{block.text}</div>

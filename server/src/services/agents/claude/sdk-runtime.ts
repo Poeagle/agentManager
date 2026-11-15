@@ -165,6 +165,7 @@ class ClaudeRuntime {
   private input: ClaudeInputStream | null = null;
   /** Follow-ups accepted into the same SDK query for native ordering and echo correlation. */
   private submitted: Pending[] = [];
+  private currentClientId: string | undefined;
   private active: Query | null = null;
   private abort: AbortController | null = null;
   private busy = false;
@@ -196,7 +197,7 @@ class ClaudeRuntime {
   }
 
   private observedTurnId() {
-    return this.submitted.at(-1)?.clientId ?? this.turnId;
+    return this.currentClientId ?? this.turnId;
   }
 
   snapshot(): AgentStreamSnapshot {
@@ -247,6 +248,7 @@ class ClaudeRuntime {
     if (this.busy && this.input) {
       const message = await userMessage(pending, this.id, "now");
       this.submitted.push(pending);
+      this.currentClientId = pending.clientId ?? this.currentClientId;
       this.input.push(message);
       this.upsert({
         id: conversationMessageId("", "user", pending.userId),
@@ -752,6 +754,7 @@ class ClaudeRuntime {
     this.busy = true;
     this.stage = "waiting";
     this.turnId = pending.userId;
+    this.currentClientId = pending.clientId;
     this.completedTurnId = null;
     this.startedAt = new Date().toISOString();
     this.completedAt = null;
@@ -813,8 +816,15 @@ class ClaudeRuntime {
     };
     const conversation = query({ prompt: input, options });
     this.active = conversation;
+    let completed = false;
     try {
-      for await (const message of conversation) this.consume(message);
+      for await (const message of conversation) {
+        this.consume(message);
+        if (message.type === "result") {
+          completed = true;
+          break;
+        }
+      }
     } catch (error) {
       if (!abort.signal.aborted) {
         const text = error instanceof Error ? error.message : "Claude 连接失败";
@@ -834,6 +844,7 @@ class ClaudeRuntime {
         });
       }
     } finally {
+      const active = this.active;
       this.active = null;
       input.close();
       if (this.input === input) this.input = null;
@@ -842,6 +853,13 @@ class ClaudeRuntime {
       this.stage = "idle";
       this.completedAt = new Date().toISOString();
       this.completedTurnId = this.observedTurnId();
+      if (completed && active) {
+        try {
+          active.close();
+        } catch {
+          // The result is authoritative; closing a released stream is optional.
+        }
+      }
       for (const id of this.assistantIds) {
         const message = this.messages.find((item) => item.id === id);
         if (message)
@@ -864,12 +882,22 @@ class ClaudeRuntime {
     return true;
   }
   async interrupt() {
+    const turnId = this.turnId;
+    const active = this.active;
+    if (!this.busy || !turnId) return;
     this.abort?.abort();
     try {
-      await this.active?.interrupt();
+      await active?.interrupt();
     } catch {
       /* Abort is authoritative. */
     }
+    this.busy = false;
+    this.stage = "idle";
+    this.completedAt = new Date().toISOString();
+    this.completedTurnId = this.observedTurnId();
+    for (const [id, activity] of this.activities)
+      if (activity.status === "running") this.finishTool(id);
+    this.publish();
   }
   setModel(preference: ModelPreference) {
     this.model = preference.model || undefined;
