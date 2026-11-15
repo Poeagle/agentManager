@@ -109,6 +109,47 @@ describe('Claude Agent SDK runtime',()=>{
     expect(await runtime.stopTurn(turn)).toBe(true);expect(sdk.interrupts).toBe(1);
     resolve({type:'result',subtype:'success',uuid:assistant,session_id:session});await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));expect(await runtime.stopTurn(turn)).toBe(false);
   });
+  it('injects a running follow-up into the same SDK input stream',async()=>{
+    let release!:(value:any)=>void;sdk.messages=[new Promise(done=>{release=done;})];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    expect(await runtime.submit('Start work','client-start')).toBe(true);
+    const input=sdk.queries[0].prompt[Symbol.asyncIterator]();
+    const first=await input.next();expect(first.value).toMatchObject({
+      message:{role:'user',content:'Start work'},
+    });
+    const reading=input.next();
+    expect(await runtime.submit('Insert this guidance','client-steer')).toBe(true);
+    const inserted=await reading;
+    expect(inserted.value).toMatchObject({
+      priority:'now',message:{role:'user',content:'Insert this guidance'},
+    });
+    expect(sdk.queries).toHaveLength(1);
+    expect(runtime.snapshot().messages.filter(message=>message.role==='user').map(message=>message.client_id))
+      .toEqual(['client-start','client-steer']);
+    const insertedUser={
+      type:'user',uuid:'d3587c44-6f5d-4d52-9a6c-484eac61880f',session_id:session,
+      parent_tool_use_id:null,message:{role:'user',content:'Insert this guidance'},
+    };
+    const emitted=[insertedUser,
+      stream({type:'message_start',message:{id:'steer-answer'}}),
+      stream({type:'content_block_start',index:0,content_block:{type:'text',text:'Guidance applied.'}}),
+      stream({type:'content_block_stop',index:0}),
+      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'steer-answer',content:[{type:'text',text:'Guidance applied.'}]}},
+      {type:'result',subtype:'success',uuid:assistant,session_id:session}];
+    sdk.messages.push(...emitted);
+    release(emitted);
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.snapshot().messages.filter(message=>message.role==='user')).toHaveLength(2);
+    expect(runtime.snapshot().messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role:'user',text:'Insert this guidance',client_id:'client-steer',
+        native_client_id:'client-steer',
+        id:conversationMessageId('','user','d3587c44-6f5d-4d52-9a6c-484eac61880f'),
+        turn_id:'d3587c44-6f5d-4d52-9a6c-484eac61880f',
+      }),
+      expect.objectContaining({role:'assistant',text:'Guidance applied.'}),
+    ]));
+  });
   it('uses protocol envelopes instead of per-chunk UUIDs and preserves text around tools',async()=>{
     sdk.messages=[
       stream({type:'message_start',message:{id:'api-message-one'}}),
@@ -159,6 +200,28 @@ describe('Claude Agent SDK runtime',()=>{
     expect(assistants[0].content_blocks).toEqual([
       {type:'text',index:0,text:'我先读取。'},
       {type:'tool_use',index:1,id:'tool-1',name:'Read',input:{file_path:'/tmp/demo.ts'},status:'completed',result:'ok'},
+    ]);
+  });
+  it('keeps Claude thinking blocks separate from answer text while streaming',async()=>{
+    sdk.messages=[
+      stream({type:'message_start',message:{id:'thinking-message'}}),
+      stream({type:'content_block_start',index:0,content_block:{type:'thinking',thinking:''}}),
+      stream({type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:'Checking the'}}),
+      stream({type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:' request.'}}),
+      stream({type:'content_block_stop',index:0}),
+      stream({type:'content_block_start',index:1,content_block:{type:'text',text:''}}),
+      stream({type:'content_block_delta',index:1,delta:{type:'text_delta',text:'Done.'}}),
+      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'thinking-message',content:[{type:'thinking',thinking:'Checking the request.'},{type:'text',text:'Done.'}]}},
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Check');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    const message=runtime.snapshot().messages.find(item=>item.role==='assistant')!;
+    expect(message.text).toBe('Done.');
+    expect(message.content_blocks).toEqual([
+      {type:'thinking',index:0,text:'Checking the request.'},
+      {type:'text',index:1,text:'Done.'},
     ]);
   });
   it('rekeys streamed content to the late native ID and merges tool snapshots by tool ID',async()=>{

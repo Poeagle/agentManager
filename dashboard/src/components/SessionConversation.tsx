@@ -384,7 +384,10 @@ const Bubble = memo(function Bubble({
     );
   const contentBlocks =
     message.content_blocks?.filter(
-      (block) => block.type === "tool_use" || block.text.length > 0,
+      (block) =>
+        block.type === "tool_use" ||
+        block.type === "thinking" ||
+        block.text.length > 0,
     ) || [];
   if (
     message.role === "assistant" &&
@@ -467,6 +470,7 @@ const Bubble = memo(function Bubble({
   return (
     <article
       className={`session-chat-message ${message.role}`}
+      data-agent={agent.id === "claude" ? "claude" : undefined}
       data-phase={message.phase}
       data-streaming={streaming}
       data-chat-message-id={message.id}
@@ -518,7 +522,20 @@ const Bubble = memo(function Bubble({
                   <ConversationToolCall
                     key={`${message.id}:tool:${block.id}`}
                     block={block}
+                    compact={agent.id === "claude"}
                   />
+                ) : block.type === "thinking" ? (
+                  <details
+                    key={`${message.id}:thinking:${block.index}`}
+                    className="session-chat-thinking-block"
+                  >
+                    <summary>
+                      <span className="session-chat-thinking-spark" aria-hidden="true" />
+                      <span>{streaming ? "Claude 正在思考" : "Claude 的思考过程"}</span>
+                      <small>{streaming ? "实时输出" : "已完成"}</small>
+                    </summary>
+                    <div>{block.text}</div>
+                  </details>
                 ) : (
                   <ConversationMarkdown
                     key={`${message.id}:text:${block.index}:${index}`}
@@ -2155,7 +2172,7 @@ export function SessionConversation({
         if(!(event.target instanceof HTMLElement)||event.target.closest('.session-chat-editor,input,textarea,select,[contenteditable],.session-batch-send'))return;
         event.preventDefault();event.stopPropagation();if(!event.repeat)submitWithShortcut();
       }}><div className="session-chat-layout">
-      <section ref={readingRoot} className="session-chat" aria-label="会话对话">
+      <section ref={readingRoot} className="session-chat" data-agent={sessionAgent(session).id === "claude" ? "claude" : undefined} aria-label="会话对话">
         <ConversationPromptEnhancer
           sessionId={session.id}
           active={active}

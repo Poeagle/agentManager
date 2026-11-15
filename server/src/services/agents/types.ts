@@ -299,6 +299,7 @@ export interface AgentMessage {
   phase?: "commentary" | "final" | "error";
   content_blocks?: Array<
     | { type: "text"; index: number; text: string }
+    | { type: "thinking"; index: number; text: string }
     | {
         type: "tool_use";
         index: number;

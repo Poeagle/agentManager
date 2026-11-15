@@ -30,6 +30,8 @@ type Pending = {
   clientId?: string;
   attachments: ConversationAttachment[];
   userId: string;
+  clientGenerated: boolean;
+  nativeUuid?: string;
 };
 type AssistantEnvelope = {
   ordinal: number;
@@ -77,6 +79,7 @@ function toolLabel(name: string, input: unknown): string {
 async function userMessage(
   pending: Pending,
   sessionId: string,
+  priority?: SDKUserMessage["priority"],
 ): Promise<SDKUserMessage> {
   const files = pending.attachments.filter((item) => item.kind === "file");
   const images = pending.attachments.filter((item) => item.kind === "image");
@@ -110,15 +113,58 @@ async function userMessage(
     message: { role: "user", content },
     parent_tool_use_id: null,
     session_id: sessionId,
-    uuid: pending.userId as `${string}-${string}-${string}-${string}-${string}`,
+    ...(priority ? { priority } : {}),
+    ...(pending.nativeUuid
+      ? { uuid: pending.nativeUuid as `${string}-${string}-${string}-${string}-${string}` }
+      : {}),
   };
+}
+
+class ClaudeInputStream {
+  private values: SDKUserMessage[] = [];
+  private waiting: ((value: IteratorResult<SDKUserMessage>) => void) | null = null;
+  private closed = false;
+
+  push(value: SDKUserMessage) {
+    if (this.closed) throw Error("Claude input stream is closed");
+    if (this.waiting) {
+      const resolve = this.waiting;
+      this.waiting = null;
+      resolve({ done: false, value });
+    } else this.values.push(value);
+  }
+
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.waiting?.({ done: true, value: undefined });
+    this.waiting = null;
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<SDKUserMessage> {
+    while (true) {
+      const value = this.values.shift();
+      if (value) {
+        yield value;
+        continue;
+      }
+      if (this.closed) return;
+      const next = await new Promise<IteratorResult<SDKUserMessage>>(
+        (resolve) => (this.waiting = resolve),
+      );
+      if (next.done) return;
+      yield next.value;
+    }
+  }
 }
 
 class ClaudeRuntime {
   private listeners = new Set<Listener>();
   private messages: AgentMessage[] = [];
   private activities = new Map<string, ConversationActivity>();
-  private queue: Pending[] = [];
+  private input: ClaudeInputStream | null = null;
+  /** Follow-ups accepted into the same SDK query for native ordering and echo correlation. */
+  private submitted: Pending[] = [];
   private active: Query | null = null;
   private abort: AbortController | null = null;
   private busy = false;
@@ -185,10 +231,29 @@ class ClaudeRuntime {
     attachments: ConversationAttachment[] = [],
     userId?: string,
   ): Promise<boolean | "queued"> {
-    const pending = { text, clientId, attachments, userId: userId || randomUUID() };
-    if (this.busy) {
-      this.queue.push(pending);
-      return "queued";
+    const pending = {
+      text,
+      clientId,
+      attachments,
+      userId: userId || randomUUID(),
+      clientGenerated: !userId,
+      nativeUuid: userId ? userId : undefined,
+    };
+    if (this.busy && this.input) {
+      const message = await userMessage(pending, this.id, "now");
+      this.submitted.push(pending);
+      this.input.push(message);
+      this.upsert({
+        id: conversationMessageId("", "user", pending.userId),
+        role: "user",
+        text: pending.text.trim() || "请查看附件。",
+        timestamp: new Date().toISOString(),
+        turn_id: pending.userId,
+        client_id: pending.clientId,
+        streaming: false,
+      });
+      this.publish();
+      return true;
     }
     void this.run(pending);
     return true;
@@ -240,7 +305,9 @@ class ClaudeRuntime {
         ...old,
         ...existing,
         id: newId,
-        content_blocks: old.content_blocks,
+        content_blocks: existing.content_blocks?.length
+          ? existing.content_blocks
+          : old.content_blocks,
       };
       this.messages.splice(index, 1);
     } else this.messages[index] = { ...old, id: newId };
@@ -264,6 +331,26 @@ class ClaudeRuntime {
 
   private assistantEnvelope() {
     return this.currentAssistant ?? this.beginAssistant();
+  }
+
+  private appendThinking(envelope: AssistantEnvelope, index: number, text: string) {
+    if (!text) return;
+    const existing = envelope.blocks.get(index);
+    const previous =
+      existing?.type === "thinking" ? existing.text : "";
+    envelope.blocks.set(index, {
+      type: "thinking",
+      index,
+      text: previous + text,
+    });
+    const message = this.assistant(this.textBlock(envelope, index));
+    this.upsert({
+      ...message,
+      content_blocks: [...envelope.blocks.values()].sort(
+        (a, b) => a.index - b.index,
+      ),
+      streaming: true,
+    });
   }
 
   private finishAssistantEnvelope() {
@@ -340,12 +427,24 @@ class ClaudeRuntime {
         this.startTool(envelope, index, block.id, block.name, block.input);
         continue;
       }
+      if (block?.type === "thinking" && typeof block.thinking === "string") {
+        const existing = envelope.blocks.get(index);
+        const previous = existing?.type === "thinking" ? existing.text : "";
+        const current = block.thinking;
+        if (current !== previous)
+          this.appendThinking(
+            envelope,
+            index,
+            current.startsWith(previous) ? current.slice(previous.length) : current,
+          );
+        continue;
+      }
       if (
         block?.type !== "text" ||
-        typeof block.text !== "string" ||
-        !block.text
+        typeof block.text !== "string"
       )
         continue;
+      if (!block.text) continue;
       const existing = envelope.blocks.get(index);
       const duplicateText = [...envelope.blocks.values()].some(
         (item) => item.type === "text" && item.text === block.text,
@@ -401,6 +500,20 @@ class ClaudeRuntime {
 
   private consume(message: SDKMessage) {
     this.lastActivity = new Date().toISOString();
+    if (message.type === "user" && !message.parent_tool_use_id && message.uuid) {
+      const nativeText = textContent(message.message.content);
+      const submitted = this.submitted.find(
+        (item) =>
+          (!item.clientGenerated && item.nativeUuid === message.uuid) ||
+          message.uuid === item.nativeUuid ||
+          message.uuid === item.userId ||
+          (item === this.submitted[0] && nativeText === item.text),
+      );
+      if (submitted) {
+        this.submitted.splice(this.submitted.indexOf(submitted), 1);
+        this.linkNativeUserMessage(submitted, message.uuid);
+      }
+    }
     if (message.type === "stream_event") {
       const event: any = message.event;
       if (event?.type === "message_start") {
@@ -410,6 +523,26 @@ class ClaudeRuntime {
           envelope.nativeId = event.message.id;
       } else if (event?.type === "message_stop") {
         this.finishAssistantEnvelope();
+      } else if (
+        event?.type === "content_block_start" &&
+        event.content_block?.type === "thinking" &&
+        message.parent_tool_use_id === null
+      ) {
+        this.appendThinking(
+          this.assistantEnvelope(),
+          event.index,
+          String(event.content_block.thinking || ""),
+        );
+      } else if (
+        event?.type === "content_block_delta" &&
+        event.delta?.type === "thinking_delta" &&
+        message.parent_tool_use_id === null
+      ) {
+        this.appendThinking(
+          this.assistantEnvelope(),
+          event.index,
+          String(event.delta.thinking || ""),
+        );
       } else if (
         event?.type === "content_block_start" &&
         event.content_block?.type === "tool_use"
@@ -571,6 +704,28 @@ class ClaudeRuntime {
     }
   }
 
+  private linkNativeUserMessage(pending: Pending, nativeId: string) {
+    const linked = pending as Pending & { nativeLinked?: boolean };
+    if (linked.nativeLinked) return;
+    linked.nativeLinked = true;
+    const optimisticId = conversationMessageId("", "user", pending.userId);
+    const nativeMessageId = conversationMessageId("", "user", nativeId);
+    const index = this.messages.findIndex((message) => message.id === optimisticId);
+    if (index < 0 || optimisticId === nativeMessageId) return;
+    const existing = this.messages.findIndex(
+      (message) => message.id === nativeMessageId,
+    );
+    const message = {
+      ...this.messages[index],
+      id: nativeMessageId,
+      turn_id: nativeId,
+      ...(pending.clientId ? { native_client_id: pending.clientId } : {}),
+    };
+    this.messages[index] = message;
+    this.publish();
+    if (existing >= 0 && existing !== index) this.messages.splice(existing, 1);
+  }
+
   private appendText(envelope: AssistantEnvelope, index: number, text: string) {
     envelope.sawText = true;
     this.stage = "answering";
@@ -612,9 +767,9 @@ class ClaudeRuntime {
     const abort = new AbortController();
     this.abort = abort;
     const sessionId = this.id;
-    const prompt = (async function* () {
-      yield await userMessage(pending, sessionId);
-    })();
+    const input = new ClaudeInputStream();
+    this.input = input;
+    input.push(await userMessage(pending, sessionId));
     const resume = this.resumeOnNextQuery;
     this.resumeOnNextQuery = true;
     const providerEnvironment = this.provider
@@ -650,7 +805,7 @@ class ClaudeRuntime {
       ...(this.model ? { model: this.model } : {}),
       ...(resume ? { resume: this.id } : { sessionId: this.id }),
     };
-    const conversation = query({ prompt, options });
+    const conversation = query({ prompt: input, options });
     this.active = conversation;
     try {
       for await (const message of conversation) this.consume(message);
@@ -674,6 +829,8 @@ class ClaudeRuntime {
       }
     } finally {
       this.active = null;
+      input.close();
+      if (this.input === input) this.input = null;
       this.abort = null;
       this.busy = false;
       this.stage = "idle";
@@ -691,8 +848,6 @@ class ClaudeRuntime {
       for (const [id, activity] of this.activities)
         if (activity.status === "running") this.finishTool(id);
       this.publish();
-      const next = this.queue.shift();
-      if (next) void this.run(next);
     }
   }
 
