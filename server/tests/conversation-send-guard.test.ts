@@ -57,3 +57,9 @@ it('asks for confirmation on unknown history metrics without substituting activi
  vi.mocked(codexAdapter.runtime.read).mockResolvedValue({source:'fixture',session_id:'native',state:'idle',last_activity_at:new Date(Date.now()-60*60000).toISOString(),observed_at:new Date().toISOString(),reason:'no end event'});
  const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});expect(response.json()).toMatchObject({needs_confirmation:true,matched:null,idle_minutes:null,last_completed_at:null});
 });
+it('does not warn before the first turn of a newly created session',async()=>{
+ vi.mocked(codexAdapter.telemetry.read).mockRejectedValue(Error('no usage yet'));
+ vi.mocked(codexAdapter.runtime.read).mockRejectedValue(Error('runtime not connected yet'));
+ const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ expect(response.statusCode).toBe(200);expect(response.json()).toMatchObject({needs_confirmation:false,matched:null,context_tokens:null,context_window:null,last_completed_at:null});
+});

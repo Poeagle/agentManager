@@ -150,6 +150,17 @@ describe('Claude Agent SDK runtime',()=>{
       expect.objectContaining({role:'assistant',text:'Guidance applied.'}),
     ]));
   });
+  it('exposes the completed native turn so the dashboard can clear its busy state',async()=>{
+    sdk.messages=[
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Finish this turn','client-turn');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.runtime()).toMatchObject({
+      state:'idle',completed_turn_id:expect.any(String),last_turn_ended_at:expect.any(String),
+    });
+  });
   it('uses protocol envelopes instead of per-chunk UUIDs and preserves text around tools',async()=>{
     sdk.messages=[
       stream({type:'message_start',message:{id:'api-message-one'}}),

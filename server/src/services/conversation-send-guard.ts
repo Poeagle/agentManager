@@ -24,8 +24,11 @@ export async function inspectSendGuard(session:AgentSession,userId:string,payloa
  const tokens=finite(usage?.usage?.last.total_tokens),window=finite(usage?.usage?.window),percent=tokens!==null&&window&&window>0?Math.min(100,tokens/window*100):null;
  const idle=!!runtime&&['idle','interrupted','failed'].includes(runtime.state),last=idle&&runtime?.last_turn_ended_at?Date.parse(runtime.last_turn_ended_at):NaN;
  const idleMinutes=Number.isFinite(last)&&last<=now?(now-last)/60000:null;
+ const completedTurnId=runtime&&'completed_turn_id' in runtime?runtime.completed_turn_id:undefined;
  const matched=policy.enabled?evaluateSendGuard(policy.conditions,{context_percent:percent,context_tokens:tokens,idle_minutes:runtime&&['running','waiting_for_input'].includes(runtime.state)?0:idleMinutes}):false;
  const owned=session.created_by_user_id===userId,canTransform=isAdmin(userId)&&owned&&idle;
- const hasHistory=!!runtime?.completed_turn_id||idle&&!!runtime?.last_activity_at;
- return {needs_confirmation:matched===true||matched===null&&(unavailable||hasHistory||tokens!==null||window!==null),matched,enabled:policy.enabled,context_tokens:tokens,context_window:window,context_percent:percent,idle_minutes:idleMinutes,last_completed_at:idle?runtime?.last_turn_ended_at??null:null,observed_at:usage?.observed_at??null,native_id:context.nativeId,checked_at:new Date(now).toISOString(),can_compact:!!canTransform&&!!adapter.descriptor.capabilities.compact,can_new:!!canTransform&&!!adapter.descriptor.capabilities.newConversation,token:guardToken(session,userId,payload,now,policy)};
+ // A failed or empty runtime probe on a just-created conversation is not
+ // history. Ask for confirmation only after a native turn or usage was observed.
+ const hasHistory=!!completedTurnId||!!tokens||!!idle&&!!runtime?.last_turn_ended_at;
+ return {needs_confirmation:matched===true||matched===null&&(hasHistory||tokens!==null||window!==null),matched,enabled:policy.enabled,context_tokens:tokens,context_window:window,context_percent:percent,idle_minutes:idleMinutes,last_completed_at:idle?runtime?.last_turn_ended_at??null:null,observed_at:usage?.observed_at??null,native_id:context.nativeId,checked_at:new Date(now).toISOString(),can_compact:!!canTransform&&!!adapter.descriptor.capabilities.compact,can_new:!!canTransform&&!!adapter.descriptor.capabilities.newConversation,token:guardToken(session,userId,payload,now,policy)};
 }

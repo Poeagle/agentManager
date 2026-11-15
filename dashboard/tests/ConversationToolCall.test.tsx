@@ -13,8 +13,8 @@ it('renders a compact tool header and reveals input and result on demand',()=>{
   const card=container.querySelector('details');
   expect(card).toHaveAttribute('data-status','completed');
   expect(screen.getByText('Read')).toBeVisible();
-  expect(screen.getByText('工具调用完成')).toBeVisible();
-  expect(screen.getByText('完成')).toBeVisible();
+  expect(screen.getByText('README.md')).toBeVisible();
+  expect(screen.queryByText('工具调用完成')).not.toBeInTheDocument();
   expect(card).not.toHaveAttribute('open');
   fireEvent.click(screen.getByText('Read'));
   expect(card).toHaveAttribute('open');

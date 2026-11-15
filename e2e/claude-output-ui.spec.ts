@@ -16,6 +16,12 @@ test('renders Claude thinking and tool output in the transcript',async({page},te
     cli_type:'claude',agent_id:'claude',native_session_id:'019ff001-7777-7777-8777-777777777777',
     agent_environment_id:'claude-provider:anthropic',pid:null,created_at:new Date().toISOString(),
   };
+  let socket:import('@playwright/test').WebSocketRoute|null=null,push:any;
+  await page.routeWebSocket('**/conversation/stream*',route=>{
+    socket=route;
+    push=value=>route.send(JSON.stringify(value));
+    push({type:'snapshot',messages:[],busy:true,turn_id:'turn',started_at:new Date().toISOString(),stage:'answering',activities:[]});
+  });
   await page.route('**/api/sessions**',route=>{
     const url=new URL(route.request().url());
     if(url.pathname==='/api/sessions'&&route.request().method()==='GET')return route.fulfill({json:{sessions:[session]}});
@@ -51,12 +57,30 @@ test('renders Claude thinking and tool output in the transcript',async({page},te
   }}});
   await page.setViewportSize({width:1100,height:900});
   await page.goto('/');
-  await expect(page.getByText('Claude 的思考过程').last()).toBeVisible();
+  await expect(page.getByText('Event stream connected')).toBeVisible();
+  expect(socket).not.toBeNull();
+  push({type:'snapshot',messages:[
+    {id:'u',role:'user',text:'Inspect the project',timestamp:new Date(Date.now()-5000).toISOString()},
+    {id:'a',role:'assistant',text:'Inspection complete.',timestamp:new Date().toISOString(),
+     turn_id:'turn',phase:'final',content_blocks:[
+      {type:'thinking',index:0,text:'I should read the README before changing anything.'},
+      {type:'tool_use',index:1,id:'tool-1',name:'Read',input:{file_path:'README.md'},status:'completed',result:'# Project'},
+      {type:'text',index:2,text:'Inspection complete.'},
+     ]},
+  ],busy:false,turn_id:'turn',completed_at:new Date().toISOString(),stage:'idle'});
+  await expect(page.getByText('Ready for your next message')).toBeVisible();
+  await expect(page.getByRole('button',{name:'停止当前执行'})).toHaveCount(0);
+  await expect(page.getByText(/esc to interrupt/)).toHaveCount(0);
+  await expect(page.getByText('Thought').last()).toBeVisible();
   await expect(page.getByText('Read',{exact:true}).last()).toBeVisible();
+  await expect(page.getByText('README.md',{exact:true}).last()).toBeVisible();
   await expect(page.getByText('Inspection complete.',{exact:true}).last()).toBeVisible();
+  await expect(page.locator('.claudian-response-footer')).toHaveCount(1);
+  await expect(page.getByText('progress',{exact:true})).toHaveCount(0);
+  await expect(page.getByText('final',{exact:true})).toHaveCount(0);
   await expect(page.getByText('# Project')).not.toBeVisible();
   await expect(page.getByText('I should read the README before changing anything.')).not.toBeVisible();
-  await page.getByText('Claude 的思考过程').last().click();
+  await page.getByText('Thought').last().click();
   await expect(page.getByText('I should read the README before changing anything.')).toBeVisible();
   await page.getByText('Read',{exact:true}).last().click();
   await expect(page.getByText('# Project')).toBeVisible();

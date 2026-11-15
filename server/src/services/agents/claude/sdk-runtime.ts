@@ -170,6 +170,7 @@ class ClaudeRuntime {
   private busy = false;
   private stage: AgentStreamSnapshot["stage"] = "idle";
   private turnId: string | null = null;
+  private completedTurnId: string | null = null;
   private startedAt: string | null = null;
   private completedAt: string | null = null;
   private assistantIds = new Set<string>();
@@ -192,6 +193,10 @@ class ClaudeRuntime {
     this.model = preference?.model || undefined;
     this.resumeOnNextQuery = resume;
     this.provider = provider;
+  }
+
+  private observedTurnId() {
+    return this.submitted.at(-1)?.clientId ?? this.turnId;
   }
 
   snapshot(): AgentStreamSnapshot {
@@ -747,6 +752,7 @@ class ClaudeRuntime {
     this.busy = true;
     this.stage = "waiting";
     this.turnId = pending.userId;
+    this.completedTurnId = null;
     this.startedAt = new Date().toISOString();
     this.completedAt = null;
     this.assistantIds.clear();
@@ -835,6 +841,7 @@ class ClaudeRuntime {
       this.busy = false;
       this.stage = "idle";
       this.completedAt = new Date().toISOString();
+      this.completedTurnId = this.observedTurnId();
       for (const id of this.assistantIds) {
         const message = this.messages.find((item) => item.id === id);
         if (message)
@@ -878,6 +885,7 @@ class ClaudeRuntime {
       state: this.busy ? "running" : "idle",
       last_activity_at: this.lastActivity,
       last_turn_ended_at: this.completedAt,
+      ...(this.completedTurnId ? { completed_turn_id: this.completedTurnId } : {}),
       observed_at: new Date().toISOString(),
       reason: "Claude Agent SDK structured event stream",
       pending_question_count: 0,
