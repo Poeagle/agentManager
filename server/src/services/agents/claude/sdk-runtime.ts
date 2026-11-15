@@ -970,6 +970,7 @@ class ClaudeRuntime {
     const conversation = query({ prompt: input, options });
     this.active = conversation;
     let completed = false;
+    let completedSuccessfully = false;
     try {
       for await (const message of conversation) {
         const current =
@@ -979,6 +980,7 @@ class ClaudeRuntime {
         this.consume(message, current);
         if (message.type === "result") {
           completed = true;
+          completedSuccessfully = message.subtype === "success";
           // A Claude result is the end of the current native turn. The SDK
           // input stream can remain open after it, so do not wait for closure
           // before releasing the runtime or starting an accepted follow-up.
@@ -1038,19 +1040,45 @@ class ClaudeRuntime {
       this.stage = "idle";
       this.completedAt = new Date().toISOString();
       this.completedTurnId = this.observedTurnId();
-      for (const id of this.assistantIds) {
-        const message = this.messages.find((item) => item.id === id);
-        if (message)
-          this.upsert({
-            ...message,
-            phase: "final",
-            streaming: false,
-            timestamp: this.completedAt,
-          });
-      }
+      this.finalizeAssistantMessages(completedSuccessfully);
       for (const [id, activity] of this.activities)
         if (activity.status === "running") this.finishTool(id);
       this.publish();
+    }
+  }
+
+  /** Claude emits assistant protocol messages for commentary and tool rounds as
+   * well as the conclusion. Only a successful final text message represents the
+   * answer; tools stay in the shared progress transcript. */
+  private finalizeAssistantMessages(success: boolean) {
+    const assistants = [...this.assistantIds].flatMap((id) => {
+      const message = this.messages.find((item) => item.id === id);
+      return message && message.role === "assistant" ? [message] : [];
+    });
+    let finalMessage: AgentMessage | undefined;
+    if (success) {
+      for (let index = assistants.length - 1; index >= 0; index--) {
+        const message = assistants[index];
+        if (
+          message.phase !== "error" &&
+          !!message.text.trim() &&
+          message.content_blocks?.some(
+            (block) => block.type === "text" && !!block.text.trim(),
+          ) === true
+        ) {
+          finalMessage = message;
+          break;
+        }
+      }
+    }
+    for (const message of assistants) {
+      const final = message === finalMessage;
+      this.upsert({
+        ...message,
+        phase: final ? "final" : "commentary",
+        streaming: false,
+        ...(final && this.completedAt ? { timestamp: this.completedAt } : {}),
+      });
     }
   }
 

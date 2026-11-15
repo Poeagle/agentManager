@@ -291,7 +291,10 @@ describe('Claude Agent SDK runtime',()=>{
     const user=final.messages.find((message:any)=>message.role==='user');
     expect(user.id).toBe(conversationMessageId('',user.role,user.turn_id));
     expect(new Set(assistants.map((message:any)=>message.id)).size).toBe(2);
-    expect(assistants).toEqual(assistants.map((message:any)=>expect.objectContaining({phase:'final',streaming:false})));
+    expect(assistants.map(message=>({phase:message.phase,streaming:message.streaming}))).toEqual([
+      {phase:'commentary',streaming:false},
+      {phase:'final',streaming:false},
+    ]);
     expect(final.activities).toEqual([expect.objectContaining({id:'tool-1',label:'读取文件 · /tmp/demo.ts',status:'completed'})]);
     expect(assistants[0].content_blocks).toEqual([
       {type:'text',index:0,text:'我先读取。'},
@@ -362,6 +365,26 @@ describe('Claude Agent SDK runtime',()=>{
     stop();
     expect(frames.at(-1).messages.filter((message:any)=>message.role==='assistant')).toEqual([
       expect.objectContaining({text:'完整回复',phase:'final',streaming:false}),
+    ]);
+  });
+  it('keeps tool rounds in progress and finalizes only the conclusion',async()=>{
+    sdk.messages=[
+      stream({type:'message_start',message:{id:'tool-round'}}),
+      stream({type:'content_block_start',index:0,content_block:{type:'tool_use',id:'read-one',name:'Read',input:{file_path:'/p/README.md'}}}),
+      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'tool-round',content:[{type:'tool_use',id:'read-one',name:'Read',input:{file_path:'/p/README.md'}}]}},
+      {type:'user',uuid:'019ff001-1212-7212-8212-121212121214',session_id:session,parent_tool_use_id:'read-one',message:{content:[{type:'tool_result',tool_use_id:'read-one',content:'README'}]}},
+      stream({type:'message_start',message:{id:'answer-round'}}),
+      stream({type:'content_block_start',index:0,content_block:{type:'text',text:'Project summary'}}),
+      {type:'assistant',uuid:'019ff001-1212-7212-8212-121212121215',session_id:session,parent_tool_use_id:null,message:{id:'answer-round',content:[{type:'text',text:'Project summary'}]}},
+      {type:'result',subtype:'success',uuid:'019ff001-1212-7212-8212-121212121216',session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Inspect');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    const assistants=runtime.snapshot().messages.filter(message=>message.role==='assistant');
+    expect(assistants.map(message=>({id:message.id,phase:message.phase,tools:message.content_blocks?.filter(block=>block.type==='tool_use').map(block=>block.name)}))).toEqual([
+      {id:conversationMessageId('','assistant','tool-round'),phase:'commentary',tools:['Read']},
+      {id:conversationMessageId('','assistant','answer-round'),phase:'final',tools:[]},
     ]);
   });
   it('merges thinking-only and text completions from the same API message into one final message',async()=>{

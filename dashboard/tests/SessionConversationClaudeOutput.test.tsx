@@ -1,4 +1,4 @@
-import {act,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {beforeEach,expect,it,vi} from 'vitest';
 import {api,type ConversationPage,type Session} from '../src/lib/api';
@@ -20,6 +20,9 @@ class Socket {
 const session={id:'claude-ui',project_id:'p',status:'running',cli_type:'claude',claude_session_id:'claude-native',codex_session_id:null} as Session;
 
 beforeEach(()=>{
+  Object.defineProperty(HTMLElement.prototype,'scrollIntoView',{configurable:true,value:vi.fn()});
+  localStorage.clear();
+  Socket.latest=undefined as unknown as Socket;
   vi.stubGlobal('WebSocket',Socket);
   vi.spyOn(api.agent,'conversation').mockResolvedValue({
     messages:[],statistics:[],has_more:false,reset:false,available:true,generation:'g',
@@ -65,4 +68,32 @@ it('does not leave a Claude turn clock or stop control after a completed snapsho
   act(()=>Socket.latest.emit({type:'snapshot',busy:false,turn_id:'turn',completed_at:new Date().toISOString(),stage:'idle',messages:[{id:'a',role:'assistant',turn_id:'turn',phase:'final',text:'Done',timestamp:new Date().toISOString()}]}));
   await waitFor(()=>expect(screen.queryByRole('button',{name:'停止当前执行'})).not.toBeInTheDocument());
   expect(screen.queryByText(/esc to interrupt/)).not.toBeInTheDocument();
+});
+
+it('groups Claude tool rounds with the final answer and keeps tool cards compact',async()=>{
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  render(<QueryClientProvider client={client}><SessionConversation session={session} active onRaw={()=>{}}/></QueryClientProvider>);
+  await waitFor(()=>expect(Socket.latest?.onmessage).toBeTruthy());
+  act(()=>Socket.latest.emit({type:'snapshot',busy:false,stage:'idle',messages:[],stream_id:'group-test',stream_seq:1}));
+  const stamp='2026-11-15T05:00:00.000Z';
+  act(()=>Socket.latest.emit({
+    type:'snapshot',busy:false,turn_id:'turn',stage:'idle',stream_id:'group-test',stream_seq:2,
+    messages:[
+      {id:'user',role:'user',text:'介绍一下项目',timestamp:stamp},
+      {id:'tool-round',role:'assistant',turn_id:'turn',phase:'commentary',text:'',timestamp:stamp,content_blocks:[
+        {type:'tool_use',index:0,id:'read-one',name:'Read',input:{file_path:'/p/README.md'},status:'completed',result:'README'},
+        {type:'tool_use',index:1,id:'read-two',name:'Bash',input:{command:'npm test'},status:'completed',result:'ok'},
+      ]},
+      {id:'tool-round-two',role:'assistant',turn_id:'turn',phase:'commentary',text:'',timestamp:stamp,content_blocks:[
+        {type:'tool_use',index:0,id:'read-three',name:'Read',input:{file_path:'/p/package.json'},status:'completed',result:'package'},
+      ]},
+      {id:'final',role:'assistant',turn_id:'turn',phase:'final',text:'项目介绍已完成。',timestamp:stamp},
+    ],
+  }));
+  const progress=await screen.findByLabelText('Claude 进展');
+  const tool=within(progress).getAllByText('Read')[0].closest('details')!;
+  expect(tool).not.toHaveAttribute('open');
+  expect(tool).toHaveClass('session-chat-tool-compact');
+  expect(screen.getByText('项目介绍已完成。')).toBeVisible();
+  expect(within(progress).queryByText('项目介绍已完成。')).not.toBeInTheDocument();
 });

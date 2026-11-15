@@ -522,7 +522,7 @@ const Bubble = memo(function Bubble({
                   <ConversationToolCall
                     key={`${message.id}:tool:${block.id}`}
                     block={block}
-                    compact={compact}
+                    compact
                   />
                 ) : block.type === "thinking" ? (
                   <details

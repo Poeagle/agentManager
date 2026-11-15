@@ -12,6 +12,14 @@ export function nextDefaultTabName(prefix: string, tabs: TerminalInstance[]): st
   return `${prefix} ${number}`;
 }
 
+/** Automatic session tabs use their task when it identifies a new conversation,
+ * then fall back to a unique ordinal. Generic launcher tasks are not names. */
+export function automaticSessionTabName(task:string|undefined,tabs:TerminalInstance[],id:string):string|null{
+  const title=task?.trim().replace(/\s+/g,' ').slice(0,100);
+  if(!title||['Terminal','新会话','工作会话'].includes(title))return null;
+  return uniqueTabName(title,tabs,id);
+}
+
 export function uniqueTabName(name: string, tabs: TerminalInstance[], id: string): string {
   const used = new Set(tabs.filter(tab => tab.id !== id).map(tab => (tab.customLabel?.trim() || tab.label).toLocaleLowerCase()));
   if (!used.has(name.toLocaleLowerCase())) return name;
