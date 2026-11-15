@@ -36,6 +36,7 @@ type Pending = {
   userId: string;
   clientGenerated: boolean;
   nativeUuid?: string;
+  priority?: SDKUserMessage["priority"];
 };
 type AssistantEnvelope = {
   ordinal: number;
@@ -174,6 +175,8 @@ class ClaudeRuntime {
   /** Follow-ups accepted into the same SDK query for native ordering and echo correlation. */
   private submitted: Pending[] = [];
   private currentClientId: string | undefined;
+  private currentInputUuid: string | undefined;
+  private currentNativeUserSeen = false;
   private active: Query | null = null;
   private abort: AbortController | null = null;
   private busy = false;
@@ -309,7 +312,7 @@ class ClaudeRuntime {
     attachments: ConversationAttachment[] = [],
     userId?: string,
   ): Promise<boolean | "queued"> {
-    const pending = {
+    const pending: Pending = {
       text,
       clientId,
       attachments,
@@ -317,6 +320,24 @@ class ClaudeRuntime {
       clientGenerated: !userId,
       nativeUuid: userId ? userId : undefined,
     };
+    if (this.busy && this.input && this.active) {
+      pending.priority = "now";
+      const native = await userMessage(pending, this.id, "now");
+      this.input.push(native);
+      this.submitted.push(pending);
+      this.upsert({
+        id: conversationMessageId("", "user", pending.userId),
+        role: "user",
+        text: pending.text.trim() || "请查看附件。",
+        timestamp: new Date().toISOString(),
+        turn_id: this.turnId || pending.userId,
+        client_id: pending.clientId,
+        queued: false,
+        streaming: false,
+      });
+      this.publish();
+      return true;
+    }
     if (this.busy || this.running) {
       this.pending.push(pending);
       this.upsert({
@@ -324,13 +345,13 @@ class ClaudeRuntime {
         role: "user",
         text: pending.text.trim() || "请查看附件。",
         timestamp: new Date().toISOString(),
-        turn_id: pending.userId,
+        turn_id: this.turnId || pending.userId,
         client_id: pending.clientId,
         queued: true,
         streaming: false,
       });
       this.publish();
-      return true;
+      return "queued";
     }
     if (userId) pending.nativeUuid = userId;
     this.start(pending);
@@ -705,8 +726,16 @@ class ClaudeRuntime {
     }
     if (message.type === "user" && !message.parent_tool_use_id && message.uuid) {
       if (currentTurnUser) {
+        const previousTurnId = this.turnId;
+        this.turnId = message.uuid;
         const index = this.messages.findIndex(
-          (item) => item.turn_id === this.turnId && item.role === "user",
+          (item) =>
+            item.role === "user" &&
+            (
+              item.id === conversationMessageId("", "user", message.uuid) ||
+              item.turn_id === previousTurnId ||
+              item.turn_id === this.currentClientId
+            ),
         );
         if (index >= 0) {
           this.messages[index] = {
@@ -970,6 +999,8 @@ class ClaudeRuntime {
     this.stage = "waiting";
     this.turnId = pending.userId;
     this.currentClientId = pending.clientId;
+    this.currentInputUuid = undefined;
+    this.currentNativeUserSeen = false;
     this.completedTurnId = null;
     this.startedAt = new Date().toISOString();
     this.completedAt = null;
@@ -998,7 +1029,7 @@ class ClaudeRuntime {
     this.input = input;
     if (!pending.nativeUuid)
       pending.nativeUuid = randomUUID() as Pending["nativeUuid"];
-    const currentInput = await userMessage(pending, sessionId);
+    const currentInput = await userMessage(pending, sessionId, pending.priority);
     input.push(currentInput);
     const resume = this.resumeOnNextQuery;
     this.resumeOnNextQuery = true;
@@ -1030,6 +1061,7 @@ class ClaudeRuntime {
       ...(this.model ? { model: this.model } : {}),
       ...(resume ? { resume: this.id } : { sessionId: this.id }),
     };
+    this.currentInputUuid = currentInput.uuid;
     const conversation = query({ prompt: input, options });
     this.active = conversation;
     let completed = false;
@@ -1039,7 +1071,14 @@ class ClaudeRuntime {
         const current =
           message.type === "user" &&
           !message.parent_tool_use_id &&
-          message.uuid === currentInput.uuid;
+          !this.currentNativeUserSeen &&
+          (
+            !this.currentInputUuid ||
+            message.uuid === this.currentInputUuid ||
+            textContent(message.message.content) ===
+              textContent(currentInput.message.content)
+          );
+        if (current) this.currentNativeUserSeen = true;
         this.consume(message, current);
         if (message.type === "result") {
           completed = true;

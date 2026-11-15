@@ -190,7 +190,7 @@ describe('Claude Agent SDK runtime',()=>{
       streaming:false,
     });
   });
-  it('queues a running follow-up and resumes the same Claude session after the current query',async()=>{
+  it('inserts a running follow-up into the same native query',async()=>{
     let release!:(value:any)=>void;sdk.messages=[new Promise(done=>{release=done;})];
     const runtime=ensureClaudeRuntime(session,'/tmp');
     expect(await runtime.submit('Start work','client-start')).toBe(true);
@@ -199,41 +199,49 @@ describe('Claude Agent SDK runtime',()=>{
       message:{role:'user',content:'Start work'},
     });
     expect(await runtime.submit('Insert this guidance','client-steer')).toBe(true);
-    expect(runtime.snapshot().messages.find(message=>message.client_id==='client-steer')).toMatchObject({queued:true});
+    expect(runtime.snapshot().messages.find(message=>message.client_id==='client-steer')).toMatchObject({queued:false});
+    expect((await input.next()).value).toMatchObject({priority:'now',message:{content:'Insert this guidance'}});
     expect(runtime.snapshot().messages.filter(message=>message.role==='user').map(message=>message.client_id))
       .toEqual(['client-start','client-steer']);
     const emitted=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     sdk.messages.push(...emitted);release(emitted);
-    await vi.waitFor(()=>expect(sdk.queries).toHaveLength(2));
-    expect(sdk.queries[1].options).toMatchObject({resume:session});
-    const followUp=await sdk.queries[1].prompt[Symbol.asyncIterator]().next();
-    expect(followUp.value).toMatchObject({message:{role:'user',content:'Insert this guidance'}});
-    const completed=[
-      {type:'user',uuid:'d3587c44-6f5d-4d52-9a6c-484eac61880f',session_id:session,parent_tool_use_id:null,message:{role:'user',content:'Insert this guidance'}},
-      stream({type:'message_start',message:{id:'steer-answer'}}),
-      stream({type:'content_block_start',index:0,content_block:{type:'text',text:'Guidance applied.'}}),
-      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'steer-answer',content:[{type:'text',text:'Guidance applied.'}]}},
-      {type:'result',subtype:'success',uuid:assistant,session_id:session},
-    ];
-    sdk.messages.push(...completed);release(completed);
     await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
     expect(runtime.snapshot().messages.filter(message=>message.role==='user')).toHaveLength(2);
     expect(runtime.snapshot().messages).toEqual(expect.arrayContaining([
       expect.objectContaining({role:'user',text:'Insert this guidance',client_id:'client-steer',queued:false}),
     ]));
   });
+  it('rekeys the initial live user message to its native receipt before history can load',async()=>{
+    const nativeUser='d3587c44-6f5d-4d52-9a6c-484eac61880f';
+    sdk.messages=[
+      {type:'user',uuid:nativeUser,session_id:session,parent_tool_use_id:null,message:{role:'user',content:'Initial task'}},
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Initial task','client-initial');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    const users=runtime.snapshot().messages.filter(message=>message.role==='user');
+    expect(users).toEqual([
+      expect.objectContaining({
+        id:conversationMessageId('','user',nativeUser),
+        turn_id:nativeUser,
+        client_id:'client-initial',
+      }),
+    ]);
+  });
   it('removes only a matching queued Claude message',async()=>{
     let release!:(value:any)=>void;sdk.messages=[new Promise(done=>{release=done;})];
-    const runtime=ensureClaudeRuntime(session,'/tmp');
-    await runtime.submit('Start work','client-start');
+    const runtime=ensureClaudeRuntime(session,'/tmp'),internal:any=runtime;
+    (runtime as any).busy=true;
+    const originalInput=internal.input;
+    internal.input=null;
     await runtime.submit('Keep this','client-keep');
     await runtime.submit('Cancel this','client-cancel');
     await runtime.cancelQueued('client-cancel');
     expect(runtime.snapshot().messages.filter(message=>message.role==='user').map(message=>message.client_id))
-      .toEqual(['client-start','client-keep']);
+      .toEqual(['client-keep']);
     await expect(runtime.cancelQueued('client-cancel')).rejects.toThrow('等待队列');
-    const emitted=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
-    sdk.messages.push(...emitted);release(emitted);
+    internal.input=originalInput;
   });
   it('exposes the completed native turn so the dashboard can clear its busy state',async()=>{
     sdk.messages=[
