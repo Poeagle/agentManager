@@ -12,7 +12,7 @@ it('redistributes the observed period by the entire period credit weight',()=>{
 it('conserves the observed total across projects and models for each selected period',()=>{
  const rows=[row('2026-01-05','a',21),row('2026-01-05','b',31),row('2026-01-06','a',13),row('2026-01-06','b',15)];
  const hours=[{hour:'2026-01-05T10:00:00+00:00',quota:1.5},{hour:'2026-01-06T11:00:00+00:00',quota:2.2}];
- for(const dimension of ['day','week','month','project','model'] as const){const result=allocateUsagePeriods(rows,hours,dimension);const actual=result.reduce((sum,r)=>sum+(r.models?.[0].actual_quota??0),0);expect(actual).toBeCloseTo(3.7,12);}
+ for(const dimension of ['day','week','month','total','project','model'] as const){const result=allocateUsagePeriods(rows,hours,dimension);const actual=result.reduce((sum,r)=>sum+(r.models?.[0].actual_quota??0),0);expect(actual).toBeCloseTo(3.7,12);}
 });
 it('keeps consumption unknown when there is no observed quota or no estimable weight',()=>{
  const r=[row('2026-01-05','a',0)];expect(allocateUsagePeriods(r,[{hour:'2026-01-05T10:00:00+00:00',quota:1}],'day')[0].models?.[0].actual_quota).toBeNull();
@@ -31,4 +31,13 @@ it('matches equivalent UTC hour timestamps without merging different instants',(
 });
 it('allocates the screenshot daily total to every project with positive credit weight',()=>{
  const rows=[row('2026-11-14','octoally-app',812.77),row('2026-11-14','collectreport',90.81),row('2026-11-14','aizhaopin',78.86)];const result=allocateUsagePeriods(rows,[{hour:'2026-11-14T13:00:00+08:00',quota:3}],'day');expect(result.map(r=>r.actual_quota)).toEqual([2.4819,.2773,.2408]);
+});
+
+it('reallocates total across week boundaries instead of summing the weekly project allocations',()=>{
+ const rows=[row('2026-01-05','a',90),row('2026-01-05','b',10),row('2026-01-12','a',10),row('2026-01-12','b',90)];
+ const hours=[{hour:'2026-01-05T01:00:00Z',quota:1},{hour:'2026-01-12T01:00:00Z',quota:3}];
+ const total=allocateUsagePeriods(rows,hours,'total'),week=allocateUsagePeriods(rows,hours,'week');
+ expect(total.filter(r=>r.cwd==='a').reduce((sum,r)=>sum+r.actual_quota!,0)).toBe(2);
+ expect(week.filter(r=>r.cwd==='a').reduce((sum,r)=>sum+r.actual_quota!,0)).toBe(1.2);
+ expect(total.reduce((sum,r)=>sum+r.actual_quota!,0)).toBe(4);
 });

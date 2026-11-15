@@ -4,8 +4,8 @@ const metrics=(input:number,cached:number|null)=>({tokens:{input_tokens:input,ca
 const row=(date:string,cwd:string,model:string,input:number,cached:number|null):UsageRow=>({date,cwd,project_name:'Same name',...metrics(input,cached),models:[{model,...metrics(input,cached)}]});
 const rows=[row('2026-12-31','/a','large',900,900),row('2027-01-01','/a','small',100,0),row('2027-01-03','/b','large',200,100),row('2027-01-04','/a','large',50,25)];
 function verify(nodes:UsageGroup[]){for(const node of nodes){if(node.children.length){expect(node.children.reduce((sum,n)=>sum+n.metrics.tokens.total_tokens!,0)).toBe(node.metrics.tokens.total_tokens);expect(node.children.reduce((sum,n)=>sum+(n.metrics.estimated_credits??0),0)).toBeCloseTo(node.metrics.estimated_credits!);verify(node.children);}}}
-it('preserves totals and credit estimates at every level for all five dimensions',()=>{
- for(const dim of ['day','week','month','project','model'] as Dimension[]){const groups=groupUsage(rows,dim);expect(groups.reduce((n,g)=>n+g.metrics.tokens.total_tokens!,0)).toBe(1250);verify(groups);}
+it('preserves totals and credit estimates at every level for all supported dimensions',()=>{
+ for(const dim of ['day','week','month','total','project','model'] as Dimension[]){const groups=groupUsage(rows,dim);expect(groups.reduce((n,g)=>n+g.metrics.tokens.total_tokens!,0)).toBe(1250);verify(groups);}
  const projects=groupUsage(rows,'project');expect(projects).toHaveLength(2);expect(projects[0].detail).toBe('/a');expect(projects[0].children.map(n=>n.label)).toEqual(['large','small']);expect(projects[0].children[0].children).toHaveLength(2);
  const models=groupUsage(rows,'model');expect(models[0].label).toBe('large');expect(models[0].children).toHaveLength(2);
 });
@@ -24,7 +24,7 @@ it('hides unestimatable projects and models and recomputes parent counters for e
  const unknown={...row('2026-01-01','/hidden','unknown',500,400),estimated_credits:null,models:[{model:'unknown',...metrics(500,400),estimated_credits:null}]};
  const mixed={...known,tokens:metrics(600,450).tokens,models:[...known.models!,...unknown.models]};
  const visible=estimatableUsageRows([mixed,unknown]);expect(visible).toHaveLength(1);expect(visible[0].models).toHaveLength(1);expect(visible[0].tokens.total_tokens).toBe(100);
- for(const dimension of ['day','week','month','project','model'] as Dimension[]){const grouped=groupUsage(visible,dimension);expect(grouped[0].metrics.tokens.total_tokens).toBe(100);expect(JSON.stringify(grouped)).not.toContain('unknown');}
+ for(const dimension of ['day','week','month','total','project','model'] as Dimension[]){const grouped=groupUsage(visible,dimension);expect(grouped[0].metrics.tokens.total_tokens).toBe(100);expect(JSON.stringify(grouped)).not.toContain('unknown');}
 });
 it('hides offsets visually while preserving distinct repeated local hours',()=>{
  const first={...row('2026-11-01','/a','m',10,0),hour:'2026-11-01T01:00:00-04:00'};

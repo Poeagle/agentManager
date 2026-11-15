@@ -1,9 +1,10 @@
+import {usageDateRange,type UsageDateRange} from './usage-date-range';
 import {usagePeriod} from './usage-period-allocation';
 import {useMemo,useState} from 'react';
 import {useTableModel,type TableColumn,type TableModel} from './table/use-table-model';
 import {groupUsage,type Dimension,type Metrics,type UsageGroup,type UsageRow} from './codex-usage-groups';
 
-export const usageFieldDescriptions:Record<string,string>={'label':'按所选维度分组；日期使用平台本地时区，项目按工作目录区分。','cwd':'可解析的软链接别名按真实工作目录合并；显示平台登记目录或真实目录，原始路径仍保留在日志和 CSV 中。','input':'各请求的输入 Token 累加，包含缓存输入和重复上下文。','cached':'输入 Token 中命中缓存的部分。','uncached':'输入减去缓存输入；缺失或数值异常时显示未知。','hit':'缓存输入除以输入；汇总时先相加再计算。','output':'输出 Token 累加；推理 Token 包含在输出中。','total':'原生日志中记录的总 Token 累加。','actual':'周额度已用百分比的采样变化，按所选周期订阅参考值分配；只覆盖可采集且可分配的区间；数据不完整时按已有记录分配，可能存在偏差。读数未变时为零，但不能证明没有耗用。数值单位为百分点。','credits':'以标准 Credits 费率为基准估算订阅额度相对用量；Fast 按 2.5 倍，未记录档位按标准估算，不是实际账单。','share':'该项预估积分占所选日期范围内同周期全部项目和模型预估积分的比例；搜索和字段筛选不改变分母。'};
+export const usageFieldDescriptions:Record<string,string>={'label':'按所选维度分组；日期使用平台本地时区，项目按工作目录区分。','cwd':'可解析的软链接别名按真实工作目录合并；显示平台登记目录或真实目录，原始路径仍保留在日志和 CSV 中。','input':'各请求的输入 Token 累加，包含缓存输入和重复上下文。','cached':'输入 Token 中命中缓存的部分。','uncached':'输入减去缓存输入；缺失或数值异常时显示未知。','hit':'缓存输入除以输入；汇总时先相加再计算。','output':'输出 Token 累加；推理 Token 包含在输出中。','total':'原生日志中记录的总 Token 累加。','actual':'周额度已用百分比的采样变化，按所选周期订阅参考值分配；只覆盖可采集且可分配的区间；数据不完整时按已有记录分配，可能存在偏差。读数未变时为零，但不能证明没有耗用。数值单位为百分点。','credits':'以标准 Credits 费率为基准估算订阅额度相对用量；Fast 按 2.5 倍，未记录档位按标准估算，不是实际账单。','share':'该项预估积分占实际统计范围内同周期全部项目和模型预估积分的比例；搜索和字段筛选不改变分母。'};
 type Leaf=UsageRow&{modelName:string|null;missing:boolean};
 const number=(m:Metrics,key:string)=>m.tokens[key]??null;
 const uncached=(m:Metrics)=>{const a=number(m,'input_tokens'),b=number(m,'cached_input_tokens');return a!==null&&b!==null&&b<=a?a-b:null;};
@@ -18,11 +19,12 @@ function sortGroups(groups:UsageGroup[],sort:{key:string;direction:'asc'|'desc'}
  const result=groups.map(group=>({...group,children:sortGroups(group.children,sort)}));if(!sort)return result;
  return result.map((group,index)=>({group,index})).sort((a,b)=>{const x=value(a.group,sort.key),y=value(b.group,sort.key);if(x==null)return y==null?a.index-b.index:1;if(y==null)return -1;const n=typeof x==='number'&&typeof y==='number'?x-y:collator.compare(String(x),String(y));return (sort.direction==='asc'?n:-n)||a.index-b.index;}).map(x=>x.group);
 }
-export function useUsageTable(rows:UsageRow[],dimension:Dimension,referenceRows:UsageRow[]=rows){
+export function useUsageTable(rows:UsageRow[],dimension:Dimension,referenceRows:UsageRow[]=rows,range?:UsageDateRange){
+ const groupRange=useMemo(()=>range??usageDateRange('','',dimension,referenceRows.map(row=>row.date)),[range,referenceRows,dimension]);
  const [sort,setSort]=useState<{key:string;direction:'asc'|'desc'}|null>(null);
  const leaves=useMemo<Leaf[]>(()=>rows.flatMap<Leaf>(row=>row.models?.length?row.models.map(m=>({...row,...m,modelName:m.model,models:[m],missing:false})): [{...row,modelName:null,missing:true}]),[rows]);
  const columns=useMemo<TableColumn<Leaf>[]>(()=>[
-  {key:'label',description:usageFieldDescriptions.label,title:dimension==='project'?'项目 ｜ 模型 ｜ 日期':dimension==='model'?'模型 ｜ 项目 ｜ 日期':`${dimension==='hour'?'小时':dimension==='week'?'周':dimension==='month'?'月':'日期'} ｜ 项目 ｜ 模型`,filterMode:'text',value:r=>`${r.date} ${r.hour||''} ${r.project_name||''} ${r.modelName||''}`},
+  {key:'label',description:usageFieldDescriptions.label,title:dimension==='project'?'项目 ｜ 模型 ｜ 日期':dimension==='model'?'模型 ｜ 项目 ｜ 日期':`${dimension==='hour'?'小时':dimension==='week'?'周':dimension==='month'?'月':dimension==='total'?'总量':'日期'} ｜ 项目 ｜ 模型`,filterMode:'text',value:r=>`${r.date} ${r.hour||''} ${r.project_name||''} ${r.modelName||''}`},
   {key:'cwd',description:usageFieldDescriptions.cwd,title:'工作目录',filterMode:'text',value:r=>r.cwd},
   {key:'input',description:usageFieldDescriptions.input,title:'输入',kind:'number',filterMode:'range',value:r=>number(r,'input_tokens')},
   {key:'cached',description:usageFieldDescriptions.cached,title:'缓存输入',kind:'number',filterMode:'range',value:r=>number(r,'cached_input_tokens')},
@@ -42,10 +44,10 @@ export function useUsageTable(rows:UsageRow[],dimension:Dimension,referenceRows:
  const shareColumns=useMemo<TableColumn<Leaf>[]>(()=>[{key:'share',description:usageFieldDescriptions.share,title:'占比',kind:'number',filterMode:'range',value:r=>{const denominator=denominators.get(periodKey(r,dimension));return denominator&&r.estimated_credits!=null?100*r.estimated_credits/denominator:null;}}],[denominators,dimension]);
  const share=useTableModel(base.rows,shareColumns);
  const selected=useMemo<UsageRow[]>(()=>share.rows.map(({modelName:_,missing:__,...row})=>row),[share.rows]);
- const groups=useMemo(()=>sortGroups(groupUsage(selected,dimension),sort),[selected,dimension,sort]);
+ const groups=useMemo(()=>sortGroups(groupUsage(selected,dimension,groupRange),sort),[selected,dimension,groupRange,sort]);
  const table:TableModel<Leaf>={...base,columns:[...columns,...shareColumns],sort,filters:{...base.filters,...share.filters},active:base.active||share.active||!!sort,
   toggleSort(key){setSort(current=>current?.key!==key?{key,direction:'asc'}:current.direction==='asc'?{key,direction:'desc'}:null);},
   setFilter(key,filter){(key==='share'?share:base).setFilter(key,filter);},options(key){return (key==='share'?share:base).options(key);},reset(){base.reset();share.reset();setSort(null);},rows:share.rows};
- const creditTotals=useMemo(()=>new Map(groupUsage(referenceRows,dimension).map(group=>[group.key,group.metrics.estimated_credits??null])),[referenceRows,dimension]);
+ const creditTotals=useMemo(()=>new Map(groupUsage(referenceRows,dimension,groupRange).map(group=>[group.key,group.metrics.estimated_credits??null])),[referenceRows,dimension,groupRange]);
  return {rows:selected,groups,table,creditTotals};
 }

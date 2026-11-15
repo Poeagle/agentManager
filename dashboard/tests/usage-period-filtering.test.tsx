@@ -21,3 +21,12 @@ it('keeps hidden projects in the original denominator after project search',()=>
  const {result}=renderHook(()=>useUsageTable(visible,'day',reference));
  expect(result.current.groups[0].metrics.actual_quota).toBe(2);expect(result.current.creditTotals.get(result.current.groups[0].key)).toBe(100);
 });
+
+it('keeps total range labels and account denominators stable when filtering models',()=>{
+ const total=allocateUsagePeriods(reference,[{hour:'2026-01-05T01:00:00Z',quota:4}],'total');
+ const {result}=renderHook(()=>useUsageTable(total,'total',reference,{from:'2026-01-01',to:'2026-01-31'}));
+ act(()=>result.current.table.setFilter('label',{text:'M1'}));
+ expect(result.current.groups).toHaveLength(1);const group=result.current.groups[0];
+ expect(group.label).toBe('2026-01-01 ~ 2026-01-31');expect(group.metrics.actual_quota).toBe(3);expect(result.current.creditTotals.get(group.key)).toBe(100);
+ const share=result.current.table.columns.find(column=>column.key==='share')!;expect(result.current.table.rows.map(row=>share.value(row))).toEqual([25,50]);
+});
