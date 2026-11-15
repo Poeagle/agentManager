@@ -1024,13 +1024,6 @@ class ClaudeRuntime {
       }
       const active = this.active;
       this.active = null;
-      input.close();
-      if (this.input === input) this.input = null;
-      this.abort = null;
-      this.busy = false;
-      this.stage = "idle";
-      this.completedAt = new Date().toISOString();
-      this.completedTurnId = this.observedTurnId();
       if (completed && active) {
         try {
           active.close();
@@ -1038,6 +1031,13 @@ class ClaudeRuntime {
           // The result is authoritative; closing a released stream is optional.
         }
       }
+      input.close();
+      if (this.input === input) this.input = null;
+      this.abort = null;
+      this.busy = false;
+      this.stage = "idle";
+      this.completedAt = new Date().toISOString();
+      this.completedTurnId = this.observedTurnId();
       for (const id of this.assistantIds) {
         const message = this.messages.find((item) => item.id === id);
         if (message)
@@ -1066,29 +1066,45 @@ class ClaudeRuntime {
   }
   async interrupt() {
     const turnId = this.turnId;
-    const active = this.active;
     if (!this.busy || !turnId) return;
-    this.abort?.abort();
+    const active = this.active;
+    this.closeActiveQuery();
     try {
       await active?.interrupt();
     } catch {
-      /* Abort is authoritative. */
+      /* Closing the query is authoritative. */
+    } finally {
+      // The SDK may finish a transport close asynchronously. The user's stop
+      // request and the closed query remain authoritative for UI state.
+      this.active = null;
+      this.abort = null;
+      this.busy = false;
+      this.stage = "idle";
+      this.completedAt = new Date().toISOString();
+      this.completedTurnId = this.observedTurnId();
+      for (const [id, activity] of this.activities)
+        if (activity.status === "running") this.finishTool(id);
+      this.publish();
     }
-    this.busy = false;
-    this.stage = "idle";
-    this.completedAt = new Date().toISOString();
-    this.completedTurnId = this.observedTurnId();
-    for (const [id, activity] of this.activities)
-      if (activity.status === "running") this.finishTool(id);
-    this.publish();
   }
-  close() {
-    this.abort?.abort();
+  private closeActiveQuery() {
+    const active = this.active;
+    const abort = this.abort;
+    this.active = null;
+    this.abort = null;
     try {
-      this.active?.close();
+      active?.close();
     } catch {
       // The SDK process may already have exited.
     }
+    try {
+      abort?.abort();
+    } catch {
+      // Query close is the primary lifecycle boundary.
+    }
+  }
+  close() {
+    this.closeActiveQuery();
     this.input?.close();
     this.input = null;
     this.pending.length = 0;

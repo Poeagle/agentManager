@@ -8,7 +8,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk',()=>({
     async *[Symbol.asyncIterator](){for(const message of sdk.messages){await Promise.resolve();yield message;}},
     setModel:async(model:string)=>{sdk.queries.at(-1).setModel=model;},
     interrupt:async()=>{sdk.interrupts++;},
-    close:()=>{},
+    close:()=>{sdk.queries.at(-1).closed=true;},
   };},
 }));
 
@@ -184,6 +184,7 @@ describe('Claude Agent SDK runtime',()=>{
     expect(runtime.snapshot().stage).toBe('idle');
     expect(runtime.runtime().state).toBe('idle');
     expect(runtime.runtime().completed_turn_id).toBeTruthy();
+    expect(sdk.queries.at(-1)?.closed).toBe(true);
     expect(runtime.snapshot().messages.find(message=>message.text==='Complete.')).toMatchObject({
       phase:'final',
       streaming:false,
