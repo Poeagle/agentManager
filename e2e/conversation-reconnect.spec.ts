@@ -17,6 +17,7 @@ test('a detached chat reconnects independently of the raw terminal and preserves
  await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});
  await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'可视化友好'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
  let disconnected=true,reconnects=0;const sent:Array<{input:string}>=[];
+ await page.route(`**/api/sessions/${session.id}/input-check`,route=>route.fulfill({json:{needs_confirmation:false,enabled:false}}));
  await page.route(`**/api/sessions/${session.id}/input`,async route=>{sent.push(route.request().postDataJSON());await route.fulfill({status:202,json:{status:'submitted'}});});
  await page.route(`**/api/sessions/${session.id}/conversation?*`,async route=>{const response=await route.fetch();const data=await response.json();await route.fulfill({response,json:disconnected?{...data,session_active:false,session_status:'detached'}:data});});
  await page.routeWebSocket('**/conversation/stream*',socket=>socket.send(JSON.stringify({type:'snapshot',messages:[],busy:false,stage:'idle'})));

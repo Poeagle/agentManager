@@ -38,6 +38,24 @@ beforeEach(async()=>{
 afterEach(async()=>{stop?.();stop=undefined;for(const client of wss.clients) client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 const send=(method:string,params:unknown)=>peer.send(JSON.stringify({method,params}));
 describe('native Codex conversation streaming',()=>{
+  it('streams bounded tool previews with their progress boundary, without inserting tool output into messages',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));
+    await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
+    send('turn/started',{threadId:'thread',turn:{id:'turn'}});
+    send('item/completed',{threadId:'thread',turnId:'turn',item:{id:'fourth',type:'agentMessage',phase:'commentary',text:'Fourth update'}});
+    send('item/started',{threadId:'thread',turnId:'turn',item:{id:'tool',type:'commandExecution',command:'npm test'}});
+    send('item/commandExecution/outputDelta',{threadId:'thread',turnId:'turn',itemId:'tool',delta:'Compiling… token=private-'});
+    send('item/commandExecution/outputDelta',{threadId:'thread',turnId:'turn',itemId:'tool',delta:'secret'});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({activities:[{after_message_id:conversationMessageId('turn','assistant','fourth'),turn_id:'turn',result_preview:'Compiling… token=[隐藏]'}]}));
+    send('item/commandExecution/outputDelta',{threadId:'thread',turnId:'wrong',itemId:'tool',delta:'WRONG_TURN'});
+    send('item/completed',{threadId:'thread',turnId:'turn',item:{id:'tool',type:'commandExecution',command:'npm test',status:'completed',aggregatedOutput:'All tests passed'}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({activities:[{status:'completed',result_preview:'All tests passed',after_message_id:conversationMessageId('turn','assistant','fourth')}]}));
+    const messages=frames.flatMap(frame=>frame.type==='snapshot'?frame.messages:[]);
+    expect(JSON.stringify(messages)).not.toMatch(/Compiling|All tests passed|private-secret|WRONG_TURN/);
+    send('item/completed',{threadId:'thread',turnId:'turn',item:{id:'fifth',type:'agentMessage',phase:'commentary',text:'Fifth update'}});
+    send('item/started',{threadId:'thread',turnId:'turn',item:{id:'next',type:'mcpToolCall',server:'tools',tool:'exec'}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({activities:[{id:'tool'},{id:'next',after_message_id:conversationMessageId('turn','assistant','fifth')}]}));
+  });
   it('keeps a durable progress completion time across attach and later tool completions',async()=>{
     const completed=Date.now()-61000;
     active=true;baselineItems=[{type:'agentMessage',id:'previous-progress',text:'已完成的进展',phase:'commentary',startedAtMs:completed-1500,completedAtMs:completed},{type:'commandExecution',id:'next-tool',command:'true',status:'inProgress'}];

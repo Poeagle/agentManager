@@ -13,7 +13,7 @@ import {conversationImagePaths,nativeConversationInput,type ConversationAttachme
 import {extractAgentMessages} from '../../prompt-context.js';
 import {conversationMessageId,type ConversationMessage} from '../../conversation-reader.js';
 import {conversationErrorMessage} from '../../conversation-error.js';
-import {conversationActivity,type ConversationActivity} from '../../conversation-activity.js';
+import {activityResultPreview,conversationActivity,type ConversationActivity} from '../../conversation-activity.js';
 import {nativeUsageFrame} from '../../conversation-usage.js';
 import {getDb} from '../../../db/index.js';
 import {setLiveCodexRuntime,clearLiveCodexRuntime,rememberLiveCodexInput,liveCodexInput,rememberCodexQuestionReply,syncQueuedCodexQuestionReplies} from './runtime-signals.js';
@@ -219,6 +219,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   let flush:ReturnType<typeof setTimeout>|undefined;
   let lastUsageFingerprint:string|undefined;
   let full=true,lastState='';const publicItems=new Map<string,string>();const dirty=new Set<string>(),deltas=new Map<string,{id:string;offset:number;text:string}>();
+  const activityOutputs=new WeakMap<ConversationActivity,string>();
   function snapshot() {
     clearTimeout(flush);
     flush=undefined;
@@ -268,8 +269,11 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     changed(true);
   }
   function acceptActivity(item:any,completed:boolean,baseline=false) {
-    const activity=conversationActivity(item,completed,activities.get(item?.id),baseline?null:Date.now());
+    const previous=activities.get(item?.id);
+    const activity=conversationActivity(item,completed,previous,baseline?null:Date.now());
     if(!activity)return;
+    activity.turn_id=turnId;
+    activity.after_message_id=previous && Object.hasOwn(previous,'after_message_id')?previous.after_message_id:[...items.values()].at(-1)?.message.id??null;
     if(item.type==='contextCompaction')compaction={...activity};
     activities.set(activity.id,activity);
     if(activities.size>8)activities.delete(activities.keys().next().value!);
@@ -378,7 +382,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     } catch {if(!closed){unavailable(true);socket.close();}}
   }
   socket.on('open',()=>{
-    void request('initialize',{clientInfo:{name:'octoally-conversation',version:'1.0.0'},capabilities:{experimentalApi:true,optOutNotificationMethods:['item/commandExecution/outputDelta','item/fileChange/outputDelta','item/reasoning/textDelta','item/reasoning/summaryTextDelta','item/reasoning/summaryPartAdded']}}).then(()=>{
+    void request('initialize',{clientInfo:{name:'octoally-conversation',version:'1.0.0'},capabilities:{experimentalApi:true,optOutNotificationMethods:['item/fileChange/outputDelta','item/reasoning/textDelta','item/reasoning/summaryTextDelta','item/reasoning/summaryPartAdded']}}).then(()=>{
       if(closed) return;socket.send(JSON.stringify({method:'initialized'}));return attach();
     }).catch(()=>{unavailable(true);socket.close();});
   });
@@ -388,6 +392,14 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(waiting) {pending.delete(frame.id);clearTimeout(waiting.timer);if(frame.error) waiting.reject(new Error('Codex 事件接口不可用'));else {if(frame.result?.thread)rememberCodexThread(frame.result.thread);waiting.resolve(frame.result);}return;}
     const data=frame.params;
     if(data?.threadId!==threadId) return;
+    if(frame.method==='item/commandExecution/outputDelta') {
+      if(data.turnId!==turnId || typeof data.delta!=='string')return;
+      const activity=activities.get(data.itemId);
+      if(!activity || activity.status!=='running')return;
+      const output=((activityOutputs.get(activity)||'')+data.delta.slice(-8192)).slice(-8192);
+      activityOutputs.set(activity,output);activity.result_preview=activityResultPreview(output);
+      changed();return;
+    }
     if(frame.method==='thread/name/updated'){rememberCodexTitle(threadId,data.threadName,currentCodexEngine().environmentId??'native');return;}
     if(frame.method==='thread/queue/changed'){void readQueue();return;}
     if(frame.method==='thread/tokenUsage/updated') {

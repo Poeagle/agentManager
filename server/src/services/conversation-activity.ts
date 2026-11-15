@@ -1,6 +1,18 @@
 export interface ConversationActivity {
   id: string; label: string; status: 'running' | 'completed' | 'failed';
   started_at: string | null; completed_at: string | null; duration_ms: number | null;
+  /** Presentation boundary, never a persisted assistant message. */
+  after_message_id?: string | null; turn_id?: string | null;
+  result_preview?: string;
+}
+
+/** Bounded, redacted plain text only; never forward raw structured tool data. */
+export function activityResultPreview(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return short(value.slice(-8192), 8192)
+    .replace(/sk-[A-Za-z0-9_-]{12,}/g,'[隐藏]')
+    .replace(/https?:\/\/[^\s"']+/g,url=>{try{const parsed=new URL(url);parsed.username='';parsed.password='';parsed.search='';parsed.hash='';return parsed.toString();}catch{return '[URL]';}})
+    .slice(-2000) || undefined;
 }
 
 function short(value: unknown, limit = 180): string {
@@ -24,7 +36,10 @@ export function conversationActivity(item: any, completed: boolean, previous?: C
   else return null;
   const started = typeof item.startedAtMs === 'number' && Number.isFinite(item.startedAtMs) ? item.startedAtMs : previous?.started_at ? Date.parse(previous.started_at) : completed ? null : observedAt;
   const ended = completed ? typeof item.completedAtMs === 'number' && Number.isFinite(item.completedAtMs) ? item.completedAtMs : observedAt : null;
+  const output = item.aggregatedOutput ?? (Array.isArray(item.result?.content)?item.result.content.filter((block:any)=>block?.type==='text' && typeof block.text==='string').map((block:any)=>block.text).join('\n'):undefined);
+  const preview = activityResultPreview(output) ?? previous?.result_preview;
   return {id: item.id, label, status: completed ? ['failed','declined'].includes(item.status) ? 'failed' : 'completed' : 'running',
+    ...(preview ? {result_preview:preview} : {}),
     started_at: started === null ? null : new Date(started).toISOString(), completed_at: ended === null ? null : new Date(ended).toISOString(),
     duration_ms: typeof item.durationMs === 'number' && item.durationMs >= 0 ? item.durationMs : started !== null && ended !== null ? Math.max(0, ended - started) : null};
 }

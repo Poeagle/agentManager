@@ -3,7 +3,7 @@ import {mkdirSync,writeFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {join} from 'node:path';
 
-test('one-line tool activity scrolls, keeps real timers and never enters public conversation messages',async({page},testInfo)=>{
+test('live progress owns tool updates and result previews while public history stays unchanged',async({page},testInfo)=>{
   const status=await(await page.request.get('/api/auth/status')).json();
   expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
   const root=join(process.cwd(),'.test-data/e2e'),projectPath=join(root,'activity-project');mkdirSync(projectPath,{recursive:true});
@@ -25,20 +25,23 @@ test('one-line tool activity scrolls, keeps real timers and never enters public 
   await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'部署状态'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
-  const ticker=chat.getByTestId('conversation-activity-line');
+  const footer=chat.getByTestId('conversation-activity-line');
+  const ticker=chat.locator('.session-chat-progress-pending');
   await expect(ticker).toContainText('Run command · npm run build');await expect(chat.locator('[title="Elapsed time for this progress segment"]')).toContainText('Elapsed 3m');
   await expect(chat.getByText('Elapsed: 1m 46s',{exact:true})).toBeVisible();
-  expect((await ticker.boundingBox())!.height).toBeLessThan(26);
-  const long='调用工具 · tools / exec_command · '+Array.from({length:18},()=> '只在状态栏显示的工具活动').join(' ');
+  await expect(footer).not.toContainText('npm run build');
+  const long='调用工具 · tools / exec_command · '+Array.from({length:18},()=> '本轮实时工具活动').join(' ');
   push?.(frame([activity('one','运行命令 · npm run build'),activity('two',long)]));
-  await expect(ticker).toContainText('只在状态栏显示的工具活动');
-  await expect(ticker.locator('[data-overflow=true]')).toHaveCount(1);
-  await expect(chat.locator('.session-chat-feed')).not.toContainText('只在状态栏显示的工具活动');
+  await expect(ticker).toContainText('本轮实时工具活动');
+  await expect(ticker).toContainText('Running');
+  await expect(footer).not.toContainText('本轮实时工具活动');
+  push?.(frame([{...activity('two',long),status:'completed',completed_at:stamp(0),result_preview:'Build succeeded'}]));
+  await expect(ticker).toContainText('Build succeeded');
   const publicPage=await(await page.request.get(`/api/sessions/${session.id}/conversation`)).json();
-  expect(JSON.stringify(publicPage.messages)).not.toContain('只在状态栏显示的工具活动');
+  expect(JSON.stringify(publicPage.messages)).not.toContain('本轮实时工具活动');
   await page.screenshot({path:testInfo.outputPath('activity-timing-desktop.png')});
   await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-  expect((await ticker.boundingBox())!.height).toBeLessThan(26);await page.screenshot({path:testInfo.outputPath('activity-timing-mobile.png')});
+  await expect(footer).not.toContainText('npm run build');await page.screenshot({path:testInfo.outputPath('activity-timing-mobile.png')});
   const completed=new Date().toISOString(),compaction={id:'automatic-compact',status:'completed',started_at:stamp(-10000),completed_at:completed,duration_ms:10000};
   push?.({...frame([]),compaction});await expect(chat.getByText('Context compaction complete',{exact:true})).toBeVisible();
   push?.({...frame([{...activity('new-work','运行命令 · 最新步骤'),started_at:new Date(Date.parse(completed)+1).toISOString()}]),compaction});
@@ -48,6 +51,8 @@ test('one-line tool activity scrolls, keeps real timers and never enters public 
   push?.({...frame([]),compaction:second});await expect(chat.getByText('Context compaction complete',{exact:true})).toBeVisible();
   await expect(chat.getByText('Context compaction complete',{exact:true})).toHaveCount(0,{timeout:4000});
   push?.({...frame([]),compaction:{...second,completed_at:new Date().toISOString()}});await expect(chat.getByText('Context compaction complete',{exact:true})).toHaveCount(0);
-  push?.(frame([],false));await expect(ticker).toContainText('Ready for your next message');
+  push?.(frame([],false));await expect(footer).toContainText('Ready for your next message');await expect(ticker).toHaveCount(0);
+  push?.({...frame([],false),messages:[{id:'after-tools',role:'assistant',phase:'commentary',turn_id:'turn',text:'Verification finished',timestamp:new Date().toISOString(),streaming:false}]});
+  await expect(ticker).toHaveCount(0);await chat.locator('.session-chat-progress-disclosure:not([open])>summary').click();await expect(chat.getByText('Verification finished',{exact:true})).toBeVisible();await expect(chat.locator('.session-chat-feed')).not.toContainText('Build succeeded');
   await page.request.delete(`/api/sessions/${session.id}`);
 });

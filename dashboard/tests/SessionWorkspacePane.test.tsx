@@ -51,10 +51,10 @@ describe('chat/raw terminal display',()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
     vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
     mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
-    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'tools',turn_id:'current',started_at:'2026-11-03T00:01:00Z',activities:[{id:'tool',label:'运行命令 · 活动步骤',status:'running',started_at:'2026-11-03T00:01:00Z',completed_at:null,duration_ms:null}],messages:[]})}));
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'tools',turn_id:'current',started_at:'2026-11-03T00:01:00Z',activities:[{id:'tool',label:'运行命令 · 活动步骤',status:'running',turn_id:'current',after_message_id:'b'.repeat(32),started_at:'2026-11-03T00:01:00Z',completed_at:null,duration_ms:null}],messages:[]})}));
     const push=(last_activity_at:string,observed_at:string,completed_turn_id='current')=>act(()=>window.dispatchEvent(new CustomEvent('agentmanager:session-runtime',{detail:{sessionId:'chat',runtime:{session_id:'native',state:'idle',last_activity_at,observed_at,completed_turn_id}}})));
-    push('2026-11-03T00:00:59Z','2026-11-03T00:01:01Z');expect(screen.getByTestId('conversation-activity-line')).toHaveTextContent('活动步骤');
-    push('2026-11-03T00:01:02Z','2026-11-03T00:01:02Z','other');expect(screen.getByTestId('conversation-activity-line')).toHaveTextContent('活动步骤');
+    push('2026-11-03T00:00:59Z','2026-11-03T00:01:01Z');expect(screen.getByRole('status',{name:'正在执行的进展 1'})).toHaveTextContent('活动步骤');
+    push('2026-11-03T00:01:02Z','2026-11-03T00:01:02Z','other');expect(screen.getByRole('status',{name:'正在执行的进展 1'})).toHaveTextContent('活动步骤');
     push('2026-11-03T00:01:03Z','2026-11-03T00:01:03Z');expect(screen.getByTestId('conversation-activity-line')).toHaveTextContent('Ready for your next message');
   });
   it('updates pending questions from native runtime push without waiting for a conversation refetch',async()=>{
@@ -306,9 +306,9 @@ describe('chat/raw terminal display',()=>{
     });
     mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
     act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages:[],busy:true,stage:'waiting',turn_id:'next',started_at:new Date(Date.now()-17000).toISOString()})}));
-    expect(screen.getByText('Waiting for codex')).toBeVisible();
-    expect(screen.getByText('The response will appear as it arrives.')).toBeVisible();
-    expect(document.querySelector('.session-chat-elapsed')).toHaveTextContent(/\d+s/);
+    expect(screen.getByRole('status',{name:'正在执行的进展 1'})).toHaveTextContent('Waiting for update');
+    expect(screen.queryByText('The response will appear as it arrives.')).not.toBeInTheDocument();
+    expect(screen.getByText(/^Elapsed /)).toBeVisible();
     expect(screen.queryByText('Receiving response…')).not.toBeInTheDocument();
     const message={id:'c'.repeat(32),role:'assistant' as const,text:'真正的',timestamp:'2026-10-29T10:01:00Z',turn_id:'next',streaming:true};
     act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages:[message],busy:true,stage:'answering',turn_id:'next'})}));
@@ -332,13 +332,13 @@ describe('chat/raw terminal display',()=>{
     const frame=(messages:unknown[],stage='tools')=>act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages,busy:true,stage,turn_id:'active',started_at:new Date(Date.now()-120000).toISOString()})}));
     frame([]);typeDraft(screen.getByRole('textbox'),'请用通俗语言解释');
     fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalled());
-    expect((await screen.findByText('0 items')).closest('.session-chat-pending-progress')).toHaveTextContent('In progress');expect(screen.queryByText('The response will appear as it arrives.')).not.toBeInTheDocument();
+    expect((await screen.findByRole('status',{name:'正在执行的进展 1'})).closest('.session-chat-progress')).toHaveTextContent('In progress');expect(screen.queryByText('The response will appear as it arrives.')).not.toBeInTheDocument();
     const [,text,clientId]=vi.mocked(api.agent.sendInput).mock.calls[0];
     const echo={id:'followup-echo',role:'user',text,client_id:clientId,turn_id:'active',timestamp:new Date().toISOString()};
     frame([echo]);expect(screen.getAllByText('请用通俗语言解释')).toHaveLength(1);
     const progress={id:'new-progress',role:'assistant',phase:'commentary',text:'我会用',turn_id:'active',streaming:true,timestamp:new Date().toISOString()};
     frame([echo,progress],'answering');const article=screen.getByText('我会用').closest('article');expect(article).toHaveAttribute('data-streaming','true');
-    expect(document.querySelector('.session-chat-pending-progress')).toBeNull();
+    expect(document.querySelector('.session-chat-progress-pending')).toBeNull();
     frame([echo,{...progress,text:'我会用具体数字逐项解释'}],'answering');expect(screen.getByText('我会用具体数字逐项解释').closest('article')).toBe(article);
     expect(screen.getAllByText('请用通俗语言解释')).toHaveLength(1);
   });

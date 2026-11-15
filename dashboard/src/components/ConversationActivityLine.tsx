@@ -4,10 +4,11 @@ import {browserTimestamp,formatDisplayTimestamp,useDisplayClock} from '../lib/di
 
 export interface ConversationActivity {
   id:string;label:string;status:'running'|'completed'|'failed';started_at:string|null;completed_at:string|null;duration_ms:number|null;
+  after_message_id?:string|null;turn_id?:string|null;result_preview?:string;
 }
 const activityLabels:Record<string,string>={'运行命令':'Run command','调用工具':'Call tool','修改文件':'Edit files','读取文件':'Read file','搜索文件':'Search files','搜索':'Search','读取网页':'Read page','压缩会话上下文':'Compact context'};
 const activityDefaults:Record<string,string>={'终端命令':'terminal command','MCP 工具':'MCP tool','工具':'tool','项目文件':'project files','网页搜索':'web search','网页':'web page'};
-function englishActivity(label:string){const [prefix,...rest]=label.split(' · ');if(!activityLabels[prefix])return label;return [activityLabels[prefix],...rest.map(part=>activityDefaults[part]||part.replaceAll('[隐藏]','[redacted]'))].join(' · ');}
+export function englishActivity(label:string){const [prefix,...rest]=label.split(' · ');if(!activityLabels[prefix])return label;return [activityLabels[prefix],...rest.map(part=>activityDefaults[part]||part.replaceAll('[隐藏]','[redacted]'))].join(' · ');}
 export function currentConversationActivity(activities:ConversationActivity[],busy:boolean){return busy?[...activities].reverse().find(item=>item.status==='running')||activities.at(-1)||null:null;}
 export function conversationActivityDuration(item:ConversationActivity|null,now:number){return item?.duration_ms??(item?.status==='running'?elapsedBetween(item.started_at,now):null);}
 
