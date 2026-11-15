@@ -143,6 +143,7 @@ export const claudeAdapter: AgentDefinition = {
                 provider,
                 readClaudeSessionModelPreference(context) ??
                   managedModelPreference("claude"),
+                true,
               ),
               effort: "",
             }
@@ -329,6 +330,7 @@ function asyncObserve(
               provider,
               readClaudeSessionModelPreference(context) ??
                 managedModelPreference("claude"),
+              true,
             ),
             effort: "",
           }
