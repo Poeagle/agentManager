@@ -169,6 +169,7 @@ class ClaudeRuntime {
   /** Latest native activity by ID; tool updates replace this state rather than
    * accumulating another visible item. */
   private liveActivities = new Map<string, AgentActivity>();
+  private progressBoundary: string | null = null;
   private input: ClaudeInputStream | null = null;
   /** Follow-ups accepted into the same SDK query for native ordering and echo correlation. */
   private submitted: Pending[] = [];
@@ -557,7 +558,7 @@ class ClaudeRuntime {
           ) }
         : {}),
       turn_id: this.turnId,
-      after_message_id: this.assistant(
+      after_message_id: this.progressBoundary ??= this.assistant(
         this.textBlock(envelope, Math.max(0, envelope.blocks.size - 1)),
       ).id,
     });
@@ -975,6 +976,7 @@ class ClaudeRuntime {
     this.assistantIds.clear();
     this.activities.clear();
     this.liveActivities.clear();
+    this.progressBoundary = null;
     this.assistantOrdinal = 0;
     this.currentAssistant = null;
     this.completedAssistants = [];

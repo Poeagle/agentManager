@@ -360,6 +360,21 @@ describe('Claude Agent SDK runtime',()=>{
       }),
     ]);
   });
+  it('keeps all tool activities in one progress slot for the current input',async()=>{
+    sdk.messages=[
+      stream({type:'message_start',message:{id:'tools-round'}}),
+      stream({type:'content_block_start',index:0,content_block:{type:'tool_use',id:'first',name:'Bash',input:{command:'pwd'}}}),
+      {type:'user',uuid:'019ff001-1212-7212-8212-121212121214',session_id:session,parent_tool_use_id:'first',message:{content:[{type:'tool_result',tool_use_id:'first',content:'/tmp'}]}},
+      stream({type:'content_block_start',index:0,content_block:{type:'tool_use',id:'second',name:'Bash',input:{command:'git status'}}}),
+      {type:'result',subtype:'success',uuid:'019ff001-1212-7212-8212-121212121215',session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Inspect');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    const activities=runtime.snapshot().activities;
+    expect(activities).toHaveLength(2);
+    expect(new Set(activities.map(activity=>activity.after_message_id)).size).toBe(1);
+  });
   it('uses the completed assistant event when no partial text was emitted',async()=>{
     sdk.messages=[
       stream({type:'message_start',message:{id:'api-message-one'}}),
