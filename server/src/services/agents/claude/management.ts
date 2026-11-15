@@ -224,15 +224,15 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
       return models;
     },
     saveSelectedModels: async (models, defaultModel) => {
-      const aliases = new Set(['default', 'sonnet', 'opus', 'haiku']);
       const unique = [...new Set(models.filter(model => typeof model === 'string' && model.trim()).map(model => model.trim()))];
       if (!unique.length) throw Object.assign(Error('至少选择一个 Claude 模型'), { statusCode: 400 });
       const selectedDefault = defaultModel && unique.includes(defaultModel) ? defaultModel : unique[0];
-      const values: Record<string,string> = { ANTHROPIC_MODEL: selectedDefault };
-      const defaults = unique.filter(model => !aliases.has(model));
-      if (defaults[0]) values.ANTHROPIC_DEFAULT_OPUS_MODEL = defaults[0];
-      if (defaults[1] || defaults[0]) values.ANTHROPIC_DEFAULT_SONNET_MODEL = defaults[1] || defaults[0];
-      if (defaults[2] || defaults[1] || defaults[0]) values.ANTHROPIC_DEFAULT_HAIKU_MODEL = defaults[2] || defaults[1] || defaults[0];
+      const values: Record<string,string> = {
+        ANTHROPIC_MODEL: selectedDefault,
+        ANTHROPIC_DEFAULT_OPUS_MODEL: selectedDefault,
+        ANTHROPIC_DEFAULT_SONNET_MODEL: selectedDefault,
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: selectedDefault,
+      };
       updateManagedEnvironment({ values, clear: [] });
       for (const [name, value] of Object.entries(values)) process.env[name] = value;
       return environment();

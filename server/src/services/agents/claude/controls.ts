@@ -1,4 +1,5 @@
 import { NATIVE_SESSION_ID_RE } from '../native-identifiers.js';
+import { getDb } from '../../../db/index.js';
 import { open } from 'fs/promises';
 import { join } from 'path';
 import { resolveClaudeDir } from './archive.js';
@@ -22,10 +23,57 @@ const cache = new Map<string, {
     state: AgentRuntime['state'];
     usage: AgentControls['usage'];
     compaction: AgentCompaction | null;
+    compactionAt:string|null;
 }>();
+const sessionModelKey = (sessionId: string) =>
+    `claude_session_model:${sessionId}`;
+export function readClaudeSessionModelPreference(
+    context: AgentContext,
+): ModelPreference | null {
+    const sessionId = context.session.id;
+    if (!sessionId) return null;
+    let row: { value: string } | undefined;
+    try {
+        row = getDb()
+            .prepare('SELECT value FROM settings WHERE key=?')
+            .get(sessionModelKey(sessionId)) as { value: string } | undefined;
+    } catch {
+        return null;
+    }
+    try {
+        const value = JSON.parse(row?.value || 'null');
+        return value &&
+            typeof value.model === 'string' &&
+            value.model &&
+            value.effort === ''
+            ? { model: value.model, effort: '' }
+            : null;
+    } catch {
+        return null;
+    }
+}
+export function saveClaudeSessionModelPreference(
+    context: AgentContext,
+    value: ModelPreference,
+) {
+    const sessionId = context.session.id;
+    if (!sessionId) return;
+    try {
+        getDb()
+            .prepare(
+                "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            )
+            .run(
+                sessionModelKey(sessionId),
+                JSON.stringify({ model: value.model, effort: '' }),
+            );
+    } catch {
+        // File-only adapter fixtures do not have a database.
+    }
+}
 async function metadata(context: AgentContext) {
     const directory = context.projectPath ? resolveClaudeDir(context.projectPath) : null;
-    const empty = { endedAt:null as string|null, compaction: null as AgentCompaction | null, model: null as string | null, modelAt: null as string | null, requestCount:0, lastUsage:{input_tokens:0,cached_input_tokens:0,output_tokens:0,total_tokens:0}, totalUsage:{input_tokens:0,cached_input_tokens:0,output_tokens:0,total_tokens:0}, last: null as string | null, state: 'unknown' as AgentRuntime['state'], usage: null as AgentControls['usage'] };
+    const empty = { endedAt:null as string|null, compaction: null as AgentCompaction | null, compactionAt:null as string|null, model: null as string | null, modelAt: null as string | null, requestCount:0, lastUsage:{input_tokens:0,cached_input_tokens:0,output_tokens:0,total_tokens:0}, totalUsage:{input_tokens:0,cached_input_tokens:0,output_tokens:0,total_tokens:0}, last: null as string | null, state: 'unknown' as AgentRuntime['state'], usage: null as AgentControls['usage'] };
     if (!directory || !context.nativeId || !NATIVE_SESSION_ID_RE.test(context.nativeId))
         return empty;
     const path = join(directory, `${context.nativeId}.jsonl`);
@@ -81,7 +129,9 @@ async function metadata(context: AgentContext) {
             else if (record.type === 'system' && record.subtype === 'turn_duration'){state.state='idle';state.endedAt=typeof record.timestamp==='string'?record.timestamp:null;}
             else if (record.type === 'system' && record.subtype === 'compact_boundary') {
                 state.state = 'idle';
-                state.compaction = { id: record.uuid || `compact:${record.timestamp}`, status: 'completed', started_at: null, completed_at: record.timestamp || null, duration_ms: null };
+                const duration=Number(record.compactMetadata?.durationMs),ended=typeof record.timestamp==='string'?record.timestamp:null;
+                state.compaction = { id: record.uuid || `compact:${record.timestamp}`, status: 'completed', started_at: ended&&Number.isFinite(duration)?new Date(Date.parse(ended)-duration).toISOString():ended, completed_at:ended, duration_ms: Number.isFinite(duration)?duration:null };
+                state.compactionAt = record.timestamp || null;
             }
         }
         state.usage = state.requestCount ? {
@@ -141,7 +191,9 @@ export async function readClaudeControls(context: AgentContext): Promise<AgentCo
         .map(model => ({ model, name: model, description: provider ? `${provider.name} · Provider 模型` : aliases.includes(model) ? 'Claude 原生模型别名' : '网关配置的模型', context_window:provider?.contextWindow??null, max_output_tokens:provider?.maxOutputTokens??null, input_modalities:['text','image'], efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' }));
     if (!provider&&value.model && !models.some(model => model.model === value.model))
         models.unshift({ model: value.model, name: value.model, description: '当前原生模型', context_window:null, max_output_tokens:null, input_modalities:['text','image'], efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' });
-    return { supports_fresh_model:true, model_observed_at: value.modelAt, model: provider?(value.model&&provider.models.includes(value.model)?value.model:runtime?.selectedModel()||provider.defaultModel):value.model, effort: '', provider: provider?.id||'anthropic', cwd: context.projectPath, cli_version: null, engine_version: null, installed_cli_version: null, git: null, state: loaded ? runtime!.runtime().state : 'notLoaded', permission: 'bypassPermissions', approval: null, service_tier: null, usage: value.usage, limits: [], usage_observed_at: value.last, models, loaded, warning: loaded ? null : 'Claude managed runtime is not connected; durable history remains available.', native_id: context.nativeId || '', checked_at: new Date().toISOString() };
+    const persisted=readClaudeSessionModelPreference(context);
+    const selected=persisted&&(!provider||provider.models.includes(persisted.model))?persisted.model:runtime?.selectedModel()||provider?.defaultModel||value.model;
+    return { supports_fresh_model:true, model_observed_at: value.modelAt, model: selected, effort: '', provider: provider?.id||'anthropic', cwd: context.projectPath, cli_version: null, engine_version: null, installed_cli_version: null, git: null, state: loaded ? runtime!.runtime().state : 'notLoaded', permission: 'bypassPermissions', approval: null, service_tier: null, usage: value.usage, limits: [], usage_observed_at: value.last, models, loaded, warning: loaded ? null : 'Claude managed runtime is not connected; durable history remains available.', native_id: context.nativeId || '', checked_at: new Date().toISOString() };
 }
 export async function validateClaudeControls(context: AgentContext, value: unknown): Promise<ModelPreference> {
     const p = value && typeof value === 'object' ? value as Partial<ModelPreference> : null;
@@ -157,11 +209,17 @@ export async function applyClaudeControls(context: AgentContext, value: ModelPre
     const runtime=(await import('./sdk-runtime.js')).claudeRuntime(context.nativeId);
     if(!runtime)throw Error('Claude managed runtime is not connected');
     const provider=readClaudeRuntimeProvider(context.session,context.environmentAccess);
-    if(provider&&!provider.models.includes(value.model))throw Error('模型不属于当前 Claude Provider');
+    (await import('./providers.js')).assertClaudeSelectedModel(provider,value.model);
     runtime.setModel(value);
+    saveClaudeSessionModelPreference(context,value);
     return {...value,pending:false};
 }
-export async function compactClaudeConversation() { throw Error('Claude managed runtime does not expose manual compaction'); }
+export async function compactClaudeConversation(context: AgentContext) {
+    if(!context.nativeId) throw Error('会话尚未连接');
+    const runtime=(await import('./sdk-runtime.js')).claudeRuntime(context.nativeId);
+    if(!runtime) throw Error('Claude managed runtime is not connected');
+    await runtime.compact();
+}
 /** Usage events only read the bounded native metadata cache; no process-tree scan. */
 export async function readClaudeTelemetry(context: AgentContext) { const value = await metadata(context); return { usage: value.usage, observed_at: value.last }; }
 export function confirmedClaudeControls(_context: AgentContext, value: ModelPreference, controls: AgentControls, submittedAt: string): boolean {

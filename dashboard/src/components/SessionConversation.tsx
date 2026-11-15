@@ -125,12 +125,6 @@ interface FailedDraft {
 }
 
 const timeColor=(seconds:number)=>seconds>=60?'var(--error)':seconds>=30?'#e57b18':'var(--text-muted)';
-function claudianDuration(label:string){
-  const match=label.match(/^(?:本轮)?耗时\s*(?:(\d+)时)?(?:(\d+)分)?(?:(\d+)秒)?$/);
-  if(!match)return label;
-  const seconds=Number(match[1]||0)*3600+Number(match[2]||0)*60+Number(match[3]||0);
-  return seconds>=60?`${Math.floor(seconds/60)}m ${seconds%60}s`:`${seconds}s`;
-}
 
 interface ProgressSummaryProps {
   agent: AgentDescriptor; agentName: string; count: number; active: boolean;
@@ -213,14 +207,12 @@ const Bubble = memo(function Bubble({
   onOpenFile,
   onNavigate,
   durationLabel,
-  durationTitle,
   onRaw,
   active,
 }: {
   active: boolean;
   allowRaw?: boolean;
   durationLabel?: string;
-  durationTitle?: string;
   retrying?: boolean;
   autoRetry?: ConversationRetry;
   onCancelRetry?: () => Promise<void>;
@@ -360,7 +352,7 @@ const Bubble = memo(function Bubble({
         context={{
           kind: "compaction_summary",
           label: "Compaction summary",
-          source: "codex",
+          source: agent.label,
         }}
         copied={copied}
         onCopy={() => void copy()}
@@ -396,11 +388,6 @@ const Bubble = memo(function Bubble({
         block.type === "thinking" ||
         block.text.length > 0,
     ) || [];
-  // Claude has a provider-owned transcript presentation. Keep the neutral
-  // message and lifecycle semantics above, but render its completed and live
-  // output with Claudian's direct message/tool/thinking structure instead of
-  // placing it inside AgentManager's progress disclosure.
-  const claudian = message.role === "assistant" && agent.id === "claude";
   if (
     message.role === "assistant" &&
     !message.text &&
@@ -464,6 +451,8 @@ const Bubble = memo(function Bubble({
                 ? "当前模型繁忙，本轮已停止。可稍后重试，或在原始终端切换模型。"
                 : /selected model.*(?:does not exist|may not exist|access)/i.test(message.text)
                   ? "当前模型不存在或该 Provider 无访问权限，请检查 Provider 模型配置。"
+                  : message.error?.code === "model_mismatch"
+                    ? "Provider 实际路由到了不同模型。该结果未被当作所选模型，请检查 Provider 的模型映射或上游路由。"
                   : "本轮已停止。请根据错误信息处理后再试。"}
           </p>
         ) : null}
@@ -481,13 +470,12 @@ const Bubble = memo(function Bubble({
     );
   return (
     <article
-      className={`${claudian ? "claudian-message" : "session-chat-message"} ${message.role}`}
-      data-agent={claudian ? "claude" : undefined}
+      className={`session-chat-message ${message.role}`}
       data-phase={message.phase}
       data-streaming={streaming}
       data-chat-message-id={message.id}
     >
-      {message.role === "assistant" && !compact && !claudian && (
+      {message.role === "assistant" && !compact && (
         <div
           className={`session-chat-agent${headerMetadata ? " session-chat-final-heading" : ""}`}
         >
@@ -504,7 +492,7 @@ const Bubble = memo(function Bubble({
           )}
         </div>
       )}
-      <div className={claudian ? "claudian-message-content" : "session-chat-body"}>
+      <div className="session-chat-body">
         {message.role === "user" ? (
           <>
             <div className="session-chat-user-text">
@@ -525,7 +513,7 @@ const Bubble = memo(function Bubble({
           </>
         ) : (
           <>
-            {!headerMetadata && !claudian && (
+            {!headerMetadata && (
               <div className="session-chat-metadata-row">{metadata}</div>
             )}
             {contentBlocks.length ? (
@@ -534,18 +522,18 @@ const Bubble = memo(function Bubble({
                   <ConversationToolCall
                     key={`${message.id}:tool:${block.id}`}
                     block={block}
-                    compact={claudian}
+                    compact={compact}
                   />
                 ) : block.type === "thinking" ? (
                   <details
                     key={`${message.id}:thinking:${block.index}`}
-                    className={claudian ? "claudian-thinking-block" : "session-chat-thinking-block"}
+                    className="session-chat-thinking-block"
                   >
-                    <summary className={claudian ? "claudian-thinking-header" : undefined}>
-                      <span className={claudian ? "claudian-thinking-label" : "session-chat-thinking-spark"} aria-hidden={claudian ? undefined : "true"}>{claudian ? (streaming && message.phase !== "final" ? "Thinking..." : "Thought") : null}</span>
-                      {!claudian && <><span>{streaming ? "Claude 正在思考" : "Claude 的思考过程"}</span><small>{streaming ? "实时输出" : "已完成"}</small></>}
+                    <summary>
+                      <span className="session-chat-thinking-spark" aria-hidden="true" />
+                      <span>{streaming ? `${agentName} 正在思考` : `${agentName} 的思考过程`}</span><small>{streaming ? "实时输出" : "已完成"}</small>
                     </summary>
-                    <div className={claudian ? "claudian-thinking-content" : undefined}>{block.text}</div>
+                    <div>{block.text}</div>
                   </details>
                 ) : (
                   <ConversationMarkdown
@@ -570,12 +558,6 @@ const Bubble = memo(function Bubble({
                 onOpenFile={onOpenFile}
                 onNavigate={onNavigate}
               />
-            )}
-            {claudian && message.phase === "final" && durationLabel && durationLabel !== "0s" && (
-              <div className="claudian-response-footer" data-duration={`${message.id}:${durationLabel}`}>
-                <span className="claudian-baked-duration" title={durationTitle}>* Baked for {claudianDuration(durationLabel)}</span>
-                {message.usage?.total_tokens!=null&&<span className="claudian-usage-footer"> · {message.usage.total_tokens.toLocaleString()} tokens{message.usage.cached_input_tokens!=null&&message.usage.cached_input_tokens>0?` · ${message.usage.cached_input_tokens.toLocaleString()} cached`:''}</span>}
-              </div>
             )}
           </>
         )}
@@ -2177,7 +2159,6 @@ export function SessionConversation({
         }
         compact={compact}
         durationLabel={timings.get(message.id)?.label}
-        durationTitle={timings.get(message.id)?.title}
         agent={sessionAgent(session)}
         agentName={agentName}
         projectPath={projectPath}
@@ -2195,7 +2176,7 @@ export function SessionConversation({
         if(!(event.target instanceof HTMLElement)||event.target.closest('.session-chat-editor,input,textarea,select,[contenteditable],.session-batch-send'))return;
         event.preventDefault();event.stopPropagation();if(!event.repeat)submitWithShortcut();
       }}><div className="session-chat-layout">
-      <section ref={readingRoot} className="session-chat" data-agent={sessionAgent(session).id === "claude" ? "claude" : undefined} aria-label="会话对话">
+      <section ref={readingRoot} className="session-chat" aria-label="会话对话">
         <ConversationPromptEnhancer
           sessionId={session.id}
           active={active}
@@ -2240,24 +2221,6 @@ export function SessionConversation({
               )}
               {groups.map((group, groupIndex) => {
                 if(group.kind === "message") return bubble(group.message,false,group.id);
-                if(sessionAgent(session).id==='claude') {
-                  const last=group.messages.at(-1),next=groups[groupIndex+1];
-                  const final=next?.kind==='message'&&next.message.role==='assistant'&&next.message.phase==='final'&&!next.message.async_questions?.length&&!!next.message.turn_id&&next.message.turn_id===last?.turn_id?next.message:null;
-                  const saved=final?.statistics?.segment||last?.statistics?.segment;
-                  const live=progressStatistics?.segment;
-                  const part=busy&&groups.at(-1)===group&&progressStatistics?.turn_id===last?.turn_id&&saved&&live?.id===saved.id&&!!saved.start_at&&live.start_at===saved.start_at?live:saved;
-                  const progressStarted=part?.start_at||started;
-                  const progressSeconds=progressStarted&&Number.isFinite(Date.parse(progressStarted))?Math.max(0,Math.floor((now-Date.parse(progressStarted))/1000)):0;
-                  return <div key={`claudian-progress-${group.id}`} className="claudian-progress-group">
-                    {group.messages.map(message=>bubble(message,false,message.id))}
-                    {busy&&groups.at(-1)===group&&(
-                      <div className="claudian-thinking" role="status">
-                        <span>{liveProgress.stage==='tools'?callingLabel||'Working':'Thinking...'}</span>
-                        <span className="claudian-thinking-hint"> (esc to interrupt · {Math.floor(progressSeconds/60)}:{String(progressSeconds%60).padStart(2,'0')})</span>
-                      </div>
-                    )}
-                  </div>;
-                }
                 const last=group.messages.at(-1),next=groups[groupIndex+1];
                 const pending=group.id===pendingGroupId;
                 const final=next?.kind==='message'&&next.message.role==='assistant'&&next.message.phase==='final'&&!next.message.async_questions?.length&&!!next.message.turn_id&&next.message.turn_id===last?.turn_id?next.message:null;

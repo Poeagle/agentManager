@@ -8,14 +8,12 @@ const block={
   result:'# Project',
 };
 
-it('renders a compact tool header and reveals input and result on demand',()=>{
+it('uses the shared compact tool disclosure and reveals input and result on demand',()=>{
   const {container}=render(<ConversationToolCall block={block} compact/>);
   const card=container.querySelector('details');
   expect(card).toHaveAttribute('data-status','completed');
   expect(screen.getByText('Read')).toBeVisible();
-  expect(screen.getByText('README.md')).toBeVisible();
   expect(screen.queryByText('工具调用完成')).not.toBeInTheDocument();
-  expect(card.querySelector('summary')).toHaveStyle({height:'24px'});
   expect(card).not.toHaveAttribute('open');
   fireEvent.click(screen.getByText('Read'));
   expect(card).toHaveAttribute('open');

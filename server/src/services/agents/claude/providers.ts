@@ -673,7 +673,7 @@ export function claudeProviderChoiceForEnvironment(
 export function claudeProviderModelsForEnvironment(
   environmentId: string,
 ): string[] {
-  if (environmentId === 'anthropic') {
+  if (environmentId === 'anthropic' || environmentId === 'claude-provider:anthropic') {
     ensureNativeClaudeProvider();
     const provider = enabledClaudeProviders().find(item => item.id === 'anthropic');
     return provider?.models || [];
@@ -702,6 +702,19 @@ export function claudeModelChoice(
   };
 }
 
+/** A user-selected model must never silently fall back to another catalog item. */
+export function assertClaudeSelectedModel(
+  provider: ClaudeProviderRuntime | null,
+  model: string,
+) {
+  if (!provider) return;
+  if (!provider.models.includes(model))
+    throw Object.assign(
+      Error(`所选模型 ${model} 不属于 Provider ${provider.name}`),
+      { statusCode: 400 },
+    );
+}
+
 export function claudeManagementProviderState(
   providerId: string,
 ): AgentProviderState | null {
@@ -714,11 +727,15 @@ export function claudeProviderEnvironment(
   model?: string,
 ): Record<string, string> | undefined {
   if (!provider) return undefined;
+  const selected = model || provider.defaultModel || '';
   return {
     ANTHROPIC_BASE_URL: provider.baseUrl,
     ANTHROPIC_AUTH_TOKEN: provider.authToken,
     ANTHROPIC_API_KEY: '',
-    ANTHROPIC_MODEL: model || provider.defaultModel || '',
+    ANTHROPIC_MODEL: selected,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: selected,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: selected,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: selected,
     ...(provider.contextWindow
       ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(provider.contextWindow) }
       : {}),
@@ -791,6 +808,38 @@ export async function detectClaudeProviderModels(
           : model;
     return [{ model, name, description: '由 Claude 兼容网关返回' }];
   });
+}
+
+export async function verifyClaudeProviderModel(
+  provider: ClaudeProviderRuntime,
+  model: string,
+): Promise<string> {
+  assertClaudeSelectedModel(provider, model);
+  const response = await fetch(`${provider.baseUrl.replace(/\/+$/, "")}/v1/messages`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": provider.authToken,
+      Authorization: `Bearer ${provider.authToken}`,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 1,
+      messages: [{ role: "user", content: "Reply with OK." }],
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok)
+    throw Error(`Provider 预检失败（HTTP ${response.status}）`);
+  const body = await response.json() as { model?: unknown };
+  if (typeof body.model !== "string" || !body.model)
+    throw Error("Provider 响应未包含实际模型，不能确认所选模型");
+  if (body.model !== model)
+    throw Error(
+      `Provider 实际返回模型 ${body.model}，与所选模型 ${model} 不一致`,
+    );
+  return body.model;
 }
 
 export async function persistDetectedClaudeModels(

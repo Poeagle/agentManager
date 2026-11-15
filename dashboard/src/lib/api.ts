@@ -312,7 +312,7 @@ export const api = {
     checkConnection:(connection:NonNullable<CodexEnvironment['connection']>&{environment_id?:string;project_id?:string})=>fetchJSON<EnvironmentPreflight>('/codex/environments/check-connection',{method:'POST',body:JSON.stringify(connection)}),
     preflight:(id:string,projectId?:string)=>fetchJSON<EnvironmentPreflight>('/codex/environments/'+encodeURIComponent(id)+'/preflight',{method:'POST',body:JSON.stringify(projectId?{project_id:projectId}:{})}),
     forSession:(id:string)=>fetchJSON<{current:string;environments:CodexEnvironment[]}>('/sessions/'+encodeURIComponent(id)+'/environments'),
-    sessionPreflight:(id:string,environment:string)=>fetchJSON<EnvironmentPreflight>('/sessions/'+encodeURIComponent(id)+'/environments/'+encodeURIComponent(environment)+'/preflight',{method:'POST',body:'{}'}),
+    sessionPreflight:(id:string,environment:string,body:{model?:string}={})=>fetchJSON<EnvironmentPreflight>('/sessions/'+encodeURIComponent(id)+'/environments/'+encodeURIComponent(environment)+'/preflight',{method:'POST',body:JSON.stringify(body)}),
     transfer:(id:string,input:{environment_id:string;model:string;effort:string;provider?:string})=>fetchJSON<{ok:boolean;session:Session;history_id?:string}>('/sessions/'+encodeURIComponent(id)+'/environment',{method:'POST',body:JSON.stringify(input)}),
   },
   claudeEnvironments: {

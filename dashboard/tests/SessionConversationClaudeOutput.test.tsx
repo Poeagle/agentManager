@@ -28,7 +28,7 @@ beforeEach(()=>{
   vi.spyOn(api.agent,'checkSend').mockResolvedValue({needs_confirmation:false,matched:false,enabled:true,context_tokens:null,context_window:null,context_percent:null,idle_minutes:null,last_completed_at:null,observed_at:null,native_id:'claude-native',checked_at:new Date().toISOString(),can_compact:false,can_new:false,token:''});
 });
 
-it('renders Claude output with Claudian structure and no progress or final wrapper',async()=>{
+it('renders Claude through the same conversation structure as every other agent',async()=>{
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
   render(<QueryClientProvider client={client}><SessionConversation session={session} active onRaw={()=>{}}/></QueryClientProvider>);
   await waitFor(()=>expect(Socket.latest?.onmessage).toBeTruthy());
@@ -43,20 +43,19 @@ it('renders Claude output with Claudian structure and no progress or final wrapp
       ]},
     ],
   }));
-  const thinking=screen.getByText('Thought').closest('details')!;
+  const thinking=screen.getByText('Claude 的思考过程').closest('details')!;
   expect(thinking).not.toHaveAttribute('open');
-  fireEvent.click(screen.getByText('Thought'));
+  fireEvent.click(screen.getByText('Claude 的思考过程'));
   expect(thinking).toHaveAttribute('open');
   expect(screen.getByText('I should inspect the repository first.')).toBeVisible();
   expect(screen.getByText('Read')).toBeVisible();
-  expect(screen.getByText('README.md')).toBeVisible();
-  expect(document.querySelector('.claudian-baked-duration')).toHaveTextContent('Baked for 5s');
-  expect(screen.getByText(/150 tokens · 80 cached/)).toBeInTheDocument();
+  expect(screen.getByText('Read')).toBeVisible();
   expect(screen.getByText('The project is ready.')).toBeVisible();
-  expect(screen.queryByText('progress')).not.toBeInTheDocument();
-  expect(screen.queryByText('final')).not.toBeInTheDocument();
-  expect(screen.queryByText('Claude')).not.toBeInTheDocument();
-  expect(screen.queryByText('Claude Provider')).not.toBeInTheDocument();
+  expect(screen.getByText('Claude')).toBeInTheDocument();
+  expect(document.querySelector('.session-chat-message.assistant')).toBeInTheDocument();
+  expect(document.querySelector('.claudian-message')).not.toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'复制Agent 回复'})).toBeInTheDocument();
+  expect(screen.getByText('Total: 5s')).toBeInTheDocument();
 });
 
 it('does not leave a Claude turn clock or stop control after a completed snapshot',async()=>{

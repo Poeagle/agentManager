@@ -21,7 +21,7 @@ import type {
   AgentStreamPort,
   ModelPreference,
 } from "../types.js";
-import type { AgentStreamSnapshot } from "../events.js";
+import type { AgentCompaction, AgentStreamSnapshot } from "../events.js";
 import type { ClaudeProviderRuntime } from "./providers.js";
 
 type Listener = (frame: AgentStreamSnapshot) => void;
@@ -169,6 +169,7 @@ class ClaudeRuntime {
   private active: Query | null = null;
   private abort: AbortController | null = null;
   private busy = false;
+  private running: Promise<void> | null = null;
   private stage: AgentStreamSnapshot["stage"] = "idle";
   private turnId: string | null = null;
   private completedTurnId: string | null = null;
@@ -178,8 +179,11 @@ class ClaudeRuntime {
   private assistantOrdinal = 0;
   private currentAssistant: AssistantEnvelope | null = null;
   private completedAssistants: AssistantEnvelope[] = [];
+  private pending: Pending[] = [];
   private model: string | undefined;
   private lastActivity: string | null = null;
+  private compaction: AgentCompaction | null = null;
+  private pendingModelMismatch: string | null = null;
   private resumeOnNextQuery: boolean;
   private provider: ClaudeProviderRuntime | null;
 
@@ -200,13 +204,32 @@ class ClaudeRuntime {
     return this.currentClientId ?? this.turnId;
   }
 
+  configure(
+    provider: ClaudeProviderRuntime | null,
+    preference?: ModelPreference,
+  ) {
+    if (!provider) return;
+    if (
+      this.provider &&
+      this.provider.id !== provider.id
+    )
+      throw Error("Claude 会话正在使用另一个 Provider，完成后才能切换");
+    if (!this.provider) this.provider = provider;
+    else if (this.provider.id !== provider.id) {
+      throw Error(
+        `Claude 会话已绑定 Provider ${this.provider.name}，不能切换到 ${provider.name}`,
+      );
+    }
+    if (preference?.model) this.model = preference.model;
+  }
+
   snapshot(): AgentStreamSnapshot {
     return {
       type: "snapshot",
       messages: this.messages.slice(-128),
       interactions: [],
       activities: [...this.activities.values()],
-      compaction: null,
+      compaction: this.compaction,
       busy: this.busy,
       connected: true,
       turn_id: this.turnId,
@@ -214,6 +237,47 @@ class ClaudeRuntime {
       completed_at: this.completedAt,
       stage: this.stage,
     };
+  }
+  private compactionSummary(message: SDKMessage) {
+    if (
+      (message as any).type !== "system" ||
+      (message as any).subtype !== "compact_boundary"
+    ) return;
+    if (!(message as any).uuid) return;
+    const metadata = (message as any).compact_metadata;
+    if (!metadata || typeof metadata !== "object") return;
+    const timestamp = new Date().toISOString();
+    this.upsert({
+      id: conversationMessageId("", "assistant", message.uuid),
+      role: "assistant",
+      text: "",
+      timestamp,
+      phase: "commentary",
+      streaming: false,
+      presentation: "compaction_summary",
+      compaction: {
+        before_tokens:
+          typeof metadata.pre_tokens === "number" ? metadata.pre_tokens : null,
+        after_tokens:
+          typeof metadata.post_tokens === "number"
+            ? metadata.post_tokens
+            : null,
+        duration_ms:
+          typeof metadata.duration_ms === "number"
+            ? metadata.duration_ms
+            : null,
+      },
+    });
+  }
+  private recordObservedModel(model: unknown) {
+    if (
+      !this.model ||
+      typeof model !== "string" ||
+      !model ||
+      model.startsWith("<") ||
+      model === this.model
+    ) return;
+    this.pendingModelMismatch = model;
   }
 
   private publish() {
@@ -245,11 +309,8 @@ class ClaudeRuntime {
       clientGenerated: !userId,
       nativeUuid: userId ? userId : undefined,
     };
-    if (this.busy && this.input) {
-      const message = await userMessage(pending, this.id, "now");
-      this.submitted.push(pending);
-      this.currentClientId = pending.clientId ?? this.currentClientId;
-      this.input.push(message);
+    if (this.busy || this.running) {
+      this.pending.push(pending);
       this.upsert({
         id: conversationMessageId("", "user", pending.userId),
         role: "user",
@@ -257,13 +318,47 @@ class ClaudeRuntime {
         timestamp: new Date().toISOString(),
         turn_id: pending.userId,
         client_id: pending.clientId,
+        queued: true,
         streaming: false,
       });
       this.publish();
       return true;
     }
-    void this.run(pending);
+    if (userId) pending.nativeUuid = userId;
+    this.start(pending);
     return true;
+  }
+
+  async cancelQueued(clientId: string) {
+    const index = this.pending.findIndex(
+      (pending) => pending.clientId === clientId,
+    );
+    if (index < 0)
+      throw Object.assign(Error("该消息已开始或不在等待队列中"), {
+        statusCode: 409,
+      });
+    const [removed] = this.pending.splice(index, 1);
+    this.messages = this.messages.filter(
+      (message) =>
+        !(
+          message.role === "user" &&
+          message.client_id === removed.clientId &&
+          message.queued
+        ),
+    );
+    this.publish();
+  }
+
+  private start(pending: Pending) {
+    if (this.busy) {
+      this.pending.push(pending);
+      return;
+    }
+    this.running = this.run(pending).finally(() => {
+      this.running = null;
+      const next = this.pending.shift();
+      if (next) this.start(next);
+    });
   }
 
   private upsert(message: AgentMessage) {
@@ -505,9 +600,66 @@ class ClaudeRuntime {
     }
   }
 
-  private consume(message: SDKMessage) {
+  private consume(message: SDKMessage, currentTurnUser = false) {
     this.lastActivity = new Date().toISOString();
+    if (message.type === "system" && message.subtype === "status") {
+      if (message.status === "compacting") {
+        this.compaction = {
+          id: this.compaction?.status === "running"
+            ? this.compaction.id
+            : `compact:${new Date().toISOString()}`,
+          status: "running",
+          started_at: this.compaction?.status === "running"
+            ? this.compaction.started_at
+            : new Date().toISOString(),
+          completed_at: null,
+          duration_ms: null,
+        };
+      } else if (this.compaction?.status === "running" && message.compact_result) {
+        const completed_at = new Date().toISOString();
+        this.compaction = {
+          ...this.compaction,
+          status: message.compact_result === "success" ? "completed" : "failed",
+          completed_at,
+          duration_ms: this.compaction.started_at
+            ? Math.max(0, Date.parse(completed_at) - Date.parse(this.compaction.started_at))
+            : null,
+        };
+      }
+      this.publish();
+      return;
+    }
+    if (message.type === "system" && message.subtype === "compact_boundary") {
+      this.compactionSummary(message);
+      const startedAt = this.compaction?.started_at ?? null;
+      this.compaction = {
+        id: message.uuid,
+        status: "completed",
+        started_at: startedAt,
+        completed_at: new Date().toISOString(),
+        duration_ms: message.compact_metadata.duration_ms ?? null,
+      };
+      this.publish();
+      return;
+    }
     if (message.type === "user" && !message.parent_tool_use_id && message.uuid) {
+      if (currentTurnUser) {
+        const index = this.messages.findIndex(
+          (item) => item.turn_id === this.turnId && item.role === "user",
+        );
+        if (index >= 0) {
+          this.messages[index] = {
+            ...this.messages[index],
+            id: conversationMessageId("", "user", message.uuid),
+            turn_id: message.uuid,
+            ...(this.currentClientId
+              ? { native_client_id: this.currentClientId }
+              : {}),
+          };
+        }
+        this.publish();
+        return;
+      }
       const nativeText = textContent(message.message.content);
       const submitted = this.submitted.find(
         (item) =>
@@ -627,6 +779,7 @@ class ClaudeRuntime {
       }
       const nativeId =
         typeof message.message.id === "string" ? message.message.id : undefined;
+      this.recordObservedModel(message.message.model);
       const envelope =
         (nativeId
           ? this.completedAssistants.find(
@@ -728,9 +881,10 @@ class ClaudeRuntime {
       turn_id: nativeId,
       ...(pending.clientId ? { native_client_id: pending.clientId } : {}),
     };
-    this.messages[index] = message;
+    if (existing >= 0 && existing !== index) this.messages[existing] = message;
+    else this.messages[index] = message;
+    if (existing >= 0 && existing !== index) this.messages.splice(index, 1);
     this.publish();
-    if (existing >= 0 && existing !== index) this.messages.splice(existing, 1);
   }
 
   private appendText(envelope: AssistantEnvelope, index: number, text: string) {
@@ -770,6 +924,7 @@ class ClaudeRuntime {
       timestamp: this.startedAt,
       turn_id: pending.userId,
       client_id: pending.clientId,
+      queued: false,
       streaming: false,
     });
     this.publish();
@@ -778,19 +933,17 @@ class ClaudeRuntime {
     const sessionId = this.id;
     const input = new ClaudeInputStream();
     this.input = input;
-    input.push(await userMessage(pending, sessionId));
+    if (!pending.nativeUuid)
+      pending.nativeUuid = randomUUID() as Pending["nativeUuid"];
+    const currentInput = await userMessage(pending, sessionId);
+    input.push(currentInput);
     const resume = this.resumeOnNextQuery;
     this.resumeOnNextQuery = true;
     const providerEnvironment = this.provider
-      ? {
-          ...(await import("./providers.js")).claudeProviderEnvironment(
-            this.provider,
-            this.model,
-          ),
-          ANTHROPIC_DEFAULT_OPUS_MODEL:this.provider.models.find(model=>model.toLowerCase()==='opus')||this.model||this.provider.defaultModel||"",
-          ANTHROPIC_DEFAULT_SONNET_MODEL:this.provider.models.find(model=>model.toLowerCase()==='sonnet')||this.model||this.provider.defaultModel||"",
-          ANTHROPIC_DEFAULT_HAIKU_MODEL:this.provider.models.find(model=>model.toLowerCase()==='haiku')||this.model||this.provider.defaultModel||"",
-        }
+      ? (await import("./providers.js")).claudeProviderEnvironment(
+          this.provider,
+          this.model,
+        )
       : undefined;
     const options: Options = {
       cwd: this.cwd,
@@ -819,11 +972,13 @@ class ClaudeRuntime {
     let completed = false;
     try {
       for await (const message of conversation) {
-        this.consume(message);
-        if (message.type === "result") {
-          completed = true;
-          break;
-        }
+        const current =
+          message.type === "user" &&
+          !message.parent_tool_use_id &&
+          message.uuid === currentInput.uuid;
+        this.consume(message, current);
+        if (message.type === "result") completed = true;
+        if (message.type === "result" && this.pending.length) break;
       }
     } catch (error) {
       if (!abort.signal.aborted) {
@@ -844,6 +999,24 @@ class ClaudeRuntime {
         });
       }
     } finally {
+      if (this.pendingModelMismatch && this.model) {
+        const observed = this.pendingModelMismatch;
+        this.pendingModelMismatch = null;
+        this.upsert({
+          id: conversationMessageId(
+            this.turnId || "claude",
+            "assistant",
+            `model-mismatch:${this.turnId}`,
+          ),
+          role: "assistant",
+          text: `Provider 实际返回模型 ${observed}，与所选模型 ${this.model} 不一致。该结果未按所选模型执行，请检查 Provider 路由或模型目录。`,
+          timestamp: new Date().toISOString(),
+          turn_id: this.turnId || undefined,
+          phase: "error",
+          streaming: false,
+          error: { code: "model_mismatch", will_retry: false },
+        });
+      }
       const active = this.active;
       this.active = null;
       input.close();
@@ -877,7 +1050,12 @@ class ClaudeRuntime {
   }
 
   async stopTurn(turnId:string):Promise<boolean> {
-    if(!this.busy||this.turnId!==turnId)return false;
+    if(!this.busy)return false;
+    if(
+      turnId!==this.turnId &&
+      turnId!==this.currentClientId &&
+      turnId!==this.id
+    )return false;
     await this.interrupt();
     return true;
   }
@@ -899,7 +1077,49 @@ class ClaudeRuntime {
       if (activity.status === "running") this.finishTool(id);
     this.publish();
   }
+  close() {
+    this.abort?.abort();
+    try {
+      this.active?.close();
+    } catch {
+      // The SDK process may already have exited.
+    }
+    this.input?.close();
+    this.input = null;
+    this.pending.length = 0;
+    this.busy = false;
+    this.stage = "idle";
+  }
+  async compact() {
+    if (this.busy || this.running)
+      throw Object.assign(
+        Error("当前任务仍在运行，请在本轮结束后再压缩"),
+        { submission: "rejected" },
+      );
+    this.compaction = {
+      id: `compact:${new Date().toISOString()}`,
+      status: "running",
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      duration_ms: null,
+    };
+    this.publish();
+    const pending: Pending = {
+      text: "/compact",
+      attachments: [],
+      userId: randomUUID(),
+      clientGenerated: true,
+    };
+    void this.run(pending);
+  }
   setModel(preference: ModelPreference) {
+    if (
+      this.provider &&
+      !this.provider.models.includes(preference.model)
+    )
+      throw Error(
+        `所选模型 ${preference.model} 不属于当前 Provider ${this.provider.name}`,
+      );
     this.model = preference.model || undefined;
     const query = this.active as
       (Query & { setModel?: (model: string) => Promise<void> | void }) | null;
@@ -939,6 +1159,8 @@ export function ensureClaudeRuntime(
   if (!runtime) {
     runtime = new ClaudeRuntime(id, cwd, instructions, preference, resume, provider);
     runtimes.set(id, runtime);
+  } else {
+    runtime.configure(provider, preference);
   }
   return runtime;
 }
@@ -948,18 +1170,7 @@ export function claudeRuntime(id: string) {
 export function releaseClaudeRuntime(id: string) {
   const runtime = runtimes.get(id);
   if (runtime) {
-    void runtime.interrupt();
+    runtime.close();
     runtimes.delete(id);
   }
 }
-export const observeClaudeSDK: AgentStreamPort["observe"] = (context, emit) => {
-  if (!context.nativeId || !context.projectPath)
-    throw Error("Claude managed session is not bound");
-  return ensureClaudeRuntime(
-    context.nativeId,
-    context.projectPath,
-    undefined,
-    undefined,
-    true,
-  ).observe(emit);
-};
