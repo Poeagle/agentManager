@@ -111,6 +111,16 @@ describe('Claude Agent SDK runtime',()=>{
     expect(()=>runtime.setModel({model:'other-model',effort:''})).toThrow('不属于当前 Provider');
     releaseClaudeRuntime(session);
   });
+  it('restores a legacy Claude preference without silently switching models',async()=>{
+    sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
+    const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-legacy',effort:''},true,{
+      id:'provider',name:'Provider',baseUrl:'https://provider.example',authToken:'token',
+      models:['claude-current'],defaultModel:'claude-current',contextWindow:null,maxOutputTokens:null,
+    });
+    await runtime.submit('Restore legacy');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(sdk.queries.at(-1)?.options).toMatchObject({model:'claude-legacy'});
+  });
   it('reports when the upstream returns a different model than the selected one',async()=>{
     sdk.messages=[
       {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'wrong-model',model:'grok-4.6',content:[{type:'text',text:'Wrong model response.'}]}},

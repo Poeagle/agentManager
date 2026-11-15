@@ -241,6 +241,7 @@ export const claudeAdapter: AgentDefinition = {
               provider,
               readClaudeSessionModelPreference({...context,nativeId}) ??
                 managedModelPreference("claude"),
+              !!resume,
             ),
             effort: "",
           }
@@ -354,6 +355,7 @@ function asyncObserve(
 function runtimeModel(
   provider: { models: string[]; defaultModel: string | null },
   preference: { model?: string } | null | undefined,
+  restore = false,
 ): string {
   const configured = preference && typeof preference.model === "string"
     ? preference.model
@@ -362,6 +364,10 @@ function runtimeModel(
   if (!configured && provider.defaultModel && provider.models.includes(provider.defaultModel))
     return provider.defaultModel;
   if (!configured && provider.models[0]) return provider.models[0];
+  // A recovered native session may predate the Provider's current catalog.
+  // Keep its exact persisted model instead of silently switching. New or
+  // user-selected turns still reject a model outside the active catalog.
+  if (restore && configured) return configured;
   throw Error(
     configured
       ? `所选模型 ${configured} 不在当前 Provider 的模型中`
