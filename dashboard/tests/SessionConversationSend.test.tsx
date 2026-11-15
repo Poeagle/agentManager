@@ -238,6 +238,7 @@ describe('conversation send transaction', () => {
     expect(pending.querySelector('.session-chat-live-tool>summary')).toHaveTextContent('Run command · npm run build');
     expect(pending.querySelector('time')).toHaveAttribute('dateTime',stamp);expect(pending.querySelector('.session-chat-metadata-row')).toHaveTextContent('token:');
     expect(screen.getByTestId('conversation-activity-line')).not.toHaveTextContent('npm run build');
+    expect(screen.getByTestId('conversation-activity-line')).not.toBeVisible();expect(screen.getByText('Event stream connected')).toBeVisible();
     push(prior,[{...tool,result_preview:'Compiling modules…'}]);expect(pending).toHaveTextContent('Compiling modules…');
     push(prior,[{...tool,status:'completed',result_preview:'Build succeeded',completed_at:stamp}]);expect(pending).toHaveTextContent('Build succeeded');expect(pending.querySelector('.session-chat-live-tool>summary')).toHaveTextContent('Waiting');
     expect(pending.querySelectorAll('.session-chat-live-tool')).toHaveLength(1);
@@ -249,6 +250,7 @@ describe('conversation send transaction', () => {
     expect(await screen.findByRole('status',{name:'正在执行的进展 6'})).not.toHaveTextContent('npm run build');
     push([...prior,{id:'final',role:'assistant',turn_id:'turn',phase:'final',text:'All done',timestamp:stamp}],[],'idle',false);
     expect(screen.queryByRole('status',{name:/正在执行的进展/})).not.toBeInTheDocument();
+    expect(screen.getByTestId('conversation-activity-line')).toBeVisible();
   });
   it('starts the first live progress without assistant text and excludes tools from a previous input or turn',async()=>{
     await mount();const stamp=new Date().toISOString();
@@ -278,7 +280,7 @@ describe('conversation send transaction', () => {
     const header=screen.getByText('progress').closest('summary')!;expect(within(header).getByText('Step 40s')).toHaveAttribute('title','Duration of the most recently completed tool step');expect(within(header).getByText(/^Elapsed /)).toHaveAttribute('title','Elapsed time for this progress segment');expect(within(screen.getByTestId('conversation-activity-line')).queryByText(/^Turn /)).not.toBeInTheDocument();
     expect(header).toHaveTextContent('unknown: —');
     act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:true,stage:'tools',turn_id:'turn',started_at:new Date(Date.now()-120000).toISOString(),activities:[{id:'tool',label:'调用工具 · test',status:'running',started_at:new Date(Date.now()-35000).toISOString(),completed_at:null,duration_ms:null}]}));
-    expect(header).toHaveTextContent(/calling \(test\): 3[45]s/);
+    expect(header).toHaveTextContent(/calling: 3[45]s/);expect(header).not.toHaveTextContent('test');
     act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:true,stage:'tools',turn_id:'turn',started_at:new Date(Date.now()-120000).toISOString(),activities:[{id:'tool',label:'调用工具 · test',status:'completed',started_at:new Date(Date.now()-35000).toISOString(),completed_at:new Date(Date.now()-5000).toISOString(),duration_ms:30000}]}));
     expect(header).toHaveTextContent(/waiting: [45]s/);
     const segment={id:'segment-one',start_at:new Date(Date.now()-120000).toISOString(),end_at:null,elapsed_ms:null,end_reason:null,tokens:{total_tokens:392100},requests:1,tool_calls:2,tool_rounds:2,complete:true};

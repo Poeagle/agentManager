@@ -30,15 +30,15 @@ it('keeps usage unknown across missing, incomplete, changed or regressing baseli
   expect(pendingProgressStatistics(null,previous,true)).toBeNull();
 });
 
-it('keeps a 40-character command summary in the header while expanded content contains only live results',()=>{
-  const command='echo '+ '界'.repeat(40)+' tail';
+it('keeps a 100-character command summary in the header while expanded content contains only live results',()=>{
+  const command='echo '+ '界'.repeat(100)+' tail';
   const view=render(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} connected tool={{...tool,input_preview:command}}/>);
   const label=document.querySelector('.session-chat-live-tool-label')!;
-  expect(label.textContent).toBe('echo '+ '界'.repeat(35)+'…');expect(label).toHaveAttribute('title',command);
+  expect(label.textContent).toBe('echo '+ '界'.repeat(95)+'…');expect(label).toHaveAttribute('title',command);
   expect(document.querySelector('.session-chat-tool-input')).toBeNull();
   fireEvent.click(document.querySelector('summary')!);expect(document.querySelector('.session-chat-live-tool-details')).toHaveTextContent('First output');expect(document.querySelector('.session-chat-live-tool-details')).not.toHaveTextContent('echo');
   view.rerender(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} connected tool={{...tool,input_preview:command,status:'completed',result_preview:'Final result'}}/>);
-  expect(label.textContent).toBe('echo '+ '界'.repeat(35)+'…');expect(document.querySelector('summary')).toHaveTextContent('Waiting');expect(screen.getByText('Final result')).toBeVisible();
+  expect(label.textContent).toBe('echo '+ '界'.repeat(95)+'…');expect(document.querySelector('summary')).toHaveTextContent('Waiting');expect(screen.getByText('Final result')).toBeVisible();
 });
 it('flattens multiline commands and leaves short commands intact',()=>{
   render(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} connected tool={{...tool,input_preview:'echo one\n  echo two'}}/>);

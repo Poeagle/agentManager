@@ -131,7 +131,7 @@ interface ProgressSummaryProps {
   progress?: import('../lib/api').ConversationProgressStatistics | null;
   progressScope?: 'total'|'turn'|'segment'; completed?: boolean; interrupted?: boolean;
   stepDuration?: number|null; stepRunning?: boolean; phaseSeconds?: number|null;
-  progressPhase: 'calling'|'waiting'|'unknown'; callingLabel: string|null; turnDuration?: number|null;
+  progressPhase: 'calling'|'waiting'|'unknown'; turnDuration?: number|null;
 }
 
 function ProgressSection({
@@ -147,7 +147,6 @@ function ProgressSection({
   stepRunning,
   phaseSeconds,
   progressPhase,
-  callingLabel,
   turnDuration,
   children,
 }: ProgressSummaryProps & {children: ReactNode}) {
@@ -168,7 +167,7 @@ function ProgressSection({
           aria-label={`${open ? "收起" : "展开"}进展（${count} 条）`}
           aria-expanded={open}
         >
-          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} progress={progress} progressScope={progressScope} completed={completed} interrupted={interrupted} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} callingLabel={callingLabel} turnDuration={turnDuration}/>
+          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} progress={progress} progressScope={progressScope} completed={completed} interrupted={interrupted} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} turnDuration={turnDuration}/>
           <ChevronDown size={14} className="session-chat-progress-chevron" />
         </summary>
         <div className="session-chat-progress-content">{children}</div>
@@ -177,7 +176,7 @@ function ProgressSection({
   );
 }
 
-function ProgressSummary({agent,agentName,count,active,progress,progressScope='total',completed,interrupted,stepDuration,stepRunning,phaseSeconds,progressPhase,callingLabel,turnDuration}:ProgressSummaryProps) {
+function ProgressSummary({agent,agentName,count,active,progress,progressScope='total',completed,interrupted,stepDuration,stepRunning,phaseSeconds,progressPhase,turnDuration}:ProgressSummaryProps) {
   return <>
           <span aria-hidden="true"><AgentIcon session={{agent}} className="h-[13px] w-[13px]" /></span>
           <span>{agentName}</span>
@@ -186,7 +185,7 @@ function ProgressSummary({agent,agentName,count,active,progress,progressScope='t
           {progress && <span className="session-chat-message-statistics" title={progressScope==='segment'?'Usage recorded since this progress segment started; incomplete data is a lower bound.':progressScope==='total'?'Cumulative recorded usage since the previous conclusion. Incomplete history is a lower bound.':'Recorded usage for this native turn through its last progress update. Incomplete history is a lower bound.'}>{progressScope} · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} ｜ {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
           {!progress&&progressScope==='segment'&&<span className="session-chat-message-statistics" title="Segment usage is unavailable">segment · token: — · tools: —</span>}
           {active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
-          {active&&<span className="session-chat-progress-time">{progressPhase}{callingLabel&&<span title={callingLabel}> ({Array.from(callingLabel).length>18?`${Array.from(callingLabel).slice(0,18).join('')}…`:callingLabel})</span>}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
+          {active&&<span className="session-chat-progress-time">{progressPhase}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
           {turnDuration!=null?<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time for this progress segment">Elapsed {formatElapsedEnglish(turnDuration)}</time>:progressScope==='segment'?<span className="session-chat-progress-time" title="Segment timing is unavailable">Elapsed —</span>:null}
           {active ? <span className="session-chat-progress-live">In progress</span> : interrupted ? <span className="session-chat-progress-time">Interrupted</span> : completed ? <span className="session-chat-progress-time">Completed</span> : null}
   </>;
@@ -1978,6 +1977,7 @@ export function SessionConversation({
     else {const id=`live-${liveTurn}-${tailMessage?.id||'start'}`;groups.splice(tailIndex+1,0,{kind:'progress',id,messages:[]});pendingGroupId=id;}
   }
   const progressTimingVisible=busy&&!reconnectable&&!ended&&!waiting&&!activeError&&!compaction.state&&(!!pendingGroupId||tail?.kind==='progress');
+  const hideFooterExecutionStatus=liveState==='connected'&&!reconnectable&&!compaction.state&&(showLiveProgress||progressTimingVisible);
   const activityRunning=busy&&!reconnectable&&!ended&&!waiting&&!activeError;
   const currentActivities=liveState==='connected'&&!reconnectable&&liveProgress.stage==='tools'?liveProgress.activities||[]:[];
   const currentActivity=currentConversationActivity(currentActivities,activityRunning);
@@ -1998,7 +1998,6 @@ export function SessionConversation({
     return ()=>cancelAnimationFrame(frame);
   },[pendingGroupId,liveProgress.activities]);
   const runningTool=progressActivities.find(item=>item.status==='running');
-  const callingLabel=runningTool?.label.split(' · ').slice(1).join(' · ')||null;
   const lastFinished=progressActivities.filter(item=>item.completed_at).sort((a,b)=>Date.parse(b.completed_at!)-Date.parse(a.completed_at!))[0];
   const progressPhase=liveState!=='connected'||reconnectable||(!runningTool&&!lastFinished&&liveProgress.stage==='tools')?'unknown':runningTool?'calling':'waiting';
   const phaseStart=progressPhase==='unknown'?null:runningTool?runningTool.started_at:lastFinished?.completed_at||liveProgress.started_at;
@@ -2215,7 +2214,6 @@ export function SessionConversation({
                     stepRunning={currentActivity?.status==='running'}
                     phaseSeconds={phaseSeconds}
                     progressPhase={progressPhase}
-                    callingLabel={callingLabel}
                     turnDuration={progressTimingVisible&&(pending||groups.at(-1)===group)?(part?.start_at?elapsedBetween(part.start_at,now):turnDuration):part?.elapsed_ms??null}
                     completed={part?part.end_reason==='completed':!!final}
                     interrupted={part?.end_reason==='interrupted'}
@@ -2359,6 +2357,7 @@ export function SessionConversation({
 
         <footer className="session-chat-composer">
           <div className="session-chat-status" role="status">
+            <div className="session-chat-execution-status" hidden={hideFooterExecutionStatus}>
             <span
               className={`session-chat-connection ${liveState}`}
               data-attention={!!pendingQuestion || waiting}
@@ -2414,8 +2413,9 @@ export function SessionConversation({
                 }
               />
             )}
+            </div>
             {observingStream && liveState === "connected" && (
-              <span className="session-chat-live-label">Event stream connected</span>
+              <span className="session-chat-live-label" data-state="connected">Event stream connected</span>
             )}
             {observingStream && liveState === "connecting" && (
               <span

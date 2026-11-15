@@ -182,7 +182,7 @@ describe('chat/raw terminal display',()=>{
     act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'waiting',turn_id:'retry',messages:[failure]})}));
     expect(screen.getByRole('alert')).toHaveTextContent('正在自动重试');expect(screen.queryByText('Turn failed; resolve the error and retry')).not.toBeInTheDocument();
     act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'answering',turn_id:'retry',messages:[failure,{id:'recovered',role:'assistant',phase:'commentary',text:'连接已恢复，继续检查',turn_id:'retry',timestamp:null,streaming:true}]})}));
-    expect(screen.getByRole('alert')).toHaveTextContent('重试已结束');expect(screen.getByText('连接已恢复，继续检查')).toBeVisible();expect(screen.getByText('Receiving response…')).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('重试已结束');expect(screen.getByText('连接已恢复，继续检查')).toBeVisible();expect(screen.getByText('Receiving response…')).not.toBeVisible();
   });
   it('updates one compact retry notice and reconstructs it from history',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];

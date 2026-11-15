@@ -11,7 +11,7 @@ export function ConversationProgressPending({number,tool,startedAt,statistics,no
   const elapsed=elapsedBetween(startedAt,now);
   const command=tool?(tool.input_preview||englishActivity(tool.label)).replace(/\s+/g,' ').trim():'';
   const characters=Array.from(command);
-  const summary=characters.length>40?`${characters.slice(0,40).join('')}…`:command;
+  const summary=characters.length>100?`${characters.slice(0,100).join('')}…`:command;
   return <div className="session-chat-progress-entry session-chat-progress-pending" data-active="true" role="status" aria-label={`正在执行的进展 ${number}`}>
     <span className="session-chat-progress-number" aria-label={`进展序号 ${number}`}>{number}</span>
     <div className="session-chat-metadata-row"><span className="session-chat-message-meta">
