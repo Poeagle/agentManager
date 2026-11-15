@@ -45,6 +45,14 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('omits unknown timing and redundant scope labels from a restored final response',async()=>{
+    await mount();
+    const part={tokens:{total_tokens:100},requests:1,tool_calls:0,tool_rounds:0,complete:false,shared_messages:1,start_at:null,end_at:'2026-11-15T05:30:00Z',elapsed_ms:null};
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[{id:'unknown-timing-final',role:'assistant',phase:'final',text:'Completed with unknown timing',timestamp:part.end_at,turn_id:'turn',statistics:{...part,sequence:1,turn_id:'turn',conclusion:part}}],busy:false,stage:'idle'}));
+    const final=document.querySelector('[data-chat-message-id="unknown-timing-final"]')!;
+    expect(final).toHaveTextContent('100');expect(final).not.toHaveTextContent('summary ·');expect(final).not.toHaveTextContent('Total: —');
+    expect(final.querySelector('.session-chat-message-duration')).toBeNull();
+  });
   it('closes the guard modal on compact-and-send and keeps a cancellable inline status',async()=>{
     vi.mocked(api.agent.checkSend).mockResolvedValue({needs_confirmation:true,matched:true,token:'confirmed',native_id:'native',context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,observed_at:null,can_compact:true,can_new:false} as any);
     const submit=vi.spyOn(api.agent,'sendInput');await mount();input('preserved while compacting');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));fireEvent.click(await screen.findByRole('button',{name:'压缩后发送'}));expect(screen.queryByRole('dialog',{name:'发送前检查'})).not.toBeInTheDocument();expect(screen.getByText('正在压缩，确认完成后自动发送。')).toBeVisible();expect(submit).not.toHaveBeenCalled();expect(loadComposer(composerKey('local',session.id)).draft).toBe('preserved while compacting');

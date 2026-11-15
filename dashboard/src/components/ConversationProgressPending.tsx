@@ -17,7 +17,7 @@ export function ConversationProgressPending({number,tool,startedAt,statistics,no
     <div className="session-chat-metadata-row"><span className="session-chat-message-meta">
       {startedAt&&Number.isFinite(Date.parse(startedAt))?<time dateTime={startedAt} title="Progress start time; this update is still running">{formatConversationTimestamp(startedAt)}</time>:<span>Time pending</span>}
       <ConversationStatisticsLabel statistics={statistics} interval/>
-      <span className="session-chat-message-duration" title="Elapsed time since this progress update started">Elapsed: {elapsed===null?'—':formatElapsedEnglish(elapsed)}</span>
+      {elapsed!==null&&<span className="session-chat-message-duration" title="Elapsed time since this progress update started">Elapsed: {formatElapsedEnglish(elapsed)}</span>}
     </span></div>
     {tool?<ConversationCard key={tool.id} className="session-chat-live-tool" status={tool.status} summary={<><ChevronRight size={12} className="session-chat-live-tool-arrow"/><span className="session-chat-live-tool-label" title={command}>{summary}</span>{tool.status==='running'?<Loader2 size={12} className="animate-spin"/>:<span className="session-chat-live-tool-state">Waiting…</span>}</>}>
       <div className="session-chat-live-tool-details">

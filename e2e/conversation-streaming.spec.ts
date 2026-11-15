@@ -41,8 +41,11 @@ test('renders each native delta before the item completes and keeps one progress
   await expect(currentStats).toContainText('1 round | 1 call',{timeout:1000});
   dispatched=performance.now();appendFileSync(metricsLog,metricUsage(20400));
   await expect(currentStats).toContainText('10.2K｜10K｜10K (99.99%)｜50｜200｜0.075',{timeout:1000});expect(performance.now()-dispatched).toBeLessThan(1000);
+  await expect(currentStats).not.toContainText('step ·');await expect(currentStats.locator('.session-chat-estimated-cost')).toHaveCSS('color','rgb(126, 34, 206)');
+  await expect(currentStats.locator('.session-chat-tool-counts')).toHaveCSS('color','rgb(29, 78, 216)');
   const healthy=await currentStats.locator('.session-chat-cache-hit').evaluate(node=>getComputedStyle(node).color);const channels=healthy.match(/[\d.]+/g)!.map(Number);expect(channels[1]).toBeGreaterThan(channels[0]);
   await page.evaluate(()=>document.documentElement.setAttribute('data-theme','midnight'));
+  await expect(currentStats.locator('.session-chat-estimated-cost')).toHaveCSS('color','rgb(196, 161, 255)');await expect(currentStats.locator('.session-chat-tool-counts')).toHaveCSS('color','rgb(121, 180, 255)');
   const dark=await currentStats.locator('.session-chat-cache-hit').evaluate(node=>getComputedStyle(node).color);expect(dark.match(/[\d.]+/g)!.map(Number)[1]).toBeGreaterThan(channels[1]);
   await page.evaluate(()=>document.documentElement.setAttribute('data-theme','light'));
   await expect(bubble.locator('.session-chat-message-statistics')).toContainText('10.2K｜');

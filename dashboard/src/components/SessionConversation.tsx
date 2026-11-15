@@ -311,20 +311,12 @@ const Bubble = memo(function Bubble({
             interval={message.phase === "commentary"||!!message.streaming}
           />
         )}
-        {(durationLabel || compact || message.phase === "final") && (
+        {durationLabel && (
           <span
             className="session-chat-message-duration"
-            title={
-              durationLabel
-                ? metadataDurationTitle(message.phase)
-                : "Completion timing is unavailable for this interval."
-            }
+            title={metadataDurationTitle(message.phase)}
           >
-            {durationLabel
-              ? englishMetadataDuration(durationLabel)
-              : message.phase === "final"
-                ? "Total: —"
-                : "Elapsed: —"}
+            {englishMetadataDuration(durationLabel)}
           </span>
         )}
         {compact && streaming && (

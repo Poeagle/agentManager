@@ -1,6 +1,7 @@
 import {open} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {emptyCostTotals,recordCost,costDifference,costSnapshot,type CostTotals} from './statistics-cost.js';
+import {precedingPricingSettings,recordedPricingSettings} from './statistics-settings.js';
 import {publicTokenCounters,tokenFields} from '../../conversation-usage.js';
 
 export type ConversationInterval=import('../types.js').AgentStatisticsInterval;
@@ -81,8 +82,8 @@ function consume(state:State,line:Buffer,sequence:number){
   if(line.length>256*1024){incomplete(state);return;}
   let record:any;try{record=JSON.parse(line.toString());}catch{incomplete(state);return;}
   const p=record.payload;if(!p)return;
-  const settings=record.type==='session_meta'||record.type==='turn_context'?p:record.type==='event_msg'&&p.type==='thread_settings_applied'?p.thread_settings:null;
-  if(settings){if(typeof settings.model==='string')state.model=settings.model.slice(0,120);if('service_tier' in settings)state.tier=typeof settings.service_tier==='string'?settings.service_tier.slice(0,120):null;}
+  const settings=recordedPricingSettings(record);
+  if(settings){if('model' in settings)state.model=typeof settings.model==='string'?settings.model.slice(0,120):null;if('service_tier' in settings)state.tier=typeof settings.service_tier==='string'?settings.service_tier.slice(0,120):null;}
   const id=p.turn_id||p.internal_chat_message_metadata_passthrough?.turn_id||(record.type==='response_item'?state.turn?.id:undefined);
   if(record.type==='event_msg'&&p.type==='task_started'&&typeof id==='string'){
     if(state.conclusion.initial)state.conclusion.start ||= timestamp(record.timestamp);
@@ -171,8 +172,11 @@ export async function readConversationStatistics(path:string,withCredits=true):P
   try {
     const info=await handle.stat();let state=cache.get(path),skipFirst=false;
     if(state&&state.inode===info.ino&&state.offset===info.size&&state.mtime===info.mtimeMs)return [...state.stats.values()].map(item=>projectCost(item,withCredits));
-    if(!state||state.inode!==info.ino||info.size<state.offset||info.size===state.offset&&info.mtimeMs!==state.mtime){state={model:null,tier:null,offset:Math.max(0,info.size-WINDOW),inode:info.ino,mtime:info.mtimeMs,partial:Buffer.alloc(0),turn:null,conclusion:conclusion(null,info.size<=WINDOW,info.size<=WINDOW),fingerprint:null,stats:new Map(),segment:null};cache.set(path,state);if(cache.size>32)cache.delete(cache.keys().next().value!);
+    if(!state||state.inode!==info.ino||info.size<state.offset||info.size===state.offset&&info.mtimeMs!==state.mtime){state={model:null,tier:null,offset:Math.max(0,info.size-WINDOW),inode:info.ino,mtime:info.mtimeMs,partial:Buffer.alloc(0),turn:null,conclusion:conclusion(null,info.size<=WINDOW,info.size<=WINDOW),fingerprint:null,stats:new Map(),segment:null};
       skipFirst=state.offset>0;
+      if(skipFirst)Object.assign(state,await precedingPricingSettings(handle,state.offset));
+      // Do not expose an unseeded cache to concurrent HTTP/file observers.
+      cache.set(path,state);if(cache.size>32)cache.delete(cache.keys().next().value!);
     }
     while(state.offset<info.size){
       const buffer=Buffer.alloc(Math.min(WINDOW,info.size-state.offset)),{bytesRead}=await handle.read(buffer,0,buffer.length,state.offset);if(!bytesRead)break;

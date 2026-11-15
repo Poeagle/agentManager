@@ -6,13 +6,25 @@ const interval={tokens:{total_tokens:200},requests:1,tool_calls:2,tool_rounds:1,
 const label=()=>document.querySelector('.session-chat-message-statistics')!;
 describe('English message metadata',()=>{
  it('shows fixed field/value ordering and rounds before calls for the current interval',()=>{
-  render(<ConversationStatisticsLabel interval statistics={{...base,interval}}/>);expect(label()).toHaveTextContent('step · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 200｜—｜—｜—｜—｜— · 1 round | 2 calls');expect(label()).toHaveAttribute('title',expect.stringContaining('since the previous progress request'));
+  render(<ConversationStatisticsLabel interval statistics={{...base,interval}}/>);expect(label()).toHaveTextContent('Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 200｜—｜—｜—｜—｜— · 1 round | 2 calls');expect(label()).toHaveAttribute('title',expect.stringContaining('since the previous progress request'));
  });
  it('uses conclusion interval data instead of native turn totals',()=>{
-  render(<ConversationStatisticsLabel statistics={{...base,interval,conclusion:{...interval,start_at:null,end_at:null,elapsed_ms:null}}}/>);expect(label()).toHaveTextContent('summary ·');expect(label()).toHaveTextContent('200｜');expect(label()).not.toHaveTextContent('1K');expect(label()).toHaveAttribute('title',expect.stringContaining('since the previous conclusion completed'));
+  render(<ConversationStatisticsLabel statistics={{...base,interval,conclusion:{...interval,start_at:null,end_at:null,elapsed_ms:null}}}/>);expect(label()).not.toHaveTextContent('summary ·');expect(label()).toHaveTextContent('200｜');expect(label()).not.toHaveTextContent('1K');expect(label()).toHaveAttribute('title',expect.stringContaining('since the previous conclusion completed'));
+ });
+ it('omits redundant interval prefixes and colors only the Credit value and tool counts',()=>{
+  render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,cost:{amount:1.267,unit:'credits',complete:true}}}}/>);
+  expect(label().textContent).toMatch(/^Total｜/);expect(label()).not.toHaveTextContent('step ·');
+  expect(document.querySelector('.session-chat-estimated-cost')).toHaveTextContent('1.267');
+  expect(document.querySelector('.session-chat-tool-counts')).toHaveTextContent('1 round | 2 calls');
+  expect(document.querySelector('.session-chat-estimated-cost')).not.toHaveTextContent('Est. Cr');
+ });
+ it('explains an unavailable estimate without substituting zero or cumulative Credit',()=>{
+  render(<ConversationStatisticsLabel interval statistics={{...base,cost:{amount:100,unit:'credits',complete:true},interval:{...interval,cost:{amount:null,unit:'credits',complete:false}}}}/>);
+  expect(document.querySelector('.session-chat-estimated-cost')).toHaveTextContent('—');expect(label()).not.toHaveTextContent('100');
+  expect(label()).toHaveAttribute('title',expect.stringContaining('Pricing is unavailable'));
  });
  it('does not split or duplicate a shared model request',()=>{
-  render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,shared_messages:2}}}/>);expect(label()).toHaveTextContent('step · Shared request');expect(label()).toHaveAttribute('title',expect.stringContaining('2 updates share the same model request'));expect(label()).toHaveAttribute('title',expect.stringContaining('200 tokens'));
+  render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,shared_messages:2}}}/>);expect(label()).toHaveTextContent('Shared request');expect(label()).toHaveAttribute('title',expect.stringContaining('2 updates share the same model request'));expect(label()).toHaveAttribute('title',expect.stringContaining('200 tokens'));
  });
  it('marks incomplete counters as lower bounds',()=>{
   render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,complete:false}}}/>);expect(label()).toHaveTextContent('≥200｜');expect(label()).toHaveTextContent('≥1 round | ≥2 calls');
@@ -36,6 +48,6 @@ describe('English message metadata',()=>{
   render(<ConversationStatisticsLabel statistics={null} interval/>);expect(label()).toHaveTextContent('— rounds | — calls');expect(label()).not.toHaveTextContent('0 calls');
  });
  it('uses English units and timing tooltips',()=>{
-  expect(englishMetadataDuration('本轮耗时 1时2分3秒')).toBe('Total: 1h 2m 3s');expect(englishMetadataDuration('耗时 19秒')).toBe('Elapsed: 19s');expect(metadataDurationTitle('commentary')).toMatch(/^Time between/);expect(metadataTimestampTitle({id:'a',role:'assistant',text:'',timestamp:'2026-11-03T01:00:00Z'},true)).toMatch(/^Progress completion time:/);
+  expect(englishMetadataDuration('本轮耗时 1时2分3秒')).toBe('Total time: 1h 2m 3s');expect(englishMetadataDuration('耗时 19秒')).toBe('Elapsed: 19s');expect(metadataDurationTitle('commentary')).toMatch(/^Time between/);expect(metadataTimestampTitle({id:'a',role:'assistant',text:'',timestamp:'2026-11-03T01:00:00Z'},true)).toMatch(/^Progress completion time:/);
  });
 });

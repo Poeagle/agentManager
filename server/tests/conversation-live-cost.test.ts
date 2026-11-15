@@ -50,3 +50,13 @@ it('marks a gap inside the active interval partial rather than pricing it as com
  appendFileSync(path,'{"type":"event_msg","payload":{"type":"token_count",broken}}\n'+usage(2002000));
  expect((await readConversationProgress(path))?.step).toMatchObject({complete:false,cost:{amount:7.5,complete:false}});
 });
+it('recovers preceding model and speed receipts for a cold long transcript without using later settings or replaying earlier usage',async()=>{
+ const padding=row('event_msg',{type:'unrelated',padding:'x'.repeat(16000)}).repeat(200);
+ writeFileSync(path,context('gpt-6.1-sol','fast')+start+usage(1001000)+padding+start+message('cold')+usage(2002000));
+ const reads=await Promise.all([readConversationStatistics(path),readConversationStatistics(path),readConversationStatistics(path)]);
+ const first=reads[0][0];expect(reads[1]).toEqual(reads[0]);expect(reads[2]).toEqual(reads[0]);
+ expect(first.interval).toMatchObject({requests:1,tokens:{total_tokens:1001000},cost:{amount:18.75,complete:true}});
+ appendFileSync(path,context('gpt-6.1-terra','default')+message('next')+usage(3003000));
+ const next=await readConversationStatistics(path);
+ expect(next[0].interval?.cost?.amount).toBe(18.75);expect(next[1].interval?.cost?.amount).toBe(3.75);
+});

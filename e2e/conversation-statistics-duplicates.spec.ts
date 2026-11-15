@@ -28,7 +28,7 @@ test('deduplicates native conclusion echoes and shows actual usage and duration 
  await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'统计测试'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
  await page.routeWebSocket('**/conversation/stream*',socket=>socket.send(JSON.stringify({type:'snapshot',messages:[],busy:false,stage:'idle'})));
  await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
- const verify=async()=>{await expect(chat.getByText('测试结论',{exact:true})).toHaveCount(1);await expect(chat.locator('.session-chat-message-statistics')).toContainText('200｜180｜50 (27.78%)｜5｜20');await expect(chat.locator('.session-chat-message-statistics')).toContainText('1 round | 1 call');await expect(chat.getByText('Total: 1m 4s')).toBeVisible();};
+ const verify=async()=>{await expect(chat.getByText('测试结论',{exact:true})).toHaveCount(1);await expect(chat.locator('.session-chat-message-statistics')).toContainText('200｜180｜50 (27.78%)｜5｜20');await expect(chat.locator('.session-chat-message-statistics')).toContainText('1 round | 1 call');await expect(chat.getByText('Total time: 1m 4s')).toBeVisible();};
  await verify();await page.reload();await verify();
  await page.request.delete(`/api/sessions/${session.id}`);
 });
