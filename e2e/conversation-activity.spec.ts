@@ -32,7 +32,7 @@ test('live progress owns tool updates and result previews while public history s
   await expect(footer).not.toContainText('npm run build');
   const long='调用工具 · tools / exec_command · '+Array.from({length:18},()=> '本轮实时工具活动').join(' ');
   push?.(frame([activity('one','运行命令 · npm run build'),activity('two',long)]));
-  await expect(ticker).toContainText('本轮实时工具活动');
+  await expect(ticker.locator('.session-chat-live-tool-label')).toContainText('exec_command');
   await expect(ticker.locator('.session-chat-live-tool')).toHaveCount(1);
   await expect(ticker.locator('.session-chat-live-tool>summary')).not.toContainText('npm run build');
   await expect(footer).not.toContainText('本轮实时工具活动');
@@ -41,6 +41,7 @@ test('live progress owns tool updates and result previews while public history s
   await expect(ticker.locator('.session-chat-live-tool')).not.toHaveAttribute('open','');
   await ticker.locator('.session-chat-live-tool>summary').click();
   await expect(ticker.getByText('Build succeeded',{exact:true})).toBeVisible();
+  await expect(ticker.locator('.session-chat-live-tool-details')).toHaveText('Build succeeded');
   await expect(ticker.locator('.session-chat-metadata-row>span>time')).toHaveCount(1);
   const publicPage=await(await page.request.get(`/api/sessions/${session.id}/conversation`)).json();
   expect(JSON.stringify(publicPage.messages)).not.toContain('本轮实时工具活动');

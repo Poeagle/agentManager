@@ -33,7 +33,9 @@ test('renders each native delta before the item completes and keeps one progress
   await expect(toolRow).toContainText('npm run live-check',{timeout:1000});expect(performance.now()-dispatched).toBeLessThan(1000);
   dispatched=performance.now();emit('item/completed',{threadId,turnId,item:{type:'commandExecution',id:'live-command',command:'npm run live-check',status:'completed',aggregatedOutput:'check passed'}});
   await expect(toolRow).toContainText('Waiting',{timeout:1000});expect(performance.now()-dispatched).toBeLessThan(1000);
+  await expect(toolRow).toContainText('npm run live-check');
   await toolRow.click();await expect(chat.locator('.session-chat-live-tool .session-chat-tool-result')).toHaveText('check passed');
+  await expect(chat.locator('.session-chat-live-tool-details')).toHaveText('check passed');
   emit('turn/completed',{threadId,turn:{id:turnId,status:'completed',completedAt:Date.now()/1000}});
 await expect(chat.getByText('Ready for your next message',{exact:true})).toBeVisible();expect(submitted).toHaveLength(1);
   // Keep the rollout unchanged while a reply waits through compaction. The
