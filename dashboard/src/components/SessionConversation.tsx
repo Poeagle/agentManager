@@ -970,6 +970,15 @@ export function SessionConversation({
       index > lastUserIndex && message.role === "assistant" ? message : last,
     null,
   );
+  const latestUser = lastUserIndex >= 0 ? messages[lastUserIndex] : undefined;
+  const completedWithoutNewInput = Boolean(
+    latestUser &&
+      latestAssistant?.phase === "final" &&
+      !latestAssistant.streaming &&
+      latestAssistant.timestamp &&
+      latestUser.timestamp &&
+      Date.parse(latestAssistant.timestamp) >= Date.parse(latestUser.timestamp),
+  );
   const activeError =
     latestAssistant?.phase === "error" &&
     (liveState !== "connected" ||
@@ -979,6 +988,7 @@ export function SessionConversation({
       ? latestAssistant
       : null;
   const busy =
+    !completedWithoutNewInput &&
     !(activeError && !activeError.error?.will_retry) &&
     !(completedTurn.current && completedTurn.current === liveProgress.turn_id) &&
     (liveState === "connected"

@@ -977,8 +977,11 @@ class ClaudeRuntime {
           !message.parent_tool_use_id &&
           message.uuid === currentInput.uuid;
         this.consume(message, current);
-        if (message.type === "result") completed = true;
-        if (message.type === "result" && this.pending.length) break;
+        if (message.type === "result") {
+          completed = true;
+          this.publish();
+          if (this.pending.length) break;
+        }
       }
     } catch (error) {
       if (!abort.signal.aborted) {

@@ -180,6 +180,8 @@ describe('Claude Agent SDK runtime',()=>{
     await runtime.submit('Complete');
     await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
     expect(runtime.snapshot().busy).toBe(false);
+    expect(runtime.runtime().state).toBe('idle');
+    expect(runtime.runtime().completed_turn_id).toBeTruthy();
   });
   it('queues a running follow-up and resumes the same Claude session after the current query',async()=>{
     let release!:(value:any)=>void;sdk.messages=[new Promise(done=>{release=done;})];

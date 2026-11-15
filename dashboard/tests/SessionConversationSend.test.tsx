@@ -365,6 +365,18 @@ describe('conversation send transaction', () => {
     act(()=>first.emit({type:'snapshot',messages:[{...item,text:'部分输出继续'}],busy:true,stage:'answering'}));
     await waitFor(()=>expect(screen.getByText('Streaming')).toBeInTheDocument());expect(screen.getByText('部分输出继续')).toBeInTheDocument();
   });
+  it('does not show waiting or a stop control after a final reply arrives before a stale busy frame',async()=>{
+    await mount();
+    const stamp=new Date(Date.now()-4000).toISOString();
+    const user={id:'user',role:'user',text:'Hi',timestamp:stamp};
+    const final={id:'final',role:'assistant',turn_id:'turn',phase:'final',text:'Done',timestamp:new Date().toISOString(),streaming:false};
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[user,final],busy:false,stage:'idle',turn_id:'turn'}));
+    expect(await screen.findByText('Done')).toBeVisible();
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[user,final],busy:true,stage:'waiting',turn_id:'different-native-turn',started_at:stamp}));
+    await waitFor(()=>expect(screen.queryByText(/Waiting for/)).not.toBeInTheDocument());
+    expect(screen.queryByRole('button',{name:'停止当前执行'})).not.toBeInTheDocument();
+    expect(screen.queryByText(/In progress/)).not.toBeInTheDocument();
+  });
   it('resynchronizes a missing delta sequence immediately without replaying a submitted message',async()=>{
     const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();const first=Socket.latest;
     act(()=>first.emit({type:'snapshot',stream_id:'shared',stream_seq:1,messages:[],busy:false,stage:'idle'}));
