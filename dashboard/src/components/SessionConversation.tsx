@@ -273,7 +273,7 @@ const Bubble = memo(function Bubble({
         {message.queued && (
           <>
             <span className="session-chat-queued" role="status">
-              Queued · waiting
+              Queued
             </span>
             {onCancelQueued && (
               <button

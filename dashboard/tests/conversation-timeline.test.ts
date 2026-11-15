@@ -81,4 +81,9 @@ describe('deterministic conversation timeline',()=>{
     expect(ids(mergeConversationTimeline(result,[live]))).toEqual(['durable']);
     expect(ids(mergeConversationTimeline(result,[message('intentional','user',{text:'same',client_id:'another',sequence:30})]))).toEqual(['durable','intentional']);
   });
+  it('reconciles a Claude live user echo with its durable UUID-only history projection',()=>{
+    const live=message('live-user','user',{text:'same prompt',client_id:'prompt-id',queued:false});
+    const durable=message('native-user','user',{text:'same prompt',client_id:'prompt-id',turn_id:'native',sequence:10});
+    expect(ids(mergeConversationTimeline([live],[durable]))).toEqual(['native-user']);
+  });
 });

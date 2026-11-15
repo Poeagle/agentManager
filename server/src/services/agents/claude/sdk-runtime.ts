@@ -321,10 +321,11 @@ class ClaudeRuntime {
       nativeUuid: userId ? userId : undefined,
     };
     if (this.busy && this.input && this.active) {
-      pending.priority = "now";
-      const native = await userMessage(pending, this.id, "now");
-      this.input.push(native);
-      this.submitted.push(pending);
+      // The current Claude Agent SDK terminates streaming input with
+      // aborted_streaming when priority:now arrives mid-turn. A real steer is
+      // therefore interrupt -> new turn, not an injected stale SDK message.
+      pending.priority = "next";
+      this.pending.unshift(pending);
       this.upsert({
         id: conversationMessageId("", "user", pending.userId),
         role: "user",
@@ -336,6 +337,12 @@ class ClaudeRuntime {
         streaming: false,
       });
       this.publish();
+      const active = this.active;
+      try {
+        await active.interrupt();
+      } catch {
+        // The interrupt may race a native turn that has just completed.
+      }
       return true;
     }
     if (this.busy || this.running) {
