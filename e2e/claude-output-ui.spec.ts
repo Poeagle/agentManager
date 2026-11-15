@@ -44,7 +44,8 @@ test('renders Claude thinking and tool output in the transcript',async({page},te
   }}));
   await page.route('**/api/sessions/claude-output-ui/controls**',route=>route.fulfill({json:{
     supports_fresh_model:true,model:'claude-fable-5',effort:'',provider:'anthropic',cwd:projectPath,
-    state:'idle',permission:'bypassPermissions',usage:null,limits:[],models:[],loaded:true,
+    state:'idle',permission:'bypassPermissions',usage:{total:{total_tokens:150,input_tokens:120,cached_input_tokens:80,output_tokens:30},last:{total_tokens:150,input_tokens:120,cached_input_tokens:80,output_tokens:30},window:200000},limits:[],
+    models:[{model:'claude-fable-5',name:'claude-fable-5',description:'Anthropic · Provider 模型',context_window:200000,max_output_tokens:64000,input_modalities:['text','image'],efforts:[{value:'',description:'由原生客户端决定'}],defaultEffort:''}],loaded:true,
     native_id:session.native_session_id,checked_at:new Date().toISOString(),can_edit:true,
   }}));
   await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});
@@ -62,7 +63,7 @@ test('renders Claude thinking and tool output in the transcript',async({page},te
   push({type:'snapshot',messages:[
     {id:'u',role:'user',text:'Inspect the project',timestamp:new Date(Date.now()-5000).toISOString()},
     {id:'a',role:'assistant',text:'Inspection complete.',timestamp:new Date().toISOString(),
-     turn_id:'turn',phase:'final',content_blocks:[
+     turn_id:'turn',phase:'final',usage:{input_tokens:120,cached_input_tokens:80,output_tokens:30,total_tokens:150},content_blocks:[
       {type:'thinking',index:0,text:'I should read the README before changing anything.'},
       {type:'tool_use',index:1,id:'tool-1',name:'Read',input:{file_path:'README.md'},status:'completed',result:'# Project'},
       {type:'text',index:2,text:'Inspection complete.'},
@@ -76,6 +77,11 @@ test('renders Claude thinking and tool output in the transcript',async({page},te
   await expect(page.getByText('README.md',{exact:true}).last()).toBeVisible();
   await expect(page.getByText('Inspection complete.',{exact:true}).last()).toBeVisible();
   await expect(page.locator('.claudian-response-footer')).toHaveCount(1);
+  await expect(page.getByText(/150 tokens · 80 cached/)).toBeVisible();
+  await page.getByRole('combobox',{name:'选择模型'}).hover();
+  await expect(page.getByRole('tooltip')).toContainText('200,000 tokens');
+  await expect(page.getByRole('tooltip')).toContainText('64,000 tokens');
+  await expect(page.getByRole('tooltip')).toContainText('text、image');
   await expect(page.getByText('progress',{exact:true})).toHaveCount(0);
   await expect(page.getByText('final',{exact:true})).toHaveCount(0);
   await expect(page.getByText('# Project')).not.toBeVisible();

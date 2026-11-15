@@ -120,10 +120,11 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         <dt>发布时间</dt><dd>{model.release_date||'未提供'}</dd>
         <dt>计费标准</dt><dd>{referenceCredits?<>Credits 每百万 Token：输入 {referenceCredits.input} · 缓存 {referenceCredits.cached} · 输出 {referenceCredits.output}<br/><small>参考费率 {referenceCredits.as_of}，非实际账单</small></>:'未提供'}</dd>
         <dt>上下文长度</dt><dd>{modelContext!=null?`${modelContext.toLocaleString()} tokens`:'未提供'}</dd>
+        {model.max_output_tokens!=null&&<><dt>最大输出</dt><dd>{model.max_output_tokens.toLocaleString()} tokens</dd></>}
+        {model.description&&<><dt>模型说明</dt><dd>{model.description}</dd></>}
         <dt>输入类型</dt><dd>{model.input_modalities?.length?model.input_modalities.join('、'):'未提供'}</dd>
         <dt>推理强度</dt><dd>{model.efforts.length?model.efforts.map(e=>e.value||'默认').join('、'):'未提供'}</dd>
         <dt>服务档位</dt><dd>{model.service_tiers?.length?model.service_tiers.map(t=>t.name).join('、'):'未提供'}</dd>
-        {model.description&&<><dt>说明</dt><dd>{model.description.length>180?`${model.description.slice(0,180)}…`:model.description}</dd></>}
       </dl>
     </div>,document.body)}
     {newOpen&&<Dialog title="在当前标签页新开会话" busy={operation==='new'} onClose={()=>setNewOpen(false)}>

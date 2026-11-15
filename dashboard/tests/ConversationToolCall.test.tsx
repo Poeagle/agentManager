@@ -15,6 +15,7 @@ it('renders a compact tool header and reveals input and result on demand',()=>{
   expect(screen.getByText('Read')).toBeVisible();
   expect(screen.getByText('README.md')).toBeVisible();
   expect(screen.queryByText('工具调用完成')).not.toBeInTheDocument();
+  expect(card.querySelector('summary')).toHaveStyle({height:'24px'});
   expect(card).not.toHaveAttribute('open');
   fireEvent.click(screen.getByText('Read'));
   expect(card).toHaveAttribute('open');

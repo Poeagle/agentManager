@@ -383,6 +383,9 @@ export interface AgentRuntime {
 export interface AgentModel {
   default_service_tier?: string | null;
   service_tiers?: Array<{ id: string; name: string; description: string }>;
+  context_window?: number | null;
+  max_output_tokens?: number | null;
+  input_modalities?: string[];
   provider?: string;
   model: string;
   name: string;
@@ -503,6 +506,8 @@ export interface AgentHistoryRecord {
   sourceRole?: "tool_result";
   /** Tool result record identity and public result, kept out of message text. */
   toolResult?: { toolUseId: string; result: string; failed: boolean };
+  /** Provider-reported usage attached to this native assistant record. */
+  usage?: Record<string,number|null>;
 }
 /** File codecs are an optional persistence strategy, never a requirement for
  * an HTTP/SDK agent. Only the generic bounded file reader consumes this port. */

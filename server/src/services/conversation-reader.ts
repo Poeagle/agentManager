@@ -14,7 +14,9 @@ import { type ConversationAttachment } from "./conversation-attachments.js";
 
 import type { AgentStatistics as ConversationStatistics } from "./agents/types.js";
 
-export type ConversationMessage = import("./agents/types.js").AgentMessage;
+export type ConversationMessage = import("./agents/types.js").AgentMessage & {
+  usage?: Record<string,number|null>;
+};
 
 interface IndexedMessage extends Omit<ConversationMessage, "phase"> {
   offset: number;
@@ -204,6 +206,7 @@ function scan(
       declaredTurnId: turnId,
       sourceRole: parsed.sourceRole,
       toolResult: parsed.toolResult,
+      usage: parsed.usage,
       ...(parsed.presentation ? { presentation: parsed.presentation } : {}),
       ...(compacted ? { compaction: compacted } : {}),
       ...(parsed.asyncQuestions
@@ -873,6 +876,7 @@ export async function readConversation(
               ...(byOffset.has(item.offset)
                 ? { statistics: byOffset.get(item.offset) }
                 : {}),
+              ...(item.usage ? { usage: item.usage } : {}),
               ...(parsed.questionReplies
                 ? { question_replies: parsed.questionReplies }
                 : {}),

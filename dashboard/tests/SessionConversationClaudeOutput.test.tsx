@@ -36,7 +36,7 @@ it('renders Claude output with Claudian structure and no progress or final wrapp
     type:'snapshot',busy:false,turn_id:'turn',stage:'idle',
     messages:[
       {id:'user',role:'user',text:'Inspect the project',timestamp:new Date().toISOString()},
-      {id:'assistant',role:'assistant',text:'The project is ready.',timestamp:new Date(Date.now()+5000).toISOString(),turn_id:'turn',phase:'final',content_blocks:[
+      {id:'assistant',role:'assistant',text:'The project is ready.',timestamp:new Date(Date.now()+5000).toISOString(),turn_id:'turn',phase:'final',usage:{input_tokens:120,cached_input_tokens:80,output_tokens:30,total_tokens:150},content_blocks:[
         {type:'thinking',index:0,text:'I should inspect the repository first.'},
         {type:'tool_use',index:1,id:'tool-1',name:'Read',input:{file_path:'/p/README.md'},status:'completed',result:'# Project'},
         {type:'text',index:2,text:'The project is ready.'},
@@ -51,6 +51,7 @@ it('renders Claude output with Claudian structure and no progress or final wrapp
   expect(screen.getByText('Read')).toBeVisible();
   expect(screen.getByText('README.md')).toBeVisible();
   expect(document.querySelector('.claudian-baked-duration')).toHaveTextContent('Baked for 5s');
+  expect(screen.getByText(/150 tokens · 80 cached/)).toBeInTheDocument();
   expect(screen.getByText('The project is ready.')).toBeVisible();
   expect(screen.queryByText('progress')).not.toBeInTheDocument();
   expect(screen.queryByText('final')).not.toBeInTheDocument();

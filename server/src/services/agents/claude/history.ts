@@ -70,6 +70,7 @@ export function parseClaudeMessage(line: Buffer): AgentHistoryRecord | null {
         : undefined;
   const contentBlocks =
     extracted.role === "assistant" ? claudeContentBlocks(content) : undefined;
+  const usage = extracted.role === "assistant" ? claudeUsage(message.usage) : null;
   return {
     message: reply ? { ...extracted, text: reply.text } : extracted,
     recordType: "native_message",
@@ -83,6 +84,21 @@ export function parseClaudeMessage(line: Buffer): AgentHistoryRecord | null {
           ? entry.parentUuid
           : undefined,
     ...(contentBlocks?.length ? { contentBlocks } : {}),
+    ...(usage ? { usage } : {}),
+  };
+}
+
+function claudeUsage(value: unknown): Record<string,number|null>|null {
+  if (!value || typeof value !== "object") return null;
+  const usage=value as Record<string,unknown>;
+  const number=(key:string)=>typeof usage[key]==="number"&&Number.isFinite(usage[key])?usage[key] as number:null;
+  const input=number("input_tokens"),read=number("cache_read_input_tokens")??0,write=number("cache_creation_input_tokens")??0,output=number("output_tokens");
+  if(input===null&&output===null)return null;
+  return {
+    input_tokens:input===null?null:input+read+write,
+    cached_input_tokens:read,
+    output_tokens:output,
+    total_tokens:input===null&&output===null?null:(input??0)+read+write+(output??0),
   };
 }
 
@@ -152,6 +168,7 @@ interface ClaudeEntry {
     model?: string;
     stop_reason?: string;
     content?: unknown;
+    usage?: unknown;
   };
 }
 

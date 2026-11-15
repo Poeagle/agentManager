@@ -14,6 +14,9 @@ const cache = new Map<string, {
     partial: Buffer;
     model: string | null;
     modelAt: string | null;
+    requestCount: number;
+    lastUsage: {input_tokens:number;cached_input_tokens:number;output_tokens:number;total_tokens:number};
+    totalUsage: {input_tokens:number;cached_input_tokens:number;output_tokens:number;total_tokens:number};
     endedAt:string|null;
     last: string | null;
     state: AgentRuntime['state'];
@@ -22,7 +25,7 @@ const cache = new Map<string, {
 }>();
 async function metadata(context: AgentContext) {
     const directory = context.projectPath ? resolveClaudeDir(context.projectPath) : null;
-    const empty = { endedAt:null as string|null, compaction: null as AgentCompaction | null, model: null as string | null, modelAt: null as string | null, last: null as string | null, state: 'unknown' as AgentRuntime['state'], usage: null as AgentControls['usage'] };
+    const empty = { endedAt:null as string|null, compaction: null as AgentCompaction | null, model: null as string | null, modelAt: null as string | null, requestCount:0, lastUsage:{input_tokens:0,cached_input_tokens:0,output_tokens:0,total_tokens:0}, totalUsage:{input_tokens:0,cached_input_tokens:0,output_tokens:0,total_tokens:0}, last: null as string | null, state: 'unknown' as AgentRuntime['state'], usage: null as AgentControls['usage'] };
     if (!directory || !context.nativeId || !NATIVE_SESSION_ID_RE.test(context.nativeId))
         return empty;
     const path = join(directory, `${context.nativeId}.jsonl`);
@@ -64,7 +67,12 @@ async function metadata(context: AgentContext) {
                 const usage = record.message?.usage;
                 if (usage) {
                     const input = Number(usage.input_tokens) || 0, read = Number(usage.cache_read_input_tokens) || 0, write = Number(usage.cache_creation_input_tokens) || 0, output = Number(usage.output_tokens) || 0;
-                    state.usage = { total: publicTokenCounters(null), last: publicTokenCounters({ input_tokens: input + read + write, cached_input_tokens: read, output_tokens: output, total_tokens: input + read + write + output }), window: null };
+                    state.requestCount++;
+                    state.lastUsage = {input_tokens: input + read + write, cached_input_tokens: read, output_tokens: output, total_tokens: input + read + write + output};
+                    state.totalUsage.input_tokens += input + read + write;
+                    state.totalUsage.cached_input_tokens += read;
+                    state.totalUsage.output_tokens += output;
+                    state.totalUsage.total_tokens += input + read + write + output;
                 }
                 state.state = record.message?.stop_reason === 'end_turn' ? 'idle' : 'running';
                 state.endedAt=state.state==='idle'&&typeof record.timestamp==='string'?record.timestamp:null;
@@ -76,6 +84,11 @@ async function metadata(context: AgentContext) {
                 state.compaction = { id: record.uuid || `compact:${record.timestamp}`, status: 'completed', started_at: null, completed_at: record.timestamp || null, duration_ms: null };
             }
         }
+        state.usage = state.requestCount ? {
+            total: publicTokenCounters(state.totalUsage),
+            last: publicTokenCounters(state.lastUsage),
+            window: null as number | null,
+        } : null;
         const value = { ...state, size: stat.size, inode: stat.ino, mtime: stat.mtimeMs, partial: Buffer.from(combined.subarray(last)) };
         cache.set(path, value);
         if (cache.size > 64)
@@ -114,17 +127,20 @@ function configuredModels(context?:Pick<AgentContext,'session'|'environmentAcces
         .filter((value): value is string => !!value && !value.startsWith('<') && !aliases.includes(value)))];
 }
 export async function readClaudeControls(context: AgentContext): Promise<AgentControls> {
-    const value = await metadata(context);
+    let value = await metadata(context);
     const runtime=context.nativeId?(await import('./sdk-runtime.js')).claudeRuntime(context.nativeId):undefined;
     const loaded=!!runtime;
     const provider=readClaudeRuntimeProvider(context.session,context.environmentAccess);
+    if(value.usage&&value.usage.window==null&&provider?.contextWindow){
+        value={...value,usage:{total:value.usage.total,last:value.usage.last,window:provider.contextWindow}};
+    }
     const seen = new Set<string>();
     const providerModels=provider?.models||[];
     const models = [...providerModels, ...(provider?[]:aliases)]
         .filter(model => !seen.has(model) && (seen.add(model), true))
-        .map(model => ({ model, name: model, description: aliases.includes(model) ? 'Claude 原生模型别名' : '网关配置的模型', efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' }));
+        .map(model => ({ model, name: model, description: provider ? `${provider.name} · Provider 模型` : aliases.includes(model) ? 'Claude 原生模型别名' : '网关配置的模型', context_window:provider?.contextWindow??null, max_output_tokens:provider?.maxOutputTokens??null, input_modalities:['text','image'], efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' }));
     if (!provider&&value.model && !models.some(model => model.model === value.model))
-        models.unshift({ model: value.model, name: value.model, description: '当前原生模型', efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' });
+        models.unshift({ model: value.model, name: value.model, description: '当前原生模型', context_window:null, max_output_tokens:null, input_modalities:['text','image'], efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' });
     return { supports_fresh_model:true, model_observed_at: value.modelAt, model: provider?(value.model&&provider.models.includes(value.model)?value.model:runtime?.selectedModel()||provider.defaultModel):value.model, effort: '', provider: provider?.id||'anthropic', cwd: context.projectPath, cli_version: null, engine_version: null, installed_cli_version: null, git: null, state: loaded ? runtime!.runtime().state : 'notLoaded', permission: 'bypassPermissions', approval: null, service_tier: null, usage: value.usage, limits: [], usage_observed_at: value.last, models, loaded, warning: loaded ? null : 'Claude managed runtime is not connected; durable history remains available.', native_id: context.nativeId || '', checked_at: new Date().toISOString() };
 }
 export async function validateClaudeControls(context: AgentContext, value: unknown): Promise<ModelPreference> {

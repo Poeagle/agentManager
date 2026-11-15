@@ -574,6 +574,7 @@ const Bubble = memo(function Bubble({
             {claudian && message.phase === "final" && durationLabel && durationLabel !== "0s" && (
               <div className="claudian-response-footer" data-duration={`${message.id}:${durationLabel}`}>
                 <span className="claudian-baked-duration" title={durationTitle}>* Baked for {claudianDuration(durationLabel)}</span>
+                {message.usage?.total_tokens!=null&&<span className="claudian-usage-footer"> · {message.usage.total_tokens.toLocaleString()} tokens{message.usage.cached_input_tokens!=null&&message.usage.cached_input_tokens>0?` · ${message.usage.cached_input_tokens.toLocaleString()} cached`:''}</span>}
               </div>
             )}
           </>
