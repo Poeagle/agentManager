@@ -14,6 +14,10 @@ import {
   type ConversationAttachment,
 } from "../../conversation-attachments.js";
 import type { ConversationActivity } from "../../conversation-activity.js";
+import {
+  activityResultPreview,
+  type ConversationActivity as AgentActivity,
+} from "../../conversation-activity.js";
 import type {
   AgentConnection,
   AgentMessage,
@@ -162,6 +166,9 @@ class ClaudeRuntime {
   private listeners = new Set<Listener>();
   private messages: AgentMessage[] = [];
   private activities = new Map<string, ConversationActivity>();
+  /** Latest native activity by ID; tool updates replace this state rather than
+   * accumulating another visible item. */
+  private liveActivities = new Map<string, AgentActivity>();
   private input: ClaudeInputStream | null = null;
   /** Follow-ups accepted into the same SDK query for native ordering and echo correlation. */
   private submitted: Pending[] = [];
@@ -228,7 +235,7 @@ class ClaudeRuntime {
       type: "snapshot",
       messages: this.messages.slice(-128),
       interactions: [],
-      activities: [...this.activities.values()],
+      activities: [...this.liveActivities.values()],
       compaction: this.compaction,
       busy: this.busy,
       connected: true,
@@ -514,6 +521,46 @@ class ClaudeRuntime {
       ),
     });
     this.stage = "tools";
+    this.publishActivity(envelope, id, name, input, false);
+  }
+
+  private publishActivity(
+    envelope: AssistantEnvelope,
+    id: string,
+    name: string,
+    input: unknown,
+    completed: boolean,
+    result?: unknown,
+  ) {
+    const previous = this.liveActivities.get(id);
+    const started = previous?.started_at ?? new Date().toISOString();
+    const ended = completed ? new Date().toISOString() : null;
+    const value = input && typeof input === "object"
+      ? (input as Record<string, unknown>)
+      : {};
+    const detail =
+      name === "Bash" ? value.command :
+      value.file_path ?? value.path ?? value.pattern ?? value.query ?? value.description;
+    this.liveActivities.set(id, {
+      id,
+      label: toolLabel(name, input),
+      status: completed ? "completed" : "running",
+      started_at: started,
+      completed_at: ended,
+      duration_ms: ended ? Math.max(0, Date.parse(ended) - Date.parse(started)) : null,
+      ...(typeof detail === "string" && detail.trim()
+        ? { input_preview: activityResultPreview(detail.trim()) }
+        : {}),
+      ...(result !== undefined
+        ? { result_preview: activityResultPreview(
+            typeof result === "string" ? result : textContent(result),
+          ) }
+        : {}),
+      turn_id: this.turnId,
+      after_message_id: this.assistant(
+        this.textBlock(envelope, Math.max(0, envelope.blocks.size - 1)),
+      ).id,
+    });
   }
 
   private mergeCompletedAssistant(
@@ -578,6 +625,19 @@ class ClaudeRuntime {
         ? Math.max(0, Date.parse(completed_at) - Date.parse(old.started_at))
         : null,
     });
+    const live = this.liveActivities.get(id);
+    if (live) {
+      const completed_at = this.activities.get(id)!.completed_at;
+      this.liveActivities.set(id, {
+        ...live,
+        status: failed ? "failed" : "completed",
+        completed_at,
+        duration_ms: this.activities.get(id)!.duration_ms,
+        ...(result !== undefined
+          ? { result_preview: activityResultPreview(result) }
+          : {}),
+      });
+    }
     for (const message of this.messages) {
       if (
         message.role !== "assistant" ||
@@ -914,6 +974,7 @@ class ClaudeRuntime {
     this.completedAt = null;
     this.assistantIds.clear();
     this.activities.clear();
+    this.liveActivities.clear();
     this.assistantOrdinal = 0;
     this.currentAssistant = null;
     this.completedAssistants = [];

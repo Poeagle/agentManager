@@ -350,6 +350,15 @@ describe('Claude Agent SDK runtime',()=>{
         {type:'tool_use',index:1,id:'tool-late',name:'Bash',input:{command:'pwd'},status:'completed',result:'/tmp/demo'},
       ],
     });
+    expect(frames.some(frame=>frame.activities.some((activity:any)=>activity.id==='tool-late'&&activity.status==='running'&&activity.after_message_id===conversationMessageId('','assistant','late-native-message')))).toBe(true);
+    expect(frames.at(-1)?.activities).toEqual([
+      expect.objectContaining({
+        id:'tool-late',
+        status:'completed',
+        result_preview:'/tmp/demo',
+        after_message_id:conversationMessageId('','assistant','late-native-message'),
+      }),
+    ]);
   });
   it('uses the completed assistant event when no partial text was emitted',async()=>{
     sdk.messages=[

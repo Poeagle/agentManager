@@ -2019,14 +2019,20 @@ export function SessionConversation({
   const currentActivity=currentConversationActivity(currentActivities,activityRunning);
   const stepDuration=conversationActivityDuration(currentActivity,now);
   const progressActivities=liveState==='connected'&&!reconnectable?liveProgress.activities||[]:[];
+  // Activities are transient state, not history: keep one latest row per
+  // native tool ID so streamed updates cannot grow a vertical stack.
+  const latestActivities=Array.from(
+    progressActivities.reduce((items,item)=>items.set(item.id,item),new Map<string,ConversationActivity>()).values(),
+  );
   const slotBoundary=tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?null:tailMessage?.id??null;
-  const slotActivities=progressActivities.filter(item=>{
+  const slotActivities=latestActivities.filter(item=>{
     if(item.turn_id&&item.turn_id!==liveTurn)return false;
     if(Object.hasOwn(item,'after_message_id'))return item.after_message_id===slotBoundary;
     // Older adapters can supply real timing instead of an explicit boundary.
     if(!tailMessage)return true;
     return !!item.started_at&&!!tailMessage.timestamp&&Date.parse(item.started_at)>Date.parse(tailMessage.timestamp);
   });
+  const latestSlotActivity=[...slotActivities].reverse().find(item=>item.status==='running')||slotActivities.at(-1);
   useEffect(()=>{
     if(!pendingGroupId)return;
     if(!pinned.current){setUnread(true);return;}
@@ -2270,7 +2276,7 @@ export function SessionConversation({
                         {bubble(message, true)}
                       </div>
                     ))}
-                    {pending&&<ConversationProgressPending number={group.messages.length+1} tool={currentConversationActivity(slotActivities,true)||undefined}
+                    {pending&&<ConversationProgressPending number={group.messages.length+1} tool={latestSlotActivity}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
                       statistics={pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||!!last||!!pendingSegment)?progressStatistics:null,last?.statistics?.segment,!!last)} now={now} connected={liveState==='connected'}/>}
                   </ProgressSection>
