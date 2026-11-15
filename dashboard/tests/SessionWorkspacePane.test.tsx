@@ -36,16 +36,16 @@ describe('chat/raw terminal display',()=>{
     await screen.findByText('检查已完成。');expect(screen.queryByRole('button',{name:'原始终端',exact:true})).not.toBeInTheDocument();expect(terminal).not.toHaveBeenCalled();
   });
 
-  it('shows progress completion time and statistics only after the message finishes',async()=>{
+  it('shows statistics during streaming while keeping completion time until the message finishes',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
     vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
     mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
     const message={id:'streaming-progress',role:'assistant',phase:'commentary',text:'检查进展',turn_id:'work',streaming:true,timestamp:'2026-11-03T00:00:00Z',statistics:{complete:true,requests:1,tool_calls:3,tool_rounds:2,tokens:{total_tokens:500}}};
     const send=(message:unknown)=>act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'answering',turn_id:'work',started_at:'2026-11-03T00:00:00Z',messages:[message]})}));
     send(message);let bubble=document.querySelector('[data-chat-message-id="streaming-progress"]')!;
-    expect(bubble.querySelector('time')).toBeNull();expect(bubble.querySelector('.session-chat-message-statistics')).toBeNull();
+    expect(bubble.querySelector('time')).toBeNull();expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('500｜');
     send({...message,text:'检查结束',streaming:false,timestamp:'2026-11-03T00:00:05Z'});bubble=document.querySelector('[data-chat-message-id="streaming-progress"]')!;
-    expect(bubble.querySelector('time')).toHaveAttribute('datetime','2026-11-03T00:00:05Z');expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('token: 500 · tools: 3｜2');
+    expect(bubble.querySelector('time')).toHaveAttribute('datetime','2026-11-03T00:00:05Z');expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('500｜—｜—｜—｜—｜— · 2 rounds | 3 calls');
   });
   it('uses newer durable completion to clear a lost RPC busy snapshot while rejecting older completion',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];

@@ -7,7 +7,9 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.13.0');
+    expect(contract.version).toBe('3.14.0');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('progress_statistics.step');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('cost estimate');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('after_message_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request?.batch?.description).toContain('client_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request?.attachments?.description).toContain('outside project/Git');

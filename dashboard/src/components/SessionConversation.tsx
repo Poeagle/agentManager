@@ -92,7 +92,7 @@ import {
   mergeConversationTimeline,
   type TimelineMessage,
 } from "../lib/conversation-timeline";
-import { groupConversationProgress, pendingProgressStatistics } from "../lib/conversation-progress";
+import { groupConversationProgress, pendingProgressStatistics, withObservedToolCounts } from "../lib/conversation-progress";
 import {
   conversationTimings,
   elapsedBetween,
@@ -182,8 +182,7 @@ function ProgressSummary({agent,agentName,count,active,progress,progressScope='t
           <span>{agentName}</span>
           <span className="session-chat-kind">progress</span>
           <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
-          {progress && <span className="session-chat-message-statistics" title={progressScope==='segment'?'Usage recorded since this progress segment started; incomplete data is a lower bound.':progressScope==='total'?'Cumulative recorded usage since the previous conclusion. Incomplete history is a lower bound.':'Recorded usage for this native turn through its last progress update. Incomplete history is a lower bound.'}>{progressScope} · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} ｜ {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
-          {!progress&&progressScope==='segment'&&<span className="session-chat-message-statistics" title="Segment usage is unavailable">segment · token: — · tools: —</span>}
+          {(progress||progressScope==='segment')&&<ConversationStatisticsLabel statistics={progress?{...progress,sequence:0}:null} scope={progressScope}/>}
           {active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
           {active&&<span className="session-chat-progress-time">{progressPhase}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
           {turnDuration!=null?<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time for this progress segment">Elapsed {formatElapsedEnglish(turnDuration)}</time>:progressScope==='segment'?<span className="session-chat-progress-time" title="Segment timing is unavailable">Elapsed —</span>:null}
@@ -268,6 +267,7 @@ const Bubble = memo(function Bubble({
     compact && (streaming || message.streaming) ? (
       <span className="session-chat-message-meta">
         <span className="session-chat-progress-updating">Streaming</span>
+        <ConversationStatisticsLabel statistics={message.statistics??null} interval/>
       </span>
     ) : (
       <span className="session-chat-message-meta">
@@ -305,10 +305,10 @@ const Bubble = memo(function Bubble({
             Time pending
           </span>
         ) : null}
-        {message.role === "assistant" && message.statistics && (
+        {message.role === "assistant" && (message.statistics || compact || message.phase === "final") && (
           <ConversationStatisticsLabel
-            statistics={message.statistics}
-            interval={message.phase === "commentary"}
+            statistics={message.statistics??null}
+            interval={message.phase === "commentary"||!!message.streaming}
           />
         )}
         {(durationLabel || compact || message.phase === "final") && (
@@ -1242,7 +1242,7 @@ export function SessionConversation({
           return;
         }
         if (frame.type === "snapshot" || frame.type === "patch") failures = 0;
-        if(frame.type==='progress_statistics'&&frame.native_id===agentNativeId(session)){if(frame.progress)setProgressStatistics(frame.progress);return;}
+        if(frame.type==='progress_statistics'&&frame.native_id===agentNativeId(session)){setProgressStatistics(frame.progress??null);return;}
         if(frame.type==='input_reconciliation'&&frame.native_id===agentNativeId(session)&&Array.isArray(frame.messages)){setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));return;}
         if (
           frame.type === "patch" &&
@@ -1991,6 +1991,10 @@ export function SessionConversation({
     if(!tailMessage)return true;
     return !!item.started_at&&!!tailMessage.timestamp&&Date.parse(item.started_at)>Date.parse(tailMessage.timestamp);
   });
+  const pendingStatistics=withObservedToolCounts(pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||tail?.kind==='progress'||!!pendingSegment)?progressStatistics:null,tail?.kind==='progress'?tailMessage?.statistics?.segment:undefined,tail?.kind==='progress',tailMessage),slotActivities.length,liveTurn||'');
+  const streamingIndex=displayed.findIndex(message=>message.id===streamingId);
+  const streamingPrevious=streamingIndex>=0?displayed.slice(0,streamingIndex).filter(message=>!message.queued).at(-1):undefined;
+  const streamingStatistics=streamingIndex>=0&&progressStatistics?.turn_id===liveTurn?pendingProgressStatistics(progressStatistics,streamingPrevious?.statistics?.segment,streamingPrevious?.role==='assistant',streamingPrevious):null;
   useEffect(()=>{
     if(!pendingGroupId)return;
     if(!pinned.current){setUnread(true);return;}
@@ -2112,7 +2116,7 @@ export function SessionConversation({
       <Bubble
         key={stableKey}
         active={active}
-        message={message}
+        message={message.id===streamingId&&streamingStatistics?{...message,statistics:streamingStatistics}:message}
         streaming={message.id === streamingId}
         retrying={
           message.id === activeError?.id &&
@@ -2201,8 +2205,10 @@ export function SessionConversation({
                 const final=next?.kind==='message'&&next.message.role==='assistant'&&next.message.phase==='final'&&!next.message.async_questions?.length&&!!next.message.turn_id&&next.message.turn_id===last?.turn_id?next.message:null;
                 const saved=final?.statistics?.segment||last?.statistics?.segment||(pending?pendingSegment:null);
                 const live=progressStatistics?.segment;
-                const part=busy&&groups.at(-1)===group&&progressStatistics?.turn_id===last?.turn_id&&saved&&live?.id===saved.id&&!!saved.start_at&&live.start_at===saved.start_at?live:saved;
-                const summary=part?{...part,turn_id:last?.turn_id||''}:null;
+                const activeGroup=busy&&(pending||groups.at(-1)===group);
+                const liveMatches=progressStatistics?.turn_id===(last?.turn_id||liveTurn)&&live&&(!saved?(last?progressStatistics?.step?.after_message_id===last.id||progressStatistics?.step?.after_sequence!=null&&progressStatistics.step.after_sequence===last.sequence:!!pendingSegment||!continuingAfterFollowup):live.id===saved.id&&!!saved.start_at&&live.start_at===saved.start_at);
+                const part=activeGroup&&liveMatches?live:saved;
+                const summary=withObservedToolCounts(part?{...part,turn_id:last?.turn_id||liveTurn||'',sequence:0}:null,pending?slotActivities.length:0,liveTurn||'');
                 return (
                   <ProgressSection
                     key={`progress-${group.id}`}
@@ -2237,7 +2243,7 @@ export function SessionConversation({
                     ))}
                     {pending&&<ConversationProgressPending number={group.messages.length+1} tool={currentConversationActivity(slotActivities,true)||undefined}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
-                      statistics={pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||!!last||!!pendingSegment)?progressStatistics:null,last?.statistics?.segment,!!last)} now={now} connected={liveState==='connected'}/>}
+                      statistics={pendingStatistics} now={now} connected={liveState==='connected'}/>}
                   </ProgressSection>
                 );
               })}

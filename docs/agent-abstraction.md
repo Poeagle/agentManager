@@ -312,3 +312,13 @@ Codex 适配器订阅命令输出增量并合并到有界的 `result_preview`（
 实时连接文字前使用状态圆点：绿色表示已连接，黄色表示连接或重连中，红色表示当前连接失败且未在重试。Progress 已展示执行状态时隐藏底部重复的运行提示和其圆点；连接、错误、上下文压缩及等待输入等独立状态继续保留。
 
 Progress 标题仅显示汇总、调用/等待状态与耗时，命令摘要统一显示在当前执行项中，避免重复。
+
+### 进展用量与实时统计
+
+每条进展、流式文字和当前执行项使用同一字段顺序：`Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : ...`，工具统计统一为 `4 rounds | 7 calls`。Cache 后紧跟该区间的缓存命中率，百分比采用由红到绿的连续色阶，并为明暗主题调整亮度；输入为零、缺失或缓存大于输入时保持未知灰色。Reasoning 已包含在 Output 中，Cache 已包含在 Input 中。悬停提供精确计数、统计区间和价格覆盖情况。共享同一模型请求的多条文字只标为 Shared request，不伪造逐条拆分。
+
+`progress_statistics.step` 可携带当前区间的 `segment_id / after_message_id / after_sequence / start_at` 及独立的 Token、调用、轮次、cost，前端匹配消息边界后使用，避免通过跨输入段或不完整累计值相减。后端原生工具调用第一次出现时立即增加 call；同一模型响应中的并行调用属于同一 round，新的模型响应再计一轮。code-mode 包裹调用内部的子调用不展开。原生区间未到达时，实时活动快照只能提供调用数下限；它不覆盖已匹配的权威区间，也不能把最多 8 个活动当成完整历史，避免把已归属上一请求的调用重复计入当前项。
+
+健康 RPC 流继续转发 JSONL 后补的 `statistics`，不只转发进展总计，因此文字早于 token_count 到达时也能补齐该行，不需要新的文字或手动刷新。复用已有文件观察器、50 ms 合并和追加解析；不新增轮询或额度采集。Token 在原生 usage 事件到达后更新，不估算尚未返回的生成 Token。
+
+统计 DTO 的可选 `cost` 为 `{amount,unit,complete,rate_date,basis}`。Codex 按每个请求当时记录的模型、服务档位和三类 Token 先估算再累加；复用账号用量的[官方参考费率](https://learn.chatgpt.com/docs/pricing)，Fast 的订阅参考倍率为 2.5，推理不重复计价。未知模型、异常 Token 或不支持的档位不编造价格；未记录档位按 Standard 参考值估算并标 `*`，部分请求未定价也标 `*`。Credit 是参考估算，不是实际账单或账号周额度百分点。API Engine 返回 `cost=null`，界面隐藏订阅 Credit 字段；其他 Agent 不必伪造不支持的价格。

@@ -391,7 +391,9 @@ export interface AgentModel {
   }>;
   defaultEffort: string;
 }
+export interface AgentCostEstimate {amount:number|null;unit:string;complete:boolean;rate_date?:string;basis?:string}
 export interface AgentStatisticsInterval {
+  cost?:AgentCostEstimate|null;
   tokens: Record<string, number | null> | null;
   requests: number;
   tool_calls: number;
@@ -400,10 +402,12 @@ export interface AgentStatisticsInterval {
   shared_messages: number;
 }
 export interface AgentProgressSegment {
+  cost?:AgentCostEstimate|null;
   id:string; start_at:string|null; end_at:string|null; elapsed_ms:number|null; end_reason:'input'|'completed'|'interrupted'|'unknown'|null;
   tokens:Record<string,number|null>|null; requests:number; tool_calls:number; tool_rounds:number; complete:boolean;
 }
 export interface AgentStatistics {
+  cost?:AgentCostEstimate|null;
   sequence: number;
   message_id?: string;
   turn_id: string;
@@ -586,7 +590,7 @@ export interface AgentStatisticsPort {
   read(context: AgentContext, path: string): Promise<AgentStatistics[]>;
   readProgress?(context: AgentContext, path: string): Promise<AgentProgressStatistics | null>;
 }
-export interface AgentProgressStatistics {turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;segment?:AgentProgressSegment}
+export interface AgentProgressStatistics {turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;cost?:AgentCostEstimate|null;segment?:AgentProgressSegment;step?:AgentStatisticsInterval&{segment_id:string;after_message_id:string|null;after_sequence:number|null;start_at:string|null}}
 export interface AgentQuotaPort {
   shutdown?(): void | Promise<void>;
   read(force?: boolean): Promise<{

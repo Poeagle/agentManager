@@ -50,6 +50,19 @@ describe('immediate session input',()=>{
     const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'伪造',source:'conversation',client_id:'platform-id'}});
     expect(result.statusCode).toBe(409);expect(result.json().submission).toBe('rejected');expect(manager.writeToSession).not.toHaveBeenCalled();
   });
+  it('forwards late statistics while the native event stream remains connected',async()=>{
+    getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();
+    let fileEmit:((frame:any)=>void)|undefined,nativeEmit:((frame:any)=>void)|undefined;
+    vi.spyOn(fileStream,'observeConversationFile').mockImplementation((_binding,emit)=>{fileEmit=emit;return vi.fn();});
+    vi.spyOn(conversation,'observeCodexConversation').mockImplementation((_native,emit)=>{nativeEmit=emit;return Object.assign(vi.fn(),{respond:vi.fn()});});
+    const frames:any[]=[],socket=await app.injectWS('/api/sessions/own/conversation/stream',{headers:{cookie}},{onInit:ws=>ws.on('message',bytes=>frames.push(JSON.parse(bytes.toString())))});
+    try{
+      await vi.waitFor(()=>expect(nativeEmit&&fileEmit).toBeTruthy());
+      nativeEmit!({type:'snapshot',messages:[],interactions:[],activities:[],compaction:null,busy:true,connected:true,turn_id:'turn',started_at:null,completed_at:null,stage:'tools'});
+      fileEmit!({type:'statistics',native_id:'native',statistics:[{sequence:1,message_id:'finished',turn_id:'turn',tokens:{input_tokens:100},requests:1,tool_calls:2,tool_rounds:1,complete:true}]});
+      await vi.waitFor(()=>expect(frames.find(frame=>frame.type==='statistics')).toMatchObject({statistics:[{message_id:'finished',tool_calls:2}]}));
+    }finally{await new Promise<void>(resolve=>{socket.once('close',resolve);socket.close();});}
+  });
   it('projects personal ignored questions on every history replay after reconnect',async()=>{
     getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();
     const owner=getDb().prepare("SELECT id FROM users WHERE username='owner'").get() as {id:string};

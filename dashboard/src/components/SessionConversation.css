@@ -505,3 +505,6 @@
 .session-chat-live-tool-details {overflow:hidden;border:1px solid var(--border);border-radius:8px;margin:4px 0 6px;background:var(--bg-secondary);}
 .session-chat-live-tool-details .session-chat-tool-result {border-top:0;}
 .session-chat-live-tool-state {flex-shrink:0;font-size:11px;color:var(--text-muted);}
+
+.session-chat-cache-hit {--cache-hit-lightness:64%;font-variant-numeric:tabular-nums;}
+:root[data-theme="light"] .session-chat-cache-hit {--cache-hit-lightness:32%;}
