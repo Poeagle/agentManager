@@ -202,7 +202,7 @@ describe('Claude Agent SDK runtime',()=>{
       streaming:false,
     });
   });
-  it('interrupts the current query and immediately continues with a running follow-up',async()=>{
+  it('inserts a running follow-up into the current query and continues after interrupt',async()=>{
     let release!:(value:any)=>void;sdk.messages=[new Promise(done=>{release=done;})];
     const runtime=ensureClaudeRuntime(session,'/tmp');
     expect(await runtime.submit('Start work','client-start')).toBe(true);
@@ -213,15 +213,11 @@ describe('Claude Agent SDK runtime',()=>{
     expect(await runtime.submit('Insert this guidance','client-steer')).toBe(true);
     expect(runtime.snapshot().messages.find(message=>message.client_id==='client-steer')).toMatchObject({queued:false});
     expect(sdk.interrupts).toBe(1);
+    expect((await input.next()).value).toMatchObject({message:{content:'Insert this guidance'}});
     expect(runtime.snapshot().messages.filter(message=>message.role==='user').map(message=>message.client_id))
       .toEqual(['client-start','client-steer']);
     const emitted=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     sdk.messages.push(...emitted);release(emitted);
-    await vi.waitFor(()=>expect(sdk.queries).toHaveLength(2));
-    const next=await sdk.queries[1].prompt[Symbol.asyncIterator]().next();
-    expect(next.value).toMatchObject({message:{content:'Insert this guidance'}});
-    sdk.messages.push({type:'result',subtype:'success',uuid:assistant,session_id:session});
-    release({type:'result',subtype:'success',uuid:assistant,session_id:session});
     await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
     expect(runtime.snapshot().messages.filter(message=>message.role==='user')).toHaveLength(2);
     expect(runtime.snapshot().messages).toEqual(expect.arrayContaining([

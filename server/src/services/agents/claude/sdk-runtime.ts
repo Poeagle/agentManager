@@ -321,11 +321,31 @@ class ClaudeRuntime {
       nativeUuid: userId ? userId : undefined,
     };
     if (this.busy && this.input && this.active) {
-      // The current Claude Agent SDK terminates streaming input with
-      // aborted_streaming when priority:now arrives mid-turn. A real steer is
-      // therefore interrupt -> new turn, not an injected stale SDK message.
-      pending.priority = "next";
-      this.pending.unshift(pending);
+      // Claude can continue the same streaming query after interrupt(); the
+      // next user message starts the continuation turn in that same session.
+      let accepted = false;
+      try {
+        this.input.push(await userMessage(pending, this.id));
+        this.submitted.push(pending);
+        accepted = true;
+      } catch {
+        // Fall through to the queue path without creating a second identity.
+      }
+      if (!accepted) {
+        this.pending.unshift(pending);
+        this.upsert({
+          id: conversationMessageId("", "user", pending.userId),
+          role: "user",
+          text: pending.text.trim() || "请查看附件。",
+          timestamp: new Date().toISOString(),
+          turn_id: this.turnId || pending.userId,
+          client_id: pending.clientId,
+          queued: true,
+          streaming: false,
+        });
+        this.publish();
+        return "queued";
+      }
       this.upsert({
         id: conversationMessageId("", "user", pending.userId),
         role: "user",
@@ -341,7 +361,7 @@ class ClaudeRuntime {
       try {
         await active.interrupt();
       } catch {
-        // The interrupt may race a native turn that has just completed.
+        // The continuation input is already in the same query stream.
       }
       return true;
     }
@@ -1088,6 +1108,9 @@ class ClaudeRuntime {
         if (current) this.currentNativeUserSeen = true;
         this.consume(message, current);
         if (message.type === "result") {
+          if (this.submitted.length && !this.currentNativeUserSeen) {
+            continue;
+          }
           completed = true;
           completedSuccessfully = message.subtype === "success";
           // A Claude result is the end of the current native turn. The SDK
