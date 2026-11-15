@@ -36,6 +36,7 @@ import {decorateConversationAttachments,rememberConversationAttachments,formatCo
 import {observeConversationFile} from '../services/conversation-file-stream.js';
 import {ConversationRetryManager} from '../services/conversation-retry.js';
 import {ConversationProjection} from '../services/conversation-projection.js';
+import {rememberFirstSessionTask} from '../services/conversation-session-task.js';
 
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
@@ -905,7 +906,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
           await rememberConversationInput(id,{...session,cli_type:session.cli_type||'claude',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},clientId,visible).catch(()=>{});
         }
         const adapter=agentForSession(session),native=await adapter.input.submit(sessionAgentContext(session),input,typeof clientId==='string'?clientId:attachments.length?attachmentClientId:undefined,attachments);
-        if(native)return native==='queued'?'queued':'submitted';if(adapter.descriptor.sessionHost==='managed')throw Object.assign(Error('Agent 服务未接受输入，消息尚未提交'),{submission:'rejected'});
+        if(native){
+          rememberFirstSessionTask(id,conversationQuestionReply(input)?.text??input);
+          return native==='queued'?'queued':'submitted';
+        }
+        if(adapter.descriptor.sessionHost==='managed')throw Object.assign(Error('Agent 服务未接受输入，消息尚未提交'),{submission:'rejected'});
       }
       if(nativeCandidate&&!await attachExistingSession(id))throw new AgentSubmissionError('消息尚未发送：终端连接未就绪，请重连后重试','rejected');
       if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);
