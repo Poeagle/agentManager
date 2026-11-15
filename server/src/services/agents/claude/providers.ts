@@ -736,6 +736,11 @@ export function claudeProviderEnvironment(
     ANTHROPIC_DEFAULT_OPUS_MODEL: selected,
     ANTHROPIC_DEFAULT_SONNET_MODEL: selected,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: selected,
+    // Claude Code may spawn Agent/workflow subagents with a separate model
+    // selection. Bind those aliases to the exact session model as well, so a
+    // Provider cannot silently route an internal turn to an incompatible model.
+    CLAUDE_CODE_SUBAGENT_MODEL: selected,
+    CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: selected,
     ...(provider.contextWindow
       ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(provider.contextWindow) }
       : {}),

@@ -62,6 +62,8 @@ describe('Claude Agent SDK runtime',()=>{
         ANTHROPIC_DEFAULT_OPUS_MODEL:'claude-a',
         ANTHROPIC_DEFAULT_SONNET_MODEL:'claude-a',
         ANTHROPIC_DEFAULT_HAIKU_MODEL:'claude-a',
+        CLAUDE_CODE_SUBAGENT_MODEL:'claude-a',
+        CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL:'claude-a',
         CLAUDE_CODE_MAX_CONTEXT_TOKENS:'200000',
         CLAUDE_CODE_MAX_OUTPUT_TOKENS:'64000',
       },
