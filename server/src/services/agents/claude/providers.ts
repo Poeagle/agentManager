@@ -22,6 +22,14 @@ const secretPurpose = (providerId: string) => `claude-provider:${providerId}`;
 export const claudeEnvironmentName = (providerId: string) =>
   `claude-provider:${providerId}`;
 
+/** The UI uses the stable native provider id; storage and authorization use
+ * the fully-qualified environment id. */
+export function claudeEnvironmentId(environmentId: string): string {
+  return environmentId === 'anthropic'
+    ? claudeEnvironmentName('anthropic')
+    : environmentId;
+}
+
 export interface ClaudeProviderRuntime {
   id: string;
   name: string;
@@ -504,18 +512,24 @@ export function canUseClaudeEnvironment(
   environmentId: string,
   userId: string,
 ): boolean {
+  environmentId = claudeEnvironmentId(environmentId);
   const admin =
     (getDb()
       .prepare('SELECT role FROM users WHERE id=? AND disabled=0')
       .get(userId) as { role?: string } | undefined)?.role === 'admin';
   if (!environmentId) return true;
+  const native = environmentId === claudeEnvironmentName('anthropic');
+  if (native) ensureNativeClaudeProvider();
   const providerId = environmentId.startsWith('claude-provider:')
     ? environmentId.slice(16)
     : '';
   const provider = configuredProviders().find(
     (item) => item.id === providerId,
   );
-  if (!provider || !provider.enabled) return false;
+  if (!provider) throw Object.assign(Error('原生 Anthropic 配置尚未就绪，请检查 API 地址和认证密钥'), {
+    statusCode: 409,
+  });
+  if (!provider.enabled) return false;
   if (admin) return true;
   const override = environmentUserOverride(environmentId, userId);
   return override === null ? true : override;
@@ -525,6 +539,7 @@ export function canControlClaudeEnvironment(
   environmentId: string,
   userId: string,
 ): boolean {
+  environmentId = claudeEnvironmentId(environmentId);
   if (!canUseClaudeEnvironment(environmentId, userId)) return false;
   if (!environmentId) return true;
   const override = environmentUserOverride(environmentId, userId);

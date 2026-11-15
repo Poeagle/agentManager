@@ -8,6 +8,7 @@ import {capabilities} from '../src/services/agents/types.js';
 import {
   canUseClaudeEnvironment,
   claudeEnvironmentName,
+  claudeEnvironmentId,
   claudeManagementProviderState,
   claudeProviderForEnvironment,
   claudeProviderModelsForEnvironment,
@@ -77,6 +78,9 @@ describe('Claude managed providers',()=>{
   expect(claudeProviderModelsForEnvironment('claude-provider:gateway')).toEqual(['claude-a','claude-b']);
   expect(canUseClaudeEnvironment(id,owner.id)).toBe(true);
   expect(canUseClaudeEnvironment('',owner.id)).toBe(true);
+  expect(canUseClaudeEnvironment('anthropic',owner.id)).toBe(true);
+  expect(claudeEnvironmentId('anthropic')).toBe('claude-provider:anthropic');
+  expect(claudeEnvironmentId('claude-provider:gateway')).toBe('claude-provider:gateway');
   getDb()
    .prepare(
     "INSERT INTO agent_environment_user_access(environment_id,user_id,allowed) VALUES(?,?,0)",

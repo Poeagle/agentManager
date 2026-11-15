@@ -27,6 +27,7 @@ import { managedModelPreference } from "../management-store.js";
 import {
   canControlClaudeEnvironment,
   canUseClaudeEnvironment,
+  claudeEnvironmentId,
 } from "./providers.js";
 export const claudeAdapter: AgentDefinition = {
   descriptor: {
@@ -96,6 +97,7 @@ export const claudeAdapter: AgentDefinition = {
     apply: applyClaudeControls,
   },
   environment: {
+    storageId: claudeEnvironmentId,
     canUse: canUseClaudeEnvironment,
     canControl: canControlClaudeEnvironment,
   },

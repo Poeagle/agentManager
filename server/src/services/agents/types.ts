@@ -625,6 +625,8 @@ export interface AgentControlResult extends ModelPreference {
   pending?: boolean;
 }
 export interface AgentEnvironmentPort {
+  /** Normalize an adapter-declared environment id before persisting it. */
+  storageId?(id: string): string;
   /** Validate an adapter-owned environment or empty id for a new session. */
   canUse(id: string, userId: string): boolean;
   /** Permit this user to control sessions bound to the environment. */

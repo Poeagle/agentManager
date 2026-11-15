@@ -8,6 +8,7 @@ import { authHook, createSession as createAuthSession, createUser } from '../src
 import { getDb } from '../src/db/index.js';
 import { sessionRoutes } from '../src/routes/sessions.js';
 import { consumePendingSpawn } from '../src/services/session-manager.js';
+import * as sessionManager from '../src/services/session-manager.js';
 import { createTestDatabase } from './helpers/database.js';
 
 describe('session creation project identity', () => {
@@ -91,6 +92,32 @@ describe('session creation project identity', () => {
       projectId: 'project-1',
       projectPath,
     });
+  });
+
+  it('normalizes the native Claude Provider before a managed session starts', async () => {
+    vi.spyOn(sessionManager, 'spawnSession').mockResolvedValue(undefined);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sessions',
+      headers: { cookie },
+      payload: {
+        project_id: 'project-1',
+        project_path: projectPath,
+        mode: 'session',
+        cli_type: 'claude',
+        environment_id: 'anthropic',
+        task: 'Reply exactly OK.',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const sessionId = response.json().session.id as string;
+    expect(getDb().prepare('SELECT agent_environment_id FROM sessions WHERE id=?').get(sessionId)).toEqual({
+      agent_environment_id: 'claude-provider:anthropic',
+    });
+    expect(sessionManager.spawnSession).toHaveBeenCalledWith(
+      sessionId, projectPath, 'Reply exactly OK.', 120, 40, 'claude',
+    );
   });
 
   it('keeps the regular session list scoped to the current admin account', async () => {

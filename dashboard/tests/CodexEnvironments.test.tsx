@@ -73,4 +73,15 @@ describe('Codex environments UI',()=>{
    cli_type:'claude',environment_id:'claude-provider:xindu',
   })));
  });
+ it('creates a Claude tab with the native Provider without an environment authorization error',async()=>{
+  const p:Project={id:'p',name:'Project',path:'/fixture/project',description:null,session_prompt:null,openclaw_prompt:null,color:'',created_at:'',tool_access:{can_session:true,can_terminal:false,session_clients:['claude']}};
+  vi.mocked(api.sessions.create).mockResolvedValueOnce({ok:true,session:{id:'s'} as any});
+  mount(<ProjectSessionCreateDialog project={p} onClose={vi.fn()} onSessionCreated={vi.fn()}/>);
+  await waitFor(()=>expect(screen.getByRole('combobox',{name:'新会话 Claude Provider'})).toHaveValue('anthropic'));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'新建会话'})).toBeEnabled());
+  fireEvent.click(screen.getByRole('button',{name:'新建会话'}));
+  await waitFor(()=>expect(api.sessions.create).toHaveBeenCalledWith(expect.objectContaining({
+   cli_type:'claude',environment_id:'anthropic',
+  })));
+ });
 });

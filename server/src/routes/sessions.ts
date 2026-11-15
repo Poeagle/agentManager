@@ -525,7 +525,10 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const initialTask = task ?? '';
 
     const session = sessionManager.createSession(canonicalProjectPath, initialTask, resolvedProjectId, cliType, req.user!.id, 'session');
-    if(typeof environmentId==='string')getDb().prepare('UPDATE sessions SET agent_environment_id=? WHERE id=?').run(environmentId,session.id);
+    const storedEnvironmentId=typeof environmentId==='string'
+      ? getAgent(cliType).environment?.storageId?.(environmentId)||environmentId
+      : undefined;
+    if(storedEnvironmentId)getDb().prepare('UPDATE sessions SET agent_environment_id=? WHERE id=?').run(storedEnvironmentId,session.id);
     if(getAgent(cliType).descriptor.sessionHost==='managed')await sessionManager.spawnSession(session.id,canonicalProjectPath,initialTask,120,40,cliType);
     else registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task: initialTask, mode: 'session', projectId: resolvedProjectId, cliType });
 
