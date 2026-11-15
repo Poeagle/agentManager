@@ -80,3 +80,21 @@ export function applyNativeTabTitles(tabs:TerminalInstance[],titles:Record<strin
  for(const tab of tabs){const title=titles[tab.id]?.trim();const label=!tab.customLabel?.trim()&&title?uniqueTabName(title,[...tabs,...result],tab.id):tab.label;result.push(label===tab.label?tab:{...tab,label});}
  return result;
 }
+
+/** Migrate the former automatic "Session N" / "Terminal N" labels to the
+ * session task once it is available. Custom names and native titles win. */
+export function applySessionTabTasks(
+  tabs:TerminalInstance[],
+  tasks:Record<string,string|undefined>,
+  titles:Record<string,string|null|undefined>={},
+):TerminalInstance[]{
+  const result:TerminalInstance[]=[];
+  for(const tab of tabs){
+    const automatic=/^(?:Session|Terminal) \d+$/i.test(tab.label);
+    const title=titles[tab.id]?.trim();
+    const taskName=automatic&&!tab.customLabel?.trim()&&!title?automaticSessionTabName(tasks[tab.id],tabs,tab.id):null;
+    const label=taskName??(automatic&&title?uniqueTabName(title,[...tabs,...result],tab.id):tab.label);
+    result.push(label===tab.label?tab:{...tab,label});
+  }
+  return result;
+}
