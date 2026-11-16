@@ -1,3 +1,4 @@
+import {Fragment} from 'react';
 import {createPortal} from 'react-dom';
 import {ConversationEnvironmentSelector} from './ConversationEnvironmentSelector';
 import type {AgentFeature} from '../lib/agents';
@@ -15,6 +16,7 @@ const compact=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',max
 const choiceKey=(value:{provider?:string;model:string})=>value.provider?JSON.stringify([value.provider,value.model]):value.model;
 const permissions:Record<string,string>={'danger-full-access':'完整访问','workspace-write':'工作区可写','read-only':'只读'};
 const permissionsEn:Record<string,string>={'danger-full-access':'Full access','workspace-write':'Workspace write','read-only':'Read only'};
+const tokenMetricDescriptions:Record<string,string>={Total:'会话累计 Token，包含重复上下文',Input:'累计输入 Token，包含缓存输入',Cache:'累计命中缓存的输入 Token',Reasoning:'累计推理 Token，包含在输出中',Output:'累计输出 Token，包含推理 Token'};
 export function ConversationControls({sessionId,active,busy=false,compacting=false,onCompact,onNewConversation,toolbarTarget}:{toolbarTarget?:HTMLElement|null;sessionId:string;active:boolean;busy?:boolean;compacting?:boolean;onCompact?:()=>Promise<void>;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<void>}) {
   const queryClient=useQueryClient(),[expanded,setExpanded]=useState(false),[saving,setSaving]=useState(false),[applied,setApplied]=useState(false),[error,setError]=useState('');
   const [operation,setOperation]=useState<'compact'|'new'|null>(null),[newOpen,setNewOpen]=useState(false),[notice,setNotice]=useState('');
@@ -51,6 +53,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
     return target?.auth_mode==='api'?m.name:`${m.provider?`${m.provider} · `:''}${m.name}`;
   };
   const model=data?.models.find(m=>m.model===selected.model&&(!m.provider||!selected.provider||m.provider===selected.provider)),usage=data?.usage;
+  const tokenMetrics=usage?([['Total',usage.total.total_tokens],['Input',usage.total.input_tokens],['Cache',usage.total.cached_input_tokens],['Reasoning',usage.total.reasoning_output_tokens],['Output',usage.total.output_tokens]] as Array<[string,number|null|undefined]>).filter((entry):entry is [string,number]=>entry[1]!=null):[];
   const cacheInput=usage?.total.input_tokens,cacheHit=usage?.total.cached_input_tokens;
   const cacheRate=cacheInput!=null&&cacheInput>0&&cacheHit!=null&&cacheHit>=0&&cacheHit<=cacheInput?Number((100*cacheHit/cacheInput).toFixed(1)):null;
   const cacheColor=cacheRate===null?'var(--text-muted)':quotaColor(cacheRate);
@@ -104,6 +107,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
           {data.permission&&<span title="Access permissions">{permissionsEn[data.permission]||data.permission}</span>}
           {data.approval&&<span title="Approval policy">Approval: {data.approval}</span>}
           {data.engine_version&&<span title="Running engine version">Engine {data.engine_version}</span>}
+          {tokenMetrics.length>0&&<span aria-label="Cumulative token usage">Tokens {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{name}</span></Fragment>)} : {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{compact(value)}</span></Fragment>)}</span>}
         </span>
         {(error&&!newOpen||notice)&&<span className="conversation-control-message" role={error&&!newOpen?'alert':'status'} title={error&&!newOpen?error:notice}>{error&&!newOpen?error:notice}</span>}
         <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>Details</button>

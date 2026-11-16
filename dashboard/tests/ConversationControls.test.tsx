@@ -10,11 +10,35 @@ beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}})
 afterEach(()=>client.clear());
 const mount=()=>render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active/></QueryClientProvider>);
 describe('compact conversation controls',()=>{
+ it('retains all cumulative token metrics while displaying window capacity only in Context',async()=>{
+  data={...data,usage:{total:{total_tokens:330800000,input_tokens:330200000,cached_input_tokens:327800000,reasoning_output_tokens:286200,output_tokens:627600},last:{total_tokens:104500},window:475000}};
+  mount();expect(await screen.findByText('Context 475K | 22%')).toBeVisible();
+  const tokens=screen.getByLabelText('Cumulative token usage');
+  expect(tokens).toHaveTextContent('Tokens Total｜Input｜Cache｜Reasoning｜Output : 330.8M｜330.2M｜327.8M｜286.2K｜627.6K');
+  expect(tokens).not.toHaveTextContent('Window');expect(tokens).not.toHaveTextContent('475K');
+  expect(within(tokens).getByText('327.8M')).toHaveAttribute('title','累计命中缓存的输入 Token（327,800,000）');
+  const calls=vi.mocked(api.agent.controls).mock.calls.length;
+  await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-16T01:00:00Z',usage:{total:{total_tokens:331000000,input_tokens:330400000,cached_input_tokens:328000000,reasoning_output_tokens:286300,output_tokens:627800},last:{total_tokens:120000},window:475000}});});
+  expect(tokens).toHaveTextContent('Tokens Total｜Input｜Cache｜Reasoning｜Output : 331M｜330.4M｜328M｜286.3K｜627.8K');
+  expect(api.agent.controls).toHaveBeenCalledTimes(calls);
+ });
+ it('shows known zero token counts and omits missing cumulative metrics',async()=>{
+  data={...data,usage:{total:{input_tokens:0,output_tokens:1000},last:{},window:475000}};
+  mount();const tokens=await screen.findByLabelText('Cumulative token usage');
+  expect(tokens).toHaveTextContent('Tokens Input｜Output : 0｜1K');
+  expect(tokens).not.toHaveTextContent(/Window|Total|Cache|Reasoning/);
+  expect(screen.queryByRole('button',{name:'View context token details'})).not.toBeInTheDocument();
+ });
+ it.each([null,{total:{},last:{total_tokens:12000},window:40000}])('omits token consumption when cumulative counts are unavailable',async usage=>{
+  data={...data,usage};mount();await screen.findByRole('button',{name:'Details'});
+  expect(screen.queryByLabelText('Cumulative token usage')).not.toBeInTheDocument();
+ });
+
  it('shows window capacity beside context usage and updates both from live events',async()=>{
   data={...data,usage:{total:{total_tokens:9999999},last:{total_tokens:166250},window:475000}};
   mount();expect(await screen.findByText('Context 475K | 35%')).toBeVisible();
   expect(screen.getByRole('button',{name:'View context token details'})).toHaveAttribute('title',expect.stringContaining('475,000 tokens'));
-  expect(screen.queryByText(/Tokens Window/)).not.toBeInTheDocument();expect(screen.queryByText('10M')).not.toBeInTheDocument();
+  expect(screen.queryByText(/Tokens Window/)).not.toBeInTheDocument();expect(within(screen.getByLabelText('Cumulative token usage')).getByText('10M')).toBeVisible();
   await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-16T01:00:00Z',usage:{total:{},last:{total_tokens:40000},window:80000}});});
   expect(await screen.findByText('Context 80K | 50%')).toBeVisible();
  });

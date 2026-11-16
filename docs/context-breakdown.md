@@ -12,4 +12,4 @@ GET /api/sessions/:id/context-breakdown 使用与会话读取一致的授权，�
 
 原生用量事件与原生线程读取能力见 [OpenAI App Server 文档](https://learn.chatgpt.com/docs/app-server)。分类重建根据本项目实际 JSONL 读取路径实现，未知部分保持未知。
 
-底部 Context 指示器以 `Context 475K | 35%` 展示模型上下文窗口容量与最近一次请求的占用比例，随实时用量更新。状态栏不再平铺 Tokens Window、Total、Input 等计数；累计及本次 Token 明细仍在会话详情中查看。窗口或本次总量未知时不显示占用指示器。
+底部 Context 指示器以 `Context 475K | 35%` 展示模型上下文窗口容量与最近一次请求的占用比例，随实时用量更新。窗口容量仅在 Context 中展示；状态栏保留 Tokens 的 Total、Input、Cache、Reasoning、Output 累计耗用计数，缺失项不显示，已知的零值正常显示。累计及本次 Token 明细仍在会话详情中查看。窗口或本次总量未知时不显示占用指示器。
