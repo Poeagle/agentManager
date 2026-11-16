@@ -10,6 +10,23 @@ beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}})
 afterEach(()=>client.clear());
 const mount=()=>render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active/></QueryClientProvider>);
 describe('compact conversation controls',()=>{
+ it('shows cumulative estimated credits and updates from the same native session without fetching controls',async()=>{
+  data.usage={...data.usage!,cost:{amount:1234.5678,unit:'credits',complete:true,rate_date:'2026-11-14'}};
+  mount();const credits=await screen.findByLabelText('预计积分');expect(credits).toHaveTextContent('预计积分：1,234.568');expect(credits).toHaveClass('session-chat-estimated-cost');expect(credits).toHaveAttribute('title',expect.stringContaining('每次请求'));
+  const calls=vi.mocked(api.agent.controls).mock.calls.length;
+  await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-17T01:00:00Z',usage:{...data.usage,cost:{amount:1235,unit:'credits',complete:false}}});});
+  expect(credits).toHaveTextContent('预计积分：1,235*');expect(api.agent.controls).toHaveBeenCalledTimes(calls);
+  await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'other',observed_at:'2026-11-17T02:00:00Z',usage:{...data.usage,cost:{amount:9999,unit:'credits',complete:true}}});});
+  await waitFor(()=>expect(screen.getByLabelText('预计积分')).toHaveTextContent('预计积分：1,234.568'));
+ });
+ it.each([[0,true,'0'],[.00001,false,'<0.001*'],[null,false,'—'],[-1,true,'—']])('preserves credit zero, partial and unknown values (%s)',async(amount,complete,expected)=>{
+  data.usage={...data.usage!,cost:{amount:amount as number|null,unit:'credits',complete:complete as boolean}};
+  mount();expect(await screen.findByLabelText('预计积分')).toHaveTextContent(`预计积分：${expected}`);
+ });
+ it.each([undefined,null,{amount:12,unit:'USD',complete:true}])('hides subscription credits when the engine provides no credit estimate',async cost=>{
+  data.usage={...data.usage!,cost};mount();await screen.findByLabelText('Cumulative token usage');expect(screen.queryByLabelText('预计积分')).toBeNull();
+ });
+
  it('retains all cumulative token metrics while displaying window capacity only in Context',async()=>{
   data={...data,usage:{total:{total_tokens:330800000,input_tokens:330200000,cached_input_tokens:327800000,reasoning_output_tokens:286200,output_tokens:627600},last:{total_tokens:104500},window:475000}};
   mount();expect(await screen.findByText('Context 475K | 22%')).toBeVisible();

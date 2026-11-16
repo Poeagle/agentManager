@@ -444,6 +444,7 @@ export interface AgentControls {
   approval: string | null;
   service_tier: string | null;
   usage: {
+    cost?:AgentCostEstimate|null;
     total: Record<string, number | null>;
     last: Record<string, number | null>;
     window: number | null;

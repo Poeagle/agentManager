@@ -512,7 +512,7 @@
 
 .session-chat-cache-hit {--cache-hit-lightness:64%;font-variant-numeric:tabular-nums;}
 :root[data-theme="light"] .session-chat-cache-hit {--cache-hit-lightness:32%;}
-.session-chat-estimated-cost {color:#c4a1ff;font-variant-numeric:tabular-nums;}
+.session-chat-estimated-cost,.conversation-control-environment>.session-chat-estimated-cost {color:#c4a1ff;font-variant-numeric:tabular-nums;}
 .session-chat-tool-counts {color:#79b4ff;font-variant-numeric:tabular-nums;}
-:root[data-theme="light"] .session-chat-estimated-cost {color:#7e22ce;}
+:root[data-theme="light"] .session-chat-estimated-cost,:root[data-theme="light"] .conversation-control-environment>.session-chat-estimated-cost {color:#7e22ce;}
 :root[data-theme="light"] .session-chat-tool-counts {color:#1d4ed8;}

@@ -1335,7 +1335,7 @@ export interface ConversationControlsData {
   agent?:AgentDescriptor;can_edit_features?:Partial<Record<import('./agents').AgentFeature,boolean>>;
   engine_version?:string|null;installed_cli_version?:string|null;git?:{branch:string;changes:number}|null;state?:string|null;
   model:string|null;effort:string|null;provider:string|null;cwd:string|null;cli_version:string|null;permission:string|null;approval:string|null;service_tier:string|null;
-  usage:{total:Record<string,number|null>;last:Record<string,number|null>;window:number|null}|null;
+  usage:{cost?:ConversationCostEstimate|null;total:Record<string,number|null>;last:Record<string,number|null>;window:number|null}|null;
   limits:Array<{used_percent:number;minutes:number;resets_at:number|null}>;
   models:Array<{release_date?:string|null;context_window?:number|null;input_modalities?:string[];reference_credits?:{input:number;cached:number;output:number;as_of:string}|null;default_service_tier?:string|null;service_tiers?:Array<{id:string;name:string;description:string}>;provider?:string;model:string;name:string;description:string;efforts:Array<{value:string;description:string}>;defaultEffort:string}>;
   pending_status?:'saved'|'submitted'|null;can_edit:boolean;loaded:boolean;pending:AgentModelPreference|null;warning:string|null;native_id:string;checked_at:string;usage_observed_at:string|null;

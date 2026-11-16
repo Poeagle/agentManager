@@ -108,8 +108,8 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.14.0',
-    updatedAt:'2026-11-15',
+    version:'3.15.0',
+    updatedAt:'2026-11-17',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
@@ -246,7 +246,7 @@ export function getAgentApiContract() {
       },
       {
         category: 'Sessions', method: 'GET', path: '/api/sessions/:id/controls',
-        description: 'Read the accessible session model, runtime controls and available models. Optional ?refresh=true refreshes native data; model release date, context length, modalities and reference Credits are optional and may be unavailable. Reference Credits are not an invoice.',
+        description: 'Read the accessible session model, runtime controls and available models. Optional ?refresh=true refreshes native data; model release date, context length, modalities and reference Credits are optional and may be unavailable. Reference Credits are not an invoice. Optional usage.cost is a cumulative per-request credit estimate {amount,unit,complete,rate_date,basis}; partial history or assumed speed makes complete=false; API engines return null.',
         errors: { 400: 'Invalid refresh flag', 404: 'Session not found or not accessible', 409: 'Session has no native identity' },
       },
       {
@@ -414,7 +414,7 @@ export function getAgentApiContract() {
         category: 'Session control',
         method: 'WS',
         path: '/api/sessions/:id/conversation/stream',
-        description: 'Cookie-authenticated conversation stream. Optional UI-only activities carry turn_id, after_message_id and bounded, redacted input_preview (commands only) and result_preview (up to 2000 characters); they are transient and never become conversation messages. User messages may include batch [{text,attachments}] for verified batch submissions and input_source {kind,label} when the platform has verified their submission identity; absent provenance is unknown. Statistics can carry an optional cost estimate {amount,unit,complete,rate_date,basis}; missing rates stay unknown and API engines can set cost=null. progress_statistics.step carries an authoritative active interval with segment_id, after_message_id, after_sequence and start_at, so consumers do not subtract unrelated cumulative snapshots. Tool calls and rounds update when calls start. Supported agents can emit progress_statistics with cumulative recorded token and tool counts since the previous conclusion and an optional separate per-input segment with timing, status and recorded counts; missing or incomplete data remains unknown or a lower bound. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
+        description: 'Cookie-authenticated conversation stream. Optional UI-only activities carry turn_id, after_message_id and bounded, redacted input_preview (commands only) and result_preview (up to 2000 characters); they are transient and never become conversation messages. User messages may include batch [{text,attachments}] for verified batch submissions and input_source {kind,label} when the platform has verified their submission identity; absent provenance is unknown. Statistics can carry an optional cost estimate {amount,unit,complete,rate_date,basis}; usage.cost optionally carries the cumulative estimate with the same completeness semantics; missing rates stay unknown and API engines can set cost=null. progress_statistics.step carries an authoritative active interval with segment_id, after_message_id, after_sequence and start_at, so consumers do not subtract unrelated cumulative snapshots. Tool calls and rounds update when calls start. Supported agents can emit progress_statistics with cumulative recorded token and tool counts since the previous conclusion and an optional separate per-input segment with timing, status and recorded counts; missing or incomplete data remains unknown or a lower bound. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
       },
       {
         category: 'Session control',

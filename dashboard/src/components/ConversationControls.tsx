@@ -54,6 +54,8 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   };
   const model=data?.models.find(m=>m.model===selected.model&&(!m.provider||!selected.provider||m.provider===selected.provider)),usage=data?.usage;
   const tokenMetrics=usage?([['Total',usage.total.total_tokens],['Input',usage.total.input_tokens],['Cache',usage.total.cached_input_tokens],['Reasoning',usage.total.reasoning_output_tokens],['Output',usage.total.output_tokens]] as Array<[string,number|null|undefined]>).filter((entry):entry is [string,number]=>entry[1]!=null):[];
+  const cost=usage?.cost,creditAmount=cost?.unit==='credits'&&typeof cost.amount==='number'&&Number.isFinite(cost.amount)&&cost.amount>=0?cost.amount:null;
+  const creditText=creditAmount===null?'—':`${creditAmount>0&&creditAmount<.001?'<0.001':new Intl.NumberFormat('en',{maximumFractionDigits:3}).format(creditAmount)}${cost?.complete?'':'*'}`;
   const cacheInput=usage?.total.input_tokens,cacheHit=usage?.total.cached_input_tokens;
   const cacheRate=cacheInput!=null&&cacheInput>0&&cacheHit!=null&&cacheHit>=0&&cacheHit<=cacheInput?Number((100*cacheHit/cacheInput).toFixed(1)):null;
   const cacheColor=cacheRate===null?'var(--text-muted)':quotaColor(cacheRate);
@@ -108,6 +110,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
           {data.approval&&<span title="Approval policy">Approval: {data.approval}</span>}
           {data.engine_version&&<span title="Running engine version">Engine {data.engine_version}</span>}
           {tokenMetrics.length>0&&<span aria-label="Cumulative token usage">Tokens {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{name}</span></Fragment>)} : {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{compact(value)}</span></Fragment>)}</span>}
+          {cost?.unit==='credits'&&<span className="session-chat-estimated-cost" aria-label="预计积分" title={`会话累计预计积分，按每次请求记录的模型和速度档位计算；费率日期：${cost.rate_date||'未知'}。* 表示部分请求未定价、历史扫描未完整覆盖，或缺少速度档位而按 Standard 估算。不是实际账单或周额度。`}>预计积分：{creditText}</span>}
         </span>
         {(error&&!newOpen||notice)&&<span className="conversation-control-message" role={error&&!newOpen?'alert':'status'} title={error&&!newOpen?error:notice}>{error&&!newOpen?error:notice}</span>}
         <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>Details</button>

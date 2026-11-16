@@ -50,6 +50,32 @@ const get=()=>app.inject({url:'/api/sessions/s/controls',headers:{cookie}});
 const set=(value:any)=>app.inject({method:'PUT',url:'/api/sessions/s/controls',headers:{cookie,'content-type':'application/json'},payload:JSON.stringify(value)});
 const send=()=>app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{input:'继续',source:'conversation'}});
 describe('native conversation controls',()=>{
+ it('accumulates per-request credit rates, deduplicates snapshots and hides estimates for API engines',async()=>{
+  const count=(total:number)=>record('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{input_tokens:1000000,cached_input_tokens:600000,output_tokens:100000,total_tokens:1100000}}});
+  writeFileSync(log,record('session_meta',{model:'gpt-6.1-sol',service_tier:'default'})+count(1100000));
+  expect((await readConversationTelemetry(native)).usage?.cost).toMatchObject({amount:46.5,unit:'credits',complete:true});
+  appendFileSync(log,record('event_msg',{type:'thread_settings_applied',thread_settings:{service_tier:'fast'}})+count(2200000)+count(2200000));
+  expect((await readConversationTelemetry(native)).usage?.cost).toMatchObject({amount:162.75,complete:true});
+  expect((await readConversationTelemetry(native)).usage?.cost?.amount).toBe(162.75);
+  appendFileSync(log,record('turn_context',{model:'gpt-6.1-terra',service_tier:'default'})+count(3300000));
+  const response=await get();expect(response.json().usage.cost).toMatchObject({amount:186,complete:true});
+  const api=await runInCodexEngine({socket:'',environmentId:'provider:fixture'},()=>readConversationTelemetry(native));expect(api.usage?.cost).toBeNull();
+  expect((await readConversationTelemetry(native)).usage?.cost?.amount).toBe(186);
+ });
+ it('marks assumed speed, missing usage and unknown models as incomplete without guessing prices',async()=>{
+  const count=(total:number)=>record('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{input_tokens:1000000,cached_input_tokens:600000,output_tokens:100000,total_tokens:1100000}}});
+  writeFileSync(log,record('session_meta',{model:'gpt-6.1-sol'})+count(2200000));
+  expect((await readConversationTelemetry(native)).usage?.cost).toMatchObject({amount:46.5,complete:false});
+  appendFileSync(log,record('turn_context',{model:'unsupported',service_tier:'default'})+count(3300000));
+  expect((await readConversationTelemetry(native)).usage?.cost).toMatchObject({amount:46.5,complete:false});
+  writeFileSync(log,record('turn_context',{model:'unsupported',service_tier:'default'})+count(1100000));
+  expect((await readConversationTelemetry(native)).usage?.cost).toMatchObject({amount:null,complete:false});
+ });
+ it('seeds pricing for a bounded cold tail and reports omitted history as partial',async()=>{
+  writeFileSync(log,record('session_meta',{model:'gpt-6.1-sol',service_tier:'default'})+record('response_item',{type:'function_call_output',output:'x'.repeat(3*1024*1024)})+record('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:1100000},last_token_usage:{input_tokens:1000000,cached_input_tokens:600000,output_tokens:100000,total_tokens:1100000}}}));
+  expect((await readConversationTelemetry(native)).usage?.cost).toMatchObject({amount:46.5,complete:false});
+ });
+
  it('reads the authorized project Git status when ownership differs',async()=>{
   execFileSync('git',['init','-q','-b','fixture',dir]);writeFileSync(join(dir,'new.txt'),'new');nativeCwd=dir;vi.stubEnv('GIT_TEST_ASSUME_DIFFERENT_OWNER','1');
   const response=await get();expect(response.statusCode).toBe(200);expect(response.json().git).toMatchObject({branch:'fixture'});expect(response.json().git.changes).toBeGreaterThan(0);

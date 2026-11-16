@@ -3,6 +3,7 @@ import {ConversationBatchCard} from './ConversationBatchCard';
 import {composerKey,loadComposer,saveComposer,emptyComposer,combinedBatch,type ComposerState,type BatchEntry} from '../lib/batch-composer';
 import {
   ConversationStreamCursor,
+  mergeConversationUsage,
   applyConversationPatches,
   type ConversationPatch,
 } from "../lib/conversation-stream";
@@ -1300,20 +1301,11 @@ export function SessionConversation({
               "conversation-usage",
               session.id,
             ]);
-            if (
-              previous?.native_id === update.native_id &&
-              Date.parse(previous.observed_at) > Date.parse(update.observed_at)
-            )
-              return;
-            compaction.usage(update.usage, update.observed_at);
+            const merged = mergeConversationUsage(previous, update);
+            if (merged === previous) return;
+            compaction.usage(merged.usage, merged.observed_at);
             queryClient.setQueryData<ConversationUsageUpdate>(
-              ["conversation-usage", session.id],
-              (previous) =>
-                previous?.native_id === update.native_id &&
-                Date.parse(previous.observed_at) >
-                  Date.parse(update.observed_at)
-                  ? previous
-                  : update,
+              ["conversation-usage", session.id], merged,
             );
           }
           return;

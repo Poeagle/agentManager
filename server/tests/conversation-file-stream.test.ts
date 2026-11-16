@@ -72,3 +72,17 @@ it('shares file parsing and updates question metadata while the execution state 
   await vi.waitFor(()=>expect(second.flatMap(frame=>frame.messages||[]).some(message=>message.text==='remaining viewer')).toBe(true));expect(first).toHaveLength(count);
  }finally{stopSecond();syncQueuedCodexQuestionReplies(native,[]);}
 });
+
+it('pushes cumulative credit changes on the existing usage stream and replays them to reconnecting viewers',async()=>{
+ dir=mkdtempSync(join(tmpdir(),'conversation-file-credits-'));vi.stubEnv('CODEX_HOME',dir);mkdirSync(join(dir,'sessions'));
+ const native='019ff001-6543-7654-8654-654365436543',file=join(dir,'sessions',`rollout-${native}.jsonl`),binding={cli_type:'codex',codex_session_id:native,claude_session_id:null,project_path:dir};
+ const row=(type:string,payload:unknown)=>JSON.stringify({type,payload,timestamp:'2026-11-17T01:00:00Z'})+'\n';
+ const count=(total:number)=>row('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{input_tokens:1000000,cached_input_tokens:600000,output_tokens:100000,total_tokens:1100000}}});
+ writeFileSync(file,row('session_meta',{model:'gpt-6.1-sol',service_tier:'default'})+count(1100000));
+ const frames:ConversationUsageFrame[]=[];close=observeConversationFile(binding,frame=>{if(frame.type==='usage')frames.push(frame);});
+ await vi.waitFor(()=>expect(frames.at(-1)?.usage.cost).toMatchObject({amount:46.5,complete:true}));
+ appendFileSync(file,row('turn_context',{model:'gpt-6.1-sol',service_tier:'fast'})+count(2200000));
+ await vi.waitFor(()=>expect(frames.at(-1)?.usage.cost).toMatchObject({amount:162.75,complete:true}));
+ const replay:ConversationUsageFrame[]=[];const stop=observeConversationFile(binding,frame=>{if(frame.type==='usage')replay.push(frame);});
+ try{expect(replay.at(-1)?.usage.cost?.amount).toBe(162.75);}finally{stop();}
+});
