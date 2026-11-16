@@ -45,6 +45,24 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('shows the batch panel only while entries need sending and hides it after acceptance',async()=>{
+    const response=deferred<SendResult>(),submit=vi.spyOn(api.agent,'sendInput').mockReturnValue(response.promise);await mount();
+    const panel=()=>screen.queryByRole('complementary',{name:'批量待发内容'});
+    fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
+    expect(panel()).not.toBeInTheDocument();input('staged');expect(panel()).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:'加入批量'}));expect(panel()).toHaveTextContent('staged');
+    expect(screen.getByRole('separator',{name:'调整批量待发区宽度'})).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
+    expect(panel()).toHaveTextContent('staged');
+    await act(async()=>response.resolve({status:'submitted'} as SendResult));
+    await waitFor(()=>expect(panel()).not.toBeInTheDocument());
+    expect(screen.getByRole('combobox',{name:'发送模式'})).toHaveValue('batch');
+    input('next');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));expect(panel()).toHaveTextContent('next');
+    fireEvent.click(screen.getByRole('button',{name:'删除第 1 条消息'}));expect(panel()).not.toBeInTheDocument();
+    input('recall');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
+    fireEvent.click(screen.getByRole('button',{name:'撤回第 1 条消息'}));expect(panel()).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveTextContent('recall');
+  });
   it('omits unknown timing and redundant scope labels from a restored final response',async()=>{
     await mount();
     const part={tokens:{total_tokens:100},requests:1,tool_calls:0,tool_rounds:0,complete:false,shared_messages:1,start_at:null,end_at:'2026-11-15T05:30:00Z',elapsed_ms:null};
@@ -102,7 +120,7 @@ describe('conversation send transaction', () => {
     const submit=vi.spyOn(api.agent,'sendInput').mockRejectedValue(new ApiError('unknown',503,'unknown'));
     const view=await mount();fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
     input('keep me');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));
-    await waitFor(()=>expect(submit).toHaveBeenCalledOnce());await waitFor(()=>expect(screen.getByRole('button',{name:'发送批量内容'})).toBeDisabled());
+    await waitFor(()=>expect(submit).toHaveBeenCalledOnce());await waitFor(()=>expect(screen.getByRole('button',{name:'发送批量内容'})).toBeDisabled());expect(screen.getByRole('complementary',{name:'批量待发内容'})).toHaveTextContent('keep me');
     expect(screen.getByRole('button',{name:'撤回第 1 条消息'})).toBeDisabled();expect(screen.getByRole('button',{name:'删除第 1 条消息'})).toBeDisabled();
     const id=submit.mock.calls[0][2];view.unmount();await mount();
     expect(screen.getByRole('button',{name:'发送批量内容'})).toBeDisabled();expect(submit).toHaveBeenCalledOnce();

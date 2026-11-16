@@ -10,6 +10,18 @@ beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}})
 afterEach(()=>client.clear());
 const mount=()=>render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active/></QueryClientProvider>);
 describe('compact conversation controls',()=>{
+ it('shows window capacity beside context usage and updates both from live events',async()=>{
+  data={...data,usage:{total:{total_tokens:9999999},last:{total_tokens:166250},window:475000}};
+  mount();expect(await screen.findByText('Context 475K | 35%')).toBeVisible();
+  expect(screen.getByRole('button',{name:'View context token details'})).toHaveAttribute('title',expect.stringContaining('475,000 tokens'));
+  expect(screen.queryByText(/Tokens Window/)).not.toBeInTheDocument();expect(screen.queryByText('10M')).not.toBeInTheDocument();
+  await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-16T01:00:00Z',usage:{total:{},last:{total_tokens:40000},window:80000}});});
+  expect(await screen.findByText('Context 80K | 50%')).toBeVisible();
+ });
+ it.each([{total:{},last:{total_tokens:100}}, {total:{},last:{total_tokens:100},window:0}, {total:{},last:{},window:475000}])('omits the context indicator when capacity or recent usage is unknown',async usage=>{
+  data={...data,usage};mount();await screen.findByRole('button',{name:'Details'});
+  expect(screen.queryByRole('button',{name:'View context token details'})).not.toBeInTheDocument();
+ });
  it.each([[80,'var(--success)'],[35,'#b7790b'],[20,'#e57b18'],[10,'var(--error)']] as const)('colors weekly remaining %s%% consistently with account quota',async(remaining,color)=>{
   data={...data,limits:[{used_percent:100-remaining,minutes:10080,resets_at:null}]};mount();const weekly=await screen.findByLabelText(`Weekly remaining ${remaining}%`);
   expect(weekly.querySelector('i')).toHaveAttribute('style',expect.stringContaining(color));expect(weekly.querySelector('strong')).toHaveStyle({color});
@@ -41,7 +53,7 @@ describe('compact conversation controls',()=>{
  });
  it('shows the cumulative cache hit rate before context and updates it live',async()=>{
   data={...data,usage:{...data.usage!,total:{total_tokens:400000,input_tokens:1000,cached_input_tokens:974}}};
-  mount();const cache=await screen.findByLabelText('Cache hit rate 97.4%');expect(cache.querySelector('i')).toHaveStyle({background:'conic-gradient(var(--success) 97.4%, var(--border) 0)'});expect(cache.compareDocumentPosition(screen.getByText('Context 30%'))&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  mount();const cache=await screen.findByLabelText('Cache hit rate 97.4%');expect(cache.querySelector('i')).toHaveStyle({background:'conic-gradient(var(--success) 97.4%, var(--border) 0)'});expect(cache.compareDocumentPosition(screen.getByText('Context 40K | 30%'))&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-02T03:20:55Z',usage:{last:{total_tokens:1000,input_tokens:1000,cached_input_tokens:1000},total:{input_tokens:2000,cached_input_tokens:500},window:40000}});});
   expect(await screen.findByLabelText('Cache hit rate 25%')).toBeVisible();
   await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-02T03:20:56Z',usage:{last:{input_tokens:1000,cached_input_tokens:1000},total:{input_tokens:0,cached_input_tokens:0},window:40000}});});
@@ -49,7 +61,7 @@ describe('compact conversation controls',()=>{
  });
  it('reads context categories only after clicking the usage indicator without reloading controls',async()=>{
   vi.mocked(api.agent.contextBreakdown).mockReset().mockResolvedValue({context:{source:'jsonl',exact:false,method:'characters_div_3',checked_at:'2026-11-11T12:00:00Z',observed_at:null,model:'model-a',usage:null,partial:false,warnings:[],files_read:1,records_read:1,bytes_read:100,compactions:0,categories:[{id:'user',name:'用户消息',tokens:100,count:1,detail:[]}]}});
-  mount();await screen.findByText('Context 30%');const weekly=await screen.findByLabelText('Weekly remaining 75%');expect(weekly.compareDocumentPosition(screen.getByText((_,element)=>element?.tagName==='SPAN'&&element.textContent==='Tokens Window｜Total : 40K｜400K'))&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();expect(screen.getByText('Context 30%').compareDocumentPosition(weekly)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();expect(weekly.querySelector('i')).toHaveAttribute('aria-hidden','true');expect(weekly.querySelector('i')).toHaveAttribute('style',expect.stringContaining('75%'));expect(api.agent.contextBreakdown).not.toHaveBeenCalled();const calls=vi.mocked(api.agent.controls).mock.calls.length;
+  mount();await screen.findByText('Context 40K | 30%');const weekly=await screen.findByLabelText('Weekly remaining 75%');expect(screen.queryByText(/Tokens Window/)).not.toBeInTheDocument();expect(screen.getByText('Context 40K | 30%').compareDocumentPosition(weekly)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();expect(weekly.querySelector('i')).toHaveAttribute('aria-hidden','true');expect(weekly.querySelector('i')).toHaveAttribute('style',expect.stringContaining('75%'));expect(api.agent.contextBreakdown).not.toHaveBeenCalled();const calls=vi.mocked(api.agent.controls).mock.calls.length;
   fireEvent.click(screen.getByRole('button',{name:'View context token details'}));const dialog=await screen.findByRole('dialog',{name:'上下文 Token 详情'});expect(await within(dialog).findByRole('rowheader',{name:'用户消息'})).toBeVisible();expect(api.agent.controls).toHaveBeenCalledTimes(calls);expect(api.agent.contextBreakdown).toHaveBeenCalledTimes(1);fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).toBeNull();
  });
  it('places editable controls in the composer slot and keeps runtime information below',async()=>{
@@ -59,24 +71,24 @@ describe('compact conversation controls',()=>{
   expect(within(slot).getByLabelText('选择推理强度')).toBeVisible();
   expect(within(slot).getByRole('button',{name:'压缩'})).toBeVisible();
   expect(within(slot).getByRole('button',{name:'新开'})).toBeVisible();
-  expect(within(slot).queryByText('Context 30%')).not.toBeInTheDocument();
-  expect(within(view.container).getByText('Context 30%')).toBeVisible();
+  expect(within(slot).queryByText('Context 40K | 30%')).not.toBeInTheDocument();
+  expect(within(view.container).getByText('Context 40K | 30%')).toBeVisible();
   expect(within(slot).queryByText('/project')).not.toBeInTheDocument();
   expect(within(view.container).getByText('/project')).toBeVisible();
   view.unmount();expect(slot).toBeEmptyDOMElement();slot.remove();
  });
  it('updates usage immediately without an extra controls request and ignores an older metadata refresh',async()=>{
-  mount();await screen.findByText('Context 30%');const calls=vi.mocked(api.agent.controls).mock.calls.length;
+  mount();await screen.findByText('Context 40K | 30%');const calls=vi.mocked(api.agent.controls).mock.calls.length;
   await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-02T03:20:55Z',usage:{last:{total_tokens:2400,input_tokens:2000,cached_input_tokens:1900,output_tokens:400},total:{total_tokens:402400,input_tokens:400000,cached_input_tokens:380000},window:40000}});});
-  expect(await screen.findByText('Context 6%')).toBeVisible();expect(api.agent.controls).toHaveBeenCalledTimes(calls);
+  expect(await screen.findByText('Context 40K | 6%')).toBeVisible();expect(api.agent.controls).toHaveBeenCalledTimes(calls);
   await act(async()=>{await client.invalidateQueries({queryKey:['conversation-controls','s']});});
-  expect(screen.getByText('Context 6%')).toBeVisible();
+  expect(screen.getByText('Context 40K | 6%')).toBeVisible();
   fireEvent.click(screen.getByRole('button',{name:'Details'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(within(dialog).getByRole('rowheader',{name:'本次缓存命中率'}).parentElement).toHaveTextContent('95.0%');
  });
  it('does not mix another native thread usage into this tab',async()=>{
-  mount();await screen.findByText('Context 30%');
+  mount();await screen.findByText('Context 40K | 30%');
   await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'other',observed_at:'2026-11-02T03:20:55Z',usage:{last:{total_tokens:1000},total:{},window:40000}});});
-  expect(screen.getByText('Context 30%')).toBeVisible();
+  expect(screen.getByText('Context 40K | 30%')).toBeVisible();
  });
  it('refreshes every five minutes, ignores focus refresh and retains a manual refresh action',async()=>{
   vi.useFakeTimers();vi.mocked(api.agent.controls).mockClear();
@@ -89,7 +101,7 @@ describe('compact conversation controls',()=>{
  });
 
  it('shows actual context and weekly remaining values and expands only allowlisted details',async()=>{
-  data={...data,limits:[{used_percent:60,minutes:300,resets_at:1900000000},...data.limits]};mount();expect(await screen.findByText('Context 30%')).toBeVisible();expect(await screen.findByLabelText('Weekly remaining 75%')).toBeVisible();expect(screen.getByText('5h remaining 40%')).toBeVisible();expect(screen.getByText('Engine 0.166.0')).toBeVisible();expect(screen.getByText('Approval: never')).toBeVisible();expect(screen.getByText((_,element)=>element?.tagName==='SPAN'&&element.textContent==='Tokens Window｜Total : 40K｜400K')).toBeVisible();expect(screen.getByText('Git main · 2 changed')).toBeVisible();expect(screen.queryByRole('dialog')).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'Details'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(dialog).not.toHaveTextContent('0.test');expect(dialog).not.toHaveTextContent('创建版本');expect(dialog).toHaveTextContent('工作区可写');expect(dialog).toHaveTextContent('40,000');expect(dialog).toHaveTextContent('400,000');const table=within(dialog).getByRole('table',{name:'Token 用量与运行环境'});expect(within(table).getByRole('rowheader',{name:'缓存命中输入'})).toBeVisible();expect(within(table).getByRole('rowheader',{name:'当前模型'})).toBeVisible();expect(dialog.querySelectorAll('details')).toHaveLength(0);fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  data={...data,limits:[{used_percent:60,minutes:300,resets_at:1900000000},...data.limits]};mount();expect(await screen.findByText('Context 40K | 30%')).toBeVisible();expect(await screen.findByLabelText('Weekly remaining 75%')).toBeVisible();expect(screen.getByText('5h remaining 40%')).toBeVisible();expect(screen.getByText('Engine 0.166.0')).toBeVisible();expect(screen.getByText('Approval: never')).toBeVisible();expect(screen.queryByText(/Tokens Window/)).not.toBeInTheDocument();expect(screen.getByText('Git main · 2 changed')).toBeVisible();expect(screen.queryByRole('dialog')).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'Details'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(dialog).not.toHaveTextContent('0.test');expect(dialog).not.toHaveTextContent('创建版本');expect(dialog).toHaveTextContent('工作区可写');expect(dialog).toHaveTextContent('40,000');expect(dialog).toHaveTextContent('400,000');const table=within(dialog).getByRole('table',{name:'Token 用量与运行环境'});expect(within(table).getByRole('rowheader',{name:'缓存命中输入'})).toBeVisible();expect(within(table).getByRole('rowheader',{name:'当前模型'})).toBeVisible();expect(dialog.querySelectorAll('details')).toHaveLength(0);fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
  });
  it('applies model and effort immediately and shows the confirmed current settings',async()=>{
   mount();const model=await screen.findByRole('combobox',{name:'选择模型'});fireEvent.change(model,{target:{value:'model-b'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenCalledWith('s',{model:'model-b',effort:'low'}));expect(await screen.findByText('已应用')).toBeVisible();expect(screen.getByRole('combobox',{name:'选择推理强度'})).toHaveValue('low');expect(screen.queryByText('下轮生效')).not.toBeInTheDocument();fireEvent.change(screen.getByRole('combobox',{name:'选择推理强度'}),{target:{value:'medium'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenLastCalledWith('s',{model:'model-b',effort:'medium'}));expect(model).toHaveValue('model-b');

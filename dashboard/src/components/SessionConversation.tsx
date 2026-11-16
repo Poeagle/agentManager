@@ -81,6 +81,7 @@ import {
 import {ConversationAttachmentPicker, ConversationMessageAttachments} from "./ConversationAttachments";
 import {useConversationAttachments} from '../lib/use-conversation-attachments';
 import type {DraftAttachment} from '../lib/conversation-attachments';
+import {ConversationBatchResizeHandle} from "./ConversationBatchResizeHandle";
 import { ConversationMarkdown } from "./ConversationMarkdown";
 import {
   ConversationWidthHandles,
@@ -725,6 +726,7 @@ export function SessionConversation({
   const generation = useRef<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
   const readingRoot = useRef<HTMLElement>(null);
+  const chatLayout = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const sendingRef = useRef(false);
   const submissionIdentity = useRef<{ fingerprint: string; id: string } | null>(
@@ -2146,7 +2148,7 @@ export function SessionConversation({
         if(!active||event.key!=='Enter'||!(event.ctrlKey||event.metaKey)||event.nativeEvent.isComposing||document.querySelector('[aria-modal="true"]'))return;
         if(!(event.target instanceof HTMLElement)||event.target.closest('.session-chat-editor,input,textarea,select,[contenteditable],.session-batch-send'))return;
         event.preventDefault();event.stopPropagation();if(!event.repeat)submitWithShortcut();
-      }}><div className="session-chat-layout">
+      }}><div ref={chatLayout} className="session-chat-layout">
       <section ref={readingRoot} className="session-chat" aria-label="会话对话">
         <ConversationPromptEnhancer
           sessionId={session.id}
@@ -2677,7 +2679,8 @@ export function SessionConversation({
             )}
         </footer>
       </section>
-        {composer.mode==='batch'&&<aside className="session-chat-batch" aria-label="批量待发内容">
+        {composer.mode==='batch'&&(composer.entries.length>0||composer.pending)&&<aside className="session-chat-batch" aria-label="批量待发内容">
+          <ConversationBatchResizeHandle layout={chatLayout} active={active} storageKey={`agentmanager-batch-width:${userId}`}/>
           <header className="session-batch-header"><span>批量待发</span><small>{composer.entries.length} 条</small></header>
           <div className="session-chat-batch-content">{composer.entries.length?composer.entries.map((entry,index)=><article key={entry.id}><header><small>消息 {index+1}</small><time dateTime={entry.createdAt} title="加入待发区时间">{formatDisplayTimestamp(entry.createdAt)}</time><button type="button" className="session-batch-recall" aria-label={`撤回第 ${index+1} 条消息`} disabled={!canSend||sending||sendGuard.blocking||!!composer.pending?.entryIds.includes(entry.id)||attachments.uploading||attachments.failed} onClick={()=>recallBatch(entry)}>撤回</button><button type="button" className="session-batch-delete" aria-label={`删除第 ${index+1} 条消息`} disabled={!canSend||sending||sendGuard.blocking||!!composer.pending?.entryIds.includes(entry.id)} onClick={()=>deleteBatch(entry)}>删除</button></header><ConversationMessageAttachments text={entry.text} items={entry.attachments} projectId={session.project_id} projectPath={projectPath} onOpenFile={onOpenFile}/></article>):<div className="session-batch-empty"><span>暂未添加消息</span><p>在输入框编写内容，按 Enter 加入这里，整理完成后一起发送。</p></div>}</div>
           {composer.pending&&<p role="status">发送结果待确认。恢复连接后自动核对，请勿重复发送。</p>}
