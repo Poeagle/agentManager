@@ -142,3 +142,5 @@
 .ci-observation{overflow-x:auto;overflow-y:hidden;}
 .ci-observation>span{flex-shrink:0;}
 .ci-observation .ci-source{flex:0 0 auto;overflow:visible;text-overflow:clip;}
+
+.ci-usage-cost{white-space:nowrap;}
