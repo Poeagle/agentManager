@@ -408,17 +408,18 @@ export class PlatformAiWorker {
       const operation=getDb().prepare('SELECT status,result FROM platform_ai_operations WHERE id=?').get(quotedReplyOperationId(message.id)) as {status:string;result:string|null}|undefined;
       content=operation?(operation.status==='done'&&operation.result?operation.result:'投递结果待核对，为避免重复执行不会自动重发，请查看原标签页。'):`未投递：${publicFailure(error)}。请核对原标签页后重试。`;
     }
-    this.finishMessage(message,conversation,null,content);
+    const operation=getDb().prepare("SELECT json_extract(arguments,'$.quiet_success') AS quiet FROM platform_ai_operations WHERE id=? AND status='done'").get(quotedReplyOperationId(message.id)) as {quiet:number|null}|undefined;
+    this.finishMessage(message,conversation,null,content,operation?.quiet===1);
   }
 
-  private finishMessage(message: InboxMessage, conversation: Conversation, transcript: ModelMessage[]|null, content: string): void {
+  private finishMessage(message: InboxMessage, conversation: Conversation, transcript: ModelMessage[]|null, content: string, quietDelivery = false): void {
         getDb().transaction(() => {
           getDb().prepare(`INSERT OR IGNORE INTO platform_ai_messages (id,conversation_id,external_id,role,content,status) VALUES (?,?,?,'assistant',?,'done')`)
             .run(nanoid(16), conversation.id, message.id, content);
           getDb().prepare("UPDATE platform_ai_messages SET status='done',checkpoint='[]',error=NULL,progress='',partial_content='',lease_until=0 WHERE id=?").run(message.id);
           if(transcript)getDb().prepare("UPDATE platform_ai_conversations SET context=?,updated_at=datetime('now') WHERE id=?")
             .run(JSON.stringify(completedConversation(transcript, content)), conversation.id);
-          getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox (id,conversation_id,dedupe_key,content,reply_context) VALUES (?,?,?,?,?)`)
+          if(!quietDelivery)getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox (id,conversation_id,dedupe_key,content,reply_context) VALUES (?,?,?,?,?)`)
             .run(nanoid(16), conversation.id, `reply:${message.id}`, content, message.reply_context);
         })();
         publishMessage(message.id);

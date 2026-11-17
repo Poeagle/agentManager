@@ -128,11 +128,12 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
   const active=getDb().prepare("SELECT id FROM platform_ai_tasks WHERE session_id=? AND status IN ('running','blocked','uncertain')").get(session.id) as {id:string}|undefined;
   if(sourceTaskId&&active&&active.id!==sourceTaskId)throw new ChannelError('标签页已有更新的任务，请引用最新通知。',409,true);
   getDb().prepare("INSERT INTO platform_ai_operations(id,message_id,tool_name,arguments,status) VALUES(?,?, 'quoted_reply',?,'started')").run(operationId,message.id,JSON.stringify({session_id:session.id,route_id:route.id}));
-  let result:string,acceptedOrUnknown=false;
+  let result:string,acceptedOrUnknown=false,quietSuccess=false;
   try {
     const sent=await platformApi(app,conversation.user_id,'POST',`/api/sessions/${encodeURIComponent(session.id)}/input`,{input:message.content+`\n\n[Platform task reference: ${operationId}]`,source:'conversation',client_id:'quoted_'+message.id,expected_native_id:route.native_id,expected_environment_id:route.environment_id});
     acceptedOrUnknown=true;
     if(!['submitted','queued'].includes(sent.status))throw Error('Unknown input receipt');
+    quietSuccess=true;
     const label=sessionPresenter(conversation.user_id)(session);
     result=`${sent.status==='queued'?'已排队提交':'已提交'}到「${[label.project_name,label.tab_name].filter(Boolean).join(' / ')}」，等待 Agent 处理。`;
   }catch(error){
@@ -145,8 +146,8 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
       if(sourceTaskId)getDb().prepare("UPDATE platform_ai_tasks SET status='superseded',updated_at=datetime('now') WHERE id=? AND status IN ('running','blocked','uncertain')").run(sourceTaskId);
       const task=trackTask(conversation,session.id,((previous?.requirement||'')+'\n\n用户回复：'+message.content).slice(-24000),Number(display.cursor)||0,operationId);
       if(result.startsWith('投递结果待核对'))getDb().prepare("UPDATE platform_ai_tasks SET status='uncertain' WHERE id=?").run(task.id);
-    })();}catch{result+=' 任务跟踪未能更新，请到原标签页核对后续结果。';}
+    })();}catch{quietSuccess=false;result+=' 任务跟踪未能更新，请到原标签页核对后续结果。';}
   }
-  getDb().prepare("UPDATE platform_ai_operations SET status='done',result=? WHERE id=?").run(result,operationId);
+  getDb().prepare("UPDATE platform_ai_operations SET status='done',result=?,arguments=json_set(arguments,'$.quiet_success',?) WHERE id=?").run(result,Number(quietSuccess),operationId);
   return result;
 }

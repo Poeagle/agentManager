@@ -14,7 +14,7 @@ import {PlatformAiWorker} from '../src/services/platform-ai/worker.js';
 import {saveProjectNotification} from '../src/services/platform-ai/project-notifications.js';
 
 let cleanup:()=>void,app:ReturnType<typeof Fastify>,worker:PlatformAiWorker,user:string,other:string,channel:ReturnType<typeof saveChannel>,conversation:string;
-let inputs:Array<{id:string;body:any}>,delivered:string[],currentRef:Record<string,string>,promptType:string|null,inputStatus:number;
+let inputs:Array<{id:string;body:any}>,delivered:string[],currentRef:Record<string,string>,promptType:string|null,inputStatus:number,inputReceipt:'submitted'|'queued';
 let finalText:string|null,beforeDisplay:(()=>void)|null;
 beforeEach(async()=>{
  ({cleanup}=createTestDatabase());user=createUser({username:'owner',password:'password1',role:'admin'}).id;other=createUser({username:'other',password:'password1',role:'admin'}).id;
@@ -26,13 +26,13 @@ beforeEach(async()=>{
  for(const [external,uid] of [['wx-owner',user],['wx-other',other]])getDb().prepare('INSERT INTO platform_ai_bindings(id,channel_id,external_user_id,user_id) VALUES(?,?,?,?)').run(external,channel.id,external,uid);
  conversation=receiveMessage({userId:user,channelId:channel.id,externalUserId:'wx-owner',chatId:'wx-owner',messageId:'initial',content:'hello'}).conversation_id;
  getDb().prepare("UPDATE platform_ai_messages SET status='done'").run();
- inputs=[];delivered=[];currentRef={a:'turn-a',b:'turn-b'};promptType=null;inputStatus=202;finalText=null;beforeDisplay=null;
+ inputs=[];delivered=[];currentRef={a:'turn-a',b:'turn-b'};promptType=null;inputStatus=202;inputReceipt='submitted';finalText=null;beforeDisplay=null;
  app=Fastify();app.addHook('onRequest',authHook);
  app.get<{Params:{id:string}}>('/api/sessions/:id',req=>({session:getDb().prepare('SELECT * FROM sessions WHERE id=?').get(req.params.id)}));
  app.get<{Params:{id:string}}>('/api/sessions/:id/agent-messages',req=>({messages:[{role:'user',phase:'user',timestamp:'2026-11-17T00:00:00Z',text:'request',task_reference:currentRef[req.params.id]},...finalText?[{role:'assistant',phase:'final',text:finalText,timestamp:'2026-11-17T00:00:01Z',task_reference:currentRef[req.params.id]}]:[]]}));
  app.get('/api/sessions/:id/display',()=>{beforeDisplay?.();return {cursor:0,processState:'idle',promptType};});
  app.get('/api/sessions/:id/completed-turn',()=>({turns:[]}));
- app.post<{Params:{id:string};Body:any}>('/api/sessions/:id/input',(req,reply)=>{inputs.push({id:req.params.id,body:req.body});return reply.code(inputStatus).send(inputStatus===202?{status:'submitted'}:{error:'fixture failure'});});
+ app.post<{Params:{id:string};Body:any}>('/api/sessions/:id/input',(req,reply)=>{inputs.push({id:req.params.id,body:req.body});return reply.code(inputStatus).send(inputStatus===202?{status:inputReceipt}:{error:'fixture failure'});});
  await app.ready();worker=new PlatformAiWorker(app);
  setBotTransport(channel.id,{status:{state:'connected',message:'fixture',updated_at:''},deliver:async(_chat,content)=>{delivered.push(content);}});
  vi.stubGlobal('fetch',vi.fn(()=>{throw Error('Model must not run for a quoted reply');}));
@@ -53,6 +53,27 @@ async function process(){worker.tick();await worker.drain();}
 function response(){return (getDb().prepare("SELECT content FROM platform_ai_messages WHERE role='assistant' ORDER BY rowid DESC LIMIT 1").get() as {content:string}|undefined)?.content||'';}
 
 describe('quoted notification quick replies',()=>{
+ it.each([[400,'未投递'],[503,'投递结果待核对']] as const)('still delivers a failed or uncertain receipt for HTTP %s',async(status,text)=>{
+  const quoted=await notice();inputStatus=status;const received=reply(quoted);await process();await process();
+  expect(getDb().prepare('SELECT status,content FROM platform_ai_outbox WHERE dedupe_key=?').get('reply:'+received.message_id)).toMatchObject({status:'sent',content:expect.stringContaining(text)});
+  expect(delivered.at(-1)).toContain(text);
+ });
+ it('still warns when input was accepted but follow-up tracking failed',async()=>{
+  const quoted=await notice();
+  getDb().exec("CREATE TRIGGER reject_test_tracking BEFORE INSERT ON platform_ai_tasks BEGIN SELECT RAISE(ABORT,'test tracking failure'); END");
+  const received=reply(quoted);await process();await process();
+  expect(inputs).toHaveLength(1);
+  expect(getDb().prepare('SELECT status,content FROM platform_ai_outbox WHERE dedupe_key=?').get('reply:'+received.message_id)).toMatchObject({status:'sent',content:expect.stringContaining('跟踪未能更新')});
+ });
+ it.each(['submitted','queued'] as const)('keeps a %s receipt on the web without sending it to WeCom',async receipt=>{
+  inputReceipt=receipt;const quoted=await notice(),received=reply(quoted);await process();
+  expect(response()).toContain(receipt==='queued'?'已排队提交':'已提交');
+  expect(getDb().prepare("SELECT count(*) n FROM platform_ai_outbox WHERE dedupe_key=?").get('reply:'+received.message_id)).toEqual({n:0});
+  expect(delivered).toEqual([quoted]);
+  getDb().prepare("UPDATE platform_ai_messages SET status='queued' WHERE id=?").run(received.message_id);
+  await process();expect(inputs).toHaveLength(1);expect(delivered).toEqual([quoted]);
+ });
+
  it('shows the source once and resolves a rendered Markdown quote within its original chat',async()=>{
   const quoted=await notice();
   expect(quoted).toBe('**Project / a**\n\nAgent 的问题');
@@ -169,7 +190,7 @@ describe('quoted notification quick replies',()=>{
   const quoted=await notice();reply(quoted);
   const db=getDb(),prepare=db.prepare.bind(db);let fail=true;
   const spy=vi.spyOn(db,'prepare').mockImplementation(((sql:string)=>{
-   if(fail&&sql==="UPDATE platform_ai_operations SET status='done',result=? WHERE id=?"){fail=false;throw Error('temporary journal failure');}
+   if(fail&&sql.startsWith("UPDATE platform_ai_operations SET status='done',result=?")){fail=false;throw Error('temporary journal failure');}
    return prepare(sql);
   }) as typeof db.prepare);
   try{await process();expect(inputs).toHaveLength(1);expect(response()).toContain('投递结果待核对');expect(response()).not.toContain('未投递');}finally{spy.mockRestore();}

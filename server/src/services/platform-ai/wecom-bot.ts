@@ -150,6 +150,9 @@ export class WecomBotManager {
       const result = acceptChannelMessage(channel, {externalUserId: userId, chatId, messageId, content, images, replyContext: {bot_message_id: messageId,...directRoute?{direct_route:directRoute}:{}}});
       if (result.duplicate) return;
       publishMessage(result.message_id);
+      // Quoted input is delivered directly. Only errors and the Agent's answer
+      // produce messages; do not open an “已收到 / 已提交” reply stream.
+      if(directRoute)return;
       // Download expiring media immediately, independently from model queue load.
       if (images.length) void prepareImages(result.message_id, connection.abort.signal).then(() => publishMessage(result.message_id)).catch(() => {});
       if (connection.streams.size >= 100) { this.reject(connection, frame, '指令已接收，将通过后续消息返回结果。'); return; }

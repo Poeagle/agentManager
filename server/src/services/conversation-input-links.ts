@@ -23,9 +23,14 @@ function decorateInputSources(sessionId:string,messages:ConversationMessage[]):C
   return decorateBatches(sessionId,messages.map(message=>{
     const {input_source:_source,...visible}=message;
     if(message.role!=='user')return visible;
+    // Hide only the reserved suffix bound to this exact quoted submission.
+    // Keep the native record and input fingerprint intact for correlation.
+    const suffix=message.client_id?.startsWith('quoted_')?`\n\n[Platform task reference: ${message.client_id}]`:null;
+    const projected=suffix&&visible.text.endsWith(suffix)?{...visible,text:visible.text.slice(0,-suffix.length),
+      ...(visible.content_blocks?{content_blocks:visible.content_blocks.map(block=>block.type==='text'&&block.text.endsWith(suffix)?{...block,text:block.text.slice(0,-suffix.length)}:block)}:{})}:visible;
     const source=lookup.get(sessionId,message.client_id||'',message.id) as {kind:string;label:string}|undefined;
     if(source&&message.client_id&&!message.queued)bind.run(message.id,sessionId,message.client_id);
-    return source?{...visible,input_source:source}:visible;
+    return source?{...projected,input_source:source}:projected;
   }));
 }
 

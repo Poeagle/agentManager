@@ -84,3 +84,19 @@ it('restores batch parts from durable history after moving and rolling back a co
  expect(linkConversationInputs('s',native,[message('batch-native',boundary,text)])[0].batch).toEqual(parts);
  expect(linkConversationInputs('other',native,[message('batch-native',boundary,text)])[0].batch).toBeUndefined();
 });
+
+it('hides the bound quoted task suffix in live, recovered and durable conversation text only',async()=>{
+ const client='quoted_reply-123',text='不用',raw=text+'\n\n[Platform task reference: '+client+']';
+ const boundary=statSync(file).size;await rememberConversationInput('s',binding,client,raw);
+ const live={...message('quoted-user',boundary,raw),client_id:client,content_blocks:[{type:'text' as const,index:0,text:raw}]};
+ expect(linkConversationInputs('s',native,[live])[0]).toMatchObject({text,client_id:client,content_blocks:[{type:'text',index:0,text}]});
+ const durable=message('quoted-user',boundary,raw);
+ expect(linkConversationInputs('s',native,[durable])[0]).toMatchObject({text,client_id:client});
+ expect(linkConversationInputs('s',native,[durable])[0].text).toBe(text);
+ expect(linkConversationInputs('other',native,[durable])[0].text).toBe(raw);
+ expect(linkConversationInputs('s',native,[{...live,id:'unrelated',sequence:boundary+200,client_id:'different-client'}])[0].text).toBe(raw);
+ expect(linkConversationInputs('s',native,[{...live,role:'assistant'}])[0].text).toBe(raw);
+ const explanation='[Platform task reference: '+client+'] 这是何意味';
+ expect(linkConversationInputs('s',native,[{...live,text:explanation}])[0].text).toBe(explanation);
+ const queued={...live,sequence:undefined,queued:true};expect(linkConversationInputs('s',native,[queued])[0].text).toBe(text);
+});

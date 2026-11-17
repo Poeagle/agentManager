@@ -156,7 +156,7 @@ describe('project notification classification through the native adapter and WeC
     const followups = frames.filter(frame=>frame.cmd==='aibot_send_msg');
     expect(followups).toHaveLength(2);
     expect(followups[1].body).toMatchObject({msgtype:'markdown',markdown:{content:'**通知项目 / 文档**\n\n好的。'}});
-    expect(getDb().prepare("SELECT count(*) n FROM platform_ai_outbox WHERE status='sent'").get()).toEqual({n:3});
+    expect(getDb().prepare("SELECT count(*) n FROM platform_ai_outbox WHERE status='sent'").get()).toEqual({n:2});
   });
 });
 
@@ -188,7 +188,8 @@ describe('WeCom quoted notification direct routing',()=>{
   worker.tick();await worker.drain();
   const input=api.mock.calls.find(call=>call[2]==='POST')!;expect(input[3]).toBe('/api/sessions/quick-tab/input');expect(input[4]?.input).toMatch(/^使用测试环境\n\n\[Platform task reference:/);expect(fetch).not.toHaveBeenCalled();
   worker.tick();await worker.drain();
-  await expect.poll(()=>frames.some(frame=>frame.body?.stream?.finish&&frame.body.stream.content.includes('已提交到'))).toBe(true);
+  expect(frames.some(frame=>frame.cmd==='aibot_respond_msg'&&frame.headers.req_id==='request-direct-reply')).toBe(false);
+  expect(getDb().prepare("SELECT count(*) n FROM platform_ai_outbox WHERE dedupe_key LIKE 'reply:%'").get()).toEqual({n:0});
  });
  it('rejects attachments in direct replies without downloading or silently dropping them',async()=>{
   const channel=bot();bind(channel.id);manager.start();await connected(channel.id);vi.stubGlobal('fetch',vi.fn());
