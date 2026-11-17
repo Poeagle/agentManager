@@ -128,8 +128,45 @@ it('shows only project, tab and full local date/time in the list and uses a cent
   mount();const dialog=await open();expect(dialog).toHaveAttribute('aria-modal','true');
   const list=within(dialog).getByRole('region',{name:'通知列表'});
   const source=await within(list).findByRole('button',{name:'项目 A · 标签 1'});
-  expect(source).toHaveTextContent('2026.11.17 13:58');expect(source).not.toHaveTextContent('问题 1');expect(source).not.toHaveTextContent('Agent 需要你的回答');
+  expect(source).toHaveTextContent('2026.11.17 13:58');expect(source).not.toHaveTextContent('项目 A');expect(source).not.toHaveTextContent('问题 1');expect(source).not.toHaveTextContent('Agent 需要你的回答');
   expect(notificationTime(new Date(2026,0,2,3,4).toISOString())).toBe('2026.01.02 03:04');
+});
+
+it('groups notified tabs under their project without merging projects with the same name',async()=>{
+  page.notifications=[row(4,{project_id:'second',project_name:'项目 A'}),row(3,{project_id:'p',project_name:'项目 A'}),row(2,{project_id:null,project_name:''}),row(1)];
+  mount();const dialog=await open(),list=within(dialog).getByRole('region',{name:'通知列表'});
+  await within(list).findByRole('button',{name:'项目 A · 标签 4'});
+  const projects=within(list).getAllByRole('group',{name:'项目 A'});expect(projects).toHaveLength(2);
+  expect(within(projects[0]).getByRole('button',{name:'项目 A · 标签 4'})).toBeInTheDocument();
+  expect(within(projects[1]).getAllByRole('button',{name:/^项目 A · 标签/})).toHaveLength(2);
+  expect(within(list).getByRole('group',{name:'工作会话'})).toHaveTextContent('标签 2');
+  expect(within(list).queryByText('问题 4')).not.toBeInTheDocument();
+});
+
+it('preserves project folding and the open reply while new notified tabs arrive',async()=>{
+  mount();const dialog=await open();fireEvent.click(await within(dialog).findByRole('button',{name:'项目 A · 标签 1'}));
+  await screen.findByTestId('notification-conversation');fireEvent.change(screen.getByRole('textbox',{name:'通知回复草稿'}),{target:{value:'继续编辑'}});
+  const toggle=within(dialog).getByRole('button',{name:'项目 A',exact:true});fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute('aria-expanded','false');expect(within(dialog).queryByRole('button',{name:'项目 A · 标签 1'})).not.toBeInTheDocument();
+  page={...page,notifications:[row(2),row(1)],pending:2,unread:2,through_id:2};
+  await act(()=>client.invalidateQueries({queryKey:['notifications','u']}));
+  expect(toggle).toHaveAttribute('aria-expanded','false');expect(screen.getByRole('textbox',{name:'通知回复草稿'})).toHaveValue('继续编辑');
+  fireEvent.click(toggle);expect(toggle).toHaveAttribute('aria-expanded','true');
+  expect(within(dialog).getByRole('button',{name:'项目 A · 标签 2'})).toBeInTheDocument();
+  expect(within(dialog).getByRole('button',{name:'项目 A · 标签 1'})).toHaveAttribute('aria-pressed','true');
+});
+
+it('groups earlier pages into existing projects and removes a project after its last notice is handled',async()=>{
+  vi.mocked(notificationApi.list).mockImplementation(async query=>query?.before?{...page,notifications:[row(1)],has_more:false}:{...page,notifications:[row(3)],has_more:true});
+  mount();const dialog=await open(),list=within(dialog).getByRole('region',{name:'通知列表'});
+  fireEvent.click(await within(list).findByRole('button',{name:'加载更早的通知'}));
+  await within(list).findByRole('button',{name:'项目 A · 标签 1'});
+  expect(within(list).getAllByRole('group',{name:'项目 A'})).toHaveLength(1);
+  expect(within(list).getAllByRole('button',{name:/^项目 A · 标签/})).toHaveLength(2);
+  vi.mocked(notificationApi.list).mockResolvedValue({...page,notifications:[],has_more:false,pending:0,unread:0});
+  await act(()=>client.invalidateQueries({queryKey:['notifications','u']}));
+  await waitFor(()=>expect(within(list).queryByRole('group',{name:'项目 A'})).not.toBeInTheDocument());
+  expect(within(list).getByText('目前没有待处理事项')).toBeInTheDocument();
 });
 
 it('removes answered and submitted notifications even under all without losing an open reply draft',async()=>{

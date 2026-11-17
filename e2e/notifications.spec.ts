@@ -69,6 +69,15 @@ test('notifies changed sessions across closed projects, answers in the centered 
     await expect(drawer.locator('.session-chat-message-statistics')).toHaveCount(0);
     await expect(drawer.getByRole('combobox',{name:'发送模式'})).toHaveCount(0);
     const noticeList=drawer.getByRole('region',{name:'通知列表'});
+    const projectGroup=noticeList.getByRole('group',{name:'通知验证项目'});
+    await expect(projectGroup.getByRole('button',{name:'通知验证项目',exact:true})).toHaveAttribute('aria-expanded','true');
+    const tabRow=projectGroup.getByRole('button',{name:'通知验证项目 · 兼容性修复',exact:true});
+    await expect(tabRow).toContainText('兼容性修复');await expect(tabRow).not.toContainText('通知验证项目');
+    const projectBox=await projectGroup.getByRole('button',{name:'通知验证项目',exact:true}).boundingBox(),tabBox=await tabRow.boundingBox();
+    expect(tabBox!.x).toBeGreaterThan(projectBox!.x+10);
+    await projectGroup.getByRole('button',{name:'通知验证项目',exact:true}).click();await expect(tabRow).not.toBeVisible();
+    await expect(drawer.getByRole('region',{name:'会话对话'})).toContainText('兼容性检查完成');
+    await projectGroup.getByRole('button',{name:'通知验证项目',exact:true}).click();await expect(tabRow).toBeVisible();
     await expect(noticeList.locator('time')).toHaveText(/^\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}$/);
     await expect(noticeList).not.toContainText('兼容性检查完成');
     await page.screenshot({path:testInfo.outputPath('notification-result-desktop.png')});

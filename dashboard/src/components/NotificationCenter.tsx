@@ -1,7 +1,7 @@
-import {lazy,Suspense,useCallback,useEffect,useRef,useState} from 'react';
+import {lazy,Suspense,useCallback,useEffect,useId,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
 import {useQuery,useInfiniteQuery,useQueryClient} from '@tanstack/react-query';
-import {ArrowLeft,ArrowUpRight,Bell,BellOff,CheckCheck,Loader2,X} from 'lucide-react';
+import {ArrowLeft,ArrowUpRight,Bell,BellOff,CheckCheck,ChevronDown,Folder,Loader2,X} from 'lucide-react';
 import {api,type Project} from '../lib/api';
 import {agentNativeId} from '../lib/agents';
 import {notificationApi,notificationFocus,notificationIsVisible,notificationTime,type Notification,type NotificationFilter} from '../lib/notifications';
@@ -32,6 +32,7 @@ function NotificationDetail({notification,userId,onOpen,onRead}:{notification:No
 /** Query pages remain authoritative, including removals. New rows appear on
  * the next stream invalidation while the selected conversation stays mounted. */
 function NotificationList({userId,filter,project,selected,onSelect,onDismiss,busy}:{userId:string;filter:NotificationFilter;project:string;selected:number|undefined;onSelect:(n:Notification)=>void;onDismiss:(n:Notification)=>void;busy:boolean}) {
+  const groupId=useId(),[collapsed,setCollapsed]=useState<Set<string|null>>(()=>new Set());
   const query=useInfiniteQuery({queryKey:['notifications',userId,'list',filter,project],initialPageParam:undefined as number|undefined,
     queryFn:({pageParam})=>notificationApi.list({filter,...project?{project_id:project}:{},...pageParam?{before:pageParam}:{}}),
     getNextPageParam:page=>page.has_more?page.notifications.at(-1)?.id:undefined});
@@ -40,15 +41,28 @@ function NotificationList({userId,filter,project,selected,onSelect,onDismiss,bus
     if(seen.has(row.id)||row.state==='resolved'||row.state==='submitted')return false;
     seen.add(row.id);return true;
   });
+  const groups=new Map<string|null,{name:string;rows:Notification[]}>();
+  for(const row of rows){
+    let group=groups.get(row.project_id);
+    if(!group){group={name:row.project_name||'工作会话',rows:[]};groups.set(row.project_id,group);}
+    group.rows.push(row);
+  }
   return <div className="notification-list-scroll">
     {query.isPending&&<div className="notification-empty" role="status"><Loader2 size={16} className="animate-spin"/>正在读取通知…</div>}
     {!query.isPending&&!query.isError&&!rows.length&&<div className="notification-empty"><Bell size={24}/>{filter==='pending'?'目前没有待处理事项':filter==='unread'?'没有未读通知':'暂无通知'}</div>}
-    {rows.map(row=><article key={row.id} className="notification-row" data-kind={row.kind} data-selected={selected===row.id} data-unread={!row.read_at}>
+    {[...groups].map(([projectId,group],index)=><section key={JSON.stringify(projectId)} className="notification-project" role="group" aria-label={group.name}>
+      <h4><button className="notification-project-toggle" aria-expanded={!collapsed.has(projectId)} aria-controls={`${groupId}-${index}`} onClick={()=>setCollapsed(previous=>{const next=new Set(previous);if(next.has(projectId))next.delete(projectId);else next.add(projectId);return next;})}>
+        <ChevronDown size={12} className="notification-project-chevron"/><Folder size={14}/><span title={group.name}>{group.name}</span>
+      </button></h4>
+      <div id={`${groupId}-${index}`} hidden={collapsed.has(projectId)} className="notification-project-tabs">
+    {group.rows.map(row=><article key={row.id} className="notification-row" data-kind={row.kind} data-selected={selected===row.id} data-unread={!row.read_at}>
       <button className="notification-row-main" onClick={()=>onSelect(row)} aria-label={`${row.project_name} · ${row.display_name}`} aria-pressed={selected===row.id}>
-        <span className="notification-row-source"><strong title={`${row.project_name} · ${row.display_name}`}>{row.project_name||'工作会话'} · {row.display_name}</strong><time dateTime={row.created_at}>{notificationTime(row.created_at)}</time></span>
+        <span className="notification-row-source"><strong title={row.display_name}>{row.display_name}</strong><time dateTime={row.created_at}>{notificationTime(row.created_at)}</time></span>
       </button>
       <button className="notification-row-read" disabled={busy} aria-label={`标为已读：${row.project_name} · ${row.display_name}`} title="标为已读并移除通知，无需回复" onClick={()=>onDismiss(row)}><CheckCheck size={14}/></button>
     </article>)}
+      </div>
+    </section>)}
     {query.error&&<p role="alert" className="notification-error">{query.error.message}<button onClick={()=>void query.refetch()}>重试</button></p>}
     {query.hasNextPage&&<button className="notification-load" disabled={query.isFetchingNextPage} onClick={()=>void query.fetchNextPage()}>{query.isFetchingNextPage?'正在读取…':'加载更早的通知'}</button>}
   </div>;
