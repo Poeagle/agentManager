@@ -16,7 +16,7 @@ export function ConversationEnvironmentSelector({sessionId,busy,onTransferred,re
  if(!query.data)return null;
  return <><label className="conversation-control-select"><span>账号</span><select aria-label="选择 Codex 账号环境" disabled={busy||working} value={query.data.current} onChange={e=>{setTarget(e.target.value);setModels([]);setSelection('');setChecks([]);setError('');}}>{query.data.environments.map(e=><option key={e.id} value={e.id} disabled={!e.enabled||!e.can_control}>{e.name}</option>)}</select><ChevronDown size={12}/></label>
  {target&&<Dialog title="保留上下文切换 Codex 环境" busy={working} onClose={close}>
-  <p>将完整原生历史复制到“{query.data.environments.find(e=>e.id===target)?.name}”，验证恢复成功后切换当前标签页。原会话保留；运行中的任务须先完成。</p>
+  <p>将完整原生历史复制到“{query.data.environments.find(e=>e.id===target)?.name}”，验证恢复成功后切换当前标签页。原会话保留；运行中的任务须先完成。已清理的历史附件保留引用，但不会恢复文件，也不阻止切换。</p>
   <button type="button" disabled={working||busy} onClick={()=>void preflight()}>{working?'处理中…':'预检连接、登录、模型与项目权限'}</button>
   {checks.length>0&&<EnvironmentChecks checks={checks}/>}
   {models.length>0&&<><label className="mt-3 block">目标模型<select aria-label="目标环境模型" value={selection} disabled={working} onChange={e=>{setSelection(e.target.value);setEffort(models.find(m=>modelKey(m)===e.target.value)?.defaultEffort||'');}}>{models.map(m=><option key={modelKey(m)} value={modelKey(m)}>{query.data?.environments.find(e=>e.id===target)?.auth_mode==='api'?m.name:`${m.provider?m.provider+' · ':''}${m.name}`}</option>)}</select></label><label className="mt-3 block">推理强度<select aria-label="目标环境推理强度" value={effort} disabled={working} onChange={e=>setEffort(e.target.value)}>{model?.efforts.map(e=><option key={e.value} value={e.value}>{e.description||e.value||'默认'}</option>)}</select></label></>}

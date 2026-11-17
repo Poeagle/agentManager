@@ -9,7 +9,7 @@ import {stageEnvironmentHistory} from './account-files.js';
 import {preparePagedHistory,omitAdditionalToolsForEndpoint} from './history-bundle.js';
 import {readAgentManagement} from '../management-store.js';
 import {findCodexRollout} from '../../prompt-context.js';
-import {checkAccountProject,accountCommand} from './account-transport.js';
+import {checkAccountProject,checkAccountAttachments} from './account-transport.js';
 import {readEngineModelsForEnvironment} from './controls.js';
 import type {ModelPreference} from '../types.js';
 import {recordUsageImports,recordUsageFork} from './usage-provenance.js';
@@ -57,7 +57,7 @@ export async function transferCodexEnvironment(sessionId:string,userId:string,ta
    await checkAccountProject(environmentConnection(target),context.projectPath!);
    const attachments=getDb().prepare('SELECT attachments FROM conversation_attachments WHERE session_id=?').all(sessionId) as Array<{attachments:string}>;
    const paths=[...new Set(attachments.flatMap(row=>{try{return (JSON.parse(row.attachments) as Array<{path:string}>).map(x=>x.path);}catch{return [];}}))];
-   if(paths.length)await accountCommand(environmentConnection(target),`import os,sys\npaths=${JSON.stringify(paths)}\nif any(not os.path.isfile(p) or not os.access(p,os.R_OK) for p in paths):sys.exit('PROJECT_ACCESS')\nprint('ok')`);
+   await checkAccountAttachments(environmentConnection(target),paths);
   }
   const source=before.thread.historyMode==='paginated'?before.thread.path:await findCodexRollout(native);if(typeof source!=='string'||!source.startsWith('/'))throw Error('找不到可完整复制的原生会话历史，原会话保持不变');
   const settings=await sourceRequest('thread/resume',{threadId:native,excludeTurns:true});

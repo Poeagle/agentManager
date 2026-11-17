@@ -48,6 +48,7 @@ function connectionFailure(stderr:string):AccountConnectionError {
  if(/ENGINE_PRESENT_NOT_READY/.test(stderr))return new AccountConnectionError('codex_process','目标用户的引擎进程存在但未就绪，请在该用户下检查引擎日志；平台不会仅凭 PID 杀死进程');
  if(/CODEX_NOT_FOUND/.test(stderr))return new AccountConnectionError('codex_executable','目标用户下找不到 Codex 命令，请安装 Codex 或填写绝对命令路径');
  if(/CODEX_PREFLIGHT_MODELS_FAILED/.test(stderr))return new AccountConnectionError('models','SSH 已连通，但目标用户的 Codex 无法读取模型目录，请检查该用户的 Codex 配置和版本');
+ if(/ATTACHMENT_ACCESS/.test(stderr))return new AccountConnectionError('attachment_access','目标系统用户无法读取仍存在的历史附件，请检查附件及其上级目录的读取权限；原会话已保留');
  if(/PROJECT_ACCESS/.test(stderr))return new AccountConnectionError('project_access','目标系统用户无法读写该项目目录，请检查项目目录权限');
  if(/HISTORY_ACCESS/.test(stderr))return new AccountConnectionError('history_access','目标用户无法读取该会话历史文件');
  if(/python3.*not found|python3:/.test(stderr))return new AccountConnectionError('runtime','目标用户下找不到 python3，无法执行本机连接检查');
@@ -138,6 +139,23 @@ export async function closeAccountTransport(id:string):Promise<void> {
 }
 export async function closeAccountTransports():Promise<void>{await Promise.all([...tunnels.keys()].map(closeAccountTransport));}
 export async function checkAccountProject(c:AccountConnection,path:string):Promise<void>{await accountCommand(c,`import os,sys,tempfile\np=${JSON.stringify(path)}\nif not os.path.isdir(p) or not os.access(p,os.R_OK|os.W_OK|os.X_OK):sys.exit('PROJECT_ACCESS')\nwith tempfile.NamedTemporaryFile(dir=p,prefix='.codex-access-check-') as f:f.write(b'ok')\nprint('ok')`);}
+
+/** Retention can remove old attachments without invalidating the conversation.
+ * Keep their original history references; only inaccessible retained files block transfer. */
+export async function checkAccountAttachments(c:AccountConnection,paths:string[]):Promise<void> {
+ if(!paths.length)return;
+ await accountCommand(c,`import os,sys,stat
+paths=${JSON.stringify(paths)}
+for p in paths:
+ try:
+  mode=os.stat(p).st_mode
+ except FileNotFoundError:
+  continue
+ except OSError:
+  sys.exit('ATTACHMENT_ACCESS')
+ if not stat.S_ISREG(mode) or not os.access(p,os.R_OK):sys.exit('ATTACHMENT_ACCESS')
+print('ok')`);
+}
 
 /** Read-only connection/model probe. It uses the account's existing login and
  * terminates only its own temporary stdio child; no model turn is submitted. */

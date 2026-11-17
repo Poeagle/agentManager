@@ -5,9 +5,9 @@ import {createTestDatabase} from './helpers/database.js';
 const state=vi.hoisted(()=>({execute:vi.fn(),forward:vi.fn(),ready:vi.fn(async()=>true)}));
 vi.mock('child_process',async original=>{(state.execute as any)[Symbol.for('nodejs.util.promisify.custom')]=(...args:any[])=>new Promise((resolve,reject)=>state.execute(...args,(error:unknown,stdout:string,stderr:string)=>error?reject(error):resolve({stdout,stderr})));return {...await original<typeof import('child_process')>(),execFile:state.execute,spawn:state.forward};});
 vi.mock('../src/services/agents/codex/process-lifecycle.js',()=>({waitForSocketReady:state.ready}));
-import {readFile,stat} from 'fs/promises';
+import {readFile,stat,writeFile,mkdir} from 'fs/promises';
 import {execFileSync} from 'child_process';
-import {sshArguments,sshEnvironment,accountCommand,accountCommandInput,localCommandInput,ensureAccountTransport,closeAccountTransports,validateAccountConnection} from '../src/services/agents/codex/account-transport.js';
+import {sshArguments,sshEnvironment,checkAccountAttachments,accountCommand,accountCommandInput,localCommandInput,ensureAccountTransport,closeAccountTransports,validateAccountConnection} from '../src/services/agents/codex/account-transport.js';
 const connection={username:'fixture',port:22,identityFile:'',codexCommand:'codex',codexHome:''};
 let db:ReturnType<typeof createTestDatabase>;
 beforeEach(()=>{
@@ -55,11 +55,32 @@ describe('same-machine account SSH transport',()=>{
   ['CODEX_LOGIN_REQUIRED','codex_authentication','codex login'],
   ['CODEX_NOT_FOUND','codex_executable','Codex 命令'],
   ['PROJECT_ACCESS','project_access','目录权限'],
+  ['ATTACHMENT_ACCESS','attachment_access','历史附件'],
   ['ENGINE_PRESENT_NOT_READY','codex_process','不会仅凭 PID'],
  ])('reports %s by stage without exposing stderr',async(stderr,stage,message)=>{
   state.execute.mockImplementationOnce((_cmd,_args,_options,callback)=>callback(Object.assign(Error('private error'),{stderr:stderr+' SECRET_VALUE',code:255}),'',''));
   const error=await accountCommand(connection,'print("ok")').catch(e=>e);expect(error).toMatchObject({stage,message:expect.stringContaining(message)});expect(error.message).not.toContain('SECRET_VALUE');
  });
+ it('allows retained readable attachments and expired paths without changing files',async()=>{
+  const retained=db.dir+"/保留 '截图.png",expired=db.dir+'/expired.png';await writeFile(retained,'image');
+  state.execute.mockImplementation((_cmd,args,_options,callback)=>{
+   try{callback(null,execFileSync('/bin/sh',['-c',args.at(-1)],{encoding:'utf8'}),'');}catch(e){callback(e,'','');}
+  });
+  await expect(checkAccountAttachments(connection,[expired,retained])).resolves.toBeUndefined();
+  expect(await readFile(retained,'utf8')).toBe('image');await expect(stat(expired)).rejects.toMatchObject({code:'ENOENT'});
+ });
+ it.each(['unreadable','inaccessible-parent','directory'])('reports %s as attachment access rather than project permissions',async(kind)=>{
+  const path=db.dir+'/attachment';if(kind==='directory')await mkdir(path);else await writeFile(path,'image');
+  state.execute.mockImplementation((_cmd,args,_options,callback)=>{
+   // Inject filesystem denial into the generated Python script so this stays deterministic even as root.
+   const prefix=kind==='unreadable'?"import os; os.access=lambda *args: False\n":kind==='inaccessible-parent'?"import os\ndef denied(*args, **kwargs): raise PermissionError()\nos.stat=denied\n":'';
+   const command=args.at(-1) as string;
+   const script=execFileSync('/bin/sh',['-c',command.replace('python3 -c ','printf %s ')],{encoding:'utf8'});
+   try{callback(null,execFileSync('python3',['-c',prefix+script],{encoding:'utf8',stdio:['ignore','pipe','pipe']}),'');}catch(e){callback(e,'','');}
+  });
+  await expect(checkAccountAttachments(connection,[path])).rejects.toMatchObject({stage:'attachment_access',message:expect.stringContaining('历史附件')});
+ });
+ it('skips SSH attachment checks when no attachments were recorded',async()=>{await checkAccountAttachments(connection,[]);expect(state.execute).not.toHaveBeenCalled();});
  it('quotes the target script and fixes the destination to localhost',async()=>{await accountCommand(connection,"print('quoted $HOME; `id`')");const [command,args]=state.execute.mock.calls[0];expect(command).toBe('ssh');expect(args).toContain('fixture@127.0.0.1');expect(args).toContain('StrictHostKeyChecking=yes');expect(args.at(-1)).toContain("'\\''");});
  it('reuses a single tunnel for concurrent launches and closes only that tunnel',async()=>{
   const results=await Promise.all([ensureAccountTransport('account:fixture',connection),ensureAccountTransport('account:fixture',connection)]);expect(results[0].socket).toBe(results[1].socket);expect(state.execute).toHaveBeenCalledOnce();expect(state.forward).toHaveBeenCalledOnce();
