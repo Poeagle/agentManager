@@ -2,7 +2,7 @@ import {lazy,Suspense,useCallback,useEffect,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
 import {useQuery,useQueryClient} from '@tanstack/react-query';
 import {ArrowLeft,ArrowUpRight,Bell,BellOff,CheckCheck,CheckCircle2,ChevronRight,Loader2,MessageCircleQuestion,ShieldCheck,TriangleAlert,X} from 'lucide-react';
-import {api} from '../lib/api';
+import {api,type Project} from '../lib/api';
 import {agentNativeId} from '../lib/agents';
 import {notificationApi,notificationFocus,notificationIsVisible,notificationLabels,type Notification,type NotificationFilter,type NotificationPage} from '../lib/notifications';
 import {useStreamStore} from '../lib/websocket';
@@ -63,9 +63,11 @@ function NotificationList({page,latest,filter,project,selected,onSelect,onOpen}:
   </div>;
 }
 
-export function NotificationCenter({userId,projects,onOpen,onDetailChange}:{userId:string;projects:Array<{id:string;name:string;path?:string}>;onOpen:(n:Notification,raw?:boolean)=>void;onDetailChange:(open:boolean)=>void}) {
+export function NotificationCenter({userId,projects,onOpen,onDetailChange}:{userId:string;projects:Array<Pick<Project,'id'|'name'|'owner_id'>>;onOpen:(n:Notification,raw?:boolean)=>void;onDetailChange:(open:boolean)=>void}) {
   const client=useQueryClient(),permissions=usePermissions(),canRead=hasPermission(permissions.data,'agent_api');
-  const [open,setOpen]=useState(false),[filter,setFilter]=useState<NotificationFilter>('pending'),[project,setProject]=useState('');
+  const [open,setOpen]=useState(false),[filter,setFilter]=useState<NotificationFilter>('pending'),[projectSelection,setProject]=useState('');
+  const ownProjects=projects.filter(project=>project.owner_id===userId);
+  const project=ownProjects.some(project=>project.id===projectSelection)?projectSelection:'';
   const [selected,setSelected]=useState<Notification|null>(null),[toast,setToast]=useState<Notification|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   const button=useRef<HTMLButtonElement>(null),drawer=useRef<HTMLElement>(null),known=useRef<Map<number,string>|null>(null),reading=useRef(new Set<number>()),lastSeenId=useRef(0);
   const summary=useQuery({queryKey:['notifications',userId],queryFn:()=>notificationApi.list(),enabled:canRead});
@@ -114,7 +116,7 @@ export function NotificationCenter({userId,projects,onOpen,onDetailChange}:{user
     {toast&&createPortal(<aside className="notification-toast" aria-label="新消息通知" aria-live="polite"><button className="notification-toast-close" aria-label="关闭提醒" onClick={()=>setToast(null)}><X size={14}/></button><strong>{toast.project_name} · {toast.display_name}</strong><p>{toast.title}</p><div className="notification-toast-preview">{toast.body}</div><footer><button onClick={()=>select(toast)}>查看并处理</button><button onClick={()=>jump(toast)}>打开标签页<ArrowUpRight size={12}/></button></footer></aside>,document.body)}
     {open&&createPortal(<aside id="notification-center" ref={drawer} role="dialog" aria-modal="false" aria-label="消息通知" tabIndex={-1} className="notification-drawer" data-detail={!!current}>
       <header className="notification-header"><Bell size={18}/><strong>消息通知</strong><span>待处理 {pending} · 未读 {unread}</span><button aria-label="关闭消息通知" onClick={()=>{setOpen(false);button.current?.focus();}}><X size={18}/></button></header>
-      <div className="notification-toolbar"><div role="group" aria-label="通知分类">{([['pending','待处理'],['unread','未读'],['all','全部']] as const).map(([value,label])=><button key={value} aria-pressed={filter===value} onClick={()=>setFilter(value)}>{label}</button>)}</div><select aria-label="筛选通知项目" value={project} onChange={event=>setProject(event.target.value)}><option value="">全部项目</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select><button disabled={busy||!unread} title="全部标为已读，保留待处理事项" aria-label="全部标为已读" onClick={()=>void allRead()}><CheckCheck size={16}/></button>{project&&<button disabled={busy} title={summary.data?.preferences.muted_project_ids.includes(project)?'恢复项目提醒':'静音项目提醒，通知仍保留'} aria-label={summary.data?.preferences.muted_project_ids.includes(project)?'恢复项目提醒':'静音项目提醒'} onClick={()=>void mute()}><BellOff size={15}/></button>}</div>
+      <div className="notification-toolbar"><div role="group" aria-label="通知分类">{([['pending','待处理'],['unread','未读'],['all','全部']] as const).map(([value,label])=><button key={value} aria-pressed={filter===value} onClick={()=>setFilter(value)}>{label}</button>)}</div><select aria-label="筛选通知项目" value={project} onChange={event=>setProject(event.target.value)}><option value="">全部项目</option>{ownProjects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select><button disabled={busy||!unread} title="全部标为已读，保留待处理事项" aria-label="全部标为已读" onClick={()=>void allRead()}><CheckCheck size={16}/></button>{project&&<button disabled={busy} title={summary.data?.preferences.muted_project_ids.includes(project)?'恢复项目提醒':'静音项目提醒，通知仍保留'} aria-label={summary.data?.preferences.muted_project_ids.includes(project)?'恢复项目提醒':'静音项目提醒'} onClick={()=>void mute()}><BellOff size={15}/></button>}</div>
       {(error||summary.error||list.error)&&<div className="notification-error" role="alert">{error||summary.error?.message||list.error?.message}<button onClick={()=>{setError('');void refresh();}}>重试</button></div>}
       {!connected&&<p className="notification-connection" role="status">实时通知连接已断开，正在重新连接…</p>}
       {!!summary.data?.monitoring_limited&&<p className="notification-connection" role="status">实时关注已达上限，另有 {summary.data.monitoring_limited} 个会话暂未接入提醒。</p>}

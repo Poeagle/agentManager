@@ -20,8 +20,33 @@ beforeEach(()=>{
   useStreamStore.setState({connected:true});
 });
 afterEach(()=>{client.clear();vi.restoreAllMocks();});
-function mount(){return render(<QueryClientProvider client={client}><NotificationCenter userId="u" projects={[{id:'p',name:'项目 A'}]} onOpen={jump} onDetailChange={detail}/></QueryClientProvider>);}
+function mount(){return render(<QueryClientProvider client={client}><NotificationCenter userId="u" projects={[{id:'p',name:'项目 A',owner_id:'u'}]} onOpen={jump} onDetailChange={detail}/></QueryClientProvider>);}
 async function open(){fireEvent.click(await screen.findByRole('button',{name:'消息通知，1 条未读'}));return screen.findByRole('dialog',{name:'消息通知'});}
+
+it('limits project options to the current owner even with administrative project access',async()=>{
+  vi.mocked(api.rbac.me).mockResolvedValue({roles:[],catalog:[],permissions:{agent_api:'write',project_access:'write',users:'write'}});
+  render(<QueryClientProvider client={client}><NotificationCenter userId="u" projects={[
+    {id:'p',name:'我的项目',owner_id:'u'},
+    {id:'other',name:'其他用户的项目',owner_id:'another-user'},
+    {id:'unowned',name:'未分配项目',owner_id:null},
+    {id:'unknown',name:'归属未知的项目'},
+  ]} onOpen={jump} onDetailChange={detail}/></QueryClientProvider>);
+  const drawer=await open(),select=within(drawer).getByRole('combobox',{name:'筛选通知项目'});
+  expect(within(select).getAllByRole('option').map(option=>option.textContent)).toEqual(['全部项目','我的项目']);
+  fireEvent.change(select,{target:{value:'p'}});
+  await waitFor(()=>expect(notificationApi.list).toHaveBeenCalledWith({filter:'pending',project_id:'p'}));
+});
+
+it('clears a stale project scope when the selected project no longer belongs to the current user',async()=>{
+  const view=mount(),drawer=await open();
+  const select=within(drawer).getByRole('combobox',{name:'筛选通知项目'});
+  fireEvent.change(select,{target:{value:'p'}});expect(select).toHaveValue('p');
+  view.rerender(<QueryClientProvider client={client}><NotificationCenter userId="u" projects={[{id:'p',name:'已转交项目',owner_id:'another-user'}]} onOpen={jump} onDetailChange={detail}/></QueryClientProvider>);
+  expect(select).toHaveValue('');expect(within(select).getAllByRole('option')).toHaveLength(1);
+  expect(within(drawer).queryByRole('button',{name:'静音项目提醒'})).not.toBeInTheDocument();
+  fireEvent.click(within(drawer).getByRole('button',{name:'全部标为已读'}));
+  await waitFor(()=>expect(notificationApi.read).toHaveBeenCalledWith({through_id:1}));
+});
 
 it('opens the compact notification list and marks read only once the selected content is actually shown',async()=>{
   mount();const drawer=await open();await within(drawer).findByText('问题 1');
