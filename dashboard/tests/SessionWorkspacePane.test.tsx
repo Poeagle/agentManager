@@ -4,6 +4,7 @@ import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {SessionWorkspacePane} from '../src/components/SessionWorkspacePane';
+import {SessionConversation} from '../src/components/SessionConversation';
 import {api,type ConversationPage,type Session} from '../src/lib/api';
 vi.mock('../src/lib/api',async(original)=>{
   const actual=await original<typeof import('../src/lib/api')>();
@@ -25,6 +26,29 @@ afterEach(()=>{client.clear();vi.unstubAllGlobals();});
 function typeDraft(node:HTMLElement,value:string){node.textContent=value;fireEvent.input(node);}
 function mount(onReload?:()=>Promise<void>) {return render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active onReload={onReload} renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);}
 describe('chat/raw terminal display',()=>{
+  it.each(['full','notification'] as const)('keeps message and progress statistics scoped to the %s presentation',async presentation=>{
+    const statistics={turn_id:'turn',sequence:1,complete:true,requests:1,tool_calls:3,tool_rounds:2,tokens:{total_tokens:500,input_tokens:400,output_tokens:100}};
+    page.messages=[page.messages[0],{id:'progress',role:'assistant',phase:'commentary',text:'检查进展',timestamp:'2026-11-17T00:00:01Z',turn_id:'turn',statistics},{...page.messages[1],phase:'final',turn_id:'turn',statistics}];
+    render(<QueryClientProvider client={client}><SessionConversation session={session} userId="u" active presentation={presentation} onRaw={()=>{}}/></QueryClientProvider>);
+    await screen.findByText('检查已完成。');
+    if(presentation==='notification'){
+      expect(document.querySelectorAll('.session-chat-message-statistics,.session-chat-message-duration')).toHaveLength(0);
+      expect(screen.queryByRole('combobox',{name:'发送模式'})).not.toBeInTheDocument();
+      expect(screen.queryByRole('button',{name:'优化当前输入'})).not.toBeInTheDocument();
+      expect(screen.getByRole('button',{name:'更多回复选项'})).toHaveAttribute('aria-expanded','false');
+      fireEvent.click(screen.getByRole('button',{name:'更多回复选项'}));
+      expect(screen.getByRole('combobox',{name:'发送模式'})).toBeInTheDocument();
+    }else expect(document.querySelectorAll('.session-chat-message-statistics').length).toBeGreaterThan(0);
+  });
+  it('retains an unconfirmed reply in the compact notification composer',async()=>{
+    vi.mocked(api.agent.sendInput).mockRejectedValueOnce(new Error('连接中断，接收结果待核对'));
+    render(<QueryClientProvider client={client}><SessionConversation session={session} userId="u" draftScope="notifications" active presentation="notification" onRaw={()=>{}}/></QueryClientProvider>);
+    const input=await screen.findByRole('textbox',{name:'发送给当前 Agent 的消息'});typeDraft(input,'保留这条回复');
+    await waitFor(()=>expect(screen.getByRole('button',{name:'发送消息'})).toBeEnabled());
+    fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+    await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('连接中断'));
+    expect(input).toHaveTextContent('保留这条回复');expect(api.agent.sendInput).toHaveBeenCalledTimes(1);
+  });
   it('opens the raw terminal when an error notification explicitly requests it',async()=>{
     render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active focusTarget={{nativeId:'native',requestId:1,view:'terminal'}} renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);
     await waitFor(()=>expect(screen.getByTestId('raw')).toHaveAttribute('data-visible','true'));

@@ -12,7 +12,7 @@ export type NotificationState='pending'|'recovering'|'submitted'|'resolved'|'inf
 export interface Notification {
   id:number;user_id:string;session_id:string;native_id:string;source_id:string;
   message_id:string|null;turn_id:string|null;kind:NotificationKind;state:NotificationState;
-  title:string;body:string;read_at:string|null;created_at:string;updated_at:string;
+  title:string;body:string;read_at:string|null;dismissed_at:string|null;created_at:string;updated_at:string;
 }
 export type NotificationSession=AgentSession&{id:string;project_id:string|null;created_by_user_id:string|null;mode:string;status:string};
 
@@ -46,9 +46,11 @@ export function putNotification(session:NotificationSession,input:Pick<Notificat
   const now=new Date().toISOString();
   const result=getDb().prepare(`INSERT INTO notifications(user_id,session_id,native_id,source_id,kind,state,title,body,message_id,turn_id,created_at,updated_at)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,session_id,native_id,kind,source_id) DO UPDATE SET
-    state=excluded.state,title=excluded.title,body=excluded.body,message_id=COALESCE(excluded.message_id,notifications.message_id),updated_at=excluded.updated_at,
-    read_at=CASE WHEN excluded.state='pending' AND notifications.state!='pending' THEN NULL ELSE notifications.read_at END
-    WHERE notifications.state!=excluded.state OR notifications.title!=excluded.title OR notifications.body!=excluded.body
+    state=CASE WHEN notifications.kind='result' AND notifications.state='resolved' THEN 'resolved' ELSE excluded.state END,
+    dismissed_at=CASE WHEN notifications.kind='error' AND excluded.message_id IS NOT NULL AND notifications.message_id IS NOT excluded.message_id THEN NULL ELSE notifications.dismissed_at END,
+    title=excluded.title,body=excluded.body,message_id=COALESCE(excluded.message_id,notifications.message_id),updated_at=excluded.updated_at,
+    read_at=CASE WHEN excluded.state='pending' AND (notifications.state!='pending' OR (notifications.kind='error' AND excluded.message_id IS NOT NULL AND notifications.message_id IS NOT excluded.message_id)) THEN NULL ELSE notifications.read_at END
+    WHERE (notifications.state!=excluded.state AND NOT(notifications.kind='result' AND notifications.state='resolved')) OR notifications.title!=excluded.title OR notifications.body!=excluded.body
       OR (excluded.message_id IS NOT NULL AND notifications.message_id IS NOT excluded.message_id)`)
     .run(userId,session.id,native,input.source_id,input.kind,input.state,input.title.slice(0,240),input.body.slice(0,12000),input.message_id||null,input.turn_id||null,now,now);
   if(result.changes)notificationChanged(userId);
@@ -59,10 +61,35 @@ export function updateNotificationState(session:NotificationSession,kind:Notific
   if(result.changes&&session.created_by_user_id)notificationChanged(session.created_by_user_id);
 }
 
+/** Capture before dispatch so a later result cannot be consumed by an earlier
+ * input. Only an accepted/queued input settles these personal notifications. */
+export function notificationInputBoundary(session:AgentSession&{id:string},userId:string) {
+  return getDb().prepare(`SELECT id,message_id FROM notifications WHERE user_id=? AND session_id=? AND native_id=?
+    AND ((kind='result' AND state='info') OR (kind='error' AND state='pending'))`)
+    .all(userId,session.id,nativeConversationId(session)) as Pick<Notification,'id'|'message_id'>[];
+}
+export function settleNotificationsForInput(session:AgentSession&{id:string},userId:string,boundary:ReturnType<typeof notificationInputBoundary>) {
+  const stmt=getDb().prepare(`UPDATE notifications SET state=CASE WHEN kind='result' THEN 'resolved' ELSE 'submitted' END,updated_at=?
+    WHERE user_id=? AND session_id=? AND native_id=? AND id=? AND message_id IS ? AND ((kind='result' AND state='info') OR (kind='error' AND state='pending'))`);
+  const now=new Date().toISOString(),native=nativeConversationId(session);
+  const changes=getDb().transaction(()=>boundary.reduce((count,row)=>count+stmt.run(now,userId,session.id,native,row.id,row.message_id).changes,0))();
+  if(changes)notificationChanged(userId);
+}
+/** Stable native message order repairs old result notices after a reply was
+ * accepted in another client, including replies observed before a restart. */
+export function settleNotificationResults(session:NotificationSession,messageIds:string[],replyAt?:string) {
+  if((!messageIds.length&&!replyAt)||!session.created_by_user_id)return;
+  const ids=[...new Set(messageIds)].slice(0,256);
+  const result=getDb().prepare(`UPDATE notifications SET state='resolved',updated_at=? WHERE user_id=? AND session_id=? AND native_id=?
+    AND kind='result' AND state='info' AND (message_id IN (${ids.length?ids.map(()=>'?').join(','):'NULL'})${replyAt?' OR created_at<?':''})`)
+    .run(new Date().toISOString(),session.created_by_user_id,session.id,nativeConversationId(session),...ids,...replyAt?[replyAt]:[]);
+  if(result.changes)notificationChanged(session.created_by_user_id);
+}
+
 export function listNotifications(userId:string,query:{filter?:string;project_id?:string;before?:number}={}) {
   // Counts inspect metadata only; large bodies are read for this page alone.
   const rows=getDb().prepare(`SELECT id,user_id,session_id,native_id,source_id,message_id,turn_id,kind,state,title,
-    '' AS body,read_at,created_at,updated_at FROM notifications WHERE user_id=? ORDER BY id DESC`).all(userId) as Notification[];
+    '' AS body,read_at,dismissed_at,created_at,updated_at FROM notifications WHERE user_id=? ORDER BY id DESC`).all(userId) as Notification[];
   const sessions=new Map<string,NotificationSession|undefined>(),present=sessionPresenter(userId);
   const access=new Map<string,boolean>(),labels=new Map<string,ReturnType<typeof present>>();
   const preferences=notificationPreferences(userId),muted=new Set(preferences.muted_project_ids);
@@ -76,9 +103,10 @@ export function listNotifications(userId:string,query:{filter?:string;project_id
     if(!access.get(session.id))return [];
     if(!labels.has(session.id))labels.set(session.id,present(session));
     const current=nativeConversationId(session)===row.native_id;
-    const state=current?row.state:row.state==='info'?'info':'resolved';
+    const state=current?row.state:'resolved';
     const isMuted=!!session.project_id&&muted.has(session.project_id);
     throughId=Math.max(throughId,row.id);
+    if(row.dismissed_at||state==='resolved'||state==='submitted')return [];
     if(!isMuted&&!row.read_at){unread++;if(session.project_id)byProject[session.project_id]=(byProject[session.project_id]||0)+1;bySession[session.id]=(bySession[session.id]||0)+1;}
     if(!isMuted&&state==='pending')pending++;
     return [{...row,state,project_id:session.project_id,...labels.get(session.id)!,muted:isMuted,current_binding:current}];
@@ -98,6 +126,20 @@ export function markNotificationsRead(userId:string,ids:number[],throughId?:numb
     if(!selected.has(row.id)&&!(throughId&&row.id<=throughId))continue;
     const session=notificationSession(row.session_id);
     if(session&&(!projectId||session.project_id===projectId)&&canReadNotifications(session,userId))stmt.run(now,row.id,userId);
+  }})();
+  notificationChanged(userId);
+}
+
+/** Explicitly closing a notice is independent of the Agent's question or task.
+ * Keep its source identity so history/reconnect cannot restore the same notice. */
+export function dismissNotifications(userId:string,ids:number[],throughId?:number,projectId?:string) {
+  const rows=getDb().prepare('SELECT * FROM notifications WHERE user_id=? AND dismissed_at IS NULL').all(userId) as Notification[];
+  const selected=new Set(ids),now=new Date().toISOString();
+  const stmt=getDb().prepare('UPDATE notifications SET dismissed_at=?,read_at=COALESCE(read_at,?),updated_at=? WHERE id=? AND user_id=?');
+  getDb().transaction(()=>{for(const row of rows){
+    if(!selected.has(row.id)&&!(throughId&&row.id<=throughId))continue;
+    const session=notificationSession(row.session_id);
+    if(session&&(!projectId||session.project_id===projectId)&&canReadNotifications(session,userId))stmt.run(now,now,now,row.id,userId);
   }})();
   notificationChanged(userId);
 }

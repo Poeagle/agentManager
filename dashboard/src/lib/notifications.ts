@@ -16,6 +16,7 @@ export type NotificationFilter='pending'|'unread'|'all';
 export const notificationApi={
   list:(query:{filter?:NotificationFilter;project_id?:string;before?:number}={})=>fetchJSON<NotificationPage>(`/notifications?${new URLSearchParams(Object.entries(query).map(([key,value])=>[key,String(value)]))}`),
   read:(input:{ids?:number[];through_id?:number;project_id?:string})=>fetchJSON<{ok:boolean}>('/notifications/read',{method:'POST',body:JSON.stringify(input)}),
+  dismiss:(input:{ids?:number[];through_id?:number;project_id?:string})=>fetchJSON<{ok:boolean}>('/notifications/dismiss',{method:'POST',body:JSON.stringify(input)}),
   preferences:(muted_project_ids:string[])=>fetchJSON<{ok:boolean}>('/notifications/preferences',{method:'PUT',body:JSON.stringify({muted_project_ids})}),
 };
 export interface ConversationFocus {messageId?:string|null;sourceId?:string;nativeId:string;requestId:number;view?:'chat'|'terminal'}
@@ -34,4 +35,9 @@ export function notificationIsVisible(notification:Notification) {
   if(document.visibilityState!=='visible'||!document.hasFocus())return false;
   return [...views.values()].some(view=>view.sessionId===notification.session_id&&view.nativeId===notification.native_id&&(
     !!notification.message_id&&view.messageIds.has(notification.message_id)||view.questionIds.has(notification.source_id.replace(/^question:/,''))));
+}
+
+export function notificationTime(value:string):string {
+  const date=new Date(value),pad=(n:number)=>String(n).padStart(2,'0');
+  return `${date.getFullYear()}.${pad(date.getMonth()+1)}.${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }

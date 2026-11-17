@@ -7,11 +7,12 @@ import type {AgentStreamFrame} from './agents/events.js';
 import type {ConversationRetry} from './conversation-retry.js';
 import {observeConversationFile} from './conversation-file-stream.js';
 import {activityResultPreview} from './conversation-activity.js';
+import {linkConversationInputs} from './conversation-input-links.js';
 import {nativeConversationId} from './session-identity.js';
 import {personalQuestionRuntime,ignoredQuestionIds} from './question-attention.js';
 import {
   canReadNotifications,notificationSession,putNotification,updateNotificationState,pruneNotifications,
-  notificationChanged,type NotificationSession,type Notification,
+  notificationChanged,settleNotificationResults,type NotificationSession,type Notification,
 } from './notifications.js';
 
 const ACTIVE=new Set(['pending','launching','running','detached','released']);
@@ -88,7 +89,7 @@ export class NotificationObserver {
       stops.push(observeConversationFile({...session,cli_type:session.cli_type??null,codex_session_id:session.codex_session_id??null,claude_session_id:session.claude_session_id??null,project_path:context.projectPath??null},frame=>{
         if(frame.type!=='history')return;
         const current=this.current(id,native);if(!current)return;
-        try{this.runtime(current,frame.runtime,entry);this.messages(current,frame.messages,entry);}catch(error){this.onError(error);}
+        try{this.runtime(current,frame.runtime,entry);this.messages(current,[...entry.finals.values(),...frame.messages],entry);}catch(error){this.onError(error);}
       }));
       // The shared native stream also carries live approvals and questions that
       // do not yet have durable history records.
@@ -120,6 +121,7 @@ export class NotificationObserver {
     }
   }
   private messages(session:NotificationSession,messages:AgentMessage[],entry:Watch,live=false) {
+    messages=linkConversationInputs(session.id,entry.native,messages);
     for(const message of messages){
       for(const reply of message.question_replies||[]){entry.questions.delete(reply.question_id);updateNotificationState(session,'question','question:'+reply.question_id,message.queued?'submitted':'resolved');}
       if(message.role!=='assistant'||message.streaming||message.presentation==='compaction_summary')continue;
@@ -166,6 +168,19 @@ export class NotificationObserver {
       entry.seen.add(message.id);
     }
     for(const message of messages)if(message.streaming)entry.seen.add(`live:${message.id}`);
+    const prior=new Map<string,number>(),settled:string[]=[];
+    let repliedAt:number|undefined;
+    for(const message of messages){
+      const at=Date.parse(message.timestamp||'');
+      if(!Number.isFinite(at))continue;
+      if(message.role==='assistant'&&message.phase==='final'&&!message.streaming&&!message.async_questions?.length)prior.set(message.id,at);
+      if(message.role==='user'&&!message.queued&&!message.input_source
+        &&!/^\s*(?:# AGENTS\.md instructions|<(?:environment_context|permissions|skills_instructions|task_notification|turn_aborted|octoally_shared_resources)(?:\s|>))/.test(message.text)){
+        for(const [id,completed] of prior)if(completed<at)settled.push(id);
+        if(at<=Date.now())repliedAt=Math.max(repliedAt||0,at);
+      }
+    }
+    settleNotificationResults(session,settled,repliedAt?new Date(repliedAt).toISOString():undefined);
     while(entry.seen.size>256)entry.seen.delete(entry.seen.values().next().value!);
   }
   private runtime(session:NotificationSession,raw:AgentRuntime,entry:Watch) {

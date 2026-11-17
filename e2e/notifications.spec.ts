@@ -5,7 +5,7 @@ import {createRequire} from 'node:module';
 import {join} from 'node:path';
 const require=createRequire(import.meta.url),{WebSocketServer}=require('../server/node_modules/ws'),Database=require('../server/node_modules/better-sqlite3');
 
-test('notifies changed sessions across closed projects, answers in the drawer and jumps to the source',async({page},testInfo)=>{
+test('notifies changed sessions across closed projects, answers in the centered window and jumps to the source',async({page},testInfo)=>{
   const root=join(process.cwd(),'.test-data/e2e'),native='019ff001-3535-7353-8353-353535353535';
   const logDir=join(root,'home/.codex/sessions');mkdirSync(logDir,{recursive:true});const log=join(logDir,`rollout-notification-${native}.jsonl`);
   const record=(type:string,payload:unknown)=>JSON.stringify({type,timestamp:new Date().toISOString(),payload})+'\n';
@@ -61,14 +61,28 @@ test('notifies changed sessions across closed projects, answers in the drawer an
     const drawer=page.getByRole('dialog',{name:'消息通知'});
     await expect(drawer.getByRole('region',{name:'会话对话'})).toContainText('兼容性检查完成');
     await expect(drawer).not.toContainText('安静的标签页');
+    await expect(drawer).toHaveAttribute('aria-modal','true');
+    const bounds=await drawer.boundingBox(),viewport=page.viewportSize()!;
+    expect(Math.abs(bounds!.x+bounds!.width/2-viewport.width/2)).toBeLessThan(2);
+    expect(Math.abs(bounds!.y+bounds!.height/2-viewport.height/2)).toBeLessThan(2);
+    await expect(page.locator('.notification-bell svg')).toHaveAttribute('width','14');
+    await expect(drawer.locator('.session-chat-message-statistics')).toHaveCount(0);
+    await expect(drawer.getByRole('combobox',{name:'发送模式'})).toHaveCount(0);
+    const noticeList=drawer.getByRole('region',{name:'通知列表'});
+    await expect(noticeList.locator('time')).toHaveText(/^\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}$/);
+    await expect(noticeList).not.toContainText('兼容性检查完成');
     await page.screenshot({path:testInfo.outputPath('notification-result-desktop.png')});
+    await drawer.getByRole('button',{name:'标为已读',exact:true}).click();
+    await expect(noticeList.getByRole('button',{name:/^通知验证项目 · /})).toHaveCount(0);
+    expect(inputs).toHaveLength(0);
+    await expect.poll(async()=>{const data=await(await page.request.get('/api/notifications')).json();return data.notifications.length;}).toBe(0);
     await drawer.getByRole('button',{name:'关闭消息通知'}).click();
     const questionId=JSON.stringify(['request_user_input_async','notify-question',0]);
     const question={type:'AgentMessage',id:'notify-question',delivery:'async',questions:[{title:'需要继续兼容旧版接口吗？',options:['兼容旧版','只支持新版']}],content:[{type:'Text',text:'需要继续兼容旧版接口吗？'}]};
     appendFileSync(log,record('event_msg',{type:'task_started',turn_id:'question-turn'})+record('event_msg',{type:'item_completed',thread_id:native,turn_id:'question-turn',item:question}));
     await expect.poll(async()=>{const data=await(await page.request.get('/api/notifications')).json();return data.pending;}).toBe(1);
     await page.getByRole('button',{name:/^消息通知/}).click();
-    await drawer.getByRole('button',{name:'直接处理',exact:true}).click();
+    await drawer.getByRole('region',{name:'通知列表'}).getByRole('button',{name:/^通知验证项目 · /}).click();
     const card=drawer.getByRole('region',{name:'Codex 向你提问'});
     await expect(card).toContainText('需要继续兼容旧版接口吗？');
     await page.screenshot({path:testInfo.outputPath('notification-question-desktop.png')});
@@ -80,13 +94,11 @@ test('notifies changed sessions across closed projects, answers in the drawer an
     const reply=JSON.parse(inputs[0].text.replace('<send_user_message_question_reply>','').replace('</send_user_message_question_reply>',''));
     expect(reply).toEqual([{questionItemId:questionId,question:'需要继续兼容旧版接口吗？',answer:'兼容旧版'}]);
     await expect.poll(async()=>{const data=await(await page.request.get('/api/notifications')).json();return data.pending;}).toBe(0);
+    await expect.poll(async()=>{const data=await(await page.request.get('/api/notifications')).json();return data.notifications.length;}).toBe(0);
+    await expect(noticeList.getByRole('button',{name:/^通知验证项目 · /})).toHaveCount(0);
     await page.setViewportSize({width:1280,height:860});
-    await drawer.getByRole('button',{name:'打开标签页',exact:true}).last().click();
-    await expect(drawer).not.toBeVisible();
-    await expect(page.getByLabel('会话标签',{exact:true}).locator('[data-session-id="notification-work"]')).toHaveCount(1);
-    await expect(page.locator('.session-chat[data-session-id="notification-work"]').filter({visible:true})).toBeVisible();
-    expect((await(await page.request.get('/api/sessions')).json()).sessions).toHaveLength(2);
-    expect(inputs).toHaveLength(1);
+    const replyDraft=drawer.getByRole('textbox',{name:'发送给当前 Agent 的消息'});
+    await replyDraft.fill('配置已调整，请继续处理。');
 
     // A permanent failure becomes actionable, with its original error and the
     // same reply target. Continuing is a real, explicitly requested input.
@@ -94,15 +106,29 @@ test('notifies changed sessions across closed projects, answers in the drawer an
     send('turn/started',{threadId:native,turn:{id:'failed-turn',status:'inProgress'}});
     send('error',{threadId:native,turnId:'failed-turn',error:{message:'测试执行错误：请检查项目配置。'},willRetry:false});
     await expect.poll(async()=>{const data=await(await page.request.get('/api/notifications')).json();return data.notifications.filter((n:{kind:string;state:string})=>n.kind==='error'&&n.state==='pending').length;}).toBe(1);
-    await page.getByRole('button',{name:/^消息通知/}).click();
-    await drawer.getByRole('button',{name:'直接处理',exact:true}).click();
+    await expect(noticeList.getByRole('button',{name:/^通知验证项目 · /})).toBeVisible();
+    await expect(replyDraft).toHaveText('配置已调整，请继续处理。');
+    await expect(drawer.getByRole('button',{name:/新通知，点击显示/})).toHaveCount(0);
+    await noticeList.getByRole('button',{name:/^通知验证项目 · /}).click();
     await expect(drawer.locator('.session-chat-error-notice')).toContainText('测试执行错误：请检查项目配置。');
     await page.screenshot({path:testInfo.outputPath('notification-error-desktop.png')});
     const input=drawer.getByRole('textbox',{name:'发送给当前 Agent 的消息'});
-    await input.fill('配置已调整，请继续处理。');await drawer.getByRole('button',{name:'发送消息',exact:true}).click();
+    await expect(input).toHaveText('配置已调整，请继续处理。');
+    const sendBox=await drawer.getByRole('button',{name:'发送消息',exact:true}).boundingBox();
+    const attachBox=await drawer.getByRole('button',{name:'上传图片或文件',exact:true}).boundingBox();
+    expect(Math.abs(sendBox!.y+sendBox!.height/2-attachBox!.y-attachBox!.height/2)).toBeLessThan(3);
+    await drawer.getByRole('button',{name:'发送消息',exact:true}).click();
     const guard=page.getByRole('dialog',{name:'发送前检查'});
     await expect(guard).toBeVisible();await guard.getByRole('button',{name:'原样发送',exact:true}).click();
     await expect.poll(()=>inputs.length).toBe(2);expect(inputs[1].text).toBe('配置已调整，请继续处理。');
+    await expect.poll(async()=>{const data=await(await page.request.get('/api/notifications')).json();return data.notifications.length;}).toBe(0);
+    await expect(noticeList.getByRole('button',{name:/^通知验证项目 · /})).toHaveCount(0);
+    await drawer.getByRole('button',{name:'打开标签页',exact:true}).click();
+    await expect(drawer).not.toBeVisible();
+    await expect(page.getByLabel('会话标签',{exact:true}).locator('[data-session-id="notification-work"]')).toHaveCount(1);
+    const original=page.locator('.session-chat[data-session-id="notification-work"]').filter({visible:true});
+    await expect(original).toBeVisible();await expect(original.locator('.session-chat-message-statistics').first()).toBeVisible();
+    expect((await(await page.request.get('/api/sessions')).json()).sessions).toHaveLength(2);
   }finally{
     try {
       if(projectId||fixtureUserId){const db=new Database(join(root,'agentmanager.db'));try{

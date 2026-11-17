@@ -36,6 +36,7 @@ import {decorateConversationAttachments,rememberConversationAttachments,formatCo
 import {observeConversationFile} from '../services/conversation-file-stream.js';
 import {ConversationRetryManager} from '../services/conversation-retry.js';
 import {ConversationProjection} from '../services/conversation-projection.js';
+import {notificationInputBoundary,settleNotificationsForInput} from '../services/notifications.js';
 
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
@@ -884,6 +885,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const current=getSession(id);if(current&&nativeConversationId(current))retries.cancel(id,nativeConversationId(current)!,'new_input');
     const preparedInput=formatConversationInput(input,attachments,true);
     const attachmentClientId=typeof clientId==='string'?clientId:randomUUID();
+    let notificationBoundary:ReturnType<typeof notificationInputBoundary>=[];
+    try{if(target)notificationBoundary=notificationInputBoundary(target,req.user!.id);}catch{req.log.warn({session_id:id},'Could not read notification input boundary');}
     // Serialize only the brief paste/Enter pair, never the agent's execution.
     // A second caller must not paste its text before the first caller's Enter.
     const prior = pendingInputs.get(id) || Promise.resolve();
@@ -924,6 +927,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     pendingInputs.set(id,submission);
     try {
       const status=await submission;
+      try{if(target&&notificationBoundary.length)settleNotificationsForInput(target,req.user!.id,notificationBoundary);}catch{req.log.warn({session_id:id},'Could not settle notifications after accepted input');}
       return reply.code(202).send({id,status:status==='queued'?'queued':'submitted'});
     } catch(error) {
       if(error instanceof Error&&(error as Error&{submission?:string}).submission==='rejected')return reply.code(409).send({error:error.message,submission:'rejected',...(error as Error&{send_guard?:unknown}).send_guard?{send_guard:(error as Error&{send_guard?:unknown}).send_guard}:{}});

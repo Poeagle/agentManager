@@ -15,4 +15,6 @@ export function migrateNotifications(db:Database.Database) {
   CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id,id DESC);
   CREATE INDEX IF NOT EXISTS idx_notifications_session ON notifications(session_id,native_id);
   `);
+  const columns=db.pragma('table_info(notifications)') as {name:string}[];
+  if(!columns.some(column=>column.name==='dismissed_at'))db.exec('ALTER TABLE notifications ADD COLUMN dismissed_at TEXT');
 }

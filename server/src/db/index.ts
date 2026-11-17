@@ -7,7 +7,7 @@ import {migratePlatformAi} from '../services/platform-ai/schema.js';
 import {migrateNotifications} from '../services/notification-schema.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 28;
+const SCHEMA_VERSION = 29;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;

@@ -516,3 +516,20 @@
 .session-chat-tool-counts {color:#79b4ff;font-variant-numeric:tabular-nums;}
 :root[data-theme="light"] .session-chat-estimated-cost {color:#7e22ce;}
 :root[data-theme="light"] .session-chat-tool-counts {color:#1d4ed8;}
+
+/* Notifications share submission behavior but use a compact reading/reply view. */
+.session-chat[data-presentation=notification] .session-chat-feed{width:calc(100% - 32px);max-width:none;padding:16px 0}
+.session-chat[data-presentation=notification] .session-chat-message{margin-bottom:14px}
+.session-chat[data-presentation=notification] .session-chat-message-meta{min-height:16px;gap:6px;font-size:10px}
+.session-chat[data-presentation=notification] .session-chat-composer{padding:8px 12px 10px;border-top:1px solid var(--border)}
+.session-chat[data-presentation=notification] .session-chat-composer>form{border-radius:10px;padding:8px 10px 6px}
+.session-chat[data-presentation=notification] .session-chat-composer>form>.session-chat-editor{min-height:52px;max-height:150px;font-size:13px;line-height:1.6}
+.session-chat[data-presentation=notification] .session-chat-input-tools{flex-wrap:wrap;justify-content:flex-start;gap:6px;margin-top:4px}
+.session-chat[data-presentation=notification] .session-chat-input-tools>.session-chat-attach{width:26px;height:26px;background:transparent;color:var(--text-secondary);padding:4px}
+.session-chat[data-presentation=notification] .session-chat-input-tools>.session-chat-more{display:inline-flex;gap:3px;width:auto;height:26px;padding:0 5px;border-radius:4px;background:transparent;color:var(--text-secondary);font-size:11px}
+.session-chat[data-presentation=notification] .session-chat-send-hint{flex:1 1 auto;width:auto;order:0;min-width:0;margin:0;text-align:right;white-space:nowrap;font-size:10px}
+.session-chat[data-presentation=notification] .session-chat-send-actions{flex:none;margin-left:auto;gap:5px}
+.session-chat[data-presentation=notification] .session-chat-send-actions>button{width:28px;height:28px}
+.session-chat[data-presentation=notification] .session-chat-controls-slot{flex:1 0 100%;order:4;padding-top:6px;border-top:1px solid var(--border);justify-content:flex-start}
+.session-chat[data-presentation=notification] .session-chat-status[hidden]{display:none}
+@container(max-width:500px){.session-chat[data-presentation=notification] .session-chat-send-hint{display:none}}

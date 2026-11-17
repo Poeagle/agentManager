@@ -2,7 +2,7 @@ import type {FastifyPluginAsync} from 'fastify';
 import {z} from 'zod';
 import {requirePermission} from '../services/rbac.js';
 import {userOwnsProject} from '../auth.js';
-import {listNotifications,markNotificationsRead,notificationPreferences,saveNotificationPreferences} from '../services/notifications.js';
+import {listNotifications,markNotificationsRead,dismissNotifications,notificationPreferences,saveNotificationPreferences} from '../services/notifications.js';
 import {NotificationObserver} from '../services/notification-observer.js';
 import {getDb} from '../db/index.js';
 
@@ -27,6 +27,13 @@ export const notificationRoutes:FastifyPluginAsync=async app=>{
     const parsed=readSchema.safeParse(req.body);
     if(!parsed.success)return reply.code(400).send({error:'通知标识无效'});
     markNotificationsRead(req.user!.id,parsed.data.ids,parsed.data.through_id,parsed.data.project_id);
+    return {ok:true};
+  });
+  app.post('/notifications/dismiss',async(req,reply)=>{
+    if(!requirePermission(req,reply,'agent_api'))return reply;
+    const parsed=readSchema.safeParse(req.body);
+    if(!parsed.success)return reply.code(400).send({error:'通知标识无效'});
+    dismissNotifications(req.user!.id,parsed.data.ids,parsed.data.through_id,parsed.data.project_id);
     return {ok:true};
   });
   app.get('/notifications/preferences',async(req,reply)=>{

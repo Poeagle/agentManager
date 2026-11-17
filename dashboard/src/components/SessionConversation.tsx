@@ -134,7 +134,7 @@ interface ProgressSummaryProps {
   progress?: import('../lib/api').ConversationProgressStatistics | null;
   progressScope?: 'total'|'turn'|'segment'; completed?: boolean; interrupted?: boolean;
   stepDuration?: number|null; stepRunning?: boolean; phaseSeconds?: number|null;
-  progressPhase: 'calling'|'waiting'|'unknown'; turnDuration?: number|null;
+  progressPhase: 'calling'|'waiting'|'unknown'; turnDuration?: number|null; showStatistics?:boolean;
 }
 
 function ProgressSection({
@@ -151,6 +151,7 @@ function ProgressSection({
   phaseSeconds,
   progressPhase,
   turnDuration,
+  showStatistics=true,
   children,
 }: ProgressSummaryProps & {children: ReactNode}) {
   const [preference, setPreference] = useState<boolean | null>(null);
@@ -170,7 +171,7 @@ function ProgressSection({
           aria-label={`${open ? "收起" : "展开"}进展（${count} 条）`}
           aria-expanded={open}
         >
-          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} progress={progress} progressScope={progressScope} completed={completed} interrupted={interrupted} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} turnDuration={turnDuration}/>
+          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} progress={progress} progressScope={progressScope} completed={completed} interrupted={interrupted} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} turnDuration={turnDuration} showStatistics={showStatistics}/>
           <ChevronDown size={14} className="session-chat-progress-chevron" />
         </summary>
         <div className="session-chat-progress-content">{children}</div>
@@ -179,16 +180,16 @@ function ProgressSection({
   );
 }
 
-function ProgressSummary({agent,agentName,count,active,progress,progressScope='total',completed,interrupted,stepDuration,stepRunning,phaseSeconds,progressPhase,turnDuration}:ProgressSummaryProps) {
+function ProgressSummary({agent,agentName,count,active,progress,progressScope='total',completed,interrupted,stepDuration,stepRunning,phaseSeconds,progressPhase,turnDuration,showStatistics=true}:ProgressSummaryProps) {
   return <>
           <span aria-hidden="true"><AgentIcon session={{agent}} className="h-[13px] w-[13px]" /></span>
           <span>{agentName}</span>
           <span className="session-chat-kind">progress</span>
-          <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
-          {(progress||progressScope==='segment')&&<ConversationStatisticsLabel statistics={progress?{...progress,sequence:0}:null} scope={progressScope}/>}
-          {active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
-          {active&&<span className="session-chat-progress-time">{progressPhase}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
-          {turnDuration!=null?<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time for this progress segment">Elapsed {formatElapsedEnglish(turnDuration)}</time>:progressScope==='segment'?<span className="session-chat-progress-time" title="Segment timing is unavailable">Elapsed —</span>:null}
+          {showStatistics&&<span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>}
+          {showStatistics&&(progress||progressScope==='segment')&&<ConversationStatisticsLabel statistics={progress?{...progress,sequence:0}:null} scope={progressScope}/>}
+          {showStatistics&&active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
+          {showStatistics&&active&&<span className="session-chat-progress-time">{progressPhase}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
+          {showStatistics&&(turnDuration!=null?<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time for this progress segment">Elapsed {formatElapsedEnglish(turnDuration)}</time>:progressScope==='segment'?<span className="session-chat-progress-time" title="Segment timing is unavailable">Elapsed —</span>:null)}
           {active ? <span className="session-chat-progress-live">In progress</span> : interrupted ? <span className="session-chat-progress-time">Interrupted</span> : completed ? <span className="session-chat-progress-time">Completed</span> : null}
   </>;
 }
@@ -202,6 +203,7 @@ const Bubble = memo(function Bubble({
   onCancelRetry,
   onCancelQueued,
   compact = false,
+  showStatistics = true,
   agent,
   agentName,
   projectPath,
@@ -224,6 +226,7 @@ const Bubble = memo(function Bubble({
   message: ConversationMessage;
   streaming: boolean;
   compact?: boolean;
+  showStatistics?:boolean;
   agent: AgentDescriptor;
   agentName: string;
   projectPath?: string;
@@ -270,7 +273,7 @@ const Bubble = memo(function Bubble({
     compact && (streaming || message.streaming) ? (
       <span className="session-chat-message-meta">
         <span className="session-chat-progress-updating">Streaming</span>
-        <ConversationStatisticsLabel statistics={message.statistics??null} interval/>
+        {showStatistics&&<ConversationStatisticsLabel statistics={message.statistics??null} interval/>}
       </span>
     ) : (
       <span className="session-chat-message-meta">
@@ -308,13 +311,13 @@ const Bubble = memo(function Bubble({
             Time pending
           </span>
         ) : null}
-        {message.role === "assistant" && (message.statistics || compact || message.phase === "final") && (
+        {showStatistics && message.role === "assistant" && (message.statistics || compact || message.phase === "final") && (
           <ConversationStatisticsLabel
             statistics={message.statistics??null}
             interval={message.phase === "commentary"||!!message.streaming}
           />
         )}
-        {durationLabel && (
+        {showStatistics && durationLabel && (
           <span
             className="session-chat-message-duration"
             title={metadataDurationTitle(message.phase)}
@@ -559,6 +562,7 @@ export function SessionConversation({
   focusTarget,
   onFocusTargetVisible,
   draftScope,
+  presentation="full",
 }: {
   session: Session;
   active: boolean;
@@ -576,6 +580,7 @@ export function SessionConversation({
   focusTarget?:ConversationFocus|null;
   onFocusTargetVisible?:()=>void;
   draftScope?:string;
+  presentation?:"full"|"notification";
 }) {
   const compaction = useConversationCompaction(
     session.id,
@@ -587,6 +592,8 @@ export function SessionConversation({
   const canRead = hasPermission(permissions.data, "agent_api");
   const canSend = hasPermission(permissions.data, "agent_api", "write");
   const canAttach = agentSupports(session, "attachments");
+  const notificationView=presentation==="notification";
+  const [composerOptionsOpen,setComposerOptionsOpen]=useState(false);
   const [toolbarTarget, setToolbarTarget] = useState<HTMLDivElement | null>(null);
   const [messages, setMessages] = useState<TimelineMessage[]>([]);
   const [autoRetries, setAutoRetries] = useState<
@@ -2168,6 +2175,7 @@ export function SessionConversation({
             : undefined
         }
         compact={compact}
+        showStatistics={!notificationView}
         durationLabel={timings.get(message.id)?.label}
         durationTitle={timings.get(message.id)?.title}
         agent={sessionAgent(session)}
@@ -2187,16 +2195,16 @@ export function SessionConversation({
         if(!(event.target instanceof HTMLElement)||event.target.closest('.session-chat-editor,input,textarea,select,[contenteditable],.session-batch-send'))return;
         event.preventDefault();event.stopPropagation();if(!event.repeat)submitWithShortcut();
       }}><div ref={chatLayout} className="session-chat-layout">
-      <section ref={readingRoot} className="session-chat" aria-label="会话对话" data-session-id={session.id}>
+      <section ref={readingRoot} className="session-chat" aria-label="会话对话" data-session-id={session.id} data-presentation={presentation}>
         {notificationFocusMissing&&<p className="session-pane-warning" role="status">通知对应的消息不在当前可读历史中，可继续加载更早的对话核对。</p>}
-        <ConversationPromptEnhancer
+        {(!notificationView||composerOptionsOpen)&&<ConversationPromptEnhancer
           sessionId={session.id}
           active={active}
           canEdit={canSend && !ended && !waiting && !sendGuard.blocking}
           value={draft}
           attachments={attachments.items}
           onApply={changeDraft}
-        />
+        />}
         <div className="session-chat-reading">
           <div
             ref={list}
@@ -2245,6 +2253,7 @@ export function SessionConversation({
                 return (
                   <ProgressSection
                     key={`progress-${group.id}`}
+                    showStatistics={!notificationView}
                     agent={sessionAgent(session)}
                     agentName={agentName}
                     count={group.messages.length+(pending?1:0)}
@@ -2276,7 +2285,7 @@ export function SessionConversation({
                     ))}
                     {pending&&<ConversationProgressPending number={group.messages.length+1} tool={currentConversationActivity(slotActivities,true)||undefined}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
-                      statistics={pendingStatistics} now={now} connected={liveState==='connected'}/>}
+                      statistics={pendingStatistics} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
                   </ProgressSection>
                 );
               })}
@@ -2293,7 +2302,7 @@ export function SessionConversation({
                           ? `${agentName} is working`
                           : `Waiting for ${agentName}`}
                     </span>
-                    <time className="session-chat-elapsed" style={{color:timeColor(elapsed)}}>{elapsed}s</time>
+                    {!notificationView&&<time className="session-chat-elapsed" style={{color:timeColor(elapsed)}}>{elapsed}s</time>}
                     </div>
                     <p>
                       {continuingAfterFollowup
@@ -2329,13 +2338,13 @@ export function SessionConversation({
               <div ref={bottom} />
             </div>
           </div>
-          <ConversationWidthHandles
+          {!notificationView&&<ConversationWidthHandles
             root={readingRoot}
             scroll={list}
             active={active}
             storageKey={`agentmanager-chat-width:${userId}`}
-          />
-          {canRead && (
+          />}
+          {canRead && !notificationView && (
             <ConversationNavigator
               messages={displayed}
               scroll={list}
@@ -2395,7 +2404,7 @@ export function SessionConversation({
         {storageError&&<p role="alert" className="session-chat-error">{storageError}</p>}
 
         <footer className="session-chat-composer">
-          <div className="session-chat-status" role="status">
+          <div className="session-chat-status" role="status" hidden={notificationView&&liveState==='connected'&&!ended&&!reconnectable&&!compaction.state}>
             <div className="session-chat-execution-status" hidden={hideFooterExecutionStatus}>
             <span
               className={`session-chat-connection ${liveState}`}
@@ -2658,10 +2667,11 @@ export function SessionConversation({
                 disabled={!canAttach || !canSend || ended || sending || sendGuard.blocking}
                 onFiles={attachments.enqueue}
               />
-              <div className="session-chat-controls-slot conversation-toolbar"><label className="conversation-control-select conversation-composer-mode"><span>模式</span><select aria-label="发送模式" value={composer.mode} disabled={sending||sendGuard.blocking||!!composer.pending} onChange={e=>persistComposer({mode:e.target.value as ComposerState['mode']})}><option value="immediate">立即发送</option><option value="batch">批量发送</option></select><ChevronDown size={12}/></label><div ref={setToolbarTarget}/></div>
+              {notificationView&&<button type="button" className="session-chat-more" aria-label="更多回复选项" aria-expanded={composerOptionsOpen} aria-controls={`notification-composer-options-${session.id}`} onClick={()=>setComposerOptionsOpen(value=>!value)}>{composer.mode==='batch'?'批量 · 更多':'更多'}<ChevronDown size={12}/></button>}
+              {(!notificationView||composerOptionsOpen)&&<div id={`notification-composer-options-${session.id}`} className="session-chat-controls-slot conversation-toolbar"><label className="conversation-control-select conversation-composer-mode"><span>模式</span><select aria-label="发送模式" value={composer.mode} disabled={sending||sendGuard.blocking||!!composer.pending} onChange={e=>persistComposer({mode:e.target.value as ComposerState['mode']})}><option value="immediate">立即发送</option><option value="batch">批量发送</option></select><ChevronDown size={12}/></label><div ref={setToolbarTarget}/></div>}
               <span className="session-chat-send-hint">{composer.mode==='batch'?'Enter 加入批量 · Ctrl+Enter 发送':'Enter 发送 · Shift+Enter 换行'}</span>
               <div className="session-chat-send-actions">
-                <button
+                {(!notificationView||composerOptionsOpen)&&<button
                   type="button"
                   className="session-chat-enhance"
                   aria-label="优化当前输入"
@@ -2678,7 +2688,7 @@ export function SessionConversation({
                   }
                 >
                   <Sparkles size={17} />
-                </button>
+                </button>}
                 {!questionActive&&stopButton}
                 <button
                   type="submit"
@@ -2703,7 +2713,7 @@ export function SessionConversation({
               </div>
             </div>
           </form>
-          {agentSupports(session, "controls") &&
+          {(!notificationView||composerOptionsOpen) && agentSupports(session, "controls") &&
             !!page?.native_id &&
             canRead && (
               <ConversationControls
