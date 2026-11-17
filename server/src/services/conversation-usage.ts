@@ -4,7 +4,6 @@ export function publicTokenCounters(value:any,camel=false) {
   return Object.fromEntries(tokenFields.map(key=>[key,finite(value?.[camel?key.replace(/_([a-z])/g,(_,letter:string)=>letter.toUpperCase()):key])])) as Record<typeof tokenFields[number],number|null>;
 }
 export interface ConversationUsage {
-  cost?:import('./agents/types.js').AgentCostEstimate|null;
   total:ReturnType<typeof publicTokenCounters>;last:ReturnType<typeof publicTokenCounters>;window:number|null;
 }
 export interface ConversationUsageFrame {type:'usage';native_id:string;usage:ConversationUsage;observed_at:string}

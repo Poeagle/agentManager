@@ -1,4 +1,4 @@
-import type {ConversationMessage,ConversationUsageUpdate} from './api';
+import type {ConversationMessage} from './api';
 import {mergeConversationTimeline,type TimelineMessage} from './conversation-timeline';
 export interface ConversationPatch {type:'patch';upserts:ConversationMessage[];deltas:Array<{id:string;offset:number;text:string}>}
 /** Display timestamps are never delivery cursors. Reconnects replay a bounded
@@ -29,14 +29,4 @@ export function applyConversationPatches(previous:TimelineMessage[],patches:Conv
   }
  }
  return {messages,needsSync};
-}
-
-/** JSONL may price the same counters after an RPC usage event. Enrich only a
- * matching snapshot; never attach a stale estimate to newer token totals. */
-export function mergeConversationUsage(previous:ConversationUsageUpdate|undefined,next:ConversationUsageUpdate):ConversationUsageUpdate {
- if(!previous||previous.native_id!==next.native_id)return next;
- const same=(['total','last'] as const).every(part=>['input_tokens','cached_input_tokens','output_tokens','reasoning_output_tokens','total_tokens'].every(field=>(previous.usage[part][field]??null)===(next.usage[part][field]??null)));
- const older=Date.parse(previous.observed_at)>Date.parse(next.observed_at);
- if(older)return same&&next.usage.cost!==undefined?{...previous,usage:{...previous.usage,cost:next.usage.cost}}:previous;
- return same&&next.usage.cost===undefined&&previous.usage.cost!==undefined?{...next,usage:{...next.usage,cost:previous.usage.cost}}:next;
 }

@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {ConversationStreamCursor,applyConversationPatches,mergeConversationUsage} from '../src/lib/conversation-stream';
+import {ConversationStreamCursor,applyConversationPatches} from '../src/lib/conversation-stream';
 import type {TimelineMessage} from '../src/lib/conversation-timeline';
 describe('conversation incremental delivery',()=>{
  it('detects missing events independently of display timestamps and ignores duplicate delivery',()=>{
@@ -23,14 +23,4 @@ describe('conversation incremental delivery',()=>{
   expect(result.needsSync).toBe(false);expect(result.messages.map(item=>item.text)).toEqual(['unchanged','ABC','XY']);expect(result.messages[0]).toBe(old);
   const empty=applyConversationPatches([old],[{type:'patch',upserts:[],deltas:[{id:'old',offset:9,text:''}]}]);expect(empty.messages).toBeDefined();expect(empty.messages[0]).toBe(old);
  });
-});
-
-it('enriches matching RPC counters with late pricing without letting stale counters or threads overwrite newer usage',()=>{
- const current={native_id:'native',observed_at:'2026-11-17T12:00:01Z',usage:{total:{total_tokens:100},last:{total_tokens:100},window:1000}};
- const priced={...current,observed_at:'2026-11-17T12:00:00Z',usage:{...current.usage,cost:{amount:2,unit:'credits',complete:true}}};
- const merged=mergeConversationUsage(current,priced);expect(merged.observed_at).toBe(current.observed_at);expect(merged.usage.cost).toEqual(priced.usage.cost);
- expect(mergeConversationUsage(merged,{...current,observed_at:'2026-11-17T12:00:02Z'}).usage.cost).toEqual(priced.usage.cost);
- const newer={...current,usage:{...current.usage,total:{total_tokens:200}}};expect(mergeConversationUsage(newer,priced)).toBe(newer);
- expect(mergeConversationUsage(merged,{...newer,observed_at:'2026-11-17T12:00:03Z'}).usage.cost).toBeUndefined();
- const other={...priced,native_id:'other'};expect(mergeConversationUsage(merged,other)).toBe(other);
 });

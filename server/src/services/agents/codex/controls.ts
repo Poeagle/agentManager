@@ -7,9 +7,6 @@ import {open,readFile,stat} from 'fs/promises';
 import {join} from 'path';
 import {homedir} from 'os';
 import {CREDIT_RATES,CREDIT_RATE_DATE} from './usage-credits.js';
-import {emptyCostTotals,recordCost,costSnapshot,type CostTotals} from './statistics-cost.js';
-import {precedingPricingSettings,recordedPricingSettings} from './statistics-settings.js';
-import type {ConversationUsage} from '../../conversation-usage.js';
 
 import {findCodexRollout} from '../../prompt-context.js';
 import {withCodexConnection} from './stream.js';
@@ -28,12 +25,9 @@ function windows(value:any,camel=false) {return [value?.primary,value?.secondary
   const used=finite(camel?window?.usedPercent:window?.used_percent),minutes=finite(camel?window?.windowDurationMins:window?.window_minutes);
   return used===null||minutes===null?[]:[{used_percent:Math.min(100,used),minutes,resets_at:finite(camel?window?.resetsAt:window?.resets_at)}];
 });}
-interface Telemetry {model:string|null;effort:string|null;permission:string|null;approval:string|null;service_tier:string|null;usage:ConversationUsage|null;limits:ReturnType<typeof windows>;observed_at:string|null}
+interface Telemetry {model:string|null;effort:string|null;permission:string|null;approval:string|null;service_tier:string|null;usage:{total:ReturnType<typeof tokens>;last:ReturnType<typeof tokens>;window:number|null}|null;limits:ReturnType<typeof windows>;observed_at:string|null}
 const empty=():Telemetry=>({model:null,effort:null,permission:null,approval:null,service_tier:null,usage:null,limits:[],observed_at:null});
-const telemetryCache=new Map<string,{size:number;inode:number;mtime:number;partial:Buffer;data:Telemetry;cost:CostTotals;fingerprint:string|null}>();
-function pricedTelemetry(data:Telemetry,cost:CostTotals):Telemetry {
- return {...data,usage:data.usage?{...data.usage,cost:currentCodexEngine().environmentId?.startsWith('provider:')?null:costSnapshot(cost)}:null};
-}
+const telemetryCache=new Map<string,{size:number;inode:number;mtime:number;partial:Buffer;data:Telemetry}>();
 /** Only allowlisted public counters and settings are retained. No tool output,
  * credentials, prompts or reasoning text is sent to the browser. */
 export async function readConversationTelemetry(threadId:string):Promise<Telemetry> {
@@ -41,15 +35,10 @@ export async function readConversationTelemetry(threadId:string):Promise<Telemet
   const handle=await open(path,'r');
   try {
     const stat=await handle.stat(),saved=telemetryCache.get(path);
-    if(saved&&saved.size===stat.size&&saved.inode===stat.ino&&saved.mtime===stat.mtimeMs)return pricedTelemetry(saved.data,saved.cost);
+    if(saved&&saved.size===stat.size&&saved.inode===stat.ino&&saved.mtime===stat.mtimeMs)return saved.data;
     const resumed=!!saved&&saved.inode===stat.ino&&saved.size<stat.size;
     const data:Telemetry=resumed?{...saved.data}:empty();
     const start=resumed?Math.max(saved.size,stat.size-2*1024*1024):Math.max(0,stat.size-2*1024*1024);
-    const cost=resumed?{...saved.cost}:emptyCostTotals();let fingerprint=resumed?saved.fingerprint:null;
-    if(start>(resumed?saved.size:0)){
-      cost.gaps++;
-      const settings=await precedingPricingSettings(handle,start);data.model=settings.model;data.service_tier=settings.tier;
-    }
     const buffer=Buffer.alloc(stat.size-start);await handle.read(buffer,0,buffer.length,start);
     const continued=resumed&&start===saved.size;
     const bytes=continued?Buffer.concat([saved.partial,buffer]):buffer;
@@ -58,34 +47,22 @@ export async function readConversationTelemetry(threadId:string):Promise<Telemet
     const partial=bytes.subarray(Math.max(first,end));
     const lines=end>first?bytes.subarray(first,end).toString('utf8').split('\n'):[];
     for(const line of lines) {
-      if(!/^\s*\{/.test(line))continue;
-      const header=line.slice(0,400);if(!/"type"\s*:\s*"(?:session_meta|turn_context|thread_settings_applied|token_count)"/.test(header))continue;
-      if(line.length>256*1024){cost.gaps++;continue;}
-      let record:any;try{record=JSON.parse(line);}catch{cost.gaps++;continue;}const p=record.payload;
-      const settings=recordedPricingSettings(record);
-      if(settings){if('model' in settings)data.model=typeof settings.model==='string'?settings.model:null;if('service_tier' in settings)data.service_tier=typeof settings.service_tier==='string'?settings.service_tier:null;}
+      if(line.length>256*1024||!/^\s*\{/.test(line))continue;
+      const header=line.slice(0,400);if(!/"type"\s*:\s*"(?:turn_context|token_count)"/.test(header))continue;
+      let record:any;try{record=JSON.parse(line);}catch{continue;}const p=record.payload;
       if(record.type==='turn_context'&&p) {
-        data.effort=typeof p.effort==='string'?p.effort:null;
+        data.model=typeof p.model==='string'?p.model:null;data.effort=typeof p.effort==='string'?p.effort:null;
         data.permission=typeof p.sandbox_policy?.type==='string'?p.sandbox_policy.type:null;
         data.approval=typeof p.approval_policy==='string'?p.approval_policy:null;
+        data.service_tier=typeof p.service_tier==='string'?p.service_tier:null;
       } else if(record.type==='event_msg'&&p?.type==='token_count') {
-        if(p.info){
-          const total=tokens(p.info.total_token_usage),last=tokens(p.info.last_token_usage),next=JSON.stringify(total);
-          if(total.total_tokens===null){cost.gaps++;}
-          else if(next!==fingerprint){
-            // A cold tail or inherited cumulative baseline cannot be priced as if all requests were observed.
-            const prior=fingerprint===null?0:JSON.parse(fingerprint).total_tokens;
-            if(last.total_tokens===null||total.total_tokens-last.total_tokens!==prior)cost.gaps++;
-            fingerprint=next;recordCost(cost,data.model,data.service_tier,last);
-          }
-          data.usage={total,last,window:finite(p.info.model_context_window)};if(typeof record.timestamp==='string')data.observed_at=record.timestamp;
-        }
+        if(p.info){data.usage={total:tokens(p.info.total_token_usage),last:tokens(p.info.last_token_usage),window:finite(p.info.model_context_window)};if(typeof record.timestamp==='string')data.observed_at=record.timestamp;}
         if(p.rate_limits)data.limits=windows(p.rate_limits);
       }
     }
-    telemetryCache.delete(path);telemetryCache.set(path,{size:stat.size,inode:stat.ino,mtime:stat.mtimeMs,partial:partial.length<=256*1024?Buffer.from(partial):Buffer.alloc(0),data,cost,fingerprint});
+    telemetryCache.delete(path);telemetryCache.set(path,{size:stat.size,inode:stat.ino,mtime:stat.mtimeMs,partial:partial.length<=256*1024?Buffer.from(partial):Buffer.alloc(0),data});
     if(telemetryCache.size>64)telemetryCache.delete(telemetryCache.keys().next().value!);
-    return pricedTelemetry(data,cost);
+    return data;
   }finally{await handle.close();}
 }
 
