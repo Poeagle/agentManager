@@ -75,6 +75,14 @@ test('notifies changed sessions across closed projects, answers in the centered 
     await expect(tabRow).toContainText('兼容性修复');await expect(tabRow).not.toContainText('通知验证项目');
     const projectBox=await projectGroup.getByRole('button',{name:'通知验证项目',exact:true}).boundingBox(),tabBox=await tabRow.boundingBox();
     expect(tabBox!.x).toBeGreaterThan(projectBox!.x+10);
+    const nameBox=await tabRow.locator('strong').boundingBox(),timeBox=await tabRow.locator('time').boundingBox();
+    expect(Math.abs(nameBox!.y+nameBox!.height/2-timeBox!.y-timeBox!.height/2)).toBeLessThan(2);
+    expect(nameBox!.x+nameBox!.width).toBeLessThan(timeBox!.x);
+    expect(tabBox!.height).toBeLessThan(40);
+    const titleBox=await drawer.getByRole('heading',{name:'消息通知',exact:true}).boundingBox();
+    const filterBox=await drawer.getByRole('group',{name:'通知分类'}).boundingBox(),projectFilterBox=await drawer.getByRole('combobox',{name:'筛选通知项目'}).boundingBox();
+    expect(Math.abs(titleBox!.y+titleBox!.height/2-filterBox!.y-filterBox!.height/2)).toBeLessThan(2);
+    expect(Math.abs(titleBox!.y+titleBox!.height/2-projectFilterBox!.y-projectFilterBox!.height/2)).toBeLessThan(2);
     await projectGroup.getByRole('button',{name:'通知验证项目',exact:true}).click();await expect(tabRow).not.toBeVisible();
     await expect(drawer.getByRole('region',{name:'会话对话'})).toContainText('兼容性检查完成');
     await projectGroup.getByRole('button',{name:'通知验证项目',exact:true}).click();await expect(tabRow).toBeVisible();
@@ -91,6 +99,8 @@ test('notifies changed sessions across closed projects, answers in the centered 
     appendFileSync(log,record('event_msg',{type:'task_started',turn_id:'question-turn'})+record('event_msg',{type:'item_completed',thread_id:native,turn_id:'question-turn',item:question}));
     await expect.poll(async()=>{const data=await(await page.request.get('/api/notifications')).json();return data.pending;}).toBe(1);
     await page.getByRole('button',{name:/^消息通知/}).click();
+    const listTitleBox=await drawer.getByRole('heading',{name:'消息通知',exact:true}).boundingBox(),listFilterBox=await drawer.getByRole('group',{name:'通知分类'}).boundingBox();
+    expect(Math.abs(listTitleBox!.y+listTitleBox!.height/2-listFilterBox!.y-listFilterBox!.height/2)).toBeLessThan(2);
     await drawer.getByRole('region',{name:'通知列表'}).getByRole('button',{name:/^通知验证项目 · /}).click();
     const card=drawer.getByRole('region',{name:'Codex 向你提问'});
     await expect(card).toContainText('需要继续兼容旧版接口吗？');
@@ -140,6 +150,9 @@ test('notifies changed sessions across closed projects, answers in the centered 
     expect((await(await page.request.get('/api/sessions')).json()).sessions).toHaveLength(2);
   }finally{
     try {
+      // Finish intercepted history reads while the fixture engine is still
+      // available, before closing the browser's API request context.
+      await page.unrouteAll({behavior:'wait'});
       if(projectId||fixtureUserId){const db=new Database(join(root,'agentmanager.db'));try{
         db.pragma('foreign_keys=ON');
         db.prepare('DELETE FROM notifications WHERE session_id IN (?,?)').run('notification-work','notification-quiet');
