@@ -35,6 +35,7 @@ export function notificationReplyTarget(sessionId:string,turnKey:string|null):Re
  * text within the authorized chat; ambiguous identical notices fail closed. */
 function quoteHash(text: string): string {
   const normalized = text.replace(/\r\n?/g,'\n').replace(/^ {0,3}#{1,6}\s+/gm,'')
+    .replace(/^[ \t]*[·•●][ \t]+/gm,'- ')
     .replace(/\[([^\]\n]+)\]\(https?:\/\/[^\s)]+\)/g,'$1').replace(/\*\*([^*]+)\*\*/g,'$1')
     .replace(/\\([\\`*_[\]<>])/g,'$1').replace(/`([^`\n]+)`/g,'$1').replace(/\s+/g,' ').trim();
   return createHash('sha256').update(normalized).digest('hex');

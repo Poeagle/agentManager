@@ -146,7 +146,9 @@ describe('project notification classification through the native adapter and WeC
     expect(frames.filter(frame => frame.cmd === 'aibot_send_msg')).toHaveLength(1);
     expect(fetch).not.toHaveBeenCalled();
 
-    send({...inbound('project-reply'),body:{...inbound('project-reply').body,text:{content:'不用'},quote:{msgtype:'text',text:{content:sent[0].body.markdown.content}}}} as any);
+    // Real WeCom strips bold markup and turns Markdown list hyphens into dots.
+    const renderedQuote=sent[0].body.markdown.content.replace(/\*\*([^*]+)\*\*/g,'$1').replace(/^- /gm,'· ');
+    send({...inbound('project-reply'),body:{...inbound('project-reply').body,text:{content:'不用'},quote:{msgtype:'text',text:{content:renderedQuote}}}} as any);
     await expect.poll(() => getDb().prepare("SELECT count(*) n FROM platform_ai_messages WHERE external_id='project-reply'").get()).toEqual({n:1});
     for(let tick=0;tick<4;tick++){worker.tick();await worker.drain();}
     expect(api.mock.calls.filter(call=>call[2]==='POST')).toHaveLength(1);

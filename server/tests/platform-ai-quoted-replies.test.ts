@@ -68,6 +68,15 @@ describe('quoted notification quick replies',()=>{
   const quoted=await notice('a','**文档**：[查看说明](https://example.com/docs)');
   expect(quotedReplyRoute('dolphindb_manager / a\n文档：查看说明')).toBe(quotedReplyRoute(quoted));
  });
+ it.each(['·','•','●'])('matches the actual WeCom rendered %s list callback against the sent Markdown',async bullet=>{
+  getDb().prepare("UPDATE projects SET name='dolphindb_manager' WHERE id='p'").run();
+  const quoted=await notice('a','这是一条企微往返测试通知。\n\n- **Markdown**：加粗与列表显示检查。\n- **引用回复**：请引用本条通知回复“不用”。\n\n是否需要继续？');
+  const rendered=`dolphindb\\_manager / a\n\n这是一条企微往返测试通知。\n\n${bullet} Markdown：加粗与列表显示检查。\n${bullet} 引用回复：请引用本条通知回复“不用”。\n\n是否需要继续？`;
+  expect(quotedReplyRoute(rendered)).toBe(quotedReplyRoute(quoted));
+  reply(rendered,'不用');await process();expect(inputs).toHaveLength(1);expect(inputs[0].id).toBe('a');
+  expect(inputs[0].body.input).toMatch(/^不用\n\n\[Platform task reference: quoted_/);
+  expect(fetch).not.toHaveBeenCalled();
+ });
  it('rejects identical quoted notices from different turns rather than guessing the newest one',async()=>{
   const first=await notice();currentRef.a='turn-a-2';const second=await notice();
   expect(first).toBe(second);
