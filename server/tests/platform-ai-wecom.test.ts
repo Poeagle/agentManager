@@ -105,6 +105,26 @@ function imageFixture() {
 }
 
 describe('WeCom outbound screenshot delivery',()=>{
+ it('sends a single image/text template card using the existing authenticated connection',async()=>{
+  const channel=bot();bind(channel.id);manager.start();await connected(channel.id);
+  const result=await manager.testImageCard(channel.id,member,`binding:${channel.id}:wx-member`);
+  expect(result.ok).toBe(true);
+  const sends=frames.filter(frame=>frame.cmd==='aibot_send_msg');expect(sends).toHaveLength(1);
+  expect(sends[0].body).toMatchObject({chatid:'wx-member',msgtype:'template_card',template_card:{card_type:'news_notice',card_image:{url:expect.stringMatching(/^https:\/\/wwcdn\.weixin\.qq\.com\//)},vertical_content_list:expect.arrayContaining([expect.objectContaining({title:'正文示例'})])}});
+  expect(frames.filter(frame=>frame.cmd==='aibot_subscribe')).toHaveLength(1);
+ });
+ it('rejects a test-card recipient belonging to another user before sending',async()=>{
+  const channel=bot();bind(channel.id,'wx-other',other);manager.start();await connected(channel.id);
+  await expect(manager.testImageCard(channel.id,member,`binding:${channel.id}:wx-other`)).rejects.toThrow('当前用户');
+  expect(frames.filter(frame=>frame.cmd==='aibot_send_msg')).toHaveLength(0);
+ });
+ it('requires existing administration permissions and a supported card destination',async()=>{
+  const channel=bot(),payload={mode:'image_card',recipient_id:'binding:fixture'};
+  expect((await app.inject({method:'POST',url:`/api/platform-ai/channels/${channel.id}/test`,headers:{cookie:memberCookie},payload})).statusCode).toBe(403);
+  const group=groupWebhook();expect((await app.inject({method:'POST',url:`/api/platform-ai/channels/${group.id}/test`,headers:{cookie:adminCookie},payload})).statusCode).toBe(400);
+  expect((await app.inject({method:'POST',url:`/api/platform-ai/channels/${channel.id}/test`,headers:{cookie:adminCookie},payload:{mode:'image_card'}})).statusCode).toBe(400);
+  expect((await app.inject({method:'POST',url:`/api/platform-ai/channels/${channel.id}/test`,headers:{cookie:adminCookie},payload:{...payload,image_url:'http://localhost/private'}})).statusCode).toBe(400);
+ });
  async function imageNotice(count=2){
   const channel=bot();bind(channel.id);manager.start();await connected(channel.id);
   const root=join(databaseDir,'image-project');mkdirSync(root);

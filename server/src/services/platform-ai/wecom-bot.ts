@@ -11,6 +11,7 @@ import { MAX_IMAGES, prepareImages, type ImageSource } from './attachments.js';
 import { publishMessage } from './live.js';
 
 import {quotedReplyRoute} from './quoted-replies.js';
+import {notificationRecipients} from './project-notifications.js';
 
 const silentLogger = {debug() {}, info() {}, warn() {}, error() {}};
 export type BotClient = Pick<WSClient, 'on' | 'connect' | 'disconnect' | 'replyStream' | 'sendMessage' | 'uploadMedia' | 'removeAllListeners'>;
@@ -242,6 +243,33 @@ export class WecomBotManager {
   }
 
   reconnect(id: string): void { this.close(id); this.reconcile(); }
+
+  /** Explicit administrator preview. Use a fixed public demonstration image;
+   * private screenshots are never published to obtain a card image URL. */
+  async testImageCard(id:string,userId:string,recipientId:string):Promise<{ok:boolean;message:string}> {
+    const recipient=notificationRecipients(userId).find(item=>item.id===recipientId&&item.channel_id===id&&!item.group);
+    if(!recipient)throw new ChannelError('请选择绑定当前用户的该机器人接收身份',403,true);
+    const connected=await this.test(id);
+    if(!connected.ok)throw new ChannelError(connected.message,503);
+    // Recheck destination authorization after waiting for connection/auth.
+    const current=notificationRecipients(userId).find(item=>item.id===recipientId&&item.channel_id===id&&!item.group);
+    const connection=this.connections.get(id);
+    if(!current||current.chat_id!==recipient.chat_id||!getChannel(id)?.enabled||connection?.status.state!=='connected')throw new ChannelError('接收身份或机器人连接已变化，请重试',409,true);
+    const image='https://wwcdn.weixin.qq.com/node/wework/images/06.a954815a1f.png';
+    try {
+      await connection.client.sendMessage(current.chat_id,{msgtype:'template_card',template_card:{
+        card_type:'news_notice',source:{desc:'OctoAlly 卡片试发',desc_color:1},
+        main_title:{title:'文字 + 图片 · 同一张卡片',desc:'图文展示效果测试'},
+        card_image:{url:image,aspect_ratio:648/369},
+        vertical_content_list:[
+          {title:'公开示例图片',desc:'这张图片来自企微官网，用于确认图片和文字是否出现在同一条消息中。'},
+          {title:'正文示例',desc:'任务摘要、检查结果可以放在这里，完整内容可通过链接打开。'},
+        ],
+        card_action:{type:1,url:image},
+      }});
+    }catch{throw new ChannelError('图文卡片发送未获确认，请先检查企微会话，避免重复试发',502);}
+    return {ok:true,message:'图文卡片已获企微确认，请在客户端检查文字和图片是否同条显示'};
+  }
 
   async test(id: string, timeout = 8000): Promise<{ok: boolean; message: string}> {
     // Reuse the existing socket; a second test socket would displace it.
