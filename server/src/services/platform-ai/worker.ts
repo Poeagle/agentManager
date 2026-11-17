@@ -15,7 +15,7 @@ import {callModel,ModelRequestError,PLATFORM_SYSTEM_PROMPT,type ModelMessage,typ
 import {messageAttachments,prepareImages} from './attachments.js';
 import {boundedToolResult,executePlatformTool,isMutatingTool,operationKey,platformApi,PlatformApiError,PLATFORM_TOOLS} from './tools.js';
 import {userHasPermission} from '../rbac.js';
-import {assertLiveUser,claimMessage,enqueueNotice,getConversation,trackTask,type Conversation,type InboxMessage,type TrackedTask} from './store.js';
+import {assertLiveUser,claimMessage,enqueueNotice,formatTaskNotification,getConversation,trackTask,type Conversation,type InboxMessage,type TrackedTask} from './store.js';
 import {publishMessage,refreshConversation} from './live.js';
 import {subscribe,type Event as PlatformEvent} from '../event-store.js';
 import {getSession} from '../session-manager.js';
@@ -23,7 +23,7 @@ import {sessionPresenter} from '../session-labels.js';
 import type {AgentTextMessage} from '../prompt-context.js';
 import {authorizeProjectNotice,ProjectNotifications} from './project-notifications.js';
 
-import {notificationReplyTarget,prefixReplyNotification,dispatchQuotedReply,quotedReplyOperationId} from './quoted-replies.js';
+import {notificationReplyTarget,prepareReplyNotification,dispatchQuotedReply,quotedReplyOperationId} from './quoted-replies.js';
 
 const OBSERVATION_FALLBACK_MS = 5 * 60 * 1000;
 
@@ -474,6 +474,12 @@ export class PlatformAiWorker {
       const replies = (nextUser < 0 ? current : current.slice(0, nextUser)).filter(message => message.role === 'assistant');
       const latestFinal = task.source_ref ? [...replies].reverse().find(message => message.phase === 'final')?.text || '' : '';
       const nativeFinal = latestFinal || (task.source_ref ? await readFinal() : '');
+      // A quoted chat reply needs its answer even when it is only “好的。”.
+      // The exact request reference proves correlation, not business success.
+      if (nativeFinal && task.source_ref.startsWith('quoted_')) {
+        this.saveAssessment(task, {status:'reported_complete',summary:'Agent 已回复',evidence:nativeFinal.slice(0,3000)}, now, true, nativeFinal);
+        return;
+      }
       const missingCommand = ended ? output.split('\n').find((line:string)=>agentDescriptors().some(agent=>line.includes(`command not found: ${agent.id}`)||line.includes(`${agent.id}: command not found`))) : undefined;
       if (missingCommand && !nativeFinal) {
         this.saveAssessment(task, {status: 'failed', summary: `${agentForSession(session).descriptor.label} 启动失败：系统找不到启动命令，本次需求未执行。请选择已探测可用的 Agent 后重新下发。`, evidence: missingCommand.trim()}, now, true);
@@ -548,11 +554,10 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
       const updated = getDb().prepare(`UPDATE platform_ai_tasks SET status=?,summary=?,evidence=?,last_notified_at=?,updated_at=datetime('now') WHERE id=? AND status IN ('running','blocked','uncertain')`)
         .run(assessment.status, assessment.summary, assessment.evidence, notify ? now : task.last_notified_at, task.id);
       if (notify && updated.changes) {
-        const title = assessment.status === 'reported_complete' ? 'Agent 已报告完成' : assessment.status === 'blocked' ? '需要你回复' : assessment.status === 'failed' ? '执行失败' : '进展';
         const key = createHash('sha256').update(JSON.stringify([assessment.status, assessment.summary.replace(/\s+/g, ' ').trim()])).digest('hex').slice(0, 24);
         const question = assessment.status === 'blocked' && assessment.evidence && !finalAnswer ? `\n\n### 需要你处理的内容\n\n${assessment.evidence}\n` : '';
         const body = finalAnswer || `${assessment.summary}${question}`;
-        enqueueNotice(task.conversation_id, `task:${task.id}:${key}`, `${title} · ${taskLocation(task)}\n\n${body}`,{notification_target:notificationReplyTarget(task.session_id,task.source_ref?'ref:'+task.source_ref:null)});
+        enqueueNotice(task.conversation_id, `task:${task.id}:${key}`, formatTaskNotification(taskLocation(task), body),{notification_target:notificationReplyTarget(task.session_id,task.source_ref?'ref:'+task.source_ref:null)});
       }
     })();
     if (notify) refreshConversation(task.conversation_id);
@@ -588,7 +593,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         const context = channel.kind === 'wecom_bot' && !item.dedupe_key.startsWith('reply:') ? {} : JSON.parse(item.reply_context);
         const metadata=JSON.parse(item.reply_context);
         const target=metadata.notification_target;
-        const content=channel.kind==='wecom_bot'&&target?prefixReplyNotification({noticeId:item.id,noticeKey:item.dedupe_key,target,userId:conversation.user_id,channelId:channel.id,externalUserId:projectRecipient?.external_user_id||conversation.external_user_id,chatId:projectRecipient?.chat_id||conversation.external_chat_id,content:item.content}):item.content;
+        const content=channel.kind==='wecom_bot'&&target?prepareReplyNotification({noticeId:item.id,noticeKey:item.dedupe_key,target,userId:conversation.user_id,channelId:channel.id,externalUserId:projectRecipient?.external_user_id||conversation.external_user_id,chatId:projectRecipient?.chat_id||conversation.external_chat_id,content:item.content}):item.content;
         await deliverMessage(channel, projectRecipient?.chat_id || conversation.external_chat_id, projectRecipient?.external_user_id || conversation.external_user_id, content, context, item.id, this.abort.signal);
       }
       getDb().prepare("UPDATE platform_ai_outbox SET status='sent',error=NULL,lease_until=0 WHERE id=?").run(item.id);

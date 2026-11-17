@@ -9,9 +9,9 @@ import {nativeConversationId} from '../session-identity.js';
 import {getTracker} from '../session-state.js';
 import {sessionPresenter} from '../session-labels.js';
 import type {AgentTextMessage} from '../prompt-context.js';
-import {ChannelError} from './channels.js';
+import {ChannelError,compactText} from './channels.js';
 import {platformApi,PlatformApiError} from './tools.js';
-import {trackTask,type Conversation,type InboxMessage} from './store.js';
+import {formatTaskNotification,trackTask,type Conversation,type InboxMessage} from './store.js';
 
 const token = customAlphabet('23456789abcdefghjkmnpqrstuvwxyz',12);
 export const quotedReplyOperationId=(messageId:string)=>'quoted_'+messageId;
@@ -31,8 +31,18 @@ export function notificationReplyTarget(sessionId:string,turnKey:string|null):Re
   return session&&native?{session_id:sessionId,native_id:native,environment_id:session.agent_environment_id||'native',turn_key:turnKey}:null;
 }
 
-/** Called only after outbound authorization, with the actual destination. Retries reuse the same prefix. */
-export function prefixReplyNotification(input:{noticeId:string;noticeKey:string;target:ReplyTarget;userId:string;channelId:string;externalUserId:string;chatId:string;content:string}):string {
+/** WeCom quotes contain text, not the original message ID. Match the delivered
+ * text within the authorized chat; ambiguous identical notices fail closed. */
+function quoteHash(text: string): string {
+  const normalized = text.replace(/\r\n?/g,'\n').replace(/^ {0,3}#{1,6}\s+/gm,'')
+    .replace(/\[([^\]\n]+)\]\(https?:\/\/[^\s)]+\)/g,'$1').replace(/\*\*([^*]+)\*\*/g,'$1')
+    .replace(/\\([\\`*_[\]<>])/g,'$1').replace(/`([^`\n]+)`/g,'$1').replace(/\s+/g,' ').trim();
+  return createHash('sha256').update(normalized).digest('hex');
+}
+
+/** Called only after outbound authorization. Freeze the actual Markdown sent
+ * in the existing outbox metadata so retries and renames keep quote identity. */
+export function prepareReplyNotification(input:{noticeId:string;noticeKey:string;target:ReplyTarget;userId:string;channelId:string;externalUserId:string;chatId:string;content:string}):string {
   const db=getDb(),now=Date.now();
   db.prepare('DELETE FROM platform_ai_reply_routes WHERE expires_at<?').run(now);
   let route=db.prepare('SELECT * FROM platform_ai_reply_routes WHERE notice_id=?').get(input.noticeId) as ReplyRoute|undefined;
@@ -47,15 +57,32 @@ export function prefixReplyNotification(input:{noticeId:string;noticeKey:string;
   if(route.user_id!==input.userId||route.channel_id!==input.channelId||route.external_user_id!==input.externalUserId||route.chat_id!==input.chatId)throw new ChannelError('通知接收身份或聊天已变化，请等待最新通知。',409,true);
   const session=getSession(route.session_id);
   const label=session?sessionPresenter(input.userId)(session):null;
-  const name=[label?.project_name,label?.tab_name].filter(Boolean).join(' / ').replace(/[\r\n【】]/g,' ').slice(0,100)||'工作会话';
-  return `【${name} · AM-${route.id}】\n${input.content}`;
+  const name=[label?.project_name,label?.tab_name].filter(Boolean).join(' / ')||'工作会话';
+  const row=db.prepare('SELECT reply_context FROM platform_ai_outbox WHERE id=?').get(input.noticeId) as {reply_context:string};
+  const metadata=JSON.parse(row.reply_context);
+  const content=metadata.wecom_quote_text||compactText(input.content.startsWith(formatTaskNotification(name,''))?input.content:formatTaskNotification(name,input.content),4000);
+  db.prepare("UPDATE platform_ai_outbox SET reply_context=json_set(reply_context,'$.wecom_quote_text',?,'$.wecom_quote_hash',?) WHERE id=?").run(content,quoteHash(content),input.noticeId);
+  return content;
 }
 
-export function quotedReplyRoute(text:string):string {
+export function quotedReplyRoute(text:string,identity?:{channelId:string;externalUserId:string;chatId:string}):string {
   if(text.length>24000)throw new ChannelError('引用内容过长，请只引用一条任务通知。',400,true);
+  if(identity){
+    const routes=getDb().prepare(`SELECT r.id FROM platform_ai_reply_routes r
+      JOIN platform_ai_outbox o ON o.id=r.notice_id
+      JOIN platform_ai_bindings b ON b.channel_id=r.channel_id AND b.external_user_id=r.external_user_id AND b.user_id=r.user_id
+      WHERE r.channel_id=? AND r.external_user_id=? AND r.chat_id=? AND r.expires_at>=?
+      AND o.status IN ('sending','sent','pending') AND json_extract(o.reply_context,'$.wecom_quote_hash')=? LIMIT 2`)
+      .all(identity.channelId,identity.externalUserId,identity.chatId,Date.now(),quoteHash(text)) as Array<{id:string}>;
+    if(routes.length===1)return routes[0].id;
+    if(routes.length>1)throw new ChannelError('引用内容对应多条相同通知，无法确定原轮次，请打开原标签页回复。',409,true);
+  }
+  // Exact delivered content wins over marker-like text inside the Agent body.
+  // Old visible headers remain readable until their seven-day routes expire.
   const tokens=[...new Set([...text.matchAll(/(?:^|\n)【[^\r\n】]{1,160} · AM-([23456789abcdefghjkmnpqrstuvwxyz]{12})】/g)].map(match=>match[1]))];
-  if(tokens.length!==1)throw new ChannelError(tokens.length?'引用了多个通知目标，请只引用一条通知回复。':'这条引用没有可识别的通知前缀，请引用一条新的任务通知回复。',400,true);
-  return tokens[0];
+  if(tokens.length>1)throw new ChannelError('引用了多个通知目标，请只引用一条通知回复。',400,true);
+  if(tokens.length===1&&text.startsWith('【'))return tokens[0];
+  throw new ChannelError('这条引用没有可识别的通知关联，请引用最新通知或打开原标签页回复。',400,true);
 }
 
 /** Does not invoke a model or retry a possibly submitted write. Durable operation records fence restarts. */
@@ -102,7 +129,7 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
   getDb().prepare("INSERT INTO platform_ai_operations(id,message_id,tool_name,arguments,status) VALUES(?,?, 'quoted_reply',?,'started')").run(operationId,message.id,JSON.stringify({session_id:session.id,route_id:route.id}));
   let result:string,acceptedOrUnknown=false;
   try {
-    const sent=await platformApi(app,conversation.user_id,'POST',`/api/sessions/${encodeURIComponent(session.id)}/input`,{input:message.content+(sourceTaskId?`\n\n[Platform task reference: ${operationId}]`:''),source:'conversation',client_id:'quoted_'+message.id,expected_native_id:route.native_id,expected_environment_id:route.environment_id});
+    const sent=await platformApi(app,conversation.user_id,'POST',`/api/sessions/${encodeURIComponent(session.id)}/input`,{input:message.content+`\n\n[Platform task reference: ${operationId}]`,source:'conversation',client_id:'quoted_'+message.id,expected_native_id:route.native_id,expected_environment_id:route.environment_id});
     acceptedOrUnknown=true;
     if(!['submitted','queued'].includes(sent.status))throw Error('Unknown input receipt');
     const label=sessionPresenter(conversation.user_id)(session);
@@ -111,10 +138,10 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
     acceptedOrUnknown=!(error instanceof PlatformApiError&&error.statusCode<500);
     result=error instanceof PlatformApiError&&error.statusCode<500?`未投递：${error.message}。请处理后重新回复通知。`:'投递结果待核对，为避免重复执行不会自动重发，请查看原标签页。';
   }
-  if(sourceTaskId&&acceptedOrUnknown){
+  if(acceptedOrUnknown){
     try{getDb().transaction(()=>{
-      const previous=getDb().prepare('SELECT requirement FROM platform_ai_tasks WHERE id=?').get(sourceTaskId) as {requirement:string}|undefined;
-      getDb().prepare("UPDATE platform_ai_tasks SET status='superseded',updated_at=datetime('now') WHERE id=? AND status IN ('running','blocked','uncertain')").run(sourceTaskId);
+      const previous=sourceTaskId?getDb().prepare('SELECT requirement FROM platform_ai_tasks WHERE id=?').get(sourceTaskId) as {requirement:string}|undefined:undefined;
+      if(sourceTaskId)getDb().prepare("UPDATE platform_ai_tasks SET status='superseded',updated_at=datetime('now') WHERE id=? AND status IN ('running','blocked','uncertain')").run(sourceTaskId);
       const task=trackTask(conversation,session.id,((previous?.requirement||'')+'\n\n用户回复：'+message.content).slice(-24000),Number(display.cursor)||0,operationId);
       if(result.startsWith('投递结果待核对'))getDb().prepare("UPDATE platform_ai_tasks SET status='uncertain' WHERE id=?").run(task.id);
     })();}catch{result+=' 任务跟踪未能更新，请到原标签页核对后续结果。';}

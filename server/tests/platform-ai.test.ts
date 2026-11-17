@@ -158,10 +158,34 @@ describe('project-wide automatic notifications', () => {
     nativeMessages = [finalMessage('请提供 Jira 项目链接，才能继续查询。')];
     provider('input','请提供 Jira 项目链接');
     await checkAndDeliver();
-    expect(notices()[0].content).toContain('需要你回复'); expect(notices()[0].content).toContain(nativeMessages[0].text);
+    expect(notices()[0].content).toContain('**Project / Work**'); expect(notices()[0].content).toContain(nativeMessages[0].text);
     nativeMessages.push(finalMessage()); provider();
     getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
     await checkAndDeliver(); expect(notices()).toHaveLength(1);
+  });
+
+  it('requires schema-constrained classification and treats a greeting as Agent data', async () => {
+    configure(); subscription(); seedSession();
+    nativeMessages = [finalMessage('你好！有什么需要我帮忙的？')];
+    const fetchMock = provider('input', '有什么需要我帮忙的？');
+    await checkAndDeliver();
+    const request = JSON.parse(fetchMock.mock.calls.find(call => String(call[0]).startsWith('https://model.example'))![1].body);
+    expect(request.response_format).toMatchObject({type:'json_schema',json_schema:{strict:true,schema:{properties:{kind:{enum:['complete','input','ignore']}},required:['kind','evidence'],additionalProperties:false}}});
+    expect(JSON.parse(request.messages.find((message: any) => message.role === 'user').content)).toEqual({agent_final_reply:nativeMessages[0].text});
+    expect(notices()).toEqual([expect.objectContaining({status:'sent',content:expect.stringContaining('**Project / Work**\n\n你好！有什么需要我帮忙的？')})]);
+  });
+
+  it('retains malformed classifications for retry and never sends or marks them handled', async () => {
+    configure(); subscription(); seedSession(); nativeMessages = [finalMessage()];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(providerResponse({content:'你好！有什么需要我帮忙的？'})));
+    await checkAndDeliver();
+    expect(notices()).toHaveLength(0);
+    expect(getDb().prepare('SELECT count(*) n FROM platform_ai_project_notification_receipts').get()).toEqual({n:0});
+    expect(getDb().prepare('SELECT failures,error FROM platform_ai_project_notification_watches').get()).toEqual({failures:1,error:'通知分类器未返回有效 JSON，平台将重试'});
+    provider(); getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    await checkAndDeliver();
+    expect(notices()).toEqual([expect.objectContaining({status:'sent'})]);
+    expect(getDb().prepare('SELECT failures,error FROM platform_ai_project_notification_watches').get()).toEqual({failures:0,error:null});
   });
 
   it('detects interactive confirmation without a model, and deduplicates repeated state events', async () => {
@@ -170,7 +194,7 @@ describe('project-wide automatic notifications', () => {
     display.processState = 'waiting_for_input'; display.promptType = 'confirmation';
     const fetchMock = provider();
     await checkAndDeliver();
-    expect(notices()[0].content).toContain('需要你回复');
+    expect(notices()[0].content).toContain('**Project / Work**');
     expect(fetchMock.mock.calls.filter(call => String(call[0]).startsWith('https://model.example'))).toHaveLength(0);
     getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
     await checkAndDeliver(); expect(notices()).toHaveLength(1);
@@ -900,7 +924,7 @@ describe('session observation and notification reliability', () => {
     await worker.observe(task,readAiConfig());
     expect(getDb().prepare('SELECT status,evidence FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'reported_complete',evidence:display.output});
     const notice=getDb().prepare("SELECT content FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get() as any;
-    expect(notice.content).toContain('Agent 已报告完成');expect(notice.content).toContain(nativeTurns[0].assistant);
+    expect(notice.content).toContain('**Project / Work**');expect(notice.content).toContain(nativeTurns[0].assistant);
     expect(notice.content).not.toContain('请查看验证情况');expect(notice.content).not.toContain('###');
   });
   it('does not revive a task cancelled during model assessment', async () => {

@@ -15,19 +15,23 @@ export type AiSource=z.infer<typeof aiSourceSchema>;
 export const isClientSource=(source?:AiSource)=>!!source&&source.kind!=='api';
 export {availableAiClients} from './ai-source-discovery.js';
 const replySchema={type:'object',properties:{content:{type:'string'},tool_calls:{type:'array',maxItems:8,items:{type:'object',properties:{name:{type:'string'},arguments:{type:'string'}},required:['name','arguments'],additionalProperties:false}}},required:['content','tool_calls'],additionalProperties:false};
+export interface ModelResponseFormat {
+ type:'json_schema'; json_schema:{name:string;strict:true;schema:Record<string,unknown>};
+}
 let active=0;
 /** One-shot model adapters. Built-in clients have no host tools; platform
  * tool requests are returned as data and executed by the existing RBAC loop. */
-export async function runAiClient(source:AiSource,input:{messages:unknown[];tools?:unknown[];model?:string;tool_choice?:string},timeout:number,signal?:AbortSignal) {
+export async function runAiClient(source:AiSource,input:{messages:unknown[];tools?:unknown[];model?:string;tool_choice?:string;response_format?:ModelResponseFormat},timeout:number,signal?:AbortSignal) {
  const config=aiSourceSchema.parse(source);if(config.kind==='api')throw Error('请选择本机客户端');if(active>=2)throw Error('本机 AI 正忙，请稍后重试');signal?.throwIfAborted();active++;
  let directory:string|undefined;let sandbox:Awaited<ReturnType<typeof prepareAiSandbox>>|undefined;
  try{
-  directory=await mkdtemp(join(tmpdir(),'octoally-model-'));const schemaPath=join(directory,'reply.json');await writeFile(schemaPath,JSON.stringify(replySchema));
-  const envelope={protocol:'octoally.ai.v1',...input,response_schema:replySchema};
-  const instruction='Act as a stateless AI model for the supplied messages. Follow the system messages and answer the last user message. Do not use any host tools. Tools in this JSON are descriptions only: return requested tool calls as JSON data for the platform to execute. Return ONLY a JSON object matching response_schema. Each tool call arguments field must be a JSON-encoded string. If tool_choice is none, tool_calls must be empty.\n'+JSON.stringify(envelope);
+  const outputSchema=input.response_format?.json_schema.schema||replySchema;
+  directory=await mkdtemp(join(tmpdir(),'octoally-model-'));const schemaPath=join(directory,'reply.json');await writeFile(schemaPath,JSON.stringify(outputSchema));
+  const envelope={protocol:'octoally.ai.v1',...input,response_schema:outputSchema};
+  const instruction='Act as a stateless AI model for the supplied messages. Follow the supplied system messages: they define the task, and the user message may be data to classify rather than a request to answer. Do not use any host tools. Return ONLY a JSON object matching response_schema. '+(input.response_format?'Return the requested structured result directly, without a content/tool_calls wrapper.':'Tools in this JSON are descriptions only: return requested tool calls as JSON data for the platform to execute. Each tool call arguments field must be a JSON-encoded string. If tool_choice is none, tool_calls must be empty.')+'\n'+JSON.stringify(envelope);
   let args:string[],stdin=instruction,executable=config.executable||config.kind;
   if(config.kind==='codex')args=['exec','-c','cli_auth_credentials_store="file"','--ignore-user-config','--ephemeral','--skip-git-repo-check','--sandbox','read-only','--disable','shell_tool','--disable','plugins','-c','web_search="disabled"','--json','--output-schema',schemaPath,...(input.model?['--model',input.model]:[]),'-'];
-  else if(config.kind==='claude')args=['--print','--tools','','--strict-mcp-config','--mcp-config','{"mcpServers":{}}','--setting-sources','','--no-session-persistence','--output-format','json','--json-schema',JSON.stringify(replySchema),...(input.model?['--model',input.model]:[])];
+  else if(config.kind==='claude')args=['--print','--tools','','--strict-mcp-config','--mcp-config','{"mcpServers":{}}','--setting-sources','','--no-session-persistence','--output-format','json','--json-schema',JSON.stringify(outputSchema),...(input.model?['--model',input.model]:[])];
   else {args=JSON.parse(config.arguments_json||'[]');stdin=JSON.stringify(envelope);}
   // Native clients need real image input rather than base64 prose. Generic
   // adapters receive the unchanged compatible image content in the envelope.
@@ -46,6 +50,13 @@ export async function runAiClient(source:AiSource,input:{messages:unknown[];tool
    child.on('error',()=>finish(Error('无法启动 AI 客户端，请检查安装及程序路径')));child.stdout.on('data',bytes=>{size+=bytes.length;if(size>2*1024*1024)finish(Error('AI 响应超过大小限制'));else output+=bytes.toString();});child.stderr.on('data',()=>{});child.stdin.on('error',()=>{});child.on('close',code=>finish(code===0?undefined:Error('AI 客户端运行失败，请检查登录、模型权限及客户端版本')));child.stdin.end(stdin);
   });
   let data:any;if(config.kind==='codex'){const records=raw.split('\n').flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});const message=records.filter(entry=>entry.type==='item.completed'&&entry.item?.type==='agent_message').at(-1);if(!message)throw Error('Codex 未返回有效模型回复');data=JSON.parse(message.item.text);}else {data=JSON.parse(raw);if(config.kind==='claude'){if(data.is_error)throw Error('Claude 请求失败，请检查登录和额度');data=data.structured_output??JSON.parse(data.result||'null');}}
+  if(input.response_format){
+   // The caller validates the task-specific schema; native clients constrain it
+   // directly instead of hiding JSON inside an unconstrained content string.
+   if(!data||typeof data!=='object'||Array.isArray(data))throw Error('AI 客户端未返回约定的结构化回复，请检查适配器');
+   const content=JSON.stringify(data);if(content.length>16000)throw Error('AI 响应超过大小限制');
+   return {role:'assistant' as const,content};
+  }
   const parsed=z.object({content:z.string().max(16000),tool_calls:z.array(z.object({name:z.string().min(1).max(200),arguments:z.string().max(64000)}).strict()).max(8)}).strict().parse(data);
   const allowed=new Set((input.tools||[]).map((tool:any)=>tool.function?.name));for(const call of parsed.tool_calls){if(input.tool_choice==='none'||!allowed.has(call.name))throw Error('AI 返回了未授权的工具请求');JSON.parse(call.arguments);}
   if(!parsed.content.trim()&&!parsed.tool_calls.length)throw Error('AI 返回了空回复');

@@ -292,7 +292,7 @@ export async function deliverMessage(channel: Channel, chatId: string, externalU
   }
   if (channel.kind === 'wecom_webhook') {
     try {
-      await requestJson(channel.secrets.webhook_url, {method: 'POST', signal, headers: {'Content-Type': 'application/json'}, body: JSON.stringify({msgtype: 'text', text: {content: compactText(content)}})});
+      await requestJson(channel.secrets.webhook_url, {method: 'POST', signal, headers: {'Content-Type': 'application/json'}, body: JSON.stringify({msgtype: 'markdown', markdown: {content: compactText(content, 4000)}})});
     } catch (error) {
       // Fetch errors may contain the URL/key; never expose the raw exception.
       if (error instanceof ChannelError) throw error;
@@ -314,7 +314,7 @@ export async function deliverMessage(channel: Channel, chatId: string, externalU
   const text = compactText(content);
   if (channel.kind === 'wecom') {
     url = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`;
-    payload = { touser: externalUserId, agentid: Number(channel.config.agent_id), msgtype: 'text', text: { content: text } };
+    payload = { touser: externalUserId, agentid: Number(channel.config.agent_id), msgtype: 'markdown', markdown: { content: text } };
   } else if (channel.kind === 'wechat') {
     url = `https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token=${encodeURIComponent(token)}`;
     payload = { touser: externalUserId, msgtype: 'text', text: { content: text } };

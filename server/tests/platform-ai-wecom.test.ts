@@ -1,4 +1,6 @@
 import { once } from 'events';
+import {writeFileSync} from 'fs';
+import {join} from 'path';
 import { createCipheriv, randomBytes } from 'crypto';
 import { WebSocket, WebSocketServer } from 'ws';
 import { WSClient } from '@wecom/aibot-node-sdk';
@@ -19,6 +21,7 @@ import { createTestDatabase } from './helpers/database.js';
 
 import {notificationReplyTarget} from '../src/services/platform-ai/quoted-replies.js';
 import * as platformTools from '../src/services/platform-ai/tools.js';
+import {saveProjectNotification,canNotifyProject} from '../src/services/platform-ai/project-notifications.js';
 
 let cleanup: () => void;
 let app: FastifyInstance;
@@ -30,9 +33,10 @@ let frames: any[];
 let admin: string, member: string, other: string, adminCookie: string, memberCookie: string;
 let rejectAuth = false;
 let rejectStream = false;
+let databaseDir: string;
 
 beforeEach(async () => {
-  const database = createTestDatabase(); cleanup = database.cleanup;
+  const database = createTestDatabase(); cleanup = database.cleanup; databaseDir = database.dir;
   admin = createUser({username: 'admin', password: 'password1', role: 'admin'}).id;
   member = createUser({username: 'member', password: 'password1'}).id;
   other = createUser({username: 'other', password: 'password1'}).id;
@@ -95,6 +99,65 @@ function imageFixture() {
   return {source: {url: 'https://wework.qpic.cn/private-test-image?token=private-download-token', aeskey: key.toString('base64')}, encrypted};
 }
 
+describe('project notification classification through the native adapter and WeCom SDK', () => {
+  const sandboxIt = process.platform === 'linux' ? it : it.skip;
+  sandboxIt('delivers the previously failing greeting as Markdown and preserves deduplication after recovery', async () => {
+    const channel = bot(); bind(channel.id); manager.start(); await connected(channel.id);
+    getDb().prepare("INSERT INTO projects(id,name,path,owner_id) VALUES('notice-project','通知项目','/fixture',?)").run(member);
+    setProjectToolAccess({projectId:'notice-project',userId:member,canSession:true,canTerminal:true,sessionClients:['codex'],grantedBy:admin});
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES('notice-tab','notice-project','文档','running','session','codex','native-notice',?)").run(member);
+    const rule = saveProjectNotification(member, {project_id:'notice-project',recipient_id:`binding:${channel.id}:wx-member`,enabled:true,on_complete:true,on_input:true});
+    expect(canNotifyProject(rule, 'notice-tab')).toBe(true);
+    const text = '你好！有什么需要我帮忙的？\n\n- **文档**：[查看说明](https://example.com/docs)';
+    const timestamp = new Date(Date.now()+1000).toISOString();
+    let messages = [{role:'user',phase:'user',text:'你好',timestamp,task_reference:'notice-turn'}, {role:'assistant',phase:'final',text,timestamp,task_reference:'notice-turn'}];
+    const api = vi.spyOn(platformTools, 'platformApi').mockImplementation(async (_app,_user,method,url,body) => {
+      if(url.endsWith('/agent-messages')) return {messages};
+      if(url.includes('/display')) return {processState:'idle',promptType:null,cursor:0};
+      if(method==='GET' && url==='/api/sessions/notice-tab') return {session:getDb().prepare("SELECT * FROM sessions WHERE id='notice-tab'").get()};
+      if(method==='POST' && url.endsWith('/input')) {
+        const ref = String(body?.input).match(/\[Platform task reference: (quoted_[^\]]+)\]/)![1];
+        messages = [{role:'user',phase:'user',text:'不用',timestamp,task_reference:ref}, {role:'assistant',phase:'final',text:'好的。',timestamp,task_reference:ref}];
+        return {status:'submitted'};
+      }
+      throw Error('Unexpected fixture API '+url);
+    });
+    const adapter = join(databaseDir, 'classifier.cjs');
+    writeFileSync(adapter, `let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{
+      const request=JSON.parse(input);
+      const structured=request.response_schema.properties.kind && JSON.parse(request.messages.at(-1).content).agent_final_reply;
+      console.log(JSON.stringify(structured?{kind:'input',evidence:'有什么需要我帮忙的？'}:{content:'你好！有什么需要我帮忙的？',tool_calls:[]}));
+    });`);
+    updateAiConfig({enabled:true,model:'fixture',source:{kind:'command',executable:process.execPath,arguments_json:JSON.stringify([adapter])}});
+    vi.stubGlobal('fetch', vi.fn(() => {throw Error('No external HTTP expected');}));
+    worker.tick(); await worker.drain(); worker.tick(); await worker.drain();
+    expect(getDb().prepare('SELECT failures,error FROM platform_ai_project_notification_watches WHERE rule_id=?').get(rule.id)).toEqual({failures:0,error:null});
+    expect(getDb().prepare('SELECT status,error FROM platform_ai_outbox').all()).toEqual([expect.objectContaining({status:'sent',error:null})]);
+    const sent = frames.filter(frame => frame.cmd === 'aibot_send_msg');
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body).toMatchObject({chatid:'wx-member',msgtype:'markdown',markdown:{content:expect.stringContaining(`**通知项目 / 文档**\n\n${text}`)}});
+    expect(sent[0].body.markdown.content).toBe(`**通知项目 / 文档**\n\n${text}`);
+    expect(sent[0].body.markdown.content).not.toContain('AM-');
+    expect(getDb().prepare('SELECT status,attempts,error FROM platform_ai_outbox').get()).toEqual({status:'sent',attempts:1,error:null});
+    expect(getDb().prepare('SELECT failures,error FROM platform_ai_project_notification_watches WHERE rule_id=?').get(rule.id)).toEqual({failures:0,error:null});
+    await worker.stop(); worker = new PlatformAiWorker(app);
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    worker.tick(); await worker.drain(); worker.tick(); await worker.drain();
+    expect(frames.filter(frame => frame.cmd === 'aibot_send_msg')).toHaveLength(1);
+    expect(fetch).not.toHaveBeenCalled();
+
+    send({...inbound('project-reply'),body:{...inbound('project-reply').body,text:{content:'不用'},quote:{msgtype:'text',text:{content:sent[0].body.markdown.content}}}} as any);
+    await expect.poll(() => getDb().prepare("SELECT count(*) n FROM platform_ai_messages WHERE external_id='project-reply'").get()).toEqual({n:1});
+    for(let tick=0;tick<4;tick++){worker.tick();await worker.drain();}
+    expect(api.mock.calls.filter(call=>call[2]==='POST')).toHaveLength(1);
+    expect(api.mock.calls.find(call=>call[2]==='POST')![4]?.input).toMatch(/^不用\n\n\[Platform task reference: quoted_/);
+    const followups = frames.filter(frame=>frame.cmd==='aibot_send_msg');
+    expect(followups).toHaveLength(2);
+    expect(followups[1].body).toMatchObject({msgtype:'markdown',markdown:{content:'**通知项目 / 文档**\n\n好的。'}});
+    expect(getDb().prepare("SELECT count(*) n FROM platform_ai_outbox WHERE status='sent'").get()).toEqual({n:3});
+  });
+});
+
 describe('WeCom quoted notification direct routing',()=>{
  it.each(['text','mixed'])('delivers a prefixed notice and routes a %s quote through the quick lane, deduplicating WebSocket replay',async quoteType=>{
   const channel=bot();bind(channel.id);manager.start();await connected(channel.id);
@@ -108,7 +171,7 @@ describe('WeCom quoted notification direct routing',()=>{
   enqueueNotice(received.conversation_id,`task:${task.id}:done`,'是否使用测试环境？',{notification_target:notificationReplyTarget('quick-tab','ref:turn-quick')});
   worker.tick();await worker.drain();
   const notification=frames.find(frame=>frame.cmd==='aibot_send_msg').body.markdown.content;
-  expect(notification).toMatch(/^【.*AM-[a-z0-9]{12}】/);
+  expect(notification).toBe('**Project / Work**\n\n是否使用测试环境？');
   const api=vi.spyOn(platformTools,'platformApi').mockImplementation(async(_app,_user,method,url)=>{
    if(url.endsWith('/agent-messages'))return {messages:[{role:'user',phase:'user',text:'work',timestamp:null,task_reference:'turn-quick'}]};
    if(url.includes('/display'))return {processState:'idle',promptType:null,cursor:0};
@@ -134,7 +197,7 @@ describe('WeCom quoted notification direct routing',()=>{
  it('rejects a quote without a routing prefix instead of guessing or invoking a model',async()=>{
   const channel=bot();bind(channel.id);manager.start();await connected(channel.id);
   const frame={...inbound('invalid-quote'),body:{...inbound('invalid-quote').body,quote:{msgtype:'text',text:{content:'没有标识的旧通知'}}}};
-  send(frame as any);await expect.poll(()=>frames.some(frame=>frame.body?.stream?.content?.includes('没有可识别的通知前缀'))).toBe(true);
+  send(frame as any);await expect.poll(()=>frames.some(frame=>frame.body?.stream?.content?.includes('没有可识别的通知关联'))).toBe(true);
   expect(getDb().prepare('SELECT count(*) n FROM platform_ai_messages').get()).toEqual({n:0});
  });
 });
@@ -339,7 +402,7 @@ describe('WeCom configuration, group subscriptions and migration', () => {
     worker.tick(); await worker.drain(); worker.tick(); await worker.drain();
     expect(fetch).toHaveBeenCalledTimes(2);
     const payload = JSON.parse(fetch.mock.calls[1][1].body);
-    expect(payload).toEqual({msgtype: 'text', text: {content: '任务完成内容'}});
+    expect(payload).toEqual({msgtype: 'markdown', markdown: {content: '任务完成内容'}});
     const deliveries = await app.inject({url: '/api/platform-ai/deliveries', headers: {cookie: memberCookie}});
     expect(deliveries.json().deliveries.some((delivery: any) => delivery.channel_name === '开发通知群' && delivery.status === 'sent')).toBe(true);
   });
@@ -368,6 +431,22 @@ describe('WeCom configuration, group subscriptions and migration', () => {
     response = await test(); expect(response.statusCode).toBe(502); expect(response.body).toContain('未知错误码'); expect(response.body).not.toContain('application-private-secret');
     fetch.mockResolvedValueOnce(new Response('invalid application-private-secret', {status: 200}));
     response = await test(); expect(response.statusCode).toBe(502); expect(response.body).not.toContain('application-private-secret');
+  });
+
+  it('uses Markdown for application and group deliveries and bounds multibyte messages', async () => {
+    const group = groupWebhook();
+    const application = saveChannel({name:'应用',kind:'wecom',enabled:true,config:{corp_id:'corp',agent_id:'1001'},secrets:{app_secret:'dummy',token:'callback',aes_key:'a'.repeat(43)}});
+    const content = '**结果**\n\n- [查看说明](https://example.com/docs)\n' + '中文😀'.repeat(2000);
+    const fetchMock = vi.fn().mockImplementation(async (url:string) => new Response(JSON.stringify(String(url).includes('gettoken')?{access_token:'fixture-token',expires_in:7200}:{errcode:0}),{status:200}));
+    vi.stubGlobal('fetch',fetchMock);
+    for(const channel of [group,application]) {
+      await deliverMessage(getChannel(channel.id)!, 'chat', 'wx-member', content, {}, 'markdown-test');
+      const payload=JSON.parse(fetchMock.mock.calls.at(-1)![1].body);
+      expect(payload).toMatchObject({msgtype:'markdown',markdown:{content:expect.stringContaining('**结果**\n\n- [查看说明](https://example.com/docs)')}});
+      expect(Buffer.byteLength(payload.markdown.content)).toBeLessThanOrEqual(channel.kind==='wecom_webhook'?4000:1850);
+      expect(payload.markdown.content).not.toContain('\ufffd');
+      expect(payload).not.toHaveProperty('text');
+    }
   });
 
   it('migrates the old channel CHECK constraint without cascading away conversations, secrets or deliveries', () => {

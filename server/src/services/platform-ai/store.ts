@@ -19,6 +19,11 @@ export interface TrackedTask {
   created_at: string;
 }
 
+export function formatTaskNotification(location: string, body: string): string {
+  const label = location.replace(/[\r\n]/g, ' ').replace(/[\\`*_[\]<>]/g, '\\$&');
+  return `**${label}**\n\n${body}`;
+}
+
 export function getConversation(id: string): Conversation | undefined {
   return getDb().prepare('SELECT * FROM platform_ai_conversations WHERE id=?').get(id) as Conversation | undefined;
 }

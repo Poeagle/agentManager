@@ -130,7 +130,7 @@ export class WecomBotManager {
     }
     try {
       if (images.length > MAX_IMAGES) {this.reject(connection, frame, `单条消息最多支持 ${MAX_IMAGES} 张图片，请分开发送。`); return;}
-      const directRoute=typeof quotedText==='string'?quotedReplyRoute(quotedText):undefined;
+      const directRoute=typeof quotedText==='string'?quotedReplyRoute(quotedText,{channelId,externalUserId:userId,chatId}):undefined;
       if(directRoute&&images.length)throw new ChannelError('引用通知的快速回复目前仅支持文字，请在标签页发送附件。',400,true);
       const result = acceptChannelMessage(channel, {externalUserId: userId, chatId, messageId, content, images, replyContext: {bot_message_id: messageId,...directRoute?{direct_route:directRoute}:{}}});
       if (result.duplicate) return;
