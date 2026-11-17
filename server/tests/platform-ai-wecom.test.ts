@@ -198,7 +198,9 @@ describe('WeCom quoted notification direct routing',()=>{
   const channel=bot();bind(channel.id);manager.start();await connected(channel.id);
   const frame={...inbound('invalid-quote'),body:{...inbound('invalid-quote').body,quote:{msgtype:'text',text:{content:'没有标识的旧通知'}}}};
   send(frame as any);await expect.poll(()=>frames.some(frame=>frame.body?.stream?.content?.includes('没有可识别的通知关联'))).toBe(true);
-  expect(getDb().prepare('SELECT count(*) n FROM platform_ai_messages').get()).toEqual({n:0});
+  expect(getDb().prepare("SELECT count(*) n FROM platform_ai_messages WHERE status='failed'").get()).toEqual({n:1});
+  expect(getDb().prepare("SELECT content,reply_context FROM platform_ai_messages WHERE status='failed'").get()).toMatchObject({content:'列出项目',reply_context:expect.stringContaining('没有标识的旧通知')});
+  const fetchMock=vi.fn();vi.stubGlobal('fetch',fetchMock);worker.tick();await worker.drain();expect(fetchMock).not.toHaveBeenCalled();
  });
 });
 

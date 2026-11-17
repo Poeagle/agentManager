@@ -130,7 +130,22 @@ export class WecomBotManager {
     }
     try {
       if (images.length > MAX_IMAGES) {this.reject(connection, frame, `单条消息最多支持 ${MAX_IMAGES} 张图片，请分开发送。`); return;}
-      const directRoute=typeof quotedText==='string'?quotedReplyRoute(quotedText,{channelId,externalUserId:userId,chatId}):undefined;
+      let directRoute: string | undefined;
+      if(typeof quotedText==='string') {
+        try {directRoute=quotedReplyRoute(quotedText,{channelId,externalUserId:userId,chatId});}
+        catch(error) {
+          // Keep a bound user's rejected quote in their existing conversation,
+          // without allowing it into the ordinary model queue or host logs.
+          const rejected=acceptChannelMessage(channel,{externalUserId:userId,chatId,messageId,content,
+            replyContext:{bot_message_id:messageId,rejected_quote:quotedText.slice(0,24000)}});
+          if(!rejected.duplicate) {
+            getDb().prepare("UPDATE platform_ai_messages SET status='failed',error=? WHERE id=?")
+              .run(error instanceof ChannelError?error.message:'引用通知关联失败',rejected.message_id);
+            publishMessage(rejected.message_id);
+          }
+          throw error;
+        }
+      }
       if(directRoute&&images.length)throw new ChannelError('引用通知的快速回复目前仅支持文字，请在标签页发送附件。',400,true);
       const result = acceptChannelMessage(channel, {externalUserId: userId, chatId, messageId, content, images, replyContext: {bot_message_id: messageId,...directRoute?{direct_route:directRoute}:{}}});
       if (result.duplicate) return;
