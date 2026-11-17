@@ -4,18 +4,21 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { WSClient } from '@wecom/aibot-node-sdk';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { authHook, createSession, createUser } from '../src/auth.js';
+import { authHook, createSession, createUser, setProjectToolAccess } from '../src/auth.js';
 import { closeDb, getDb, initDb } from '../src/db/index.js';
 import { platformAiRoutes } from '../src/routes/platform-ai.js';
 import { getBotTransport } from '../src/services/platform-ai/channel-runtime.js';
 import { compactText, decodeCallback, deliverMessage, getChannel, saveChannel } from '../src/services/platform-ai/channels.js';
 import { updateAiConfig } from '../src/services/platform-ai/config.js';
 import { publishMessage } from '../src/services/platform-ai/live.js';
-import { enqueueNotice, receiveMessage } from '../src/services/platform-ai/store.js';
+import { enqueueNotice, receiveMessage, getConversation, trackTask } from '../src/services/platform-ai/store.js';
 import { WecomBotManager } from '../src/services/platform-ai/wecom-bot.js';
 import { PlatformAiWorker } from '../src/services/platform-ai/worker.js';
 import { messageAttachments, prepareImages, validateImageSource } from '../src/services/platform-ai/attachments.js';
 import { createTestDatabase } from './helpers/database.js';
+
+import {notificationReplyTarget} from '../src/services/platform-ai/quoted-replies.js';
+import * as platformTools from '../src/services/platform-ai/tools.js';
 
 let cleanup: () => void;
 let app: FastifyInstance;
@@ -91,6 +94,50 @@ function imageFixture() {
   const encrypted = Buffer.concat([cipher.update(Buffer.concat([png, Buffer.alloc(padding,padding)])), cipher.final()]);
   return {source: {url: 'https://wework.qpic.cn/private-test-image?token=private-download-token', aeskey: key.toString('base64')}, encrypted};
 }
+
+describe('WeCom quoted notification direct routing',()=>{
+ it.each(['text','mixed'])('delivers a prefixed notice and routes a %s quote through the quick lane, deduplicating WebSocket replay',async quoteType=>{
+  const channel=bot();bind(channel.id);manager.start();await connected(channel.id);
+  getDb().prepare("INSERT INTO projects(id,name,path,owner_id) VALUES('quick-project','Project','/fixture',?)").run(member);
+  setProjectToolAccess({projectId:'quick-project',userId:member,canSession:true,canTerminal:true,sessionClients:['codex'],grantedBy:admin});
+  getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES('quick-tab','quick-project','Work','running','session','codex','native-quick',?)").run(member);
+  const received=receiveMessage({userId:member,channelId:channel.id,externalUserId:'wx-member',chatId:'wx-member',messageId:'original',content:'work'});
+  getDb().prepare("UPDATE platform_ai_messages SET status='done'").run();
+  const task=trackTask(getConversation(received.conversation_id)!,'quick-tab','work',0,'turn-quick');
+  getDb().prepare("UPDATE platform_ai_tasks SET status='reported_complete' WHERE id=?").run(task.id);
+  enqueueNotice(received.conversation_id,`task:${task.id}:done`,'是否使用测试环境？',{notification_target:notificationReplyTarget('quick-tab','ref:turn-quick')});
+  worker.tick();await worker.drain();
+  const notification=frames.find(frame=>frame.cmd==='aibot_send_msg').body.markdown.content;
+  expect(notification).toMatch(/^【.*AM-[a-z0-9]{12}】/);
+  const api=vi.spyOn(platformTools,'platformApi').mockImplementation(async(_app,_user,method,url)=>{
+   if(url.endsWith('/agent-messages'))return {messages:[{role:'user',phase:'user',text:'work',timestamp:null,task_reference:'turn-quick'}]};
+   if(url.includes('/display'))return {processState:'idle',promptType:null,cursor:0};
+   if(method==='POST'&&url.endsWith('/input'))return {status:'submitted'};
+   throw Error('Unexpected test API '+url);
+  });
+  vi.stubGlobal('fetch',vi.fn(()=>{throw Error('No model expected');}));
+  const frame={...inbound('direct-reply'),body:{...inbound('direct-reply').body,text:{content:'使用测试环境'},quote:quoteType==='text'?{msgtype:'text',text:{content:notification}}:{msgtype:'mixed',mixed:{msg_item:[{msgtype:'text',text:{content:notification}}]}}}};
+  send(frame as any);send(frame as any);
+  await expect.poll(()=>getDb().prepare("SELECT count(*) n FROM platform_ai_messages WHERE external_id='direct-reply'").get()).toEqual({n:1});
+  expect((getDb().prepare("SELECT content FROM platform_ai_messages WHERE external_id='direct-reply'").get() as any).content).toBe('使用测试环境');
+  worker.tick();await worker.drain();
+  const input=api.mock.calls.find(call=>call[2]==='POST')!;expect(input[3]).toBe('/api/sessions/quick-tab/input');expect(input[4]?.input).toMatch(/^使用测试环境\n\n\[Platform task reference:/);expect(fetch).not.toHaveBeenCalled();
+  worker.tick();await worker.drain();
+  await expect.poll(()=>frames.some(frame=>frame.body?.stream?.finish&&frame.body.stream.content.includes('已提交到'))).toBe(true);
+ });
+ it('rejects attachments in direct replies without downloading or silently dropping them',async()=>{
+  const channel=bot();bind(channel.id);manager.start();await connected(channel.id);vi.stubGlobal('fetch',vi.fn());
+  send({...inbound('quoted-image'),body:{...inbound('quoted-image').body,msgtype:'mixed',text:undefined,mixed:{msg_item:[{msgtype:'text',text:{content:'参考这张图'}},{msgtype:'image',image:{url:'https://wework.qpic.cn/test.png',aeskey:'dummy'}}]},quote:{msgtype:'text',text:{content:'【来源 · AM-222222222222】'}}}} as any);
+  await expect.poll(()=>frames.some(frame=>frame.body?.stream?.content?.includes('快速回复目前仅支持文字'))).toBe(true);expect(fetch).not.toHaveBeenCalled();
+  expect(getDb().prepare('SELECT count(*) n FROM platform_ai_messages').get()).toEqual({n:0});
+ });
+ it('rejects a quote without a routing prefix instead of guessing or invoking a model',async()=>{
+  const channel=bot();bind(channel.id);manager.start();await connected(channel.id);
+  const frame={...inbound('invalid-quote'),body:{...inbound('invalid-quote').body,quote:{msgtype:'text',text:{content:'没有标识的旧通知'}}}};
+  send(frame as any);await expect.poll(()=>frames.some(frame=>frame.body?.stream?.content?.includes('没有可识别的通知前缀'))).toBe(true);
+  expect(getDb().prepare('SELECT count(*) n FROM platform_ai_messages').get()).toEqual({n:0});
+ });
+});
 
 describe('WeCom image and mixed-message ingestion', () => {
   it('persists, decrypts and displays a mixed message, feeds the model real image bytes, and deduplicates replay', async () => {

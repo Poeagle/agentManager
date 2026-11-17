@@ -28,3 +28,14 @@ it('repairs the missing watch rechecks column at the current schema version with
   closeDb(); initDb();
   expect(getDb().prepare("SELECT COUNT(*) AS count FROM platform_ai_project_notification_watches").get()).toEqual({count:1});
 });
+
+it('adds the notification reply mapping to an existing current-version database without losing messages',()=>{
+ const fixture=createTestDatabase();cleanup=fixture.cleanup;const db=getDb();
+ const user=createUser({username:'owner',password:'password1',role:'admin'}).id;
+ db.prepare("INSERT INTO platform_ai_conversations(id,user_id,external_chat_id,external_user_id) VALUES('kept',?,'chat','user')").run(user);
+ db.exec("INSERT INTO platform_ai_messages(id,conversation_id,external_id,role,content) VALUES('message','kept','external','user','preserved')");
+ db.exec('DROP TABLE platform_ai_reply_routes');closeDb();initDb();
+ expect(getDb().prepare("SELECT content FROM platform_ai_messages WHERE id='message'").get()).toEqual({content:'preserved'});
+ expect(getDb().prepare('PRAGMA table_info(platform_ai_reply_routes)').all()).toEqual(expect.arrayContaining([expect.objectContaining({name:'native_id'}),expect.objectContaining({name:'turn_key'})]));
+ closeDb();initDb();expect(getDb().prepare('SELECT count(*) n FROM platform_ai_messages').get()).toEqual({n:1});
+});

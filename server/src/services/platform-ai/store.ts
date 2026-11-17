@@ -59,7 +59,7 @@ export function receiveMessage(input: {
   })();
 }
 
-export function enqueueNotice(conversationId: string, dedupeKey: string, content: string): void {
+export function enqueueNotice(conversationId: string, dedupeKey: string, content: string, replyContext?: Record<string,unknown>): void {
   const conversation = getConversation(conversationId);
   if (!conversation) return;
   getDb().prepare(`INSERT OR IGNORE INTO platform_ai_messages
@@ -67,7 +67,7 @@ export function enqueueNotice(conversationId: string, dedupeKey: string, content
     .run(nanoid(16), conversationId, dedupeKey, content);
   getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox
     (id,conversation_id,dedupe_key,content,reply_context) VALUES (?,?,?,?,?)`)
-    .run(nanoid(16), conversationId, dedupeKey, content, conversation.reply_context);
+    .run(nanoid(16), conversationId, dedupeKey, content, replyContext?JSON.stringify(replyContext):conversation.reply_context);
   if (dedupeKey.startsWith('task:') || dedupeKey.startsWith('observation-error:') || dedupeKey.startsWith('schedule:')) {
     const targets = getDb().prepare(`SELECT n.channel_id FROM platform_ai_notification_targets n JOIN platform_ai_channels ch ON ch.id=n.channel_id
       WHERE n.user_id=? AND ch.kind='wecom_webhook' AND ch.enabled=1`).all(conversation.user_id) as Array<{channel_id: string}>;
@@ -94,13 +94,13 @@ export function trackTask(conversation: Conversation, sessionId: string, require
   return getDb().prepare('SELECT * FROM platform_ai_tasks WHERE id=?').get(id) as TrackedTask;
 }
 
-/** Claim one message, with strict FIFO processing within each conversation. */
-export function claimMessage(now: number, leaseMs: number): InboxMessage | undefined {
+/** FIFO within each conversation and lane; model work must not block quoted replies. */
+export function claimMessage(now: number, leaseMs: number, direct = false): InboxMessage | undefined {
   return getDb().transaction(() => {
     const row = getDb().prepare(`SELECT m.* FROM platform_ai_messages m
-      WHERE m.role='user' AND m.status='queued' AND m.available_at<=?
+      WHERE m.role='user' AND m.status='queued' AND json_extract(m.reply_context,'$.direct_route') IS ${direct?'NOT NULL':'NULL'} AND m.available_at<=?
       AND NOT EXISTS (SELECT 1 FROM platform_ai_messages prior WHERE prior.conversation_id=m.conversation_id
-        AND prior.role='user' AND (prior.status='processing' OR (prior.status='queued' AND prior.rowid<m.rowid)))
+        AND prior.role='user' AND (json_extract(prior.reply_context,'$.direct_route') IS NOT NULL) = ${direct?1:0} AND (prior.status='processing' OR (prior.status='queued' AND prior.rowid<m.rowid)))
       ORDER BY m.rowid LIMIT 1`).get(now) as InboxMessage | undefined;
     if (!row) return undefined;
     getDb().prepare("UPDATE platform_ai_messages SET status='processing',attempts=attempts+1,lease_until=? WHERE id=?")

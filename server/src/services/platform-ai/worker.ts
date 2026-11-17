@@ -23,6 +23,8 @@ import {sessionPresenter} from '../session-labels.js';
 import type {AgentTextMessage} from '../prompt-context.js';
 import {authorizeProjectNotice,ProjectNotifications} from './project-notifications.js';
 
+import {notificationReplyTarget,prefixReplyNotification,dispatchQuotedReply,quotedReplyOperationId} from './quoted-replies.js';
+
 const OBSERVATION_FALLBACK_MS = 5 * 60 * 1000;
 
 const assessmentSchema = z.object({
@@ -77,6 +79,7 @@ export class PlatformAiWorker {
   private abort = new AbortController();
   private pending = new Set<Promise<unknown>>();
   private messages = new Set<string>();
+  private directReplies = new Set<string>();
   private observations = new Set<string>();
   private deliveries = new Set<string>();
   private stopped = false;
@@ -171,6 +174,14 @@ export class PlatformAiWorker {
         for (const id of this.nativeRechecks.keys()) if (!active.has(id)) this.nativeRechecks.delete(id);
       }
     }
+    this.runQueueStep('quoted-replies',()=>{
+      while(this.directReplies.size<2){
+        const message=claimMessage(now,60000,true);
+        if(!message)break;
+        this.directReplies.add(message.id);
+        this.launch(this.processQuotedReply(message),()=>this.directReplies.delete(message.id));
+      }
+    });
     this.runQueueStep('messages', () => {
       while (this.messages.size < 2) {
         const message = claimMessage(now, (config.timeout_ms + 30000) * (config.max_tool_rounds + 2));
@@ -386,12 +397,26 @@ export class PlatformAiWorker {
     }
   }
 
-  private finishMessage(message: InboxMessage, conversation: Conversation, transcript: ModelMessage[], content: string): void {
+  private async processQuotedReply(message:InboxMessage):Promise<void> {
+    const conversation=getConversation(message.conversation_id);
+    if(!conversation)return;
+    let content:string;
+    try {
+      this.assertConversation(conversation);
+      content=await dispatchQuotedReply(this.app,conversation,message,authorizeProjectNotice,()=>this.assertConversation(conversation));
+    }catch(error){
+      const operation=getDb().prepare('SELECT status,result FROM platform_ai_operations WHERE id=?').get(quotedReplyOperationId(message.id)) as {status:string;result:string|null}|undefined;
+      content=operation?(operation.status==='done'&&operation.result?operation.result:'投递结果待核对，为避免重复执行不会自动重发，请查看原标签页。'):`未投递：${publicFailure(error)}。请核对原标签页后重试。`;
+    }
+    this.finishMessage(message,conversation,null,content);
+  }
+
+  private finishMessage(message: InboxMessage, conversation: Conversation, transcript: ModelMessage[]|null, content: string): void {
         getDb().transaction(() => {
           getDb().prepare(`INSERT OR IGNORE INTO platform_ai_messages (id,conversation_id,external_id,role,content,status) VALUES (?,?,?,'assistant',?,'done')`)
             .run(nanoid(16), conversation.id, message.id, content);
           getDb().prepare("UPDATE platform_ai_messages SET status='done',checkpoint='[]',error=NULL,progress='',partial_content='',lease_until=0 WHERE id=?").run(message.id);
-          getDb().prepare("UPDATE platform_ai_conversations SET context=?,updated_at=datetime('now') WHERE id=?")
+          if(transcript)getDb().prepare("UPDATE platform_ai_conversations SET context=?,updated_at=datetime('now') WHERE id=?")
             .run(JSON.stringify(completedConversation(transcript, content)), conversation.id);
           getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox (id,conversation_id,dedupe_key,content,reply_context) VALUES (?,?,?,?,?)`)
             .run(nanoid(16), conversation.id, `reply:${message.id}`, content, message.reply_context);
@@ -527,7 +552,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         const key = createHash('sha256').update(JSON.stringify([assessment.status, assessment.summary.replace(/\s+/g, ' ').trim()])).digest('hex').slice(0, 24);
         const question = assessment.status === 'blocked' && assessment.evidence && !finalAnswer ? `\n\n### 需要你处理的内容\n\n${assessment.evidence}\n` : '';
         const body = finalAnswer || `${assessment.summary}${question}`;
-        enqueueNotice(task.conversation_id, `task:${task.id}:${key}`, `${title} · ${taskLocation(task)}\n\n${body}`);
+        enqueueNotice(task.conversation_id, `task:${task.id}:${key}`, `${title} · ${taskLocation(task)}\n\n${body}`,{notification_target:notificationReplyTarget(task.session_id,task.source_ref?'ref:'+task.source_ref:null)});
       }
     })();
     if (notify) refreshConversation(task.conversation_id);
@@ -561,7 +586,10 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         }
         // Task notices are active messages, never updates to a user's still-open reply stream.
         const context = channel.kind === 'wecom_bot' && !item.dedupe_key.startsWith('reply:') ? {} : JSON.parse(item.reply_context);
-        await deliverMessage(channel, projectRecipient?.chat_id || conversation.external_chat_id, projectRecipient?.external_user_id || conversation.external_user_id, item.content, context, item.id, this.abort.signal);
+        const metadata=JSON.parse(item.reply_context);
+        const target=metadata.notification_target;
+        const content=channel.kind==='wecom_bot'&&target?prefixReplyNotification({noticeId:item.id,noticeKey:item.dedupe_key,target,userId:conversation.user_id,channelId:channel.id,externalUserId:projectRecipient?.external_user_id||conversation.external_user_id,chatId:projectRecipient?.chat_id||conversation.external_chat_id,content:item.content}):item.content;
+        await deliverMessage(channel, projectRecipient?.chat_id || conversation.external_chat_id, projectRecipient?.external_user_id || conversation.external_user_id, content, context, item.id, this.abort.signal);
       }
       getDb().prepare("UPDATE platform_ai_outbox SET status='sent',error=NULL,lease_until=0 WHERE id=?").run(item.id);
     } catch (error) {

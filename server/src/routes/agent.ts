@@ -109,8 +109,8 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.14.0',
-    updatedAt:'2026-11-15',
+    version:'3.14.1',
+    updatedAt:'2026-11-17',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
@@ -367,6 +367,8 @@ export function getAgentApiContract() {
           input: {type:'string',required:true,description:'Text, at most 64 KiB; may be empty when attachments are present.'},
           source: {type:'string',required:false,description:'Use conversation to submit directly to the bound native engine when available.'},
           client_id: {type:'string',required:false,description:'Client correlation ID for matching the native user-message echo. IDs already reserved by platform submissions are rejected with 409.'},
+          expected_environment_id:{type:'string',required:false,description:'Expected Agent environment ID; defaults on existing sessions are native. A changed environment is rejected with 409 submission=rejected.'},
+          expected_native_id:{type:'string',required:false,description:'Opaque native conversation ID expected by a notification reply. A changed or missing binding is rejected before input submission with 409 submission=rejected.'},
           guard_token:{type:'string',required:false,description:'Short-lived input-check confirmation token, bound to user, native session, exact input/attachments/batch and current policy. A required/mismatched confirmation returns 409 with submission=rejected and send_guard; no input is dispatched.'},
           batch: {type:'array',required:false,description:'Optional 1–100 {length,attachments} segments of the input (UTF-16 lengths, attachment counts), separated by two newlines. Requires source=conversation and client_id. Persisted as message.batch parts for history and streaming cards.'},
           attachments: {type:'array',required:false,description:'Up to 8 {kind: image|file, name, path} references returned by this session’s paste-image/paste-file endpoints. New uploads are stored outside project/Git directories; paths are opaque and project-authorized. Existing project-local attachments remain readable. Images total at most 10 MiB, each file and all attachments at most 100 MiB.'},
@@ -555,6 +557,7 @@ export function getAgentApiContract() {
     tips: [
       'Batch input example: POST /api/sessions/:id/input with '+JSON.stringify({input:'one\n\ntwo',source:'conversation',client_id:'unique-batch-id',batch:[{length:3,attachments:0},{length:3,attachments:0}]}),
       'The output fields from display and execute are CLEAN TEXT — read them directly; do not strip ANSI or parse raw PTY data.',
+      'Notification reply example: POST /api/sessions/:id/input with '+JSON.stringify({input:'Use the isolated environment',source:'conversation',client_id:'notification-reply-id',expected_native_id:'opaque-native-id',expected_environment_id:'native'}),
       'POST /api/sessions/:id/input submits a follow-up immediately, including while busy or execute is pending. It does not interrupt work. Use execute only when you need to wait for output.',
       'For interactive prompts, read promptType and choices from state to decide what to send.',
       'Prefer explicit input. An empty input string is valid and intentionally sends Enter, which may accept a prompt default.',
@@ -855,11 +858,16 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'发送检查失败'});}
   });
 
-  app.post<{Params:{id:string};Body:{input?:unknown;source?:unknown;client_id?:unknown;attachments?:unknown;batch?:unknown;guard_token?:unknown}}>('/sessions/:id/input', async (req, reply) => {
+  app.post<{Params:{id:string};Body:{input?:unknown;source?:unknown;client_id?:unknown;expected_native_id?:unknown;expected_environment_id?:unknown;attachments?:unknown;batch?:unknown;guard_token?:unknown}}>('/sessions/:id/input', async (req, reply) => {
     const {id} = req.params;
     if (!canAccessAgentSession(req.user!.id,id)) return reply.code(404).send({error:'Session not found'});
     const input = req.body?.input;
     if (typeof input !== 'string' || (!input.trim() && !(Array.isArray(req.body?.attachments) && req.body.attachments.length)) || Buffer.byteLength(input) > MAX_EXECUTE_INPUT_BYTES) return reply.code(400).send({error:'input must be text of at most 64 KiB, with text or at least one attachment'});
+    const expectedNative=req.body?.expected_native_id,expectedEnvironment=req.body?.expected_environment_id;
+    if(expectedEnvironment!==undefined&&(typeof expectedEnvironment!=='string'||!expectedEnvironment||expectedEnvironment.length>2048))return reply.code(400).send({error:'Invalid expected_environment_id',submission:'rejected'});
+    if(typeof expectedEnvironment==='string'&&(getSession(id)?.agent_environment_id||'native')!==expectedEnvironment)return reply.code(409).send({error:'标签页已更换账号，请引用最新通知',submission:'rejected'});
+    if(expectedNative!==undefined&&(typeof expectedNative!=='string'||!expectedNative||expectedNative.length>2048))return reply.code(400).send({error:'Invalid expected_native_id',submission:'rejected'});
+    if(typeof expectedNative==='string'&&nativeConversationId(getSession(id)!)!==expectedNative)return reply.code(409).send({error:'标签页已更换对话，请引用最新通知',submission:'rejected'});
     const clientId=req.body?.client_id;
     if(clientId!==undefined && (typeof clientId!=='string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(clientId))) return reply.code(400).send({error:'Invalid client_id'});
     if(typeof clientId==='string'&&getDb().prepare('SELECT 1 FROM conversation_input_sources WHERE session_id=? AND client_id=?').get(id,clientId))return reply.code(409).send({error:'该输入标识已用于平台消息',submission:'rejected'});
@@ -882,7 +890,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     // client attachment. PTY reattachment is only needed by the fallback below.
     const nativeCandidate=req.body?.source==='conversation'&&!!target&&!!nativeConversationId(target);
     if(!nativeCandidate&&!await attachExistingSession(id))return reply.code(409).send({error:'会话连接尚未就绪，请重新连接；进程已退出时需恢复会话。',submission:'rejected'});
-    const current=getSession(id);if(current&&nativeConversationId(current))retries.cancel(id,nativeConversationId(current)!,'new_input');
+    const current=getSession(id);
+    if((typeof expectedNative==='string'&&(!current||nativeConversationId(current)!==expectedNative))||(typeof expectedEnvironment==='string'&&(!current||(current.agent_environment_id||'native')!==expectedEnvironment)))return reply.code(409).send({error:'标签页已更换对话或账号，请引用最新通知',submission:'rejected'});
+    if(current&&nativeConversationId(current))retries.cancel(id,nativeConversationId(current)!,'new_input');
     const preparedInput=formatConversationInput(input,attachments,true);
     const attachmentClientId=typeof clientId==='string'?clientId:randomUUID();
     let notificationBoundary:ReturnType<typeof notificationInputBoundary>=[];
@@ -892,6 +902,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const prior = pendingInputs.get(id) || Promise.resolve();
     const submission = prior.catch(() => {}).then(async () => {
       const session=getSession(id);
+      if(typeof expectedEnvironment==='string'&&(!session||(session.agent_environment_id||'native')!==expectedEnvironment))throw Object.assign(Error('标签页已更换账号，请引用最新通知'),{submission:'rejected'});
+      if(typeof expectedNative==='string'&&(!session||nativeConversationId(session)!==expectedNative))throw Object.assign(Error('标签页已更换对话，请引用最新通知'),{submission:'rejected'});
       if(session&&req.body?.source==='conversation'&&!conversationQuestionReply(input)&&(sendGuardPolicy().enabled||req.body?.guard_token!==undefined)){
         const payload={input,attachments,batch:req.body?.batch??null};
         if(!validGuardToken(req.body?.guard_token,session,req.user!.id,payload)){

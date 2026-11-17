@@ -10,6 +10,8 @@ import { getBotTransport, setBotTransport, subscribeChannelChanges, type BotTran
 import { MAX_IMAGES, prepareImages, type ImageSource } from './attachments.js';
 import { publishMessage } from './live.js';
 
+import {quotedReplyRoute} from './quoted-replies.js';
+
 const silentLogger = {debug() {}, info() {}, warn() {}, error() {}};
 export type BotClient = Pick<WSClient, 'on' | 'connect' | 'disconnect' | 'replyStream' | 'sendMessage' | 'removeAllListeners'>;
 export type BotClientFactory = (options: WSClientOptions) => BotClient;
@@ -121,14 +123,16 @@ export class WecomBotManager {
       }
     }
     if (body.quote?.msgtype === 'image') addImage(body.quote.image);
-    if (body.quote?.msgtype === 'text') addText(body.quote.text?.content ? `引用内容：${body.quote.text.content}` : '');
+    const quotedText=body.quote?.msgtype==='text'?body.quote.text?.content:body.quote?.msgtype==='mixed'?body.quote.mixed?.msg_item?.filter((item:any)=>item.msgtype==='text').map((item:any)=>item.text?.content||'').join('\n'):undefined;
     const content = texts.join('\n') || (images.length ? '请查看我发送的图片。' : '');
     if (![userId, messageId, chatId].every(value => typeof value === 'string' && value.length > 0 && value.length <= 256) || !content || content.length > 24000) {
       this.reject(connection, frame, '消息格式无效，或文字超过 24000 字符。'); return;
     }
     try {
       if (images.length > MAX_IMAGES) {this.reject(connection, frame, `单条消息最多支持 ${MAX_IMAGES} 张图片，请分开发送。`); return;}
-      const result = acceptChannelMessage(channel, {externalUserId: userId, chatId, messageId, content, images, replyContext: {bot_message_id: messageId}});
+      const directRoute=typeof quotedText==='string'?quotedReplyRoute(quotedText):undefined;
+      if(directRoute&&images.length)throw new ChannelError('引用通知的快速回复目前仅支持文字，请在标签页发送附件。',400,true);
+      const result = acceptChannelMessage(channel, {externalUserId: userId, chatId, messageId, content, images, replyContext: {bot_message_id: messageId,...directRoute?{direct_route:directRoute}:{}}});
       if (result.duplicate) return;
       publishMessage(result.message_id);
       // Download expiring media immediately, independently from model queue load.

@@ -115,6 +115,15 @@ export function migratePlatformAi(db: Database.Database): void {
     rule_id TEXT NOT NULL REFERENCES platform_ai_project_notifications(id) ON DELETE CASCADE,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     event_key TEXT NOT NULL, PRIMARY KEY(rule_id,session_id,event_key));`);
+  db.exec(`CREATE TABLE IF NOT EXISTS platform_ai_reply_routes (
+    id TEXT PRIMARY KEY, notice_id TEXT NOT NULL UNIQUE REFERENCES platform_ai_outbox(id) ON DELETE CASCADE,
+    notice_key TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    channel_id TEXT NOT NULL REFERENCES platform_ai_channels(id) ON DELETE CASCADE,
+    external_user_id TEXT NOT NULL, chat_id TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    native_id TEXT NOT NULL, environment_id TEXT NOT NULL, turn_key TEXT,
+    expires_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS idx_platform_ai_reply_routes_expiry ON platform_ai_reply_routes(expires_at);`);
   // CREATE TABLE IF NOT EXISTS does not repair an already-created table.
   // Run on every startup, including databases already at the current version.
   const watchColumns = db.prepare('PRAGMA table_info(platform_ai_project_notification_watches)').all() as Array<{name: string}>;

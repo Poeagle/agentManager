@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.14.0');
+    expect(contract.version).toBe('3.14.1');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('progress_statistics.step');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('cost estimate');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('after_message_id');
@@ -15,6 +15,8 @@ describe('Agent API contract', () => {
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request?.attachments?.description).toContain('outside project/Git');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input-check')?.method).toBe('POST');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request).toHaveProperty('guard_token');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request).toHaveProperty('expected_native_id');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request).toHaveProperty('expected_environment_id');
     expect(contract.scope).toContain('scheduled tasks');
     expect(contract.endpoints.find(e=>e.path==='/api/codex-quota')?.description).toContain('refresh=true only rereads this cache');
     expect(contract.endpoints.find(endpoint=>endpoint.path==='/api/sessions/:id/input')?.request?.client_id?.description).toContain('409');
