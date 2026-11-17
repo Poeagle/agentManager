@@ -65,7 +65,7 @@ export function ConversationInteraction({request,storageKey,connected,canAnswer,
     finally{lock.current=false;setSending(false);}
   }
   const complete=(request.questions||[]).every(q=>customQuestion(q.id)?!!drafts[q.id]?.custom.trim()||!!files[q.id]?.values.length:!!drafts[q.id]?.choice);
-  return <section className={`conversation-interaction${inline?' conversation-interaction-inline':''}`} aria-label={request.title}>
+  return <section className={`conversation-interaction${inline?' conversation-interaction-inline':''}`} aria-label={request.title} data-interaction-id={request.id} data-question-ids={JSON.stringify(request.questions?.map(q=>q.id)||[])}>
     <header>{request.kind==='question'?<MessageCircleQuestion size={16}/>:<ShieldCheck size={16}/>}<strong>{request.title}</strong>{!request.blocking&&<span>可稍后回答</span>}{submitted&&<span><Check size={13}/>{resolvedLabel||'已提交'}</span>}</header>
     <form ref={form} onSubmit={event=>{event.preventDefault();if(!complete)return;const answers=Object.fromEntries((request.questions||[]).map(q=>{const draft=drafts[q.id];return [q.id,{answers:[customQuestion(q.id)?draft?.custom.trim()||'请查看附件。':draft.choice]}];}));const attached=Object.fromEntries((request.questions||[]).filter(q=>customQuestion(q.id)&&files[q.id]?.values.length).map(q=>[q.id,files[q.id].values]));void submit({answers},attached);}}>
       <div className="conversation-interaction-body">

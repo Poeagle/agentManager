@@ -20,9 +20,10 @@ import {platformAiRoutes} from './platform-ai.js';
 import {skillsRoutes} from './skills.js';
 import {userStateRoutes} from './user-state.js';
 import {scheduledTaskRoutes} from './scheduled-tasks.js';
+import {notificationRoutes} from './notifications.js';
 
 /** Explicit route inventory shared by startup and reachability checks. */
-export const apiRoutePlugins = {codexEnvironmentRoutes,authRoutes, userRoutes, rbacRoutes, eventRoutes, hooksRoutes, sessionRoutes, taskRoutes, streamRoutes, projectRoutes, terminalRoutes, fileRoutes, gitRoutes, agentRoutes, settingsRoutes, sharedResourceRoutes, promptEnhancerRoutes, platformAiRoutes, skillsRoutes, userStateRoutes, scheduledTaskRoutes};
+export const apiRoutePlugins = {codexEnvironmentRoutes,authRoutes, userRoutes, rbacRoutes, eventRoutes, hooksRoutes, sessionRoutes, taskRoutes, streamRoutes, projectRoutes, terminalRoutes, fileRoutes, gitRoutes, agentRoutes, settingsRoutes, sharedResourceRoutes, promptEnhancerRoutes, platformAiRoutes, skillsRoutes, userStateRoutes, scheduledTaskRoutes,notificationRoutes};
 export async function registerApiRoutes(app:FastifyInstance):Promise<void> {
  for(const plugin of Object.values(apiRoutePlugins))await app.register(plugin,{prefix:'/api'});
 }

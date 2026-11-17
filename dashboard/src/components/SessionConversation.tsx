@@ -1,4 +1,6 @@
 import {useConversationSendGuard} from '../lib/use-conversation-send-guard';
+import {useConversationNotificationVisibility} from '../lib/use-conversation-notification-visibility';
+import type {ConversationFocus} from '../lib/notifications';
 import {ConversationBatchCard} from './ConversationBatchCard';
 import {composerKey,loadComposer,saveComposer,emptyComposer,combinedBatch,type ComposerState,type BatchEntry} from '../lib/batch-composer';
 import {
@@ -554,6 +556,9 @@ export function SessionConversation({
   userId = "local",
   projectPath,
   onOpenFile,
+  focusTarget,
+  onFocusTargetVisible,
+  draftScope,
 }: {
   session: Session;
   active: boolean;
@@ -568,6 +573,9 @@ export function SessionConversation({
   userId?: string;
   projectPath?: string;
   onOpenFile?: (path: string) => void;
+  focusTarget?:ConversationFocus|null;
+  onFocusTargetVisible?:()=>void;
+  draftScope?:string;
 }) {
   const compaction = useConversationCompaction(
     session.id,
@@ -627,7 +635,7 @@ export function SessionConversation({
   const [reconnectError, setReconnectError] = useState("");
   const reconnectAttempted = useRef(false),
     reconnectLock = useRef(false);
-  const storageKey = composerKey(userId,session.id);
+  const storageKey = composerKey(draftScope?`${userId}:${draftScope}`:userId,session.id);
   const [storageError,setStorageError]=useState('');
   const [composer,setComposer]=useState<ComposerState>(()=>{try{return loadComposer(storageKey);}catch{setStorageError('保存的草稿无法读取，请保留浏览器数据。');return emptyComposer();}});
   const composerRef=useRef({key:storageKey,value:composer});
@@ -2027,6 +2035,36 @@ export function SessionConversation({
     null;
   const questionActive =
     !!pendingQuestion && minimizedQuestion !== pendingQuestion.id;
+  const focusProgress=useRef({request:0,pages:0,done:false});
+  const [notificationFocusMissing,setNotificationFocusMissing]=useState(false);
+  const focusVisible=useRef(onFocusTargetVisible);focusVisible.current=onFocusTargetVisible;
+  const focusNativeId=agentNativeId(session);
+  const loadNotificationHistory=useRef(loadOlder);loadNotificationHistory.current=loadOlder;
+  useConversationNotificationVisibility(readingRoot,session.id,agentNativeId(session),active,
+    JSON.stringify([messages.map(m=>[m.id,m.phase]),requests.map(r=>r.id),pendingQuestion?.id,questionActive]));
+  useEffect(()=>{
+    if(!active||!focusTarget||focusTarget.nativeId!==focusNativeId||loading)return;
+    if(focusProgress.current.request!==focusTarget.requestId){
+      focusProgress.current={request:focusTarget.requestId,pages:0,done:false};setNotificationFocusMissing(false);
+      readingRoot.current?.querySelectorAll<HTMLElement>('[data-notification-focus]').forEach(node=>delete node.dataset.notificationFocus);
+    }
+    const progress=focusProgress.current;if(progress.done)return;
+    const source=focusTarget.sourceId?.replace(/^question:/,'');
+    const pending=pendingQuestions.find(message=>message.async_questions?.some(question=>question.id===source));
+    if(pending&&(selectedQuestion!==pending.id||minimizedQuestion===pending.id)){
+      setSelectedQuestion(pending.id);setMinimizedQuestion(null);return;
+    }
+    const node=[...(readingRoot.current?.querySelectorAll<HTMLElement>('[data-chat-message-id],[data-interaction-id]')||[])].find(node=>
+      !!focusTarget.messageId&&(node.dataset.chatMessageId===focusTarget.messageId||node.dataset.interactionId===focusTarget.messageId)
+      ||!!source&&JSON.parse(node.dataset.questionIds||'[]').includes(source));
+    if(node){
+      pinned.current=false;setNotificationFocusMissing(false);
+      const frame=requestAnimationFrame(()=>{node.scrollIntoView({block:'center'});node.dataset.notificationFocus='true';progress.done=true;focusVisible.current?.();});
+      return()=>cancelAnimationFrame(frame);
+    }
+    if(!older&&hasMore&&focusTarget.messageId&&!focusTarget.sourceId?.startsWith('interaction:')&&progress.pages<20){progress.pages++;void loadNotificationHistory.current();}
+    else if(!older&&!pending&&!requests.some(request=>request.id===focusTarget.messageId))setNotificationFocusMissing(true);
+  },[active,focusTarget,loading,older,hasMore,messages,requests,pendingQuestions,selectedQuestion,minimizedQuestion,focusNativeId]);
   async function ignoreQuestions(ids: string[], ignored = true) {
     if (ignoringQuestions || !ids.length) return;
     setIgnoringQuestions(true);
@@ -2149,7 +2187,8 @@ export function SessionConversation({
         if(!(event.target instanceof HTMLElement)||event.target.closest('.session-chat-editor,input,textarea,select,[contenteditable],.session-batch-send'))return;
         event.preventDefault();event.stopPropagation();if(!event.repeat)submitWithShortcut();
       }}><div ref={chatLayout} className="session-chat-layout">
-      <section ref={readingRoot} className="session-chat" aria-label="会话对话">
+      <section ref={readingRoot} className="session-chat" aria-label="会话对话" data-session-id={session.id}>
+        {notificationFocusMissing&&<p className="session-pane-warning" role="status">通知对应的消息不在当前可读历史中，可继续加载更早的对话核对。</p>}
         <ConversationPromptEnhancer
           sessionId={session.id}
           active={active}
@@ -2321,7 +2360,7 @@ export function SessionConversation({
                 还有 {requests.length - 1} 项待处理
               </p>
             )}
-            {requests.slice(0, 1).map((request) => (
+            {(requests.some(request=>request.id===focusTarget?.messageId)?requests.filter(request=>request.id===focusTarget?.messageId):requests.slice(0, 1)).map((request) => (
               <ConversationInteraction
                 key={`${connectionGeneration}:${request.id}`}
                 request={request}

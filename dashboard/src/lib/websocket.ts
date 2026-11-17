@@ -111,6 +111,7 @@ export function connectStream() {
     lastMessageAt = Date.now();
     useStreamStore.getState().setConnected(true);
     void queryClientRef?.invalidateQueries({ queryKey: SERVER_RESOURCE_QUERY_KEY });
+    void queryClientRef?.invalidateQueries({ queryKey: ['notifications'] });
   };
 
   ws.onmessage = (msg) => {
@@ -120,6 +121,10 @@ export function connectStream() {
 
       // Heartbeat / handshake frames are keepalive only — nothing to render.
       if (event.type === 'ping' || event.type === 'connected') return;
+      if(event.type==='notification.changed'){
+        void queryClientRef?.invalidateQueries({queryKey:['notifications']});return;
+      }
+      if(event.type==='session.retry')return;
       if(event.type==='session.runtime'&&event.session_id){
         const {runtime}=JSON.parse(event.data||'{}');if(!runtime?.session_id||!runtime.observed_at)return;
         if(queryClientRef)cacheSessionRuntime(queryClientRef,event.session_id,runtime);
@@ -171,6 +176,7 @@ export function connectStream() {
       }
 
       if (event.type === 'rbac.changed') {
+        void queryClientRef?.invalidateQueries({queryKey:['notifications']});
         for (const key of ['rbac-me', 'rbac-roles', 'rbac-assignable-roles', 'auth-status', 'users', 'projects']) {
           void queryClientRef?.invalidateQueries({ queryKey: [key] });
         }

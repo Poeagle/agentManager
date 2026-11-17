@@ -4,9 +4,10 @@ import {existsSync,mkdirSync} from 'fs';
 import {config} from '../config.js';
 import {migrateRbac} from '../services/rbac.js';
 import {migratePlatformAi} from '../services/platform-ai/schema.js';
+import {migrateNotifications} from '../services/notification-schema.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 27;
+const SCHEMA_VERSION = 28;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -510,6 +511,7 @@ function runMigrations(): void {
         WHERE key LIKE 'project:%' AND json_valid(value)`);
     }
     migratePlatformAi(db);
+    migrateNotifications(db);
     createCurrentIndexes();
     if ((db.pragma('foreign_key_check') as unknown[]).length) throw new Error('Foreign key validation failed after migration');
     db.pragma(`user_version = ${SCHEMA_VERSION}`);

@@ -25,6 +25,17 @@ afterEach(()=>{client.clear();vi.unstubAllGlobals();});
 function typeDraft(node:HTMLElement,value:string){node.textContent=value;fireEvent.input(node);}
 function mount(onReload?:()=>Promise<void>) {return render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active onReload={onReload} renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);}
 describe('chat/raw terminal display',()=>{
+  it('opens the raw terminal when an error notification explicitly requests it',async()=>{
+    render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active focusTarget={{nativeId:'native',requestId:1,view:'terminal'}} renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);
+    await waitFor(()=>expect(screen.getByTestId('raw')).toHaveAttribute('data-visible','true'));
+    expect(screen.getByRole('button',{name:'原始终端',exact:true})).toHaveAttribute('aria-pressed','true');
+  });
+  it('switches to chat and locates the source message when opening a notification from a saved raw view',async()=>{
+    localStorage.setItem('agentmanager-session-view:u:chat','terminal');
+    render(<QueryClientProvider client={client}><SessionWorkspacePane session={session} userId="u" active focusTarget={{nativeId:'native',messageId:'b'.repeat(32),requestId:2,view:'chat'}} renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);
+    const source=await screen.findByText('检查已完成。');await waitFor(()=>expect(source.closest('[data-chat-message-id]')).toHaveAttribute('data-notification-focus','true'));
+    expect(screen.getByRole('button',{name:'对话',exact:true})).toHaveAttribute('aria-pressed','true');expect(api.agent.sendInput).not.toHaveBeenCalled();
+  });
   it('mounts a plain terminal even when its default agent descriptor uses a managed host',async()=>{
     const plain={...session,mode:'terminal' as const,cli_type:'claude',codex_session_id:null,native_session_id:null,agent:{...sessionAgent(session),id:'claude',sessionHost:'managed' as const}};
     render(<QueryClientProvider client={client}><SessionWorkspacePane session={plain} userId="u" active renderTerminal={(visible,suspended,ready)=><Raw visible={visible} suspended={suspended} ready={ready}/>} /></QueryClientProvider>);
