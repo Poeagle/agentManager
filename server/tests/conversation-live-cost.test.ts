@@ -11,6 +11,15 @@ const context=(model:string,tier:string|null)=>row('turn_context',{turn_id:'turn
 const call=(id:string)=>row('response_item',{type:'function_call',call_id:id,arguments:'PRIVATE_ARGUMENTS'});
 const message=(id:string)=>row('response_item',{type:'message',id,role:'assistant',phase:'commentary',content:[{type:'output_text',text:'progress'}]});
 const usage=(total:number)=>row('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{total_tokens:1001000,input_tokens:1000000,cached_input_tokens:900000,output_tokens:1000,reasoning_output_tokens:100}}});
+it('prices GPT-6.2 model and speed changes per request in live and restored conversation statistics',async()=>{
+ writeFileSync(path,context('gpt-6.2-sol','priority')+start+message('sol')+usage(1001000));
+ expect((await readConversationStatistics(path))[0].interval?.cost).toMatchObject({amount:15,complete:true,basis:'subscription',rate_date:'2026-11-18'});
+ appendFileSync(path,context('gpt-6.2-astra','ultrafast')+message('astra')+usage(2002000));
+ expect((await readConversationProgress(path))?.segment?.cost).toMatchObject({amount:195,complete:true});
+ const updated=await readConversationStatistics(path);expect(updated.map(item=>item.interval?.cost?.amount)).toEqual([15,180]);
+ const restored=join(dir,'restored.jsonl');writeFileSync(restored,context('gpt-6.2-sol','priority')+start+message('sol')+usage(1001000)+context('gpt-6.2-astra','ultrafast')+message('astra')+usage(2002000));
+ expect((await readConversationStatistics(restored)).map(item=>item.interval?.cost?.amount)).toEqual([15,180]);
+});
 it('updates active calls and rounds before any token count, then updates tokens and per-request Credit before the next text',async()=>{
  writeFileSync(path,context('gpt-6.1-sol','default')+start+message('first')+usage(1001000));
  let live=await readConversationProgress(path);expect(live?.step).toMatchObject({after_message_id:conversationMessageId('turn','assistant','first'),requests:0,tokens:null,tool_calls:0});

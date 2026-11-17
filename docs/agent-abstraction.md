@@ -331,7 +331,7 @@ Progress 标题仅显示汇总、调用/等待状态与耗时，命令摘要统�
 
 健康 RPC 流继续转发 JSONL 后补的 `statistics`，不只转发进展总计，因此文字早于 token_count 到达时也能补齐该行，不需要新的文字或手动刷新。复用已有文件观察器、50 ms 合并和追加解析；不新增轮询或额度采集。Token 在原生 usage 事件到达后更新，不估算尚未返回的生成 Token。
 
-统计 DTO 的可选 `cost` 为 `{amount,unit,complete,rate_date,basis}`。Codex 按每个请求当时记录的模型、服务档位和三类 Token 先估算再累加；复用账号用量的[官方参考费率](https://learn.chatgpt.com/docs/pricing)，Fast 的订阅参考倍率为 2.5，推理不重复计价。未知模型、异常 Token 或不支持的档位不编造价格；未记录档位按 Standard 参考值估算并标 `*`，部分请求未定价也标 `*`。Credit 是参考估算，不是实际账单或账号周额度百分点。API Engine 返回 `cost=null`，界面隐藏订阅 Credit 字段；其他 Agent 不必伪造不支持的价格。
+统计 DTO 的可选 `cost` 为 `{amount,unit,complete,rate_date,basis}`。Codex 按每个请求当时记录的模型、服务档位和三类 Token 先估算再累加；复用账号用量的[官方参考费率](https://learn.chatgpt.com/docs/pricing)，模型与速度的换算见[账号用量规则](codex-account-usage.md)。6.2 Sol / Astra 的订阅 Fast 为 2 倍、Ultrafast 为 6 倍；6.1 Sol / 6 Astra 仍分别为 2.5 倍与 8 倍，不能把倍率套给所有模型。推理不重复计价。未知模型、异常 Token 或不支持的档位不编造价格；未记录档位按 Standard 参考值估算并标 `*`，部分请求未定价也标 `*`。Credit 是参考估算，不是实际账单或账号周额度百分点。API Engine 返回 `cost=null`，界面隐藏订阅 Credit 字段；其他 Agent 不必伪造不支持的价格。
 
 长会话冷加载的统计窗口仍为末尾 2 MiB；初始化时按 256 KiB 块向窗口之前回查最多 16 MiB，分别找到最近一次模型及速度记录后立即停止。只恢复定价上下文，不重放更早的请求或累计计数，也不使用窗口之后的设置反推历史。读取预算内仍缺失的模型保留未知，明确的 null 会清除旧设置。之后继续复用原有追加读取和有界缓存。
 

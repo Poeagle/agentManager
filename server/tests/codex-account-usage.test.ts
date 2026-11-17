@@ -83,6 +83,18 @@ it('groups model usage across speeds while retaining unknown models and exact to
  const sol=r.models.find(m=>m.model==='gpt-6.1-sol')!;expect(sol.tokens.input_tokens).toBe(1000);expect(sol.estimated_credits).toBeCloseTo(0.00825);expect(r.models.find(m=>m.model===null)?.estimated_credits).toBeNull();
  expect(r.models.reduce((n,m)=>n+(m.tokens.total_tokens??0),0)).toBe(r.tokens.total_tokens);
 });
+it('prices persisted GPT-6.2 account aggregates on read without recollecting tokens',async()=>{
+ const counters={input_tokens:1000000,cached_input_tokens:900000,output_tokens:1000,reasoning_output_tokens:100,total_tokens:1001000};
+ respond([{...row,model:'gpt-6.2-sol',tier:'default',tokens:counters},{...row,model:'gpt-6.2-sol',tier:'priority',tokens:counters},{...row,model:'gpt-6.2-astra',tier:'ultrafast',tokens:counters}]);
+ await collectAccountUsage('native');vi.mocked(localCommandInput).mockClear();
+ for(let i=0;i<2;i++){
+  const result=cachedAccountUsage('native');expect(result.credit_rate_date).toBe('2026-11-18');
+  expect(result.rows[0]).toMatchObject({estimated_credits:202.5,credit_coverage:{covered:3,total:3},tokens:{total_tokens:3003000}});
+  expect(result.rows[0].models.find(m=>m.model==='gpt-6.2-sol')?.estimated_credits).toBe(22.5);
+  expect(result.rows[0].models.find(m=>m.model==='gpt-6.2-astra')?.estimated_credits).toBe(180);
+ }
+ expect(localCommandInput).not.toHaveBeenCalled();
+});
 it('performs one full scan, then adds only new request identities and preserves absent sessions and historical days',async()=>{
  vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-02T12:00:00Z'));
  respond([row,{...row,day:'2026-01-02'}]);await collectAccountUsage('native');
