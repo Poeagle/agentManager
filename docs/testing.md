@@ -66,3 +66,7 @@ port. This also isolates worktrees that share dependency directories by symlink;
 sharing their optimizer cache can load two React runtimes in lazy editors.
 On loaded hosts, `npm --prefix dashboard run test:coverage -- --maxWorkers=2`
 limits concurrency while running the complete component suite and thresholds.
+
+## WeCom outbound screenshot coverage
+
+`platform-ai-outbound-images.test.ts` uses temporary project/report files to cover local Markdown links, code examples, file permissions, private-resource denial, symlink escapes, bounded reads, type checks, count limits and content fingerprints. `platform-ai-wecom.test.ts` connects the official SDK to a local WebSocket peer and validates upload init/chunk/finish bytes, text-before-image ordering, worker recovery, media reuse/expiry, partial failures, and permission/binding revocation before send. All test files, sockets, sessions and databases are isolated and released. Real-account sends remain a separately authorized manual smoke test; fixture coverage does not claim real-client rendering.

@@ -13,7 +13,7 @@ import { publishMessage } from './live.js';
 import {quotedReplyRoute} from './quoted-replies.js';
 
 const silentLogger = {debug() {}, info() {}, warn() {}, error() {}};
-export type BotClient = Pick<WSClient, 'on' | 'connect' | 'disconnect' | 'replyStream' | 'sendMessage' | 'removeAllListeners'>;
+export type BotClient = Pick<WSClient, 'on' | 'connect' | 'disconnect' | 'replyStream' | 'sendMessage' | 'uploadMedia' | 'removeAllListeners'>;
 export type BotClientFactory = (options: WSClientOptions) => BotClient;
 interface Stream {
   messageId: string; userId: string; externalUserId: string; frame: WsFrame; id: string;
@@ -65,6 +65,14 @@ export class WecomBotManager {
       fingerprint, client, streams: new Map(), stopped: false, rateStart: 0, rateCount: 0, abort: new AbortController(),
       status: {state: 'connecting', message: '正在连接企业微信', updated_at: new Date().toISOString()},
       deliver: (chatId, content, context, deliveryId) => this.deliver(channel.id, connection, chatId, content, context, deliveryId),
+      uploadImage:async(data,filename)=>{
+        try{return (await client.uploadMedia(data,{type:'image',filename})).media_id;}
+        catch{throw new ChannelError('企微截图上传失败，将按通知队列策略重试',502);}
+      },
+      sendImage:async(chatId,mediaId)=>{
+        try{await client.sendMessage(chatId,{msgtype:'image',image:{media_id:mediaId}});}
+        catch{throw new ChannelError('企微截图发送未获确认，将按通知队列策略重试',502);}
+      },
     };
     this.connections.set(channel.id, connection); setBotTransport(channel.id, connection);
     client.on('connected', () => this.state(connection, 'authenticating', '连接已建立，正在认证'));

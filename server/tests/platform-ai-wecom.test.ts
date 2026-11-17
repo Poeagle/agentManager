@@ -1,5 +1,5 @@
 import { once } from 'events';
-import {writeFileSync} from 'fs';
+import {writeFileSync,mkdirSync} from 'fs';
 import {join} from 'path';
 import { createCipheriv, randomBytes } from 'crypto';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -19,7 +19,7 @@ import { PlatformAiWorker } from '../src/services/platform-ai/worker.js';
 import { messageAttachments, prepareImages, validateImageSource } from '../src/services/platform-ai/attachments.js';
 import { createTestDatabase } from './helpers/database.js';
 
-import {notificationReplyTarget} from '../src/services/platform-ai/quoted-replies.js';
+import {notificationReplyTarget,quotedReplyRoute} from '../src/services/platform-ai/quoted-replies.js';
 import * as platformTools from '../src/services/platform-ai/tools.js';
 import {saveProjectNotification,canNotifyProject} from '../src/services/platform-ai/project-notifications.js';
 
@@ -34,6 +34,8 @@ let admin: string, member: string, other: string, adminCookie: string, memberCoo
 let rejectAuth = false;
 let rejectStream = false;
 let databaseDir: string;
+let rejectImage = false;
+let uploadCount = 0;
 
 beforeEach(async () => {
   const database = createTestDatabase(); cleanup = database.cleanup; databaseDir = database.dir;
@@ -45,14 +47,17 @@ beforeEach(async () => {
   updateAiConfig({enabled: true, endpoint: 'https://model.example/v1', model: 'test', api_key: 'model-secret'});
   app = Fastify(); app.addHook('onRequest', authHook);
   await app.register(platformAiRoutes, {prefix: '/api', runWorker: false}); await app.ready();
-  sockets = []; frames = []; rejectAuth = false; rejectStream = false;
+  sockets = []; frames = []; rejectAuth = false; rejectStream = false;rejectImage=false;uploadCount=0;
   server = new WebSocketServer({host: '127.0.0.1', port: 0}); await once(server, 'listening');
   server.on('connection', socket => {
     sockets.push(socket);
     socket.on('message', data => {
       const frame = JSON.parse(data.toString()); frames.push(frame);
-      const fail = (rejectAuth && frame.cmd === 'aibot_subscribe') || (rejectStream && frame.cmd === 'aibot_respond_msg');
-      socket.send(JSON.stringify({headers: frame.headers, errcode: fail ? 40001 : 0, errmsg: fail ? 'secret echoed here bot-secret-do-not-expose' : 'ok'}));
+      const fail = (rejectAuth && frame.cmd === 'aibot_subscribe') || (rejectStream && frame.cmd === 'aibot_respond_msg') || (rejectImage&&frame.cmd==='aibot_send_msg'&&frame.body?.msgtype==='image');
+      let body;
+      if(frame.cmd==='aibot_upload_media_init')body={upload_id:'upload-'+(++uploadCount)};
+      if(frame.cmd==='aibot_upload_media_finish')body={type:'image',media_id:'media-'+uploadCount};
+      socket.send(JSON.stringify({headers: frame.headers, body, errcode: fail ? 40001 : 0, errmsg: fail ? 'secret echoed here bot-secret-do-not-expose' : 'ok'}));
     });
   });
   const address = server.address() as {port: number};
@@ -98,6 +103,81 @@ function imageFixture() {
   const encrypted = Buffer.concat([cipher.update(Buffer.concat([png, Buffer.alloc(padding,padding)])), cipher.final()]);
   return {source: {url: 'https://wework.qpic.cn/private-test-image?token=private-download-token', aeskey: key.toString('base64')}, encrypted};
 }
+
+describe('WeCom outbound screenshot delivery',()=>{
+ async function imageNotice(count=2){
+  const channel=bot();bind(channel.id);manager.start();await connected(channel.id);
+  const root=join(databaseDir,'image-project');mkdirSync(root);
+  getDb().prepare("INSERT INTO projects(id,name,path,owner_id) VALUES('image-project','Images',?,?)").run(root,member);
+  setProjectToolAccess({projectId:'image-project',userId:member,canSession:true,canTerminal:true,sessionClients:['codex'],grantedBy:admin});
+  getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES('image-tab','image-project','Work','running','session','codex','native-image',?)").run(member);
+  const conversation=receiveMessage({userId:member,channelId:channel.id,externalUserId:'wx-member',chatId:'wx-member',messageId:'image-initial',content:'work'}).conversation_id;
+  getDb().prepare("UPDATE platform_ai_messages SET status='done'").run();
+  const task=trackTask(getConversation(conversation)!,'image-tab','work',0,'image-turn');getDb().prepare("UPDATE platform_ai_tasks SET status='reported_complete' WHERE id=?").run(task.id);
+  const files=Array.from({length:count},(_,index)=>join(root,`screen-${index}.png`));files.forEach(file=>writeFileSync(file,png));
+  enqueueNotice(conversation,`task:${task.id}:images`,'**Images / Work**\n\nCI 已通过。\n'+files.map(file=>`[查看正式截图](${file})`).join('\n'),{notification_target:notificationReplyTarget('image-tab','ref:image-turn')});
+  return {channel,files};
+ }
+ async function tick(count=1){for(let n=0;n<count;n++){worker.tick();await worker.drain();}}
+ const messages=()=>frames.filter(frame=>frame.cmd==='aibot_send_msg');
+ const imageRows=()=>getDb().prepare("SELECT * FROM platform_ai_outbox WHERE json_extract(reply_context,'$.outbound_image') IS NOT NULL ORDER BY rowid").all() as any[];
+ it('uploads actual bytes through the SDK and sends ordered image messages after readable Markdown',async()=>{
+  const {channel,files}=await imageNotice();await tick(3);
+  expect(messages().map(frame=>frame.body.msgtype)).toEqual(['markdown','image','image']);
+  expect(messages()[0].body.markdown.content).toContain('CI 已通过');expect(messages()[0].body.markdown.content).not.toContain(files[0]);
+  expect(messages()[0].body.markdown.content).toContain('图片见下方');
+  expect(frames.filter(frame=>frame.cmd==='aibot_upload_media_chunk').every(frame=>Buffer.from(frame.body.base64_data,'base64').equals(png))).toBe(true);
+  expect(uploadCount).toBe(2);expect(imageRows().map(row=>row.status)).toEqual(['sent','sent']);
+  expect(quotedReplyRoute(messages()[0].body.markdown.content,{channelId:channel.id,externalUserId:'wx-member',chatId:'wx-member'})).toBeTruthy();
+ });
+ it('retries only the unacknowledged image after worker recovery, reusing its uploaded media',async()=>{
+  await imageNotice();rejectImage=true;await tick(2);
+  expect(imageRows().map(row=>row.status)).toEqual(['pending','pending']);expect(uploadCount).toBe(1);
+  expect(imageRows()[0].error).toContain('未获确认');expect(imageRows()[0].error).not.toContain('bot-secret');
+  await worker.stop();worker=new PlatformAiWorker(app);rejectImage=false;
+  getDb().prepare("UPDATE platform_ai_outbox SET available_at=0 WHERE status='pending'").run();await tick(2);
+  expect(messages().filter(frame=>frame.body.msgtype==='markdown')).toHaveLength(1);
+  expect(uploadCount).toBe(2);expect(imageRows().map(row=>row.status)).toEqual(['sent','sent']);
+  expect(messages().filter(frame=>frame.body.msgtype==='image').map(frame=>frame.body.image.media_id)).toEqual(['media-1','media-1','media-2']);
+ });
+ it('rechecks session authorization before upload and sends no image after revocation',async()=>{
+  await imageNotice();await tick();
+  setProjectToolAccess({projectId:'image-project',userId:member,canSession:false,canTerminal:false,sessionClients:[],grantedBy:admin});await tick(3);
+  expect(uploadCount).toBe(0);expect(imageRows().every(row=>row.status==='failed')).toBe(true);
+  expect(messages().map(frame=>frame.body.msgtype)).toEqual(['markdown']);
+ });
+ it('rechecks binding after asynchronous upload before sending any image',async()=>{
+  const {channel}=await imageNotice(1);await tick();
+  const transport=getBotTransport(channel.id)!,upload=transport.uploadImage!;
+  vi.spyOn(transport,'uploadImage').mockImplementation(async(data,name)=>{const id=await upload(data,name);getDb().prepare('DELETE FROM platform_ai_bindings WHERE channel_id=?').run(channel.id);return id;});
+  await tick();expect(uploadCount).toBe(1);expect(messages().filter(frame=>frame.body.msgtype==='image')).toHaveLength(0);expect(imageRows()[0].status).toBe('failed');
+ });
+ it('rechecks filesystem access after uploading an ordinary conversational image',async()=>{
+  const {channel}=await imageNotice(1);
+  getDb().prepare("UPDATE platform_ai_outbox SET dedupe_key='ordinary-image-reply'").run();await tick();
+  const transport=getBotTransport(channel.id)!,upload=transport.uploadImage!;
+  vi.spyOn(transport,'uploadImage').mockImplementation(async(data,name)=>{
+   const id=await upload(data,name);
+   getDb().prepare("UPDATE projects SET owner_id=? WHERE id='image-project'").run(other);
+   getDb().prepare("DELETE FROM project_user_access WHERE project_id='image-project' AND user_id=?").run(member);
+   return id;
+  });
+  await tick();expect(uploadCount).toBe(1);expect(messages().filter(frame=>frame.body.msgtype==='image')).toHaveLength(0);
+  expect(imageRows()[0]).toMatchObject({status:'failed',error:expect.stringContaining('权限')});
+ });
+ it('does not replace a queued screenshot with changed file bytes and reports partial failure',async()=>{
+  const {files}=await imageNotice();await tick();writeFileSync(files[0],Buffer.concat([png,Buffer.from('changed')]));await tick(3);
+  expect(imageRows().map(row=>row.status)).toEqual(['failed','sent']);expect(imageRows()[0].error).toContain('已变化');
+  expect(messages().filter(frame=>frame.body.msgtype==='image')).toHaveLength(1);
+  expect(messages().filter(frame=>frame.body.markdown?.content.includes('截图未能发送'))).toHaveLength(1);
+ });
+ it('reuploads expired media without repeating the Markdown body',async()=>{
+  await imageNotice(1);rejectImage=true;await tick(2);expect(uploadCount).toBe(1);
+  getDb().prepare("UPDATE platform_ai_outbox SET available_at=0,reply_context=json_set(reply_context,'$.outbound_image.expires_at',0) WHERE json_extract(reply_context,'$.outbound_image') IS NOT NULL").run();
+  rejectImage=false;await tick();expect(uploadCount).toBe(2);expect(imageRows()[0].status).toBe('sent');
+  expect(messages().filter(frame=>frame.body.msgtype==='markdown')).toHaveLength(1);
+ });
+});
 
 describe('project notification classification through the native adapter and WeCom SDK', () => {
   const sandboxIt = process.platform === 'linux' ? it : it.skip;
