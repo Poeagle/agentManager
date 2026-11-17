@@ -2,10 +2,13 @@ import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {render,screen,fireEvent,waitFor,within} from '@testing-library/react';
 import {beforeEach,afterEach,describe,it,expect,vi} from 'vitest';
 import {CodexAccountProviderEditor} from '../src/components/CodexAccountProviderEditor';
+import {EnvironmentDiagnostic} from '../src/components/CodexEnvironmentPanel';
 import {ConversationEnvironmentSelector} from '../src/components/ConversationEnvironmentSelector';
 import {ProjectSessionCreateDialog} from '../src/components/ProjectSessionCreateDialog';
+import {copyConversationText} from '../src/lib/conversation-clipboard';
 import {api,type Project,type CodexEnvironment} from '../src/lib/api';
 vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,projects:{...actual.api.projects,list:vi.fn(async()=>({projects:[]}))},codexEnvironments:{management:vi.fn(),list:vi.fn(),save:vi.fn(),checkConnection:vi.fn(),preflight:vi.fn(),forSession:vi.fn(),sessionPreflight:vi.fn(),transfer:vi.fn(),usage:vi.fn(),remove:vi.fn(),closeTabs:vi.fn()},sessions:{...actual.api.sessions,create:vi.fn()}}};});
+vi.mock('../src/lib/conversation-clipboard',()=>({copyConversationText:vi.fn(async()=>{})}));
 const native:CodexEnvironment={id:'native',name:'xlli 默认账号',kind:'native',enabled:true,allowed_user_ids:null};
 const account:CodexEnvironment={id:'account:ymchen',name:'ymchen Codex',kind:'account',enabled:true,allowed_user_ids:['ymchen'],connection:{authMethod:'key',username:'ymchen',port:22,identityFile:'',codexCommand:'codex',codexHome:''}};
 const model={model:'fixture-model',provider:'openai',name:'Fixture',description:'',efforts:[{value:'high',description:''}],defaultEffort:'high'};
@@ -53,6 +56,26 @@ describe('Codex environments UI',()=>{
   fireEvent.click(within(dialog).getByRole('button',{name:'预检连接、登录、模型与项目权限'}));await within(dialog).findByRole('combobox',{name:'目标环境模型'});
   vi.mocked(api.codexEnvironments.transfer).mockRejectedValueOnce(Error('目标恢复失败，原会话保持不变'));fireEvent.click(within(dialog).getByRole('button',{name:'复制历史并切换'}));expect(await within(dialog).findByRole('alert')).toHaveTextContent('原会话保持不变');expect(select).toHaveValue('native');
   expect(api.codexEnvironments.transfer).toHaveBeenCalledWith('s',{environment_id:account.id,provider:'openai',model:'fixture-model',effort:'high'});
+ });
+ it.each(['preflight','transfer'])('keeps %s repair commands readable and copyable, then allows retry',async(stage)=>{
+  const message="历史附件权限不足：/fixture/paste.png\n目标系统用户：fixture\nsudo setfacl -m 'u:fixture:r--' -- '/fixture/paste.png'\n执行后重新预检并重试切换。";
+  if(stage==='preflight')vi.mocked(api.codexEnvironments.sessionPreflight).mockResolvedValueOnce({ok:false,checks:[{stage:'project_access',ok:false,message}]});
+  else vi.mocked(api.codexEnvironments.transfer).mockRejectedValueOnce(Error(message));
+  mount(<ConversationEnvironmentSelector sessionId="s" busy={false}/>);
+  const select=await screen.findByRole('combobox',{name:'选择 Codex 账号环境'});fireEvent.change(select,{target:{value:account.id}});
+  const dialog=screen.getByRole('dialog');fireEvent.click(within(dialog).getByRole('button',{name:'预检连接、登录、模型与项目权限'}));
+  if(stage==='transfer'){await within(dialog).findByRole('combobox',{name:'目标环境模型'});fireEvent.click(within(dialog).getByRole('button',{name:'复制历史并切换'}));}
+  const error=await within(dialog).findByRole('alert');expect(error).toHaveTextContent('sudo setfacl');expect(within(error).getByText(message,{exact:true,normalizer:t=>t})).toHaveStyle({whiteSpace:'pre-wrap'});
+  fireEvent.click(within(dialog).getByRole('button',{name:'复制诊断与命令'}));await waitFor(()=>expect(copyConversationText).toHaveBeenCalledWith(message));
+  expect(select).toHaveValue('native');
+  fireEvent.click(within(dialog).getByRole('button',{name:'预检连接、登录、模型与项目权限'}));await within(dialog).findByRole('combobox',{name:'目标环境模型'});
+  fireEvent.click(within(dialog).getByRole('button',{name:'复制历史并切换'}));await waitFor(()=>expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+ });
+ it('keeps diagnostics selectable when clipboard access fails',async()=>{
+  vi.mocked(copyConversationText).mockRejectedValueOnce(Error('clipboard denied'));
+  mount(<EnvironmentDiagnostic message={'权限不足\nsudo repair-command'}/>);
+  fireEvent.click(screen.getByRole('button',{name:'复制诊断与命令'}));
+  expect(await screen.findByRole('status')).toHaveTextContent('复制失败，请手动选择文本复制');expect(screen.getByText(/sudo repair-command/)).toBeVisible();
  });
  it('disables account switching while a task is running',async()=>{mount(<ConversationEnvironmentSelector sessionId="s" busy/>);expect(await screen.findByRole('combobox',{name:'选择 Codex 账号环境'})).toBeDisabled();});
  it('creates a new Codex tab with the authorized account instead of falling back to native',async()=>{

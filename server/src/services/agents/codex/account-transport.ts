@@ -54,9 +54,20 @@ function connectionFailure(stderr:string):AccountConnectionError {
  if(/python3.*not found|python3:/.test(stderr))return new AccountConnectionError('runtime','目标用户下找不到 python3，无法执行本机连接检查');
  return new AccountConnectionError('codex_process','目标用户的 Codex 进程操作失败，请检查该用户的 Codex 安装、启动参数及进程日志');
 }
+function accountFailureGuidance(error:AccountConnectionError,c:AccountConnection):AccountConnectionError {
+ const ssh=['ssh','-p',String(c.port),'-o','StrictHostKeyChecking=ask',...(c.authMethod==='password'?['-o','PreferredAuthentications=password','-o','PubkeyAuthentication=no']:[]),...(c.authMethod!=='password'&&c.identityFile?['-o','IdentitiesOnly=yes','-i',c.identityFile.startsWith('~/')?join(homedir(),c.identityFile.slice(2)):c.identityFile]:[]),`${c.username}@127.0.0.1`].map(shellSingleQuote).join(' ');
+ let guidance='';
+ if(['ssh_authentication','ssh_connection','ssh_host_key'].includes(error.stage))guidance=`在平台运行用户的终端执行，检查 SSH 连接与认证；主机指纹需核对后确认：\n${ssh}\n连接成功后重新预检。`;
+ if(error.stage==='codex_authentication'){
+  const login=`export PATH="$HOME/.local/bin:$PATH"; ${c.codexHome?'export CODEX_HOME='+shellSingleQuote(c.codexHome)+'; ':''}${shellSingleQuote(c.codexCommand)} login`;
+  guidance=`在平台所在服务器的终端执行并完成登录，然后重新预检：\nsudo -iu ${shellSingleQuote(c.username)} bash -lc ${shellSingleQuote(login)}`;
+ }
+ if(error.stage==='codex_executable'||error.stage==='models')guidance=`在平台所在服务器执行检查；根据结果修正账号配置中的 Codex 可执行文件路径或该用户的配置，再重新预检：\nsudo -iu ${shellSingleQuote(c.username)} bash -lc ${shellSingleQuote('export PATH="$HOME/.local/bin:$PATH"; command -v '+shellSingleQuote(c.codexCommand)+'; '+shellSingleQuote(c.codexCommand)+' --version')}`;
+ return guidance?new AccountConnectionError(error.stage,error.message+'\n'+guidance):error;
+}
 export async function accountCommand(connection:AccountConnection,script:string,timeout=10000):Promise<string> {
  try {const result=await execute('ssh',[...sshArguments(connection),`${connection.username}@127.0.0.1`,`python3 -c ${shellSingleQuote(script)}`],{timeout,maxBuffer:128*1024,env:await sshEnvironment(connection)});return result.stdout.trim();}
- catch(e){if(e instanceof AccountConnectionError)throw e;const error=e as {stderr?:string;code?:string};if(error.code==='ENOENT')throw new AccountConnectionError('ssh_executable','平台运行环境找不到 ssh 命令');throw connectionFailure(error.stderr||String(error.code||''));}
+ catch(e){if(e instanceof AccountConnectionError)throw e;const error=e as {stderr?:string;code?:string};if(error.code==='ENOENT')throw new AccountConnectionError('ssh_executable','平台运行环境找不到 ssh 命令');throw accountFailureGuidance(connectionFailure(error.stderr||String(error.code||'')),connection);}
 }
 /** Send file content over stdin; it never appears in command arguments or logs. */
 type InputOptions={timeoutMs?:number;maxOutputBytes?:number;signal?:AbortSignal};
@@ -138,38 +149,100 @@ export async function closeAccountTransport(id:string):Promise<void> {
  const current=tunnels.get(id);if(!current)return;tunnels.delete(id);current.child.kill('SIGTERM');await unlink(current.socket).catch(()=>{});
 }
 export async function closeAccountTransports():Promise<void>{await Promise.all([...tunnels.keys()].map(closeAccountTransport));}
-export async function checkAccountProject(c:AccountConnection,path:string):Promise<void>{await accountCommand(c,`import os,sys,tempfile\np=${JSON.stringify(path)}\nif not os.path.isdir(p) or not os.access(p,os.R_OK|os.W_OK|os.X_OK):sys.exit('PROJECT_ACCESS')\nwith tempfile.NamedTemporaryFile(dir=p,prefix='.codex-access-check-') as f:f.write(b'ok')\nprint('ok')`);}
-
-/** Retention can remove old attachments without invalidating the conversation.
- * Keep their original history references; only inaccessible retained files block transfer. */
-export async function checkAccountAttachments(c:AccountConnection,paths:string[]):Promise<void> {
- if(!paths.length)return;
- await accountCommand(c,`import os,sys,stat
+/** Diagnose as the target user. Missing retained attachments are expected after cleanup.
+ * Report exact blocked ancestors and targets, without changing permissions. */
+async function checkAccountPaths(c:AccountConnection,paths:string[],project:boolean):Promise<void> {
+ const output=await accountCommand(c,`import os,sys,stat,json,tempfile,subprocess
 paths=${JSON.stringify(paths)}
-for p in paths:
+project=${project?'True':'False'}
+issues=[];repairs={}
+def permission(path,required):
+ if path in repairs:return
  try:
-  mode=os.stat(p).st_mode
- except FileNotFoundError:
-  continue
+  info=os.stat(path)
  except OSError:
-  sys.exit('ATTACHMENT_ACCESS')
- if not stat.S_ISREG(mode) or not os.access(p,os.R_OK):sys.exit('ATTACHMENT_ACCESS')
-print('ok')`);
+  return
+ if info.st_uid==os.getuid():
+  repairs[path]={'path':path,'mode':'owner','permissions':required}
+  return
+ # Preserve the target user's existing named ACL when adding the missing rights.
+ try:
+  result=subprocess.run(['getfacl','-cpn','--',path],capture_output=True,text=True,timeout=2)
+  if result.returncode:raise OSError()
+  prior=next((line.split(':')[2].split()[0] for line in result.stdout.splitlines() if line.startswith('user:'+str(os.getuid())+':')),'---')
+  rights=''.join(ch if ch in required or ch in prior else '-' for ch in 'rwx')
+  repairs[path]={'path':path,'mode':'acl','permissions':rights}
+ except (OSError,subprocess.TimeoutExpired):
+  repairs[path]={'path':path,'mode':'inspect','permissions':required}
+for path in paths:
+ # Distinguish retention removing an entire attachment directory from traversal denial.
+ try:os.stat(path)
+ except FileNotFoundError:
+  if project:issues.append({'path':path,'reason':'missing'})
+  continue
+ except OSError:pass
+ # Real and lexical ancestors both matter when a project path contains symlinks.
+ ancestors=set()
+ for value in [os.path.abspath(path),os.path.realpath(path)]:
+  parent=os.path.dirname(value)
+  while parent!='/':
+   ancestors.add(parent);parent=os.path.dirname(parent)
+ blocked=sorted((a for a in ancestors if not os.access(a,os.X_OK)),key=lambda a:(a.count('/'),a))
+ if blocked:
+  for a in blocked:permission(a,'x')
+  issues.append({'path':path,'reason':'ancestor'})
+ else:
+  try:
+   info=os.stat(path)
+   valid=stat.S_ISDIR(info.st_mode) if project else stat.S_ISREG(info.st_mode)
+   if not valid:issues.append({'path':path,'reason':'type'})
+   elif project and os.statvfs(path).f_flag & getattr(os,'ST_RDONLY',1):issues.append({'path':path,'reason':'write'})
+   elif not os.access(path,os.R_OK|os.W_OK|os.X_OK if project else os.R_OK):
+    permission(path,'rwx' if project else 'r');issues.append({'path':path,'reason':'permission'})
+   elif project:
+    try:
+     with tempfile.NamedTemporaryFile(dir=path,prefix='.codex-access-check-') as f:f.write(b'ok')
+    except OSError:
+     issues.append({'path':path,'reason':'write'})
+  except FileNotFoundError:
+   if project:issues.append({'path':path,'reason':'missing'})
+  except OSError:
+   issues.append({'path':path,'reason':'filesystem'})
+ if len(issues)>=20:break
+print(json.dumps({'issues':issues,'repairs':list(repairs.values())}))`);
+ const report=JSON.parse(output) as {issues:Array<{path:string;reason:string}>;repairs:Array<{path:string;mode:string;permissions:string}>};
+ if(!Array.isArray(report.issues)||!Array.isArray(report.repairs))throw Error('目录诊断未返回有效结果，请重新预检');
+ if(!report.issues.length)return;
+ const reasons:Record<string,string>={ancestor:'上级目录无法进入',type:project?'路径不是目录':'路径不是普通文件',permission:'权限不足',write:'写入测试失败（可能是只读挂载、配额或磁盘空间不足）',missing:'项目目录不存在',filesystem:'文件系统访问失败'};
+ const commands:string[]=[];
+ for(const repair of report.repairs){
+  if(repair.mode==='owner')commands.push(`sudo -u ${shellSingleQuote(c.username)} chmod u+${repair.permissions} -- ${shellSingleQuote(repair.path)}`);
+  else if(repair.mode==='acl')commands.push(`sudo setfacl -m ${shellSingleQuote('u:'+c.username+':'+repair.permissions)} -- ${shellSingleQuote(repair.path)}`);
+ }
+ for(const issue of report.issues)commands.push(`namei -l -- ${shellSingleQuote(issue.path)}`);
+ if(report.issues.some(i=>i.reason==='write'))commands.push(`df -h -- ${shellSingleQuote(paths[0])}`,`df -i -- ${shellSingleQuote(paths[0])}`,`findmnt -T ${shellSingleQuote(paths[0])}`);
+ const needsInspection=report.issues.some(i=>i.reason!=='permission'&&i.reason!=='ancestor')||report.repairs.some(i=>i.mode==='inspect');
+ const message=[project?'目标系统用户无法读写项目目录。':'目标系统用户无法访问历史附件。',
+  `目标系统用户：${c.username}`,...report.issues.map(i=>`${reasons[i.reason]||i.reason}：${i.path}`),
+  '在平台所在服务器的终端执行以下命令；sudo 需要管理员权限，ACL 命令需要安装 acl 工具。',
+  ...commands,needsInspection?'请根据诊断结果恢复原目录/文件，或修复挂载、空间及权限；不要创建空目录代替原项目。':'权限命令仅针对以上路径，不递归修改其他文件。',
+  '执行后重新预检并重试切换；若仍有错误，请复制完整诊断。原会话已保留。',
+  ...(report.issues.length>=20?['本次最多显示 20 项，请修复后重试以检查其余路径。']:[])].join('\n');
+ throw new AccountConnectionError(project?'project_access':'attachment_access',message);
 }
+export async function checkAccountProject(c:AccountConnection,path:string):Promise<void>{await checkAccountPaths(c,[path],true);}
+export async function checkAccountAttachments(c:AccountConnection,paths:string[]):Promise<void>{if(paths.length)await checkAccountPaths(c,paths,false);}
 
 /** Read-only connection/model probe. It uses the account's existing login and
  * terminates only its own temporary stdio child; no model turn is submitted. */
 export async function probeAccountConnection(c:AccountConnection,projectPath?:string):Promise<{models:Array<{model:string;name:string;description:string;efforts:Array<{value:string;description:string}>;defaultEffort:string}>}> {
+ if(projectPath)await checkAccountProject(c,projectPath);
  const script=`import os,pathlib,shutil,subprocess,sys,json,select,time,tempfile
 os.environ['PATH']=str(pathlib.Path.home()/'.local/bin')+':/usr/local/bin:/usr/bin:/bin:'+os.environ.get('PATH','')
 command=shutil.which(${JSON.stringify(c.codexCommand)})
 if not command:sys.exit('CODEX_NOT_FOUND')
 if ${JSON.stringify(c.codexHome)}:os.environ['CODEX_HOME']=${JSON.stringify(c.codexHome)}
 if subprocess.run([command,'login','status'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=6).returncode:sys.exit('CODEX_LOGIN_REQUIRED')
-project=${projectPath?JSON.stringify(projectPath):'None'}
-if project:
- if not os.path.isdir(project) or not os.access(project,os.R_OK|os.W_OK|os.X_OK):sys.exit('PROJECT_ACCESS')
- with tempfile.NamedTemporaryFile(dir=project,prefix='.codex-access-check-') as f:f.write(b'ok')
 p=subprocess.Popen([command,'app-server','--disable','plugins','-c','analytics.enabled=false'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
 seq=0;buffer=b'';deadline=time.monotonic()+18
 stage='initialize'

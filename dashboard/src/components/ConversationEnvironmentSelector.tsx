@@ -3,7 +3,7 @@ import {useEffect,useState} from 'react';
 import {useQuery,useQueryClient} from '@tanstack/react-query';
 import {api,type EnvironmentCheck,type ConversationControlsData} from '../lib/api';
 import {Dialog} from './Dialog';
-import {EnvironmentChecks} from './CodexEnvironmentPanel';
+import {EnvironmentChecks,EnvironmentDiagnostic} from './CodexEnvironmentPanel';
 type Model=ConversationControlsData['models'][number];
 export function ConversationEnvironmentSelector({sessionId,busy,onTransferred,requested,onRequestHandled}:{sessionId:string;busy:boolean;onTransferred?:()=>void;requested?:{provider:string;model:string;effort:string};onRequestHandled?:()=>void}) {
  const client=useQueryClient();const query=useQuery({queryKey:['session-environments',sessionId],queryFn:()=>api.codexEnvironments.forSession(sessionId),retry:false,staleTime:30000});
@@ -20,7 +20,7 @@ export function ConversationEnvironmentSelector({sessionId,busy,onTransferred,re
   <button type="button" disabled={working||busy} onClick={()=>void preflight()}>{working?'处理中…':'预检连接、登录、模型与项目权限'}</button>
   {checks.length>0&&<EnvironmentChecks checks={checks}/>}
   {models.length>0&&<><label className="mt-3 block">目标模型<select aria-label="目标环境模型" value={selection} disabled={working} onChange={e=>{setSelection(e.target.value);setEffort(models.find(m=>modelKey(m)===e.target.value)?.defaultEffort||'');}}>{models.map(m=><option key={modelKey(m)} value={modelKey(m)}>{query.data?.environments.find(e=>e.id===target)?.auth_mode==='api'?m.name:`${m.provider?m.provider+' · ':''}${m.name}`}</option>)}</select></label><label className="mt-3 block">推理强度<select aria-label="目标环境推理强度" value={effort} disabled={working} onChange={e=>setEffort(e.target.value)}>{model?.efforts.map(e=><option key={e.value} value={e.value}>{e.description||e.value||'默认'}</option>)}</select></label></>}
-  {error&&<p role="alert">{error}</p>}
+  {error&&<p role="alert"><EnvironmentDiagnostic message={error}/></p>}
   <footer className="mt-4 flex justify-end gap-3"><button type="button" disabled={working} onClick={close}>取消</button><button type="button" disabled={working||busy||!model||!checks.length||checks.some(c=>!c.ok)} onClick={()=>void transfer()}>复制历史并切换</button></footer>
- </Dialog>}{!target&&error&&<span role="alert">{error}</span>}</>;
+ </Dialog>}{!target&&error&&<span role="alert"><EnvironmentDiagnostic message={error}/></span>}</>;
 }
