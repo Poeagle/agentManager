@@ -38,3 +38,11 @@ export function estimateUsageCredits(model:string|null,tier:string|null,tokens:R
  const multiplier=speedMultiplier(model!,tier,basis);
  return multiplier===null?null:((input!-cached!)*rate[0]+cached!*rate[1]+output!*rate[2])*multiplier/1e6;
 }
+
+export function estimateUsageBreakdown(model:string|null,tier:string|null,tokens:Record<string,number|null>,basis:UsageEstimateBasis='credits') {
+ const total=estimateUsageCredits(model,tier,tokens,basis);
+ if(total===null||!model)return null;
+ const rate=CREDIT_RATES[model], multiplier=speedMultiplier(model,tier,basis)!/1e6;
+ const reasoning=tokens.reasoning_output_tokens;
+ return {input:(tokens.input_tokens!-tokens.cached_input_tokens!)*rate[0]*multiplier,cache:tokens.cached_input_tokens!*rate[1]*multiplier,output:tokens.output_tokens!*rate[2]*multiplier,reasoning:typeof reasoning==='number'&&Number.isFinite(reasoning)&&reasoning>=0&&reasoning<=tokens.output_tokens!?reasoning*rate[2]*multiplier:null};
+}

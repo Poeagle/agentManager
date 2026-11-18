@@ -391,7 +391,7 @@ export interface AgentModel {
   }>;
   defaultEffort: string;
 }
-export interface AgentCostEstimate {amount:number|null;unit:string;complete:boolean;rate_date?:string;basis?:string}
+export interface AgentCostEstimate {amount:number|null;unit:string;complete:boolean;rate_date?:string;basis?:string;breakdown?:{input:number;cache:number;output:number;reasoning:number|null}}
 export interface AgentStatisticsInterval {
   cost?:AgentCostEstimate|null;
   tokens: Record<string, number | null> | null;

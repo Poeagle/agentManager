@@ -1310,7 +1310,7 @@ export interface SessionOutput {
   oldestSeq: number | null;
 }
 
-export interface ConversationCostEstimate {amount:number|null;unit:string;complete:boolean;rate_date?:string;basis?:string}
+export interface ConversationCostEstimate {amount:number|null;unit:string;complete:boolean;rate_date?:string;basis?:string;breakdown?:{input:number;cache:number;output:number;reasoning:number|null}}
 export interface ConversationInterval {cost?:ConversationCostEstimate|null;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;shared_messages:number}
 export interface ConversationConclusion extends ConversationInterval {start_at:string|null;end_at:string|null;elapsed_ms:number|null}
 export interface ConversationProgressSegment {cost?:ConversationCostEstimate|null;id:string;start_at:string|null;end_at:string|null;elapsed_ms:number|null;end_reason:'input'|'completed'|'interrupted'|'unknown'|null;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean}
