@@ -86,4 +86,18 @@ describe('deterministic conversation timeline',()=>{
     const durable=message('native-user','user',{text:'same prompt',client_id:'prompt-id',turn_id:'native',sequence:10});
     expect(ids(mergeConversationTimeline([live],[durable]))).toEqual(['native-user']);
   });
+  it('settles a Claude UUID echo that carries the browser ID only as its native alias',()=>{
+    const pending=message('pending-browser','user',{text:'same prompt',client_id:'browser-id',optimistic:{afterSequence:-1}});
+    const echo=message('native-user','user',{text:'same prompt',native_client_id:'browser-id',turn_id:'native'});
+    expect(ids(mergeConversationTimeline([pending],[echo]))).toEqual(['native-user']);
+  });
+  it('settles the same Claude browser send when the UUID echo arrives before the alias',()=>{
+    const pending=message('pending-browser','user',{text:'same prompt',client_id:'browser-id',optimistic:{afterSequence:-1}});
+    const echo=message('native-user','user',{text:'same prompt',turn_id:'native',sequence:10});
+    const aliased=message('native-user','user',{text:'same prompt',turn_id:'native',native_client_id:'browser-id',sequence:10});
+    const first=mergeConversationTimeline([pending],[echo]);
+    const settled=mergeConversationTimeline(first,[aliased]);
+    expect(ids(settled)).toEqual(['native-user']);
+    expect(settled[0]).toMatchObject({client_id:'browser-id',native_client_id:'browser-id'});
+  });
 });

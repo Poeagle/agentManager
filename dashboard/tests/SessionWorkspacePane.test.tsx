@@ -218,6 +218,16 @@ describe('chat/raw terminal display',()=>{
     expect(await screen.findByRole('alert')).toHaveTextContent('当前 Provider 余额不足');
     expect(screen.getByRole('alert')).toHaveTextContent('切换到其他 Provider');
   });
+  it('shows an actionable error card when the Claude provider has no accounts',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const failure={id:'provider-error',role:'assistant' as const,phase:'error' as const,text:'API Error: 503 {"error":{"message":"No available accounts: no available accounts","type":"api_error"},"type":"error"}',turn_id:'provider',timestamp:null,error:{code:'provider_unavailable',will_retry:false}};
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:false,stage:'idle',turn_id:'provider',messages:[failure]})}));
+    const card=await screen.findByRole('alert');
+    expect(card).toHaveTextContent('当前 Claude Provider 暂无可用账号');
+    expect(card).not.toHaveTextContent('final');
+  });
   it('explains an unavailable selected model without suggesting a provider retry loop',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
     vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});

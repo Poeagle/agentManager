@@ -444,6 +444,9 @@ const Bubble = memo(function Bubble({
           <p>
             {/insufficient_balance|insufficient balance/i.test(message.text)
               ? "当前 Provider 余额不足，本轮已停止。请在 Agent 配置中充值或切换到其他 Provider，然后新开会话。"
+              : message.error?.code === "provider_unavailable" ||
+                    /no available accounts|api error:\s*503/i.test(message.text)
+                ? "当前 Claude Provider 暂无可用账号，本轮未执行。请更新 Provider 凭据或切换到其他模型，然后重试。"
               : message.error?.code === "server_overloaded" ||
                     /at capacity/i.test(message.text)
                 ? "当前模型繁忙，本轮已停止。可稍后重试，或在原始终端切换模型。"
