@@ -960,9 +960,11 @@ class ClaudeRuntime {
             : "Claude 执行失败";
         const code = /insufficient_balance|insufficient balance/i.test(text)
           ? "insufficient_balance"
-          : /selected model.*(?:does not exist|may not exist|access)/i.test(text)
-            ? "model_unavailable"
-            : undefined;
+          : /\b503\b|no available accounts|service unavailable|api_error/i.test(text)
+            ? "provider_unavailable"
+            : /selected model.*(?:does not exist|may not exist|access)/i.test(text)
+              ? "model_unavailable"
+              : undefined;
         this.upsert({
           id: conversationMessageId(
             this.turnId || "claude",
@@ -974,6 +976,7 @@ class ClaudeRuntime {
           timestamp: new Date().toISOString(),
           turn_id: this.turnId || undefined,
           phase: "error",
+          presentation: undefined,
           streaming: false,
           error: { ...(code ? { code } : {}), will_retry: false },
         });
@@ -1204,6 +1207,10 @@ class ClaudeRuntime {
       }
     }
     for (const message of assistants) {
+      if (message.phase === "error") {
+        this.upsert({ ...message, streaming: false });
+        continue;
+      }
       const final = message === finalMessage;
       this.upsert({
         ...message,

@@ -4,6 +4,19 @@ export interface TimelineMessage extends ConversationMessage {
   optimistic?: {afterSequence:number;accepted?:boolean};
 }
 
+function sameUserIdentity(
+  left: Pick<ConversationMessage,'client_id'|'native_client_id'>,
+  right: Pick<ConversationMessage,'client_id'|'native_client_id'>,
+) {
+  const leftIds = new Set(
+    [left.client_id, left.native_client_id].filter((id): id is string => !!id),
+  );
+  const rightIds = [right.client_id, right.native_client_id].filter(
+    (id): id is string => !!id,
+  );
+  return rightIds.some((id) => leftIds.has(id));
+}
+
 /** Merge only identities guaranteed by the transport contract.
  * Native messages use their public ID; local sends use client_id until the
  * native user item arrives. Text and timestamps never decide identity/order. */
@@ -14,7 +27,9 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
     if(message.queued&&message.client_id&&result.some(item=>item.role==='user'&&item.client_id===message.client_id&&!item.queued&&!item.optimistic))continue;
     let index=result.findIndex(item=>item.id===message.id);
     if(index<0&&message.role==='user'&&message.client_id){
-      index=result.findIndex(item=>item.role==='user'&&(item.client_id===message.client_id||item.native_client_id===message.client_id||!!message.native_client_id&&(item.client_id===message.native_client_id||item.native_client_id===message.native_client_id)));
+      index = result.findIndex(
+        (item) => item.role === 'user' && sameUserIdentity(item, message),
+      );
     }
     if(index>=0){
       const old=result[index];
@@ -34,7 +49,7 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
           streaming:message.streaming??(message.sequence!==undefined?false:old.streaming),optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
         continue;
       }
-      result[index]={...old,...message,streaming:message.streaming??(message.sequence!==undefined?false:old.streaming),optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
+      result[index]={...old,...message,client_id:message.client_id??old.client_id??message.native_client_id,streaming:message.streaming??(message.sequence!==undefined?false:old.streaming),optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
       continue;
     }
     const nextId=incoming.slice(position+1).map(item=>item.id).find(id=>result.some(item=>item.id===id));
@@ -46,8 +61,8 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
   }
   const byClient=new Map<string,number>(),remove=new Set<number>();
   result.forEach((item,index)=>{
-    if(item.role!=='user'||!item.client_id)return;
-    const identities=[item.client_id,...item.native_client_id?[item.native_client_id]:[]];
+    if(item.role!=='user'||(!item.client_id&&!item.native_client_id))return;
+    const identities=[item.client_id,...item.native_client_id?[item.native_client_id]:[]].filter((id): id is string => !!id);
     const old=identities.map(id=>byClient.get(id)).find(value=>value!==undefined);
     if(old===undefined){for(const id of identities)byClient.set(id,index);return;}
     const oldItem=result[old];

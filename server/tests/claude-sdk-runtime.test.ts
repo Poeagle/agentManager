@@ -43,6 +43,20 @@ describe('Claude Agent SDK runtime',()=>{
       error:{code:'model_unavailable',will_retry:false},
     });
   });
+  it('keeps an upstream 503 as an error card instead of final prose',async()=>{
+    sdk.messages=[
+      {type:'result',subtype:'error_during_execution',uuid:assistant,session_id:session,errors:['API Error: 503 {"error":{"message":"No available accounts: no available accounts","type":"api_error"},"type":"error"}']},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('介绍你自己');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    const error=runtime.snapshot().messages.find(message=>message.role==='assistant');
+    expect(error).toMatchObject({
+      phase:'error',
+      text:expect.stringContaining('No available accounts'),
+      error:{code:'provider_unavailable',will_retry:false},
+    });
+  });
   it('injects only the bound Provider credentials and model into the SDK process',async()=>{
     sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-a',effort:''},false,{
