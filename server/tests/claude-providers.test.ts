@@ -2,7 +2,7 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
 import {createUser} from '../src/auth.js';
-import {readAgentManagement} from '../src/services/agents/management-store.js';
+import {readAgentManagement,updateAgentManagement} from '../src/services/agents/management-store.js';
 import {claudeManagement} from '../src/services/agents/claude/management.js';
 import {capabilities} from '../src/services/agents/types.js';
 import {
@@ -127,6 +127,24 @@ describe('Claude managed providers',()=>{
    ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES:'adaptive_thinking',
    ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES:'adaptive_thinking',
    ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES:'adaptive_thinking',
+  });
+ });
+ it('infers adaptive thinking for an existing provider that predates the field',()=>{
+  create();
+  updateClaudeProvider('gateway',{
+   fields:{
+    models:['claude-sonnet-5-5'],
+    defaultModel:'claude-sonnet-5-5',
+   },
+  });
+  const stored=readAgentManagement('claude').providers.find(provider=>provider.id==='gateway')!;
+  delete (stored.fields as Record<string,unknown>).adaptiveThinking;
+  updateAgentManagement('claude',value=>({
+   ...value,
+   providers:value.providers.map(provider=>provider.id==='gateway'?stored:provider),
+  }));
+  expect(claudeProviderForEnvironment('claude-provider:gateway')).toMatchObject({
+   adaptiveThinking:true,
   });
  });
  it('blocks deletion while an active session remains bound',()=>{
