@@ -31,6 +31,13 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
         (item) => item.role === 'user' && sameUserIdentity(item, message),
       );
     }
+    if(index<0&&message.role==='user'&&message.turn_id&&!message.client_id&&!message.native_client_id){
+      index=result.findIndex(
+        (item)=>item.role==='user'&&item.turn_id===message.turn_id&&(
+          item.client_id!==undefined||item.native_client_id!==undefined
+        ),
+      );
+    }
     if(index>=0){
       const old=result[index];
       // A verified durable terminal echo wins over a later replay of the live
@@ -49,7 +56,7 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
           streaming:message.streaming??(message.sequence!==undefined?false:old.streaming),optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
         continue;
       }
-      result[index]={...old,...message,client_id:message.client_id??old.client_id??message.native_client_id,streaming:message.streaming??(message.sequence!==undefined?false:old.streaming),optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
+      result[index]={...old,...message,client_id:message.client_id||old.client_id||message.native_client_id||old.native_client_id,native_client_id:message.native_client_id||old.native_client_id||message.client_id||old.client_id,streaming:message.streaming??(message.sequence!==undefined?false:old.streaming),optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
       continue;
     }
     const nextId=incoming.slice(position+1).map(item=>item.id).find(id=>result.some(item=>item.id===id));

@@ -100,4 +100,13 @@ describe('deterministic conversation timeline',()=>{
     expect(ids(settled)).toEqual(['native-user']);
     expect(settled[0]).toMatchObject({client_id:'browser-id',native_client_id:'browser-id'});
   });
+  it('merges a UUID-only Claude history projection after the live echo established its turn',()=>{
+    const pending=message('pending-browser','user',{text:'介绍你自己',client_id:'browser-id',optimistic:{afterSequence:-1}});
+    const live=message('native-user','user',{text:'介绍你自己',turn_id:'native-turn',native_client_id:'browser-id'});
+    const history=message('native-user','user',{text:'介绍你自己',turn_id:'native-turn',sequence:10});
+    const first=mergeConversationTimeline([pending],[live]);
+    const settled=mergeConversationTimeline(first,[history]);
+    expect(ids(settled)).toEqual(['native-user']);
+    expect(settled[0]).toMatchObject({client_id:'browser-id',native_client_id:'browser-id',sequence:10});
+  });
 });
