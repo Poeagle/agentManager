@@ -19,6 +19,7 @@ import {
   updateNativeClaudeProvider,
   updateClaudeProvider,
   ensureNativeClaudeProvider,
+  modelSupportsAdaptiveThinking,
   persistDetectedClaudeModels,
 } from '../src/services/agents/claude/providers.js';
 
@@ -46,6 +47,9 @@ describe('Claude managed providers',()=>{
   expect(claudeManagementProviderState('gateway')?.fields.map(field=>field.key)).toEqual(
    nativeClaudeProviderState().fields.map(field=>field.key),
   );
+   expect(claudeManagementProviderState('gateway')?.fields).toContainEqual(
+    expect.objectContaining({key:'adaptiveThinking',type:'toggle'}),
+   );
  });
  it('stores native Anthropic in the encrypted provider runtime instead of stale LaunchAgent aliases',()=>{
   updateNativeClaudeProvider({
@@ -72,7 +76,7 @@ describe('Claude managed providers',()=>{
   });
   expect(JSON.stringify(readAgentManagement('claude'))).not.toContain('secret-token');
   expect(claudeProviderForEnvironment(id)).toMatchObject({
-   id:'gateway',baseUrl:'https://gateway.example',authToken:'secret-token',defaultModel:'claude-a',contextWindow:200000,
+   id:'gateway',baseUrl:'https://gateway.example',authToken:'secret-token',defaultModel:'claude-a',adaptiveThinking:false,contextWindow:200000,
   });
   expect(claudeManagementProviderState('gateway')).toMatchObject({status:'ready',models:['claude-a','claude-b']});
   expect(claudeProviderModelsForEnvironment('claude-provider:gateway')).toEqual(['claude-a','claude-b']);
@@ -96,6 +100,34 @@ describe('Claude managed providers',()=>{
   expect(()=>createClaudeProvider({id:'bad-url',apiKey:'x',fields:{baseUrl:'file:///tmp/x',models:['x']}})).toThrow('HTTP');
   expect(claudeProviderForEnvironment('anthropic')).toBeNull();
   expect(()=>claudeProviderForEnvironment('provider:other')).toThrow('不是 Claude');
+ });
+ it('marks Claude adaptive-thinking models without guessing unrelated model families',async()=>{
+  create();
+  updateClaudeProvider('gateway',{
+   fields:{
+    models:['claude-sonnet-5-5','claude-opus-4-8','claude-haiku-5-5','grok-4.6','claude-sonnet-4-5'],
+    defaultModel:'claude-sonnet-5-5',
+    adaptiveThinking:true,
+   },
+  });
+  expect(modelSupportsAdaptiveThinking('claude-sonnet-5-5')).toBe(true);
+  expect(modelSupportsAdaptiveThinking('claude-sonnet-4-6')).toBe(true);
+  expect(modelSupportsAdaptiveThinking('claude-opus-4-8')).toBe(true);
+  expect(modelSupportsAdaptiveThinking('claude-haiku-5-5')).toBe(true);
+  expect(modelSupportsAdaptiveThinking('claude-sonnet-4-5')).toBe(false);
+  expect(modelSupportsAdaptiveThinking('grok-4.6')).toBe(false);
+  expect(claudeProviderForEnvironment('claude-provider:gateway')).toMatchObject({
+   adaptiveThinking:true,
+  });
+  const {claudeProviderEnvironment}=await import('../src/services/agents/claude/providers.js');
+  expect(claudeProviderEnvironment(claudeProviderForEnvironment('claude-provider:gateway'),'claude-sonnet-5-5')).toMatchObject({
+   ANTHROPIC_MODEL:'claude-sonnet-5-5',
+   CLAUDE_CODE_SUBAGENT_MODEL:'claude-sonnet-5-5',
+   CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL:'claude-sonnet-5-5',
+   ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES:'adaptive_thinking',
+   ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES:'adaptive_thinking',
+   ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES:'adaptive_thinking',
+  });
  });
  it('blocks deletion while an active session remains bound',()=>{
   create();

@@ -61,13 +61,14 @@ describe('Claude Agent SDK runtime',()=>{
     sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-a',effort:''},false,{
       id:'gateway',name:'Gateway',baseUrl:'https://gateway.example',authToken:'private-token',
-      models:['claude-a','claude-b'],defaultModel:'claude-a',contextWindow:200000,maxOutputTokens:64000,
+      models:['claude-a','claude-b'],defaultModel:'claude-a',adaptiveThinking:true,contextWindow:200000,maxOutputTokens:64000,
     });
     await runtime.submit('provider-bound');
     await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
     expect(sdk.queries).toHaveLength(1);
     expect(sdk.queries[0].options).toMatchObject({
       model:'claude-a',
+      thinking:{type:'adaptive'},
       env:{
         ANTHROPIC_BASE_URL:'https://gateway.example',
         ANTHROPIC_AUTH_TOKEN:'private-token',
@@ -78,22 +79,39 @@ describe('Claude Agent SDK runtime',()=>{
         ANTHROPIC_DEFAULT_HAIKU_MODEL:'claude-a',
         CLAUDE_CODE_SUBAGENT_MODEL:'claude-a',
         CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL:'claude-a',
+        ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES:'adaptive_thinking',
+        ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES:'adaptive_thinking',
+        ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES:'adaptive_thinking',
         CLAUDE_CODE_MAX_CONTEXT_TOKENS:'200000',
         CLAUDE_CODE_MAX_OUTPUT_TOKENS:'64000',
       },
     });
     expect(runtime.selectedModel()).toBe('claude-a');
   });
+  it('uses adaptive thinking for claude-sonnet-5-5 provider requests',async()=>{
+    sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
+    const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-sonnet-5-5',effort:''},false,{
+      id:'anthropic',name:'Anthropic',baseUrl:'https://xindu.xyz',authToken:'private-token',
+      models:['claude-sonnet-5-5'],defaultModel:'claude-sonnet-5-5',adaptiveThinking:true,
+      contextWindow:1000000,maxOutputTokens:null,
+    });
+    await runtime.submit('介绍你自己');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(sdk.queries.at(-1)?.options).toMatchObject({
+      model:'claude-sonnet-5-5',
+      thinking:{type:'adaptive'},
+    });
+  });
   it('keeps simultaneously active Claude providers isolated by session runtime',async()=>{
     sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     const other='019ff001-1212-7212-8212-121212121299';
     const first=ensureClaudeRuntime(session,'/tmp',undefined,{model:'provider-a-model',effort:''},false,{
       id:'provider-a',name:'Provider A',baseUrl:'https://a.example',authToken:'token-a',
-      models:['provider-a-model'],defaultModel:'provider-a-model',contextWindow:null,maxOutputTokens:null,
+      models:['provider-a-model'],defaultModel:'provider-a-model',adaptiveThinking:false,contextWindow:null,maxOutputTokens:null,
     });
     const second=ensureClaudeRuntime(other,'/tmp',undefined,{model:'provider-b-model',effort:''},false,{
       id:'provider-b',name:'Provider B',baseUrl:'https://b.example',authToken:'token-b',
-      models:['provider-b-model'],defaultModel:'provider-b-model',contextWindow:null,maxOutputTokens:null,
+      models:['provider-b-model'],defaultModel:'provider-b-model',adaptiveThinking:false,contextWindow:null,maxOutputTokens:null,
     });
     await Promise.all([first.submit('A'),second.submit('B')]);
     await vi.waitFor(()=>expect(sdk.queries).toHaveLength(2));
@@ -101,7 +119,7 @@ describe('Claude Agent SDK runtime',()=>{
       expect.objectContaining({model:'provider-a-model',env:expect.objectContaining({ANTHROPIC_BASE_URL:'https://a.example',ANTHROPIC_AUTH_TOKEN:'token-a',ANTHROPIC_MODEL:'provider-a-model'})}),
       expect.objectContaining({model:'provider-b-model',env:expect.objectContaining({ANTHROPIC_BASE_URL:'https://b.example',ANTHROPIC_AUTH_TOKEN:'token-b',ANTHROPIC_MODEL:'provider-b-model'})}),
     ]));
-    expect(()=>first.configure({id:'provider-b',name:'Provider B',baseUrl:'https://b.example',authToken:'token-b',models:['provider-b-model'],defaultModel:'provider-b-model',contextWindow:null,maxOutputTokens:null})).toThrow('另一个 Provider');
+    expect(()=>first.configure({id:'provider-b',name:'Provider B',baseUrl:'https://b.example',authToken:'token-b',models:['provider-b-model'],defaultModel:'provider-b-model',adaptiveThinking:false,contextWindow:null,maxOutputTokens:null})).toThrow('另一个 Provider');
     releaseClaudeRuntime(other);
   });
   it('maps every Claude model alias to the concrete model selected for this request',async()=>{

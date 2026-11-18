@@ -962,6 +962,8 @@ class ClaudeRuntime {
           ? "insufficient_balance"
           : /\b503\b|no available accounts|service unavailable|api_error/i.test(text)
             ? "provider_unavailable"
+            : /\b400\b|invalid_request_error|requires adaptive thinking/i.test(text)
+              ? "invalid_request"
             : /selected model.*(?:does not exist|may not exist|access)/i.test(text)
               ? "model_unavailable"
               : undefined;
@@ -1079,6 +1081,9 @@ class ClaudeRuntime {
       tools: { type: "preset", preset: "claude_code" },
       persistSession: true,
       ...(providerEnvironment ? { env: providerEnvironment } : {}),
+      ...(this.provider?.adaptiveThinking
+        ? { thinking: { type: "adaptive" as const } }
+        : {}),
       ...(this.instructions
         ? {
             systemPrompt: {

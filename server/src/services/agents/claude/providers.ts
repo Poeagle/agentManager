@@ -37,8 +37,48 @@ export interface ClaudeProviderRuntime {
   authToken: string;
   models: string[];
   defaultModel: string | null;
+  adaptiveThinking: boolean;
   contextWindow: number | null;
   maxOutputTokens: number | null;
+}
+
+/** The SDK model aliases all resolve to the session's exact model. */
+export function claudeProviderEnvironment(
+  provider: ClaudeProviderRuntime | null,
+  model?: string,
+): Record<string, string> | undefined {
+  if (!provider) return undefined;
+  const selected = model || provider.defaultModel || '';
+  const capabilities = provider.adaptiveThinking
+    ? 'adaptive_thinking'
+    : undefined;
+  return {
+    ANTHROPIC_BASE_URL: provider.baseUrl,
+    ANTHROPIC_AUTH_TOKEN: provider.authToken,
+    ANTHROPIC_API_KEY: '',
+    ANTHROPIC_MODEL: selected,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: selected,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: selected,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: selected,
+    // Claude Code may spawn Agent/workflow subagents with a separate model
+    // selection. Bind those aliases to the exact session model as well, so a
+    // Provider cannot silently route an internal turn to an incompatible model.
+    CLAUDE_CODE_SUBAGENT_MODEL: selected,
+    CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: selected,
+    ...(capabilities
+      ? {
+          ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES: capabilities,
+          ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES: capabilities,
+          ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES: capabilities,
+        }
+      : {}),
+    ...(provider.contextWindow
+      ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(provider.contextWindow) }
+      : {}),
+    ...(provider.maxOutputTokens
+      ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(provider.maxOutputTokens) }
+      : {}),
+  };
 }
 
 function stringField(
@@ -65,6 +105,30 @@ function modelField(provider: StoredProvider): string[] {
     : [];
 }
 
+/** Claude Agent SDK uses adaptive thinking for Claude 4.6 and newer. Infer
+ * that capability for existing providers, while allowing an explicit
+ * Provider-level override for gateways and older models. */
+export function modelSupportsAdaptiveThinking(model: string): boolean {
+  const id = model.trim().toLowerCase();
+  return (
+    /^claude-opus-(?:4-(?:6|7|8)|5(?:-5)?)(?:[.@-]|$)/.test(id) ||
+    /^claude-sonnet-(?:4-6|5(?:-5)?)(?:[.@-]|$)/.test(id) ||
+    /^claude-haiku-5-5(?:[.@-]|$)/.test(id) ||
+    /^claude-(?:fable|mythos)-5(?:-(?:1|2))?(?:[.@-]|$)/.test(id)
+  );
+}
+
+function adaptiveThinkingField(
+  provider: StoredProvider,
+  models: string[],
+): boolean {
+  const configured = provider.fields.adaptiveThinking;
+  if (typeof configured === 'boolean') return configured;
+  if (configured === 'true' || configured === 'false')
+    return configured === 'true';
+  return models.some(modelSupportsAdaptiveThinking);
+}
+
 function configuredProviders(): StoredProvider[] {
   return readAgentManagement('claude').providers;
 }
@@ -85,6 +149,7 @@ function nativeProviderState(): AgentProviderState {
     ),
   ];
   const configured = !!env.ANTHROPIC_AUTH_TOKEN || !!env.ANTHROPIC_API_KEY;
+  const adaptiveThinking = models.some(modelSupportsAdaptiveThinking);
   const baseUrl = env.ANTHROPIC_BASE_URL || '';
   return {
     id: 'anthropic',
@@ -102,6 +167,7 @@ function nativeProviderState(): AgentProviderState {
       { key: 'envKey', label: 'API Key', type: 'password', value: '', configured, required: true, description: '保存后写回此 Provider 的配置；密钥不会回显。' },
       { key: 'models', label: '模型', type: 'string-list', value: models, required: true, description: '此 Provider 可用模型。' },
       { key: 'defaultModel', label: '默认模型', type: 'text', value: env.ANTHROPIC_MODEL || models[0] || '', description: '新建会话默认模型。' },
+      { key: 'adaptiveThinking', label: '自适应思考', type: 'toggle', value: adaptiveThinking, description: 'Claude 4.6 及更新模型应开启；旧模型或网关不支持时关闭。' },
       { key: 'contextWindow', label: '上下文窗口', type: 'text', value: env.CLAUDE_CODE_MAX_CONTEXT_TOKENS || '', placeholder: '可选，例如 200000' },
       { key: 'maxOutputTokens', label: '最大输出 Token', type: 'text', value: env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '', placeholder: '可选' },
     ],
@@ -152,7 +218,12 @@ export function ensureNativeClaudeProvider(): void {
   const baseUrl=env.ANTHROPIC_BASE_URL;
   const apiKey=env.ANTHROPIC_AUTH_TOKEN||env.ANTHROPIC_API_KEY;
   if(!baseUrl||!models.length||!apiKey)return;
-  const fields=validateFields({baseUrl,models,defaultModel:env.ANTHROPIC_MODEL||models[0]});
+  const fields=validateFields({
+    baseUrl,
+    models,
+    defaultModel:env.ANTHROPIC_MODEL||models[0],
+    adaptiveThinking:models.some(modelSupportsAdaptiveThinking),
+  });
   updateAgentManagement('claude',current=>({
     ...current,
     providers:[...current.providers.filter(provider=>provider.id!=='anthropic'),{id:'anthropic',name:'Anthropic',kind:'official',enabled:true,fields}],
@@ -188,6 +259,10 @@ export function updateNativeClaudeProvider(input: AgentProviderInput): void {
     typeof input.fields?.maxOutputTokens === 'string'
       ? input.fields.maxOutputTokens.trim()
       : env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '';
+  const adaptiveThinking =
+    typeof input.fields?.adaptiveThinking === 'boolean'
+      ? input.fields.adaptiveThinking
+      : models.some(modelSupportsAdaptiveThinking);
   boundedNumber(contextWindow, '上下文窗口', 1, 10_000_000);
   boundedNumber(maxOutputTokens, '最大输出 Token', 1, 10_000_000);
   updateAgentManagement('claude',(current)=>({
@@ -196,7 +271,7 @@ export function updateNativeClaudeProvider(input: AgentProviderInput): void {
       ...current.providers.filter(provider=>provider.id!=='anthropic'),
       {
         id:'anthropic',name:'Anthropic',kind:'official',enabled:true,
-        fields:validateFields({baseUrl,models,defaultModel,contextWindow,maxOutputTokens}),
+        fields:validateFields({baseUrl,models,defaultModel,adaptiveThinking,contextWindow,maxOutputTokens}),
       },
     ],
   }));
@@ -294,6 +369,11 @@ function validateFields(
       });
     next.defaultModel = model;
   }
+  if (fields?.adaptiveThinking !== undefined) {
+    if (typeof fields.adaptiveThinking !== 'boolean')
+      throw Object.assign(Error('自适应思考配置无效'), { statusCode: 400 });
+    next.adaptiveThinking = fields.adaptiveThinking;
+  }
   for (const [key, label] of [
     ['contextWindow', '上下文窗口'],
     ['maxOutputTokens', '最大输出 Token'],
@@ -381,6 +461,14 @@ export function claudeProviderState(
         type: 'text',
         value: stringField(provider, 'defaultModel') || models[0] || '',
         description: '新建会话默认使用的模型。',
+      },
+      {
+        key: 'adaptiveThinking',
+        label: '自适应思考',
+        type: 'toggle',
+        value: adaptiveThinkingField(provider, models),
+        description:
+          '控制此 Provider 的模型是否使用 adaptive thinking。Claude 4.6 及更新模型应开启，避免固定思考预算被上游拒绝。',
       },
       {
         key: 'contextWindow',
@@ -585,6 +673,7 @@ export function claudeRuntimeProvider(
     authToken,
     models,
     defaultModel: models.includes(requested) ? requested : models[0] || null,
+    adaptiveThinking: adaptiveThinkingField(provider, models),
     contextWindow: boundedNumber(
       provider.fields.contextWindow,
       '上下文窗口',
@@ -640,6 +729,7 @@ export function claudeProviderChoiceForEnvironment(
   baseUrl: string;
   models: string[];
   defaultModel: string | null;
+  adaptiveThinking: boolean;
   contextWindow: number | null;
 } | null {
   if (environmentId === 'anthropic') return null;
@@ -661,6 +751,7 @@ export function claudeProviderChoiceForEnvironment(
     baseUrl: stringField(provider, 'baseUrl'),
     models,
     defaultModel: models.includes(requested) ? requested : models[0] || null,
+    adaptiveThinking: adaptiveThinkingField(provider, models),
     contextWindow: boundedNumber(
       provider.fields.contextWindow,
       '上下文窗口',
@@ -720,34 +811,6 @@ export function claudeManagementProviderState(
 ): AgentProviderState | null {
   const provider = configuredProviders().find((item) => item.id === providerId);
   return provider ? claudeProviderState(provider) : null;
-}
-
-export function claudeProviderEnvironment(
-  provider: ClaudeProviderRuntime | null,
-  model?: string,
-): Record<string, string> | undefined {
-  if (!provider) return undefined;
-  const selected = model || provider.defaultModel || '';
-  return {
-    ANTHROPIC_BASE_URL: provider.baseUrl,
-    ANTHROPIC_AUTH_TOKEN: provider.authToken,
-    ANTHROPIC_API_KEY: '',
-    ANTHROPIC_MODEL: selected,
-    ANTHROPIC_DEFAULT_OPUS_MODEL: selected,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: selected,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: selected,
-    // Claude Code may spawn Agent/workflow subagents with a separate model
-    // selection. Bind those aliases to the exact session model as well, so a
-    // Provider cannot silently route an internal turn to an incompatible model.
-    CLAUDE_CODE_SUBAGENT_MODEL: selected,
-    CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: selected,
-    ...(provider.contextWindow
-      ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(provider.contextWindow) }
-      : {}),
-    ...(provider.maxOutputTokens
-      ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(provider.maxOutputTokens) }
-      : {}),
-  };
 }
 
 export function claudeProviderModelChoices(
