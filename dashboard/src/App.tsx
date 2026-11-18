@@ -21,6 +21,8 @@ import {AgentQuotaIndicators} from './components/AgentQuotaIndicator';
 import { ServerResourceIndicator } from './components/ServerResourceIndicator';
 import {mergeSessionRuntimeLists} from './lib/session-runtime-cache';
 import { moveItemByKey, orderItemsByKeys } from './lib/reorder';
+import {NotificationCenter} from './components/NotificationCenter';
+import {notificationApi,notificationFocus,type Notification,type ConversationFocus} from './lib/notifications';
 
 const PlatformCenter = lazy(() => import('./components/PlatformCenter').then((module) => ({ default: module.PlatformCenter })));
 const ProjectView = lazy(() => import('./components/ProjectView').then((module) => ({ default: module.ProjectView })));
@@ -92,6 +94,8 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     return t === 'skills' ? 'home' : t;
   });
   const [focusSessionId, setFocusSessionId] = useState<string | null>(null);
+  const [notificationDetailOpen,setNotificationDetailOpen]=useState(false);
+  const [conversationTarget,setConversationTarget]=useState<{sessionId:string;focus:ConversationFocus}|null>(null);
   // Stable so memo(ProjectView) isn't busted by a new function identity each render.
   const handleFocusSessionHandled = useCallback(() => setFocusSessionId(null), []);
   // Inline tab-rename: which tab is being renamed + its draft text.
@@ -210,6 +214,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
 
   const [platformSection, setPlatformSection] = useState<PlatformSection | null>(null);
   const permissionsQuery = usePermissions();
+  const notifications=useQuery({queryKey:['notifications',authUser.id],queryFn:()=>notificationApi.list(),enabled:hasPermission(permissionsQuery.data,'agent_api')});
   const showPlatformCenter = platformSection !== null;
   const closePlatformCenter = useCallback(() => {
     setPlatformSection(null);
@@ -309,6 +314,13 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     }
   }, [projects]);
 
+  const openNotification=useCallback((notification:Notification,raw=false)=>{
+    if(!notification.project_id)return;
+    handleOpenProject(notification.project_id,notification.project_name);
+    setConversationTarget({sessionId:notification.session_id,focus:{...notificationFocus(notification),view:raw?'terminal':'chat'}});
+    setFocusSessionId(notification.session_id);
+  },[handleOpenProject]);
+
   const [confirmClose, setConfirmClose] = useState<{ projectId: string; count: number } | null>(null);
 
   const closeProjectTab = useCallback(async (projectId: string) => {
@@ -405,6 +417,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           </h1>
         </div>
         <div className="workspace-header-tools flex min-w-0 items-center overflow-x-auto [scrollbar-width:none] [&>*]:shrink-0">
+          <NotificationCenter userId={authUser.id} projects={projects} onOpen={openNotification} onDetailChange={setNotificationDetailOpen}/>
           <AgentQuotaIndicators agents={projectsData?.agents} isAdmin={authUser.role==='admin'}/>
           {hasPermission(permissionsQuery.data, 'monitor') && <ServerResourceIndicator />}
           <div className="workspace-account">
@@ -563,6 +576,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                   title="双击重命名标签"
                 >
                   <ProjectTabLabel label={tab.customName?.trim() || tab.projectName} sessions={tabSessions} fallbackAt={project?.updated_at ?? project?.created_at} />
+                  {!!notifications.data?.unread_by_project[tab.projectId]&&<span className="notification-tab-count" aria-label={`${notifications.data.unread_by_project[tab.projectId]} 条未读通知`}>{notifications.data.unread_by_project[tab.projectId]}</span>}
                 </button>
               )}
               <button
@@ -639,7 +653,9 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                       projectId={tab.projectId}
                       projectPath={projectPath}
                       projectName={projectName}
-                      active={isActive && !showPlatformCenter}
+                      active={isActive && !showPlatformCenter && !notificationDetailOpen}
+                      conversationTarget={conversationTarget}
+                      notificationUnread={notifications.data?.unread_by_session}
                       terminalsSuspended={showPlatformCenter}
                       focusSessionId={isActive ? focusSessionId : null}
                       onFocusSessionHandled={handleFocusSessionHandled}

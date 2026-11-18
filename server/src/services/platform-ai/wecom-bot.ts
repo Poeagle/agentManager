@@ -10,8 +10,11 @@ import { getBotTransport, setBotTransport, subscribeChannelChanges, type BotTran
 import { MAX_IMAGES, prepareImages, type ImageSource } from './attachments.js';
 import { publishMessage } from './live.js';
 
+import {quotedReplyRoute} from './quoted-replies.js';
+import {notificationRecipients} from './project-notifications.js';
+
 const silentLogger = {debug() {}, info() {}, warn() {}, error() {}};
-export type BotClient = Pick<WSClient, 'on' | 'connect' | 'disconnect' | 'replyStream' | 'sendMessage' | 'removeAllListeners'>;
+export type BotClient = Pick<WSClient, 'on' | 'connect' | 'disconnect' | 'replyStream' | 'sendMessage' | 'uploadMedia' | 'removeAllListeners'>;
 export type BotClientFactory = (options: WSClientOptions) => BotClient;
 interface Stream {
   messageId: string; userId: string; externalUserId: string; frame: WsFrame; id: string;
@@ -63,6 +66,14 @@ export class WecomBotManager {
       fingerprint, client, streams: new Map(), stopped: false, rateStart: 0, rateCount: 0, abort: new AbortController(),
       status: {state: 'connecting', message: '正在连接企业微信', updated_at: new Date().toISOString()},
       deliver: (chatId, content, context, deliveryId) => this.deliver(channel.id, connection, chatId, content, context, deliveryId),
+      uploadImage:async(data,filename)=>{
+        try{return (await client.uploadMedia(data,{type:'image',filename})).media_id;}
+        catch{throw new ChannelError('企微截图上传失败，将按通知队列策略重试',502);}
+      },
+      sendImage:async(chatId,mediaId)=>{
+        try{await client.sendMessage(chatId,{msgtype:'image',image:{media_id:mediaId}});}
+        catch{throw new ChannelError('企微截图发送未获确认，将按通知队列策略重试',502);}
+      },
     };
     this.connections.set(channel.id, connection); setBotTransport(channel.id, connection);
     client.on('connected', () => this.state(connection, 'authenticating', '连接已建立，正在认证'));
@@ -121,16 +132,36 @@ export class WecomBotManager {
       }
     }
     if (body.quote?.msgtype === 'image') addImage(body.quote.image);
-    if (body.quote?.msgtype === 'text') addText(body.quote.text?.content ? `引用内容：${body.quote.text.content}` : '');
+    const quotedText=body.quote?.msgtype==='text'?body.quote.text?.content:body.quote?.msgtype==='mixed'?body.quote.mixed?.msg_item?.filter((item:any)=>item.msgtype==='text').map((item:any)=>item.text?.content||'').join('\n'):undefined;
     const content = texts.join('\n') || (images.length ? '请查看我发送的图片。' : '');
     if (![userId, messageId, chatId].every(value => typeof value === 'string' && value.length > 0 && value.length <= 256) || !content || content.length > 24000) {
       this.reject(connection, frame, '消息格式无效，或文字超过 24000 字符。'); return;
     }
     try {
       if (images.length > MAX_IMAGES) {this.reject(connection, frame, `单条消息最多支持 ${MAX_IMAGES} 张图片，请分开发送。`); return;}
-      const result = acceptChannelMessage(channel, {externalUserId: userId, chatId, messageId, content, images, replyContext: {bot_message_id: messageId}});
+      let directRoute: string | undefined;
+      if(typeof quotedText==='string') {
+        try {directRoute=quotedReplyRoute(quotedText,{channelId,externalUserId:userId,chatId});}
+        catch(error) {
+          // Keep a bound user's rejected quote in their existing conversation,
+          // without allowing it into the ordinary model queue or host logs.
+          const rejected=acceptChannelMessage(channel,{externalUserId:userId,chatId,messageId,content,
+            replyContext:{bot_message_id:messageId,rejected_quote:quotedText.slice(0,24000)}});
+          if(!rejected.duplicate) {
+            getDb().prepare("UPDATE platform_ai_messages SET status='failed',error=? WHERE id=?")
+              .run(error instanceof ChannelError?error.message:'引用通知关联失败',rejected.message_id);
+            publishMessage(rejected.message_id);
+          }
+          throw error;
+        }
+      }
+      if(directRoute&&images.length)throw new ChannelError('引用通知的快速回复目前仅支持文字，请在标签页发送附件。',400,true);
+      const result = acceptChannelMessage(channel, {externalUserId: userId, chatId, messageId, content, images, replyContext: {bot_message_id: messageId,...directRoute?{direct_route:directRoute}:{}}});
       if (result.duplicate) return;
       publishMessage(result.message_id);
+      // Quoted input is delivered directly. Only errors and the Agent's answer
+      // produce messages; do not open an “已收到 / 已提交” reply stream.
+      if(directRoute)return;
       // Download expiring media immediately, independently from model queue load.
       if (images.length) void prepareImages(result.message_id, connection.abort.signal).then(() => publishMessage(result.message_id)).catch(() => {});
       if (connection.streams.size >= 100) { this.reject(connection, frame, '指令已接收，将通过后续消息返回结果。'); return; }
@@ -212,6 +243,33 @@ export class WecomBotManager {
   }
 
   reconnect(id: string): void { this.close(id); this.reconcile(); }
+
+  /** Explicit administrator preview. Use a fixed public demonstration image;
+   * private screenshots are never published to obtain a card image URL. */
+  async testImageCard(id:string,userId:string,recipientId:string):Promise<{ok:boolean;message:string}> {
+    const recipient=notificationRecipients(userId).find(item=>item.id===recipientId&&item.channel_id===id&&!item.group);
+    if(!recipient)throw new ChannelError('请选择绑定当前用户的该机器人接收身份',403,true);
+    const connected=await this.test(id);
+    if(!connected.ok)throw new ChannelError(connected.message,503);
+    // Recheck destination authorization after waiting for connection/auth.
+    const current=notificationRecipients(userId).find(item=>item.id===recipientId&&item.channel_id===id&&!item.group);
+    const connection=this.connections.get(id);
+    if(!current||current.chat_id!==recipient.chat_id||!getChannel(id)?.enabled||connection?.status.state!=='connected')throw new ChannelError('接收身份或机器人连接已变化，请重试',409,true);
+    const image='https://wwcdn.weixin.qq.com/node/wework/images/06.a954815a1f.png';
+    try {
+      await connection.client.sendMessage(current.chat_id,{msgtype:'template_card',template_card:{
+        card_type:'news_notice',source:{desc:'OctoAlly 卡片试发',desc_color:1},
+        main_title:{title:'文字 + 图片 · 同一张卡片',desc:'图文展示效果测试'},
+        card_image:{url:image,aspect_ratio:648/369},
+        vertical_content_list:[
+          {title:'公开示例图片',desc:'这张图片来自企微官网，用于确认图片和文字是否出现在同一条消息中。'},
+          {title:'正文示例',desc:'任务摘要、检查结果可以放在这里，完整内容可通过链接打开。'},
+        ],
+        card_action:{type:1,url:image},
+      }});
+    }catch{throw new ChannelError('图文卡片发送未获确认，请先检查企微会话，避免重复试发',502);}
+    return {ok:true,message:'图文卡片已获企微确认，请在客户端检查文字和图片是否同条显示'};
+  }
 
   async test(id: string, timeout = 8000): Promise<{ok: boolean; message: string}> {
     // Reuse the existing socket; a second test socket would displace it.

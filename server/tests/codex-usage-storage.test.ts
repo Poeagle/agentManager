@@ -13,3 +13,14 @@ it('reports database fallback before a matching CSV generation is available',()=
 it('reports CSV only when that generation is actually used for the daily or hourly read',()=>{publishUsageCsv('native',{day:'2026-11-14',timezone:'UTC',checkpoint:'2026-11-14T08:00:00Z',current:[],history:[],quota:[]});expect(cachedAccountUsage('native').storage).toEqual({kind:'csv',path:usageCsvDirectory('native')});expect(cachedGroupUsage(['native'],'hour',true).storage).toEqual({kind:'csv',path:usageCsvDirectory('native')});getDb().prepare('UPDATE codex_usage_status SET partial=1').run();expect(cachedAccountUsage('native').storage.kind).toBe('csv');getDb().prepare('UPDATE codex_usage_status SET checked_at=?').run('2026-11-14T08:05:00Z');expect(cachedAccountUsage('native').storage).toEqual({kind:'database',path:config.dbPath});});
 
 it('falls back to the database when a published CSV file is damaged',()=>{publishUsageCsv('native',{day:'2026-11-14',timezone:'UTC',checkpoint:'2026-11-14T08:00:00Z',current:[],history:[],quota:[]});const root=usageCsvDirectory('native'),manifest=JSON.parse(readFileSync(join(root,'manifest.json'),'utf8'));writeFileSync(join(root,manifest.files.current),'broken');expect(cachedAccountUsage('native').storage).toEqual({kind:'database',path:config.dbPath});});
+it('recalculates daily and hourly GPT-6.2 subscription credits from archived CSV tokens',()=>{
+ const tokens={input_tokens:1000000,cached_input_tokens:900000,output_tokens:1000,reasoning_output_tokens:100,total_tokens:1001000};
+ publishUsageCsv('native',{day:'2026-11-14',timezone:'UTC',checkpoint:'2026-11-14T08:00:00Z',current:[],history:[
+  ['2026-11-13','2026-11-13T07:00:00+00:00','/p','gpt-6.2-sol','priority',tokens,1,null],
+  ['2026-11-13','2026-11-13T07:00:00+00:00','/p','gpt-6.2-astra','ultrafast',tokens,1,null],
+ ],quota:[]});
+ for(const result of [cachedAccountUsage('native'),cachedGroupUsage(['native'],'hour',true)]){
+  expect(result.storage.kind).toBe('csv');expect(result.credit_rate_date).toBe('2026-11-18');
+  expect(result.rows[0]).toMatchObject({estimated_credits:195,credit_coverage:{covered:2,total:2},tokens:{total_tokens:2002000}});
+ }
+});

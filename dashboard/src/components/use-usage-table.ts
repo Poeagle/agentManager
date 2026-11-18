@@ -5,6 +5,7 @@ import {useTableModel,type TableColumn,type TableModel} from './table/use-table-
 import {groupUsage,type Dimension,type Metrics,type UsageGroup,type UsageRow} from './codex-usage-groups';
 
 export const usageFieldDescriptions:Record<string,string>={'label':'按所选维度分组；日期使用平台本地时区，项目按工作目录区分。','cwd':'可解析的软链接别名按真实工作目录合并；显示平台登记目录或真实目录，原始路径仍保留在日志和 CSV 中。','input':'各请求的输入 Token 累加，包含缓存输入和重复上下文。','cached':'输入 Token 中命中缓存的部分。','uncached':'输入减去缓存输入；缺失或数值异常时显示未知。','hit':'缓存输入除以输入；汇总时先相加再计算。','output':'输出 Token 累加；推理 Token 包含在输出中。','total':'原生日志中记录的总 Token 累加。','actual':'周额度已用百分比的采样变化，按所选周期订阅参考值分配；只覆盖可采集且可分配的区间；数据不完整时按已有记录分配，可能存在偏差。读数未变时为零，但不能证明没有耗用。数值单位为百分点。','credits':'以标准 Credits 费率为基准估算订阅额度相对用量；Fast 按 2.5 倍，未记录档位按标准估算，不是实际账单。','share':'该项预估积分占实际统计范围内同周期全部项目和模型预估积分的比例；搜索和字段筛选不改变分母。'};
+usageFieldDescriptions.cost=`${usageFieldDescriptions.credits} ${usageFieldDescriptions.actual} 括号内为耗用积分除以额度，即每 1 额度对应的积分；额度为零或字段缺失时不计算。此列按耗用积分排序和筛选。`;
 type Leaf=UsageRow&{modelName:string|null;missing:boolean};
 const number=(m:Metrics,key:string)=>m.tokens[key]??null;
 const uncached=(m:Metrics)=>{const a=number(m,'input_tokens'),b=number(m,'cached_input_tokens');return a!==null&&b!==null&&b<=a?a-b:null;};
@@ -13,7 +14,7 @@ const periodKey=(row:UsageRow,dimension:Dimension)=>usagePeriod(row.date,row.hou
 const collator=new Intl.Collator('zh-CN',{numeric:true,sensitivity:'base'});
 function value(group:UsageGroup,key:string):string|number|null{
  const m=group.metrics;
- switch(key){case 'label':return group.label;case 'cwd':return group.detail||null;case 'input':return number(m,'input_tokens');case 'cached':return number(m,'cached_input_tokens');case 'uncached':return uncached(m);case 'hit':return hit(m);case 'output':return number(m,'output_tokens');case 'total':return number(m,'total_tokens');case 'actual':return m.actual_quota??null;case 'credits':case 'share':return m.estimated_credits??null;default:return null;}
+ switch(key){case 'label':return group.label;case 'cwd':return group.detail||null;case 'input':return number(m,'input_tokens');case 'cached':return number(m,'cached_input_tokens');case 'uncached':return uncached(m);case 'hit':return hit(m);case 'output':return number(m,'output_tokens');case 'total':return number(m,'total_tokens');case 'credits':case 'share':return m.estimated_credits??null;default:return null;}
 }
 function sortGroups(groups:UsageGroup[],sort:{key:string;direction:'asc'|'desc'}|null):UsageGroup[]{
  const result=groups.map(group=>({...group,children:sortGroups(group.children,sort)}));if(!sort)return result;
@@ -32,8 +33,7 @@ export function useUsageTable(rows:UsageRow[],dimension:Dimension,referenceRows:
   {key:'hit',description:usageFieldDescriptions.hit,title:'缓存率',kind:'number',filterMode:'range',value:hit},
   {key:'output',description:usageFieldDescriptions.output,title:'输出',kind:'number',filterMode:'range',value:r=>number(r,'output_tokens')},
   {key:'total',description:usageFieldDescriptions.total,title:'总量',kind:'number',filterMode:'range',value:r=>number(r,'total_tokens')},
-  {key:'actual',description:usageFieldDescriptions.actual,title:'耗用额度',kind:'number',filterMode:'range',value:r=>r.actual_quota??null},
-  {key:'credits',description:usageFieldDescriptions.credits,title:'预估积分',kind:'number',filterMode:'range',value:r=>r.estimated_credits??null},
+  {key:'credits',description:usageFieldDescriptions.cost,title:'耗用积分 | 额度',kind:'number',filterMode:'range',value:r=>r.estimated_credits??null},
  ],[dimension]);
  const base=useTableModel(leaves,columns);
  const denominators=useMemo(()=>{

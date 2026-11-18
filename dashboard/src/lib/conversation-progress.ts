@@ -2,7 +2,9 @@ import type {ConversationMessage,ConversationProgressStatistics,ConversationProg
 
 /** Difference only matching recorded segment counters, never cumulative totals
  * from different turns or a subtraction of two incomplete lower bounds. */
-export function pendingProgressStatistics(live:ConversationProgressStatistics|null,previous:ConversationProgressSegment|undefined,hasPrevious:boolean):ConversationStatistics|null {
+export function pendingProgressStatistics(live:ConversationProgressStatistics|null,previous:ConversationProgressSegment|undefined,hasPrevious:boolean,boundary?:Pick<ConversationMessage,'id'|'sequence'>):ConversationStatistics|null {
+  const step=live?.step;
+  if(step&&live?.segment?.id===step.segment_id&&(!hasPrevious?step.after_message_id===null:!!boundary&&(step.after_message_id===boundary.id||step.after_sequence!=null&&step.after_sequence===boundary.sequence))){return {...step,sequence:0,turn_id:live!.turn_id,interval:{...step}};}
   const current=live?.segment;
   if(!current||current.end_reason||hasPrevious&&(!previous||!previous.complete||previous.id!==current.id||previous.start_at!==current.start_at))return null;
   const requests=current.requests-(previous?.requests??0),calls=current.tool_calls-(previous?.tool_calls??0),rounds=current.tool_rounds-(previous?.tool_rounds??0);
@@ -11,7 +13,8 @@ export function pendingProgressStatistics(live:ConversationProgressStatistics|nu
     const before=previous?previous.tokens?.[key]:0;
     return [key,value!=null&&before!=null&&value>=before?value-before:null];
   })):null;
-  return {sequence:0,turn_id:live!.turn_id,tokens,requests,tool_calls:calls,tool_rounds:rounds,complete:current.complete,interval:{tokens,requests,tool_calls:calls,tool_rounds:rounds,complete:current.complete,shared_messages:1}};
+  const cost=current.cost===null?null:current.cost&&(!previous||previous.cost?.complete)&&current.cost.amount!=null?{...current.cost,amount:Math.max(0,current.cost.amount-(previous?.cost?.amount??0))}:undefined;
+  return {cost,sequence:0,turn_id:live!.turn_id,tokens,requests,tool_calls:calls,tool_rounds:rounds,complete:current.complete,interval:{cost,tokens,requests,tool_calls:calls,tool_rounds:rounds,complete:current.complete,shared_messages:1}};
 }
 
 type ConversationGroup={kind:'progress';id:string;messages:ConversationMessage[]}|{kind:'message';id:string;message:ConversationMessage};
@@ -40,4 +43,11 @@ export function groupConversationProgress(messages:ConversationMessage[]):Conver
     }else groups.push({kind:'message',id:message.id,message});
   }
   return groups;
+}
+
+export function withObservedToolCounts(statistics:ConversationStatistics|null,count:number,turnId:string):ConversationStatistics|null {
+ if(!count||statistics&&('segment_id' in statistics||statistics.tool_calls>=count))return statistics;
+ const value=statistics?.interval??statistics;
+ const interval={...value,tokens:value?.tokens??null,requests:value?.requests??0,tool_calls:Math.max(value?.tool_calls??0,count),tool_rounds:Math.max(value?.tool_rounds??0,1),complete:false,shared_messages:1};
+ return {...statistics,...interval,sequence:0,turn_id:turnId,interval};
 }

@@ -107,11 +107,14 @@ export const platformAiRoutes: FastifyPluginAsync<{ runWorker?: boolean }> = asy
   });
   app.post<{Params: {id: string}}>('/platform-ai/channels/:id/test', async (req, reply) => {
     if (!requirePermission(req, reply, 'settings', 'write') || !requirePermission(req, reply, 'roles', 'write')) return;
+    const input=z.object({mode:z.enum(['connection','image_card']).default('connection'),recipient_id:idSchema.optional()}).strict().parse(req.body??{});
     const channel = getChannel(req.params.id);
     if (!channel) return reply.code(404).send({error: '渠道不存在'});
     if (!channel.enabled) return reply.code(400).send({error: '请先补齐配置并启用渠道'});
+    if(input.mode==='image_card'&&(channel.kind!=='wecom_bot'||!input.recipient_id))return reply.code(400).send({error:'图文卡片试发请选择智能机器人和当前用户的接收身份'});
     if (channel.kind === 'wecom_bot') {
       if (!bots) return reply.code(503).send({error: '机器人连接服务未启动'});
+      if(input.mode==='image_card')return bots.testImageCard(channel.id,req.user!.id,input.recipient_id!);
       return bots.test(channel.id);
     }
     return testChannelConnection(channel);

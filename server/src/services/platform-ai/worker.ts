@@ -15,13 +15,17 @@ import {callModel,ModelRequestError,PLATFORM_SYSTEM_PROMPT,type ModelMessage,typ
 import {messageAttachments,prepareImages} from './attachments.js';
 import {boundedToolResult,executePlatformTool,isMutatingTool,operationKey,platformApi,PlatformApiError,PLATFORM_TOOLS} from './tools.js';
 import {userHasPermission} from '../rbac.js';
-import {assertLiveUser,claimMessage,enqueueNotice,getConversation,trackTask,type Conversation,type InboxMessage,type TrackedTask} from './store.js';
+import {assertLiveUser,claimMessage,enqueueNotice,formatTaskNotification,getConversation,trackTask,type Conversation,type InboxMessage,type TrackedTask} from './store.js';
 import {publishMessage,refreshConversation} from './live.js';
 import {subscribe,type Event as PlatformEvent} from '../event-store.js';
 import {getSession} from '../session-manager.js';
 import {sessionPresenter} from '../session-labels.js';
 import type {AgentTextMessage} from '../prompt-context.js';
 import {authorizeProjectNotice,ProjectNotifications} from './project-notifications.js';
+
+import {notificationReplyTarget,prepareReplyNotification,dispatchQuotedReply,quotedReplyOperationId} from './quoted-replies.js';
+import {prepareOutboundImages,readOutboundImage,assertOutboundImageAccess,type OutboundImage} from './outbound-images.js';
+import {getBotTransport} from './channel-runtime.js';
 
 const OBSERVATION_FALLBACK_MS = 5 * 60 * 1000;
 
@@ -77,6 +81,7 @@ export class PlatformAiWorker {
   private abort = new AbortController();
   private pending = new Set<Promise<unknown>>();
   private messages = new Set<string>();
+  private directReplies = new Set<string>();
   private observations = new Set<string>();
   private deliveries = new Set<string>();
   private stopped = false;
@@ -171,6 +176,14 @@ export class PlatformAiWorker {
         for (const id of this.nativeRechecks.keys()) if (!active.has(id)) this.nativeRechecks.delete(id);
       }
     }
+    this.runQueueStep('quoted-replies',()=>{
+      while(this.directReplies.size<2){
+        const message=claimMessage(now,60000,true);
+        if(!message)break;
+        this.directReplies.add(message.id);
+        this.launch(this.processQuotedReply(message),()=>this.directReplies.delete(message.id));
+      }
+    });
     this.runQueueStep('messages', () => {
       while (this.messages.size < 2) {
         const message = claimMessage(now, (config.timeout_ms + 30000) * (config.max_tool_rounds + 2));
@@ -193,7 +206,9 @@ export class PlatformAiWorker {
       }
     });
     this.runQueueStep('deliveries', () => {
-      const outbox = getDb().prepare(`SELECT * FROM platform_ai_outbox WHERE status='pending' AND available_at<=? ORDER BY rowid LIMIT 10`).all(now) as any[];
+      const outbox = getDb().prepare(`SELECT * FROM platform_ai_outbox o WHERE status='pending' AND available_at<=?
+        AND NOT EXISTS (SELECT 1 FROM platform_ai_outbox prior WHERE prior.id=json_extract(o.reply_context,'$.outbound_image.after_id')
+          AND prior.status IN ('pending','sending')) ORDER BY rowid LIMIT 10`).all(now) as any[];
       for (const item of outbox) {
         if (this.deliveries.size >= 2) break;
         if (this.deliveries.has(item.id)) continue;
@@ -386,14 +401,29 @@ export class PlatformAiWorker {
     }
   }
 
-  private finishMessage(message: InboxMessage, conversation: Conversation, transcript: ModelMessage[], content: string): void {
+  private async processQuotedReply(message:InboxMessage):Promise<void> {
+    const conversation=getConversation(message.conversation_id);
+    if(!conversation)return;
+    let content:string;
+    try {
+      this.assertConversation(conversation);
+      content=await dispatchQuotedReply(this.app,conversation,message,authorizeProjectNotice,()=>this.assertConversation(conversation));
+    }catch(error){
+      const operation=getDb().prepare('SELECT status,result FROM platform_ai_operations WHERE id=?').get(quotedReplyOperationId(message.id)) as {status:string;result:string|null}|undefined;
+      content=operation?(operation.status==='done'&&operation.result?operation.result:'投递结果待核对，为避免重复执行不会自动重发，请查看原标签页。'):`未投递：${publicFailure(error)}。请核对原标签页后重试。`;
+    }
+    const operation=getDb().prepare("SELECT json_extract(arguments,'$.quiet_success') AS quiet FROM platform_ai_operations WHERE id=? AND status='done'").get(quotedReplyOperationId(message.id)) as {quiet:number|null}|undefined;
+    this.finishMessage(message,conversation,null,content,operation?.quiet===1);
+  }
+
+  private finishMessage(message: InboxMessage, conversation: Conversation, transcript: ModelMessage[]|null, content: string, quietDelivery = false): void {
         getDb().transaction(() => {
           getDb().prepare(`INSERT OR IGNORE INTO platform_ai_messages (id,conversation_id,external_id,role,content,status) VALUES (?,?,?,'assistant',?,'done')`)
             .run(nanoid(16), conversation.id, message.id, content);
           getDb().prepare("UPDATE platform_ai_messages SET status='done',checkpoint='[]',error=NULL,progress='',partial_content='',lease_until=0 WHERE id=?").run(message.id);
-          getDb().prepare("UPDATE platform_ai_conversations SET context=?,updated_at=datetime('now') WHERE id=?")
+          if(transcript)getDb().prepare("UPDATE platform_ai_conversations SET context=?,updated_at=datetime('now') WHERE id=?")
             .run(JSON.stringify(completedConversation(transcript, content)), conversation.id);
-          getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox (id,conversation_id,dedupe_key,content,reply_context) VALUES (?,?,?,?,?)`)
+          if(!quietDelivery)getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox (id,conversation_id,dedupe_key,content,reply_context) VALUES (?,?,?,?,?)`)
             .run(nanoid(16), conversation.id, `reply:${message.id}`, content, message.reply_context);
         })();
         publishMessage(message.id);
@@ -449,6 +479,12 @@ export class PlatformAiWorker {
       const replies = (nextUser < 0 ? current : current.slice(0, nextUser)).filter(message => message.role === 'assistant');
       const latestFinal = task.source_ref ? [...replies].reverse().find(message => message.phase === 'final')?.text || '' : '';
       const nativeFinal = latestFinal || (task.source_ref ? await readFinal() : '');
+      // A quoted chat reply needs its answer even when it is only “好的。”.
+      // The exact request reference proves correlation, not business success.
+      if (nativeFinal && task.source_ref.startsWith('quoted_')) {
+        this.saveAssessment(task, {status:'reported_complete',summary:'Agent 已回复',evidence:nativeFinal.slice(0,3000)}, now, true, nativeFinal);
+        return;
+      }
       const missingCommand = ended ? output.split('\n').find((line:string)=>agentDescriptors().some(agent=>line.includes(`command not found: ${agent.id}`)||line.includes(`${agent.id}: command not found`))) : undefined;
       if (missingCommand && !nativeFinal) {
         this.saveAssessment(task, {status: 'failed', summary: `${agentForSession(session).descriptor.label} 启动失败：系统找不到启动命令，本次需求未执行。请选择已探测可用的 Agent 后重新下发。`, evidence: missingCommand.trim()}, now, true);
@@ -523,11 +559,10 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
       const updated = getDb().prepare(`UPDATE platform_ai_tasks SET status=?,summary=?,evidence=?,last_notified_at=?,updated_at=datetime('now') WHERE id=? AND status IN ('running','blocked','uncertain')`)
         .run(assessment.status, assessment.summary, assessment.evidence, notify ? now : task.last_notified_at, task.id);
       if (notify && updated.changes) {
-        const title = assessment.status === 'reported_complete' ? 'Agent 已报告完成' : assessment.status === 'blocked' ? '需要你回复' : assessment.status === 'failed' ? '执行失败' : '进展';
         const key = createHash('sha256').update(JSON.stringify([assessment.status, assessment.summary.replace(/\s+/g, ' ').trim()])).digest('hex').slice(0, 24);
         const question = assessment.status === 'blocked' && assessment.evidence && !finalAnswer ? `\n\n### 需要你处理的内容\n\n${assessment.evidence}\n` : '';
         const body = finalAnswer || `${assessment.summary}${question}`;
-        enqueueNotice(task.conversation_id, `task:${task.id}:${key}`, `${title} · ${taskLocation(task)}\n\n${body}`);
+        enqueueNotice(task.conversation_id, `task:${task.id}:${key}`, formatTaskNotification(taskLocation(task), body),{notification_target:notificationReplyTarget(task.session_id,task.source_ref?'ref:'+task.source_ref:null)});
       }
     })();
     if (notify) refreshConversation(task.conversation_id);
@@ -536,13 +571,9 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
     }
   }
 
-  private async deliver(item: any): Promise<void> {
-    const claimed = getDb().prepare("UPDATE platform_ai_outbox SET status='sending',attempts=attempts+1,lease_until=? WHERE id=? AND status='pending'")
-      .run(Date.now() + 60000, item.id);
-    if (!claimed.changes) return;
-    try {
+  private deliveryDestination(item:any) {
       const conversation = getConversation(item.conversation_id);
-      if (!conversation) return;
+      if (!conversation) throw new ChannelError('通知对话不存在',404,true);
       this.assertConversation(conversation);
       const projectRecipient = item.dedupe_key.startsWith('project-notice:') ? authorizeProjectNotice(item.dedupe_key, conversation.id) : undefined;
       if (conversation.channel_id || item.destination_channel_id) {
@@ -559,9 +590,58 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
           const subscription = getDb().prepare('SELECT 1 FROM platform_ai_notification_targets WHERE channel_id=? AND user_id=?').get(destination, conversation.user_id);
           if (!subscription || channel.kind !== 'wecom_webhook') throw new ChannelError('通知订阅已取消', 403, true);
         }
+        const sessionId=task?.session_id||(projectRecipient?item.dedupe_key.split(':')[2]:undefined);
+        const project=sessionId?getDb().prepare('SELECT p.path FROM sessions s JOIN projects p ON p.id=s.project_id WHERE s.id=?').get(sessionId) as {path:string}|undefined:undefined;
+        return {conversation,channel,projectRecipient,projectPath:project?.path};
+      }
+      return {conversation,channel:undefined,projectRecipient,projectPath:undefined};
+  }
+
+  private async deliver(item: any): Promise<void> {
+    const claimed = getDb().prepare("UPDATE platform_ai_outbox SET status='sending',attempts=attempts+1,lease_until=? WHERE id=? AND status='pending'")
+      .run(Date.now() + 60000, item.id);
+    if (!claimed.changes) return;
+    let image:OutboundImage|undefined;
+    try {
+      let destination=this.deliveryDestination(item);
+      const metadata=JSON.parse(item.reply_context);
+      image=metadata.outbound_image as OutboundImage|undefined;
+      if(image){
+        if(destination.channel?.kind!=='wecom_bot')throw new ChannelError('此渠道不支持截图主动发送',400,true);
+        const parent=getDb().prepare('SELECT status FROM platform_ai_outbox WHERE id=?').get(image.parent_id) as {status:string}|undefined;
+        if(parent?.status!=='sent')throw new ChannelError('正文尚未送达或已被撤销，截图未发送',409,true);
+        if(image.problem)throw new ChannelError(image.problem,400,true);
+        if(!image.sha256||!/^[a-f0-9]{64}$/.test(image.sha256))throw new ChannelError('截图投递记录无效',400,true);
+        getDb().prepare('UPDATE platform_ai_outbox SET lease_until=? WHERE id=?').run(Date.now()+600000,item.id);
+        const file=await readOutboundImage(destination.conversation.user_id,image.path,image.sha256);
+        destination=this.deliveryDestination(item);
+        assertOutboundImageAccess(destination.conversation.user_id,file.path);
+        let transport=getBotTransport(destination.channel!.id);
+        if(transport?.status.state!=='connected'||!transport.uploadImage||!transport.sendImage)throw new ChannelError('企微图片通道尚未就绪，将自动重试',503);
+        if(!image.media_id||!image.expires_at||image.expires_at<=Date.now()||image.bot_id!==destination.channel!.config.bot_id){
+          image.media_id=await transport.uploadImage(file.data,file.filename);image.expires_at=Date.now()+2*24*60*60*1000;
+          image.bot_id=destination.channel!.config.bot_id;
+          getDb().prepare("UPDATE platform_ai_outbox SET reply_context=json_set(reply_context,'$.outbound_image.media_id',?,'$.outbound_image.expires_at',?,'$.outbound_image.bot_id',?) WHERE id=?")
+            .run(image.media_id,image.expires_at,image.bot_id,item.id);
+        }
+        destination=this.deliveryDestination(item);
+        assertOutboundImageAccess(destination.conversation.user_id,file.path);
+        transport=getBotTransport(destination.channel!.id);
+        if(transport?.status.state!=='connected'||!transport.sendImage)throw new ChannelError('企微图片通道尚未就绪，将自动重试',503);
+        await transport.sendImage(destination.projectRecipient?.chat_id||destination.conversation.external_chat_id,image.media_id);
+      }else if(destination.channel){
+        let body=item.content;
+        if(destination.channel.kind==='wecom_bot'){
+          body=await prepareOutboundImages(item,destination.conversation.user_id,destination.projectPath);
+          destination=this.deliveryDestination(item);
+        }
+        const {conversation,channel,projectRecipient}=destination;
+        if(!channel)throw new ChannelError('通知渠道不存在',403,true);
         // Task notices are active messages, never updates to a user's still-open reply stream.
         const context = channel.kind === 'wecom_bot' && !item.dedupe_key.startsWith('reply:') ? {} : JSON.parse(item.reply_context);
-        await deliverMessage(channel, projectRecipient?.chat_id || conversation.external_chat_id, projectRecipient?.external_user_id || conversation.external_user_id, item.content, context, item.id, this.abort.signal);
+        const target=metadata.notification_target;
+        const content=channel.kind==='wecom_bot'&&target?prepareReplyNotification({noticeId:item.id,noticeKey:item.dedupe_key,target,userId:conversation.user_id,channelId:channel.id,externalUserId:projectRecipient?.external_user_id||conversation.external_user_id,chatId:projectRecipient?.chat_id||conversation.external_chat_id,content:body}):body;
+        await deliverMessage(channel, projectRecipient?.chat_id || conversation.external_chat_id, projectRecipient?.external_user_id || conversation.external_user_id, content, context, item.id, this.abort.signal);
       }
       getDb().prepare("UPDATE platform_ai_outbox SET status='sent',error=NULL,lease_until=0 WHERE id=?").run(item.id);
     } catch (error) {
@@ -569,6 +649,16 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
       const failed = attempts >= 8 || (error instanceof ChannelError && error.permanent);
       getDb().prepare('UPDATE platform_ai_outbox SET status=?,available_at=?,error=?,lease_until=0 WHERE id=?')
         .run(failed ? 'failed' : 'pending', Date.now() + Math.min(3600000, 5000 * 2 ** attempts), publicFailure(error), item.id);
+      if(failed&&image&&!image.problem){
+        // A text already acknowledged by WeCom remains sent. Report only the
+        // missing screenshot, through the same durable authorization boundary.
+        try {
+          const {conversation}=this.deliveryDestination(item);
+          const parent=getDb().prepare("SELECT reply_context FROM platform_ai_outbox WHERE id=? AND status='sent'").get(image.parent_id) as {reply_context:string}|undefined;
+          if(parent)getDb().prepare('INSERT OR IGNORE INTO platform_ai_outbox(id,conversation_id,dedupe_key,content,reply_context,destination_channel_id) VALUES(?,?,?,?,?,?)')
+            .run(nanoid(16),conversation.id,item.dedupe_key+':failure','截图未能发送，请在平台查看。',JSON.stringify({notification_target:JSON.parse(parent.reply_context).notification_target}),item.destination_channel_id||null);
+        }catch{this.app.log.warn({notice_id:item.id},'Could not queue screenshot failure notice');}
+      }
     }
   }
 }

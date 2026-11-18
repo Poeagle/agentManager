@@ -8,13 +8,15 @@ import {useQueryClient} from '@tanstack/react-query';
 import type {ConversationControlsData} from '../lib/api';
 import {RotateCw} from 'lucide-react';
 import {hasPermission,usePermissions} from '../lib/permissions';
+import type {ConversationFocus} from '../lib/notifications';
 
-export function SessionWorkspacePane({session,userId,active,renderTerminal,onResume,onReload,onNewConversation,onClose,resuming,resumeFailed,controlsHost,projectPath,onOpenFile}: {
+export function SessionWorkspacePane({session,userId,active,renderTerminal,onResume,onReload,onNewConversation,onClose,resuming,resumeFailed,controlsHost,projectPath,onOpenFile,focusTarget}: {
   session:Session;userId:string;active:boolean;
   renderTerminal:(visible:boolean,suspend:boolean,onReady:()=>void)=>ReactNode;
   onResume?:()=>void;onReload?:()=>Promise<void>;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<void>;onClose?:()=>void;resuming?:boolean;resumeFailed?:boolean;
   controlsHost?:HTMLElement|null;
   projectPath?:string;onOpenFile?:(path:string)=>void;
+  focusTarget?:ConversationFocus|null;
 }) {
   const queryClient=useQueryClient();
   function terminalReady(){setReady(true);const key=['conversation-controls',session.id],cached=queryClient.getQueryData<ConversationControlsData>(key);if(cached?.loaded&&!cached.can_edit)void queryClient.invalidateQueries({queryKey:key});}
@@ -44,6 +46,9 @@ export function SessionWorkspacePane({session,userId,active,renderTerminal,onRes
     }
     setSwitchError('');setView(next);if(next==='terminal') setOpenedRaw(true);try{localStorage.setItem(key,next);}catch{/* Storage unavailable. */}
   }
+  const targetRequest=useRef<number|null>(null);
+  const chooseFocusView=useRef(choose);chooseFocusView.current=choose;
+  useEffect(()=>{if(active&&focusTarget&&targetRequest.current!==focusTarget.requestId){targetRequest.current=focusTarget.requestId;chooseFocusView.current(focusTarget.view||'chat');}},[active,focusTarget]);
   const controls=<div className="session-pane-switch" role="group" aria-label="会话显示方式"><button disabled={!canChat} title={canChat?'显示你的消息、Agent 进展和回答':'当前为 Shell，绑定 Agent 后可查看对话'} aria-pressed={!raw} onClick={()=>choose('chat')}>对话</button>{terminalAvailable&&<button aria-pressed={raw} onClick={()=>choose('terminal')}>原始终端</button>}{onReload&&agentSupports(session,'reload')&&agentNativeId(session)&&hasPermission(permissions.data,'agent_api','write')&&<button type="button" className="session-pane-reload" disabled={reloading||resuming} title="保留历史，重新启动此标签页的 Agent 客户端" onClick={openReload}><RotateCw size={12} className={reloading?'animate-spin':''}/>重载标签页</button>}</div>;
   return <div className="session-pane">
     {reloadOpen&&<Dialog title="重载标签页" onClose={()=>setReloadOpen(false)} busy={reloading} initialFocus={cancel}>
@@ -58,7 +63,7 @@ export function SessionWorkspacePane({session,userId,active,renderTerminal,onRes
       <div className="absolute inset-0" style={{visibility:active&&raw?'visible':'hidden',pointerEvents:active&&raw?'auto':'none'}} aria-hidden={!raw}>
         {terminalAvailable&&(!ended||openedRaw||raw) && renderTerminal(active&&raw,!raw&&ready,terminalReady)}
       </div>
-      {canChat && <div className="absolute inset-0" style={{display:raw?'none':'block'}}><SessionConversation session={session} userId={userId} projectPath={projectPath} onOpenFile={onOpenFile} active={active&&!raw} onRaw={()=>choose('terminal')} onResume={onResume} onNewConversation={onNewConversation} onClose={onClose} resuming={resuming} resumeFailed={resumeFailed}/></div>}
+      {canChat && <div className="absolute inset-0" style={{display:raw?'none':'block'}}><SessionConversation session={session} userId={userId} projectPath={projectPath} onOpenFile={onOpenFile} active={active&&!raw} onRaw={()=>choose('terminal')} onResume={onResume} onNewConversation={onNewConversation} onClose={onClose} resuming={resuming} resumeFailed={resumeFailed} focusTarget={focusTarget}/></div>}
     </div>
   </div>;
 }

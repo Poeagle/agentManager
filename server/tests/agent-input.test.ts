@@ -15,6 +15,7 @@ import {createTestDatabase} from './helpers/database.js';
 import {mkdirSync,realpathSync,writeFileSync} from 'fs';
 import {join} from 'path';
 import {createHash} from 'crypto';
+import {notificationSession,putNotification,listNotifications} from '../src/services/notifications.js';
 
 describe('immediate session input',()=>{
   let app:FastifyInstance,cleanup:()=>void,cookie:string,fixtureDir:string;
@@ -34,6 +35,20 @@ describe('immediate session input',()=>{
     app=Fastify();await app.register(websocket);app.addHook('onRequest',authHook);await app.register(agentRoutes,{prefix:'/api'});await app.ready();
   });
   afterEach(async()=>{tracker.destroy();await app.close();vi.restoreAllMocks();vi.unstubAllEnvs();cleanup();});
+  it.each(['accepted','queued','rejected','unknown'] as const)('settles existing notifications only when input is %s and preserves a new result arriving during submission',async outcome=>{
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');
+    getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
+    const session=notificationSession('own')!,owner=session.created_by_user_id!;
+    putNotification(session,{kind:'result',state:'info',source_id:'previous',title:'完成',body:'旧结果'});
+    vi.spyOn(conversation,'submitStreamingCodexInput').mockImplementation(async()=>{
+      putNotification(session,{kind:'result',state:'info',source_id:'newer',title:'新完成',body:'新结果'});
+      if(outcome==='rejected'||outcome==='unknown')throw Object.assign(new Error('未确认'),{submission:outcome});
+      return outcome==='queued'?'queued':true;
+    });
+    const response=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'继续处理',source:'conversation'}});
+    expect(response.statusCode).toBe(outcome==='rejected'?409:outcome==='unknown'?503:202);
+    expect(listNotifications(owner).notifications.map(row=>row.source_id)).toEqual(outcome==='accepted'||outcome==='queued'?['newer']:['newer','previous']);
+  });
   it('pushes a journal-verified terminal echo as an input reconciliation',async()=>{
     getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();
     getDb().prepare('INSERT INTO conversation_input_links(session_id,native_id,client_id,input_hash,after_offset) VALUES(?,?,?,?,?)').run('own','native','browser',createHash('sha256').update('hello').digest('hex'),10);
@@ -49,6 +64,19 @@ describe('immediate session input',()=>{
     getDb().prepare('INSERT INTO conversation_input_sources(session_id,client_id,kind,label) VALUES(?,?,?,?)').run('own','platform-id','scheduled','巡检');
     const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'伪造',source:'conversation',client_id:'platform-id'}});
     expect(result.statusCode).toBe(409);expect(result.json().submission).toBe('rejected');expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
+  it('forwards late statistics while the native event stream remains connected',async()=>{
+    getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();
+    let fileEmit:((frame:any)=>void)|undefined,nativeEmit:((frame:any)=>void)|undefined;
+    vi.spyOn(fileStream,'observeConversationFile').mockImplementation((_binding,emit)=>{fileEmit=emit;return vi.fn();});
+    vi.spyOn(conversation,'observeCodexConversation').mockImplementation((_native,emit)=>{nativeEmit=emit;return Object.assign(vi.fn(),{respond:vi.fn()});});
+    const frames:any[]=[],socket=await app.injectWS('/api/sessions/own/conversation/stream',{headers:{cookie}},{onInit:ws=>ws.on('message',bytes=>frames.push(JSON.parse(bytes.toString())))});
+    try{
+      await vi.waitFor(()=>expect(nativeEmit&&fileEmit).toBeTruthy());
+      nativeEmit!({type:'snapshot',messages:[],interactions:[],activities:[],compaction:null,busy:true,connected:true,turn_id:'turn',started_at:null,completed_at:null,stage:'tools'});
+      fileEmit!({type:'statistics',native_id:'native',statistics:[{sequence:1,message_id:'finished',turn_id:'turn',tokens:{input_tokens:100},requests:1,tool_calls:2,tool_rounds:1,complete:true}]});
+      await vi.waitFor(()=>expect(frames.find(frame=>frame.type==='statistics')).toMatchObject({statistics:[{message_id:'finished',tool_calls:2}]}));
+    }finally{await new Promise<void>(resolve=>{socket.once('close',resolve);socket.close();});}
   });
   it('projects personal ignored questions on every history replay after reconnect',async()=>{
     getDb().prepare("UPDATE sessions SET codex_session_id='native' WHERE id='own'").run();

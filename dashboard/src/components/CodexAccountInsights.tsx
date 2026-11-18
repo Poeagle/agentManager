@@ -20,13 +20,21 @@ const sum=(rows:Metrics[],field:string):number|null=>!rows.length||rows.some(r=>
 const credits=(rows:Metrics[])=>{const known=rows.filter(r=>r.estimated_credits!=null);return known.length?known.reduce((s,r)=>s+r.estimated_credits!,0):null;};
 const partialCredits=(rows:Metrics[])=>rows.some(r=>r.estimated_credits==null||r.credit_coverage&&r.credit_coverage.covered<r.credit_coverage.total);
 const treeKeys=(nodes:UsageGroup[]):string[]=>nodes.flatMap(n=>[n.key,...treeKeys(n.children)]);
+
+function usageCostText(rows:Metrics[]){
+ const amount=credits(rows),quota=rows.some(r=>r.actual_quota!=null)?rows.reduce((n,r)=>n+(r.actual_quota??0),0):null;
+ if(amount===null&&quota===null)return '';
+ const ratio=amount!==null&&quota!==null&&quota>0?amount/quota:null;
+ return `${amount===null?'—':numeric(amount)+(partialCredits(rows)?' *':'')} | ${quota===null?'—':quotaNumber(quota)} (${ratio!==null&&Number.isFinite(ratio)?numeric(ratio):'—'})`;
+}
+
 // Reserve numeric columns from the longest formatted value, including descendants.
 // Text columns have independent bounds; narrow screens scroll the whole table.
 function usageColumnWidths(nodes:UsageGroup[]){
  // Keep headings, controls and full formatted numbers visible.
- const widths=[70,82,94,70,70,70,84,84,64];
+ const widths=[70,82,94,70,70,70,170,64];
  function visit(items:UsageGroup[]){for(const node of items){const t=node.metrics.tokens;
-  [t.input_tokens,t.cached_input_tokens,t.input_tokens!=null&&t.cached_input_tokens!=null?t.input_tokens-t.cached_input_tokens:null,null,t.output_tokens,t.total_tokens,node.metrics.actual_quota,node.metrics.estimated_credits,null].forEach((value,i)=>{if(value!=null)widths[i]=Math.max(widths[i],(i===6?quotaNumber(value):numeric(value)).length*7+14);});visit(node.children);
+  [t.input_tokens,t.cached_input_tokens,t.input_tokens!=null&&t.cached_input_tokens!=null?t.input_tokens-t.cached_input_tokens:null,null,t.output_tokens,t.total_tokens].forEach((value,i)=>{if(value!=null)widths[i]=Math.max(widths[i],numeric(value).length*7+14);});widths[6]=Math.max(widths[6],usageCostText([node.metrics]).length*7+14);visit(node.children);
  }}visit(nodes);return widths;
 }
 export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:string;name:string;onClose:()=>void;groupId?:string;apiOverview?:React.ReactNode}){
@@ -52,7 +60,7 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
  const summaryMetrics:Array<[string,number|null,string]>=[['总量',sum(rows,'total_tokens'),'筛选范围内原生日志记录的总 Token'],['输入',input,'筛选范围内输入 Token，包含缓存'],['缓存',cached,'筛选范围内命中缓存的输入 Token'],['推理',sum(rows,'reasoning_output_tokens'),'筛选范围内的推理 Token，包含在输出中'],['输出',sum(rows,'output_tokens'),'筛选范围内输出 Token，包含推理 Token']];
  const rangeTotal=credits(datedRows),byPeriod=['hour','day','week','month','total'].includes(dimension);
  const columnWidths=useMemo(()=>{const widths=usageColumnWidths(groups);return apiMode?widths.slice(0,6):widths;},[groups,apiMode]);
- const displayTable=apiMode?{...table,columns:table.columns.filter(column=>!['actual','credits','share'].includes(column.key))}:table;
+ const displayTable=apiMode?{...table,columns:table.columns.filter(column=>!['credits','share'].includes(column.key))}:table;
  const periodName=dimension==='total'?'范围':dimension==='hour'?'小时':dimension==='day'?'日期':dimension==='week'?'周期':'月份';
  const cards=resets.data?.resets;
  const refresh=()=>{void usage.refetch();if(!apiMode)void resets.refetch();};
@@ -90,19 +98,19 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
     </div>
     {rows.some(row=>!row.models?.length)&&<p className="ci-notice" role="status">部分项目的模型明细未返回，请刷新；若仍未恢复，请检查后台服务版本。</p>}
     <TableFrame label="用量统计" className="ci-table-scroll" tableClassName="ci-table ci-usage-table" style={{minWidth:485+columnWidths.reduce((s,w)=>s+w,0)}} columns={<colgroup><col style={{width:230}}/><col style={{width:255}}/>{columnWidths.map((width,k)=><col key={k} style={{width}}/>)}</colgroup>} header={<TableHeaders model={displayTable}/>}>
-     {!groups.length&&<TableStateRow columnCount={apiMode?8:11}>{usage.isPending?'正在读取缓存…':'所选范围暂无用量记录'}</TableStateRow>}
+     {!groups.length&&<TableStateRow columnCount={apiMode?8:10}>{usage.isPending?'正在读取缓存…':'所选范围暂无用量记录'}</TableStateRow>}
      {shown.map((node,index)=><Group key={node.key} node={node} creditTotal={byPeriod?creditTotals.get(node.key)??null:rangeTotal} depth={0} apiMode={apiMode} defaultOpen={currentPage===0&&index===0} expansion={expansion} setExpansion={setExpansion}/>)}
     </TableFrame>
     <div className="ci-pagination"><span>{groups.length} 个{byPeriod?periodName:dimensionLabels[dimension]} · {new Set(rows.map(row=>JSON.stringify([row.date,row.cwd]))).size} 条日期｜项目记录</span><button className="ci-button" disabled={currentPage===0} onClick={()=>setPage(currentPage-1)}>上一页</button><span>{currentPage+1} ｜ {pages}</span><button className="ci-button" disabled={currentPage+1>=pages} onClick={()=>setPage(currentPage+1)}>下一页</button></div>
-    {apiMode?<p className="ci-footnote">日期按本地时间，周从周一开始；周、月扩展为完整自然周期，总量严格按所选日期统计。余额与实际扣费来自上游；Token 来自本地历史。</p>:<p className="ci-footnote">耗用额度以周额度百分点显示，只覆盖成功采样且能分配的区间；按所选周期内订阅参考值分配，读数未变化时显示 0，重置、采样中断及费率未知时不计入；其他未采集客户端的耗用或历史缺失也可能影响分配。宽表可横向滚动查看完整列。{'显示全部可归属记录；'}缓存命中率 = 缓存输入 ÷ 输入 Token；各汇总层按 Token 加权，输入为零或字段缺失时不计算。周从本地周一开始；周、月按日期选择扩展到完整自然周期，总量及其他维度严格按起止日期统计；占比以实际统计范围内{byPeriod?`对应${periodName}`:'全部范围'}全部项目及模型的预估积分为分母，搜索与字段筛选不改变分母。预估值按 {data?.credit_rate_date||'当前'} 官方费率与订阅速度倍率折算，用于比较而非实际扣费；未记录速度时按 Standard 估算，带 * 为部分覆盖。<a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noreferrer">费率依据</a></p>}
+    {apiMode?<p className="ci-footnote">日期按本地时间，周从周一开始；周、月扩展为完整自然周期，总量严格按所选日期统计。余额与实际扣费来自上游；Token 来自本地历史。</p>:<p className="ci-footnote">括号内为每 1 额度对应的积分（积分 ÷ 额度），无法计算时显示 —。耗用额度以周额度百分点显示，只覆盖成功采样且能分配的区间；按所选周期内订阅参考值分配，读数未变化时显示 0，重置、采样中断及费率未知时不计入；其他未采集客户端的耗用或历史缺失也可能影响分配。宽表可横向滚动查看完整列。{'显示全部可归属记录；'}缓存命中率 = 缓存输入 ÷ 输入 Token；各汇总层按 Token 加权，输入为零或字段缺失时不计算。周从本地周一开始；周、月按日期选择扩展到完整自然周期，总量及其他维度严格按起止日期统计；占比以实际统计范围内{byPeriod?`对应${periodName}`:'全部范围'}全部项目及模型的预估积分为分母，搜索与字段筛选不改变分母。预估值按 {data?.credit_rate_date||'当前'} 官方费率与订阅速度倍率折算，用于比较而非实际扣费；未记录速度时按 Standard 估算，带 * 为部分覆盖。<a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noreferrer">费率依据</a></p>}
    </section>}
   </div>
  </Dialog>;
 }
-function CreditCell({rows}:{rows:Metrics[]}){const value=credits(rows);return <td data-field-description={usageFieldDescriptions.credits} title={partialCredits(rows)?'部分模型或 Token 字段缺失，仅计入可估算记录':'标准 Credits 费率结合订阅速度倍率的相对参考值，非账单'}>{value===null?'':numeric(value)}{value!==null&&partialCredits(rows)?' *':''}</td>;}
+function UsageCostCell({rows}:{rows:Metrics[]}){return <td className="ci-usage-cost" data-field-description={usageFieldDescriptions.cost} title={partialCredits(rows)?'部分模型或 Token 字段缺失，仅计入可估算记录；括号内为每 1 额度对应的积分':usageFieldDescriptions.cost}>{usageCostText(rows)}</td>;}
 function MetricCells({rows,creditTotal,apiMode}:{rows:Metrics[];creditTotal:number|null;apiMode:boolean}){
  const amount=credits(rows),input=sum(rows,'input_tokens'),cached=sum(rows,'cached_input_tokens'),tokens=sum(rows,'total_tokens'),valid=input!==null&&cached!==null&&cached<=input;
- return <><td data-field-description={usageFieldDescriptions.input}>{cellNumber(input)}</td><td data-field-description={usageFieldDescriptions.cached}>{cellNumber(cached)}</td><td data-field-description={usageFieldDescriptions.uncached}>{valid?numeric(input-cached):''}</td><td data-field-description={usageFieldDescriptions.hit}>{valid&&input>0?`${(cached/input*100).toFixed(1)}%`:''}</td><td data-field-description={usageFieldDescriptions.output}>{cellNumber(sum(rows,'output_tokens'))}</td><td data-field-description={usageFieldDescriptions.total}>{cellNumber(tokens)}</td>{!apiMode&&<><td data-field-description={usageFieldDescriptions.actual} title="所选周期内观测的周额度百分点，按订阅参考值分配；未覆盖的时段不计入">{quotaNumber(rows.some(r=>r.actual_quota!=null)?rows.reduce((n,r)=>n+(r.actual_quota??0),0):null)}</td><CreditCell rows={rows}/><td data-field-description={usageFieldDescriptions.share}>{creditTotal&&amount!==null?`${(amount/creditTotal*100).toFixed(1)}%`:''}</td></>}</>;
+ return <><td data-field-description={usageFieldDescriptions.input}>{cellNumber(input)}</td><td data-field-description={usageFieldDescriptions.cached}>{cellNumber(cached)}</td><td data-field-description={usageFieldDescriptions.uncached}>{valid?numeric(input-cached):''}</td><td data-field-description={usageFieldDescriptions.hit}>{valid&&input>0?`${(cached/input*100).toFixed(1)}%`:''}</td><td data-field-description={usageFieldDescriptions.output}>{cellNumber(sum(rows,'output_tokens'))}</td><td data-field-description={usageFieldDescriptions.total}>{cellNumber(tokens)}</td>{!apiMode&&<><UsageCostCell rows={rows}/><td data-field-description={usageFieldDescriptions.share}>{creditTotal&&amount!==null?`${(amount/creditTotal*100).toFixed(1)}%`:''}</td></>}</>;
 }
 function Group({node,creditTotal,depth,apiMode,defaultOpen=false,expansion,setExpansion}:{node:UsageGroup;creditTotal:number|null;depth:number;apiMode:boolean;defaultOpen?:boolean;expansion:Record<string,boolean>;setExpansion:React.Dispatch<React.SetStateAction<Record<string,boolean>>>}){
  const open=expansion[node.key]??defaultOpen,childKind=node.children[0]?.kind;

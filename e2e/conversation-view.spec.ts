@@ -43,7 +43,7 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   const answerMeta=chat.locator('.session-chat-message[data-phase="final"] .session-chat-message-meta').first();
   await expect(answerMeta).toHaveCSS('opacity','1');
   await expect(answerMeta.getByRole('button',{name:'复制Agent 回复'})).toBeVisible();
-  appendFileSync(log,counters(1500,300)+entry('event_msg',{type:'task_complete',turn_id:turn}));await expect(answerMeta).toContainText('token: 600 · tools: 4 calls ｜ 2 rounds');await expect(progress).toContainText('token: 100 · tools: 3 calls ｜ 1 round');
+  appendFileSync(log,counters(1500,300)+entry('event_msg',{type:'task_complete',turn_id:turn}));await expect(answerMeta).toContainText('2 rounds | 4 calls');await expect(progress).toContainText('1 round | 3 calls');
   await expect(chat.locator('.conversation-inline-meta')).toHaveCount(0);
   for(const article of await chat.locator('.session-chat-message.assistant').all()){
     const geometry=await article.evaluate(node=>{const meta=node.querySelector('.session-chat-metadata-row')!.getBoundingClientRect(),body=node.querySelector('.conversation-markdown')!.getBoundingClientRect();return {metaBottom:meta.bottom,bodyTop:body.top};});
@@ -63,7 +63,7 @@ await expect(progress).not.toContainText('检查已完成。');
   const sent=page.waitForResponse(response=>response.url().endsWith(`/api/sessions/${session.id}/input`)&&response.request().method()==='POST');
   // Exercise the legacy busy-engine fallback; idle engines now migrate before sending.
   appendFileSync(log,entry('event_msg',{type:'task_started',turn_id:'current'}));
-  await chat.getByRole('button',{name:'发送消息',exact:true}).click();expect((await sent).status()).toBe(202);
+  await chat.getByRole('button',{name:'发送消息',exact:true}).click();await page.getByRole('dialog',{name:'发送前检查'}).getByRole('button',{name:'原样发送'}).click();expect((await sent).status()).toBe(202);
   appendFileSync(log,entry('event_msg',{type:'user_message',message:"printf 'chat-input-ok\\n'"})+entry('event_msg',{type:'task_complete',last_agent_message:'本轮答复已更新。'}));
   await expect(chat.getByText('本轮答复已更新。',{exact:true})).toBeVisible();
   await page.screenshot({path:testInfo.outputPath('conversation-view.png')});

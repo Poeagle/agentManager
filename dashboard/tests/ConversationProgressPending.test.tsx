@@ -1,7 +1,7 @@
 import {fireEvent,render,screen} from '@testing-library/react';
 import {expect,it} from 'vitest';
 import {ConversationProgressPending} from '../src/components/ConversationProgressPending';
-import {pendingProgressStatistics} from '../src/lib/conversation-progress';
+import {pendingProgressStatistics,withObservedToolCounts} from '../src/lib/conversation-progress';
 import type {ConversationProgressSegment,ConversationProgressStatistics} from '../src/lib/api';
 
 const startedAt='2026-11-15T00:00:00Z',now=Date.parse(startedAt)+12000;
@@ -10,7 +10,7 @@ it('renders standard metadata and one collapsed tool, waits after completion, an
   const props={number:7,startedAt,now,statistics:null,connected:true};
   const view=render(<ConversationProgressPending {...props} tool={tool}/>);
   expect(screen.getByLabelText('进展序号 7')).toBeVisible();expect(document.querySelector('time')).toHaveAttribute('datetime',startedAt);
-  expect(document.querySelector('.session-chat-metadata-row')).toHaveTextContent('step · token: — · tools: —');expect(screen.getByText('Elapsed: 12s')).toBeVisible();
+  expect(document.querySelector('.session-chat-metadata-row')).toHaveTextContent('Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr :');expect(screen.getByText('Elapsed: 12s')).toBeVisible();
   const summary=document.querySelector('summary')!;expect(summary).toHaveTextContent('npm test');expect(screen.getByText('First output')).not.toBeVisible();
   fireEvent.click(summary);expect(screen.getByText('First output')).toBeVisible();expect(screen.getByText('npm test -- --run')).toBeVisible();expect(document.querySelector('.session-chat-live-tool-details')).toHaveTextContent('First output');expect(document.querySelector('.session-chat-live-tool-details')).not.toHaveTextContent('npm test');
   view.rerender(<ConversationProgressPending {...props} tool={{...tool,status:'completed',result_preview:'Tests passed'}}/>);
@@ -43,4 +43,18 @@ it('keeps a 100-character command summary in the header while expanded content c
 it('flattens multiline commands and leaves short commands intact',()=>{
   render(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} connected tool={{...tool,input_preview:'echo one\n  echo two'}}/>);
   expect(document.querySelector('.session-chat-live-tool-label')).toHaveTextContent('echo one echo two');expect(document.querySelector('.session-chat-live-tool-label')).not.toHaveTextContent('…');
+});
+it('hides unavailable elapsed time instead of displaying an empty timing placeholder',()=>{
+ const props={number:7,now,statistics:null,connected:true};
+ const view=render(<ConversationProgressPending {...props} startedAt={null}/>);
+ expect(document.querySelector('.session-chat-message-duration')).toBeNull();expect(screen.queryByText(/Elapsed:/)).toBeNull();
+ view.rerender(<ConversationProgressPending {...props} startedAt="invalid"/>);
+ expect(document.querySelector('.session-chat-message-duration')).toBeNull();
+ view.rerender(<ConversationProgressPending {...props} startedAt={startedAt}/>);
+ expect(screen.getByText('Elapsed: 12s')).toBeVisible();
+});
+
+it('uses activity snapshots only as a fallback and never double-counts a tool already assigned to a recorded request',()=>{
+ const fallback=withObservedToolCounts(null,2,'turn');expect(fallback).toMatchObject({tool_calls:2,tool_rounds:1,complete:false,tokens:null});
+ const step={...live,sequence:0,segment_id:'segment',tokens:null,tool_calls:0,tool_rounds:0};expect(withObservedToolCounts(step,2,'turn')).toBe(step);
 });

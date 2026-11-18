@@ -1,5 +1,7 @@
 import {open} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
+import {emptyCostTotals,recordCost,costDifference,costSnapshot,type CostTotals} from './statistics-cost.js';
+import {precedingPricingSettings,recordedPricingSettings} from './statistics-settings.js';
 import {publicTokenCounters,tokenFields} from '../../conversation-usage.js';
 
 export type ConversationInterval=import('../types.js').AgentStatisticsInterval;
@@ -7,19 +9,20 @@ export type ConversationConclusion=NonNullable<import('../types.js').AgentStatis
 export type ConversationStatistics=import('../types.js').AgentStatistics;
 type ProgressSegment=import('../types.js').AgentProgressSegment;
 
-interface Segment {id:string;start:string|null;end:string|null;closed:boolean;fromUser:boolean;reason:ProgressSegment['end_reason'];tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:number;rounds:number;pendingTools:boolean;complete:boolean;skipUsage:boolean;lastSequence:number|null}
-interface Turn {checkpoint?:{tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:number;rounds:number};intervalIntact?:boolean;id:string;complete:boolean;tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:Set<string>;rounds:number;pendingTools:boolean;waiting:Array<{sequence:number;message_id?:string;final:boolean;timestamp:string|null;hash?:string;implicit?:boolean;segment:Segment|null}>}
-interface Conclusion {tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:number;rounds:number;complete:boolean;start:string|null;initial:boolean}
-interface State {offset:number;inode:number;mtime:number;partial:Buffer;turn:Turn|null;conclusion:Conclusion;fingerprint:string|null;stats:Map<number,ConversationStatistics>;segment:Segment|null}
+interface Segment {cost:CostTotals;id:string;start:string|null;end:string|null;closed:boolean;fromUser:boolean;reason:ProgressSegment['end_reason'];tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:number;rounds:number;pendingTools:boolean;complete:boolean;skipUsage:boolean;lastSequence:number|null}
+interface Turn {cost:CostTotals;checkpoint?:{cost:CostTotals;tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:number;rounds:number};intervalIntact?:boolean;id:string;complete:boolean;tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:Set<string>;rounds:number;pendingTools:boolean;waiting:Array<{sequence:number;message_id?:string;final:boolean;timestamp:string|null;hash?:string;implicit?:boolean;segment:Segment|null}>}
+interface Conclusion {cost:CostTotals;tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:number;rounds:number;complete:boolean;start:string|null;initial:boolean}
+interface StepBase {intact:boolean;segmentId:string;tokens:Turn['tokens'];cost:CostTotals;requests:number;calls:number;rounds:number;afterId:string|null;afterSequence:number|null;start:string|null}
+interface State {model:string|null;tier:string|null;stepBase?:StepBase;offset:number;inode:number;mtime:number;partial:Buffer;turn:Turn|null;conclusion:Conclusion;fingerprint:string|null;stats:Map<number,ConversationStatistics>;segment:Segment|null}
 const cache=new Map<string,State>(),WINDOW=2*1024*1024;
 const callTypes=new Set(['function_call','custom_tool_call','tool_search_call','web_search_call','local_shell_call']);
 const zeroTokens=()=>Object.fromEntries(tokenFields.map(field=>[field,0])) as Turn['tokens'];
-function conclusion(start:string|null,complete:boolean,initial=false):Conclusion{return {start,complete,tokens:zeroTokens(),requests:0,calls:0,rounds:0,initial};}
+function conclusion(start:string|null,complete:boolean,initial=false):Conclusion{return {cost:emptyCostTotals(),start,complete,tokens:zeroTokens(),requests:0,calls:0,rounds:0,initial};}
 const timestamp=(value:unknown):string|null=>typeof value==='string'&&Number.isFinite(Date.parse(value))?value:null;
-function segment(id:number,start:string|null,complete:boolean,skipUsage=false,fromUser=false):Segment {return {id:String(id),start,end:null,closed:false,fromUser,reason:null,tokens:zeroTokens(),requests:0,calls:0,rounds:0,pendingTools:false,complete,skipUsage,lastSequence:null};}
+function segment(id:number,start:string|null,complete:boolean,skipUsage=false,fromUser=false):Segment {return {cost:emptyCostTotals(),id:String(id),start,end:null,closed:false,fromUser,reason:null,tokens:zeroTokens(),requests:0,calls:0,rounds:0,pendingTools:false,complete,skipUsage,lastSequence:null};}
 function segmentSnapshot(value:Segment):ProgressSegment {
  const elapsed=value.start&&value.end?Date.parse(value.end)-Date.parse(value.start):null;
- return {id:value.id,start_at:value.start,end_at:value.end,end_reason:value.reason,elapsed_ms:elapsed!==null&&elapsed>=0?elapsed:null,tokens:value.requests?{...value.tokens}:null,requests:value.requests,tool_calls:value.calls,tool_rounds:value.rounds,complete:value.complete};
+ return {cost:costSnapshot(value.cost),id:value.id,start_at:value.start,end_at:value.end,end_reason:value.reason,elapsed_ms:elapsed!==null&&elapsed>=0?elapsed:null,tokens:value.requests?{...value.tokens}:null,requests:value.requests,tool_calls:value.calls,tool_rounds:value.rounds,complete:value.complete};
 }
 function closeSegment(state:State,end:string|null,reason:NonNullable<ProgressSegment['end_reason']>='unknown'){
  const value=state.segment;if(!value||value.closed)return;
@@ -28,8 +31,8 @@ function closeSegment(state:State,end:string|null,reason:NonNullable<ProgressSeg
  if(state.turn?.waiting.some(item=>item.segment===value)||value.pendingTools)value.complete=false;
  if(value.lastSequence!==null){const item=state.stats.get(value.lastSequence);if(item)item.segment=segmentSnapshot(value);}
 }
-function incomplete(state:State){state.conclusion.complete=false;if(state.segment)state.segment.complete=false;if(state.turn){state.turn.complete=false;state.turn.intervalIntact=false;}}
-function turn(id:string,complete:boolean):Turn{return {id,complete,tokens:Object.fromEntries(tokenFields.map(field=>[field,0])) as Turn['tokens'],requests:0,calls:new Set(),rounds:0,pendingTools:false,waiting:[]};}
+function incomplete(state:State){state.conclusion.cost.gaps++;if(state.segment)state.segment.cost.gaps++;if(state.turn)state.turn.cost.gaps++;if(state.stepBase)state.stepBase.intact=false;state.conclusion.complete=false;if(state.segment)state.segment.complete=false;if(state.turn){state.turn.complete=false;state.turn.intervalIntact=false;}}
+function turn(id:string,complete:boolean):Turn{return {cost:emptyCostTotals(),id,complete,tokens:Object.fromEntries(tokenFields.map(field=>[field,0])) as Turn['tokens'],requests:0,calls:new Set(),rounds:0,pendingTools:false,waiting:[]};}
 function settleImplicit(state:State,text:string){
   // Older records omit phase on an assistant item. task_complete names the
   // exact final text, so only the matching tail is promoted to a conclusion.
@@ -39,7 +42,7 @@ function settleImplicit(state:State,text:string){
   const snapshot=state.stats.get(tail.sequence);
   if(!snapshot)return;
   const end=tail.timestamp,start=state.conclusion.start,elapsed=start&&end?Date.parse(end)-Date.parse(start):null;
-  snapshot.conclusion={tokens:state.conclusion.requests?{...state.conclusion.tokens}:null,requests:state.conclusion.requests,tool_calls:state.conclusion.calls,tool_rounds:state.conclusion.rounds,complete:state.conclusion.complete&&!!snapshot.interval?.complete,shared_messages:1,start_at:start,end_at:end,elapsed_ms:elapsed!==null&&elapsed>=0?elapsed:null};
+  snapshot.conclusion={cost:costSnapshot(state.conclusion.cost),tokens:state.conclusion.requests?{...state.conclusion.tokens}:null,requests:state.conclusion.requests,tool_calls:state.conclusion.calls,tool_rounds:state.conclusion.rounds,complete:state.conclusion.complete&&!!snapshot.interval?.complete,shared_messages:1,start_at:start,end_at:end,elapsed_ms:elapsed!==null&&elapsed>=0?elapsed:null};
   state.conclusion=conclusion(end,true);
 }
 function finish(state:State,hasUsage:boolean,retainTail=0){
@@ -48,6 +51,7 @@ function finish(state:State,hasUsage:boolean,retainTail=0){
   const settled=current.waiting.slice(0,current.waiting.length-retained.length);if(!settled.length)return;
   const previous=current.checkpoint;
   const interval:ConversationInterval={
+    cost:costSnapshot(costDifference(current.cost,current.checkpoint?.cost)),
     tokens:hasUsage?Object.fromEntries(tokenFields.map(field=>{const end=current.tokens[field],start=previous?previous.tokens[field]:0;return [field,end===null||start===null?null:Math.max(0,end-start)];})) as Turn['tokens']:null,
     requests:current.requests-(previous?.requests??0),tool_calls:current.calls.size-(previous?.calls??0),tool_rounds:current.rounds-(previous?.rounds??0),
     complete:(current.intervalIntact??current.complete)&&hasUsage,shared_messages:settled.length,
@@ -55,32 +59,36 @@ function finish(state:State,hasUsage:boolean,retainTail=0){
   const finals=settled.filter(message=>message.final),summary=state.conclusion;
   let conclusionStart=summary.start;
   for(const message of settled){
-    state.stats.set(message.sequence,{sequence:message.sequence,...message.message_id?{message_id:message.message_id}:{},turn_id:current.id,tokens:hasUsage?{...current.tokens}:null,requests:current.requests,tool_calls:current.calls.size,tool_rounds:current.rounds,complete:current.complete});
+    state.stats.set(message.sequence,{cost:costSnapshot(current.cost),sequence:message.sequence,...message.message_id?{message_id:message.message_id}:{},turn_id:current.id,tokens:hasUsage?{...current.tokens}:null,requests:current.requests,tool_calls:current.calls.size,tool_rounds:current.rounds,complete:current.complete});
     state.stats.get(message.sequence)!.interval={...interval,tokens:interval.tokens?{...interval.tokens}:null};
     if(message.segment){message.segment.lastSequence=message.sequence;state.stats.get(message.sequence)!.segment=segmentSnapshot(message.segment);}
     if(message.final){
       const end=message.timestamp,start=conclusionStart,elapsed=start&&end?Date.parse(end)-Date.parse(start):null;
-      state.stats.get(message.sequence)!.conclusion={tokens:summary.requests?{...summary.tokens}:null,requests:summary.requests,tool_calls:summary.calls,tool_rounds:summary.rounds,complete:summary.complete&&hasUsage,shared_messages:finals.length,start_at:start,end_at:end,elapsed_ms:elapsed!==null&&elapsed>=0?elapsed:null};
+      state.stats.get(message.sequence)!.conclusion={cost:costSnapshot(summary.cost),tokens:summary.requests?{...summary.tokens}:null,requests:summary.requests,tool_calls:summary.calls,tool_rounds:summary.rounds,complete:summary.complete&&hasUsage,shared_messages:finals.length,start_at:start,end_at:end,elapsed_ms:elapsed!==null&&elapsed>=0?elapsed:null};
       conclusionStart=end;
     }
   }
   // The conclusion boundary belongs to the native transcript, not the current
   // turn or the retained page. Follow-ups and retries must not reset it.
   if(finals.length)state.conclusion=conclusion(finals.at(-1)!.timestamp,true);
-  current.checkpoint={tokens:{...current.tokens},requests:current.requests,calls:current.calls.size,rounds:current.rounds};current.intervalIntact=true;
+  current.checkpoint={cost:{...current.cost},tokens:{...current.tokens},requests:current.requests,calls:current.calls.size,rounds:current.rounds};current.intervalIntact=true;
+  const last=settled.at(-1);if(last?.segment&&last.segment===state.segment){const part=last.segment;state.stepBase={intact:true,segmentId:part.id,tokens:zeroTokens(),cost:{...part.cost},requests:part.requests,calls:part.calls,rounds:part.rounds,afterId:last.message_id??null,afterSequence:last.sequence,start:last.timestamp};}
   current.waiting=retained;while(state.stats.size>80)state.stats.delete(state.stats.keys().next().value!);
 }
 function consume(state:State,line:Buffer,sequence:number){
   // Only parse relevant records; never retain arguments, outputs or reasoning.
   const header=line.subarray(0,600).toString();
-  if(!/"type"\s*:\s*"(?:task_started|task_complete|turn_aborted|user_message|turn_context|token_count|message|item_completed|AgentMessage|function_call|custom_tool_call|tool_search_call|web_search_call|local_shell_call)"/.test(header))return;
+  if(!/"type"\s*:\s*"(?:session_meta|thread_settings_applied|task_started|task_complete|turn_aborted|user_message|turn_context|token_count|message|item_completed|AgentMessage|function_call|custom_tool_call|tool_search_call|web_search_call|local_shell_call)"/.test(header))return;
   if(line.length>256*1024){incomplete(state);return;}
   let record:any;try{record=JSON.parse(line.toString());}catch{incomplete(state);return;}
   const p=record.payload;if(!p)return;
+  const settings=recordedPricingSettings(record);
+  if(settings){if('model' in settings)state.model=typeof settings.model==='string'?settings.model.slice(0,120):null;if('service_tier' in settings)state.tier=typeof settings.service_tier==='string'?settings.service_tier.slice(0,120):null;}
   const id=p.turn_id||p.internal_chat_message_metadata_passthrough?.turn_id||(record.type==='response_item'?state.turn?.id:undefined);
   if(record.type==='event_msg'&&p.type==='task_started'&&typeof id==='string'){
     if(state.conclusion.initial)state.conclusion.start ||= timestamp(record.timestamp);
-    if(state.turn?.id!==id){closeSegment(state,null);finish(state,false);state.turn=turn(id,true);state.segment=segment(sequence,timestamp(record.timestamp),true);}return;
+    if(state.turn?.id!==id){closeSegment(state,null);finish(state,false);state.turn=turn(id,true);state.segment=segment(sequence,timestamp(record.timestamp),true);}
+    else if(!state.segment){const intact=!state.turn.requests&&!state.turn.calls.size&&!state.turn.waiting.length;state.segment=segment(sequence,timestamp(record.timestamp),intact);if(intact)state.turn.complete=true;}return;
   }
   if(record.type==='event_msg'&&p.type==='user_message'&&state.turn){
     const prior=state.segment,overlap=!!prior&&!prior.closed&&(prior.fromUser||prior.requests>0||prior.calls>0||state.turn.waiting.length>0);
@@ -120,7 +128,7 @@ function consume(state:State,line:Buffer,sequence:number){
   if(record.type==='response_item'&&callTypes.has(p.type)&&state.turn){
     if(typeof id==='string'&&id!==state.turn.id){closeSegment(state,null);finish(state,false);state.turn=turn(id,false);state.segment=segment(sequence,null,false);}
     const key=typeof p.call_id==='string'?p.call_id:typeof p.id==='string'?p.id:`offset:${sequence}`;
-    if(!state.turn.calls.has(key)){if(state.turn.calls.size>=8192){incomplete(state);}else {state.turn.calls.add(key);state.conclusion.calls++;if(state.segment&&!state.segment.closed){state.segment.calls++;state.segment.pendingTools=true;}}state.turn.pendingTools=true;}
+    if(!state.turn.calls.has(key)){if(state.turn.calls.size>=8192){incomplete(state);}else {state.turn.calls.add(key);state.conclusion.calls++;if(state.segment&&!state.segment.closed){state.segment.calls++;if(!state.segment.pendingTools)state.segment.rounds++;state.segment.pendingTools=true;}if(!state.turn.pendingTools){state.turn.rounds++;state.conclusion.rounds++;}}state.turn.pendingTools=true;}
     return;
   }
   if(record.type==='event_msg'&&p.type==='token_count'&&p.info){
@@ -132,10 +140,14 @@ function consume(state:State,line:Buffer,sequence:number){
     const part=state.segment;
     if(part&&!part.closed){
       if(part.skipUsage){part.skipUsage=false;part.complete=false;}
-      else {part.requests++;for(const field of tokenFields)part.tokens[field]=part.tokens[field]===null||last[field]===null?null:part.tokens[field]!+last[field]!;}
-      if(part.pendingTools){part.rounds++;part.pendingTools=false;}
+      else {
+        if(state.stepBase?.segmentId!==part.id)state.stepBase={intact:part.complete,segmentId:part.id,tokens:zeroTokens(),cost:emptyCostTotals(),requests:0,calls:0,rounds:0,afterId:null,afterSequence:null,start:part.start};
+        part.requests++;recordCost(part.cost,state.model,state.tier,last);
+        for(const field of tokenFields){part.tokens[field]=part.tokens[field]===null||last[field]===null?null:part.tokens[field]!+last[field]!;const step=state.stepBase;step.tokens[field]=step.tokens[field]===null||last[field]===null?null:step.tokens[field]!+last[field]!;}
+      }
+      part.pendingTools=false;
     }
-    current.requests++;state.conclusion.requests++;if(current.pendingTools){current.rounds++;state.conclusion.rounds++;current.pendingTools=false;}
+    current.requests++;state.conclusion.requests++;current.pendingTools=false;recordCost(current.cost,state.model,state.tier,last);recordCost(state.conclusion.cost,state.model,state.tier,last);
     for(const field of tokenFields){current.tokens[field]=current.tokens[field]===null||last[field]===null?null:current.tokens[field]!+last[field]!;state.conclusion.tokens[field]=state.conclusion.tokens[field]===null||last[field]===null?null:state.conclusion.tokens[field]!+last[field]!;}
     // Keep the exact answer pending until task_complete can identify it.
     const tail=current.waiting.at(-1);
@@ -152,15 +164,19 @@ function consume(state:State,line:Buffer,sequence:number){
     finish(state,false);
   }
 }
+function projectCost<T extends object>(value:T,enabled:boolean):T{if(enabled)return value;const result:any={...value,cost:null};for(const key of ['interval','segment','conclusion','step'])if((value as any)[key])result[key]={...(value as any)[key],cost:null};return result;}
 /** One bounded cold read, then append-only reads shared by HTTP and existing
  * file notifications. Missing turn starts produce explicitly partial counts. */
-export async function readConversationStatistics(path:string):Promise<ConversationStatistics[]> {
+export async function readConversationStatistics(path:string,withCredits=true):Promise<ConversationStatistics[]> {
   const handle=await open(path,'r');
   try {
     const info=await handle.stat();let state=cache.get(path),skipFirst=false;
-    if(state&&state.inode===info.ino&&state.offset===info.size&&state.mtime===info.mtimeMs)return [...state.stats.values()];
-    if(!state||state.inode!==info.ino||info.size<state.offset||info.size===state.offset&&info.mtimeMs!==state.mtime){state={offset:Math.max(0,info.size-WINDOW),inode:info.ino,mtime:info.mtimeMs,partial:Buffer.alloc(0),turn:null,conclusion:conclusion(null,info.size<=WINDOW,info.size<=WINDOW),fingerprint:null,stats:new Map(),segment:null};cache.set(path,state);if(cache.size>32)cache.delete(cache.keys().next().value!);
+    if(state&&state.inode===info.ino&&state.offset===info.size&&state.mtime===info.mtimeMs)return [...state.stats.values()].map(item=>projectCost(item,withCredits));
+    if(!state||state.inode!==info.ino||info.size<state.offset||info.size===state.offset&&info.mtimeMs!==state.mtime){state={model:null,tier:null,offset:Math.max(0,info.size-WINDOW),inode:info.ino,mtime:info.mtimeMs,partial:Buffer.alloc(0),turn:null,conclusion:conclusion(null,info.size<=WINDOW,info.size<=WINDOW),fingerprint:null,stats:new Map(),segment:null};
       skipFirst=state.offset>0;
+      if(skipFirst)Object.assign(state,await precedingPricingSettings(handle,state.offset));
+      // Do not expose an unseeded cache to concurrent HTTP/file observers.
+      cache.set(path,state);if(cache.size>32)cache.delete(cache.keys().next().value!);
     }
     while(state.offset<info.size){
       const buffer=Buffer.alloc(Math.min(WINDOW,info.size-state.offset)),{bytesRead}=await handle.read(buffer,0,buffer.length,state.offset);if(!bytesRead)break;
@@ -169,14 +185,19 @@ export async function readConversationStatistics(path:string):Promise<Conversati
       state.partial=Buffer.from(data.subarray(start));state.offset+=bytesRead;
       if(state.partial.length>WINDOW){state.partial=Buffer.alloc(0);incomplete(state);}
     }
-    state.mtime=info.mtimeMs;return [...state.stats.values()];
+    state.mtime=info.mtimeMs;return [...state.stats.values()].map(item=>projectCost(item,withCredits));
   }finally{await handle.close();}
 }
 
 /** The current conclusion interval is incrementally maintained by the same parser. */
-export async function readConversationProgress(path:string):Promise<import('../types.js').AgentProgressStatistics|null> {
+export async function readConversationProgress(path:string,withCredits=true):Promise<import('../types.js').AgentProgressStatistics|null> {
   await readConversationStatistics(path);
   const state=cache.get(path),current=state?.turn,summary=state?.conclusion;
   if(!current||!summary)return null;
-  return {turn_id:current.id,tokens:summary.requests?{...summary.tokens}:null,requests:summary.requests,tool_calls:summary.calls,tool_rounds:summary.rounds,complete:summary.complete,...state.segment?{segment:segmentSnapshot(state.segment)}:{}};
+  const part=state.segment,base=part&&state.stepBase?.segmentId===part.id?state.stepBase:undefined;
+  const requests=part?part.requests-(base?.requests??0):0;
+  const step=part&&!part.closed?{segment_id:part.id,after_message_id:base?.afterId??null,after_sequence:base?.afterSequence??null,start_at:base?.start??part.start,
+    tokens:requests&&base?{...base.tokens}:null,
+    cost:costSnapshot(costDifference(part.cost,base?.cost)),requests,tool_calls:part.calls-(base?.calls??0),tool_rounds:part.rounds-(base?.rounds??0),complete:base?base.intact:part.complete,shared_messages:1}:undefined;
+  return projectCost({cost:costSnapshot(summary.cost),turn_id:current.id,tokens:summary.requests?{...summary.tokens}:null,requests:summary.requests,tool_calls:summary.calls,tool_rounds:summary.rounds,complete:summary.complete,...part?{segment:segmentSnapshot(part)}:{},...step?{step}:{}},withCredits);
 }

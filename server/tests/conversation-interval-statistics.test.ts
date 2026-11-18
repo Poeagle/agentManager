@@ -12,7 +12,7 @@ beforeEach(()=>{dir=mkdtempSync(join(tmpdir(),'progress-interval-'));file=join(d
 describe('progress request intervals',()=>{
  it('updates cumulative progress as native records arrive and deduplicates tool calls',async()=>{
   writeFileSync(file,start()+message('a')+call('one')+usage(100,100));expect(await readConversationProgress(file)).toMatchObject({turn_id:'turn',tokens:{total_tokens:100},tool_calls:1,tool_rounds:1,complete:true});
-  appendFileSync(file,call('two')+call('two'));expect(await readConversationProgress(file)).toMatchObject({tokens:{total_tokens:100},tool_calls:2,tool_rounds:1});
+  appendFileSync(file,call('two')+call('two'));expect(await readConversationProgress(file)).toMatchObject({tokens:{total_tokens:100},tool_calls:2,tool_rounds:2});
   appendFileSync(file,usage(300,200));expect(await readConversationProgress(file)).toMatchObject({tokens:{total_tokens:300},tool_calls:2,tool_rounds:2});
  });
  it('splits progress segments at follow-ups and stop boundaries and survives a cold read',async()=>{

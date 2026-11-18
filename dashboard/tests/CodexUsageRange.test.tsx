@@ -30,11 +30,11 @@ it('uses full natural weeks and months but exact selected dates for total, with 
 it('supports API engines with the same total and calendar ranges while keeping subscription columns hidden',async()=>{
  mount(true);await screen.findByText('/December');dates();const requests=vi.mocked(fetchJSON).mock.calls.length;dimension('total');
  const root=screen.getByText('2026-11-14 ~ 2026-11-15',{exact:true}).closest('tr')!;expect(within(root).getAllByRole('cell')[7]).toHaveTextContent('200');
- expect(screen.queryByRole('columnheader',{name:'耗用额度'})).toBeNull();expect(screen.queryByRole('columnheader',{name:'预估积分'})).toBeNull();expect(screen.queryByRole('columnheader',{name:'占比'})).toBeNull();
+ expect(screen.queryByRole('columnheader',{name:'耗用额度'})).toBeNull();expect(screen.queryByRole('columnheader',{name:'耗用积分 | 额度'})).toBeNull();expect(screen.queryByRole('columnheader',{name:'占比'})).toBeNull();
  dimension('week');expect(screen.getByText('统计范围：2026-11-09 ~ 2026-11-15')).toBeVisible();expect(vi.mocked(fetchJSON).mock.calls.length).toBe(requests);
 });
 it('does not fabricate total quota from daily allocations when hourly observation data is absent',async()=>{
  mount(false,null);await screen.findByText('/December');dates();dimension('total');
- expect(within(project('/A')).getAllByRole('cell')[8].textContent).toBe('');
+ expect(within(project('/A')).getAllByRole('cell')[8].textContent).toBe('30 | — (—)');
  fireEvent.change(screen.getByLabelText('开始日期'),{target:{value:'2026-11-16'}});dimension('week');expect(screen.getByText('所选范围暂无用量记录')).toBeVisible();
 });

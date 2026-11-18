@@ -1,4 +1,4 @@
-import {isClientSource,runAiClient} from '../ai-source.js';
+import {isClientSource,runAiClient,type ModelResponseFormat} from '../ai-source.js';
 import type { AiConfig } from './config.js';
 import { modelImageContent, MAX_IMAGES } from './attachments.js';
 
@@ -164,7 +164,7 @@ async function requestStreamedChat(config: AiConfig, body: Record<string, unknow
   return {usage, choices: [{message: {content: content || null, ...(calls.size ? {tool_calls: [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call)} : {})}}]};
 }
 
-export async function callModel(config: AiConfig, messages: ModelMessage[], tools?: ModelTool[], signal?: AbortSignal, options?: {maxTokens?: number; onContent?: (content: string) => void; onUsage?: (usage: ModelUsage) => void; userId?: string; toolChoice?: 'auto' | 'none'}): Promise<ModelMessage> {
+export async function callModel(config: AiConfig, messages: ModelMessage[], tools?: ModelTool[], signal?: AbortSignal, options?: {maxTokens?: number; onContent?: (content: string) => void; onUsage?: (usage: ModelUsage) => void; userId?: string; toolChoice?: 'auto' | 'none'; responseFormat?: ModelResponseFormat}): Promise<ModelMessage> {
   if (!config.enabled || !isClientSource(config.source)&&(!config.api_key || !config.endpoint || !config.model)) throw new Error('平台 AI 尚未启用或模型配置不完整');
   let imagesLeft = MAX_IMAGES;
   const wireMessages = messages.slice().reverse().map(({attachment_ids, source_message_id, runtime_context, ...message}) => {
@@ -176,9 +176,10 @@ export async function callModel(config: AiConfig, messages: ModelMessage[], tool
     if (!options?.userId) throw new Error('图片请求缺少用户身份');
     return {...message, content: [{type: 'text', text: message.content || '请查看图片'}, ...modelImageContent(ids, options.userId)]};
   }).reverse();
-  if(isClientSource(config.source)){const response=await runAiClient(config.source!,{messages:wireMessages,tools,model:config.model,tool_choice:options?.toolChoice},config.timeout_ms,signal);if(response.content)options?.onContent?.(response.content);return response;}
+  if(isClientSource(config.source)){const response=await runAiClient(config.source!,{messages:wireMessages,tools,model:config.model,tool_choice:options?.toolChoice,response_format:options?.responseFormat},config.timeout_ms,signal);if(response.content)options?.onContent?.(response.content);return response;}
   const body = {
     model: config.model, messages: wireMessages,
+    ...(options?.responseFormat ? {response_format: options.responseFormat} : {}),
     ...(tools?.length ? { tools, tool_choice: options?.toolChoice ?? 'auto', parallel_tool_calls: false } : {}),
     max_tokens: options?.maxTokens ?? 2400,
   };
@@ -213,6 +214,7 @@ platform_capabilities 的 agents 是实时探测的工作 Agent。派发前核�
 用户补充、纠正或继续某个已有标签的需求时，立即调用 send_to_session 转发原话。目标忙碌、有执行请求在等待，都不妨碍追加输入；绑定正在运行的 Codex/Claude 的 terminal 标签也支持。不要说“等这一轮结束/空闲再发”，不要把补充需求暂存为自己的待办，不代替用户判断是否应该打断；消息已提交给原会话，由工作 Agent 处理。只有目标不运行或实际等待交互确认时如实报告。项目或目标标签确实不明确时才简短澄清。
 用户消息可能包含图片附件。只有实际收到 image_url 图像内容时才能描述图中信息；下载失败或模型不支持图像时必须说明，不能猜测。派发与截图有关的工作时，将消息中提供的附件 ID 放入 start_work/send_to_session 的 attachment_ids，平台会把原图保存到目标项目并提供本地路径。用户只发图片且目标不明确时，先查看图片并询问需求，不擅自创建开发任务。
 仅用户明确要操作时才调用写入工具；项目不明确时先列出可见项目或澄清。不得将验证码、API Key、凭据或会话 Cookie 传给模型工具或开发 Agent。
+企业微信智能机器人中的任务通知只显示项目与标签名称及正文，用户引用整条通知并回复文字即可通过程序快速投递到原标签页；此路由不调用你判断目标。缺少或失效的引用需引用最新通知或回到网页，不猜测其他标签。
 建立定时任务前确认时区、触发周期、目标和提示词，调用定时任务接口；创建成功后会自动关联此对话进行结果通知。
 任务和会话状态不同：idle、execute completed、定时任务 success 仅表示空闲或发送完成，不代表业务完成。
 平台会后台读取工作 Agent 的公开消息与状态，工具过程和结果不送入平台 AI。没有明确结果和验证依据不能声称任务成功；区分 Agent 报告完成、验证通过、验证未执行和需要用户确认。

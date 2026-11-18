@@ -81,8 +81,8 @@
 .session-chat-metadata-row .session-chat-message-meta {margin:0;min-height:22px;line-height:20px;font-size:11px;font-weight:400;gap:4px 12px;font-family:var(--app-font-family);font-variant-numeric:tabular-nums;color:var(--text-secondary);}
 .session-chat-metadata-row .session-chat-message-meta .session-chat-message-duration {margin-right:0;font:inherit;}
 .session-chat-metadata-row .session-chat-message-meta>button {margin-left:auto;}
-.session-chat-final-heading {flex-wrap:wrap;gap:4px 8px;}
-.session-chat-final-heading .session-chat-final-meta {flex:1 1 auto;min-width:0;margin:0;font-weight:400;}
+.session-chat-final-heading {align-items:flex-start;flex-wrap:wrap;gap:4px 8px;}
+.session-chat-final-heading .session-chat-final-meta {flex:1 1 0;min-width:0;margin:0;font-weight:400;}
 .session-chat-message-meta button {display:flex;align-items:center;padding:4px;border-radius:4px;}
 .session-chat-message-meta button:hover {background:var(--bg-tertiary);color:var(--text-primary);}
 .session-chat-caret {display:inline-block;width:7px;height:16px;margin-left:3px;border-radius:2px;background:var(--accent);vertical-align:text-bottom;animation:chat-pulse 1.1s ease-in-out infinite;}
@@ -457,7 +457,11 @@
 .session-chat-container {height:100%;min-width:0;container-type:inline-size;}
 .session-chat-layout {display:flex;height:100%;min-height:0;min-width:0;}
 .session-chat-layout>.session-chat {flex:1;min-width:0;}
-.session-chat-batch {position:relative;flex:0 0 290px;width:290px;min-height:0;display:flex;flex-direction:column;border-left:1px solid var(--border);color:var(--text-primary);}
+.session-chat-batch {position:relative;flex:0 0 var(--chat-batch-width,290px);width:var(--chat-batch-width,290px);min-height:0;display:flex;flex-direction:column;border-left:1px solid var(--border);color:var(--text-primary);}
+.session-chat-layout[data-batch-resize] {user-select:none;cursor:col-resize;}
+.session-batch-resize-handle {position:absolute;left:-5px;top:0;bottom:0;width:10px;z-index:4;cursor:col-resize;touch-action:none;outline:none;}
+.session-batch-resize-handle::after {content:"";position:absolute;left:4px;top:0;bottom:0;width:2px;background:transparent;}
+.session-batch-resize-handle:hover::after,.session-batch-resize-handle:focus-visible::after,.session-chat-layout[data-batch-resize] .session-batch-resize-handle::after {background:var(--accent);}
 .session-chat-batch-content {flex:1;min-height:0;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;}
 .session-chat-batch-content article {border-bottom:1px solid var(--border);}
 .session-chat-batch-content article>header {display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
@@ -467,7 +471,7 @@
 .session-batch-delete {color:var(--warning);}
 .session-batch-recall:not(:disabled):hover,.session-batch-delete:not(:disabled):hover {text-decoration:underline;}
 .session-batch-recall:disabled,.session-batch-delete:disabled {opacity:.4;cursor:default;}
-@container(max-width:760px){.session-chat-layout {flex-direction:column;}.session-chat-layout>.session-chat {height:auto;min-height:0;}.session-chat-batch {flex:0 1 auto;width:auto;max-height:30vh;border-left:0;border-top:1px solid var(--border);}.session-chat-controls-slot {flex-wrap:wrap;}}
+@container(max-width:760px){.session-batch-resize-handle {display:none;}.session-chat-layout {flex-direction:column;}.session-chat-layout>.session-chat {height:auto;min-height:0;}.session-chat-batch {flex:0 1 auto;width:auto;max-height:30vh;border-left:0;border-top:1px solid var(--border);}.session-chat-controls-slot {flex-wrap:wrap;}}
 
 .conversation-composer-mode {font:500 11px/18px var(--app-font-family);white-space:nowrap;flex-shrink:0;}
 .conversation-composer-mode>span {font-weight:400;}
@@ -522,3 +526,27 @@
 .session-chat-live-tool-details {overflow:hidden;border:1px solid var(--border);border-radius:8px;margin:4px 0 6px;background:var(--bg-secondary);}
 .session-chat-live-tool-details .session-chat-tool-result {border-top:0;}
 .session-chat-live-tool-state {flex-shrink:0;font-size:11px;color:var(--text-muted);}
+
+.session-chat-cache-hit {--cache-hit-lightness:64%;font-variant-numeric:tabular-nums;}
+:root[data-theme="light"] .session-chat-cache-hit {--cache-hit-lightness:32%;}
+.session-chat-estimated-cost {color:#c4a1ff;font-variant-numeric:tabular-nums;}
+.session-chat-tool-counts {color:#79b4ff;font-variant-numeric:tabular-nums;}
+:root[data-theme="light"] .session-chat-estimated-cost {color:#7e22ce;}
+:root[data-theme="light"] .session-chat-tool-counts {color:#1d4ed8;}
+
+/* Notifications share submission behavior but use a compact reading/reply view. */
+.session-chat[data-presentation=notification] .session-chat-feed{width:calc(100% - 32px);max-width:none;padding:16px 0}
+.session-chat[data-presentation=notification] .session-chat-message{margin-bottom:14px}
+.session-chat[data-presentation=notification] .session-chat-message-meta{min-height:16px;gap:6px;font-size:10px}
+.session-chat[data-presentation=notification] .session-chat-composer{padding:8px 12px 10px;border-top:1px solid var(--border)}
+.session-chat[data-presentation=notification] .session-chat-composer>form{border-radius:10px;padding:8px 10px 6px}
+.session-chat[data-presentation=notification] .session-chat-composer>form>.session-chat-editor{min-height:52px;max-height:150px;font-size:13px;line-height:1.6}
+.session-chat[data-presentation=notification] .session-chat-input-tools{flex-wrap:wrap;justify-content:flex-start;gap:6px;margin-top:4px}
+.session-chat[data-presentation=notification] .session-chat-input-tools>.session-chat-attach{width:26px;height:26px;background:transparent;color:var(--text-secondary);padding:4px}
+.session-chat[data-presentation=notification] .session-chat-input-tools>.session-chat-more{display:inline-flex;gap:3px;width:auto;height:26px;padding:0 5px;border-radius:4px;background:transparent;color:var(--text-secondary);font-size:11px}
+.session-chat[data-presentation=notification] .session-chat-send-hint{flex:1 1 auto;width:auto;order:0;min-width:0;margin:0;text-align:right;white-space:nowrap;font-size:10px}
+.session-chat[data-presentation=notification] .session-chat-send-actions{flex:none;margin-left:auto;gap:5px}
+.session-chat[data-presentation=notification] .session-chat-send-actions>button{width:28px;height:28px}
+.session-chat[data-presentation=notification] .session-chat-controls-slot{flex:1 0 100%;order:4;padding-top:6px;border-top:1px solid var(--border);justify-content:flex-start}
+.session-chat[data-presentation=notification] .session-chat-status[hidden]{display:none}
+@container(max-width:500px){.session-chat[data-presentation=notification] .session-chat-send-hint{display:none}}

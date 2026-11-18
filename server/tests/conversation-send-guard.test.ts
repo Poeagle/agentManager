@@ -71,3 +71,26 @@ it('does not warn when usage exists but the provider omits its context window',a
  const sent=await app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:input});
  expect(sent.statusCode).toBe(202);
 });
+
+it.each(['wrong-native',''])('rejects stale or invalid notification native binding %s before submission',async expected=>{
+ const response=await app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{input:'hello',source:'conversation',expected_native_id:expected}});
+ expect(response.statusCode).toBe(expected?409:400);expect(response.json().submission).toBe('rejected');expect(stream.submitStreamingCodexInput).not.toHaveBeenCalled();
+});
+
+it('rejects a notification whose Agent environment has changed',async()=>{
+ const response=await app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{input:'hello',source:'conversation',expected_native_id:'native',expected_environment_id:'other-environment'}});
+ expect(response.statusCode).toBe(409);expect(response.json().submission).toBe('rejected');expect(stream.submitStreamingCodexInput).not.toHaveBeenCalled();
+});
+
+it('rechecks the expected native binding after waiting for another input submission',async()=>{
+ getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY,JSON.stringify({...DEFAULT_SEND_GUARD,enabled:false}));
+ let release!:(value:boolean)=>void;
+ vi.mocked(stream.submitStreamingCodexInput).mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+ const first=app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{input:'first',source:'conversation'}}).then(r=>r);
+ await vi.waitFor(()=>expect(stream.submitStreamingCodexInput).toHaveBeenCalledOnce());
+ const second=app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{input:'reply',source:'conversation',expected_native_id:'native'}}).then(r=>r);
+ // Let the second request reach the shared input queue before changing the binding.
+ await new Promise(resolve=>setImmediate(resolve));
+ getDb().prepare("UPDATE sessions SET codex_session_id='replacement' WHERE id='s'").run();release(true);
+ await first;const response=await second;expect(response.statusCode).toBe(409);expect(response.json().submission).toBe('rejected');expect(stream.submitStreamingCodexInput).toHaveBeenCalledOnce();
+});

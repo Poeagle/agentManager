@@ -4,9 +4,9 @@ test('period allocations remain coherent across dimensions, expansion and search
  await page.route('**/api/codex/**',route=>route.fulfill({json:route.request().url().includes('/insights')?{usage:{storage:{kind:'csv',path:'/fixture/usage-csv/account'},checked_at:'2026-11-14T08:00:00Z',initialized:true,partial:false,timezone:'UTC',quota_hours:[{hour:'2026-11-09T01:00:00+00:00',quota:1},{hour:'2026-11-10T01:00:00+00:00',quota:3}],rows:[item('2026-11-09','/A',90),item('2026-11-09','/B',10),item('2026-11-10','/A',10),item('2026-11-10','/B',90)]}}:{account:{email:'fixture@example.invalid',plan:'pro'},resets:null}}));
  await page.goto('/tests/fixtures/usage-insights.html');const project=()=>page.getByRole('row').filter({has:page.getByText('/A',{exact:true})});
  await expect(page.getByText('CSV 目录：/fixture/usage-csv/account')).toBeVisible();await expect(page.getByText('最新采集：2026/11/14 08:00:00')).toBeVisible();await expect(page.locator('.ci-observation')).toHaveCSS('flex-wrap','nowrap');
- await expect(project().locator('td').nth(8)).toHaveText('0.3');await page.getByLabel('统计维度').selectOption('week');await expect(project().locator('td').nth(8)).toHaveText('2');
- await page.getByLabel('搜索项目或目录').fill('A');await expect(project().locator('td').nth(8)).toHaveText('2');await expect(project().locator('td').nth(10)).toHaveText('50.0%');await page.getByRole('button',{name:'展开 A 模型'}).click();await expect(page.getByRole('row').filter({has:page.getByText('fixture-model',{exact:true})}).locator('td').nth(8)).toHaveText('2');
- await page.getByLabel('统计维度').selectOption('hour');await expect(project().locator('td').nth(8)).toHaveText('0.3');await page.getByLabel('统计维度').selectOption('month');await expect(project().locator('td').nth(8)).toHaveText('2');
+ await expect(project().locator('td').nth(8)).toHaveText('10 | 0.3 (33.33)');await page.getByLabel('统计维度').selectOption('week');await expect(project().locator('td').nth(8)).toHaveText('100 | 2 (50)');
+ await page.getByLabel('搜索项目或目录').fill('A');await expect(project().locator('td').nth(8)).toHaveText('100 | 2 (50)');await expect(project().locator('td').nth(9)).toHaveText('50.0%');await page.getByRole('button',{name:'展开 A 模型'}).click();await expect(page.getByRole('row').filter({has:page.getByText('fixture-model',{exact:true})}).locator('td').nth(8)).toHaveText('100 | 2 (50)');
+ await page.getByLabel('统计维度').selectOption('hour');await expect(project().locator('td').nth(8)).toHaveText('10 | 0.3 (33.33)');await page.getByLabel('统计维度').selectOption('month');await expect(project().locator('td').nth(8)).toHaveText('100 | 2 (50)');
 });
 
 for(const api of [false,true])test(`selected dates expand for weeks/months and remain exact for total (${api?'API':'subscription'})`,async({page})=>{
@@ -18,11 +18,27 @@ for(const api of [false,true])test(`selected dates expand for weeks/months and r
  await page.getByLabel('开始日期').fill('2026-11-14');await page.getByLabel('结束日期').fill('2026-11-15');await page.getByLabel('统计维度').selectOption('total');
  const root=page.locator('tr.ci-day'),project=(name:string)=>page.getByRole('row').filter({has:page.getByText(name,{exact:true})});
  await expect(root).toHaveCount(1);await expect(root).toContainText('2026-11-14 ~ 2026-11-15');await expect(root.locator('td').nth(7)).toHaveText('200');
- if(api){await expect(page.getByRole('columnheader',{name:'耗用额度',exact:true})).toHaveCount(0);await expect(page.getByRole('columnheader',{name:'预估积分',exact:true})).toHaveCount(0);}else{await expect(project('/A').locator('td').nth(8)).toHaveText('0.75');await expect(root.locator('td').nth(8)).toHaveText('5');}
+ if(api){await expect(page.getByRole('columnheader',{name:'耗用额度',exact:true})).toHaveCount(0);await expect(page.getByRole('columnheader',{name:'耗用积分 | 额度',exact:true})).toHaveCount(0);}else{await expect(project('/A').locator('td').nth(8)).toHaveText('30 | 0.75 (40)');await expect(root.locator('td').nth(8)).toHaveText('200 | 5 (40)');}
  await page.getByLabel('统计维度').selectOption('week');await expect(root).toContainText('2026-11-09 ~ 2026-11-15');await expect(root.locator('td').nth(7)).toHaveText('300');await expect(page.getByText('统计范围：2026-11-09 ~ 2026-11-15')).toBeVisible();
- if(!api)await expect(project('/A').locator('td').nth(8)).toHaveText('2.4');
+ if(!api)await expect(project('/A').locator('td').nth(8)).toHaveText('120 | 2.4 (50)');
  await page.getByLabel('统计维度').selectOption('month');await expect(root.locator('td').nth(7)).toHaveText('500');await expect(page.getByText('/Before',{exact:true})).toBeVisible();await expect(page.getByText('/After',{exact:true})).toBeVisible();await expect(page.getByText('/December',{exact:true})).toHaveCount(0);
  await page.getByLabel('统计维度').selectOption('total');await page.getByLabel('搜索项目或目录').fill('A');await expect(project('/B')).toHaveCount(0);await expect(root).toContainText('2026-11-14 ~ 2026-11-15');
- if(!api){await expect(project('/A').locator('td').nth(8)).toHaveText('0.75');await expect(project('/A').locator('td').nth(10)).toHaveText('15.0%');}
+ if(!api){await expect(project('/A').locator('td').nth(8)).toHaveText('30 | 0.75 (40)');await expect(project('/A').locator('td').nth(9)).toHaveText('15.0%');}
  expect(reads).toBe(1);await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+});
+
+test('combined credit and quota cells remain readable on desktop and mobile',async({page},info)=>{
+ const metrics={estimated_credits:3757.13,actual_quota:15,tokens:{input_tokens:852254294,cached_input_tokens:837980928,output_tokens:2856707,total_tokens:855111001}};
+ await page.route('**/api/codex/**',route=>route.fulfill({json:route.request().url().includes('/insights')?{usage:{initialized:true,partial:false,timezone:'UTC',rows:[{date:'2026-11-16',cwd:'/fixture/combined',project_name:'Combined',...metrics,models:[{model:'fixture-model',...metrics}]}]}}:{account:{email:'fixture@example.invalid',plan:'pro'},resets:null}}));
+ await page.goto('/tests/fixtures/usage-insights.html');
+ const table=page.getByRole('table',{name:'用量统计'}),row=table.getByRole('row').filter({has:page.getByText('/fixture/combined',{exact:true})}),cost=row.locator('td').nth(8);
+ await expect(table.getByRole('columnheader')).toHaveCount(10);await expect(table.getByRole('columnheader',{name:'耗用积分 | 额度',exact:true})).toBeVisible();
+ await expect(cost).toHaveText('3,757.13 | 15 (250.48)');await cost.scrollIntoViewIfNeeded();
+ expect(await cost.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+ await page.screenshot({path:info.outputPath('combined-usage-cost.png')});
+ await page.getByRole('button',{name:'展开 Combined 模型'}).click();
+ await expect(table.getByRole('row').filter({has:page.getByText('fixture-model',{exact:true})}).locator('td').nth(8)).toHaveText('3,757.13 | 15 (250.48)');
+ await page.setViewportSize({width:390,height:844});await cost.scrollIntoViewIfNeeded();
+ expect(await cost.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+ await page.screenshot({path:info.outputPath('combined-usage-cost-mobile.png')});
 });

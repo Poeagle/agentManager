@@ -46,7 +46,7 @@ export const codexAdapter: AgentAdapter = {
         apply: async (context, value) => inCodexThread(requireNative(context),async()=>(await import('./controls.js')).applyCodexModelSettings(requireNative(context), value)),
     },
     telemetry: { read: async (context) => inCodexThread(requireNative(context),async()=> (await import('./controls.js')).readConversationTelemetry(requireNative(context))),contextBreakdown:async context=>inCodexThread(requireNative(context),async()=>(await import('./context-breakdown.js')).readCodexContextBreakdown(context)) },
-    statistics: { read: async (_context, path) => (await import('./statistics.js')).readConversationStatistics(path),readProgress:async (_context,path)=>(await import('./statistics.js')).readConversationProgress(path) },
+    statistics: { read: async (context, path) => (await import('./statistics.js')).readConversationStatistics(path,!context.session.agent_environment_id?.startsWith('provider:')),readProgress:async (context,path)=>(await import('./statistics.js')).readConversationProgress(path,!context.session.agent_environment_id?.startsWith('provider:')) },
     quota: { read: async (force) => (await import('./quota.js')).readCodexWeeklyQuota({ force }) },
     retry: { retryable:retryableConversationError,inspect: async (id) => inCodexThread(id,async()=>(await import('./retry.js')).inspectCodexRetry(id)), start: async (id, failed, client) => inCodexThread(id,async()=>(await import('./retry.js')).startRetryTurn(id, failed, client)) },
     input: {

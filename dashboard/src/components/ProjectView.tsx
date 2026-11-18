@@ -28,6 +28,7 @@ import {
   type TerminalInstance,
 } from '../lib/project-session-state';
 import { moveItemByKey, orderItemsByKeys } from '../lib/reorder';
+import type {ConversationFocus} from '../lib/notifications';
 
 interface ProjectViewProps {
   currentUserId: string;
@@ -40,6 +41,8 @@ interface ProjectViewProps {
   /** When set, switch to this terminal session ID and clear it */
   focusSessionId?: string | null;
   onFocusSessionHandled?: () => void;
+  conversationTarget?:{sessionId:string;focus:ConversationFocus}|null;
+  notificationUnread?:Record<string,number>;
 }
 /** A restored tab can load independently of expensive list/history enrichment. */
 function RestoreSessionRecord({sessionId,projectId,onRestore}:{sessionId:string;projectId:string;onRestore:(session:Session)=>void}) {
@@ -141,7 +144,7 @@ const sidebarButtons = [
 // handlers), so the shallow compare holds.
 export const ProjectView = memo(ProjectViewImpl);
 
-function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled }: ProjectViewProps) {
+function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled,conversationTarget,notificationUnread }: ProjectViewProps) {
   const queryClient = useQueryClient();
   const sessionResume = useSessionResume(projectId);
   const [terminalConnectionVersions, setTerminalConnectionVersions] = useState<Record<string, number>>({});
@@ -637,7 +640,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         closedSessionIds.current.delete(focusSessionId);
         canonicalOpenSessionIdsRef.current?.add(focusSessionId);
         setClosedIdsVersion((value) => value + 1);
-        setTerminalInstances((prev) => [...prev, { id: focusSessionId, label: nextSessionTabLabel(target, prev), customLabel: terminalLabelsRef.current[focusSessionId] }]);
+        setTerminalInstances((prev) => prev.some(tab=>tab.id===focusSessionId)?prev:[...prev, { id: focusSessionId, label: nextSessionTabLabel(target, prev), customLabel: terminalLabelsRef.current[focusSessionId] }]);
         setActiveTerminalId(focusSessionId);
 
         setActiveMode('terminal');
@@ -1255,6 +1258,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         setTerminalDropTargetId(null);
                       }}
                       className="workspace-tab group touch-none"
+                      data-session-id={inst.id}
                       data-active={isActive}
                       onDragOver={(event) => {
                         if (!draggingTerminalId || draggingTerminalId === inst.id) return;
@@ -1276,6 +1280,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                       {sigSession && (
                         <span className="workspace-tab-signal">
                           <LiveSessionSignalDot session={sigSession} active={isActive} />
+                          {!!notificationUnread?.[inst.id]&&<span className="notification-tab-count" aria-label={`${notificationUnread[inst.id]} 条未读通知`}>{notificationUnread[inst.id]}</span>}
                         </span>
                       )}
                       {editingTerminalId === inst.id ? (
@@ -1653,6 +1658,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                     >
                       {shouldMount && (endedSession ? <SessionWorkspacePane
                         session={endedSession} userId={currentUserId} active={termVisible}
+                        focusTarget={conversationTarget?.sessionId===term.id?conversationTarget.focus:null}
                         controlsHost={sessionControlsHost}
                         projectPath={projectPath} onOpenFile={handleOpenInExplorer}
                         renderTerminal={renderTerminal} resuming={resuming} resumeFailed={resumeState?.phase==='error'}

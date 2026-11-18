@@ -32,3 +32,19 @@ sandboxIt('blocks egress proxy CONNECT requests to server services',async()=>{
  const result=await runAiClient({kind:'command',executable:process.execPath,arguments_json:JSON.stringify([file])},{messages:[]},5000);expect(result.content).toBe('403');expect(aiSourceSchema.safeParse({kind:'command',executable:'adapter',allowed_hosts_json:'["127.0.0.1"]'}).success).toBe(false);
 });
 it('validates the extension protocol configuration',()=>{for(const source of [{kind:'other'},{kind:'command'},{kind:'command',executable:'node',arguments_json:'"not array"'}])expect(aiSourceSchema.safeParse(source).success).toBe(false);});
+
+sandboxIt.each(['codex','claude','command'] as const)('constrains %s classification output directly instead of accepting a greeting in content', async kind => {
+ const file=join(dir,kind);
+ const schema={type:'object',properties:{kind:{type:'string',enum:['complete','input','ignore']},evidence:{type:'string'}},required:['kind','evidence'],additionalProperties:false};
+ writeFileSync(file,`#!${process.execPath}
+ const fs=require('fs');let stdin='';process.stdin.on('data',x=>stdin+=x);process.stdin.on('end',()=>{
+  const envelope=JSON.parse(stdin.slice(stdin.indexOf('{')));
+  const args=process.argv.slice(2);
+  const schema=${kind==='codex'?"JSON.parse(fs.readFileSync(args[args.indexOf('--output-schema')+1],'utf8'))":kind==='claude'?"JSON.parse(args[args.indexOf('--json-schema')+1])":"envelope.response_schema"};
+  const reply=schema.properties.kind?{kind:'input',evidence:'有什么需要我帮忙的？'}:{content:'你好！有什么需要我帮忙的？',tool_calls:[]};
+  console.log(JSON.stringify(${kind==='codex'?"{type:'item.completed',item:{type:'agent_message',text:JSON.stringify(reply)}}":kind==='claude'?"{structured_output:reply}":'reply'}));
+ });`);chmodSync(file,0o755);
+ const result=await runAiClient({kind,executable:file},{messages:[{role:'system',content:'Classify the supplied Agent reply.'},{role:'user',content:'你好！有什么需要我帮忙的？'}],response_format:{type:'json_schema',json_schema:{name:'classification',strict:true,schema}}},5000);
+ expect(JSON.parse(result.content!)).toEqual({kind:'input',evidence:'有什么需要我帮忙的？'});
+ expect(result).not.toHaveProperty('tool_calls');
+});

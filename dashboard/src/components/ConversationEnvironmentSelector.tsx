@@ -3,7 +3,7 @@ import {useEffect,useState} from 'react';
 import {useQuery,useQueryClient} from '@tanstack/react-query';
 import {api,type EnvironmentCheck,type ConversationControlsData} from '../lib/api';
 import {Dialog} from './Dialog';
-import {EnvironmentChecks} from './CodexEnvironmentPanel';
+import {EnvironmentChecks,EnvironmentDiagnostic} from './CodexEnvironmentPanel';
 type Model=ConversationControlsData['models'][number];
 export function ConversationEnvironmentSelector({sessionId,busy,onTransferred,requested,onRequestHandled}:{sessionId:string;busy:boolean;onTransferred?:()=>void;requested?:{provider:string;model:string;effort:string};onRequestHandled?:()=>void}) {
  const client=useQueryClient();const query=useQuery({queryKey:['session-environments',sessionId],queryFn:()=>api.codexEnvironments.forSession(sessionId),retry:false,staleTime:30000});
@@ -19,11 +19,11 @@ export function ConversationEnvironmentSelector({sessionId,busy,onTransferred,re
  const environments=query.data.environments.filter(environment=>environment.can_control);
  return <><label className="conversation-control-select"><span>{isClaude?'Provider':'账号'}</span><select aria-label={isClaude?'选择 Claude Provider':'选择 Codex 账号环境'} disabled={busy||working||environments.length<2} value={query.data.current} onChange={e=>{setTarget(e.target.value);setModels([]);setSelection('');setChecks([]);setError('');}}>{environments.map(e=><option key={e.id} value={e.id} disabled={!e.enabled}>{e.name}</option>)}</select><ChevronDown size={12}/></label>
  {target&&<Dialog title={isClaude?'切换 Claude Provider':'保留上下文切换 Codex 环境'} busy={working} onClose={close}>
-  <p>{isClaude?'会保留当前对话记录，并在当前标签页以新模型、新凭据开始会话。运行中的任务须先完成。':'将完整原生历史复制到目标环境，验证恢复成功后切换当前标签页。运行中的任务须先完成。'}</p>
+  <p>{isClaude?'会保留当前对话记录，并在当前标签页以新模型、新凭据开始会话。运行中的任务须先完成。':<>将完整原生历史复制到“{query.data.environments.find(e=>e.id===target)?.name}”，验证恢复成功后切换当前标签页。原会话保留；运行中的任务须先完成。已清理的历史附件保留引用，但不会恢复文件，也不阻止切换。</>}</p>
   <button type="button" disabled={working||busy} onClick={()=>void preflight()}>{working?'处理中…':isClaude?'读取 Provider 模型':'预检连接、登录、模型与项目权限'}</button>
   {checks.length>0&&<EnvironmentChecks checks={checks}/>}
   {models.length>0&&<><label className="mt-3 block">目标模型<select aria-label="目标环境模型" value={selection} disabled={working} onChange={e=>{setSelection(e.target.value);setEffort(models.find(m=>modelKey(m)===e.target.value)?.defaultEffort||'');}}>{models.map(m=><option key={modelKey(m)} value={modelKey(m)}>{query.data?.environments.find(e=>e.id===target)?.auth_mode==='api'?m.name:`${m.provider?m.provider+' · ':''}${m.name}`}</option>)}</select></label>{!isClaude&&<label className="mt-3 block">推理强度<select aria-label="目标环境推理强度" value={effort} disabled={working} onChange={e=>setEffort(e.target.value)}>{model?.efforts.map(e=><option key={e.value} value={e.value}>{e.description||e.value||'默认'}</option>)}</select></label>}</>}
-  {error&&<p role="alert">{error}</p>}
+  {error&&<p role="alert"><EnvironmentDiagnostic message={error}/></p>}
   <footer className="mt-4 flex justify-end gap-3"><button type="button" disabled={working} onClick={close}>取消</button><button type="button" disabled={working||busy||(isClaude?!model:!model)||!checks.length||checks.some(c=>!c.ok)} onClick={()=>void (isClaude?switchClaude():transfer())}>{isClaude?'切换 Provider':'复制历史并切换'}</button></footer>
- </Dialog>}{!target&&error&&<span role="alert">{error}</span>}</>;
+ </Dialog>}{!target&&error&&<span role="alert"><EnvironmentDiagnostic message={error}/></span>}</>;
 }

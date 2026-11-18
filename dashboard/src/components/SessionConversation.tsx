@@ -1,4 +1,6 @@
 import {useConversationSendGuard} from '../lib/use-conversation-send-guard';
+import {useConversationNotificationVisibility} from '../lib/use-conversation-notification-visibility';
+import type {ConversationFocus} from '../lib/notifications';
 import {ConversationBatchCard} from './ConversationBatchCard';
 import {composerKey,loadComposer,saveComposer,emptyComposer,combinedBatch,type ComposerState,type BatchEntry} from '../lib/batch-composer';
 import {
@@ -81,6 +83,7 @@ import {
 import {ConversationAttachmentPicker, ConversationMessageAttachments} from "./ConversationAttachments";
 import {useConversationAttachments} from '../lib/use-conversation-attachments';
 import type {DraftAttachment} from '../lib/conversation-attachments';
+import {ConversationBatchResizeHandle} from "./ConversationBatchResizeHandle";
 import { ConversationMarkdown } from "./ConversationMarkdown";
 import {
   ConversationWidthHandles,
@@ -92,7 +95,7 @@ import {
   mergeConversationTimeline,
   type TimelineMessage,
 } from "../lib/conversation-timeline";
-import { groupConversationProgress, pendingProgressStatistics } from "../lib/conversation-progress";
+import { groupConversationProgress, pendingProgressStatistics, withObservedToolCounts } from "../lib/conversation-progress";
 import {
   conversationTimings,
   elapsedBetween,
@@ -131,7 +134,7 @@ interface ProgressSummaryProps {
   progress?: import('../lib/api').ConversationProgressStatistics | null;
   progressScope?: 'total'|'turn'|'segment'; completed?: boolean; interrupted?: boolean;
   stepDuration?: number|null; stepRunning?: boolean; phaseSeconds?: number|null;
-  progressPhase: 'calling'|'waiting'|'unknown'; turnDuration?: number|null;
+  progressPhase: 'calling'|'waiting'|'unknown'; turnDuration?: number|null; showStatistics?:boolean;
 }
 
 function ProgressSection({
@@ -148,6 +151,7 @@ function ProgressSection({
   phaseSeconds,
   progressPhase,
   turnDuration,
+  showStatistics=true,
   children,
 }: ProgressSummaryProps & {children: ReactNode}) {
   const [preference, setPreference] = useState<boolean | null>(null);
@@ -167,7 +171,7 @@ function ProgressSection({
           aria-label={`${open ? "收起" : "展开"}进展（${count} 条）`}
           aria-expanded={open}
         >
-          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} progress={progress} progressScope={progressScope} completed={completed} interrupted={interrupted} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} turnDuration={turnDuration}/>
+          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} progress={progress} progressScope={progressScope} completed={completed} interrupted={interrupted} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} turnDuration={turnDuration} showStatistics={showStatistics}/>
           <ChevronDown size={14} className="session-chat-progress-chevron" />
         </summary>
         <div className="session-chat-progress-content">{children}</div>
@@ -176,17 +180,16 @@ function ProgressSection({
   );
 }
 
-function ProgressSummary({agent,agentName,count,active,progress,progressScope='total',completed,interrupted,stepDuration,stepRunning,phaseSeconds,progressPhase,turnDuration}:ProgressSummaryProps) {
+function ProgressSummary({agent,agentName,count,active,progress,progressScope='total',completed,interrupted,stepDuration,stepRunning,phaseSeconds,progressPhase,turnDuration,showStatistics=true}:ProgressSummaryProps) {
   return <>
           <span aria-hidden="true"><AgentIcon session={{agent}} className="h-[13px] w-[13px]" /></span>
           <span>{agentName}</span>
           <span className="session-chat-kind">progress</span>
-          <span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>
-          {progress && <span className="session-chat-message-statistics" title={progressScope==='segment'?'Usage recorded since this progress segment started; incomplete data is a lower bound.':progressScope==='total'?'Cumulative recorded usage since the previous conclusion. Incomplete history is a lower bound.':'Recorded usage for this native turn through its last progress update. Incomplete history is a lower bound.'}>{progressScope} · token: {progress.tokens?.total_tokens == null ? '—' : `${progress.complete?'':'≥'}${new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(progress.tokens.total_tokens)}`} · tools: {progress.complete?'':'≥'}{progress.tool_calls} {progress.tool_calls===1?'call':'calls'} ｜ {progress.complete?'':'≥'}{progress.tool_rounds} {progress.tool_rounds===1?'round':'rounds'}</span>}
-          {!progress&&progressScope==='segment'&&<span className="session-chat-message-statistics" title="Segment usage is unavailable">segment · token: — · tools: —</span>}
-          {active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
-          {active&&<span className="session-chat-progress-time">{progressPhase}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
-          {turnDuration!=null?<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time for this progress segment">Elapsed {formatElapsedEnglish(turnDuration)}</time>:progressScope==='segment'?<span className="session-chat-progress-time" title="Segment timing is unavailable">Elapsed —</span>:null}
+          {showStatistics&&<span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>}
+          {showStatistics&&(progress||progressScope==='segment')&&<ConversationStatisticsLabel statistics={progress?{...progress,sequence:0}:null}/>}
+          {showStatistics&&active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
+          {showStatistics&&active&&<span className="session-chat-progress-time">{progressPhase}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
+          {showStatistics&&(turnDuration!=null?<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time for this progress segment">Elapsed {formatElapsedEnglish(turnDuration)}</time>:progressScope==='segment'?<span className="session-chat-progress-time" title="Segment timing is unavailable">Elapsed —</span>:null)}
           {active ? <span className="session-chat-progress-live">In progress</span> : interrupted ? <span className="session-chat-progress-time">Interrupted</span> : completed ? <span className="session-chat-progress-time">Completed</span> : null}
   </>;
 }
@@ -200,6 +203,7 @@ const Bubble = memo(function Bubble({
   onCancelRetry,
   onCancelQueued,
   compact = false,
+  showStatistics = true,
   agent,
   agentName,
   projectPath,
@@ -221,6 +225,7 @@ const Bubble = memo(function Bubble({
   message: ConversationMessage;
   streaming: boolean;
   compact?: boolean;
+  showStatistics?:boolean;
   agent: AgentDescriptor;
   agentName: string;
   projectPath?: string;
@@ -267,6 +272,7 @@ const Bubble = memo(function Bubble({
     compact && (streaming || message.streaming) ? (
       <span className="session-chat-message-meta">
         <span className="session-chat-progress-updating">Streaming</span>
+        {showStatistics&&<ConversationStatisticsLabel statistics={message.statistics??null} interval/>}
       </span>
     ) : (
       <span className="session-chat-message-meta">
@@ -304,26 +310,18 @@ const Bubble = memo(function Bubble({
             Time pending
           </span>
         ) : null}
-        {message.role === "assistant" && message.statistics && (
+        {showStatistics && message.role === "assistant" && (message.statistics || compact || message.phase === "final") && (
           <ConversationStatisticsLabel
-            statistics={message.statistics}
-            interval={message.phase === "commentary"}
+            statistics={message.statistics??null}
+            interval={message.phase === "commentary"||!!message.streaming}
           />
         )}
-        {(durationLabel || compact || message.phase === "final") && (
+        {showStatistics && durationLabel && (
           <span
             className="session-chat-message-duration"
-            title={
-              durationLabel
-                ? metadataDurationTitle(message.phase)
-                : "Completion timing is unavailable for this interval."
-            }
+            title={metadataDurationTitle(message.phase)}
           >
-            {durationLabel
-              ? englishMetadataDuration(durationLabel)
-              : message.phase === "final"
-                ? "Total: —"
-                : "Elapsed: —"}
+            {englishMetadataDuration(durationLabel)}
           </span>
         )}
         {compact && streaming && (
@@ -581,6 +579,10 @@ export function SessionConversation({
   userId = "local",
   projectPath,
   onOpenFile,
+  focusTarget,
+  onFocusTargetVisible,
+  draftScope,
+  presentation="full",
 }: {
   session: Session;
   active: boolean;
@@ -595,6 +597,10 @@ export function SessionConversation({
   userId?: string;
   projectPath?: string;
   onOpenFile?: (path: string) => void;
+  focusTarget?:ConversationFocus|null;
+  onFocusTargetVisible?:()=>void;
+  draftScope?:string;
+  presentation?:"full"|"notification";
 }) {
   const compaction = useConversationCompaction(
     session.id,
@@ -606,6 +612,8 @@ export function SessionConversation({
   const canRead = hasPermission(permissions.data, "agent_api");
   const canSend = hasPermission(permissions.data, "agent_api", "write");
   const canAttach = agentSupports(session, "attachments");
+  const notificationView=presentation==="notification";
+  const [composerOptionsOpen,setComposerOptionsOpen]=useState(false);
   const [toolbarTarget, setToolbarTarget] = useState<HTMLDivElement | null>(null);
   const [messages, setMessages] = useState<TimelineMessage[]>([]);
   const [autoRetries, setAutoRetries] = useState<
@@ -654,7 +662,7 @@ export function SessionConversation({
   const [reconnectError, setReconnectError] = useState("");
   const reconnectAttempted = useRef(false),
     reconnectLock = useRef(false);
-  const storageKey = composerKey(userId,session.id);
+  const storageKey = composerKey(draftScope?`${userId}:${draftScope}`:userId,session.id);
   const [storageError,setStorageError]=useState('');
   const [composer,setComposer]=useState<ComposerState>(()=>{try{return loadComposer(storageKey);}catch{setStorageError('保存的草稿无法读取，请保留浏览器数据。');return emptyComposer();}});
   const composerRef=useRef({key:storageKey,value:composer});
@@ -756,6 +764,7 @@ export function SessionConversation({
   const generation = useRef<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
   const readingRoot = useRef<HTMLElement>(null);
+  const chatLayout = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const sendingRef = useRef(false);
   const submissionIdentity = useRef<{ fingerprint: string; id: string } | null>(
@@ -1278,7 +1287,7 @@ export function SessionConversation({
           return;
         }
         if (frame.type === "snapshot" || frame.type === "patch") failures = 0;
-        if(frame.type==='progress_statistics'&&frame.native_id===agentNativeId(session)){if(frame.progress)setProgressStatistics(frame.progress);return;}
+        if(frame.type==='progress_statistics'&&frame.native_id===agentNativeId(session)){setProgressStatistics(frame.progress??null);return;}
         if(frame.type==='input_reconciliation'&&frame.native_id===agentNativeId(session)&&Array.isArray(frame.messages)){setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));return;}
         if (
           frame.type === "patch" &&
@@ -2033,6 +2042,10 @@ export function SessionConversation({
     return !!item.started_at&&!!tailMessage.timestamp&&Date.parse(item.started_at)>Date.parse(tailMessage.timestamp);
   });
   const latestSlotActivity=[...slotActivities].reverse().find(item=>item.status==='running')||slotActivities.at(-1);
+  const pendingStatistics=withObservedToolCounts(pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||tail?.kind==='progress'||!!pendingSegment)?progressStatistics:null,tail?.kind==='progress'?tailMessage?.statistics?.segment:undefined,tail?.kind==='progress',tailMessage),slotActivities.length,liveTurn||'');
+  const streamingIndex=displayed.findIndex(message=>message.id===streamingId);
+  const streamingPrevious=streamingIndex>=0?displayed.slice(0,streamingIndex).filter(message=>!message.queued).at(-1):undefined;
+  const streamingStatistics=streamingIndex>=0&&progressStatistics?.turn_id===liveTurn?pendingProgressStatistics(progressStatistics,streamingPrevious?.statistics?.segment,streamingPrevious?.role==='assistant',streamingPrevious):null;
   useEffect(()=>{
     if(!pendingGroupId)return;
     if(!pinned.current){setUnread(true);return;}
@@ -2071,6 +2084,36 @@ export function SessionConversation({
     null;
   const questionActive =
     !!pendingQuestion && minimizedQuestion !== pendingQuestion.id;
+  const focusProgress=useRef({request:0,pages:0,done:false});
+  const [notificationFocusMissing,setNotificationFocusMissing]=useState(false);
+  const focusVisible=useRef(onFocusTargetVisible);focusVisible.current=onFocusTargetVisible;
+  const focusNativeId=agentNativeId(session);
+  const loadNotificationHistory=useRef(loadOlder);loadNotificationHistory.current=loadOlder;
+  useConversationNotificationVisibility(readingRoot,session.id,agentNativeId(session),active,
+    JSON.stringify([messages.map(m=>[m.id,m.phase]),requests.map(r=>r.id),pendingQuestion?.id,questionActive]));
+  useEffect(()=>{
+    if(!active||!focusTarget||focusTarget.nativeId!==focusNativeId||loading)return;
+    if(focusProgress.current.request!==focusTarget.requestId){
+      focusProgress.current={request:focusTarget.requestId,pages:0,done:false};setNotificationFocusMissing(false);
+      readingRoot.current?.querySelectorAll<HTMLElement>('[data-notification-focus]').forEach(node=>delete node.dataset.notificationFocus);
+    }
+    const progress=focusProgress.current;if(progress.done)return;
+    const source=focusTarget.sourceId?.replace(/^question:/,'');
+    const pending=pendingQuestions.find(message=>message.async_questions?.some(question=>question.id===source));
+    if(pending&&(selectedQuestion!==pending.id||minimizedQuestion===pending.id)){
+      setSelectedQuestion(pending.id);setMinimizedQuestion(null);return;
+    }
+    const node=[...(readingRoot.current?.querySelectorAll<HTMLElement>('[data-chat-message-id],[data-interaction-id]')||[])].find(node=>
+      !!focusTarget.messageId&&(node.dataset.chatMessageId===focusTarget.messageId||node.dataset.interactionId===focusTarget.messageId)
+      ||!!source&&JSON.parse(node.dataset.questionIds||'[]').includes(source));
+    if(node){
+      pinned.current=false;setNotificationFocusMissing(false);
+      const frame=requestAnimationFrame(()=>{node.scrollIntoView({block:'center'});node.dataset.notificationFocus='true';progress.done=true;focusVisible.current?.();});
+      return()=>cancelAnimationFrame(frame);
+    }
+    if(!older&&hasMore&&focusTarget.messageId&&!focusTarget.sourceId?.startsWith('interaction:')&&progress.pages<20){progress.pages++;void loadNotificationHistory.current();}
+    else if(!older&&!pending&&!requests.some(request=>request.id===focusTarget.messageId))setNotificationFocusMissing(true);
+  },[active,focusTarget,loading,older,hasMore,messages,requests,pendingQuestions,selectedQuestion,minimizedQuestion,focusNativeId]);
   async function ignoreQuestions(ids: string[], ignored = true) {
     if (ignoringQuestions || !ids.length) return;
     setIgnoringQuestions(true);
@@ -2154,7 +2197,7 @@ export function SessionConversation({
       <Bubble
         key={stableKey}
         active={active}
-        message={message}
+        message={message.id===streamingId&&streamingStatistics?{...message,statistics:streamingStatistics}:message}
         streaming={message.id === streamingId}
         retrying={
           message.id === activeError?.id &&
@@ -2174,6 +2217,7 @@ export function SessionConversation({
             : undefined
         }
         compact={compact}
+        showStatistics={!notificationView}
         durationLabel={timings.get(message.id)?.label}
         agent={sessionAgent(session)}
         agentName={agentName}
@@ -2191,16 +2235,17 @@ export function SessionConversation({
         if(!active||event.key!=='Enter'||!(event.ctrlKey||event.metaKey)||event.nativeEvent.isComposing||document.querySelector('[aria-modal="true"]'))return;
         if(!(event.target instanceof HTMLElement)||event.target.closest('.session-chat-editor,input,textarea,select,[contenteditable],.session-batch-send'))return;
         event.preventDefault();event.stopPropagation();if(!event.repeat)submitWithShortcut();
-      }}><div className="session-chat-layout">
-      <section ref={readingRoot} className="session-chat" aria-label="会话对话">
-        <ConversationPromptEnhancer
+      }}><div ref={chatLayout} className="session-chat-layout">
+      <section ref={readingRoot} className="session-chat" aria-label="会话对话" data-session-id={session.id} data-presentation={presentation}>
+        {notificationFocusMissing&&<p className="session-pane-warning" role="status">通知对应的消息不在当前可读历史中，可继续加载更早的对话核对。</p>}
+        {(!notificationView||composerOptionsOpen)&&<ConversationPromptEnhancer
           sessionId={session.id}
           active={active}
           canEdit={canSend && !ended && !waiting && !sendGuard.blocking}
           value={draft}
           attachments={attachments.items}
           onApply={changeDraft}
-        />
+        />}
         <div className="session-chat-reading">
           <div
             ref={list}
@@ -2242,11 +2287,14 @@ export function SessionConversation({
                 const final=next?.kind==='message'&&next.message.role==='assistant'&&next.message.phase==='final'&&!next.message.async_questions?.length&&!!next.message.turn_id&&next.message.turn_id===last?.turn_id?next.message:null;
                 const saved=final?.statistics?.segment||last?.statistics?.segment||(pending?pendingSegment:null);
                 const live=progressStatistics?.segment;
-                const part=busy&&groups.at(-1)===group&&progressStatistics?.turn_id===last?.turn_id&&saved&&live?.id===saved.id&&!!saved.start_at&&live.start_at===saved.start_at?live:saved;
-                const summary=part?{...part,turn_id:last?.turn_id||''}:null;
+                const activeGroup=busy&&(pending||groups.at(-1)===group);
+                const liveMatches=progressStatistics?.turn_id===(last?.turn_id||liveTurn)&&live&&(!saved?(last?progressStatistics?.step?.after_message_id===last.id||progressStatistics?.step?.after_sequence!=null&&progressStatistics.step.after_sequence===last.sequence:!!pendingSegment||!continuingAfterFollowup):live.id===saved.id&&!!saved.start_at&&live.start_at===saved.start_at);
+                const part=activeGroup&&liveMatches?live:saved;
+                const summary=withObservedToolCounts(part?{...part,turn_id:last?.turn_id||liveTurn||'',sequence:0}:null,pending?slotActivities.length:0,liveTurn||'');
                 return (
                   <ProgressSection
                     key={`progress-${group.id}`}
+                    showStatistics={!notificationView}
                     agent={sessionAgent(session)}
                     agentName={agentName}
                     count={group.messages.length+(pending?1:0)}
@@ -2278,7 +2326,7 @@ export function SessionConversation({
                     ))}
                     {pending&&<ConversationProgressPending number={group.messages.length+1} tool={latestSlotActivity}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
-                      statistics={pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||!!last||!!pendingSegment)?progressStatistics:null,last?.statistics?.segment,!!last)} now={now} connected={liveState==='connected'}/>}
+                      statistics={pendingStatistics} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
                   </ProgressSection>
                 );
               })}
@@ -2295,7 +2343,7 @@ export function SessionConversation({
                           ? `${agentName} is working`
                           : `Waiting for ${agentName}`}
                     </span>
-                    <time className="session-chat-elapsed" style={{color:timeColor(elapsed)}}>{elapsed}s</time>
+                    {!notificationView&&<time className="session-chat-elapsed" style={{color:timeColor(elapsed)}}>{elapsed}s</time>}
                     </div>
                     <p>
                       {continuingAfterFollowup
@@ -2331,13 +2379,13 @@ export function SessionConversation({
               <div ref={bottom} />
             </div>
           </div>
-          <ConversationWidthHandles
+          {!notificationView&&<ConversationWidthHandles
             root={readingRoot}
             scroll={list}
             active={active}
             storageKey={`agentmanager-chat-width:${userId}`}
-          />
-          {canRead && (
+          />}
+          {canRead && !notificationView && (
             <ConversationNavigator
               messages={displayed}
               scroll={list}
@@ -2362,7 +2410,7 @@ export function SessionConversation({
                 还有 {requests.length - 1} 项待处理
               </p>
             )}
-            {requests.slice(0, 1).map((request) => (
+            {(requests.some(request=>request.id===focusTarget?.messageId)?requests.filter(request=>request.id===focusTarget?.messageId):requests.slice(0, 1)).map((request) => (
               <ConversationInteraction
                 key={`${connectionGeneration}:${request.id}`}
                 request={request}
@@ -2397,7 +2445,7 @@ export function SessionConversation({
         {storageError&&<p role="alert" className="session-chat-error">{storageError}</p>}
 
         <footer className="session-chat-composer">
-          <div className="session-chat-status" role="status">
+          <div className="session-chat-status" role="status" hidden={notificationView&&liveState==='connected'&&!ended&&!reconnectable&&!compaction.state}>
             <div className="session-chat-execution-status" hidden={hideFooterExecutionStatus}>
             <span
               className={`session-chat-connection ${liveState}`}
@@ -2660,10 +2708,11 @@ export function SessionConversation({
                 disabled={!canAttach || !canSend || ended || sending || sendGuard.blocking}
                 onFiles={attachments.enqueue}
               />
-              <div className="session-chat-controls-slot conversation-toolbar"><label className="conversation-control-select conversation-composer-mode"><span>模式</span><select aria-label="发送模式" value={composer.mode} disabled={sending||sendGuard.blocking||!!composer.pending} onChange={e=>persistComposer({mode:e.target.value as ComposerState['mode']})}><option value="immediate">立即发送</option><option value="batch">批量发送</option></select><ChevronDown size={12}/></label><div ref={setToolbarTarget}/></div>
+              {notificationView&&<button type="button" className="session-chat-more" aria-label="更多回复选项" aria-expanded={composerOptionsOpen} aria-controls={`notification-composer-options-${session.id}`} onClick={()=>setComposerOptionsOpen(value=>!value)}>{composer.mode==='batch'?'批量 · 更多':'更多'}<ChevronDown size={12}/></button>}
+              {(!notificationView||composerOptionsOpen)&&<div id={`notification-composer-options-${session.id}`} className="session-chat-controls-slot conversation-toolbar"><label className="conversation-control-select conversation-composer-mode"><span>模式</span><select aria-label="发送模式" value={composer.mode} disabled={sending||sendGuard.blocking||!!composer.pending} onChange={e=>persistComposer({mode:e.target.value as ComposerState['mode']})}><option value="immediate">立即发送</option><option value="batch">批量发送</option></select><ChevronDown size={12}/></label><div ref={setToolbarTarget}/></div>}
               <span className="session-chat-send-hint">{composer.mode==='batch'?'Enter 加入批量 · Ctrl+Enter 发送':'Enter 发送 · Shift+Enter 换行'}</span>
               <div className="session-chat-send-actions">
-                <button
+                {(!notificationView||composerOptionsOpen)&&<button
                   type="button"
                   className="session-chat-enhance"
                   aria-label="优化当前输入"
@@ -2680,7 +2729,7 @@ export function SessionConversation({
                   }
                 >
                   <Sparkles size={17} />
-                </button>
+                </button>}
                 {!questionActive&&stopButton}
                 <button
                   type="submit"
@@ -2705,7 +2754,7 @@ export function SessionConversation({
               </div>
             </div>
           </form>
-          {agentSupports(session, "controls") &&
+          {(!notificationView||composerOptionsOpen) && agentSupports(session, "controls") &&
             !!page?.native_id &&
             canRead && (
               <ConversationControls
@@ -2720,7 +2769,8 @@ export function SessionConversation({
             )}
         </footer>
       </section>
-        {composer.mode==='batch'&&<aside className="session-chat-batch" aria-label="批量待发内容">
+        {composer.mode==='batch'&&(composer.entries.length>0||composer.pending)&&<aside className="session-chat-batch" aria-label="批量待发内容">
+          <ConversationBatchResizeHandle layout={chatLayout} active={active} storageKey={`agentmanager-batch-width:${userId}`}/>
           <header className="session-batch-header"><span>批量待发</span><small>{composer.entries.length} 条</small></header>
           <div className="session-chat-batch-content">{composer.entries.length?composer.entries.map((entry,index)=><article key={entry.id}><header><small>消息 {index+1}</small><time dateTime={entry.createdAt} title="加入待发区时间">{formatDisplayTimestamp(entry.createdAt)}</time><button type="button" className="session-batch-recall" aria-label={`撤回第 ${index+1} 条消息`} disabled={!canSend||sending||sendGuard.blocking||!!composer.pending?.entryIds.includes(entry.id)||attachments.uploading||attachments.failed} onClick={()=>recallBatch(entry)}>撤回</button><button type="button" className="session-batch-delete" aria-label={`删除第 ${index+1} 条消息`} disabled={!canSend||sending||sendGuard.blocking||!!composer.pending?.entryIds.includes(entry.id)} onClick={()=>deleteBatch(entry)}>删除</button></header><ConversationMessageAttachments text={entry.text} items={entry.attachments} projectId={session.project_id} projectPath={projectPath} onOpenFile={onOpenFile}/></article>):<div className="session-batch-empty"><span>暂未添加消息</span><p>在输入框编写内容，按 Enter 加入这里，整理完成后一起发送。</p></div>}</div>
           {composer.pending&&<p role="status">发送结果待确认。恢复连接后自动核对，请勿重复发送。</p>}

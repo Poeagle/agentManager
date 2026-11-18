@@ -5,6 +5,7 @@ import type {AgentStreamFrame as ConversationStreamFrame} from './agents/events.
 import {agentForSession} from './agents/index.js';
 import {sessionAgentContext} from './agents/session.js';
 import {conversationErrorMessage} from './conversation-error.js';
+import {broadcastEphemeral} from './event-store.js';
 
 const DELAYS=[10_000,20_000,40_000] as const;
 export type RetryStatus='waiting'|'submitting'|'running'|'succeeded'|'exhausted'|'cancelled'|'unknown';
@@ -116,6 +117,7 @@ export class ConversationRetryManager {
   private save(job:ConversationRetry) {
     this.db.prepare(`INSERT INTO conversation_retries(session_id,native_id,root_turn_id,data) VALUES (?,?,?,?) ON CONFLICT(session_id,native_id,root_turn_id) DO UPDATE SET data=excluded.data,updated_at=datetime('now')`).run(job.session_id,job.native_id,job.root_turn_id,JSON.stringify(job));
     for(const emit of this.listeners.get(job.session_id)??[])emit({type:'retry',retry:{...job,failed_turn_ids:[...job.failed_turn_ids]}});
+    broadcastEphemeral({type:'session.retry',session_id:job.session_id,data:{retry:job}});
   }
   private current(job:ConversationRetry) {return !this.stopped&&this.jobs.get(job.session_id)===job;}
   private authorized(job:ConversationRetry) {return this.deps.allowed(job.session_id,job.user_id,job.native_id);}

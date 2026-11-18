@@ -31,13 +31,32 @@ test('renders each native delta before the item completes and keeps one progress
   emit('item/completed',{threadId,turnId,completedAtMs:Date.now(),item:{type:'agentMessage',id:itemId,phase:'commentary',text:'第一段已经到达。第二段继续到达。'}});await expect(bubble).toHaveAttribute('data-streaming','false');await expect(bubble.getByLabel('进展完成时间')).toBeVisible();const toolRow=chat.locator('.session-chat-live-tool>summary');
   let dispatched=performance.now();emit('item/started',{threadId,turnId,item:{type:'commandExecution',id:'live-command',command:'npm run live-check'}});
   await expect(toolRow).toContainText('npm run live-check',{timeout:1000});expect(performance.now()-dispatched).toBeLessThan(1000);
+  // Keep RPC connected while durable statistics arrive after their text. Both
+  // the completed row and active row must update without another text message.
+  const metricsLog=join(logs,`rollout-${native}.jsonl`),metricRecord=(type:string,payload:unknown)=>JSON.stringify({timestamp:new Date().toISOString(),type,payload})+'\n';
+  const metricUsage=(total:number)=>metricRecord('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{input_tokens:10000,cached_input_tokens:9999,output_tokens:200,reasoning_output_tokens:50,total_tokens:10200}}});
+  appendFileSync(metricsLog,metricRecord('turn_context',{turn_id:turnId,model:'gpt-6.1-sol',service_tier:'default'})+metricRecord('event_msg',{type:'task_started',turn_id:turnId})+metricRecord('response_item',{type:'message',id:itemId,role:'assistant',phase:'commentary',content:[{type:'output_text',text:'第一段已经到达。第二段继续到达。'}]})+metricUsage(10200)+metricRecord('response_item',{type:'function_call',call_id:'live-command'}));
+  await expect(bubble.locator('.session-chat-message-statistics')).toContainText('10.2K｜10K｜10K (99.99%)｜50｜200｜0.075',{timeout:1000});
+  const currentStats=chat.locator('.session-chat-progress-pending .session-chat-message-statistics');
+  await expect(currentStats).toContainText('1 round | 1 call',{timeout:1000});
+  dispatched=performance.now();appendFileSync(metricsLog,metricUsage(20400));
+  await expect(currentStats).toContainText('10.2K｜10K｜10K (99.99%)｜50｜200｜0.075',{timeout:1000});expect(performance.now()-dispatched).toBeLessThan(1000);
+  await expect(currentStats).not.toContainText('step ·');await expect(currentStats.locator('.session-chat-estimated-cost')).toHaveCSS('color','rgb(126, 34, 206)');
+  await expect(currentStats.locator('.session-chat-tool-counts')).toHaveCSS('color','rgb(29, 78, 216)');
+  const healthy=await currentStats.locator('.session-chat-cache-hit').evaluate(node=>getComputedStyle(node).color);const channels=healthy.match(/[\d.]+/g)!.map(Number);expect(channels[1]).toBeGreaterThan(channels[0]);
+  await page.evaluate(()=>document.documentElement.setAttribute('data-theme','midnight'));
+  await expect(currentStats.locator('.session-chat-estimated-cost')).toHaveCSS('color','rgb(196, 161, 255)');await expect(currentStats.locator('.session-chat-tool-counts')).toHaveCSS('color','rgb(121, 180, 255)');
+  const dark=await currentStats.locator('.session-chat-cache-hit').evaluate(node=>getComputedStyle(node).color);expect(dark.match(/[\d.]+/g)!.map(Number)[1]).toBeGreaterThan(channels[1]);
+  await page.evaluate(()=>document.documentElement.setAttribute('data-theme','light'));
+  await expect(bubble.locator('.session-chat-message-statistics')).toContainText('10.2K｜');
+
   dispatched=performance.now();emit('item/completed',{threadId,turnId,item:{type:'commandExecution',id:'live-command',command:'npm run live-check',status:'completed',aggregatedOutput:'check passed'}});
   await expect(toolRow).toContainText('Waiting',{timeout:1000});expect(performance.now()-dispatched).toBeLessThan(1000);
   await expect(toolRow).toContainText('npm run live-check');
   await toolRow.click();await expect(chat.locator('.session-chat-live-tool .session-chat-tool-result')).toHaveText('check passed');
   await expect(chat.locator('.session-chat-live-tool-details')).toHaveText('check passed');
   emit('turn/completed',{threadId,turn:{id:turnId,status:'completed',completedAt:Date.now()/1000}});
-await expect(chat.getByText('Ready for your next message',{exact:true})).toBeVisible();expect(submitted).toHaveLength(1);
+await expect(chat.getByText('Ready for your next message',{exact:true})).toBeVisible();expect(submitted).toHaveLength(1);appendFileSync(metricsLog,metricRecord('event_msg',{type:'task_complete',turn_id:turnId}));
   // Keep the rollout unchanged while a reply waits through compaction. The
   // existing RPC stream must drive the tab state and distinguish queueing.
   const log=join(logs,`rollout-${native}.jsonl`),call='async-question',question='使用哪个测试邮箱？';

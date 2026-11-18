@@ -7,10 +7,11 @@ import {getDb} from '../src/db/index.js';
 import {saveCodexEnvironment} from '../src/services/agents/codex/environments.js';
 import {currentCodexEngine} from '../src/services/agents/codex/engine-context.js';
 import {transferCodexEnvironment} from '../src/services/agents/codex/environment-transfer.js';
+import {checkAccountProject,checkAccountAttachments} from '../src/services/agents/codex/account-transport.js';
 import {usageOrigins} from '../src/services/agents/codex/usage-provenance.js';
 const fixture=vi.hoisted(()=>({sourceFile:'',targetFile:'',cleanup:vi.fn(),rpc:vi.fn(),lifecycle:vi.fn()}));
 vi.mock('../src/services/agents/codex/history-bundle.js',()=>({omitAdditionalToolsForEndpoint:vi.fn(()=>false),preparePagedHistory:vi.fn(async()=>{await copyFile(fixture.sourceFile,fixture.targetFile);return {path:fixture.targetFile,importedIds:['import-parent'],finish:async(keep:boolean)=>fixture.cleanup(keep)};})}));
-vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),ensureAccountTransport:vi.fn(async(id:string)=>({socket:'/fixture/'+id,home:'/fixture/home'})),closeAccountTransport:vi.fn(),checkAccountProject:vi.fn(),accountCommand:vi.fn()}));
+vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),ensureAccountTransport:vi.fn(async(id:string)=>({socket:'/fixture/'+id,home:'/fixture/home'})),closeAccountTransport:vi.fn(),checkAccountProject:vi.fn(),checkAccountAttachments:vi.fn()}));
 vi.mock('../src/services/agents/codex/controls.js',()=>({readEngineModelsForEnvironment:vi.fn(async()=>[{model:'fixture-model',provider:'openai',efforts:[{value:'high'}],defaultEffort:'high'}])}));
 vi.mock('../src/services/prompt-context.js',()=>({findCodexRollout:vi.fn(async()=>fixture.sourceFile)}));
 vi.mock('../src/services/agents/codex/account-files.js',()=>({stageEnvironmentHistory:vi.fn(async()=>{await copyFile(fixture.sourceFile,fixture.targetFile);return {path:fixture.targetFile,cleanup:async()=>{fixture.cleanup();await unlink(fixture.targetFile);}};})}));
@@ -21,7 +22,7 @@ const native='019ff001-1111-7111-8111-111111111111',fresh='019ff001-2222-7222-82
 const preference={model:'fixture-model',provider:'openai',effort:'high'};
 let active:boolean,paginated:boolean,failResume:boolean,dropHistory:boolean,reads:number;
 beforeEach(async()=>{
- vi.clearAllMocks();db=createTestDatabase();owner=createUser({username:'owner',password:'password1'}).id;
+ vi.clearAllMocks();vi.mocked(checkAccountProject).mockResolvedValue(undefined);vi.mocked(checkAccountAttachments).mockResolvedValue(undefined);db=createTestDatabase();owner=createUser({username:'owner',password:'password1'}).id;
  const c={username:'fixture',port:22,identityFile:'',codexCommand:'codex',codexHome:''};
  sourceId=(await saveCodexEnvironment({name:'source',connection:c,allowed_user_ids:[owner]})).id;
  targetId=(await saveCodexEnvironment({name:'target',connection:{...c,username:'second'},allowed_user_ids:[owner]})).id;
@@ -46,6 +47,19 @@ describe('full native environment transfer preparation',()=>{
   expect(fixture.rpc).toHaveBeenCalledWith('thread/fork',expect.objectContaining({model:'fixture-model',modelProvider:'openai',sandbox:'workspace-write',approvalPolicy:'on-request',deferGoalContinuation:true}));
   expect(fixture.rpc.mock.calls.map(c=>c[0])).not.toContain('turn/start');expect(fixture.cleanup).toHaveBeenCalledOnce();expect(reads).toBe(2);
   expect(usageOrigins(targetId)[fresh]).toEqual({after:expect.any(String)});
+ });
+ it('checks deduplicated history attachments separately from project access',async()=>{
+  const attachments=JSON.stringify([{path:'/fixture/expired.png'},{path:'/fixture/expired.png'},{path:'/fixture/retained.png'}]);
+  getDb().prepare("INSERT INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments) VALUES('s','input','key','text',?)").run(attachments);
+  expect(await transferCodexEnvironment('s',owner,targetId,preference)).toMatchObject({ok:true});
+  expect(checkAccountProject).toHaveBeenCalledWith(expect.anything(),'/fixture/project');
+  expect(checkAccountAttachments).toHaveBeenCalledWith(expect.anything(),['/fixture/expired.png','/fixture/retained.png']);
+ });
+ it('preserves the source and does not fork when a retained attachment is inaccessible',async()=>{
+  vi.mocked(checkAccountAttachments).mockRejectedValueOnce(Error('目标系统用户无法读取仍存在的历史附件'));
+  expect(await transferCodexEnvironment('s',owner,targetId,preference)).toMatchObject({ok:false,error:expect.stringContaining('历史附件')});
+  expect(fixture.rpc.mock.calls.map(c=>c[0])).not.toContain('thread/fork');expect(fixture.cleanup).not.toHaveBeenCalled();
+  expect(getDb().prepare("SELECT agent_environment_id,codex_session_id FROM sessions WHERE id='s'").get()).toEqual({agent_environment_id:sourceId,codex_session_id:native});
  });
  it('refuses an active source before copying any history',async()=>{active=true;expect(await transferCodexEnvironment('s',owner,targetId,preference)).toMatchObject({ok:false,error:expect.stringContaining('仍在执行')});expect(fixture.cleanup).not.toHaveBeenCalled();});
  it('archives a partially created target on resume failure and preserves source ownership',async()=>{failResume=true;expect(await transferCodexEnvironment('s',owner,targetId,preference)).toMatchObject({ok:false,error:'target disconnected'});expect(fixture.rpc).toHaveBeenCalledWith('thread/archive',{threadId:fresh});expect(fixture.cleanup).toHaveBeenCalledOnce();expect(getDb().prepare("SELECT agent_environment_id,codex_session_id FROM sessions WHERE id='s'").get()).toEqual({agent_environment_id:sourceId,codex_session_id:native});});

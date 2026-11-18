@@ -8,6 +8,8 @@ export interface ChannelConnection {
 export interface BotTransport {
   status: ChannelConnection;
   deliver(chatId: string, content: string, context: Record<string, unknown>, deliveryId: string): Promise<void>;
+  uploadImage?(data:Buffer,filename:string):Promise<string>;
+  sendImage?(chatId:string,mediaId:string):Promise<void>;
 }
 const transports = new Map<string, BotTransport>();
 const changes = new EventEmitter();
