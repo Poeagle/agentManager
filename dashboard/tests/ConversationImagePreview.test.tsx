@@ -8,6 +8,20 @@ import {api} from '../src/lib/api';
 vi.mock('../src/components/FileExplorer',()=>({FileExplorer:({openFileRequest,readOnly}:{openFileRequest:{path:string};readOnly:boolean})=><div data-testid="preview-file" data-readonly={readOnly}>{openFileRequest.path}</div>}));
 const image={kind:'image' as const,name:'截图.png',path:'/project/.agentmanager/pastes/test.png'};
 describe('conversation image preview',()=>{
+  it('previews linked images in tight and nested lists without duplicating loose-list previews',async()=>{
+    const preview=vi.spyOn(api.files,'preview').mockRejectedValue(new Error('Forbidden'));
+    try{
+      const content='- 告警详情：[弹窗截图](/tmp/dialog.png) · [报告截图](/tmp/report.png)\n  - 子项：nested/child.png\n- 其他内容';
+      const view=render(<ConversationMarkdown content={content} streaming messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      await waitFor(()=>expect(preview).toHaveBeenCalledTimes(3));
+      expect(preview).toHaveBeenCalledWith('/tmp/dialog.png',expect.any(AbortSignal),undefined);
+      expect(preview).toHaveBeenCalledWith('/project/nested/child.png',expect.any(AbortSignal),'p');
+      expect(view.container.querySelectorAll('.conversation-linked-images')).toHaveLength(2);
+      view.rerender(<ConversationMarkdown content={'- 第一项：[图片](/tmp/loose.png)\n\n- 第二项'} messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      await waitFor(()=>expect(preview).toHaveBeenCalledTimes(4));
+      expect(view.container.querySelectorAll('.conversation-linked-images')).toHaveLength(1);
+    }finally{preview.mockRestore();}
+  });
   it('opens an attachment in a centered dialog, zooms and restores focus without opening a file',()=>{
     const open=vi.fn();render(<ConversationMessageAttachments items={[image]} projectId="p" onOpenFile={open}/>);
     const button=screen.getByRole('button',{name:'打开附件 截图.png'});button.focus();fireEvent.click(button);
@@ -45,6 +59,63 @@ describe('conversation image preview',()=>{
     const preview=vi.spyOn(api.files,'preview').mockRejectedValue(new Error('Forbidden'));
     try{render(<ConversationMarkdown content="![外部截图](/tmp/example.png)" messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
       await waitFor(()=>expect(preview).toHaveBeenCalledWith('/tmp/example.png',expect.any(AbortSignal),undefined));expect(await screen.findByText('图片加载失败：外部截图')).toBeVisible();
+    }finally{preview.mockRestore();}
+  });
+  it('previews local image links and paths together while retaining the original links',async()=>{
+    const preview=vi.spyOn(api.files,'preview').mockResolvedValue(new Blob(['image']));
+    const create=vi.fn().mockReturnValue('blob:test-image'),revoke=vi.fn();
+    vi.stubGlobal('URL',class extends URL {static createObjectURL=create;static revokeObjectURL=revoke;});
+    try{
+      const first='结果：[弹窗](/tmp/dialog.png) · /project/report.jpg';
+      const view=render(<ConversationMarkdown content={first} streaming messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      await waitFor(()=>expect(preview).toHaveBeenCalledTimes(2));
+      expect(preview).toHaveBeenCalledWith('/tmp/dialog.png',expect.any(AbortSignal),undefined);
+      expect(preview).toHaveBeenCalledWith('/project/report.jpg',expect.any(AbortSignal),'p');
+      expect(screen.getByRole('link',{name:/弹窗/})).toBeVisible();
+      const row=view.container.querySelector('.conversation-linked-images')!;
+      expect(within(row).getAllByRole('button')).toHaveLength(2);
+      view.rerender(<ConversationMarkdown content={first+' · [重复](/tmp/dialog.png) · [文本](/tmp/readme.txt)'} messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      expect(within(row).getAllByRole('button')).toHaveLength(2);expect(preview).toHaveBeenCalledTimes(2);
+      fireEvent.click(await screen.findByRole('button',{name:'预览图片 dialog.png'}));expect(screen.getByRole('dialog',{name:'图片预览 · dialog.png'})).toBeVisible();
+      view.unmount();expect(revoke).toHaveBeenCalledTimes(2);
+    }finally{preview.mockRestore();vi.unstubAllGlobals();}
+  });
+  it('does not create local previews for remote links, code blocks or existing Markdown images',()=>{
+    const preview=vi.spyOn(api.files,'preview').mockRejectedValue(new Error('Forbidden'));
+    try{
+      render(<ConversationMarkdown content={'[远程](https://example.com/a.png)\n\n```\n/tmp/code.png\n```\n\n![图片](https://example.com/b.png)'} messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      expect(preview).not.toHaveBeenCalled();expect(screen.getAllByRole('button',{name:/预览图片/})).toHaveLength(1);
+    }finally{preview.mockRestore();}
+  });
+  it('keeps the link usable when an inline image path is denied',async()=>{
+    const preview=vi.spyOn(api.files,'preview').mockRejectedValue(new Error('Forbidden'));
+    try{
+      render(<ConversationMarkdown content={'截图：`/tmp/private.png`'} messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      expect(await screen.findByText('图片加载失败：private.png')).toBeVisible();
+      expect(screen.getByRole('link',{name:'/tmp/private.png'})).toBeVisible();
+    }finally{preview.mockRestore();}
+  });
+  it('previews plain relative image paths against the project as the stream grows',async()=>{
+    const preview=vi.spyOn(api.files,'preview').mockRejectedValue(new Error('Forbidden'));
+    try{
+      const first='截图：screenshots/report.final.png，另一个 ./images/第二张.JPG';
+      const view=render(<ConversationMarkdown content={first} streaming messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      await waitFor(()=>expect(preview).toHaveBeenCalledTimes(2));
+      expect(preview).toHaveBeenCalledWith('/project/screenshots/report.final.png',expect.any(AbortSignal),'p');
+      expect(preview).toHaveBeenCalledWith('/project/images/第二张.JPG',expect.any(AbortSignal),'p');
+      expect(screen.getByRole('link',{name:'screenshots/report.final.png'})).toBeVisible();
+      view.rerender(<ConversationMarkdown content={first+'，文件名 third.webp。'} messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      await waitFor(()=>expect(preview).toHaveBeenCalledTimes(3));
+      expect(preview).toHaveBeenCalledWith('/project/third.webp',expect.any(AbortSignal),'p');
+    }finally{preview.mockRestore();}
+  });
+  it('does not treat plain relative paths as project files without a project or interpret URLs and code as local images',()=>{
+    const preview=vi.spyOn(api.files,'preview').mockRejectedValue(new Error('Forbidden'));
+    try{
+      const view=render(<ConversationMarkdown content={'screenshots/a.png\n\n```\nscreenshots/b.png\n```\n\nhttps://example.com/assets/c.png'} messageId="m" projectId={null} onNavigate={()=>{}}/>);
+      expect(screen.queryByRole('link',{name:'screenshots/a.png'})).toBeNull();expect(preview).not.toHaveBeenCalled();
+      view.rerender(<ConversationMarkdown content={'普通文字和 report.png.txt。\n\n```\nscreenshots/b.png\n```\n\nhttps://example.com/assets/c.png'} messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      expect(preview).not.toHaveBeenCalled();
     }finally{preview.mockRestore();}
   });
   it('uses the same dialog for Markdown image links and reports loading failures',()=>{

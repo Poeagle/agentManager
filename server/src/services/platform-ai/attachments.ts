@@ -76,7 +76,16 @@ async function downloadImage(source: ImageSource, signal?: AbortSignal): Promise
 
 /** The inbox is already durable before downloading temporary WeCom media. */
 export function prepareImages(messageId: string, signal?: AbortSignal): Promise<void> {
-  const existing = preparations.get(messageId); if (existing) return existing;
+  const existing = preparations.get(messageId);
+  if(existing){
+    if(!signal)return existing;
+    if(signal.aborted)return Promise.reject(new Error('图片接收已暂停'));
+    return new Promise<void>((resolve,reject)=>{
+      const abort=()=>{signal.removeEventListener('abort',abort);reject(new Error('图片接收已暂停'));};
+      signal.addEventListener('abort',abort,{once:true});
+      existing.then(()=>{signal.removeEventListener('abort',abort);resolve();},error=>{signal.removeEventListener('abort',abort);reject(error);});
+    });
+  }
   const work = prepareImagesOnce(messageId, signal).finally(() => preparations.delete(messageId));
   preparations.set(messageId, work); return work;
 }

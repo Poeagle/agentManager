@@ -15,6 +15,7 @@ export interface NotificationPage {
 export type NotificationFilter='pending'|'unread'|'all';
 export const notificationApi={
   list:(query:{filter?:NotificationFilter;project_id?:string;before?:number}={})=>fetchJSON<NotificationPage>(`/notifications?${new URLSearchParams(Object.entries(query).map(([key,value])=>[key,String(value)]))}`),
+  readVisible:(input:{session_id:string;native_id:string;message_ids:string[];question_ids:string[]})=>fetchJSON<{ok:boolean}>('/notifications/read-visible',{method:'POST',body:JSON.stringify(input)}),
   read:(input:{ids?:number[];through_id?:number;project_id?:string})=>fetchJSON<{ok:boolean}>('/notifications/read',{method:'POST',body:JSON.stringify(input)}),
   dismiss:(input:{ids?:number[];through_id?:number;project_id?:string})=>fetchJSON<{ok:boolean}>('/notifications/dismiss',{method:'POST',body:JSON.stringify(input)}),
   preferences:(muted_project_ids:string[])=>fetchJSON<{ok:boolean}>('/notifications/preferences',{method:'PUT',body:JSON.stringify({muted_project_ids})}),

@@ -10,7 +10,7 @@ import type {AgentStreamFrame,AgentStreamSnapshot} from '../src/services/agents/
 import {observeConversationFile} from '../src/services/conversation-file-stream.js';
 import {notificationRoutes} from '../src/routes/notifications.js';
 import {streamRoutes} from '../src/routes/stream.js';
-import {broadcastEphemeral} from '../src/services/event-store.js';
+import {broadcastEphemeral,subscribe} from '../src/services/event-store.js';
 import {rememberInputSource} from '../src/services/conversation-input-links.js';
 import {listNotifications,notificationSession,putNotification,pruneNotifications,notificationInputBoundary,settleNotificationsForInput} from '../src/services/notifications.js';
 
@@ -59,12 +59,41 @@ it('keeps reading separate from answering and follows queued answers, cancellati
   history(runtime({pending_questions:[{id:'group',questions:[q],timestamp:now()}]}));
   const first=listNotifications(owner);expect(first.pending).toBe(1);
   await app.inject({method:'POST',url:'/api/notifications/read',headers:{cookie},payload:{ids:[first.notifications[0].id]}});
-  expect(listNotifications(owner)).toMatchObject({pending:1,unread:0});
+  expect(listNotifications(owner)).toMatchObject({pending:0,unread:0,notifications:[]});
+  expect(stored('question')[0].state).toBe('pending');
   history(runtime({submitted_question_ids:[q.id],queued_answer_count:1}));
   expect(stored('question')[0].state).toBe('submitted');expect(listNotifications(owner).notifications).toEqual([]);
   history(runtime({pending_questions:[{id:'group',questions:[q],timestamp:now()}]}));
   expect(listNotifications(owner).pending).toBe(1);
   history(runtime());expect(stored('question')[0].state).toBe('resolved');expect(listNotifications(owner).notifications).toEqual([]);
+});
+
+it('clears a previously read legacy notice without answering its question',async()=>{
+  const session=notificationSession('s')!;
+  putNotification(session,{kind:'question',state:'pending',source_id:'legacy',title:'问题',body:'需要回答'});
+  const row=stored('question')[0];getDb().prepare("UPDATE notifications SET read_at='2026-01-01T00:00:00Z' WHERE id=?").run(row.id);
+  await app.inject({method:'POST',url:'/api/notifications/read',headers:{cookie:otherCookie},payload:{ids:[row.id]}});
+  expect(listNotifications(owner).notifications).toHaveLength(1);
+  await app.inject({method:'POST',url:'/api/notifications/read',headers:{cookie},payload:{ids:[row.id]}});
+  expect(listNotifications(owner).notifications).toEqual([]);expect(stored('question')[0].state).toBe('pending');
+  putNotification(session,{kind:'question',state:'pending',source_id:'legacy',title:'问题',body:'需要回答'});
+  expect(listNotifications(owner).notifications).toEqual([]);
+});
+
+it('clears exact visible messages even outside the first page, with user and native-session isolation',async()=>{
+  const session=notificationSession('s')!;
+  putNotification(session,{kind:'result',state:'info',source_id:'older',message_id:'older-message',title:'结果',body:'旧结果'});
+  putNotification(session,{kind:'question',state:'pending',source_id:'question:visible-q',title:'问题',body:'需要回答'});
+  for(let i=0;i<55;i++)putNotification(session,{kind:'result',state:'info',source_id:`new-${i}`,message_id:`new-${i}`,title:'结果',body:'较新的结果'});
+  expect(listNotifications(owner).notifications.some(row=>row.source_id==='older')).toBe(false);
+  const payload={session_id:'s',native_id:'opaque/thread',message_ids:['older-message'],question_ids:['visible-q']};
+  expect((await app.inject({method:'POST',url:'/api/notifications/read-visible',headers:{cookie:otherCookie},payload})).statusCode).toBe(404);
+  expect((await app.inject({method:'POST',url:'/api/notifications/read-visible',headers:{cookie},payload:{...payload,native_id:'stale'}})).statusCode).toBe(404);
+  expect((await app.inject({method:'POST',url:'/api/notifications/read-visible',headers:{cookie},payload})).statusCode).toBe(200);
+  const rows=getDb().prepare("SELECT source_id,dismissed_at,state FROM notifications WHERE source_id IN ('older','question:visible-q','new-0') ORDER BY source_id").all() as Array<{source_id:string;dismissed_at:string|null;state:string}>;
+  expect(rows.find(row=>row.source_id==='older')?.dismissed_at).toBeTruthy();
+  expect(rows.find(row=>row.source_id==='question:visible-q')).toMatchObject({state:'pending',dismissed_at:expect.any(String)});
+  expect(rows.find(row=>row.source_id==='new-0')?.dismissed_at).toBeNull();
 });
 
 it('updates live approvals in place and rejects malformed read/preference requests',async()=>{
@@ -100,7 +129,7 @@ it('muting suppresses counts while preserving entries, and read-all cannot consu
   await app.inject({method:'POST',url:'/api/notifications/read',headers:{cookie},payload:{through_id:through}});
   expect(listNotifications(owner).unread).toBe(1);
   await app.inject({method:'PUT',url:'/api/notifications/preferences',headers:{cookie},payload:{muted_project_ids:['p']}});
-  expect(listNotifications(owner)).toMatchObject({unread:0,pending:0,notifications:[{muted:true},{muted:true}]});
+  expect(listNotifications(owner)).toMatchObject({unread:0,pending:0,notifications:[{muted:true}]});
 });
 
 it('survives migration/restart without losing read state and removes only settled retained history',async()=>{
@@ -219,4 +248,14 @@ it('keeps manually read errors quiet on replay but not a distinct later failure 
   putNotification(session,failure);expect(listNotifications(owner).notifications).toEqual([]);
   putNotification(session,{...failure,message_id:'failure-2',body:'新的失败'});
   expect(listNotifications(owner)).toMatchObject({pending:1,unread:1,notifications:[{message_id:'failure-2'}]});
+});
+
+it('wakes external observers once for a new final from the shared stream',()=>{
+ const events:string[]=[];const stop=subscribe(event=>{if(event.type==='session.final')events.push(event.session_id!);});
+ try {
+  const final=message('new-final');
+  history(runtime(),[message('old-final',{timestamp:'2000-01-01T00:00:00Z'}),message('streaming',{streaming:true}),final]);
+  history(runtime(),[final]);
+  expect(events).toEqual(['s']);
+ } finally {stop();}
 });

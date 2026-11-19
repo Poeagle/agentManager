@@ -17,13 +17,29 @@ import {MarkdownTable} from './AiReply';
 const Streaming=createContext(false);
 const SourceOffset=createContext(0);
 const Trailing=createContext<{content:ReactNode;end:number;kind?:string}|null>(null);
+const ImagePaths=createContext<{root?:string;projectId:string|null}>({projectId:null});
 const MarkdownSegment=memo(function MarkdownSegment({source,offset,components,footer,kind}:{source:string;offset:number;components:Components;footer?:ReactNode;kind?:string}) {
+  const {root}=useContext(ImagePaths);
   const trailing=useMemo(()=>footer?{content:footer,end:source.trimEnd().length,kind}:null,[footer,source,kind]);
-  return <SourceOffset.Provider value={offset}><Trailing.Provider value={trailing}><ReactMarkdown remarkPlugins={[remarkGfm,conversationCjkStrong,conversationFilePaths]} components={components} urlTransform={url=>/^(?:file:|sandbox:\/)/i.test(url)?url:defaultUrlTransform(url)} skipHtml>{source}</ReactMarkdown></Trailing.Provider></SourceOffset.Provider>;
+  return <SourceOffset.Provider value={offset}><Trailing.Provider value={trailing}><ReactMarkdown remarkPlugins={[remarkGfm,conversationCjkStrong,[conversationFilePaths,{relativeImages:!!root}]]} components={components} urlTransform={url=>/^(?:file:|sandbox:\/)/i.test(url)?url:defaultUrlTransform(url)} skipHtml>{source}</ReactMarkdown></Trailing.Provider></SourceOffset.Provider>;
 });
 const trailingKinds=new Set(['paragraph','list','blockquote']);
-function FooterParagraph({children,node,className,...props}:any){const trailing=useContext(Trailing),show=!!trailing&&['paragraph','blockquote','list'].includes(trailing.kind||'')&&node?.position?.end.offset===trailing.end;return <p {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{show?<span>{children}</span>:children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</p>;}
-function FooterListItem({children,node,className,...props}:any){const trailing=useContext(Trailing),show=!!trailing&&trailing.kind==='list'&&node?.position?.end.offset===trailing.end&&!node.children?.some((child:any)=>['ul','ol'].includes(child.tagName)||child.tagName==='p'&&child.position?.end.offset===trailing.end);return <li {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</li>;}
+function FooterParagraph({children,node,className,...props}:any){
+  const trailing=useContext(Trailing),show=!!trailing&&['paragraph','blockquote','list'].includes(trailing.kind||'')&&node?.position?.end.offset===trailing.end;
+  const {root,projectId}=useContext(ImagePaths);
+  const parts=node?.children||[];
+  const imageOnly=parts.some((part:any)=>part.type==='element')&&parts.every((part:any)=>
+    part.type==='text'?!part.value.trim():part.type==='element'&&(part.tagName==='img'||part.tagName==='a'&&part.children?.length===1&&part.children[0].tagName==='img'));
+  const images=linkedImages(parts,root);
+  return <><p {...props} className={[className,imageOnly?'conversation-image-paragraph':'',show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{show?<span>{children}</span>:children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</p><LinkedImagePreviews images={images} root={root} projectId={projectId}/></>;
+}
+function FooterListItem({children,node,className,...props}:any){
+  const trailing=useContext(Trailing),show=!!trailing&&trailing.kind==='list'&&node?.position?.end.offset===trailing.end&&!node.children?.some((child:any)=>['ul','ol'].includes(child.tagName)||child.tagName==='p'&&child.position?.end.offset===trailing.end);
+  const {root,projectId}=useContext(ImagePaths);
+  // Paragraphs and nested lists render their own previews.
+  const images=linkedImages((node?.children||[]).filter((child:any)=>!['p','ul','ol','pre'].includes(child.tagName)),root);
+  return <li {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}<LinkedImagePreviews images={images} root={root} projectId={projectId}/></li>;
+}
 export function conversationLocalPath(source:string|undefined,root:string|undefined):string|null {
   if(!source||!root||source.startsWith('#')||source.startsWith('?')||source.startsWith('//')||/^[a-z][a-z\d+.-]*:/i.test(source))return null;
   try{
@@ -48,6 +64,27 @@ export function conversationFileLink(source:string|undefined,root:string|undefin
     if(decoded.includes('\0')||(!decoded.startsWith('/')&&!root))return null;
     return normalizeExplorerPath(decoded.startsWith('/')?decoded:`${root}/${decoded}`);
   }catch{return null;}
+}
+
+// Collect only local image links and inline paths, never code blocks or existing images.
+function linkedImages(parts:any[],root?:string):string[] {
+  const images:string[]=[];
+  const visit=(part:any)=>{
+    if(images.length>=16||part.type!=='element'||part.tagName==='img')return;
+    if(part.tagName==='a'||part.tagName==='code'){
+      if(part.tagName==='a'&&part.children?.some((child:any)=>child.tagName==='img'))return;
+      const source=part.tagName==='a'?part.properties?.href:part.children?.map((child:any)=>child.value||'').join('');
+      const path=typeof source==='string'?conversationFileLink(source,root):null;
+      if(path&&/\.(?:png|jpe?g|gif|webp|bmp|svg|ico|avif)$/i.test(path)&&!images.includes(path))images.push(path);
+      return;
+    }
+    part.children?.forEach(visit);
+  };
+  parts.forEach(visit);return images;
+}
+
+function LinkedImagePreviews({images,root,projectId}:{images:string[];root?:string;projectId:string|null}) {
+  return images.length>0?<div className="conversation-linked-images">{images.map(path=><MarkdownImage key={path} src={path} alt={path.split('/').pop()} root={root} projectId={projectId}/>)}</div>:null;
 }
 
 const CodeBlock=memo(function DiagramOrCode({source,language}:{source:string;language:string}){const streaming=useContext(Streaming);return isMermaidCode(source,language)?<MermaidDiagram source={source} streaming={streaming}/>:<PlainCodeBlock source={source} language={language}/>;});
@@ -121,7 +158,7 @@ export const ConversationMarkdown=memo(function ConversationMarkdown({content,me
         if(path){
           const inProject=!!projectPath&&isWithinExplorerRoot(path,projectPath);
           const rootPath=inProject?projectPath!:path.slice(0,path.lastIndexOf('/'))||'/';
-          return <a href={href} title={title||path} onClick={event=>{event.preventDefault();if(previewFile)previewFile({path,rootPath,projectId:inProject?projectId:null,name:path.split('/').pop()||path});else if(inProject)onOpenFile?.(path);}}>{children}{!inProject&&<> (<code>{path}</code>)</>}</a>;
+          return <a href={href} title={title||path} onClick={event=>{event.preventDefault();if(previewFile)previewFile({path,rootPath,projectId:inProject?projectId:null,name:path.split('/').pop()||path});else if(inProject)onOpenFile?.(path);}}>{children}</a>;
         }
         if(href?.startsWith('#'))return <a href={href} onClick={event=>{
           const scope=event.currentTarget.closest('.session-chat-message');let fragment:string;try{fragment=decodeURIComponent(href.slice(1));}catch{return;}
@@ -136,5 +173,5 @@ export const ConversationMarkdown=memo(function ConversationMarkdown({content,me
     };
   },[messageId,projectPath,projectId,onOpenFile,onNavigate]);
   const inline=trailingKinds.has(blocks.at(-1)?.kind||'');
-  return <ConversationImagePreviewRoot><Streaming.Provider value={streaming}><div className="markdown-preview conversation-markdown">{blocks.map((block,index)=><MarkdownSegment key={block.key} source={block.source} offset={block.offset} components={components} kind={block.kind} footer={inline&&index===blocks.length-1?footer:undefined}/>)}{!inline&&footer&&<div className="conversation-footer-fallback">{footer}</div>}</div></Streaming.Provider></ConversationImagePreviewRoot>;
+  return <ConversationImagePreviewRoot><Streaming.Provider value={streaming}><ImagePaths.Provider value={{root:projectPath,projectId}}><div className="markdown-preview conversation-markdown">{blocks.map((block,index)=><MarkdownSegment key={block.key} source={block.source} offset={block.offset} components={components} kind={block.kind} footer={inline&&index===blocks.length-1?footer:undefined}/>)}{!inline&&footer&&<div className="conversation-footer-fallback">{footer}</div>}</div></ImagePaths.Provider></Streaming.Provider></ConversationImagePreviewRoot>;
 });

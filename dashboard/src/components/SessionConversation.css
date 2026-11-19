@@ -207,6 +207,7 @@
 .conversation-markdown blockquote {border-left:3px solid color-mix(in srgb,var(--accent) 40%,var(--border));padding:2px 0 2px 14px;margin:14px 0;color:var(--text-secondary);}
 .conversation-markdown hr {margin:24px 0;opacity:.7;}
 .conversation-markdown img {max-width:min(100%,320px);max-height:220px;object-fit:contain;border-radius:8px;}
+.conversation-markdown p.conversation-image-paragraph,.session-chat-message .markdown-preview p.conversation-image-paragraph {display:inline-block;vertical-align:top;max-width:100%;margin:0 8px 6px 0;}
 .conversation-image-error {color:var(--text-muted);font-size:12px;}
 .conversation-table-scroll {max-width:100%;overflow-x:auto;margin:10px 0;border:1px solid var(--border);border-radius:8px;overscroll-behavior-x:contain;}
 .conversation-markdown .conversation-table-scroll table {width:max-content;min-width:100%;border-collapse:collapse;margin:0;font-size:13px;line-height:1.7;}

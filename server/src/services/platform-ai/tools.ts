@@ -92,6 +92,15 @@ export async function platformApi(app: FastifyInstance, userId: string, method: 
   } finally { destroySession(cookie); }
 }
 
+export async function copyImagesToSession(app:FastifyInstance,userId:string,sessionId:string,images:Array<{mime:string;data:Buffer}>):Promise<string> {
+  const paths:string[]=[];
+  for(const image of images){
+    const result=await platformApi(app,userId,'POST',`/api/sessions/${encodeURIComponent(sessionId)}/paste-image`,{dataUrl:`data:${image.mime};base64,${image.data.toString('base64')}`});
+    paths.push(result.path);
+  }
+  return paths.length?'\n\n用户提供的参考图片（请打开原图查看，不要仅根据文字猜测）：\n'+paths.map((path,index)=>`图片 ${index+1}：${path}`).join('\n'):'';
+}
+
 export async function executePlatformTool(app: FastifyInstance, conversation: Conversation, name: string, rawArguments: string, operationId: string, messageId?: string): Promise<any> {
   const args = JSON.parse(rawArguments);
   const userId = conversation.user_id;
@@ -120,14 +129,7 @@ export async function executePlatformTool(app: FastifyInstance, conversation: Co
       return image;
     });
   };
-  const copyImages = async (sessionId: string, images: ReturnType<typeof imagesForWork>) => {
-    const paths: string[] = [];
-    for (const image of images) {
-      const result = await platformApi(app, userId, 'POST', `/api/sessions/${encodeURIComponent(sessionId)}/paste-image`, {dataUrl: `data:${image.mime};base64,${image.data.toString('base64')}`});
-      paths.push(result.path);
-    }
-    return paths.length ? '\n\n用户提供的参考图片（请打开原图查看，不要仅根据文字猜测）：\n' + paths.map((path, index) => `图片 ${index + 1}：${path}`).join('\n') : '';
-  };
+  const copyImages = (sessionId:string,images:ReturnType<typeof imagesForWork>)=>copyImagesToSession(app,userId,sessionId,images);
   if(name==='list_projects') {
     z.object({}).strict().parse(args);
     const {projects}=await platformApi(app,userId,'GET','/api/projects');

@@ -74,6 +74,15 @@ describe('quoted notification quick replies',()=>{
   await process();expect(inputs).toHaveLength(1);expect(delivered).toEqual([quoted]);
  });
 
+ it.each([{status:202,cleared:true},{status:500,cleared:false}])('clears only the matched web notification after confirmed quoted input ($status)',async ({status,cleared})=>{
+  const quoted=await notice();const now=new Date().toISOString();
+  const inserted=getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,message_id,kind,state,title,body,created_at,updated_at) VALUES (?,'a','native-a','question:q','message-q','question','pending','问题','Agent 的问题',?,?)").run(user,now,now);
+  getDb().prepare("UPDATE platform_ai_outbox SET reply_context=json_set(reply_context,'$.personal_notification_id',?) WHERE dedupe_key LIKE 'task:%'").run(Number(inserted.lastInsertRowid));
+  inputStatus=status;reply(quoted);await process();
+  const row=getDb().prepare('SELECT read_at,dismissed_at,state FROM notifications WHERE id=?').get(inserted.lastInsertRowid) as {read_at:string|null;dismissed_at:string|null;state:string};
+  expect(!!row.read_at).toBe(cleared);expect(!!row.dismissed_at).toBe(cleared);expect(row.state).toBe('pending');
+ });
+
  it('shows the source once and resolves a rendered Markdown quote within its original chat',async()=>{
   const quoted=await notice();
   expect(quoted).toBe('**Project / a**\n\nAgent 的问题');

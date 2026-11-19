@@ -2,12 +2,13 @@ import type {FastifyPluginAsync} from 'fastify';
 import {z} from 'zod';
 import {requirePermission} from '../services/rbac.js';
 import {userOwnsProject} from '../auth.js';
-import {listNotifications,markNotificationsRead,dismissNotifications,notificationPreferences,saveNotificationPreferences} from '../services/notifications.js';
+import {listNotifications,markNotificationsRead,markVisibleNotifications,dismissNotifications,notificationPreferences,saveNotificationPreferences} from '../services/notifications.js';
 import {NotificationObserver} from '../services/notification-observer.js';
 import {getDb} from '../db/index.js';
 
 const querySchema=z.object({filter:z.enum(['pending','unread','all']).optional(),project_id:z.string().min(1).max(256).optional(),before:z.coerce.number().int().positive().optional()}).strict();
 const readSchema=z.object({ids:z.array(z.number().int().positive()).max(200).default([]),through_id:z.number().int().positive().optional(),project_id:z.string().min(1).max(256).optional()}).strict().refine(value=>value.ids.length||value.through_id,{message:'请选择要标记的通知'});
+const visibleSchema=z.object({session_id:z.string().min(1).max(256),native_id:z.string().min(1).max(1024),message_ids:z.array(z.string().min(1).max(1024)).max(200),question_ids:z.array(z.string().min(1).max(1024)).max(200)}).strict();
 const preferencesSchema=z.object({muted_project_ids:z.array(z.string().min(1).max(256)).max(1000)}).strict();
 
 /** Personal dashboard routes. Sending input continues through the original
@@ -27,6 +28,14 @@ export const notificationRoutes:FastifyPluginAsync=async app=>{
     const parsed=readSchema.safeParse(req.body);
     if(!parsed.success)return reply.code(400).send({error:'通知标识无效'});
     markNotificationsRead(req.user!.id,parsed.data.ids,parsed.data.through_id,parsed.data.project_id);
+    return {ok:true};
+  });
+  app.post('/notifications/read-visible',async(req,reply)=>{
+    if(!requirePermission(req,reply,'agent_api'))return reply;
+    const parsed=visibleSchema.safeParse(req.body);
+    if(!parsed.success)return reply.code(400).send({error:'可见消息标识无效'});
+    const {session_id,native_id,message_ids,question_ids}=parsed.data;
+    if(!markVisibleNotifications(req.user!.id,session_id,native_id,message_ids,question_ids))return reply.code(404).send({error:'会话不存在或已变更'});
     return {ok:true};
   });
   app.post('/notifications/dismiss',async(req,reply)=>{
