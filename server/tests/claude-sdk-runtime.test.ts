@@ -3,12 +3,17 @@ import {afterEach,describe,expect,it,vi} from 'vitest';
 const sdk=vi.hoisted(()=>({messages:[] as any[],queries:[] as any[],interrupts:0}));
 vi.mock('@anthropic-ai/claude-agent-sdk',()=>({
   query:(request:any)=>{
-    sdk.queries.push(request);
+    const handle={
+      ...request,
+      interrupt:async()=>{sdk.interrupts++;},
+      close:()=>{handle.closed=true;},
+    };
+    sdk.queries.push(handle);
     return {
     async *[Symbol.asyncIterator](){for(const message of sdk.messages){await Promise.resolve();yield message;}},
-    setModel:async(model:string)=>{sdk.queries.at(-1).setModel=model;},
-    interrupt:async()=>{sdk.interrupts++;},
-    close:()=>{sdk.queries.at(-1).closed=true;},
+    setModel:async(model:string)=>{handle.setModel=model;},
+    interrupt:handle.interrupt,
+    close:handle.close,
   };},
 }));
 
@@ -213,6 +218,20 @@ describe('Claude Agent SDK runtime',()=>{
     expect(await runtime.stopTurn(turn)).toBe(true);expect(sdk.interrupts).toBe(1);
     expect(runtime.runtime()).toMatchObject({state:'idle',completed_turn_id:expect.any(String)});
     resolve({type:'result',subtype:'success',uuid:assistant,session_id:session});await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));expect(await runtime.stopTurn(turn)).toBe(false);
+  });
+  it('publishes idle immediately when the SDK interrupt RPC never settles',async()=>{
+    let resolve!:(value:any)=>void;sdk.messages=[new Promise(done=>{resolve=done;})];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    expect(await runtime.submit('Work')).toBe(true);
+    const turn=runtime.snapshot().turn_id!;
+    vi.spyOn(sdk.queries.at(-1),'interrupt').mockImplementation(()=>new Promise(()=>{}));
+    const started=Date.now();
+    expect(await runtime.stopTurn(turn)).toBe(true);
+    expect(Date.now()-started).toBeLessThan(100);
+    expect(runtime.runtime().state).toBe('idle');
+    expect(runtime.snapshot().busy).toBe(false);
+    resolve({type:'result',subtype:'success',uuid:assistant,session_id:session});
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
   });
   it('finishes the turn when result arrives before the streaming input closes',async()=>{
     sdk.messages=[

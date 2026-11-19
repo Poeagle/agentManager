@@ -1241,23 +1241,24 @@ class ClaudeRuntime {
     if (!this.busy || !turnId) return;
     const active = this.active;
     this.closeActiveQuery();
-    try {
-      await active?.interrupt();
-    } catch {
-      /* Closing the query is authoritative. */
-    } finally {
-      // The SDK may finish a transport close asynchronously. The user's stop
-      // request and the closed query remain authoritative for UI state.
-      this.active = null;
-      this.abort = null;
-      this.busy = false;
-      this.stage = "idle";
-      this.completedAt = new Date().toISOString();
-      this.completedTurnId = this.observedTurnId();
-      for (const [id, activity] of this.activities)
-        if (activity.status === "running") this.finishTool(id);
-      this.publish();
-    }
+    // Closing the query and aborting its transport are authoritative local
+    // stop signals. The SDK's interrupt RPC may wait on a remote stream that is
+    // already gone; never keep the session busy while waiting for that courtesy
+    // notification to settle.
+    this.active = null;
+    this.abort = null;
+    this.busy = false;
+    this.stage = "idle";
+    this.completedAt = new Date().toISOString();
+    this.completedTurnId = this.observedTurnId();
+    for (const [id, activity] of this.activities)
+      if (activity.status === "running") this.finishTool(id);
+    this.publish();
+    void Promise.resolve()
+      .then(() => active?.interrupt())
+      .catch(() => {
+        /* Closing the query remains authoritative. */
+      });
   }
   private closeActiveQuery() {
     const active = this.active;
