@@ -47,6 +47,8 @@ describe('conversation Markdown',()=>{
   });
   it('opens external absolute paths and file URLs through the authorized file preview',()=>{
     render(<ConversationMarkdown {...props} content={'[脚本](/data/ymchen/dolphindb_exporter/scripts/export_cpu_metrics.py)\n\n[截图](file:///tmp/ops945.png)'}/>);
+    expect(screen.getByRole('link',{name:'脚本'})).toHaveTextContent(/^脚本$/);
+    expect(screen.getByRole('link',{name:'截图'})).toHaveTextContent(/^截图$/);
     fireEvent.click(screen.getByRole('link',{name:/脚本/}));expect(screen.getByRole('dialog',{name:'文件预览 · export_cpu_metrics.py'})).toBeVisible();
     fireEvent.click(screen.getByRole('button',{name:'关闭文件预览 · export_cpu_metrics.py'}));
     fireEvent.click(screen.getByRole('link',{name:/截图/}));expect(screen.getByRole('dialog',{name:'文件预览 · ops945.png'})).toBeVisible();

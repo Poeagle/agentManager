@@ -19,8 +19,9 @@ const SourceOffset=createContext(0);
 const Trailing=createContext<{content:ReactNode;end:number;kind?:string}|null>(null);
 const ImagePaths=createContext<{root?:string;projectId:string|null}>({projectId:null});
 const MarkdownSegment=memo(function MarkdownSegment({source,offset,components,footer,kind}:{source:string;offset:number;components:Components;footer?:ReactNode;kind?:string}) {
+  const {root}=useContext(ImagePaths);
   const trailing=useMemo(()=>footer?{content:footer,end:source.trimEnd().length,kind}:null,[footer,source,kind]);
-  return <SourceOffset.Provider value={offset}><Trailing.Provider value={trailing}><ReactMarkdown remarkPlugins={[remarkGfm,conversationCjkStrong,conversationFilePaths]} components={components} urlTransform={url=>/^(?:file:|sandbox:\/)/i.test(url)?url:defaultUrlTransform(url)} skipHtml>{source}</ReactMarkdown></Trailing.Provider></SourceOffset.Provider>;
+  return <SourceOffset.Provider value={offset}><Trailing.Provider value={trailing}><ReactMarkdown remarkPlugins={[remarkGfm,conversationCjkStrong,[conversationFilePaths,{relativeImages:!!root}]]} components={components} urlTransform={url=>/^(?:file:|sandbox:\/)/i.test(url)?url:defaultUrlTransform(url)} skipHtml>{source}</ReactMarkdown></Trailing.Provider></SourceOffset.Provider>;
 });
 const trailingKinds=new Set(['paragraph','list','blockquote']);
 function FooterParagraph({children,node,className,...props}:any){
@@ -147,7 +148,7 @@ export const ConversationMarkdown=memo(function ConversationMarkdown({content,me
         if(path){
           const inProject=!!projectPath&&isWithinExplorerRoot(path,projectPath);
           const rootPath=inProject?projectPath!:path.slice(0,path.lastIndexOf('/'))||'/';
-          return <a href={href} title={title||path} onClick={event=>{event.preventDefault();if(previewFile)previewFile({path,rootPath,projectId:inProject?projectId:null,name:path.split('/').pop()||path});else if(inProject)onOpenFile?.(path);}}>{children}{!inProject&&<> (<code>{path}</code>)</>}</a>;
+          return <a href={href} title={title||path} onClick={event=>{event.preventDefault();if(previewFile)previewFile({path,rootPath,projectId:inProject?projectId:null,name:path.split('/').pop()||path});else if(inProject)onOpenFile?.(path);}}>{children}</a>;
         }
         if(href?.startsWith('#'))return <a href={href} onClick={event=>{
           const scope=event.currentTarget.closest('.session-chat-message');let fragment:string;try{fragment=decodeURIComponent(href.slice(1));}catch{return;}
