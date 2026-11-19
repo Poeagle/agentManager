@@ -11,6 +11,7 @@
 .conversation-image-preview-canvas img {display:block;max-width:none;max-height:none;object-fit:contain;flex-shrink:0;}
 .conversation-image-preview-hint {margin-top:8px;font-size:11px;color:var(--text-muted);text-align:center;}
 .conversation-inline-image {display:inline-block;max-width:100%;cursor:zoom-in;}
+.conversation-linked-images {display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;margin:0 0 6px;}
 .conversation-preview-layout {display:flex;height:100%;min-height:0;min-width:0;}
 .conversation-preview-main {flex:1;min-width:0;min-height:0;}
 .conversation-preview-sidebar {width:46%;min-width:300px;max-width:min(70%,calc(100% - 328px));flex-shrink:0;margin-left:8px;}

@@ -47,6 +47,40 @@ describe('conversation image preview',()=>{
       await waitFor(()=>expect(preview).toHaveBeenCalledWith('/tmp/example.png',expect.any(AbortSignal),undefined));expect(await screen.findByText('图片加载失败：外部截图')).toBeVisible();
     }finally{preview.mockRestore();}
   });
+  it('previews local image links and paths together while retaining the original links',async()=>{
+    const preview=vi.spyOn(api.files,'preview').mockResolvedValue(new Blob(['image']));
+    const create=vi.fn().mockReturnValue('blob:test-image'),revoke=vi.fn();
+    vi.stubGlobal('URL',class extends URL {static createObjectURL=create;static revokeObjectURL=revoke;});
+    try{
+      const first='结果：[弹窗](/tmp/dialog.png) · /project/report.jpg';
+      const view=render(<ConversationMarkdown content={first} streaming messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      await waitFor(()=>expect(preview).toHaveBeenCalledTimes(2));
+      expect(preview).toHaveBeenCalledWith('/tmp/dialog.png',expect.any(AbortSignal),undefined);
+      expect(preview).toHaveBeenCalledWith('/project/report.jpg',expect.any(AbortSignal),'p');
+      expect(screen.getByRole('link',{name:/弹窗/})).toBeVisible();
+      const row=view.container.querySelector('.conversation-linked-images')!;
+      expect(within(row).getAllByRole('button')).toHaveLength(2);
+      view.rerender(<ConversationMarkdown content={first+' · [重复](/tmp/dialog.png) · [文本](/tmp/readme.txt)'} messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      expect(within(row).getAllByRole('button')).toHaveLength(2);expect(preview).toHaveBeenCalledTimes(2);
+      fireEvent.click(await screen.findByRole('button',{name:'预览图片 dialog.png'}));expect(screen.getByRole('dialog',{name:'图片预览 · dialog.png'})).toBeVisible();
+      view.unmount();expect(revoke).toHaveBeenCalledTimes(2);
+    }finally{preview.mockRestore();vi.unstubAllGlobals();}
+  });
+  it('does not create local previews for remote links, code blocks or existing Markdown images',()=>{
+    const preview=vi.spyOn(api.files,'preview').mockRejectedValue(new Error('Forbidden'));
+    try{
+      render(<ConversationMarkdown content={'[远程](https://example.com/a.png)\n\n```\n/tmp/code.png\n```\n\n![图片](https://example.com/b.png)'} messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      expect(preview).not.toHaveBeenCalled();expect(screen.getAllByRole('button',{name:/预览图片/})).toHaveLength(1);
+    }finally{preview.mockRestore();}
+  });
+  it('keeps the link usable when an inline image path is denied',async()=>{
+    const preview=vi.spyOn(api.files,'preview').mockRejectedValue(new Error('Forbidden'));
+    try{
+      render(<ConversationMarkdown content={'截图：`/tmp/private.png`'} messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      expect(await screen.findByText('图片加载失败：private.png')).toBeVisible();
+      expect(screen.getByRole('link',{name:'/tmp/private.png'})).toBeVisible();
+    }finally{preview.mockRestore();}
+  });
   it('uses the same dialog for Markdown image links and reports loading failures',()=>{
     render(<ConversationMarkdown content="[![示意图](https://example.com/image.png)](https://example.com/full.png)" messageId="m" projectId="p" onNavigate={()=>{}}/>);
     expect(screen.queryByRole('link')).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'预览图片 示意图'}));const dialog=screen.getByRole('dialog');fireEvent.error(within(dialog).getByRole('img'));expect(within(dialog).getByRole('alert')).toHaveTextContent('图片加载失败');
