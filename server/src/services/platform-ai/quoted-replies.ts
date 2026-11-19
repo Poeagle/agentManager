@@ -10,7 +10,8 @@ import {getTracker} from '../session-state.js';
 import {sessionPresenter} from '../session-labels.js';
 import type {AgentTextMessage} from '../prompt-context.js';
 import {ChannelError,compactText} from './channels.js';
-import {platformApi,PlatformApiError} from './tools.js';
+import {platformApi,PlatformApiError,copyImagesToSession} from './tools.js';
+import {messageAttachments,ownedImage,prepareImages} from './attachments.js';
 import {formatTaskNotification,trackTask,type Conversation,type InboxMessage} from './store.js';
 import {notificationInputBoundary,settleNotificationsForInput,markNotificationsRead} from '../notifications.js';
 
@@ -88,7 +89,7 @@ export function quotedReplyRoute(text:string,identity?:{channelId:string;externa
 }
 
 /** Does not invoke a model or retry a possibly submitted write. Durable operation records fence restarts. */
-export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conversation,message:InboxMessage,authorizeProjectNotice:ProjectNoticeAuthorizer,assertAuthorized:()=>void):Promise<string> {
+export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conversation,message:InboxMessage,authorizeProjectNotice:ProjectNoticeAuthorizer,assertAuthorized:()=>void,signal?:AbortSignal):Promise<string> {
   const id=JSON.parse(message.reply_context).direct_route;
   const route=getDb().prepare('SELECT * FROM platform_ai_reply_routes WHERE id=?').get(id) as ReplyRoute|undefined;
   if(!route||route.expires_at<Date.now())throw new ChannelError('通知关联已过期，请打开原标签页或引用最新通知。',409,true);
@@ -117,6 +118,15 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
   };
   let session=checkSession();
   if(!route.turn_key)throw new ChannelError('原通知缺少任务轮次依据，请打开标签页核对后回复。',409,true);
+  await prepareImages(message.id,signal);
+  const attachments=messageAttachments(message.id);
+  if(attachments.some(image=>image.status!=='ready'))throw new ChannelError('图片接收失败，文字和图片均未投递，请重新发送。',400,true);
+  assertAuthorized();assertSource();session=checkSession();
+  const images=attachments.map(image=>ownedImage(image.id,conversation.user_id,conversation.id));
+  if(images.some(image=>!image))throw new ChannelError('图片不可用或无权访问，文字和图片均未投递。',403,true);
+  let imagePrompt:string;
+  try{imagePrompt=await copyImagesToSession(app,conversation.user_id,session.id,images.filter(image=>image!==undefined));}
+  catch{throw new ChannelError('图片保存到会话失败，文字和图片均未投递，请重新发送。',400,true);}
   const native=await platformApi(app,conversation.user_id,'GET',`/api/sessions/${encodeURIComponent(session.id)}/agent-messages`);
   const latest=[...(native.messages||[])].reverse().find((m:AgentTextMessage)=>m.role==='user');
   if(replyTurnKey(latest)!==route.turn_key)throw new ChannelError('标签页已经进入其他任务轮次，请引用最新通知，未投递。',409,true);
@@ -126,6 +136,7 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
   session=checkSession();
   assertAuthorized();
   assertSource();
+  if(signal?.aborted)throw new Error('图片回复处理已暂停');
   const active=getDb().prepare("SELECT id FROM platform_ai_tasks WHERE session_id=? AND status IN ('running','blocked','uncertain')").get(session.id) as {id:string}|undefined;
   if(sourceTaskId&&active&&active.id!==sourceTaskId)throw new ChannelError('标签页已有更新的任务，请引用最新通知。',409,true);
   const boundary=notificationInputBoundary(session,conversation.user_id);
@@ -134,7 +145,7 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
   getDb().prepare("INSERT INTO platform_ai_operations(id,message_id,tool_name,arguments,status) VALUES(?,?, 'quoted_reply',?,'started')").run(operationId,message.id,JSON.stringify({session_id:session.id,route_id:route.id}));
   let result:string,acceptedOrUnknown=false,quietSuccess=false;
   try {
-    const sent=await platformApi(app,conversation.user_id,'POST',`/api/sessions/${encodeURIComponent(session.id)}/input`,{input:message.content+`\n\n[Platform task reference: ${operationId}]`,source:'conversation',client_id:'quoted_'+message.id,expected_native_id:route.native_id,expected_environment_id:route.environment_id});
+    const sent=await platformApi(app,conversation.user_id,'POST',`/api/sessions/${encodeURIComponent(session.id)}/input`,{input:message.content+`\n\n[Platform task reference: ${operationId}]`+imagePrompt,source:'conversation',client_id:'quoted_'+message.id,expected_native_id:route.native_id,expected_environment_id:route.environment_id});
     acceptedOrUnknown=true;
     if(!['submitted','queued'].includes(sent.status))throw Error('Unknown input receipt');
     quietSuccess=true;

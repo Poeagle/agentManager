@@ -155,15 +155,14 @@ export class WecomBotManager {
           throw error;
         }
       }
-      if(directRoute&&images.length)throw new ChannelError('引用通知的快速回复目前仅支持文字，请在标签页发送附件。',400,true);
       const result = acceptChannelMessage(channel, {externalUserId: userId, chatId, messageId, content, images, replyContext: {bot_message_id: messageId,...directRoute?{direct_route:directRoute}:{}}});
       if (result.duplicate) return;
       publishMessage(result.message_id);
       // Quoted input is delivered directly. Only errors and the Agent's answer
       // produce messages; do not open an “已收到 / 已提交” reply stream.
-      if(directRoute)return;
       // Download expiring media immediately, independently from model queue load.
       if (images.length) void prepareImages(result.message_id, connection.abort.signal).then(() => publishMessage(result.message_id)).catch(() => {});
+      if(directRoute)return;
       if (connection.streams.size >= 100) { this.reject(connection, frame, '指令已接收，将通过后续消息返回结果。'); return; }
       const owner = getDb().prepare('SELECT user_id FROM platform_ai_conversations WHERE id=?').get(result.conversation_id) as {user_id: string};
       const stream: Stream = {messageId, userId: owner.user_id, externalUserId: userId, frame: {headers: {req_id: frame.headers.req_id}},

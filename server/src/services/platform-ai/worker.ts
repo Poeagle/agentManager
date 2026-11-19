@@ -408,9 +408,10 @@ export class PlatformAiWorker {
     let content:string;
     try {
       this.assertConversation(conversation);
-      content=await dispatchQuotedReply(this.app,conversation,message,authorizeProjectNotice,()=>this.assertConversation(conversation));
+      content=await dispatchQuotedReply(this.app,conversation,message,authorizeProjectNotice,()=>this.assertConversation(conversation),this.abort.signal);
     }catch(error){
       const operation=getDb().prepare('SELECT status,result FROM platform_ai_operations WHERE id=?').get(quotedReplyOperationId(message.id)) as {status:string;result:string|null}|undefined;
+      if(this.abort.signal.aborted&&!operation){getDb().prepare("UPDATE platform_ai_messages SET status='queued',lease_until=0,available_at=0 WHERE id=?").run(message.id);return;}
       content=operation?(operation.status==='done'&&operation.result?operation.result:'投递结果待核对，为避免重复执行不会自动重发，请查看原标签页。'):`未投递：${publicFailure(error)}。请核对原标签页后重试。`;
     }
     const operation=getDb().prepare("SELECT json_extract(arguments,'$.quiet_success') AS quiet FROM platform_ai_operations WHERE id=? AND status='done'").get(quotedReplyOperationId(message.id)) as {quiet:number|null}|undefined;

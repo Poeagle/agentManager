@@ -302,11 +302,51 @@ describe('WeCom quoted notification direct routing',()=>{
   expect(frames.some(frame=>frame.cmd==='aibot_respond_msg'&&frame.headers.req_id==='request-direct-reply')).toBe(false);
   expect(getDb().prepare("SELECT count(*) n FROM platform_ai_outbox WHERE dedupe_key LIKE 'reply:%'").get()).toEqual({n:0});
  });
- it('rejects attachments in direct replies without downloading or silently dropping them',async()=>{
-  const channel=bot();bind(channel.id);manager.start();await connected(channel.id);vi.stubGlobal('fetch',vi.fn());
-  send({...inbound('quoted-image'),body:{...inbound('quoted-image').body,msgtype:'mixed',text:undefined,mixed:{msg_item:[{msgtype:'text',text:{content:'参考这张图'}},{msgtype:'image',image:{url:'https://wework.qpic.cn/test.png',aeskey:'dummy'}}]},quote:{msgtype:'text',text:{content:'【来源 · AM-222222222222】'}}}} as any);
-  await expect.poll(()=>frames.some(frame=>frame.body?.stream?.content?.includes('快速回复目前仅支持文字'))).toBe(true);expect(fetch).not.toHaveBeenCalled();
-  expect(getDb().prepare('SELECT count(*) n FROM platform_ai_messages').get()).toEqual({n:0});
+ it.each(['success','image-only','download-failed','copy-failed'])('routes quoted images without dropping them: %s',async outcome=>{
+  const channel=bot();bind(channel.id);manager.start();await connected(channel.id);
+  getDb().prepare("INSERT INTO projects(id,name,path,owner_id) VALUES('quick-project','Project','/fixture',?)").run(member);
+  setProjectToolAccess({projectId:'quick-project',userId:member,canSession:true,canTerminal:true,sessionClients:['codex'],grantedBy:admin});
+  getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES('quick-tab','quick-project','Work','running','session','codex','native-quick',?)").run(member);
+  const received=receiveMessage({userId:member,channelId:channel.id,externalUserId:'wx-member',chatId:'wx-member',messageId:'original',content:'work'});
+  getDb().prepare("UPDATE platform_ai_messages SET status='done'").run();
+  const task=trackTask(getConversation(received.conversation_id)!,'quick-tab','work',0,'turn-quick');
+  getDb().prepare("UPDATE platform_ai_tasks SET status='reported_complete' WHERE id=?").run(task.id);
+  enqueueNotice(received.conversation_id,`task:${task.id}:done`,'请确认',{notification_target:notificationReplyTarget('quick-tab','ref:turn-quick')});
+  worker.tick();await worker.drain();
+  const notification=frames.find(frame=>frame.cmd==='aibot_send_msg').body.markdown.content;
+  const image=imageFixture();
+  const fetch=vi.fn(async()=>outcome==='download-failed'?new Response('',{status:500}):new Response(image.encrypted,{status:200}));vi.stubGlobal('fetch',fetch);
+  const copy=vi.spyOn(platformTools,'copyImagesToSession').mockImplementation(async(_app,_user,_session,images)=>{
+    expect(images).toEqual([expect.objectContaining({mime:'image/png',data:png})]);
+    if(outcome==='copy-failed')throw Error('copy failed');
+    return '\n\n图片 1：/fixture/paste.png';
+  });
+  const api=vi.spyOn(platformTools,'platformApi').mockImplementation(async(_app,_user,method,url)=>{
+    if(url.endsWith('/agent-messages'))return {messages:[{role:'user',text:'work',task_reference:'turn-quick'}]};
+    if(url.includes('/display'))return {processState:'idle',promptType:null,cursor:0};
+    if(method==='POST'&&url.endsWith('/input'))return {status:'submitted'};
+    throw Error('Unexpected test API '+url);
+  });
+  const frame={...inbound('quoted-image'),body:{...inbound('quoted-image').body,...(outcome==='image-only'?{msgtype:'image',text:undefined,image:image.source}:{msgtype:'mixed',text:undefined,mixed:{msg_item:[{msgtype:'text',text:{content:'参考这张图'}},{msgtype:'image',image:image.source}]}}),quote:{msgtype:'text',text:{content:notification}}}};
+  send(frame as any);send(frame as any);
+  await expect.poll(()=>getDb().prepare("SELECT count(*) n FROM platform_ai_messages WHERE external_id='quoted-image' AND role='user'").get()).toEqual({n:1});
+  worker.tick();await worker.drain();
+  const inputs=api.mock.calls.filter(call=>call[2]==='POST'&&call[3].endsWith('/input'));
+  if(outcome==='success'||outcome==='image-only'){
+    expect(inputs).toHaveLength(1);expect(inputs[0][4]?.input).toContain(outcome==='image-only'?'请查看我发送的图片。':'参考这张图');expect(inputs[0][4]?.input).toContain('/fixture/paste.png');expect(copy).toHaveBeenCalledTimes(1);
+  }else{
+    expect(inputs).toHaveLength(0);const reply=getDb().prepare("SELECT content FROM platform_ai_messages WHERE role='assistant' AND external_id=(SELECT id FROM platform_ai_messages WHERE external_id='quoted-image' AND role='user')").get() as {content:string};
+    expect(reply.content).toContain('文字和图片均未投递');
+  }
+  expect(fetch).toHaveBeenCalledTimes(1);
+ });
+ it('saves image bytes through the authenticated session attachment API',async()=>{
+  const target=Fastify();let received:unknown;
+  target.post('/api/sessions/:id/paste-image',async request=>{received=request.body;return {path:'/fixture/image.png'};});
+  try{
+    const prompt=await platformTools.copyImagesToSession(target,member,'quick-tab',[{mime:'image/png',data:png}]);
+    expect(received).toEqual({dataUrl:`data:image/png;base64,${png.toString('base64')}`});expect(prompt).toContain('/fixture/image.png');
+  }finally{await target.close();}
  });
  it('rejects a quote without a routing prefix instead of guessing or invoking a model',async()=>{
   const channel=bot();bind(channel.id);manager.start();await connected(channel.id);
@@ -319,6 +359,18 @@ describe('WeCom quoted notification direct routing',()=>{
 });
 
 describe('WeCom image and mixed-message ingestion', () => {
+  it('lets a worker cancel its wait on a shared image download without cancelling the receiver',async()=>{
+    const channel=bot();bind(channel.id);manager.start();await connected(channel.id);
+    const image=imageFixture();let complete!:(response:Response)=>void;
+    const fetch=vi.fn(()=>new Promise<Response>(resolve=>{complete=resolve;}));vi.stubGlobal('fetch',fetch);
+    send({...inbound('shared-image'),body:{...inbound('shared-image').body,msgtype:'image',text:undefined,image:image.source}} as any);
+    await expect.poll(()=>fetch.mock.calls.length).toBe(1);
+    const message=getDb().prepare("SELECT id FROM platform_ai_messages WHERE external_id='shared-image'").get() as {id:string};
+    const controller=new AbortController();const waiting=prepareImages(message.id,controller.signal);controller.abort();
+    await expect(waiting).rejects.toThrow('图片接收已暂停');
+    complete(new Response(image.encrypted,{status:200}));
+    await expect.poll(()=>messageAttachments(message.id)[0].status).toBe('ready');
+  });
   it('persists, decrypts and displays a mixed message, feeds the model real image bytes, and deduplicates replay', async () => {
     const channel = bot(); bind(channel.id); manager.start(); await connected(channel.id);
     const image = imageFixture();
