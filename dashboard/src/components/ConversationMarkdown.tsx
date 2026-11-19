@@ -22,7 +22,13 @@ const MarkdownSegment=memo(function MarkdownSegment({source,offset,components,fo
   return <SourceOffset.Provider value={offset}><Trailing.Provider value={trailing}><ReactMarkdown remarkPlugins={[remarkGfm,conversationCjkStrong,conversationFilePaths]} components={components} urlTransform={url=>/^(?:file:|sandbox:\/)/i.test(url)?url:defaultUrlTransform(url)} skipHtml>{source}</ReactMarkdown></Trailing.Provider></SourceOffset.Provider>;
 });
 const trailingKinds=new Set(['paragraph','list','blockquote']);
-function FooterParagraph({children,node,className,...props}:any){const trailing=useContext(Trailing),show=!!trailing&&['paragraph','blockquote','list'].includes(trailing.kind||'')&&node?.position?.end.offset===trailing.end;return <p {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{show?<span>{children}</span>:children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</p>;}
+function FooterParagraph({children,node,className,...props}:any){
+  const trailing=useContext(Trailing),show=!!trailing&&['paragraph','blockquote','list'].includes(trailing.kind||'')&&node?.position?.end.offset===trailing.end;
+  const parts=node?.children||[];
+  const imageOnly=parts.some((part:any)=>part.type==='element')&&parts.every((part:any)=>
+    part.type==='text'?!part.value.trim():part.type==='element'&&(part.tagName==='img'||part.tagName==='a'&&part.children?.length===1&&part.children[0].tagName==='img'));
+  return <p {...props} className={[className,imageOnly?'conversation-image-paragraph':'',show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{show?<span>{children}</span>:children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</p>;
+}
 function FooterListItem({children,node,className,...props}:any){const trailing=useContext(Trailing),show=!!trailing&&trailing.kind==='list'&&node?.position?.end.offset===trailing.end&&!node.children?.some((child:any)=>['ul','ol'].includes(child.tagName)||child.tagName==='p'&&child.position?.end.offset===trailing.end);return <li {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</li>;}
 export function conversationLocalPath(source:string|undefined,root:string|undefined):string|null {
   if(!source||!root||source.startsWith('#')||source.startsWith('?')||source.startsWith('//')||/^[a-z][a-z\d+.-]*:/i.test(source))return null;

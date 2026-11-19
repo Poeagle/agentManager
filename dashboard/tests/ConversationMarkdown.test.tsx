@@ -6,6 +6,19 @@ import {ConversationMarkdownBlocks} from '../src/lib/conversation-markdown-block
 vi.mock('../src/components/FileExplorer',()=>({FileExplorer:({openFileRequest}:{openFileRequest:{path:string}})=><div>{openFileRequest.path}</div>}));
 const props={messageId:'message',projectId:'project',projectPath:'/work/project',onNavigate:()=>{}};
 describe('conversation Markdown',()=>{
+  it('keeps consecutive image paragraphs inline as streamed content grows and settles',()=>{
+    const first='说明。\n\n![第一张](https://example.com/one.png)';
+    const view=render(<ConversationMarkdown {...props} streaming content={first}/>);
+    const image=screen.getByRole('button',{name:'预览图片 第一张'});
+    view.rerender(<ConversationMarkdown {...props} streaming content={first+'\n\n[![第二张](https://example.com/two.png)](https://example.com/full.png)\n\n后续说明。'}/>);
+    const paragraphs=[...view.container.querySelectorAll('p')];
+    expect(paragraphs.map(p=>p.classList.contains('conversation-image-paragraph'))).toEqual([false,true,true,false]);
+    expect(screen.getByRole('button',{name:'预览图片 第一张'})).toBe(image);
+    expect(screen.getByRole('button',{name:'预览图片 第二张'})).toBeVisible();
+    view.rerender(<ConversationMarkdown {...props} content={first+'\n\n[![第二张](https://example.com/two.png)](https://example.com/full.png)\n\n后续说明。'}/>);
+    expect(view.container.querySelectorAll('.conversation-image-paragraph')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button',{name:'预览图片 第二张'}));expect(screen.getByRole('dialog',{name:'图片预览 · 第二张'})).toBeVisible();
+  });
   it.each(['完成。','- 第一项\n- 最后一项','- 第一项\n\n- 最后一项','- 第一项\n  - 最后子项','> 引用结论。'])('keeps one metadata footer in the last prose block: %s',content=>{
     const view=render(<ConversationMarkdown {...props} content={content} footer={<time>12:30</time>}/>);
     expect(view.container.querySelectorAll('time')).toHaveLength(1);expect(view.container.querySelector('.conversation-inline-meta time')).toHaveTextContent('12:30');
