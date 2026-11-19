@@ -74,3 +74,62 @@ it("projects Claude request usage and tools through the shared statistics contra
     complete: true,
   });
 });
+
+it("attributes Claude multi-record turns to their user message without double-counting one API request", async () => {
+  const path = join(directory, "multi-record.jsonl");
+  writeFileSync(
+    path,
+    [
+      {
+        type: "user",
+        uuid: "test-user",
+        timestamp: "2026-11-19T00:10:14Z",
+        message: { role: "user", content: "detail" },
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-thinking",
+        parentUuid: "test-user",
+        timestamp: "2026-11-19T00:10:15Z",
+        message: {
+          id: "msg_same",
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "plan" }],
+          usage: { input_tokens: 4, cache_read_input_tokens: 100, output_tokens: 10 },
+        },
+      },
+      {
+        type: "user",
+        uuid: "tool-result",
+        parentUuid: "assistant-thinking",
+        timestamp: "2026-11-19T00:10:16Z",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "tool-1", content: "ok" }],
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-final",
+        parentUuid: "tool-result",
+        timestamp: "2026-11-19T00:10:17Z",
+        message: {
+          id: "msg_same",
+          role: "assistant",
+          content: [{ type: "text", text: "completed" }],
+          usage: { input_tokens: 4, cache_read_input_tokens: 100, output_tokens: 10 },
+        },
+      },
+    ]
+      .map((value) => JSON.stringify(value))
+      .join("\n") + "\n",
+  );
+  const result = await readClaudeStatistics(path);
+  expect(result).toHaveLength(1);
+  expect(result[0]).toMatchObject({
+    message_id: "msg_same",
+    turn_id: "test-user",
+    tokens: { total_tokens: 114 },
+    requests: 1,
+  });
+});

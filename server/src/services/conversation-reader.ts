@@ -29,6 +29,7 @@ interface IndexedMessage extends Omit<ConversationMessage, "phase"> {
   questionSignature?: string;
   questionCallId?: string;
   projectionIndex?: number;
+  statistics?: ConversationStatistics;
   resetBefore?: boolean;
   sourceRole?: "tool_result";
   toolResult?: { toolUseId: string; result: string; failed: boolean };
@@ -835,6 +836,11 @@ export async function readConversation(
         const byOffset = new Map(
           statistics.map((item) => [item.sequence, item]),
         );
+        const byMessage = new Map(
+          statistics
+            .filter((item) => item.message_id)
+            .map((item) => [item.message_id!, item]),
+        );
         let sourceOffset = -1,
           sourceBuffer: Buffer | undefined;
         for (const item of selected) {
@@ -875,7 +881,11 @@ export async function readConversation(
               ...(item.compaction ? { compaction: item.compaction } : {}),
               ...(byOffset.has(item.offset)
                 ? { statistics: byOffset.get(item.offset) }
-                : {}),
+                : byMessage.has(item.id)
+                  ? { statistics: byMessage.get(item.id) }
+                  : item.statistics
+                    ? { statistics: item.statistics }
+                    : {}),
               ...(item.usage ? { usage: item.usage } : {}),
               ...(parsed.questionReplies
                 ? { question_replies: parsed.questionReplies }

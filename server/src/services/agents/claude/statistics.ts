@@ -41,7 +41,8 @@ export async function readClaudeStatistics(
     const records: State["records"] = [];
     let seq = 0;
     let turnId = "claude";
-    let lastUser: string | null = null;
+    const userTurns = new Map<string, string>();
+    const byMessage = new Map<string, State["records"][number]>();
     for (const line of bytes.toString("utf8").split("\n")) {
       if (!line) continue;
       let entry: any;
@@ -56,14 +57,24 @@ export async function readClaudeStatistics(
         entry.message?.model === "<synthetic>"
       )
         continue;
+      const parent = typeof entry.parentUuid === "string" ? entry.parentUuid : null;
       if (entry.type === "user") {
-        if (
+        const toolResult =
           Array.isArray(entry.message?.content) &&
-          entry.message.content.some((block: any) => block?.type === "tool_result")
-        )
+          entry.message.content.some((block: any) => block?.type === "tool_result");
+        const userUuid = typeof entry.uuid === "string" ? entry.uuid : null;
+        if (toolResult) {
+          if (parent || userUuid)
+            userTurns.set(
+              userUuid ?? parent!,
+              (parent && userTurns.get(parent)) || turnId,
+            );
           continue;
-        lastUser = typeof entry.uuid === "string" ? entry.uuid : null;
-        turnId = lastUser ?? turnId;
+        }
+        if (userUuid) {
+          turnId = userUuid;
+          userTurns.set(userUuid, userUuid);
+        }
       }
       if (entry.type !== "assistant" && entry.type !== "user") continue;
       const content = entry.message?.content;
@@ -82,14 +93,46 @@ export async function readClaudeStatistics(
         entry.type === "assistant"
           ? claudeUsage(entry.message?.usage)
           : null;
-      records.push({
-        key:
-          entry.type === "assistant" && typeof entry.message?.id === "string"
-            ? entry.message.id
-            : typeof entry.uuid === "string"
-              ? entry.uuid
-              : `${path}:${seq}`,
-        turnId: entry.type === "assistant" ? entry.parentUuid ?? turnId : turnId,
+      const key =
+        entry.type === "assistant" && typeof entry.message?.id === "string"
+          ? entry.message.id
+          : typeof entry.uuid === "string"
+            ? entry.uuid
+            : `${path}:${seq}`;
+      const resolvedTurn =
+        (parent && userTurns.get(parent)) ||
+        turnId;
+      if (entry.type === "assistant" && typeof entry.message?.id === "string") {
+        const previous = byMessage.get(key);
+        if (previous) {
+          if (!previous.usage && usage) {
+            previous.usage = usage;
+            previous.timestamp =
+              typeof entry.timestamp === "string" ? entry.timestamp : previous.timestamp;
+          }
+          previous.tools = Math.max(previous.tools, tools);
+          previous.text ||= text;
+          previous.turnId = resolvedTurn;
+          continue;
+        }
+        const record = {
+          key,
+          turnId: resolvedTurn,
+          role: entry.type,
+          timestamp:
+            typeof entry.timestamp === "string" ? entry.timestamp : null,
+          usage,
+          tools,
+          seq: seq++,
+          text,
+        };
+        records.push(record);
+        byMessage.set(key, record);
+        continue;
+      }
+      const record = {
+        key,
+        turnId: resolvedTurn,
         role: entry.type,
         timestamp:
           typeof entry.timestamp === "string" ? entry.timestamp : null,
@@ -97,7 +140,10 @@ export async function readClaudeStatistics(
         tools,
         seq: seq++,
         text,
-      });
+      };
+      records.push(record);
+      if (entry.type === "user" && parent) userTurns.set(parent, resolvedTurn);
+      if (entry.type === "user") userTurns.set(key, resolvedTurn);
     }
     const state = { inode: stat.ino, size: stat.size, records };
     cache.set(path, state);
