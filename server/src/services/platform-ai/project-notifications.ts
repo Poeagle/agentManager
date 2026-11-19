@@ -154,7 +154,7 @@ export class ProjectNotifications {
     }
     const watches = getDb().prepare(`SELECT r.*,w.session_id,w.failures,w.rechecks FROM platform_ai_project_notification_watches w
       JOIN platform_ai_project_notifications r ON r.id=w.rule_id WHERE r.enabled=1 AND w.next_check_at<=?
-      ORDER BY w.next_check_at,w.rowid LIMIT 20`).all(now) as Watch[];
+      ORDER BY CASE WHEN w.rechecks>0 THEN 0 ELSE 1 END,w.next_check_at,w.rowid LIMIT 20`).all(now) as Watch[];
     for (const watch of watches) {
       if (this.pending.size >= 2) break;
       const key = `${watch.id}:${watch.session_id}`;

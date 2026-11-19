@@ -1,5 +1,5 @@
 import {getDb} from '../db/index.js';
-import {subscribe} from './event-store.js';
+import {subscribe,broadcastEphemeral} from './event-store.js';
 import {agentForSession} from './agents/index.js';
 import {sessionAgentContext} from './agents/session.js';
 import type {AgentMessage,AgentRuntime} from './agents/types.js';
@@ -141,6 +141,13 @@ export class NotificationObserver {
         continue;
       }
       if(!['final','error'].includes(message.phase||'')||!message.text.trim())continue;
+      // Reuse the shared native stream to wake external notification observers.
+      // Old history and repeated snapshots must not generate a wake-up storm.
+      const eventKey=`external-final:${message.id}`, messageTime=Date.parse(message.timestamp||'');
+      if(message.phase==='final' && Number.isFinite(messageTime) && messageTime>=Date.now()-120000 && !entry.seen.has(eventKey)){
+        entry.seen.add(eventKey);
+        broadcastEphemeral({type:'session.final',session_id:session.id,project_id:session.project_id||undefined});
+      }
       if(message.timestamp&&Date.parse(message.timestamp)<this.since)continue;
       if(!message.timestamp&&!entry.seen.has(message.id)){
         // Timestamp-less history cannot prove a new result. A live streaming

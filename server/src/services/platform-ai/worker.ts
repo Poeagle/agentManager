@@ -114,10 +114,10 @@ export class PlatformAiWorker {
   }
 
   private onSessionEvent(event: PlatformEvent): void {
-    if (this.stopped || !event.session_id || !['session.state','session.activity','session_start','session_end'].includes(event.type)) return;
+    if (this.stopped || !event.session_id || !['session.state','session.activity','session.final','session_start','session_end'].includes(event.type)) return;
     let state: {processState?: string} = {};
     try { state = event.data ? JSON.parse(event.data) : {}; } catch { return; }
-    const urgent = event.type === 'session_end' || (event.type === 'session.state' && ['idle','waiting_for_input'].includes(state.processState || ''));
+    const urgent = event.type === 'session_end' || event.type === 'session.final' || (event.type === 'session.state' && ['idle','waiting_for_input'].includes(state.processState || ''));
     this.runQueueStep('project-notification-events', () => this.projectNotifications.wake(event.session_id!, urgent));
     const now = Date.now();
     // Explicit tracking and opt-in project notifications are independent.

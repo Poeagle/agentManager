@@ -10,7 +10,7 @@ import type {AgentStreamFrame,AgentStreamSnapshot} from '../src/services/agents/
 import {observeConversationFile} from '../src/services/conversation-file-stream.js';
 import {notificationRoutes} from '../src/routes/notifications.js';
 import {streamRoutes} from '../src/routes/stream.js';
-import {broadcastEphemeral} from '../src/services/event-store.js';
+import {broadcastEphemeral,subscribe} from '../src/services/event-store.js';
 import {rememberInputSource} from '../src/services/conversation-input-links.js';
 import {listNotifications,notificationSession,putNotification,pruneNotifications,notificationInputBoundary,settleNotificationsForInput} from '../src/services/notifications.js';
 
@@ -219,4 +219,14 @@ it('keeps manually read errors quiet on replay but not a distinct later failure 
   putNotification(session,failure);expect(listNotifications(owner).notifications).toEqual([]);
   putNotification(session,{...failure,message_id:'failure-2',body:'新的失败'});
   expect(listNotifications(owner)).toMatchObject({pending:1,unread:1,notifications:[{message_id:'failure-2'}]});
+});
+
+it('wakes external observers once for a new final from the shared stream',()=>{
+ const events:string[]=[];const stop=subscribe(event=>{if(event.type==='session.final')events.push(event.session_id!);});
+ try {
+  const final=message('new-final');
+  history(runtime(),[message('old-final',{timestamp:'2000-01-01T00:00:00Z'}),message('streaming',{streaming:true}),final]);
+  history(runtime(),[final]);
+  expect(events).toEqual(['s']);
+ } finally {stop();}
 });

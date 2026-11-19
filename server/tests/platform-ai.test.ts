@@ -222,6 +222,17 @@ describe('project-wide automatic notifications', () => {
     await checkAndDeliver(); expect(notices()).toHaveLength(1);
   });
 
+  it('wakes a project watch immediately when the shared native stream reports a final', async () => {
+    configure(); subscription(); seedSession(); provider(); worker.start();
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=?,rechecks=0').run(Date.now()+30000);
+    nativeMessages=[finalMessage()];
+    broadcastEphemeral({type:'session.final',session_id:'session-1',project_id:'p'});
+    const watch=getDb().prepare('SELECT next_check_at,rechecks FROM platform_ai_project_notification_watches WHERE session_id=?').get('session-1') as {next_check_at:number;rechecks:number};
+    expect(watch.rechecks).toBe(3);expect(watch.next_check_at).toBeLessThan(Date.now()+2000);
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    await checkAndDeliver();expect(notices()).toHaveLength(1);
+  });
+
   it('does not notify another users sessions in a shared project', async () => {
     configure(); subscription(); seedSession();
     getDb().prepare("UPDATE sessions SET created_by_user_id=? WHERE id='session-1'").run(other);
