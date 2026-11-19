@@ -253,7 +253,19 @@ export class ProjectNotifications {
         for(const row of rows){
           const key='structured:'+row.id+':'+(row.message_id||'');if(this.seen(watch,key))continue;
           const active=row.state==='pending'&&!row.read_at&&!row.dismissed_at;
-          this.record(watch,key,active?(row.kind==='error'?'error':'input'):undefined,row.body,null,row.id);
+          let turnKey:string|null=null;
+          if(active&&row.kind==='question'&&row.message_id&&session&&latestUser){
+            // A quote may target a turn only when the native history proves
+            // which user message owns this exact question.
+            const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
+            try {
+              const page=await readConversation({...session,cli_type:session.cli_type||'codex',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},{limit:100});
+              const index=page.messages.findIndex(item=>item.id===row.message_id);
+              const user=index>=0?[...page.messages.slice(0,index)].reverse().find(item=>item.role==='user'):undefined;
+              if(user&&user.timestamp===latestUser.timestamp&&user.text===latestUser.text)turnKey=replyTurnKey(latestUser);
+            }catch{/* Unknown ownership must not be guessed. */}
+          }
+          this.record(watch,key,active?(row.kind==='error'?'error':'input'):undefined,row.body,turnKey,row.id);
         }
       }
       // Timestamps and durable receipts prevent stale finals from becoming new notifications.

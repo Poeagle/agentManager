@@ -44,8 +44,7 @@ it('clears a stale project scope when the selected project no longer belongs to 
   view.rerender(<QueryClientProvider client={client}><NotificationCenter userId="u" projects={[{id:'p',name:'已转交项目',owner_id:'another-user'}]} onOpen={jump} onDetailChange={detail}/></QueryClientProvider>);
   expect(select).toHaveValue('');expect(within(select).getAllByRole('option')).toHaveLength(1);
   expect(within(drawer).queryByRole('button',{name:'静音项目提醒'})).not.toBeInTheDocument();
-  fireEvent.click(within(drawer).getByRole('button',{name:'全部标为已读'}));
-  await waitFor(()=>expect(notificationApi.dismiss).toHaveBeenCalledWith({through_id:1}));
+  expect(within(drawer).queryByRole('button',{name:'全部标为已读'})).not.toBeInTheDocument();
 });
 
 it('opens the compact notification list and marks read only once the selected content is actually shown',async()=>{
@@ -56,6 +55,15 @@ it('opens the compact notification list and marks read only once the selected co
   fireEvent.click(screen.getByRole('button',{name:'内容进入视口'}));
   await waitFor(()=>expect(notificationApi.read).toHaveBeenCalledWith({ids:[1]}));
   expect(detail).toHaveBeenCalledWith(true);
+});
+
+it('waits until the browser is in the foreground before clearing the displayed message',async()=>{
+  const focused=vi.spyOn(document,'hasFocus').mockReturnValue(false);
+  mount();const drawer=await open();fireEvent.click(await within(drawer).findByRole('button',{name:'项目 A · 标签 1'}));
+  await screen.findByTestId('notification-conversation');fireEvent.click(screen.getByRole('button',{name:'内容进入视口'}));
+  expect(notificationApi.read).not.toHaveBeenCalled();
+  focused.mockReturnValue(true);fireEvent.focus(window);
+  await waitFor(()=>expect(notificationApi.read).toHaveBeenCalledWith({ids:[1]}));focused.mockRestore();
 });
 
 it('jumps to the exact source without marking unread content read or submitting any input',async()=>{
@@ -75,33 +83,36 @@ it('automatically inserts new notifications while preserving the selected conver
   expect(within(drawer).queryByRole('button',{name:/新通知，点击显示/})).not.toBeInTheDocument();
 });
 
-it('explicitly dismisses observed notices and supports project muting and Escape',async()=>{
+it('supports project muting and Escape without manual read buttons',async()=>{
   mount();const drawer=await open();
-  fireEvent.click(within(drawer).getByRole('button',{name:'全部标为已读'}));
-  await waitFor(()=>expect(notificationApi.dismiss).toHaveBeenCalledWith({through_id:1}));
-  expect(within(drawer).getByRole('button',{name:'项目 A · 标签 1'})).toBeInTheDocument();
+  expect(within(drawer).queryByRole('button',{name:'全部标为已读'})).not.toBeInTheDocument();
+  expect(within(drawer).queryByRole('button',{name:/标为已读/})).not.toBeInTheDocument();
+  expect(await within(drawer).findByRole('button',{name:'项目 A · 标签 1'})).toBeInTheDocument();
   fireEvent.change(within(drawer).getByRole('combobox',{name:'筛选通知项目'}),{target:{value:'p'}});
   fireEvent.click(within(drawer).getByRole('button',{name:'静音项目提醒'}));
   await waitFor(()=>expect(notificationApi.preferences).toHaveBeenCalledWith(['p']));
   fireEvent.keyDown(drawer,{key:'Escape'});expect(screen.queryByRole('dialog',{name:'消息通知'})).not.toBeInTheDocument();
 });
 
-it('can mark a notice read without replying and preserves the draft when it disappears',async()=>{
+it('automatically clears a visible notice while preserving the draft',async()=>{
   mount();const dialog=await open();fireEvent.click(await within(dialog).findByRole('button',{name:'项目 A · 标签 1'}));
   await screen.findByTestId('notification-conversation');fireEvent.change(screen.getByRole('textbox',{name:'通知回复草稿'}),{target:{value:'保留草稿'}});
-  vi.mocked(notificationApi.dismiss).mockImplementation(async()=>{page={...page,notifications:[],pending:0,unread:0};return {ok:true};});
-  fireEvent.click(within(dialog).getByRole('button',{name:'标为已读',exact:true}));
-  await waitFor(()=>expect(notificationApi.dismiss).toHaveBeenCalledWith({ids:[1]}));
+  vi.mocked(notificationApi.read).mockImplementation(async()=>{page={...page,notifications:[],pending:0,unread:0};return {ok:true};});
+  expect(within(dialog).queryByRole('button',{name:'标为已读',exact:true})).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'内容进入视口'}));
+  await waitFor(()=>expect(notificationApi.read).toHaveBeenCalledWith({ids:[1]}));
   await waitFor(()=>expect(within(dialog).queryByRole('button',{name:'项目 A · 标签 1'})).not.toBeInTheDocument());
   expect(screen.getByRole('textbox',{name:'通知回复草稿'})).toHaveValue('保留草稿');expect(jump).not.toHaveBeenCalled();
 });
 
-it('keeps a failed manual read visible with a retryable error',async()=>{
-  vi.mocked(notificationApi.dismiss).mockRejectedValue(new Error('标记暂时失败'));
-  mount();const dialog=await open();fireEvent.click(await within(dialog).findByRole('button',{name:'标为已读：项目 A · 标签 1'}));
-  expect(await within(dialog).findByRole('alert')).toHaveTextContent('标记暂时失败');
+it('retains a failed automatic read and retries without a manual read button',async()=>{
+  vi.mocked(notificationApi.read).mockRejectedValueOnce(new Error('状态更新失败')).mockResolvedValueOnce({ok:true});
+  mount();const dialog=await open();fireEvent.click(await within(dialog).findByRole('button',{name:'项目 A · 标签 1'}));
+  await screen.findByTestId('notification-conversation');fireEvent.click(screen.getByRole('button',{name:'内容进入视口'}));
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent('状态更新失败');
   expect(within(dialog).getByRole('button',{name:'项目 A · 标签 1'})).toBeInTheDocument();
-  expect(within(dialog).getByRole('button',{name:'标为已读：项目 A · 标签 1'})).toBeEnabled();
+  fireEvent.click(within(dialog).getByRole('button',{name:'重试'}));
+  await waitFor(()=>expect(notificationApi.read).toHaveBeenCalledTimes(2));
 });
 
 it('removes an instant reminder when the notice is handled elsewhere',async()=>{

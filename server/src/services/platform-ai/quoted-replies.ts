@@ -12,6 +12,7 @@ import type {AgentTextMessage} from '../prompt-context.js';
 import {ChannelError,compactText} from './channels.js';
 import {platformApi,PlatformApiError} from './tools.js';
 import {formatTaskNotification,trackTask,type Conversation,type InboxMessage} from './store.js';
+import {notificationInputBoundary,settleNotificationsForInput,markNotificationsRead} from '../notifications.js';
 
 const token = customAlphabet('23456789abcdefghjkmnpqrstuvwxyz',12);
 export const quotedReplyOperationId=(messageId:string)=>'quoted_'+messageId;
@@ -127,6 +128,9 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
   assertSource();
   const active=getDb().prepare("SELECT id FROM platform_ai_tasks WHERE session_id=? AND status IN ('running','blocked','uncertain')").get(session.id) as {id:string}|undefined;
   if(sourceTaskId&&active&&active.id!==sourceTaskId)throw new ChannelError('标签页已有更新的任务，请引用最新通知。',409,true);
+  const boundary=notificationInputBoundary(session,conversation.user_id);
+  const source=getDb().prepare("SELECT json_extract(reply_context,'$.personal_notification_id') AS id FROM platform_ai_outbox WHERE id=?").get(route.notice_id) as {id:number|null}|undefined;
+  const exactId=source?.id&&getDb().prepare('SELECT 1 FROM notifications WHERE id=? AND user_id=? AND session_id=? AND native_id=?').get(source.id,conversation.user_id,session.id,route.native_id)?source.id:null;
   getDb().prepare("INSERT INTO platform_ai_operations(id,message_id,tool_name,arguments,status) VALUES(?,?, 'quoted_reply',?,'started')").run(operationId,message.id,JSON.stringify({session_id:session.id,route_id:route.id}));
   let result:string,acceptedOrUnknown=false,quietSuccess=false;
   try {
@@ -139,6 +143,10 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
   }catch(error){
     acceptedOrUnknown=!(error instanceof PlatformApiError&&error.statusCode<500);
     result=error instanceof PlatformApiError&&error.statusCode<500?`未投递：${error.message}。请处理后重新回复通知。`:'投递结果待核对，为避免重复执行不会自动重发，请查看原标签页。';
+  }
+  if(quietSuccess){
+    try {settleNotificationsForInput(session,conversation.user_id,boundary);if(exactId)markNotificationsRead(conversation.user_id,[exactId]);}
+    catch {quietSuccess=false;result+=' 网页通知状态未能更新，请在原标签页核对。';}
   }
   if(acceptedOrUnknown){
     try{getDb().transaction(()=>{

@@ -164,6 +164,17 @@ describe('project-wide automatic notifications', () => {
     expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://model.example'))).toHaveLength(0);
   });
 
+  it('links a structured question to a proven native user turn for replies',async()=>{
+    configure();subscription();seedSession();getDb().prepare("UPDATE sessions SET codex_session_id='native-question' WHERE id='session-1'").run();
+    const now=new Date(Date.now()+1000).toISOString();
+    nativeMessages=[{role:'user',phase:'user',text:'开始任务',timestamp:now,task_reference:'native:turn'}];
+    getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,message_id,kind,state,title,body,created_at,updated_at) VALUES (?,'session-1','native-question','question:q','question-msg','question','pending','问题','请选择',?,?)").run(member,now,now);
+    vi.spyOn(conversationReader,'readConversation').mockResolvedValue({messages:[{id:'user-msg',role:'user',text:'开始任务',timestamp:now},{id:'question-msg',role:'assistant',text:'请选择',timestamp:now}],statistics:[],has_more:false,reset:false,available:true,generation:'test'} as any);
+    provider();worker.tick();await worker.drain();
+    const row=getDb().prepare("SELECT json_extract(reply_context,'$.notification_target.turn_key') AS turn_key FROM platform_ai_outbox WHERE dedupe_key LIKE 'project-notice:%'").get();
+    expect(row).toEqual({turn_key:'ref:native:turn'});
+  });
+
   it('sends any final response without calling a model', async () => {
     configure();subscription();seedSession();nativeMessages=[finalMessage('这是操作说明。')];const fetchMock=provider();
     await checkAndDeliver();
