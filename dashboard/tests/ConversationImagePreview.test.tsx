@@ -8,6 +8,20 @@ import {api} from '../src/lib/api';
 vi.mock('../src/components/FileExplorer',()=>({FileExplorer:({openFileRequest,readOnly}:{openFileRequest:{path:string};readOnly:boolean})=><div data-testid="preview-file" data-readonly={readOnly}>{openFileRequest.path}</div>}));
 const image={kind:'image' as const,name:'截图.png',path:'/project/.agentmanager/pastes/test.png'};
 describe('conversation image preview',()=>{
+  it('previews linked images in tight and nested lists without duplicating loose-list previews',async()=>{
+    const preview=vi.spyOn(api.files,'preview').mockRejectedValue(new Error('Forbidden'));
+    try{
+      const content='- 告警详情：[弹窗截图](/tmp/dialog.png) · [报告截图](/tmp/report.png)\n  - 子项：nested/child.png\n- 其他内容';
+      const view=render(<ConversationMarkdown content={content} streaming messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      await waitFor(()=>expect(preview).toHaveBeenCalledTimes(3));
+      expect(preview).toHaveBeenCalledWith('/tmp/dialog.png',expect.any(AbortSignal),undefined);
+      expect(preview).toHaveBeenCalledWith('/project/nested/child.png',expect.any(AbortSignal),'p');
+      expect(view.container.querySelectorAll('.conversation-linked-images')).toHaveLength(2);
+      view.rerender(<ConversationMarkdown content={'- 第一项：[图片](/tmp/loose.png)\n\n- 第二项'} messageId="m" projectPath="/project" projectId="p" onNavigate={()=>{}}/>);
+      await waitFor(()=>expect(preview).toHaveBeenCalledTimes(4));
+      expect(view.container.querySelectorAll('.conversation-linked-images')).toHaveLength(1);
+    }finally{preview.mockRestore();}
+  });
   it('opens an attachment in a centered dialog, zooms and restores focus without opening a file',()=>{
     const open=vi.fn();render(<ConversationMessageAttachments items={[image]} projectId="p" onOpenFile={open}/>);
     const button=screen.getByRole('button',{name:'打开附件 截图.png'});button.focus();fireEvent.click(button);

@@ -31,9 +31,15 @@ function FooterParagraph({children,node,className,...props}:any){
   const imageOnly=parts.some((part:any)=>part.type==='element')&&parts.every((part:any)=>
     part.type==='text'?!part.value.trim():part.type==='element'&&(part.tagName==='img'||part.tagName==='a'&&part.children?.length===1&&part.children[0].tagName==='img'));
   const images=linkedImages(parts,root);
-  return <><p {...props} className={[className,imageOnly?'conversation-image-paragraph':'',show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{show?<span>{children}</span>:children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</p>{images.length>0&&<div className="conversation-linked-images">{images.map(path=><MarkdownImage key={path} src={path} alt={path.split('/').pop()} root={root} projectId={projectId}/>)}</div>}</>;
+  return <><p {...props} className={[className,imageOnly?'conversation-image-paragraph':'',show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{show?<span>{children}</span>:children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</p><LinkedImagePreviews images={images} root={root} projectId={projectId}/></>;
 }
-function FooterListItem({children,node,className,...props}:any){const trailing=useContext(Trailing),show=!!trailing&&trailing.kind==='list'&&node?.position?.end.offset===trailing.end&&!node.children?.some((child:any)=>['ul','ol'].includes(child.tagName)||child.tagName==='p'&&child.position?.end.offset===trailing.end);return <li {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}</li>;}
+function FooterListItem({children,node,className,...props}:any){
+  const trailing=useContext(Trailing),show=!!trailing&&trailing.kind==='list'&&node?.position?.end.offset===trailing.end&&!node.children?.some((child:any)=>['ul','ol'].includes(child.tagName)||child.tagName==='p'&&child.position?.end.offset===trailing.end);
+  const {root,projectId}=useContext(ImagePaths);
+  // Paragraphs and nested lists render their own previews.
+  const images=linkedImages((node?.children||[]).filter((child:any)=>!['p','ul','ol','pre'].includes(child.tagName)),root);
+  return <li {...props} className={[className,show?'conversation-footer-line':''].filter(Boolean).join(' ')}>{children}{show&&<span className="conversation-inline-meta">{trailing!.content}</span>}<LinkedImagePreviews images={images} root={root} projectId={projectId}/></li>;
+}
 export function conversationLocalPath(source:string|undefined,root:string|undefined):string|null {
   if(!source||!root||source.startsWith('#')||source.startsWith('?')||source.startsWith('//')||/^[a-z][a-z\d+.-]*:/i.test(source))return null;
   try{
@@ -75,6 +81,10 @@ function linkedImages(parts:any[],root?:string):string[] {
     part.children?.forEach(visit);
   };
   parts.forEach(visit);return images;
+}
+
+function LinkedImagePreviews({images,root,projectId}:{images:string[];root?:string;projectId:string|null}) {
+  return images.length>0?<div className="conversation-linked-images">{images.map(path=><MarkdownImage key={path} src={path} alt={path.split('/').pop()} root={root} projectId={projectId}/>)}</div>:null;
 }
 
 const CodeBlock=memo(function DiagramOrCode({source,language}:{source:string;language:string}){const streaming=useContext(Streaming);return isMermaidCode(source,language)?<MermaidDiagram source={source} streaming={streaming}/>:<PlainCodeBlock source={source} language={language}/>;});
