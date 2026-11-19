@@ -814,7 +814,7 @@ describe('session observation and notification reliability', () => {
     const modelInput=JSON.parse(JSON.parse(fetchMock.mock.calls[0][1].body).messages[1].content);
     expect(modelInput.output).toBe('');expect(modelInput.native_final_answer).toBe('已完成分析，报告正文。');
   });
-  it('sends incremental, bounded progress text and deduplicates unchanged progress notices', async () => {
+  it('observes incremental progress without sending progress notices', async () => {
     configure();seedSession();const received=inbound();
     let task=trackTask(getConversation(received.conversation_id)!,'session-1','分析项目');
     const fetchMock=vi.fn().mockImplementation(async()=>providerResponse({content:JSON.stringify({status:'running',summary:'正在分析核心模块',evidence:''})}));
@@ -826,7 +826,7 @@ describe('session observation and notification reliability', () => {
       await worker.observe(task,readAiConfig());
       task=getDb().prepare('SELECT * FROM platform_ai_tasks WHERE id=?').get(task.id) as typeof task;
     }
-    expect(getDb().prepare("SELECT COUNT(*) AS n FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get()).toEqual({n:1});
+    expect(getDb().prepare("SELECT COUNT(*) AS n FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get()).toEqual({n:0});
     const third=JSON.parse(JSON.parse(fetchMock.mock.calls[2][1].body).messages[1].content);
     expect(third.output).toContain('进展2');expect(third.output).not.toContain('进展0');
     expect(third.previous_summary).toBe('正在分析核心模块');

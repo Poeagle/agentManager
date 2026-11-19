@@ -505,7 +505,7 @@ export class PlatformAiWorker {
       if (!nativeFinal && !questionSignal && now - task.last_assessed_at < config.assessment_interval_seconds * 1000) return;
       if (!nativeFinal && !questionSignal && display.processState === 'busy' && now - task.last_assessed_at < config.notification_interval_seconds * 1000) return;
       if (ended && !nativeFinal) {
-        this.saveAssessment(task, {status: 'uncertain', summary: '工作会话已结束，但未读取到本次任务对应的最终答复，结果待核对；不会将退出状态当作任务完成。', evidence: `平台会话状态：${session.status}`}, now, task.status !== 'uncertain');
+        this.saveAssessment(task, {status: 'uncertain', summary: '工作会话已结束，但未读取到本次任务对应的最终答复，结果待核对；不会将退出状态当作任务完成。', evidence: `平台会话状态：${session.status}`}, now, false);
         getDb().prepare('UPDATE platform_ai_tasks SET last_assessed_at=? WHERE id=?').run(now, task.id);
         return;
       }
@@ -543,7 +543,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         assessment = { status: 'uncertain', summary: '尚未读取到本次需求对应的原生最终答复，结果待核对。' + assessment.summary, evidence: '' };
       }
       getDb().prepare('UPDATE platform_ai_tasks SET last_assessed_fingerprint=?,last_assessed_at=?,last_assessed_output=? WHERE id=?').run(fingerprint, now, messageOutput, task.id);
-      const shouldNotify = assessment.status !== task.status || now - task.last_notified_at >= config.notification_interval_seconds * 1000;
+      const shouldNotify = assessment.status === 'reported_complete' || assessment.status === 'failed' || (assessment.status === 'blocked' && task.status !== 'blocked');
       this.saveAssessment(task, assessment, now, shouldNotify, nativeFinal);
     } catch (error) {
       const attempts = task.observation_failures + 1;

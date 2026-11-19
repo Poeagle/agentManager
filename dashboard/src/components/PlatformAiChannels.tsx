@@ -72,7 +72,7 @@ export function PlatformAiChannels() {
     </section>
     <section aria-label="任务通知订阅" className="space-y-4 rounded-lg border p-4" style={{borderColor: 'var(--border)'}}>
       <h3 className="text-sm font-medium">任务通知订阅</h3>
-      <p className="text-xs leading-6" style={muted}>将指定平台用户的任务进展、待处理问题和结果发送到企业微信群。群成员都能看到这些通知；普通对话回复仍在原会话中。</p>
+      <p className="text-xs leading-6" style={muted}>将指定平台用户的待处理问题和任务结果发送到企业微信群。群成员都能看到这些通知；普通对话回复仍在原会话中。</p>
       <form className="grid gap-3 sm:grid-cols-2" onSubmit={event => {event.preventDefault(); void action('subscribe', () => platformAiApi.saveNotificationTarget({channel_id: targetChannel, user_id: targetUser}));}}>
         <label className="text-xs">通知渠道<select required aria-label="通知渠道" className={fieldClass + ' mt-2'} style={fieldStyle} value={targetChannel} onChange={event => setTargetChannel(event.target.value)}><option value="">请选择群机器人</option>{channels.filter(channel => channel.kind === 'wecom_webhook').map(channel => <option key={channel.id} value={channel.id}>{channel.name}</option>)}</select></label>
         <label className="text-xs">订阅用户<select required aria-label="订阅用户" className={fieldClass + ' mt-2'} style={fieldStyle} value={targetUser} onChange={event => setTargetUser(event.target.value)}><option value="">请选择平台用户</option>{activeUsers.map(user => <option key={user.id} value={user.id}>{user.display_name} (@{user.username})</option>)}</select></label>

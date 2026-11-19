@@ -244,8 +244,19 @@ describe('project notification classification through the native adapter and WeC
     getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
     worker.tick(); await worker.drain(); worker.tick(); await worker.drain();
     expect(frames.filter(frame => frame.cmd === 'aibot_send_msg')).toHaveLength(1);
+    // A recovered native final may have a different timestamp for the same turn.
+    messages[1] = {...messages[1], timestamp: new Date(Date.parse(timestamp)+5000).toISOString()};
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    worker.tick(); await worker.drain(); worker.tick(); await worker.drain();
+    expect(frames.filter(frame => frame.cmd === 'aibot_send_msg')).toHaveLength(1);
+    // History may contain the final alone, without any recoverable turn ID.
+    messages = [{...messages[1], task_reference: '', timestamp: new Date(Date.parse(timestamp)+10000).toISOString()}];
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    worker.tick(); await worker.drain(); worker.tick(); await worker.drain();
+    expect(frames.filter(frame => frame.cmd === 'aibot_send_msg')).toHaveLength(1);
     expect(fetch).not.toHaveBeenCalled();
 
+    messages = [{role:'user',phase:'user',text:'你好',timestamp,task_reference:'notice-turn'}, {role:'assistant',phase:'final',text,timestamp,task_reference:'notice-turn'}];
     // Real WeCom strips bold markup and turns Markdown list hyphens into dots.
     const renderedQuote=sent[0].body.markdown.content.replace(/\*\*([^*]+)\*\*/g,'$1').replace(/^- /gm,'· ');
     send({...inbound('project-reply'),body:{...inbound('project-reply').body,text:{content:'不用'},quote:{msgtype:'text',text:{content:renderedQuote}}}} as any);
