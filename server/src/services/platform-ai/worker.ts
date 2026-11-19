@@ -21,7 +21,7 @@ import {subscribe,type Event as PlatformEvent} from '../event-store.js';
 import {getSession} from '../session-manager.js';
 import {sessionPresenter} from '../session-labels.js';
 import type {AgentTextMessage} from '../prompt-context.js';
-import {authorizeProjectNotice,ProjectNotifications} from './project-notifications.js';
+import {authorizeProjectNotice,ProjectNotifications,matchPersonalResult} from './project-notifications.js';
 
 import {notificationReplyTarget,prepareReplyNotification,dispatchQuotedReply,quotedReplyOperationId} from './quoted-replies.js';
 import {prepareOutboundImages,readOutboundImage,assertOutboundImageAccess,type OutboundImage} from './outbound-images.js';
@@ -114,6 +114,7 @@ export class PlatformAiWorker {
   }
 
   private onSessionEvent(event: PlatformEvent): void {
+    if (!this.stopped && event.session_id && event.type==='notification.changed') { this.runQueueStep('project-notification-events', () => this.projectNotifications.wake(event.session_id!, true)); return; }
     if (this.stopped || !event.session_id || !['session.state','session.activity','session.final','session_start','session_end'].includes(event.type)) return;
     let state: {processState?: string} = {};
     try { state = event.data ? JSON.parse(event.data) : {}; } catch { return; }
@@ -477,12 +478,18 @@ export class PlatformAiWorker {
         : messages.filter(message => message.timestamp && Date.parse(message.timestamp) >= Date.parse(task.created_at + (task.created_at.endsWith('Z') ? '' : 'Z')));
       const nextUser = current.findIndex(message => message.role === 'user');
       const replies = (nextUser < 0 ? current : current.slice(0, nextUser)).filter(message => message.role === 'assistant');
-      const latestFinal = task.source_ref ? [...replies].reverse().find(message => message.phase === 'final')?.text || '' : '';
+      const finalMessage = task.source_ref ? [...replies].reverse().find(message => message.phase === 'final') : undefined;
+      const latestFinal = finalMessage?.text || '';
       const nativeFinal = latestFinal || (task.source_ref ? await readFinal() : '');
       // A quoted chat reply needs its answer even when it is only “好的。”.
       // The exact request reference proves correlation, not business success.
       if (nativeFinal && task.source_ref.startsWith('quoted_')) {
-        this.saveAssessment(task, {status:'reported_complete',summary:'Agent 已回复',evidence:nativeFinal.slice(0,3000)}, now, true, nativeFinal);
+        this.saveAssessment(task, {status:'reported_complete',summary:'Agent 已回复',evidence:nativeFinal.slice(0,3000)}, now, true, nativeFinal, finalMessage?await matchPersonalResult(task.user_id,task.session_id,finalMessage):null);
+        return;
+      }
+      // A native final closes this request; its content needs no model classification.
+      if (nativeFinal) {
+        this.saveAssessment(task, {status:'reported_complete',summary:'Agent 已回复',evidence:nativeFinal.slice(0,3000)}, now, true, nativeFinal, finalMessage?await matchPersonalResult(task.user_id,task.session_id,finalMessage):null);
         return;
       }
       const missingCommand = ended ? output.split('\n').find((line:string)=>agentDescriptors().some(agent=>line.includes(`command not found: ${agent.id}`)||line.includes(`${agent.id}: command not found`))) : undefined;
@@ -509,6 +516,11 @@ export class PlatformAiWorker {
         getDb().prepare('UPDATE platform_ai_tasks SET last_assessed_at=? WHERE id=?').run(now, task.id);
         return;
       }
+      // A subscribed project uses native result/question/error events directly.
+      // Do not let the task observer classify progress into extra notices.
+      const subscribed=getDb().prepare(`SELECT 1 FROM platform_ai_project_notifications r JOIN sessions s ON s.project_id=r.project_id
+        WHERE r.enabled=1 AND r.user_id=? AND s.id=? AND s.created_by_user_id=r.user_id LIMIT 1`).get(task.user_id,task.session_id);
+      if(subscribed)return;
       // Display remains a local signal for process/permission failures. Only
       // public agent messages go to the model, never terminal tool output.
       const messageOutput = nativeFinal ? '' : replies.map(message => message.text).join('\n\n');
@@ -554,7 +566,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
     }
   }
 
-  private saveAssessment(task: TrackedTask, assessment: Assessment, now: number, notify: boolean, finalAnswer = ''): void {
+  private saveAssessment(task: TrackedTask, assessment: Assessment, now: number, notify: boolean, finalAnswer = '', personalId:number|null=null): void {
     getDb().transaction(() => {
       const updated = getDb().prepare(`UPDATE platform_ai_tasks SET status=?,summary=?,evidence=?,last_notified_at=?,updated_at=datetime('now') WHERE id=? AND status IN ('running','blocked','uncertain')`)
         .run(assessment.status, assessment.summary, assessment.evidence, notify ? now : task.last_notified_at, task.id);
@@ -562,7 +574,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         const key = createHash('sha256').update(JSON.stringify([assessment.status, assessment.summary.replace(/\s+/g, ' ').trim()])).digest('hex').slice(0, 24);
         const question = assessment.status === 'blocked' && assessment.evidence && !finalAnswer ? `\n\n### 需要你处理的内容\n\n${assessment.evidence}\n` : '';
         const body = finalAnswer || `${assessment.summary}${question}`;
-        enqueueNotice(task.conversation_id, `task:${task.id}:${key}`, formatTaskNotification(taskLocation(task), body),{notification_target:notificationReplyTarget(task.session_id,task.source_ref?'ref:'+task.source_ref:null)});
+        enqueueNotice(task.conversation_id, `task:${task.id}:${key}`, formatTaskNotification(taskLocation(task), body),{notification_target:notificationReplyTarget(task.session_id,task.source_ref?'ref:'+task.source_ref:null),...(personalId?{personal_notification_id:personalId}:{})});
       }
     })();
     if (notify) refreshConversation(task.conversation_id);
@@ -605,6 +617,8 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
     try {
       let destination=this.deliveryDestination(item);
       const metadata=JSON.parse(item.reply_context);
+      const isHandled=()=>{if(!Number.isSafeInteger(metadata.personal_notification_id))return false;const n=getDb().prepare('SELECT read_at,dismissed_at,state FROM notifications WHERE id=? AND user_id=?').get(metadata.personal_notification_id,destination.conversation.user_id) as {read_at:string|null;dismissed_at:string|null;state:string}|undefined;return !!n&&(!!n.read_at||!!n.dismissed_at||['submitted','resolved'].includes(n.state));};
+      if(isHandled()){getDb().prepare("UPDATE platform_ai_outbox SET status='cancelled',error='已在网页查看或处理',lease_until=0 WHERE id=?").run(item.id);return;}
       image=metadata.outbound_image as OutboundImage|undefined;
       if(image){
         if(destination.channel?.kind!=='wecom_bot')throw new ChannelError('此渠道不支持截图主动发送',400,true);
@@ -641,6 +655,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         const context = channel.kind === 'wecom_bot' && !item.dedupe_key.startsWith('reply:') ? {} : JSON.parse(item.reply_context);
         const target=metadata.notification_target;
         const content=channel.kind==='wecom_bot'&&target?prepareReplyNotification({noticeId:item.id,noticeKey:item.dedupe_key,target,userId:conversation.user_id,channelId:channel.id,externalUserId:projectRecipient?.external_user_id||conversation.external_user_id,chatId:projectRecipient?.chat_id||conversation.external_chat_id,content:body}):body;
+        if(isHandled()){getDb().prepare("UPDATE platform_ai_outbox SET status='cancelled',error='已在网页查看或处理',lease_until=0 WHERE id=?").run(item.id);return;}
         await deliverMessage(channel, projectRecipient?.chat_id || conversation.external_chat_id, projectRecipient?.external_user_id || conversation.external_user_id, content, context, item.id, this.abort.signal);
       }
       getDb().prepare("UPDATE platform_ai_outbox SET status='sent',error=NULL,lease_until=0 WHERE id=?").run(item.id);

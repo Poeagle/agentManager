@@ -26,8 +26,8 @@ export function canReadNotifications(session:NotificationSession,userId:string):
   return !!(user&&!user.disabled&&session.created_by_user_id===userId&&userHasPermission(userId,'agent_api')
     &&userCanUseSessionTool(userId,session.id,agentForSession(session).descriptor.id,session.mode==='terminal'?'terminal':'session'));
 }
-export function notificationChanged(userId:string,id?:number) {
-  broadcastEphemeral({type:'notification.changed',data:{user_id:userId,...id?{id}:{}}});
+export function notificationChanged(userId:string,id?:number,sessionId?:string) {
+  broadcastEphemeral({session_id:sessionId,type:'notification.changed',data:{user_id:userId,...id?{id}:{}}});
 }
 export function notificationPreferences(userId:string):{muted_project_ids:string[]} {
   const row=getDb().prepare("SELECT value FROM user_ui_state WHERE user_id=? AND key='notification-preferences'").get(userId) as {value:string}|undefined;
@@ -53,12 +53,12 @@ export function putNotification(session:NotificationSession,input:Pick<Notificat
     WHERE (notifications.state!=excluded.state AND NOT(notifications.kind='result' AND notifications.state='resolved')) OR notifications.title!=excluded.title OR notifications.body!=excluded.body
       OR (excluded.message_id IS NOT NULL AND notifications.message_id IS NOT excluded.message_id)`)
     .run(userId,session.id,native,input.source_id,input.kind,input.state,input.title.slice(0,240),input.body.slice(0,12000),input.message_id||null,input.turn_id||null,now,now);
-  if(result.changes)notificationChanged(userId);
+  if(result.changes)notificationChanged(userId,undefined,session.id);
 }
 export function updateNotificationState(session:NotificationSession,kind:NotificationKind,sourceId:string,state:NotificationState) {
   const result=getDb().prepare(`UPDATE notifications SET read_at=CASE WHEN ?='pending' AND state!='pending' THEN NULL ELSE read_at END,state=?,updated_at=? WHERE session_id=? AND native_id=? AND kind=? AND source_id=? AND state!=?`)
     .run(state,state,new Date().toISOString(),session.id,nativeConversationId(session),kind,sourceId,state);
-  if(result.changes&&session.created_by_user_id)notificationChanged(session.created_by_user_id);
+  if(result.changes&&session.created_by_user_id)notificationChanged(session.created_by_user_id,undefined,session.id);
 }
 
 /** Capture before dispatch so a later result cannot be consumed by an earlier

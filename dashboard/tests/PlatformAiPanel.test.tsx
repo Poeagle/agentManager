@@ -285,7 +285,7 @@ describe('platform AI user flows', () => {
     vi.mocked(platformAiApi.tasks).mockResolvedValue({tasks:[{id:'task-1',conversation_id:'chat-1',session_id:'session-1',project_id:'p1',requirement:'实现导出',status:'reported_complete',summary:'实现完成，测试未执行。',evidence:'已完成导出功能',updated_at:'2026-10-19'}]});
     const {onOpenSession}=mount();fireEvent.click(screen.getByRole('button',{name:'任务跟踪'}));
     await screen.findByText('实现完成，测试未执行。');
-    expect(screen.getByText(/task-1.*Agent 已报告完成/)).toBeVisible();
+    expect(screen.getByText(/task-1.*Agent 已回复/)).toBeVisible();
     fireEvent.click(screen.getByText('查看判断依据'));
     expect(screen.getByText('已完成导出功能')).toBeVisible();
     fireEvent.click(screen.getByRole('button',{name:'打开会话'}));

@@ -78,8 +78,8 @@ export function enqueueNotice(conversationId: string, dedupeKey: string, content
       WHERE n.user_id=? AND ch.kind='wecom_webhook' AND ch.enabled=1`).all(conversation.user_id) as Array<{channel_id: string}>;
     for (const target of targets) {
       getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox
-        (id,conversation_id,dedupe_key,content,destination_channel_id) VALUES (?,?,?,?,?)`)
-        .run(nanoid(16), conversationId, `${dedupeKey}:target:${target.channel_id}`, content, target.channel_id);
+        (id,conversation_id,dedupe_key,content,destination_channel_id,reply_context) VALUES (?,?,?,?,?,?)`)
+        .run(nanoid(16), conversationId, `${dedupeKey}:target:${target.channel_id}`, content, target.channel_id, replyContext?JSON.stringify(replyContext):conversation.reply_context);
     }
   }
 }

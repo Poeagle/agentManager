@@ -12,6 +12,7 @@ import { projectRoutes } from '../src/routes/projects.js';
 import { sessionRoutes } from '../src/routes/sessions.js';
 import { scheduledTaskRoutes } from '../src/routes/scheduled-tasks.js';
 import * as manager from '../src/services/session-manager.js';
+import * as conversationReader from '../src/services/conversation-reader.js';
 import { readAiConfig, updateAiConfig } from '../src/services/platform-ai/config.js';
 import { decodeCallback, decryptWechatMessage, getChannel, hmacSignature, saveChannel, xmlText } from '../src/services/platform-ai/channels.js';
 import { claimMessage, enqueueNotice, getConversation, receiveMessage, trackTask, type InboxMessage } from '../src/services/platform-ai/store.js';
@@ -152,40 +153,100 @@ describe('project-wide automatic notifications', () => {
     expect(notices()).toHaveLength(1);
   });
 
-  it('forwards a final question as needs-input and respects independent event switches', async () => {
-    configure(); const {rule} = subscription(); seedSession();
+  it('sends structured questions under the input switch without a model', async () => {
+    configure(); const {rule}=subscription();seedSession();
+    getDb().prepare("UPDATE sessions SET codex_session_id='native-question' WHERE id='session-1'").run();
     saveProjectNotification(member,{project_id:'p',recipient_id:rule.recipient_id,enabled:true,on_complete:false,on_input:true},rule.id);
-    nativeMessages = [finalMessage('请提供 Jira 项目链接，才能继续查询。')];
-    provider('input','请提供 Jira 项目链接');
+    const now=new Date(Date.now()+1000).toISOString();
+    getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,kind,state,title,body,created_at,updated_at) VALUES (?,'session-1','native-question','question:q','question','pending','问题','请提供 Jira 链接',?,?)").run(member,now,now);
+    const fetchMock=provider(); await checkAndDeliver();
+    expect(notices()).toEqual([expect.objectContaining({status:'sent',content:expect.stringContaining('请提供 Jira 链接')})]);
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://model.example'))).toHaveLength(0);
+  });
+
+  it('sends any final response without calling a model', async () => {
+    configure();subscription();seedSession();nativeMessages=[finalMessage('这是操作说明。')];const fetchMock=provider();
     await checkAndDeliver();
-    expect(notices()[0].content).toContain('**Project / Work**'); expect(notices()[0].content).toContain(nativeMessages[0].text);
-    nativeMessages.push(finalMessage()); provider();
+    expect(notices()).toEqual([expect.objectContaining({status:'sent',content:expect.stringContaining('这是操作说明。')})]);
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://model.example'))).toHaveLength(0);
+  });
+
+  it('cancels a queued result if its exact web message was read before delivery', async () => {
+    configure();subscription();seedSession();
+    getDb().prepare("UPDATE sessions SET codex_session_id='native-read' WHERE id='session-1'").run();
+    const message=finalMessage('本轮已完成');nativeMessages=[message];const now=new Date(Date.now()+1000).toISOString();
+    getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,message_id,kind,state,title,body,created_at,updated_at) VALUES (?,'session-1','native-read','msg-1','msg-1','result','info','完成',?,?,?)").run(member,message.text,now,now);
+    vi.spyOn(conversationReader,'readConversation').mockResolvedValue({messages:[{id:'msg-1',role:'assistant',phase:'final',text:message.text,timestamp:message.timestamp}],statistics:[],has_more:false,reset:false,available:true,generation:'test'} as any);
+    const fetchMock=provider();worker.tick();await worker.drain();expect(notices()).toHaveLength(1);
+    getDb().prepare("UPDATE notifications SET read_at=? WHERE message_id='msg-1'").run(now);
+    worker.tick();await worker.drain();expect(notices()[0].status).toBe('cancelled');
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://notify.example'))).toHaveLength(0);
+  });
+
+  it('does not enqueue a result already read in the web', async () => {
+    configure();subscription();seedSession();getDb().prepare("UPDATE sessions SET codex_session_id='native-read' WHERE id='session-1'").run();
+    const message=finalMessage('已查看的答复');nativeMessages=[message];const now=new Date(Date.now()+1000).toISOString();
+    getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,message_id,kind,state,title,body,read_at,created_at,updated_at) VALUES (?,'session-1','native-read','msg-1','msg-1','result','info','完成',?,?,?,?)").run(member,message.text,now,now,now);
+    vi.spyOn(conversationReader,'readConversation').mockResolvedValue({messages:[{id:'msg-1',role:'assistant',phase:'final',text:message.text,timestamp:message.timestamp}],statistics:[],has_more:false,reset:false,available:true,generation:'test'} as any);
+    const fetchMock=provider();await checkAndDeliver();expect(notices()).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://notify.example'))).toHaveLength(0);
+  });
+
+  it('does not send a final question already viewed in the web', async () => {
+    configure();subscription();seedSession();getDb().prepare("UPDATE sessions SET codex_session_id='native-read' WHERE id='session-1'").run();
+    const message=finalMessage('请选择环境');nativeMessages=[message];const now=new Date(Date.now()+1000).toISOString();
+    getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,message_id,kind,state,title,body,read_at,created_at,updated_at) VALUES (?,'session-1','native-read','question:q','question-msg','question','pending','问题','选择环境',?,?,?)").run(member,now,now,now);
+    vi.spyOn(conversationReader,'readConversation').mockResolvedValue({messages:[{id:'question-msg',role:'assistant',phase:'final',text:message.text,timestamp:message.timestamp}],statistics:[],has_more:false,reset:false,available:true,generation:'test'} as any);
+    const fetchMock=provider();await checkAndDeliver();expect(notices()).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://notify.example'))).toHaveLength(0);
+  });
+
+  it('does not suppress another turn with identical text and a different message id', async () => {
+    configure();subscription();seedSession();getDb().prepare("UPDATE sessions SET codex_session_id='native-read' WHERE id='session-1'").run();
+    const message=finalMessage('相同答复');nativeMessages=[message];const now=new Date(Date.now()+1000).toISOString();
+    getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,message_id,kind,state,title,body,read_at,created_at,updated_at) VALUES (?,'session-1','native-read','old-id','old-id','result','info','完成',?,?,?,?)").run(member,message.text,now,now,now);
+    vi.spyOn(conversationReader,'readConversation').mockResolvedValue({messages:[{id:'new-id',role:'assistant',phase:'final',text:message.text,timestamp:message.timestamp}],statistics:[],has_more:false,reset:false,available:true,generation:'test'} as any);
+    provider();await checkAndDeliver();expect(notices()).toEqual([expect.objectContaining({status:'sent'})]);
+  });
+
+  it('sends a structured error without a model and skips an already-read question', async () => {
+    configure();subscription();seedSession();getDb().prepare("UPDATE sessions SET codex_session_id='native-events' WHERE id='session-1'").run();
+    const now=new Date(Date.now()+1000).toISOString();
+    const insert=getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,kind,state,title,body,read_at,created_at,updated_at) VALUES (?,'session-1','native-events',?,?, 'pending','提示',?,?,?,?)");
+    insert.run(member,'question:q','question','已经看过的问题',now,now,now);insert.run(member,'error:e','error','执行失败',null,now,now);
+    const fetchMock=provider();await checkAndDeliver();
+    expect(notices()).toEqual([expect.objectContaining({status:'sent',content:expect.stringContaining('执行失败')})]);
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://model.example'))).toHaveLength(0);
+  });
+
+  it('sends an error when recovery is exhausted and skips it if web handles it before delivery', async () => {
+    configure();subscription();seedSession();getDb().prepare("UPDATE sessions SET codex_session_id='native-recovery' WHERE id='session-1'").run();
+    const now=new Date(Date.now()+1000).toISOString();
+    getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,message_id,kind,state,title,body,created_at,updated_at) VALUES (?,'session-1','native-recovery','error:turn','failure-1','error','recovering','出错','失败',?,?)").run(member,now,now);
+    const fetchMock=provider();await checkAndDeliver();expect(notices()).toHaveLength(0);
+    getDb().prepare("UPDATE notifications SET state='pending' WHERE source_id='error:turn'").run();
     getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
-    await checkAndDeliver(); expect(notices()).toHaveLength(1);
+    worker.tick();await worker.drain();expect(notices()).toHaveLength(1);
+    getDb().prepare("UPDATE notifications SET state='resolved' WHERE source_id='error:turn'").run();
+    worker.tick();await worker.drain();expect(notices()[0].status).toBe('cancelled');
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://notify.example'))).toHaveLength(0);
   });
 
-  it('requires schema-constrained classification and treats a greeting as Agent data', async () => {
-    configure(); subscription(); seedSession();
-    nativeMessages = [finalMessage('你好！有什么需要我帮忙的？')];
-    const fetchMock = provider('input', '有什么需要我帮忙的？');
-    await checkAndDeliver();
-    const request = JSON.parse(fetchMock.mock.calls.find(call => String(call[0]).startsWith('https://model.example'))![1].body);
-    expect(request.response_format).toMatchObject({type:'json_schema',json_schema:{strict:true,schema:{properties:{kind:{enum:['complete','input','ignore']}},required:['kind','evidence'],additionalProperties:false}}});
-    expect(JSON.parse(request.messages.find((message: any) => message.role === 'user').content)).toEqual({agent_final_reply:nativeMessages[0].text});
-    expect(notices()).toEqual([expect.objectContaining({status:'sent',content:expect.stringContaining('**Project / Work**\n\n你好！有什么需要我帮忙的？')})]);
+  it('does not ask a model to classify tracked progress in a subscribed project', async () => {
+    configure();subscription();seedSession();const received=inbound();
+    const task=trackTask(getConversation(received.conversation_id)!,'session-1','处理问题',0,'ref-progress');
+    nativeMessages=[{role:'assistant',phase:'commentary',text:'正在执行',timestamp:new Date().toISOString(),task_reference:'ref-progress'}];
+    const fetchMock=provider();await worker.observe(task,readAiConfig(),true);
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://model.example'))).toHaveLength(0);
+    expect(getDb().prepare("SELECT COUNT(*) AS n FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get()).toEqual({n:0});
   });
 
-  it('retains malformed classifications for retry and never sends or marks them handled', async () => {
-    configure(); subscription(); seedSession(); nativeMessages = [finalMessage()];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(providerResponse({content:'你好！有什么需要我帮忙的？'})));
-    await checkAndDeliver();
-    expect(notices()).toHaveLength(0);
-    expect(getDb().prepare('SELECT count(*) n FROM platform_ai_project_notification_receipts').get()).toEqual({n:0});
-    expect(getDb().prepare('SELECT failures,error FROM platform_ai_project_notification_watches').get()).toEqual({failures:1,error:'通知分类器未返回有效 JSON，平台将重试'});
-    provider(); getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
-    await checkAndDeliver();
-    expect(notices()).toEqual([expect.objectContaining({status:'sent'})]);
-    expect(getDb().prepare('SELECT failures,error FROM platform_ai_project_notification_watches').get()).toEqual({failures:0,error:null});
+  it('does not duplicate a structured approval with the terminal prompt', async () => {
+    configure();subscription();seedSession();getDb().prepare("UPDATE sessions SET codex_session_id='native-approval' WHERE id='session-1'").run();
+    const now=new Date(Date.now()+1000).toISOString();
+    getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,message_id,kind,state,title,body,created_at,updated_at) VALUES (?,'session-1','native-approval','approval:1','approval-1','approval','pending','授权','是否允许？',?,?)").run(member,now,now);
+    display.processState='waiting_for_input';display.promptType='confirmation';provider();await checkAndDeliver();
+    expect(notices()).toHaveLength(1);expect(notices()[0].content).toContain('是否允许？');
   });
 
   it('detects interactive confirmation without a model, and deduplicates repeated state events', async () => {
@@ -265,14 +326,6 @@ describe('project-wide automatic notifications', () => {
     // Deliver the queued old notice directly; new observation is intentionally not run.
     getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=?').run(Date.now()+60000);
     worker.tick(); await worker.drain(); expect(notices()[0].status).toBe('failed');
-  });
-
-  it('rejects invented model evidence and retains a retryable observation error', async () => {
-    configure(); subscription(); seedSession(); nativeMessages=[finalMessage()]; provider('complete','部署已通过');
-    await checkAndDeliver(); expect(notices()).toHaveLength(0);
-    expect(getDb().prepare('SELECT failures,error FROM platform_ai_project_notification_watches').get()).toMatchObject({failures:1,error:expect.stringContaining('原文依据')});
-    provider(); getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
-    await checkAndDeliver(); expect(notices()[0].status).toBe('sent');
   });
 
   it('preserves deduplication through worker recreation', async () => {
@@ -689,14 +742,12 @@ describe('session observation and notification reliability', () => {
     const fetchMock=vi.fn().mockResolvedValue(providerResponse({content:JSON.stringify({status:'blocked',summary:'Agent 请求提供 Jira 项目或筛选器链接。',evidence:'请提供项目或筛选器链接'})}));
     vi.stubGlobal('fetch',fetchMock);
     await worker.observe(task,readAiConfig());
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'blocked'});
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'reported_complete'});
     expect((getDb().prepare("SELECT content FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get() as {content:string}).content).toContain(reply);
-    const input=JSON.parse(JSON.parse(fetchMock.mock.calls[0][1].body).messages[1].content);
-    expect(input.native_final_answer).toBe(reply);expect(input.output).toBe('');
     task=getDb().prepare('SELECT * FROM platform_ai_tasks WHERE id=?').get(task.id) as typeof task;
     await worker.observe(task,readAiConfig());
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(getDb().prepare("SELECT COUNT(*) AS n FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get()).toEqual({n:1});
   });
   it('does not permanently skip public questions after bounded idle log rechecks are exhausted', async () => {
@@ -822,8 +873,7 @@ describe('session observation and notification reliability', () => {
     vi.stubGlobal('fetch',fetchMock);
     await worker.observe(task,readAiConfig());
     expect(getDb().prepare('SELECT cursor,status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({cursor:42,status:'reported_complete'});
-    const modelInput=JSON.parse(JSON.parse(fetchMock.mock.calls[0][1].body).messages[1].content);
-    expect(modelInput.output).toBe('');expect(modelInput.native_final_answer).toBe('已完成分析，报告正文。');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
   it('observes incremental progress without sending progress notices', async () => {
     configure();seedSession();const received=inbound();
