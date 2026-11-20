@@ -132,7 +132,7 @@ describe('conversation send transaction', () => {
     emit([pending,...Array.from({length:165},(_,index)=>({...settled,message_id:'later-'+index,sequence:2+index}))]);
     expect(label).toHaveTextContent('2.4K');
     expect(label).toHaveAttribute('title',expect.stringContaining('Total 2,420'));
-    expect(label).toHaveTextContent('1 Run');
+    expect(label).toHaveTextContent('1 round | 0 calls');
   });
   it('closes the guard modal on compact-and-send and keeps a cancellable inline status',async()=>{
     vi.mocked(api.agent.checkSend).mockResolvedValue({needs_confirmation:true,matched:true,token:'confirmed',native_id:'native',context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,observed_at:null,can_compact:true,can_new:false} as any);
@@ -377,7 +377,7 @@ describe('conversation send transaction', () => {
     const prior={id:'prior-step',role:'assistant',phase:'commentary',turn_id:'turn',text:'Previous update',timestamp:stamp};
     const tool={id:'active-tool',label:'Run command · test',status:'running',started_at:stamp,turn_id:'turn',after_message_id:prior.id};
     act(()=>Socket.latest.emit({type:'snapshot',messages:[prior],activities:[tool],busy:true,stage:'tools',turn_id:'turn',started_at:stamp}));
-    const pending=await screen.findByRole('status',{name:'正在执行的进展 2'});expect(pending).toHaveTextContent('≥1 round | ≥1 call');
+    const pending=await screen.findByRole('status',{name:'正在执行的进展 2'});expect(pending).toHaveTextContent('— rounds | ≥1 call');
     const segment={id:'live-segment',start_at:stamp,end_at:null,end_reason:null,elapsed_ms:null,tokens:{total_tokens:10000,input_tokens:9000,cached_input_tokens:8000,reasoning_output_tokens:100,output_tokens:1000},requests:2,tool_calls:4,tool_rounds:3,complete:false};
     const step={segment_id:segment.id,after_message_id:prior.id,after_sequence:null,start_at:stamp,tokens:{total_tokens:1100,input_tokens:1000,cached_input_tokens:900,reasoning_output_tokens:50,output_tokens:100},requests:1,tool_calls:2,tool_rounds:1,complete:true,shared_messages:1,cost:{unit:'credits',amount:3.21,complete:true}};
     const progress={turn_id:'turn',...segment,segment,step};
@@ -403,11 +403,11 @@ describe('conversation send transaction', () => {
     act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:1,message_id:item.id,turn_id:'turn',tokens:{total_tokens:392100},requests:1,tool_calls:2,tool_rounds:2,complete:true,segment}]}));
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'other',progress:{turn_id:'turn',tokens:{total_tokens:999},tool_calls:9,tool_rounds:9,complete:true}}));expect(screen.queryByText(/token: 999/)).not.toBeInTheDocument();
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'another-turn',tokens:{total_tokens:999},tool_calls:9,tool_rounds:9,complete:true,segment:{...segment,tokens:{total_tokens:999}}}}));expect(header.querySelector('.session-chat-message-statistics')).toHaveTextContent('392.1K (—)｜');expect(header).not.toHaveTextContent('999');
-    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:400000},tool_calls:3,tool_rounds:2,complete:true,segment:{...segment,tokens:{total_tokens:400000},tool_calls:3}}}));await waitFor(()=>expect(header.querySelector('.session-chat-message-statistics')).toHaveTextContent('400K (—)｜—｜—｜—｜— · 2 rounds | 3 calls'));
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:400000},tool_calls:3,tool_rounds:2,complete:true,segment:{...segment,tokens:{total_tokens:400000},tool_calls:3}}}));await waitFor(()=>expect(header.querySelector('.session-chat-message-statistics')).toHaveTextContent('400K (—)｜—｜—｜—｜— · 1 round | 3 calls'));
     const ended={...segment,end_at:new Date().toISOString(),elapsed_ms:120000,end_reason:'interrupted',tokens:{total_tokens:400000},tool_calls:3};
     act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:1,message_id:item.id,turn_id:'turn',tokens:{total_tokens:400000},requests:1,tool_calls:3,tool_rounds:2,complete:true,segment:ended}]}));
     act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:false,stage:'idle',turn_id:'turn'}));
-    expect(header.querySelector('.session-chat-message-statistics')).toHaveTextContent('400K (—)｜—｜—｜—｜— · 2 rounds | 3 calls');expect(header).toHaveTextContent('Elapsed 2m 0s');expect(header).toHaveTextContent('Interrupted');expect(header).not.toHaveTextContent('waiting:');
+    expect(header.querySelector('.session-chat-message-statistics')).toHaveTextContent('400K (—)｜—｜—｜—｜— · 1 round | 3 calls');expect(header).toHaveTextContent('Elapsed 2m 0s');expect(header).toHaveTextContent('Interrupted');expect(header).not.toHaveTextContent('waiting:');
   });
   it('reconciles an executing Item and its Progress before and after the Item settles',async()=>{
     await mount();
@@ -436,7 +436,7 @@ describe('conversation send transaction', () => {
     const heading=group.querySelector('summary .session-chat-message-statistics')!;
     expect(heading).toHaveAttribute('title',expect.stringContaining('Total 4,300,000;'));
     expect(heading).toHaveTextContent('4.3M (14.03)');
-    expect(heading).toHaveTextContent('10 rounds | 10 calls | 10 Runs');
+    expect(heading).toHaveTextContent('10 rounds | 10 calls');
     expect(group.querySelector('[data-chat-message-id="local-first"] .session-chat-message-statistics')).toHaveTextContent('2.9M (10.532)');
     expect(within(group as HTMLElement).getByRole('status',{name:'正在执行的进展 2'})).toHaveTextContent('1.4M (3.498)');
     const settled={id:'local-next',role:'assistant',phase:'commentary',turn_id:'turn',text:'Second local Item',timestamp,
@@ -452,7 +452,7 @@ describe('conversation send transaction', () => {
     const total={id:'historical-segment',end_reason:'completed',tokens:{total_tokens:97400},requests:2,tool_calls:4,tool_rounds:3,complete:true,shared_messages:1,start_at:'2026-01-01T00:00:00Z',end_at:final.timestamp,elapsed_ms:60000};
     vi.mocked(api.agent.conversation).mockResolvedValue({...existing,messages:[item,final],statistics:[{sequence:1,message_id:final.id,turn_id:'turn',...total,conclusion:total,segment:total}]} as unknown as ConversationPage);
     await mount();const header=(await screen.findByText('progress')).closest('summary')!;
-    expect(header.querySelector('.session-chat-message-statistics')).toHaveTextContent('97.4K (—)｜—｜—｜—｜— · 3 rounds | 4 calls');expect(header).toHaveTextContent('Elapsed 1m 0s');expect(header).toHaveTextContent('Completed');expect(header).not.toHaveTextContent('calling:');
+    expect(header.querySelector('.session-chat-message-statistics')).toHaveTextContent('97.4K (—)｜—｜—｜—｜— · 2 rounds | 4 calls');expect(header).toHaveTextContent('Elapsed 1m 0s');expect(header).toHaveTextContent('Completed');expect(header).not.toHaveTextContent('calling:');
   });
   it('does not mark a progress segment completed just because an async question follows it',async()=>{
     const existing=await api.agent.conversation(session.id);

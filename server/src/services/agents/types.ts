@@ -414,6 +414,7 @@ export interface AgentStatisticsInterval {
   shared_messages: number;
 }
 export interface AgentProgressSegment {
+  last_request_at?: string;
   unassigned?: AgentStatisticsInterval;
   coverage?: SessionCoverage;
   reasons?: SessionCoverageReason[];

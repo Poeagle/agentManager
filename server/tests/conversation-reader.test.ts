@@ -42,6 +42,22 @@ describe('public conversation pages',()=>{
     const page=await readConversation(binding);const answer=page.messages.find(message=>message.id===conversationMessageId(turn,'assistant','answer'));
     expect(answer).toBeDefined();expect(page.statistics?.find(stat=>stat.message_id===answer?.id)).toMatchObject({conclusion:{shared_messages:1,elapsed_ms:64000,tokens:{total_tokens:200}}});
   });
+  it.each([false,true])('preserves an async notice as progress when a formal answer is present: %s',async(withFinal)=>{
+    const turn='async-notice-turn';
+    const content=[{type:'output_text',text:'期间给你的说明'}];
+    const notice={type:'AgentMessage',id:'notice',delivery:'async',phase:'final_answer',content};
+    writeFileSync(file,line('event_msg',{type:'task_started',turn_id:turn})+user('开始')+
+      line('response_item',{type:'message',id:'progress',role:'assistant',phase:'commentary',
+        content:[{type:'output_text',text:'先核对'}]})+
+      line('event_msg',{type:'item_completed',turn_id:turn,item:notice})+
+      line('response_item',{type:'message',id:'notice',role:'assistant',phase:'final_answer',content})+
+      (withFinal?line('response_item',{type:'message',id:'answer',role:'assistant',phase:'final_answer',
+        content:[{type:'output_text',text:'正式答复'}]}):'')+
+      line('event_msg',{type:'task_complete',turn_id:turn,last_agent_message:withFinal?'正式答复':'期间给你的说明'}));
+    const page=await readConversation(binding);
+    expect(page.messages.filter(message=>message.role==='assistant').map(message=>[message.phase,message.text]))
+      .toEqual([['commentary','先核对'],['commentary','期间给你的说明'],...(withFinal?[['final','正式答复']]:[])]);
+  });
   it('returns a complete baseline when a history file is replaced even if its old cursor survives',async()=>{
     writeFileSync(file,user('第一问')+final('第一答'));
     const first=await readConversation(binding);const cursor=first.messages.at(-1)!.id;

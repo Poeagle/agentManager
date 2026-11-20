@@ -19,7 +19,7 @@ const RECORD_MAX = 16 * 1024 * 1024;
 const CHUNK = 256 * 1024;
 const BATCH = 8 * 1024 * 1024;
 const RECORDS = 4000;
-const CHECKPOINT_PROJECTION_VERSION = 3;
+const CHECKPOINT_PROJECTION_VERSION = 4;
 const checkpointVersion = (codec: AgentSessionFactsPort) => codec.revision * 100 + CHECKPOINT_PROJECTION_VERSION;
 
 interface SourceRow {
@@ -479,8 +479,8 @@ export function readSessionUsageIntervals(context: AgentContext, {parent,before}
   const rows: SessionUsageIntervalRow[] = results.slice(0,50).map(row => {
     const stat = readJson<AgentStatistics>(row.facts);
     if (row.kind === 'progress') {
-      const {id,end_at,start_at,elapsed_ms,end_reason,...usage} = stat.segment!;
-      return {id:`progress:${children!.rootId}:${id}`,kind:row.kind,at:end_at,usage:{...usage,shared_messages:1},
+      const {id,end_at,start_at,last_request_at,elapsed_ms,end_reason,...usage} = stat.segment!;
+      return {id:`progress:${children!.rootId}:${id}`,kind:row.kind,at:last_request_at ?? end_at ?? start_at,usage:{...usage,shared_messages:1},
         expandable:row.last_item!==null||!!usage.unassigned};
     }
     if (row.kind === 'final') {

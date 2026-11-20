@@ -29,7 +29,7 @@ import {
 } from "../lib/use-conversation-compaction";
 import { ConversationCompactionStatus } from "./ConversationCompactionStatus";
 import { ConversationControls } from "./ConversationControls";
-import { ConversationCacheDrop } from "./ConversationCacheDrop";
+import { ConversationCacheDrop, MetadataTime } from "./ConversationCacheDrop";
 import {mergeCacheTimeline,unassignedUsageDescription,unassignedUsageLabel,type CacheTimeline,type SessionCacheDrop,type SessionMetadata} from '../lib/session-metadata';
 import { ConversationAutomaticContext } from "./ConversationAutomaticContext";
 import { ConversationDialogCard } from "./ConversationDialogCard";
@@ -138,7 +138,7 @@ interface FailedDraft {
 const timeColor=(seconds:number)=>seconds>=60?'var(--error)':seconds>=30?'#e57b18':'var(--text-muted)';
 
 interface ProgressSummaryProps {
-  agent: AgentDescriptor; agentName: string; count: number; active: boolean;
+  agent: AgentDescriptor; agentName: string; count: number; active: boolean; timestamp?: string | null;
   progress?: import('../lib/api').ConversationProgressStatistics | null;
   progressScope?: 'total'|'turn'|'segment'; completed?: boolean; interrupted?: boolean;
   stepDuration?: number|null; stepRunning?: boolean; phaseSeconds?: number|null;
@@ -150,6 +150,7 @@ function ProgressSection({
   agentName,
   count,
   active,
+  timestamp,
   progress,
   progressScope,
   completed,
@@ -179,7 +180,7 @@ function ProgressSection({
           aria-label={`${open ? "收起" : "展开"}进展（${count} 条）`}
           aria-expanded={open}
         >
-          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} progress={progress} progressScope={progressScope} completed={completed} interrupted={interrupted} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} turnDuration={turnDuration} showStatistics={showStatistics}/>
+          <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} timestamp={timestamp} progress={progress} progressScope={progressScope} completed={completed} interrupted={interrupted} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} turnDuration={turnDuration} showStatistics={showStatistics}/>
           <ChevronDown size={14} className="session-chat-progress-chevron" />
         </summary>
         <div className="session-chat-progress-content">{children}</div>
@@ -188,12 +189,13 @@ function ProgressSection({
   );
 }
 
-function ProgressSummary({agent,agentName,count,active,progress,progressScope='total',completed,interrupted,stepDuration,stepRunning,phaseSeconds,progressPhase,turnDuration,showStatistics=true}:ProgressSummaryProps) {
+function ProgressSummary({agent,agentName,count,active,timestamp,progress,progressScope='total',completed,interrupted,stepDuration,stepRunning,phaseSeconds,progressPhase,turnDuration,showStatistics=true}:ProgressSummaryProps) {
   return <>
           <span aria-hidden="true"><AgentIcon session={{agent}} className="h-[13px] w-[13px]" /></span>
           <span>{agentName}</span>
           <span className="session-chat-kind">progress</span>
           {showStatistics&&<span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>}
+          {showStatistics&&timestamp&&<span className="session-chat-progress-time" aria-label="进展时间"><MetadataTime at={timestamp}/></span>}
           {showStatistics&&(progress||progressScope==='segment')&&<ConversationStatisticsLabel progress interval={!!progress&&!('segment' in progress)} statistics={progress?{...progress,sequence:0}:null}/>}
           {showStatistics&&active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
           {showStatistics&&active&&<span className="session-chat-progress-time">{progressPhase}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
@@ -2385,6 +2387,8 @@ export function SessionConversation({
                     agentName={agentName}
                     count={group.messages.length+Number(!!execution)}
                     active={activeGroup}
+                    timestamp={part?.last_request_at??part?.end_at??part?.start_at??
+                      (last?.streaming?null:last?.timestamp)??(pending?liveProgress.started_at:null)}
                     stepDuration={progressTimingVisible&&(pending||tail===group)?stepDuration:null}
                     stepRunning={currentActivity?.status==='running'}
                     phaseSeconds={phaseSeconds}

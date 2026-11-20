@@ -171,6 +171,24 @@ describe('native Codex conversation streaming',()=>{
     send('turn/completed',{threadId:'thread',turn:{id:'turn',status:'completed'}});
     await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:false,messages:[{async_questions:questions,streaming:false}]}));
   });
+  it('streams an async notice as progress and keeps the real Final in the same turn',async()=>{
+    stop=observeCodexConversation('thread',frame=>frames.push(frame));
+    await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));
+    const turnId='with-async-notice';
+    send('turn/started',{threadId:'thread',turn:{id:turnId}});
+    send('item/completed',{threadId:'thread',turnId,item:{
+      type:'agentMessage',id:'notice',phase:'final_answer',delivery:'async',text:'执行中说明',
+    }});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:true,stage:'tools',messages:[
+      {id:conversationMessageId(turnId,'assistant','notice'),phase:'commentary',text:'执行中说明'},
+    ]}));
+    send('item/completed',{threadId:'thread',turnId,item:{
+      type:'agentMessage',id:'answer',phase:'final_answer',text:'正式答复',
+    }});
+    await vi.waitFor(()=>expect(frames.at(-1)?.messages?.at(-1)).toMatchObject({phase:'final',text:'正式答复'}));
+    send('turn/completed',{threadId:'thread',turn:{id:turnId,status:'completed'}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:false}));
+  });
   it('replays genuine native questions on resume and answers exactly once on the subscribed socket',async()=>{
     const native={id:3,method:'item/tool/requestUserInput',params:{threadId:'thread',turnId:'turn',itemId:'ask',isBlocking:true,questions:[{id:'q',header:'范围',question:'选择部署范围',isOther:false,isSecret:false,options:[{label:'试用',description:'隔离环境'},{label:'正式',description:'日常环境'}]}]}};
     humanRequests=[native];

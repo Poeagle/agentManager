@@ -77,7 +77,6 @@ interface ModelUsage {
   speed: string | null;
   tokens: number | null;
   requests: number;
-  rounds: number;
   calls: number;
   cost: ConversationCostEstimate | null;
 }
@@ -90,12 +89,11 @@ function usageByModel(models: SessionMetadataDetails['models']): ModelUsage[] {
     const tokens = row.tokens?.total_tokens ?? null;
     if (!previous) {
       groups.set(key, {model: row.model, speed: row.speed, tokens, requests: row.requests,
-        rounds: row.tool_rounds, calls: row.tool_calls, cost: row.cost});
+        calls: row.tool_calls, cost: row.cost});
       continue;
     }
     previous.tokens = tokens == null || previous.tokens == null ? null : previous.tokens + tokens;
     previous.requests += row.requests;
-    previous.rounds += row.tool_rounds;
     previous.calls += row.tool_calls;
     if (previous.cost || row.cost) {
       const a = previous.cost?.amount, b = row.cost?.amount;
@@ -105,6 +103,11 @@ function usageByModel(models: SessionMetadataDetails['models']): ModelUsage[] {
   }
   return [...groups.values()].sort((a, b) => (b.tokens ?? -1) - (a.tokens ?? -1));
 }
+
+const requestCountColumns = [
+  {label:'Round', title:'有原生记录的模型请求次数，含只进行推理或只输出文字的请求。'},
+  {label:'Call', title:'Agent 发出的原生工具调用次数。'},
+];
 
 function ModelUsageTable({details, loading, error, onRetry}: {
   details: SessionMetadataDetails | null;
@@ -116,15 +119,18 @@ function ModelUsageTable({details, loading, error, onRetry}: {
   return <section className="conversation-metadata-section">
     <h4>按模型用量</h4>
     <TableFrame label="按模型用量" className="conversation-metadata-scroll conversation-model-usage" style={{minWidth: 520}}
-      loading={loading} header={<>{['模型', '速度', '总量 Token', 'Runs', '工具轮次 / 调用', '预估积分']
-        .map(label => <th key={label} scope="col">{label}</th>)}</>}>
+      loading={loading} header={<>
+        <th scope="col">模型</th><th scope="col">速度</th><th scope="col">总量 Token</th>
+        {requestCountColumns.map(({label,title}) => <th key={label} scope="col" title={title}>{label}</th>)}
+        <th scope="col">预估积分</th>
+      </>}>
       {loading ? <TableStateRow columnCount={6} loading>加载中…</TableStateRow>
       : error ? <TableStateRow columnCount={6} error onRetry={onRetry}>{error}</TableStateRow>
       : models.length === 0 ? <TableStateRow columnCount={6}>暂无模型用量</TableStateRow>
       : models.map(row => <tr key={JSON.stringify([row.model,row.speed])}>
         <th scope="row">{row.model ?? '未知模型'}</th><td>{row.speed ?? '—'}</td>
         <td>{number(row.tokens)}</td><td>{number(row.requests)}</td>
-        <td>{number(row.rounds)} / {number(row.calls)}</td>
+        <td>{number(row.calls)}</td>
         <td className={row.cost?.amount == null ? undefined : 'session-chat-estimated-cost'}>{row.cost?.amount == null ? '—' : creditsLabel(row.cost)}</td>
       </tr>)}
     </TableFrame>
@@ -134,8 +140,7 @@ function ModelUsageTable({details, loading, error, onRetry}: {
 const intervalColumns: Array<{label: string; title?: string}> = [
   {label:'时间'}, {label:'总输入'}, {label:'缓存输入'}, {label:'未缓存输入'},
   {label:'缓存率'}, {label:'输出'}, {label:'总量'},
-  {label:'工具轮次 / 调用', title:'同一次模型响应中的工具调用计为一轮，每个工具分别计一次调用。'},
-  {label:'Runs', title:'已记录的模型请求次数，含只进行推理或只输出文字的请求。'},
+  ...requestCountColumns,
   {label:'预估积分'},
 ];
 
@@ -172,8 +177,10 @@ function UsageLevel({scope,parent,depth=0}: {
   if (loading) return <TableStateRow columnCount={intervalColumns.length} loading>加载中…</TableStateRow>;
   if (query.isError && !first) return <TableStateRow columnCount={intervalColumns.length} error onRetry={()=>void query.refetch()}>无法读取区间用量</TableStateRow>;
   if (!rows.length) return <TableStateRow columnCount={intervalColumns.length}>暂无区间用量记录</TableStateRow>;
+  const finalReply = parent?.kind === 'final' ? rows.find(row => row.phase === 'final') : undefined;
   return <>
-    {rows.map(row=><UsageRow key={row.id} scope={scope} row={row} depth={depth}/>)}
+    {finalReply&&<UsageRow key={finalReply.id} scope={scope} row={finalReply} depth={depth}/>}
+    {rows.filter(row=>row!==finalReply).map(row=><UsageRow key={row.id} scope={scope} row={row} depth={depth}/>)}
     {history.error && <TableStateRow columnCount={intervalColumns.length} error>{history.error}</TableStateRow>}
     {history.before && <TableDetailRow columnCount={intervalColumns.length}>
       <button className="session-chat-older" type="button" style={{marginInlineStart:14*depth}} disabled={history.loading} onClick={()=>void history.load()}>
@@ -222,8 +229,8 @@ function UsageRow({scope,row,depth}: {
         {coverage&&<span className="conversation-interval-footnote"
           title={[coverage,...(usage?.reasons??[]).map(reason=>coverageReason[reason])].join(' · ')} aria-label={coverage}>*</span>}
       </td>
-      <td>{usage&&`${count(usage.tool_rounds)} / ${count(usage.tool_calls)}`}</td>
       <td>{usage&&count(usage.requests)}</td>
+      <td>{usage&&count(usage.tool_calls)}</td>
       <td className={usage?.cost?.amount==null?undefined:'session-chat-estimated-cost'}>{usage&&(usage.cost?.amount==null?'—':creditsLabel(usage.cost))}</td>
     </tr>
     {expanded&&<UsageLevel scope={scope} parent={row} depth={depth+1}/>}
@@ -238,7 +245,7 @@ export function ConversationUsageHistory({sessionId,nativeId,details,generation,
     <ModelUsageTable details={details} loading={loading} error={error} onRetry={onRetry} />
     <section className="conversation-metadata-section">
       <h4>逐区间用量</h4>
-      <TableFrame label="逐区间用量" className="conversation-metadata-scroll conversation-interval-table" style={{minWidth:970}}
+      <TableFrame label="逐区间用量" className="conversation-metadata-scroll conversation-interval-table" style={{minWidth:900}}
         header={intervalColumns.map(({label,title})=><th key={label} scope="col" title={title}>{label}</th>)}>
         <UsageLevel key={JSON.stringify([nativeId,generation])} scope={{sessionId,nativeId,generation,revision,enabled:active&&supported}}/>
       </TableFrame>

@@ -14,6 +14,7 @@ interface Point { counter: StatisticsCounter; at: string | null; id?: string; of
 interface Progress {
   id: string;
   start_at: string | null;
+  last_request_at?: string;
   counter: StatisticsCounter;
   seen: boolean;
   last?: Item;
@@ -37,7 +38,7 @@ interface Turn {
   heldProgress?: Progress;
   last?: Item;
   unknownTail?: {item: Item; point: Point; shared: number; beforeRequest: Point;
-    beforeProgress?: StatisticsCounter; previousItem?: Point; previousCompleted?: Item};
+    beforeProgress?: StatisticsCounter; previousRequestAt?: string; previousItem?: Point; previousCompleted?: Item};
   ended?: End;
   answered?: boolean;
   progressedAt?: Point;
@@ -249,6 +250,7 @@ export class SessionStatisticsProjection {
       const progress=turn.heldProgress??turn.progress;
       if (candidate.beforeProgress && progress.last?.id === candidate.item.id) {
         progress.counter=candidate.beforeProgress;
+        progress.last_request_at=candidate.previousRequestAt;
         progress.last=candidate.previousCompleted;
         progress.completed=candidate.previousCompleted;
         progress.item_end=candidate.previousItem;
@@ -355,7 +357,12 @@ export class SessionStatisticsProjection {
     const previousItem=scope.item_end,previousCompleted=scope.completed;
     const mayBecomeFinal=last?.phase==='unknown'&&items.length===1&&toolsInRequest===0;
     const beforeProgress=mayBecomeFinal?copyCounter(scope.counter):undefined;
-    if(ownsProgress) countRequest(scope.counter,request,toolsInRequest);
+    const previousRequestAt=scope.last_request_at;
+    if (ownsProgress) {
+      countRequest(scope.counter,request,toolsInRequest);
+      if (request.at && (!previousRequestAt || request.at > previousRequestAt))
+        scope.last_request_at=request.at;
+    }
     const interval = recordedInterval(ownsProgress?scope.counter:state.total,
       ownsProgress?previousItem?.counter:beforeRequest.counter,items.length,
       late ? ['ambiguous_boundary'] : turn.verified ? [] : ['missing_start']);
@@ -383,7 +390,7 @@ export class SessionStatisticsProjection {
       this.answer(turn, item, this.point(item.at, item.id, item.offset), finals.length, late);
     }
     if (last?.phase === 'unknown') turn.unknownTail = {item:last,point,shared:items.length,beforeRequest,
-      beforeProgress,previousItem,previousCompleted};
+      beforeProgress,previousRequestAt,previousItem,previousCompleted};
     else turn.unknownTail = undefined;
     if (turn.heldProgress?.close) {
       const {at, reason} = turn.heldProgress.close;
@@ -438,7 +445,7 @@ function progressSegment(progress: Progress, at: string | null, reason: AgentPro
   const tail = includePendingTools(recordedInterval(progress.counter,progress.item_end?.counter,1,extra,pending),pendingTools);
   const unassigned = tail.requests || tail.tool_calls ? tail : undefined;
   return {
-    ...interval, id: progress.id, start_at: progress.start_at, end_at: at,
+    ...interval, id: progress.id, start_at: progress.start_at, end_at: at, last_request_at: progress.last_request_at,
     end_reason: reason, elapsed_ms: elapsed(progress.start_at, at), ...(unassigned ? {unassigned} : {}),
   };
 }

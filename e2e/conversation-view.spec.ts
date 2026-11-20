@@ -43,7 +43,7 @@ test('chat hides tool logs, sends to the same live session and switches to its o
   const answerMeta=chat.locator('.session-chat-message[data-phase="final"] .session-chat-message-meta').first();
   await expect(answerMeta).toHaveCSS('opacity','1');
   await expect(answerMeta.getByRole('button',{name:'复制Agent 回复'})).toBeVisible();
-  appendFileSync(log,counters(1500,300)+entry('event_msg',{type:'task_complete',turn_id:turn}));await expect(answerMeta).toContainText('2 rounds | 4 calls');await expect(progress).toContainText('1 round | 3 calls');
+  appendFileSync(log,counters(1500,300)+entry('event_msg',{type:'task_complete',turn_id:turn}));await expect(answerMeta).toContainText('3 rounds | 4 calls');await expect(progress).toContainText('1 round | 3 calls');
   await expect(chat.locator('.conversation-inline-meta')).toHaveCount(0);
   for(const article of await chat.locator('.session-chat-message.assistant').all()){
     const geometry=await article.evaluate(node=>{const meta=node.querySelector('.session-chat-metadata-row')!.getBoundingClientRect(),body=node.querySelector('.conversation-markdown')!.getBoundingClientRect();return {metaBottom:meta.bottom,bodyTop:body.top};});

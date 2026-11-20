@@ -30,7 +30,7 @@ describe('English message metadata',()=>{
   render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,complete:false}}}/>);expect(label()).toHaveTextContent('≥200 (—)｜');expect(label()).toHaveTextContent('≥1 round | ≥2 calls');
  });
  it('keeps legacy snapshots described as cumulative usage',()=>{
-  render(<ConversationStatisticsLabel interval statistics={base}/>);expect(label()).toHaveTextContent('1K (—)｜');expect(label()).toHaveTextContent('4 rounds | 8 calls');expect(label()).toHaveAttribute('title',expect.stringContaining('Cumulative usage'));
+  render(<ConversationStatisticsLabel interval statistics={base}/>);expect(label()).toHaveTextContent('1K (—)｜');expect(label()).toHaveTextContent('3 rounds | 8 calls');expect(label()).toHaveAttribute('title',expect.stringContaining('Cumulative usage'));
  });
  it('shows cache hit percentage beside cached input and provides exact counters and pricing in the tooltip',()=>{
   const tokens={total_tokens:10200,input_tokens:10000,cached_input_tokens:9999,reasoning_output_tokens:50,output_tokens:200};
@@ -67,9 +67,9 @@ describe('English message metadata',()=>{
   const view=render(<ConversationStatisticsLabel interval statistics={{...base,interval:pending}}/>);
   expect(label()).toHaveTextContent(/^等待用量回执$/);
   view.rerender(<ConversationStatisticsLabel interval statistics={{...base,interval:{...pending,tool_calls:2,tool_rounds:1}}}/>);
-  expect(label()).toHaveTextContent('1 round | 2 calls | — Runs');
+  expect(label()).toHaveTextContent('— rounds | 2 calls');
   view.rerender(<ConversationStatisticsLabel interval statistics={{...base,interval:{...pending,coverage:'complete',complete:true,requests:1,tokens:{total_tokens:200}}}}/>);
-  expect(label()).toHaveTextContent('0 rounds | 0 calls | 1 Run');
+  expect(label()).toHaveTextContent('1 round | 0 calls');
   expect(label()).not.toHaveTextContent('等待用量回执');
  });
  it('uses English units and timing tooltips',()=>{

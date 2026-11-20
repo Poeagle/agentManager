@@ -15,11 +15,13 @@ export function codexUserText(content: unknown): string {
         return true;
     }), 'input_text');
 }
+export function codexMessagePhase(phase: unknown, delivery?: unknown): 'unknown' | 'commentary' | 'final' {
+    if (delivery === 'async' || phase === 'commentary') return 'commentary';
+    return phase === 'final_answer' || phase === 'final' ? 'final' : 'unknown';
+}
+
 export function decodeCodexText(entries: Iterable<unknown>, limit = 8000) {
     const { messages, append: collect } = textCollector(limit);
-    const phase = (value: unknown): 'unknown' | 'commentary' | 'final' => value === 'final_answer' || value === 'final'
-        ? 'final'
-        : value === 'commentary' ? 'commentary' : 'unknown';
     const itemText = (content: unknown) => Array.isArray(content)
         ? content.filter(isRecord)
             .filter(block => ['Text', 'output_text', 'text'].includes(String(block.type)) && typeof block.text === 'string')
@@ -36,15 +38,15 @@ export function decodeCodexText(entries: Iterable<unknown>, limit = 8000) {
             if (p.role === 'user')
                 append('user', 'user', codexUserText(p.content), entry.timestamp);
             if (p.role === 'assistant')
-                append('assistant', phase(p.phase), contentText(p.content, 'output_text'), entry.timestamp);
+                append('assistant', codexMessagePhase(p.phase, p.delivery), contentText(p.content, 'output_text'), entry.timestamp);
         }
         else if (entry.type === 'event_msg') {
             if (p.type === 'user_message')
                 append('user', 'user', cleanText(p.message), entry.timestamp);
             if (p.type === 'agent_message')
-                append('assistant', phase(p.phase), cleanText(p.message), entry.timestamp);
+                append('assistant', codexMessagePhase(p.phase, p.delivery), cleanText(p.message), entry.timestamp);
             if (p.type === 'item_completed' && isRecord(p.item) && p.item.type === 'AgentMessage')
-                append('assistant', phase(p.item.phase), itemText(p.item.content), entry.timestamp);
+                append('assistant', codexMessagePhase(p.item.phase, p.item.delivery), itemText(p.item.content), entry.timestamp);
             if (p.type === 'item_completed' && isRecord(p.item) && p.item.type === 'UserMessage')
                 append('user', 'user', contentText(Array.isArray(p.item.content) ? p.item.content.map((part: unknown) => isRecord(part) && part.type === 'text' ? { ...part, type: 'input_text' } : part) : p.item.content, 'input_text'), entry.timestamp);
             if (p.type === 'task_complete')

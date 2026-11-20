@@ -6,6 +6,7 @@ import { realpath } from 'node:fs/promises';
 import type { AgentSessionFactsPort, NativeFactLocation, NativeRequestFact, NativeSessionFact, RequestDimensions } from '../session-facts.js';
 import { consistentUsage, factId, factString, factTime, nativeItemId, parsedUsage, recordType } from '../session-fact-values.js';
 import { recordedPricingSettings } from './statistics-settings.js';
+import { codexMessagePhase } from './text.js';
 import { costSnapshot, emptyCostTotals, recordCost } from './statistics-cost.js';
 
 interface Input {
@@ -185,10 +186,11 @@ export const codexSessionFacts: AgentSessionFactsPort = {
       captureRequestContext(state, turn);
       const native = factString(item.id);
       const digest = textDigest(itemText(item.content, ['text', 'Text', 'output_text']));
-      const final = ['final_answer', 'final'].includes(item.phase) && item.delivery !== 'async' && !item.questions?.length && !!digest;
+      const phase = codexMessagePhase(item.phase, item.delivery);
+      const final = phase === 'final' && !item.questions?.length && !!digest;
       if (digest || native) facts.push({
         kind: 'item', id: native ? nativeItemId('assistant', native) : factId('item', context.nativeId, offset),
-        turn_id: turn, at, phase: final ? 'final' : item.phase && item.phase !== 'unknown' ? 'progress' : 'unknown',
+        turn_id: turn, at, phase: final ? 'final' : phase === 'commentary' || (item.phase && item.phase !== 'unknown') ? 'progress' : 'unknown',
         ...(digest ? {digest} : {}),
       });
       return result();

@@ -497,7 +497,7 @@ function dedupe(messages: IndexedMessage[]): IndexedMessage[] {
   const priority = (message: IndexedMessage) =>
     message.recordType === "compaction_summary"
       ? 7
-      : message.recordType === "async_question"
+      : message.recordType === "async_question" || message.recordType === "async_progress"
         ? 6
         : message.recordType === "shared_context"
           ? 5
@@ -559,10 +559,13 @@ function dedupe(messages: IndexedMessage[]): IndexedMessage[] {
       if(!native.image_paths?.length&&event.image_paths?.length)native.image_paths=event.image_paths;
       omit.add(event);
     }
-    const completed = turn.some(
-      (message) =>
-        message.recordType === "completion_echo" && message.phase !== "error",
-    );
+    const asyncUpdates = turn.filter(message => message.recordType === "async_progress");
+    let completed = false;
+    for (const message of turn) {
+      if (message.recordType !== "completion_echo" || message.phase === "error") continue;
+      if (asyncUpdates.some(update => update.turn_id === message.turn_id && update.text === message.text)) omit.add(message);
+      else completed = true;
+    }
     const questions = turn.filter(
       (message) => message.recordType === "async_question",
     );

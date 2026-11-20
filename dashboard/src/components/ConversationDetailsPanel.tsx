@@ -59,9 +59,9 @@ export function ConversationDetailsPanel({usage, model, state, statusTitle, meta
     {label: '当前模型', value: model},
     {label: '预估积分', value: creditsLabel(cost), credits: true,
       title: cost ? `费率 ${cost.rate_date ?? '未知'}${cost.complete ? '' : ' · 费率或用量覆盖不完整'}` : undefined},
-    {label: '模型请求（Runs）', value: counts(metadata?.totals?.requests)},
+    {label: '模型请求（Round）', value: counts(metadata?.totals?.requests)},
     {label: '用户输入 / 已完成问答', value: metadata ? `${counts(metadata.user_inputs)} / ${counts(metadata.completed_turns)}` : '—'},
-    {label: '工具轮次 / 调用', value: metadata?.totals ? `${counts(metadata.totals.tool_rounds)} / ${counts(metadata.totals.tool_calls)}` : '—'},
+    {label: '工具调用（Call）', value: counts(metadata?.totals?.tool_calls)},
     {label: '记录覆盖', value: metadata ? coverageText[metadata.status] : null,
       title: metadata?.reasons.map(reason => coverageReason[reason]).join('、') || undefined},
   ];

@@ -2,6 +2,7 @@ import {open} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {emptyCostTotals,recordCost,costDifference,costSnapshot,type CostTotals} from './statistics-cost.js';
 import {precedingPricingSettings,recordedPricingSettings} from './statistics-settings.js';
+import {codexMessagePhase} from './text.js';
 import {publicTokenCounters,tokenFields} from '../../conversation-usage.js';
 
 export type ConversationInterval=import('../types.js').AgentStatisticsInterval;
@@ -107,8 +108,9 @@ function consume(state:State,line:Buffer,sequence:number){
     if(state.turn?.id!==id){closeSegment(state,null);finish(state,false);state.turn=turn(id,false);state.segment=segment(sequence,null,false);}
     const message_id=typeof assistantItem.id==='string'?createHash('sha256').update(`item:assistant:${assistantItem.id}`).digest('hex').slice(0,32):undefined;
     const text=Array.isArray(assistantItem.content)?assistantItem.content.filter((part:any)=>['Text','output_text','text'].includes(part?.type)&&typeof part.text==='string').map((part:any)=>part.text.trim()).filter(Boolean).join('\n').trim():'';
-    const final=['final_answer','final'].includes(assistantItem.phase)&&assistantItem.delivery!=='async'&&!assistantItem.questions?.length&&!!text;
-    const implicit=!assistantItem.phase||assistantItem.phase==='unknown';
+    const phase=codexMessagePhase(assistantItem.phase,assistantItem.delivery);
+    const final=phase==='final'&&!assistantItem.questions?.length&&!!text;
+    const implicit=phase==='unknown'&&(!assistantItem.phase||assistantItem.phase==='unknown');
     const current=state.turn!;
     // Codex records the same item in item_completed and response_item. Merge
     // by native ID before assigning a request interval or conclusion boundary.

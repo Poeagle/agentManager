@@ -80,7 +80,7 @@ describe('chat/raw terminal display',()=>{
     send(message);let bubble=document.querySelector('[data-chat-message-id="streaming-progress"]')!;
     expect(bubble.querySelector('time')).toBeNull();expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('500 (—)｜');
     send({...message,text:'检查结束',streaming:false,timestamp:'2026-11-03T00:00:05Z'});bubble=document.querySelector('[data-chat-message-id="streaming-progress"]')!;
-    expect(bubble.querySelector('time')).toHaveAttribute('datetime','2026-11-03T00:00:05Z');expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('500 (—)｜—｜—｜—｜— · 2 rounds | 3 calls');
+    expect(bubble.querySelector('time')).toHaveAttribute('datetime','2026-11-03T00:00:05Z');expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('500 (—)｜—｜—｜—｜— · 1 round | 3 calls');
   });
   it('uses newer durable completion to clear a lost RPC busy snapshot while rejecting older completion',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];

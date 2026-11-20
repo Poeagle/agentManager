@@ -111,7 +111,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.17.0',
+    version:'3.18.0',
     updatedAt:'2026-11-21',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -266,7 +266,7 @@ export function getAgentApiContract() {
       },
       {
         category: 'Sessions', method: 'GET', path: '/api/sessions/:id/conversation/usage-intervals',
-        description: 'Read recorded usage in newest-first order. A root row with kind=final is the round total between Final boundaries. Expanding that row returns the reply itself as kind=item with phase=final, alongside its Progress groups. Pass an expandable row id as parent and next_before as before for the next page at that level. Each row carries its own usage and coverage.',
+        description: 'Read recorded usage in newest-first order. A root row with kind=final is the round total between Final boundaries. Expanding that row returns the reply itself as kind=item with phase=final, alongside its Progress groups. Pass an expandable row id as parent and next_before as before for the next page at that level. Each row carries its own usage and coverage. Progress time uses its latest recorded request, falling back to a known segment boundary.',
         response: {intervals:'SessionUsageIntervalPage | null'},
         errors: {400:'Invalid parent or cursor',404:'Session not found or not accessible'},
       },
@@ -431,7 +431,7 @@ export function getAgentApiContract() {
         category: 'Session control',
         method: 'WS',
         path: '/api/sessions/:id/conversation/stream',
-        description: 'Cookie-authenticated conversation stream. Optional UI-only activities carry turn_id, after_message_id and bounded, redacted input_preview and result_preview. User messages may include batch and verified input_source. Statistics carry Item and Final intervals and optional progress segment and cost estimate. Runs count recorded model requests; multiple parallel calls in a single response count as one tool round. progress_statistics.step identifies the open Item interval through segment_id, after_message_id, after_sequence and start_at. session_metadata carries the persisted native_id, generation and revision with session totals and cache_drops. Coverage marks pending and partial intervals. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
+        description: 'Cookie-authenticated conversation stream. Optional UI-only activities carry turn_id, after_message_id and bounded, redacted input_preview and result_preview. User messages may include batch and verified input_source. Statistics carry Item and Final intervals and optional progress segment and cost estimate. The dashboard displays Round as requests and Call as tool_calls. Progress segments may carry last_request_at. Asynchronous assistant updates are commentary and do not close a Final interval. progress_statistics.step identifies the open Item interval through segment_id, after_message_id, after_sequence and start_at. session_metadata carries the persisted native_id, generation and revision with session totals and cache_drops. Coverage marks pending and partial intervals. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
       },
       {
         category: 'Session control',

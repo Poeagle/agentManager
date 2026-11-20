@@ -19,9 +19,9 @@ test('progress badges and folding keep metadata separate from the message conten
  try{
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
   const toggle=chat.getByLabel('展开进展（2 条）');await expect(toggle).toBeVisible();await expect(chat.getByText('First progress',{exact:true})).toBeHidden();await expect(chat.getByText('Finished',{exact:true})).toBeVisible();await toggle.click();
-  await expect(chat.getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 100 (—)｜—｜—｜—｜— · 1 round | 1 call | 1 Run',{exact:true})).toBeVisible();
-  await expect(chat.getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 200 (—)｜—｜—｜—｜— · 1 round | 2 calls | 1 Run',{exact:true})).toBeVisible();
-  await expect(chat.locator('[data-phase=final]').getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 600 (—)｜—｜—｜—｜— · 2 rounds | 3 calls | 3 Runs',{exact:true})).toBeVisible();
+  await expect(chat.getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 100 (—)｜—｜—｜—｜— · 1 round | 1 call',{exact:true})).toBeVisible();
+  await expect(chat.getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 200 (—)｜—｜—｜—｜— · 1 round | 2 calls',{exact:true})).toBeVisible();
+  await expect(chat.locator('[data-phase=final]').getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 600 (—)｜—｜—｜—｜— · 3 rounds | 3 calls',{exact:true})).toBeVisible();
   expect(await chat.locator('.session-chat-message-statistics').first().getAttribute('title')).toContain('Usage for the Items in this Progress.');
   await expect(chat.locator('.session-chat-message-statistics').first()).toHaveAttribute('title',/Total 300[;]/);
   await expect(chat.getByRole('region',{name:'Codex 进展'}).locator('.session-chat-kind')).toHaveText('progress');
@@ -48,8 +48,8 @@ test('progress badges and folding keep metadata separate from the message conten
   const secondFinal=JSON.parse(msg('second-final','Second conclusion','final_answer','retry'));secondFinal.timestamp=secondTime;
   appendFileSync(log,rec('event_msg',{type:'task_started',turn_id:'interrupted'})+call('retry-a')+usage(700,100)+rec('event_msg',{type:'task_complete',turn_id:'interrupted'})+rec('event_msg',{type:'task_started',turn_id:'retry'})+call('retry-b')+JSON.stringify(secondFinal)+'\n'+usage(750,50)+rec('event_msg',{type:'task_complete',turn_id:'retry',last_agent_message:'Second conclusion'}));
   const second=chat.locator('.session-chat-message[data-phase="final"]').filter({hasText:'Second conclusion'});
-  await expect(second.getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 150 (—)｜—｜—｜—｜— · 2 rounds | 2 calls | 2 Runs',{exact:true})).toBeVisible();
+  await expect(second.getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 150 (—)｜—｜—｜—｜— · 2 rounds | 2 calls',{exact:true})).toBeVisible();
   await expect(second.getByText('Total time: 1m 0s',{exact:true})).toBeVisible();
-  await page.reload();await expect(second.getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 150 (—)｜—｜—｜—｜— · 2 rounds | 2 calls | 2 Runs',{exact:true})).toBeVisible();await expect(second.getByText('Total time: 1m 0s',{exact:true})).toBeVisible();
+  await page.reload();await expect(second.getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 150 (—)｜—｜—｜—｜— · 2 rounds | 2 calls',{exact:true})).toBeVisible();await expect(second.getByText('Total time: 1m 0s',{exact:true})).toBeVisible();
  }finally{await page.request.delete(`/api/sessions/${session.id}`).catch(()=>{});}
 });

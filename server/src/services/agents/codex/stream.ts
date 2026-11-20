@@ -15,6 +15,7 @@ import {conversationMessageId,type ConversationMessage} from '../../conversation
 import {conversationErrorMessage} from '../../conversation-error.js';
 import {activityResultPreview,conversationActivity,type ConversationActivity} from '../../conversation-activity.js';
 import {nativeUsageFrame} from '../../conversation-usage.js';
+import {codexMessagePhase} from './text.js';
 import {getDb} from '../../../db/index.js';
 import {setLiveCodexRuntime,clearLiveCodexRuntime,rememberLiveCodexInput,liveCodexInput,rememberCodexQuestionReply,syncQueuedCodexQuestionReplies} from './runtime-signals.js';
 import type {CodexState} from './runtime.js';
@@ -305,12 +306,14 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     const text=reply?.text??rawText;
     // A reconnect baseline can arrive after fresh deltas on the same socket.
     if(previous && streaming && (previous.message.text.length>text.length || (!previous.message.streaming && previous.message.text.length>=text.length))) return;
-    const nativePhase=item.phase==='final_answer'||item.phase==='final'?'final':item.phase==='commentary'?'commentary':previous?.phase??null;
+    const phase=codexMessagePhase(item.phase,item.delivery);
+    const nativePhase=phase==='unknown'?previous?.phase??null:phase;
+    const questions=role==='assistant'?conversationAsyncQuestions(item):undefined;
     items.set(item.id,{phase:nativePhase,message:{
       id:conversationMessageId(turnId,role,item.id),role,turn_id:turnId,
-      ...(role==='assistant'?{phase:nativePhase==='final'?'final' as const:'commentary' as const}:{}),
+      ...(role==='assistant'?{phase:questions||nativePhase==='final'?'final' as const:'commentary' as const}:{}),
       ...(reply?{question_replies:reply.answers}:{}),
-      ...(role==='assistant'&&conversationAsyncQuestions(item)?{async_questions:conversationAsyncQuestions(item)}:{}),
+      ...(questions?{async_questions:questions}:{}),
       ...(typeof item.clientId==='string'?{client_id:item.clientId}:{}),
       ...(role==='user'?{image_paths:conversationImagePaths(item.content)}:{}),
       text:text.slice(0,128*1024),timestamp:role==='assistant'&&!streaming?(timestamp===null?null:new Date(timestamp??Date.now()).toISOString()):previous?.message.timestamp || (timestamp===null?null:new Date(timestamp??Date.now()).toISOString()),streaming:role==='assistant' && streaming,
@@ -364,7 +367,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
           const streaming=!newer&&item===(turn.items||[]).at(-1) && item.type==='agentMessage' && !item.completedAtMs;
           acceptItem(item,turn.id,streaming,!streaming&&item.type==='agentMessage'?(typeof item.completedAtMs==='number'?item.completedAtMs:null):typeof item.startedAtMs==='number'?item.startedAtMs:typeof item.completedAtMs==='number'?item.completedAtMs:null);
           if(newer)continue;
-          if(item.type==='agentMessage' && item.text?.length) stage=streaming?'answering':item.phase==='final_answer'?'finishing':'tools';
+          if(item.type==='agentMessage' && item.text?.length) stage=streaming?'answering':codexMessagePhase(item.phase,item.delivery)==='final'?'finishing':'tools';
           else if(['commandExecution','mcpToolCall','dynamicToolCall','fileChange','webSearch','contextCompaction'].includes(item.type))stage='tools';
         }
         if(!busy&&!newer)for(const item of turn.items||[])if(item.type==='contextCompaction'){acceptActivity(item,true,true);if(compaction&&turn.status==='interrupted')compaction={...compaction,status:'interrupted'};}
@@ -434,7 +437,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       if(data.item?.type==='contextCompaction'&&frame.method==='item/started'){busy=true;stage='tools';}
       acceptActivity({...data.item,...(typeof data.startedAtMs==='number'?{startedAtMs:data.startedAtMs}:{}),...(typeof data.completedAtMs==='number'?{completedAtMs:data.completedAtMs}:{})},frame.method==='item/completed');
       acceptItem(data.item,data.turnId,frame.method==='item/started',frame.method==='item/completed'?(data.completedAtMs??data.item?.completedAtMs??Date.now()):(data.startedAtMs??data.item?.startedAtMs));
-      if(data.item?.type==='agentMessage' && data.item.text?.length) stage=frame.method==='item/completed'?(data.item.phase==='final_answer'?'finishing':'tools'):'answering';
+      if(data.item?.type==='agentMessage' && data.item.text?.length) stage=frame.method==='item/completed'?(codexMessagePhase(data.item.phase,data.item.delivery)==='final'?'finishing':'tools'):'answering';
       else if(frame.method==='item/started' && ['commandExecution','mcpToolCall','dynamicToolCall','fileChange','webSearch','contextCompaction'].includes(data.item?.type)) {stage='tools';changed();}
       if(frame.method==='item/completed'&&data.item?.type==='contextCompaction')void syncNativeState();
     }

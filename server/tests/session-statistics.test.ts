@@ -291,7 +291,7 @@ describe('persisted session statistics',()=>{
     expect(final.usage).toMatchObject({requests:6,tokens:{total_tokens:21120}});
     const children=readSessionUsageIntervals(codex,{parent:final.id})!.rows;
     expectUsageSum(final.usage!,children.map(row=>row.usage!));
-    const progress=children.find(row=>row.kind==='progress'&&row.at===stamp(15))!;
+    const progress=children.find(row=>row.kind==='progress'&&row.at===stamp(12))!;
     expect(progress.usage).toMatchObject({requests:2,tokens:{total_tokens:9040}});
     const items=readSessionUsageIntervals(codex,{parent:progress.id})!.rows;
     expect(items.map(row=>row.id)).toEqual(['item:'+nativeItemId('assistant','new-item'),'item:'+nativeItemId('assistant','crossing-item')]);
@@ -333,6 +333,21 @@ describe('persisted session statistics',()=>{
     expect(readSessionMetadata(codex)?.totals?.requests).toBe(4);
   });
 
+  it('keeps the promoted implicit Final receipt out of the Progress timestamp',async()=>{
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'input')+
+      answer(2,'progress','commentary')+receipt(3,'work','turn',tokens(1000,900))+
+      answer(4,'implicit','unknown')+receipt(5,'answer','turn',tokens(2000,1900))+
+      event(6,'task_complete',{turn_id:'turn',last_agent_message:'private output body'}));
+    await updateSessionFacts(codex,file);
+    const [round]=readSessionUsageIntervals(codex)!.rows;
+    expect(round).toMatchObject({kind:'final',at:stamp(4),usage:{requests:2,tokens:{total_tokens:3040}}});
+    const children=readSessionUsageIntervals(codex,{parent:round.id})!.rows;
+    expect(children).toEqual(expect.arrayContaining([
+      expect.objectContaining({kind:'progress',at:stamp(3),usage:expect.objectContaining({requests:1})}),
+      expect.objectContaining({kind:'item',phase:'final',at:stamp(4),usage:expect.objectContaining({requests:1})}),
+    ]));
+  });
+
   it('retains a tool-only interrupted Progress as usage without a fabricated Item',async()=>{
     await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'input')+
       tool(2,'call')+receipt(3,'request','turn',tokens(2000,1900))+
@@ -340,7 +355,7 @@ describe('persisted session statistics',()=>{
     await updateSessionFacts(codex,file);
     expect(readChangedSessionStatistics(codex,0)).toEqual([]);
     const progress=readSessionUsageIntervals(codex,{parent:'open'})!.rows[0];
-    expect(progress).toMatchObject({kind:'progress',expandable:true,at:stamp(4),
+    expect(progress).toMatchObject({kind:'progress',expandable:true,at:stamp(3),
       usage:{requests:1,tokens:{total_tokens:2020},unassigned:{requests:1}}});
     expect(readSessionUsageIntervals(codex,{parent:progress.id})!.rows).toMatchObject([
       {kind:'unassigned',usage:{requests:1,tool_rounds:1,tokens:{total_tokens:2020}}},

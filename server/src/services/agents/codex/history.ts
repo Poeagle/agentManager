@@ -141,6 +141,7 @@ export function parseCodexMessage(line: Buffer, questionCallId?: string, context
             : entry.type === 'response_item' && entry.payload?.type === 'message' && entry.payload.role === 'assistant' ? entry.payload : null;
         const completedUserItem = userItem && entry.type === 'event_msg' && entry.payload?.type === 'item_completed' ? entry.payload.item : null;
         const nativeAsyncItem = asyncItem ?? (entry.type === 'event_msg' && entry.payload?.type === 'agent_message' ? entry.payload : null);
+        const asyncProgress = nativeAsyncItem?.delivery === 'async';
         const asyncQuestions = conversationAsyncQuestions(questionCallId ? { ...nativeAsyncItem, id: questionCallId } : nativeAsyncItem);
         const asyncMessage = asyncQuestions ? { role: 'assistant' as const, phase: 'final' as const, text: (typeof nativeAsyncItem.message === 'string' ? nativeAsyncItem.message : (nativeAsyncItem.content || []).filter((part: any) => ['Text', 'output_text'].includes(part.type) && typeof part.text === 'string').map((part: any) => part.text).join('\n')).slice(0, 128 * 1024) || asyncQuestions.map(q => q.title).join('\n'), timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null } : null;
         // Show only our explicit, credential-free resource notice. Other developer
@@ -156,12 +157,13 @@ export function parseCodexMessage(line: Buffer, questionCallId?: string, context
         const extracted = shared || failure || asyncMessage || decodeCodexText([entry], 128 * 1024).find(message => message.role === 'user' || message.role === 'assistant');
         const reply = extracted?.role === 'user' ? conversationQuestionReply(extracted.text,Array.isArray(entry.payload?.content)&&entry.payload.content.some((part:any)=>part?.type==='input_image')) : undefined;
         const message = reply ? { ...extracted!, text: reply.text } : extracted;
-        const itemId = typeof asyncItem?.id === 'string' ? asyncItem.id : typeof completedUserItem?.id === 'string' ? completedUserItem.id : entry.type === 'response_item' && typeof entry.payload?.id === 'string' ? entry.payload.id : undefined;
+        const assistantItem = asyncItem ?? (asyncProgress ? nativeAsyncItem : null);
+        const itemId = typeof assistantItem?.id === 'string' ? assistantItem.id : typeof completedUserItem?.id === 'string' ? completedUserItem.id : entry.type === 'response_item' && typeof entry.payload?.id === 'string' ? entry.payload.id : undefined;
         const clientId = typeof completedUserItem?.client_id === 'string' ? completedUserItem.client_id : typeof completedUserItem?.clientId === 'string' ? completedUserItem.clientId : undefined;
         const imageContent = completedUserItem && Array.isArray(completedUserItem.content)
             ? completedUserItem.content.map((part: any) => part?.type === 'local_image' ? {...part,type:'localImage'} : part)
             : entry.payload?.content;
-        return message ? { message: message as AgentHistoryRecord['message'], failure, itemId, ...(clientId ? {clientId} : {}), asyncQuestions, questionReplies: reply?.answers, imagePaths: message.role === 'user' ? conversationImagePaths(imageContent) : [], turnId: typeof turnId === 'string' ? turnId : undefined, recordType: shared ? 'shared_context' : asyncQuestions ? 'async_question' : userItem ? 'event_user_item' : entry.type === 'event_msg' ? (entry.payload?.type === 'task_complete' ? 'completion_echo' : 'event_message') : 'native_message' } : null;
+        return message ? { message: message as AgentHistoryRecord['message'], failure, itemId, ...(clientId ? {clientId} : {}), asyncQuestions, questionReplies: reply?.answers, imagePaths: message.role === 'user' ? conversationImagePaths(imageContent) : [], turnId: typeof turnId === 'string' ? turnId : undefined, recordType: shared ? 'shared_context' : asyncQuestions ? 'async_question' : asyncProgress ? 'async_progress' : userItem ? 'event_user_item' : entry.type === 'event_msg' ? (entry.payload?.type === 'task_complete' ? 'completion_echo' : 'event_message') : 'native_message' } : null;
     }
     catch {
         return null;

@@ -13,7 +13,7 @@ export function ConversationStatisticsLabel({statistics,interval=false,progress=
  const coverage=value?.coverage, pending=coverage==='pending';
  const coverageLabel=coverage&&intervalCoverageText(coverage,value?.reasons);
  if(interval&&recorded?.shared_reference)return <span className="session-chat-message-statistics" title="请求用量已计入同组 Item">共享请求</span>;
- if(pending&&!tokens&&!value?.requests&&!value?.tool_calls&&!value?.tool_rounds){
+ if(pending&&!tokens&&!value?.requests&&!value?.tool_calls){
   return <span className="session-chat-message-statistics session-chat-statistics-coverage"
     title="原生用量回执到达后自动更新。">{coverageLabel}</span>;
  }
@@ -23,7 +23,7 @@ export function ConversationStatisticsLabel({statistics,interval=false,progress=
  const hit=!inputsKnown?null:coverage?recordedCachePercent(tokens):totalInput!==null&&totalInput>0&&cached!==null&&cached<=totalInput?cached/totalInput*100:null;
  const hitText=hit===null?'—':new Intl.NumberFormat('en',{maximumFractionDigits:2}).format(hit)+'%';
  const partialPrefix=!coverage&&!complete?'≥':'';
- const count=(n:number)=>pending&&!value?.requests&&n===0?'—':partialPrefix+n;
+ const count=(n:number|null|undefined)=>valid(n)===null||!complete&&!value?.requests&&n===0?'—':partialPrefix+n;
  const formatted=(value:number|null|undefined)=>{const n=valid(value);return n===null?'—':partialPrefix+number(n);};
  const cost=value?.cost,includeCost=cost!==null,costValue=valid(cost?.amount);
  const costLabel=cost?.unit==='USD'?'Est. $':cost&&cost.unit!=='credits'?'Est. cost':'Est. Cr';
@@ -33,7 +33,7 @@ export function ConversationStatisticsLabel({statistics,interval=false,progress=
   `Total ${exact(tokens?.total_tokens)}; Input ${exact(input)} (uncached); Cache ${exact(cached)}; total input ${exact(totalInput)}; cache hit ${hitText}; Reasoning ${exact(tokens?.reasoning_output_tokens)} (included in Output); Output ${exact(output)}.`,
   shared?`${part?.shared_messages} updates share the same model request. Per-update usage cannot be split reliably; this request group used ${tokens?.total_tokens==null?'unknown':number(tokens.total_tokens)} tokens.`:'',
   coverage&&coverage!=='complete'?coverageLabel+'。'+(value?.reasons??[]).map(reason=>coverageReason[reason]).join('、'):!complete?'Partial recorded interval: ≥ marks a lower bound.':'',
-  `${value?.tool_rounds??'unknown'} native tool rounds; ${value?.tool_calls??'unknown'} native tool calls. One model response calling three parallel tools is 1 round | 3 calls. Code-mode internals are not expanded.`,
+  'Rounds count recorded model requests. Calls count native tool calls. One request issuing three tools is 1 round | 3 calls.',
   includeCost?`Estimated ${cost?.unit??'credits'}: ${costValue??'unknown'}; rate date ${cost?.rate_date??'unknown'}. ${costValue===null?'Pricing is unavailable until usage and supported model/speed settings are recorded. ':''}Input credits exclude cached input; reasoning credits are included in output credits. Per-request model and speed are used before aggregation. * means partial pricing or an assumed Standard speed. Subscription-reference estimates are not an invoice. API pricing is separate.`:'No credit estimate applies to this engine.',
  ].filter(Boolean).join(' ');
  const amount=(n:number|null|undefined)=>{const v=valid(n);return v===null?'—':`${v>0&&v<.001?'<0.001':new Intl.NumberFormat('en',{maximumFractionDigits:3}).format(v)}${cost?.complete&&complete?'':'*'}`;};
@@ -45,8 +45,7 @@ export function ConversationStatisticsLabel({statistics,interval=false,progress=
   {shared&&<span>Shared request · </span>}
   <span>Total｜Input｜Cache｜Reasoning｜Output{includeCost?`｜${costLabel}`:''} : </span>
   {values.map((value,index)=><Fragment key={index}>{index>0&&'｜'}{value}</Fragment>)} · <span className="session-chat-tool-counts">
-   {value?`${count(value.tool_rounds)} ${value.tool_rounds===1?'round':'rounds'} | ${count(value.tool_calls)} ${value.tool_calls===1?'call':'calls'}`:'— rounds | — calls'}
-   {value&&<> | {count(value.requests)} {value.requests===1?'Run':'Runs'}</>}
+   {count(value?.requests)} {value?.requests===1?'round':'rounds'} | {count(value?.tool_calls)} {value?.tool_calls===1?'call':'calls'}
   </span>
  </span>;
 }
