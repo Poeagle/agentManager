@@ -986,6 +986,14 @@ class ClaudeRuntime {
     }
   }
 
+  private completedNativeTurn(message: SDKMessage) {
+    return (
+      message.type === "assistant" &&
+      message.parent_tool_use_id === null &&
+      message.message.stop_reason === "end_turn"
+    );
+  }
+
   private linkNativeUserMessage(pending: Pending, nativeId: string) {
     const linked = pending as Pending & { nativeLinked?: boolean };
     if (linked.nativeLinked) return;
@@ -1115,15 +1123,18 @@ class ClaudeRuntime {
           );
         if (current) this.currentNativeUserSeen = true;
         this.consume(message, current);
-        if (message.type === "result") {
+        const nativeTurnCompleted = this.completedNativeTurn(message);
+        if (message.type === "result" || nativeTurnCompleted) {
           if (this.submitted.length && !this.currentNativeUserSeen) {
             continue;
           }
           completed = true;
-          completedSuccessfully = message.subtype === "success";
+          completedSuccessfully =
+            message.type === "result" ? message.subtype === "success" : true;
           // A Claude result is the end of the current native turn. The SDK
-          // input stream can remain open after it, so do not wait for closure
-          // before releasing the runtime or starting an accepted follow-up.
+          // sometimes omits that result after a native end_turn, and its input
+          // stream can remain open after either completion signal. Do not wait
+          // for closure before releasing the runtime or starting a follow-up.
           break;
         }
       }
