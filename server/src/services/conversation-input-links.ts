@@ -20,10 +20,10 @@ export function bindInputSourceMessage(sessionId:string,clientId:string,messageI
  * Keep it on the same journal used by terminal input reconciliation. */
 export function rememberInitialConversationInput(sessionId:string,nativeId:string,clientId:string,messageId:string) {
   const afterOffset=Number.MAX_SAFE_INTEGER;
-  getDb().prepare(`INSERT INTO conversation_input_links(session_id,native_id,client_id,message_id,after_offset)
-    VALUES(?,?,?,?,?) ON CONFLICT(session_id,native_id,client_id)
+  getDb().prepare(`INSERT INTO conversation_input_links(session_id,native_id,client_id,message_id,input_hash,after_offset)
+    VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,native_id,client_id)
     DO UPDATE SET message_id=excluded.message_id,after_offset=excluded.after_offset`
-  ).run(sessionId,nativeId,clientId,messageId,afterOffset);
+  ).run(sessionId,nativeId,clientId,messageId,'',afterOffset);
 }
 
 function decorateInputSources(sessionId:string,messages:ConversationMessage[]):ConversationMessage[] {

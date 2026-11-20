@@ -9,9 +9,11 @@ import {
   canUseClaudeEnvironment,
   claudeEnvironmentName,
   claudeEnvironmentId,
+  claudeProviderEnvironment,
   claudeManagementProviderState,
   claudeProviderForEnvironment,
   claudeProviderModelsForEnvironment,
+  claudeRuntimeProvider,
   createClaudeProvider,
   deleteClaudeProvider,
   detectClaudeProviderModels,
@@ -31,6 +33,45 @@ afterEach(()=>{database.cleanup();vi.unstubAllGlobals();});
 const create=(id='gateway')=>createClaudeProvider({
  id,name:'Gateway',kind:'anthropic-compatible',apiKey:'secret-token',
  fields:{baseUrl:'https://gateway.example',models:['claude-a','claude-b'],defaultModel:'claude-a',contextWindow:'200000'},
+});
+it('keeps bracketed models and exposes official Claude Code routing controls',()=>{
+  createClaudeProvider({
+    id:'deepseek',apiKey:'secret',
+    fields:{
+      baseUrl:'https://api.deepseek.com/anthropic',
+      models:['deepseek-flash[1m]','deepseek-flash'],
+      defaultModel:'deepseek-flash[1m]',
+      haikuModel:'deepseek-flash',
+      subagentModel:'deepseek-flash',
+      effort:'max',
+      autoCompactWindow:'786432',
+    },
+  });
+  const provider=claudeProviderForEnvironment('claude-provider:deepseek')!;
+  expect(provider).toMatchObject({
+    models:['deepseek-flash[1m]','deepseek-flash'],
+    defaultModel:'deepseek-flash[1m]',
+    haikuModel:'deepseek-flash',
+    subagentModel:'deepseek-flash',
+    effort:'max',
+    autoCompactWindow:786432,
+  });
+  expect(claudeProviderEnvironment(provider,provider.defaultModel)).toMatchObject({
+    ANTHROPIC_BASE_URL:'https://api.deepseek.com/anthropic',
+    ANTHROPIC_MODEL:'deepseek-flash[1m]',
+    ANTHROPIC_DEFAULT_OPUS_MODEL:'deepseek-flash[1m]',
+    ANTHROPIC_DEFAULT_SONNET_MODEL:'deepseek-flash[1m]',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL:'deepseek-flash',
+    CLAUDE_CODE_SUBAGENT_MODEL:'deepseek-flash',
+    CLAUDE_CODE_EFFORT_LEVEL:'max',
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW:'786432',
+  });
+  expect(claudeManagementProviderState('deepseek')?.providerOptions).toMatchObject({
+   haikuModel:'deepseek-flash',
+   subagentModel:'deepseek-flash',
+   effort:'max',
+   autoCompactWindow:'786432',
+  });
 });
 it('verifies a manually entered model against Claude Messages before saving the provider',async()=>{
   const response=(model:string,status=200)=>new Response(JSON.stringify(status===200?{model}:{error:{type:'not_found_error'}}),{status,headers:{'content-type':'application/json'}});
@@ -76,7 +117,7 @@ describe('Claude managed providers',()=>{
    ]),
   });
   expect(claudeManagementProviderState('gateway')?.fields.map(field=>field.key)).toEqual(
-   nativeClaudeProviderState().fields.map(field=>field.key),
+   expect.arrayContaining(nativeClaudeProviderState().fields.map(field=>field.key)),
   );
    expect(claudeManagementProviderState('gateway')?.fields).toContainEqual(
     expect.objectContaining({key:'adaptiveThinking',type:'toggle'}),
@@ -196,6 +237,36 @@ describe('Claude managed providers',()=>{
   fetchMock.mockResolvedValueOnce(new Response('private upstream body',{status:502}));
   await expect(detectClaudeProviderModels({providerId:'gateway'})).rejects.toThrow('502');
  });
+it('falls back from a Claude prefix to its origin model catalog without naming a vendor',async()=>{
+ create();
+ const fetchMock=vi.fn(async(url:string)=>url.endsWith('/anthropic/models')
+  ? new Response('',{status:404})
+  : new Response(JSON.stringify({data:[{id:'deepseek-flash[1m]'},{id:'deepseek-flash'}]}),{status:200,headers:{'content-type':'application/json'}}));
+ vi.stubGlobal('fetch',fetchMock);
+ expect(await detectClaudeProviderModels({endpoint:'https://api.deepseek.com/anthropic',apiKey:'token'})).toEqual([
+  {model:'deepseek-flash[1m]',name:'deepseek-flash[1m]',description:'由 Claude 兼容网关返回'},
+  {model:'deepseek-flash',name:'deepseek-flash',description:'由 Claude 兼容网关返回'},
+ ]);
+ expect(fetchMock.mock.calls.map(([url])=>String(url))).toEqual([
+  'https://api.deepseek.com/anthropic/models',
+  'https://api.deepseek.com/models',
+ ]);
+});
+it('isolates two Provider bindings that share a native ID, owner and project',()=>{
+  createClaudeProvider({id:'deepseek',name:'DeepSeek',apiKey:'deepseek-token',fields:{baseUrl:'https://api.deepseek.com/anthropic',models:['deepseek-flash[1m]'],defaultModel:'deepseek-flash[1m]'}});
+  createClaudeProvider({id:'other',name:'Other',apiKey:'other-token',fields:{baseUrl:'https://other.example',models:['other-model'],defaultModel:'other-model'}});
+  const deepseek=claudeRuntimeProvider({agent_environment_id:'claude-provider:deepseek'},undefined,{materializeNative:false})!;
+  const other=claudeRuntimeProvider({agent_environment_id:'claude-provider:other'},undefined,{materializeNative:false})!;
+  expect(claudeProviderEnvironment(deepseek,deepseek.defaultModel)).toMatchObject({
+    ANTHROPIC_BASE_URL:'https://api.deepseek.com/anthropic',
+    ANTHROPIC_MODEL:'deepseek-flash[1m]',
+  });
+  expect(claudeProviderEnvironment(other,other.defaultModel)).toMatchObject({
+    ANTHROPIC_BASE_URL:'https://other.example',
+    ANTHROPIC_MODEL:'other-model',
+  });
+  expect(deepseek.authToken).not.toBe(other.authToken);
+});
  it('replaces stale aliases with only models returned by discovery',async()=>{
   create();
   persistDetectedClaudeModels('gateway',[

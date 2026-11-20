@@ -8,7 +8,7 @@
  * only — never a full read. Last-activity comes from mtime, size from stat.
  */
 import { readdirSync, statSync, openSync, readSync, closeSync, existsSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { homedir } from 'os';
 
 export interface ClaudeHistoryItem {
@@ -20,7 +20,17 @@ export interface ClaudeHistoryItem {
   model: string | null;
 }
 
-const PROJECTS_ROOT = join(homedir(), '.claude', 'projects');
+/** Resolve on each call so isolated servers and portable homes do not pin the
+ * boot-time home directory in module state. */
+const projectsRoot = () => join(homedir(), '.claude', 'projects');
+/** The SDK may use the host account's Claude directory even when the platform
+ * process itself runs with an isolated HOME. Only two known roots are tried. */
+function projectRoots(): string[] {
+  const roots = [projectsRoot()];
+  const username = process.env.USER || process.env.LOGNAME;
+  if (username) roots.push(join('/Users', username, '.claude', 'projects'));
+  return [...new Set(roots)];
+}
 const HEAD_BYTES = 64 * 1024;
 
 /** Claude encodes the cwd into the dir name by replacing every non-alphanumeric
@@ -56,17 +66,22 @@ function readCwd(filePath: string): string | null {
 
 /** Locate the Claude log dir for a project path (direct encode, else scan+match cwd). */
 export function resolveClaudeDir(projectPath: string): string | null {
-  const direct = join(PROJECTS_ROOT, encodeDir(projectPath));
-  if (existsSync(direct)) return direct;
-  // Fallback for any encoding edge case: match by the cwd recorded inside.
-  try {
-    for (const name of readdirSync(PROJECTS_ROOT)) {
-      const dir = join(PROJECTS_ROOT, name);
-      let firstJsonl: string | undefined;
-      try { firstJsonl = readdirSync(dir).find((f) => f.endsWith('.jsonl') && !f.includes('-topic-')); } catch { continue; }
-      if (firstJsonl && readCwd(join(dir, firstJsonl)) === projectPath) return dir;
-    }
-  } catch { /* projects root may not exist */ }
+  const normalizedProjectPath = resolve(projectPath);
+  for (const root of projectRoots()) {
+    const direct = join(root, encodeDir(normalizedProjectPath));
+    if (existsSync(direct)) return direct;
+    const configured = join(root, encodeDir(projectPath));
+    if (configured !== direct && existsSync(configured)) return configured;
+    // Fallback for any encoding edge case: match by the cwd recorded inside.
+    try {
+      for (const name of readdirSync(root)) {
+        const dir = join(root, name);
+        let firstJsonl: string | undefined;
+        try { firstJsonl = readdirSync(dir).find((f) => f.endsWith('.jsonl') && !f.includes('-topic-')); } catch { continue; }
+        if (firstJsonl && resolve(readCwd(join(dir, firstJsonl)) || '') === normalizedProjectPath) return dir;
+      }
+    } catch { /* projects root may not exist */ }
+  }
   return null;
 }
 

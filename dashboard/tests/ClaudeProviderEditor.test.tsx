@@ -18,9 +18,25 @@ beforeEach(()=>{
   {key:'defaultModel',label:'默认模型',type:'text',value:'claude-a'},
   {key:'contextWindow',label:'上下文窗口',type:'text',value:'200000'},
   {key:'maxOutputTokens',label:'最大输出 Token',type:'text',value:''},
+  {key:'haikuModel',label:'Haiku 模型',type:'text',value:''},
+  {key:'subagentModel',label:'子 Agent 模型',type:'text',value:''},
+  {key:'effort',label:'Effort 等级',type:'text',value:''},
+  {key:'autoCompactWindow',label:'自动压缩窗口',type:'text',value:''},
  ]};
 });
 const mount=(props:Partial<Parameters<typeof ClaudeProviderEditor>[0]>={})=>render(<QueryClientProvider client={client}><ClaudeProviderEditor provider={provider} readOnly={false} onSaved={vi.fn()} {...props}/></QueryClientProvider>);
+it('saves model-specific Claude Code routing controls',async()=>{
+  vi.mocked(api.agentManagement.updateProvider).mockResolvedValue({state:{agent:{id:'claude',label:'Claude'},providers:[provider]} as any});
+  mount();
+  fireEvent.change(screen.getByLabelText('Claude Haiku 模型'),{target:{value:'deepseek-flash'}});
+  fireEvent.change(screen.getByLabelText('Claude 子 Agent 模型'),{target:{value:'deepseek-flash'}});
+  fireEvent.change(screen.getByLabelText('Claude Effort 等级'),{target:{value:'max'}});
+  fireEvent.change(screen.getByLabelText('Claude 自动压缩窗口'),{target:{value:'786432'}});
+  fireEvent.click(screen.getByRole('button',{name:'保存 Provider'}));
+  await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('claude','gateway',expect.objectContaining({fields:expect.objectContaining({
+    haikuModel:'deepseek-flash',subagentModel:'deepseek-flash',effort:'max',autoCompactWindow:'786432',
+  })})));
+});
 it('keeps a configured key masked and saves only a replacement value',async()=>{
  vi.mocked(api.agentManagement.updateProvider).mockResolvedValue({state:{agent:{id:'claude',label:'Claude'},providers:[provider]} as any});
  mount();const key=screen.getByLabelText('Claude API Key');expect(key).toHaveValue('');expect(key).toHaveAttribute('placeholder','留空保持不变');expect(screen.getByText('已配置')).toBeVisible();

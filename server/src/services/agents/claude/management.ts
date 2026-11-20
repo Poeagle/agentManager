@@ -171,7 +171,8 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
       await verifyAndCreateClaudeProvider(input).catch(async (error) => {
         // A temporary network failure must not strand an otherwise valid
         // configuration. Explicit model/protocol rejection still fails closed.
-        if ((error as { code?: string })?.code === 'model_protocol_unavailable') throw error;
+        const code = (error as { code?: string })?.code;
+        if (code === 'model_protocol_unavailable') throw error;
         createClaudeProvider(input);
         throw Object.assign(
           Error(`${error instanceof Error ? error.message : '模型预检失败'}；配置已保存，可稍后重新测试连接。`),

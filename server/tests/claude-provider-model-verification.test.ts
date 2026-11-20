@@ -11,6 +11,10 @@ const provider = {
   authToken: "secret",
   models: ["claude-opus-4-8", "claude-sonnet-4-6"],
   defaultModel: "claude-opus-4-8",
+  haikuModel: null,
+  subagentModel: null,
+  effort: null,
+  autoCompactWindow: null,
   contextWindow: null,
   maxOutputTokens: null,
 };

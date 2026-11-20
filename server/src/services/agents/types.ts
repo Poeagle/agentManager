@@ -129,6 +129,8 @@ export interface AgentProviderState {
   };
   models: string[];
   defaultModel: string | null;
+  /** Adapter-specific controls, exposed as editable Provider fields. */
+  providerOptions?: Record<string, string | number | null>;
   fields: AgentManagementField[];
   /** Runtime and file locations are provider-scoped for Codex engines. */
   socket?: string | null;

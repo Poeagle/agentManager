@@ -183,6 +183,7 @@ export interface AgentProviderState {
   authentication: { status: 'authenticated' | 'missing' | 'unknown'; method: string };
   models: string[];
   defaultModel: string | null;
+  providerOptions?: Record<string, string | number | null>;
   fields: AgentManagementField[];
   socket?: string | null;
   pid?: number | null;

@@ -195,6 +195,7 @@ class ClaudeRuntime {
   private lastActivity: string | null = null;
   private compaction: AgentCompaction | null = null;
   private pendingModelMismatch: string | null = null;
+  private providerAliases = new Set<string>();
   private resumeOnNextQuery: boolean;
   private provider: ClaudeProviderRuntime | null;
 
@@ -209,6 +210,17 @@ class ClaudeRuntime {
     this.model = preference?.model || undefined;
     this.resumeOnNextQuery = resume;
     this.provider = provider;
+    this.rememberProviderAliases();
+  }
+
+  private rememberProviderAliases() {
+    if (!this.provider) return;
+    for (const model of [
+      this.provider.defaultModel,
+      this.provider.haikuModel,
+      this.provider.subagentModel,
+    ])
+      if (model) this.providerAliases.add(model.toLowerCase());
   }
 
   private observedTurnId() {
@@ -231,6 +243,8 @@ class ClaudeRuntime {
         `Claude 会话已绑定 Provider ${this.provider.name}，不能切换到 ${provider.name}`,
       );
     }
+    if (this.provider.id === provider.id) this.provider = provider;
+    this.rememberProviderAliases();
     if (preference?.model) this.model = preference.model;
   }
 
@@ -304,7 +318,8 @@ class ClaudeRuntime {
       typeof model !== "string" ||
       !model ||
       model.startsWith("<") ||
-      model === this.model
+      model.toLowerCase() === this.model.toLowerCase() ||
+      this.providerAliases.has(model.toLowerCase())
     ) return;
     this.pendingModelMismatch = model;
   }

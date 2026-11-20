@@ -164,6 +164,11 @@ export const claudeAdapter: AgentDefinition = {
       (await import("./statistics.js")).readClaudeProgress(path),
   },
   stream: {
+    // A Provider owns its native runtime, credentials, environment variables
+    // and model routing. Include it in the shared-subscription identity even
+    // when two sessions happen to expose the same opaque native ID.
+    scope: context =>
+      context.session.agent_environment_id || context.projectPath || '',
     seed: async (context) => {
       if (!context.nativeId) throw Error("Claude managed session is not bound");
       const runtime = await import("./sdk-runtime.js");
