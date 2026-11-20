@@ -48,9 +48,8 @@ it('refreshes one live thinking row in place instead of stacking request snapsho
   const props={number:7,startedAt,now,statistics:null,connected:true,agentName:'Claude',tool};
   const view=render(<ConversationProgressPending {...props} thinking="Reading the repository structure."/>);
   expect(screen.getAllByText('Claude 正在思考')).toHaveLength(1);
-  expect(screen.getByText('Reading the repository structure.')).not.toBeVisible();
-  fireEvent.click(screen.getByText('Claude 正在思考'));
   expect(screen.getByText('Reading the repository structure.')).toBeVisible();
+  expect(document.querySelector('.session-chat-thinking-caret')).toHaveAttribute('aria-hidden','true');
   view.rerender(<ConversationProgressPending {...props} thinking="Tests are running. I will check the output."/>);
   expect(screen.getAllByText('Claude 正在思考')).toHaveLength(1);
   expect(screen.queryByText('Reading the repository structure.')).not.toBeInTheDocument();

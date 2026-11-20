@@ -79,13 +79,16 @@ export function latestProgressThinking(messages:ConversationMessage[]):string|nu
   return null;
 }
 
-/** Keep tool calls on their numbered items, but collapse all request-level
- * reasoning in a progress group to one platform-level row. The blocks stay in
- * durable messages for reconciliation and are not discarded. */
+/** Keep tool calls and commentary text on their numbered items, while all
+ * request-level reasoning moves to one platform-level row. Thinking-only
+ * requests do not occupy empty numbered rows. The blocks stay in durable
+ * messages for reconciliation and are not discarded. */
 export function withoutProgressThinking(messages:ConversationMessage[]):ConversationMessage[] {
-  return messages.map(message=>message.content_blocks
-    ? {...message,content_blocks:message.content_blocks.filter(block=>block.type!=='thinking')}
-    : message);
+  return messages.flatMap(message=>{
+    const content_blocks=message.content_blocks?.filter(block=>block.type!=='thinking');
+    if(!message.text.trim()&&!content_blocks?.some(block=>block.type==='tool_use'||block.text.trim()))return [];
+    return [{...message,...(content_blocks?{content_blocks}:{})}];
+  });
 }
 
 export function withObservedToolCounts(statistics:ConversationStatistics|null,count:number,turnId:string):ConversationStatistics|null {

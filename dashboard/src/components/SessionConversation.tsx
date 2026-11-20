@@ -2300,6 +2300,7 @@ export function SessionConversation({
                 const part=activeGroup&&liveMatches?live:saved;
                 const summary=withObservedToolCounts(part?{...part,turn_id:last?.turn_id||liveTurn||'',sequence:0}:progressGroupStatistics(group.messages,final),pending?slotActivities.length:0,liveTurn||'');
                 const thinking=latestProgressThinking(group.messages);
+                const visibleProgress=withoutProgressThinking(group.messages);
                 return (
                   <ProgressSection
                     key={`progress-${group.id}`}
@@ -2318,7 +2319,7 @@ export function SessionConversation({
                     progressScope="segment"
                     progress={summary}
                   >
-                    {withoutProgressThinking(group.messages).map((message, index) => (
+                    {visibleProgress.map((message, index) => (
                       <div
                         key={message.id}
                         className="session-chat-progress-entry"
@@ -2333,8 +2334,8 @@ export function SessionConversation({
                         {bubble(message, true, message.id, false)}
                       </div>
                     ))}
-                    {!pending&&thinking&&<ConversationThinking agentName={agentName} text={thinking} streaming={activeGroup&&active}/>}
-                    {pending&&<ConversationProgressPending number={group.messages.length+1} tool={latestSlotActivity}
+                    {!pending&&thinking&&<ConversationThinking agentName={agentName} text={thinking} streaming={activeGroup}/>}
+                    {pending&&<ConversationProgressPending number={visibleProgress.length+1} tool={latestSlotActivity}
                       thinking={thinking} agentName={agentName}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
                       statistics={pendingStatistics} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}

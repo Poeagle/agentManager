@@ -101,17 +101,49 @@ it('projects multiple Claude request snapshots into one latest live thinking row
   snapshot([['round-1','First request reasoning.']],true);
   const progress=await screen.findByLabelText('Claude 进展');
   expect(within(progress).getAllByText('Claude 正在思考')).toHaveLength(1);
-  expect(within(progress).getAllByText('First request reasoning.').every(item=>!item.closest('details')?.open)).toBe(true);
+  expect(within(progress).getByText('First request reasoning.')).toBeVisible();
   snapshot([['round-1','First request reasoning.'],['round-2','Second request reasoning.'],['round-3','Third request reasoning.']],true);
   expect(within(progress).getAllByText('Claude 正在思考')).toHaveLength(1);
   expect(within(progress).queryByText('First request reasoning.')).not.toBeInTheDocument();
   expect(within(progress).queryByText('Second request reasoning.')).not.toBeInTheDocument();
-  expect(within(progress).getAllByText('Third request reasoning.').every(item=>!item.closest('details')?.open)).toBe(true);
+  expect(within(progress).getByText('Third request reasoning.')).toBeVisible();
   expect(within(progress).getAllByText('Read')).toHaveLength(3);
   snapshot([['round-1','First request reasoning.'],['round-2','Second request reasoning.'],['round-3','Third request reasoning.'],['round-4','Fourth request reasoning.']],false);
   expect(within(progress).getAllByText('Claude 的思考过程')).toHaveLength(1);
   expect(within(progress).queryByText('Third request reasoning.')).not.toBeInTheDocument();
-  expect(within(progress).getAllByText('Fourth request reasoning.').every(item=>!item.closest('details')?.open)).toBe(true);
+  expect(within(progress).getByText('Fourth request reasoning.').closest('details')).not.toHaveAttribute('open');
+});
+it('does not reserve numbered items for Claude thinking-only request snapshots',async()=>{
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  render(<QueryClientProvider client={client}><SessionConversation session={session} active onRaw={()=>{}}/></QueryClientProvider>);
+  await waitFor(()=>expect(Socket.latest?.onmessage).toBeTruthy());
+  const stamp='2026-11-19T23:45:45.000Z';
+  act(()=>Socket.latest.emit({
+    type:'snapshot',busy:true,turn_id:'turn',stage:'tools',
+    messages:[
+      {id:'user',role:'user',text:'Inspect the project',timestamp:stamp},
+      {id:'thought-1',role:'assistant',turn_id:'turn',phase:'commentary',text:'',timestamp:stamp,content_blocks:[
+        {type:'thinking',index:0,text:'First private reasoning.'},
+      ]},
+      {id:'commentary',role:'assistant',turn_id:'turn',phase:'commentary',text:'I found the relevant files.',timestamp:stamp},
+      {id:'thought-2',role:'assistant',turn_id:'turn',phase:'commentary',text:'',timestamp:stamp,content_blocks:[
+        {type:'thinking',index:0,text:'Second private reasoning.'},
+      ]},
+      {id:'tool',role:'assistant',turn_id:'turn',phase:'commentary',text:'',timestamp:stamp,content_blocks:[
+        {type:'tool_use',index:0,id:'read',name:'Read',input:{file_path:'/p/README.md'},status:'completed',result:'README'},
+      ]},
+    ],
+  }));
+  const progress=await screen.findByLabelText('Claude 进展');
+  const entries=progress.querySelectorAll('.session-chat-progress-entry:not(.session-chat-progress-pending)');
+  expect(entries).toHaveLength(2);
+  expect(within(entries[0] as HTMLElement).getByText('I found the relevant files.')).toBeVisible();
+  expect(within(entries[1] as HTMLElement).getByText('Read')).toBeVisible();
+  expect(entries[0].querySelector('.session-chat-progress-number')).toHaveTextContent('1');
+  expect(entries[1].querySelector('.session-chat-progress-number')).toHaveTextContent('2');
+  expect(within(progress).getByLabelText('进展序号 2')).toBeInTheDocument();
+  expect(within(progress).getByText('Second private reasoning.')).toBeVisible();
+  expect(progress.querySelector('summary')).toHaveTextContent('5 items');
 });
 it('renders Claude through the same conversation structure as every other agent',async()=>{
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
