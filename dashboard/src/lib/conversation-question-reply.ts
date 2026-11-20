@@ -35,7 +35,7 @@ function legacyAnswers(message:ConversationMessage,later:TimelineMessage[]):stri
   }
   return null;
 }
-export type QuestionState='pending'|'sending'|'submitted'|'queued'|'answered';
+export type QuestionState='pending'|'sending'|'submitted'|'queued'|'answered'|'uncertain';
 type PendingGroup={id:string;questions:NonNullable<ConversationMessage['async_questions']>;timestamp:string|null;turn_id?:string};
 /** One metadata index serves question cards, pending attention and answer state.
  * Body-only deltas never require rescanning every answer for every question. */
@@ -45,7 +45,7 @@ export function indexConversationQuestions(messages:TimelineMessage[]) {
     positions.set(message.id,index);
     if(message.async_questions?.length)questions.push(message);
     if(message.role!=='user')return;
-    const rank=!message.queued&&!message.optimistic?3:message.queued?1:message.optimistic?.accepted?2:0;
+    const rank=!message.queued&&!message.optimistic?3:message.queued?1:message.optimistic?.uncertain?-1:message.optimistic?.accepted?2:0;
     for(const reply of message.question_replies||[]){const previous=replies.get(reply.question_id);if(!previous||rank>=previous.rank)replies.set(reply.question_id,{answer:reply.answer,rank});}
     if(!message.question_replies?.length&&message.text.startsWith('回复你的提问：\n'))legacy.push({index,message});
   });
@@ -61,7 +61,7 @@ export function indexConversationQuestions(messages:TimelineMessage[]) {
     const set=message.async_questions||[];
     if(answers(message)===null)return set.length&&set.every(question=>question.id&&submittedIds.includes(question.id))?'submitted':'pending';
     const rank=Math.min(3,...set.map(question=>replies.get(question.id||'')?.rank??3));
-    return rank===0?'sending':rank===1?'queued':rank===2?'submitted':'answered';
+    return rank===-1?'uncertain':rank===0?'sending':rank===1?'queued':rank===2?'submitted':'answered';
   }
   function pending(groups:PendingGroup[]=[],ignoredIds:string[]=[]):ConversationMessage[]{
     const ignored=new Set(ignoredIds),seen=new Set<string>(),result:ConversationMessage[]=[];

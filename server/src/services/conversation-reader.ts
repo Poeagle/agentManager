@@ -935,7 +935,9 @@ export async function readConversation(
           messages,
           statistics,
           metadata,
-          cache_drops: readSessionCacheDrops(context, messages.filter(message => message.role === "user").map(message => message.id)),
+          cache_drops: readSessionCacheDrops(context,
+            messages.filter(message => message.role === "user").map(message => message.id),
+            messages.flatMap(message => message.presentation === "compaction_summary" && message.timestamp ? [message.timestamp] : [])),
           has_more:
             index.start > 0 || (!!first && index.messages[0]?.id !== first.id),
           reset,

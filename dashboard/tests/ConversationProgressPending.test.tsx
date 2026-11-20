@@ -30,6 +30,21 @@ it('keeps usage unknown across missing, incomplete, changed or regressing baseli
   expect(pendingProgressStatistics(null,previous,true)).toBeNull();
 });
 
+it('subtracts both the total and each priced token category for a pending Item',()=>{
+  const prior={...previous,cost:{amount:7,unit:'credits',complete:true,breakdown:{input:1,cache:2,output:4,reasoning:3}}};
+  const segment={...live.segment!,cost:{amount:12,unit:'credits',complete:true,breakdown:{input:2,cache:3,output:7,reasoning:5}}};
+  const pending=pendingProgressStatistics({...live,segment},prior,true);
+  expect(pending?.interval?.cost).toMatchObject({amount:5,breakdown:{input:1,cache:1,output:3,reasoning:2}});
+  expect(pending?.interval?.tokens).toEqual({total_tokens:200});
+});
+
+it('uses the first native step after an insertion without a baseline from the previous Progress',()=>{
+  const segment={...previous,id:'after-input',requests:1,tokens:{total_tokens:600}};
+  const step={...segment,shared_messages:1,segment_id:segment.id,after_message_id:null,after_sequence:null,start_at:startedAt};
+  expect(pendingProgressStatistics({...live,segment,step},undefined,false)?.interval).toEqual(step);
+  expect(pendingProgressStatistics({...live,segment,step},previous,true,{id:'previous-item'})).toBeNull();
+});
+
 it('keeps a 100-character command summary in the header while expanded content contains only live results',()=>{
   const command='echo '+ '界'.repeat(100)+' tail';
   const view=render(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} connected tool={{...tool,input_preview:command}}/>);

@@ -62,6 +62,7 @@ import {
   Square,
   ChevronDown,
   CalendarClock,
+  Clock3,
 } from "lucide-react";
 import {
   api,
@@ -94,10 +95,14 @@ import {
 import { hasPermission, usePermissions } from "../lib/permissions";
 import {
   conversationClientId,
+  isWaitingConversationInput,
   mergeConversationTimeline,
+  readWaitingInputs,
+  updateWaitingInputs,
+  waitingInputKey,
   type TimelineMessage,
 } from "../lib/conversation-timeline";
-import { groupConversationProgress, mergeConversationStatistics, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts } from "../lib/conversation-progress";
+import { groupConversationProgress, isEmptyProgress, mergeConversationStatistics, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts } from "../lib/conversation-progress";
 import {
   conversationTimings,
   elapsedBetween,
@@ -196,6 +201,16 @@ function ProgressSummary({agent,agentName,count,active,progress,progressScope='t
   </>;
 }
 
+function InputDeliveryStatus({message}:{message:TimelineMessage}) {
+  const pending=message.optimistic;
+  const label=message.queued?'排队中':pending?.uncertain?'发送结果待确认':pending?.accepted?'等待 Agent 接收':pending?'提交中':'已发送';
+  const delivered=label==='已发送';
+  return <span className={`session-chat-input-delivery${delivered?' delivered':''}`} role="status" aria-label={label}
+    title={delivered?'Agent 已接收':label}>
+    {delivered?<Check size={13} aria-hidden="true"/>:<><Clock3 size={13} aria-hidden="true"/>{label}</>}
+  </span>;
+}
+
 const Bubble = memo(function Bubble({
   message,
   streaming,
@@ -239,6 +254,8 @@ const Bubble = memo(function Bubble({
   const [copied, setCopied] = useState(false),
     [cancelling, setCancelling] = useState(false);
   const visibleText = questionReplyDisplayText(message);
+  const waitingInput = isWaitingConversationInput(message);
+  const observedAt = compact ? message.statistics?.item_at ?? message.timestamp : message.timestamp;
   const parsed =
     message.role === "user"
       ? message.attachments
@@ -278,12 +295,7 @@ const Bubble = memo(function Bubble({
       </span>
     ) : (
       <span className="session-chat-message-meta">
-        {message.queued && (
-          <>
-            <span className="session-chat-queued" role="status">
-              Queued
-            </span>
-            {onCancelQueued && (
+        {message.queued && onCancelQueued && (
               <button
                 type="button"
                 disabled={cancelling}
@@ -296,16 +308,14 @@ const Bubble = memo(function Bubble({
               >
                 {cancelling ? "正在取消…" : "取消排队"}
               </button>
-            )}
-          </>
         )}
-        {message.timestamp && Number.isFinite(Date.parse(message.timestamp)) ? (
+        {observedAt && Number.isFinite(Date.parse(observedAt)) ? (
           <time
             aria-label={compact ? "进展完成时间" : undefined}
-            dateTime={message.timestamp}
-            title={metadataTimestampTitle(message, compact)}
+            dateTime={observedAt}
+            title={waitingInput?'提交时间':metadataTimestampTitle({...message,timestamp:observedAt}, compact)}
           >
-            {formatConversationTimestamp(message.timestamp)}
+            {formatConversationTimestamp(observedAt)}
           </time>
         ) : compact ? (
           <span className="session-chat-progress-time-unknown">
@@ -329,11 +339,12 @@ const Bubble = memo(function Bubble({
         {compact && streaming && (
           <span className="session-chat-progress-updating">Streaming</span>
         )}
-        {!compact && (
+        {message.role==='user'&&<InputDeliveryStatus message={message}/>}
+        {!compact && message.role==='assistant' && (
           <button
             type="button"
             onClick={() => void copy()}
-            aria-label={`复制${message.role === "user" ? "你的消息" : "Agent 回复"}`}
+            aria-label="复制Agent 回复"
             title={copied ? "Copied" : "Copy message"}
           >
             {copied ? <Check size={13} /> : <Copy size={13} />}
@@ -616,6 +627,7 @@ export function SessionConversation({
   const canRead = hasPermission(permissions.data, "agent_api");
   const canSend = hasPermission(permissions.data, "agent_api", "write");
   const canAttach = agentSupports(session, "attachments");
+  const inputStorageKey=waitingInputKey(userId,session.id,agentNativeId(session));
   const notificationView=presentation==="notification";
   const [composerOptionsOpen,setComposerOptionsOpen]=useState(false);
   const [toolbarTarget, setToolbarTarget] = useState<HTMLDivElement | null>(null);
@@ -851,6 +863,7 @@ export function SessionConversation({
   const conversationIdentity = useRef<{
     sessionId: string;
     nativeId: string | null;
+    userId?: string;
   }>({ sessionId: "", nativeId: null });
   const scrollBottom = () => {
     pinned.current = true;
@@ -893,15 +906,18 @@ export function SessionConversation({
     const previous = conversationIdentity.current;
     const identityChanged =
       previous.sessionId !== session.id ||
+      previous.userId !== userId ||
       (!!previous.nativeId && !!nativeId && previous.nativeId !== nativeId);
-    conversationIdentity.current = { sessionId: session.id, nativeId };
+    conversationIdentity.current = { sessionId: session.id, nativeId, userId };
     if (!identityChanged) return;
     cursor.current = undefined;
     generation.current = null;
     pushAvailable.current = false;
     reconnectAttempted.current = false;
     setReconnectError("");
-    setMessages([]);
+    setMessages(readWaitingInputs(inputStorageKey).map(message=>message.optimistic?.accepted||message.queued?message:{
+      ...message,optimistic:{...message.optimistic!,uncertain:true},
+    }));
     setStatistics([]);
     setMetadata(null);
     setPage(null);
@@ -922,7 +938,15 @@ export function SessionConversation({
       answer.reject(Error("会话已切换"));
     }
     pendingAnswers.current.clear();
-  }, [session.id, agentNativeId(session), session.claude_session_id]);
+  }, [session.id, agentNativeId(session), session.claude_session_id, inputStorageKey, userId]);
+  const receivedInputKey=JSON.stringify(messages.filter(message=>message.role==='user'&&!isWaitingConversationInput(message))
+    .flatMap(message=>[message.client_id,message.native_client_id].filter(Boolean)));
+  useEffect(()=>{
+    if(!inputStorageKey)return;
+    const received=new Set<string>(JSON.parse(receivedInputKey));
+    updateWaitingInputs(inputStorageKey,rows=>rows.some(row=>row.client_id&&received.has(row.client_id))
+      ? rows.filter(row=>!row.client_id||!received.has(row.client_id)) : rows);
+  },[inputStorageKey,receivedInputKey]);
   const ended = ["completed", "failed", "cancelled"].includes(session.status);
   const observingStream =
     receiveUpdates &&
@@ -976,7 +1000,7 @@ export function SessionConversation({
   const lastUserIndex = messages.reduce(
     (last, message, index) =>
       message.role === "user" &&
-      !message.queued &&
+      !isWaitingConversationInput(message) &&
       !automaticConversationContext(message.text)
         ? index
         : last,
@@ -1718,7 +1742,7 @@ export function SessionConversation({
     const guardVersion=draftVersion.current,guardEntries=JSON.stringify(composerRef.current.value.entries.map(e=>e.id));
     let guardToken:string|undefined,sendNativeId=agentNativeId(session);
     if(!fromQuestion||fromBatch){
-      try{const confirmation=await sendGuard.confirm({input:text,attachments:attached,...fromBatch?{batch:composerRef.current.value.entries.map(e=>({length:e.text.length,attachments:e.attachments.length}))}:{}});if(confirmation===null)return;guardToken=confirmation.token;sendNativeId=confirmation.nativeId;}
+      try{const confirmation=await sendGuard.confirm({input:text,attachments:attached,...fromBatch?{batch:composerRef.current.value.entries.map(e=>({length:e.text.length,attachments:e.attachments.length}))}:{}});if(confirmation===null)return;guardToken=confirmation.token;sendNativeId=confirmation.nativeId??sendNativeId;}
       catch(failure){setSendError(failure instanceof Error?failure.message:'发送前检查失败，草稿已保留');return;}
     }
     if(!fromQuestion&&draftVersion.current!==guardVersion||fromBatch&&guardEntries!==JSON.stringify(composerRef.current.value.entries.map(e=>e.id))){setSendError('输入内容已变化，请重新发送以检查最新草稿。');return;}
@@ -1759,10 +1783,10 @@ export function SessionConversation({
       (item) =>
         item.role === "user" && item.client_id === clientId && !item.optimistic,
     );
-    if (!accepted)
-      setMessages((previous) => [
-        ...previous,
-        {
+    const sendWaitingKey=waitingInputKey(userId,session.id,sendNativeId);
+    const matchesPending=(item:TimelineMessage)=>!!item.optimistic&&item.client_id===clientId;
+    if (!accepted) {
+      const pending:TimelineMessage={
           id: `pending-${clientId}`,
           client_id: clientId,
           role: "user",
@@ -1772,13 +1796,17 @@ export function SessionConversation({
           timestamp,
           ...(parsedReply ? { question_replies: parsedReply.answers } : {}),
           optimistic: {
-            afterSequence: previous.reduce(
+            afterSequence: timelineRef.current.reduce(
               (last, item) => Math.max(last, item.sequence ?? -1),
               -1,
             ),
           },
-        },
-      ]);
+      };
+      const remember=(previous:TimelineMessage[])=>previous.some(matchesPending)
+        ? previous.map(item=>matchesPending(item)?pending:item) : [...previous,pending];
+      setMessages(remember);
+      updateWaitingInputs(sendWaitingKey,remember);
+    }
     // Move this exact draft into the send transaction immediately. The HTTP
     // acknowledgement can arrive seconds after the native user-message echo.
     if (!fromQuestion) {
@@ -1792,17 +1820,18 @@ export function SessionConversation({
     function acknowledged(status: string) {
       if(fromBatch&&composerRef.current.key===sendStorageKey){const pending=composerRef.current.value.pending;if(pending?.id===clientId)persistComposer({pending:null,entries:composerRef.current.value.entries.filter(e=>!pending.entryIds.includes(e.id))});}
       submissionIdentity.current = null;
-      setMessages((previous) =>
-        previous.map((item) =>
-          item.optimistic && item.client_id === clientId
+      const settle=(previous:TimelineMessage[])=>previous.some(matchesPending)
+        ? previous.map((item) =>
+          matchesPending(item)
             ? {
                 ...item,
-                optimistic: { ...item.optimistic, accepted: true },
+                optimistic: { ...item.optimistic!, accepted: true, uncertain:false },
                 queued: status === "queued",
               }
             : item,
-        ),
-      );
+        ) : previous;
+      setMessages(settle);
+      updateWaitingInputs(sendWaitingKey,settle);
       attachments.release(savedAttachments);
       // The native turn/started event can precede this HTTP acknowledgement;
       // only initialize the waiting state if a new turn has not arrived yet.
@@ -1838,12 +1867,13 @@ export function SessionConversation({
         acknowledged(echoed.queued ? "queued" : "submitted");
         return;
       }
-      setMessages((previous) =>
-        previous.filter(
-          (item) => !(item.optimistic && item.client_id === clientId),
-        ),
-      );
-      if(fromBatch&&composerRef.current.key===sendStorageKey&&failure instanceof ApiError&&(failure.submission==='rejected'||[400,401,403,404,413,422].includes(failure.status)))persistComposer({pending:null});
+      const rejected=failure instanceof ApiError&&(failure.submission==='rejected'||
+        failure.submission!=='unknown'&&[400,401,403,404,409,413,422].includes(failure.status));
+      const settle=(previous:TimelineMessage[])=>rejected?previous.filter(item=>!matchesPending(item)):
+        previous.map(item=>matchesPending(item)?{...item,optimistic:{...item.optimistic!,uncertain:true}}:item);
+      setMessages(settle);
+      updateWaitingInputs(sendWaitingKey,settle);
+      if(fromBatch&&composerRef.current.key===sendStorageKey&&rejected)persistComposer({pending:null});
       if (fromQuestion) {
         setSendError(
           failure instanceof Error ? failure.message : "回答提交失败",
@@ -1908,7 +1938,7 @@ export function SessionConversation({
         message.role === "assistant" &&
         message.turn_id === currentTurn,
     );
-  const started = messages[lastUserIndex]?.optimistic ? null : lastUserTime || liveProgress.started_at;
+  const started = lastUserTime || liveProgress.started_at;
   const elapsed = started
     ? Math.max(0, Math.floor((now - Date.parse(started)) / 1000))
     : 0;
@@ -2011,25 +2041,18 @@ export function SessionConversation({
         )
       : null;
   const groups = groupConversationProgress(displayed);
-  const displayedLastUser=displayed.reduce((index,message,current)=>message.role==='user'&&!message.queued&&!automaticConversationContext(message.text)?current:index,-1);
+  const displayedLastUser=displayed.reduce((index,message,current)=>message.role==='user'&&!isWaitingConversationInput(message)&&!automaticConversationContext(message.text)?current:index,-1);
   const previousSegment=[...displayed.slice(0,Math.max(0,displayedLastUser))].reverse().find(message=>message.role==='assistant'&&message.statistics?.segment)?.statistics?.segment;
   const pendingSegment=continuingAfterFollowup&&previousSegment&&progressStatistics?.segment&&previousSegment.id!==progressStatistics.segment.id&&progressStatistics.turn_id===liveProgress.turn_id?progressStatistics.segment:null;
   // This slot is presentation only: native messages remain the sole history.
   // Queued input must not close the running segment before it is accepted.
-  const tailIndex=groups.reduce((index,group,current)=>group.kind==='progress'||!group.message.queued?current:index,-1);
+  const tailIndex=groups.reduce((index,group,current)=>group.kind==='progress'||!isWaitingConversationInput(group.message)?current:index,-1);
   const tail=groups[tailIndex];
   const tailMessage=tail?.kind==='progress'?tail.messages.at(-1):tail?.message;
   const liveTurn=liveProgress.turn_id;
-  const showLiveProgress=busy&&!sending&&!ended&&!waiting&&!activeError&&!compaction.state&&!!liveTurn&&
+  const canShowLiveProgress=busy&&!ended&&!waiting&&!activeError&&!compaction.state&&!!liveTurn&&
     liveProgress.stage!=='finishing'&&!(tailMessage?.role==='assistant'&&(!tailMessage.turn_id||tailMessage.turn_id===liveTurn)&&(tailMessage.phase==='final'||tailMessage.streaming))&&
     !(tailMessage?.role==='assistant'&&tailMessage.turn_id&&tailMessage.turn_id!==liveTurn&&liveProgress.stage==='answering');
-  let pendingGroupId:string|null=null;
-  if(showLiveProgress){
-    if(tail?.kind==='progress'&&(!tailMessage?.turn_id||tailMessage.turn_id===liveTurn))pendingGroupId=tail.id;
-    else {const id=`live-${liveTurn}-${tailMessage?.id||'start'}`;groups.splice(tailIndex+1,0,{kind:'progress',id,messages:[]});pendingGroupId=id;}
-  }
-  const progressTimingVisible=busy&&!reconnectable&&!ended&&!waiting&&!activeError&&!compaction.state&&(!!pendingGroupId||tail?.kind==='progress');
-  const hideFooterExecutionStatus=liveState==='connected'&&!reconnectable&&!compaction.state&&(showLiveProgress||progressTimingVisible);
   const activityRunning=busy&&!reconnectable&&!ended&&!waiting&&!activeError;
   const currentActivities=liveState==='connected'&&!reconnectable&&liveProgress.stage==='tools'?liveProgress.activities||[]:[];
   const currentActivity=currentConversationActivity(currentActivities,activityRunning);
@@ -2041,18 +2064,31 @@ export function SessionConversation({
     progressActivities.reduce((items,item)=>items.set(item.id,item),new Map<string,ConversationActivity>()).values(),
   );
   const slotBoundary=tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?null:tailMessage?.id??null;
+  const hiddenBoundaries=new Set(displayed.slice(tailMessage?displayed.indexOf(tailMessage)+1:0)
+    .filter(message=>isEmptyProgress(message)&&message.turn_id===liveTurn).map(message=>message.id));
   const slotActivities=latestActivities.filter(item=>{
     if(item.turn_id&&item.turn_id!==liveTurn)return false;
-    if(Object.hasOwn(item,'after_message_id'))return item.after_message_id===slotBoundary;
+    if(Object.hasOwn(item,'after_message_id'))return item.after_message_id===slotBoundary||
+      !!item.after_message_id&&hiddenBoundaries.has(item.after_message_id)||item.after_message_id===null&&tailMessage?.role==='user'&&
+      !!item.started_at&&!!tailMessage.timestamp&&Date.parse(item.started_at)>=Date.parse(tailMessage.timestamp);
     // Older adapters can supply real timing instead of an explicit boundary.
     if(!tailMessage)return true;
     return !!item.started_at&&!!tailMessage.timestamp&&Date.parse(item.started_at)>Date.parse(tailMessage.timestamp);
   });
   const latestSlotActivity=[...slotActivities].reverse().find(item=>item.status==='running')||slotActivities.at(-1);
+  const showLiveProgress=canShowLiveProgress&&slotActivities.length>0;
+  let pendingGroupId:string|null=null;
+  if(showLiveProgress){
+    if(tail?.kind==='progress'&&(!tailMessage?.turn_id||tailMessage.turn_id===liveTurn))pendingGroupId=tail.id;
+    else {const id=`live-${liveTurn}-${tailMessage?.id||'start'}`;groups.splice(tailIndex+1,0,{kind:'progress',id,messages:[]});pendingGroupId=id;}
+  }
+  const progressTimingVisible=busy&&!reconnectable&&!ended&&!waiting&&!activeError&&!compaction.state&&(!!pendingGroupId||tail?.kind==='progress');
+  const hideFooterExecutionStatus=liveState==='connected'&&!reconnectable&&!compaction.state&&(showLiveProgress||progressTimingVisible);
   const pendingStatistics=withObservedToolCounts(pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||tail?.kind==='progress'||!!pendingSegment)?progressStatistics:null,tail?.kind==='progress'?tailMessage?.statistics?.segment:undefined,tail?.kind==='progress',tailMessage),slotActivities.length,liveTurn||'');
   const streamingIndex=displayed.findIndex(message=>message.id===streamingId);
-  const streamingPrevious=streamingIndex>=0?displayed.slice(0,streamingIndex).filter(message=>!message.queued).at(-1):undefined;
-  const streamingStatistics=streamingIndex>=0&&progressStatistics?.turn_id===liveTurn?pendingProgressStatistics(progressStatistics,streamingPrevious?.statistics?.segment,streamingPrevious?.role==='assistant',streamingPrevious):null;
+  const streamingPrevious=streamingIndex>=0?displayed.slice(0,streamingIndex).filter(message=>!isWaitingConversationInput(message)).at(-1):undefined;
+  const streamingStatistics=streamingIndex>=0&&progressStatistics?.turn_id===liveTurn&&progressStatistics?.revision==null?
+    pendingProgressStatistics(progressStatistics,streamingPrevious?.statistics?.segment,streamingPrevious?.role==='assistant',streamingPrevious):null;
   useEffect(()=>{
     if(!pendingGroupId)return;
     if(!pinned.current){setUnread(true);return;}
@@ -2166,6 +2202,7 @@ export function SessionConversation({
     if (!message.client_id) return;
     try {
       await api.agent.cancelQueuedInput(session.id, message.client_id);
+      updateWaitingInputs(inputStorageKey,rows=>rows.filter(item=>item.client_id!==message.client_id));
       setMessages((previous) =>
         previous.filter(
           (item) => !(item.queued && item.client_id === message.client_id),
@@ -2237,11 +2274,15 @@ export function SessionConversation({
       />
     );
   const currentMetadata=metadata?.summary.native_id===(agentNativeId(session)??page?.native_id)?metadata:null;
-  const dropsByInput=new Map<string,SessionCacheDrop[]>();
+  const dropsByMessage=new Map<string,SessionCacheDrop[]>();
+  const compactionMessages=new Map(displayed.flatMap(message=>message.presentation==='compaction_summary'&&message.timestamp?
+    [[Date.parse(message.timestamp),message.id] as const]:[]));
   if(!notificationView)for(const drop of currentMetadata?.drops.values()??[]){
-    const list=dropsByInput.get(drop.current.input_id)??[];
+    const anchor=(drop.compaction_at?compactionMessages.get(Date.parse(drop.compaction_at)):null)??drop.current.input_id;
+    if(!anchor)continue;
+    const list=dropsByMessage.get(anchor)??[];
     list.push(drop);
-    dropsByInput.set(drop.current.input_id,list);
+    dropsByMessage.set(anchor,list);
   }
   return (
     <ConversationImagePreviewRoot active={active} onOpen={navigate}>
@@ -2296,7 +2337,7 @@ export function SessionConversation({
               )}
               {groups.map((group, groupIndex) => {
                 if(group.kind === "message") {
-                  const drops=dropsByInput.get(group.message.id);
+                  const drops=dropsByMessage.get(group.message.id);
                   return drops?.length ? <div key={group.id}>
                     {bubble(group.message,false,group.id)}
                     {drops.map(drop=><ConversationCacheDrop key={drop.id} drop={drop} active={active}/>)}
@@ -2306,25 +2347,42 @@ export function SessionConversation({
                 const pending=group.id===pendingGroupId;
                 const nextMessage=next?.kind==='message'?next.message:undefined;
                 const final=nextMessage?.role==='assistant'&&nextMessage.phase==='final'&&!nextMessage.async_questions?.length?nextMessage:null;
-                const saved=final?.statistics?.segment||last?.statistics?.segment||(pending?pendingSegment:null);
+                const scope=last?.statistics?.progress_id??group.messages.find(message=>message.statistics?.progress_id)?.statistics?.progress_id;
+                const savedMessage=[...group.messages].reverse().find(message=>{
+                  const segment=message.statistics?.segment;
+                  return !!segment&&(!scope||segment.id===scope);
+                });
+                const finalSegment=final?.statistics?.segment;
+                const saved=savedMessage?.statistics?.segment??
+                  (finalSegment&&(scope?finalSegment.id===scope:!finalSegment.coverage)?finalSegment:undefined)??(pending?pendingSegment:null);
                 const live=progressStatistics?.segment;
-                const activeGroup=busy&&(pending||groups.at(-1)===group);
-                const liveMatches=progressStatistics?.turn_id===(last?.statistics?.turn_id||last?.turn_id||liveTurn)&&live&&(!saved?(last?progressStatistics?.step?.after_message_id===last.id||progressStatistics?.step?.after_sequence!=null&&progressStatistics.step.after_sequence===last.sequence:!!pendingSegment||!continuingAfterFollowup):live.id===saved.id&&!!saved.start_at&&live.start_at===saved.start_at);
+                const step=progressStatistics?.step;
+                const activeGroup=busy&&(pending||tail===group);
+                const savedScope=scope??saved?.id;
+                const boundaryMatches=!step?.after_message_id||group.messages.some(message=>
+                  message.id===step.after_message_id||(step.after_sequence!=null&&message.sequence===step.after_sequence));
+                const liveIsCurrent=progressStatistics?.revision==null||progressStatistics.revision>=(savedMessage?.statistics?.revision??0);
+                const liveMatches=progressStatistics?.turn_id===(last?.statistics?.turn_id||last?.turn_id||liveTurn)&&live&&
+                  liveIsCurrent&&(savedScope?live.id===savedScope&&boundaryMatches:last?step?.after_message_id===last.id||
+                    step?.after_sequence!=null&&step.after_sequence===last.sequence:
+                    !!pendingSegment||!continuingAfterFollowup);
                 const part=activeGroup&&liveMatches?live:saved;
                 const summary=withObservedToolCounts(part?{...part,turn_id:last?.turn_id||liveTurn||'',sequence:0}:progressGroupStatistics(group.messages,final),pending?slotActivities.length:0,liveTurn||'');
+                const execution=part?.unassigned;
+                const executionStats=execution?{...execution,sequence:0,turn_id:last?.turn_id||liveTurn||'',interval:execution}:null;
                 return (
                   <ProgressSection
                     key={`progress-${group.id}`}
                     showStatistics={!notificationView}
                     agent={sessionAgent(session)}
                     agentName={agentName}
-                    count={group.messages.length+(pending?1:0)}
-                    active={busy && (pending || groups.at(-1) === group)}
-                    stepDuration={progressTimingVisible&&(pending||groups.at(-1)===group)?stepDuration:null}
+                    count={group.messages.length+Number(!!execution)}
+                    active={activeGroup}
+                    stepDuration={progressTimingVisible&&(pending||tail===group)?stepDuration:null}
                     stepRunning={currentActivity?.status==='running'}
                     phaseSeconds={phaseSeconds}
                     progressPhase={progressPhase}
-                    turnDuration={progressTimingVisible&&(pending||groups.at(-1)===group)?(part?.start_at?elapsedBetween(part.start_at,now):turnDuration):part?.elapsed_ms??null}
+                    turnDuration={progressTimingVisible&&(pending||tail===group)?(part?.start_at?elapsedBetween(part.start_at,now):turnDuration):part?.elapsed_ms??null}
                     completed={part?part.end_reason==='completed':!!final}
                     interrupted={part?.end_reason==='interrupted'}
                     progressScope="segment"
@@ -2342,12 +2400,16 @@ export function SessionConversation({
                         >
                           {index + 1}
                         </span>
-                        {bubble(message, true)}
+                        {bubble(message,true)}
                       </div>
                     ))}
                     {pending&&<ConversationProgressPending number={group.messages.length+1} tool={latestSlotActivity}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
-                      statistics={pendingStatistics} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
+                      statistics={executionStats??(progressStatistics?.revision==null?pendingStatistics:null)} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
+                    {!pending&&!notificationView&&executionStats&&<div className="session-chat-progress-entry">
+                      <span className="session-chat-progress-number" aria-label={`进展序号 ${group.messages.length+1}`}>{group.messages.length+1}</span>
+                      <div className="session-chat-message-meta"><span>执行项</span><ConversationStatisticsLabel interval statistics={executionStats}/></div>
+                    </div>}
                   </ProgressSection>
                 );
               })}
@@ -2357,22 +2419,13 @@ export function SessionConversation({
                   <div>
                     <div className="session-chat-thinking-summary"><span>
                       {continuingAfterFollowup
-                        ? sending
-                          ? "Sending follow-up…"
-                          : `Follow-up sent · ${agentName} is working`
+                        ? "Sending follow-up…"
                         : liveProgress.stage === "tools"
                           ? `${agentName} is working`
                           : `Waiting for ${agentName}`}
                     </span>
                     {!notificationView&&<time className="session-chat-elapsed" style={{color:timeColor(elapsed)}}>{elapsed}s</time>}
                     </div>
-                    <p>
-                      {continuingAfterFollowup
-                        ? "The task is still running. Updates will appear here."
-                        : liveProgress.stage === "tools"
-                          ? "Updates will appear as work continues."
-                          : "The response will appear as it arrives."}
-                    </p>
                   </div>
                 </div>
               )}

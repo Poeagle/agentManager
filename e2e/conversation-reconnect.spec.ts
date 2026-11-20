@@ -33,5 +33,8 @@ test('a detached chat reconnects independently of the raw terminal and preserves
   await expect(page.getByRole('button',{name:'对话',exact:true})).toHaveAttribute('aria-pressed','true');
   await page.screenshot({path:testInfo.outputPath('chat-reconnected.png')});
   await chat.getByRole('button',{name:'发送消息'}).click();await expect(input).toHaveText('');expect(sent).toHaveLength(1);expect(sent[0].input).toBe('继续处理，不丢草稿');
- }finally{await page.request.delete(`/api/sessions/${session.id}`).catch(()=>{});}
+ }finally{
+  await page.unrouteAll({behavior:'wait'});
+  await page.request.delete(`/api/sessions/${session.id}`).catch(()=>{});
+ }
 });

@@ -1,4 +1,5 @@
-import type {ConversationMessage,ConversationProgressStatistics,ConversationProgressSegment,ConversationStatistics} from './api';
+import type {ConversationCostEstimate,ConversationMessage,ConversationProgressStatistics,ConversationProgressSegment,ConversationStatistics} from './api';
+import {isWaitingConversationInput, type TimelineMessage} from './conversation-timeline';
 
 export function mergeConversationStatistics(previous:ConversationStatistics[],incoming:ConversationStatistics[]):ConversationStatistics[] {
   if (!incoming.length) return previous;
@@ -9,6 +10,18 @@ export function mergeConversationStatistics(previous:ConversationStatistics[],in
     if ((result.get(id)?.revision ?? 0) <= (item.revision ?? 0)) result.set(id, item);
   }
   return [...result.values()];
+}
+
+function costDifference(current: ConversationCostEstimate|null|undefined, previous: ConversationCostEstimate|null|undefined) {
+  if (!current || !previous) return current;
+  if (!previous.complete || current.unit!==previous.unit || current.basis!==previous.basis ||
+      current.amount==null || previous.amount==null || current.amount<previous.amount) return undefined;
+  const a=current.breakdown, b=previous.breakdown;
+  const breakdown=a&&b&&a.input>=b.input&&a.cache>=b.cache&&a.output>=b.output ? {
+    input:a.input-b.input, cache:a.cache-b.cache, output:a.output-b.output,
+    reasoning:a.reasoning!=null&&b.reasoning!=null&&a.reasoning>=b.reasoning ? a.reasoning-b.reasoning : null,
+  } : undefined;
+  return {...current,amount:current.amount-previous.amount,breakdown};
 }
 
 /** Difference only matching recorded segment counters, never cumulative totals
@@ -24,24 +37,35 @@ export function pendingProgressStatistics(live:ConversationProgressStatistics|nu
     const before=previous?previous.tokens?.[key]:0;
     return [key,value!=null&&before!=null&&value>=before?value-before:null];
   })):null;
-  const cost=current.cost===null?null:current.cost&&(!previous||previous.cost?.complete)&&current.cost.amount!=null?{...current.cost,amount:Math.max(0,current.cost.amount-(previous?.cost?.amount??0))}:undefined;
+  const cost=previous&&!previous.cost ? current.cost===null?null:undefined : costDifference(current.cost,previous?.cost);
   return {cost,sequence:0,turn_id:live!.turn_id,tokens,requests,tool_calls:calls,tool_rounds:rounds,complete:current.complete,interval:{cost,tokens,requests,tool_calls:calls,tool_rounds:rounds,complete:current.complete,shared_messages:1}};
 }
 
 type ConversationGroup={kind:'progress';id:string;messages:ConversationMessage[]}|{kind:'message';id:string;message:ConversationMessage};
 
-/** Group presentation only; retain every native item ID for reconciliation,
- * document anchors and navigation. A user message or final reply ends a group.
- * Native turn IDs can change between consecutive assistant updates in one
- * request, so they are not a presentation boundary. */
-export function groupConversationProgress(messages:ConversationMessage[]):ConversationGroup[] {
+export function isEmptyProgress(message:ConversationMessage) {
+  return message.role==='assistant'&&message.phase==='commentary'&&message.presentation!=='compaction_summary'&&
+    !message.text.trim()&&!message.content_blocks?.length&&!message.async_questions?.length;
+}
+
+/** Use recorded Progress ownership when available. With older adapters,
+ * accepted inputs and finals provide the presentation boundaries. */
+export function groupConversationProgress(messages:TimelineMessage[]):ConversationGroup[] {
   const groups:ConversationGroup[]=[];
+  const waitingInputs:ConversationGroup[]=[];
+  const byProgressId=new Map<string,Extract<ConversationGroup,{kind:'progress'}>>();
+  const groupScope=new Map<ConversationGroup,string>();
   let progressClosed=false;
   for(const message of messages) {
+    if (isWaitingConversationInput(message)) {
+      waitingInputs.push({kind:'message',id:message.id,message});
+      continue;
+    }
     const previous=groups.at(-1);
     // A live tool round can carry text only in its content blocks. The same
     // shared presentation rule applies after the platform strips tool data
     // from durable history, so do not require literal message text here.
+    if(isEmptyProgress(message))continue;
     const progressMessage=message.role==='assistant' && (message.phase==='commentary' || !message.phase && message.content_blocks?.length) && message.presentation!=='compaction_summary';
     // Consecutive native retry notices in the same turn are updates to one
     // incident. Never infer a relationship across a turn or an intervening
@@ -55,26 +79,38 @@ export function groupConversationProgress(messages:ConversationMessage[]):Conver
       }
     }
     if(progressMessage) {
-      if(previous?.kind==='progress'&&!progressClosed)previous.messages.push(message);
-      else groups.push({kind:'progress',id:message.id,messages:[message]});
+      const scope=message.statistics?.progress_id;
+      const owner=scope?byProgressId.get(scope):undefined;
+      if(owner&&owner!==previous) {
+        owner.messages.push(message);
+        continue;
+      }
+      const priorScope=previous&&groupScope.get(previous);
+      const adjacent=previous?.kind==='progress'&&!progressClosed&&(!scope||!priorScope||scope===priorScope)?previous:undefined;
+      const group=owner??adjacent??{kind:'progress' as const,id:message.id,messages:[]};
+      group.messages.push(message);
+      if(!owner&&!adjacent)groups.push(group);
+      if(scope&&!owner){byProgressId.set(scope,group);groupScope.set(group,scope);}
       progressClosed=!!(message.phase==='final'||message.phase==='error'||message.presentation==='compaction_summary'||message.async_questions?.length);
     }else {
       groups.push({kind:'message',id:message.id,message});
       progressClosed=!(message.role==='assistant'&&message.phase==='error'&&message.error?.will_retry);
     }
   }
-  return groups;
+  return [...groups,...waitingInputs];
 }
 
 /** Select the most specific recorded usage for a presentation group. Segment
  * counters describe the current input interval; native turn totals remain a
  * valid fallback for adapters that cannot record segment timings. */
 export function progressGroupStatistics(messages:ConversationMessage[],final?:ConversationMessage|null):ConversationStatistics|null {
-  for(const message of final?[final,...messages.slice().reverse()]:messages.slice().reverse()) {
+  const recent=messages.slice().reverse();
+  for(const message of final?[...recent,final]:recent) {
     const statistics=message.statistics;
     if(statistics?.segment)return {...statistics,...statistics.segment,sequence:0,turn_id:statistics.turn_id||final?.turn_id||message.turn_id||'',interval:{...statistics.segment,shared_messages:1}};
   }
-  for(const message of final?[final,...messages.slice().reverse()]:messages.slice().reverse())if(message.statistics)return {...message.statistics,sequence:0};
+  for(const message of final?[final,...messages.slice().reverse()]:messages.slice().reverse())
+    if(message.statistics&&!message.statistics.interval?.coverage)return {...message.statistics,sequence:0};
   return null;
 }
 

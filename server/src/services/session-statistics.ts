@@ -8,6 +8,7 @@ import { factId, factTime, consistentUsage } from './agents/session-fact-values.
 import type {
   AgentSessionFactsPort, RequestDimensions, SessionAction, SessionActionState, SessionCacheDrop,
   SessionCoverageReason, SessionLifecycleFact, SessionMetadata, SessionMetadataDetails,
+  SessionUsageIntervalPage, SessionUsageIntervalRow,
 } from './agents/session-facts.js';
 import type { AgentContext, AgentSession, AgentStatistics } from './agents/types.js';
 import { activityContext, modelTotals, newProjection, projectProgress, projectSummary,
@@ -18,6 +19,8 @@ const RECORD_MAX = 16 * 1024 * 1024;
 const CHUNK = 256 * 1024;
 const BATCH = 8 * 1024 * 1024;
 const RECORDS = 4000;
+const CHECKPOINT_PROJECTION_VERSION = 3;
+const checkpointVersion = (codec: AgentSessionFactsPort) => codec.revision * 100 + CHECKPOINT_PROJECTION_VERSION;
 
 interface SourceRow {
   file_id: string;
@@ -177,7 +180,10 @@ function projectionSink(source: Source, revision: number, generation: string): P
     },
     saveItem: stat => { saveItem.run(key, stat.message_id, stat.sequence, revision, json({...stat, revision})); },
     event: (fact, offset) => !!event.run(key, fact.id, fact.at, offset, 'native', json(fact)).changes,
-    anomaly: (fact, offset) => { anomaly.run(key, fact.id, fact.current.input_id, fact.at, offset, json(fact)); },
+    anomaly: (fact, offset) => {
+      const anchor = fact.compaction_at ? 'compact:'+fact.compaction_at : fact.current.input_id ?? '';
+      anomaly.run(key, fact.id, anchor, fact.at, offset, json(fact));
+    },
     model(fact, tools) {
       const dimensions = json(fact.dimensions);
       let counts = models.get(dimensions);
@@ -204,7 +210,8 @@ async function scan(source: Source, context: AgentContext, path: string): Promis
     const old = rowFor(source);
     const fileId = json([stat.dev, stat.ino]);
     const stamp = json([stat.mtimeMs, stat.ctimeMs]);
-    const sameFile = old?.file_id === fileId && old.codec_version === codec.revision && old.length <= stat.size;
+    const version = checkpointVersion(codec);
+    const sameFile = old?.file_id === fileId && old.codec_version === version && old.length <= stat.size;
     const sameVersion = sameFile && old.stamp === stamp && old.length === stat.size;
     if (sameVersion && old.caught_up) return false;
     const canAppend = sameFile && (sameVersion || old.length < stat.size &&
@@ -237,7 +244,7 @@ async function scan(source: Source, context: AgentContext, path: string): Promis
             db.prepare(`DELETE FROM session_statistics_${table} WHERE source=?`).run(key);
         } else {
           db.prepare('INSERT INTO session_statistics_sources VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(
-            key, source.agent, id, source.environment, codec.revision, fileId, 0, 0, '', '', '', 0, 0, revision, '{}', '{}', '{}',
+            key, source.agent, id, source.environment, version, fileId, 0, 0, '', '', '', 0, 0, revision, '{}', '{}', '{}',
           );
         }
         db.prepare("DELETE FROM session_statistics_events WHERE source=? AND evidence='native'").run(key);
@@ -274,7 +281,7 @@ async function scan(source: Source, context: AgentContext, path: string): Promis
       db.prepare(`UPDATE session_statistics_sources
         SET codec_version=?,file_id=?,offset=?,length=?,stamp=?,first_anchor=?,end_anchor=?,skipping=?,
           caught_up=?,revision=?,adapter_state=?,projection_state=?,summary=? WHERE source=?`).run(
-        codec.revision, fileId, batch.end, stat.size, stamp, first, end, Number(batch.skipping),
+        version, fileId, batch.end, stat.size, stamp, first, end, Number(batch.skipping),
         Number(batch.caughtUp), revision, json(adapterState ?? null), json(state), json(summary), key,
       );
     })();
@@ -368,14 +375,16 @@ export function readSessionMetadata(context: AgentContext, available = true): Se
 export function readSessionProgress(context: AgentContext) {
   const source = sourceFor(context);
   const row = source && rowFor(source);
-  return row ? projectProgress(readJson<SessionProjectionState>(row.projection_state)) : null;
+  if (!row || row.codec_version !== checkpointVersion(source.codec)) return null;
+  const progress = projectProgress(readJson<SessionProjectionState>(row.projection_state));
+  return progress && {...progress,revision:row.revision};
 }
 
 export function readSessionItemStatistics(context: AgentContext, items: Array<{id: string; offset: number}>): AgentStatistics[] {
   const source = sourceFor(context);
   if (!source || !items.length) return [];
   const lookup = source.db.prepare('SELECT facts FROM session_statistics_items WHERE source=? AND item_id=?');
-  const byOffset = source.db.prepare('SELECT facts FROM session_statistics_items WHERE source=? AND position=? LIMIT 1');
+  const byOffset = source.db.prepare("SELECT facts FROM session_statistics_items WHERE source=? AND position=? AND json_type(facts,'$.interval')='object' LIMIT 1");
   return items.flatMap(item => {
     const row = (lookup.get(source.key, item.id) ?? byOffset.get(source.key, item.offset)) as {facts: string} | undefined;
     return row ? [readJson<AgentStatistics>(row.facts)] : [];
@@ -386,16 +395,126 @@ export function readChangedSessionStatistics(context: AgentContext, since: numbe
   const source = sourceFor(context);
   if (!source) return [];
   const where = since ? ' AND revision>?' : '';
-  return (source.db.prepare('SELECT facts FROM session_statistics_items WHERE source=?'+where+
+  return (source.db.prepare("SELECT facts FROM session_statistics_items WHERE source=? AND json_type(facts,'$.interval')='object'"+where+
     ' ORDER BY position DESC LIMIT 160').all(...(since ? [source.key, since] : [source.key])) as {facts: string}[])
     .reverse().map(row => readJson<AgentStatistics>(row.facts));
 }
 
-export function readSessionCacheDrops(context: AgentContext, inputIds: string[]): SessionCacheDrop[] {
+interface IntervalAnchor { position: number; item_id: string }
+interface IntervalProjection extends IntervalAnchor {
+  facts: string;
+  kind: 'final' | 'progress' | 'item';
+  segment_id: string | null;
+  last_item: number | null;
+}
+export interface SessionUsagePageQuery {
+  parent?: string;
+  before?: [number, string, IntervalProjection['kind']];
+}
+
+const finalBoundary = "json_type(facts, '$.conclusion') = 'object'";
+const upperBound = {position: Number.MAX_SAFE_INTEGER, item_id: ''};
+const lowerBound = {position:-1, item_id:''};
+
+function previousFinal(source: Source, before: IntervalAnchor): IntervalAnchor {
+  return source.db.prepare(`SELECT position,item_id FROM session_statistics_items WHERE source=@source
+    AND ${finalBoundary} AND (position,item_id) < (@position,@item_id) ORDER BY position DESC,item_id DESC LIMIT 1`)
+    .get({source:source.key,...before}) as IntervalAnchor | undefined ?? lowerBound;
+}
+
+function intervalWithin(alias: string) {
+  return `${alias}.source=@source AND (${alias}.position,${alias}.item_id) > (@low,@low_id)
+    AND (${alias}.position,${alias}.item_id) <= (@high,@high_id)`;
+}
+
+function intervalChildren(source: Source, parent: string) {
+  const [kind, boundary, segment] = parent.split(':');
+  const rootId = kind === 'final' ? boundary : kind === 'progress' ? boundary : 'open';
+  const upper = rootId === 'open' ? upperBound :
+    source.db.prepare(`SELECT position,item_id FROM session_statistics_items
+      WHERE source=? AND item_id=? AND ${finalBoundary}`).get(source.key, rootId) as IntervalAnchor | undefined;
+  if (!upper) return null;
+  const lower = previousFinal(source, upper);
+  const segmentId = (alias: string) => `json_extract(${alias}.facts, '$.segment.id')`;
+  // Multiple Items can carry snapshots of a Progress. Choose the latest one.
+  const progress = `WITH progress AS (
+    SELECT i.position,i.item_id,i.facts,'progress' kind,${segmentId('i')} segment_id,
+      (SELECT MAX(s.position) FROM session_statistics_items s WHERE ${intervalWithin('s')}
+        AND json_extract(s.facts, '$.progress_id')=${segmentId('i')}) last_item
+    FROM session_statistics_items i WHERE ${intervalWithin('i')} AND ${segmentId('i')} IS NOT NULL
+      AND i.item_id=(SELECT s.item_id FROM session_statistics_items s WHERE s.source=i.source
+        AND ${segmentId('s')}=${segmentId('i')} ORDER BY s.revision DESC,s.position DESC,s.item_id DESC LIMIT 1)
+  )`;
+  const member = "json_extract(i.facts, '$.progress_id')=p.segment_id";
+  const items = `SELECT i.position,i.item_id,i.facts,'item' kind,NULL segment_id,NULL last_item
+    FROM session_statistics_items i WHERE ${intervalWithin('i')} AND json_type(i.facts, '$.interval')='object'`;
+  const select = kind === 'progress'
+    ? `${items} AND EXISTS(SELECT 1 FROM progress p WHERE p.segment_id=@segment AND ${member})`
+    : `SELECT p.position,p.item_id,p.facts,p.kind,p.segment_id,
+      p.last_item FROM progress p
+      UNION ALL ${items} AND NOT EXISTS(SELECT 1 FROM progress p WHERE ${member})`;
+  return {progress, select, rootId, params:{
+    low:lower.position,low_id:lower.item_id,high:upper.position,high_id:upper.item_id,
+    ...(kind === 'progress' ? {segment} : {}),
+  }};
+}
+
+export function readSessionUsageIntervals(context: AgentContext, {parent,before}:SessionUsagePageQuery={}): SessionUsageIntervalPage | null {
   const source = sourceFor(context);
-  if (!source || !inputIds.length) return [];
+  if (!source) return null;
+  const saved = rowFor(source);
+  const generation = saved ? readJson<SessionMetadata>(saved.summary).generation : undefined;
+  const page = {native_id:source.id,generation,revision:saved?.revision ?? 0};
+  if (saved?.codec_version !== checkpointVersion(source.codec)) return {...page,rows:[],next_before:null};
+  const children = parent ? intervalChildren(source, parent) : null;
+  if (parent && !children) return {...page, rows:[], next_before:null};
+  const select = children?.select ?? `SELECT position,item_id,facts,'final' kind,NULL segment_id,NULL last_item
+    FROM session_statistics_items WHERE source=@source AND ${finalBoundary}`;
+  const cursor = before ? 'WHERE (position,item_id,kind) < (@cursor_position,@cursor_id,@cursor_kind)' : '';
+  const results = source.db.prepare(`${children?.progress ?? ''} SELECT * FROM (${select}) ${cursor}
+    ORDER BY position DESC,item_id DESC,kind DESC LIMIT 51`)
+    .all({source:source.key,...children?.params,...(before ? {
+      cursor_position:before[0],cursor_id:before[1],cursor_kind:before[2],
+    } : {})}) as IntervalProjection[];
+  const rows: SessionUsageIntervalRow[] = results.slice(0,50).map(row => {
+    const stat = readJson<AgentStatistics>(row.facts);
+    if (row.kind === 'progress') {
+      const {id,end_at,start_at,elapsed_ms,end_reason,...usage} = stat.segment!;
+      return {id:`progress:${children!.rootId}:${id}`,kind:row.kind,at:end_at,usage:{...usage,shared_messages:1},
+        expandable:row.last_item!==null||!!usage.unassigned};
+    }
+    if (row.kind === 'final') {
+      const {end_at,start_at,elapsed_ms,...usage} = stat.conclusion!;
+      return {id:`final:${row.item_id}`,kind:row.kind,at:end_at,usage,expandable:true};
+    }
+    return {id:`item:${row.item_id}`,kind:row.kind,at:stat.item_at ?? stat.conclusion?.end_at ?? null,usage:stat.interval!,expandable:false};
+  });
+  if (!parent && !before) {
+    const latest = results[0] ?? lowerBound;
+    const open = source.db.prepare(`SELECT 1 FROM session_statistics_items WHERE source=@source
+      AND (position,item_id) > (@position,@item_id) LIMIT 1`)
+      .get({source:source.key,position:latest.position,item_id:latest.item_id});
+    if (open) rows.unshift({id:'open',kind:'open',at:null,usage:null,expandable:true});
+  }
+  if (parent?.startsWith('progress:') && children && !before) {
+    const row = source.db.prepare(`${children.progress} SELECT facts FROM progress WHERE segment_id=@segment`)
+      .get({source:source.key,...children.params}) as {facts:string}|undefined;
+    const tail = row && readJson<AgentStatistics>(row.facts).segment?.unassigned;
+    if (tail) rows.unshift({id:parent+':unassigned',kind:'unassigned',at:null,usage:tail,expandable:false});
+  }
+  const last = results[49];
+  return {...page,rows,next_before:results.length>50 ? json([last.position,last.item_id,last.kind]) : null};
+}
+
+export function readSessionCacheDrops(context: AgentContext, inputIds: string[], compactionTimes: string[] = []): SessionCacheDrop[] {
+  const source = sourceFor(context);
+  if (!source) return [];
   const query = source.db.prepare('SELECT fact FROM session_statistics_cache_drops WHERE source=? AND input_id=?');
-  return inputIds.flatMap(id => (query.all(source.key, id) as {fact: string}[]).map(row => readJson<SessionCacheDrop>(row.fact)));
+  const anchors = new Set([...inputIds,...compactionTimes.flatMap(at => {
+    const timestamp = factTime(at);
+    return timestamp ? ['compact:'+timestamp] : [];
+  })]);
+  return [...anchors].flatMap(id => (query.all(source.key, id) as {fact: string}[]).map(row => readJson<SessionCacheDrop>(row.fact)));
 }
 
 export function readRecentSessionCacheDrops(context: AgentContext): SessionCacheDrop[] {

@@ -5,7 +5,7 @@ import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {SessionWorkspacePane} from '../src/components/SessionWorkspacePane';
 import {SessionConversation} from '../src/components/SessionConversation';
-import {api,type ConversationPage,type Session} from '../src/lib/api';
+import {api,ApiError,type ConversationPage,type Session} from '../src/lib/api';
 vi.mock('../src/lib/api',async(original)=>{
   const actual=await original<typeof import('../src/lib/api')>();
   return {...actual,api:{...actual.api,agent:{...actual.api.agent,conversation:vi.fn(),sendInput:vi.fn(),checkSend:vi.fn()},sessions:{...actual.api.sessions,reconnect:vi.fn(),pasteImage:vi.fn(),pasteFile:vi.fn()},rbac:{...actual.api.rbac,me:vi.fn()}}};
@@ -14,7 +14,7 @@ const session={id:'chat',project_id:'p',task:'Work',status:'running',mode:'sessi
 let client:QueryClient;let page:ConversationPage;
 function Raw({visible,suspended,ready}:{visible:boolean;suspended:boolean;ready:()=>void}) {useEffect(()=>{ready();},[]);return <div data-testid="raw" data-suspended={suspended} data-visible={visible}>raw tool result</div>;}
 beforeEach(()=>{
-  localStorage.clear();vi.clearAllMocks();Element.prototype.scrollIntoView=vi.fn();
+  localStorage.clear();sessionStorage.clear();vi.clearAllMocks();Element.prototype.scrollIntoView=vi.fn();
   vi.mocked(api.agent.checkSend).mockResolvedValue({needs_confirmation:false,matched:false,enabled:false,context_tokens:null,context_window:null,context_percent:null,idle_minutes:null,last_completed_at:null,observed_at:null,native_id:'native',checked_at:'2026-11-14T00:00:00Z',can_compact:false,can_new:false,token:''});
   client=new QueryClient({defaultOptions:{queries:{retry:false}}});
   page={messages:[{id:'a'.repeat(32),role:'user',text:'检查代码',timestamp:null},{id:'b'.repeat(32),role:'assistant',text:'检查已完成。',timestamp:null}],has_more:false,available:true,reset:false,generation:'native',session_id:'chat',native_id:'native',session_active:true,session_status:'running',runtime:null,interaction:{processState:'idle',promptType:null,isPermission:false,choices:null}};
@@ -139,7 +139,7 @@ describe('chat/raw terminal display',()=>{
     page.messages=[{id:'ordinary',role:'user',text:'普通消息',timestamp:null},{id:'scheduled',role:'user',text:'定时提示正文\n第二行',timestamp:'2026-10-31T03:00:00Z',input_source:{kind:'scheduled',label:'每日检查'}}];
     mount();const label=await screen.findByText('每日检查');const trigger=label.closest('button')!;
     expect(trigger).toHaveTextContent('定时任务');expect(screen.getByText('普通消息').closest('button')).toBeNull();expect(screen.queryByRole('dialog')).toBeNull();
-    trigger.focus();fireEvent.click(trigger);const dialog=screen.getByRole('dialog',{name:'定时任务 · 每日检查'});expect(dialog).toHaveTextContent('定时提示正文');expect(within(dialog).getByRole('button',{name:'复制你的消息'})).toBeInTheDocument();
+    trigger.focus();fireEvent.click(trigger);const dialog=screen.getByRole('dialog',{name:'定时任务 · 每日检查'});expect(dialog).toHaveTextContent('定时提示正文');expect(within(dialog).getByRole('status',{name:'已发送'})).toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole('dialog'),{key:'Escape'});expect(screen.queryByRole('dialog')).toBeNull();expect(trigger).toHaveFocus();
   });
   it('updates a live input to a sourced card on durable reconciliation without duplication',async()=>{
@@ -169,8 +169,8 @@ describe('chat/raw terminal display',()=>{
     expect(api.agent.sendInput).toHaveBeenCalledExactlyOnceWith('chat',expect.stringContaining('<send_user_message_question_reply>'),expect.any(String));expect(draft).toHaveTextContent('这份草稿先留着');expect(screen.queryByRole('button',{name:'提交回答',exact:true})).not.toBeInTheDocument();expect(screen.getByText('已提交 · 等待接收')).toBeVisible();
   });
   it('keeps an async answer editable after failure and unrelated followups on restore',async()=>{
-    const question={id:'question',role:'assistant' as const,text:'哪个？',timestamp:null,async_questions:[{id:'native-id',title:'哪个？',options:['A','B']}]};page.messages=[page.messages[0],question];vi.mocked(api.agent.sendInput).mockRejectedValueOnce(new Error('网络断开'));
-    const view=mount();fireEvent.click(await screen.findByRole('radio',{name:/A/}));await act(async()=>fireEvent.click(screen.getByRole('button',{name:'提交回答',exact:true})));expect(await screen.findByRole('alert')).toHaveTextContent('网络断开');expect(screen.getByRole('button',{name:'提交回答',exact:true})).toBeEnabled();view.unmount();
+    const question={id:'question',role:'assistant' as const,text:'哪个？',timestamp:null,async_questions:[{id:'native-id',title:'哪个？',options:['A','B']}]};page.messages=[page.messages[0],question];vi.mocked(api.agent.sendInput).mockRejectedValueOnce(new ApiError('回答被拒绝',400,'rejected'));
+    const view=mount();fireEvent.click(await screen.findByRole('radio',{name:/A/}));await act(async()=>fireEvent.click(screen.getByRole('button',{name:'提交回答',exact:true})));expect(await screen.findByRole('alert')).toHaveTextContent('回答被拒绝');expect(screen.getByRole('button',{name:'提交回答',exact:true})).toBeEnabled();view.unmount();
     page.messages=[...page.messages,{id:'next-user',role:'user',text:'下一个问题',timestamp:null}];mount();expect(await screen.findByRole('button',{name:'提交回答',exact:true})).toBeEnabled();expect(screen.queryByText('已继续对话')).not.toBeInTheDocument();
   });
   it('shows the answer in its question card without a duplicate user bubble',async()=>{
@@ -368,9 +368,10 @@ describe('chat/raw terminal display',()=>{
     });
     mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
     act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages:[],busy:true,stage:'waiting',turn_id:'next',started_at:new Date(Date.now()-17000).toISOString()})}));
-    expect(screen.getByRole('status',{name:'正在执行的进展 1'})).toHaveTextContent('Waiting for update');
+    expect(screen.queryByRole('status',{name:'正在执行的进展 1'})).not.toBeInTheDocument();
+    expect(screen.getByText('Waiting for codex')).toBeVisible();
     expect(screen.queryByText('The response will appear as it arrives.')).not.toBeInTheDocument();
-    expect(screen.getByText(/^Elapsed /)).toBeVisible();
+    expect(document.querySelector('.session-chat-thinking time')).toBeVisible();
     expect(screen.queryByText('Receiving response…')).not.toBeInTheDocument();
     const message={id:'c'.repeat(32),role:'assistant' as const,text:'真正的',timestamp:'2026-10-29T10:01:00Z',turn_id:'next',streaming:true};
     act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages:[message],busy:true,stage:'answering',turn_id:'next'})}));
@@ -386,18 +387,23 @@ describe('chat/raw terminal display',()=>{
     fireEvent.click(screen.getByRole('button',{name:'原始终端',exact:true}));expect(sockets[0].close).toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button',{name:'对话',exact:true}));expect(screen.getAllByText('真正的流式回复')).toHaveLength(1);
   });
-  it('keeps an executing task active after a followup and inserts its next progress immediately',async()=>{
+  it('keeps an executing task active while a followup waits and starts the new Progress on native work',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
     vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
     page.messages=[{id:'first-user',role:'user',text:'整理文档',turn_id:'active',timestamp:null},{id:'first-progress',role:'assistant',text:'正在补充差异说明',phase:'commentary',turn_id:'active',timestamp:null}];
     mount();await screen.findByText('正在补充差异说明');await waitFor(()=>expect(sockets).toHaveLength(1));
-    const frame=(messages:unknown[],stage='tools')=>act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages,busy:true,stage,turn_id:'active',started_at:new Date(Date.now()-120000).toISOString()})}));
+    const frame=(messages:unknown[],stage='tools',activities:unknown[]=[])=>act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',messages,activities,busy:true,stage,turn_id:'active',started_at:new Date(Date.now()-120000).toISOString()})}));
     frame([]);typeDraft(screen.getByRole('textbox'),'请用通俗语言解释');
     fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalled());
-    expect((await screen.findByRole('status',{name:'正在执行的进展 1'})).closest('.session-chat-progress')).toHaveTextContent('In progress');expect(screen.queryByText('The response will appear as it arrives.')).not.toBeInTheDocument();
+    expect(await screen.findByRole('status',{name:'等待 Agent 接收'})).toBeVisible();
+    expect(screen.getByRole('region',{name:/codex 进展/i})).toHaveTextContent('In progress');
+    expect(screen.queryByRole('status',{name:'正在执行的进展 1'})).not.toBeInTheDocument();
     const [,text,clientId]=vi.mocked(api.agent.sendInput).mock.calls[0];
     const echo={id:'followup-echo',role:'user',text,client_id:clientId,turn_id:'active',timestamp:new Date().toISOString()};
     frame([echo]);expect(screen.getAllByText('请用通俗语言解释')).toHaveLength(1);
+    expect(screen.queryByRole('status',{name:'正在执行的进展 1'})).not.toBeInTheDocument();
+    frame([echo],'tools',[{id:'actual-tool',label:'Native tool',status:'running',turn_id:'active',after_message_id:echo.id}]);
+    expect(await screen.findByRole('status',{name:'正在执行的进展 1'})).toBeVisible();
     const progress={id:'new-progress',role:'assistant',phase:'commentary',text:'我会用',turn_id:'active',streaming:true,timestamp:new Date().toISOString()};
     frame([echo,progress],'answering');const article=screen.getByText('我会用').closest('article');expect(article).toHaveAttribute('data-streaming','true');
     expect(document.querySelector('.session-chat-progress-pending')).toBeNull();

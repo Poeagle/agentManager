@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { closeDb, getDb, initDb } from '../src/db/index.js';
 import { agentContext, getAgent } from '../src/services/agents/index.js';
 import { nativeItemId } from '../src/services/agents/session-fact-values.js';
-import { beginSessionAction, collectSessionStatisticsInventory, readChangedSessionStatistics, readSessionMetadata, readSessionMetadataDetails,
-  readSessionProgress, stopSessionStatistics, updateSessionFacts } from '../src/services/session-statistics.js';
+import { beginSessionAction, collectSessionStatisticsInventory, readChangedSessionStatistics, readSessionCacheDrops, readSessionMetadata, readSessionMetadataDetails,
+  readSessionProgress, readSessionUsageIntervals, stopSessionStatistics, updateSessionFacts, type SessionUsagePageQuery } from '../src/services/session-statistics.js';
+import type { AgentStatisticsInterval } from '../src/services/agents/types.js';
 import { createTestDatabase } from './helpers/database.js';
 
 const base = Date.parse('2026-11-20T09:00:00Z');
@@ -26,6 +27,16 @@ const legacy = (time: number, total: number, last: ReturnType<typeof tokens>) =>
   event(time, 'token_count', {info:{total_token_usage:{total_tokens:total}, last_token_usage:last}});
 const codex = agentContext({id:'tab', agent_id:'codex', native_session_id:'codex-session', project_path:'/project'});
 const claude = agentContext({id:'claude-tab', agent_id:'claude', native_session_id:'claude-session', project_path:'/project'});
+function expectUsageSum(total:AgentStatisticsInterval, slices:AgentStatisticsInterval[]) {
+  for (const key of ['requests','tool_calls','tool_rounds'] as const)
+    expect(slices.reduce((sum,usage)=>sum+usage[key],0)).toEqual(total[key]);
+  for (const [field,value] of Object.entries(total.tokens??{}))
+    expect(slices.reduce((sum,usage)=>sum+(usage.tokens?.[field]??0),0)).toEqual(value);
+  if (total.cost?.amount!=null) expect(slices.reduce((sum,usage)=>sum+(usage.cost?.amount??0),0)).toBeCloseTo(total.cost.amount,10);
+  for (const [field,value] of Object.entries(total.cost?.breakdown??{})) {
+    if (value!=null) expect(slices.reduce((sum,usage)=>sum+(usage.cost?.breakdown?.[field as keyof NonNullable<typeof total.cost.breakdown>]??0),0)).toBeCloseTo(value,10);
+  }
+}
 let fixture:ReturnType<typeof createTestDatabase>, file:string;
 beforeEach(async()=>{
   fixture=createTestDatabase();
@@ -65,10 +76,56 @@ describe('persisted session statistics',()=>{
       requests:3,tool_calls:2,tool_rounds:1,tokens:{total_tokens:first.total_tokens+second.total_tokens+third.total_tokens},
     },user_inputs:2,completed_turns:2,cache_drop_count:1});
     expect(details.models).toMatchObject([{model:'gpt-6.1-sol',speed:'default',requests:2},{model:'gpt-6.1-terra',speed:'priority',requests:1}]);
-    expect(details.cache_drops[0]).toMatchObject({at:stamp(934),elapsed_ms:929000,
-      factors:['model','speed','compact','input_gap'],previous:{request_id:'r1',input_id:nativeItemId('user','first')},current:{request_id:'r3'},confirmed_cause:null});
+    expect(details.cache_drops[0]).toMatchObject({at:stamp(934),elapsed_ms:929000,interval_kind:'input',
+      factors:['model','speed','compact','input_gap'],previous:{request_id:'r2',input_id:nativeItemId('user','first')},current:{request_id:'r3'},confirmed_cause:null});
     expect(readChangedSessionStatistics(codex,before.revision).at(-1)?.conclusion).toMatchObject({requests:1,tokens:{total_tokens:second.total_tokens}});
+    const finals=readSessionUsageIntervals(codex)!;
+    expect(finals.rows.map(row=>row.usage?.requests)).toEqual([1,2]);
+    const group=readSessionUsageIntervals(codex,{parent:finals.rows[1].id})!.rows;
+    expect(group.map(row=>row.kind)).toEqual(['progress','item']);
+    expect(group[0].usage).toMatchObject({requests:1,tool_calls:2});
+    expect(readSessionUsageIntervals(codex,{parent:group[0].id})?.rows).toMatchObject([
+      {kind:'item',at:stamp(4),usage:{requests:1,tokens:{total_tokens:first.total_tokens}}},
+    ]);
     expect(JSON.stringify(details)).not.toContain('private');
+  });
+
+  it('uses the adjacent native receipts at a compaction in the middle of one input',async()=>{
+    const before=tokens(450_070,448_512),after=tokens(32_061,13_696);
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'one')+
+      answer(2,'before','commentary')+receipt(3,'first','turn',tokens(400_000,390_000))+
+      receipt(55.355,'before','turn',before)+row(55.363,'compacted',{compaction_response_id:'compact-one'})+
+      receipt(60.309,'after','turn',after));
+    await updateSessionFacts(codex,file);
+    const [drop]=readSessionMetadataDetails(codex,true)!.cache_drops;
+    expect(drop).toMatchObject({at:stamp(60.309),compaction_at:stamp(55.363),interval_kind:'request',elapsed_ms:4954,
+      factors:['compact','input_size'],confirmed_cause:null,
+      previous:{request_id:'before',input_tokens:450070,cached_input_tokens:448512},
+      current:{request_id:'after',input_tokens:32061,cached_input_tokens:13696,input_id:nativeItemId('user','one')}});
+    expect(drop.decrease_pp).toBeCloseTo(56.9352,3);
+    expect(readSessionCacheDrops(codex,[],[stamp(55.363)])).toEqual([drop]);
+    expect(readSessionProgress(codex)).toMatchObject({segment:{start_at:stamp(55.363),requests:1,tokens:{total_tokens:after.total_tokens}}});
+    await appendFile(file,receipt(60.309,'after','turn',after)+receipt(62,'recovered','turn',tokens(34000,33000))+
+      row(63,'compacted',{compaction_response_id:'compact-two'})+receipt(64,'high','turn',tokens(30000,29000)));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)?.cache_drop_count).toBe(1);
+    expect(readSessionMetadataDetails(codex,true)?.cache_drops).toEqual([drop]);
+  });
+
+  it('detects a native model and speed change in a single input, and breaks comparisons across missing receipts',async()=>{
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'one')+
+      row(2,'turn_context',{turn_id:'turn',model:'gpt-6.1-sol',service_tier:'default'})+
+      answer(3,'before','commentary')+receipt(4,'before','turn',tokens(10000,9800))+
+      row(5,'turn_context',{turn_id:'turn',model:'gpt-6.1-terra',service_tier:'priority'})+
+      receipt(6,'after','turn',tokens(10000,1000))+receipt(7,'recovered','turn',tokens(10000,9900))+
+      row(8,'compacted',{compaction_response_id:'unobserved'})+
+      row(9,'token_usage_record',{turn_id:'turn',response_id:'missing',usage:{total_tokens:1020}})+
+      receipt(10,'unrelated','turn',tokens(10000,0)));
+    await updateSessionFacts(codex,file);
+    const metadata=readSessionMetadataDetails(codex,true)!;
+    expect(metadata.summary.cache_drop_count).toBe(1);
+    expect(metadata.cache_drops).toMatchObject([{at:stamp(6),interval_kind:'request',elapsed_ms:2000,
+      factors:['model','speed'],previous:{request_id:'before'},current:{request_id:'after'}}]);
   });
 
   it('recovers a partial line and replaces stale projections when the source is rewritten',async()=>{
@@ -159,6 +216,118 @@ describe('persisted session statistics',()=>{
     });
   });
 
+  it('retains ownership when a streaming Item starts before insertion and finishes after it',async()=>{
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'input')+
+      answer(2,'first','commentary')+receipt(3,'first','turn',tokens(1000,900))+
+      event(4,'item_started',{turn_id:'turn',item:{id:'late',type:'AgentMessage'}})+user(5,'steer')+
+      answer(6,'late','commentary')+receipt(7,'late','turn',tokens(2000,1800))+
+      answer(8,'next','commentary')+receipt(9,'next','turn',tokens(3000,2800)));
+    await updateSessionFacts(codex,file);
+    const [first,late,next]=readChangedSessionStatistics(codex,0);
+    expect(late.progress_id).toBe(first.progress_id);
+    expect(late.segment).toMatchObject({end_reason:'input',end_at:stamp(5),requests:2,tokens:{total_tokens:3040}});
+    expect(next.progress_id).not.toBe(first.progress_id);
+    expect(next.segment).toMatchObject({start_at:stamp(5),requests:1,tokens:{total_tokens:3020}});
+    expectUsageSum({...late.segment!,shared_messages:1},[first.interval!,late.interval!]);
+    expectUsageSum({...next.segment!,shared_messages:1},[next.interval!]);
+  });
+
+  it('keeps consecutive steers additive at every Progress and Final in the usage tree',async()=>{
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'first')+
+      row(1.5,'turn_context',{turn_id:'turn',model:'gpt-6.1-sol',service_tier:'default'})+
+      answer(2,'first-item','commentary')+receipt(3,'first','turn',tokens(1000,900))+
+      tool(4,'old-tool')+receipt(5,'older','turn',tokens(2000,1800))+
+      user(6,'steer-1')+receipt(7,'between','turn',tokens(3000,2800))+
+      user(8,'steer-2')+answer(9,'crossing-item','commentary')+receipt(10,'crossing','turn',tokens(4000,3800))+
+      answer(11,'new-item','commentary')+receipt(12,'newer','turn',tokens(5000,4800))+
+      answer(13,'answer','final_answer')+receipt(14,'final','turn',tokens(6000,5800))+
+      event(15,'task_complete',{turn_id:'turn'}));
+    await updateSessionFacts(codex,file);
+    const final=readSessionUsageIntervals(codex)!.rows[0];
+    expect(final.usage).toMatchObject({requests:6,tokens:{total_tokens:21120}});
+    const children=readSessionUsageIntervals(codex,{parent:final.id})!.rows;
+    expectUsageSum(final.usage!,children.map(row=>row.usage!));
+    const progress=children.find(row=>row.kind==='progress'&&row.at===stamp(15))!;
+    expect(progress.usage).toMatchObject({requests:2,tokens:{total_tokens:9040}});
+    const items=readSessionUsageIntervals(codex,{parent:progress.id})!.rows;
+    expect(items.map(row=>row.id)).toEqual(['item:'+nativeItemId('assistant','new-item'),'item:'+nativeItemId('assistant','crossing-item')]);
+    expect(items[0].usage).toMatchObject({requests:1,tokens:{total_tokens:5020}});
+    expect(items[1].usage).toMatchObject({requests:1,tokens:{total_tokens:4020}});
+    for(const group of children.filter(row=>row.kind==='progress')) {
+      expectUsageSum(group.usage!,readSessionUsageIntervals(codex,{parent:group.id})!.rows.map(row=>row.usage!));
+    }
+  });
+
+  it('reconciles receipts beyond the last visible Item in live and closed Progress',async()=>{
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'first')+
+      row(2,'turn_context',{turn_id:'turn',model:'gpt-6.1-sol',service_tier:'default'})+
+      answer(3,'visible','commentary')+receipt(4,'visible-request','turn',tokens(1000,900))+
+      tool(5,'tail-tool')+receipt(6,'tail-request','turn',tokens(2000,1800))+
+      receipt(7,'reasoning-only','turn',tokens(3000,2800)));
+    await updateSessionFacts(codex,file);
+    const active=readSessionProgress(codex)?.segment;
+    expect(active).toMatchObject({requests:3,tokens:{total_tokens:6060},
+      unassigned:{requests:2,tool_calls:1,tokens:{total_tokens:5040}}});
+    expect(active!.unassigned!.cost!.amount).toBeCloseTo(0.0415);
+    expectUsageSum({...active!,shared_messages:1},[readChangedSessionStatistics(codex,0)[0].interval!,active!.unassigned!]);
+    expect(readSessionProgress(codex)?.step).toMatchObject({after_message_id:nativeItemId('assistant','visible'),
+      requests:2,tokens:{total_tokens:5040}});
+    await appendFile(file,user(8,'steer')+answer(9,'final','final_answer')+
+      receipt(10,'final-request','turn',tokens(4000,3800))+event(11,'task_complete',{turn_id:'turn'}));
+    await updateSessionFacts(codex,file);
+    const final=readSessionUsageIntervals(codex)!.rows[0];
+    const progress=readSessionUsageIntervals(codex,{parent:final.id})!.rows.find(row=>row.kind==='progress')!;
+    expect(progress.usage?.unassigned).toEqual(active?.unassigned);
+    expect(readSessionUsageIntervals(codex,{parent:progress.id})?.rows).toMatchObject([
+      {kind:'unassigned',usage:{requests:2,tokens:{total_tokens:5040}}},
+      {kind:'item',usage:{requests:1,tokens:{total_tokens:1020}}},
+    ]);
+    // The pre-upgrade projections are replayed once and receipt identities survive.
+    getDb().prepare('UPDATE session_statistics_sources SET codec_version=1').run();
+    await updateSessionFacts(codex,file);
+    expect(readSessionUsageIntervals(codex)!.rows).toEqual([final]);
+    expect(readSessionMetadata(codex)?.totals?.requests).toBe(4);
+  });
+
+  it('retains a tool-only interrupted Progress as usage without a fabricated Item',async()=>{
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'input')+
+      tool(2,'call')+receipt(3,'request','turn',tokens(2000,1900))+
+      event(4,'turn_aborted',{turn_id:'turn'}));
+    await updateSessionFacts(codex,file);
+    expect(readChangedSessionStatistics(codex,0)).toEqual([]);
+    const progress=readSessionUsageIntervals(codex,{parent:'open'})!.rows[0];
+    expect(progress).toMatchObject({kind:'progress',expandable:true,at:stamp(4),
+      usage:{requests:1,tokens:{total_tokens:2020},unassigned:{requests:1}}});
+    expect(readSessionUsageIntervals(codex,{parent:progress.id})!.rows).toMatchObject([
+      {kind:'unassigned',usage:{requests:1,tool_rounds:1,tokens:{total_tokens:2020}}},
+    ]);
+  });
+
+  it('pages Final rows without duplicates and exposes the unfinished tail separately',async()=>{
+    const turns=Array.from({length:52},(_,i)=>{
+      const turn='turn'+i, time=i*10;
+      return event(time,'task_started',{turn_id:turn})+user(time+1,'input'+i)+
+        answer(time+2,'answer'+i,'final_answer')+receipt(time+3,'response'+i,turn,tokens(1000+i,900))+
+        event(time+4,'task_complete',{turn_id:turn});
+    });
+    await writeFile(file,turns.join('')+event(520,'task_started',{turn_id:'open'})+
+      user(521,'pending-input')+answer(522,'pending-item','commentary'));
+    await updateSessionFacts(codex,file);
+    const initial=readSessionUsageIntervals(codex)!;
+    expect(initial.rows).toHaveLength(51);
+    expect(initial.rows[0]).toMatchObject({id:'open',kind:'open',usage:null,expandable:true});
+    const pending=readSessionUsageIntervals(codex,{parent:'open'})!.rows[0];
+    expect(pending).toMatchObject({kind:'progress',expandable:true});
+    expect(readSessionUsageIntervals(codex,{parent:pending.id})?.rows).toMatchObject([
+      {kind:'item',at:stamp(522),usage:{coverage:'pending',tokens:null}},
+    ]);
+    const before=JSON.parse(initial.next_before!) as SessionUsagePageQuery['before'];
+    const older=readSessionUsageIntervals(codex,{before})!;
+    expect(older.rows).toHaveLength(2);
+    expect(older.next_before).toBeNull();
+    expect(new Set([...initial.rows,...older.rows].map(row=>row.id)).size).toBe(53);
+  });
+
   it('does not split shared usage or add non-Item requests twice when computing a Final',async()=>{
     await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'first')+
       tool(2,'hidden')+receipt(3,'tools','turn',tokens(2000,1000))+
@@ -168,8 +337,9 @@ describe('persisted session statistics',()=>{
       event(8,'task_complete',{turn_id:'turn'}));
     await updateSessionFacts(codex,file);
     const [a,b,final]=readChangedSessionStatistics(codex,0);
-    expect(a.interval).toMatchObject({shared_messages:2,requests:1,tokens:{total_tokens:3020}});
-    expect(a.interval).toEqual(b.interval);
+    expect(a.interval).toMatchObject({shared_messages:2,requests:2,tokens:{total_tokens:5040}});
+    expect(b.interval).toMatchObject({shared_messages:2,shared_reference:true,requests:0,tokens:null});
+    expectUsageSum({...b.segment!,shared_messages:1},[a.interval!,b.interval!]);
     expect(final.conclusion).toMatchObject({requests:3,tokens:{total_tokens:9060},tool_calls:1});
   });
 

@@ -4,20 +4,23 @@ import type {
   SessionCoverageReason, SessionLifecycleFact, SessionMetadata, SessionModelTotals,
 } from './agents/session-facts.js';
 import type { AgentProgressSegment, AgentProgressStatistics, AgentStatistics } from './agents/types.js';
-import { cacheSample, detectCacheDrop } from './session-cache-drop.js';
+import { cacheDimensionChanges, cacheSample, detectCacheDrop } from './session-cache-drop.js';
 import { copyCounter, countRequest, counterReasons, emptyCounter, recordedInterval, usageTotals, type StatisticsCounter } from './session-statistics-totals.js';
 
 type Item = Extract<NativeSessionFact, { kind: 'item' }> & { offset: number };
 type End = Extract<NativeSessionFact, { kind: 'end' }>;
-interface Input { id: string; turn: string; at: string | null; sampled: boolean; ambiguous: boolean }
+interface Input { id: string; at: string | null; sampled: boolean; ambiguous: boolean }
 interface Point { counter: StatisticsCounter; at: string | null; id?: string; offset?: number }
 interface Progress {
   id: string;
+  start_at: string | null;
+  counter: StatisticsCounter;
   seen: boolean;
   last?: Item;
+  completed?: Item;
   final?: Item;
-  ambiguous?: boolean;
-  close?: {at: string | null; reason: 'input'};
+  item_end?: Point;
+  close?: {at: string | null; reason: 'input' | 'compact'};
 }
 interface Turn {
   id: string;
@@ -33,7 +36,8 @@ interface Turn {
   progress: Progress;
   heldProgress?: Progress;
   last?: Item;
-  unknownTail?: {item: Item; point: Point; shared: number};
+  unknownTail?: {item: Item; point: Point; shared: number; beforeRequest: Point;
+    beforeProgress?: StatisticsCounter; previousItem?: Point; previousCompleted?: Item};
   ended?: End;
   answered?: boolean;
   progressedAt?: Point;
@@ -47,7 +51,9 @@ export interface SessionProjectionState {
   final?: Point;
   turn?: Turn;
   suspended: Turn[];
-  previousSample?: SessionCacheSample;
+  previousInputSample?: SessionCacheSample;
+  previousRequestSample?: SessionCacheSample;
+  lastCompactionAt?: string | null;
   sampledCompactions: number;
   compactions: number;
   latest: NativeRequestFact | null;
@@ -75,6 +81,8 @@ const elapsed = (start: string | null, end: string | null) => {
   const value = Date.parse(end) - Date.parse(start);
   return value >= 0 ? value : null;
 };
+const newProgress = (offset:number, at:string|null):Progress =>
+  ({id:String(offset),start_at:at,counter:emptyCounter(),seen:false});
 
 export class SessionStatisticsProjection {
   constructor(readonly state: SessionProjectionState, private readonly sink: ProjectionSink) {}
@@ -83,12 +91,15 @@ export class SessionStatisticsProjection {
     return {counter: copyCounter(this.state.total), at, id, offset};
   }
 
-  private gap(reason: SessionCoverageReason, usage = true) {
+  private gap(reason: SessionCoverageReason, usage = true,
+    progress = this.state.turn?.heldProgress ?? this.state.turn?.progress ?? null) {
     const state = this.state;
     if (!state.reasons.includes(reason)) state.reasons.push(reason);
     if (usage) {
       state.total.gaps[reason] = (state.total.gaps[reason] ?? 0) + 1;
-      state.previousSample = undefined;
+      if (progress) progress.counter.gaps[reason] = (progress.counter.gaps[reason] ?? 0) + 1;
+      state.previousInputSample = undefined;
+      state.previousRequestSample = undefined;
     }
   }
 
@@ -104,11 +115,12 @@ export class SessionStatisticsProjection {
       }
     }
     if (verified && !state.first) state.first = this.point(at);
-    if (!verified) this.gap('missing_start');
-    return state.turn = {
+    state.turn = {
       id, start: this.point(at), verified, inputCount: 0, items: [], activeItems: [], tools: [], activeTools: [],
-      progress: {id: String(offset), seen: false},
+      progress: newProgress(offset,at),
     };
+    if (!verified) this.gap('missing_start');
+    return state.turn;
   }
 
   private turn(id: string, offset: number, at: string | null): Turn {
@@ -119,23 +131,32 @@ export class SessionStatisticsProjection {
   private pushEvent(event: Omit<SessionLifecycleFact, 'evidence' | 'id'>, offset: number, id?: string) {
     const record = {...event, id: id ?? factId(offset, event.action, event.state), evidence: 'native' as const};
     const added = this.sink.event(record, offset);
-    if (added && event.action === 'compact' && event.state === 'completed') this.state.compactions++;
+    if (added && event.action === 'compact' && event.state === 'completed') {
+      this.state.compactions++;
+      this.state.lastCompactionAt = event.at;
+      const turn = this.state.turn;
+      if (turn && !turn.ended) this.cutProgress(turn,event.at,'compact',offset);
+    }
+  }
+
+  private cutProgress(turn: Turn, at: string | null, reason: 'input' | 'compact', offset: number) {
+    const pending = turn.items.length > 0 || turn.tools.length > 0 || turn.activeItems.length > 0;
+    if (!turn.heldProgress) {
+      this.closeProgress(turn,at,reason,pending);
+      if (pending) turn.heldProgress = {...turn.progress,close:{at,reason}};
+    }
+    turn.progress = newProgress(offset,at);
   }
 
   private onInput(turn: Turn, fact: Extract<NativeSessionFact, {kind: 'input'}>, offset: number) {
     if (this.sink.seen('input', fact.id)) return;
     const state = this.state;
     const overlap = !!turn.input && !turn.ended;
-    const pending = turn.items.length > 0 || turn.tools.length > 0;
+    const pending = turn.items.length > 0 || turn.tools.length > 0 || turn.activeItems.length > 0;
     const context = activityContext(state);
-    if (turn.input && !turn.input.sampled) state.previousSample = undefined;
-    if (overlap) {
-      this.closeProgress(turn, fact.at, 'input', pending);
-      if (pending && turn.progress.seen && !turn.heldProgress)
-        turn.heldProgress = {...turn.progress, close: {at: fact.at, reason: 'input'}};
-      turn.progress = {id: String(offset), seen: false};
-    }
-    turn.input = {id: fact.id, turn: turn.id, at: fact.at, sampled: false, ambiguous: overlap && !pending};
+    if (turn.input && !turn.input.sampled) state.previousInputSample = undefined;
+    if (overlap) this.cutProgress(turn,fact.at,'input',offset);
+    turn.input = {id: fact.id, at: fact.at, sampled: false, ambiguous: overlap && !pending};
     if (!pending) turn.groupInput = fact.id;
     turn.inputCount++;
     state.inputs++;
@@ -159,17 +180,19 @@ export class SessionStatisticsProjection {
     }
     turn.items.push(fact);
     turn.last = fact;
-    if (fact.phase !== 'final') {
-      const progress = turn.heldProgress ?? turn.progress;
+    const progress = turn.heldProgress ?? turn.progress;
+    const progressId = fact.phase === 'final' ? undefined : progress.id;
+    if (progressId) {
       progress.seen = true;
       progress.last = fact;
     }
     this.sink.saveItem({
       ...recordedInterval(this.state.total, turn.start.counter, 1, [], true),
-      sequence: fact.offset, message_id: fact.id, turn_id: fact.turn_id,
-      interval: recordedInterval(this.state.total, this.state.item?.counter ?? this.state.first?.counter, 1,
-        this.state.first ? [] : ['missing_start'], true),
+      sequence: fact.offset, item_at: fact.at, message_id: fact.id, turn_id: fact.turn_id,
+      progress_id: progressId,
+      interval: recordedInterval(emptyCounter(), undefined, 1, turn.verified ? [] : ['missing_start'], true),
     });
+    if (progressId) this.closeProgress(turn,progress.close?.at??null,progress.close?.reason??null,true,progress);
   }
 
   private answer(turn: Turn, item: Item, point: Point, shared: number, late = false) {
@@ -193,14 +216,16 @@ export class SessionStatisticsProjection {
   }
 
   private closeProgress(turn: Turn, at: string | null, reason: AgentProgressSegment['end_reason'], pending: boolean, progress = turn.progress) {
-    if (!progress.seen) return;
-    const segment = includePendingTools(
-      progressSegment(this.state, progress, at, reason, pending), pending ? turn.tools.length : 0,
-    );
+    if (!progress.seen && !progress.counter.requests) return;
+    const segment = progressSegment(progress,at,reason,pending,pending ? turn.tools.length : 0);
     for (const item of [progress.last, progress.final]) {
       if (!item) continue;
       const row = this.sink.readItem(item.id);
       if (row) this.sink.saveItem({...row, segment});
+    }
+    if (!progress.last && !progress.final && (segment.requests > 0 || segment.tool_calls > 0)) {
+      this.sink.saveItem({...segment,sequence:Number(progress.id),message_id:factId('tool-progress',progress.id),
+        turn_id:turn.id,segment});
     }
     const point = this.point(at, progress.last?.id, progress.last?.offset);
     turn.progressedAt = point;
@@ -211,9 +236,16 @@ export class SessionStatisticsProjection {
     if (turn.ended) return;
     const candidate = turn.unknownTail;
     if (end.outcome === 'completed' && end.final_digest && candidate?.item.digest === end.final_digest && candidate.item.id === turn.last?.id) {
-      if (turn.progress.last?.id === candidate.item.id) {
-        turn.progress.last = undefined;
-        turn.progress.seen = turn.progress.seen && !!turn.progressedAt;
+      const progress=turn.heldProgress??turn.progress;
+      if (candidate.beforeProgress && progress.last?.id === candidate.item.id) {
+        progress.counter=candidate.beforeProgress;
+        progress.last=candidate.previousCompleted;
+        progress.completed=candidate.previousCompleted;
+        progress.item_end=candidate.previousItem;
+        progress.seen=!!progress.last||progress.counter.requests>0;
+        const record=this.sink.readItem(candidate.item.id);
+        if(record)this.sink.saveItem({...record,segment:undefined,progress_id:undefined,interval:recordedInterval(candidate.point.counter,
+          candidate.beforeRequest.counter,1,turn.verified?[]:['missing_start'])});
       }
       this.answer(turn, candidate.item, candidate.point, candidate.shared);
     }
@@ -225,11 +257,13 @@ export class SessionStatisticsProjection {
       for (const item of turn.items) {
         const record = this.sink.readItem(item.id);
         if (!record) continue;
-        this.sink.saveItem({...record, interval: includePendingTools(recordedInterval(this.state.total,
-          this.state.item?.counter ?? this.state.first?.counter, turn.items.length, ['missing_usage']), turn.tools.length)});
+        this.sink.saveItem({...record, interval: recordedInterval(emptyCounter(),undefined,turn.items.length,['missing_usage'])});
       }
     }
-    this.closeProgress(turn, end.at, end.outcome, pending);
+    if (turn.heldProgress?.close) {
+      const {at,reason} = turn.heldProgress.close;
+      this.closeProgress(turn,at,reason,pending,turn.heldProgress);
+    } else this.closeProgress(turn, end.at, end.outcome, pending);
     const context = activityContext(this.state, turn);
     if (end.outcome === 'interrupted')
       this.pushEvent({action: 'interrupt', state: 'completed', at: end.at, turn_id: turn.id, execution: context}, offset);
@@ -238,9 +272,39 @@ export class SessionStatisticsProjection {
         at: end.at, turn_id: turn.id, message_id: turn.input.id, execution: context}, offset);
     turn.activeTools = [];
     turn.activeItems = [];
-    if (turn.input && !turn.input.sampled && !pending) this.state.previousSample = undefined;
+    if (turn.input && !turn.input.sampled && !pending) this.state.previousInputSample = undefined;
     if (turn.input && !pending && turn.start.counter.requests === this.state.total.requests)
       this.gap('missing_usage');
+  }
+
+  private sampleCache(turn: Turn | undefined, request: NativeRequestFact, offset: number) {
+    const state = this.state;
+    const input = turn?.groupInput === turn?.input?.id ? turn?.input : undefined;
+    const firstInputSample = input && !input.sampled && !!(turn?.items.length || turn?.tools.length);
+    const current = cacheSample(input, request);
+    const previous = state.previousRequestSample;
+    const compaction = state.compactions !== state.sampledCompactions ? {at: state.lastCompactionAt ?? null} : undefined;
+    const structuralChange = previous && current && (compaction || cacheDimensionChanges(previous,current).length > 0);
+    // A compression or settings change can occur between requests of one
+    // input. Prefer the immediately adjacent receipts at that boundary.
+    let drop: SessionCacheDrop | null = null;
+    if (current && previous && structuralChange) {
+      const distinctInputs = firstInputSample && !input.ambiguous && previous.input_id && previous.input_id !== current.input_id;
+      drop = detectCacheDrop(previous,current,distinctInputs ? 'input' : 'request',compaction);
+    } else if (current && firstInputSample && !input.ambiguous && state.previousInputSample) {
+      drop = detectCacheDrop(state.previousInputSample,current,'input');
+    }
+    if (drop) {
+      this.sink.anomaly(drop, offset);
+      state.anomalyCount++;
+    }
+    if (firstInputSample) {
+      input.sampled = true;
+      state.previousInputSample = input.ambiguous ? undefined : current ?? undefined;
+    }
+    if (structuralChange && compaction && !firstInputSample) state.previousInputSample = undefined;
+    state.previousRequestSample = current ?? undefined;
+    state.sampledCompactions = state.compactions;
   }
 
   private request(request: NativeRequestFact, offset: number) {
@@ -255,46 +319,50 @@ export class SessionStatisticsProjection {
     const late = !!turn?.ended && state.turn !== turn && state.item?.offset != null &&
       turn.items.some(item => item.offset < state.item!.offset!);
     const beforeRequest = this.point(request.at);
-    if (late) this.gap('ambiguous_boundary');
-    const cacheBaseline = state.previousSample;
+    const items = turn?.items ?? [];
+    const toolsInRequest = turn?.tools.length ?? 0;
+    const progress = turn && (turn.heldProgress ?? turn.progress);
+    const ownsProgress = !!progress && (!items.length || items.some(item=>item.phase!=='final'));
+    if (late) this.gap('ambiguous_boundary',true,ownsProgress?progress!:null);
     const consistent = consistentUsage(request.tokens);
     if (!consistent) this.gap(!request.tokens || ['input_tokens','cached_input_tokens','output_tokens','total_tokens']
-      .some(key=>request.tokens![key as keyof NonNullable<NativeRequestFact['tokens']>]==null) ? 'missing_usage' : 'counter_mismatch');
-    countRequest(state.total, request, turn?.tools.length ?? 0);
-    this.sink.model(request, turn?.tools.length ?? 0);
+      .some(key=>request.tokens![key as keyof NonNullable<NativeRequestFact['tokens']>]==null) ? 'missing_usage' : 'counter_mismatch',
+      true,ownsProgress?progress!:null);
+    countRequest(state.total, request, toolsInRequest);
+    this.sink.model(request, toolsInRequest);
     state.latest = request;
+    if (!late) this.sampleCache(turn,request,offset);
     if (!turn) return;
     const input = turn.input;
-    const items = turn.items;
-    if (input && !input.sampled && turn.groupInput === input.id && (items.length || turn.tools.length)) {
-      input.sampled = true;
-      const current = !input.ambiguous && !late ? cacheSample(input, request) : null;
-      if (current && cacheBaseline) {
-        const drop = detectCacheDrop(cacheBaseline, current, state.compactions !== state.sampledCompactions);
-        if (drop) {
-          this.sink.anomaly(drop, offset);
-          state.anomalyCount++;
-        }
-      }
-      state.previousSample = current ?? undefined;
-      state.sampledCompactions = state.compactions;
-    }
     turn.tools = [];
     turn.items = [];
     turn.groupInput = input?.id;
-    const previous = state.item ?? state.first;
     const last = items.at(-1);
     const point = this.point(last?.at ?? request.at, last?.id, last?.offset);
-    const interval = recordedInterval(state.total, items.length > 1 || late ? beforeRequest.counter : previous?.counter, items.length,
-      late ? ['ambiguous_boundary'] : previous ? [] : ['missing_start']);
+    const scope=progress!;
+    const previousItem=scope.item_end,previousCompleted=scope.completed;
+    const mayBecomeFinal=last?.phase==='unknown'&&items.length===1&&toolsInRequest===0;
+    const beforeProgress=mayBecomeFinal?copyCounter(scope.counter):undefined;
+    if(ownsProgress) countRequest(scope.counter,request,toolsInRequest);
+    const interval = recordedInterval(ownsProgress?scope.counter:state.total,
+      ownsProgress?previousItem?.counter:beforeRequest.counter,items.length,
+      late ? ['ambiguous_boundary'] : turn.verified ? [] : ['missing_start']);
     const finals = items.filter(item => item.phase === 'final');
+    const owner=items.find(item=>item.phase!=='final')??items[0];
     for (const item of items) {
       this.sink.saveItem({
         ...recordedInterval(state.total, turn.start.counter, 1, turn.verified ? [] : ['missing_start']),
-        sequence: item.offset, turn_id: turn.id, message_id: item.id, interval,
+        sequence: item.offset, item_at: item.at, turn_id: turn.id, message_id: item.id,
+        progress_id: item.phase==='final' ? undefined : scope.id,
+        interval: item===owner ? interval : {...recordedInterval(emptyCounter(),undefined,items.length),shared_reference:true},
       });
     }
     if (last && !late) state.item = point;
+    if (last && ownsProgress) {
+      scope.completed = items.filter(item=>item.phase!=='final').at(-1);
+      scope.item_end = {counter:copyCounter(scope.counter),at:scope.completed?.at??null,
+        id:scope.completed?.id,offset:scope.completed?.offset};
+    }
     // Real items from a single native response share usage. Freeze one final
     // interval for the entire group before moving its boundary.
     const finalStart = state.final;
@@ -302,13 +370,14 @@ export class SessionStatisticsProjection {
       state.final = finalStart;
       this.answer(turn, item, this.point(item.at, item.id, item.offset), finals.length, late);
     }
-    if (last?.phase === 'unknown') turn.unknownTail = {item: last, point, shared: items.length};
+    if (last?.phase === 'unknown') turn.unknownTail = {item:last,point,shared:items.length,beforeRequest,
+      beforeProgress,previousItem,previousCompleted};
     else turn.unknownTail = undefined;
     if (turn.heldProgress?.close) {
       const {at, reason} = turn.heldProgress.close;
       this.closeProgress(turn, at, reason, late, turn.heldProgress);
       turn.heldProgress = undefined;
-    } else if (last && turn.progress.seen)
+    } else if (ownsProgress || turn.progress.seen)
       this.closeProgress(turn, turn.ended?.at ?? null, turn.ended?.outcome ?? null, late);
     if (turn.ended) state.suspended = state.suspended.filter(candidate => candidate !== turn);
   }
@@ -348,16 +417,17 @@ export class SessionStatisticsProjection {
   }
 }
 
-function progressSegment(state: SessionProjectionState, progress: Progress, at: string | null, reason: AgentProgressSegment['end_reason'], unresolved: boolean): AgentProgressSegment {
-  const start = state.progress ?? state.first;
+function progressSegment(progress: Progress, at: string | null, reason: AgentProgressSegment['end_reason'], unresolved: boolean, pendingTools: number): AgentProgressSegment {
   const extra: SessionCoverageReason[] = [];
-  if (!start) extra.push('missing_start');
   if (unresolved && reason) extra.push('missing_usage');
-  if (progress.ambiguous || reason === 'unknown') extra.push('ambiguous_boundary');
-  const interval = recordedInterval(state.total, start?.counter, 1, extra, unresolved && !reason);
+  if (reason === 'unknown') extra.push('ambiguous_boundary');
+  const pending = unresolved && !reason;
+  const interval = includePendingTools(recordedInterval(progress.counter, undefined, 1, extra, pending),pendingTools);
+  const tail = includePendingTools(recordedInterval(progress.counter,progress.item_end?.counter,1,extra,pending),pendingTools);
+  const unassigned = tail.requests || tail.tool_calls ? tail : undefined;
   return {
-    ...interval, id: progress.id, start_at: start?.at ?? null, end_at: at,
-    end_reason: reason, elapsed_ms: elapsed(start?.at ?? null, at),
+    ...interval, id: progress.id, start_at: progress.start_at, end_at: at,
+    end_reason: reason, elapsed_ms: elapsed(progress.start_at, at), ...(unassigned ? {unassigned} : {}),
   };
 }
 
@@ -378,24 +448,22 @@ function includePendingTools<T extends {tool_calls:number;tool_rounds:number}>(i
 
 export function projectProgress(state: SessionProjectionState): AgentProgressStatistics | null {
   const turn = state.turn;
-  if (!turn) return null;
+  if (!turn?.progress.counter) return null;
   const open = !turn.ended;
-  const waiting = turn.items.length > 0 || turn.tools.length > 0;
+  const waiting = !turn.heldProgress && (turn.items.length > 0 || turn.tools.length > 0);
   const pendingTools = turn.heldProgress ? 0 : turn.tools.length;
   const from = state.final ?? state.first;
-  const stepFrom = state.item ?? state.first;
+  const stepFrom = turn.progress.item_end;
   const segment = turn.ended && turn.progressedAt && state.progress?.id === turn.progressedAt.id
-    ? undefined : includePendingTools(
-      progressSegment(state, turn.progress, turn.ended?.at ?? null, turn.ended?.outcome ?? null, waiting), pendingTools,
-    );
+    ? undefined : progressSegment(turn.progress, turn.ended?.at ?? null, turn.ended?.outcome ?? null, waiting,pendingTools);
   return {
     ...includePendingTools(recordedInterval(state.total, from?.counter, 1, from ? [] : ['missing_start'], open && waiting), pendingTools),
     turn_id: turn.id,
     ...(segment ? {segment} : {}),
     ...(open ? {step: {
-      ...includePendingTools(recordedInterval(state.total, stepFrom?.counter, 1, stepFrom ? [] : ['missing_start'], waiting), pendingTools),
-      segment_id: turn.progress.id, after_message_id: state.item?.id ?? null,
-      after_sequence: state.item?.offset ?? null, start_at: stepFrom?.at ?? null,
+      ...includePendingTools(recordedInterval(turn.progress.counter, stepFrom?.counter, 1, turn.verified?[]:['missing_start'], waiting), pendingTools),
+      segment_id: turn.progress.id, after_message_id: stepFrom?.id ?? null,
+      after_sequence: stepFrom?.offset ?? null, start_at: stepFrom?.at ?? turn.progress.start_at,
     }} : {}),
   };
 }

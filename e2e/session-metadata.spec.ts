@@ -91,7 +91,7 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   appendFileSync(session.log,second(0));
   const incident=session.chat.getByRole('button',{name:/缓存命中率下降/});
   await expect(incident).toHaveCount(1);
-  await expect(incident).toContainText('10K / 9.8K (98.0%)');
+  await expect(incident).toContainText('11K / 10K (90.91%)');
   await expect(incident).toContainText('10K / 0 (0.0%)');
   await expect(incident).toContainText('2026-11-20');
   const credits=session.chat.locator('.conversation-total-credits');
@@ -103,19 +103,41 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   const card=page.getByRole('dialog',{name:'缓存命中率下降',exact:true});
   await expect(card).toContainText('原因未确认');
   await expect(card).toContainText('模型变化、速度变化、上下文压缩、输入间隔较长');
-  await expect(card.locator('time')).toHaveCount(5);
+  await expect(card.getByRole('table').locator('time')).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.getByRole('button',{name:'Details',exact:true}).click();
   const details=page.getByRole('dialog',{name:'会话详情',exact:true});
-  await expect(details.getByRole('region',{name:'按模型用量'})).toContainText('gpt-6.1-terra');
-  await expect(details.getByRole('region',{name:'按模型用量'})).toContainText('priority');
-  await expect(details.getByRole('heading',{name:'缓存命中率下降（1 次）'})).toBeVisible();
+  await expect(details.getByRole('tab',{name:'概览'})).toBeFocused();
+  expect((await details.boundingBox())!.width).toBeGreaterThan(1000);
   await expect(details.getByRole('rowheader',{name:'用户输入 / 已完成问答'}).locator('..')).toContainText('2 / 2');
-  await expect(details.getByRole('region',{name:'生命周期与输入记录'})).toContainText('压缩 · 已完成');
+  await expect(details.getByRole('table',{name:'Token 用量'})).toContainText('31,060');
+  await details.getByRole('tab',{name:'概览'}).press('ArrowRight');
+  const cache=details.getByRole('table',{name:'缓存命中率下降明细'});
+  await expect(details.getByRole('heading',{name:'缓存命中率下降（1 次）'})).toBeVisible();
+  await expect(cache.getByRole('row').nth(1).getByRole('cell').first()).toHaveText(/^2026-11-20 \d{2}:\d{2}:\d{2} GMT(?:[+-]\d{1,2}(?::\d{2})?)?$/);
+  await expect(cache).toContainText('11K / 10K (90.91%)');
+  await expect(cache).not.toContainText('请求 ID');
+  await details.getByRole('tab',{name:'会话详情'}).click();
+  await expect(details.getByRole('table',{name:'按模型用量'})).toContainText('gpt-6.1-terra');
+  await expect(details.getByRole('table',{name:'按模型用量'})).toContainText('priority');
+  const usage=details.getByRole('table',{name:'逐区间用量'});
+  const firstFinal=usage.locator('[data-interval-kind="final"]').filter({hasText:'21,040'});
+  await firstFinal.getByRole('button',{name:'展开Final'}).click();
+  const progress=usage.locator('[data-interval-kind="progress"]');
+  await expect(progress).toHaveCount(1);
+  await progress.getByRole('button',{name:'展开Progress'}).click();
+  const item=usage.locator('[data-interval-depth="2"]');
+  await expect(item).toContainText('10,020');
+  await expect(usage.getByRole('columnheader',{name:'未缓存输入'})).toBeVisible();
+  await expect(item.getByRole('cell',{name:'200',exact:true})).toHaveCount(1);
+  await page.screenshot({path:testInfo.outputPath('metadata-tree.png')});
   await page.setViewportSize({width:390,height:844});
-  await expect(details.getByRole('region',{name:'缓存命中率下降明细'})).toBeAttached();
+  await details.getByRole('tab',{name:'缓存异常'}).click();
+  await expect(cache).toBeVisible();
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
   await page.screenshot({path:testInfo.outputPath('metadata-narrow.png')});
+  await details.getByRole('tab',{name:'会话详情'}).click();
+  await expect(usage.locator('[data-interval-depth="2"]')).toContainText('10,020');
   await page.keyboard.press('Escape');
   await page.setViewportSize({width:1200,height:900});
   const oldConnections=connections;
@@ -148,8 +170,10 @@ test('Claude uses the same session details and persists request facts before rem
   await expect(session.chat.getByText('Claude 答复',{exact:true})).toBeVisible();
   await page.getByRole('button',{name:'Details',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'会话详情',exact:true});
-  await expect(dialog.getByRole('region',{name:'按模型用量'})).toContainText('claude-fixture');
   await expect(dialog.getByRole('rowheader',{name:'模型请求（Runs）'}).locator('..')).toContainText('1');
+  await dialog.getByRole('tab',{name:'会话详情'}).click();
+  await expect(dialog.getByRole('table',{name:'按模型用量'})).toContainText('claude-fixture');
+  await expect(dialog.getByRole('table',{name:'逐区间用量'})).toContainText('11,040');
   await page.keyboard.press('Escape');
   expect((await page.request.delete(session.api+'/record')).ok()).toBeTruthy();
   expect((await page.request.get(session.api+'/conversation/metadata')).status()).toBe(404);
@@ -177,6 +201,10 @@ test('loads exact earlier intervals and pages through the corresponding lifecycl
   writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+turns.join(''));
   const metadataUrl=session.api+'/conversation/metadata';
   expect((await anonymous.get(metadataUrl)).status()).toBe(401);
+  const usageUrl=session.api+'/conversation/usage-intervals';
+  expect((await anonymous.get(usageUrl)).status()).toBe(401);
+  expect((await page.request.get(usageUrl+'?parent=invalid')).status()).toBe(400);
+  expect((await page.request.get(usageUrl+'?before=invalid')).status()).toBe(400);
   const {metadata}=await read(page,metadataUrl);
   expect(metadata.events).toHaveLength(50);
   expect(metadata.next_event).toBeTruthy();
@@ -195,4 +223,92 @@ test('loads exact earlier intervals and pages through the corresponding lifecycl
   const stats=first.locator('.session-chat-message-statistics');
   await expect(stats).toHaveAttribute('title',/Total 15,040/);
   await expect(stats).toContainText('1 round | 1 call | 2 Runs');
+});
+
+test('keeps the shown Item counts and usage within their Progress across consecutive inserted inputs and refresh',async({page})=>{
+  const session=await setup(page,'codex','completed');
+  const turn='steered-turn';
+  writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+
+    event(1,'task_started',{turn_id:turn})+record(2,'turn_context',{turn_id:turn,model:'gpt-6.1-sol',service_tier:'default'})+
+    message(3,'input','user','开始核对')+message(4,'first','assistant','第一段核对','commentary')+
+    request(5,turn,'r1',1000,900)+record(6,'response_item',{type:'function_call',call_id:'call'})+
+    request(7,turn,'r2',2000,1800)+message(8,'steer1','user','第一次插入')+
+    request(9,turn,'r3',3000,2800)+message(10,'steer2','user','第二次插入')+
+    message(11,'crossing','assistant','跨段的进展','commentary')+request(12,turn,'r4',4000,3800)+
+    message(13,'after','assistant','本段的进展','commentary')+request(14,turn,'r5',5000,4800)+
+    record(14.1,'response_item',{type:'function_call',call_id:'tail'})+
+    request(14.2,turn,'late-tail',7000,6800)+message(14.3,'steer3','user','暂缓前面的请求')+
+    message(15,'answer','assistant','核对完成','final_answer')+request(16,turn,'r6',6000,5800)+
+    event(17,'task_complete',{turn_id:turn}));
+  await page.goto('/');
+  const group=session.chat.getByRole('region',{name:'Codex 进展'}).filter({hasText:'跨段的进展'});
+  const disclosure=group.getByRole('button',{name:/展开进展/});
+  await expect(group).toBeVisible();
+  if(await disclosure.isVisible())await disclosure.click();
+  await expect(group.locator('.session-chat-message-statistics').first()).toHaveAttribute('title',/Total 16,060;/);
+  const crossing=group.locator('.session-chat-progress-entry').filter({hasText:'跨段的进展'});
+  await expect(crossing.locator('.session-chat-message-statistics')).toHaveAttribute('title',/Total 4,020;/);
+  await expect(crossing.locator('time').first()).toHaveAttribute('datetime',at(11));
+  await expect(group.locator('.session-chat-progress-entry').filter({hasText:'本段的进展'}).locator('.session-chat-message-statistics')).toHaveAttribute('title',/Total 5,020;/);
+  await expect(group.locator('.session-chat-progress-entry').filter({hasText:'执行项'}).locator('.session-chat-message-statistics')).toHaveAttribute('title',/Total 7,020;/);
+  await expect(group.locator('.session-chat-progress-entry')).toHaveCount(3);
+  await page.getByRole('button',{name:'Details',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'会话详情',exact:true});
+  await dialog.getByRole('tab',{name:'会话详情'}).click();
+  const table=dialog.getByRole('table',{name:'逐区间用量'});
+  await table.getByRole('button',{name:'展开Final'}).click();
+  await table.locator('[data-interval-kind="progress"]').filter({hasText:'16,060'}).getByRole('button',{name:'展开Progress'}).click();
+  const items=table.locator('[data-interval-depth="2"][data-interval-kind="item"]');
+  await expect(items).toHaveCount(2);
+  await expect(items.nth(0)).toContainText('5,020');
+  await expect(items.nth(1)).toContainText('4,020');
+  await expect(table.locator('[data-interval-kind="unassigned"]')).toContainText('7,020');
+  await dialog.getByRole('button',{name:'刷新',exact:true}).click();
+  await expect(dialog.getByRole('tab',{name:'会话详情'})).toHaveAttribute('aria-selected','true');
+  await expect(items).toHaveCount(2);
+});
+
+test('shows one cache drop next to an in-turn compaction and keeps it after reload',async({page})=>{
+  const session=await setup(page,'codex','detached');
+  const turn='compact-live';
+  await page.route('**/api/sessions**',async route=>{
+    const path=new URL(route.request().url()).pathname;
+    if(path!==session.api&&path!=='/api/sessions'||route.request().method()!=='GET')return route.continue();
+    const response=await route.fetch();
+    if(!response.ok())return route.fulfill({response});
+    const data=await response.json();
+    const keep=(row:{id:string;status:string})=>row.id===session.id?{...row,status:'detached'}:row;
+    if(data.session)data.session=keep(data.session);
+    if(data.sessions)data.sessions=data.sessions.map(keep);
+    return route.fulfill({response,json:data});
+  });
+  writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+
+    event(1,'task_started',{turn_id:turn})+message(2,'user','user','继续办理')+
+    message(3,'progress','assistant','压缩前的进展','commentary')+
+    request(55.355,turn,'before',450070,448512)+
+    record(55.363,'compacted',{compaction_response_id:'compaction-id',message:'已压缩本次上下文'}));
+  await page.goto('/');
+  const summary=session.chat.getByRole('button',{name:/Conversation summary/});
+  await expect(summary).toBeVisible();
+  const incident=session.chat.getByRole('button',{name:/缓存命中率下降/});
+  await expect(incident).toHaveCount(0);
+  const after=request(60.309,turn,'after',32061,13696);
+  appendFileSync(session.log,after+after);
+  await expect(incident).toHaveCount(1);
+  await expect(incident).toContainText('99.65%');
+  await expect(incident).toContainText('42.72%');
+  await expect(incident).toContainText('请求间隔 4.954秒');
+  expect(await summary.evaluate(node=>node.closest('[data-context-kind="compaction_summary"]')?.nextElementSibling?.matches('[data-cache-drop-id]'))).toBe(true);
+  await page.getByRole('button',{name:'Details',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'会话详情',exact:true});
+  await dialog.getByRole('tab',{name:'缓存异常'}).click();
+  const cache=dialog.getByRole('table',{name:'缓存命中率下降明细'});
+  await expect(cache).toContainText('上下文压缩');
+  await expect(cache).toContainText('4.954秒');
+  await expect(cache.locator('time')).toHaveAttribute('datetime',at(60.309));
+  await page.reload();
+  await expect(incident).toHaveCount(1);
+  const history=await read(page,session.api+'/conversation');
+  expect(history.cache_drops).toHaveLength(1);
+  expect(history.cache_drops[0]).toMatchObject({elapsed_ms:4954,compaction_at:at(55.363),interval_kind:'request'});
 });

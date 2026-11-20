@@ -1,4 +1,4 @@
-import type { ConversationCostEstimate } from './api';
+import type { ConversationCostEstimate, ConversationInterval } from './api';
 
 export type StatisticsCoverage = 'complete' | 'pending' | 'partial' | 'unavailable';
 export type StatisticsReason =
@@ -34,9 +34,9 @@ export interface SessionMetadata {
   observed_at: string | null;
 }
 export interface SessionCacheSample extends SessionDimensions {
-  input_id: string;
+  input_id: string | null;
   input_at: string | null;
-  turn_id: string;
+  turn_id: string | null;
   request_id: string;
   request_at: string | null;
   input_tokens: number;
@@ -50,6 +50,8 @@ export interface SessionCacheDrop {
   previous: SessionCacheSample;
   current: SessionCacheSample;
   elapsed_ms: number | null;
+  interval_kind?: 'input' | 'request';
+  compaction_at?: string | null;
   decrease_pp: number;
   factors: CacheDropFactor[];
   confirmed_cause: {label: string; evidence: string} | null;
@@ -86,6 +88,22 @@ export interface SessionMetadataDetails {
   next_cache_drop: string | null;
 }
 
+export interface SessionUsageIntervalRow {
+  id: string;
+  kind: 'final' | 'progress' | 'item' | 'open' | 'unassigned';
+  at: string | null;
+  usage: ConversationInterval | null;
+  expandable: boolean;
+}
+
+export interface SessionUsageIntervalPage {
+  native_id: string;
+  generation?: string;
+  revision: number;
+  rows: SessionUsageIntervalRow[];
+  next_before: string | null;
+}
+
 export const coverageText: Record<StatisticsCoverage, string> = {
   complete: '完整', pending: '等待用量或回填', partial: '记录不完整', unavailable: '来源不可用',
 };
@@ -101,6 +119,13 @@ export function creditsLabel(cost: ConversationCostEstimate | null | undefined) 
   return cost?.amount == null ? '未提供' : new Intl.NumberFormat('en', {
     minimumFractionDigits: 1, maximumFractionDigits: 1,
   }).format(cost.amount) + (cost.complete ? '' : '*');
+}
+
+export function uncachedInputTokens(tokens: Record<string, number | null> | null | undefined): number | null {
+  const {input_tokens:input,cached_input_tokens:cached}=tokens??{};
+  if (input===0&&cached==null) return 0;
+  if (input==null||cached==null||!Number.isSafeInteger(input)||!Number.isSafeInteger(cached)||cached<0||cached>input) return null;
+  return input-cached;
 }
 
 export function recordedCachePercent(tokens: Record<string, number | null> | null | undefined): number | null {

@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.15.0');
+    expect(contract.version).toBe('3.16.0');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('progress_statistics.step');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('cost estimate');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('after_message_id');
@@ -33,6 +33,7 @@ describe('Agent API contract', () => {
       'GET /api/sessions/:id/controls',
       'PUT /api/sessions/:id/controls',
       'GET /api/sessions/:id/conversation/metadata',
+      'GET /api/sessions/:id/conversation/usage-intervals',
       'GET /api/sessions/:id/completed-turn',
       'POST /api/sessions/:id/execute',
       'POST /api/sessions/:id/input',

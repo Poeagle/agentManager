@@ -1,117 +1,234 @@
-import { useEffect, useState } from 'react';
-import { api } from '../lib/api';
-import { creditsLabel, type SessionLifecycleFact, type SessionMetadataDetails } from '../lib/session-metadata';
+import { Fragment, useEffect, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { api, type ConversationCostEstimate } from '../lib/api';
+import {
+  coverageReason, coverageText, creditsLabel, uncachedInputTokens, type SessionCacheDrop, type SessionMetadataDetails,
+  type SessionUsageIntervalPage, type SessionUsageIntervalRow,
+} from '../lib/session-metadata';
 import { CacheDropTable, MetadataTime } from './ConversationCacheDrop';
-import { DataTable } from './table/DataTable';
-import { useTableModel } from './table/use-table-model';
+import { formatSessionNumber as number } from './ConversationDetailsPanel';
+import { TableDetailRow, TableExpandButton, TableFrame, TableStateRow } from './table/DataTable';
 
-const number = (value: number | null | undefined) => value == null ? '—' : value.toLocaleString('zh-CN');
-const actions: Record<SessionLifecycleFact['action'], string> = {
-  create: '创建', resume: '恢复', reload: '重载', new: '新开', close: '关闭', delete: '删除',
-  compact: '压缩', model: '模型设置', speed: '速度设置', environment: 'Engine 切换', account: '账号切换',
-  input: '输入', queue: '排队', cancel_queue: '取消排队', stop: '停止执行', interrupt: '中断',
-};
-const states: Record<SessionLifecycleFact['state'], string> = {
-  requested: '已提交', accepted: '已受理', completed: '已完成', failed: '失败', unknown: '结果未知',
-};
+type HistoryPage<T> = {rows: T[]; next: string | null};
 
-export function ConversationUsageHistory({sessionId, details}: {sessionId: string; details: SessionMetadataDetails}) {
-  const [older, setOlder] = useState<Partial<SessionMetadataDetails>>({});
-  const [loading, setLoading] = useState<'event' | 'cache' | null>(null);
+function mergeRows<T extends {id:string}>(current:T[], older:T[]) {
+  const ids = new Set(current.map(row=>row.id));
+  return [...current, ...older.filter(row=>!ids.has(row.id))];
+}
+
+function useEarlierRows<T extends {id: string}>(current: HistoryPage<T>,
+  read: (before: string, signal: AbortSignal) => Promise<HistoryPage<T>>) {
+  const [older, setOlder] = useState<HistoryPage<T> | null>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const identity = details.summary.native_id + ':' + details.summary.generation;
-  useEffect(() => {
-    setOlder({});
-    setError('');
-    setLoading(null);
-  }, [identity]);
-  const events = [...new Map([...details.events, ...(older.events ?? [])].map(row => [row.id, row])).values()];
-  const drops = [...new Map([...details.cache_drops, ...(older.cache_drops ?? [])].map(row => [row.id, row])).values()];
-  const nextEvent = older.next_event !== undefined ? older.next_event : details.next_event;
-  const nextCache = older.next_cache_drop !== undefined ? older.next_cache_drop : details.next_cache_drop;
-  const models = useTableModel(details.models,[
-    {key:'model',title:'模型',value:row=>row.model},
-    {key:'dimensions',title:'速度 / Engine / 账号',value:row=>[row.speed,row.environment,row.account].filter(Boolean).join(' / ')},
-    {key:'runs',title:'Runs',value:row=>row.requests},
-    {key:'tools',title:'工具轮次 / 调用',value:row=>row.tool_rounds},
-    {key:'total',title:'总量 Token',value:row=>row.tokens?.total_tokens},
-    {key:'input',title:'输入 / 命中',value:row=>row.tokens?.input_tokens},
-    {key:'output',title:'输出 / 推理',value:row=>row.tokens?.output_tokens},
-    {key:'credit',title:'预估积分',value:row=>row.cost?.amount},
-  ]);
-  const lifecycle=useTableModel(events,[
-    {key:'time',title:'时间',value:row=>row.at},
-    {key:'action',title:'动作与状态',value:row=>actions[row.action]+' · '+states[row.state]},
-    {key:'evidence',title:'来源',value:row=>row.evidence==='native'?'原生记录':'平台记录'},
-    {key:'related',title:'关联记录',value:row=>row.turn_id??row.execution?.turn_id??row.related_native_id},
-  ]);
+  const pending = useRef<AbortController | null>(null);
+  useEffect(() => () => pending.current?.abort(), []);
+  const before = older ? older.next : current.next;
 
-  async function load(kind: 'event' | 'cache', before: string) {
-    setLoading(kind);
+  async function load() {
+    if (!before || pending.current) return;
+    const controller = new AbortController();
+    pending.current = controller;
+    setLoading(true);
     setError('');
     try {
-      const {metadata} = await api.agent.conversationMetadata(sessionId,
-        kind === 'event' ? {event_before: before} : {cache_before: before});
-      if (!metadata || metadata.summary.native_id + ':' + metadata.summary.generation !== identity) {
-        setError('会话记录已更新，请刷新后重试');
-        return;
-      }
-      setOlder(previous => kind === 'event' ? {
-        ...previous, events: [...(previous.events ?? []), ...metadata.events], next_event: metadata.next_event,
-      } : {
-        ...previous, cache_drops: [...(previous.cache_drops ?? []), ...metadata.cache_drops], next_cache_drop: metadata.next_cache_drop,
-      });
+      const next = await read(before, controller.signal);
+      if (!controller.signal.aborted)
+        setOlder({rows:mergeRows(current.rows, mergeRows(older?.rows ?? [], next.rows)), next:next.next});
     } catch {
-      setError('读取更早的会话记录失败');
+      if (!controller.signal.aborted) setError('无法读取更早的记录');
     } finally {
-      setLoading(null);
+      pending.current = null;
+      if (!controller.signal.aborted) setLoading(false);
     }
   }
 
+  return {rows:mergeRows(current.rows, older?.rows ?? []), before, loading, error, load};
+}
+
+export function ConversationCacheHistory({sessionId, details, loading, error, onRetry}: {
+  sessionId: string;
+  details: SessionMetadataDetails | null;
+  loading: boolean;
+  error?: string;
+  onRetry: () => void;
+}) {
+  const history = useEarlierRows<SessionCacheDrop>({rows: details?.cache_drops ?? [], next: details?.next_cache_drop ?? null},
+    async (before, signal) => {
+      const {metadata} = await api.agent.conversationMetadata(sessionId, {cache_before: before}, signal);
+      if (!metadata || metadata.summary.native_id !== details?.summary.native_id || metadata.summary.generation !== details?.summary.generation)
+        throw new Error('Cache history changed');
+      return {rows: metadata.cache_drops, next: metadata.next_cache_drop};
+    });
+  const count = details?.summary.cache_drop_count;
+  return <section className="conversation-metadata-section">
+    <h4>缓存命中率下降{count == null ? '' : `（${count} 次）`}</h4>
+    <CacheDropTable drops={history.rows} loading={loading} error={error} onRetry={onRetry} />
+    {history.before && <button className="session-chat-older" type="button" disabled={history.loading} onClick={()=>void history.load()}>
+      {history.loading ? '正在读取…' : '更早的缓存异常'}
+    </button>}
+    {history.error && <p role="alert" className="conversation-details-note">{history.error}</p>}
+  </section>;
+}
+
+interface ModelUsage {
+  model: string | null;
+  speed: string | null;
+  tokens: number | null;
+  requests: number;
+  rounds: number;
+  calls: number;
+  cost: ConversationCostEstimate | null;
+}
+
+function usageByModel(models: SessionMetadataDetails['models']): ModelUsage[] {
+  const groups = new Map<string, ModelUsage>();
+  for (const row of models) {
+    const key = JSON.stringify([row.model,row.speed]);
+    const previous = groups.get(key);
+    const tokens = row.tokens?.total_tokens ?? null;
+    if (!previous) {
+      groups.set(key, {model: row.model, speed: row.speed, tokens, requests: row.requests,
+        rounds: row.tool_rounds, calls: row.tool_calls, cost: row.cost});
+      continue;
+    }
+    previous.tokens = tokens == null || previous.tokens == null ? null : previous.tokens + tokens;
+    previous.requests += row.requests;
+    previous.rounds += row.tool_rounds;
+    previous.calls += row.tool_calls;
+    if (previous.cost || row.cost) {
+      const a = previous.cost?.amount, b = row.cost?.amount;
+      previous.cost = {unit: 'credits', amount: a == null && b == null ? null : (a ?? 0) + (b ?? 0),
+        complete: previous.cost?.complete === true && row.cost?.complete === true};
+    }
+  }
+  return [...groups.values()].sort((a, b) => (b.tokens ?? -1) - (a.tokens ?? -1));
+}
+
+function ModelUsageTable({details, loading, error, onRetry}: {
+  details: SessionMetadataDetails | null;
+  loading: boolean;
+  error?: string;
+  onRetry: () => void;
+}) {
+  const models = usageByModel(details?.models ?? []);
+  return <section className="conversation-metadata-section">
+    <h4>按模型用量</h4>
+    <TableFrame label="按模型用量" className="conversation-metadata-scroll conversation-model-usage" style={{minWidth: 520}}
+      loading={loading} header={<>{['模型', '速度', '总量 Token', 'Runs', '工具轮次 / 调用', '预估积分']
+        .map(label => <th key={label} scope="col">{label}</th>)}</>}>
+      {loading ? <TableStateRow columnCount={6} loading>加载中…</TableStateRow>
+      : error ? <TableStateRow columnCount={6} error onRetry={onRetry}>{error}</TableStateRow>
+      : models.length === 0 ? <TableStateRow columnCount={6}>暂无模型用量</TableStateRow>
+      : models.map(row => <tr key={JSON.stringify([row.model,row.speed])}>
+        <th scope="row">{row.model ?? '未知模型'}</th><td>{row.speed ?? '—'}</td>
+        <td>{number(row.tokens)}</td><td>{number(row.requests)}</td>
+        <td>{number(row.rounds)} / {number(row.calls)}</td>
+        <td className={row.cost?.amount == null ? undefined : 'session-chat-estimated-cost'}>{row.cost?.amount == null ? '—' : creditsLabel(row.cost)}</td>
+      </tr>)}
+    </TableFrame>
+  </section>;
+}
+
+const intervalName: Record<SessionUsageIntervalRow['kind'],string> = {
+  final:'Final',progress:'Progress',item:'Item',open:'未形成 Final',unassigned:'执行 Item',
+};
+const tokenColumns = [
+  ['total_tokens','总量 Token'], ['uncached_input_tokens','未缓存输入'], ['cached_input_tokens','缓存命中'],
+  ['output_tokens','输出'], ['reasoning_output_tokens','推理输出'],
+] as const;
+const intervalColumnCount=tokenColumns.length+5;
+
+interface UsageScope {
+  sessionId:string; nativeId:string; generation?:string; revision?:number; enabled:boolean;
+}
+
+function UsageLevel({scope,parent,depth=0}: {
+  scope:UsageScope; parent?:SessionUsageIntervalRow; depth?:number;
+}) {
+  const {sessionId,nativeId,generation,revision,enabled}=scope;
+  const parentId=parent?.id;
+  const matches = (page: SessionUsageIntervalPage | null | undefined) =>
+    page?.native_id === nativeId && (!generation || page.generation === generation) ? page : null;
+  const query = useQuery({
+    queryKey: ['conversation-usage-intervals', sessionId, nativeId, generation, parentId],
+    queryFn: ({signal}) => api.agent.conversationUsageIntervals(sessionId, parentId ? {parent:parentId} : {}, signal),
+    enabled: enabled && !!nativeId, retry: false, refetchOnWindowFocus:false,
+  });
+  const first = matches(query.data?.intervals);
+  useEffect(() => {
+    if (!enabled || !first || !revision || first.revision >= revision) return;
+    const timer = setTimeout(() => void query.refetch(), 500);
+    return () => clearTimeout(timer);
+  }, [enabled, revision, first?.revision, query.refetch]);
+  const history = useEarlierRows({rows: first?.rows ?? [], next: first?.next_before ?? null}, async (before, signal) => {
+    const result = matches((await api.agent.conversationUsageIntervals(sessionId, parentId ? {parent:parentId,before} : {before}, signal)).intervals);
+    if (!result || result.generation !== first?.generation) throw new Error('Interval history changed');
+    return {rows:result.rows,next:result.next_before};
+  });
+  const rows = history.rows.filter(row => row.kind!=='open' && row.kind!=='unassigned' ||
+    first?.rows.some(current => current.id===row.id));
+  const loading = enabled && query.isFetching && !first;
+  if (loading) return <TableStateRow columnCount={intervalColumnCount} loading>加载中…</TableStateRow>;
+  if (query.isError && !first) return <TableStateRow columnCount={intervalColumnCount} error onRetry={()=>void query.refetch()}>无法读取区间用量</TableStateRow>;
+  if (!rows.length) return <TableStateRow columnCount={intervalColumnCount}>暂无区间用量记录</TableStateRow>;
   return <>
-    <section className="conversation-metadata-section" aria-label="按模型、速度与环境">
-      <h4>按模型、速度与环境</h4>
-      {details.models.length > 0 ? <DataTable label="按模型用量" className="conversation-metadata-scroll" model={models} minWidth={700}>
-          {models.rows.map(row => <tr key={JSON.stringify([row.model, row.speed, row.environment, row.account])}>
-            <th scope="row">{row.model ?? '未知模型'}</th>
-            <td>{row.speed ?? '速度未知'} / {row.environment ?? 'Engine 未知'} / {row.account ?? '账号未知'}</td>
-            <td>{number(row.requests)}</td><td>{number(row.tool_rounds)} / {number(row.tool_calls)}</td>
-            <td>{number(row.tokens?.total_tokens)}</td>
-            <td>{number(row.tokens?.input_tokens)} / {number(row.tokens?.cached_input_tokens)}</td>
-            <td>{number(row.tokens?.output_tokens)} / {number(row.tokens?.reasoning_output_tokens)}</td>
-            <td><span className="session-chat-estimated-cost">{creditsLabel(row.cost)}</span></td>
-          </tr>)}
-      </DataTable> : <p className="conversation-details-note">暂无可归属的原生请求。</p>}
+    {rows.map(row=><UsageRow key={row.id} scope={scope} row={row} depth={depth}/>)}
+    {history.error && <TableStateRow columnCount={intervalColumnCount} error>{history.error}</TableStateRow>}
+    {history.before && <TableDetailRow columnCount={intervalColumnCount}>
+      <button className="session-chat-older" type="button" style={{marginInlineStart:14*depth}} disabled={history.loading} onClick={()=>void history.load()}>
+        {history.loading ? '正在读取…' : parent ? '更多子项' : '更早的用量'}
+      </button>
+    </TableDetailRow>}
+  </>;
+}
+
+function UsageRow({scope,row,depth}: {
+  scope:UsageScope; row:SessionUsageIntervalRow; depth:number;
+}) {
+  const [expanded,setExpanded]=useState(false);
+  const label=intervalName[row.kind];
+  const reference=row.usage?.shared_reference;
+  const usage=reference?null:row.usage;
+  const uncached=usage?.reasons?.some(reason=>reason==='missing_usage'||reason==='counter_mismatch')?null:uncachedInputTokens(usage?.tokens);
+  const coverage=usage&&!usage.complete ? coverageText[usage.coverage??'partial'] : null;
+  return <Fragment>
+    <tr data-interval-kind={row.kind} data-interval-depth={depth}>
+      <th scope="row" style={{paddingInlineStart:9+14*depth}}>
+        <span className="conversation-interval-label">
+          {row.expandable&&<TableExpandButton expanded={expanded} label={label} onClick={()=>setExpanded(value=>!value)}/>}
+          {label}
+          {reference&&<span className="conversation-interval-footnote" title="请求用量已计入同组 Item">共享</span>}
+        </span>
+      </th>
+      <td className="conversation-time-cell">{row.kind==='open'||row.kind==='unassigned'?'—':<MetadataTime at={row.at}/>}</td>
+      {tokenColumns.map(([key])=><td key={key}>{number(key==='uncached_input_tokens'?uncached:usage?.tokens?.[key])}
+        {key==='total_tokens'&&coverage&&<span className="conversation-interval-footnote"
+          title={[coverage,...(usage?.reasons??[]).map(reason=>coverageReason[reason])].join(' · ')} aria-label={coverage}>*</span>}
+        {key==='total_tokens'&&(usage?.shared_messages??0)>1&&<span className="conversation-interval-footnote" title="共享请求用量">†</span>}
+      </td>)}
+      <td>{number(usage?.requests)}</td>
+      <td>{usage?`${number(usage.tool_rounds)} / ${number(usage.tool_calls)}`:'—'}</td>
+      <td className={usage?.cost?.amount==null?undefined:'session-chat-estimated-cost'}>{usage?.cost?.amount==null?'—':creditsLabel(usage.cost)}</td>
+    </tr>
+    {expanded&&<UsageLevel scope={scope} parent={row} depth={depth+1}/>}
+  </Fragment>;
+}
+
+export function ConversationUsageHistory({sessionId,nativeId,details,generation,revision,active,supported,loading,error,onRetry}: {
+  sessionId:string; nativeId:string; details:SessionMetadataDetails|null; generation?:string; revision?:number;
+  active:boolean; supported:boolean; loading:boolean; error?:string; onRetry:()=>void;
+}) {
+  return <>
+    <ModelUsageTable details={details} loading={loading} error={error} onRetry={onRetry} />
+    <section className="conversation-metadata-section">
+      <h4>逐区间用量</h4>
+      <TableFrame label="逐区间用量" className="conversation-metadata-scroll conversation-interval-table" style={{minWidth:900}}
+        header={<><th scope="col">区间</th><th scope="col">时间</th>
+          {tokenColumns.map(([key,label])=><th key={key} scope="col">{label}</th>)}
+          <th scope="col">Runs</th><th scope="col">工具轮次 / 调用</th><th scope="col">预估积分</th></>}>
+        <UsageLevel key={JSON.stringify([nativeId,generation])} scope={{sessionId,nativeId,generation,revision,enabled:active&&supported}}/>
+      </TableFrame>
     </section>
-    <section className="conversation-metadata-section" aria-label="缓存命中率异常">
-      <h4>缓存命中率下降（{details.summary.cache_drop_count} 次）</h4>
-      {drops.length > 0 ? <CacheDropTable drops={drops} /> : <p className="conversation-details-note">已记录的输入中未发现达到规则的下降。</p>}
-      {nextCache && <button className="session-chat-older" type="button" disabled={loading !== null} onClick={()=>void load('cache', nextCache)}>更早的缓存异常</button>}
-    </section>
-    <section className="conversation-metadata-section" aria-label="会话事件">
-      <h4>会话事件</h4>
-      {events.length > 0 ? <DataTable label="生命周期与输入记录" className="conversation-metadata-scroll" model={lifecycle} minWidth={490}>
-          {lifecycle.rows.map(event => <tr key={event.id}>
-            <td><MetadataTime at={event.at} /></td>
-            <th scope="row">{actions[event.action]} · {states[event.state]}</th>
-            <td>{event.evidence === 'native' ? '原生记录' : '平台记录'}</td>
-            <td>
-              {(event.turn_id || event.execution?.turn_id) && <small>轮次 {event.turn_id || event.execution?.turn_id}</small>}
-              {event.message_id && <small>消息 {event.message_id}</small>}
-              {event.client_id && <small>提交 ID {event.client_id}</small>}
-              {event.related_native_id && <small>关联会话 {event.related_native_id}</small>}
-              {event.dimensions && <small>{[event.dimensions.model, event.dimensions.speed, event.dimensions.environment, event.dimensions.account].filter(Boolean).join(' · ')}</small>}
-              {event.execution && <>
-                {event.execution.last_progress_id && <small>上个 Progress {event.execution.last_progress_id}</small>}
-                {event.execution.last_item_id && <small>上个 Item {event.execution.last_item_id}</small>}
-                {event.execution.active_item_ids.length > 0 && <small>活动 Item {event.execution.active_item_ids.join('、')}</small>}
-                {event.execution.active_tool_ids.length > 0 && <small>活动工具 {event.execution.active_tool_ids.join('、')}</small>}
-              </>}
-            </td>
-          </tr>)}
-      </DataTable> : <p className="conversation-details-note">暂无会话事件。</p>}
-      {nextEvent && <button className="session-chat-older" type="button" disabled={loading !== null} onClick={()=>void load('event', nextEvent)}>更早的会话事件</button>}
-    </section>
-    {error && <p role="alert" className="session-chat-error">{error}</p>}
   </>;
 }

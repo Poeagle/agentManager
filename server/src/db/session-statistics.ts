@@ -42,6 +42,15 @@ export function migrateSessionStatistics(db: Database.Database) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS session_statistics_timeline ON session_statistics_items(source, position);
     CREATE INDEX IF NOT EXISTS session_statistics_live ON session_statistics_items(source, revision, position);
+    CREATE INDEX IF NOT EXISTS session_statistics_finals ON session_statistics_items(source, position DESC, item_id DESC)
+      WHERE json_type(facts, '$.conclusion') = 'object';
+    CREATE INDEX IF NOT EXISTS session_statistics_progress_timeline ON session_statistics_items(source, position DESC, item_id DESC)
+      WHERE json_extract(facts, '$.segment.id') IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS session_statistics_progress_identity
+      ON session_statistics_items(source, json_extract(facts, '$.segment.id'), revision DESC, position DESC, item_id DESC)
+      WHERE json_extract(facts, '$.segment.id') IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS session_statistics_progress_items
+      ON session_statistics_items(source, json_extract(facts, '$.progress_id'), position);
     CREATE TABLE IF NOT EXISTS session_statistics_identities (
       source TEXT NOT NULL REFERENCES session_statistics_sources(source) ON DELETE CASCADE,
       identity TEXT NOT NULL,

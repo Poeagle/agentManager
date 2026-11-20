@@ -319,7 +319,7 @@ Codex 切换系统账号环境时，已缺失的历史附件不阻止切换，�
 仍存在但目标用户不可读的附件会阻止切换并提示历史附件权限；项目目录权限单独校验，失败时保留原会话。
 权限失败诊断包含目标系统用户、受影响路径、按目标账号限定的 chmod/ACL 命令及上级目录检查命令；平台不自动执行。
 预检与切换弹窗保留命令换行，支持复制诊断。目录缺失、只读挂载或空间不足仅提供诊断步骤，不以创建空目录或扩大权限代替恢复；SSH/登录失败提供对应连接或登录命令。
-Agent API 契约版本为 `3.15.0`，上传响应 `path` 为不透明绝对路径，客户端不得假定它位于项目内。
+Agent API 契约版本为 `3.16.0`，上传响应 `path` 为不透明绝对路径，客户端不得假定它位于项目内。
 
 新建 Session 窗口和快捷创建只创建等待输入的会话，不自动发送问候语或项目 Session Prompt。`POST /api/sessions` 的 `task` 可省略或为空；适配器须建立原生会话但不提交空消息，首次手动输入通过既有输入接口发送。显式提供的非空任务（含定时任务和平台 AI）仍在创建时提交。
 
@@ -349,7 +349,9 @@ Progress 标题仅显示汇总、调用/等待状态与耗时，命令摘要统�
 
 `GET /api/sessions/:id/conversation/metadata` 返回已授权会话的摘要、按模型与速度分项、事件和缓存下降。事件与缓存下降可分别分页。WebSocket 的 `session_metadata` 帧带原生身份、版本和历史代次，用于实时更新与替换。页面查询只用已持久化的区间和请求聚合。会话详情的当前运行状态和最近原生请求分别展示。
 
-工具轮次、调用和 Runs 为独立计数。Item、Progress、Final 使用各自完成边界，多个 Item 共享一个响应时标明共享。相同 native ID 的实时与历史消息按适配器提供的稳定身份关联。`progress_statistics.step` 可提供活动 Item 的原生区间。Code-mode 中只有包裹工具对平台可见时，统计计为该工具调用。详细的统计口径、覆盖状态和缓存比较规则见 [会话元信息与统计](session-metadata-requirements.md)。
+`GET /api/sessions/:id/conversation/usage-intervals` 分页读取持久化的用量树。根页含 Final 和已记录的未完成区间组。用可展开行的 `id` 作为 `parent` 读取子级，用 `next_before` 作为同级的 `before` 读取下一页。Progress 汇总所属 Item，包括正在执行且已有回执的部分。原生文件可读时，旧检查点按批次重放以补齐 Item 归属。时间缺失时保持未知。
+
+工具轮次、调用和 Runs 为独立计数。多个 Item 共享一个响应时仅一个 Item 记录用量。相同 native ID 的实时与历史消息按适配器提供的稳定身份关联。`progress_statistics.step` 可提供活动 Item 的原生区间。同一轮内压缩后用相邻请求检测缓存下降。Code-mode 中只有包裹工具对平台可见时，统计计为该工具调用。详细规则见 [会话元信息与统计](session-metadata-requirements.md)。
 
 企业微信通知引用回复通过现有平台权限和输入接口直接提交，调度模型不参与路由。
 `POST /api/sessions/:id/input` 的可选 `expected_native_id`、`expected_environment_id` 将输入绑定到预期原生会话和账号环境，服务端在接收及排队实际发送前均检查；绑定变化返回 `409` 和 `submission=rejected`。标识保持不透明，不限定某个 Agent 的格式；既有调用不传这些字段时保持兼容。通知路由仅使用 Agent 中立的原生绑定与公开消息，不访问适配器内部状态。

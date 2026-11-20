@@ -38,7 +38,7 @@ import {ConversationRetryManager} from '../services/conversation-retry.js';
 import {ConversationProjection} from '../services/conversation-projection.js';
 import {rememberFirstSessionTask} from '../services/conversation-session-task.js';
 import {notificationInputBoundary,settleNotificationsForInput} from '../services/notifications.js';
-import {beginSessionAction, readSessionMetadataDetails, updateSessionFacts} from '../services/session-statistics.js';
+import {beginSessionAction, readSessionMetadataDetails, readSessionUsageIntervals, updateSessionFacts, type SessionUsagePageQuery} from '../services/session-statistics.js';
 
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
@@ -111,7 +111,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.15.0',
+    version:'3.16.0',
     updatedAt:'2026-11-20',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -263,6 +263,12 @@ export function getAgentApiContract() {
         description: 'Read verified session totals, model and speed totals, lifecycle records and cache hit drops. Pass event_before or cache_before from next_event or next_cache_drop for earlier records. The status and reasons report missing or pending evidence. Credits are request-based estimates.',
         response: {metadata:'SessionMetadataDetails | null'},
         errors: {400:'Invalid cursor',404:'Session not found or not accessible'},
+      },
+      {
+        category: 'Sessions', method: 'GET', path: '/api/sessions/:id/conversation/usage-intervals',
+        description: 'Read recorded usage in newest-first order. Pass the id of an expandable row as parent to read its children, and next_before as before for the next page at that level. Each Final, Progress or Item keeps its own interval, coverage and shared request count.',
+        response: {intervals:'SessionUsageIntervalPage | null'},
+        errors: {400:'Invalid parent or cursor',404:'Session not found or not accessible'},
       },
       {
         category: 'Sessions',
@@ -1185,20 +1191,48 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     socket.once('close',()=>{clearInterval(heartbeat);stopFileFallback();stopProgress();stop();stopRetry();});
   });
 
-  app.get<{Params:{id:string};Querystring:{event_before?:string;cache_before?:string}}>('/sessions/:id/conversation/metadata',async(req,reply)=>{
-    const session=getSession(req.params.id);
-    if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
-    if([req.query.event_before,req.query.cache_before].some(value=>value!==undefined&&(typeof value!=='string'||!value.length||value.length>256)))
-      return reply.code(400).send({error:'Invalid metadata cursor'});
+  async function refreshBoundStatistics(session:NonNullable<ReturnType<typeof getSession>>, userId:string) {
     const context=sessionAgentContext(session);
     const binding={...session,cli_type:agentForSession(session).descriptor.id,project_path:context.projectPath} as PromptContextSession;
     const file=context.nativeId?await nativeConversationFile(binding).catch(()=>null):null;
     const available=!!file&&await updateSessionFacts(context,file.path).catch(()=>false);
     const latest=getSession(session.id);
-    if(!latest||nativeConversationId(latest)!==context.nativeId||latest.agent_environment_id!==session.agent_environment_id||!canAccessAgentSession(req.user!.id,session.id))
-      return reply.code(404).send({error:'Session not found'});
+    if(!latest||nativeConversationId(latest)!==context.nativeId||latest.agent_environment_id!==session.agent_environment_id||!canAccessAgentSession(userId,session.id))
+      return null;
+    return {context, available};
+  }
+  const validCursor=(value:unknown)=>value===undefined||typeof value==='string'&&value.length>0&&value.length<=256;
+
+  app.get<{Params:{id:string};Querystring:{event_before?:string;cache_before?:string}}>('/sessions/:id/conversation/metadata',async(req,reply)=>{
+    const session=getSession(req.params.id);
+    if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
+    if(![req.query.event_before,req.query.cache_before].every(validCursor))
+      return reply.code(400).send({error:'Invalid metadata cursor'});
+    const binding=await refreshBoundStatistics(session,req.user!.id);
+    if(!binding)return reply.code(404).send({error:'Session not found'});
     return reply.header('Cache-Control','private, no-store').send({metadata:
-      readSessionMetadataDetails(context,available,{event:req.query.event_before,cache:req.query.cache_before})});
+      readSessionMetadataDetails(binding.context,binding.available,{event:req.query.event_before,cache:req.query.cache_before})});
+  });
+
+  app.get<{Params:{id:string};Querystring:{parent?:string;before?:string}}>('/sessions/:id/conversation/usage-intervals',async(req,reply)=>{
+    const session=getSession(req.params.id);
+    if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
+    const {parent,before}=req.query;
+    if(![parent,before].every(validCursor)||parent&&!/^(?:open|final:[a-f0-9]{32}|progress:(?:open|[a-f0-9]{32}):\d+)$/.test(parent))
+      return reply.code(400).send({error:'Invalid interval query'});
+    let cursor:SessionUsagePageQuery['before'];
+    if(before){
+      let parts:unknown;
+      try{parts=JSON.parse(before);}catch{return reply.code(400).send({error:'Invalid interval cursor'});}
+      if(!Array.isArray(parts)||parts.length!==3||!Number.isSafeInteger(parts[0])||parts[0]<0||
+        typeof parts[1]!=='string'||!parts[1].length||parts[1].length>128||!['final','progress','item'].includes(parts[2]))
+        return reply.code(400).send({error:'Invalid interval cursor'});
+      cursor=parts as SessionUsagePageQuery['before'];
+    }
+    const binding=await refreshBoundStatistics(session,req.user!.id);
+    if(!binding)return reply.code(404).send({error:'Session not found'});
+    return reply.header('Cache-Control','private, no-store').send({intervals:
+      readSessionUsageIntervals(binding.context,{parent,before:cursor})});
   });
 
   app.get<{Params:{id:string};Querystring:{after?:string;before?:string;limit?:string}}>('/sessions/:id/conversation',async(req,reply)=>{

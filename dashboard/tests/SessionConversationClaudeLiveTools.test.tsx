@@ -39,7 +39,7 @@ it('refreshes one latest Claude activity slot instead of stacking duplicate tool
   const round={id:'round',role:'assistant',turn_id:'turn',phase:'commentary',text:'',timestamp:stamp};
   const tool={id:'same-tool',label:'运行命令 · npm test',status:'running',started_at:stamp,completed_at:null,duration_ms:null,turn_id:'turn',after_message_id:'round',input_preview:'npm test'};
   act(()=>Socket.latest.emit({type:'snapshot',messages:[prompt,round],activities:[tool],busy:true,stage:'tools',turn_id:'turn',started_at:stamp}));
-  const slot=await screen.findByRole('status',{name:'正在执行的进展 2'});
+  const slot=await screen.findByRole('status',{name:'正在执行的进展 1'});
   expect(slot.querySelectorAll('.session-chat-live-tool')).toHaveLength(1);
   expect(slot).toHaveTextContent('npm test');
   expect(slot.querySelector('.session-chat-live-tool')).not.toHaveAttribute('open','');

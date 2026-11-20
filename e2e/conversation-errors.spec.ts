@@ -20,7 +20,9 @@ test('native failures appear live, stop busy indicators and survive history reco
   await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'错误显示'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
   let push!:(data:string)=>void;
-  await page.routeWebSocket('**/conversation/stream*',socket=>{push=data=>socket.send(data);push(JSON.stringify({type:'snapshot',messages:[],busy:true,stage:'tools',turn_id:turn}));});
+  await page.routeWebSocket('**/conversation/stream*',socket=>{push=data=>socket.send(data);push(JSON.stringify({type:'snapshot',
+    messages:[],busy:true,stage:'tools',turn_id:turn,activities:[{id:'test-tool',label:'Run command · verify',status:'running',
+      turn_id:turn,after_message_id:null,started_at:'2026-10-30T07:30:01Z'}]}));});
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
   await expect(chat.getByText('执行验证任务',{exact:true})).toBeVisible();await expect(chat.getByText('In progress',{exact:true})).toBeVisible();
   const text='Selected model is at capacity. Please try a different model.';

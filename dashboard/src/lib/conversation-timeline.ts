@@ -1,7 +1,36 @@
 import type {ConversationMessage} from './api';
 
 export interface TimelineMessage extends ConversationMessage {
-  optimistic?: {afterSequence:number;accepted?:boolean};
+  optimistic?: {afterSequence:number;accepted?:boolean;uncertain?:boolean};
+}
+
+export function isWaitingConversationInput(message: TimelineMessage) {
+  return message.role === 'user' && (!!message.queued || !!message.optimistic);
+}
+
+export const waitingInputKey = (userId:string|undefined, sessionId:string, nativeId:string|null) =>
+  nativeId ? `agentmanager-waiting-inputs:${JSON.stringify([userId??'local',sessionId,nativeId])}` : null;
+
+export function readWaitingInputs(key: string|null): TimelineMessage[] {
+  if (!key) return [];
+  try {
+    const value:unknown=JSON.parse(sessionStorage.getItem(key)??'[]');
+    return Array.isArray(value) ? value.filter((item):item is TimelineMessage =>
+      item?.role==='user'&&typeof item.id==='string'&&typeof item.client_id==='string'&&typeof item.text==='string'&&
+      typeof item.timestamp==='string'&&Number.isSafeInteger(item.optimistic?.afterSequence)).slice(-32) : [];
+  } catch { return []; }
+}
+
+export function updateWaitingInputs(key:string|null, replace:(rows:TimelineMessage[])=>TimelineMessage[]) {
+  if (!key) return;
+  try {
+    const current=readWaitingInputs(key);
+    const next=replace(current);
+    if (next===current) return;
+    const rows=next.slice(-32);
+    if (rows.length) sessionStorage.setItem(key,JSON.stringify(rows));
+    else sessionStorage.removeItem(key);
+  } catch { /* The live timeline can continue without browser storage. */ }
 }
 
 function sameUserIdentity(

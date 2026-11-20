@@ -1,6 +1,6 @@
 import {useDisplayClock} from '../lib/display-clock';
 import type {ConversationMessage} from '../lib/api';
-import {encodeQuestionReply} from '../lib/conversation-question-reply';
+import {encodeQuestionReply,type QuestionState} from '../lib/conversation-question-reply';
 import {ConversationQuestionEditor,type QuestionAttachmentContext,type QuestionAttachmentMap,type QuestionAttachmentState} from './ConversationQuestionEditor';
 
 import type {DraftAttachment} from '../lib/conversation-attachments';
@@ -112,11 +112,11 @@ export function ConversationAsyncQuestion({message,agentName,storageKey,connecte
     }}/>;
 }
 
-export const ConversationQuestionSummary=memo(function ConversationQuestionSummary({message,answers,state,onAnswer}:{message:ConversationMessage;answers:string[]|null;state?:'pending'|'sending'|'submitted'|'queued'|'answered';continued?:boolean;onAnswer:(id:string)=>void}) {
+export const ConversationQuestionSummary=memo(function ConversationQuestionSummary({message,answers,state,onAnswer}:{message:ConversationMessage;answers:string[]|null;state?:QuestionState;continued?:boolean;onAnswer:(id:string)=>void}) {
   useDisplayClock();
   const questions=message.async_questions||[];
   const status=state??(answers!==null?'answered':'pending'),settled=status!=='pending';
-  const labels={pending:'待回答',sending:'正在提交',submitted:'已提交 · 等待接收',queued:'回答已排队',answered:'已回答'};
+  const labels={pending:'待回答',sending:'正在提交',submitted:'已提交 · 等待接收',queued:'回答已排队',answered:'已回答',uncertain:'回答结果待确认'};
   return <article className="session-chat-question-summary" data-chat-message-id={message.id}>
     <ConversationCard key={settled?'answered':'pending'} summary={<><MessageCircleQuestion size={14}/><span className="conversation-question-state">{labels[status]}</span><strong>{questions[0]?.title}</strong><span className="conversation-question-expand">查看详情</span></>}>
       <dl>{questions.map((q,index)=><div key={q.id||index}><dt>{q.title}</dt><dd>{answers?.[index]!==undefined?`回答：${answers[index]}`:q.options?.length?q.options.join(' · '):settled?'文字回答':'自由回答'}</dd></div>)}</dl>

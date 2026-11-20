@@ -4,7 +4,7 @@ import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {beforeEach,afterEach,describe,expect,it,vi} from 'vitest';
 import {ConversationControls} from '../src/components/ConversationControls';
 import {api,type ConversationControlsData} from '../src/lib/api';
-vi.mock('../src/lib/api',()=>({api:{codexEnvironments:{forSession:vi.fn(async()=>({current:'provider:provider-a',environments:[{id:'provider:provider-a',kind:'provider',provider:'provider-a',name:'A',auth_mode:'account',can_control:true},{id:'provider:provider-b',kind:'provider',provider:'provider-b',name:'B',can_control:true}]})),sessionPreflight:vi.fn(async()=>({ok:true,checks:[{stage:'models',ok:true,message:'available'}],models:[{model:'model-b',name:'B',provider:'provider-b',efforts:[{value:'low'}],defaultEffort:'low'}]})),transfer:vi.fn(async()=>({ok:true}))},agent:{controls:vi.fn(),setControls:vi.fn(),contextBreakdown:vi.fn()},sessions:{compactConversation:vi.fn().mockResolvedValue({ok:true})}}}));
+vi.mock('../src/lib/api',()=>({api:{codexEnvironments:{forSession:vi.fn(async()=>({current:'provider:provider-a',environments:[{id:'provider:provider-a',kind:'provider',provider:'provider-a',name:'A',auth_mode:'account',can_control:true},{id:'provider:provider-b',kind:'provider',provider:'provider-b',name:'B',can_control:true}]})),sessionPreflight:vi.fn(async()=>({ok:true,checks:[{stage:'models',ok:true,message:'available'}],models:[{model:'model-b',name:'B',provider:'provider-b',efforts:[{value:'low'}],defaultEffort:'low'}]})),transfer:vi.fn(async()=>({ok:true}))},agent:{controls:vi.fn(),setControls:vi.fn(),contextBreakdown:vi.fn(),conversationMetadata:vi.fn(async()=>({metadata:null})),conversationUsageIntervals:vi.fn(async()=>({intervals:null}))},sessions:{compactConversation:vi.fn().mockResolvedValue({ok:true})}}}));
 let client:QueryClient,data:ConversationControlsData;
 beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}});data={agent:sessionAgent({cli_type:'codex'}),engine_version:'0.166.0',git:{branch:'main',changes:2},state:'active',model:'model-a',effort:'high',provider:'openai',cwd:'/project',cli_version:'0.test',permission:'workspace-write',approval:'never',service_tier:null,usage:{total:{total_tokens:400000},last:{total_tokens:12000,input_tokens:11000,cached_input_tokens:9000,output_tokens:1000},window:40000},limits:[{used_percent:25,minutes:10080,resets_at:1900000000}],models:[{model:'model-a',name:'Model A',description:'默认',efforts:[{value:'high',description:''}],defaultEffort:'high'},{model:'model-b',name:'Model B',description:'另一模型',efforts:[{value:'low',description:''},{value:'medium',description:''}],defaultEffort:'low'}],can_edit:true,loaded:true,pending:null,warning:null,native_id:'native',checked_at:'2026-10-31T02:00:00Z',usage_observed_at:'2026-10-31T01:59:00Z'};vi.mocked(api.agent.controls).mockImplementation(async()=>data);vi.mocked(api.agent.setControls).mockImplementation(async(_id,value)=>({ok:true,pending:null,...value}));});
 afterEach(()=>client.clear());
@@ -14,12 +14,12 @@ describe('compact conversation controls',()=>{
   data={...data,usage:{total:{total_tokens:330800000,input_tokens:330200000,cached_input_tokens:327800000,reasoning_output_tokens:286200,output_tokens:627600},last:{total_tokens:104500},window:475000}};
   mount();expect(await screen.findByText('Context 475K | 22%')).toBeVisible();
   const tokens=screen.getByLabelText('Cumulative token usage');
-  expect(tokens).toHaveTextContent('Tokens Total｜Input｜Cache｜Reasoning｜Output : 330.8M｜330.2M｜327.8M｜286.2K｜627.6K');
+  expect(tokens).toHaveTextContent('Tokens Total｜Input｜Cache｜Reasoning｜Output : 330.8M｜2.4M｜327.8M｜286.2K｜627.6K');
   expect(tokens).not.toHaveTextContent('Window');expect(tokens).not.toHaveTextContent('475K');
   expect(within(tokens).getByText('327.8M')).toHaveAttribute('title','累计命中缓存的输入 Token（327,800,000）');
   const calls=vi.mocked(api.agent.controls).mock.calls.length;
   await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-16T01:00:00Z',usage:{total:{total_tokens:331000000,input_tokens:330400000,cached_input_tokens:328000000,reasoning_output_tokens:286300,output_tokens:627800},last:{total_tokens:120000},window:475000}});});
-  await waitFor(()=>expect(tokens).toHaveTextContent('Tokens Total｜Input｜Cache｜Reasoning｜Output : 331M｜330.4M｜328M｜286.3K｜627.8K'));
+  await waitFor(()=>expect(tokens).toHaveTextContent('Tokens Total｜Input｜Cache｜Reasoning｜Output : 331M｜2.4M｜328M｜286.3K｜627.8K'));
   expect(api.agent.controls).toHaveBeenCalledTimes(calls);
  });
  it('shows known zero token counts and omits missing cumulative metrics',async()=>{
@@ -107,7 +107,7 @@ describe('compact conversation controls',()=>{
   expect(await screen.findByText('Context 40K | 6%')).toBeVisible();expect(api.agent.controls).toHaveBeenCalledTimes(calls);
   await act(async()=>{await client.invalidateQueries({queryKey:['conversation-controls','s']});});
   expect(screen.getByText('Context 40K | 6%')).toBeVisible();
-  fireEvent.click(screen.getByRole('button',{name:'Details'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(within(dialog).getByRole('rowheader',{name:'本次缓存命中率'}).parentElement).toHaveTextContent('95.0%');
+  fireEvent.click(screen.getByRole('button',{name:'Details'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(within(dialog).getByRole('rowheader',{name:'缓存命中率'}).parentElement).toHaveTextContent('95.0%');
  });
  it('does not mix another native thread usage into this tab',async()=>{
   mount();await screen.findByText('Context 40K | 30%');
@@ -124,11 +124,56 @@ describe('compact conversation controls',()=>{
   }finally{vi.useRealTimers();}
  });
 
- it('shows actual context and weekly remaining values and expands only allowlisted details',async()=>{
-  data={...data,limits:[{used_percent:60,minutes:300,resets_at:1900000000},...data.limits]};mount();expect(await screen.findByText('Context 40K | 30%')).toBeVisible();expect(await screen.findByLabelText('Weekly remaining 75%')).toBeVisible();expect(screen.getByText('5h remaining 40%')).toBeVisible();expect(screen.getByText('Engine 0.166.0')).toBeVisible();expect(screen.getByText('Approval: never')).toBeVisible();expect(screen.queryByText(/Tokens Window/)).not.toBeInTheDocument();expect(screen.getByText('Git main · 2 changed')).toBeVisible();expect(screen.queryByRole('dialog')).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'Details'}));const dialog=screen.getByRole('dialog',{name:'会话详情'});expect(dialog).not.toHaveTextContent('0.test');expect(dialog).not.toHaveTextContent('创建版本');expect(dialog).toHaveTextContent('工作区可写');expect(dialog).toHaveTextContent('40,000');expect(dialog).toHaveTextContent('400,000');const table=within(dialog).getByRole('table',{name:'Token 用量与运行环境'});expect(within(table).getByRole('rowheader',{name:'缓存命中输入'})).toBeVisible();expect(within(table).getByRole('rowheader',{name:'当前模型'})).toBeVisible();expect(dialog.querySelectorAll('details')).toHaveLength(0);fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+ it('opens the overview and switches among three table pages by keyboard',async()=>{
+  mount();
+  expect(await screen.findByText('Context 40K | 30%')).toBeVisible();
+  expect(await screen.findByLabelText('Weekly remaining 75%')).toBeVisible();
+  const details=screen.getByRole('button',{name:'Details'});
+  details.focus();
+  fireEvent.click(details);
+  const dialog=screen.getByRole('dialog',{name:'会话详情'});
+  const overview=within(dialog).getByRole('tab',{name:'概览'});
+  expect(overview).toHaveFocus();
+  expect(within(dialog).getByRole('table',{name:'Token 用量'})).toBeVisible();
+  expect(within(dialog).getByRole('rowheader',{name:'当前模型'}).parentElement).toHaveTextContent('model-a');
+  fireEvent.keyDown(overview,{key:'ArrowRight'});
+  const cache=within(dialog).getByRole('tab',{name:'缓存异常'});
+  expect(cache).toHaveFocus();
+  expect(within(dialog).getByRole('table',{name:'缓存命中率下降明细'})).toBeVisible();
+  expect(within(dialog).queryByRole('table',{name:'Token 用量'})).not.toBeInTheDocument();
+  fireEvent.keyDown(cache,{key:'End'});
+  const usage=within(dialog).getByRole('tab',{name:'会话详情'});
+  expect(usage).toHaveAttribute('aria-selected','true');
+  expect(within(dialog).getByRole('table',{name:'逐区间用量'})).toBeVisible();
+  fireEvent.keyDown(usage,{key:'Escape'});
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(details).toHaveFocus();
  });
  it('applies model and effort immediately and shows the confirmed current settings',async()=>{
   mount();const model=await screen.findByRole('combobox',{name:'选择模型'});fireEvent.change(model,{target:{value:'model-b'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenCalledWith('s',{model:'model-b',effort:'low'}));expect(await screen.findByText('已应用')).toBeVisible();expect(screen.getByRole('combobox',{name:'选择推理强度'})).toHaveValue('low');expect(screen.queryByText('下轮生效')).not.toBeInTheDocument();fireEvent.change(screen.getByRole('combobox',{name:'选择推理强度'}),{target:{value:'medium'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenLastCalledWith('s',{model:'model-b',effort:'medium'}));expect(model).toHaveValue('model-b');
+ });
+ it('removes the open interval on settlement while retaining loaded earlier Final rows',async()=>{
+  let settled=false;
+  const usage={coverage:'complete' as const,complete:true,tokens:{total_tokens:5010},requests:1,tool_rounds:0,tool_calls:0,shared_messages:1};
+  const row=(id:string,total_tokens:number)=>({id,kind:'final' as const,at:null,usage:{...usage,tokens:{total_tokens}},expandable:true});
+  vi.mocked(api.agent.conversationUsageIntervals).mockImplementation(async(_id,query)=>({intervals:{
+    native_id:'native',generation:'same',revision:settled?2:1,
+    rows:query.before?[row('older',4030)]:[
+      settled?row('settled',6010):{id:'open',kind:'open' as const,at:null,usage:null,expandable:true},
+      row('first',5010),
+    ],next_before:query.before?null:'older-cursor',
+  }}));
+  mount();fireEvent.click(await screen.findByRole('button',{name:'Details'}));
+  fireEvent.click(screen.getByRole('tab',{name:'会话详情'}));
+  const table=screen.getByRole('table',{name:'逐区间用量'});
+  expect(await within(table).findByText('未形成 Final')).toBeVisible();
+  fireEvent.click(within(table).getByRole('button',{name:'更早的用量'}));
+  expect(await within(table).findByText('4,030')).toBeVisible();
+  settled=true;
+  await act(async()=>{await client.invalidateQueries({queryKey:['conversation-usage-intervals','s']});});
+  expect(await within(table).findByText('6,010')).toBeVisible();
+  expect(within(table).queryByText('未形成 Final')).not.toBeInTheDocument();
+  expect(within(table).getByText('4,030')).toBeVisible();
  });
  it('does not resubmit a control request that is waiting for native confirmation',async()=>{
   vi.mocked(api.agent.setControls).mockClear();data={...data,pending:{model:'model-b',effort:'low'},pending_status:'submitted'};mount();expect(await screen.findByText('已提交，等待原生模型确认')).toBeVisible();expect(api.agent.setControls).not.toHaveBeenCalled();expect(screen.queryByRole('button',{name:'应用',exact:true})).not.toBeInTheDocument();

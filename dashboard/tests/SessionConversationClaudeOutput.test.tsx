@@ -171,7 +171,9 @@ it('groups Claude progress across native record turns and shows recorded usage w
   const progress=await screen.findByLabelText('Claude 进展');
   const header=progress.querySelector('summary')!;
   expect(header).toHaveTextContent('3 items');
-  expect(header.querySelector('.session-chat-message-statistics')).toHaveTextContent('4.2K (—)｜3.8K｜—｜—｜400 · 3 rounds | 5 calls');
+  const statistics=header.querySelector('.session-chat-message-statistics');
+  expect(statistics).toHaveTextContent('4.2K (—)｜—｜—｜—｜400 · 3 rounds | 5 calls');
+  expect(statistics).toHaveAttribute('title',expect.stringContaining('total input 3,800'));
   expect(header).not.toHaveTextContent('— rounds | — calls');
   expect(within(progress).getByText('Check the result')).toBeInTheDocument();
   expect(screen.getByText('Done')).toBeVisible();

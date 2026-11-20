@@ -2,15 +2,15 @@ import { AlertTriangle } from 'lucide-react';
 import type { CacheDropFactor, SessionCacheDrop, SessionCacheSample } from '../lib/session-metadata';
 import { formatElapsed } from '../lib/conversation-timing';
 import { ConversationDialogCard } from './ConversationDialogCard';
-import { DataTable } from './table/DataTable';
-import { useTableModel } from './table/use-table-model';
+import { TableFrame, TableStateRow } from './table/DataTable';
 
 const compact = new Intl.NumberFormat('en', {notation:'compact', maximumFractionDigits: 1});
 const date = new Intl.DateTimeFormat('sv-SE', {
   year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
   hourCycle: 'h23', timeZoneName: 'shortOffset',
 });
-const rate = (value: number) => (value * 100).toFixed(1) + '%';
+const percent = new Intl.NumberFormat('en', {minimumFractionDigits:1, maximumFractionDigits:2});
+const rate = (value: number) => percent.format(value * 100) + '%';
 
 export const factorNames: Record<CacheDropFactor, string> = {
   input_gap: '输入间隔较长', model: '模型变化', speed: '速度变化', environment: 'Engine 变化',
@@ -22,46 +22,41 @@ export function MetadataTime({at}: {at: string | null | undefined}) {
 }
 
 function SampleTokens({sample}: {sample: SessionCacheSample}) {
-  const label = '输入 ' + sample.input_tokens.toLocaleString() + ' Token，缓存命中 ' +
+  const label = '总输入 ' + sample.input_tokens.toLocaleString() + ' Token，缓存命中 ' +
     sample.cached_input_tokens.toLocaleString() + ' Token，命中率 ' + rate(sample.hit_rate);
   return <span title={label} aria-label={label} className="conversation-cache-sample">
     {compact.format(sample.input_tokens)} / {compact.format(sample.cached_input_tokens)} ({rate(sample.hit_rate)})
   </span>;
 }
 
-function SampleCell({sample}: {sample: SessionCacheSample}) {
-  const dimensions = [sample.model, sample.speed, sample.environment, sample.account].filter(Boolean);
-  return <>
-    <SampleTokens sample={sample} />
-    <small>输入 <MetadataTime at={sample.input_at} /></small>
-    <small>请求 <MetadataTime at={sample.request_at} /></small>
-    {dimensions.length > 0 && <small>{dimensions.join(' · ')}</small>}
-    <small title={sample.turn_id}>轮次 {sample.turn_id}</small>
-    <small title={sample.request_id}>请求 ID {sample.request_id}</small>
-  </>;
+function dropInterval(drop: SessionCacheDrop) {
+  const label = drop.interval_kind === 'request' ? '请求间隔' : '输入间隔';
+  const elapsed = drop.elapsed_ms;
+  return elapsed === null ? `${label}未知` : `${label} ${elapsed < 60_000 ? elapsed / 1000 + '秒' : formatElapsed(elapsed)}`;
 }
 
-export function CacheDropTable({drops}: {drops: SessionCacheDrop[]}) {
-  const model=useTableModel(drops,[
-    {key:'time',title:'异常时间',value:row=>row.at},
-    {key:'previous',title:'前次输入 / 命中（命中率）',value:row=>row.previous.hit_rate},
-    {key:'current',title:'本次输入 / 命中（命中率）',value:row=>row.current.hit_rate},
-    {key:'interval',title:'输入间隔',value:row=>row.elapsed_ms},
-    {key:'reason',title:'原因与相关因素',value:row=>row.confirmed_cause?.label??row.factors.map(factor=>factorNames[factor]).join('、')},
-  ]);
-  return <DataTable label="缓存命中率下降明细" className="conversation-metadata-scroll" model={model} minWidth={660}>
-      {model.rows.map(drop => <tr key={drop.id}>
-        <td><MetadataTime at={drop.at} /><small>下降 {drop.decrease_pp.toFixed(1)} 个百分点</small></td>
-        <td><SampleCell sample={drop.previous} /></td>
-        <td><SampleCell sample={drop.current} /></td>
-        <td>{drop.elapsed_ms === null ? '未知' : formatElapsed(drop.elapsed_ms)}</td>
-        <td>{drop.confirmed_cause ? <>
-          {drop.confirmed_cause.label}<small>{drop.confirmed_cause.evidence}</small>
-        </> : '原因未确认'}
+export function CacheDropTable({drops, loading, error, onRetry}: {
+  drops: SessionCacheDrop[];
+  loading?: boolean;
+  error?: string;
+  onRetry?: () => void;
+}) {
+  return <TableFrame label="缓存命中率下降明细" className="conversation-metadata-scroll conversation-cache-table" loading={loading}
+    header={<>{['异常时间', '前次总输入 / 命中', '本次总输入 / 命中', '间隔', '原因与相关因素']
+      .map(label => <th key={label} scope="col">{label}</th>)}</>} style={{minWidth: 660}}>
+      {loading ? <TableStateRow columnCount={5} loading>加载中…</TableStateRow>
+      : error ? <TableStateRow columnCount={5} error onRetry={onRetry}>{error}</TableStateRow>
+      : drops.length === 0 ? <TableStateRow columnCount={5}>暂无缓存异常记录</TableStateRow>
+      : drops.map(drop => <tr key={drop.id}>
+        <td className="conversation-time-cell"><MetadataTime at={drop.at} /></td>
+        <td><SampleTokens sample={drop.previous} /></td>
+        <td><SampleTokens sample={drop.current} /></td>
+        <td>{dropInterval(drop)}</td>
+        <td>{drop.confirmed_cause?.label ?? '原因未确认'}
           {drop.factors.length > 0 && <small>相关因素 {drop.factors.map(factor => factorNames[factor]).join('、')}</small>}
         </td>
       </tr>)}
-  </DataTable>;
+  </TableFrame>;
 }
 
 export function ConversationCacheDrop({drop, active}: {drop: SessionCacheDrop; active: boolean}) {
@@ -71,7 +66,7 @@ export function ConversationCacheDrop({drop, active}: {drop: SessionCacheDrop; a
         <AlertTriangle size={14} aria-hidden="true" />
         <strong>缓存命中率下降</strong>
         <SampleTokens sample={drop.previous} /><span aria-hidden="true">→</span><SampleTokens sample={drop.current} />
-        <span>{drop.elapsed_ms === null ? '输入间隔未知' : '间隔 ' + formatElapsed(drop.elapsed_ms)}</span>
+        <span>{dropInterval(drop)}</span>
         <MetadataTime at={drop.at} />
       </span>
     }>

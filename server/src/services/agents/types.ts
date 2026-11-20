@@ -399,6 +399,8 @@ export interface AgentModel {
 }
 export interface AgentCostEstimate {amount:number|null;unit:string;complete:boolean;rate_date?:string;basis?:string;breakdown?:{input:number;cache:number;output:number;reasoning:number|null}}
 export interface AgentStatisticsInterval {
+  shared_reference?: boolean;
+  unassigned?: AgentStatisticsInterval;
   coverage?: SessionCoverage;
   reasons?: SessionCoverageReason[];
   cost?:AgentCostEstimate|null;
@@ -410,15 +412,18 @@ export interface AgentStatisticsInterval {
   shared_messages: number;
 }
 export interface AgentProgressSegment {
+  unassigned?: AgentStatisticsInterval;
   coverage?: SessionCoverage;
   reasons?: SessionCoverageReason[];
   cost?:AgentCostEstimate|null;
-  id:string; start_at:string|null; end_at:string|null; elapsed_ms:number|null; end_reason:'input'|'completed'|'interrupted'|'unknown'|null;
+  id:string; start_at:string|null; end_at:string|null; elapsed_ms:number|null; end_reason:'input'|'compact'|'completed'|'interrupted'|'unknown'|null;
   tokens:Record<string,number|null>|null; requests:number; tool_calls:number; tool_rounds:number; complete:boolean;
 }
 export interface AgentStatistics {
   cost?:AgentCostEstimate|null;
   sequence: number;
+  item_at?: string | null;
+  progress_id?: string;
   revision?: number;
   message_id?: string;
   turn_id: string;
@@ -604,7 +609,7 @@ export interface AgentStatisticsPort {
   readProgress?(context: AgentContext, path: string): Promise<AgentProgressStatistics | null>;
   facts?: AgentSessionFactsPort;
 }
-export interface AgentProgressStatistics {turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;cost?:AgentCostEstimate|null;segment?:AgentProgressSegment;step?:AgentStatisticsInterval&{segment_id:string;after_message_id:string|null;after_sequence:number|null;start_at:string|null}}
+export interface AgentProgressStatistics {turn_id:string;revision?:number;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;cost?:AgentCostEstimate|null;segment?:AgentProgressSegment;step?:AgentStatisticsInterval&{segment_id:string;after_message_id:string|null;after_sequence:number|null;start_at:string|null}}
 export interface AgentQuotaPort {
   shutdown?(): void | Promise<void>;
   read(force?: boolean): Promise<{

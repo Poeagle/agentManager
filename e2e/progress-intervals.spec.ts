@@ -22,7 +22,8 @@ test('progress badges and folding keep metadata separate from the message conten
   await expect(chat.getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 100 (—)｜—｜—｜—｜— · 1 round | 1 call | 1 Run',{exact:true})).toBeVisible();
   await expect(chat.getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 200 (—)｜—｜—｜—｜— · 1 round | 2 calls | 1 Run',{exact:true})).toBeVisible();
   await expect(chat.locator('[data-phase=final]').getByText('记录不完整 · Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 600 (—)｜—｜—｜—｜— · 2 rounds | 3 calls | 3 Runs',{exact:true})).toBeVisible();
-  expect(await chat.locator('.session-chat-message-statistics').first().getAttribute('title')).toContain('Usage between completed Progress boundaries.');
+  expect(await chat.locator('.session-chat-message-statistics').first().getAttribute('title')).toContain('Usage for the Items in this Progress.');
+  await expect(chat.locator('.session-chat-message-statistics').first()).toHaveAttribute('title',/Total 300[;]/);
   await expect(chat.getByRole('region',{name:'Codex 进展'}).locator('.session-chat-kind')).toHaveText('progress');
   await expect(chat.locator('.session-chat-message[data-phase="final"] .session-chat-kind')).toHaveText('final');
   await expect(chat.getByRole('region',{name:'Codex 进展'})).toHaveCSS('border-left-width','0px');

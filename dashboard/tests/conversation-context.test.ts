@@ -33,6 +33,17 @@ it('groups consecutive assistant updates across native turn identity changes wit
  expect(groupConversationProgress([{id:'input',role:'user',text:'Inspect',timestamp:null},blockOnly,{...blockOnly,id:'tool-only-two'}]))
   .toMatchObject([{kind:'message',message:{id:'input'}},{kind:'progress',messages:[{id:'tool-only'},{id:'tool-only-two'}]}]);
 });
+it('keeps a late native Item with its original Progress even after a confirmed user insertion',()=>{
+ const item=(id:string,progress_id:string)=>({id,role:'assistant' as const,phase:'commentary' as const,
+   text:id,timestamp:null,statistics:{sequence:1,turn_id:'turn',progress_id,
+     tokens:null,requests:1,tool_calls:0,tool_rounds:0,complete:true}});
+ const groups=groupConversationProgress([
+   item('earlier','first'),{id:'steer',role:'user',text:'Continue',timestamp:null},
+   item('late','first'),item('new','second'),
+ ]);
+ expect(groups.map(group=>group.kind==='progress'?group.messages.map(message=>message.id):group.message.id))
+   .toEqual([['earlier','late'],'steer',['new']]);
+});
 it('uses the group segment when recorded and falls back to cumulative native turn usage',()=>{
  const segment={id:'segment',start_at:null,end_at:null,elapsed_ms:null,end_reason:null,tokens:{total_tokens:300},requests:1,tool_calls:2,tool_rounds:1,complete:true};
  const messages=[

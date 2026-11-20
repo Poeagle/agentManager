@@ -1,7 +1,7 @@
 import {Fragment} from 'react';
 import type {ConversationMessage,ConversationStatistics} from '../lib/api';
 import {formatConversationTimestamp} from '../lib/conversation-timing';
-import {coverageReason,coverageText,recordedCachePercent} from '../lib/session-metadata';
+import {coverageReason,coverageText,recordedCachePercent,uncachedInputTokens} from '../lib/session-metadata';
 const number=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(value);
 const valid=(value:number|null|undefined)=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
 /** Every displayed field belongs to the same recorded interval. Cache hit is a
@@ -11,8 +11,11 @@ export function ConversationStatisticsLabel({statistics,interval=false,progress=
  const part=interval?recorded:summary,value=part??statistics,shared=!!part&&part.shared_messages>1;
  const complete=value?.complete??false,tokens=value?.tokens;
  const coverage=value?.coverage;
- const input=valid(tokens?.input_tokens),cached=valid(tokens?.cached_input_tokens),output=valid(tokens?.output_tokens);
- const hit=coverage?recordedCachePercent(tokens):input!==null&&input>0&&cached!==null&&cached<=input?cached/input*100:null;
+ if(interval&&recorded?.shared_reference)return <span className="session-chat-message-statistics" title="请求用量已计入同组 Item">共享请求</span>;
+ const totalInput=valid(tokens?.input_tokens),cached=valid(tokens?.cached_input_tokens),output=valid(tokens?.output_tokens);
+ const inputsKnown=!value?.reasons?.some(reason=>reason==='missing_usage'||reason==='counter_mismatch');
+ const input=inputsKnown?uncachedInputTokens(tokens):null;
+ const hit=!inputsKnown?null:coverage?recordedCachePercent(tokens):totalInput!==null&&totalInput>0&&cached!==null&&cached<=totalInput?cached/totalInput*100:null;
  const hitText=hit===null?'—':new Intl.NumberFormat('en',{maximumFractionDigits:2}).format(hit)+'%';
  const partialPrefix=!coverage&&!complete?'≥':'';
  const formatted=(value:number|null|undefined)=>{const n=valid(value);return n===null?'—':partialPrefix+number(n);};
@@ -20,8 +23,8 @@ export function ConversationStatisticsLabel({statistics,interval=false,progress=
  const costLabel=cost?.unit==='USD'?'Est. $':cost&&cost.unit!=='credits'?'Est. cost':'Est. Cr';
  const exact=(value:number|null|undefined)=>valid(value)===null?'unknown':new Intl.NumberFormat('en').format(value!);
  const title=[
-  summary?'Usage between completed Final boundaries.':progress?'Usage between completed Progress boundaries.':part?'Usage between completed Item boundaries.':'Cumulative usage for this native turn (legacy snapshot).',
-  `Total ${exact(tokens?.total_tokens)}; Input ${exact(input)} (includes cached input); Cache ${exact(cached)}; cache hit ${hitText}; Reasoning ${exact(tokens?.reasoning_output_tokens)} (included in Output); Output ${exact(output)}.`,
+  summary?'Usage between completed Final boundaries.':progress?'Usage for the Items in this Progress.':part?'Usage for this Item.':'Cumulative usage for this native turn (legacy snapshot).',
+  `Total ${exact(tokens?.total_tokens)}; Input ${exact(input)} (uncached); Cache ${exact(cached)}; total input ${exact(totalInput)}; cache hit ${hitText}; Reasoning ${exact(tokens?.reasoning_output_tokens)} (included in Output); Output ${exact(output)}.`,
   shared?`${part?.shared_messages} updates share the same model request. Per-update usage cannot be split reliably; this request group used ${tokens?.total_tokens==null?'unknown':number(tokens.total_tokens)} tokens.`:'',
   coverage&&coverage!=='complete'?coverageText[coverage]+'。'+(value?.reasons??[]).map(reason=>coverageReason[reason]).join('、'):!complete?'Partial recorded interval: ≥ marks a lower bound.':'',
   `${value?.tool_rounds??'unknown'} native tool rounds; ${value?.tool_calls??'unknown'} native tool calls. One model response calling three parallel tools is 1 round | 3 calls. Code-mode internals are not expanded.`,

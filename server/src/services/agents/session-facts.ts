@@ -1,4 +1,4 @@
-import type { AgentContext, AgentCostEstimate, AgentProgressStatistics, AgentStatistics } from './types.js';
+import type { AgentContext, AgentCostEstimate, AgentProgressStatistics, AgentStatistics, AgentStatisticsInterval } from './types.js';
 import type { publicTokenCounters } from '../conversation-usage.js';
 
 export type SessionTokens = ReturnType<typeof publicTokenCounters>;
@@ -97,8 +97,8 @@ export interface SessionUsageTotals {
 }
 export interface SessionModelTotals extends SessionUsageTotals, RequestDimensions {}
 export interface SessionCacheSample extends RequestDimensions {
-  input_id: string;
-  turn_id: string;
+  input_id: string | null;
+  turn_id: string | null;
   input_at: string | null;
   request_id: string;
   request_at: string | null;
@@ -113,6 +113,8 @@ export interface SessionCacheDrop {
   previous: SessionCacheSample;
   current: SessionCacheSample;
   elapsed_ms: number | null;
+  interval_kind?: 'input' | 'request';
+  compaction_at?: string | null;
   decrease_pp: number;
   factors: CacheDropFactor[];
   confirmed_cause: { label: string; evidence: string } | null;
@@ -138,6 +140,22 @@ export interface SessionMetadataDetails {
   cache_drops: SessionCacheDrop[];
   next_event: string | null;
   next_cache_drop: string | null;
+}
+
+export interface SessionUsageIntervalRow {
+  id: string;
+  kind: 'final' | 'progress' | 'item' | 'open' | 'unassigned';
+  at: string | null;
+  usage: AgentStatisticsInterval | null;
+  expandable: boolean;
+}
+
+export interface SessionUsageIntervalPage {
+  native_id: string;
+  generation?: string;
+  revision: number;
+  rows: SessionUsageIntervalRow[];
+  next_before: string | null;
 }
 
 export interface SessionFactsUpdate {

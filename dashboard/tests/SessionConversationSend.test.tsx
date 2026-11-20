@@ -37,6 +37,7 @@ async function mount(target:Session=session) {
 beforeEach(() => {
   vi.spyOn(api.agent,'checkSend').mockResolvedValue({needs_confirmation:false,token:undefined} as any);
   localStorage.clear();
+  sessionStorage.clear();
   Socket.latest = undefined as unknown as Socket;
   vi.stubGlobal('WebSocket', Socket);
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
@@ -45,6 +46,43 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('shows submission, waiting for native receipt and delivery across a browser remount',async()=>{
+    const response=deferred<SendResult>();
+    const submit=vi.spyOn(api.agent,'sendInput').mockReturnValue(response.promise);
+    const view=await mount();
+    input('等待回执的追加输入');
+    fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));
+    expect(await screen.findByRole('status',{name:'提交中'})).toBeVisible();
+    const clientId=submit.mock.calls[0][2];
+    await act(async()=>response.resolve({status:'submitted'} as SendResult));
+    expect(await screen.findByRole('status',{name:'等待 Agent 接收'})).toBeVisible();
+    expect(screen.queryByRole('status',{name:'已发送'})).not.toBeInTheDocument();
+    view.unmount();
+    await mount();
+    expect(await screen.findByRole('status',{name:'等待 Agent 接收'})).toBeVisible();
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[{
+      id:'confirmed-input',client_id:clientId,role:'user',text:'等待回执的追加输入',timestamp:'2026-11-20T04:02:00Z',
+    }],busy:true,stage:'waiting',turn_id:'turn'}));
+    expect(await screen.findByRole('status',{name:'已发送'})).toBeVisible();
+    expect(screen.getAllByText('等待回执的追加输入')).toHaveLength(1);
+    expect(screen.queryByRole('status',{name:'等待 Agent 接收'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('button',{name:'复制你的消息'})).not.toBeInTheDocument();
+  });
+  it('keeps an ambiguous input pending until the matching native receipt',async()=>{
+    const submit=vi.spyOn(api.agent,'sendInput').mockRejectedValue(new ApiError('接收结果暂未确认',503,'unknown'));
+    await mount();
+    input('结果待确认的消息');
+    fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));
+    expect(await screen.findByRole('status',{name:'发送结果待确认'})).toBeVisible();
+    expect(screen.queryByRole('status',{name:'已发送'})).not.toBeInTheDocument();
+    const id=submit.mock.calls[0][2];
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[{
+      id:'echo',client_id:id,role:'user',text:'结果待确认的消息',timestamp:'2026-11-20T04:02:00Z',
+    }],busy:true,stage:'waiting',turn_id:'turn'}));
+    expect(await screen.findByRole('status',{name:'已发送'})).toBeVisible();
+    expect(screen.queryByRole('status',{name:'发送结果待确认'})).not.toBeInTheDocument();
+    expect(submit).toHaveBeenCalledOnce();
+  });
   it('shows the batch panel only while entries need sending and hides it after acceptance',async()=>{
     const response=deferred<SendResult>(),submit=vi.spyOn(api.agent,'sendInput').mockReturnValue(response.promise);await mount();
     const panel=()=>screen.queryByRole('complementary',{name:'批量待发内容'});
@@ -285,7 +323,7 @@ describe('conversation send transaction', () => {
     const push=(messages:unknown[],activities:unknown[],stage='tools',busy=true)=>act(()=>Socket.latest.emit({type:'snapshot',messages,activities,busy,stage,turn_id:'turn',started_at:stamp}));
     push(prior,[tool]);
     const pending=await screen.findByRole('status',{name:'正在执行的进展 5'});
-    expect(pending.closest('.session-chat-progress')).toHaveTextContent('5 items');
+    expect(pending.closest('.session-chat-progress')).toHaveTextContent('4 items');
     expect(pending.querySelector('.session-chat-live-tool>summary')).toHaveTextContent('Run command · npm run build');
     expect(pending.querySelector('time')).toHaveAttribute('dateTime',stamp);expect(pending.querySelector('.session-chat-metadata-row')).toHaveTextContent('Input');
     expect(screen.getByTestId('conversation-activity-line')).not.toHaveTextContent('npm run build');
@@ -298,7 +336,7 @@ describe('conversation send transaction', () => {
     push([...prior,{id:'round-5',role:'assistant',turn_id:'turn',phase:'commentary',text:'The build passed.',timestamp:stamp,streaming:true}],[tool],'answering');
     expect(await screen.findByText('The build passed.')).toBeVisible();expect(screen.queryByText('Build succeeded')).not.toBeInTheDocument();expect(screen.queryByRole('status',{name:'正在执行的进展 5'})).not.toBeInTheDocument();
     push([...prior,{id:'round-5',role:'assistant',turn_id:'turn',phase:'commentary',text:'The build passed.',timestamp:stamp,streaming:false}],[tool]);
-    expect(await screen.findByRole('status',{name:'正在执行的进展 6'})).not.toHaveTextContent('npm run build');
+    expect(screen.queryByRole('status',{name:'正在执行的进展 6'})).not.toBeInTheDocument();
     push([...prior,{id:'final',role:'assistant',turn_id:'turn',phase:'final',text:'All done',timestamp:stamp}],[],'idle',false);
     expect(screen.queryByRole('status',{name:/正在执行的进展/})).not.toBeInTheDocument();
     expect(screen.getByTestId('conversation-activity-line')).toBeVisible();
@@ -314,15 +352,23 @@ describe('conversation send transaction', () => {
     act(()=>Socket.latest.onclose?.());
     expect(screen.queryByText('Current step')).not.toBeInTheDocument();expect(screen.queryByRole('status',{name:'正在执行的进展 1'})).not.toBeInTheDocument();
   });
-  it('shows the shared progress summary while continuing after a follow-up',async()=>{
+  it('leaves consecutive inserted inputs adjacent until a native reply or tool is observed',async()=>{
     await mount();const prior={id:'before-followup',role:'assistant',turn_id:'turn',phase:'commentary',text:'Prior work',timestamp:new Date(Date.now()-20000).toISOString()};const followup={id:'followup',role:'user',turn_id:'turn',text:'Continue please',timestamp:new Date(Date.now()-10000).toISOString()};
-    act(()=>Socket.latest.emit({type:'snapshot',messages:[prior,followup],busy:true,stage:'waiting',turn_id:'turn',started_at:new Date(Date.now()-20000).toISOString(),activities:[]}));
+    const second={...followup,id:'second',text:'Another insertion',timestamp:new Date(Date.now()-9000).toISOString()};
+    const empty={...prior,id:'empty',text:'',streaming:true};
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[prior,followup,empty,second],busy:true,stage:'waiting',turn_id:'turn',started_at:new Date(Date.now()-20000).toISOString(),activities:[]}));
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:12345},tool_calls:7,tool_rounds:5,complete:true}}));
-    const status=(await screen.findByRole('status',{name:'正在执行的进展 1'})).closest('.session-chat-progress')!.querySelector('summary')!;expect(status).toHaveTextContent('1 item');expect(status).toHaveTextContent('— rounds | — calls');expect(status).not.toHaveTextContent('12.3K');expect(status.closest('.session-chat-progress')!.querySelector('.session-chat-metadata-row')).not.toHaveTextContent('12.3K');expect(status).toHaveTextContent('In progress');expect(status).not.toHaveTextContent('Follow-up sent');
+    expect(screen.getByText('Another insertion')).toBeVisible();
+    expect(screen.getAllByRole('region',{name:/进展$/})).toHaveLength(1);
+    expect(screen.queryByRole('status',{name:/正在执行的进展/})).not.toBeInTheDocument();
     const oldPart={id:'old-segment',start_at:new Date(Date.now()-20000).toISOString(),end_at:followup.timestamp,elapsed_ms:10000,end_reason:'input',tokens:{total_tokens:1000},requests:1,tool_calls:3,tool_rounds:1,complete:true};
-    const newPart={...oldPart,id:'new-segment',start_at:followup.timestamp,end_at:null,elapsed_ms:null,end_reason:null,tokens:{total_tokens:200},tool_calls:1};
+    const newPart={...oldPart,id:'new-segment',start_at:second.timestamp,end_at:null,elapsed_ms:null,end_reason:null,tokens:{total_tokens:200},tool_calls:1};
     act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:10,message_id:prior.id,turn_id:'turn',...oldPart,segment:oldPart}]}));
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{turn_id:'turn',tokens:{total_tokens:1200},requests:2,tool_calls:4,tool_rounds:2,complete:true,segment:newPart}}));
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[prior,followup,empty,second],busy:true,stage:'tools',turn_id:'turn',
+      activities:[{id:'tool',label:'Native-only tool',status:'running',turn_id:'turn',after_message_id:second.id}]}));
+    const status=(await screen.findByRole('status',{name:'正在执行的进展 1'})).closest('.session-chat-progress')!.querySelector('summary')!;
+    expect(status).toHaveTextContent('0 items');
     const statistics=status.querySelector('.session-chat-message-statistics')!;
     expect(statistics).toHaveTextContent('200 (—)｜—｜—｜—｜— · 1 round | 1 call');expect(statistics).not.toHaveTextContent('1.2K');
   });
@@ -335,7 +381,7 @@ describe('conversation send transaction', () => {
     const segment={id:'live-segment',start_at:stamp,end_at:null,end_reason:null,elapsed_ms:null,tokens:{total_tokens:10000,input_tokens:9000,cached_input_tokens:8000,reasoning_output_tokens:100,output_tokens:1000},requests:2,tool_calls:4,tool_rounds:3,complete:false};
     const step={segment_id:segment.id,after_message_id:prior.id,after_sequence:null,start_at:stamp,tokens:{total_tokens:1100,input_tokens:1000,cached_input_tokens:900,reasoning_output_tokens:50,output_tokens:100},requests:1,tool_calls:2,tool_rounds:1,complete:true,shared_messages:1,cost:{unit:'credits',amount:3.21,complete:true}};
     const progress={turn_id:'turn',...segment,segment,step};
-    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress}));const pendingStatistics=pending.querySelector('.session-chat-message-statistics')!;expect(pendingStatistics).toHaveTextContent('1.1K (3.21)｜1K｜900 (90%)｜50｜100');expect(pendingStatistics).toHaveTextContent('1 round | 2 calls');
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress}));const pendingStatistics=pending.querySelector('.session-chat-message-statistics')!;expect(pendingStatistics).toHaveTextContent('1.1K (3.21)｜100｜900 (90%)｜50｜100');expect(pendingStatistics).toHaveTextContent('1 round | 2 calls');
     act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:1,message_id:prior.id,turn_id:'turn',tokens:{total_tokens:200},requests:1,tool_calls:1,tool_rounds:1,complete:true,interval:{tokens:{total_tokens:200},requests:1,tool_calls:1,tool_rounds:1,complete:true,shared_messages:1}}]}));
     expect(document.querySelector('[data-chat-message-id="prior-step"] .session-chat-message-statistics')).toHaveTextContent('200 (—)｜');expect(pendingStatistics).toHaveTextContent('1.1K (3.21)｜');
     const current={id:'streamed-step',role:'assistant',phase:'commentary',turn_id:'turn',text:'Current streamed text',timestamp:stamp,streaming:true};
@@ -362,6 +408,44 @@ describe('conversation send transaction', () => {
     act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:1,message_id:item.id,turn_id:'turn',tokens:{total_tokens:400000},requests:1,tool_calls:3,tool_rounds:2,complete:true,segment:ended}]}));
     act(()=>Socket.latest.emit({type:'snapshot',messages:[item],busy:false,stage:'idle',turn_id:'turn'}));
     expect(header.querySelector('.session-chat-message-statistics')).toHaveTextContent('400K (—)｜—｜—｜—｜— · 2 rounds | 3 calls');expect(header).toHaveTextContent('Elapsed 2m 0s');expect(header).toHaveTextContent('Interrupted');expect(header).not.toHaveTextContent('waiting:');
+  });
+  it('reconciles an executing Item and its Progress before and after the Item settles',async()=>{
+    await mount();
+    const timestamp=new Date(Date.now()-10000).toISOString();
+    const usage=(tokens:number,requests:number,calls:number,amount:number)=>({
+      tokens:{total_tokens:tokens},requests,tool_calls:calls,tool_rounds:calls,complete:true,coverage:'complete' as const,
+      shared_messages:1,cost:{unit:'credits',amount,complete:true},
+    });
+    const itemUsage=usage(2900000,7,6,10.532),workUsage=usage(1400000,3,4,3.498);
+    const timing={start_at:timestamp,end_at:null,end_reason:null,elapsed_ms:null};
+    const old={id:'before',role:'assistant',phase:'commentary',turn_id:'turn',text:'Before the insert',timestamp,
+      statistics:{...usage(3800000,9,9,12.733),sequence:1,turn_id:'turn',progress_id:'old',
+        interval:usage(3800000,9,9,12.733),segment:{...usage(3800000,9,9,12.733),...timing,id:'old'}}};
+    const user={id:'insert',role:'user',text:'Accepted insertion',turn_id:'turn',timestamp};
+    const item={id:'local-first',role:'assistant',phase:'commentary',turn_id:'turn',text:'First local Item',timestamp,
+      statistics:{...itemUsage,sequence:3,revision:1,turn_id:'turn',progress_id:'local',interval:itemUsage,
+        segment:{...itemUsage,...timing,id:'local'}}};
+    const activity={id:'tool',label:'Native tool',status:'running',turn_id:'turn',after_message_id:item.id};
+    const send=(frame:unknown)=>act(()=>Socket.latest.emit(frame));
+    send({type:'snapshot',messages:[old,user,item],activities:[activity],busy:true,stage:'tools',turn_id:'turn'});
+    const total={...usage(4300000,10,10,14.03),...timing,id:'local'};
+    send({type:'progress_statistics',native_id:'native',progress:{...total,revision:2,turn_id:'turn',
+      segment:{...total,unassigned:workUsage},
+      step:{...workUsage,segment_id:total.id,after_message_id:item.id,after_sequence:3,start_at:timestamp}}});
+    const group=screen.getByText(item.text).closest('.session-chat-progress')!;
+    const heading=group.querySelector('summary .session-chat-message-statistics')!;
+    expect(heading).toHaveAttribute('title',expect.stringContaining('Total 4,300,000;'));
+    expect(heading).toHaveTextContent('4.3M (14.03)');
+    expect(heading).toHaveTextContent('10 rounds | 10 calls | 10 Runs');
+    expect(group.querySelector('[data-chat-message-id="local-first"] .session-chat-message-statistics')).toHaveTextContent('2.9M (10.532)');
+    expect(within(group as HTMLElement).getByRole('status',{name:'正在执行的进展 2'})).toHaveTextContent('1.4M (3.498)');
+    const settled={id:'local-next',role:'assistant',phase:'commentary',turn_id:'turn',text:'Second local Item',timestamp,
+      statistics:{...workUsage,sequence:4,revision:3,turn_id:'turn',progress_id:'local',interval:workUsage,segment:total}};
+    send({type:'snapshot',messages:[old,user,item,settled],activities:[],busy:true,stage:'waiting',turn_id:'turn'});
+    expect(heading).toHaveTextContent('4.3M (14.03)');
+    expect(group.querySelectorAll('.session-chat-progress-entry')).toHaveLength(2);
+    expect(screen.queryByRole('status',{name:'正在执行的进展 2'})).not.toBeInTheDocument();
+    expect(group.querySelector('[data-chat-message-id="local-next"] .session-chat-message-statistics')).toHaveTextContent('1.4M (3.498)');
   });
   it('restores completed progress totals and duration from recorded conclusion statistics',async()=>{
     const existing=await api.agent.conversation(session.id),item={id:'historical-progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'Earlier work',timestamp:'2026-01-01T00:00:05Z'},final={id:'historical-final',role:'assistant',turn_id:'turn',phase:'final',text:'Complete',timestamp:'2026-01-01T00:01:00Z'};

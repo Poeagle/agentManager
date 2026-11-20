@@ -372,7 +372,8 @@
 .conversation-compaction-status[data-state="completed"] {color:var(--success,#22a879);}
 .conversation-compaction-status[data-state="failed"],.conversation-compaction-status[data-state="interrupted"] {color:var(--error,#dc2626);}
 
-.session-chat-queued {color:var(--accent);font-size:10px;white-space:nowrap;}
+.session-chat-input-delivery {display:inline-flex;align-items:center;gap:3px;color:var(--text-secondary);font-size:10px;white-space:nowrap;}
+.session-chat-input-delivery.delivered {color:var(--success);}
 
 .session-chat-input-tools>span {margin-right:auto;}
 .session-chat-send-actions {display:flex;align-items:center;gap:8px;margin-left:auto;flex-shrink:0;}
