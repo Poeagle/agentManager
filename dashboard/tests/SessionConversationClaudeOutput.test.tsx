@@ -148,3 +148,31 @@ it('groups Claude tool rounds with the final answer using the shared progress st
   expect(screen.getByText('项目介绍已完成。')).toBeVisible();
   expect(within(progress).queryByText('项目介绍已完成。')).not.toBeInTheDocument();
 });
+it('groups Claude progress across native record turns and shows recorded usage without a segment',async()=>{
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  vi.mocked(api.agent.conversation).mockResolvedValue({
+    messages:[
+      {id:'user',role:'user',text:'Inspect',timestamp:'2026-11-19T23:45:45.000Z'},
+      {id:'one',role:'assistant',turn_id:'record-one',phase:'commentary',text:'Read the README',timestamp:'2026-11-19T23:45:46.000Z'},
+      {id:'two',role:'assistant',turn_id:'record-two',phase:'commentary',text:'Run the tests',timestamp:'2026-11-19T23:45:47.000Z'},
+      {id:'three',role:'assistant',turn_id:'record-three',phase:'commentary',text:'Check the result',timestamp:'2026-11-19T23:45:48.000Z'},
+      {id:'final',role:'assistant',turn_id:'record-four',phase:'final',text:'Done',timestamp:'2026-11-19T23:45:50.000Z'},
+    ],
+    statistics:[
+      {sequence:2,message_id:'one',turn_id:'user-record',tokens:{total_tokens:1200,input_tokens:1000,output_tokens:200},requests:1,tool_calls:2,tool_rounds:1,complete:true},
+      {sequence:3,message_id:'two',turn_id:'user-record',tokens:{total_tokens:2600,input_tokens:2300,output_tokens:300},requests:2,tool_calls:4,tool_rounds:2,complete:true},
+      {sequence:4,message_id:'three',turn_id:'user-record',tokens:{total_tokens:4200,input_tokens:3800,output_tokens:400},requests:3,tool_calls:5,tool_rounds:3,complete:true},
+    ],
+    has_more:false,reset:false,available:true,generation:'g',native_id:'claude-native',
+    session_active:true,session_status:'running',runtime:{state:'idle'},interaction:null,
+  } as unknown as ConversationPage);
+  render(<QueryClientProvider client={client}><SessionConversation session={session} active onRaw={()=>{}}/></QueryClientProvider>);
+  await waitFor(()=>expect(Socket.latest?.onmessage).toBeTruthy());
+  const progress=await screen.findByLabelText('Claude 进展');
+  const header=progress.querySelector('summary')!;
+  expect(header).toHaveTextContent('3 items');
+  expect(header.querySelector('.session-chat-message-statistics')).toHaveTextContent('4.2K (—)｜3.8K｜—｜—｜400 · 3 rounds | 5 calls');
+  expect(header).not.toHaveTextContent('— rounds | — calls');
+  expect(within(progress).getByText('Check the result')).toBeInTheDocument();
+  expect(screen.getByText('Done')).toBeVisible();
+});

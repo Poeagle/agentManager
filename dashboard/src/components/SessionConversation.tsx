@@ -95,7 +95,7 @@ import {
   mergeConversationTimeline,
   type TimelineMessage,
 } from "../lib/conversation-timeline";
-import { groupConversationProgress, pendingProgressStatistics, withObservedToolCounts } from "../lib/conversation-progress";
+import { groupConversationProgress, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts } from "../lib/conversation-progress";
 import {
   conversationTimings,
   elapsedBetween,
@@ -186,7 +186,7 @@ function ProgressSummary({agent,agentName,count,active,progress,progressScope='t
           <span>{agentName}</span>
           <span className="session-chat-kind">progress</span>
           {showStatistics&&<span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>}
-          {showStatistics&&(progress||progressScope==='segment')&&<ConversationStatisticsLabel statistics={progress?{...progress,sequence:0}:null}/>}
+          {showStatistics&&(progress||progressScope==='segment')&&<ConversationStatisticsLabel interval={!!progress&&!('segment' in progress)} statistics={progress?{...progress,sequence:0}:null}/>}
           {showStatistics&&active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
           {showStatistics&&active&&<span className="session-chat-progress-time">{progressPhase}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
           {showStatistics&&(turnDuration!=null?<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time for this progress segment">Elapsed {formatElapsedEnglish(turnDuration)}</time>:progressScope==='segment'?<span className="session-chat-progress-time" title="Segment timing is unavailable">Elapsed —</span>:null)}
@@ -2286,13 +2286,14 @@ export function SessionConversation({
                 if(group.kind === "message") return bubble(group.message,false,group.id);
                 const last=group.messages.at(-1),next=groups[groupIndex+1];
                 const pending=group.id===pendingGroupId;
-                const final=next?.kind==='message'&&next.message.role==='assistant'&&next.message.phase==='final'&&!next.message.async_questions?.length&&!!next.message.turn_id&&next.message.turn_id===last?.turn_id?next.message:null;
+                const nextMessage=next?.kind==='message'?next.message:undefined;
+                const final=nextMessage?.role==='assistant'&&nextMessage.phase==='final'&&!nextMessage.async_questions?.length?nextMessage:null;
                 const saved=final?.statistics?.segment||last?.statistics?.segment||(pending?pendingSegment:null);
                 const live=progressStatistics?.segment;
                 const activeGroup=busy&&(pending||groups.at(-1)===group);
-                const liveMatches=progressStatistics?.turn_id===(last?.turn_id||liveTurn)&&live&&(!saved?(last?progressStatistics?.step?.after_message_id===last.id||progressStatistics?.step?.after_sequence!=null&&progressStatistics.step.after_sequence===last.sequence:!!pendingSegment||!continuingAfterFollowup):live.id===saved.id&&!!saved.start_at&&live.start_at===saved.start_at);
+                const liveMatches=progressStatistics?.turn_id===(last?.statistics?.turn_id||last?.turn_id||liveTurn)&&live&&(!saved?(last?progressStatistics?.step?.after_message_id===last.id||progressStatistics?.step?.after_sequence!=null&&progressStatistics.step.after_sequence===last.sequence:!!pendingSegment||!continuingAfterFollowup):live.id===saved.id&&!!saved.start_at&&live.start_at===saved.start_at);
                 const part=activeGroup&&liveMatches?live:saved;
-                const summary=withObservedToolCounts(part?{...part,turn_id:last?.turn_id||liveTurn||'',sequence:0}:null,pending?slotActivities.length:0,liveTurn||'');
+                const summary=withObservedToolCounts(part?{...part,turn_id:last?.turn_id||liveTurn||'',sequence:0}:progressGroupStatistics(group.messages,final),pending?slotActivities.length:0,liveTurn||'');
                 return (
                   <ProgressSection
                     key={`progress-${group.id}`}

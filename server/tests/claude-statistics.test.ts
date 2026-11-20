@@ -6,6 +6,7 @@ import {
   readClaudeProgress,
   readClaudeStatistics,
 } from "../src/services/agents/claude/statistics.js";
+import { conversationMessageId } from "../src/services/conversation-reader.js";
 
 let directory = "";
 beforeEach(() => {
@@ -51,7 +52,7 @@ it("projects Claude request usage and tools through the shared statistics contra
   const result = await readClaudeStatistics(path);
   expect(result).toEqual([
     expect.objectContaining({
-      message_id: "assistant-message-1",
+      message_id: conversationMessageId("", "assistant", "assistant-message-1"),
       turn_id: "user-1",
       tokens: expect.objectContaining({
         input_tokens: 35,
@@ -127,7 +128,7 @@ it("attributes Claude multi-record turns to their user message without double-co
   const result = await readClaudeStatistics(path);
   expect(result).toHaveLength(1);
   expect(result[0]).toMatchObject({
-    message_id: "msg_same",
+    message_id: conversationMessageId("", "assistant", "msg_same"),
     turn_id: "test-user",
     tokens: { total_tokens: 114 },
     requests: 1,

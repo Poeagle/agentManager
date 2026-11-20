@@ -20,15 +20,22 @@ export function pendingProgressStatistics(live:ConversationProgressStatistics|nu
 type ConversationGroup={kind:'progress';id:string;messages:ConversationMessage[]}|{kind:'message';id:string;message:ConversationMessage};
 
 /** Group presentation only; retain every native item ID for reconciliation,
- * document anchors and navigation. A user message or final reply ends a group. */
+ * document anchors and navigation. A user message or final reply ends a group.
+ * Native turn IDs can change between consecutive assistant updates in one
+ * request, so they are not a presentation boundary. */
 export function groupConversationProgress(messages:ConversationMessage[]):ConversationGroup[] {
   const groups:ConversationGroup[]=[];
+  let progressClosed=false;
   for(const message of messages) {
     const previous=groups.at(-1);
+    // A live tool round can carry text only in its content blocks. The same
+    // shared presentation rule applies after the platform strips tool data
+    // from durable history, so do not require literal message text here.
+    const progressMessage=message.role==='assistant' && (message.phase==='commentary' || !message.phase && message.content_blocks?.length) && message.presentation!=='compaction_summary';
     // Consecutive native retry notices in the same turn are updates to one
     // incident. Never infer a relationship across a turn or an intervening
     // message, and keep a different explicit error code as a separate error.
-    if(message.role==='assistant' && message.phase==='error' && message.turn_id && previous?.kind==='message') {
+    if(message.role==='assistant' && message.phase==='error' && message.turn_id && previous?.kind==='message' && !progressClosed) {
       const prior=previous.message;
       if(prior.role==='assistant' && prior.phase==='error' && prior.error?.will_retry && prior.turn_id===message.turn_id &&
         (!prior.error.code || !message.error?.code || prior.error.code===message.error.code)) {
@@ -36,13 +43,28 @@ export function groupConversationProgress(messages:ConversationMessage[]):Conver
         continue;
       }
     }
-    if(message.role==='assistant' && message.phase==='commentary' && message.presentation!=='compaction_summary') {
-      const turn=previous?.kind==='progress'?previous.messages.at(-1)?.turn_id:undefined;
-      if(previous?.kind==='progress' && (!turn || !message.turn_id || turn===message.turn_id))previous.messages.push(message);
+    if(progressMessage) {
+      if(previous?.kind==='progress'&&!progressClosed)previous.messages.push(message);
       else groups.push({kind:'progress',id:message.id,messages:[message]});
-    }else groups.push({kind:'message',id:message.id,message});
+      progressClosed=!!(message.phase==='final'||message.phase==='error'||message.presentation==='compaction_summary'||message.async_questions?.length);
+    }else {
+      groups.push({kind:'message',id:message.id,message});
+      progressClosed=!(message.role==='assistant'&&message.phase==='error'&&message.error?.will_retry);
+    }
   }
   return groups;
+}
+
+/** Select the most specific recorded usage for a presentation group. Segment
+ * counters describe the current input interval; native turn totals remain a
+ * valid fallback for adapters that cannot record segment timings. */
+export function progressGroupStatistics(messages:ConversationMessage[],final?:ConversationMessage|null):ConversationStatistics|null {
+  for(const message of final?[final,...messages.slice().reverse()]:messages.slice().reverse()) {
+    const statistics=message.statistics;
+    if(statistics?.segment)return {...statistics,...statistics.segment,sequence:0,turn_id:statistics.turn_id||final?.turn_id||message.turn_id||'',interval:{...statistics.segment,shared_messages:1}};
+  }
+  for(const message of final?[final,...messages.slice().reverse()]:messages.slice().reverse())if(message.statistics)return {...message.statistics,sequence:0};
+  return null;
 }
 
 export function withObservedToolCounts(statistics:ConversationStatistics|null,count:number,turnId:string):ConversationStatistics|null {

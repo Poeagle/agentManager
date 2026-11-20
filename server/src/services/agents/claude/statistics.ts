@@ -1,5 +1,6 @@
 import { open } from "fs/promises";
 import { publicTokenCounters } from "../../conversation-usage.js";
+import { conversationMessageId } from "../../conversation-reader.js";
 import type {
   AgentProgressStatistics,
   AgentStatistics,
@@ -175,7 +176,10 @@ function project(state: State): AgentStatistics[] {
     return [
       {
         sequence: record.seq,
-        message_id: record.key,
+        message_id:
+          record.role === "assistant"
+            ? conversationMessageId("", "assistant", record.key)
+            : record.key,
         turn_id: record.turnId,
         tokens: record.usage ? { ...totals } : null,
         requests,

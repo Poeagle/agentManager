@@ -2,7 +2,7 @@ import {describe,it,expect} from 'vitest';
 import {automaticConversationContext,automaticContextMarkdown} from '../src/lib/conversation-context';
 import {conversationTimings} from '../src/lib/conversation-timing';
 import {conversationOutline} from '../src/components/ConversationReadingTools';
-import {groupConversationProgress} from '../src/lib/conversation-progress';
+import {groupConversationProgress,progressGroupStatistics} from '../src/lib/conversation-progress';
 it('collapses only consecutive retry errors from the same known turn while preserving the latest state',()=>{
  const retry=(id:string,turn_id:string|undefined,code:string|undefined,will_retry=true)=>({id,role:'assistant' as const,phase:'error' as const,text:id,timestamp:null,turn_id,error:{code,will_retry}});
  const first=retry('first','one','network'),second=retry('second','one','network'),final=retry('final','one','network',false);
@@ -12,6 +12,35 @@ it('collapses only consecutive retry errors from the same known turn while prese
  expect(groupConversationProgress([retry('unknown-a',undefined,'network'),retry('unknown-b',undefined,'network')])).toHaveLength(2);
  expect(groupConversationProgress([final,second])).toHaveLength(2);
  expect(groupConversationProgress([first,{id:'user',role:'user',text:'continue',timestamp:null},second])).toHaveLength(3);
+});
+it('groups consecutive assistant updates across native turn identity changes without crossing user input',()=>{
+ const progress=(id:string,turn_id:string)=>({id,role:'assistant' as const,phase:'commentary' as const,text:id,timestamp:null,turn_id});
+ const first=progress('one','record-one'),second=progress('two','record-two'),third=progress('three','record-three');
+ const groups=groupConversationProgress([{id:'user',role:'user',text:'Inspect',timestamp:null},first,second,third,{id:'followup',role:'user',text:'Continue',timestamp:null},progress('four','record-four')]);
+ expect(groups.map(group=>group.kind==='progress'?group.messages.map(message=>message.id):group.message.id)).toEqual([
+   'user',['one','two','three'],'followup',['four'],
+ ]);
+ const missing=groupConversationProgress([
+  {id:'first-user',role:'user',text:'First',timestamp:null},
+  {...first,turn_id:undefined},
+  {id:'second-user',role:'user',text:'Second',timestamp:null},
+  {...second,turn_id:undefined},
+ ]);
+ expect(missing.map(group=>group.kind==='progress'?group.messages.map(message=>message.id):group.message.id)).toEqual([
+  'first-user',['one'],'second-user',['two'],
+ ]);
+ const blockOnly={id:'tool-only',role:'assistant' as const,text:'',timestamp:null,phase:'commentary' as const,content_blocks:[{type:'tool_use' as const,index:0,id:'tool',name:'Read',input:{},status:'completed' as const}]};
+ expect(groupConversationProgress([{id:'input',role:'user',text:'Inspect',timestamp:null},blockOnly,{...blockOnly,id:'tool-only-two'}]))
+  .toMatchObject([{kind:'message',message:{id:'input'}},{kind:'progress',messages:[{id:'tool-only'},{id:'tool-only-two'}]}]);
+});
+it('uses the group segment when recorded and falls back to cumulative native turn usage',()=>{
+ const segment={id:'segment',start_at:null,end_at:null,elapsed_ms:null,end_reason:null,tokens:{total_tokens:300},requests:1,tool_calls:2,tool_rounds:1,complete:true};
+ const messages=[
+  {id:'one',role:'assistant' as const,phase:'commentary' as const,text:'one',timestamp:null,turn_id:'native-one',statistics:{sequence:1,message_id:'one',turn_id:'user',tokens:{total_tokens:100},requests:1,tool_calls:1,tool_rounds:1,complete:true}},
+  {id:'two',role:'assistant' as const,phase:'commentary' as const,text:'two',timestamp:null,turn_id:'native-two',statistics:{sequence:2,message_id:'two',turn_id:'user',tokens:{total_tokens:300},requests:2,tool_calls:4,tool_rounds:2,complete:true,segment}},
+ ];
+ expect(progressGroupStatistics(messages)).toMatchObject({turn_id:'user',tokens:{total_tokens:300},requests:1,tool_calls:2,tool_rounds:1,interval:{shared_messages:1}});
+ expect(progressGroupStatistics(messages.map(message=>({...message,statistics:{...message.statistics!,segment:undefined}})))).toMatchObject({turn_id:'user',tokens:{total_tokens:300},requests:2,tool_calls:4,tool_rounds:2});
 });
 const rules='# AGENTS.md instructions for /project\n\n<INSTRUCTIONS>\n# 项目治理\n自动规则\n</INSTRUCTIONS>';
 describe('native automatic context',()=>{
