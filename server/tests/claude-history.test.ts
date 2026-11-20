@@ -146,13 +146,9 @@ describe("Claude durable conversation projection", () => {
     expect(page.messages.map((message) => message.text)).toEqual([
       "检查项目",
       "开始检查。",
-    ]);
-    expect(page.messages.map((message) => message.text)).toEqual([
-      "检查项目",
       "开始检查。",
     ]);
     expect(page.messages[1].content_blocks).toEqual([
-      { type: "text", index: 0, text: "开始检查。" },
       {
         type: "tool_use",
         index: 1,
@@ -163,7 +159,10 @@ describe("Claude durable conversation projection", () => {
         result: "/workspace",
       },
     ]);
-    expect(page.messages[1].id).toBe(
+    expect(page.messages[2].content_blocks).toEqual([
+      { type: "text", index: 0, text: "开始检查。" },
+    ]);
+    expect(page.messages[2].id).toBe(
       conversationMessageId("", "assistant", "assistant-message"),
     );
     appendFileSync(
