@@ -1,5 +1,6 @@
 import {registerApiRoutes} from './routes/index.js';
 import {startAccountUsage,stopAccountUsage} from './services/agents/codex/account-usage.js';
+import {collectSessionStatisticsInventory,stopSessionStatistics} from './services/session-statistics.js';
 import {startEngineBalance,stopEngineBalance} from './services/agents/codex/engine-balance.js';
 import { installApiFallback } from './http-fallback.js';
 // Increase libuv thread pool for async execFile / fs operations
@@ -102,7 +103,7 @@ async function start() {
   // before WebSocket connected, or spawn command hangs on registry check/npm install)
   startPendingSessionWatchdog();
   startScheduledTaskScheduler();
-  startAccountUsage();
+  startAccountUsage(collectSessionStatisticsInventory);
   startEngineBalance();
   serverResourceSampler.start();
   memorySessionReaper.start();
@@ -329,6 +330,7 @@ async function shutdown(exitCode = 0): Promise<void> {
   try { killAllSessions(); } catch (error) { recordFailure('session detach', error); }
   try { detachManagedAgents();for(const descriptor of agentDescriptors())await getAgent(descriptor.id).quota.shutdown?.(); } catch (error) { recordFailure('quota reader stop', error); }
   if (closeServer) await closeServer;
+  try { await stopSessionStatistics(); } catch (error) { recordFailure('session statistics stop', error); }
   try { getDb().pragma('wal_checkpoint(TRUNCATE)'); } catch (error) { recordFailure('database checkpoint', error); }
   try { closeDb(); } catch (error) { recordFailure('database close', error); }
 

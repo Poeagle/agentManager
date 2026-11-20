@@ -1,7 +1,8 @@
-import { purgeClaudeIdentity } from "./identity.js";
+import { purgeClaudeHistory } from "./identity.js";
 import { extractClaudePromptContext } from "./prompt-context.js";
 import { decodeClaudeText } from "./text.js";
 import { parseClaudeMessage, claudeRecordLimit } from "./history.js";
+import { claudeSessionFacts } from "./session-facts.js";
 import { NATIVE_SESSION_ID_RE } from "../native-identifiers.js";
 import { join } from "path";
 import { randomUUID } from "crypto";
@@ -66,7 +67,7 @@ export const claudeAdapter: AgentDefinition = {
     read: (session) =>
       session.native_session_id ?? session.claude_session_id ?? null,
     legacyField: "claude_session_id",
-    purge: purgeClaudeIdentity,
+    purgeHistory: purgeClaudeHistory,
     matchesProcess: (args) =>
       ["claude", "claude-code"].includes(
         args[0]?.split("/").at(-1)?.toLowerCase() || "",
@@ -157,6 +158,7 @@ export const claudeAdapter: AgentDefinition = {
     afterTerminalSubmit: async () => {},
   },
   statistics: {
+    facts: claudeSessionFacts,
     read: async (_context, path) =>
       (await import("./statistics.js")).readClaudeStatistics(path),
     readProgress: async (_context, path) =>

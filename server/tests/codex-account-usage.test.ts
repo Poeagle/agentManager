@@ -4,7 +4,7 @@ import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
 import {createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
-import {mkdtemp,mkdir,writeFile,appendFile,utimes,rm,copyFile} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,appendFile,utimes,rm,copyFile,access} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {initAccountUsage,collectAccountUsage,cachedAccountUsage,cachedGroupUsage,backfillUsageHours,startAccountUsage,stopAccountUsage,refreshUsageRules,USAGE_RULE_VERSION} from '../src/services/agents/codex/account-usage.js';
@@ -48,6 +48,45 @@ function response(input:string,rows:any[],options:Record<string,unknown>={}){
 function respond(rows:any[]=[row],options:Record<string,unknown>={}){vi.mocked(localCommandInput).mockImplementation(async(_script,input)=>response(input,rows,options));}
 beforeEach(()=>{vi.stubEnv('TZ','UTC');fixture=createTestDatabase();initAccountUsage();respond();vi.mocked(accountCommandInput).mockImplementation(async(_c,_s,input)=>response(input,[row]));});
 afterEach(async()=>{await stopAccountUsage();fixture.cleanup();vi.restoreAllMocks();vi.resetAllMocks();vi.useRealTimers();vi.unstubAllEnvs();});
+
+it('captures the final Codex request before platform history deletion and retains account consumption',async()=>{
+ const native='019ff001-5555-7555-8555-555555555554';
+ const root=join(fixture.dir,'codex-home'),directory=join(root,'sessions'),path=join(directory,`rollout-${native}.jsonl`);
+ vi.stubEnv('CODEX_HOME',root);
+ await mkdir(directory,{recursive:true});
+ const line=(type:string,payload:object,timestamp='2026-11-20T00:00:00Z')=>JSON.stringify({type,payload,timestamp})+'\n';
+ const usage=(id:string,input:number)=>line('token_usage_record',{turn_id:'turn',response_id:id,
+   usage:{input_tokens:input,cached_input_tokens:0,output_tokens:5,reasoning_output_tokens:0,total_tokens:input+5}});
+ await writeFile(path,line('session_meta',{id:native,cwd:fixture.dir})+line('event_msg',{type:'task_started',turn_id:'turn'})+usage('first',1024));
+ vi.mocked(localCommandInput).mockImplementation((script,input)=>new Promise((resolve,reject)=>{
+   const child=execFile('python3',['-c',script],{maxBuffer:1024*1024},(error,out)=>error?reject(error):resolve(out));
+   child.stdin!.end(input);
+ }));
+ await collectAccountUsage('native');
+ expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(1029);
+ await appendFile(path,usage('last',2048)+line('event_msg',{type:'task_complete',turn_id:'turn'}));
+ const {purgeSessionRecord}=await import('../src/services/session-manager.js');
+ getDb().prepare("INSERT INTO sessions(id,task,status,cli_type,codex_session_id) VALUES ('purge-fixture','Test','cancelled','codex',?)").run(native);
+ vi.stubEnv('TZ','Asia/Taipei');
+ await expect(purgeSessionRecord('purge-fixture')).resolves.toEqual({ok:true});
+ await expect(access(path)).rejects.toMatchObject({code:'ENOENT'});
+ expect(cachedAccountUsage('native')).toMatchObject({
+   timezone:'UTC',timezone_pending:'Asia/Taipei',unassigned:null,rows:[{tokens:{total_tokens:3082}}],
+ });
+ vi.stubEnv('TZ','UTC');
+ await collectAccountUsage('native');
+ expect(cachedAccountUsage('native').rows[0]).toMatchObject({credit_coverage:{total:2},tokens:{total_tokens:3082}});
+});
+it('keeps existing account usage when a targeted flush sees a different history source',async()=>{
+ vi.stubEnv('CODEX_HOME',join(fixture.dir,'original'));
+ await collectAccountUsage('native');
+ const original=cachedAccountUsage('native').rows;
+ expect(original[0].tokens.total_tokens).toBe(10);
+ vi.stubEnv('CODEX_HOME',join(fixture.dir,'replacement'));
+ await expect(collectAccountUsage('native',{nativeId:'target'})).rejects.toThrow('账号历史来源已变化');
+ vi.stubEnv('CODEX_HOME',join(fixture.dir,'original'));
+ expect(cachedAccountUsage('native').rows).toEqual(original);
+});
 it('reprocesses old Fast metadata on a rule upgrade and preserves data if history is missing',async()=>{
  const home=await mkdtemp(join(tmpdir(),'usage-rule-refresh-'));vi.stubEnv('CODEX_HOME',home);vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-02T12:00:00Z'));
  const entry=(type:string,payload:unknown,timestamp?:string)=>JSON.stringify({type,payload,...timestamp?{timestamp}:{}})+'\n';

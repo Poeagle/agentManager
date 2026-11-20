@@ -703,6 +703,7 @@ export const api = {
     contextBreakdown:(sessionId:string,refresh=false,signal?:AbortSignal)=>fetchJSON<{context:ConversationContextBreakdown}>(`/sessions/${encodeURIComponent(sessionId)}/context-breakdown${refresh?'?refresh=true':''}`,{signal}),
     setControls:(sessionId:string,value:AgentModelPreference|null)=>fetchJSON<{ok:boolean;pending:AgentModelPreference|null;pending_status?:'saved'|'submitted'|null;model?:string;effort?:string;provider?:string;service_tier?:string}>(`/sessions/${encodeURIComponent(sessionId)}/controls`,{method:'PUT',body:JSON.stringify(value)}),
     conversation:(sessionId:string,query:{after?:string;before?:string}={},signal?:AbortSignal)=>fetchJSON<ConversationPage>(`/sessions/${encodeURIComponent(sessionId)}/conversation?${new URLSearchParams(query)}`,{signal}),
+    conversationMetadata:(sessionId:string,query:{event_before?:string;cache_before?:string}={},signal?:AbortSignal)=>fetchJSON<{metadata:SessionMetadataDetails|null}>(`/sessions/${encodeURIComponent(sessionId)}/conversation/metadata?${new URLSearchParams(query)}`,{signal}),
     checkSend:(sessionId:string,payload:SendGuardPayload,signal?:AbortSignal)=>fetchJSON<SendGuardCheck>(`/sessions/${encodeURIComponent(sessionId)}/input-check`,{method:'POST',body:JSON.stringify(payload),signal}),
     sendInput:(sessionId:string,input:string,clientId?:string,attachments?:ConversationAttachment[],batch?:Array<{length:number;attachments:number}>,guardToken?:string)=>fetchJSON<{status:string}>(`/sessions/${encodeURIComponent(sessionId)}/input`,{method:'POST',body:JSON.stringify({input,source:'conversation',client_id:clientId,attachments,batch,guard_token:guardToken})}),
     capabilities: () => fetchJSON<AgentApiContract>('/agent/capabilities'),
@@ -1314,11 +1315,11 @@ export interface SessionOutput {
 }
 
 export interface ConversationCostEstimate {amount:number|null;unit:string;complete:boolean;rate_date?:string;basis?:string;breakdown?:{input:number;cache:number;output:number;reasoning:number|null}}
-export interface ConversationInterval {cost?:ConversationCostEstimate|null;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;shared_messages:number}
+export interface ConversationInterval {coverage?:StatisticsCoverage;reasons?:StatisticsReason[];cost?:ConversationCostEstimate|null;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;shared_messages:number}
 export interface ConversationConclusion extends ConversationInterval {start_at:string|null;end_at:string|null;elapsed_ms:number|null}
 export interface ConversationMessage {usage?:Record<string,number|null>;batch?:Array<{text:string;attachments:ConversationAttachment[]}>;statistics?:ConversationStatistics;id:string;role:'user'|'assistant';text:string;timestamp:string|null;turn_id?:string;streaming?:boolean;queued?:boolean;phase?:'commentary'|'final'|'error';content_blocks?:Array<{type:'text';index:number;text:string}|{type:'thinking';index:number;text:string}|{type:'tool_use';index:number;id:string;name:string;input:unknown;status:'running'|'completed'|'failed';result?:string;is_error?:boolean}>;presentation?:'compaction_summary';compaction?:{before_tokens:number|null;after_tokens:number|null;duration_ms:number|null};error?:{code?:string;will_retry:boolean};client_id?:string;input_source?:{kind:string;label:string};native_client_id?:string;sequence?:number;attachments?:ConversationAttachment[];async_questions?:Array<{id?:string;title:string;options:string[]|null}>;question_replies?:Array<{question_id:string;question:string;answer:string}>}
-export interface ConversationProgressSegment {cost?:ConversationCostEstimate|null;id:string;start_at:string|null;end_at:string|null;elapsed_ms:number|null;end_reason:'input'|'completed'|'interrupted'|'unknown'|null;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean}
-export interface ConversationStatistics {cost?:ConversationCostEstimate|null;sequence:number;message_id?:string;turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;interval?:ConversationInterval;segment?:ConversationProgressSegment;conclusion?:ConversationConclusion}
+export interface ConversationProgressSegment {coverage?:StatisticsCoverage;reasons?:StatisticsReason[];cost?:ConversationCostEstimate|null;id:string;start_at:string|null;end_at:string|null;elapsed_ms:number|null;end_reason:'input'|'completed'|'interrupted'|'unknown'|null;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean}
+export interface ConversationStatistics {coverage?:StatisticsCoverage;reasons?:StatisticsReason[];cost?:ConversationCostEstimate|null;sequence:number;revision?:number;message_id?:string;turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;interval?:ConversationInterval;segment?:ConversationProgressSegment;conclusion?:ConversationConclusion}
 export interface ConversationProgressStatistics {turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;cost?:ConversationCostEstimate|null;segment?:ConversationProgressSegment;step?:ConversationInterval&{segment_id:string;after_message_id:string|null;after_sequence:number|null;start_at:string|null}}
 export interface ConversationContextBreakdown {
  source:'jsonl';exact:false;method:'characters_div_3';checked_at:string;observed_at:string|null;model:string|null;
@@ -1344,6 +1345,7 @@ export interface ConversationControlsData {
   pending_status?:'saved'|'submitted'|null;can_edit:boolean;loaded:boolean;pending:AgentModelPreference|null;warning:string|null;native_id:string;checked_at:string;usage_observed_at:string|null;
 }
 export interface ConversationPage {
+  metadata?:SessionMetadata|null;cache_drops?:SessionCacheDrop[];
   messages:ConversationMessage[];statistics?:ConversationStatistics[];has_more:boolean;reset:boolean;available:boolean;generation:string|null;
   agent?:AgentDescriptor;agent_id?:string;native_session_id?:string|null;session_id:string;session_status:Session['status'];session_active:boolean;native_id:string|null;
   runtime:Session['agent_runtime']|null;
@@ -1366,3 +1368,4 @@ export interface CodexAccountDetails {
   settings:Record<string,string|null>;
   models:Array<{model:string;name?:string;description?:string;defaultEffort?:string;efforts?:Array<{value:string;description:string}>;service_tiers?:Array<{id:string;name:string;description:string}>;default_service_tier?:string|null}>;
 }
+import type { SessionCacheDrop, SessionMetadata, SessionMetadataDetails, StatisticsCoverage, StatisticsReason } from './session-metadata';

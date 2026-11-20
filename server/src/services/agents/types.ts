@@ -1,5 +1,6 @@
 import type { ConversationAttachment } from "../conversation-attachments.js";
 import type { AgentStreamFrame } from "./events.js";
+import type { AgentSessionFactsPort, SessionCoverage, SessionCoverageReason } from "./session-facts.js";
 /** Provider identifiers are open strings; registering a provider does not
  * require changing a discriminated union in platform code. */
 export type AgentId = string;
@@ -398,6 +399,8 @@ export interface AgentModel {
 }
 export interface AgentCostEstimate {amount:number|null;unit:string;complete:boolean;rate_date?:string;basis?:string;breakdown?:{input:number;cache:number;output:number;reasoning:number|null}}
 export interface AgentStatisticsInterval {
+  coverage?: SessionCoverage;
+  reasons?: SessionCoverageReason[];
   cost?:AgentCostEstimate|null;
   tokens: Record<string, number | null> | null;
   requests: number;
@@ -407,6 +410,8 @@ export interface AgentStatisticsInterval {
   shared_messages: number;
 }
 export interface AgentProgressSegment {
+  coverage?: SessionCoverage;
+  reasons?: SessionCoverageReason[];
   cost?:AgentCostEstimate|null;
   id:string; start_at:string|null; end_at:string|null; elapsed_ms:number|null; end_reason:'input'|'completed'|'interrupted'|'unknown'|null;
   tokens:Record<string,number|null>|null; requests:number; tool_calls:number; tool_rounds:number; complete:boolean;
@@ -414,6 +419,7 @@ export interface AgentProgressSegment {
 export interface AgentStatistics {
   cost?:AgentCostEstimate|null;
   sequence: number;
+  revision?: number;
   message_id?: string;
   turn_id: string;
   tokens: Record<string, number | null> | null;
@@ -596,6 +602,7 @@ export interface AgentContextBreakdown {
 export interface AgentStatisticsPort {
   read(context: AgentContext, path: string): Promise<AgentStatistics[]>;
   readProgress?(context: AgentContext, path: string): Promise<AgentProgressStatistics | null>;
+  facts?: AgentSessionFactsPort;
 }
 export interface AgentProgressStatistics {turn_id:string;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;cost?:AgentCostEstimate|null;segment?:AgentProgressSegment;step?:AgentStatisticsInterval&{segment_id:string;after_message_id:string|null;after_sequence:number|null;start_at:string|null}}
 export interface AgentQuotaPort {

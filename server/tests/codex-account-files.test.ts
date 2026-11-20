@@ -17,8 +17,18 @@ describe('account history file boundaries',()=>{
  it('changes the mirror generation for an actual transcript rewrite so removed content is not retained',async()=>{const before=await stat(fixture.path);const temporary=fixture.path+'.new';await writeFile(temporary,'REWRITTEN HISTORY\n');await publishHistoryMirror(temporary,fixture.path);expect((await stat(fixture.path)).ino).not.toBe(before.ino);expect(await readFile(fixture.path,'utf8')).toBe('REWRITTEN HISTORY\n');});
  it('returns no history for an unloaded account thread without hiding other RPC failures',async()=>{
   const {CodexRpcError}=await import('../src/services/agents/codex/stream.js');
+  fixture.command.mockResolvedValueOnce('null');
   fixture.error=new CodexRpcError(`thread not loaded: ${native}`);expect(await environmentRollout(context)).toBeNull();
   fixture.error=new CodexRpcError('account access denied');await expect(environmentRollout(context)).rejects.toThrow('account access denied');
+ });
+ it('reads the authorized archived rollout of an unloaded account thread',async()=>{
+  const {CodexRpcError}=await import('../src/services/agents/codex/stream.js');
+  await mkdir(join(fixture.home,'archived_sessions'));
+  const archive=join(fixture.home,'archived_sessions','rollout-'+native+'.jsonl');
+  await writeFile(archive,'ARCHIVED HISTORY\n');
+  fixture.error=new CodexRpcError(`thread not loaded: ${native}`);
+  fixture.command.mockResolvedValueOnce(JSON.stringify(archive));
+  expect(await environmentRollout(context)).toBe(archive);
  });
  it('reads an explicitly bound rollout inside the account sessions root without broadening permissions',async()=>{expect(await environmentRollout(context)).toBe(fixture.path);expect(fixture.command).not.toHaveBeenCalled();});
  it('expands native paginated fork ancestry into the same public history',async()=>{

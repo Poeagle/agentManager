@@ -5,9 +5,10 @@ import {config} from '../config.js';
 import {migrateRbac} from '../services/rbac.js';
 import {migratePlatformAi} from '../services/platform-ai/schema.js';
 import {migrateNotifications} from '../services/notification-schema.js';
+import {migrateSessionStatistics} from './session-statistics.js';
 
 let db: Database.Database;
-const SCHEMA_VERSION = 29;
+const SCHEMA_VERSION = 30;
 
 function tableColumns(table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -512,6 +513,7 @@ function runMigrations(): void {
     }
     migratePlatformAi(db);
     migrateNotifications(db);
+    migrateSessionStatistics(db);
     createCurrentIndexes();
     if ((db.pragma('foreign_key_check') as unknown[]).length) throw new Error('Foreign key validation failed after migration');
     db.pragma(`user_version = ${SCHEMA_VERSION}`);

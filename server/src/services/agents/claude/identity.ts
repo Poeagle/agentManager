@@ -1,4 +1,5 @@
 import { readdirSync, statSync, unlinkSync } from 'fs';
+import { lstat, unlink } from 'node:fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import { getDb } from '../../../db/index.js';
@@ -142,3 +143,16 @@ export function purgeClaudeIdentity(context: AgentContext) { if (!context.native
         unlinkSync(join(directory, `${context.nativeId}.jsonl`));
     }
     catch { } }
+
+export async function purgeClaudeHistory(context: AgentContext) {
+    if (!context.nativeId || !UUID_RE.test(context.nativeId) || !context.projectPath) return;
+    const directory = resolveClaudeDir(context.projectPath);
+    if (!directory) return;
+    try {
+        const path = join(directory, `${context.nativeId}.jsonl`);
+        if (!(await lstat(path)).isFile()) throw Error('Claude 原生记录不是普通文件');
+        await unlink(path);
+    } catch(error) {
+        if ((error as NodeJS.ErrnoException).code!=='ENOENT') throw error;
+    }
+}

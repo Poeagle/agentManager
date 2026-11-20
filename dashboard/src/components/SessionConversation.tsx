@@ -29,6 +29,8 @@ import {
 } from "../lib/use-conversation-compaction";
 import { ConversationCompactionStatus } from "./ConversationCompactionStatus";
 import { ConversationControls } from "./ConversationControls";
+import { ConversationCacheDrop } from "./ConversationCacheDrop";
+import {mergeCacheTimeline,type CacheTimeline,type SessionCacheDrop,type SessionMetadata} from '../lib/session-metadata';
 import { ConversationAutomaticContext } from "./ConversationAutomaticContext";
 import { ConversationDialogCard } from "./ConversationDialogCard";
 import { automaticConversationContext } from "../lib/conversation-context";
@@ -95,7 +97,7 @@ import {
   mergeConversationTimeline,
   type TimelineMessage,
 } from "../lib/conversation-timeline";
-import { groupConversationProgress, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts } from "../lib/conversation-progress";
+import { groupConversationProgress, mergeConversationStatistics, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts } from "../lib/conversation-progress";
 import {
   conversationTimings,
   elapsedBetween,
@@ -186,7 +188,7 @@ function ProgressSummary({agent,agentName,count,active,progress,progressScope='t
           <span>{agentName}</span>
           <span className="session-chat-kind">progress</span>
           {showStatistics&&<span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>}
-          {showStatistics&&(progress||progressScope==='segment')&&<ConversationStatisticsLabel interval={!!progress&&!('segment' in progress)} statistics={progress?{...progress,sequence:0}:null}/>}
+          {showStatistics&&(progress||progressScope==='segment')&&<ConversationStatisticsLabel progress interval={!!progress&&!('segment' in progress)} statistics={progress?{...progress,sequence:0}:null}/>}
           {showStatistics&&active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
           {showStatistics&&active&&<span className="session-chat-progress-time">{progressPhase}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
           {showStatistics&&(turnDuration!=null?<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time for this progress segment">Elapsed {formatElapsedEnglish(turnDuration)}</time>:progressScope==='segment'?<span className="session-chat-progress-time" title="Segment timing is unavailable">Elapsed —</span>:null)}
@@ -623,6 +625,9 @@ export function SessionConversation({
   >({});
   useEffect(() => setAutoRetries({}), [session.id, agentNativeId(session)]);
   const [statistics, setStatistics] = useState<ConversationStatistics[]>([]);
+  const [metadata, setMetadata] = useState<CacheTimeline|null>(null);
+  const acceptMetadata=useCallback((summary:SessionMetadata|null|undefined,drops:SessionCacheDrop[]=[])=>
+    {if(summary)setMetadata(previous=>mergeCacheTimeline(previous,summary,drops));},[]);
   const [progressStatistics,setProgressStatistics]=useState<import('../lib/api').ConversationProgressStatistics|null>(null);
   const [page, setPage] = useState<ConversationPage | null>(null);
   useEffect(() => {
@@ -898,6 +903,7 @@ export function SessionConversation({
     setReconnectError("");
     setMessages([]);
     setStatistics([]);
+    setMetadata(null);
     setPage(null);
     setRequests([]);
     setHasMore(false);
@@ -1043,6 +1049,7 @@ export function SessionConversation({
           if (controller.signal.aborted) return;
           result = { ...result, reset: true };
         }
+        acceptMetadata(result.metadata,result.cache_drops);
         pageActive = result.session_active;
         const reset =
           result.reset ||
@@ -1057,18 +1064,11 @@ export function SessionConversation({
             ? { ...result, runtime: previous.runtime }
             : result,
         );
-        if (result.statistics)
+        if (reset || result.statistics)
           setStatistics((previous) =>
             reset
-              ? result.statistics!
-              : [
-                  ...new Map(
-                    [...previous, ...result.statistics!].map((item) => [
-                      item.sequence,
-                      item,
-                    ]),
-                  ).values(),
-                ].slice(-80),
+              ? result.statistics ?? []
+              : mergeConversationStatistics(previous, result.statistics ?? []),
           );
         setError("");
         setLoading(false);
@@ -1262,6 +1262,8 @@ export function SessionConversation({
           native_id?: string;
           usage?: ConversationUsageUpdate["usage"];
           statistics?: ConversationStatistics[];
+          metadata?: SessionMetadata;
+          cache_drops?: SessionCacheDrop[];
           progress?: import('../lib/api').ConversationProgressStatistics|null;
           retry?: ConversationRetry;
           observed_at?: string;
@@ -1290,6 +1292,10 @@ export function SessionConversation({
         }
         if (frame.type === "snapshot" || frame.type === "patch") failures = 0;
         if(frame.type==='progress_statistics'&&frame.native_id===agentNativeId(session)){setProgressStatistics(frame.progress??null);return;}
+        if(frame.type==='session_metadata'){
+          if(frame.native_id===agentNativeId(session))acceptMetadata(frame.metadata,frame.cache_drops);
+          return;
+        }
         if(frame.type==='input_reconciliation'&&frame.native_id===agentNativeId(session)&&Array.isArray(frame.messages)){setMessages(previous=>mergeConversationTimeline(previous,frame.messages!));return;}
         if (
           frame.type === "patch" &&
@@ -1376,14 +1382,7 @@ export function SessionConversation({
           frame.native_id === agentNativeId(session) &&
           Array.isArray(frame.statistics)
         ) {
-          setStatistics((previous) => {
-            const merged = new Map(
-              previous.map((item) => [item.sequence, item]),
-            );
-            for (const item of frame.statistics!)
-              merged.set(item.sequence, item);
-            return [...merged.values()].slice(-80);
-          });
+          setStatistics((previous) => mergeConversationStatistics(previous, frame.statistics!));
           return;
         }
         if (frame.type === "settings" && typeof frame.model === "string") {
@@ -1584,9 +1583,15 @@ export function SessionConversation({
     const previousHeight = list.current?.scrollHeight || 0;
     const previousTop = list.current?.scrollTop || 0;
     try {
+      const identity = conversationIdentity.current;
       const result = await api.agent.conversation(session.id, {
         before: messages[0]?.id || "0".repeat(32),
       });
+      if(conversationIdentity.current.sessionId!==identity.sessionId||conversationIdentity.current.nativeId!==identity.nativeId)return;
+      if(result.reset||result.generation!==generation.current){setRefresh(value=>value+1);return;}
+      acceptMetadata(result.metadata,result.cache_drops);
+      if (result.statistics)
+        setStatistics((previous) => mergeConversationStatistics(previous, result.statistics!));
       setMessages((previous) =>
         mergeConversationTimeline(previous, result.messages, "prepend"),
       );
@@ -2231,6 +2236,13 @@ export function SessionConversation({
         allowRaw={sessionAgent(session).sessionHost !== "managed"}
       />
     );
+  const currentMetadata=metadata?.summary.native_id===(agentNativeId(session)??page?.native_id)?metadata:null;
+  const dropsByInput=new Map<string,SessionCacheDrop[]>();
+  if(!notificationView)for(const drop of currentMetadata?.drops.values()??[]){
+    const list=dropsByInput.get(drop.current.input_id)??[];
+    list.push(drop);
+    dropsByInput.set(drop.current.input_id,list);
+  }
   return (
     <ConversationImagePreviewRoot active={active} onOpen={navigate}>
       <div className="session-chat-container" onKeyDownCapture={event=>{
@@ -2283,7 +2295,13 @@ export function SessionConversation({
                 </p>
               )}
               {groups.map((group, groupIndex) => {
-                if(group.kind === "message") return bubble(group.message,false,group.id);
+                if(group.kind === "message") {
+                  const drops=dropsByInput.get(group.message.id);
+                  return drops?.length ? <div key={group.id}>
+                    {bubble(group.message,false,group.id)}
+                    {drops.map(drop=><ConversationCacheDrop key={drop.id} drop={drop} active={active}/>)}
+                  </div> : bubble(group.message,false,group.id);
+                }
                 const last=group.messages.at(-1),next=groups[groupIndex+1];
                 const pending=group.id===pendingGroupId;
                 const nextMessage=next?.kind==='message'?next.message:undefined;
@@ -2768,6 +2786,7 @@ export function SessionConversation({
                 compacting={compaction.running}
                 onCompact={compaction.start}
                 onNewConversation={onNewConversation}
+                metadata={currentMetadata?.summary}
               />
             )}
         </footer>

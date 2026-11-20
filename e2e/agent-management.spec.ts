@@ -28,8 +28,8 @@ test('shows Agent-specific settings for Codex and Claude', async ({ page }) => {
   await expect(page.getByText('/Users/ymchen/.codex-xindu/config.toml')).toBeVisible();
   await page.screenshot({ path: 'test-results/agent-management-codex.png', fullPage: true });
   await page.getByRole('button', { name: /Claude/ }).click();
-  await expect(page.getByText('Claude Code 用户设置')).toBeVisible();
-  await expect(page.getByText('/Users/ymchen/.claude/settings.json')).toBeVisible();
+  await expect(page.getByRole('textbox',{name:'Claude Provider 名称'})).toHaveValue('Anthropic');
+  await expect(page.getByRole('textbox',{name:'Claude API 地址'})).toBeVisible();
   await page.screenshot({ path: 'test-results/agent-management-claude.png', fullPage: true });
 });
 

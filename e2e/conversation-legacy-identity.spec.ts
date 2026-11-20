@@ -30,7 +30,7 @@ test('legacy rollout echoes reconcile live conclusions once across turns, tab sw
    // native item ID in the durable log than in their live notification.
    appendFileSync(log,record('event_msg',{type:'agent_message',phase:'final_answer',message:answer})+record('response_item',{type:'message',id:itemId,role:'assistant',phase:'final_answer',content:[{type:'output_text',text:answer}]})+record('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:index*100},last_token_usage:{total_tokens:100,input_tokens:90,output_tokens:10}}})+record('event_msg',{type:'task_complete',turn_id:turnId,last_agent_message:answer}));
    emit('turn/completed',{threadId,turn:{id:turnId,status:'completed',completedAt:Date.now()/1000}});
-   const articles=chat.locator('article[data-phase="final"]').filter({hasText:answer});await expect(articles).toHaveCount(index);await expect(articles.last().locator('.session-chat-message-statistics')).toContainText('100｜');
+   const articles=chat.locator('article[data-phase="final"]').filter({hasText:answer});await expect(articles).toHaveCount(index);await expect(articles.last().locator('.session-chat-message-statistics')).toContainText('100 (—)｜');
    const history=await(await page.request.get(`/api/sessions/${sessionId}/conversation`)).json();expect(history.messages.filter((item:any)=>item.text===answer)).toHaveLength(index);
   }
   await page.getByRole('button',{name:'原始终端',exact:true}).click();await page.getByRole('button',{name:'对话',exact:true}).click();await expect(chat.getByText(answer,{exact:true})).toHaveCount(2);

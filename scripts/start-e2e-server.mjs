@@ -7,6 +7,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const testRoot = join(repoRoot, '.test-data', 'e2e');
 const attachmentRoot = mkdtempSync(join(tmpdir(), 'octoally-e2e-attachments-'));
 const fakeHome = join(testRoot, 'home');
+const fixtureBin = join(testRoot, 'bin');
 const projectPaths = [
   join(testRoot, 'persistence-project'),
   join(testRoot, 'prompt-copy-project'),
@@ -15,6 +16,10 @@ const projectPaths = [
 // The target is a fixed repository-local test directory, never a user path.
 rmSync(testRoot, { recursive: true, force: true });
 mkdirSync(fakeHome, { recursive: true });
+mkdirSync(fixtureBin, { recursive: true });
+// Reload verifies the installed client version before attaching the fake TUI.
+// The browser suite supplies that version without launching an installed CLI.
+writeFileSync(join(fixtureBin,'codex'), '#!/bin/sh\n[ "$1" = "--version" ] || exit 1\nprintf "codex-cli 0.167.0\\n"\n', {mode:0o700});
 for (const projectPath of projectPaths) mkdirSync(projectPath, { recursive: true });
 // Prevent zsh's first-run wizard from consuming the first terminal keystroke
 // in browser tests that exercise draft input.
@@ -28,6 +33,7 @@ process.once('exit', cleanup);
 
 Object.assign(process.env, {
   HOME: fakeHome,
+  PATH: fixtureBin + ':' + (process.env.PATH || ''),
   CODEX_HOME: join(fakeHome, '.codex'),
   PORT: process.env.E2E_API_PORT || '43110',
   HOST: '127.0.0.1',

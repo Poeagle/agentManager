@@ -1,7 +1,7 @@
 import {canUseSessionEnvironment,assertEnvironmentUse} from '../services/agents/environment-access.js';
 import {detachManagedAgents,observeAgentConversation} from '../services/agents/host.js';
 import {agentForSession,getAgent} from '../services/agents/index.js';
-import {readAgentRuntime,presentAgentSession} from '../services/agents/session.js';
+import {readAgentRuntime,presentAgentSession,sessionAgentContext} from '../services/agents/session.js';
 import {nativeConversationId} from '../services/session-identity.js';
 import {FastifyPluginAsync} from 'fastify';
 import {createRequire} from 'module';
@@ -14,6 +14,8 @@ import {getTracker} from '../services/session-state.js';
 import {getDb} from '../db/index.js';
 import {getUserTabUsage,isAdmin,userCanUseSessionTool,userCanUseToolForProject,userOwnsProject,userOwnsProjectPath,userProjectIds,hashApiKey} from '../auth.js';
 import {listClaudeSessions,deleteClaudeSession} from '../services/claude-history.js';
+import {beginSessionAction,flushSessionFactsBeforeDelete} from '../services/session-statistics.js';
+import {NATIVE_SESSION_ID_RE} from '../services/agents/native-identifiers.js';
 
 import {randomUUID} from 'crypto';
 import {writeFileSync} from 'fs';
@@ -461,12 +463,29 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       `).get(r.id, req.user!.id, req.params.uuid);
       if (!own) return reply.status(404).send({ error: 'Conversation not found' });
     }
-    const removed = deleteClaudeSession(r.path, req.params.uuid);
+    if(!NATIVE_SESSION_ID_RE.test(req.params.uuid))return reply.code(404).send({error:'Conversation log not found'});
+    const rows=getDb().prepare("SELECT * FROM sessions WHERE project_id=? AND claude_session_id=?")
+      .all(r.id,req.params.uuid) as Array<NonNullable<ReturnType<typeof sessionManager.getSession>>>;
+    if(rows.some(row=>['running','detached','launching','pending','released'].includes(row.status)||sessionManager.isSessionActive(row.id)))
+      return reply.code(409).send({error:'请先停止原生会话'});
+    const owned=rows.filter(row=>row.created_by_user_id===req.user!.id||isAdmin(req.user!.id));
+    if(owned.length){
+      for(const row of owned){
+        const result=await sessionManager.purgeSessionRecord(row.id);
+        if(!result.ok)return reply.code(409).send({error:result.error});
+      }
+      return {ok:true};
+    }
+    const context={nativeId:req.params.uuid,projectPath:r.path,session:{agent_id:'claude',project_path:r.path}};
+    const recordDelete=beginSessionAction(context,'delete');
     try {
-      if (isAdmin(req.user!.id)) getDb().prepare('DELETE FROM sessions WHERE claude_session_id = ?').run(req.params.uuid);
-      else getDb().prepare('DELETE FROM sessions WHERE claude_session_id = ? AND created_by_user_id = ?').run(req.params.uuid, req.user!.id);
-    } catch { /* ignore */ }
-    if (!removed) return reply.status(404).send({ error: 'Conversation log not found' });
+      await flushSessionFactsBeforeDelete(context);
+      if(!deleteClaudeSession(r.path,req.params.uuid)){recordDelete('failed');return reply.code(404).send({error:'Conversation log not found'});}
+    } catch {
+      recordDelete('unknown');
+      return reply.code(409).send({error:'原生会话用量未能持久化，记录已保留'});
+    }
+    recordDelete('completed');
     return { ok: true };
   });
 
@@ -548,10 +567,13 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(404).send({ error: 'Session not found' });
     }
     let killTimeout: ReturnType<typeof setTimeout> | null = null;
+    const recordClose=beginSessionAction(sessionAgentContext(session),'close');
+    let confirmed=true;
     try {
       const killed = await Promise.race([
         sessionManager.killSession(id),
         new Promise<boolean>((resolve) => { killTimeout = setTimeout(() => {
+          confirmed=false;
           console.log(`[KILL] Session ${id} kill timed out after 3s, forcing DB update`);
           try {
             resolve(sessionManager.markSessionCancelledIfProcessBearing(id));
@@ -561,17 +583,21 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         }, 3000); }),
       ]);
       if (killTimeout) clearTimeout(killTimeout);
-      if (!killed) return reply.status(404).send({ error: 'Session not found or not running' });
+      if (!killed) {recordClose('failed');return reply.status(404).send({ error: 'Session not found or not running' });}
     } catch (error) {
+      confirmed=false;
       if (killTimeout) clearTimeout(killTimeout);
       try {
         if (!sessionManager.markSessionCancelledIfProcessBearing(id)) {
+          recordClose('unknown');
           return reply.status(500).send({ error: 'Failed to stop session' });
         }
       } catch {
+        recordClose('unknown');
         return reply.status(500).send({ error: 'Failed to stop session' });
       }
     }
+    recordClose(confirmed?'accepted':'unknown');
     return { ok: true };
   });
 

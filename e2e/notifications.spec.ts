@@ -57,8 +57,25 @@ test('notifies changed sessions across closed projects, answers in the centered 
     active=false;send('turn/completed',{threadId:native,turn:{id:'work',status:'completed',completedAt:Date.now()/1000}});
     await expect(page.getByRole('button',{name:/消息通知，1 条未读/})).toBeVisible({timeout:15000});
     const toast=page.getByRole('complementary',{name:'新消息通知'});await expect(toast).toContainText('本轮运行完成');
-    await toast.getByRole('button',{name:'查看并处理'}).click();
+    await page.getByRole('button',{name:/消息通知，1 条未读/}).click();
     const drawer=page.getByRole('dialog',{name:'消息通知'});
+    const noticeList=drawer.getByRole('region',{name:'通知列表'});
+    const projectGroup=noticeList.getByRole('group',{name:'通知验证项目'});
+    const projectToggle=projectGroup.getByRole('button',{name:'通知验证项目',exact:true});
+    await expect(projectToggle).toHaveAttribute('aria-expanded','true');
+    const tabRow=projectGroup.getByRole('button',{name:'通知验证项目 · 兼容性修复',exact:true});
+    await expect(tabRow).toContainText('兼容性修复');await expect(tabRow).not.toContainText('通知验证项目');
+    const projectBox=await projectToggle.boundingBox(),tabBox=await tabRow.boundingBox();
+    expect(tabBox!.x).toBeGreaterThan(projectBox!.x+10);
+    const nameBox=await tabRow.locator('strong').boundingBox(),timeBox=await tabRow.locator('time').boundingBox();
+    expect(Math.abs(nameBox!.y+nameBox!.height/2-timeBox!.y-timeBox!.height/2)).toBeLessThan(2);
+    expect(nameBox!.x+nameBox!.width).toBeLessThan(timeBox!.x);
+    expect(tabBox!.height).toBeLessThan(40);
+    await projectToggle.click();await expect(tabRow).not.toBeVisible();
+    await projectToggle.click();await expect(tabRow).toBeVisible();
+    await expect(noticeList.locator('time')).toHaveText(/^\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}$/);
+    await expect(noticeList).not.toContainText('兼容性检查完成');
+    await tabRow.click();
     await expect(drawer.getByRole('region',{name:'会话对话'})).toContainText('兼容性检查完成');
     await expect(drawer).not.toContainText('安静的标签页');
     await expect(drawer).toHaveAttribute('aria-modal','true');
@@ -68,28 +85,11 @@ test('notifies changed sessions across closed projects, answers in the centered 
     await expect(page.locator('.notification-bell svg')).toHaveAttribute('width','14');
     await expect(drawer.locator('.session-chat-message-statistics')).toHaveCount(0);
     await expect(drawer.getByRole('combobox',{name:'发送模式'})).toHaveCount(0);
-    const noticeList=drawer.getByRole('region',{name:'通知列表'});
-    const projectGroup=noticeList.getByRole('group',{name:'通知验证项目'});
-    await expect(projectGroup.getByRole('button',{name:'通知验证项目',exact:true})).toHaveAttribute('aria-expanded','true');
-    const tabRow=projectGroup.getByRole('button',{name:'通知验证项目 · 兼容性修复',exact:true});
-    await expect(tabRow).toContainText('兼容性修复');await expect(tabRow).not.toContainText('通知验证项目');
-    const projectBox=await projectGroup.getByRole('button',{name:'通知验证项目',exact:true}).boundingBox(),tabBox=await tabRow.boundingBox();
-    expect(tabBox!.x).toBeGreaterThan(projectBox!.x+10);
-    const nameBox=await tabRow.locator('strong').boundingBox(),timeBox=await tabRow.locator('time').boundingBox();
-    expect(Math.abs(nameBox!.y+nameBox!.height/2-timeBox!.y-timeBox!.height/2)).toBeLessThan(2);
-    expect(nameBox!.x+nameBox!.width).toBeLessThan(timeBox!.x);
-    expect(tabBox!.height).toBeLessThan(40);
     const titleBox=await drawer.getByRole('heading',{name:'消息通知',exact:true}).boundingBox();
     const filterBox=await drawer.getByRole('group',{name:'通知分类'}).boundingBox(),projectFilterBox=await drawer.getByRole('combobox',{name:'筛选通知项目'}).boundingBox();
     expect(Math.abs(titleBox!.y+titleBox!.height/2-filterBox!.y-filterBox!.height/2)).toBeLessThan(2);
     expect(Math.abs(titleBox!.y+titleBox!.height/2-projectFilterBox!.y-projectFilterBox!.height/2)).toBeLessThan(2);
-    await projectGroup.getByRole('button',{name:'通知验证项目',exact:true}).click();await expect(tabRow).not.toBeVisible();
-    await expect(drawer.getByRole('region',{name:'会话对话'})).toContainText('兼容性检查完成');
-    await projectGroup.getByRole('button',{name:'通知验证项目',exact:true}).click();await expect(tabRow).toBeVisible();
-    await expect(noticeList.locator('time')).toHaveText(/^\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}$/);
-    await expect(noticeList).not.toContainText('兼容性检查完成');
     await page.screenshot({path:testInfo.outputPath('notification-result-desktop.png')});
-    await drawer.getByRole('button',{name:'标为已读',exact:true}).click();
     await expect(noticeList.getByRole('button',{name:/^通知验证项目 · /})).toHaveCount(0);
     expect(inputs).toHaveLength(0);
     await expect.poll(async()=>{const data=await(await page.request.get('/api/notifications')).json();return data.notifications.length;}).toBe(0);
@@ -119,17 +119,13 @@ test('notifies changed sessions across closed projects, answers in the centered 
     const replyDraft=drawer.getByRole('textbox',{name:'发送给当前 Agent 的消息'});
     await replyDraft.fill('配置已调整，请继续处理。');
 
-    // A permanent failure becomes actionable, with its original error and the
-    // same reply target. Continuing is a real, explicitly requested input.
+    // The open conversation shows a permanent failure and marks it as read.
+    // The reply stays in the same composer while the notification is cleared.
     active=false;
     send('turn/started',{threadId:native,turn:{id:'failed-turn',status:'inProgress'}});
     send('error',{threadId:native,turnId:'failed-turn',error:{message:'测试执行错误：请检查项目配置。'},willRetry:false});
-    await expect.poll(async()=>{const data=await(await page.request.get('/api/notifications')).json();return data.notifications.filter((n:{kind:string;state:string})=>n.kind==='error'&&n.state==='pending').length;}).toBe(1);
-    await expect(noticeList.getByRole('button',{name:/^通知验证项目 · /})).toBeVisible();
-    await expect(replyDraft).toHaveText('配置已调整，请继续处理。');
-    await expect(drawer.getByRole('button',{name:/新通知，点击显示/})).toHaveCount(0);
-    await noticeList.getByRole('button',{name:/^通知验证项目 · /}).click();
     await expect(drawer.locator('.session-chat-error-notice')).toContainText('测试执行错误：请检查项目配置。');
+    await expect(drawer.getByRole('button',{name:/新通知，点击显示/})).toHaveCount(0);
     await page.screenshot({path:testInfo.outputPath('notification-error-desktop.png')});
     const input=drawer.getByRole('textbox',{name:'发送给当前 Agent 的消息'});
     await expect(input).toHaveText('配置已调整，请继续处理。');
@@ -137,8 +133,6 @@ test('notifies changed sessions across closed projects, answers in the centered 
     const attachBox=await drawer.getByRole('button',{name:'上传图片或文件',exact:true}).boundingBox();
     expect(Math.abs(sendBox!.y+sendBox!.height/2-attachBox!.y-attachBox!.height/2)).toBeLessThan(3);
     await drawer.getByRole('button',{name:'发送消息',exact:true}).click();
-    const guard=page.getByRole('dialog',{name:'发送前检查'});
-    await expect(guard).toBeVisible();await guard.getByRole('button',{name:'原样发送',exact:true}).click();
     await expect.poll(()=>inputs.length).toBe(2);expect(inputs[1].text).toBe('配置已调整，请继续处理。');
     await expect.poll(async()=>{const data=await(await page.request.get('/api/notifications')).json();return data.notifications.length;}).toBe(0);
     await expect(noticeList.getByRole('button',{name:/^通知验证项目 · /})).toHaveCount(0);
@@ -152,7 +146,7 @@ test('notifies changed sessions across closed projects, answers in the centered 
     try {
       // Finish intercepted history reads while the fixture engine is still
       // available, before closing the browser's API request context.
-      await page.unrouteAll({behavior:'wait'});
+      if(!page.isClosed())await page.unrouteAll({behavior:'wait'});
       if(projectId||fixtureUserId){const db=new Database(join(root,'agentmanager.db'));try{
         db.pragma('foreign_keys=ON');
         db.prepare('DELETE FROM notifications WHERE session_id IN (?,?)').run('notification-work','notification-quiet');

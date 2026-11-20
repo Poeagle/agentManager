@@ -3,7 +3,7 @@ import {sessionAgent} from '../src/lib/agents';
 import { act, fireEvent, render, screen, waitFor,within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api, ApiError, type ConversationPage, type Session } from '../src/lib/api';
+import { api, ApiError, type ConversationPage, type ConversationStatistics, type Session } from '../src/lib/api';
 import { SessionConversation } from '../src/components/SessionConversation';
 import * as metadata from '../src/components/ConversationStatisticsLabel';
 
@@ -70,6 +70,31 @@ describe('conversation send transaction', () => {
     const final=document.querySelector('[data-chat-message-id="unknown-timing-final"]')!;
     expect(final).toHaveTextContent('100');expect(final).not.toHaveTextContent('summary ·');expect(final).not.toHaveTextContent('Total: —');
     expect(final.querySelector('.session-chat-message-duration')).toBeNull();
+  });
+  it('retains the settled usage of an older page after a large live update',async()=>{
+    const old={id:'earlier-final',role:'assistant',phase:'final',text:'Earlier reply',timestamp:null,turn_id:'old'} as const;
+    const pending:ConversationStatistics={
+      sequence:1, revision:1, message_id:old.id, turn_id:'old',
+      tokens:null, requests:0, tool_calls:0, tool_rounds:0, complete:false,
+    };
+    const current={...old,id:'current-final',text:'Current reply',turn_id:'current'};
+    vi.mocked(api.agent.conversation).mockImplementation(async(_id,query)=>({
+      messages:query?.before?[old]:[current], statistics:query?.before?[pending]:[],
+      has_more:!query?.before, reset:false, available:true, generation:'generation',
+      native_id:'native', session_active:true, session_status:'running', runtime:{state:'idle'}, interaction:null,
+    }) as ConversationPage);
+    await mount();
+    fireEvent.click(screen.getByRole('button',{name:'加载更早的对话'}));
+    await screen.findByText('Earlier reply');
+    const settled={...pending,revision:2,requests:1,tokens:{total_tokens:2420},complete:true};
+    const emit=(statistics:ConversationStatistics[])=>act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics}));
+    emit([settled]);
+    const label=document.querySelector('[data-chat-message-id="earlier-final"] .session-chat-message-statistics');
+    expect(label).toHaveTextContent('2.4K');
+    emit([pending,...Array.from({length:165},(_,index)=>({...settled,message_id:'later-'+index,sequence:2+index}))]);
+    expect(label).toHaveTextContent('2.4K');
+    expect(label).toHaveAttribute('title',expect.stringContaining('Total 2,420'));
+    expect(label).toHaveTextContent('1 Run');
   });
   it('closes the guard modal on compact-and-send and keeps a cancellable inline status',async()=>{
     vi.mocked(api.agent.checkSend).mockResolvedValue({needs_confirmation:true,matched:true,token:'confirmed',native_id:'native',context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,observed_at:null,can_compact:true,can_new:false} as any);

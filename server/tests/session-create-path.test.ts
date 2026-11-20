@@ -10,6 +10,7 @@ import { sessionRoutes } from '../src/routes/sessions.js';
 import { consumePendingSpawn } from '../src/services/session-manager.js';
 import * as sessionManager from '../src/services/session-manager.js';
 import { createTestDatabase } from './helpers/database.js';
+import { updateNativeClaudeProvider } from '../src/services/agents/claude/providers.js';
 
 describe('session creation project identity', () => {
   let app: FastifyInstance;
@@ -95,6 +96,7 @@ describe('session creation project identity', () => {
   });
 
   it('normalizes the native Claude Provider before a managed session starts', async () => {
+    updateNativeClaudeProvider({apiKey:'fixture-native-token',fields:{baseUrl:'https://native.example',models:['sonnet']}});
     vi.spyOn(sessionManager, 'spawnSession').mockResolvedValue(undefined);
     const response = await app.inject({
       method: 'POST',

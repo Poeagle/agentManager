@@ -63,7 +63,7 @@ await expect(progress).not.toContainText('检查已完成。');
   const sent=page.waitForResponse(response=>response.url().endsWith(`/api/sessions/${session.id}/input`)&&response.request().method()==='POST');
   // Exercise the legacy busy-engine fallback; idle engines now migrate before sending.
   appendFileSync(log,entry('event_msg',{type:'task_started',turn_id:'current'}));
-  await chat.getByRole('button',{name:'发送消息',exact:true}).click();await page.getByRole('dialog',{name:'发送前检查'}).getByRole('button',{name:'原样发送'}).click();expect((await sent).status()).toBe(202);
+  await chat.getByRole('button',{name:'发送消息',exact:true}).click();expect((await sent).status()).toBe(202);
   appendFileSync(log,entry('event_msg',{type:'user_message',message:"printf 'chat-input-ok\\n'"})+entry('event_msg',{type:'task_complete',last_agent_message:'本轮答复已更新。'}));
   await expect(chat.getByText('本轮答复已更新。',{exact:true})).toBeVisible();
   await page.screenshot({path:testInfo.outputPath('conversation-view.png')});

@@ -2,7 +2,7 @@ import {usageAggregates} from './usage-aggregates.js';
 import type Database from 'better-sqlite3';
 import {tokenFields} from '../../conversation-usage.js';
 
-type Event={key:string;day:string;cwd:string;model:string|null;tokens:Record<string,number|null>};
+type Event={key:string;day:string;cwd:string;model:string|null;tokens:Record<string,number|null>;request_key?:string;echo_tokens?:Record<string,number|null>};
 /** A parser upgrade can replace old aggregates only when the retained request
  * projection proves that every old identity and counter is still present. */
 export function assertUsageRebuildPreserves(db:Database.Database,account:string,events:Event[],limit:number):void {
@@ -20,7 +20,9 @@ export function assertUsageRebuildPreserves(db:Database.Database,account:string,
   oldIds.add(row.event_key);
   const prior=JSON.parse(row.tokens) as Record<string,number|null>,next=fresh.get(row.event_key);
   if(!next)throw Error('部分历史请求无法从原始文件中找到');
-  if(next.day!==row.day||next.cwd!==row.cwd||next.model!==row.model||tokenFields.some(k=>next.tokens[k]!==prior[k]))throw Error('历史请求的归属或 Token 与缓存不一致');
+  const original=next.request_key&&next.echo_tokens?next.echo_tokens:next.tokens;
+  if(next.day!==row.day||next.cwd!==row.cwd||next.model!==row.model||
+    tokenFields.some(k=>next.tokens[k]!==prior[k])&&tokenFields.some(k=>original[k]!==prior[k]))throw Error('历史请求的归属或 Token 与缓存不一致');
   const key=keyFor(row.day,row.cwd,row.model,prior),group=groups.get(key)||{requests:0,tokens:Object.fromEntries(tokenFields.map(k=>[k,prior[k]===null?null:0]))};
   group.requests++;
   for(const field of tokenFields){if(group.tokens[field]!==null){const value=prior[field];if(typeof value!=='number'||!Number.isSafeInteger(value)||value<0)throw Error('历史计数不可验证');group.tokens[field]!+=value;if(!Number.isSafeInteger(group.tokens[field]))throw Error('历史计数超限');}}

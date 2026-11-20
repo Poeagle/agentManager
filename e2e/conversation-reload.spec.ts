@@ -1,13 +1,12 @@
 import {test,expect} from '@playwright/test';
 import {createServer} from 'http';
 import {createRequire} from 'module';
-import {execFileSync} from 'child_process';
 import {mkdirSync,writeFileSync,appendFileSync} from 'fs';
 import {join} from 'path';
 const require=createRequire(import.meta.url),{WebSocketServer}=require('../server/node_modules/ws'),Database=require('../server/node_modules/better-sqlite3');
 test('reload preserves the same conversation, draft and atomic picture text while replacing only its client',async({page},testInfo)=>{
  const root=join(process.cwd(),'.test-data/e2e'),path=join(root,'reload-project'),native='019ff001-dead-7bee-8bee-deadbeef1238';mkdirSync(path,{recursive:true});mkdirSync(join(root,'home/.codex/sessions'),{recursive:true});
- const version=execFileSync('codex',['--version'],{encoding:'utf8'}).match(/\d+\.\d+\.\d+/)![0],record=(payload:any)=>JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload})+'\n',log=join(root,'home/.codex/sessions',`rollout-${native}.jsonl`);
+ const version='0.167.0',record=(payload:any)=>JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload})+'\n',log=join(root,'home/.codex/sessions',`rollout-${native}.jsonl`);
  const auto='# AGENTS.md instructions for /test\n\n<INSTRUCTIONS>\n项目规则，自动上下文。\n</INSTRUCTIONS>';
  writeFileSync(log,record({type:'user_message',message:auto})+record({type:'user_message',message:'请核对这段短消息'})+record({type:'task_complete',last_agent_message:'结果已经核对。'}));
  const fake=join(path,'fake-codex.mjs');writeFileSync(fake,"process.stdout.write('Isolated reload client ready\\n');setInterval(()=>{},1000);");

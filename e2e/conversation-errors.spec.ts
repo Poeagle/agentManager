@@ -22,13 +22,13 @@ test('native failures appear live, stop busy indicators and survive history reco
   let push!:(data:string)=>void;
   await page.routeWebSocket('**/conversation/stream*',socket=>{push=data=>socket.send(data);push(JSON.stringify({type:'snapshot',messages:[],busy:true,stage:'tools',turn_id:turn}));});
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
-  await expect(chat.getByText('执行验证任务',{exact:true})).toBeVisible();await expect(chat.getByText('codex is working',{exact:true})).toBeVisible();
+  await expect(chat.getByText('执行验证任务',{exact:true})).toBeVisible();await expect(chat.getByText('In progress',{exact:true})).toBeVisible();
   const text='Selected model is at capacity. Please try a different model.';
   const errorId=createHash('sha256').update(JSON.stringify([turn,'error','server_overloaded',text])).digest('hex').slice(0,32);
   const failure={id:errorId,role:'assistant',phase:'error',text,turn_id:turn,timestamp:time,streaming:false,error:{code:'server_overloaded',will_retry:false}};
   push(JSON.stringify({type:'snapshot',messages:[failure],busy:false,stage:'idle',turn_id:turn}));
   const alert=chat.getByRole('alert');await expect(alert).toContainText(text);await expect(alert).toContainText('当前模型繁忙');await expect(alert.locator('time')).toBeVisible();
-  await expect(chat.getByText('codex is working',{exact:true})).toHaveCount(0);await expect(chat.locator('.session-chat-caret')).toHaveCount(0);
+  await expect(chat.getByText('In progress',{exact:true})).toHaveCount(0);await expect(chat.locator('.session-chat-caret')).toHaveCount(0);
   appendFileSync(log,entry({type:'task_complete',turn_id:turn,last_agent_message:null,error:{message:text,codex_error_info:'server_overloaded',additionalDetails:'PRIVATE DETAILS'}}));
   await expect.poll(async()=>{const result=await(await page.request.get(`/api/sessions/${session.id}/conversation`)).json();return result.messages.at(-1)?.phase;}).toBe('error');
   await expect(alert).toHaveCount(1);await expect(chat).not.toContainText('PRIVATE DETAILS');

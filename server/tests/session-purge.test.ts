@@ -45,6 +45,8 @@ describe('session record purge safety', () => {
       VALUES ('codex-history', 'Codex history', 'cancelled', 'codex', 'runtime', '019ff001-9999-7999-8999-999999999999', 'provider:xindu')
     `).run();
     vi.spyOn(codexAdapter.identity, 'purgeHistory').mockRejectedValue(new Error('source unavailable'));
+    vi.spyOn(codexAdapter.history.file!, 'locate').mockResolvedValue(null);
+    vi.spyOn(codexAdapter.statistics.facts!, 'preserveAccountUsage').mockResolvedValue();
 
     await expect(purgeSessionRecord('codex-history')).resolves.toEqual({
       ok: false,
@@ -60,9 +62,14 @@ describe('session record purge safety', () => {
       VALUES ('codex-history', 'Codex history', 'cancelled', 'codex', 'runtime', '019ff001-9999-7999-8999-999999999999', 'provider:xindu')
     `).run();
     const purge = vi.spyOn(codexAdapter.identity, 'purgeHistory').mockResolvedValue();
+    vi.spyOn(codexAdapter.history.file!, 'locate').mockResolvedValue(null);
+    const preserve=vi.spyOn(codexAdapter.statistics.facts!, 'preserveAccountUsage').mockImplementation(async()=>{
+      expect(purge).not.toHaveBeenCalled();
+    });
 
     await expect(purgeSessionRecord('codex-history')).resolves.toEqual({ ok: true });
     expect(purge).toHaveBeenCalledOnce();
+    expect(preserve).toHaveBeenCalledOnce();
     expect(getDb().prepare('SELECT id FROM sessions WHERE id=?').get('codex-history')).toBeUndefined();
   });
 });

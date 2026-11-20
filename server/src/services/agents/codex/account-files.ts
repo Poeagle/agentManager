@@ -1,7 +1,7 @@
 import {spawn} from 'child_process';
 import {createReadStream,createWriteStream} from 'fs';
 import {mkdir,unlink,access,copyFile,rename,stat,chmod,realpath,open} from 'fs/promises';
-import {dirname,join,sep} from 'path';
+import {basename,dirname,join,sep} from 'path';
 import {randomUUID,createHash} from 'crypto';
 import {homedir} from 'os';
 import {pipeline} from 'node:stream/promises';
@@ -13,6 +13,7 @@ import {getCodexEnvironment,environmentConnection,type CodexEnvironment} from '.
 import {readAgentManagement} from '../management-store.js';
 import {runInCodexEngine,engineForThread} from './engine-context.js';
 import {findCodexRollout} from '../../prompt-context.js';
+import {statisticsFiles} from '../statistics-inventory.js';
 const MAX_BYTES=1024*1024*1024;
 const cached=new Map<string,{until:number;path:string;signature:string}>();
 const pending=new Map<string,Promise<string|null>>();
@@ -31,6 +32,40 @@ export function localHome(e:CodexEnvironment):string {
  return value.startsWith('~/')?join(homedir(),value.slice(2)):value;
 }
 function accountRoot(c:AccountConnection):string{return c.codexHome?JSON.stringify(c.codexHome):"str(pathlib.Path.home()/'.codex')";}
+
+/** A saved transcript can be read even after the native Engine unloads it. */
+async function savedRollout(environment:CodexEnvironment,nativeId:string):Promise<string|null>{
+ if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(nativeId))return null;
+ const suffix=nativeId.toLowerCase()+'.jsonl';
+ if(environment.kind==='account'){
+  const connection=environmentConnection(environment);
+  const script=`import pathlib,os,json
+home=pathlib.Path(${accountRoot(connection)}).expanduser().resolve()
+suffix=${JSON.stringify(suffix)}
+matches=[];visited=0
+for name in ('sessions','archived_sessions'):
+ root=home/name
+ if root.is_symlink():raise ValueError('HISTORY_ACCESS')
+ for directory,dirs,files in os.walk(root,followlinks=False):
+  dirs[:]=[child for child in dirs if child!='.agentmanager-imports' and not pathlib.Path(directory,child).is_symlink()]
+  visited+=len(files)+1
+  if visited>20000:raise ValueError('HISTORY_LIMIT')
+  for file in files:
+   path=pathlib.Path(directory,file)
+   if file.startswith('rollout-') and file.lower().endswith(suffix) and not path.is_symlink() and path.is_file():matches.append(str(path))
+if len(matches)>1:raise ValueError('HISTORY_AMBIGUOUS')
+print(json.dumps(matches[0] if matches else None))`;
+  return JSON.parse(await accountCommand(connection,script,30000)) as string|null;
+ }
+ let found:string|null=null;
+ for(const directory of ['sessions','archived_sessions'])for await(const path of statisticsFiles(join(localHome(environment),directory),5)){
+  const name=basename(path);
+  if(!name.startsWith('rollout-')||!name.toLowerCase().endsWith(suffix))continue;
+  if(found)throw Error('存在多个同名原生会话文件，无法确认历史来源');
+  found=path;
+ }
+ return found;
+}
 export async function historyFileCommand(c:AccountConnection|null,script:string,source:string,destination:string,direction:'read'|'write'):Promise<void> {
  const child=c?spawn('ssh',[...sshArguments(c),`${c.username}@127.0.0.1`,`python3 -c ${shellSingleQuote(script)}`],{stdio:['pipe','pipe','pipe'],env:await sshEnvironment(c)}):spawn('python3',['-c',script],{stdio:['pipe','pipe','pipe']});
  child.stderr.resume();
@@ -80,9 +115,13 @@ export async function environmentRollout(context:{nativeId:string|null;session:{
     path=response.thread?.path??null;
    }catch(error){
     const {CodexRpcError}=await import('./stream.js');
-    if(error instanceof CodexRpcError&&error.nativeMessage===`thread not loaded: ${context.nativeId}`)return null;
-    throw error;
+    path=await savedRollout(e,context.nativeId!).catch(()=>{throw error;});
+    if(!path){
+     if(error instanceof CodexRpcError&&error.nativeMessage===`thread not loaded: ${context.nativeId}`)return null;
+     throw error;
+    }
    }
+   if(!path)path=await savedRollout(e,context.nativeId!);
   }
   if(typeof path!=='string'||!path.startsWith('/')||!path.endsWith(context.nativeId+'.jsonl'))return null;
   const c=e.kind==='account'?environmentConnection(e):null;

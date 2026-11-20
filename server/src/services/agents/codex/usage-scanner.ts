@@ -10,6 +10,9 @@ home=pathlib.Path(o.get('home') or str(pathlib.Path.home()/'.codex')).resolve()
 mode=o.get('mode','full'); day=o.get('day')
 if mode not in ['full','daily','catchup']:raise ValueError('invalid mode')
 if mode=='daily':datetime.date.fromisoformat(day)
+target=o.get('native_id')
+incremental=o.get('checkpoints') is not None and not rebin and not o.get('reconcile') and not target
+saved=o.get('checkpoints') or {};checkpoints={};budget=256*1024*1024
 since=o.get('since_day')
 if mode=='catchup' and (not since or datetime.date.fromisoformat(since)>datetime.date.fromisoformat(day)):raise ValueError('invalid catchup window')
 days=set(o.get('days') or [day])
@@ -34,12 +37,14 @@ for root in roots:
    match=re.search(r'([0-9a-fA-F-]{36})\.jsonl$',name)
    if match:index.setdefault(match[1],[]).append((p,st.st_size))
    modified=datetime.datetime.fromtimestamp(st.st_mtime,zone).date().isoformat()
-   if mode=='full' or mode=='catchup' and modified>=since or mode=='daily' and modified in days:paths.append((p,st.st_size))
+   if target and (not match or match[1].lower()!=target.lower()):continue
+   if incremental or target or mode=='full' or mode=='catchup' and modified>=since or mode=='daily' and modified in days:
+    paths.append((p,st))
    if len(paths)>20000:raise RuntimeError('history inventory exceeds limit')
 fields=['input_tokens','cached_input_tokens','output_tokens','reasoning_output_tokens','total_tokens']
 known=base64.b64decode(o.get('known_events',''),validate=True)
 if len(known)%32 or len(known)>64000000:raise ValueError('invalid known events')
-groups={};matched={};events=[];events_truncated=False;projection_seen=set();previous_known={known[i:i+32] for i in range(0,len(known),32)};seen=set() if rebin else set(previous_known);new_events={};read=0
+groups={};matched={};events=[];events_truncated=False;projection_seen=set();previous_known={known[i:i+32] for i in range(0,len(known),32)};seen=set() if rebin or o.get('reconcile') else set(previous_known);new_events={};read=0;incomplete=False;files_complete=0
 cutoff=datetime.datetime.fromisoformat(o['baseline_at'].replace('Z','+00:00')) if o.get('baseline_at') else None
 if cutoff and cutoff.tzinfo is None:raise ValueError('invalid baseline')
 origins=o.get('origins') or {};baseline_cache={};baseline_budget=64*1024*1024;baseline_bytes=0
@@ -81,98 +86,175 @@ def inherited_snapshot(base,visited=None):
  if any(value!=answers[0] for value in answers):raise ValueError('conflicting lineage')
  baseline_cache[cache_key]=answers[0]
  return answers[0]
-for path,size in paths:
- cwd=None;model=None;tier=None;provider=None;previous=None;turn=None;after=None;inherited_ordinal=None;session=None
- # One bounded line at a time. Modern metadata may be up to 4 MiB;
- # oversized message/tool records are discarded in 256 KiB chunks.
+def token_values(value):
+ return {k:value.get(k) if type(value.get(k))==int and 0<=value[k]<=10**15 else None for k in fields}
+def fingerprint(value):
+ return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).digest()
+def emit(candidate,echo=None):
+ global events_truncated,errors
+ if candidate is None:return
+ stamp,last,response_id,ordinal,cwd,model,tier,provider,turn,session,after,inherited_ordinal=candidate
+ at=timestamp(stamp)
+ if after and at<=timestamp(after) or inherited_ordinal is not None and type(ordinal)==int and ordinal<inherited_ordinal:return
+ tokens=token_values(last)
+ if tokens['total_tokens'] is None:errors+=1;return
+ input_tokens=tokens['input_tokens'];cached=tokens['cached_input_tokens'];output=tokens['output_tokens'];reasoning=tokens['reasoning_output_tokens']
+ if input_tokens is not None and cached is not None and cached>input_tokens or output is not None and reasoning is not None and reasoning>output or input_tokens is not None and output is not None and input_tokens+output!=tokens['total_tokens']:
+  # Keep the reported values available for audit and mark this source partial.
+  errors+=1
+ alias=None;echo_tokens=None;legacy_key=None;request_key=None
+ if echo:
+  stamp_echo,cwd_echo,turn_echo,total,legacy_last=echo
+  alias=fingerprint([turn_echo or stamp_echo,cwd_echo,total])
+  legacy_key=fingerprint([stamp_echo,cwd_echo,total]).hex()
+  echo_tokens=token_values(legacy_last) if response_id else None
+ if response_id:
+  request=fingerprint(['request',response_id]);request_key=request.hex()
+  # Existing ledgers used the changed cumulative echo as identity. Its old
+  # counters are carried only to verify reconciliation during a rule upgrade.
+  key=alias if alias and alias in previous_known and request not in previous_known else request
+ else:
+  key=alias
+ if key is None:return
+ local_at=at.astimezone(zone);event_day=local_at.date().isoformat();event_hour=local_at.replace(minute=0,second=0,microsecond=0).isoformat()
+ if not incremental and not target and (mode=='daily' and event_day not in days or mode=='catchup' and not since<=event_day<=day):return
+ if o.get('includeEvents') and o.get('rebuildEvents') and key not in projection_seen:
+  if len(events)<${USAGE_EVENT_LIMIT}:
+   projection_seen.add(key);events.append({'key':key.hex(),'legacy_key':legacy_key,'echo_tokens':echo_tokens,'request_key':request_key,'day':event_day,'hour':event_hour,'at':at.astimezone(datetime.timezone.utc).isoformat(),'session':session,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
+  else:events_truncated=True
+ if not rebin and cutoff and at<=cutoff:return
+ if key in seen:return
+ seen.add(key)
+ if o.get('includeEvents') and not o.get('rebuildEvents'):
+  if len(events)<${USAGE_EVENT_LIMIT}:events.append({'key':key.hex(),'legacy_key':legacy_key,'echo_tokens':echo_tokens,'request_key':request_key,'day':event_day,'hour':event_hour,'at':at.astimezone(datetime.timezone.utc).isoformat(),'session':session,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
+  else:events_truncated=True
+ if len(seen)>2000000:raise RuntimeError('usage event limit exceeded')
+ if rebin and (key in previous_known or cutoff and at<=cutoff):
+  legacy=key not in previous_known;old_day=at.astimezone(previous_zone).date().isoformat();matched_tokens=echo_tokens if echo_tokens and alias==key else tokens;mask=tuple(matched_tokens[k] is not None for k in fields)
+  match_key=(old_day,cwd or '',model,tier,legacy,None if legacy else mask)
+  entry=matched.setdefault(match_key,{'day':old_day,'cwd':cwd or '', 'model':model,'tier':tier,'legacy':legacy,'requests':0,'tokens':dict.fromkeys(fields,0)})
+  if len(matched)>50000:raise RuntimeError('usage match limit exceeded')
+  entry['requests']+=1
+  for k in fields:entry['tokens'][k]=None if entry['tokens'][k] is None or matched_tokens[k] is None else entry['tokens'][k]+matched_tokens[k]
+ new_events.setdefault(event_day,bytearray()).extend(key)
+ # Keep complete counters separate from unknown fields so a partial request
+ # cannot erase the known estimate of earlier requests in the same model.
+ group_key=(event_day,cwd or '',model,tier,tuple(tokens[k] is not None for k in fields))
+ group=groups.setdefault(group_key,{'day':event_day,'cwd':cwd or '','model':model,'tier':tier,'requests':0,'tokens':dict.fromkeys(fields,0)})
+ if len(groups)>50000:raise RuntimeError('usage group limit exceeded')
+ group['requests']+=1
+ for k in fields:group['tokens'][k]=None if group['tokens'][k] is None or tokens[k] is None else group['tokens'][k]+tokens[k]
+
+def sampled(f,pos,length):
+ cur=f.tell();f.seek(pos);buffer=f.read(length);f.seek(cur);return hashlib.sha256(buffer).hexdigest()
+for path,st in paths:
+ size=st.st_size;identity=fingerprint([st.st_dev,st.st_ino]).hex()
+ previous_file=saved.get(identity)
+ if incremental and read>=budget:
+  incomplete=True
+  continue
+ file_errors=errors
+ # Persist only receipt settings and counters. The source bytes, including
+ # prompts and tool results, remain in the account that owns the history.
+ cwd=None;model=None;tier=None;provider=None;previous=None;turn=None;after=None;inherited_ordinal=None;session=None;pending=None;sent_primary=False;closed=False;state_errors=0;recent=[]
  with path.open('rb') as f:
-  while f.tell()<size:
+  if incremental and previous_file and previous_file['offset']<=size:
+   offset=previous_file['offset']
+   unchanged=previous_file['length']==size and previous_file['modified']==str(st.st_mtime_ns)
+   if unchanged and previous_file.get('eof'):
+    files_complete+=1
+    errors+=previous_file.get('errors',0)
+    continue
+   appended=previous_file['length']<size and previous_file['head']==sampled(f,0,min(128,offset)) and previous_file['tail']==sampled(f,max(0,offset-128),min(128,offset))
+   if unchanged or appended:
+    cwd,model,tier,provider,previous,turn,after,inherited_ordinal,session,sent_primary,closed=previous_file['settings']
+    recent=previous_file.get('recent',[])
+    state_errors=previous_file.get('errors',0)
+    f.seek(offset)
+  while f.tell()<size and not closed:
+   position=f.tell()
+   if incremental and read>=budget:break
    limit=4194304 if f.tell()==0 else 262144
    line=f.readline(min(limit+1,size-f.tell()));read+=len(line)
    first_type=re.search(rb'"type"\s*:\s*"([^"\\]+)"',line[:1024])
    if len(line)>limit and first_type and first_type[1] in [b'turn_context',b'session_meta'] and not line.endswith(b'\n'):
     extra=f.readline(min(4194305-len(line),size-f.tell()));line+=extra;read+=len(extra);limit=4194304
    if len(line)>limit:
-    if b'"token_count"' in line[:512] or b'"turn_context"' in line[:512] or b'"session_meta"' in line[:512]:errors+=1
+    if first_type and first_type[1] in [b'token_usage_record',b'turn_context',b'session_meta'] or b'"token_count"' in line[:512]:errors+=1
     while line and not line.endswith(b'\n') and f.tell()<size:
      line=f.readline(min(262145,size-f.tell()));read+=len(line)
+    if not line.endswith(b'\n'):f.seek(position);break
     continue
-   if not line.endswith(b'\n'):errors+=1;break
-   if first_type and first_type[1] in [b'response_item',b'function_call_output',b'agent_message',b'task_started',b'task_complete']:continue
+   if not line.endswith(b'\n'):f.seek(position);break
+   if first_type and first_type[1] in [b'response_item',b'compacted',b'function_call_output',b'agent_message',b'task_started',b'task_complete']:continue
    try:
     r=json.loads(line);p=r.get('payload') or {};kind=r.get('type')
     if kind=='session_meta':
      session=p.get('id') if isinstance(p.get('id'),str) else None
      origin=origins.get(p.get('id')) or {}
-     if origin.get('exclude') or '.agentmanager-imports' in path.relative_to(home).parts:break
-     if origin.get('after'):after=timestamp(origin['after'])
+     if origin.get('exclude') or '.agentmanager-imports' in path.relative_to(home).parts:closed=True;break
+     if origin.get('after'):after=timestamp(origin['after']).isoformat()
      if p.get('forked_from_id'):
       created=p.get('timestamp') or r.get('timestamp')
-      if created:after=max(after,timestamp(created)) if after else timestamp(created)
+      if created:after=max(timestamp(after),timestamp(created)).isoformat() if after else timestamp(created).isoformat()
       elif type(p.get('forked_from_ordinal_exclusive'))==int:inherited_ordinal=p['forked_from_ordinal_exclusive']
-      elif not p.get('history_base'):errors+=1;break
+      elif not p.get('history_base'):errors+=1;closed=True;break
      if p.get('history_base'):
       try:previous=inherited_snapshot(p['history_base'])
-      except (OSError,ValueError,TypeError,KeyError):errors+=1;break
-    if kind in ['session_meta','turn_context']:
-     if isinstance(p.get('cwd'),str):cwd=p['cwd'][:4096]
-     if isinstance(p.get('model'),str):model=p['model'][:120]
-     if isinstance(p.get('model_provider'),str):provider=p['model_provider'][:120]
-     if 'service_tier' in p:tier=p['service_tier'][:120] if isinstance(p['service_tier'],str) else None
-    if kind=='event_msg' and p.get('type')=='thread_settings_applied' and isinstance(p.get('thread_settings'),dict):
-     settings=p['thread_settings']
+      except (OSError,ValueError,TypeError,KeyError):errors+=1;closed=True;break
+    settings=p if kind in ['session_meta','turn_context'] else p.get('thread_settings') if kind=='event_msg' and p.get('type')=='thread_settings_applied' else None
+    if isinstance(settings,dict):
+     if isinstance(settings.get('cwd'),str):cwd=settings['cwd'][:4096]
+     if isinstance(settings.get('model'),str):model=settings['model'][:120]
+     if isinstance(settings.get('model_provider'),str):provider=settings['model_provider'][:120]
      if 'service_tier' in settings:tier=settings['service_tier'][:120] if isinstance(settings['service_tier'],str) else None
     if kind=='turn_context' or kind=='event_msg' and p.get('type')=='task_started':
      if isinstance(p.get('turn_id'),str):turn=p['turn_id'][:200]
+    if kind=='token_usage_record':
+     if not isinstance(p.get('response_id'),str) or not p['response_id'] or not isinstance(p.get('usage'),dict):errors+=1;continue
+     stamp=r.get('timestamp')
+     timestamp(stamp)
+     response_key=fingerprint(['request',p['response_id']]).hex()
+     if response_key in recent:continue
+     recent=(recent+[response_key])[-16:]
+     emit(pending)
+     request_model=p.get('model',model);request_tier=p.get('service_tier',tier)
+     request_model=request_model[:120] if isinstance(request_model,str) else None
+     request_tier=request_tier[:120] if isinstance(request_tier,str) else None
+     pending=(stamp,p['usage'],p['response_id'],r.get('ordinal'),cwd,request_model,request_tier,provider,p.get('turn_id') or turn,session,after,inherited_ordinal)
+     sent_primary=False
+     continue
     if kind!='event_msg' or p.get('type')!='token_count' or not p.get('info'):continue
     info=p['info'];total=info.get('total_token_usage') or {};last=info.get('last_token_usage') or {};stamp=r.get('timestamp')
-    if not isinstance(stamp,str) or not isinstance(total.get('total_tokens'),(int,float)):errors+=1;continue
     snapshot=json.dumps(total,sort_keys=True,separators=(',',':'))
-    if snapshot==previous:continue
-    previous=snapshot
-    at=datetime.datetime.fromisoformat(stamp.replace('Z','+00:00'))
-    if at.tzinfo is None:errors+=1;continue
-    local_at=at.astimezone(zone);event_day=local_at.date().isoformat();event_hour=local_at.replace(minute=0,second=0,microsecond=0).isoformat()
-    if mode=='daily' and event_day not in days or mode=='catchup' and not since<=event_day<=day:continue
-    if after and at<=after or inherited_ordinal is not None and type(r.get('ordinal'))==int and r['ordinal']<inherited_ordinal:continue
-    # Legacy aggregate caches have no request identities. Preserve their totals
-    # as a baseline; only events after the last successful snapshot are new.
-    if not isinstance(last.get('total_tokens'),(int,float)):errors+=1;continue
-    tokens={k:last.get(k) if type(last.get(k)) in [int,float] and math.isfinite(last[k]) and 0<=last[k]<=10**15 else None for k in fields}
-    if tokens['total_tokens'] is None:errors+=1;continue
-    fingerprint=json.dumps([turn or stamp,cwd,total],sort_keys=True,separators=(',',':'))
-    key=hashlib.sha256(fingerprint.encode()).digest()
-    legacy_key=hashlib.sha256(json.dumps([stamp,cwd,total],sort_keys=True,separators=(',',':')).encode()).hexdigest()
-    if o.get('includeEvents') and o.get('rebuildEvents') and key not in projection_seen:
-     if len(events)<${USAGE_EVENT_LIMIT}:
-      projection_seen.add(key);events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'hour':event_hour,'at':at.astimezone(datetime.timezone.utc).isoformat(),'session':session,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
-     else:events_truncated=True
-    if not rebin and cutoff and at<=cutoff:continue
-    if key in seen:continue
-    seen.add(key)
-    if o.get('includeEvents') and not o.get('rebuildEvents'):
-     if len(events)<${USAGE_EVENT_LIMIT}:events.append({'key':key.hex(),'legacy_key':legacy_key,'day':event_day,'hour':event_hour,'at':at.astimezone(datetime.timezone.utc).isoformat(),'session':session,'cwd':cwd or '', 'model':model,'tier':tier,'provider':provider,'tokens':tokens})
-     else:events_truncated=True
-    if len(seen)>2000000:raise RuntimeError('usage event limit exceeded')
-    if rebin and (key in previous_known or cutoff and at<=cutoff):
-     legacy=key not in previous_known;old_day=at.astimezone(previous_zone).date().isoformat();mask=tuple(tokens[k] is not None for k in fields)
-     match_key=(old_day,cwd or '',model,tier,legacy,None if legacy else mask)
-     entry=matched.setdefault(match_key,{'day':old_day,'cwd':cwd or '', 'model':model,'tier':tier,'legacy':legacy,'requests':0,'tokens':dict.fromkeys(fields,0)})
-     if len(matched)>50000:raise RuntimeError('usage match limit exceeded')
-     entry['requests']+=1
-     for k in fields:entry['tokens'][k]=None if entry['tokens'][k] is None or tokens[k] is None else entry['tokens'][k]+tokens[k]
-    new_events.setdefault(event_day,bytearray()).extend(key)
-    # Keep complete counters separate from unknown fields so a partial request
-    # cannot erase the known estimate of earlier requests in the same model.
-    group_key=(event_day,cwd or '',model,tier,tuple(tokens[k] is not None for k in fields))
-    group=groups.setdefault(group_key,{'day':event_day,'cwd':cwd or '','model':model,'tier':tier,'requests':0,'tokens':dict.fromkeys(fields,0)})
-    if len(groups)>50000:raise RuntimeError('usage group limit exceeded')
-    group['requests']+=1
-    for k in fields:group['tokens'][k]=None if group['tokens'][k] is None or tokens[k] is None else group['tokens'][k]+tokens[k]
+    changed=snapshot!=previous
+    before=previous;previous=snapshot
+    echo=(stamp,cwd,turn,total,last) if changed and isinstance(stamp,str) and type(total.get('total_tokens'))==int else None
+    if pending:
+     emit(pending,echo);pending=None;sent_primary=False
+    elif sent_primary:
+     sent_primary=False
+    elif echo:
+     if before:
+      prior_total=json.loads(before)
+      if any(type(total.get(k))==int and type(prior_total.get(k))==int and type(last.get(k))==int and total[k]-prior_total[k]!=last[k] for k in fields):errors+=1
+     emit((stamp,last,None,r.get('ordinal'),cwd,model,tier,provider,turn,session,after,inherited_ordinal),echo)
+    elif changed:errors+=1
    except (ValueError,TypeError,AttributeError,OverflowError):
     errors+=1
-    if first_type and first_type[1]==b'session_meta':break
-result={'rows':list(groups.values()),'event_keys':{d:base64.b64encode(keys).decode('ascii') for d,keys in new_events.items()},'mode':mode,'day':day,'errors':errors,'partial':errors>0,'progress':{'mode':mode,'day':day,'history_files':history_files,'history_bytes':history_bytes,'files_selected':len(paths),'files_total':len(paths),'files_complete':len(paths),'bytes_total':sum(s for _,s in paths),'bytes_read':read,'lineage_bytes_read':baseline_bytes}}
+    if first_type and first_type[1]==b'session_meta':closed=True;break
+  if pending:
+   emit(pending)
+   sent_primary=True
+  eof=closed or f.tell()==size
+  if eof:files_complete+=1
+  if not eof:incomplete=True
+  if incremental or o.get('save_checkpoints'):
+   offset=f.tell()
+   checkpoints[identity]={'offset':offset,'length':size,'modified':str(st.st_mtime_ns),'head':sampled(f,0,min(128,offset)),'tail':sampled(f,max(0,offset-128),min(128,offset)),'eof':eof,'errors':state_errors+errors-file_errors,'recent':recent,'settings':[cwd,model,tier,provider,previous,turn,after,inherited_ordinal,session,sent_primary,closed]}
+  errors+=state_errors
+result={'rows':list(groups.values()),'event_keys':{d:base64.b64encode(keys).decode('ascii') for d,keys in new_events.items()},'mode':mode,'day':day,'errors':errors,'partial':errors>0 or incomplete,'progress':{'mode':mode,'day':day,'history_files':history_files,'history_bytes':history_bytes,'files_selected':len(paths),'files_total':len(paths),'files_complete':files_complete,'bytes_total':sum(st.st_size for _,st in paths),'bytes_read':read,'lineage_bytes_read':baseline_bytes}}
+if incremental or o.get('save_checkpoints'):result['checkpoints']=checkpoints
 if o.get('includeEvents'):
  for event in events:event['timezone']=o.get('timezone') or 'UTC'
  result.update({'events':events,'events_truncated':events_truncated})

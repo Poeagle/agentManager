@@ -22,9 +22,9 @@ test('renders each native delta before the item completes and keeps one progress
   const {project}=await(await page.request.post('/api/projects',{data:{name:'逐段流式回归',path}})).json(),{session}=await(await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:path,mode:'terminal'}})).json();sessionId=session.id;const db=new Database(join(root,'agentmanager.db'));try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',native,session.id);}finally{db.close();}
   await page.request.put('/api/settings',{data:{settings:{app_theme:'light',statusline_prompted:'true'}}});await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'逐段流式回归'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});await expect(chat.getByText('等待开始。',{exact:true})).toBeVisible();await expect(chat.getByText('Event stream connected',{exact:true})).toBeVisible();await chat.getByRole('textbox',{name:'发送给当前 Agent 的消息'}).fill('检查逐段流式输出');await chat.getByRole('button',{name:'发送消息',exact:true}).click();
-  // The isolated fake engine intentionally has no telemetry: confirm the
-  // real unknown-context preflight before asserting native dispatch.
-  await page.getByRole('dialog',{name:'发送前检查'}).getByRole('button',{name:'原样发送'}).click();await expect.poll(()=>submitted.length).toBe(1);
+  // This fake engine has no threshold evidence. The input can dispatch
+  // directly, and the live native events below drive the rest of the test.
+  await expect.poll(()=>submitted.length).toBe(1);
   const threadId=native,turnId='work',itemId='stream-step';emit('turn/started',{threadId,turn:{id:turnId,startedAt:Date.now()/1000}});emit('item/started',{threadId,turnId,startedAtMs:Date.now(),item:{type:'agentMessage',id:itemId,phase:'commentary',text:''}});emit('item/agentMessage/delta',{threadId,turnId,itemId,delta:'第一段已经到达。'});
   const first=chat.getByText('第一段已经到达。',{exact:true});await expect(first).toBeVisible({timeout:1000});const bubble=chat.getByRole('region',{name:'codex 进展'}).locator('article');await expect(bubble).toHaveAttribute('data-streaming','true');await expect(bubble.locator('time')).toHaveCount(0);await expect(chat.getByText('第二段继续到达。',{exact:true})).toHaveCount(0);await page.screenshot({path:info.outputPath('first-delta-before-completion.png')});
   emit('item/agentMessage/delta',{threadId,turnId,itemId,delta:'第二段继续到达。'});await expect(chat.getByText('第一段已经到达。第二段继续到达。',{exact:true})).toBeVisible({timeout:1000});await expect(chat.getByRole('region',{name:'codex 进展'}).locator('article')).toHaveCount(1);
@@ -36,19 +36,19 @@ test('renders each native delta before the item completes and keeps one progress
   const metricsLog=join(logs,`rollout-${native}.jsonl`),metricRecord=(type:string,payload:unknown)=>JSON.stringify({timestamp:new Date().toISOString(),type,payload})+'\n';
   const metricUsage=(total:number)=>metricRecord('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{input_tokens:10000,cached_input_tokens:9999,output_tokens:200,reasoning_output_tokens:50,total_tokens:10200}}});
   appendFileSync(metricsLog,metricRecord('turn_context',{turn_id:turnId,model:'gpt-6.1-sol',service_tier:'default'})+metricRecord('event_msg',{type:'task_started',turn_id:turnId})+metricRecord('response_item',{type:'message',id:itemId,role:'assistant',phase:'commentary',content:[{type:'output_text',text:'第一段已经到达。第二段继续到达。'}]})+metricUsage(10200)+metricRecord('response_item',{type:'function_call',call_id:'live-command'}));
-  await expect(bubble.locator('.session-chat-message-statistics')).toContainText('10.2K｜10K｜10K (99.99%)｜50｜200｜0.075',{timeout:1000});
+  await expect(bubble.locator('.session-chat-message-statistics')).toContainText('10.2K (0.075)',{timeout:1000});
   const currentStats=chat.locator('.session-chat-progress-pending .session-chat-message-statistics');
   await expect(currentStats).toContainText('1 round | 1 call',{timeout:1000});
   dispatched=performance.now();appendFileSync(metricsLog,metricUsage(20400));
-  await expect(currentStats).toContainText('10.2K｜10K｜10K (99.99%)｜50｜200｜0.075',{timeout:1000});expect(performance.now()-dispatched).toBeLessThan(1000);
-  await expect(currentStats).not.toContainText('step ·');await expect(currentStats.locator('.session-chat-estimated-cost')).toHaveCSS('color','rgb(126, 34, 206)');
+  await expect(currentStats).toContainText('10.2K (0.075)',{timeout:1000});expect(performance.now()-dispatched).toBeLessThan(1000);
+  await expect(currentStats).not.toContainText('step ·');await expect(currentStats.locator('.session-chat-estimated-cost').first()).toHaveCSS('color','rgb(126, 34, 206)');
   await expect(currentStats.locator('.session-chat-tool-counts')).toHaveCSS('color','rgb(29, 78, 216)');
   const healthy=await currentStats.locator('.session-chat-cache-hit').evaluate(node=>getComputedStyle(node).color);const channels=healthy.match(/[\d.]+/g)!.map(Number);expect(channels[1]).toBeGreaterThan(channels[0]);
   await page.evaluate(()=>document.documentElement.setAttribute('data-theme','midnight'));
-  await expect(currentStats.locator('.session-chat-estimated-cost')).toHaveCSS('color','rgb(196, 161, 255)');await expect(currentStats.locator('.session-chat-tool-counts')).toHaveCSS('color','rgb(121, 180, 255)');
+  await expect(currentStats.locator('.session-chat-estimated-cost').first()).toHaveCSS('color','rgb(196, 161, 255)');await expect(currentStats.locator('.session-chat-tool-counts')).toHaveCSS('color','rgb(121, 180, 255)');
   const dark=await currentStats.locator('.session-chat-cache-hit').evaluate(node=>getComputedStyle(node).color);expect(dark.match(/[\d.]+/g)!.map(Number)[1]).toBeGreaterThan(channels[1]);
   await page.evaluate(()=>document.documentElement.setAttribute('data-theme','light'));
-  await expect(bubble.locator('.session-chat-message-statistics')).toContainText('10.2K｜');
+  await expect(bubble.locator('.session-chat-message-statistics')).toContainText('10.2K (0.075)');
 
   dispatched=performance.now();emit('item/completed',{threadId,turnId,item:{type:'commandExecution',id:'live-command',command:'npm run live-check',status:'completed',aggregatedOutput:'check passed'}});
   await expect(toolRow).toContainText('Waiting',{timeout:1000});expect(performance.now()-dispatched).toBeLessThan(1000);

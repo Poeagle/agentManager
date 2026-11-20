@@ -4,7 +4,7 @@ import {usageCsvDirectory} from './usage-csv.js';
 import {getDb} from '../../../db/index.js';
 import {assertUsageRebuildPreserves} from './usage-rule-guard.js';
 // Increment when persisted interpretation of native usage records changes.
-export const USAGE_RULE_VERSION=5;
+export const USAGE_RULE_VERSION=6;
 import {quotaSamples,initAccountStatus,collectAccountStatus,stopAccountStatus} from './account-status.js';
 import {allocateQuota} from './quota-allocation.js';
 import {quotaHours} from './quota-periods.js';
@@ -72,6 +72,7 @@ export function initAccountUsage(){initUsageProvenance();getDb().exec(`
  CREATE TABLE IF NOT EXISTS codex_usage_ledger(account TEXT PRIMARY KEY,baseline_at TEXT,last_day TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS codex_usage_dedup_events(account TEXT NOT NULL,event_key TEXT NOT NULL,day TEXT NOT NULL,cwd TEXT NOT NULL,model TEXT,tier TEXT,provider TEXT,tokens TEXT NOT NULL,PRIMARY KEY(account,event_key));
  CREATE TABLE IF NOT EXISTS codex_usage_dedup_status(account TEXT PRIMARY KEY,ready INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS codex_usage_file_checkpoints(account TEXT NOT NULL,file_id TEXT NOT NULL,checkpoint TEXT NOT NULL,PRIMARY KEY(account,file_id));
  CREATE INDEX IF NOT EXISTS codex_usage_detail_days ON codex_usage_dedup_events(account,day);
 `);
  initUsageTimeStorage();
@@ -81,30 +82,37 @@ export function initAccountUsage(){initUsageProvenance();getDb().exec(`
  if(!(db.prepare('PRAGMA table_info(codex_usage_dedup_events)').all() as {name:string}[]).some(column=>column.name==='at'))db.exec('ALTER TABLE codex_usage_dedup_events ADD COLUMN at TEXT');
  if(!(db.prepare('PRAGMA table_info(codex_usage_dedup_status)').all() as {name:string}[]).some(column=>column.name==='hour_backfilled'))db.exec('ALTER TABLE codex_usage_dedup_status ADD COLUMN hour_backfilled INTEGER NOT NULL DEFAULT 0');
 }
-export async function collectAccountUsage(id:string,options:{rebuild?:boolean;preserveExisting?:boolean}={}):Promise<void>{
- if(!options.rebuild&&pending.has(id))return pending.get(id)!;
- while(pending.has(id))await pending.get(id);
+export async function collectAccountUsage(id:string,options:{rebuild?:boolean;preserveExisting?:boolean;nativeId?:string}={}):Promise<void>{
+ if(!options.rebuild&&!options.nativeId&&pending.has(id))return pending.get(id)!;
+ while(pending.has(id))await pending.get(id)!.catch(()=>{});
  if(options.rebuild&&hourlyPending.has(id)){controllers.get('hourly:'+id)?.abort();await hourlyPending.get(id);}
  const task=(async()=>{
-  const db=getDb(),e=getCodexEnvironment(id);if(!e.enabled&&!options.rebuild)return;
+  const db=getDb(),e=getCodexEnvironment(id);if(!e.enabled&&!options.rebuild&&!options.nativeId)return;
   const identity=usageIdentity(e);
   let source=db.prepare('SELECT identity FROM codex_usage_sources WHERE account=?').get(id) as {identity:string}|undefined;
   if(source&&e.kind==='provider'){
    try{const old=JSON.parse(source.identity),current=JSON.parse(identity);if(Array.isArray(old[2])&&old[0]===current[0]&&old[1]===current[1]&&old[2].some((r:unknown)=>Array.isArray(r)&&r[0]===id&&r[1]===current[1]&&r[2]===current[2])){db.prepare('UPDATE codex_usage_sources SET identity=? WHERE account=?').run(identity,id);source={identity};}}catch{/* An incompatible source requires a fresh baseline. */}
   }
-  if(!options.rebuild&&source?.identity!==identity)db.transaction(()=>{
-   for(const table of ['codex_usage_snapshots','codex_usage_archived_aggregates','codex_usage_events','codex_usage_status','codex_usage_scan_boundary','codex_usage_progress','codex_usage_event_ids','codex_usage_ledger','codex_usage_dedup_events','codex_usage_dedup_status','codex_usage_unassigned'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
-   if(source)db.prepare('DELETE FROM codex_usage_origins WHERE account=?').run(id);
-   db.prepare('INSERT OR REPLACE INTO codex_usage_sources VALUES(?,?)').run(id,identity);
-  })();
+  if(!options.rebuild&&source?.identity!==identity){
+   if(source&&options.nativeId)throw Error('账号历史来源已变化，原始历史已保留');
+   db.transaction(()=>{
+    for(const table of ['codex_usage_snapshots','codex_usage_archived_aggregates','codex_usage_events','codex_usage_status','codex_usage_scan_boundary','codex_usage_progress','codex_usage_event_ids','codex_usage_ledger','codex_usage_dedup_events','codex_usage_dedup_status','codex_usage_unassigned','codex_usage_file_checkpoints'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
+    if(source)db.prepare('DELETE FROM codex_usage_origins WHERE account=?').run(id);
+    db.prepare('INSERT OR REPLACE INTO codex_usage_sources VALUES(?,?)').run(id,identity);
+   })();
+  }
   const initialized=!options.rebuild&&!!db.prepare('SELECT initialized FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
   const dedupStatus=options.rebuild?undefined:db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
-  const timezone=usageTimezone(),previousTimezone=usageStoredTimezone(id),rebin=initialized&&previousTimezone!==timezone;
+  const previousTimezone=usageStoredTimezone(id);
+  // A targeted flush reads only one history file. An account-wide timezone
+  // migration needs a full scan to preserve the previously assigned rows.
+  const timezone=options.nativeId?previousTimezone:usageTimezone();
+  const rebin=initialized&&previousTimezone!==timezone;
   const day=usageDay(Date.now(),timezone),previousDay=new Date(Date.parse(day+'T00:00:00Z')-86400000).toISOString().slice(0,10);
   const previousLedger=db.prepare('SELECT last_day FROM codex_usage_ledger WHERE account=?').get(id) as {last_day:string}|undefined;
   const missedDays=!!previousLedger&&previousLedger.last_day<previousDay;
   const recoveryFrom=initialized&&dedupStatus?.ready===1&&!rebin&&missedDays?previousLedger!.last_day:null;
-  const mode=recoveryFrom?'catchup':initialized&&dedupStatus?.ready===1&&!rebin?'daily':'full';
+  const mode=options.nativeId?'full':recoveryFrom?'catchup':initialized&&dedupStatus?.ready===1&&!rebin?'daily':'full';
   const controller=new AbortController();controllers.set(id,controller);
   try{
    const home=e.kind==='account'?e.connection?.codexHome:usageHome(e);
@@ -116,14 +124,20 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
    const yesterday=new Date(Date.parse(day+'T00:00:00Z')-86400000).toISOString().slice(0,10);
    const lastDay=ledger?.last_day??prior?.checked_at?.slice(0,10);
    const days=mode==='daily'&&lastDay&&lastDay<day?[yesterday,day]:[day];
-   const known=options.rebuild?[]:db.prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=? AND (? OR timezone!=? OR day>=? AND day<=?) LIMIT 2000001').all(id,rebin||mode==='full'?1:0,timezone,recoveryFrom??days[0],day) as {event_id:Buffer}[];
+   const incremental=!options.rebuild&&!rebin&&!options.nativeId&&(!initialized||dedupStatus?.ready===1);
+   const checkpointRows=incremental?db.prepare('SELECT file_id,checkpoint FROM codex_usage_file_checkpoints WHERE account=? LIMIT 20000').all(id) as Array<{file_id:string;checkpoint:string}>:[];
+   const checkpoints=incremental?Object.fromEntries(checkpointRows.map(row=>[row.file_id,JSON.parse(row.checkpoint)])):undefined;
+   const known=options.rebuild&&!options.preserveExisting?[]:db.prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=? AND (? OR timezone!=? OR day>=? AND day<=?) LIMIT 2000001').all(id,rebin||mode==='full'||incremental?1:0,timezone,recoveryFrom??days[0],day) as {event_id:Buffer}[];
    if(known.length>2000000)throw Error('Usage identity limit exceeded');
-   const input=JSON.stringify({home,mode,day,days,since_day:recoveryFrom,timezone,previous_timezone:previousTimezone,rebin,baseline_at:baseline,known_events:Buffer.concat(known.map(r=>r.event_id)).toString('base64'),origins:usageOrigins(id),includeEvents:true,rebuildEvents:initialized&&dedupStatus?.ready!==1});
+   const input=JSON.stringify({home,mode,day,days,since_day:recoveryFrom,timezone,previous_timezone:previousTimezone,
+    rebin,baseline_at:baseline,known_events:Buffer.concat(known.map(r=>r.event_id)).toString('base64'),
+    origins:usageOrigins(id),includeEvents:true,rebuildEvents:initialized&&dedupStatus?.ready!==1&&!options.nativeId,
+    native_id:options.nativeId,checkpoints,reconcile:!!options.preserveExisting,save_checkpoints:!options.nativeId});
    const commandOptions={timeoutMs:mode!=='daily'?300000:120000,maxOutputBytes:256*1024*1024,signal:controller.signal};
    const scanStartedAt=new Date().toISOString();
    const result=JSON.parse(await (e.kind==='account'?accountCommandInput(environmentConnection(e),USAGE_SCAN,input,commandOptions):localCommandInput(USAGE_SCAN,input,commandOptions)));
    if(!Array.isArray(result.rows)||result.rows.length>50000||result.mode!==mode||result.day!==day)throw Error('Invalid usage response');
-   const inWindow=(date:string)=>mode==='daily'?days.includes(date):mode==='catchup'?date>=recoveryFrom!&&date<=day:true;
+   const inWindow=(date:string)=>incremental||mode==='full'||(mode==='daily'?days.includes(date):date>=recoveryFrom!&&date<=day);
    const requestsPerDay=new Map<string,number>();
    for(const row of result.rows){
     if(!/^\d{4}-\d{2}-\d{2}$/.test(row.day)||!inWindow(row.day)||typeof row.cwd!=='string'||row.cwd.length>4096||!Number.isSafeInteger(row.requests)||row.requests<1||!row.tokens||tokenFields.some(k=>row.tokens[k]!==null&&(!Number.isFinite(row.tokens[k])||row.tokens[k]<0)))throw Error('Invalid usage row');
@@ -144,11 +158,13 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
    if(!Array.isArray(result.events)||result.events.length>USAGE_EVENT_LIMIT||result.events.some((event:any)=>!/^\w{64}$/.test(event.key)||event.legacy_key!=null&&!/^[a-f0-9]{64}$/.test(event.legacy_key)||!/^\d{4}-\d{2}-\d{2}$/.test(event.day)||event.at!=null&&(typeof event.at!=='string'||!Number.isFinite(Date.parse(event.at)))||event.hour!=null&&(!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):00:00(?:Z|[+-]\d{2}:\d{2})$/.test(event.hour)||!event.hour.startsWith(event.day))||!inWindow(event.day)||typeof event.cwd!=='string'||event.cwd.length>4096||[event.provider,event.model,event.tier].some(v=>v!=null&&(typeof v!=='string'||v.length>120))||!event.tokens||tokenFields.some(k=>event.tokens[k]!==null&&(!Number.isFinite(event.tokens[k])||event.tokens[k]<0))))throw Error('Invalid deduplication response');
    if(options.preserveExisting&&(result.events_truncated||result.events.length!==count||result.events.some((event:any)=>!event.hour)||previousTimezone!==timezone))throw Error('历史重读不完整');
    if(options.rebuild&&(result.events_truncated||result.events.length!==count||result.events.some((event:any)=>!event.hour)||(result.errors&&count===0)))throw Error('Rebuild incomplete');
-   const current=getCodexEnvironment(id);if((!current.enabled&&!options.rebuild)||usageIdentity(current)!==identity){if(options.rebuild)throw Error('Environment changed');return;}
+   const nextCheckpoints=Object.entries(result.checkpoints??{});
+   if(nextCheckpoints.length>20000||nextCheckpoints.some(([key,value])=>!/^[a-f0-9]{64}$/.test(key)||!value||typeof value!=='object'||JSON.stringify(value).length>8192))throw Error('Invalid usage checkpoints');
+   const current=getCodexEnvironment(id);if((!current.enabled&&!options.rebuild&&!options.nativeId)||usageIdentity(current)!==identity){if(options.rebuild||options.nativeId)throw Error('Environment changed');return;}
    db.transaction(()=>{
     if(options.preserveExisting)assertUsageRebuildPreserves(db,id,result.events,USAGE_EVENT_LIMIT);
     if(options.rebuild){
-     for(const table of ['codex_usage_snapshots','codex_usage_archived_aggregates','codex_usage_events','codex_usage_status','codex_usage_scan_boundary','codex_usage_progress','codex_usage_event_ids','codex_usage_ledger','codex_usage_dedup_events','codex_usage_dedup_status','codex_usage_unassigned'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
+     for(const table of ['codex_usage_snapshots','codex_usage_archived_aggregates','codex_usage_events','codex_usage_status','codex_usage_scan_boundary','codex_usage_progress','codex_usage_event_ids','codex_usage_ledger','codex_usage_dedup_events','codex_usage_dedup_status','codex_usage_unassigned','codex_usage_file_checkpoints'])db.prepare(`DELETE FROM ${table} WHERE account=?`).run(id);
      db.prepare('INSERT OR REPLACE INTO codex_usage_sources VALUES(?,?)').run(id,identity);
     }
     // Request identities and aggregates commit together. Missing/truncated files
@@ -168,7 +184,16 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
      insert.run(id,key,row.day,row.cwd,row.model||null,row.tier||null,JSON.stringify({...tokens,requests:row.requests+(old?.requests??0)}));
     }
     const eventInsert=db.prepare('INSERT INTO codex_usage_dedup_events(account,event_key,day,cwd,model,tier,provider,tokens,hour,at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account,event_key) DO UPDATE SET day=excluded.day,cwd=excluded.cwd,model=excluded.model,tier=excluded.tier,provider=excluded.provider,tokens=excluded.tokens,hour=COALESCE(excluded.hour,hour),at=COALESCE(excluded.at,at)');
-    for(const event of result.events)eventInsert.run(id,event.key,event.day,event.cwd,event.model||null,event.tier||null,event.provider||null,JSON.stringify({...event.tokens,_timezone:timezone,...event.legacy_key?{_legacy_key:event.legacy_key}:{},_session:typeof event.session==='string'?event.session.slice(0,200):null}),event.hour||null,event.at||null);
+    for(const event of result.events)eventInsert.run(id,event.key,event.day,event.cwd,event.model||null,event.tier||null,event.provider||null,JSON.stringify({
+      ...event.tokens,_timezone:timezone,...event.legacy_key?{_legacy_key:event.legacy_key}:{},
+      ...typeof event.request_key==='string'&&/^[a-f0-9]{64}$/.test(event.request_key)?{_request_key:event.request_key}:{},
+      _session:typeof event.session==='string'?event.session.slice(0,200):null,
+    }),event.hour||null,event.at||null);
+    if(!result.events_truncated&&nextCheckpoints.length){
+     const save=db.prepare('INSERT OR REPLACE INTO codex_usage_file_checkpoints VALUES(?,?,?)');
+     for(const [key,value] of nextCheckpoints)save.run(id,key,JSON.stringify(value));
+    }
+    if(options.nativeId)return;
     db.prepare('INSERT INTO codex_usage_dedup_status(account,ready) VALUES(?,?) ON CONFLICT(account) DO UPDATE SET ready=excluded.ready').run(id,!result.events_truncated&&(mode==='full'||dedupStatus?.ready===1)?1:0);
     if(options.rebuild)db.prepare('UPDATE codex_usage_dedup_status SET hour_backfilled=1 WHERE account=?').run(id);
     db.prepare('INSERT INTO codex_usage_ledger(account,baseline_at,last_day,timezone) VALUES(?,?,?,?) ON CONFLICT(account) DO UPDATE SET last_day=excluded.last_day,timezone=excluded.timezone').run(id,baseline,previousLedger&&(result.partial||result.errors||result.events_truncated)?previousLedger.last_day:day,timezone);
@@ -181,7 +206,8 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
     if(result.progress)db.prepare('INSERT OR REPLACE INTO codex_usage_progress VALUES(?,?)').run(id,JSON.stringify(result.progress));
    })();
    exportUsageCsv(id,{rebuild:!!options.rebuild||rebin||missedDays||mode==='full'});
-  }catch(error){const message=error instanceof Error&&error.message==='历史目录无法独立归属'?'历史目录与其他 Engine 共用或无法确认，未统计以避免重复':'采集失败，保留上次成功数据';if(options.preserveExisting){const reasons=new Set(['历史重读不完整','历史记录存在未归属数据','历史请求身份不完整','重读请求身份重复','部分历史请求无法从原始文件中找到','历史请求的归属或 Token 与缓存不一致','历史计数不可验证','历史计数超限','历史请求身份缺失','历史聚合无法核对']);const reason=error instanceof Error&&reasons.has(error.message)?error.message:'无法完整扫描或验证原始历史';throw Object.assign(Error(reason),{statusCode:409});}if(options.rebuild)throw Object.assign(Error(message),{statusCode:409});db.prepare('INSERT INTO codex_usage_status(account,error,partial) VALUES(?,?,1) ON CONFLICT(account) DO UPDATE SET error=excluded.error,partial=1').run(id,message);}
+   if(options.nativeId&&(result.errors||result.partial||result.events_truncated))throw Error('最后的账号用量不完整，原始历史已保留');
+  }catch(error){const message=error instanceof Error&&error.message==='历史目录无法独立归属'?'历史目录与其他 Engine 共用或无法确认，未统计以避免重复':'采集失败，保留上次成功数据';if(options.preserveExisting){const reasons=new Set(['历史重读不完整','历史记录存在未归属数据','历史请求身份不完整','重读请求身份重复','部分历史请求无法从原始文件中找到','历史请求的归属或 Token 与缓存不一致','历史计数不可验证','历史计数超限','历史请求身份缺失','历史聚合无法核对']);const reason=error instanceof Error&&reasons.has(error.message)?error.message:'无法完整扫描或验证原始历史';throw Object.assign(Error(reason),{statusCode:409});}if(options.nativeId)throw Error('最后的账号用量无法完整核对，原始历史已保留');if(options.rebuild)throw Object.assign(Error(message),{statusCode:409});db.prepare('INSERT INTO codex_usage_status(account,error,partial) VALUES(?,?,1) ON CONFLICT(account) DO UPDATE SET error=excluded.error,partial=1').run(id,message);}
   finally{controllers.delete(id);}
  })();pending.set(id,task);try{await task;}finally{pending.delete(id);}
 }
@@ -298,10 +324,13 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
    if(!single&&!raw.provider){partial=true;continue;}if(!single&&raw.provider!==providerId)continue;
    if(++processed>USAGE_EVENT_LIMIT)return {partial:true,error:'统计记录过多，无法安全合并',rows:[]};
    const parsed=JSON.parse(raw.tokens),legacyKey=typeof parsed._legacy_key==='string'?parsed._legacy_key:null;
+   const requestKey=typeof parsed._request_key==='string'?parsed._request_key:null;
    const event={...raw,tokens:JSON.stringify({...Object.fromEntries(tokenFields.map(k=>[k,parsed[k]??null])),requests:parsed.requests??1})};
    const unassigned=(parsed._timezone??'UTC')!==timezone;
-   if(legacyKey){if(!aliases.has(legacyKey))aliases.set(legacyKey,event_key);else if(aliases.get(legacyKey)!==event_key)aliases.set(legacyKey,null);}
-   if(unassigned||!legacyKey)legacy.push({key:event_key,event,unassigned});else merge(event_key,event);
+   const canonical=requestKey??event_key;
+   if(requestKey)aliases.set(event_key,canonical);
+   if(legacyKey){if(!aliases.has(legacyKey))aliases.set(legacyKey,canonical);else if(aliases.get(legacyKey)!==canonical)aliases.set(legacyKey,null);}
+   if(unassigned||!legacyKey&&!requestKey)legacy.push({key:canonical,event,unassigned});else merge(canonical,event);
   }
  }
  // Old caches used timestamp-based identities. Bridge only unambiguous aliases;
@@ -344,8 +373,6 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
 export async function refreshUsageRules(id:string):Promise<void>{
  const db=getDb();
  const current=db.prepare('SELECT version,state,retry_at FROM codex_usage_rule_versions WHERE account=?').get(id) as {version:number;state:string;retry_at:string|null}|undefined;
- if(current?.version===4&&['ready','ready_partial'].includes(current.state)){db.prepare('UPDATE codex_usage_rule_versions SET version=? WHERE account=?').run(USAGE_RULE_VERSION,id);return;}
- if(current?.version===3&&current.state==='ready'){const previous=db.prepare('SELECT partial,error FROM codex_usage_status WHERE account=?').get(id) as {partial:number;error:string|null}|undefined;const partial=!!previous?.partial&&previous.error==='部分记录不可读取或缺少统计字段';db.prepare('UPDATE codex_usage_rule_versions SET version=?,state=?,retry_at=? WHERE account=?').run(USAGE_RULE_VERSION,partial?'ready_partial':'ready',partial?new Date(Date.now()+86400000).toISOString():null,id);return;}
  if(current?.version===USAGE_RULE_VERSION&&(current.state==='ready'||['blocked','ready_partial'].includes(current.state)&&current.retry_at&&Date.parse(current.retry_at)>Date.now()))return;
  db.prepare("INSERT OR REPLACE INTO codex_usage_rule_versions(account,version,state,retry_at,reason) VALUES(?,?,'pending',NULL,NULL)").run(id,USAGE_RULE_VERSION);
  try{await collectAccountUsage(id,{rebuild:true,preserveExisting:true});}
@@ -353,7 +380,7 @@ export async function refreshUsageRules(id:string):Promise<void>{
 }
 /** One background clock owns both quota acquisition and usage scanning.
  * Frontend reads are inert. Never overlap cycles or replay missed ticks. */
-export function startAccountUsage(){
+export function startAccountUsage(afterCollection?:(signal:AbortSignal)=>Promise<void>){
  if(!stopped)return;
  initAccountUsage();initAccountStatus();stopped=false;
  const tick=async()=>{
@@ -373,6 +400,13 @@ export function startAccountUsage(){
     exportUsageCsv(e.id);
    }
    for(const e of environments){if(stopped)break;if(e.enabled)await backfillUsageHours(e.id);}
+   if(!stopped&&afterCollection){
+    const controller=new AbortController();
+    controllers.set('session-statistics',controller);
+    const inventory=afterCollection(controller.signal);
+    hourlyPending.set('session-statistics',inventory);
+    try{await inventory;}finally{controllers.delete('session-statistics');hourlyPending.delete('session-statistics');}
+   }
   }catch{/* Retry configuration changes and partial failures next cycle. */}
   finally{if(!stopped){timer=setTimeout(()=>void tick(),Math.max(1000,300000-(Date.now()-triggeredAt)));timer.unref();}}
  };

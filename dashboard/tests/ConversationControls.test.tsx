@@ -19,7 +19,7 @@ describe('compact conversation controls',()=>{
   expect(within(tokens).getByText('327.8M')).toHaveAttribute('title','累计命中缓存的输入 Token（327,800,000）');
   const calls=vi.mocked(api.agent.controls).mock.calls.length;
   await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-16T01:00:00Z',usage:{total:{total_tokens:331000000,input_tokens:330400000,cached_input_tokens:328000000,reasoning_output_tokens:286300,output_tokens:627800},last:{total_tokens:120000},window:475000}});});
-  expect(tokens).toHaveTextContent('Tokens Total｜Input｜Cache｜Reasoning｜Output : 331M｜330.4M｜328M｜286.3K｜627.8K');
+  await waitFor(()=>expect(tokens).toHaveTextContent('Tokens Total｜Input｜Cache｜Reasoning｜Output : 331M｜330.4M｜328M｜286.3K｜627.8K'));
   expect(api.agent.controls).toHaveBeenCalledTimes(calls);
  });
  it('shows known zero token counts and omits missing cumulative metrics',async()=>{

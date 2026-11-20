@@ -629,12 +629,12 @@ export async function readConversation(
   session: PromptContextSession,
   query: { after?: string; before?: string; limit?: number } = {},
 ) {
-  const nativePage = await agentForSession(session).history.read(
-    agentContext(session),
-    query,
-  );
-  if (nativePage) return nativePage;
-  const file = await nativeConversationFile(session);
+  const adapter = agentForSession(session);
+  const context = agentContext(session);
+  const durable = sessionFactsEnabled(context);
+  const nativePage = await adapter.history.read(context, query);
+  if (nativePage) return {...nativePage, metadata: null, cache_drops: []};
+  const file = await nativeConversationFile(session).catch(() => null);
   const empty = {
     messages: [] as ConversationMessage[],
     statistics: [] as ConversationStatistics[],
@@ -642,6 +642,8 @@ export async function readConversation(
     reset: false,
     available: false,
     generation: null as string | null,
+    metadata: readSessionMetadata(context, false),
+    cache_drops: [],
   };
   if (!file) return empty;
   const previous = locks.get(file.path) || Promise.resolve();
@@ -852,9 +854,15 @@ export async function readConversation(
           );
         }
         const messages: ConversationMessage[] = [];
-        const statistics = await getAgent(file.kind)
-          .statistics.read(agentContext(session), file.path)
-          .catch(() => []);
+        let metadata = null;
+        let statistics: ConversationStatistics[];
+        if (durable) {
+          const available = await updateSessionFacts(context, file.path).catch(() => false);
+          metadata = readSessionMetadata(context, available);
+          statistics = readSessionItemStatistics(context, selected.filter(item => item.role === "assistant"));
+        } else {
+          statistics = await adapter.statistics.read(context, file.path).catch(() => []);
+        }
         const byOffset = new Map(
           statistics.map((item) => [item.sequence, item]),
         );
@@ -901,10 +909,10 @@ export async function readConversation(
                 ? { presentation: parsed.presentation }
                 : {}),
               ...(item.compaction ? { compaction: item.compaction } : {}),
-              ...(byOffset.has(item.offset)
-                ? { statistics: byOffset.get(item.offset) }
-                : byMessage.has(item.id)
-                  ? { statistics: byMessage.get(item.id) }
+              ...(byMessage.has(item.id)
+                ? { statistics: byMessage.get(item.id) }
+                : item.role === "assistant" && byOffset.has(item.offset)
+                  ? { statistics: byOffset.get(item.offset) }
                   : item.statistics
                     ? { statistics: item.statistics }
                     : {}),
@@ -926,6 +934,8 @@ export async function readConversation(
         return {
           messages,
           statistics,
+          metadata,
+          cache_drops: readSessionCacheDrops(context, messages.filter(message => message.role === "user").map(message => message.id)),
           has_more:
             index.start > 0 || (!!first && index.messages[0]?.id !== first.id),
           reset,
@@ -944,3 +954,7 @@ export async function readConversation(
     if (locks.get(file.path) === work) locks.delete(file.path);
   }
 }
+import {
+  readSessionCacheDrops, readSessionItemStatistics, readSessionMetadata,
+  sessionFactsEnabled, updateSessionFacts,
+} from "./session-statistics.js";

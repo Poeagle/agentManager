@@ -28,9 +28,13 @@ export async function prepareFreshCodexConversation(threadId:string,cwd:string,s
     // operation and keep an explicitly configured engine authoritative.
     const engine=currentCodexEngine();
     return runInCodexEngine(!engine.provider&&typeof current.thread.modelProvider==='string'&&current.thread.modelProvider?{...engine,provider:current.thread.modelProvider}:engine,async()=>{
-    const chosen=preference?await validateModelPreference(preference):undefined;
-    if(!chosen&&!(await readCodexModels()).some(m=>m.model===current.thread.model&&(!m.provider||m.provider===current.thread.modelProvider)))throw Error('原模型当前不可用，请先选择新会话的模型');
-    const settings=await request('thread/resume',{threadId,excludeTurns:true});
+    const model=async()=>{
+      if(preference)return validateModelPreference(preference);
+      if(!(await readCodexModels()).some(m=>m.model===current.thread.model&&(!m.provider||m.provider===current.thread.modelProvider)))
+        throw Error('原模型当前不可用，请先选择新会话的模型');
+      return undefined;
+    };
+    const [chosen,settings]=await Promise.all([model(),request('thread/resume',{threadId,excludeTurns:true})]);
     const serviceTier=chosen?.service_tier??(chosen?.provider&&chosen.provider!==current.thread.modelProvider?'default':settings.serviceTier);
     const sandbox=({readOnly:'read-only',workspaceWrite:'workspace-write',dangerFullAccess:'danger-full-access'} as Record<string,string>)[settings.sandbox?.type];
     if(!['read-only','workspace-write','danger-full-access'].includes(sandbox)||!settings.approvalPolicy)throw Error('无法确认原会话权限，原会话已保留');

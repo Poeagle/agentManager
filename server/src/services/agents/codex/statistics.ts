@@ -78,6 +78,10 @@ function finish(state:State,hasUsage:boolean,retainTail=0){
 function consume(state:State,line:Buffer,sequence:number){
   // Only parse relevant records; never retain arguments, outputs or reasoning.
   const header=line.subarray(0,600).toString();
+  // A compaction record can contain a large nested "message" field. It is
+  // not an assistant message or a usage event, and must not invalidate the
+  // surrounding statistics merely because its replacement history is large.
+  if (/^\s*\{\s*(?:"timestamp"\s*:\s*"[^"]*"\s*,\s*)?"type"\s*:\s*"compacted"\s*[,}]/.test(header)) return;
   if(!/"type"\s*:\s*"(?:session_meta|thread_settings_applied|task_started|task_complete|turn_aborted|user_message|turn_context|token_count|message|item_completed|AgentMessage|function_call|custom_tool_call|tool_search_call|web_search_call|local_shell_call)"/.test(header))return;
   if(line.length>256*1024){incomplete(state);return;}
   let record:any;try{record=JSON.parse(line.toString());}catch{incomplete(state);return;}

@@ -10,6 +10,8 @@ import {Dialog} from './Dialog';
 import {ConversationDetailsPanel,type ConversationDetailRuntimeRow} from './ConversationDetailsPanel';
 import {ConversationContextUsage} from './ConversationContextUsage';
 import {quotaColor} from '../lib/quota-color';
+import {coverageReason,coverageText,creditsLabel,recordedCachePercent,type SessionMetadata} from '../lib/session-metadata';
+import {ConversationUsageHistory} from './ConversationUsageHistory';
 
 const effortNames:Record<string,string>={none:'无',minimal:'最低',low:'低',medium:'中',high:'高',xhigh:'更高',max:'最高',ultra:'极高'};
 const compact=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(value);
@@ -17,7 +19,7 @@ const choiceKey=(value:{provider?:string;model:string})=>value.provider?JSON.str
 const permissions:Record<string,string>={'danger-full-access':'完整访问','workspace-write':'工作区可写','read-only':'只读'};
 const permissionsEn:Record<string,string>={'danger-full-access':'Full access','workspace-write':'Workspace write','read-only':'Read only'};
 const tokenMetricDescriptions:Record<string,string>={Total:'会话累计 Token，包含重复上下文',Input:'累计输入 Token，包含缓存输入',Cache:'累计命中缓存的输入 Token',Reasoning:'累计推理 Token，包含在输出中',Output:'累计输出 Token，包含推理 Token'};
-export function ConversationControls({sessionId,active,busy=false,compacting=false,onCompact,onNewConversation,toolbarTarget}:{toolbarTarget?:HTMLElement|null;sessionId:string;active:boolean;busy?:boolean;compacting?:boolean;onCompact?:()=>Promise<void>;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<void>}) {
+export function ConversationControls({sessionId,active,busy=false,compacting=false,onCompact,onNewConversation,toolbarTarget,metadata}:{toolbarTarget?:HTMLElement|null;sessionId:string;active:boolean;busy?:boolean;compacting?:boolean;onCompact?:()=>Promise<void>;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<void>;metadata?:SessionMetadata|null}) {
   const queryClient=useQueryClient(),[expanded,setExpanded]=useState(false),[saving,setSaving]=useState(false),[applied,setApplied]=useState(false),[error,setError]=useState('');
   const [operation,setOperation]=useState<'compact'|'new'|null>(null),[newOpen,setNewOpen]=useState(false),[notice,setNotice]=useState('');
   const [freshPreference,setFreshPreference]=useState<import('../lib/api').AgentModelPreference>();
@@ -53,9 +55,14 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
     return target?.auth_mode==='api'?m.name:`${m.provider?`${m.provider} · `:''}${m.name}`;
   };
   const model=data?.models.find(m=>m.model===selected.model&&(!m.provider||!selected.provider||m.provider===selected.provider)),usage=data?.usage;
-  const tokenMetrics=usage?([['Total',usage.total.total_tokens],['Input',usage.total.input_tokens],['Cache',usage.total.cached_input_tokens],['Reasoning',usage.total.reasoning_output_tokens],['Output',usage.total.output_tokens]] as Array<[string,number|null|undefined]>).filter((entry):entry is [string,number]=>entry[1]!=null):[];
-  const cacheInput=usage?.total.input_tokens,cacheHit=usage?.total.cached_input_tokens;
-  const cacheRate=cacheInput!=null&&cacheInput>0&&cacheHit!=null&&cacheHit>=0&&cacheHit<=cacheInput?Number((100*cacheHit/cacheInput).toFixed(1)):null;
+  const summary=metadata&&metadata.native_id===data?.native_id?metadata:null;
+  const cumulative=summary?summary.totals?.tokens:usage?.total;
+  const credits=summary?.totals?.cost;
+  const tokenMetrics=cumulative?([['Total',cumulative.total_tokens],['Input',cumulative.input_tokens],['Cache',cumulative.cached_input_tokens],['Reasoning',cumulative.reasoning_output_tokens],['Output',cumulative.output_tokens]] as Array<[string,number|null|undefined]>).filter((entry):entry is [string,number]=>entry[1]!=null):[];
+  const cacheInput=cumulative?.input_tokens,cacheHit=cumulative?.cached_input_tokens;
+  const recordedRate=summary?.reasons.some(reason=>reason==='missing_usage'||reason==='counter_mismatch')?null:recordedCachePercent(cumulative);
+  const cacheRate=summary?(recordedRate===null?null:Number(recordedRate.toFixed(1)))
+    :cacheInput!=null&&cacheInput>0&&cacheHit!=null&&cacheHit>=0&&cacheHit<=cacheInput?Number((100*cacheHit/cacheInput).toFixed(1)):null;
   const cacheColor=cacheRate===null?'var(--text-muted)':quotaColor(cacheRate);
   const context=usage?.window&&usage.last.total_tokens!=null?Math.min(100,Math.round(100*usage.last.total_tokens/usage.window)):null;
   const currentEnvironment=environments.data?.environments.find(e=>e.id===environments.data?.current);
@@ -108,6 +115,8 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
           {data.approval&&<span title="Approval policy">Approval: {data.approval}</span>}
           {data.engine_version&&<span title="Running engine version">Engine {data.engine_version}</span>}
           {tokenMetrics.length>0&&<span aria-label="Cumulative token usage">Tokens {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{name}</span></Fragment>)} : {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{compact(value)}</span></Fragment>)}</span>}
+          {credits?.amount!=null&&<span className="session-chat-estimated-cost conversation-total-credits" title={`按原生请求的模型和速度估算 · 费率 ${credits.rate_date??'未知'}${credits.complete?'':' · * 费率或用量覆盖不完整'}`}>Est. Cr {creditsLabel(credits)}</span>}
+          {summary&&summary.status!=='complete'&&<span title={summary.reasons.map(reason=>coverageReason[reason]).join('、')}>{coverageText[summary.status]}</span>}
         </span>
         {(error&&!newOpen||notice)&&<span className="conversation-control-message" role={error&&!newOpen?'alert':'status'} title={error&&!newOpen?error:notice}>{error&&!newOpen?error:notice}</span>}
         <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>Details</button>
@@ -134,11 +143,24 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
       {error&&<p role="alert" className="session-chat-error">{error}</p>}
       <footer className="mt-4 flex justify-end gap-3 text-sm"><button type="button" disabled={!!operation} onClick={()=>setNewOpen(false)}>取消</button><button type="button" disabled={!!operation||!!data?.supports_fresh_model&&!freshPreference} onClick={()=>void perform('new')}>{operation==='new'?'正在新开…':'停止旧会话并新开'}</button></footer>
     </Dialog>}
-    {expanded&&data&&<ControlDetails data={{...data,state:data.loaded?(busy||compacting?'active':'idle'):data.state}} onClose={()=>setExpanded(false)} onRefresh={refresh} refreshing={query.isFetching}/>}
+    {expanded&&data&&<ControlDetails key={data.native_id} sessionId={sessionId} metadata={summary} data={{...data,state:data.loaded?(busy||compacting?'active':'idle'):data.state}} onClose={()=>setExpanded(false)} onRefresh={refresh} refreshing={query.isFetching}/>}
     {contextOpen&&active&&data?.native_id&&<ConversationContextUsage key={`${sessionId}:${data.native_id}`} sessionId={sessionId} nativeId={data.native_id} usage={data.usage} observedAt={data.usage_observed_at} model={data.model} onClose={()=>setContextOpen(false)}/>}
   </div>;
 }
-function ControlDetails({data,onClose,onRefresh,refreshing}:{data:ConversationControlsData;onClose:()=>void;onRefresh:()=>void;refreshing:boolean}) {
+function ControlDetails({sessionId,metadata,data,onClose,onRefresh,refreshing}:{sessionId:string;metadata:SessionMetadata|null;data:ConversationControlsData;onClose:()=>void;onRefresh:()=>void;refreshing:boolean}) {
+  const query=useQuery({
+    queryKey:['conversation-metadata-details',sessionId,data.native_id],
+    queryFn:({signal})=>api.agent.conversationMetadata(sessionId,{},signal),
+    enabled:!!data.agent?.capabilities.statistics,retry:false,
+  });
+  const result=query.data?.metadata;
+  const details=result?.summary.native_id===data.native_id&&(!metadata?.generation||metadata.generation===result.summary.generation)?result:null;
+  const summary=details&&details.summary.revision>(metadata?.revision??0)?details.summary:metadata;
+  useEffect(()=>{
+    if(!metadata||!result||metadata.revision<=result.summary.revision)return;
+    const timer=setTimeout(()=>void query.refetch(),500);
+    return()=>clearTimeout(timer);
+  },[metadata?.revision,result?.summary.revision,query.refetch]);
   const runtime:ConversationDetailRuntimeRow[]=[
     {label:'当前模型',value:data.model,detail:data.provider?`服务 ${data.provider}`:null},
     {label:'当前推理强度',value:data.effort?`${effortNames[data.effort]||data.effort}（${data.effort}）`:null,detail:`服务层级 ${data.service_tier||'未提供'}`},
@@ -147,10 +169,13 @@ function ControlDetails({data,onClose,onRefresh,refreshing}:{data:ConversationCo
     {label:'当前分支',value:data.git?.branch,detail:data.git?data.git.changes?`工作区 ${data.git.changes} 项变更`:'工作区无变更':'未提供 Git 信息'},
     {label:'会话状态',value:data.state==='active'?'执行中':data.state==='idle'?'等待输入':data.state==='notLoaded'?'未接入实时控制':data.state},
   ];
-  return <Dialog title="会话详情" size="lg" onClose={onClose} actions={<button className="conversation-preview-dock" type="button" onClick={onRefresh} disabled={refreshing}><RefreshCw size={14} className={refreshing?'animate-spin':''}/>刷新</button>}>
+  const refreshingDetails=refreshing||query.isFetching;
+  return <Dialog title="会话详情" size="lg" onClose={onClose} actions={<button className="conversation-preview-dock" type="button" onClick={()=>{onRefresh();if(data.agent?.capabilities.statistics)void query.refetch();}} disabled={refreshingDetails}><RefreshCw size={14} className={refreshingDetails?'animate-spin':''}/>刷新</button>}>
     {data.pending&&<p className="conversation-controls-note">{data.pending_status==='submitted'?'等待原生请求确认：':'恢复或重载时应用：'}{data.pending.model} · {data.pending.effort}。</p>}
     {data.warning&&<p role="status" className="conversation-controls-note">{data.warning}</p>}
     {!data.can_edit&&<p className="conversation-controls-note">当前显示只读信息。可在原始终端查看或修改该会话支持的设置。</p>}
-    <ConversationDetailsPanel usage={data.usage} observedAt={data.usage_observed_at} runtime={runtime} nativeId={data.native_id} limits={data.limits} checkedAt={data.checked_at}/>
+    <ConversationDetailsPanel usage={data.usage} observedAt={data.usage_observed_at} runtime={runtime} nativeId={data.native_id} limits={data.limits} checkedAt={data.checked_at} metadata={summary}/>
+    {query.isError&&!!metadata&&<p role="status" className="conversation-details-note">暂时无法读取会话明细。</p>}
+    {details&&<ConversationUsageHistory key={details.summary.generation??details.summary.native_id} sessionId={sessionId} details={details}/>}
   </Dialog>;
 }

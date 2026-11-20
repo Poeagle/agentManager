@@ -47,6 +47,11 @@ describe('bounded native conversation statistics',()=>{
   writeFileSync(file,start()+message('first')+usage(1000,100)+start('two')+row('response_item',{type:'function_call_output',output:'x'.repeat(300000)})+message('second','two')+call('a')+usage(1100,100));
   const snapshots=await readConversationStatistics(file);expect(snapshots[1]).toMatchObject({turn_id:'two',complete:true,requests:1,tool_calls:1,tool_rounds:1,tokens:{total_tokens:100}});
  });
+ it('does not mark usage incomplete for a large compaction summary',async()=>{
+  const compacted=JSON.stringify({timestamp:'2026-11-20T10:00:00Z',type:'compacted',payload:{message:'x'.repeat(300000)}})+'\n';
+  writeFileSync(file,start()+compacted+message('answer','one','final_answer')+usage(100,100));
+  expect((await readConversationStatistics(file))[0]).toMatchObject({complete:true,interval:{complete:true},tokens:{total_tokens:100}});
+ });
  it('marks incomplete history and missing usage instead of inventing per-message totals',async()=>{
   writeFileSync(file,row('turn_context',{turn_id:'partial'})+message('old','partial')+call('a')+usage(1000,100));expect((await readConversationStatistics(file))[0]).toMatchObject({complete:false,tokens:{total_tokens:100},tool_calls:1});
   appendFileSync(file,start('new')+message('new','new','final_answer')+row('event_msg',{type:'task_complete',turn_id:'new'}));expect((await readConversationStatistics(file)).at(-1)).toMatchObject({tokens:null,turn_id:'new'});

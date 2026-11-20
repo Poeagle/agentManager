@@ -25,6 +25,7 @@ import {withSharedResourceInstructions} from './cli-command.js';
 import {sharedResourceLaunch} from './shared-resources/store.js';
 
 import {snapshotConversation,activateFreshConversation,restoreConversationSnapshot} from './conversation-history.js';
+import {beginSessionAction,flushSessionFactsBeforeDelete, recordSessionBinding} from './session-statistics.js';
 
 
 import {cliTypeFromArgv,nativeConversationId} from './session-identity.js';
@@ -2246,12 +2247,24 @@ function killPidTree(pid: number): void {
   }, 3000);
 }
 
+const stoppingWorkers = new Map<string, ChildProcess>();
+
 export async function killSession(sessionId: string, options?:{preserveLifecycle?:boolean}): Promise<boolean> {
   const session = getSession(sessionId);
   if (!session) return false;
   // Ended sessions may retain an identity whose native runtime is gone.
   // Their local cleanup must not depend on contacting that old runtime.
-  if(nativeConversationId(session) && (sessionStatusMayHaveProcess(session.status) || activeSessions.has(sessionId) || isManagedAgentActive(sessionId)))await agentForSession(session).lifecycle.interrupt(sessionAgentContext(session));
+  if(nativeConversationId(session) && (sessionStatusMayHaveProcess(session.status) || activeSessions.has(sessionId) || isManagedAgentActive(sessionId))) {
+    const context=sessionAgentContext(session);
+    const interrupt=beginSessionAction(context,'interrupt');
+    try {
+      await agentForSession(session).lifecycle.interrupt(context);
+      interrupt('accepted');
+    } catch(error) {
+      interrupt('unknown');
+      throw error;
+    }
+  }
   detachManagedAgent(sessionId);
   const active = activeSessions.get(sessionId);
   console.log(`[KILL] Killing session ${sessionId} (active=${!!active})`);
@@ -2285,6 +2298,10 @@ export async function killSession(sessionId: string, options?:{preserveLifecycle
 
   // 3. Tell the worker to kill everything (non-blocking from our perspective)
   if (active) {
+    if (active.worker.exitCode===null && active.worker.signalCode===null) {
+      stoppingWorkers.set(sessionId,active.worker);
+      active.worker.once('exit',()=>{if(stoppingWorkers.get(sessionId)===active.worker)stoppingWorkers.delete(sessionId);});
+    }
     try {
       active.worker.send({ type: 'kill' });
     } catch { /* worker may be dead */ }
@@ -2835,17 +2852,34 @@ export async function resumeSessionById(sessionId: string, skipCircuitBreaker = 
   const proj = getDb().prepare('SELECT path FROM projects WHERE id = ?').get(session.project_id) as { path: string } | undefined;
   if (!proj?.path) return { ok: false, error: 'Project path not found' };
 
-  await resumeCrashedSession(session, proj.path, skipCircuitBreaker);
-  return { ok: true };
+  const recordResume=beginSessionAction(sessionAgentContext(session),'resume');
+  try {
+    await resumeCrashedSession(session, proj.path, skipCircuitBreaker);
+    recordResume('completed');
+    return { ok: true };
+  } catch(error) {
+    recordResume('unknown');
+    throw error;
+  }
 }
 
 /** A stop request can race a pending attach/reload. Let its cancellation
  * finish before attempting permanent deletion, while keeping the wait bounded. */
 export async function waitForStoppedSessionLifecycle(sessionId:string):Promise<void> {
-  const pending=sessionLifecyclePromises.get(sessionId);if(!pending)return;
+  const pending=sessionLifecyclePromises.get(sessionId);
   let timer:ReturnType<typeof setTimeout>|undefined;
-  try {await Promise.race([pending.catch(()=>{}),new Promise<void>(resolve=>{timer=setTimeout(resolve,8000);})]);}
+  try {
+    if(pending)await Promise.race([pending.catch(()=>{}),new Promise<void>(resolve=>{timer=setTimeout(resolve,8000);})]);
+  }
   finally{clearTimeout(timer);}
+  const worker=stoppingWorkers.get(sessionId);
+  if(!worker)return;
+  await new Promise<void>((resolve,reject)=>{
+    if(worker.exitCode!==null||worker.signalCode!==null){resolve();return;}
+    const done=()=>{clearTimeout(timeout);resolve();};
+    const timeout=setTimeout(()=>{worker.off('exit',done);reject(Error('原终端尚未退出'));},7000);
+    worker.once('exit',done);
+  });
 }
 
 /** Explicitly replace only this tab's terminal client. Keep the native thread,
@@ -2861,10 +2895,11 @@ export function reloadAgentSessionById(sessionId:string,options:{idleOnly?:boole
     const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:!session.created_by_user_id||isAdmin(session.created_by_user_id)});
     const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
     if(!project?.path)return {ok:false,error:'找不到会话项目目录，原会话已保留'};
+    const recordReload=beginSessionAction(context,'reload');
     try {
       const version=await adapter.lifecycle.preflight(context);
       if(cancelledSessionLifecycles.has(sessionId))throw Error('重载已取消');
-      if(options.idleOnly&&(await adapter.runtime.read(context)).state!=='idle')return {ok:false,error:'会话仍在执行或等待交互，已保留当前任务，请完成后再接入实时输出'};
+      if(options.idleOnly&&(await adapter.runtime.read(context)).state!=='idle'){recordReload('failed');return {ok:false,error:'会话仍在执行或等待交互，已保留当前任务，请完成后再接入实时输出'};}
       const worker=activeSessions.get(sessionId)?.worker;
       let exited=!worker||worker.exitCode!==null||worker.signalCode!==null;
       const onExit=()=>{exited=true;};worker?.once('exit',onExit);
@@ -2882,8 +2917,9 @@ export function reloadAgentSessionById(sessionId:string,options:{idleOnly?:boole
       if(cancelledSessionLifecycles.has(sessionId)||!getSession(sessionId))throw Error('重载已取消');
       await resumeCrashedSessionUnlocked(getSession(sessionId)!,project.path,true);
       insertEvent({session_id:sessionId,type:'session_reload',data:{nativeSessionId:nativeConversationId(session),clientVersion:version}});
+      recordReload('completed');
       return {ok:true,...version?{client_version:version}:{}};
-    }catch(error){return {ok:false,error:error instanceof Error?error.message:'重载失败，历史已保留，请重试'};}
+    }catch(error){recordReload('unknown');return {ok:false,error:error instanceof Error?error.message:'重载失败，历史已保留，请重试'};}
   },()=>({ok:false,error:'会话正在启动或连接，请稍后重载'}));
   sessionReloads.set(sessionId,operation);
   return operation.finally(()=>{if(sessionReloads.get(sessionId)===operation)sessionReloads.delete(sessionId);});
@@ -2904,8 +2940,9 @@ export function compactSessionConversation(sessionId:string):Promise<SessionRelo
     const session=getSession(sessionId);
     if(!session||!nativeConversationId(session))return {ok:false,error:'请先连接原生会话'};
     const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:!session.created_by_user_id||isAdmin(session.created_by_user_id)});
-    try {await adapter.lifecycle.compact(context);return {ok:true};}
-    catch(error){return {ok:false,error:error instanceof Error?error.message:'压缩请求失败',submission:(error as {submission?:'rejected'|'unknown'})?.submission||'rejected'};}
+    const recordCompact=beginSessionAction(context,'compact');
+    try {await adapter.lifecycle.compact(context);recordCompact('accepted');return {ok:true};}
+    catch(error){const submission=(error as {submission?:'rejected'|'unknown'})?.submission||'rejected';recordCompact(submission==='unknown'?'unknown':'failed');return {ok:false,error:error instanceof Error?error.message:'压缩请求失败',submission};}
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
 }
 
@@ -2917,6 +2954,7 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
     const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:!session.created_by_user_id||isAdmin(session.created_by_user_id)});
     const project=getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined;
     if(!project?.path)return {ok:false,error:'找不到项目目录，原会话已保留'};
+    const recordNew=beginSessionAction(context,replacement?'environment':'new');
     let fresh:string|undefined,history:string|undefined,activated=false,stopped=false;
     const binding=(id:string)=>adapter.lifecycle.bind(context,id);
     try {
@@ -2958,8 +2996,13 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
       let warning:string|undefined;
       try{await adapter.lifecycle.release(context);}catch{warning='新会话已打开，旧会话后台终端回收未确认，请在历史中检查。';}
       insertEvent({session_id:sessionId,type:'conversation_new',data:{previousSessionId:history,nativeSessionId:fresh}});
+      recordNew('completed',{related_native_id:fresh});
+      const current=getSession(sessionId)!;
+      recordSessionBinding(current,fresh,nativeConversationId(session));
+      if(replacement)beginSessionAction(sessionAgentContext(current),'environment',{related_native_id:nativeConversationId(session)??undefined})('completed');
       return {ok:true,history_id:history,...warning?{warning}:{}};
     } catch(error) {
+      recordNew('unknown');
       if(history){
         if(activated){
           const failedWorker=activeSessions.get(sessionId)?.worker;
@@ -3050,15 +3093,28 @@ export async function purgeSessionRecord(sessionId: string): Promise<{ ok: boole
   const db = getDb();
   const session = getSession(sessionId);
   if (!session) return { ok: false, error: 'Session not found' };
-  if (activeSessions.has(sessionId) || sessionLifecyclePromises.has(sessionId) || purgingSessionRecords.has(sessionId) || sessionStatusMayHaveProcess(session.status)) {
+  if (activeSessions.has(sessionId) || stoppingWorkers.has(sessionId) || sessionLifecyclePromises.has(sessionId) || purgingSessionRecords.has(sessionId) || sessionStatusMayHaveProcess(session.status)) {
     return { ok: false, error: 'Stop the session before deleting it' };
   }
   purgingSessionRecords.add(sessionId);
+  const context=sessionAgentContext(session);
+  const recordDelete=beginSessionAction(context,'delete');
   try {
-    const adapter=agentForSession(session),context=sessionAgentContext(session);
+    const adapter=agentForSession(session);
+    if(context.nativeId){
+      const linked=db.prepare(`SELECT id,status FROM sessions WHERE id!=? AND COALESCE(agent_id,cli_type)=?
+        AND COALESCE(agent_environment_id,'native')=? AND COALESCE(native_session_id,codex_session_id,claude_session_id)=?`)
+        .all(sessionId,adapter.descriptor.id,session.agent_environment_id||'native',context.nativeId) as Array<{id:string;status:string}>;
+      if(linked.some(row=>sessionStatusMayHaveProcess(row.status)||isSessionActive(row.id)||stoppingWorkers.has(row.id))){
+        recordDelete('failed');
+        return {ok:false,error:'同一原生会话仍在其他标签页执行，原始历史已保留'};
+      }
+    }
+    await flushSessionFactsBeforeDelete(context);
+    await adapter.statistics.facts?.preserveAccountUsage?.(context);
     await adapter.identity.purgeHistory?.(context);
     const current=getSession(sessionId);
-    if(!current||activeSessions.has(sessionId)||sessionStatusMayHaveProcess(current.status))return {ok:false,error:'会话状态已变化，原记录已保留，请确认会话已停止后重试'};
+    if(!current||activeSessions.has(sessionId)||sessionStatusMayHaveProcess(current.status)){recordDelete('unknown');return {ok:false,error:'会话状态已变化，原记录已保留，请确认会话已停止后重试'};}
     try{adapter.identity.purge?.(context);}catch{/* non-fatal platform binding cleanup */}
     db.transaction(()=>{
       try { db.prepare('DELETE FROM pty_output WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
@@ -3067,8 +3123,10 @@ export async function purgeSessionRecord(sessionId: string): Promise<{ ok: boole
       db.prepare('DELETE FROM user_ui_state WHERE key = ?').run(`session-control:${sessionId}`);
       db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
     })();
+    recordDelete('completed');
     return { ok: true };
   } catch(error) {
+    recordDelete('unknown');
     return {ok:false,error:error instanceof Error?`删除会话原始历史失败：${error.message}`:'删除会话原始历史失败，请重试'};
   } finally {
     purgingSessionRecords.delete(sessionId);

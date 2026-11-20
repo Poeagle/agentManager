@@ -1,5 +1,16 @@
 import type {ConversationMessage,ConversationProgressStatistics,ConversationProgressSegment,ConversationStatistics} from './api';
 
+export function mergeConversationStatistics(previous:ConversationStatistics[],incoming:ConversationStatistics[]):ConversationStatistics[] {
+  if (!incoming.length) return previous;
+  const key = (item:ConversationStatistics) => item.message_id ?? item.turn_id + ':' + item.sequence;
+  const result = new Map(previous.map(item => [key(item), item]));
+  for (const item of incoming) {
+    const id = key(item);
+    if ((result.get(id)?.revision ?? 0) <= (item.revision ?? 0)) result.set(id, item);
+  }
+  return [...result.values()];
+}
+
 /** Difference only matching recorded segment counters, never cumulative totals
  * from different turns or a subtraction of two incomplete lower bounds. */
 export function pendingProgressStatistics(live:ConversationProgressStatistics|null,previous:ConversationProgressSegment|undefined,hasPrevious:boolean,boundary?:Pick<ConversationMessage,'id'|'sequence'>):ConversationStatistics|null {
@@ -68,6 +79,7 @@ export function progressGroupStatistics(messages:ConversationMessage[],final?:Co
 }
 
 export function withObservedToolCounts(statistics:ConversationStatistics|null,count:number,turnId:string):ConversationStatistics|null {
+ if(statistics&&(statistics.coverage||statistics.interval?.coverage))return statistics;
  if(!count||statistics&&('segment_id' in statistics||statistics.tool_calls>=count))return statistics;
  const value=statistics?.interval??statistics;
  const interval={...value,tokens:value?.tokens??null,requests:value?.requests??0,tool_calls:Math.max(value?.tool_calls??0,count),tool_rounds:Math.max(value?.tool_rounds??0,1),complete:false,shared_messages:1};

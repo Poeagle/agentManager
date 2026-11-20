@@ -1,6 +1,7 @@
 import { getDb } from '../../db/index.js';
 import { agentForSession } from './index.js';
 import type { AgentSession } from './types.js';
+import { recordSessionBinding } from '../session-statistics.js';
 /** Only built-in compatibility columns live alongside the provider-neutral ID. */
 export function storeAgentNativeId(session: AgentSession & {
     id: string;
@@ -11,4 +12,5 @@ export function storeAgentNativeId(session: AgentSession & {
         values[legacy] = nativeId;
     const keys = Object.keys(values);
     getDb().prepare(`UPDATE sessions SET ${keys.map(key => `"${key}"=?`).join(',')},updated_at=datetime('now') WHERE id=?`).run(...keys.map(key => values[key]), session.id);
+    if (nativeId) recordSessionBinding(session, nativeId, session.native_session_id ?? adapter.identity.read(session));
 }

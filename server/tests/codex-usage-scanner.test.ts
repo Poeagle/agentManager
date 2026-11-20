@@ -116,3 +116,26 @@ it('catches up a multi-day gap using modified files and stable identities withou
  expect((await scan('catchup','2026-01-04',{since_day:'2026-01-01',known_events:keys})).rows).toEqual([]);
  await expect(scan('catchup','2026-01-04',{since_day:'2026-01-05'})).rejects.toThrow();
 });
+
+it('prefers native request receipts over stale echoes and resumes from the committed byte boundary',async()=>{
+ const usage=(total:number)=>({total_tokens:total,input_tokens:total-10,cached_input_tokens:3,output_tokens:10,reasoning_output_tokens:2});
+ const native=(timestamp:string,id:string,total:number)=>JSON.stringify({timestamp,type:'token_usage_record',
+   payload:{turn_id:'turn',response_id:id,usage:usage(total)}})+'\n';
+ const echo=(timestamp:string,total:number,last:number)=>JSON.stringify({timestamp,type:'event_msg',payload:{
+   type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:usage(last)},
+ }})+'\n';
+ const initial=meta+context+native('2026-01-01T00:00:00Z','a',100)+echo('2026-01-01T00:00:01Z',100,100);
+ await writeFile(file,initial);
+ const first=await scan('full','2026-01-02',{checkpoints:{},includeEvents:true});
+ expect(first.rows[0]).toMatchObject({requests:1,tokens:{total_tokens:100}});
+ const options={checkpoints:first.checkpoints,known_events:first.event_keys['2026-01-01'],includeEvents:true};
+ expect((await scan('daily','2026-01-02',options)).progress.bytes_read).toBe(0);
+ const appended=native('2026-01-02T00:00:00Z','b',170)+echo('2026-01-02T00:00:01Z',100,100)+
+   native('2026-01-02T00:00:02Z','c',250)+echo('2026-01-02T00:00:03Z',350,100);
+ await appendFile(file,appended);
+ const next=await scan('daily','2026-01-02',options);
+ expect(next.progress.bytes_read).toBe(Buffer.byteLength(appended));
+ expect(next.rows[0]).toMatchObject({requests:2,tokens:{total_tokens:420}});
+ expect(next.events.map((event:any)=>event.tokens.total_tokens)).toEqual([170,250]);
+ expect(next.errors).toBe(0);
+});

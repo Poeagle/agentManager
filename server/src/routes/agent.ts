@@ -25,7 +25,7 @@ import {getSessionUser,readSessionCookie,sessionCookieName,userCanUseSessionTool
 import {registerUserConnection} from '../services/user-connections.js';
 import {requirePermission,userHasPermission} from '../services/rbac.js';
 import {getDb} from '../db/index.js';
-import {loadRecentAgentMessages,loadRecentPromptContext} from '../services/prompt-context.js';
+import {loadRecentAgentMessages,loadRecentPromptContext,nativeConversationFile,type PromptContextSession} from '../services/prompt-context.js';
 import {sessionPresenter} from '../services/session-labels.js';
 import {randomUUID} from 'crypto';
 import {readConversation} from '../services/conversation-reader.js';
@@ -38,6 +38,7 @@ import {ConversationRetryManager} from '../services/conversation-retry.js';
 import {ConversationProjection} from '../services/conversation-projection.js';
 import {rememberFirstSessionTask} from '../services/conversation-session-task.js';
 import {notificationInputBoundary,settleNotificationsForInput} from '../services/notifications.js';
+import {beginSessionAction, readSessionMetadataDetails, updateSessionFacts} from '../services/session-statistics.js';
 
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
@@ -110,8 +111,8 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.14.1',
-    updatedAt:'2026-11-17',
+    version:'3.15.0',
+    updatedAt:'2026-11-20',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
@@ -256,6 +257,12 @@ export function getAgentApiContract() {
         description: 'Update the model for an owned, authorized session. An unloaded supported session can save a preference for recovery. Send JSON null to clear a pending preference.',
         request: { model: {type:'string',required:true}, effort: {type:'string',required:true}, provider: {type:'string',required:false}, service_tier: {type:'string',required:false} },
         errors: { 400: 'Unsupported model or parameters', 403: 'Session or Engine not permitted', 409: 'Session or model service cannot be changed', 503: 'Native update not confirmed' },
+      },
+      {
+        category: 'Sessions', method: 'GET', path: '/api/sessions/:id/conversation/metadata',
+        description: 'Read verified session totals, model and speed totals, lifecycle records and cache hit drops. Pass event_before or cache_before from next_event or next_cache_drop for earlier records. The status and reasons report missing or pending evidence. Credits are request-based estimates.',
+        response: {metadata:'SessionMetadataDetails | null'},
+        errors: {400:'Invalid cursor',404:'Session not found or not accessible'},
       },
       {
         category: 'Sessions',
@@ -418,7 +425,7 @@ export function getAgentApiContract() {
         category: 'Session control',
         method: 'WS',
         path: '/api/sessions/:id/conversation/stream',
-        description: 'Cookie-authenticated conversation stream. Optional UI-only activities carry turn_id, after_message_id and bounded, redacted input_preview (commands only) and result_preview (up to 2000 characters); they are transient and never become conversation messages. User messages may include batch [{text,attachments}] for verified batch submissions and input_source {kind,label} when the platform has verified their submission identity; absent provenance is unknown. Statistics can carry an optional cost estimate {amount,unit,complete,rate_date,basis}; missing rates stay unknown and API engines can set cost=null. progress_statistics.step carries an authoritative active interval with segment_id, after_message_id, after_sequence and start_at, so consumers do not subtract unrelated cumulative snapshots. Tool calls and rounds update when calls start. Supported agents can emit progress_statistics with cumulative recorded token and tool counts since the previous conclusion and an optional separate per-input segment with timing, status and recorded counts; missing or incomplete data remains unknown or a lower bound. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
+        description: 'Cookie-authenticated conversation stream. Optional UI-only activities carry turn_id, after_message_id and bounded, redacted input_preview and result_preview. User messages may include batch and verified input_source. Statistics carry Item and Final intervals and optional progress segment and cost estimate. Runs count recorded model requests; multiple parallel calls in a single response count as one tool round. progress_statistics.step identifies the open Item interval through segment_id, after_message_id, after_sequence and start_at. session_metadata carries the persisted native_id, generation and revision with session totals and cache_drops. Coverage marks pending and partial intervals. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
       },
       {
         category: 'Session control',
@@ -834,9 +841,12 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       if(adapter.descriptor.id==='codex'&&value.provider&&value.provider!==data.provider)assertEnvironmentUse('codex','provider:'+value.provider,req.user!.id);
       if(value.provider&&data.provider&&value.provider!==data.provider)return reply.code(409).send({error:'切换模型服务需要确认新开会话，原会话已保留'});
       if(!data.loaded&&!data.supports_model_recovery)return reply.code(409).send({error:'当前 Agent 尚不支持保存恢复模型，请先恢复会话'});
+      const settingAction=beginSessionAction(context,value.service_tier!==undefined&&value.model===data.model?'speed':'model',{
+        dimensions:{model:value.model,speed:value.service_tier??null,environment:session.agent_environment_id??null,account:null},
+      });
       if(!data.loaded){saveModelPreference(req.user!.id,session.id,value);return {ok:true,pending:value,pending_status:'saved'};}
-      try {const applied=await adapter.controls.apply(context,value);const pending=applied.pending===true?value:null;saveModelPreference(req.user!.id,session.id,pending,pending?new Date().toISOString():undefined);return {ok:true,...applied,pending,pending_status:pending?'submitted':null};}
-      catch(error){return reply.code(503).send({error:error instanceof Error?error.message:'设置失败，请刷新确认'});}
+      try {const applied=await adapter.controls.apply(context,value);const pending=applied.pending===true?value:null;saveModelPreference(req.user!.id,session.id,pending,pending?new Date().toISOString():undefined);settingAction('accepted');return {ok:true,...applied,pending,pending_status:pending?'submitted':null};}
+      catch(error){settingAction('unknown');return reply.code(503).send({error:error instanceof Error?error.message:'设置失败，请刷新确认'});}
     }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'设置失败，请重试'});}
   });
 
@@ -847,8 +857,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const adapter=agentForSession(session),context=sessionAgentContext(session);
     if(!context.nativeId||!adapter.descriptor.capabilities.cancelQueuedInput||!adapter.input.cancelQueued)return reply.code(409).send({error:'此 Agent 不支持取消排队输入'});
     if(!req.params.client||req.params.client.length>200)return reply.code(400).send({error:'Invalid queued input identity'});
-    try{await adapter.input.cancelQueued(context,req.params.client);return {ok:true};}
-    catch(error){return reply.code(409).send({error:error instanceof Error?error.message:'取消排队失败，请刷新队列'});}
+    const cancel=beginSessionAction(context,'cancel_queue',{message_id:adapter.input.messageId?.(req.params.client)});
+    try{await adapter.input.cancelQueued(context,req.params.client);cancel('accepted');return {ok:true};}
+    catch(error){cancel('unknown');return reply.code(409).send({error:error instanceof Error?error.message:'取消排队失败，请刷新队列'});}
   });
 
   app.post<{Params:{id:string};Body:{input?:unknown;attachments?:unknown;batch?:unknown}}>('/sessions/:id/input-check',async(req,reply)=>{
@@ -901,6 +912,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     // Serialize only the brief paste/Enter pair, never the agent's execution.
     // A second caller must not paste its text before the first caller's Enter.
     const prior = pendingInputs.get(id) || Promise.resolve();
+    let recordInput: ReturnType<typeof beginSessionAction> | undefined;
     const submission = prior.catch(() => {}).then(async () => {
       const session=getSession(id);
       if(typeof expectedEnvironment==='string'&&(!session||(session.agent_environment_id||'native')!==expectedEnvironment))throw Object.assign(Error('标签页已更换账号，请引用最新通知'),{submission:'rejected'});
@@ -920,8 +932,13 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
           const raw=nativeConversationInput(input,attachments)[0].text,visible=conversationQuestionReply(raw)?.text??raw;
           await rememberConversationInput(id,{...session,cli_type:session.cli_type||'claude',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},clientId,visible).catch(()=>{});
         }
-        const adapter=agentForSession(session),native=await adapter.input.submit(sessionAgentContext(session),input,typeof clientId==='string'?clientId:attachments.length?attachmentClientId:undefined,attachments);
+        const adapter=agentForSession(session),context=sessionAgentContext(session);
+        const identity=typeof clientId==='string'?clientId:attachments.length?attachmentClientId:undefined;
+        const message_id=identity?adapter.input.messageId?.(identity):undefined;
+        recordInput=beginSessionAction(context,'input',{message_id,client_id:identity});
+        const native=await adapter.input.submit(context,input,identity,attachments);
         if(native){
+          if(native==='queued')beginSessionAction(context,'queue',{message_id,client_id:identity})('accepted');
           rememberFirstSessionTask(id,conversationQuestionReply(input)?.text??input);
           return native==='queued'?'queued':'submitted';
         }
@@ -944,9 +961,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     pendingInputs.set(id,submission);
     try {
       const status=await submission;
+      recordInput?.(status==='queued'?'requested':'accepted');
       try{if(target&&notificationBoundary.length)settleNotificationsForInput(target,req.user!.id,notificationBoundary);}catch{req.log.warn({session_id:id},'Could not settle notifications after accepted input');}
       return reply.code(202).send({id,status:status==='queued'?'queued':'submitted'});
     } catch(error) {
+      recordInput?.((error as {submission?:string})?.submission==='rejected'?'failed':'unknown');
       if(error instanceof Error&&(error as Error&{submission?:string}).submission==='rejected')return reply.code(409).send({error:error.message,submission:'rejected',...(error as Error&{send_guard?:unknown}).send_guard?{send_guard:(error as Error&{send_guard?:unknown}).send_guard}:{}});
       req.log.warn({session_id:id,submission:'unknown'},'Agent input dispatched without a confirmed receipt');
       return reply.code(503).send({error:'消息接收结果暂未确认，连接恢复后会自动核对；请勿重复提交',submission:'unknown'});
@@ -1073,13 +1092,16 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const adapter=agentForSession(session);
     if(!adapter.descriptor.capabilities.stopTurn)return reply.code(409).send({error:'此 Agent 不支持停止当前执行'});
     if(!nativeConversationId(session))return reply.code(409).send({error:'当前会话尚未绑定原生会话'});
+    const stopAction=beginSessionAction(sessionAgentContext(session),'stop',{turn_id:turnId});
     try {
       const accepted=await adapter.lifecycle.stopTurn(sessionAgentContext(session,{actorUserId:req.user!.id}),turnId);
-      if(!accepted)return reply.code(409).send({error:'该执行已结束或已切换，请刷新状态'});
+      if(!accepted){stopAction('failed');return reply.code(409).send({error:'该执行已结束或已切换，请刷新状态'});}
+      stopAction('accepted');
       if(nativeConversationId(session))retries.cancel(session.id,nativeConversationId(session)!,'interrupted');
       return reply.code(202).send({status:'accepted'});
     } catch (error) {
-      if(error instanceof Error&&(error as Error&{statusCode?:number}).statusCode===409)return reply.code(409).send({error:error.message});
+      if(error instanceof Error&&(error as Error&{statusCode?:number}).statusCode===409){stopAction('failed');return reply.code(409).send({error:error.message});}
+      stopAction('unknown');
       return reply.code(503).send({error:'停止结果暂未确认，请等待会话状态更新'});
     }
   });
@@ -1103,7 +1125,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const adapter=agentForSession(session),context=sessionAgentContext(session),nativeId=nativeConversationId(session)!;
     const projection=new ConversationProjection();
     let stopFile:(()=>void)|undefined;
-    const startFileFallback=()=>{if(!stopFile)stopFile=observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},send);};
+    const startFileFallback=()=>{if(!stopFile)stopFile=observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},frame=>{
+      if(frame.type==='history'||frame.type==='usage')send(frame);
+    });};
     const stopFileFallback=()=>{stopFile?.();stopFile=undefined;};
     let lastUsageFingerprint:string|undefined;
     const send=(frame:any)=>{
@@ -1130,7 +1154,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     if(adapter.descriptor.capabilities.retry)retries.monitor(id,req.user!.id,nativeId);
     const stopRetry=adapter.descriptor.capabilities.retry?retries.subscribe(id,nativeId,send):()=>{};
     const stopProgress=adapter.history.file?observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},frame=>{
-      if(frame.type==='progress_statistics'||frame.type==='statistics')send(frame);
+      if(frame.type==='progress_statistics'||frame.type==='statistics'||frame.type==='session_metadata')send(frame);
       else if(frame.type==='history'){
         const messages=boundConversationInputs(id,nativeId,frame.messages);
         if(messages.length)send({type:'input_reconciliation',native_id:nativeId,messages:decorateConversationAttachments(id,messages)});
@@ -1159,6 +1183,22 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     let alive=true;socket.on('pong',()=>{alive=true;});
     const heartbeat=setInterval(()=>{if(socket.readyState!==1)return;if(!alive){socket.terminate();return;}alive=false;socket.ping();socket.send(JSON.stringify({type:'heartbeat'}));},25000);
     socket.once('close',()=>{clearInterval(heartbeat);stopFileFallback();stopProgress();stop();stopRetry();});
+  });
+
+  app.get<{Params:{id:string};Querystring:{event_before?:string;cache_before?:string}}>('/sessions/:id/conversation/metadata',async(req,reply)=>{
+    const session=getSession(req.params.id);
+    if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
+    if([req.query.event_before,req.query.cache_before].some(value=>value!==undefined&&(typeof value!=='string'||!value.length||value.length>256)))
+      return reply.code(400).send({error:'Invalid metadata cursor'});
+    const context=sessionAgentContext(session);
+    const binding={...session,cli_type:agentForSession(session).descriptor.id,project_path:context.projectPath} as PromptContextSession;
+    const file=context.nativeId?await nativeConversationFile(binding).catch(()=>null):null;
+    const available=!!file&&await updateSessionFacts(context,file.path).catch(()=>false);
+    const latest=getSession(session.id);
+    if(!latest||nativeConversationId(latest)!==context.nativeId||latest.agent_environment_id!==session.agent_environment_id||!canAccessAgentSession(req.user!.id,session.id))
+      return reply.code(404).send({error:'Session not found'});
+    return reply.header('Cache-Control','private, no-store').send({metadata:
+      readSessionMetadataDetails(context,available,{event:req.query.event_before,cache:req.query.cache_before})});
   });
 
   app.get<{Params:{id:string};Querystring:{after?:string;before?:string;limit?:string}}>('/sessions/:id/conversation',async(req,reply)=>{

@@ -40,7 +40,7 @@ describe('public conversation pages',()=>{
     const usage={total_token_usage:{total_tokens:200},last_token_usage:{total_tokens:200,input_tokens:180,cached_input_tokens:50,output_tokens:20,reasoning_output_tokens:5}};
     writeFileSync(file,line('event_msg',{type:'task_started',turn_id:turn},'2026-10-29T10:00:00Z')+line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'AgentMessage',id:'answer',phase:'final_answer',content:contents}},'2026-10-29T10:01:04Z')+line('response_item',{type:'message',role:'assistant',id:'answer',phase:'final_answer',content:contents},'2026-10-29T10:01:04.001Z')+line('event_msg',{type:'token_count',info:usage},'2026-10-29T10:01:05Z')+line('event_msg',{type:'task_complete',turn_id:turn,last_agent_message:'最终答复'},'2026-10-29T10:01:06Z'));
     const page=await readConversation(binding);const answer=page.messages.find(message=>message.id===conversationMessageId(turn,'assistant','answer'));
-    expect(answer).toBeDefined();expect(page.statistics?.find(stat=>stat.message_id===answer?.id)).toMatchObject({conclusion:{shared_messages:1,elapsed_ms:64001,tokens:{total_tokens:200}}});
+    expect(answer).toBeDefined();expect(page.statistics?.find(stat=>stat.message_id===answer?.id)).toMatchObject({conclusion:{shared_messages:1,elapsed_ms:64000,tokens:{total_tokens:200}}});
   });
   it('returns a complete baseline when a history file is replaced even if its old cursor survives',async()=>{
     writeFileSync(file,user('第一问')+final('第一答'));
@@ -323,8 +323,11 @@ describe('public conversation pages',()=>{
     writeFileSync(file,user('new native conversation'));
     expect((await readConversation(binding,{after:first.messages[0].id})).reset).toBe(true);
     const other=createUser({username:'other-chat',password:'password1'});
-    const denied=await app.inject({url:'/api/sessions/chat/conversation',headers:{cookie:`agentmanager_session=${createSession(other.id)}`}});
+    const otherCookie=`agentmanager_session=${createSession(other.id)}`;
+    const denied=await app.inject({url:'/api/sessions/chat/conversation',headers:{cookie:otherCookie}});
     expect(denied.statusCode).toBe(404);
+    expect((await app.inject({url:'/api/sessions/chat/conversation/metadata',headers:{cookie:otherCookie}})).statusCode).toBe(404);
+    expect((await app.inject({url:'/api/sessions/chat/conversation/metadata',headers:{cookie}})).json().metadata.summary.native_id).toBe(id);
     expect((await app.inject({url:'/api/sessions/chat/conversation?before=bad',headers:{cookie}})).statusCode).toBe(400);
   });
   it('finds dialogue on cold load even when a giant tool result is the last record',async()=>{

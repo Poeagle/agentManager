@@ -1,14 +1,13 @@
 import {test,expect} from '@playwright/test';
 import {createServer} from 'node:http';
 import {createRequire} from 'node:module';
-import {execFileSync} from 'node:child_process';
 import {mkdirSync,writeFileSync,readFileSync,appendFileSync,existsSync} from 'node:fs';
 import {join} from 'node:path';
 
 test('an attached answer clears only its native terminal question and stays resolved after replay',async({page},info)=>{
  const require=createRequire(import.meta.url),{WebSocketServer}=require('../server/node_modules/ws'),Database=require('../server/node_modules/better-sqlite3');
  const root=join(process.cwd(),'.test-data/e2e'),path=join(root,'question-terminal-project'),logs=join(root,'home/.codex/sessions'),native='019ff001-5555-7555-8555-555555555558';mkdirSync(path,{recursive:true});mkdirSync(logs,{recursive:true});
- const version=execFileSync('codex',['--version'],{encoding:'utf8'}).match(/\d+\.\d+\.\d+/)![0],record=(type:string,payload:any)=>JSON.stringify({type,timestamp:new Date().toISOString(),payload})+'\n',log=join(logs,`rollout-${native}.jsonl`);
+ const version='0.167.0',record=(type:string,payload:any)=>JSON.stringify({type,timestamp:new Date().toISOString(),payload})+'\n',log=join(logs,`rollout-${native}.jsonl`);
  const question=(id:string,title:string)=>({type:'agentMessage',id,delivery:'async',phase:'final_answer',text:title,questions:[{title,options:null}]});
  const items:any[]=[question('other','还需要回答的另一个问题'),question('upload','请提供截图和日志')],submissions:any[]=[];
  writeFileSync(log,record('event_msg',{type:'user_message',message:'开始验证'})+items.map(item=>record('event_msg',{type:'item_completed',turn_id:'question-turn',item:{...item,type:'AgentMessage',content:[{type:'Text',text:item.text}]}})).join('')+record('event_msg',{type:'task_complete',turn_id:'question-turn'}));
@@ -24,6 +23,7 @@ socket.on('message',bytes=>{const frame=JSON.parse(bytes.toString());if(frame.id
  const server=createServer(),wss=new WebSocketServer({server});
  wss.on('connection',(socket:any)=>socket.on('message',(bytes:any)=>{const frame=JSON.parse(bytes.toString());if(!frame.method||!frame.id)return;let result:any={};
   if(frame.method==='initialize')result={userAgent:`codex_cli_rs/${version}`};
+  if(frame.method==='model/list')result={data:[{model:'fixture-model',displayName:'Fixture Model',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'medium'}]}]};
   if(frame.method==='thread/read'||frame.method==='thread/resume')result={thread:{id:native,status:{type:'idle'},cwd:path,turns:frame.method==='thread/resume'?[{id:'question-turn',status:'completed',items}]:undefined}};
   if(frame.method==='thread/turns/list')result={data:[{id:'question-turn',status:'completed',items}]};if(frame.method==='thread/queue/list')result={data:[]};
   if(frame.method==='turn/start'){
@@ -39,7 +39,8 @@ socket.on('message',bytes=>{const frame=JSON.parse(bytes.toString());if(frame.id
   const {project}=await(await page.request.post('/api/projects',{data:{name:'问题终端同步',path}})).json(),{session}=await(await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:path,mode:'terminal'}})).json();id=session.id;
   const db=new Database(join(root,'agentmanager.db'));try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',native,id);}finally{db.close();}
   await page.request.put('/api/settings',{data:{settings:{session_codex_command:`node '${fake}'`,statusline_prompted:'true',app_theme:'light'}}});
-  expect((await page.request.post(`/api/sessions/${id}/reload`)).ok()).toBeTruthy();await expect.poll(()=>state()?.pending.length).toBe(2);expect(state().remote).not.toBe('unix://'+join(root,'codex.sock'));
+  const reload=await page.request.post(`/api/sessions/${id}/reload`);
+  expect(reload.ok(),await reload.text()).toBeTruthy();await expect.poll(()=>state()?.pending.length).toBe(2);expect(state().remote).not.toBe('unix://'+join(root,'codex.sock'));
   await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id,label:'问题终端同步'}],activeTerminalId:id,explorerInstances:[],hiddenSessionIds:[]}}});
   await page.setViewportSize({width:1600,height:1000});await page.goto('/');const card=page.getByRole('region',{name:'Codex 向你提问'}).filter({visible:true}),answer=card.getByRole('textbox',{name:'请提供截图和日志',exact:true});await answer.fill('见附件');
   await answer.evaluate(element=>{const transfer=new DataTransfer();transfer.items.add(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9hZsEAAAAASUVORK5CYII='),c=>c.charCodeAt(0))],'proof.png',{type:'image/png'}));transfer.items.add(new File(['test log'],'proof.txt',{type:'text/plain'}));element.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));});
