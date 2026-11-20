@@ -143,7 +143,7 @@ it('does not reserve numbered items for Claude thinking-only request snapshots',
   expect(entries[1].querySelector('.session-chat-progress-number')).toHaveTextContent('2');
   expect(within(progress).getByLabelText('进展序号 2')).toBeInTheDocument();
   expect(within(progress).getByText('Second private reasoning.')).toBeVisible();
-  expect(progress.querySelector('summary')).toHaveTextContent('5 items');
+  expect(progress.querySelector('summary')).toHaveTextContent('2 items');
 });
 it('renders Claude through the same conversation structure as every other agent',async()=>{
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});

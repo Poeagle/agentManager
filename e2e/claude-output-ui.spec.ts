@@ -328,6 +328,6 @@ test('does not show empty numbers for Claude thinking-only request items',async(
   await expect(progress.locator('.session-chat-progress-entry:not(.session-chat-progress-pending)')).toHaveCount(2);
   await expect(progress.locator('.session-chat-progress-entry:not(.session-chat-progress-pending) .session-chat-progress-number')).toHaveText(['1','2']);
   await expect(progress.getByText('Private reasoning two.')).toBeVisible();
-  await expect(progress.locator(':scope > details > summary')).toContainText('5 items');
+  await expect(progress.locator(':scope > details > summary')).toContainText('2 items');
   await page.screenshot({path:testInfo.outputPath('claude-thinking-compact-items.png'),fullPage:true});
 });

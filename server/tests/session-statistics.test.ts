@@ -156,6 +156,42 @@ describe('persisted session statistics',()=>{
     expect(readSessionCacheDrops(codex,[],[stamp(1041.489)])).toEqual(details.cache_drops);
   });
 
+  it('prices omitted speed as Standard, follows a native Fast change, and restores Standard',async()=>{
+    const sample={...tokens(16_571,11_392,50),reasoning_output_tokens:0};
+    const round=(time:number,turn:string)=>event(time,'task_started',{turn_id:turn})+
+      row(time+1,'turn_context',{turn_id:turn,model:'gpt-6-luna'})+
+      user(time+2,turn+'-input')+answer(time+3,turn+'-answer','final_answer')+
+      receipt(time+4,turn+'-receipt',turn,sample)+event(time+5,'task_complete',{turn_id:turn});
+    const speed=(time:number,service_tier:string|null)=>
+      event(time,'thread_settings_applied',{thread_settings:{model:'gpt-6-luna',service_tier}});
+
+    await writeFile(file,round(0,'standard'));
+    await updateSessionFacts(codex,file);
+    const standard=readSessionMetadata(codex)!;
+    expect(standard.latest?.dimensions.speed).toBe('default');
+    expect(standard.totals?.cost).toMatchObject({complete:true});
+    expect(standard.totals?.cost?.amount).toBeCloseTo(0.0164205,10);
+
+    await appendFile(file,speed(6,'priority')+round(7,'fast'));
+    await updateSessionFacts(codex,file);
+    const fast=readSessionMetadata(codex)!;
+    expect(fast.latest).toMatchObject({dimensions:{speed:'priority'},cost:{complete:true}});
+    expect(fast.latest?.cost?.amount).toBeCloseTo(0.04105125,10);
+
+    closeDb();initDb();
+    await appendFile(file,speed(13,null)+round(14,'ordinary'));
+    await updateSessionFacts(codex,file);
+    const details=readSessionMetadataDetails(codex,true)!;
+    expect(details.summary.latest).toMatchObject({dimensions:{speed:'default'},cost:{complete:true}});
+    expect(details.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({speed:'default',requests:2,cost:expect.objectContaining({complete:true})}),
+      expect.objectContaining({speed:'priority',requests:1,cost:expect.objectContaining({complete:true})}),
+    ]));
+    const costs=readSessionUsageIntervals(codex)!.rows.map(row=>row.usage?.cost);
+    expect(costs.every(cost=>cost?.complete)).toBe(true);
+    expect(costs[2]?.amount).toBeCloseTo(0.0164205,10);
+  });
+
   it('detects a native model and speed change in a single input, and breaks comparisons across missing receipts',async()=>{
     await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'one')+
       row(2,'turn_context',{turn_id:'turn',model:'gpt-6.1-sol',service_tier:'default'})+

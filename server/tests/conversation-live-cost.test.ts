@@ -30,10 +30,13 @@ it('updates active calls and rounds before any token count, then updates tokens 
  expect(live?.segment?.cost?.amount).toBe(16.875);expect((await readConversationStatistics(path))[0].interval?.cost?.amount).toBe(7.5);
  expect(JSON.stringify(live)).not.toContain('PRIVATE_ARGUMENTS');
 });
-it('keeps missing prices and unsupported speed unknown and marks an assumed Standard rate as partial',async()=>{
- writeFileSync(path,start+usage(1001000));expect((await readConversationProgress(path))?.step?.cost).toMatchObject({amount:null,complete:false});
- appendFileSync(path,context('gpt-6.1-sol',null)+usage(2002000));expect((await readConversationProgress(path))?.step?.cost).toMatchObject({amount:7.5,complete:false});
- appendFileSync(path,context('gpt-6.1-sol','unsupported-speed')+usage(3003000));expect((await readConversationProgress(path))?.step?.cost).toMatchObject({amount:7.5,complete:false});
+it('prices the default speed as complete and keeps unavailable prices partial',async()=>{
+ writeFileSync(path,start+message('unpriced')+usage(1001000));
+ expect((await readConversationStatistics(path))[0].interval?.cost).toMatchObject({amount:null,complete:false});
+ appendFileSync(path,context('gpt-6.1-sol',null)+message('standard')+usage(2002000));
+ expect((await readConversationStatistics(path)).at(-1)?.interval?.cost).toMatchObject({amount:7.5,complete:true});
+ appendFileSync(path,context('gpt-6.1-sol','unsupported-speed')+message('unknown-speed')+usage(3003000));
+ expect((await readConversationStatistics(path)).at(-1)?.interval?.cost).toMatchObject({amount:null,complete:false});
 });
 it('suppresses subscription Credit for API engines without changing shared cached snapshots',async()=>{
  writeFileSync(path,context('gpt-6.1-sol','default')+start+message('first')+usage(1001000));

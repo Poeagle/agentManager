@@ -89,7 +89,7 @@ export const codexSessionFacts: AgentSessionFactsPort = {
     const type = kind === 'event_msg' ? payload?.type : null;
     const environment = context.session.agent_environment_id || 'native';
     const state = previous as CodexFactsState | null ?? {
-      dimensions: {model: null, speed: null, environment, account: null},
+      dimensions: {model: null, speed: 'default', environment, account: null},
       turn: null, started: false, inherited: false, forkAfter: null, forkOrdinal: null,
       previousTotal: null, primarySinceCount: false, recentReceipts: [], requestContexts: [],
     };
@@ -109,7 +109,7 @@ export const codexSessionFacts: AgentSessionFactsPort = {
       state.forkAfter = payload.forked_from_id ? factTime(payload.timestamp) ?? at : null;
       state.forkOrdinal = Number.isSafeInteger(payload.forked_from_ordinal_exclusive) ? payload.forked_from_ordinal_exclusive : null;
       const nextDimensions = {
-        model: null, speed: null, environment: inherited ? null : environment,
+        model: null, speed: 'default', environment: inherited ? null : environment,
         account: factString(payload.creator_account_id) ? 'acct-' + factId(payload.creator_account_id).slice(0, 10) : null,
       };
       if (state.dimensions.account && nextDimensions.account && state.dimensions.account !== nextDimensions.account)
@@ -124,7 +124,7 @@ export const codexSessionFacts: AgentSessionFactsPort = {
     if (settings) {
       const next = {...state.dimensions};
       if (Object.hasOwn(settings, 'model')) next.model = factString(settings.model, 120);
-      if (Object.hasOwn(settings, 'service_tier')) next.speed = factString(settings.service_tier, 120);
+      if (Object.hasOwn(settings, 'service_tier')) next.speed = factString(settings.service_tier, 120) ?? 'default';
       for (const [dimension, action] of [['model', 'model'], ['speed', 'speed']] as const) {
         if (state.dimensions[dimension] !== null && next[dimension] !== null && next[dimension] !== state.dimensions[dimension])
           facts.push({kind: 'lifecycle', event: {action, state: 'completed', at, turn_id: turn, dimensions: next}});
@@ -279,7 +279,7 @@ function receipt(
   }
   if (inherited) dimensions.environment = null;
   if (Object.hasOwn(payload, 'model')) dimensions.model = factString(payload.model,120);
-  if (Object.hasOwn(payload, 'service_tier')) dimensions.speed = factString(payload.service_tier,120);
+  if (Object.hasOwn(payload, 'service_tier')) dimensions.speed = factString(payload.service_tier,120) ?? 'default';
   const total = emptyCostTotals();
   const credits = !context.session.agent_environment_id?.startsWith('provider:');
   if (credits && tokens && consistentUsage(tokens)) recordCost(total, dimensions.model, dimensions.speed, tokens);

@@ -375,6 +375,33 @@ test('shows the manual compaction cache drop once its first ordinary request arr
   await expect(table).toContainText('32.5K / 13.7K (42.16%)');
 });
 
+test('shows complete estimates with default speed and uses native Fast settings for the next request',async({page})=>{
+  const session=await setup(page,'codex','detached');
+  const round=(time:number,turn:string,text:string)=>event(time,'task_started',{turn_id:turn})+
+    record(time+1,'turn_context',{turn_id:turn,model:'gpt-6-luna'})+
+    message(time+2,turn+'-input','user','核对 '+turn)+message(time+3,turn+'-answer','assistant',text,'final_answer')+
+    record(time+4,'token_usage_record',{turn_id:turn,response_id:turn+'-usage',usage:{
+      input_tokens:16571,cached_input_tokens:11392,output_tokens:50,reasoning_output_tokens:0,total_tokens:16621,
+    }})+event(time+5,'task_complete',{turn_id:turn});
+
+  writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+round(1,'standard','默认速度答复'));
+  await page.goto('/');
+  const finalCredits=(text:string)=>session.chat.locator('[data-phase="final"]').filter({hasText:text})
+    .locator('.session-chat-message-statistics .session-chat-estimated-cost').first();
+  await expect(finalCredits('默认速度答复')).toHaveText('0.016');
+  appendFileSync(session.log,event(7,'thread_settings_applied',{thread_settings:{model:'gpt-6-luna',service_tier:'priority'}})+
+    round(8,'fast','Fast 速度答复'));
+  await expect(finalCredits('Fast 速度答复')).toHaveText('0.041');
+  await page.reload();
+  await expect(finalCredits('默认速度答复')).toHaveText('0.016');
+  await expect(finalCredits('Fast 速度答复')).toHaveText('0.041');
+  const {metadata}=await read(page,session.api+'/conversation/metadata');
+  expect(metadata.models).toEqual(expect.arrayContaining([
+    expect.objectContaining({speed:'default',requests:1,cost:expect.objectContaining({complete:true})}),
+    expect.objectContaining({speed:'priority',requests:1,cost:expect.objectContaining({complete:true})}),
+  ]));
+});
+
 test('keeps a delivered async notice within Progress when consecutive inputs share a Final',async({page})=>{
   const session=await setup(page,'codex','detached');
   const turn='async-delivery';

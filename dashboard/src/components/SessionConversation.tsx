@@ -2385,7 +2385,7 @@ export function SessionConversation({
                     showStatistics={!notificationView}
                     agent={sessionAgent(session)}
                     agentName={agentName}
-                    count={group.messages.length+Number(!!execution)}
+                    count={visibleProgress.length+Number(!!execution)}
                     active={activeGroup}
                     timestamp={part?.last_request_at??part?.end_at??part?.start_at??
                       (last?.streaming?null:last?.timestamp)??(pending?liveProgress.started_at:null)}
@@ -2420,7 +2420,7 @@ export function SessionConversation({
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
                       statistics={executionStats??(progressStatistics?.revision==null?pendingStatistics:null)} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
                     {!pending&&!notificationView&&executionStats&&<div className="session-chat-progress-entry">
-                      <span className="session-chat-progress-number" aria-label={`进展序号 ${group.messages.length+1}`}>{group.messages.length+1}</span>
+                      <span className="session-chat-progress-number" aria-label={`进展序号 ${visibleProgress.length+1}`}>{visibleProgress.length+1}</span>
                       <div className="session-chat-message-meta">
                         <span title={unassignedUsageDescription}>{unassignedUsageLabel}</span>
                         <ConversationStatisticsLabel interval statistics={executionStats}/>

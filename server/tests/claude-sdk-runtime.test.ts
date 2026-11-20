@@ -228,15 +228,24 @@ describe('Claude Agent SDK runtime',()=>{
   it('uses one user identity for the first Claude Code input from launch through durable history',async()=>{
     const {createTestDatabase}=await import('./helpers/database.js');const database=createTestDatabase();
     let nativeId:string|undefined;
+    let deliverEcho!: (message: unknown) => void;
+    sdk.messages=[new Promise(resolve=>{deliverEcho=resolve;})];
     try{
       const {claudeAdapter}=await import('../src/services/agents/claude/adapter.js');
       const launch=await claudeAdapter.launch.prepare({session:{id:'first-claude'},projectPath:database.dir} as any,'你好，介绍你自己',undefined,false,'browser-first');
       nativeId=launch.nativeId;
       const live=await vi.waitFor(()=>{const message=claudeRuntime(nativeId!)?.snapshot().messages.find(item=>item.role==='user');expect(message).toBeTruthy();return message!;});
       expect(live.client_id).toBe('browser-first');expect(launch.initialMessageId).toBe(live.id);
-      sdk.messages=[{type:'user',uuid:'019ff001-1212-7212-8212-121212121250',session_id:nativeId,parent_tool_use_id:null,message:{role:'user',content:'你好，介绍你自己'}}];
-      await vi.waitFor(()=>expect(claudeRuntime(nativeId!)?.snapshot().messages.find(item=>item.role==='user')).toMatchObject({client_id:'browser-first',native_client_id:'browser-first'}));
-    }finally{if(nativeId)releaseClaudeRuntime(nativeId);database.cleanup();}
+      deliverEcho({type:'user',uuid:'019ff001-1212-7212-8212-121212121250',session_id:nativeId,parent_tool_use_id:null,message:{role:'user',content:'你好，介绍你自己'}});
+      await vi.waitFor(()=>expect(claudeRuntime(nativeId!)?.snapshot().messages.find(item=>item.role==='user')).toMatchObject({
+        id:conversationMessageId('','user','019ff001-1212-7212-8212-121212121250'),
+        client_id:'browser-first',native_client_id:'browser-first',
+      }));
+    }finally{
+      deliverEcho({type:'result',subtype:'success',session_id:nativeId});
+      if(nativeId)releaseClaudeRuntime(nativeId);
+      database.cleanup();
+    }
   });
   it('stops only the matching active turn',async()=>{
     let resolve!:(value:any)=>void;sdk.messages=[new Promise(done=>{resolve=done;})];
