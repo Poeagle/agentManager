@@ -321,6 +321,40 @@ test('shows one cache drop next to an in-turn compaction and keeps it after relo
   expect(history.cache_drops[0]).toMatchObject({elapsed_ms:4954,compaction_at:at(55.363),interval_kind:'request'});
 });
 
+test('shows the manual compaction cache drop once its first ordinary request arrives',async({page})=>{
+  const session=await setup(page,'codex','detached');
+  writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+
+    event(1,'task_started',{turn_id:'previous'})+message(2,'first','user','压缩前提问')+
+    message(3,'before','assistant','压缩前答复','final_answer')+request(4,'previous','before',336415,335616)+
+    event(5,'task_complete',{turn_id:'previous'})+event(20,'task_started',{turn_id:'manual'})+
+    request(61.481,'manual','rewrite',336983,0)+record(61.489,'compacted',{
+      message:'已手动压缩',replacement_history:[{type:'reasoning',encrypted_content:'x'.repeat(2_100_000)}],
+      compaction_response_id:'rewrite',
+    })+event(61.517,'task_complete',{turn_id:'manual'}));
+  await page.goto('/');
+  const summary=session.chat.getByRole('button',{name:/Conversation summary/});
+  const incident=session.chat.getByRole('button',{name:/缓存命中率下降/});
+  await expect(summary).toBeVisible();
+  await expect(incident).toHaveCount(0);
+  const after=request(77.877,'next','after',32483,13696);
+  appendFileSync(session.log,event(61.915,'task_started',{turn_id:'next'})+
+    message(61.930,'next','user','压缩后提问')+message(74,'after','assistant','压缩后答复','final_answer')+
+    after+after+event(78,'task_complete',{turn_id:'next'}));
+  await expect(incident).toHaveCount(1);
+  await expect(incident).toContainText('99.76%');
+  await expect(incident).toContainText('42.16%');
+  expect(await summary.evaluate(node=>node.closest('[data-context-kind="compaction_summary"]')?.nextElementSibling?.matches('[data-cache-drop-id]'))).toBe(true);
+  await page.reload();
+  await expect(incident).toHaveCount(1);
+  await page.getByRole('button',{name:'Details',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'会话详情'});
+  await dialog.getByRole('tab',{name:'缓存异常'}).click();
+  const table=dialog.getByRole('table',{name:'缓存命中率下降明细'});
+  await expect(table.getByRole('cell',{name:'上下文压缩',exact:true})).toBeVisible();
+  await expect(table).toContainText('336.4K / 335.6K (99.76%)');
+  await expect(table).toContainText('32.5K / 13.7K (42.16%)');
+});
+
 test('waits for actual usage after commentary and counts a reasoning-only request separately',async({page})=>{
   const session=await setup(page,'codex','detached');
   const turn='waiting-receipt';

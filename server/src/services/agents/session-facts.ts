@@ -58,7 +58,7 @@ export type NativeSessionFact =
   | { kind: 'tool_end'; id: string; turn_id: string }
   | { kind: 'request'; request: NativeRequestFact }
   | { kind: 'end'; turn_id: string; at: string | null; outcome: 'completed' | 'interrupted' | 'unknown'; final_digest?: string }
-  | { kind: 'lifecycle'; event: Omit<SessionLifecycleFact, 'id' | 'evidence'>; id?: string }
+  | { kind: 'lifecycle'; event: Omit<SessionLifecycleFact, 'id' | 'evidence'>; id?: string; related_request_id?: string }
   | { kind: 'gap'; reason: SessionCoverageReason; affectsUsage?: boolean };
 
 export interface NativeFactLocation {

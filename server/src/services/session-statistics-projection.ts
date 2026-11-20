@@ -53,6 +53,8 @@ export interface SessionProjectionState {
   suspended: Turn[];
   previousInputSample?: SessionCacheSample;
   previousRequestSample?: SessionCacheSample;
+  sampleBeforePreviousRequest?: SessionCacheSample;
+  compactionRequestId?: string;
   lastCompactionAt?: string | null;
   sampledCompactions: number;
   compactions: number;
@@ -100,6 +102,7 @@ export class SessionStatisticsProjection {
       if (progress) progress.counter.gaps[reason] = (progress.counter.gaps[reason] ?? 0) + 1;
       state.previousInputSample = undefined;
       state.previousRequestSample = undefined;
+      state.sampleBeforePreviousRequest = undefined;
     }
   }
 
@@ -128,13 +131,20 @@ export class SessionStatisticsProjection {
       this.state.suspended.find(turn => turn.id === id) ?? this.begin(id, at, offset, false);
   }
 
-  private pushEvent(event: Omit<SessionLifecycleFact, 'evidence' | 'id'>, offset: number, id?: string) {
+  private pushEvent(event: Omit<SessionLifecycleFact, 'evidence' | 'id'>, offset: number, id?: string, relatedRequestId?: string) {
     const record = {...event, id: id ?? factId(offset, event.action, event.state), evidence: 'native' as const};
     const added = this.sink.event(record, offset);
     if (added && event.action === 'compact' && event.state === 'completed') {
-      this.state.compactions++;
-      this.state.lastCompactionAt = event.at;
-      const turn = this.state.turn;
+      const state = this.state;
+      state.compactions++;
+      state.lastCompactionAt = event.at;
+      state.compactionRequestId = relatedRequestId;
+      if (relatedRequestId && state.previousRequestSample?.request_id === relatedRequestId) {
+        // The rewrite receipt can precede completion of the compaction.
+        state.previousRequestSample = state.sampleBeforePreviousRequest;
+        state.sampleBeforePreviousRequest = undefined;
+      }
+      const turn = state.turn;
       if (turn && !turn.ended) this.cutProgress(turn,event.at,'compact',offset);
     }
   }
@@ -279,6 +289,7 @@ export class SessionStatisticsProjection {
 
   private sampleCache(turn: Turn | undefined, request: NativeRequestFact, offset: number) {
     const state = this.state;
+    if (request.id === state.compactionRequestId) return;
     const input = turn?.groupInput === turn?.input?.id ? turn?.input : undefined;
     const firstInputSample = input && !input.sampled && !!(turn?.items.length || turn?.tools.length);
     const current = cacheSample(input, request);
@@ -303,6 +314,7 @@ export class SessionStatisticsProjection {
       state.previousInputSample = input.ambiguous ? undefined : current ?? undefined;
     }
     if (structuralChange && compaction && !firstInputSample) state.previousInputSample = undefined;
+    state.sampleBeforePreviousRequest = previous;
     state.previousRequestSample = current ?? undefined;
     state.sampledCompactions = state.compactions;
   }
@@ -384,7 +396,7 @@ export class SessionStatisticsProjection {
 
   accept(fact: NativeSessionFact, offset: number) {
     if (fact.kind === 'gap') return this.gap(fact.reason, fact.affectsUsage !== false);
-    if (fact.kind === 'lifecycle') return this.pushEvent(fact.event, offset, fact.id);
+    if (fact.kind === 'lifecycle') return this.pushEvent(fact.event, offset, fact.id, fact.related_request_id);
     if (fact.kind === 'request') return this.request(fact.request, offset);
     if (fact.kind === 'start') {
       this.begin(fact.turn_id, fact.at, offset, true);

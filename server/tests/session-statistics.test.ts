@@ -112,6 +112,48 @@ describe('persisted session statistics',()=>{
     expect(readSessionMetadataDetails(codex,true)?.cache_drops).toEqual([drop]);
   });
 
+  it.each(['before','after'])('uses ordinary cache samples when a linked compaction receipt comes %s completion',async(order)=>{
+    const before=tokens(336_415,335_616,548);
+    const rewrite=tokens(336_983,0,1775);
+    const after=tokens(32_483,13_696,602);
+    await writeFile(file,event(0,'task_started',{turn_id:'previous'})+user(1,'first')+
+      answer(2,'first-final','final_answer')+receipt(3,'before','previous',before)+
+      event(4,'task_complete',{turn_id:'previous'})+event(1000,'task_started',{turn_id:'manual'}));
+    await updateSessionFacts(codex,file);
+
+    const rewriteReceipt=receipt(order==='before'?1041.481:1041.491,'rewrite','manual',rewrite);
+    if (order==='before') {
+      await appendFile(file,rewriteReceipt);
+      await updateSessionFacts(codex,file);
+    }
+    // The native response ID follows a replacement history larger than the
+    // usual per-record budget.
+    await appendFile(file,row(1041.489,'compacted',{
+      replacement_history:[{type:'reasoning',encrypted_content:'x'.repeat(2_100_000)}],
+      compaction_response_id:'rewrite',
+    })+(order==='after'?rewriteReceipt:'')+event(1041.517,'task_complete',{turn_id:'manual'}));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)).toMatchObject({cache_drop_count:0,totals:{requests:2}});
+
+    closeDb();initDb();
+    const post=receipt(1057.877,'after','next',after);
+    await appendFile(file,event(1041.915,'task_started',{turn_id:'next'})+
+      user(1041.930,'next')+answer(1054,'next-final','final_answer')+post+post+
+      event(1058,'task_complete',{turn_id:'next'}));
+    await updateSessionFacts(codex,file);
+    const details=readSessionMetadataDetails(codex,true)!;
+    expect(details.summary).toMatchObject({cache_drop_count:1,totals:{requests:3,
+      tokens:{total_tokens:before.total_tokens+rewrite.total_tokens+after.total_tokens}}});
+    expect(details.cache_drops).toMatchObject([{
+      compaction_at:stamp(1041.489),at:stamp(1057.877),interval_kind:'input',
+      previous:{request_id:'before',input_tokens:336415,cached_input_tokens:335616},
+      current:{request_id:'after',input_tokens:32483,cached_input_tokens:13696},
+      factors:['compact','input_size','input_gap'],
+    }]);
+    expect(details.cache_drops[0].decrease_pp).toBeCloseTo(57.6,2);
+    expect(readSessionCacheDrops(codex,[],[stamp(1041.489)])).toEqual(details.cache_drops);
+  });
+
   it('detects a native model and speed change in a single input, and breaks comparisons across missing receipts',async()=>{
     await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'one')+
       row(2,'turn_context',{turn_id:'turn',model:'gpt-6.1-sol',service_tier:'default'})+

@@ -39,7 +39,7 @@ const itemText = (content: unknown, types: string[]) => Array.isArray(content)
   : '';
 
 export const codexSessionFacts: AgentSessionFactsPort = {
-  revision: 1,
+  revision: 2,
   async *discover() {
     const { allCodexEnvironments } = await import('./environments.js');
     const { localHome } = await import('./account-files.js');
@@ -70,7 +70,7 @@ export const codexSessionFacts: AgentSessionFactsPort = {
   recordLimit: header => {
     const kind = recordType(header);
     const prefix = header.toString();
-    return kind === 'session_meta' || kind === 'turn_context' ||
+    return kind === 'session_meta' || kind === 'turn_context' || kind === 'compacted' ||
       (kind === 'response_item' && /"role"\s*:\s*"user"/.test(prefix)) ||
       (kind === 'event_msg' && /"(?:UserMessage|user_message)"/.test(prefix))
       ? 16 * 1024 * 1024 : 512 * 1024;
@@ -243,7 +243,9 @@ export const codexSessionFacts: AgentSessionFactsPort = {
     }
     if (kind === 'compacted' || type === 'context_compacted') {
       const action = kind === 'compacted' ? 'completed' : 'accepted';
-      facts.push({kind: 'lifecycle', id: factString(payload?.compaction_response_id ?? payload?.window_id) ?? undefined,
+      const compactionRequest = kind === 'compacted' ? factString(payload?.compaction_response_id) : null;
+      facts.push({kind: 'lifecycle', id: compactionRequest ?? factString(payload?.window_id) ?? undefined,
+        ...(compactionRequest ? {related_request_id: compactionRequest} : {}),
         event: {action: 'compact', state: action, at, turn_id: turn}});
     }
     if (turn && (type === 'task_complete' || type === 'turn_aborted')) {

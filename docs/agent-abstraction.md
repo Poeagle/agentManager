@@ -351,6 +351,8 @@ Progress 标题仅显示汇总、调用/等待状态与耗时，命令摘要统�
 
 `GET /api/sessions/:id/conversation/usage-intervals` 分页读取持久化的用量树。根页含 Final 和已记录的未完成区间组。用可展开行的 `id` 作为 `parent` 读取子级，用 `next_before` 作为同级的 `before` 读取下一页。Progress 汇总所属 Item，包括正在执行且已有回执的部分。原生文件可读时，旧检查点按批次重放以补齐 Item 归属。时间缺失时保持未知。
 
+统计适配器可在原生压缩完成事实中关联执行压缩的请求。Codex 从原生压缩记录读取该关联。平台保留压缩请求的用量，并使用压缩前后的普通请求比较缓存命中率。
+
 工具轮次、调用和 Runs 为独立计数。多个 Item 共享一个响应时仅一个 Item 记录用量。相同 native ID 的实时与历史消息按适配器提供的稳定身份关联。`progress_statistics.step` 可提供活动 Item 的原生区间。同一轮内压缩后用相邻请求检测缓存下降。Code-mode 中只有包裹工具对平台可见时，统计计为该工具调用。详细规则见 [会话元信息与统计](session-metadata-requirements.md)。
 
 企业微信通知引用回复通过现有平台权限和输入接口直接提交，调度模型不参与路由。
