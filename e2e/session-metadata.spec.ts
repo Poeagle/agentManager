@@ -94,7 +94,7 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   await expect.poll(()=>connections).toBeGreaterThan(0);
   expect(await session.chat.locator('[data-cache-drop-id]').count()).toBe(0);
   appendFileSync(session.log,second(0));
-  const incident=session.chat.getByRole('button',{name:/缓存命中率下降/});
+  const incident=session.chat.getByRole('button',{name:/缓存命中输入减少/});
   await expect(incident).toHaveCount(1);
   await expect(incident).toContainText('11K / 10K (90.91%)');
   await expect(incident).toContainText('10K / 0 (0.0%)');
@@ -105,7 +105,7 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   const final=session.chat.locator('[data-phase=final]').filter({hasText:'第二问答复'});
   await expect(final.locator('.session-chat-message-statistics')).toContainText('1 round | 0 calls');
   await incident.click();
-  const card=page.getByRole('dialog',{name:'缓存命中率下降',exact:true});
+  const card=page.getByRole('dialog',{name:'缓存命中输入减少',exact:true});
   await expect(card).toContainText('模型变化、速度变化、上下文压缩、输入间隔较长');
   await expect(card.getByRole('table').locator('time')).toHaveText('2026-11-20 17:16:35');
   await page.keyboard.press('Escape');
@@ -116,8 +116,8 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   await expect(details.getByRole('rowheader',{name:'用户输入 / 已完成问答'}).locator('..')).toContainText('2 / 2');
   await expect(details.getByRole('table',{name:'Token 用量'})).toContainText('31,060');
   await details.getByRole('tab',{name:'概览'}).press('ArrowRight');
-  const cache=details.getByRole('table',{name:'缓存命中率下降明细'});
-  await expect(details.getByRole('heading',{name:'缓存命中率下降（1 次）'})).toBeVisible();
+  const cache=details.getByRole('table',{name:'缓存命中输入减少明细'});
+  await expect(details.getByRole('heading',{name:'缓存命中输入减少（1 次）'})).toBeVisible();
   await expect(cache.locator('time')).toHaveText('2026-11-20 17:16:35');
   await expect(cache).toContainText('11K / 10K (90.91%)');
   await expect(cache).not.toContainText('请求 ID');
@@ -173,7 +173,7 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   const history=await read(page,session.api+'/conversation');
   expect(history.metadata.totals).toMatchObject({requests:3,tool_calls:2,tool_rounds:1,tokens:{total_tokens:31060}});
   expect(history.cache_drops).toHaveLength(1);
-  writeFileSync(session.log+'.corrected',prefix+second(9600));
+  writeFileSync(session.log+'.corrected',prefix+second(10000));
   renameSync(session.log+'.corrected',session.log);
   await expect(incident).toHaveCount(0);
   await page.reload();
@@ -301,6 +301,39 @@ test('keeps the shown Item counts and usage within their Progress across consecu
   await expect(items).toHaveCount(2);
 });
 
+test('uses adjacent cached-input counts and ignores a ratio drop caused by new input tokens',async({page})=>{
+  const session=await setup(page,'codex','detached');
+  const turn='actual-hit-counts';
+  writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+
+    event(1,'task_started',{turn_id:turn})+message(2,'input','user','核对同一轮缓存')+
+    message(3,'first','assistant','先检查')+record(3.5,'response_item',{type:'function_call',call_id:'first'})+
+    request(4,turn,'before',36873,36480));
+  await page.goto('/');
+  await expect(session.chat.getByText('核对同一轮缓存',{exact:true})).toBeVisible();
+  const incident=session.chat.getByRole('button',{name:/缓存命中输入减少/});
+  appendFileSync(session.log,record(7,'response_item',{type:'function_call',call_id:'growth'})+
+    request(7.516,turn,'growth',44658,36736));
+  const metadataUrl=session.api+'/conversation/metadata';
+  const {metadata}=await read(page,metadataUrl);
+  expect(metadata.summary.totals.requests).toBe(2);
+  expect(metadata.cache_drops).toEqual([]);
+  await expect(incident).toHaveCount(0);
+
+  const next=request(10,turn,'fewer-hits',40000,36040);
+  appendFileSync(session.log,record(9,'response_item',{type:'function_call',call_id:'next'})+next+next);
+  await expect(incident).toHaveCount(1);
+  await expect(incident).toContainText('82.26%');
+  await expect(incident).toContainText('90.1%');
+  await expect(incident).toContainText('减少 696 Token');
+  await expect(incident).toContainText('请求间隔 2.484秒');
+  await page.reload();
+  await expect(incident).toHaveCount(1);
+  await page.getByRole('button',{name:'Details',exact:true}).click();
+  const details=page.getByRole('dialog',{name:'会话详情',exact:true});
+  await details.getByRole('tab',{name:'缓存异常'}).click();
+  await expect(details.getByRole('table',{name:'缓存命中输入减少明细'})).toContainText('请求间隔 2.484秒');
+});
+
 test('shows one cache drop next to an in-turn compaction and keeps it after reload',async({page})=>{
   const session=await setup(page,'codex','detached');
   const turn='compact-live';
@@ -312,7 +345,7 @@ test('shows one cache drop next to an in-turn compaction and keeps it after relo
   await page.goto('/');
   const summary=session.chat.getByRole('button',{name:/Conversation summary/});
   await expect(summary).toBeVisible();
-  const incident=session.chat.getByRole('button',{name:/缓存命中率下降/});
+  const incident=session.chat.getByRole('button',{name:/缓存命中输入减少/});
   await expect(incident).toHaveCount(0);
   const after=request(60.309,turn,'after',32061,13696);
   appendFileSync(session.log,after+after);
@@ -323,14 +356,14 @@ test('shows one cache drop next to an in-turn compaction and keeps it after relo
   await expect(incident.locator('time')).toHaveText('2026-11-20 17:01:00');
   expect(await summary.evaluate(node=>node.closest('[data-context-kind="compaction_summary"]')?.nextElementSibling?.matches('[data-cache-drop-id]'))).toBe(true);
   await incident.click();
-  const card=page.getByRole('dialog',{name:'缓存命中率下降',exact:true});
+  const card=page.getByRole('dialog',{name:'缓存命中输入减少',exact:true});
   await expect(card.getByRole('cell',{name:'上下文压缩',exact:true})).toBeVisible();
   await expect(card.locator('time')).toHaveText('2026-11-20 17:01:00');
   await page.keyboard.press('Escape');
   await page.getByRole('button',{name:'Details',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'会话详情',exact:true});
   await dialog.getByRole('tab',{name:'缓存异常'}).click();
-  const cache=dialog.getByRole('table',{name:'缓存命中率下降明细'});
+  const cache=dialog.getByRole('table',{name:'缓存命中输入减少明细'});
   await expect(cache.getByRole('cell',{name:'上下文压缩',exact:true})).toBeVisible();
   await expect(cache).toContainText('4.954秒');
   await expect(cache.locator('time')).toHaveAttribute('datetime',at(60.309));
@@ -353,7 +386,7 @@ test('shows the manual compaction cache drop once its first ordinary request arr
     })+event(61.517,'task_complete',{turn_id:'manual'}));
   await page.goto('/');
   const summary=session.chat.getByRole('button',{name:/Conversation summary/});
-  const incident=session.chat.getByRole('button',{name:/缓存命中率下降/});
+  const incident=session.chat.getByRole('button',{name:/缓存命中输入减少/});
   await expect(summary).toBeVisible();
   await expect(incident).toHaveCount(0);
   const after=request(77.877,'next','after',32483,13696);
@@ -369,7 +402,7 @@ test('shows the manual compaction cache drop once its first ordinary request arr
   await page.getByRole('button',{name:'Details',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'会话详情'});
   await dialog.getByRole('tab',{name:'缓存异常'}).click();
-  const table=dialog.getByRole('table',{name:'缓存命中率下降明细'});
+  const table=dialog.getByRole('table',{name:'缓存命中输入减少明细'});
   await expect(table.getByRole('cell',{name:'上下文压缩',exact:true})).toBeVisible();
   await expect(table).toContainText('336.4K / 335.6K (99.76%)');
   await expect(table).toContainText('32.5K / 13.7K (42.16%)');

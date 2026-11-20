@@ -139,7 +139,7 @@ describe('compact conversation controls',()=>{
   fireEvent.keyDown(overview,{key:'ArrowRight'});
   const cache=within(dialog).getByRole('tab',{name:'缓存异常'});
   expect(cache).toHaveFocus();
-  expect(within(dialog).getByRole('table',{name:'缓存命中率下降明细'})).toBeVisible();
+  expect(within(dialog).getByRole('table',{name:'缓存命中输入减少明细'})).toBeVisible();
   expect(within(dialog).queryByRole('table',{name:'Token 用量'})).not.toBeInTheDocument();
   fireEvent.keyDown(cache,{key:'End'});
   const usage=within(dialog).getByRole('tab',{name:'会话详情'});

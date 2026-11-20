@@ -347,11 +347,11 @@ Progress 标题仅显示汇总、调用/等待状态与耗时，命令摘要统�
 
 支持统计的文件型适配器通过 `AgentStatisticsPort.facts` 提供可版本化的归一化事件。适配器识别原生请求、工具、输入、消息、压缩和参数回执。平台保存检查点、区间和聚合，向历史和实时视图提供相同的事实。新增适配器应覆盖重复原生 ID、未知数据、源替换和迟到用量。缺少证据的边界保持待确认。
 
-`GET /api/sessions/:id/conversation/metadata` 返回已授权会话的摘要、按模型与速度分项、事件和缓存下降。事件与缓存下降可分别分页。WebSocket 的 `session_metadata` 帧带原生身份、版本和历史代次，用于实时更新与替换。页面查询只用已持久化的区间和请求聚合。会话详情的当前运行状态和最近原生请求分别展示。
+`GET /api/sessions/:id/conversation/metadata` 返回已授权会话的摘要、按模型与速度分项、事件和缓存命中输入减少记录。事件和减少记录可分别分页。WebSocket 的 `session_metadata` 帧带原生身份、版本和历史代次，用于实时更新与替换。页面查询只用已持久化的区间和请求聚合。会话详情的当前运行状态和最近原生请求分别展示。
 
 `GET /api/sessions/:id/conversation/usage-intervals` 分页读取持久化的用量树。根页的 `kind: "final"` 行汇总前后两个 Final 之间的轮次，并包含已记录的未完成区间组。轮次展开后，`kind: "item", phase: "final"` 表示 Final 自身的用量，与 Progress 同级。用可展开行的 `id` 作为 `parent` 读取子级，用 `next_before` 作为同级的 `before` 读取下一页。Progress 汇总所属 Item，包括正在执行且已有回执的部分。可用的 `last_request_at` 记录段内最后一笔请求时间，供对话和详情显示。原生文件可读时，旧检查点按批次重放以补齐 Item 归属。时间缺失时保持未知。
 
-统计适配器可在原生压缩完成事实中关联执行压缩的请求。Codex 从原生压缩记录读取该关联。平台保留压缩请求的用量，并使用压缩前后的普通请求比较缓存命中率。
+统计适配器可在原生压缩完成事实中关联执行压缩的请求。Codex 从原生压缩记录读取该关联。平台保留压缩请求的用量，并比较压缩前后普通请求的缓存命中输入 Token。命中输入减少时触发提示，命中率用于对照。
 
 前端用 Round 表示 `requests`，用 Call 表示 `tool_calls`。接口的 `tool_rounds` 表示产生过工具调用的模型响应数。Codex 的异步说明在实时和历史中映射为进展。Codex 的缺省速度按 Standard 解析，有记录的 Fast 等档位按请求所属的有效设置解析。多个 Item 共享一个响应时仅一个 Item 记录用量。相同 native ID 的实时与历史消息按适配器提供的稳定身份关联。`progress_statistics.step` 可提供活动 Item 的原生区间。同一轮内压缩后用相邻请求检测缓存下降。Code-mode 中只有包裹工具对平台可见时，统计计为该工具调用。详细规则见 [会话元信息与统计](session-metadata-requirements.md)。
 

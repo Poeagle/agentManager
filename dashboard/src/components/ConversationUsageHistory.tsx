@@ -63,7 +63,7 @@ export function ConversationCacheHistory({sessionId, details, loading, error, on
     });
   const count = details?.summary.cache_drop_count;
   return <section className="conversation-metadata-section">
-    <h4>缓存命中率下降{count == null ? '' : `（${count} 次）`}</h4>
+    <h4>缓存命中输入减少{count == null ? '' : `（${count} 次）`}</h4>
     <CacheDropTable drops={history.rows} loading={loading} error={error} onRetry={onRetry} />
     {history.before && <button className="session-chat-older" type="button" disabled={history.loading} onClick={()=>void history.load()}>
       {history.loading ? '正在读取…' : '更早的缓存异常'}

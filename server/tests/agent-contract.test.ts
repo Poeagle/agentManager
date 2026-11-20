@@ -8,6 +8,7 @@ describe('Agent API contract', () => {
 
     expect(new Set(keys).size).toBe(keys.length);
     expect(contract.version).toBe('3.18.0');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/metadata')?.description).toContain('decreases in recorded cached input tokens');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/usage-intervals')?.description).toContain('kind=item with phase=final');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('last_request_at');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('progress_statistics.step');

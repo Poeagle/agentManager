@@ -36,9 +36,10 @@ function dropInterval(drop: SessionCacheDrop) {
 }
 
 function CacheDropCause({drop}: {drop: SessionCacheDrop}) {
-  const factors = drop.factors.filter(factor => factor !== 'input_size').map(factor => factorNames[factor]);
+  const compacted = drop.factors.includes('compact');
+  const factors = drop.factors.filter(factor => factor !== 'input_size' || !compacted).map(factor => factorNames[factor]);
   const names = new Set(drop.confirmed_cause ? [drop.confirmed_cause.label, ...factors] : factors);
-  const basis = drop.factors.includes('compact') ? '比较压缩前最后一笔和压缩后第一笔原生请求的命中率' : undefined;
+  const basis = compacted ? '比较压缩前最后一笔和压缩后第一笔原生请求的缓存命中输入' : undefined;
   return <span title={basis}>{[...names].join('、') || '原因未确认'}</span>;
 }
 
@@ -48,7 +49,7 @@ export function CacheDropTable({drops, loading, error, onRetry}: {
   error?: string;
   onRetry?: () => void;
 }) {
-  return <TableFrame label="缓存命中率下降明细" className="conversation-metadata-scroll conversation-cache-table" loading={loading}
+  return <TableFrame label="缓存命中输入减少明细" className="conversation-metadata-scroll conversation-cache-table" loading={loading}
     header={<>{['异常时间', '前次总输入 / 命中', '本次总输入 / 命中', '间隔', '原因']
       .map(label => <th key={label} scope="col">{label}</th>)}</>} style={{minWidth: 660}}>
       {loading ? <TableStateRow columnCount={5} loading>加载中…</TableStateRow>
@@ -66,11 +67,12 @@ export function CacheDropTable({drops, loading, error, onRetry}: {
 
 export function ConversationCacheDrop({drop, active}: {drop: SessionCacheDrop; active: boolean}) {
   return <div className="conversation-cache-card" data-cache-drop-id={drop.id}>
-    <ConversationDialogCard title="缓存命中率下降" active={active} summary={
+    <ConversationDialogCard title="缓存命中输入减少" active={active} summary={
       <span className="conversation-cache-summary">
         <AlertTriangle size={14} aria-hidden="true" />
-        <strong>缓存命中率下降</strong>
+        <strong>缓存命中输入减少</strong>
         <SampleTokens sample={drop.previous} /><span aria-hidden="true">→</span><SampleTokens sample={drop.current} />
+        <span>减少 {(drop.previous.cached_input_tokens - drop.current.cached_input_tokens).toLocaleString('zh-CN')} Token</span>
         <span>{dropInterval(drop)}</span>
         <MetadataTime at={drop.at} />
       </span>

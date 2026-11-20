@@ -260,7 +260,7 @@ export function getAgentApiContract() {
       },
       {
         category: 'Sessions', method: 'GET', path: '/api/sessions/:id/conversation/metadata',
-        description: 'Read verified session totals, model and speed totals, lifecycle records and cache hit drops. Pass event_before or cache_before from next_event or next_cache_drop for earlier records. The status and reasons report missing or pending evidence. Credits are request-based estimates.',
+        description: 'Read verified session totals, model and speed totals, lifecycle records and decreases in recorded cached input tokens. Pass event_before or cache_before from next_event or next_cache_drop for earlier records. The status and reasons report missing or pending evidence. Credits are request-based estimates.',
         response: {metadata:'SessionMetadataDetails | null'},
         errors: {400:'Invalid cursor',404:'Session not found or not accessible'},
       },

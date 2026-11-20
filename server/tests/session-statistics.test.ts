@@ -92,6 +92,65 @@ describe('persisted session statistics',()=>{
     expect(JSON.stringify(details)).not.toContain('private');
   });
 
+  it('compares cached input counts within one input even when the hit rate moves in the opposite direction',async()=>{
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'same-input')+
+      answer(2,'progress','commentary')+tool(3,'first')+receipt(4,'before','turn',tokens(36_873,36_480))+
+      tool(5,'growth')+receipt(7.516,'growth','turn',tokens(44_658,36_736)));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)?.cache_drop_count).toBe(0);
+
+    const fewerHits=receipt(10,'fewer-hits','turn',tokens(40_000,36_040));
+    await appendFile(file,tool(9,'next')+fewerHits+fewerHits);
+    await updateSessionFacts(codex,file);
+    const [drop]=readSessionMetadataDetails(codex,true)!.cache_drops;
+    expect(drop).toMatchObject({at:stamp(10),elapsed_ms:2484,interval_kind:'request',
+      previous:{request_id:'growth',cached_input_tokens:36_736},
+      current:{request_id:'fewer-hits',cached_input_tokens:36_040,input_id:nativeItemId('user','same-input')}});
+    expect(drop.current.hit_rate).toBeGreaterThan(drop.previous.hit_rate);
+    expect(readSessionMetadata(codex)?.cache_drop_count).toBe(1);
+
+    await appendFile(file,receipt(12,'reasoning-only','turn',tokens(41_000,36_039)));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)?.cache_drop_count).toBe(1);
+    await appendFile(file,event(13,'task_complete',{turn_id:'turn'}));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadataDetails(codex,true)?.cache_drops).toMatchObject([
+      {previous:{cached_input_tokens:36_040},current:{cached_input_tokens:36_039,request_id:'reasoning-only'}},
+      {id:drop.id},
+    ]);
+  });
+
+  it('compares hits even when new input exceeds the entire preceding input',async()=>{
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'same-input')+
+      answer(2,'progress','commentary')+receipt(3,'before','turn',tokens(40_000,39_000))+
+      tool(4,'adds-input')+receipt(5,'more-input','turn',tokens(140_000,39_000)));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)?.cache_drop_count).toBe(0);
+
+    await appendFile(file,tool(6,'adds-more-input')+receipt(7,'fewer-hits','turn',tokens(300_000,38_999)));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadataDetails(codex,true)?.cache_drops).toMatchObject([
+      {factors:['input_size'],previous:{request_id:'more-input',cached_input_tokens:39_000},
+        current:{request_id:'fewer-hits',cached_input_tokens:38_999}},
+    ]);
+  });
+
+  it('skips a linked context-rewrite receipt even when it arrives on the same input before the compaction event',async()=>{
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'same-input')+
+      answer(2,'progress','commentary')+receipt(3,'normal','turn',tokens(40_000,39_000))+
+      receipt(4,'rewrite','turn',tokens(40_000,0)));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)?.cache_drop_count).toBe(0);
+    closeDb();initDb();
+    await appendFile(file,row(5,'compacted',{compaction_response_id:'rewrite'})+
+      receipt(6,'post-compact','turn',tokens(28_000,27_000)));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadataDetails(codex,true)?.cache_drops).toMatchObject([
+      {compaction_at:stamp(5),factors:['compact'],previous:{request_id:'normal'},current:{request_id:'post-compact'}},
+    ]);
+    expect(readSessionMetadata(codex)).toMatchObject({cache_drop_count:1,totals:{requests:3}});
+  });
+
   it('uses the adjacent native receipts at a compaction in the middle of one input',async()=>{
     const before=tokens(450_070,448_512),after=tokens(32_061,13_696);
     await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'one')+
@@ -108,7 +167,7 @@ describe('persisted session statistics',()=>{
     expect(readSessionCacheDrops(codex,[],[stamp(55.363)])).toEqual([drop]);
     expect(readSessionProgress(codex)).toMatchObject({segment:{start_at:stamp(55.363),requests:1,tokens:{total_tokens:after.total_tokens}}});
     await appendFile(file,receipt(60.309,'after','turn',after)+receipt(62,'recovered','turn',tokens(34000,33000))+
-      row(63,'compacted',{compaction_response_id:'compact-two'})+receipt(64,'high','turn',tokens(30000,29000)));
+      row(63,'compacted',{compaction_response_id:'compact-two'})+receipt(64,'high','turn',tokens(36000,35000)));
     await updateSessionFacts(codex,file);
     expect(readSessionMetadata(codex)?.cache_drop_count).toBe(1);
     expect(readSessionMetadataDetails(codex,true)?.cache_drops).toEqual([drop]);

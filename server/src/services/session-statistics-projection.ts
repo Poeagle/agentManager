@@ -54,6 +54,7 @@ export interface SessionProjectionState {
   suspended: Turn[];
   previousInputSample?: SessionCacheSample;
   previousRequestSample?: SessionCacheSample;
+  pendingCacheDrop?: {drop:SessionCacheDrop; offset:number};
   sampleBeforePreviousRequest?: SessionCacheSample;
   compactionRequestId?: string;
   lastCompactionAt?: string | null;
@@ -104,6 +105,7 @@ export class SessionStatisticsProjection {
       state.previousInputSample = undefined;
       state.previousRequestSample = undefined;
       state.sampleBeforePreviousRequest = undefined;
+      state.pendingCacheDrop = undefined;
     }
   }
 
@@ -137,6 +139,7 @@ export class SessionStatisticsProjection {
     const added = this.sink.event(record, offset);
     if (added && event.action === 'compact' && event.state === 'completed') {
       const state = this.state;
+      this.flushCacheDrop(relatedRequestId);
       state.compactions++;
       state.lastCompactionAt = event.at;
       state.compactionRequestId = relatedRequestId;
@@ -245,6 +248,7 @@ export class SessionStatisticsProjection {
 
   private end(turn: Turn, end: End, offset: number) {
     if (turn.ended) return;
+    if (this.state.pendingCacheDrop?.drop.current.turn_id === turn.id) this.flushCacheDrop();
     const candidate = turn.unknownTail;
     if (end.outcome === 'completed' && end.final_digest && candidate?.item.digest === end.final_digest && candidate.item.id === turn.last?.id) {
       const progress=turn.heldProgress??turn.progress;
@@ -289,27 +293,43 @@ export class SessionStatisticsProjection {
       this.gap('missing_usage');
   }
 
+  private recordCacheDrop(drop: SessionCacheDrop, offset: number) {
+    this.sink.anomaly(drop, offset);
+    this.state.anomalyCount++;
+  }
+
+  private flushCacheDrop(compactionRequestId?: string) {
+    const pending = this.state.pendingCacheDrop;
+    this.state.pendingCacheDrop = undefined;
+    if (pending && pending.drop.current.request_id !== compactionRequestId)
+      this.recordCacheDrop(pending.drop, pending.offset);
+  }
+
   private sampleCache(turn: Turn | undefined, request: NativeRequestFact, offset: number) {
     const state = this.state;
     if (request.id === state.compactionRequestId) return;
     const input = turn?.groupInput === turn?.input?.id ? turn?.input : undefined;
-    const firstInputSample = input && !input.sampled && !!(turn?.items.length || turn?.tools.length);
+    const conversationalResponse = !!(turn?.items.length || turn?.tools.length);
+    const firstInputSample = input && !input.sampled && conversationalResponse;
     const current = cacheSample(input, request);
     const previous = state.previousRequestSample;
     const compaction = state.compactions !== state.sampledCompactions ? {at: state.lastCompactionAt ?? null} : undefined;
     const structuralChange = previous && current && (compaction || cacheDimensionChanges(previous,current).length > 0);
-    // A compression or settings change can occur between requests of one
-    // input. Prefer the immediately adjacent receipts at that boundary.
+    const sameInput = current?.input_id != null && current.input_id === previous?.input_id;
     let drop: SessionCacheDrop | null = null;
-    if (current && previous && structuralChange) {
+    if (current && previous && (structuralChange || sameInput)) {
       const distinctInputs = firstInputSample && !input.ambiguous && previous.input_id && previous.input_id !== current.input_id;
       drop = detectCacheDrop(previous,current,distinctInputs ? 'input' : 'request',compaction);
-    } else if (current && firstInputSample && !input.ambiguous && state.previousInputSample) {
+    }
+    if (!drop && !structuralChange && current && firstInputSample && !input.ambiguous && state.previousInputSample) {
       drop = detectCacheDrop(state.previousInputSample,current,'input');
     }
     if (drop) {
-      this.sink.anomaly(drop, offset);
-      state.anomalyCount++;
+      // An unlabelled receipt can be the context rewrite itself. The next
+      // receipt or closing event proves enough to settle the comparison.
+      if (sameInput && !structuralChange && !conversationalResponse)
+        state.pendingCacheDrop = {drop, offset};
+      else this.recordCacheDrop(drop, offset);
     }
     if (firstInputSample) {
       input.sampled = true;
@@ -328,6 +348,7 @@ export class SessionStatisticsProjection {
       state.suspended.find(turn => turn.id === request.turn_id);
     const tools = candidate?.tools.length ?? 0;
     if (!this.sink.request(request, offset, candidate?.groupInput ?? null, tools)) return;
+    this.flushCacheDrop();
     const turn = candidate;
     if (!turn) this.gap(state.first ? 'ambiguous_boundary' : 'missing_start');
     const late = !!turn?.ended && state.turn !== turn && state.item?.offset != null &&
