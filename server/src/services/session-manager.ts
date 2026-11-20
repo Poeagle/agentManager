@@ -2922,7 +2922,7 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
     try {
       await adapter.lifecycle.preflight(context);
       if(preference&&!replacement){
-        if(!(await adapter.controls.read(context)).supports_fresh_model)throw Error('此 Agent 尚不支持为新会话指定模型');
+        if(!(adapter.lifecycle.supportsFreshModel ?? (await adapter.controls.read(context)).supports_fresh_model))throw Error('此 Agent 尚不支持为新会话指定模型');
         preference=await adapter.controls.validate(context,preference);
       }
       const instructions=adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(session.created_by_user_id, project.path)?.instructions:undefined;

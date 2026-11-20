@@ -184,6 +184,7 @@ export const claudeAdapter: AgentDefinition = {
     observe: asyncObserve,
   },
   lifecycle: {
+    supportsFreshModel: true,
     bind: async () => {},
     preflight: async (context) => {
       const agent = await (

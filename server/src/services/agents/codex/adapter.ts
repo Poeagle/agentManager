@@ -74,6 +74,7 @@ export const codexAdapter: AgentAdapter = {
                     throw Error('实时连接尚未就绪'); return stop.respond(id, answer); } });
         } },
     lifecycle: {
+        supportsFreshModel: true,
         bind: async (context, nativeId) => { if (context.session.id)
             (await import('./identity.js')).persistCodexBinding(context.session.id, nativeId); },
         preflight: async (context) => context.nativeId?inCodexThread(context.nativeId,async()=>(await import('./version.js')).prepareCodexReload(!!context.sharedAccess && !!currentCodexEngine().socket)):(await import('./version.js')).prepareCodexReload(!!context.sharedAccess && !!currentCodexEngine().socket),

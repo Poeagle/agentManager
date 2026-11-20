@@ -11,17 +11,17 @@ import {codexAdapter} from '../src/services/agents/codex/adapter.js';
 import {agentContext} from '../src/services/agents/index.js';
 vi.mock('../src/services/agents/codex/terminal-bridge.js',()=>({ensureCodexTerminalBridge:vi.fn(async(path:string)=>path)}));
 import {prepareFreshCodexConversation} from '../src/services/agents/codex/actions.js';
-let dir:string,servers:Server[],sockets:WebSocketServer[],calls:Array<{provider:string;method:string;params:any}>;
+let dir:string,servers:Server[],sockets:WebSocketServer[],calls:Array<{provider:string;connection:number;method:string;params:any}>,connections:number;
 const native='019ff001-1212-7212-8212-121212121212',fresh='019ff001-1313-7313-8313-131313131313';
 let model:string,loaded:boolean,configuredModel:string,omitProvider:boolean,writerLocked:boolean;
 beforeEach(async()=>{
- dir=mkdtempSync(join(tmpdir(),'provider-engines-'));servers=[];sockets=[];calls=[];model='a-model';loaded=true;configuredModel='a-model';omitProvider=false;writerLocked=false;
+ dir=mkdtempSync(join(tmpdir(),'provider-engines-'));servers=[];sockets=[];calls=[];connections=0;model='a-model';loaded=true;configuredModel='a-model';omitProvider=false;writerLocked=false;
  vi.stubEnv('CODEX_HOME',dir);vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',join(dir,'a'));
  vi.stubEnv('AGENTMANAGER_CODEX_PROVIDER_ENGINES',JSON.stringify([{provider:'provider-a',socket:join(dir,'a'),models:['a-model']},{provider:'provider-b',socket:join(dir,'b'),models:['b-model']}]));
  for(const provider of ['provider-a','provider-b']) {
   const server=createServer(),wss=new WebSocketServer({server});servers.push(server);sockets.push(wss);
-  wss.on('connection',ws=>ws.on('message',raw=>{
-   const m=JSON.parse(raw.toString());if(!m.id)return;calls.push({provider,...m});let result:any={};
+  wss.on('connection',ws=>{const connection=++connections;ws.on('message',raw=>{
+   const m=JSON.parse(raw.toString());if(!m.id)return;calls.push({provider,connection,...m});let result:any={};
    const thread={id:m.params.threadId||fresh,status:{type:loaded?'idle':'notLoaded'},model:provider==='provider-a'?model:'b-model',reasoningEffort:'high',modelProvider:provider};
    if(m.method==='config/read')result={config:{...omitProvider?{}:{model_provider:provider},model:provider==='provider-a'?configuredModel:'b-model'}};
    // Simulate a mixed catalog: explicit engine allowlists must scope it.
@@ -31,7 +31,7 @@ beforeEach(async()=>{
    if(m.method==='thread/settings/update')model=m.params.model;
    if(m.method==='thread/start')result={thread:{...thread,id:fresh,model:m.params.model}};
    ws.send(JSON.stringify({id:m.id,result}));
-  }));
+  });});
   await new Promise<void>(resolve=>server.listen(join(dir,provider==='provider-a'?'a':'b'),resolve));
  }
 });
@@ -45,11 +45,18 @@ it('scopes mixed catalogs to explicitly declared providers and creates/resumes a
  const models=await readCodexModels();expect(models.map(m=>[m.provider,m.model])).toEqual([['provider-a','a-model'],['provider-b','b-model']]);
  await prepareFreshCodexConversation(native,'/work',undefined,{provider:'provider-b',model:'b-model',effort:'high'});
  expect(calls.filter(c=>c.method==='thread/start')).toMatchObject([{provider:'provider-b',params:{model:'b-model',modelProvider:'provider-b'}}]);
+ expect(calls.find(c=>c.method==='thread/start')?.connection).not.toBe(calls.find(c=>c.provider==='provider-a'&&c.method==='thread/read')?.connection);
  expect(calls.filter(c=>c.method==='thread/inject_items')).toMatchObject([{provider:'provider-b'}]);
  expect(calls.some(c=>c.method==='turn/start')).toBe(false);
  calls=[];await inCodexThread(fresh,()=>withCodexConnection(request=>request('thread/read',{threadId:fresh})));
  expect(calls.find(c=>c.method==='thread/read')?.provider).toBe('provider-b');
  expect(()=>engineForProvider('not-configured')).toThrow('尚未接入');
+});
+it('reuses the initialized connection when a fresh thread uses the same engine',async()=>{
+ await inCodexThread(native,()=>prepareFreshCodexConversation(native,'/work',undefined,{provider:'provider-a',model:'a-model',effort:'high'}));
+ const source=calls.filter(c=>c.provider==='provider-a'&&c.method==='thread/read').at(-1),created=calls.find(c=>c.method==='thread/start');
+ expect(source).toBeDefined();expect(created?.connection).toBe(source?.connection);
+ expect(calls.filter(c=>c.method==='thread/inject_items')).toMatchObject([{provider:'provider-a'}]);expect(calls.some(c=>c.method==='turn/start')).toBe(false);
 });
 it('recovers a cold thread route from native metadata and uses it for live streaming and terminal resume',async()=>{
  const cold='019ff001-1414-7414-8414-141414141414';mkdirSync(join(dir,'sessions'));writeFileSync(join(dir,'sessions',`rollout-${cold}.jsonl`),JSON.stringify({type:'session_meta',payload:{id:cold,model_provider:'provider-b'}})+'\n');

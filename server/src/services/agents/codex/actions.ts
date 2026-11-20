@@ -35,7 +35,8 @@ export async function prepareFreshCodexConversation(threadId:string,cwd:string,s
     const sandbox=({readOnly:'read-only',workspaceWrite:'workspace-write',dangerFullAccess:'danger-full-access'} as Record<string,string>)[settings.sandbox?.type];
     if(!['read-only','workspace-write','danger-full-access'].includes(sandbox)||!settings.approvalPolicy)throw Error('无法确认原会话权限，原会话已保留');
     if(sandbox==='read-only'&&settings.sandbox.networkAccess===true)throw Error('此只读会话有自定义网络权限，请在原始终端新开会话');
-    return runInCodexEngine(engineForProvider(chosen?.provider||current.thread.modelProvider),()=>withCodexConnection(async target=>{
+    const targetEngine=engineForProvider(chosen?.provider||current.thread.modelProvider);
+    const create=async(target:typeof request)=>{
     const result=await target('thread/start',{
       cwd,model:chosen?.model||current.thread.model,modelProvider:chosen?.provider||current.thread.modelProvider,
       ...(sharedInstructions?{developerInstructions:sharedInstructions}:{}),
@@ -51,7 +52,10 @@ export async function prepareFreshCodexConversation(threadId:string,cwd:string,s
       if(sharedInstructions)rememberStreamingSharedResources(id,sharedInstructions);
       return id;
     } catch(error){await target('thread/archive',{threadId:id}).catch(()=>{});throw error;}
-    }));
+    };
+    // Source and target often share an engine. Reuse the existing initialized
+    // connection instead of paying for a second handshake on every fresh tab.
+    return runInCodexEngine(targetEngine,()=>targetEngine.socket===engine.socket?create(request):withCodexConnection(create));
     });
   });
 }

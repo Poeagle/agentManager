@@ -1,5 +1,5 @@
 vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),ensureAccountTransport:vi.fn(async()=>({socket:'/fake-target',home:'/fake-home'})),closeAccountTransport:vi.fn()}));
-vi.mock('../src/services/agents/codex/controls.js',()=>({readModelPreference:vi.fn(()=>null),prepareCodexModelRecovery:vi.fn().mockResolvedValue(undefined)}));
+vi.mock('../src/services/agents/codex/controls.js',()=>({readModelPreference:vi.fn(()=>null),prepareCodexModelRecovery:vi.fn().mockResolvedValue(undefined),readConversationControls:vi.fn(),validateModelPreference:vi.fn(async(value:unknown)=>value)}));
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 vi.mock('../src/services/agents/codex/terminal-bridge.js',()=>({ensureCodexTerminalBridge:vi.fn(async(path:string)=>path)}));
 vi.mock('../src/services/agents/codex/version.js',()=>({prepareCodexReload:vi.fn().mockResolvedValue('0.166.0')}));
@@ -16,6 +16,8 @@ import {createTestDatabase} from './helpers/database.js';
 import {newSessionConversation,getSession,killSession,compactSessionConversation} from '../src/services/session-manager.js';
 import {prepareFreshCodexConversation,releaseCodexConversation,compactCodexConversation} from '../src/services/agents/codex/actions.js';
 import {prepareCodexReload} from '../src/services/agents/codex/version.js';
+import {readConversationControls,validateModelPreference} from '../src/services/agents/codex/controls.js';
+import {getAgent} from '../src/services/agents/index.js';
 let cleanup:()=>void;
 const saved={useTmux:config.useTmux,useDtach:config.useDtach},native='019ff001-3434-7434-8434-343434343434';
 beforeEach(()=>{vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});vi.clearAllMocks();const db=createTestDatabase();cleanup=db.cleanup;config.useTmux=false;config.useDtach=false;vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/fake');getDb().prepare("INSERT INTO projects(id,name,path) VALUES('new-project','New',?)").run(db.dir);getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id) VALUES('new-test','new-project','Do not submit old task','running','session','codex',?)").run(native);getDb().prepare("INSERT INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments) VALUES('new-test','attachment','k','text','[]')").run();getDb().prepare("INSERT INTO pty_output(session_id,seq,data) VALUES('new-test',1,'old output')").run();});
@@ -32,6 +34,20 @@ describe('fresh conversation in the same tab',()=>{
   expect(getDb().prepare('SELECT value FROM user_ui_state WHERE key=?').get(`session-control:${result.history_id}`)).toMatchObject({value:JSON.stringify({model:'old-model',effort:'high',provider:'old-provider'})});
  });
  it('retains the running conversation when preparation fails',async()=>{vi.mocked(prepareFreshCodexConversation).mockRejectedValueOnce(Error('prepare failed'));expect(await newSessionConversation('new-test')).toMatchObject({ok:false,error:'prepare failed'});expect(getSession('new-test')).toMatchObject({status:'running',codex_session_id:native});expect(fork).not.toHaveBeenCalled();expect(getDb().prepare('SELECT count(*) n FROM sessions').get()).toEqual({n:1});});
+ it('validates a fresh model without loading the full session controls view',async()=>{
+  const preference={model:'fixture-model',effort:'high'};
+  const result=await newSessionConversation('new-test',preference);expect(result.ok).toBe(true);expect(readConversationControls).not.toHaveBeenCalled();expect(validateModelPreference).toHaveBeenCalledWith(preference,true);expect(vi.mocked(prepareFreshCodexConversation).mock.calls[0][3]).toEqual(preference);
+ });
+ it('does not replace the current session when fresh model validation fails',async()=>{
+  vi.mocked(validateModelPreference).mockRejectedValueOnce(Error('invalid model'));
+  expect(await newSessionConversation('new-test',{model:'missing',effort:'high'})).toMatchObject({ok:false,error:'invalid model'});expect(prepareFreshCodexConversation).not.toHaveBeenCalled();expect(getSession('new-test')).toMatchObject({status:'running',codex_session_id:native});
+ });
+ it('keeps the controls fallback for adapters without a static declaration',async()=>{
+  const lifecycle=getAgent('codex').lifecycle,previous=lifecycle.supportsFreshModel;
+  lifecycle.supportsFreshModel=undefined;vi.mocked(readConversationControls).mockResolvedValueOnce({supports_fresh_model:true} as any);
+  try{expect((await newSessionConversation('new-test',{model:'fixture-model',effort:'high'})).ok).toBe(true);expect(readConversationControls).toHaveBeenCalledOnce();}
+  finally{lifecycle.supportsFreshModel=previous;}
+ });
  it('serializes new and compact requests before affecting runtimes',async()=>{let release!:(v:string)=>void,entered!:()=>void;const ready=new Promise<void>(r=>entered=r);vi.mocked(prepareCodexReload).mockImplementationOnce(()=>new Promise(r=>{release=r;entered();}));const first=newSessionConversation('new-test');await ready;expect((await newSessionConversation('new-test')).ok).toBe(false);expect((await compactSessionConversation('new-test')).ok).toBe(false);release('0.166.0');expect((await first).ok).toBe(true);expect(fork).toHaveBeenCalledTimes(1);});
  it('compacts through the native action without creating or replacing a thread',async()=>{expect((await compactSessionConversation('new-test')).ok).toBe(true);expect(compactCodexConversation).toHaveBeenCalledWith(native);expect(fork).not.toHaveBeenCalled();expect(getSession('new-test')?.codex_session_id).toBe(native);});
 });

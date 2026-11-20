@@ -687,6 +687,8 @@ export interface AgentStreamSeed {
   generation: string | null;
 }
 export interface AgentLifecyclePort {
+  /** Static capability: preparing a fresh session can accept a model preference. */
+  supportsFreshModel?: boolean;
   preflight(context: AgentContext): Promise<string | null>;
   bind(context: AgentContext, nativeId: string): Promise<void>;
   compact(context: AgentContext): Promise<void>;
