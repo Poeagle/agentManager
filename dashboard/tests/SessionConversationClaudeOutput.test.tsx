@@ -52,7 +52,7 @@ function readConversationDom(agentLabel:string){
     toolClass:tool.className,
     toolSummary:tool.querySelector('summary')?.textContent?.replace(/\s+/g,' ').trim(),
     hasCompactTool:!!progress.querySelector('.session-chat-tool-compact'),
-    progressContent:progress.textContent?.replace(/^(?:Claude|codex)/,'').replace(/(?:Claude|codex) 的思考过程/,'思考过程').replace(/\s+/g,' ').trim(),
+    progressContent:progress.textContent?.replace(/^(?:Claude|codex)/,'').replaceAll(/(?:Claude|codex) 的思考过程/g,'思考过程').replace(/\s+/g,' ').trim(),
     finalText:screen.getByText('The project is ready.').textContent,
   };
 }
@@ -79,6 +79,39 @@ it('renders identical tool and thinking structure for Claude and Codex',async()=
   expect(claude.progressContent).toContain('I should inspect the repository first.');
   expect(claude.progressContent).toContain('Read');
   expect(claude.finalText).toBe('The project is ready.');
+});
+it('projects multiple Claude request snapshots into one latest live thinking row',async()=>{
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  render(<QueryClientProvider client={client}><SessionConversation session={session} active onRaw={()=>{}}/></QueryClientProvider>);
+  await waitFor(()=>expect(Socket.latest?.onmessage).toBeTruthy());
+  const stamp='2026-11-19T23:45:45.000Z';
+  const snapshot=(rounds:Array<[string,string]>,busy:boolean)=>act(()=>Socket.latest.emit({
+    type:'snapshot',busy,turn_id:'turn',stage:busy?'tools':'idle',
+    messages:[
+      {id:'user',role:'user',text:'Inspect the project',timestamp:stamp},
+      ...rounds.map(([id,thinking],index)=>({
+        id,role:'assistant',turn_id:'turn',phase:'commentary',text:'',timestamp:stamp,
+        content_blocks:[
+          {type:'thinking',index:0,text:thinking},
+          {type:'tool_use',index:1,id:`tool-${index}`,name:'Read',input:{file_path:`/p/file-${index}`},status:'completed',result:'ok'},
+        ],
+      })),
+    ],
+  }));
+  snapshot([['round-1','First request reasoning.']],true);
+  const progress=await screen.findByLabelText('Claude 进展');
+  expect(within(progress).getAllByText('Claude 正在思考')).toHaveLength(1);
+  expect(within(progress).getAllByText('First request reasoning.').every(item=>!item.closest('details')?.open)).toBe(true);
+  snapshot([['round-1','First request reasoning.'],['round-2','Second request reasoning.'],['round-3','Third request reasoning.']],true);
+  expect(within(progress).getAllByText('Claude 正在思考')).toHaveLength(1);
+  expect(within(progress).queryByText('First request reasoning.')).not.toBeInTheDocument();
+  expect(within(progress).queryByText('Second request reasoning.')).not.toBeInTheDocument();
+  expect(within(progress).getAllByText('Third request reasoning.').every(item=>!item.closest('details')?.open)).toBe(true);
+  expect(within(progress).getAllByText('Read')).toHaveLength(3);
+  snapshot([['round-1','First request reasoning.'],['round-2','Second request reasoning.'],['round-3','Third request reasoning.'],['round-4','Fourth request reasoning.']],false);
+  expect(within(progress).getAllByText('Claude 的思考过程')).toHaveLength(1);
+  expect(within(progress).queryByText('Third request reasoning.')).not.toBeInTheDocument();
+  expect(within(progress).getAllByText('Fourth request reasoning.').every(item=>!item.closest('details')?.open)).toBe(true);
 });
 it('renders Claude through the same conversation structure as every other agent',async()=>{
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});

@@ -95,7 +95,7 @@ import {
   mergeConversationTimeline,
   type TimelineMessage,
 } from "../lib/conversation-timeline";
-import { groupConversationProgress, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts } from "../lib/conversation-progress";
+import { groupConversationProgress, latestProgressThinking, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts, withoutProgressThinking } from "../lib/conversation-progress";
 import {
   conversationTimings,
   elapsedBetween,
@@ -109,6 +109,7 @@ import {
   type ConversationActivity,
 } from "./ConversationActivityLine";
 import { ConversationProgressPending } from "./ConversationProgressPending";
+import { ConversationThinking } from "./ConversationThinking";
 import { ConversationToolCall } from "./ConversationToolCall";
 import { useDisplayClock, estimatedServerNow, formatDisplayTimestamp } from "../lib/display-clock";
 import "./SessionConversation.css";
@@ -203,6 +204,7 @@ const Bubble = memo(function Bubble({
   onCancelRetry,
   onCancelQueued,
   compact = false,
+  showThinking = true,
   showStatistics = true,
   agent,
   agentName,
@@ -225,6 +227,7 @@ const Bubble = memo(function Bubble({
   message: ConversationMessage;
   streaming: boolean;
   compact?: boolean;
+  showThinking?: boolean;
   showStatistics?:boolean;
   agent: AgentDescriptor;
   agentName: string;
@@ -383,7 +386,7 @@ const Bubble = memo(function Bubble({
     message.content_blocks?.filter(
       (block) =>
         block.type === "tool_use" ||
-        block.type === "thinking" ||
+        (showThinking && block.type === "thinking") ||
         block.text.length > 0,
     ) || [];
   if (
@@ -525,16 +528,12 @@ const Bubble = memo(function Bubble({
                     block={block}
                   />
                 ) : block.type === "thinking" ? (
-                  <details
+                  <ConversationThinking
                     key={`${message.id}:thinking:${block.index}`}
-                    className="session-chat-thinking-block"
-                  >
-                    <summary>
-                      <span className="session-chat-thinking-spark" aria-hidden="true" />
-                      <span>{streaming ? `${agentName} 正在思考` : `${agentName} 的思考过程`}</span><small>{streaming ? "实时输出" : "已完成"}</small>
-                    </summary>
-                    <div>{block.text}</div>
-                  </details>
+                    agentName={agentName}
+                    text={block.text}
+                    streaming={streaming}
+                  />
                 ) : (
                   <ConversationMarkdown
                     key={`${message.id}:text:${block.index}:${index}`}
@@ -2182,7 +2181,12 @@ export function SessionConversation({
     if(!answers)continue;
     question.async_questions.forEach((item,index)=>{if(item.id)visibleQuestionAnswers.set(item.id,answers[index]);});
   }
-  const bubble = (message: ConversationMessage, compact = false, stableKey = message.id) =>
+  const bubble = (
+    message: ConversationMessage,
+    compact = false,
+    stableKey = message.id,
+    showThinking = true,
+  ) =>
     message.role==='user'&&!message.queued&&!(message as TimelineMessage).optimistic&&!message.attachments?.length&&message.question_replies?.length&&message.question_replies.every(reply=>visibleQuestionAnswers.get(reply.question_id)===reply.answer) ? null :
     message.async_questions?.length ? (
       <ConversationQuestionSummary
@@ -2219,6 +2223,7 @@ export function SessionConversation({
             : undefined
         }
         compact={compact}
+        showThinking={showThinking}
         showStatistics={!notificationView}
         durationLabel={timings.get(message.id)?.label}
         agent={sessionAgent(session)}
@@ -2294,6 +2299,7 @@ export function SessionConversation({
                 const liveMatches=progressStatistics?.turn_id===(last?.statistics?.turn_id||last?.turn_id||liveTurn)&&live&&(!saved?(last?progressStatistics?.step?.after_message_id===last.id||progressStatistics?.step?.after_sequence!=null&&progressStatistics.step.after_sequence===last.sequence:!!pendingSegment||!continuingAfterFollowup):live.id===saved.id&&!!saved.start_at&&live.start_at===saved.start_at);
                 const part=activeGroup&&liveMatches?live:saved;
                 const summary=withObservedToolCounts(part?{...part,turn_id:last?.turn_id||liveTurn||'',sequence:0}:progressGroupStatistics(group.messages,final),pending?slotActivities.length:0,liveTurn||'');
+                const thinking=latestProgressThinking(group.messages);
                 return (
                   <ProgressSection
                     key={`progress-${group.id}`}
@@ -2312,7 +2318,7 @@ export function SessionConversation({
                     progressScope="segment"
                     progress={summary}
                   >
-                    {group.messages.map((message, index) => (
+                    {withoutProgressThinking(group.messages).map((message, index) => (
                       <div
                         key={message.id}
                         className="session-chat-progress-entry"
@@ -2324,10 +2330,12 @@ export function SessionConversation({
                         >
                           {index + 1}
                         </span>
-                        {bubble(message, true)}
+                        {bubble(message, true, message.id, false)}
                       </div>
                     ))}
+                    {!pending&&thinking&&<ConversationThinking agentName={agentName} text={thinking} streaming={activeGroup&&active}/>}
                     {pending&&<ConversationProgressPending number={group.messages.length+1} tool={latestSlotActivity}
+                      thinking={thinking} agentName={agentName}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
                       statistics={pendingStatistics} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
                   </ProgressSection>

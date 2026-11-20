@@ -166,3 +166,90 @@ test('collapses Claude progress across native records and shows its recorded usa
   await expect(page.getByText('Everything passed.',{exact:true})).toBeVisible();
   await page.screenshot({path:testInfo.outputPath('claude-progress-statistics.png'),fullPage:true});
 });
+
+test('refreshes one live Claude thinking row across request items',async({page},testInfo)=>{
+  const status=await(await page.request.get('/api/auth/status')).json();
+  expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{
+    data:{username:'e2e-admin',password:'test-password'},
+  })).ok()).toBeTruthy();
+  const projectPath=`${process.cwd()}/.test-data/e2e/claude-thinking-live-row`;
+  const {mkdirSync}=await import('node:fs');
+  mkdirSync(projectPath,{recursive:true});
+  const {project}=await(await page.request.post('/api/projects',{
+    data:{name:'Claude live thinking',path:projectPath},
+  })).json();
+  const session={
+    id:'claude-thinking-live-row',project_id:project.id,task:'',status:'running',mode:'session',
+    cli_type:'claude',agent_id:'claude',native_session_id:'019ff001-9999-9999-8999-999999999999',
+    agent_environment_id:'claude-provider:anthropic',pid:null,created_at:new Date().toISOString(),
+  };
+  let push:((value:unknown)=>void)|null=null;
+  await page.routeWebSocket('**/conversation/stream*',route=>{
+    push=value=>route.send(JSON.stringify(value));
+    route.send(JSON.stringify({type:'snapshot',messages:[],busy:true,turn_id:'turn',started_at:new Date().toISOString(),stage:'tools',activities:[]}));
+  });
+  await page.route('**/api/sessions**',route=>{
+    const url=new URL(route.request().url());
+    if(url.pathname==='/api/sessions'&&route.request().method()==='GET')return route.fulfill({json:{sessions:[session]}});
+    if(url.pathname===`/api/sessions/${session.id}`&&route.request().method()==='GET')return route.fulfill({json:{session}});
+    return route.continue();
+  });
+  await page.route('**/api/sessions/claude-thinking-live-row/conversation**',route=>route.fulfill({json:{
+    messages:[],statistics:[],has_more:false,reset:false,available:true,generation:'g',
+    native_id:session.native_session_id,session_active:true,session_status:'running',
+    runtime:{state:'running'},interaction:null,
+  }}));
+  await page.route('**/api/sessions/claude-thinking-live-row/controls**',route=>route.fulfill({json:{
+    supports_fresh_model:true,model:'claude-fable-5',effort:'',provider:'anthropic',cwd:projectPath,
+    state:'running',permission:'bypassPermissions',usage:null,limits:[],
+    models:[{model:'claude-fable-5',name:'claude-fable-5',description:'Anthropic · Provider 模型',context_window:200000,max_output_tokens:64000,input_modalities:['text','image'],efforts:[{value:'',description:'由原生客户端决定'}],defaultEffort:''}],loaded:true,
+    native_id:session.native_session_id,checked_at:new Date().toISOString(),can_edit:true,
+  }}));
+  await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});
+  await page.request.put('/api/user-state/app',{data:{value:{
+    projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`,
+  }}});
+  await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{
+    terminalInstances:[{id:session.id,label:'Claude thinking'}],activeTerminalId:session.id,
+    explorerInstances:[],hiddenSessionIds:[],
+  }}});
+  await page.setViewportSize({width:1100,height:900});
+  await page.goto('/');
+  await expect(page.getByText('Event stream connected')).toBeVisible();
+  expect(push).not.toBeNull();
+  const stamp=new Date(Date.now()-5000).toISOString();
+  const rounds=(items:Array<[thinking:string,id:string]>)=>[
+    {id:'user',role:'user',text:'Inspect the project',timestamp:stamp},
+    ...items.map(([thinking,id])=>({
+      id:`round-${id}`,role:'assistant',turn_id:'turn',phase:'commentary',text:'',timestamp:stamp,
+      content_blocks:[
+        {type:'thinking',index:0,text:thinking},
+        {type:'tool_use',index:1,id,name:'Read',input:{file_path:`/p/${id}`},status:'completed',result:'ok'},
+      ],
+    })),
+  ];
+  push!({type:'snapshot',messages:rounds([
+    ['Reading the first files.','one'],
+    ['Checking the next files.','two'],
+    ['Running the final checks.','three'],
+  ]),activities:[],busy:true,turn_id:'turn',started_at:stamp,stage:'tools'});
+  const progress=page.getByLabel('Claude 进展').last();
+  await expect(progress.getByText('Claude 正在思考')).toHaveCount(1);
+  await expect(progress.getByText('Reading the first files.')).toHaveCount(0);
+  await expect(progress.getByText('Checking the next files.')).toHaveCount(0);
+  await expect(progress.getByText('Running the final checks.')).toHaveCount(1);
+  await progress.getByText('Claude 正在思考').click();
+  await expect(progress.getByText('Running the final checks.')).toBeVisible();
+  await expect(progress.getByText('Read',{exact:true})).toHaveCount(3);
+  push!({type:'snapshot',messages:rounds([
+    ['Reading the first files.','one'],
+    ['Checking the next files.','two'],
+    ['Running the final checks.','three'],
+    ['Waiting for the build result.','four'],
+  ]),activities:[],busy:true,turn_id:'turn',started_at:stamp,stage:'tools'});
+  await expect(progress.getByText('Claude 正在思考')).toHaveCount(1);
+  await expect(progress.getByText('Running the final checks.')).toHaveCount(0);
+  await expect(progress.getByText('Waiting for the build result.')).toBeVisible();
+  await expect(progress.locator('.session-chat-thinking-block')).toHaveCount(1);
+  await page.screenshot({path:testInfo.outputPath('claude-thinking-live-row.png'),fullPage:true});
+});

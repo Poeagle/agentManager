@@ -67,6 +67,27 @@ export function progressGroupStatistics(messages:ConversationMessage[],final?:Co
   return null;
 }
 
+/** Claude sends a separate thinking block for each model request in one
+ * native turn. Progress is a platform-level execution view, so expose only the
+ * newest reasoning snapshot there and replace it as new updates arrive. */
+export function latestProgressThinking(messages:ConversationMessage[]):string|null {
+  for(const message of messages.slice().reverse()) {
+    for(const block of message.content_blocks?.slice().reverse()||[]) {
+      if(block.type==='thinking'&&block.text.trim())return block.text;
+    }
+  }
+  return null;
+}
+
+/** Keep tool calls on their numbered items, but collapse all request-level
+ * reasoning in a progress group to one platform-level row. The blocks stay in
+ * durable messages for reconciliation and are not discarded. */
+export function withoutProgressThinking(messages:ConversationMessage[]):ConversationMessage[] {
+  return messages.map(message=>message.content_blocks
+    ? {...message,content_blocks:message.content_blocks.filter(block=>block.type!=='thinking')}
+    : message);
+}
+
 export function withObservedToolCounts(statistics:ConversationStatistics|null,count:number,turnId:string):ConversationStatistics|null {
  if(!count||statistics&&('segment_id' in statistics||statistics.tool_calls>=count))return statistics;
  const value=statistics?.interval??statistics;
