@@ -74,6 +74,8 @@ test('renders Claude thinking and tool output in the transcript',async({page},te
   await expect(page.getByText(/esc to interrupt/)).toHaveCount(0);
   await expect(page.getByText('Claude 的思考过程').last()).toBeVisible();
   await expect(page.getByText('Read',{exact:true}).last()).toBeVisible();
+  await expect(page.locator('.session-chat-tool-compact')).toHaveCount(0);
+  await expect(page.locator('.session-chat-tool summary').last()).toContainText('Read完成');
   await expect(page.getByText('Inspection complete.',{exact:true}).last()).toBeVisible();
   await expect(page.locator('.claudian-message')).toHaveCount(0);
   await expect(page.locator('.session-chat-message.assistant')).toBeVisible();

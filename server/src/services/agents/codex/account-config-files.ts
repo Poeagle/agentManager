@@ -5,12 +5,14 @@ const LIMIT=96*1024;
 const descriptions={config:{label:'Codex 配置',description:'模型、Provider 和运行参数，重启 Engine 后生效。',format:'TOML'},instructions:{label:'全局指令',description:'该 Codex 用户全局生效的 AGENTS.md 指令。',format:'Markdown'},override:{label:'全局覆盖指令',description:'优先于 AGENTS.md 的全局覆盖指令。',format:'Markdown'},rules:{label:'命令规则',description:'Codex 执行命令时使用的用户规则。',format:'Rules'},credentials:{label:'Codex 凭据文件',description:'保存登录凭据；仅显示文件状态，内容受保护。',format:'JSON'},catalog:{label:'模型目录',description:'config.toml 指定的模型能力目录。',format:'JSON'}} as const;
 type FileId=keyof typeof descriptions;
 const script=(home:string)=>`import os,sys,json,pathlib,hashlib,tempfile,re
+try:import tomllib
+except ImportError:tomllib=None
 root=(pathlib.Path(${JSON.stringify(home)}) if ${JSON.stringify(home)} else pathlib.Path.home()/'.codex').expanduser().resolve()
 r=json.load(sys.stdin);op=r.get('operation');name=r.get('file')
 paths={'config':root/'config.toml','instructions':root/'AGENTS.md','override':root/'AGENTS.override.md'}
 if (root/'rules').is_dir():paths['rules']=root/'rules'/'default.rules'
 try:
- import tomllib
+ if tomllib is None:raise ImportError()
  cfg=paths['config']
  if cfg.resolve().is_relative_to(root) and cfg.is_file() and cfg.stat().st_size<=98304:
   data=tomllib.loads(cfg.read_text(encoding='utf-8'));catalog=data.get('model_catalog_json')

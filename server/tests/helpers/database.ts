@@ -6,7 +6,10 @@ import { closeDb, initDb } from '../../src/db/index.js';
 
 export function createTestDatabase(): { dir: string; path: string; cleanup: () => void } {
   closeDb();
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'agentmanager-test-')));
+  // Keep test sockets below the macOS Unix-domain limit. Platform TMPDIR is
+  // often deeply nested, while /tmp is the canonical short temporary root.
+  const root = process.platform === 'darwin' ? '/tmp' : tmpdir();
+  const dir = realpathSync(mkdtempSync(join(root, 'agentmanager-test-')));
   const path = join(dir, 'agentmanager.db');
   config.dbPath = path;
   initDb();

@@ -1,7 +1,7 @@
 import Fastify,{type FastifyInstance} from 'fastify';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync,writeFileSync,readFileSync,symlinkSync,linkSync,rmSync} from 'node:fs';
+import {mkdtempSync,realpathSync,writeFileSync,readFileSync,symlinkSync,linkSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createTestDatabase} from './helpers/database.js';
@@ -10,7 +10,8 @@ import {saveCodexEnvironment} from '../src/services/agents/codex/environments.js
 import {codexEnvironmentRoutes} from '../src/routes/codex-environments.js';
 vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),accountCommandInput:vi.fn(async(_connection,script,input)=>execFileSync('python3',['-c',script],{input,encoding:'utf8',maxBuffer:256*1024})),localCommandInput:vi.fn(async(script,input)=>execFileSync('python3',['-c',script],{input,encoding:'utf8',maxBuffer:256*1024})),closeAccountTransport:vi.fn(async()=>{})}));
 let db:ReturnType<typeof createTestDatabase>,app:FastifyInstance,id:string,root:string,admin:string,member:string;
-beforeEach(async()=>{db=createTestDatabase();root=mkdtempSync(join(tmpdir(),'account-config-'));const a=createUser({username:'config-admin',password:'password1',role:'admin'}),m=createUser({username:'config-member',password:'password1'});admin='agentmanager_session='+createSession(a.id);member='agentmanager_session='+createSession(m.id);id=(await saveCodexEnvironment({name:'fixture',connection:{username:'fixture',codexCommand:'codex',codexHome:root},allowed_user_ids:[m.id]})).id;app=Fastify();app.addHook('onRequest',authHook);await app.register(codexEnvironmentRoutes,{prefix:'/api'});});
+const canonical=(path:string)=>realpathSync(path);
+beforeEach(async()=>{db=createTestDatabase();root=realpathSync(mkdtempSync(join(tmpdir(),'account-config-')));const a=createUser({username:'config-admin',password:'password1',role:'admin'}),m=createUser({username:'config-member',password:'password1'});admin='agentmanager_session='+createSession(a.id);member='agentmanager_session='+createSession(m.id);id=(await saveCodexEnvironment({name:'fixture',connection:{username:'fixture',codexCommand:'codex',codexHome:root},allowed_user_ids:[m.id]})).id;app=Fastify();app.addHook('onRequest',authHook);await app.register(codexEnvironmentRoutes,{prefix:'/api'});});
 afterEach(async()=>{await app.close();db.cleanup();vi.unstubAllEnvs();rmSync(root,{recursive:true,force:true});});
 const pathFor=()=>'/api/codex/environments/'+encodeURIComponent(id)+'/config-files';
 describe('account configuration files',()=>{
@@ -28,7 +29,7 @@ describe('account configuration files',()=>{
   vi.stubEnv('CODEX_HOME',root);writeFileSync(join(root,'auth.json'),'fixture private content');
   for(const env of [id,'native']){
    const base='/api/codex/environments/'+encodeURIComponent(env)+'/config-files';const listed=await app.inject({url:base,headers:{cookie:admin}});
-   expect(listed.statusCode).toBe(200);expect(listed.json().files).toEqual(expect.arrayContaining([expect.objectContaining({id:'credentials',sensitive:true,exists:true,path:join(root,'auth.json')})]));expect(listed.body).not.toContain('fixture private content');
+   expect(listed.statusCode).toBe(200);expect(listed.json().files).toEqual(expect.arrayContaining([expect.objectContaining({id:'credentials',sensitive:true,exists:true,path:canonical(join(root,'auth.json'))})]));expect(listed.body).not.toContain('fixture private content');
    const read=await app.inject({url:base+'?file=credentials',headers:{cookie:admin}});expect(read.statusCode).toBe(403);expect(read.body).not.toContain('fixture private content');
    const write=await app.inject({method:'PUT',url:base,headers:{cookie:admin},payload:{file:'credentials',content:'x',revision:'0'.repeat(64)}});expect(write.statusCode).toBe(403);expect(readFileSync(join(root,'auth.json'),'utf8')).toBe('fixture private content');
   }
@@ -45,9 +46,10 @@ describe('account configuration files',()=>{
   expect(read.statusCode).toBe(200);expect(read.json().content).toBe('model = "native"\n');
   const write=await app.inject({method:'PUT',url:base,headers:{cookie:admin},payload:{file:'config',revision:read.json().revision,content:'model = "changed"\n'}});expect(write.statusCode).toBe(200);expect(readFileSync(join(root,'config.toml'),'utf8')).toContain('changed');
  });
- it('lists a configured catalog only within the selected account and enforces the file size bound',async()=>{
+it.skipIf(!(()=>{try{execFileSync('python3',['-c','import tomllib'],{stdio:'ignore'});return true;}catch{return false;}})())('lists a configured catalog only within the selected account and enforces the file size bound',async()=>{
   writeFileSync(join(root,'config.toml'),'model_catalog_json = "model-catalog.json"\n');writeFileSync(join(root,'model-catalog.json'),'{"models":[]}');
   const list=await app.inject({url:pathFor(),headers:{cookie:admin}});expect(list.json().files.map((x:{id:string})=>x.id)).toContain('catalog');
+  const catalogPath=list.json().files.find((x:{id:string})=>x.id==='catalog').path;expect(catalogPath).toBe(canonical(join(root,'model-catalog.json')));
   const catalog=await app.inject({url:pathFor()+'?file=catalog',headers:{cookie:admin}});expect(catalog.json().content).toBe('{"models":[]}');
   writeFileSync(join(root,'model-catalog.json'),'x'.repeat(96*1024+1));const large=await app.inject({url:pathFor()+'?file=catalog',headers:{cookie:admin}});expect(large.statusCode).toBe(400);
   writeFileSync(join(root,'auth.json'),'{}');writeFileSync(join(root,'config.toml'),'model_catalog_json = "auth.json"\n');const authCatalog=await app.inject({url:pathFor(),headers:{cookie:admin}});expect(authCatalog.json().files.map((x:{id:string})=>x.id)).not.toContain('catalog');expect(authCatalog.json().files.find((x:{id:string})=>x.id==='credentials')).toMatchObject({sensitive:true,exists:true});

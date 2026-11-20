@@ -7,7 +7,14 @@ vi.mock('../src/services/agents/codex/environments.js',async original=>({...awai
 let fixture:ReturnType<typeof createTestDatabase>;
 const read=vi.fn();
 beforeEach(()=>{vi.clearAllMocks();fixture=createTestDatabase();initAccountStatus();read.mockImplementation(async(method:string)=>method==='account/read'?{account:{type:'chatgpt',email:'fixture@example.invalid',planType:'pro',secret:'never-cache'}}:{rateLimits:{secondary:{usedPercent:30,windowDurationMins:10080,resetsAt:123}},rateLimitResetCredits:{availableCount:2,credits:[{expiresAt:456,grantedAt:123,status:'available',secret:'never-cache'}]}});vi.spyOn(stream,'withCodexConnection').mockImplementation(async callback=>callback(read));});
-afterEach(async()=>{await stopAccountStatus();fixture.cleanup();vi.restoreAllMocks();vi.useRealTimers();});
+afterEach(async()=>{
+ const usage=await import('../src/services/agents/codex/account-usage.js');
+ await usage.stopAccountUsage();
+ await stopAccountStatus();
+ fixture.cleanup();
+ vi.restoreAllMocks();
+ vi.useRealTimers();
+});
 it('keeps all cache reads inert, and sanitizes a shared quota/reset snapshot after one background collection',async()=>{
  for(let n=0;n<5;n++)expect(cachedAccountStatus('native')).toMatchObject({quota:null,resets:null,pending:true});expect(read).not.toHaveBeenCalled();
  await Promise.all([collectAccountStatus('native'),collectAccountStatus('native')]);expect(read).toHaveBeenCalledTimes(2);

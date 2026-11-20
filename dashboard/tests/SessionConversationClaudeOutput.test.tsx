@@ -3,6 +3,7 @@ import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {beforeEach,expect,it,vi} from 'vitest';
 import {api,type ConversationPage,type Session} from '../src/lib/api';
 import {SessionConversation} from '../src/components/SessionConversation';
+type ConvMessage=NonNullable<ConversationPage['messages']>[number];
 
 vi.mock('../src/lib/permissions',()=>({usePermissions:()=>({data:{},isPending:false}),hasPermission:()=>true}));
 vi.mock('../src/components/ConversationControls',()=>({ConversationControls:()=>null}));
@@ -31,6 +32,54 @@ beforeEach(()=>{
   vi.spyOn(api.agent,'checkSend').mockResolvedValue({needs_confirmation:false,matched:false,enabled:true,context_tokens:null,context_window:null,context_percent:null,idle_minutes:null,last_completed_at:null,observed_at:null,native_id:'claude-native',checked_at:new Date().toISOString(),can_compact:false,can_new:false,token:''});
 });
 
+async function renderSnapshot(agent: Pick<Session,'id'|'project_id'|'status'|'cli_type'|'claude_session_id'|'codex_session_id'>,messages:ConvMessage[]){
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  vi.spyOn(api.agent,'conversation').mockResolvedValue({
+    messages:[],statistics:[],has_more:false,reset:false,available:true,generation:'g',
+    native_id:agent.claude_session_id||agent.codex_session_id,session_active:true,session_status:'running',runtime:{state:'idle'},interaction:null,
+  } as unknown as ConversationPage);
+  const view=render(<QueryClientProvider client={client}><SessionConversation session={agent as Session} active onRaw={()=>{}}/></QueryClientProvider>);
+  await waitFor(()=>expect(Socket.latest?.onmessage).toBeTruthy());
+  act(()=>Socket.latest.emit({type:'snapshot',busy:false,turn_id:'turn',stage:'idle',messages}));
+  return view;
+}
+function readConversationDom(agentLabel:string){
+  const progress=screen.getByLabelText(`${agentLabel} 进展`);
+  const tool=within(progress).getByText('Read').closest('details')!;
+  return {
+    progressClass:progress.className,
+    progressHeading:progress.querySelector('summary')?.textContent?.replace(/^(?:Claude|codex)/,'').replace(/\s+/g,' ').trim(),
+    toolClass:tool.className,
+    toolSummary:tool.querySelector('summary')?.textContent?.replace(/\s+/g,' ').trim(),
+    hasCompactTool:!!progress.querySelector('.session-chat-tool-compact'),
+    progressContent:progress.textContent?.replace(/^(?:Claude|codex)/,'').replace(/(?:Claude|codex) 的思考过程/,'思考过程').replace(/\s+/g,' ').trim(),
+    finalText:screen.getByText('The project is ready.').textContent,
+  };
+}
+it('renders identical tool and thinking structure for Claude and Codex',async()=>{
+  const messages=[
+    {id:'user',role:'user',text:'Inspect the project',timestamp:'2026-11-19T23:45:45.000Z'},
+    {id:'progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'',timestamp:'2026-11-19T23:45:45.000Z',content_blocks:[
+      {type:'thinking',index:0,text:'I should inspect the repository first.'},
+      {type:'tool_use',index:1,id:'tool-1',name:'Read',input:{file_path:'/p/README.md'},status:'completed',result:'# Project'},
+    ]},
+    {id:'assistant',role:'assistant',text:'The project is ready.',timestamp:'2026-11-19T23:45:50.000Z',turn_id:'turn',phase:'final',usage:{input_tokens:120,cached_input_tokens:80,output_tokens:30,total_tokens:150}},
+  ] as ConvMessage[];
+  const codex={id:'codex-ui',project_id:'p',status:'running',cli_type:'codex',claude_session_id:null,codex_session_id:'codex-native'} as Session;
+  const first=await renderSnapshot(session,messages);
+  const claude=readConversationDom('Claude');
+  first.unmount();
+  Socket.latest=undefined as unknown as Socket;
+  const second=await renderSnapshot(codex,messages);
+  const codexView=readConversationDom('codex');
+  second.unmount();
+  expect(claude).toEqual(codexView);
+  expect(claude.toolClass).toBe('conversation-card session-chat-tool');
+  expect(claude.hasCompactTool).toBe(false);
+  expect(claude.progressContent).toContain('I should inspect the repository first.');
+  expect(claude.progressContent).toContain('Read');
+  expect(claude.finalText).toBe('The project is ready.');
+});
 it('renders Claude through the same conversation structure as every other agent',async()=>{
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
   render(<QueryClientProvider client={client}><SessionConversation session={session} active onRaw={()=>{}}/></QueryClientProvider>);
@@ -55,10 +104,11 @@ it('renders Claude through the same conversation structure as every other agent'
   expect(screen.getByText('Read')).toBeVisible();
   expect(screen.getByText('The project is ready.')).toBeVisible();
   expect(screen.getByText('Claude')).toBeInTheDocument();
+  expect(document.querySelector('.session-chat-tool-compact')).toBeNull();
+  expect(document.querySelector('.session-chat-tool summary')).toHaveTextContent('Read完成');
   expect(document.querySelector('.session-chat-message.assistant')).toBeInTheDocument();
   expect(document.querySelector('.claudian-message')).not.toBeInTheDocument();
   expect(screen.getByRole('button',{name:'复制Agent 回复'})).toBeInTheDocument();
-  expect(screen.getByText('Total: 5s')).toBeInTheDocument();
 });
 
 it('does not leave a Claude turn clock or stop control after a completed snapshot',async()=>{
@@ -70,7 +120,7 @@ it('does not leave a Claude turn clock or stop control after a completed snapsho
   expect(screen.queryByText(/esc to interrupt/)).not.toBeInTheDocument();
 });
 
-it('groups Claude tool rounds with the final answer and keeps tool cards compact',async()=>{
+it('groups Claude tool rounds with the final answer using the shared progress structure',async()=>{
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
   render(<QueryClientProvider client={client}><SessionConversation session={session} active onRaw={()=>{}}/></QueryClientProvider>);
   await waitFor(()=>expect(Socket.latest?.onmessage).toBeTruthy());
@@ -93,7 +143,8 @@ it('groups Claude tool rounds with the final answer and keeps tool cards compact
   const progress=await screen.findByLabelText('Claude 进展');
   const tool=within(progress).getAllByText('Read')[0].closest('details')!;
   expect(tool).not.toHaveAttribute('open');
-  expect(tool).toHaveClass('session-chat-tool-compact');
+  expect(tool).toHaveClass('session-chat-tool');
+  expect(tool.querySelector('.session-chat-tool-detail')).toBeNull();
   expect(screen.getByText('项目介绍已完成。')).toBeVisible();
   expect(within(progress).queryByText('项目介绍已完成。')).not.toBeInTheDocument();
 });
