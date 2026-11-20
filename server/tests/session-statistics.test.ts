@@ -84,6 +84,8 @@ describe('persisted session statistics',()=>{
     const group=readSessionUsageIntervals(codex,{parent:finals.rows[1].id})!.rows;
     expect(group.map(row=>row.kind)).toEqual(['progress','item']);
     expect(group[0].usage).toMatchObject({requests:1,tool_calls:2});
+    expect(group[1]).toMatchObject({phase:'final',at:stamp(8),usage:{requests:1,tool_calls:0,tokens:{total_tokens:third.total_tokens}}});
+    expectUsageSum(finals.rows[1].usage!,group.map(child=>child.usage!));
     expect(readSessionUsageIntervals(codex,{parent:group[0].id})?.rows).toMatchObject([
       {kind:'item',at:stamp(4),usage:{requests:1,tokens:{total_tokens:first.total_tokens}}},
     ]);

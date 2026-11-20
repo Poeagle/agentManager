@@ -30,7 +30,7 @@ import {
 import { ConversationCompactionStatus } from "./ConversationCompactionStatus";
 import { ConversationControls } from "./ConversationControls";
 import { ConversationCacheDrop } from "./ConversationCacheDrop";
-import {mergeCacheTimeline,unassignedUsageLabel,type CacheTimeline,type SessionCacheDrop,type SessionMetadata} from '../lib/session-metadata';
+import {mergeCacheTimeline,unassignedUsageDescription,unassignedUsageLabel,type CacheTimeline,type SessionCacheDrop,type SessionMetadata} from '../lib/session-metadata';
 import { ConversationAutomaticContext } from "./ConversationAutomaticContext";
 import { ConversationDialogCard } from "./ConversationDialogCard";
 import { automaticConversationContext } from "../lib/conversation-context";
@@ -2409,7 +2409,7 @@ export function SessionConversation({
                     {!pending&&!notificationView&&executionStats&&<div className="session-chat-progress-entry">
                       <span className="session-chat-progress-number" aria-label={`进展序号 ${group.messages.length+1}`}>{group.messages.length+1}</span>
                       <div className="session-chat-message-meta">
-                        <span title="这部分模型请求的用量已计入当前 Progress。">{unassignedUsageLabel}</span>
+                        <span title={unassignedUsageDescription}>{unassignedUsageLabel}</span>
                         <ConversationStatisticsLabel interval statistics={executionStats}/>
                       </div>
                     </div>}

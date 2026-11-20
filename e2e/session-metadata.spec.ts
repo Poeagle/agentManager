@@ -11,6 +11,7 @@ const require = createRequire(import.meta.url);
 const Database = require('../server/node_modules/better-sqlite3');
 const root = join(process.cwd(), '.test-data/e2e');
 const start = Date.parse('2026-11-20T09:00:00Z');
+const executionUsageLabel = '执行用量（已计入本段）';
 const at = (seconds: number) => new Date(start + seconds * 1000).toISOString();
 const record = (seconds: number, type: string, payload: object) =>
   JSON.stringify({type, timestamp:at(seconds), payload})+'\n';
@@ -124,11 +125,19 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   await expect(details.getByRole('table',{name:'按模型用量'})).toContainText('gpt-6.1-terra');
   await expect(details.getByRole('table',{name:'按模型用量'})).toContainText('priority');
   const usage=details.getByRole('table',{name:'逐区间用量'});
-  await expect(usage.getByRole('columnheader')).toHaveText(['时间','总输入','缓存输入','未缓存输入','缓存率','输出','总量','预估积分']);
-  const firstFinal=usage.locator('[data-interval-kind="final"]').filter({hasText:'21,040'});
-  await firstFinal.getByRole('button',{name:'展开答复用量'}).click();
+  await expect(usage.getByRole('columnheader')).toHaveText(['时间','总输入','缓存输入','未缓存输入','缓存率','输出','总量','工具轮次 / 调用','Runs','预估积分']);
+  const firstRound=usage.locator('[data-interval-kind="final"]').filter({hasText:'21,040'});
+  await expect(firstRound.getByRole('cell',{name:'1 / 2',exact:true})).toBeVisible();
+  await expect(firstRound.getByRole('cell',{name:'2',exact:true})).toBeVisible();
+  await firstRound.getByRole('button',{name:'展开轮次用量'}).click();
+  const finalRow=usage.getByRole('row').filter({has:page.getByText('Final',{exact:true})});
+  await expect(finalRow).toHaveAttribute('data-interval-depth','1');
+  await expect(finalRow.getByRole('cell',{name:'11,020',exact:true})).toBeVisible();
+  await expect(finalRow.getByRole('cell',{name:'0 / 0',exact:true})).toBeVisible();
+  await expect(finalRow.getByRole('cell',{name:'1',exact:true})).toBeVisible();
   const progress=usage.locator('[data-interval-kind="progress"]');
   await expect(progress).toHaveCount(1);
+  await expect(progress.getByText('Progress',{exact:true})).toBeVisible();
   await progress.getByRole('button',{name:'展开进展用量'}).click();
   const item=usage.locator('[data-interval-depth="2"]');
   await expect(item).toContainText('10,020');
@@ -137,7 +146,7 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   const totalCell=item.getByRole('cell',{name:'10,020',exact:true});
   await expect(totalCell).toHaveCSS('white-space','nowrap');
   await expect(totalCell).toHaveCSS('text-align','right');
-  const dates=await Promise.all([firstFinal,progress,item].map(row=>row.locator('time').boundingBox()));
+  const dates=await Promise.all([firstRound,progress,item].map(row=>row.locator('time').boundingBox()));
   expect(dates[1]!.x).toBeGreaterThan(dates[0]!.x);
   expect(dates[2]!.x).toBeGreaterThan(dates[1]!.x);
   await page.screenshot({path:testInfo.outputPath('metadata-tree.png')});
@@ -250,7 +259,8 @@ test('keeps the shown Item counts and usage within their Progress across consecu
     message(11,'crossing','assistant','跨段的进展','commentary')+request(12,turn,'r4',4000,3800)+
     message(13,'after','assistant','本段的进展','commentary')+request(14,turn,'r5',5000,4800)+
     record(14.1,'response_item',{type:'function_call',call_id:'tail'})+
-    request(14.2,turn,'late-tail',7000,6800)+message(14.3,'steer3','user','暂缓前面的请求')+
+    request(14.2,turn,'late-tail',7000,6800)+request(14.25,turn,'reasoning-tail',8000,7900)+
+    message(14.3,'steer3','user','暂缓前面的请求')+
     message(15,'answer','assistant','核对完成','final_answer')+request(16,turn,'r6',6000,5800)+
     event(17,'task_complete',{turn_id:turn}));
   await page.goto('/');
@@ -258,24 +268,32 @@ test('keeps the shown Item counts and usage within their Progress across consecu
   const disclosure=group.getByRole('button',{name:/展开进展/});
   await expect(group).toBeVisible();
   if(await disclosure.isVisible())await disclosure.click();
-  await expect(group.locator('.session-chat-message-statistics').first()).toHaveAttribute('title',/Total 16,060;/);
+  await expect(group.locator('.session-chat-message-statistics').first()).toHaveAttribute('title',/Total 24,080;/);
   const crossing=group.locator('.session-chat-progress-entry').filter({hasText:'跨段的进展'});
   await expect(crossing.locator('.session-chat-message-statistics')).toHaveAttribute('title',/Total 4,020;/);
   await expect(crossing.locator('time').first()).toHaveAttribute('datetime',at(11));
   await expect(group.locator('.session-chat-progress-entry').filter({hasText:'本段的进展'}).locator('.session-chat-message-statistics')).toHaveAttribute('title',/Total 5,020;/);
-  await expect(group.locator('.session-chat-progress-entry').filter({hasText:'无单独消息的用量'}).locator('.session-chat-message-statistics')).toHaveAttribute('title',/Total 7,020;/);
+  await expect(group.locator('.session-chat-progress-entry').filter({hasText:executionUsageLabel}).locator('.session-chat-message-statistics')).toHaveAttribute('title',/Total 15,040;/);
   await expect(group.locator('.session-chat-progress-entry')).toHaveCount(3);
   await page.getByRole('button',{name:'Details',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'会话详情',exact:true});
   await dialog.getByRole('tab',{name:'会话详情'}).click();
   const table=dialog.getByRole('table',{name:'逐区间用量'});
-  await table.getByRole('button',{name:'展开答复用量'}).click();
-  await table.locator('[data-interval-kind="progress"]').filter({hasText:'16,060'}).getByRole('button',{name:'展开进展用量'}).click();
+  await table.getByRole('button',{name:'展开轮次用量'}).click();
+  await expect(table.getByText('Final',{exact:true})).toHaveCount(1);
+  expect(await table.getByText('Progress',{exact:true}).count()).toBeGreaterThan(1);
+  await table.locator('[data-interval-kind="progress"]').filter({hasText:'24,080'}).getByRole('button',{name:'展开进展用量'}).click();
   const items=table.locator('[data-interval-depth="2"][data-interval-kind="item"]');
   await expect(items).toHaveCount(2);
   await expect(items.nth(0)).toContainText('5,020');
   await expect(items.nth(1)).toContainText('4,020');
-  await expect(table.locator('[data-interval-kind="unassigned"]')).toContainText('7,020');
+  const execution=table.locator('[data-interval-kind="unassigned"]');
+  const executionLabel=execution.getByText(executionUsageLabel,{exact:true});
+  await expect(execution.getByRole('rowheader')).toHaveText(executionUsageLabel);
+  await expect(executionLabel).toHaveAttribute('title',/调用工具或推理/);
+  await expect(execution.getByRole('cell',{name:'15,040',exact:true})).toBeVisible();
+  await expect(execution.getByRole('cell',{name:'1 / 1',exact:true})).toBeVisible();
+  await expect(execution.getByRole('cell',{name:'2',exact:true})).toBeVisible();
   await dialog.getByRole('button',{name:'刷新',exact:true}).click();
   await expect(dialog.getByRole('tab',{name:'会话详情'})).toHaveAttribute('aria-selected','true');
   await expect(items).toHaveCount(2);
@@ -376,7 +394,7 @@ test('waits for actual usage after commentary and counts a reasoning-only reques
   await expect(header).toContainText('1 Run');
   appendFileSync(session.log,record(30,'token_usage_record',{turn_id:turn,response_id:'reasoning-receipt',
     usage:{total_tokens:284146,input_tokens:283775,cached_input_tokens:279552,output_tokens:371,reasoning_output_tokens:371}}));
-  const reasoning=group.locator('.session-chat-progress-entry').filter({hasText:'无单独消息的用量'});
+  const reasoning=group.locator('.session-chat-progress-entry').filter({hasText:executionUsageLabel});
   await expect(reasoning).toContainText('0 rounds | 0 calls | 1 Run');
   await expect(reasoning.locator('.session-chat-message-statistics')).toHaveAttribute('title',/Total 284,146;/);
   await expect(header).toHaveAttribute('title',/Total 565,499;/);

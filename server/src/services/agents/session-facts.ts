@@ -145,6 +145,7 @@ export interface SessionMetadataDetails {
 export interface SessionUsageIntervalRow {
   id: string;
   kind: 'final' | 'progress' | 'item' | 'open' | 'unassigned';
+  phase?: 'final';
   at: string | null;
   usage: AgentStatisticsInterval | null;
   expandable: boolean;

@@ -91,6 +91,7 @@ export interface SessionMetadataDetails {
 export interface SessionUsageIntervalRow {
   id: string;
   kind: 'final' | 'progress' | 'item' | 'open' | 'unassigned';
+  phase?: 'final';
   at: string | null;
   usage: ConversationInterval | null;
   expandable: boolean;
@@ -107,7 +108,8 @@ export interface SessionUsageIntervalPage {
 export const coverageText: Record<StatisticsCoverage, string> = {
   complete: '完整', pending: '等待用量或回填', partial: '记录不完整', unavailable: '来源不可用',
 };
-export const unassignedUsageLabel = '无单独消息的用量';
+export const unassignedUsageLabel = '执行用量（已计入本段）';
+export const unassignedUsageDescription = '这行汇总本段进展里没有对应消息行的用量，例如模型继续调用工具或推理。';
 
 export function intervalCoverageText(coverage: StatisticsCoverage, reasons: StatisticsReason[] = []): string {
   return coverage === 'pending' && !reasons.includes('backfill') ? '等待用量回执' : coverageText[coverage];

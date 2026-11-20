@@ -95,6 +95,7 @@
   gap: 6px;
 }
 .conversation-interval-time > span { grid-column: 2; }
+.conversation-interval-role { margin-inline-start: 6px; color: var(--text-secondary); font-size: 11px; }
 .conversation-interval-footnote { margin-inline-start: 3px; color: var(--text-secondary); font-size: 10px; }
 .conversation-interval-table tr[data-interval-depth="0"] > :is(td,th) {
   background: color-mix(in srgb, var(--bg-tertiary) 36%, var(--bg-primary));

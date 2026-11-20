@@ -487,7 +487,8 @@ export function readSessionUsageIntervals(context: AgentContext, {parent,before}
       const {end_at,start_at,elapsed_ms,...usage} = stat.conclusion!;
       return {id:`final:${row.item_id}`,kind:row.kind,at:end_at,usage,expandable:true};
     }
-    return {id:`item:${row.item_id}`,kind:row.kind,at:stat.item_at ?? stat.conclusion?.end_at ?? null,usage:stat.interval!,expandable:false};
+    return {id:`item:${row.item_id}`,kind:row.kind,at:stat.item_at ?? stat.conclusion?.end_at ?? null,
+      ...(stat.conclusion ? {phase:'final' as const} : {}),usage:stat.interval!,expandable:false};
   });
   if (!parent && !before) {
     const latest = results[0] ?? lowerBound;

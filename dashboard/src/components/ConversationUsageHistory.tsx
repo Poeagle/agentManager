@@ -2,7 +2,8 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api, type ConversationCostEstimate } from '../lib/api';
 import {
-  coverageReason, creditsLabel, intervalCoverageText, recordedCachePercent, uncachedInputTokens, unassignedUsageLabel, type SessionCacheDrop, type SessionMetadataDetails,
+  coverageReason, creditsLabel, intervalCoverageText, recordedCachePercent, uncachedInputTokens, unassignedUsageDescription, unassignedUsageLabel,
+  type SessionCacheDrop, type SessionMetadataDetails,
   type SessionUsageIntervalPage, type SessionUsageIntervalRow,
 } from '../lib/session-metadata';
 import { CacheDropTable, MetadataTime } from './ConversationCacheDrop';
@@ -130,7 +131,13 @@ function ModelUsageTable({details, loading, error, onRetry}: {
   </section>;
 }
 
-const intervalColumns = ['时间', '总输入', '缓存输入', '未缓存输入', '缓存率', '输出', '总量', '预估积分'];
+const intervalColumns: Array<{label: string; title?: string}> = [
+  {label:'时间'}, {label:'总输入'}, {label:'缓存输入'}, {label:'未缓存输入'},
+  {label:'缓存率'}, {label:'输出'}, {label:'总量'},
+  {label:'工具轮次 / 调用', title:'同一次模型响应中的工具调用计为一轮，每个工具分别计一次调用。'},
+  {label:'Runs', title:'已记录的模型请求次数，含只进行推理或只输出文字的请求。'},
+  {label:'预估积分'},
+];
 
 interface UsageScope {
   sessionId:string; nativeId:string; generation?:string; revision?:number; enabled:boolean;
@@ -180,7 +187,8 @@ function UsageRow({scope,row,depth}: {
   scope:UsageScope; row:SessionUsageIntervalRow; depth:number;
 }) {
   const [expanded,setExpanded]=useState(false);
-  const expandLabel=row.kind==='final'?'答复用量':row.kind==='progress'?'进展用量':'未完成答复';
+  const expandLabel=row.kind==='final'?'轮次用量':row.kind==='progress'?'进展用量':'未完成答复';
+  const role=row.kind==='progress'?'Progress':row.phase==='final'?'Final':null;
   const reference=row.usage?.shared_reference;
   const usage=reference?null:row.usage;
   const tokens=usage?.tokens;
@@ -188,15 +196,17 @@ function UsageRow({scope,row,depth}: {
   const uncached=inputKnown?uncachedInputTokens(tokens):null;
   const cacheRate=inputKnown?recordedCachePercent(tokens):null;
   const coverage=usage&&!usage.complete ? intervalCoverageText(usage.coverage??'partial',usage.reasons) : null;
-  const counters=usage&&(usage.requests||usage.tool_calls)
-    ? `${usage.requests ? usage.requests+' 次模型请求，' : ''}工具调用 ${usage.tool_rounds} 轮、${usage.tool_calls} 次` : undefined;
+  const waitingForCounts=usage?.coverage==='pending'&&!usage.requests;
+  const count=(value:number)=>number(waitingForCounts&&value===0?null:value);
   return <Fragment>
     <tr data-interval-kind={row.kind} data-interval-depth={depth}>
       <th scope="row" style={{paddingInlineStart:9+14*depth}}>
         <span className="conversation-interval-time">
           {row.expandable&&<TableExpandButton expanded={expanded} label={expandLabel} onClick={()=>setExpanded(value=>!value)}/>}
           <span>
-            {row.kind==='open'?'未完成答复':row.kind==='unassigned'?unassignedUsageLabel:<MetadataTime at={row.at}/>}
+            {row.kind==='open'?'未完成答复':row.kind==='unassigned'
+              ?<span title={unassignedUsageDescription}>{unassignedUsageLabel}</span>:<MetadataTime at={row.at}/>}
+            {role&&<>{' '}<span className="conversation-interval-role">{role}</span></>}
             {reference&&<span className="conversation-interval-footnote" title="请求用量已计入同组 Item">共享请求</span>}
           </span>
         </span>
@@ -208,10 +218,12 @@ function UsageRow({scope,row,depth}: {
       <td><span title={tokens?.reasoning_output_tokens==null?undefined:`含推理输出 ${number(tokens.reasoning_output_tokens)} Token`}>
         {usage&&number(tokens?.output_tokens)}
       </span></td>
-      <td><span title={counters}>{usage&&number(tokens?.total_tokens)}</span>
+      <td>{usage&&number(tokens?.total_tokens)}
         {coverage&&<span className="conversation-interval-footnote"
           title={[coverage,...(usage?.reasons??[]).map(reason=>coverageReason[reason])].join(' · ')} aria-label={coverage}>*</span>}
       </td>
+      <td>{usage&&`${count(usage.tool_rounds)} / ${count(usage.tool_calls)}`}</td>
+      <td>{usage&&count(usage.requests)}</td>
       <td className={usage?.cost?.amount==null?undefined:'session-chat-estimated-cost'}>{usage&&(usage.cost?.amount==null?'—':creditsLabel(usage.cost))}</td>
     </tr>
     {expanded&&<UsageLevel scope={scope} parent={row} depth={depth+1}/>}
@@ -226,8 +238,8 @@ export function ConversationUsageHistory({sessionId,nativeId,details,generation,
     <ModelUsageTable details={details} loading={loading} error={error} onRetry={onRetry} />
     <section className="conversation-metadata-section">
       <h4>逐区间用量</h4>
-      <TableFrame label="逐区间用量" className="conversation-metadata-scroll conversation-interval-table" style={{minWidth:820}}
-        header={intervalColumns.map(label=><th key={label} scope="col">{label}</th>)}>
+      <TableFrame label="逐区间用量" className="conversation-metadata-scroll conversation-interval-table" style={{minWidth:970}}
+        header={intervalColumns.map(({label,title})=><th key={label} scope="col" title={title}>{label}</th>)}>
         <UsageLevel key={JSON.stringify([nativeId,generation])} scope={{sessionId,nativeId,generation,revision,enabled:active&&supported}}/>
       </TableFrame>
     </section>
