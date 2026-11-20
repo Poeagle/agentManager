@@ -107,6 +107,12 @@ export interface SessionUsageIntervalPage {
 export const coverageText: Record<StatisticsCoverage, string> = {
   complete: '完整', pending: '等待用量或回填', partial: '记录不完整', unavailable: '来源不可用',
 };
+export const unassignedUsageLabel = '无单独消息的用量';
+
+export function intervalCoverageText(coverage: StatisticsCoverage, reasons: StatisticsReason[] = []): string {
+  return coverage === 'pending' && !reasons.includes('backfill') ? '等待用量回执' : coverageText[coverage];
+}
+
 export const coverageReason: Record<StatisticsReason, string> = {
   backfill: '正在读取历史记录', source_unavailable: '无法读取原生会话',
   incomplete_record: '等待原生记录写入完成', unreadable_record: '部分原生记录无法读取',

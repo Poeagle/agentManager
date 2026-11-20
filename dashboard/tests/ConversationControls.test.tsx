@@ -166,13 +166,13 @@ describe('compact conversation controls',()=>{
   mount();fireEvent.click(await screen.findByRole('button',{name:'Details'}));
   fireEvent.click(screen.getByRole('tab',{name:'会话详情'}));
   const table=screen.getByRole('table',{name:'逐区间用量'});
-  expect(await within(table).findByText('未形成 Final')).toBeVisible();
+  expect(await within(table).findByText('未完成答复')).toBeVisible();
   fireEvent.click(within(table).getByRole('button',{name:'更早的用量'}));
   expect(await within(table).findByText('4,030')).toBeVisible();
   settled=true;
   await act(async()=>{await client.invalidateQueries({queryKey:['conversation-usage-intervals','s']});});
   expect(await within(table).findByText('6,010')).toBeVisible();
-  expect(within(table).queryByText('未形成 Final')).not.toBeInTheDocument();
+  expect(within(table).queryByText('未完成答复')).not.toBeInTheDocument();
   expect(within(table).getByText('4,030')).toBeVisible();
  });
  it('does not resubmit a control request that is waiting for native confirmation',async()=>{

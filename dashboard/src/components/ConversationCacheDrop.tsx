@@ -7,7 +7,7 @@ import { TableFrame, TableStateRow } from './table/DataTable';
 const compact = new Intl.NumberFormat('en', {notation:'compact', maximumFractionDigits: 1});
 const date = new Intl.DateTimeFormat('sv-SE', {
   year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
-  hourCycle: 'h23', timeZoneName: 'shortOffset',
+  hourCycle: 'h23',
 });
 const percent = new Intl.NumberFormat('en', {minimumFractionDigits:1, maximumFractionDigits:2});
 const rate = (value: number) => percent.format(value * 100) + '%';
@@ -35,6 +35,13 @@ function dropInterval(drop: SessionCacheDrop) {
   return elapsed === null ? `${label}未知` : `${label} ${elapsed < 60_000 ? elapsed / 1000 + '秒' : formatElapsed(elapsed)}`;
 }
 
+function CacheDropCause({drop}: {drop: SessionCacheDrop}) {
+  const factors = drop.factors.filter(factor => factor !== 'input_size').map(factor => factorNames[factor]);
+  const names = new Set(drop.confirmed_cause ? [drop.confirmed_cause.label, ...factors] : factors);
+  const basis = drop.factors.includes('compact') ? '比较压缩前最后一笔和压缩后第一笔原生请求的命中率' : undefined;
+  return <span title={basis}>{[...names].join('、') || '原因未确认'}</span>;
+}
+
 export function CacheDropTable({drops, loading, error, onRetry}: {
   drops: SessionCacheDrop[];
   loading?: boolean;
@@ -42,7 +49,7 @@ export function CacheDropTable({drops, loading, error, onRetry}: {
   onRetry?: () => void;
 }) {
   return <TableFrame label="缓存命中率下降明细" className="conversation-metadata-scroll conversation-cache-table" loading={loading}
-    header={<>{['异常时间', '前次总输入 / 命中', '本次总输入 / 命中', '间隔', '原因与相关因素']
+    header={<>{['异常时间', '前次总输入 / 命中', '本次总输入 / 命中', '间隔', '原因']
       .map(label => <th key={label} scope="col">{label}</th>)}</>} style={{minWidth: 660}}>
       {loading ? <TableStateRow columnCount={5} loading>加载中…</TableStateRow>
       : error ? <TableStateRow columnCount={5} error onRetry={onRetry}>{error}</TableStateRow>
@@ -52,9 +59,7 @@ export function CacheDropTable({drops, loading, error, onRetry}: {
         <td><SampleTokens sample={drop.previous} /></td>
         <td><SampleTokens sample={drop.current} /></td>
         <td>{dropInterval(drop)}</td>
-        <td>{drop.confirmed_cause?.label ?? '原因未确认'}
-          {drop.factors.length > 0 && <small>相关因素 {drop.factors.map(factor => factorNames[factor]).join('、')}</small>}
-        </td>
+        <td><CacheDropCause drop={drop}/></td>
       </tr>)}
   </TableFrame>;
 }

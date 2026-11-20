@@ -75,23 +75,26 @@
 .conversation-token-table .data-table th:first-child { width: 35%; }
 .conversation-token-table .data-table :is(td, thead th:not(:first-child)) { text-align: right; }
 .conversation-values-table .data-table th:first-child { width: 54%; }
-.conversation-metadata-scroll .data-table small {
-  display: block;
-  margin-top: 2px;
-  color: var(--text-secondary);
-  line-height: 1.4;
-}
 .conversation-cache-table .data-table th:first-child { width: 28%; }
 .conversation-cache-table .data-table th:nth-child(4) { width: 12%; }
 .conversation-cache-table .data-table th:nth-child(5) { width: 25%; }
 .conversation-model-usage .data-table th:first-child { width: 26%; }
-.conversation-model-usage .data-table th:nth-child(4),
-.conversation-interval-table .data-table th:nth-last-child(2) { width: 8%; }
-.conversation-interval-table .data-table th:first-child { width: 17%; }
-.conversation-interval-table .data-table th:nth-child(2) { width: 23%; }
+.conversation-model-usage .data-table th:nth-child(4) { width: 8%; }
 .conversation-metadata-scroll .data-table td.conversation-time-cell { white-space: nowrap; }
-.conversation-interval-label { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.conversation-interval-label .row-expand { flex-shrink: 0; }
+.conversation-interval-table .data-table { table-layout: auto; }
+.conversation-interval-table .data-table th:first-child { width: 205px; }
+.conversation-interval-table .data-table :is(th, td) {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.conversation-interval-table .data-table :is(thead th:not(:first-child), td:not([colspan])) { text-align: right; }
+.conversation-interval-time {
+  display: inline-grid;
+  grid-template-columns: 16px auto;
+  align-items: center;
+  gap: 6px;
+}
+.conversation-interval-time > span { grid-column: 2; }
 .conversation-interval-footnote { margin-inline-start: 3px; color: var(--text-secondary); font-size: 10px; }
 .conversation-interval-table tr[data-interval-depth="0"] > :is(td,th) {
   background: color-mix(in srgb, var(--bg-tertiary) 36%, var(--bg-primary));

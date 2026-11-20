@@ -62,6 +62,16 @@ describe('English message metadata',()=>{
  it('does not invent zero counters for unavailable statistics',()=>{
   render(<ConversationStatisticsLabel statistics={null} interval/>);expect(label()).toHaveTextContent('— rounds | — calls');expect(label()).not.toHaveTextContent('0 calls');
  });
+ it('distinguishes a pending receipt from a recorded zero-tool request',()=>{
+  const pending={...interval,coverage:'pending' as const,complete:false,tokens:null,requests:0,tool_calls:0,tool_rounds:0};
+  const view=render(<ConversationStatisticsLabel interval statistics={{...base,interval:pending}}/>);
+  expect(label()).toHaveTextContent(/^等待用量回执$/);
+  view.rerender(<ConversationStatisticsLabel interval statistics={{...base,interval:{...pending,tool_calls:2,tool_rounds:1}}}/>);
+  expect(label()).toHaveTextContent('1 round | 2 calls | — Runs');
+  view.rerender(<ConversationStatisticsLabel interval statistics={{...base,interval:{...pending,coverage:'complete',complete:true,requests:1,tokens:{total_tokens:200}}}}/>);
+  expect(label()).toHaveTextContent('0 rounds | 0 calls | 1 Run');
+  expect(label()).not.toHaveTextContent('等待用量回执');
+ });
  it('uses English units and timing tooltips',()=>{
   expect(englishMetadataDuration('本轮耗时 1时2分3秒')).toBe('Total time: 1h 2m 3s');expect(englishMetadataDuration('耗时 19秒')).toBe('Elapsed: 19s');expect(metadataDurationTitle('commentary')).toMatch(/^Time between/);expect(metadataTimestampTitle({id:'a',role:'assistant',text:'',timestamp:'2026-11-03T01:00:00Z'},true)).toMatch(/^Progress completion time:/);
  });
