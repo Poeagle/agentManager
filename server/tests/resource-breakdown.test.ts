@@ -5,7 +5,7 @@ import {createTestDatabase} from './helpers/database.js';
 import {authHook,createSession,createUser} from '../src/auth.js';
 import {userRoutes} from '../src/routes/users.js';
 import {serverResourceSampler} from '../src/services/server-resources.js';
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'fs';
+import {mkdtempSync,mkdirSync,writeFileSync,realpathSync,rmSync} from 'fs';
 import {tmpdir} from 'os';
 import {join} from 'path';
 
@@ -32,7 +32,7 @@ it('requires monitor permission and validates the resource kind and path',async(
 });
 
 it('scans only the selected filesystem directory and prevents escaping the mount',async()=>{
- const root=mkdtempSync(join(tmpdir(),'resource-test-'));
+ const root=realpathSync(mkdtempSync(join(tmpdir(),'resource-test-')));
  try{
   mkdirSync(join(root,'large'));mkdirSync(join(root,'small'));
   writeFileSync(join(root,'large','file'),Buffer.alloc(16384));writeFileSync(join(root,'small','file'),Buffer.alloc(1024));

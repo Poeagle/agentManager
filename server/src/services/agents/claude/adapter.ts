@@ -12,7 +12,12 @@ import {
   claudePermissions,
   claudeResources,
 } from "./commands.js";
-import { capabilities, requireNative, type AgentDefinition } from "../types.js";
+import {
+  capabilities,
+  requireNative,
+  type AgentConnection,
+  type AgentDefinition,
+} from "../types.js";
 import {
   readClaudeControls,
   readClaudeRuntime,
@@ -21,9 +26,15 @@ import {
   compactClaudeConversation,
   readClaudeTelemetry,
   confirmedClaudeControls,
+  readClaudeSessionModelPreference,
 } from "./controls.js";
 import { claudeManagement } from "./management.js";
 import { managedModelPreference } from "../management-store.js";
+import {
+  canControlClaudeEnvironment,
+  canUseClaudeEnvironment,
+  claudeEnvironmentId,
+} from "./providers.js";
 export const claudeAdapter: AgentDefinition = {
   descriptor: {
     sessionHost: "managed",
@@ -34,6 +45,7 @@ export const claudeAdapter: AgentDefinition = {
       "history",
       "runtime",
       "input",
+      "cancelQueuedInput",
       "stream",
       "controls",
       "model",
@@ -41,7 +53,9 @@ export const claudeAdapter: AgentDefinition = {
       "reload",
       "interrupt",
       "stopTurn",
+      "compact",
       "usage",
+      "statistics",
       "launch",
       "resume",
       "attachments",
@@ -91,22 +105,62 @@ export const claudeAdapter: AgentDefinition = {
     validate: validateClaudeControls,
     apply: applyClaudeControls,
   },
-  telemetry: { read: readClaudeTelemetry },
+  environment: {
+    storageId: claudeEnvironmentId,
+    canUse: canUseClaudeEnvironment,
+    canControl: canControlClaudeEnvironment,
+  },
+    telemetry: {
+      read: readClaudeTelemetry,
+      contextBreakdown: async (context) =>
+        (await import("./context-breakdown.js")).readClaudeContextBreakdown(
+          context,
+        ),
+    },
   input: {
     supportsClientIdentity: true,
     messageId: clientId => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId) ? conversationMessageId('', 'user', clientId) : undefined,
+    cancelQueued: async (context, clientId) => {
+      const runtime = (await import("./sdk-runtime.js")).claudeRuntime(
+        requireNative(context),
+      );
+      if (!runtime) throw Error("Claude managed runtime is not connected");
+      await runtime.cancelQueued(clientId);
+    },
     submit: async (context, text, clientId, attachments) => {
+      let provider = (
+        await import("./providers.js")
+      ).claudeRuntimeProvider(context.session, context.environmentAccess);
+      if (!provider && !context.session.agent_environment_id)
+        provider = (await import("./providers.js")).claudeNativeRuntimeProvider(context.environmentAccess);
       const runtime = (await import("./sdk-runtime.js")).ensureClaudeRuntime(
         requireNative(context),
         context.projectPath!,
         undefined,
-        undefined,
+        provider
+          ? {
+              model: runtimeModel(
+                provider,
+                readClaudeSessionModelPreference(context) ??
+                  managedModelPreference("claude"),
+                true,
+              ),
+              effort: "",
+            }
+          : undefined,
         true,
+        provider,
       );
       const userId=clientId && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId) ? clientId : undefined;
       return runtime.submit(text, clientId, attachments, userId);
     },
     afterTerminalSubmit: async () => {},
+  },
+  statistics: {
+    read: async (_context, path) =>
+      (await import("./statistics.js")).readClaudeStatistics(path),
+    readProgress: async (_context, path) =>
+      (await import("./statistics.js")).readClaudeProgress(path),
   },
   stream: {
     seed: async (context) => {
@@ -139,7 +193,19 @@ export const claudeAdapter: AgentDefinition = {
       return null;
     },
     compact: compactClaudeConversation,
-    prepareFresh: async () => randomUUID(),
+    prepareFresh: async (context,instructions,preference) => {
+      if(!context.projectPath)throw Error("Claude managed session is missing project context");
+      const nativeId=randomUUID();
+      let provider=(await import("./providers.js")).claudeRuntimeProvider(context.session,context.environmentAccess);
+      if(!provider&&!context.session.agent_environment_id)provider=(await import("./providers.js")).claudeNativeRuntimeProvider(context.environmentAccess);
+      const runtime=(await import("./sdk-runtime.js")).ensureClaudeRuntime(nativeId,context.projectPath,instructions,provider?{model:runtimeModel(provider,preference),effort:""}:preference,false,provider);
+      if(preference)
+        (await import("./controls.js")).saveClaudeSessionModelPreference(
+          {...context,nativeId},
+          provider?{model:runtimeModel(provider,preference),effort:""}:preference,
+        );
+      return nativeId;
+    },
     release: async (context) => {
       if (context.nativeId)
         (await import("./sdk-runtime.js")).releaseClaudeRuntime(
@@ -165,14 +231,38 @@ export const claudeAdapter: AgentDefinition = {
       const nativeId = resume ? context.nativeId || undefined : randomUUID();
       if (!nativeId || !context.projectPath)
         throw Error("Claude managed session is missing project context");
+      let provider = (
+        await import("./providers.js")
+      ).claudeRuntimeProvider(context.session, context.environmentAccess);
+      if (!provider && !context.session.agent_environment_id)
+        provider = (await import("./providers.js")).claudeNativeRuntimeProvider(context.environmentAccess);
+      const selectedPreference=provider
+        ? {
+            model: runtimeModel(
+              provider,
+              readClaudeSessionModelPreference({...context,nativeId}) ??
+                managedModelPreference("claude"),
+              !!resume,
+            ),
+            effort: "",
+          }
+        : readClaudeSessionModelPreference({...context,nativeId}) ??
+          managedModelPreference("claude") ??
+          undefined;
       const runtime = (await import("./sdk-runtime.js")).ensureClaudeRuntime(
         nativeId,
         context.projectPath,
         instructions,
-        managedModelPreference("claude") ?? undefined,
+        selectedPreference,
         !!resume,
+        provider,
       );
       const userId = !resume && task.trim() && initialClientId ? randomUUID() : undefined;
+      if(selectedPreference)
+        (await import("./controls.js")).saveClaudeSessionModelPreference(
+          {...context,nativeId},
+          selectedPreference,
+        );
       if (!resume && task.trim()) await runtime.submit(task, initialClientId, [], userId);
       return { nativeId, ...userId ? {initialMessageId:conversationMessageId('', 'user', userId)} : {} };
     },
@@ -193,6 +283,7 @@ export const claudeAdapter: AgentDefinition = {
       "history",
       "runtime",
       "input",
+      "cancelQueuedInput",
       "stream",
       "controls",
       "model",
@@ -200,7 +291,9 @@ export const claudeAdapter: AgentDefinition = {
       "reload",
       "interrupt",
       "stopTurn",
+      "compact",
       "usage",
+      "statistics",
       "launch",
       "resume",
       "attachments",
@@ -214,11 +307,38 @@ function asyncObserve(
   emit: Parameters<NonNullable<AgentDefinition["stream"]["observe"]>>[1],
 ) {
   let stop:
-      | ReturnType<(typeof import("./sdk-runtime.js"))["observeClaudeSDK"]>
+      | AgentConnection
       | undefined,
     closed = false;
-  void import("./sdk-runtime.js").then((module) => {
-    if (!closed) stop = module.observeClaudeSDK(context, emit);
+  void import("./sdk-runtime.js").then(async (module) => {
+    if (closed) return;
+    let provider = (
+      await import("./providers.js")
+    ).claudeRuntimeProvider(context.session, context.environmentAccess);
+    if (!provider && !context.session.agent_environment_id)
+      provider = (await import("./providers.js")).claudeNativeRuntimeProvider(
+        context.environmentAccess,
+      );
+    if (closed) return;
+    const runtime = module.ensureClaudeRuntime(
+      context.nativeId!,
+      context.projectPath!,
+      undefined,
+      provider
+        ? {
+            model: runtimeModel(
+              provider,
+              readClaudeSessionModelPreference(context) ??
+                managedModelPreference("claude"),
+              true,
+            ),
+            effort: "",
+          }
+        : undefined,
+      true,
+      provider,
+    );
+    if (!closed) stop = runtime.observe(emit);
   });
   return Object.assign(
     () => {
@@ -231,5 +351,28 @@ function asyncObserve(
         return stop.respond(id, answer);
       },
     },
+  );
+}
+
+function runtimeModel(
+  provider: { models: string[]; defaultModel: string | null },
+  preference: { model?: string } | null | undefined,
+  restore = false,
+): string {
+  const configured = preference && typeof preference.model === "string"
+    ? preference.model
+    : "";
+  if (provider.models.includes(configured)) return configured;
+  if (!configured && provider.defaultModel && provider.models.includes(provider.defaultModel))
+    return provider.defaultModel;
+  if (!configured && provider.models[0]) return provider.models[0];
+  // A recovered native session may predate the Provider's current catalog.
+  // Keep its exact persisted model instead of silently switching. New or
+  // user-selected turns still reject a model outside the active catalog.
+  if (restore && configured) return configured;
+  throw Error(
+    configured
+      ? `所选模型 ${configured} 不在当前 Provider 的模型中`
+      : "Claude Provider 没有默认模型",
   );
 }

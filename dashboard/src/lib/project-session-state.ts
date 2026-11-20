@@ -12,6 +12,14 @@ export function nextDefaultTabName(prefix: string, tabs: TerminalInstance[]): st
   return `${prefix} ${number}`;
 }
 
+/** Automatic session tabs use their task when it identifies a new conversation,
+ * then fall back to a unique ordinal. Generic launcher tasks are not names. */
+export function automaticSessionTabName(task:string|undefined,tabs:TerminalInstance[],id:string):string|null{
+  const title=task?.trim().replace(/\s+/g,' ').slice(0,100);
+  if(!title||['Terminal','新会话','工作会话'].includes(title))return null;
+  return uniqueTabName(title,tabs,id);
+}
+
 export function uniqueTabName(name: string, tabs: TerminalInstance[], id: string): string {
   const used = new Set(tabs.filter(tab => tab.id !== id).map(tab => (tab.customLabel?.trim() || tab.label).toLocaleLowerCase()));
   if (!used.has(name.toLocaleLowerCase())) return name;
@@ -71,4 +79,22 @@ export function applyNativeTabTitles(tabs:TerminalInstance[],titles:Record<strin
  const result:TerminalInstance[]=[];
  for(const tab of tabs){const title=titles[tab.id]?.trim();const label=!tab.customLabel?.trim()&&title?uniqueTabName(title,[...tabs,...result],tab.id):tab.label;result.push(label===tab.label?tab:{...tab,label});}
  return result;
+}
+
+/** Migrate the former automatic "Session N" / "Terminal N" labels to the
+ * session task once it is available. Custom names and native titles win. */
+export function applySessionTabTasks(
+  tabs:TerminalInstance[],
+  tasks:Record<string,string|undefined>,
+  titles:Record<string,string|null|undefined>={},
+):TerminalInstance[]{
+  const result:TerminalInstance[]=[];
+  for(const tab of tabs){
+    const automatic=/^(?:Session|Terminal) \d+$/i.test(tab.label);
+    const title=titles[tab.id]?.trim();
+    const taskName=automatic&&!tab.customLabel?.trim()&&!title?automaticSessionTabName(tasks[tab.id],tabs,tab.id):null;
+    const label=taskName??(automatic&&title?uniqueTabName(title,[...tabs,...result],tab.id):tab.label);
+    result.push(label===tab.label?tab:{...tab,label});
+  }
+  return result;
 }

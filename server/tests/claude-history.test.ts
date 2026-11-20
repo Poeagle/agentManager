@@ -107,6 +107,11 @@ describe("Claude durable conversation projection", () => {
         id: "assistant-message",
         role: "assistant",
         stop_reason: "tool_use",
+        usage: {
+          input_tokens: 10,
+          cache_read_input_tokens: 20,
+          output_tokens: 3,
+        },
         content: [
           { type: "text", text: "开始检查。" },
           {
@@ -147,25 +152,28 @@ describe("Claude durable conversation projection", () => {
       "检查项目",
       "开始检查。",
     ]);
-    expect(page.messages.map((message) => message.text)).toEqual([
-      "检查项目",
-      "开始检查。",
-    ]);
     expect(page.messages[1].content_blocks).toEqual([
       { type: "text", index: 0, text: "开始检查。" },
-      {
-        type: "tool_use",
-        index: 1,
-        id: "tool-1",
-        name: "Bash",
-        input: { command: "pwd" },
-        status: "completed",
-        result: "/workspace",
-      },
     ]);
     expect(page.messages[1].id).toBe(
       conversationMessageId("", "assistant", "assistant-message"),
     );
+    expect(page.statistics).toEqual([
+      expect.objectContaining({
+        message_id: page.messages[1].id,
+        turn_id: "user-record",
+        requests: 1,
+        tool_calls: 1,
+        tokens: {
+          input_tokens: 30,
+          cached_input_tokens: 20,
+          output_tokens: 3,
+          reasoning_output_tokens: 0,
+          total_tokens: 33,
+        },
+      }),
+    ]);
+    expect(page.messages[1].statistics).toEqual(page.statistics![0]);
     appendFileSync(
       file,
       JSON.stringify({

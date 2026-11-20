@@ -18,6 +18,7 @@ import {authHook,createUser,createSession,userCanUseToolForProject} from '../src
 import {agentRoutes} from '../src/routes/agent.js';
 import {sessionRoutes} from '../src/routes/sessions.js';
 import * as manager from '../src/services/session-manager.js';
+import {canUseEnvironment,canControlEnvironment} from '../src/services/agents/environment-access.js';
 
 const controls=(native_id:string):AgentControls=>({model:'future-model',effort:'standard',provider:'future-provider',cwd:null,cli_version:null,engine_version:null,installed_cli_version:null,git:null,state:'idle',permission:null,approval:null,service_tier:null,usage:null,limits:[],usage_observed_at:null,models:[{model:'future-model',name:'Future model',description:'fixture',efforts:[{value:'standard',description:''}],defaultEffort:'standard'}],loaded:true,warning:null,native_id,checked_at:new Date().toISOString()});
 function fixture(path:string):AgentAdapter {
@@ -131,5 +132,17 @@ describe('provider-neutral agent features',()=>{
  it('rejects incomplete implementations at registration, before exposing capabilities',()=>{
   const adapter=fixture('/unused');delete (adapter as any).controls;
   expect(()=>registerAgent(adapter)).toThrow('Missing agent implementation');const malformed=fixture('/unused');malformed.history.file={} as any;expect(()=>registerAgent(malformed)).toThrow('history.file.locate');expect(agentDescriptors().some(agent=>agent.id==='fixture_agent')).toBe(false);
+ });
+ it('uses the optional environment contract without learning adapter-owned IDs',()=>{
+  const database=createTestDatabase();
+  try{
+   const adapter=fixture('/unused');
+   adapter.environment={canUse:(id,userId)=>id==='future-env:one'&&userId==='allowed',canControl:(id,userId)=>id==='future-env:one'&&userId==='controller'};
+   unregister=registerAgent(adapter);
+   expect(canUseEnvironment('fixture_agent','future-env:one','allowed')).toBe(true);
+   expect(canUseEnvironment('fixture_agent','future-env:one','other')).toBe(false);
+   expect(canControlEnvironment('future-env:one','controller','fixture_agent')).toBe(true);
+   expect(canControlEnvironment('future-env:one','other','fixture_agent')).toBe(false);
+  }finally{database.cleanup();}
  });
 });

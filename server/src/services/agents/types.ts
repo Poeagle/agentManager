@@ -275,6 +275,7 @@ export interface AgentContext {
   actorUserId?: string;
   force?: boolean;
   verifyProcess?: boolean;
+  environmentAccess?: (environmentId: string) => boolean;
 }
 export interface AgentAsyncQuestion {
   id?: string;
@@ -298,6 +299,7 @@ export interface AgentMessage {
   phase?: "commentary" | "final" | "error";
   content_blocks?: Array<
     | { type: "text"; index: number; text: string }
+    | { type: "thinking"; index: number; text: string }
     | {
         type: "tool_use";
         index: number;
@@ -381,6 +383,9 @@ export interface AgentRuntime {
 export interface AgentModel {
   default_service_tier?: string | null;
   service_tiers?: Array<{ id: string; name: string; description: string }>;
+  context_window?: number | null;
+  max_output_tokens?: number | null;
+  input_modalities?: string[];
   provider?: string;
   model: string;
   name: string;
@@ -505,6 +510,8 @@ export interface AgentHistoryRecord {
   sourceRole?: "tool_result";
   /** Tool result record identity and public result, kept out of message text. */
   toolResult?: { toolUseId: string; result: string; failed: boolean };
+  /** Provider-reported usage attached to this native assistant record. */
+  usage?: Record<string,number|null>;
 }
 /** File codecs are an optional persistence strategy, never a requirement for
  * an HTTP/SDK agent. Only the generic bounded file reader consumes this port. */
@@ -626,6 +633,14 @@ export interface AgentRetryPort {
 }
 export interface AgentControlResult extends ModelPreference {
   pending?: boolean;
+}
+export interface AgentEnvironmentPort {
+  /** Normalize an adapter-declared environment id before persisting it. */
+  storageId?(id: string): string;
+  /** Validate an adapter-owned environment or empty id for a new session. */
+  canUse(id: string, userId: string): boolean;
+  /** Permit this user to control sessions bound to the environment. */
+  canControl(id: string, userId: string): boolean;
 }
 export interface AgentInputPort {
   /** Submit preserves platform-generated UUIDs in live and durable message identities. */
@@ -752,6 +767,7 @@ export interface AgentAdapter {
   launch: AgentLaunchPort;
   commands: AgentCommandPort;
   management: AgentManagementPort;
+  environment?: AgentEnvironmentPort;
 }
 /** New providers implement conversation ports and only the optional features
  * they advertise. Managed providers need no CLI command or file codec. */
@@ -771,6 +787,7 @@ export interface AgentDefinition {
   launch?: Partial<AgentLaunchPort>;
   commands?: Partial<AgentCommandPort>;
   management?: Partial<AgentManagementPort>;
+  environment?: AgentEnvironmentPort;
 }
 export class UnsupportedAgentFeature extends Error {
   readonly code = "AGENT_FEATURE_UNSUPPORTED";

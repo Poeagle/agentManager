@@ -7,13 +7,13 @@ import {ConversationEnvironmentSelector} from '../src/components/ConversationEnv
 import {ProjectSessionCreateDialog} from '../src/components/ProjectSessionCreateDialog';
 import {copyConversationText} from '../src/lib/conversation-clipboard';
 import {api,type Project,type CodexEnvironment} from '../src/lib/api';
-vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,projects:{...actual.api.projects,list:vi.fn(async()=>({projects:[]}))},codexEnvironments:{management:vi.fn(),list:vi.fn(),save:vi.fn(),checkConnection:vi.fn(),preflight:vi.fn(),forSession:vi.fn(),sessionPreflight:vi.fn(),transfer:vi.fn(),usage:vi.fn(),remove:vi.fn(),closeTabs:vi.fn()},sessions:{...actual.api.sessions,create:vi.fn()}}};});
+vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,projects:{...actual.api.projects,list:vi.fn(async()=>({projects:[]}))},codexEnvironments:{management:vi.fn(),list:vi.fn(),save:vi.fn(),checkConnection:vi.fn(),preflight:vi.fn(),forSession:vi.fn(),sessionPreflight:vi.fn(),transfer:vi.fn(),usage:vi.fn(),remove:vi.fn(),closeTabs:vi.fn()},claudeEnvironments:{list:vi.fn()},sessions:{...actual.api.sessions,create:vi.fn()}}};});
 vi.mock('../src/lib/conversation-clipboard',()=>({copyConversationText:vi.fn(async()=>{})}));
 const native:CodexEnvironment={id:'native',name:'xlli 默认账号',kind:'native',enabled:true,allowed_user_ids:null};
 const account:CodexEnvironment={id:'account:ymchen',name:'ymchen Codex',kind:'account',enabled:true,allowed_user_ids:['ymchen'],connection:{authMethod:'key',username:'ymchen',port:22,identityFile:'',codexCommand:'codex',codexHome:''}};
 const model={model:'fixture-model',provider:'openai',name:'Fixture',description:'',efforts:[{value:'high',description:''}],defaultEffort:'high'};
 let client:QueryClient;
-beforeEach(()=>{vi.clearAllMocks();client=new QueryClient({defaultOptions:{queries:{retry:false}}});vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[native,account],users:[{id:'ymchen',username:'ymchen',display_name:null},{id:'xlli',username:'xlli',display_name:null}]});vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[account]});vi.mocked(api.codexEnvironments.forSession).mockResolvedValue({current:'native',environments:[{...native,can_control:true},{...account,can_control:true}]});vi.mocked(api.codexEnvironments.sessionPreflight).mockResolvedValue({ok:true,checks:[{stage:'codex_authentication',ok:true,message:'已登录'}],models:[model]});vi.mocked(api.codexEnvironments.transfer).mockResolvedValue({ok:true});vi.mocked(api.codexEnvironments.usage).mockResolvedValue({tabs:[],busy:false,verified:true});vi.mocked(api.codexEnvironments.remove).mockResolvedValue({ok:true});});
+beforeEach(()=>{vi.clearAllMocks();client=new QueryClient({defaultOptions:{queries:{retry:false}}});vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[native,account],users:[{id:'ymchen',username:'ymchen',display_name:null},{id:'xlli',username:'xlli',display_name:null}]});vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[account]});vi.mocked(api.claudeEnvironments.list).mockResolvedValue({current:'anthropic',environments:[{id:'anthropic',name:'Anthropic 原生',kind:'native',enabled:true,allowed_user_ids:null,can_control:true},{id:'claude-provider:xindu',name:'Xindu',kind:'provider',enabled:true,allowed_user_ids:null,provider:'xindu',auth_mode:'api',can_control:true}]});vi.mocked(api.codexEnvironments.forSession).mockResolvedValue({current:'native',environments:[{...native,can_control:true},{...account,can_control:true}]});vi.mocked(api.codexEnvironments.sessionPreflight).mockResolvedValue({ok:true,checks:[{stage:'codex_authentication',ok:true,message:'已登录'}],models:[model]});vi.mocked(api.codexEnvironments.transfer).mockResolvedValue({ok:true});vi.mocked(api.codexEnvironments.usage).mockResolvedValue({tabs:[],busy:false,verified:true});vi.mocked(api.codexEnvironments.remove).mockResolvedValue({ok:true});});
 afterEach(()=>client.clear());
 const mount=(child:React.ReactNode)=>render(<QueryClientProvider client={client}>{child}</QueryClientProvider>);
 describe('Codex environments UI',()=>{
@@ -84,4 +84,27 @@ describe('Codex environments UI',()=>{
   await waitFor(()=>expect(screen.getByRole('combobox',{name:'新标签页 Codex 环境'})).toHaveValue(account.id));await waitFor(()=>expect(screen.getByRole('button',{name:'新建会话'})).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:'新建会话'}));await waitFor(()=>expect(api.sessions.create).toHaveBeenCalledWith(expect.objectContaining({environment_id:account.id,cli_type:'codex'})));
  });
  it('blocks new tabs when no Codex environments are authorized',async()=>{vi.mocked(api.codexEnvironments.list).mockResolvedValueOnce({environments:[]});const ready=vi.fn();const {CodexCreateEnvironment}=await import('../src/components/CodexCreateEnvironment');mount(<CodexCreateEnvironment projectId="p" onChange={vi.fn()} onReady={ready}/>);expect(await screen.findByRole('alert')).toHaveTextContent('没有可使用');expect(ready).toHaveBeenLastCalledWith(false);});
+ it('creates a Claude tab with the selected Provider through the normal project flow',async()=>{
+  const p:Project={id:'p',name:'Project',path:'/fixture/project',description:null,session_prompt:null,openclaw_prompt:null,color:'',created_at:'',tool_access:{can_session:true,can_terminal:false,session_clients:['claude']}};
+  vi.mocked(api.sessions.create).mockResolvedValueOnce({ok:true,session:{id:'s'} as any});
+  mount(<ProjectSessionCreateDialog project={p} onClose={vi.fn()} onSessionCreated={vi.fn()}/>);
+  const select=await screen.findByRole('combobox',{name:'新会话 Claude Provider'});
+  await waitFor(()=>expect(select).toHaveValue('anthropic'));
+  fireEvent.change(select,{target:{value:'claude-provider:xindu'}});
+  fireEvent.click(screen.getByRole('button',{name:'新建会话'}));
+  await waitFor(()=>expect(api.sessions.create).toHaveBeenCalledWith(expect.objectContaining({
+   cli_type:'claude',environment_id:'claude-provider:xindu',
+  })));
+ });
+ it('creates a Claude tab with the native Provider without an environment authorization error',async()=>{
+  const p:Project={id:'p',name:'Project',path:'/fixture/project',description:null,session_prompt:null,openclaw_prompt:null,color:'',created_at:'',tool_access:{can_session:true,can_terminal:false,session_clients:['claude']}};
+  vi.mocked(api.sessions.create).mockResolvedValueOnce({ok:true,session:{id:'s'} as any});
+  mount(<ProjectSessionCreateDialog project={p} onClose={vi.fn()} onSessionCreated={vi.fn()}/>);
+  await waitFor(()=>expect(screen.getByRole('combobox',{name:'新会话 Claude Provider'})).toHaveValue('anthropic'));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'新建会话'})).toBeEnabled());
+  fireEvent.click(screen.getByRole('button',{name:'新建会话'}));
+  await waitFor(()=>expect(api.sessions.create).toHaveBeenCalledWith(expect.objectContaining({
+   cli_type:'claude',environment_id:'anthropic',
+  })));
+ });
 });

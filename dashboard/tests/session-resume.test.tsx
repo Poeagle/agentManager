@@ -8,7 +8,7 @@ import { SessionResumeFeedback } from '../src/components/SessionResumeFeedback';
 
 vi.mock('../src/lib/api', async () => {
   const actual = await vi.importActual<typeof import('../src/lib/api')>('../src/lib/api');
-  return { ...actual, api: { ...actual.api, sessions: { ...actual.api.sessions, resume: vi.fn(), reload:vi.fn() } } };
+  return { ...actual, api: { ...actual.api, sessions: { ...actual.api.sessions, resume: vi.fn(), reload:vi.fn(), newConversation:vi.fn() } } };
 });
 
 const ended: Session = {
@@ -17,6 +17,19 @@ const ended: Session = {
   completed_at: '2026-10-13T03:00:00Z', exit_code: 0, created_at: '2026-10-12T00:00:00Z',
 };
 const resumed: Session = { ...ended, status: 'running', completed_at: null, exit_code: null };
+const managed: Session = {
+  ...ended,
+  id: 'managed-1',
+  cli_type: 'claude',
+  claude_session_id: 'native-claude',
+  agent: {
+    id: 'claude',
+    label: 'Claude',
+    sessionHost: 'managed',
+    presentation: { icon: 'claude', color: '#D97757' },
+    capabilities: { history: true, launch: true, newConversation: true } as unknown as Session['agent']['capabilities'],
+  },
+};
 
 function setup() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -73,6 +86,15 @@ describe('manual session resume feedback', () => {
     }
     // HTTP success alone must not claim that the terminal is ready.
     expect(result.current.states[ended.id].phase).toBe('connecting');
+  });
+
+  it('marks a managed new conversation ready without waiting for a terminal callback', async () => {
+    const next={...managed,task:'新会话',claude_session_id:'native-new'};
+    vi.mocked(api.sessions.newConversation).mockResolvedValue({ok:true,session:next});
+    const {result}=setup();
+    await act(()=>result.current.newConversation(managed.id,{model:'claude-sonnet-5-5',effort:''}));
+    expect(result.current.states[managed.id].phase).toBe('ready');
+    expect(api.sessions.newConversation).toHaveBeenCalledWith(managed.id,{model:'claude-sonnet-5-5',effort:''});
   });
 
   it('exposes request errors and allows an explicit retry', async () => {

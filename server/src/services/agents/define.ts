@@ -26,5 +26,6 @@ export function resolveAgent(definition: AgentDefinition): AgentAdapter {
             writeConfigFile: async () => unsupported('launch'),
             ...definition.management,
         },
+        ...(definition.environment ? { environment: definition.environment } : {}),
     };
 }

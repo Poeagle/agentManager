@@ -21,6 +21,32 @@ export function parseClaudeMessage(line: Buffer): AgentHistoryRecord | null {
     return null;
   }
   const message = entry.message;
+  if (
+    entry.type === "system" &&
+    entry.subtype === "compact_boundary" &&
+    typeof entry.uuid === "string"
+  ) {
+    const duration = finiteToken(entry.compactMetadata?.durationMs);
+    return {
+      message: {
+        role: "assistant",
+        phase: "commentary",
+        text: "",
+        timestamp:
+          typeof entry.timestamp === "string" ? entry.timestamp : null,
+      },
+      presentation: "compaction_summary",
+      compaction: {
+        before_tokens: finiteToken(entry.compactMetadata?.preTokens),
+        after_tokens: finiteToken(entry.compactMetadata?.postTokens),
+        duration_ms: duration,
+      },
+      itemId: entry.uuid,
+      turnId: entry.uuid,
+      recordType: "compaction_summary",
+      imagePaths: [],
+    };
+  }
   if (!message || (entry.type !== "user" && entry.type !== "assistant"))
     return null;
   if (
@@ -58,6 +84,26 @@ export function parseClaudeMessage(line: Buffer): AgentHistoryRecord | null {
     (item) => item.role === "user" || item.role === "assistant",
   );
   if (!extracted) return null;
+  if (
+    extracted.role === "user" &&
+    typeof entry.promptId === "string" &&
+    /^This session is being continued from a previous conversation that ran out of context\./i.test(
+      extracted.text,
+    )
+  ) {
+    return {
+      message: {
+        ...extracted,
+        role: "assistant",
+        phase: "commentary",
+      },
+      presentation: "compaction_summary",
+      itemId: typeof entry.uuid === "string" ? entry.uuid : undefined,
+      turnId: undefined,
+      recordType: "compaction_summary",
+      imagePaths: [],
+    };
+  }
   const reply =
     extracted.role === "user"
       ? conversationQuestionReply(extracted.text)
@@ -70,6 +116,7 @@ export function parseClaudeMessage(line: Buffer): AgentHistoryRecord | null {
         : undefined;
   const contentBlocks =
     extracted.role === "assistant" ? claudeContentBlocks(content) : undefined;
+  const usage = extracted.role === "assistant" ? claudeUsage(message.usage) : null;
   return {
     message: reply ? { ...extracted, text: reply.text } : extracted,
     recordType: "native_message",
@@ -83,7 +130,28 @@ export function parseClaudeMessage(line: Buffer): AgentHistoryRecord | null {
           ? entry.parentUuid
           : undefined,
     ...(contentBlocks?.length ? { contentBlocks } : {}),
+    ...(usage ? { usage } : {}),
   };
+}
+
+function claudeUsage(value: unknown): Record<string,number|null>|null {
+  if (!value || typeof value !== "object") return null;
+  const usage=value as Record<string,unknown>;
+  const number=(key:string)=>typeof usage[key]==="number"&&Number.isFinite(usage[key])?usage[key] as number:null;
+  const input=number("input_tokens"),read=number("cache_read_input_tokens")??0,write=number("cache_creation_input_tokens")??0,output=number("output_tokens");
+  if(input===null&&output===null)return null;
+  return {
+    input_tokens:input===null?null:input+read+write,
+    cached_input_tokens:read,
+    output_tokens:output,
+    total_tokens:input===null&&output===null?null:(input??0)+read+write+(output??0),
+  };
+}
+
+function finiteToken(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
 }
 
 function claudeToolResult(
@@ -141,17 +209,26 @@ function claudeContentBlocks(
 
 interface ClaudeEntry {
   type?: string;
+  subtype?: string;
   uuid?: string;
   parentUuid?: string;
+  promptId?: string;
   isSidechain?: boolean;
   isMeta?: boolean;
   timestamp?: string;
+  compactMetadata?: {
+    trigger?: string;
+    preTokens?: number;
+    postTokens?: number;
+    durationMs?: number;
+  };
   message?: {
     id?: string;
     role?: string;
     model?: string;
     stop_reason?: string;
     content?: unknown;
+    usage?: unknown;
   };
 }
 

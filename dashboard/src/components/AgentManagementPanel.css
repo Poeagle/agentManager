@@ -583,6 +583,33 @@
 .agent-management-loading,
 .agent-management-empty { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 80px; padding: 12px; color: var(--text-secondary); font-size: 12px; }
 .agent-management-error { margin: 7px 0; color: var(--error); font-size: 11px; line-height: 17px; }
+.claude-provider-workspace { margin-bottom:14px; }
+.claude-provider-workspace .agent-management-provider-list { padding:8px; }
+.claude-provider-workspace .agent-management-provider-content { background:var(--bg-secondary); }
+.claude-provider-editor { padding:12px; }
+.claude-provider-back { margin-bottom:10px; }
+.claude-provider-editor-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:14px; padding-bottom:14px; border-bottom:1px solid var(--border); }
+.claude-provider-editor-heading h3 { margin:0; font-size:16px; font-weight:600; }
+.claude-provider-editor-heading p { margin:4px 0 0; color:var(--text-secondary); font-size:12px; line-height:19px; }
+.claude-provider-editor .agent-management-engine-form { gap:12px; }
+.claude-provider-editor .agent-management-field { gap:5px; }
+.claude-provider-editor .agent-management-field > span { display:flex; align-items:center; gap:4px; font-size:12px; }
+.claude-provider-models { margin-top:14px; padding-top:14px; }
+.claude-provider-models-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+.claude-provider-models-heading h4 { margin:0; font-size:14px; }
+.claude-provider-models-heading p { margin:4px 0 0; color:var(--text-secondary); font-size:12px; line-height:19px; }
+.claude-provider-model-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:5px; max-height:220px; overflow-y:auto; padding:8px; border:1px solid var(--border); border-radius:7px; background:var(--bg-primary); }
+.claude-provider-model-grid label { display:flex; min-width:0; align-items:center; gap:6px; padding:6px 7px; border:1px solid transparent; border-radius:5px; color:var(--text-secondary); font-size:11px; cursor:pointer; }
+.claude-provider-model-grid label:hover { border-color:color-mix(in srgb,var(--accent) 30%,var(--border)); background:var(--bg-tertiary); }
+.claude-provider-model-grid label.selected { color:var(--text-primary); border-color:color-mix(in srgb,var(--accent) 30%,var(--border)); background:color-mix(in srgb,var(--accent) 5%,var(--bg-secondary)); }
+.claude-provider-model-grid input { width:13px; height:13px; flex:none; accent-color:var(--accent); }
+.claude-provider-model-grid span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.claude-provider-model-grid small { margin-left:auto; color:var(--accent); font-size:9px; white-space:nowrap; }
+.claude-provider-default { max-width:340px; margin-top:10px; }
+.claude-provider-editor-actions { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); }
+.claude-provider-editor-actions > div { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+.claude-provider-editor-actions > div > span { color:var(--error); font-size:10px; }
+.claude-provider-editor-actions > span { margin-left:auto; color:var(--text-muted); font-size:10px; }
 .agent-management-error-box { color: var(--error); }
 .agent-management-operation {
   display: flex;
@@ -631,6 +658,10 @@
   .agent-management-provider { min-height: 42px; }
   .agent-management-provider-list .agent-management-provider { display: inline-grid; width: calc(50% - 4px); margin: 2px; vertical-align: top; }
   .agent-management-provider-note { display: none; }
+  .claude-provider-workspace .agent-management-provider-list { border-right:0; border-bottom:1px solid var(--border); }
+  .claude-provider-editor-heading { flex-direction:column; }
+  .claude-provider-editor-actions { align-items:stretch; }
+  .claude-provider-editor-actions > span { margin-left:0; }
   .agent-management-page { padding: 10px; }
   .agent-management-detail-heading { align-items: flex-start; flex-direction: column; }
   .agent-management-status-row { width: 100%; }

@@ -485,7 +485,8 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const cliType = getAgent(cli_type||'claude').descriptor.id;
     if (mode !== undefined && mode !== 'session' && mode !== 'terminal') return reply.status(400).send({ error: 'mode must be session or terminal' });
     const environmentId=(req.body as {environment_id?:unknown}).environment_id;
-    if(environmentId!==undefined){if(cliType!=='codex'||typeof environmentId!=='string'||mode==='terminal')return reply.code(400).send({error:'Codex 环境仅适用于 Codex 会话'});try{assertEnvironmentUse('codex',environmentId,req.user!.id);}catch{return reply.code(403).send({error:'无权使用该 Codex 环境'});}}
+    const environmentCapability=getAgent(cliType).environment;
+    if(environmentId!==undefined){if(typeof environmentId!=='string'||mode==='terminal')return reply.code(400).send({error:'环境仅适用于会话模式'});if(cliType!=='codex'&&!environmentCapability)return reply.code(400).send({error:'当前 Agent 不支持选择环境'});try{assertEnvironmentUse(cliType,environmentId,req.user!.id);}catch{return reply.code(403).send({error:'无权使用所选环境'});}}
     if(cliType==='codex'&&mode!=='terminal'&&environmentId===undefined){try{assertEnvironmentUse('codex','native',req.user!.id);}catch{return reply.code(403).send({error:'无权使用默认 Codex 环境，请选择已授权的账号环境'});}}
     const requestedMode = mode === 'terminal' ? 'terminal' : 'session';
     if(requestedMode==='session'&&!getAgent(cliType).descriptor.capabilities.launch)return reply.code(409).send({error:'此 Agent 不支持创建会话'});
@@ -524,7 +525,10 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const initialTask = task ?? '';
 
     const session = sessionManager.createSession(canonicalProjectPath, initialTask, resolvedProjectId, cliType, req.user!.id, 'session');
-    if(typeof environmentId==='string')getDb().prepare('UPDATE sessions SET agent_environment_id=? WHERE id=?').run(environmentId,session.id);
+    const storedEnvironmentId=typeof environmentId==='string'
+      ? getAgent(cliType).environment?.storageId?.(environmentId)||environmentId
+      : undefined;
+    if(storedEnvironmentId)getDb().prepare('UPDATE sessions SET agent_environment_id=? WHERE id=?').run(storedEnvironmentId,session.id);
     if(getAgent(cliType).descriptor.sessionHost==='managed')await sessionManager.spawnSession(session.id,canonicalProjectPath,initialTask,120,40,cliType);
     else registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task: initialTask, mode: 'session', projectId: resolvedProjectId, cliType });
 

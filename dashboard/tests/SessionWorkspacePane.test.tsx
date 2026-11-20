@@ -78,9 +78,9 @@ describe('chat/raw terminal display',()=>{
     const message={id:'streaming-progress',role:'assistant',phase:'commentary',text:'检查进展',turn_id:'work',streaming:true,timestamp:'2026-11-03T00:00:00Z',statistics:{complete:true,requests:1,tool_calls:3,tool_rounds:2,tokens:{total_tokens:500}}};
     const send=(message:unknown)=>act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'answering',turn_id:'work',started_at:'2026-11-03T00:00:00Z',messages:[message]})}));
     send(message);let bubble=document.querySelector('[data-chat-message-id="streaming-progress"]')!;
-    expect(bubble.querySelector('time')).toBeNull();expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('500｜');
+    expect(bubble.querySelector('time')).toBeNull();expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('500 (—)｜');
     send({...message,text:'检查结束',streaming:false,timestamp:'2026-11-03T00:00:05Z'});bubble=document.querySelector('[data-chat-message-id="streaming-progress"]')!;
-    expect(bubble.querySelector('time')).toHaveAttribute('datetime','2026-11-03T00:00:05Z');expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('500｜—｜—｜—｜—｜— · 2 rounds | 3 calls');
+    expect(bubble.querySelector('time')).toHaveAttribute('datetime','2026-11-03T00:00:05Z');expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('500 (—)｜—｜—｜—｜— · 2 rounds | 3 calls');
   });
   it('uses newer durable completion to clear a lost RPC busy snapshot while rejecting older completion',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
@@ -208,6 +208,33 @@ describe('chat/raw terminal display',()=>{
     expect(screen.getByText('Turn failed; resolve the error and retry')).toBeVisible();expect(document.querySelectorAll('.session-chat-caret')).toHaveLength(0);
     fireEvent.click(screen.getByRole('button',{name:'查看原始终端',exact:true}));expect(screen.getByTestId('raw')).toBeVisible();
     fireEvent.click(screen.getByRole('button',{name:'对话',exact:true}));expect(await screen.findAllByRole('alert')).toHaveLength(1);
+  });
+  it('explains provider balance exhaustion and points to switching providers',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const failure={id:'balance-error',role:'assistant' as const,phase:'error' as const,text:'API Error: 402 {"error":{"message":"insufficient balance","type":"insufficient_balance"}}',turn_id:'balance',timestamp:null,error:{code:'insufficient_balance',will_retry:false}};
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:false,stage:'idle',turn_id:'balance',messages:[failure]})}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('当前 Provider 余额不足');
+    expect(screen.getByRole('alert')).toHaveTextContent('切换到其他 Provider');
+  });
+  it('shows an actionable error card when the Claude provider has no accounts',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const failure={id:'provider-error',role:'assistant' as const,phase:'error' as const,text:'API Error: 503 {"error":{"message":"No available accounts: no available accounts","type":"api_error"},"type":"error"}',turn_id:'provider',timestamp:null,error:{code:'provider_unavailable',will_retry:false}};
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:false,stage:'idle',turn_id:'provider',messages:[failure]})}));
+    const card=await screen.findByRole('alert');
+    expect(card).toHaveTextContent('当前 Claude Provider 暂无可用账号');
+    expect(card).not.toHaveTextContent('final');
+  });
+  it('explains an unavailable selected model without suggesting a provider retry loop',async()=>{
+    const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
+    vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
+    mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
+    const failure={id:'model-error',role:'assistant' as const,phase:'error' as const,text:"There's an issue with the selected model (grok-4.5). It may not exist or you may not have access to it.",turn_id:'model',timestamp:null,error:{code:'model_unavailable',will_retry:false}};
+    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:false,stage:'idle',turn_id:'model',messages:[failure]})}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('当前模型不存在或该 Provider 无访问权限');
   });
   it('distinguishes automatic retry from a final error and ends the retry notice after progress resumes',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];

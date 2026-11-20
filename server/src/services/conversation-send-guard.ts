@@ -26,6 +26,8 @@ export async function inspectSendGuard(session:AgentSession,userId:string,payloa
  const idleMinutes=Number.isFinite(last)&&last<=now?(now-last)/60000:null;
  const matched=policy.enabled?evaluateSendGuard(policy.conditions,{context_percent:percent,context_tokens:tokens,idle_minutes:runtime&&['running','waiting_for_input'].includes(runtime.state)?0:idleMinutes}):false;
  const owned=session.created_by_user_id===userId,canTransform=isAdmin(userId)&&owned&&idle;
- const hasHistory=!!runtime?.completed_turn_id||idle&&!!runtime?.last_activity_at;
- return {needs_confirmation:matched===true||matched===null&&(unavailable||hasHistory||tokens!==null||window!==null),matched,enabled:policy.enabled,context_tokens:tokens,context_window:window,context_percent:percent,idle_minutes:idleMinutes,last_completed_at:idle?runtime?.last_turn_ended_at??null:null,observed_at:usage?.observed_at??null,native_id:context.nativeId,checked_at:new Date(now).toISOString(),can_compact:!!canTransform&&!!adapter.descriptor.capabilities.compact,can_new:!!canTransform&&!!adapter.descriptor.capabilities.newConversation,token:guardToken(session,userId,payload,now,policy)};
+ // Only an actual threshold match opens the dialog. Unknown telemetry remains
+ // visible as unknown, but a Provider that omits its context window must not
+ // block ordinary input.
+ return {needs_confirmation:matched===true,matched,enabled:policy.enabled,context_tokens:tokens,context_window:window,context_percent:percent,idle_minutes:idleMinutes,last_completed_at:idle?runtime?.last_turn_ended_at??null:null,observed_at:usage?.observed_at??null,native_id:context.nativeId,checked_at:new Date(now).toISOString(),can_compact:!!canTransform&&!!adapter.descriptor.capabilities.compact,can_new:!!canTransform&&!!adapter.descriptor.capabilities.newConversation,token:guardToken(session,userId,payload,now,policy)};
 }

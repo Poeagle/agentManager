@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  reconcileHydratedTerminalInstances, nextDefaultTabName, uniqueTabName,
+  reconcileHydratedTerminalInstances, nextDefaultTabName, uniqueTabName, automaticSessionTabName,
 } from '../src/lib/project-session-state';
 
 it('avoids existing displayed names when creating or renaming tabs', () => {
@@ -8,6 +8,14 @@ it('avoids existing displayed names when creating or renaming tabs', () => {
   expect(nextDefaultTabName('Session', tabs)).toBe('Session 3');
   expect(uniqueTabName('Session 2', tabs, 'b')).toBe('Session 2 (3)');
   expect(uniqueTabName('Session 2', tabs, 'a')).toBe('Session 2');
+});
+
+it('names automatic session tabs from the first task instead of a generic ordinal', () => {
+  const tabs = [{id:'a',label:'Session 1'},{id:'b',label:'介绍一下这个项目'}];
+  expect(automaticSessionTabName('介绍一下这个项目',tabs,'c')).toBe('介绍一下这个项目 (2)');
+  expect(automaticSessionTabName('  检查\n\n构建  ',tabs,'c')).toBe('检查 构建');
+  expect(automaticSessionTabName('Terminal',tabs,'c')).toBeNull();
+  expect(automaticSessionTabName('',tabs,'c')).toBeNull();
 });
 
 describe('project terminal state hydration', () => {

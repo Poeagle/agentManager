@@ -95,7 +95,7 @@ import {
   mergeConversationTimeline,
   type TimelineMessage,
 } from "../lib/conversation-timeline";
-import { groupConversationProgress, pendingProgressStatistics, withObservedToolCounts } from "../lib/conversation-progress";
+import { groupConversationProgress, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts } from "../lib/conversation-progress";
 import {
   conversationTimings,
   elapsedBetween,
@@ -186,7 +186,7 @@ function ProgressSummary({agent,agentName,count,active,progress,progressScope='t
           <span>{agentName}</span>
           <span className="session-chat-kind">progress</span>
           {showStatistics&&<span className="session-chat-progress-count">{count} {count === 1 ? "item" : "items"}</span>}
-          {showStatistics&&(progress||progressScope==='segment')&&<ConversationStatisticsLabel statistics={progress?{...progress,sequence:0}:null} scope={progressScope}/>}
+          {showStatistics&&(progress||progressScope==='segment')&&<ConversationStatisticsLabel interval={!!progress&&!('segment' in progress)} statistics={progress?{...progress,sequence:0}:null}/>}
           {showStatistics&&active&&stepDuration!=null&&<time className="session-chat-progress-time" title={stepRunning?'Elapsed time for the current tool step':'Duration of the most recently completed tool step'}>Step {formatElapsedEnglish(stepDuration)}</time>}
           {showStatistics&&active&&<span className="session-chat-progress-time">{progressPhase}: <time style={{color:phaseSeconds==null?undefined:timeColor(phaseSeconds)}}>{phaseSeconds==null?'—':`${phaseSeconds}s`}</time></span>}
           {showStatistics&&(turnDuration!=null?<time className="session-chat-progress-time" style={{color:timeColor(turnDuration/1000)}} title="Elapsed time for this progress segment">Elapsed {formatElapsedEnglish(turnDuration)}</time>:progressScope==='segment'?<span className="session-chat-progress-time" title="Segment timing is unavailable">Elapsed —</span>:null)}
@@ -217,7 +217,6 @@ const Bubble = memo(function Bubble({
   active: boolean;
   allowRaw?: boolean;
   durationLabel?: string;
-  durationTitle?: string;
   retrying?: boolean;
   autoRetry?: ConversationRetry;
   onCancelRetry?: () => Promise<void>;
@@ -280,7 +279,7 @@ const Bubble = memo(function Bubble({
         {message.queued && (
           <>
             <span className="session-chat-queued" role="status">
-              Queued · waiting
+              Queued
             </span>
             {onCancelQueued && (
               <button
@@ -351,7 +350,7 @@ const Bubble = memo(function Bubble({
         context={{
           kind: "compaction_summary",
           label: "Compaction summary",
-          source: "codex",
+          source: agent.label,
         }}
         copied={copied}
         onCopy={() => void copy()}
@@ -382,7 +381,10 @@ const Bubble = memo(function Bubble({
     );
   const contentBlocks =
     message.content_blocks?.filter(
-      (block) => block.type === "tool_use" || block.text.length > 0,
+      (block) =>
+        block.type === "tool_use" ||
+        block.type === "thinking" ||
+        block.text.length > 0,
     ) || [];
   if (
     message.role === "assistant" &&
@@ -440,10 +442,19 @@ const Bubble = memo(function Bubble({
           <ConversationRetryStatus retry={autoRetry} onCancel={onCancelRetry} />
         ) : !message.error?.will_retry ? (
           <p>
-            {message.error?.code === "server_overloaded" ||
-                  /at capacity/i.test(message.text)
+            {/insufficient_balance|insufficient balance/i.test(message.text)
+              ? "当前 Provider 余额不足，本轮已停止。请在 Agent 配置中充值或切换到其他 Provider，然后新开会话。"
+              : message.error?.code === "provider_unavailable" ||
+                    /no available accounts|api error:\s*503/i.test(message.text)
+                ? "当前 Claude Provider 暂无可用账号，本轮未执行。请更新 Provider 凭据或切换到其他模型，然后重试。"
+              : message.error?.code === "server_overloaded" ||
+                    /at capacity/i.test(message.text)
                 ? "当前模型繁忙，本轮已停止。可稍后重试，或在原始终端切换模型。"
-                : "本轮已停止。请根据错误信息处理后再试。"}
+                : /selected model.*(?:does not exist|may not exist|access)/i.test(message.text)
+                  ? "当前模型不存在或该 Provider 无访问权限，请检查 Provider 模型配置。"
+                  : message.error?.code === "model_mismatch"
+                    ? "Provider 实际路由到了不同模型。该结果未被当作所选模型，请检查 Provider 的模型映射或上游路由。"
+                  : "本轮已停止。请根据错误信息处理后再试。"}
           </p>
         ) : null}
         <div className="session-chat-error-actions">
@@ -513,6 +524,17 @@ const Bubble = memo(function Bubble({
                     key={`${message.id}:tool:${block.id}`}
                     block={block}
                   />
+                ) : block.type === "thinking" ? (
+                  <details
+                    key={`${message.id}:thinking:${block.index}`}
+                    className="session-chat-thinking-block"
+                  >
+                    <summary>
+                      <span className="session-chat-thinking-spark" aria-hidden="true" />
+                      <span>{streaming ? `${agentName} 正在思考` : `${agentName} 的思考过程`}</span><small>{streaming ? "实时输出" : "已完成"}</small>
+                    </summary>
+                    <div>{block.text}</div>
+                  </details>
                 ) : (
                   <ConversationMarkdown
                     key={`${message.id}:text:${block.index}:${index}`}
@@ -712,6 +734,9 @@ export function SessionConversation({
     started_at: null,
     stage: "idle",
   });
+  // A terminal live stage is authoritative until a new turn starts, even if
+  // a delayed page poll still carries the previous running state.
+  const completedTurn = useRef<string | null>(null);
   // The durable native completion is also an event source. If an RPC snapshot
   // was missed, do not keep a connected socket's old busy flag indefinitely.
   useEffect(() => {
@@ -956,6 +981,15 @@ export function SessionConversation({
       index > lastUserIndex && message.role === "assistant" ? message : last,
     null,
   );
+  const latestUser = lastUserIndex >= 0 ? messages[lastUserIndex] : undefined;
+  const completedWithoutNewInput = Boolean(
+    latestUser &&
+      latestAssistant?.phase === "final" &&
+      !latestAssistant.streaming &&
+      latestAssistant.timestamp &&
+      latestUser.timestamp &&
+      Date.parse(latestAssistant.timestamp) >= Date.parse(latestUser.timestamp),
+  );
   const activeError =
     latestAssistant?.phase === "error" &&
     (liveState !== "connected" ||
@@ -965,7 +999,9 @@ export function SessionConversation({
       ? latestAssistant
       : null;
   const busy =
+    !completedWithoutNewInput &&
     !(activeError && !activeError.error?.will_retry) &&
+    !(completedTurn.current && completedTurn.current === liveProgress.turn_id) &&
     (liveState === "connected"
       ? liveBusy
       : page?.runtime?.state === "running" ||
@@ -1186,6 +1222,8 @@ export function SessionConversation({
           activities: Array.isArray(frame.activities) ? frame.activities : [],
           stage: frame.stage,
         });
+      if (!frame.busy && frame.stage && !["waiting", "tools", "answering", "finishing"].includes(frame.stage))
+        completedTurn.current = frame.turn_id || null;
     };
     const connect = () => {
       if (disposed) return;
@@ -1992,14 +2030,20 @@ export function SessionConversation({
   const currentActivity=currentConversationActivity(currentActivities,activityRunning);
   const stepDuration=conversationActivityDuration(currentActivity,now);
   const progressActivities=liveState==='connected'&&!reconnectable?liveProgress.activities||[]:[];
+  // Activities are transient state, not history: keep one latest row per
+  // native tool ID so streamed updates cannot grow a vertical stack.
+  const latestActivities=Array.from(
+    progressActivities.reduce((items,item)=>items.set(item.id,item),new Map<string,ConversationActivity>()).values(),
+  );
   const slotBoundary=tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?null:tailMessage?.id??null;
-  const slotActivities=progressActivities.filter(item=>{
+  const slotActivities=latestActivities.filter(item=>{
     if(item.turn_id&&item.turn_id!==liveTurn)return false;
     if(Object.hasOwn(item,'after_message_id'))return item.after_message_id===slotBoundary;
     // Older adapters can supply real timing instead of an explicit boundary.
     if(!tailMessage)return true;
     return !!item.started_at&&!!tailMessage.timestamp&&Date.parse(item.started_at)>Date.parse(tailMessage.timestamp);
   });
+  const latestSlotActivity=[...slotActivities].reverse().find(item=>item.status==='running')||slotActivities.at(-1);
   const pendingStatistics=withObservedToolCounts(pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||tail?.kind==='progress'||!!pendingSegment)?progressStatistics:null,tail?.kind==='progress'?tailMessage?.statistics?.segment:undefined,tail?.kind==='progress',tailMessage),slotActivities.length,liveTurn||'');
   const streamingIndex=displayed.findIndex(message=>message.id===streamingId);
   const streamingPrevious=streamingIndex>=0?displayed.slice(0,streamingIndex).filter(message=>!message.queued).at(-1):undefined;
@@ -2177,7 +2221,6 @@ export function SessionConversation({
         compact={compact}
         showStatistics={!notificationView}
         durationLabel={timings.get(message.id)?.label}
-        durationTitle={timings.get(message.id)?.title}
         agent={sessionAgent(session)}
         agentName={agentName}
         projectPath={projectPath}
@@ -2243,13 +2286,14 @@ export function SessionConversation({
                 if(group.kind === "message") return bubble(group.message,false,group.id);
                 const last=group.messages.at(-1),next=groups[groupIndex+1];
                 const pending=group.id===pendingGroupId;
-                const final=next?.kind==='message'&&next.message.role==='assistant'&&next.message.phase==='final'&&!next.message.async_questions?.length&&!!next.message.turn_id&&next.message.turn_id===last?.turn_id?next.message:null;
+                const nextMessage=next?.kind==='message'?next.message:undefined;
+                const final=nextMessage?.role==='assistant'&&nextMessage.phase==='final'&&!nextMessage.async_questions?.length?nextMessage:null;
                 const saved=final?.statistics?.segment||last?.statistics?.segment||(pending?pendingSegment:null);
                 const live=progressStatistics?.segment;
                 const activeGroup=busy&&(pending||groups.at(-1)===group);
-                const liveMatches=progressStatistics?.turn_id===(last?.turn_id||liveTurn)&&live&&(!saved?(last?progressStatistics?.step?.after_message_id===last.id||progressStatistics?.step?.after_sequence!=null&&progressStatistics.step.after_sequence===last.sequence:!!pendingSegment||!continuingAfterFollowup):live.id===saved.id&&!!saved.start_at&&live.start_at===saved.start_at);
+                const liveMatches=progressStatistics?.turn_id===(last?.statistics?.turn_id||last?.turn_id||liveTurn)&&live&&(!saved?(last?progressStatistics?.step?.after_message_id===last.id||progressStatistics?.step?.after_sequence!=null&&progressStatistics.step.after_sequence===last.sequence:!!pendingSegment||!continuingAfterFollowup):live.id===saved.id&&!!saved.start_at&&live.start_at===saved.start_at);
                 const part=activeGroup&&liveMatches?live:saved;
-                const summary=withObservedToolCounts(part?{...part,turn_id:last?.turn_id||liveTurn||'',sequence:0}:null,pending?slotActivities.length:0,liveTurn||'');
+                const summary=withObservedToolCounts(part?{...part,turn_id:last?.turn_id||liveTurn||'',sequence:0}:progressGroupStatistics(group.messages,final),pending?slotActivities.length:0,liveTurn||'');
                 return (
                   <ProgressSection
                     key={`progress-${group.id}`}
@@ -2283,7 +2327,7 @@ export function SessionConversation({
                         {bubble(message, true)}
                       </div>
                     ))}
-                    {pending&&<ConversationProgressPending number={group.messages.length+1} tool={currentConversationActivity(slotActivities,true)||undefined}
+                    {pending&&<ConversationProgressPending number={group.messages.length+1} tool={latestSlotActivity}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
                       statistics={pendingStatistics} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
                   </ProgressSection>

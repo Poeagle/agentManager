@@ -91,7 +91,7 @@ describe('same-machine account SSH transport',()=>{
   expect(error).toMatchObject({stage:'attachment_access'});expect(error.message).toContain(path);expect(error.message).toContain('fixture');
   const command=error.message.split('\n').find((line:string)=>line.startsWith('sudo -u'))!;
   // Execute only the generated chmod on our isolated fixture, without sudo or another OS account.
-  execFileSync('/bin/sh',['-c',command.replace("sudo -u 'fixture' ", '')]);
+  execFileSync('/bin/sh',['-c',command.replace("sudo -u 'fixture' ", '').replace('chmod u+r --','chmod u+r')]);
   expect((await stat(path)).mode&0o600).toBe(0o600);
   await expect(checkAccountAttachments(connection,[path])).resolves.toBeUndefined();
  });

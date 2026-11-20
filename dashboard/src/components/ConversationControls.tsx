@@ -29,7 +29,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const operationLock=useRef(false);
     const forceRefresh=useRef(false);
   const query=useQuery({queryKey:['conversation-controls',sessionId],queryFn:()=>{const force=forceRefresh.current;forceRefresh.current=false;return api.agent.controls(sessionId,force);},enabled:active,refetchInterval:active?300000:false,staleTime:300000,refetchOnWindowFocus:false,retry:false});
-  const environments=useQuery({queryKey:['session-environments',sessionId],queryFn:()=>api.codexEnvironments.forSession(sessionId),enabled:active&&query.data?.agent?.id==='codex',retry:false,staleTime:30000});
+  const environments=useQuery({queryKey:['session-environments',sessionId],queryFn:()=>api.codexEnvironments.forSession(sessionId),enabled:active&&(query.data?.agent?.id==='codex'||query.data?.agent?.id==='claude'),retry:false,staleTime:30000});
   // Cache-only subscription: usage events never trigger a model/catalog/quota request.
   const liveUsage=useQuery<ConversationUsageUpdate|null>({queryKey:['conversation-usage',sessionId],queryFn:async()=>null,enabled:false});
   const refresh=()=>{forceRefresh.current=true;void query.refetch();};
@@ -79,7 +79,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   }
   useEffect(()=>{if(!applied)return;const timer=setTimeout(()=>setApplied(false),4000);return()=>clearTimeout(timer);},[applied]);
   const toolbar=data?<div className="conversation-controls conversation-toolbar" aria-label="会话操作">
-        {data.agent?.id==='codex'&&<ConversationEnvironmentSelector sessionId={sessionId} busy={busy||saving||!!operation} requested={environmentRequest} onRequestHandled={()=>setEnvironmentRequest(undefined)}/>}
+        {(data.agent?.id==='codex'||data.agent?.id==='claude')&&<ConversationEnvironmentSelector sessionId={sessionId} busy={busy||saving||!!operation} requested={environmentRequest} onRequestHandled={()=>setEnvironmentRequest(undefined)}/>}
         <label className="conversation-control-select conversation-control-model" onMouseEnter={event=>showModelInfo(event.currentTarget)} onMouseLeave={()=>setModelInfo(null)} onFocus={event=>showModelInfo(event.currentTarget)} onBlur={()=>{tooltipDismissed.current=false;setModelInfo(null);}} onPointerDown={()=>{tooltipDismissed.current=true;setModelInfo(null);}} onKeyDown={event=>{if(['Enter',' ','ArrowDown','ArrowUp','Escape'].includes(event.key)){tooltipDismissed.current=true;setModelInfo(null);}}}><span>模型</span><select aria-label="选择模型" aria-describedby={modelInfo&&model?tooltipId:undefined} value={model?choiceKey(model):selected.model} disabled={!data.can_edit||saving||!!operation} title={model?`${modelLabel(model)}${model.description?` · ${model.description}`:''}`:(!data.can_edit?'此会话暂不可切换模型，可查看原始终端':undefined)} onChange={event=>{const next=data.models.find(m=>choiceKey(m)===event.target.value);if(next){const preference={model:next.model,...(next.provider?{provider:next.provider}:{}),effort:next.efforts.some(e=>e.value===selected.effort)?selected.effort:next.defaultEffort};if(next.provider&&data.provider&&next.provider!==data.provider){if(data.agent?.id==='codex'){setEnvironmentRequest({...preference,provider:next.provider});return;}if(!onNewConversation){setError('切换模型服务需要从标签页新开会话');return;}setFreshPreference(preference);setNewOpen(true);}else void save(preference);}}}>
           {!model&&<option value={model?choiceKey(model):selected.model}>{selected.model||'未提供'}</option>}{data.models.map(m=><option key={choiceKey(m)} value={choiceKey(m)}>{modelLabel(m)}</option>)}
         </select><ChevronDown size={12}/></label>
@@ -89,7 +89,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         {data.agent?.capabilities.serviceTier&&<button type="button" aria-label={fastEnabled?'关闭 Fast 模式':'开启 Fast 模式'} aria-pressed={fastEnabled} disabled={!canEdit('serviceTier')||!fastTier||saving||!!operation} title={!fastTier?'当前模型目录未提供 Fast 档位':`Fast ${fastEnabled?'已开启，点击恢复默认档位':'已关闭，点击开启'}；对后续模型请求生效`} style={{color:fastEnabled?'var(--accent)':undefined}} onClick={()=>void save({model:selected.model,effort:selected.effort,...model?.provider?{provider:model.provider}:{},service_tier:fastEnabled?'default':fastTier!.id})}><Zap size={12}/>{fastEnabled?'Fast 开':'Fast 关'}</button>}
         {data.pending&&<span className="conversation-control-pending">{data.pending_status==='submitted'?'已提交，等待原生模型确认':'恢复或重载时应用'} {data.pending_status!=='submitted'&&<button type="button" disabled={saving} onClick={()=>void save(data.pending)}>应用</button>}<button type="button" disabled={saving} onClick={()=>void save(null)}>取消</button></span>}
         {applied&&!data.pending&&<span className="conversation-control-pending" role="status">已应用</span>}
-        <button type="button" disabled={!canEdit('compact')||busy||compacting||saving||!!operation} title={compactReason} onClick={()=>void perform('compact')}>{compacting||operation==='compact'?<Loader2 size={12} className="animate-spin"/>:<Minimize2 size={12}/>} {compacting||operation==='compact'?'压缩中…':'压缩'}</button>
+        {canEdit('compact')&&<button type="button" disabled={busy||compacting||saving||!!operation} title={compactReason} onClick={()=>void perform('compact')}>{compacting||operation==='compact'?<Loader2 size={12} className="animate-spin"/>:<Minimize2 size={12}/>} {compacting||operation==='compact'?'压缩中…':'压缩'}</button>}
         {onNewConversation&&<button type="button" disabled={!canEdit('newConversation')||saving||!!operation} title="在当前标签页新开会话，保留旧记录并停止旧会话" onClick={()=>{let rawDraft=false;window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId,respond:(value:boolean)=>{rawDraft ||= value;}}}));if(rawDraft){setError('原始终端还有未发送内容，请先发送或清空。');return;}setError('');setFreshPreference(model?{model:model.model,effort:selected.effort,provider:model.provider}:undefined);setNewOpen(true);}}><Plus size={12}/>{operation==='new'?'新开中…':'新开'}</button>}
   </div>:null;
   return <div className="conversation-controls-wrap">
@@ -120,10 +120,11 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         <dt>发布时间</dt><dd>{model.release_date||'未提供'}</dd>
         <dt>计费标准</dt><dd>{referenceCredits?<>Credits 每百万 Token：输入 {referenceCredits.input} · 缓存 {referenceCredits.cached} · 输出 {referenceCredits.output}<br/><small>参考费率 {referenceCredits.as_of}，非实际账单</small></>:'未提供'}</dd>
         <dt>上下文长度</dt><dd>{modelContext!=null?`${modelContext.toLocaleString()} tokens`:'未提供'}</dd>
+        {model.max_output_tokens!=null&&<><dt>最大输出</dt><dd>{model.max_output_tokens.toLocaleString()} tokens</dd></>}
+        {model.description&&<><dt>模型说明</dt><dd>{model.description}</dd></>}
         <dt>输入类型</dt><dd>{model.input_modalities?.length?model.input_modalities.join('、'):'未提供'}</dd>
         <dt>推理强度</dt><dd>{model.efforts.length?model.efforts.map(e=>e.value||'默认').join('、'):'未提供'}</dd>
         <dt>服务档位</dt><dd>{model.service_tiers?.length?model.service_tiers.map(t=>t.name).join('、'):'未提供'}</dd>
-        {model.description&&<><dt>说明</dt><dd>{model.description.length>180?`${model.description.slice(0,180)}…`:model.description}</dd></>}
       </dl>
     </div>,document.body)}
     {newOpen&&<Dialog title="在当前标签页新开会话" busy={operation==='new'} onClose={()=>setNewOpen(false)}>

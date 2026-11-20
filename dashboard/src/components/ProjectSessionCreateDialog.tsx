@@ -1,5 +1,6 @@
-import {useState} from 'react';
+import {useCallback,useState} from 'react';
 import {CodexCreateEnvironment} from './CodexCreateEnvironment';
+import {ClaudeCreateEnvironment} from './ClaudeCreateEnvironment';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type Project, type Session } from '../lib/api';
 import { ProjectOpenDialog } from './ProjectOpenDialog';
@@ -10,12 +11,18 @@ export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated,
   project: Project; onClose: () => void; onSessionCreated: (session: Session) => void; title?: string;
 }) {
   const client = useQueryClient();
-  const [environmentId,setEnvironmentId]=useState<string|undefined>(),[codexReady,setCodexReady]=useState(false);
+  const [environmentId,setEnvironmentId]=useState<string|undefined>(),[environmentReady,setEnvironmentReady]=useState(false);
+  const chooseEnvironment=useCallback((id:string|undefined)=>{
+    setEnvironmentId(id);
+  },[]);
+  const markEnvironmentReady=useCallback((ready:boolean)=>{
+    setEnvironmentReady(ready);
+  },[]);
   const mutation = useMutation({
     mutationFn: ({ mode, cli }: { mode: 'session' | 'terminal'; cli?: string }) => {
       if (!projectOpenModes(project).some((option) => option.mode === mode && option.cli === cli)) throw new Error('该打开方式未获授权');
       return api.sessions.create({ project_id: project.id, project_path: project.path, mode,
-        ...(mode==='session'&&cli==='codex'&&environmentId?{environment_id:environmentId}:{}),
+        ...(mode==='session'&&(cli==='codex'||cli==='claude')&&environmentId?{environment_id:environmentId}:{}),
         ...(mode === 'session' ? { cli_type: cli } : {}),
       });
     },
@@ -28,7 +35,13 @@ export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated,
     },
   });
   return <ProjectOpenDialog project={project} title={title} onClose={onClose} busy={mutation.isPending} error={mutation.error?.message}
-    renderOptions={(mode,cli)=>mode==='session'&&cli==='codex'?<CodexCreateEnvironment projectId={project.id} onChange={setEnvironmentId} onReady={setCodexReady}/>:null}
-    isChoiceReady={(mode,cli)=>mode!=='session'||cli!=='codex'||codexReady}
+    renderOptions={(mode,cli)=>
+      mode==='session'&&cli==='codex'
+        ? <CodexCreateEnvironment projectId={project.id} onChange={chooseEnvironment} onReady={markEnvironmentReady}/>
+        : mode==='session'&&cli==='claude'
+          ? <ClaudeCreateEnvironment onChange={chooseEnvironment} onReady={markEnvironmentReady}/>
+          : null}
+    isChoiceReady={(mode,cli)=>
+      mode!=='session'||(cli!=='codex'&&cli!=='claude')||environmentReady}
     onOpen={(mode, cli) => mutation.mutate({ mode, cli })} />;
 }

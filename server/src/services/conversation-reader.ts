@@ -14,7 +14,9 @@ import { type ConversationAttachment } from "./conversation-attachments.js";
 
 import type { AgentStatistics as ConversationStatistics } from "./agents/types.js";
 
-export type ConversationMessage = import("./agents/types.js").AgentMessage;
+export type ConversationMessage = import("./agents/types.js").AgentMessage & {
+  usage?: Record<string,number|null>;
+};
 
 interface IndexedMessage extends Omit<ConversationMessage, "phase"> {
   offset: number;
@@ -27,6 +29,7 @@ interface IndexedMessage extends Omit<ConversationMessage, "phase"> {
   questionSignature?: string;
   questionCallId?: string;
   projectionIndex?: number;
+  statistics?: ConversationStatistics;
   resetBefore?: boolean;
   sourceRole?: "tool_result";
   toolResult?: { toolUseId: string; result: string; failed: boolean };
@@ -204,6 +207,7 @@ function scan(
       declaredTurnId: turnId,
       sourceRole: parsed.sourceRole,
       toolResult: parsed.toolResult,
+      usage: parsed.usage,
       ...(parsed.presentation ? { presentation: parsed.presentation } : {}),
       ...(compacted ? { compaction: compacted } : {}),
       ...(parsed.asyncQuestions
@@ -342,13 +346,33 @@ function projectToolResults(messages: IndexedMessage[]): IndexedMessage[] {
       : message,
   );
 }
+/** Tool calls are live progress, never public conversation content. Normalize
+ * every adapter's projected assistant message here so persisted history has
+ * the same shape as the live message stream. */
+function projectProgressBlocks(messages: IndexedMessage[]): IndexedMessage[] {
+  return messages.flatMap((message) => {
+    if (message.role !== "assistant" || !message.content_blocks?.length)
+      return [message];
+    const visible = message.content_blocks.filter(
+      (block) => block.type === "text" || block.type === "thinking",
+    );
+    if (visible.length === message.content_blocks.length) return [message];
+    return [{
+      ...message,
+      content_blocks: visible.length ? visible : undefined,
+    }];
+  });
+}
 function compactTurnMessages(messages: IndexedMessage[]): IndexedMessage[] {
   const result: IndexedMessage[] = [];
   for (const message of messages) {
     if (
       message.role === "assistant" &&
       message.recordType === "native_message" &&
-      message.content_blocks?.length
+      message.content_blocks?.length &&
+      message.content_blocks.some(
+        (block) => block.type !== "text" && block.type !== "thinking",
+      )
     ) {
       const previous = result.at(-1);
       if (
@@ -744,12 +768,14 @@ export async function readConversation(
           index.offset - index.anchor.length,
         );
         const bind = (messages: IndexedMessage[]) =>
-          compactTurnMessages(
-            projectToolResults(
-              dedupe(
-                bindQuestionCalls(
-                  bindTurnBoundaries(messages, index!.turnBoundaries),
-                  index!.questionCalls,
+          projectProgressBlocks(
+            compactTurnMessages(
+              projectToolResults(
+                dedupe(
+                  bindQuestionCalls(
+                    bindTurnBoundaries(messages, index!.turnBoundaries),
+                    index!.questionCalls,
+                  ),
                 ),
               ),
             ),
@@ -832,6 +858,11 @@ export async function readConversation(
         const byOffset = new Map(
           statistics.map((item) => [item.sequence, item]),
         );
+        const byMessage = new Map(
+          statistics
+            .filter((item) => item.message_id)
+            .map((item) => [item.message_id!, item]),
+        );
         let sourceOffset = -1,
           sourceBuffer: Buffer | undefined;
         for (const item of selected) {
@@ -872,7 +903,12 @@ export async function readConversation(
               ...(item.compaction ? { compaction: item.compaction } : {}),
               ...(byOffset.has(item.offset)
                 ? { statistics: byOffset.get(item.offset) }
-                : {}),
+                : byMessage.has(item.id)
+                  ? { statistics: byMessage.get(item.id) }
+                  : item.statistics
+                    ? { statistics: item.statistics }
+                    : {}),
+              ...(item.usage ? { usage: item.usage } : {}),
               ...(parsed.questionReplies
                 ? { question_replies: parsed.questionReplies }
                 : {}),

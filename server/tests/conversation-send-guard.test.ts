@@ -55,7 +55,21 @@ it('invalidates checks when policy changes during telemetry collection',async()=
 it('asks for confirmation on unknown history metrics without substituting activity for turn-end time',async()=>{
  vi.mocked(codexAdapter.telemetry.read).mockResolvedValue({usage:{total:{},last:{total_tokens:600},window:1000},observed_at:null});
  vi.mocked(codexAdapter.runtime.read).mockResolvedValue({source:'fixture',session_id:'native',state:'idle',last_activity_at:new Date(Date.now()-60*60000).toISOString(),observed_at:new Date().toISOString(),reason:'no end event'});
- const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});expect(response.json()).toMatchObject({needs_confirmation:true,matched:null,idle_minutes:null,last_completed_at:null});
+ const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});expect(response.json()).toMatchObject({needs_confirmation:false,idle_minutes:null,last_completed_at:null});
+});
+it('does not warn before the first turn of a newly created session',async()=>{
+ vi.mocked(codexAdapter.telemetry.read).mockRejectedValue(Error('no usage yet'));
+ vi.mocked(codexAdapter.runtime.read).mockRejectedValue(Error('runtime not connected yet'));
+ const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ expect(response.statusCode).toBe(200);expect(response.json()).toMatchObject({needs_confirmation:false,matched:null,context_tokens:null,context_window:null,last_completed_at:null});
+});
+it('does not warn when usage exists but the provider omits its context window',async()=>{
+ vi.mocked(codexAdapter.telemetry.read).mockResolvedValue({usage:{total:{total_tokens:35564},last:{total_tokens:35564},window:null},observed_at:new Date().toISOString()});
+ vi.mocked(codexAdapter.runtime.read).mockResolvedValue({source:'fixture',session_id:'native',state:'idle',last_activity_at:new Date().toISOString(),observed_at:new Date().toISOString(),reason:'fixture'});
+ const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ expect(response.json()).toMatchObject({needs_confirmation:false,matched:null,context_tokens:35564,context_window:null,context_percent:null});
+ const sent=await app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:input});
+ expect(sent.statusCode).toBe(202);
 });
 
 it.each(['wrong-native',''])('rejects stale or invalid notification native binding %s before submission',async expected=>{

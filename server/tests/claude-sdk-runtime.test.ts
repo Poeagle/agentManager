@@ -3,12 +3,17 @@ import {afterEach,describe,expect,it,vi} from 'vitest';
 const sdk=vi.hoisted(()=>({messages:[] as any[],queries:[] as any[],interrupts:0}));
 vi.mock('@anthropic-ai/claude-agent-sdk',()=>({
   query:(request:any)=>{
-    sdk.queries.push(request);
+    const handle={
+      ...request,
+      interrupt:async()=>{sdk.interrupts++;},
+      close:()=>{handle.closed=true;},
+    };
+    sdk.queries.push(handle);
     return {
     async *[Symbol.asyncIterator](){for(const message of sdk.messages){await Promise.resolve();yield message;}},
-    setModel:async(model:string)=>{sdk.queries.at(-1).setModel=model;},
-    interrupt:async()=>{sdk.interrupts++;},
-    close:()=>{},
+    setModel:async(model:string)=>{handle.setModel=model;},
+    interrupt:handle.interrupt,
+    close:handle.close,
   };},
 }));
 
@@ -24,6 +29,167 @@ const stream=(event:any)=>({type:'stream_event',uuid:`019ff001-1212-7212-8212-${
 afterEach(()=>{releaseClaudeRuntime(session);sdk.queries=[];sdk.messages=[];sdk.interrupts=0;uuid=0;});
 
 describe('Claude Agent SDK runtime',()=>{
+  it('classifies insufficient balance and unavailable models as terminal errors',async()=>{
+    sdk.messages=[
+      {type:'result',subtype:'error_during_execution',uuid:assistant,session_id:session,errors:['API Error: 402 {"error":{"message":"insufficient balance","type":"insufficient_balance"}}']},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('balance check');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.snapshot().messages.find(message=>message.phase==='error')).toMatchObject({
+      error:{code:'insufficient_balance',will_retry:false},
+    });
+    sdk.messages=[
+      {type:'result',subtype:'error_during_execution',uuid:assistant,session_id:session,errors:["There's an issue with the selected model (grok-4.5). It may not exist or you may not have access to it."]},
+    ];
+    await runtime.submit('model check');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.snapshot().messages.filter(message=>message.phase==='error').at(-1)).toMatchObject({
+      error:{code:'model_unavailable',will_retry:false},
+    });
+  });
+  it('keeps an upstream 503 as an error card instead of final prose',async()=>{
+    sdk.messages=[
+      {type:'result',subtype:'error_during_execution',uuid:assistant,session_id:session,errors:['API Error: 503 {"error":{"message":"No available accounts: no available accounts","type":"api_error"},"type":"error"}']},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('介绍你自己');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    const error=runtime.snapshot().messages.find(message=>message.role==='assistant');
+    expect(error).toMatchObject({
+      phase:'error',
+      text:expect.stringContaining('No available accounts'),
+      error:{code:'provider_unavailable',will_retry:false},
+    });
+  });
+  it('injects only the bound Provider credentials and model into the SDK process',async()=>{
+    sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
+    const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-a',effort:''},false,{
+      id:'gateway',name:'Gateway',baseUrl:'https://gateway.example',authToken:'private-token',
+      models:['claude-a','claude-b'],defaultModel:'claude-a',adaptiveThinking:true,contextWindow:200000,maxOutputTokens:64000,
+    });
+    await runtime.submit('provider-bound');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(sdk.queries).toHaveLength(1);
+    expect(sdk.queries[0].options).toMatchObject({
+      model:'claude-a',
+      thinking:{type:'adaptive'},
+      env:{
+        ANTHROPIC_BASE_URL:'https://gateway.example',
+        ANTHROPIC_AUTH_TOKEN:'private-token',
+        ANTHROPIC_API_KEY:'',
+        ANTHROPIC_MODEL:'claude-a',
+        ANTHROPIC_DEFAULT_OPUS_MODEL:'claude-a',
+        ANTHROPIC_DEFAULT_SONNET_MODEL:'claude-a',
+        ANTHROPIC_DEFAULT_HAIKU_MODEL:'claude-a',
+        CLAUDE_CODE_SUBAGENT_MODEL:'claude-a',
+        CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL:'claude-a',
+        ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES:'adaptive_thinking',
+        ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES:'adaptive_thinking',
+        ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES:'adaptive_thinking',
+        CLAUDE_CODE_MAX_CONTEXT_TOKENS:'200000',
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS:'64000',
+      },
+    });
+    expect(runtime.selectedModel()).toBe('claude-a');
+  });
+  it('uses adaptive thinking for claude-sonnet-5-5 provider requests',async()=>{
+    sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
+    const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-sonnet-5-5',effort:''},false,{
+      id:'anthropic',name:'Anthropic',baseUrl:'https://xindu.xyz',authToken:'private-token',
+      models:['claude-sonnet-5-5'],defaultModel:'claude-sonnet-5-5',adaptiveThinking:true,
+      contextWindow:1000000,maxOutputTokens:null,
+    });
+    await runtime.submit('介绍你自己');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(sdk.queries.at(-1)?.options).toMatchObject({
+      model:'claude-sonnet-5-5',
+      thinking:{type:'adaptive'},
+    });
+  });
+  it('keeps simultaneously active Claude providers isolated by session runtime',async()=>{
+    sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
+    const other='019ff001-1212-7212-8212-121212121299';
+    const first=ensureClaudeRuntime(session,'/tmp',undefined,{model:'provider-a-model',effort:''},false,{
+      id:'provider-a',name:'Provider A',baseUrl:'https://a.example',authToken:'token-a',
+      models:['provider-a-model'],defaultModel:'provider-a-model',adaptiveThinking:false,contextWindow:null,maxOutputTokens:null,
+    });
+    const second=ensureClaudeRuntime(other,'/tmp',undefined,{model:'provider-b-model',effort:''},false,{
+      id:'provider-b',name:'Provider B',baseUrl:'https://b.example',authToken:'token-b',
+      models:['provider-b-model'],defaultModel:'provider-b-model',adaptiveThinking:false,contextWindow:null,maxOutputTokens:null,
+    });
+    await Promise.all([first.submit('A'),second.submit('B')]);
+    await vi.waitFor(()=>expect(sdk.queries).toHaveLength(2));
+    expect(sdk.queries.map(query=>query.options)).toEqual(expect.arrayContaining([
+      expect.objectContaining({model:'provider-a-model',env:expect.objectContaining({ANTHROPIC_BASE_URL:'https://a.example',ANTHROPIC_AUTH_TOKEN:'token-a',ANTHROPIC_MODEL:'provider-a-model'})}),
+      expect.objectContaining({model:'provider-b-model',env:expect.objectContaining({ANTHROPIC_BASE_URL:'https://b.example',ANTHROPIC_AUTH_TOKEN:'token-b',ANTHROPIC_MODEL:'provider-b-model'})}),
+    ]));
+    expect(()=>first.configure({id:'provider-b',name:'Provider B',baseUrl:'https://b.example',authToken:'token-b',models:['provider-b-model'],defaultModel:'provider-b-model',adaptiveThinking:false,contextWindow:null,maxOutputTokens:null})).toThrow('另一个 Provider');
+    releaseClaudeRuntime(other);
+  });
+  it('maps every Claude model alias to the concrete model selected for this request',async()=>{
+    sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
+    const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-fable-5',effort:''},false,{
+      id:'anthropic',name:'Anthropic',baseUrl:'https://xindu.xyz',authToken:'private-token',
+      models:['claude-fable-5','opus','sonnet','haiku'],defaultModel:'claude-fable-5',contextWindow:null,maxOutputTokens:null,
+    });
+    await runtime.submit('reply ok');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(sdk.queries.at(-1)?.options).toMatchObject({
+      model:'claude-fable-5',
+      env:{ANTHROPIC_MODEL:'claude-fable-5',ANTHROPIC_DEFAULT_OPUS_MODEL:'claude-fable-5',ANTHROPIC_DEFAULT_SONNET_MODEL:'claude-fable-5',ANTHROPIC_DEFAULT_HAIKU_MODEL:'claude-fable-5'},
+    });
+  });
+  it('rejects an explicit model that is not part of the selected provider catalog',async()=>{
+    const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'catalog-model',effort:''},false,{
+      id:'provider',name:'Provider',baseUrl:'https://provider.example',authToken:'token',
+      models:['catalog-model'],defaultModel:'catalog-model',contextWindow:null,maxOutputTokens:null,
+    });
+    expect(()=>runtime.setModel({model:'other-model',effort:''})).toThrow('不属于当前 Provider');
+    releaseClaudeRuntime(session);
+  });
+  it('restores a legacy Claude preference without silently switching models',async()=>{
+    sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
+    const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-legacy',effort:''},true,{
+      id:'provider',name:'Provider',baseUrl:'https://provider.example',authToken:'token',
+      models:['claude-current'],defaultModel:'claude-current',contextWindow:null,maxOutputTokens:null,
+    });
+    await runtime.submit('Restore legacy');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(sdk.queries.at(-1)?.options).toMatchObject({model:'claude-legacy'});
+  });
+  it('reports when the upstream returns a different model than the selected one',async()=>{
+    sdk.messages=[
+      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'wrong-model',model:'grok-4.6',content:[{type:'text',text:'Wrong model response.'}]}},
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-opus-4-8',effort:''},false,{
+      id:'anthropic',name:'Anthropic',baseUrl:'https://xindu.xyz',authToken:'private-token',
+      models:['claude-opus-4-8'],defaultModel:'claude-opus-4-8',contextWindow:null,maxOutputTokens:null,
+    });
+    await runtime.submit('Use the selected model');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.snapshot().messages.find(message=>message.error?.code==='model_mismatch')).toMatchObject({
+      text:expect.stringContaining('grok-4.6'),
+      error:{code:'model_mismatch',will_retry:false},
+    });
+  });
+  it('runs manual compaction as a dedicated Claude SDK query and maps native status',async()=>{
+    sdk.messages=[
+      {type:'system',subtype:'status',status:'compacting',uuid:'status-1',session_id:session},
+      {type:'system',subtype:'compact_boundary',uuid:'compact-1',session_id:session,compact_metadata:{trigger:'manual',pre_tokens:1000,post_tokens:200,duration_ms:3000}},
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.compact();
+    await vi.waitFor(()=>expect(sdk.queries).toHaveLength(1));
+    expect((await sdk.queries[0].prompt[Symbol.asyncIterator]().next()).value).toMatchObject({message:{content:'/compact'}});
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.snapshot().compaction).toMatchObject({id:'compact-1',status:'completed',duration_ms:3000});
+    expect(runtime.snapshot().messages.find(message=>message.presentation==='compaction_summary')).toMatchObject({
+      role:'assistant',phase:'commentary',compaction:{before_tokens:1000,after_tokens:200,duration_ms:3000},
+    });
+  });
   it('launches idle until the first manually supplied message',async()=>{
     const {createTestDatabase}=await import('./helpers/database.js');const database=createTestDatabase();
     let nativeId:string|undefined;
@@ -50,7 +216,136 @@ describe('Claude Agent SDK runtime',()=>{
     const runtime=ensureClaudeRuntime(session,'/tmp');expect(await runtime.submit('Work')).toBe(true);
     const turn=runtime.snapshot().turn_id!;expect(await runtime.stopTurn('old-turn')).toBe(false);expect(sdk.interrupts).toBe(0);
     expect(await runtime.stopTurn(turn)).toBe(true);expect(sdk.interrupts).toBe(1);
+    expect(runtime.runtime()).toMatchObject({state:'idle',completed_turn_id:expect.any(String)});
     resolve({type:'result',subtype:'success',uuid:assistant,session_id:session});await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));expect(await runtime.stopTurn(turn)).toBe(false);
+  });
+  it('publishes idle immediately when the SDK interrupt RPC never settles',async()=>{
+    let resolve!:(value:any)=>void;sdk.messages=[new Promise(done=>{resolve=done;})];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    expect(await runtime.submit('Work')).toBe(true);
+    const turn=runtime.snapshot().turn_id!;
+    vi.spyOn(sdk.queries.at(-1),'interrupt').mockImplementation(()=>new Promise(()=>{}));
+    const started=Date.now();
+    expect(await runtime.stopTurn(turn)).toBe(true);
+    expect(Date.now()-started).toBeLessThan(100);
+    expect(runtime.runtime().state).toBe('idle');
+    expect(runtime.snapshot().busy).toBe(false);
+    resolve({type:'result',subtype:'success',uuid:assistant,session_id:session});
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+  });
+  it('finishes the turn when result arrives before the streaming input closes',async()=>{
+    sdk.messages=[
+      stream({type:'message_start',message:{id:'result-first'}}),
+      stream({type:'content_block_start',index:0,content_block:{type:'text',text:'Complete.'}}),
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+      new Promise(()=>{}),
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Complete');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'),{timeout:1000});
+    expect(runtime.snapshot().busy).toBe(false);
+    expect(runtime.snapshot().stage).toBe('idle');
+    expect(runtime.runtime().state).toBe('idle');
+    expect(runtime.runtime().completed_turn_id).toBeTruthy();
+    expect(sdk.queries.at(-1)?.closed).toBe(true);
+    expect(runtime.snapshot().messages.find(message=>message.text==='Complete.')).toMatchObject({
+      phase:'final',
+      streaming:false,
+    });
+  });
+  it('finishes the turn from a native end_turn when the SDK result never arrives',async()=>{
+    sdk.messages=[
+      stream({type:'message_start',message:{id:'end-turn-first'}}),
+      stream({type:'content_block_start',index:0,content_block:{type:'text',text:'Already complete.'}}),
+      {
+        type:'assistant',
+        uuid:assistant,
+        session_id:session,
+        parent_tool_use_id:null,
+        message:{
+          id:'end-turn-first',
+          role:'assistant',
+          stop_reason:'end_turn',
+          content:[{type:'text',text:'Already complete.'}],
+        },
+      },
+      new Promise(()=>{}),
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Complete without result');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'),{timeout:1000});
+    expect(runtime.snapshot().busy).toBe(false);
+    expect(runtime.snapshot().stage).toBe('idle');
+    expect(sdk.queries.at(-1)?.closed).toBe(true);
+    expect(runtime.snapshot().messages.find(message=>message.text==='Already complete.')).toMatchObject({
+      phase:'final',
+      streaming:false,
+    });
+  });
+  it('inserts a running follow-up into the current query and continues after interrupt',async()=>{
+    let release!:(value:any)=>void;sdk.messages=[new Promise(done=>{release=done;})];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    expect(await runtime.submit('Start work','client-start')).toBe(true);
+    const input=sdk.queries[0].prompt[Symbol.asyncIterator]();
+    const first=await input.next();expect(first.value).toMatchObject({
+      message:{role:'user',content:'Start work'},
+    });
+    expect(await runtime.submit('Insert this guidance','client-steer')).toBe(true);
+    expect(runtime.snapshot().messages.find(message=>message.client_id==='client-steer')).toMatchObject({queued:false});
+    expect(sdk.interrupts).toBe(1);
+    expect((await input.next()).value).toMatchObject({message:{content:'Insert this guidance'}});
+    expect(runtime.snapshot().messages.filter(message=>message.role==='user').map(message=>message.client_id))
+      .toEqual(['client-start','client-steer']);
+    const emitted=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
+    sdk.messages.push(...emitted);release(emitted);
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.snapshot().messages.filter(message=>message.role==='user')).toHaveLength(2);
+    expect(runtime.snapshot().messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({role:'user',text:'Insert this guidance',client_id:'client-steer',queued:false}),
+    ]));
+  });
+  it('rekeys the initial live user message to its native receipt before history can load',async()=>{
+    const nativeUser='d3587c44-6f5d-4d52-9a6c-484eac61880f';
+    sdk.messages=[
+      {type:'user',uuid:nativeUser,session_id:session,parent_tool_use_id:null,message:{role:'user',content:'Initial task'}},
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Initial task','client-initial');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    const users=runtime.snapshot().messages.filter(message=>message.role==='user');
+    expect(users).toEqual([
+      expect.objectContaining({
+        id:conversationMessageId('','user',nativeUser),
+        turn_id:nativeUser,
+        client_id:'client-initial',
+      }),
+    ]);
+  });
+  it('removes only a matching queued Claude message',async()=>{
+    let release!:(value:any)=>void;sdk.messages=[new Promise(done=>{release=done;})];
+    const runtime=ensureClaudeRuntime(session,'/tmp'),internal:any=runtime;
+    (runtime as any).busy=true;
+    const originalInput=internal.input;
+    internal.input=null;
+    await runtime.submit('Keep this','client-keep');
+    await runtime.submit('Cancel this','client-cancel');
+    await runtime.cancelQueued('client-cancel');
+    expect(runtime.snapshot().messages.filter(message=>message.role==='user').map(message=>message.client_id))
+      .toEqual(['client-keep']);
+    await expect(runtime.cancelQueued('client-cancel')).rejects.toThrow('等待队列');
+    internal.input=originalInput;
+  });
+  it('exposes the completed native turn so the dashboard can clear its busy state',async()=>{
+    sdk.messages=[
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Finish this turn','client-turn');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.runtime()).toMatchObject({
+      state:'idle',completed_turn_id:expect.any(String),last_turn_ended_at:expect.any(String),
+    });
   });
   it('uses protocol envelopes instead of per-chunk UUIDs and preserves text around tools',async()=>{
     sdk.messages=[
@@ -97,11 +392,35 @@ describe('Claude Agent SDK runtime',()=>{
     const user=final.messages.find((message:any)=>message.role==='user');
     expect(user.id).toBe(conversationMessageId('',user.role,user.turn_id));
     expect(new Set(assistants.map((message:any)=>message.id)).size).toBe(2);
-    expect(assistants).toEqual(assistants.map((message:any)=>expect.objectContaining({phase:'final',streaming:false})));
+    expect(assistants.map(message=>({phase:message.phase,streaming:message.streaming}))).toEqual([
+      {phase:'commentary',streaming:false},
+      {phase:'final',streaming:false},
+    ]);
     expect(final.activities).toEqual([expect.objectContaining({id:'tool-1',label:'读取文件 · /tmp/demo.ts',status:'completed'})]);
     expect(assistants[0].content_blocks).toEqual([
       {type:'text',index:0,text:'我先读取。'},
-      {type:'tool_use',index:1,id:'tool-1',name:'Read',input:{file_path:'/tmp/demo.ts'},status:'completed',result:'ok'},
+    ]);
+  });
+  it('keeps Claude thinking blocks separate from answer text while streaming',async()=>{
+    sdk.messages=[
+      stream({type:'message_start',message:{id:'thinking-message'}}),
+      stream({type:'content_block_start',index:0,content_block:{type:'thinking',thinking:''}}),
+      stream({type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:'Checking the'}}),
+      stream({type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:' request.'}}),
+      stream({type:'content_block_stop',index:0}),
+      stream({type:'content_block_start',index:1,content_block:{type:'text',text:''}}),
+      stream({type:'content_block_delta',index:1,delta:{type:'text_delta',text:'Done.'}}),
+      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'thinking-message',content:[{type:'thinking',thinking:'Checking the request.'},{type:'text',text:'Done.'}]}},
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Check');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    const message=runtime.snapshot().messages.find(item=>item.role==='assistant')!;
+    expect(message.text).toBe('Done.');
+    expect(message.content_blocks).toEqual([
+      {type:'thinking',index:0,text:'Checking the request.'},
+      {type:'text',index:1,text:'Done.'},
     ]);
   });
   it('rekeys streamed content to the late native ID and merges tool snapshots by tool ID',async()=>{
@@ -122,15 +441,37 @@ describe('Claude Agent SDK runtime',()=>{
     stop();
     const assistants=frames.at(-1).messages.filter((message:any)=>message.role==='assistant');
     expect(assistants).toHaveLength(1);
-    expect(frames.some(frame=>frame.messages.some((message:any)=>message.content_blocks?.some((block:any)=>block.type==='tool_use'&&block.id==='tool-late'&&block.status==='running'&&block.input.command==='pwd')))).toBe(true);
+    expect(frames.some(frame=>frame.activities.some((activity:any)=>activity.id==='tool-late'&&activity.status==='running'&&activity.input_preview==='pwd'))).toBe(true);
     expect(assistants[0]).toMatchObject({
       id:conversationMessageId('','assistant','late-native-message'),
       text:'检查中',
-      content_blocks:[
-        {type:'text',index:0,text:'检查中'},
-        {type:'tool_use',index:1,id:'tool-late',name:'Bash',input:{command:'pwd'},status:'completed',result:'/tmp/demo'},
-      ],
+      content_blocks:[{type:'text',index:0,text:'检查中'}],
     });
+    expect(frames.some(frame=>frame.activities.some((activity:any)=>activity.id==='tool-late'&&activity.status==='running'&&activity.after_message_id===conversationMessageId('','assistant','late-native-message')))).toBe(true);
+    expect(frames.at(-1)?.activities).toEqual([
+      expect.objectContaining({
+        id:'tool-late',
+        status:'completed',
+        result_preview:'/tmp/demo',
+        after_message_id:conversationMessageId('','assistant','late-native-message'),
+      }),
+    ]);
+  });
+  it('keeps all tool activities in one progress slot for the current input',async()=>{
+    sdk.messages=[
+      stream({type:'message_start',message:{id:'tools-round'}}),
+      stream({type:'content_block_start',index:0,content_block:{type:'tool_use',id:'first',name:'Bash',input:{command:'pwd'}}}),
+      {type:'user',uuid:'019ff001-1212-7212-8212-121212121214',session_id:session,parent_tool_use_id:'first',message:{content:[{type:'tool_result',tool_use_id:'first',content:'/tmp'}]}},
+      stream({type:'content_block_start',index:0,content_block:{type:'tool_use',id:'second',name:'Bash',input:{command:'git status'}}}),
+      {type:'result',subtype:'success',uuid:'019ff001-1212-7212-8212-121212121215',session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Inspect');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    const activities=runtime.snapshot().activities;
+    expect(activities).toHaveLength(2);
+    expect(new Set(activities.map(activity=>activity.after_message_id)).size).toBe(1);
+    expect(runtime.snapshot().messages.filter(message=>message.role==='assistant'&&message.content_blocks?.some(block=>block.type==='tool_use'))).toEqual([]);
   });
   it('uses the completed assistant event when no partial text was emitted',async()=>{
     sdk.messages=[
@@ -146,6 +487,25 @@ describe('Claude Agent SDK runtime',()=>{
     stop();
     expect(frames.at(-1).messages.filter((message:any)=>message.role==='assistant')).toEqual([
       expect.objectContaining({text:'完整回复',phase:'final',streaming:false}),
+    ]);
+  });
+  it('keeps tool rounds in progress and finalizes only the conclusion',async()=>{
+    sdk.messages=[
+      stream({type:'message_start',message:{id:'tool-round'}}),
+      stream({type:'content_block_start',index:0,content_block:{type:'tool_use',id:'read-one',name:'Read',input:{file_path:'/p/README.md'}}}),
+      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'tool-round',content:[{type:'tool_use',id:'read-one',name:'Read',input:{file_path:'/p/README.md'}}]}},
+      {type:'user',uuid:'019ff001-1212-7212-8212-121212121214',session_id:session,parent_tool_use_id:'read-one',message:{content:[{type:'tool_result',tool_use_id:'read-one',content:'README'}]}},
+      stream({type:'message_start',message:{id:'answer-round'}}),
+      stream({type:'content_block_start',index:0,content_block:{type:'text',text:'Project summary'}}),
+      {type:'assistant',uuid:'019ff001-1212-7212-8212-121212121215',session_id:session,parent_tool_use_id:null,message:{id:'answer-round',content:[{type:'text',text:'Project summary'}]}},
+      {type:'result',subtype:'success',uuid:'019ff001-1212-7212-8212-121212121216',session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Inspect');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    const assistants=runtime.snapshot().messages.filter(message=>message.role==='assistant');
+    expect(assistants.map(message=>({id:message.id,phase:message.phase,tools:message.content_blocks?.filter(block=>block.type==='tool_use').map(block=>block.name)}))).toEqual([
+      {id:conversationMessageId('','assistant','answer-round'),phase:'final',tools:[]},
     ]);
   });
   it('merges thinking-only and text completions from the same API message into one final message',async()=>{

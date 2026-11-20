@@ -46,7 +46,13 @@ export function useSessionResume(projectId: string) {
           sessions: [session, ...(current?.sessions ?? []).filter((row) => row.id !== sessionId)],
         }));
       }
-      setStates((current) => ({ ...current, [sessionId]: { phase: 'connecting', startedAt,action,warning:'warning' in result&&typeof result.warning==='string'?result.warning:undefined } }));
+      const managed=session.agent?.sessionHost==='managed';
+      if(managed&&(action==='new'||action==='reload'))pending.current.delete(sessionId);
+      setStates((current) => ({ ...current, [sessionId]: { phase: managed&&(action==='new'||action==='reload')?'ready':'connecting', startedAt,action,warning:'warning' in result&&typeof result.warning==='string'?result.warning:undefined } }));
+      if(managed&&(action==='new'||action==='reload'))successTimers.current.set(sessionId,setTimeout(()=>{
+        setStates((current)=>{const next={...current};delete next[sessionId];return next;});
+        successTimers.current.delete(sessionId);
+      },3000));
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
       void queryClient.invalidateQueries({ queryKey: ['project-sessions', projectId] });
       void queryClient.invalidateQueries({queryKey:['conversation-controls',sessionId]});

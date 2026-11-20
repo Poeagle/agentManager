@@ -24,7 +24,7 @@ import { LiveSessionSignalDot } from '../lib/session-signal';
 import { SessionTabLabel } from '../lib/session-activity';
 import { promoteWarmTerminal, TERMINAL_COLD_DELAY_MS } from '../lib/warm-terminal-pool';
 import {
-  reconcileHydratedTerminalInstances, uniqueTabName, nextDefaultTabName, applyNativeTabTitles,
+  reconcileHydratedTerminalInstances, uniqueTabName, nextDefaultTabName, automaticSessionTabName, applySessionTabTasks,
   type TerminalInstance,
 } from '../lib/project-session-state';
 import { moveItemByKey, orderItemsByKeys } from '../lib/reorder';
@@ -94,6 +94,8 @@ function sessionTabKind(session: Session): 'session' | 'terminal' {
 function nextSessionTabLabel(session: Session, tabs: TerminalInstance[]): string {
   if(session.native_title?.trim())return uniqueTabName(session.native_title.trim(),tabs,session.id);
   const kind = sessionTabKind(session);
+  const taskName = kind === 'session' ? automaticSessionTabName(session.task,tabs,session.id) : null;
+  if (taskName) return taskName;
   const prefix = kind === 'terminal' ? 'Terminal' : 'Session';
   return nextDefaultTabName(prefix, tabs);
 }
@@ -560,7 +562,12 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         return withCustom;
       });
 
-      const relabeled=applyNativeTabTitles(customTabs,Object.fromEntries(knownSessions.map(s=>[s.id,s.native_title])));
+      const nativeTitles=Object.fromEntries(knownSessions.map(s=>[s.id,s.native_title]));
+      const relabeled=applySessionTabTasks(
+        customTabs,
+        Object.fromEntries(knownSessions.map(s=>[s.id,s.task])),
+        nativeTitles,
+      );
 
       // Add new sessions not yet tracked (skip user-closed sessions)
       const newTerminals: TerminalInstance[] = [];

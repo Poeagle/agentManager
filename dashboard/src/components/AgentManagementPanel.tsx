@@ -4,6 +4,7 @@ import {useProviderUsage} from '../lib/use-provider-usage';
 import {CodexAccountProvider} from './CodexAccountProvider';
 import {BalanceSummary,useEngineBalance} from './CodexEngineBalance';
 import {CodexAccountProviderEditor} from './CodexAccountProviderEditor';
+import {ClaudeProviderEditor} from './ClaudeProviderEditor';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -24,7 +25,6 @@ import {
 import {
   api,
   type AgentConfigFile,
-  type AgentEnvironmentVariable,
   type AgentManagementField,
   type AgentManagementState,
   type AgentProviderState,
@@ -640,134 +640,6 @@ function LiveProviderCard({
   );
 }
 
-
-function EnvironmentTable({
-  agentId,
-  variables,
-  readOnly,
-  onDirtyChange,
-}: {
-  agentId: string;
-  variables: AgentEnvironmentVariable[];
-  readOnly: boolean;
-  onDirtyChange: (dirty: boolean) => void;
-}) {
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [error, setError] = useState("");
-  const [saved, setSaved] = useState(false);
-  useEffect(() => {
-    setValues(
-      Object.fromEntries(
-        variables.map((variable) => [variable.name, variable.value]),
-      ),
-    );
-    onDirtyChange(false);
-  }, [onDirtyChange, variables]);
-  const changed = variables.some(
-    (variable) => (values[variable.name] || "") !== variable.value,
-  );
-  const update = (name: string, value: string) => {
-    setValues((current) => ({ ...current, [name]: value }));
-    onDirtyChange(true);
-    setSaved(false);
-  };
-  const save = useMutation({
-    mutationFn: ({ restart, save }: { restart: boolean; save: boolean }) =>
-      save
-        ? api.agentManagement.updateEnvironment(agentId, {
-            values: Object.fromEntries(
-              Object.entries(values).filter(
-                ([name, value]) =>
-                  value &&
-                  value !==
-                    variables.find((variable) => variable.name === name)?.value,
-              ),
-            ),
-            restart,
-          })
-        : api.agentManagement.updateEnvironment(agentId, {
-            values: {},
-            clear: [],
-            restart: true,
-          }),
-    onSuccess: () => {
-      setSaved(true);
-      setError("");
-      onDirtyChange(false);
-    },
-    onError: (failure: Error) => setError(failure.message),
-  });
-  return (
-    <section className="agent-management-section">
-      <div className="agent-management-section-title">
-        <div>
-          <h4>环境变量</h4>
-          <p>
-            这些变量决定 Claude 使用的 API 地址、模型和认证方式。密钥不会回显。
-          </p>
-        </div>
-        <div className="agent-management-status-row">
-          <button
-            type="button"
-            className="agent-management-button agent-management-button-primary"
-            disabled={readOnly || save.isPending || !changed}
-            onClick={() => save.mutate({ restart: false, save: true })}
-          >
-            <Save size={13} />
-            保存变量
-          </button>
-          <button
-            type="button"
-            className="agent-management-button"
-            disabled={readOnly || save.isPending}
-            onClick={() => save.mutate({ restart: true, save: changed })}
-          >
-            <RefreshCw size={13} />
-            保存并重启
-          </button>
-        </div>
-      </div>
-      <div className="agent-management-env-table">
-        {variables.map((variable) => (
-          <div className="agent-management-env-row" key={variable.name}>
-            <div>
-              <code>{variable.name}</code>
-              <p>{variable.description}</p>
-            </div>
-            <input
-              aria-label={variable.name}
-              type={variable.secret ? "password" : "text"}
-              disabled={readOnly}
-              value={values[variable.name] || ""}
-              placeholder={
-                variable.secret && variable.configured
-                  ? "已配置；输入新值可替换"
-                  : "未配置"
-              }
-              onChange={(event) => update(variable.name, event.target.value)}
-            />
-            <span
-              className={
-                variable.configured
-                  ? "agent-management-env-configured"
-                  : "agent-management-env-missing"
-              }
-            >
-              {variable.configured ? "已配置" : "未配置"}
-            </span>
-          </div>
-        ))}
-      </div>
-      <OperationStatus
-        busy={save.isPending}
-        message="正在写入 LaunchAgent 环境变量…"
-        successMessage="LaunchAgent 环境变量已写入"
-        error={error || (save.isError ? save.error : undefined)}
-        success={saved}
-      />
-    </section>
-  );
-}
 
 function ProviderEditor({
   agentId,
@@ -1666,228 +1538,31 @@ function CodexWorkspace({
 }
 
 function ClaudeWorkspace({
-  agentId,
   state,
   readOnly,
-  onDirtyChange,
 }: {
-  agentId: string;
   state: AgentManagementState;
   readOnly: boolean;
   onDirtyChange: (dirty: boolean) => void;
 }) {
-  const queryClient = useQueryClient();
   const provider = state.providers[0];
-  const [models, setModels] = useState<string[]>(provider?.models || []);
-  const [selectedModels, setSelectedModels] = useState<string[]>(
-    provider?.models || [],
-  );
-  const [defaultModel, setDefaultModel] = useState(
-    provider?.defaultModel || "",
-  );
-  const detect = useMutation({
-    mutationFn: () => api.agentManagement.detectModels(agentId),
-    onSuccess: (result) => {
-      const values = result.models.map((item) => item.model);
-      setModels(values);
-      setSelectedModels((current) =>
-        current.length
-          ? current.filter((model) => values.includes(model))
-          : values,
-      );
-      setDefaultModel((current) =>
-        values.includes(current) ? current : values[0] || "",
-      );
-    },
-  });
-  const save = useMutation({
-    mutationFn: (restart: boolean) =>
-      api.agentManagement.saveSelectedModels(
-        agentId,
-        selectedModels,
-        defaultModel,
-        restart,
-      ),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["agent-management", agentId],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["conversation-controls"],
-      });
-    },
-  });
+  const [selectedProviderId,setSelectedProviderId]=useState(provider?.id||'');
   return (
     <div className="agent-management-claude">
-      <header className="agent-management-detail-heading">
-        <div>
-          <div className="agent-management-eyebrow">CLAUDE CODE</div>
-          <h3>原生设置</h3>
-          <p>{state.authentication.detail}</p>
-        </div>
-        <span
-          className={`agent-management-pill ${statusTone(state.installation.status)}`}
-        >
-          {statusLabel[state.installation.status]}
-        </span>
-      </header>
-      <section className="agent-management-section">
-        <div className="agent-management-section-title">
-          <div>
-            <h4>安装与认证</h4>
-            <p>Claude Code CLI 与凭据由原生配置管理。</p>
-          </div>
-        </div>
-        <dl className="agent-management-kv">
-          <div>
-            <dt>CLI</dt>
-            <dd>{state.installation.executable || "未安装"}</dd>
-          </div>
-          <div>
-            <dt>版本</dt>
-            <dd>{state.installation.version || "未检测"}</dd>
-          </div>
-          <div>
-            <dt>认证</dt>
-            <dd>{state.authentication.method}</dd>
-          </div>
-          <div>
-            <dt>状态</dt>
-            <dd>{provider?.statusText || state.authentication.status}</dd>
-          </div>
-        </dl>
-      </section>
-      {state.environment && (
-        <EnvironmentTable
-          agentId={agentId}
-          variables={state.environment}
-          readOnly={readOnly}
-          onDirtyChange={onDirtyChange}
-        />
-      )}
-      <AgentDefaultsEditor
-        agentId={agentId}
-        defaults={state.defaults}
-        readOnly={readOnly}
-        onDirtyChange={onDirtyChange}
-      />
-      <section className="agent-management-section">
-        <div className="agent-management-section-title">
-          <div>
-            <h4>可用模型</h4>
-            <p>探测 Claude Code 当前可用的模型，并选择默认模型。</p>
-          </div>
-          <div className="agent-management-status-row">
-            <button
-              type="button"
-              className="agent-management-button"
-              disabled={readOnly || detect.isPending}
-              onClick={() => detect.mutate()}
-            >
-              {detect.isPending ? (
-                <Loader2 size={13} className="animate-spin" />
-              ) : (
-                <Search size={13} />
-              )}
-              探测模型
-            </button>
-            <button
-              type="button"
-              className="agent-management-button agent-management-button-primary"
-              disabled={readOnly || save.isPending || !selectedModels.length}
-              onClick={() => save.mutate(false)}
-            >
-              <Save size={13} />
-              保存模型
-            </button>
-            <button
-              type="button"
-              className="agent-management-button"
-              disabled={readOnly || save.isPending || !selectedModels.length}
-              onClick={() => save.mutate(true)}
-            >
-              <RefreshCw size={13} />
-              保存并重启
-            </button>
-          </div>
-        </div>
-        <div className="agent-management-model-options">
-          {(models.length ? models : provider?.models || []).map((model) => (
-            <label key={model}>
-              <input
-                type="checkbox"
-                checked={selectedModels.includes(model)}
-                disabled={readOnly}
-                onChange={(event) =>
-                  setSelectedModels((current) =>
-                    event.target.checked
-                      ? [...current, model]
-                      : current.filter((item) => item !== model),
-                  )
-                }
-              />
-              <span>{model}</span>
-            </label>
-          ))}
-        </div>
-        <label className="agent-management-field agent-management-claude-default">
-          <span>默认模型</span>
-          <select
-            aria-label="Claude 默认模型"
-            value={defaultModel}
-            disabled={readOnly}
-            onChange={(event) => setDefaultModel(event.target.value)}
-          >
-            <option value="">使用 Claude 默认模型</option>
-            {selectedModels.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
-        </label>
-        <OperationStatus
-          busy={detect.isPending || save.isPending}
-          message={
-            detect.isPending
-              ? "正在探测 Claude 模型…"
-              : "正在保存 Claude 模型选择…"
-          }
-          successMessage={
-            save.isSuccess
-              ? "Claude 模型选择已保存"
-              : "Claude 模型探测完成"
-          }
-          error={
-            save.isError
-              ? save.error
-              : detect.isError
-                ? detect.error
-                : undefined
-          }
-          success={save.isSuccess}
-        />
-        {save.isSuccess && (
-          <p className="agent-management-written" role="status">
-            <Check size={13} />
-            已保存到 Claude 环境变量；重启后新会话生效。
-          </p>
-        )}
-      </section>
-      <section className="agent-management-section">
-        <div className="agent-management-section-title">
-          <div>
-            <h4>配置文件</h4>
-            <p>这些文件属于 Claude Code，不是 Codex Provider。</p>
-          </div>
-        </div>
-        <ConfigFiles
-          agentId={agentId}
-          files={state.configFiles}
-          readOnly={readOnly}
-          onDirtyChange={onDirtyChange}
-        />
-      </section>
+      <div className="agent-management-codex claude-provider-workspace">
+       <aside className="agent-management-provider-list">
+        <div className="agent-management-provider-list-heading"><span>提供商</span>{!readOnly&&<button type="button" aria-label="添加 Provider" onClick={()=>setSelectedProviderId('__new__')}><Plus size={14}/></button>}</div>
+          {state.providers.map(item=><button key={item.id} type="button" className="agent-management-provider" aria-current={selectedProviderId===item.id?'true':undefined} onClick={()=>setSelectedProviderId(item.id)}><span className={`agent-management-dot ${statusTone(item.status)}`}/><span className="agent-management-provider-copy"><strong>{item.name}</strong><small>{item.managed?item.authentication.status==='authenticated'?'API Key 已配置':'缺少 API Key':'由 Claude Code 原生管理'}</small><small>{item.statusText}</small></span><ChevronRight size={14}/></button>)}
+       </aside>
+       <div className="agent-management-provider-content">
+        {(() => {
+          const selectedProvider=state.providers.find(item=>item.id===selectedProviderId);
+          if(selectedProviderId==='__new__')return <ClaudeProviderEditor readOnly={readOnly} onCancel={()=>setSelectedProviderId(provider?.id||'')} onSaved={id=>setSelectedProviderId(id||'')}/>;
+          if(selectedProvider)return <ClaudeProviderEditor key={selectedProvider.id} provider={selectedProvider} readOnly={readOnly} onCancel={()=>setSelectedProviderId(provider?.id||'')} onSaved={id=>setSelectedProviderId(id||'')}/>;
+          return <div className="agent-management-empty">选择一个提供商以查看配置。</div>;
+        })()}
+       </div>
+      </div>
     </div>
   );
 }
@@ -1976,7 +1651,7 @@ export function AgentManagementPanel({
               <small>
                 {item.agent.id === "codex"
                   ? `${((item.state as any).providers?.length || 0) + (accountCatalog.data?.environments.filter(e=>e.kind==='account').length || 0)} 个 Provider`
-                  : "原生配置"}
+                  : `${((item.state as any).providers?.length || 0)} 个 Provider`}
               </small>
             </button>
           ))}
@@ -2020,7 +1695,6 @@ export function AgentManagementPanel({
           />
         ) : (
           <ClaudeWorkspace
-            agentId={selectedId}
             state={state as AgentManagementState}
             readOnly={readOnly}
             onDirtyChange={setProviderDirtyStable}

@@ -1,5 +1,6 @@
 import {getDb} from '../../db/index.js';
 import {readAgentManagement} from './management-store.js';
+import {getAgent} from './registry.js';
 
 export interface EnvironmentRecord {id:string;agent_id:string;name:string;kind:string;enabled:number;config:string;allowed_user_ids:string|null}
 export function environmentRecord(id:string):EnvironmentRecord|undefined {
@@ -15,8 +16,17 @@ export function isRetiredEnvironment(id:string|null|undefined):boolean {
 /** Administrators can see and use every configured environment. Allow lists
  * restrict regular platform users; runtime availability is checked by the engine. */
 export function canUseEnvironment(agentId:string,id:string|null|undefined,userId:string):boolean {
+  return canUseAdapterEnvironment(agentId,id,userId,'use');
+}
+
+function canUseAdapterEnvironment(agentId:string,id:string|null|undefined,userId:string,operation:'use'|'control'):boolean {
   if(!id)return true;
   if(isRetiredEnvironment(id))return false;
+  let environment:ReturnType<typeof getAgent>['environment'];
+  try { environment=getAgent(agentId).environment; } catch { return false; }
+  if(environment)return operation==='use'
+    ? environment.canUse(id,userId)
+    : environment.canControl(id,userId);
   const row=environmentRecord(id);
   if(row && row.agent_id!==agentId)return false;
   const admin=(getDb().prepare('SELECT role FROM users WHERE id=? AND disabled=0').get(userId) as {role:string}|undefined)?.role==='admin';
@@ -35,7 +45,7 @@ export function canUseEnvironment(agentId:string,id:string|null|undefined,userId
   return row?.kind!=='account';
 }
 export function assertEnvironmentUse(agentId:string,id:string,userId:string):void {
-  if(!canUseEnvironment(agentId,id,userId))throw Object.assign(Error('无权使用该 Codex 环境，或环境已停用'),{statusCode:403});
+  if(!canUseEnvironment(agentId,id,userId))throw Object.assign(Error('无权使用该环境，或环境已停用'),{statusCode:403});
 }
 export function canUseSessionEnvironment(session:{agent_id?:string|null;cli_type?:string|null;agent_environment_id?:string|null},userId:string):boolean {
   if(session.agent_environment_id&&isRetiredEnvironment(session.agent_environment_id)){const row=environmentRecord(session.agent_environment_id)!;const admin=(getDb().prepare('SELECT role FROM users WHERE id=? AND disabled=0').get(userId) as {role:string}|undefined)?.role==='admin';try{return admin||(environmentUserOverride(session.agent_environment_id!,userId) ?? (JSON.parse(row.allowed_user_ids||'[]') as string[]).includes(userId));}catch{return admin;}}
@@ -50,8 +60,9 @@ export function validateEnvironmentUsers(value:unknown):string[]|null {
   return ids;
 }
 
-export function canControlEnvironment(id:string,userId:string):boolean {
- if(!canUseEnvironment('codex',id,userId))return false;
+export function canControlEnvironment(id:string,userId:string,agentId='codex'):boolean {
+ if(!canUseAdapterEnvironment(agentId,id,userId,'control'))return false;
+ try { if(getAgent(agentId).environment)return true; } catch { return false; }
  const row=environmentRecord(id);
  if(environmentUserOverride(id,userId)===true)return true;
  if(row?.allowed_user_ids!==null&&row?.allowed_user_ids!==undefined)return true;

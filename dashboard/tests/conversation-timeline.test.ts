@@ -81,4 +81,32 @@ describe('deterministic conversation timeline',()=>{
     expect(ids(mergeConversationTimeline(result,[live]))).toEqual(['durable']);
     expect(ids(mergeConversationTimeline(result,[message('intentional','user',{text:'same',client_id:'another',sequence:30})]))).toEqual(['durable','intentional']);
   });
+  it('reconciles a Claude live user echo with its durable UUID-only history projection',()=>{
+    const live=message('live-user','user',{text:'same prompt',client_id:'prompt-id',queued:false});
+    const durable=message('native-user','user',{text:'same prompt',client_id:'prompt-id',turn_id:'native',sequence:10});
+    expect(ids(mergeConversationTimeline([live],[durable]))).toEqual(['native-user']);
+  });
+  it('settles a Claude UUID echo that carries the browser ID only as its native alias',()=>{
+    const pending=message('pending-browser','user',{text:'same prompt',client_id:'browser-id',optimistic:{afterSequence:-1}});
+    const echo=message('native-user','user',{text:'same prompt',native_client_id:'browser-id',turn_id:'native'});
+    expect(ids(mergeConversationTimeline([pending],[echo]))).toEqual(['native-user']);
+  });
+  it('settles the same Claude browser send when the UUID echo arrives before the alias',()=>{
+    const pending=message('pending-browser','user',{text:'same prompt',client_id:'browser-id',optimistic:{afterSequence:-1}});
+    const echo=message('native-user','user',{text:'same prompt',turn_id:'native',sequence:10});
+    const aliased=message('native-user','user',{text:'same prompt',turn_id:'native',native_client_id:'browser-id',sequence:10});
+    const first=mergeConversationTimeline([pending],[echo]);
+    const settled=mergeConversationTimeline(first,[aliased]);
+    expect(ids(settled)).toEqual(['native-user']);
+    expect(settled[0]).toMatchObject({client_id:'browser-id',native_client_id:'browser-id'});
+  });
+  it('merges a UUID-only Claude history projection after the live echo established its turn',()=>{
+    const pending=message('pending-browser','user',{text:'介绍你自己',client_id:'browser-id',optimistic:{afterSequence:-1}});
+    const live=message('native-user','user',{text:'介绍你自己',turn_id:'native-turn',native_client_id:'browser-id'});
+    const history=message('native-user','user',{text:'介绍你自己',turn_id:'native-turn',sequence:10});
+    const first=mergeConversationTimeline([pending],[live]);
+    const settled=mergeConversationTimeline(first,[history]);
+    expect(ids(settled)).toEqual(['native-user']);
+    expect(settled[0]).toMatchObject({client_id:'browser-id',native_client_id:'browser-id',sequence:10});
+  });
 });
