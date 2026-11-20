@@ -1,5 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { verifyClaudeProviderModel } from "../src/services/agents/claude/providers.js";
+import {
+  claudeMessagesEndpoint,
+  verifyClaudeProviderModel,
+} from "../src/services/agents/claude/providers.js";
 
 const provider = {
   id: "provider-a",
@@ -12,6 +15,15 @@ const provider = {
   maxOutputTokens: null,
 };
 afterEach(() => vi.unstubAllGlobals());
+
+it("uses one Anthropic messages path whether the provider root already has /v1", () => {
+  expect(claudeMessagesEndpoint("https://api.deepseek.com/anthropic")).toBe(
+    "https://api.deepseek.com/anthropic/v1/messages",
+  );
+  expect(claudeMessagesEndpoint("https://gateway.example/v1/")).toBe(
+    "https://gateway.example/v1/messages",
+  );
+});
 
 it("requires the upstream response model to match the selected model", async () => {
   const fetch = vi.fn().mockResolvedValue(
@@ -59,4 +71,14 @@ it("rejects a model outside the selected provider before making a request", asyn
     verifyClaudeProviderModel(provider, "claude-haiku-5-5"),
   ).rejects.toThrow("不属于 Provider");
   expect(fetch).not.toHaveBeenCalled();
+});
+
+it("explains a Claude Messages protocol failure instead of exposing it as a raw HTTP error", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(new Response("", { status: 404 })),
+  );
+  await expect(
+    verifyClaudeProviderModel(provider, "claude-opus-4-8"),
+  ).rejects.toThrow("当前模型 claude-opus-4-8 不能用于 Claude Code");
 });

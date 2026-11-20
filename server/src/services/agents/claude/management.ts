@@ -8,6 +8,7 @@ import { managedEnv, updateManagedEnvironment } from '../environment-store.js';
 import type { AgentEnvironmentVariable } from '../types.js';
 import {
   claudeEnvironmentName,
+  claudeRuntimeProvider,
   claudeProviderState,
   createClaudeProvider,
   deleteClaudeProvider,
@@ -18,6 +19,7 @@ import {
   nativeClaudeProviderApiKey,
   persistDetectedClaudeModels,
   toggleClaudeProvider,
+  verifyAndCreateClaudeProvider,
   updateClaudeProvider,
   updateNativeClaudeProvider,
 } from './providers.js';
@@ -166,7 +168,16 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
     update: async input => ({ ...await base.update(input), environment: environment() }),
     action: async action => ({ ...await base.action(action), environment: environment() }),
     createProvider: async input => {
-      createClaudeProvider(input);
+      await verifyAndCreateClaudeProvider(input).catch(async (error) => {
+        // A temporary network failure must not strand an otherwise valid
+        // configuration. Explicit model/protocol rejection still fails closed.
+        if ((error as { code?: string })?.code === 'model_protocol_unavailable') throw error;
+        createClaudeProvider(input);
+        throw Object.assign(
+          Error(`${error instanceof Error ? error.message : '模型预检失败'}；配置已保存，可稍后重新测试连接。`),
+          { statusCode: 502 },
+        );
+      });
       return inspect(true);
     },
     updateProvider: async (providerId, input) => {
@@ -182,7 +193,9 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
     providerAction: async (providerId, action) => {
       if(providerId==='anthropic')throw Object.assign(Error('原生 Provider 由 Claude Code 环境配置管理，不能停用或删除'),{statusCode:409});
       if (action === 'test') {
-        await detectClaudeProviderModels({ providerId });
+        const provider = claudeRuntimeProvider({agent_environment_id:`claude-provider:${providerId}`});
+        if (!provider?.defaultModel) throw Error('Provider 尚未配置默认模型');
+        await (await import('./providers.js')).verifyClaudeProviderModel(provider, provider.defaultModel);
       } else if (action === 'enable') {
         toggleClaudeProvider(providerId, true);
       } else if (action === 'disable') {

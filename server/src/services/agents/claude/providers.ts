@@ -491,9 +491,7 @@ export function claudeProviderState(
   };
 }
 
-export function createClaudeProvider(
-  input: AgentProviderInput,
-): void {
+function validateNewClaudeProvider(input: AgentProviderInput) {
   const id = input.id?.trim() || '';
   if (!ID_RE.test(id))
     throw Object.assign(Error('Provider ID 无效'), { statusCode: 400 });
@@ -505,6 +503,13 @@ export function createClaudeProvider(
   const fields = validateFields(input.fields);
   if (!input.apiKey?.trim())
     throw Object.assign(Error('请填写 API Key'), { statusCode: 400 });
+  return { id, fields };
+}
+
+export function createClaudeProvider(
+  input: AgentProviderInput,
+): void {
+  const { id, fields } = validateNewClaudeProvider(input);
   updateAgentManagement('claude', (value) => ({
     ...value,
     providers: [
@@ -527,6 +532,32 @@ export function createClaudeProvider(
     }));
     throw error;
   }
+}
+
+/** Save only after the selected models successfully serve the Claude Messages
+ * protocol. A model-list entry alone does not make a gateway usable by Claude
+ * Code. Failed checks never create a provider or persist its secret. */
+export async function verifyAndCreateClaudeProvider(
+  input: AgentProviderInput,
+): Promise<void> {
+  const { id, fields } = validateNewClaudeProvider(input);
+  if (!Array.isArray(fields.models) || !fields.models.length)
+    throw Object.assign(Error('至少选择一个 Claude 模型'), { statusCode: 400 });
+  const runtime: ClaudeProviderRuntime = {
+    id,
+    name: input.name?.trim() || id,
+    baseUrl: String(fields.baseUrl),
+    authToken: String(input.apiKey).trim(),
+    models: fields.models,
+    defaultModel:
+      typeof fields.defaultModel === 'string' ? fields.defaultModel : null,
+    adaptiveThinking: false,
+    contextWindow: null,
+    maxOutputTokens: null,
+  };
+  for (const model of runtime.models)
+    await verifyClaudeProviderModel(runtime, model);
+  createClaudeProvider(input);
 }
 
 export function updateClaudeProvider(
@@ -844,7 +875,10 @@ export async function detectClaudeProviderModels(
     endpoint ||= stringField(provider, 'baseUrl');
     apiKey ||= claudeProviderApiKey(provider.id);
   }
-  endpoint = validEndpoint(endpoint);
+  const baseUrl = validEndpoint(endpoint);
+  // The form accepts an Anthropic-compatible root or an OpenAI-style `/v1`
+  // root. Both mean the same provider; `/models` belongs at the API root.
+  endpoint = /\/v1$/i.test(baseUrl) ? baseUrl.slice(0, -3) : baseUrl;
   if (!apiKey.trim())
     throw Object.assign(Error('请先填写 API Key'), { statusCode: 400 });
   const response = await fetch(`${endpoint}/models`, {
@@ -855,6 +889,13 @@ export async function detectClaudeProviderModels(
     },
     signal: AbortSignal.timeout(20_000),
   });
+  if (response.status === 404)
+    throw Object.assign(
+      Error(
+        '此地址没有提供 /models 目录。Anthropic 兼容 Provider 可手工填写模型 ID，保存后会用 Messages 请求验证。',
+      ),
+      { statusCode: 409, code: 'model_catalog_unavailable' },
+    );
   if (!response.ok)
     throw Object.assign(Error(`模型探测失败 (${response.status})`), {
       statusCode: 502,
@@ -878,12 +919,20 @@ export async function detectClaudeProviderModels(
   });
 }
 
+/** Resolve the URL the Claude Agent SDK will actually call. The configured
+ * value is a root, so a root that already contains `/v1` must not produce
+ * `/v1/v1/messages`. */
+export function claudeMessagesEndpoint(baseUrl: string): string {
+  const root = baseUrl.trim().replace(/\/+$/, '');
+  return /\/v1$/i.test(root) ? `${root}/messages` : `${root}/v1/messages`;
+}
+
 export async function verifyClaudeProviderModel(
   provider: ClaudeProviderRuntime,
   model: string,
 ): Promise<string> {
   assertClaudeSelectedModel(provider, model);
-  const response = await fetch(`${provider.baseUrl.replace(/\/+$/, "")}/v1/messages`, {
+  const response = await fetch(claudeMessagesEndpoint(provider.baseUrl), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -899,7 +948,12 @@ export async function verifyClaudeProviderModel(
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok)
-    throw Error(`Provider 预检失败（HTTP ${response.status}）`);
+    throw Object.assign(
+      Error(
+        `Provider 的 Claude Messages 预检失败（HTTP ${response.status}）；当前模型 ${model} 不能用于 Claude Code，请检查模型是否支持 Anthropic Messages 协议。`,
+      ),
+      { statusCode: 409, code: 'model_protocol_unavailable' },
+    );
   const body = await response.json() as { model?: unknown };
   if (typeof body.model !== "string" || !body.model)
     throw Error("Provider 响应未包含实际模型，不能确认所选模型");

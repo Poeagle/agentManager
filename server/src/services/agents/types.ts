@@ -645,6 +645,8 @@ export interface AgentEnvironmentPort {
 export interface AgentInputPort {
   /** Submit preserves platform-generated UUIDs in live and durable message identities. */
   supportsClientIdentity?: boolean;
+  /** A client identity can be attached before the native transcript exists. */
+  supportsInitialClientIdentity?: boolean;
   /** When supported, map a platform client ID to the durable native message ID. */
   messageId?(clientId: string): string | undefined;
   cancelQueued?(context: AgentContext, clientId: string): Promise<void>;

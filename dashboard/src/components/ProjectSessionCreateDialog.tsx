@@ -1,10 +1,11 @@
-import {useCallback,useState} from 'react';
+import {useCallback,useRef,useState} from 'react';
 import {CodexCreateEnvironment} from './CodexCreateEnvironment';
 import {ClaudeCreateEnvironment} from './ClaudeCreateEnvironment';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type Project, type Session } from '../lib/api';
 import { ProjectOpenDialog } from './ProjectOpenDialog';
 import { projectOpenModes } from './project-open-modes';
+import { conversationClientId } from '../lib/conversation-timeline';
 
 /** One creation flow for the project list and the workspace's + button. */
 export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated, title }: {
@@ -12,6 +13,7 @@ export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated,
 }) {
   const client = useQueryClient();
   const [environmentId,setEnvironmentId]=useState<string|undefined>(),[environmentReady,setEnvironmentReady]=useState(false);
+  const claudeInitialClientId=useRef(conversationClientId());
   const chooseEnvironment=useCallback((id:string|undefined)=>{
     setEnvironmentId(id);
   },[]);
@@ -21,7 +23,9 @@ export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated,
   const mutation = useMutation({
     mutationFn: ({ mode, cli }: { mode: 'session' | 'terminal'; cli?: string }) => {
       if (!projectOpenModes(project).some((option) => option.mode === mode && option.cli === cli)) throw new Error('该打开方式未获授权');
+      const clientId=mode==='session'&&cli==='claude'?claudeInitialClientId.current:undefined;
       return api.sessions.create({ project_id: project.id, project_path: project.path, mode,
+        ...(clientId?{client_id:clientId}:{}),
         ...(mode==='session'&&(cli==='codex'||cli==='claude')&&environmentId?{environment_id:environmentId}:{}),
         ...(mode === 'session' ? { cli_type: cli } : {}),
       });

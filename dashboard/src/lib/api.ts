@@ -385,7 +385,7 @@ export const api = {
     },
     get: (id: string) => fetchJSON<{ session: Session }>(`/sessions/${id}`),
     ignoreQuestions:(id:string,questionIds:string[],ignored=true)=>fetchJSON<{ok:boolean;ignored_question_ids:string[]}>(`/sessions/${encodeURIComponent(id)}/questions/ignore`,{method:'POST',body:JSON.stringify({question_ids:questionIds,ignored})}),
-    create: (data: { project_path: string; task?: string; mode?: 'session' | 'terminal'; project_id?: string; cli_type?: string;environment_id?:string }) =>
+    create: (data: { project_path: string; task?: string; mode?: 'session' | 'terminal'; project_id?: string; cli_type?: string;environment_id?:string;client_id?:string }) =>
       fetchJSON<{ ok: boolean; session: Session }>('/sessions', {
         method: 'POST',
         body: JSON.stringify(data),

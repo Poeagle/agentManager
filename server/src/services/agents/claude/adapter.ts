@@ -119,6 +119,7 @@ export const claudeAdapter: AgentDefinition = {
     },
   input: {
     supportsClientIdentity: true,
+    supportsInitialClientIdentity: true,
     messageId: clientId => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId) ? conversationMessageId('', 'user', clientId) : undefined,
     cancelQueued: async (context, clientId) => {
       const runtime = (await import("./sdk-runtime.js")).claudeRuntime(

@@ -17,7 +17,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk',()=>({
   };},
 }));
 
-import {ensureClaudeRuntime,releaseClaudeRuntime} from '../src/services/agents/claude/sdk-runtime.js';
+import {claudeRuntime,ensureClaudeRuntime,releaseClaudeRuntime} from '../src/services/agents/claude/sdk-runtime.js';
 import {conversationMessageId} from '../src/services/conversation-reader.js';
 import {parseClaudeMessage} from '../src/services/agents/claude/history.js';
 
@@ -210,6 +210,19 @@ describe('Claude Agent SDK runtime',()=>{
     const native=await sdk.queries[0].prompt[Symbol.asyncIterator]().next();expect(native.value.uuid).toBe(userId);
     const history=parseClaudeMessage(Buffer.from(JSON.stringify({type:'user',uuid:userId,message:{role:'user',content:'scheduled'},timestamp:'2026-11-01T00:00:00Z'})));
     expect(history?.itemId).toBe(userId);expect(conversationMessageId('',history!.message.role,history!.itemId)).toBe(live.id);
+  });
+  it('uses one user identity for the first Claude Code input from launch through durable history',async()=>{
+    const {createTestDatabase}=await import('./helpers/database.js');const database=createTestDatabase();
+    let nativeId:string|undefined;
+    try{
+      const {claudeAdapter}=await import('../src/services/agents/claude/adapter.js');
+      const launch=await claudeAdapter.launch.prepare({session:{id:'first-claude'},projectPath:database.dir} as any,'你好，介绍你自己',undefined,false,'browser-first');
+      nativeId=launch.nativeId;
+      const live=await vi.waitFor(()=>{const message=claudeRuntime(nativeId!)?.snapshot().messages.find(item=>item.role==='user');expect(message).toBeTruthy();return message!;});
+      expect(live.client_id).toBe('browser-first');expect(launch.initialMessageId).toBe(live.id);
+      sdk.messages=[{type:'user',uuid:'019ff001-1212-7212-8212-121212121250',session_id:nativeId,parent_tool_use_id:null,message:{role:'user',content:'你好，介绍你自己'}}];
+      await vi.waitFor(()=>expect(claudeRuntime(nativeId!)?.snapshot().messages.find(item=>item.role==='user')).toMatchObject({client_id:'browser-first',native_client_id:'browser-first'}));
+    }finally{if(nativeId)releaseClaudeRuntime(nativeId);database.cleanup();}
   });
   it('stops only the matching active turn',async()=>{
     let resolve!:(value:any)=>void;sdk.messages=[new Promise(done=>{resolve=done;})];

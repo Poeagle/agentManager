@@ -12,7 +12,7 @@ const statusTone=(status:string)=>status==='ready'?'ready':status==='error'?'err
 
 export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirtyChange}:{provider?:AgentProviderState;readOnly:boolean;onSaved:(id?:string)=>void;onCancel?:()=>void;onDirtyChange?:(dirty:boolean)=>void}){
  const client=useQueryClient(),[draft,setDraft]=useState<Draft>(()=>provider?fromProvider(provider):empty());
- const [detected,setDetected]=useState<string[]>(provider?.models||[]),[error,setError]=useState(''),[saved,setSaved]=useState(false),[confirmDelete,setConfirmDelete]=useState(false);
+ const [detected,setDetected]=useState<string[]>(provider?.models||[]),[manualModel,setManualModel]=useState(''),[error,setError]=useState(''),[saved,setSaved]=useState(false),[confirmDelete,setConfirmDelete]=useState(false);
  const original=provider?fromProvider(provider):empty();
  const dirty=JSON.stringify(draft)!==JSON.stringify(original)||!!confirmDelete;
  const change=(patch:Partial<Draft>)=>{setSaved(false);setError('');onDirtyChange?.(true);setDraft(previous=>({...previous,...patch}));};
@@ -27,6 +27,13 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
   });
   onDirtyChange?.(true);
  },onError:(failure:Error)=>setError(failure.message)});
+ const addManualModel=()=>{
+  const model=manualModel.trim();if(!model)return;
+  if(!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/.test(model)){setError('模型 ID 格式无效');return;}
+  setDetected(previous=>[...new Set([...previous,model])]);
+  change({models:[...new Set([...draft.models,model])],defaultModel:draft.defaultModel||model});
+  setManualModel('');setError('');
+ };
  const refreshSessionControls=()=>{
   void client.invalidateQueries({queryKey:['conversation-controls']});
   void client.invalidateQueries({queryKey:['session-environments']});
@@ -61,8 +68,9 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
    </div>
   </section>
   <section className="claude-provider-models agent-management-section" aria-labelledby="claude-provider-models-title">
-   <div className="claude-provider-models-heading"><div><h4 id="claude-provider-models-title">模型</h4><p>{detected.length?`已探测 ${detected.length} 个，勾选此 Provider 可用的模型。`:provider?'输入新密钥后可重新探测，现有模型仍可编辑。':'填写地址和密钥后探测模型。'}</p></div><div className="agent-management-status-row"><button type="button" className="agent-management-button" disabled={readOnly||busy||!draft.baseUrl.trim()||(!provider&&!draft.apiKey.trim())} onClick={()=>{setError('');detect.mutate();}}>{detect.isPending?<Loader2 size={13} className="animate-spin"/>:<Search size={13}/>}探测模型</button></div></div>
-   {detected.length?<div className="claude-provider-model-grid">{detected.map(model=><label className={draft.models.includes(model)?'selected':''} key={model}><input type="checkbox" aria-label={`启用模型 ${model}`} checked={draft.models.includes(model)} disabled={readOnly||busy} onChange={event=>{const models=event.target.checked?[...draft.models,model]:draft.models.filter(item=>item!==model);change({models,defaultModel:models.includes(draft.defaultModel)?draft.defaultModel:models[0]||''});}}/><span>{model}</span>{draft.defaultModel===model&&<small>默认</small>}</label>)}</div>:<div className="provider-models-note">暂无模型，请先探测 Provider 模型目录。</div>}
+   <div className="claude-provider-models-heading"><div><h4 id="claude-provider-models-title">模型</h4><p>{detected.length?`已发现 ${detected.length} 个，勾选此 Provider 可用的模型。`:'此地址也可以手工填写模型 ID；保存时会用 Anthropic Messages 请求验证。'}</p></div><div className="agent-management-status-row"><button type="button" className="agent-management-button" disabled={readOnly||busy||!draft.baseUrl.trim()||(!provider&&!draft.apiKey.trim())} onClick={()=>{setError('');detect.mutate();}}>{detect.isPending?<Loader2 size={13} className="animate-spin"/>:<Search size={13}/>}探测模型目录</button></div></div>
+   <div className="agent-management-field claude-provider-manual-model"><label htmlFor="claude-provider-manual-model">模型 ID</label><div className="flex gap-2"><input id="claude-provider-manual-model" aria-label="手工添加 Claude 模型" value={manualModel} placeholder="例如 deepseek-chat" disabled={readOnly||busy} onChange={event=>setManualModel(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();addManualModel();}}}/><button type="button" className="agent-management-button" disabled={readOnly||busy||!manualModel.trim()} onClick={addManualModel}>添加</button></div><small>模型目录不可用时可直接填写；保存时会验证模型是否支持 Claude Code。</small></div>
+   {detected.length?<div className="claude-provider-model-grid">{detected.map(model=><label className={draft.models.includes(model)?'selected':''} key={model}><input type="checkbox" aria-label={`启用模型 ${model}`} checked={draft.models.includes(model)} disabled={readOnly||busy} onChange={event=>{const models=event.target.checked?[...draft.models,model]:draft.models.filter(item=>item!==model);change({models,defaultModel:models.includes(draft.defaultModel)?draft.defaultModel:models[0]||''});}}/><span>{model}</span>{draft.defaultModel===model&&<small>默认</small>}</label>)}</div>:draft.models.length>0?<div className="claude-provider-model-grid">{draft.models.map(model=><span key={model} className="selected">{model}{draft.defaultModel===model?' · 默认':''}</span>)}</div>:<div className="provider-models-note">尚未添加模型。可探测目录，或手工填写模型 ID。</div>}
    <label className="agent-management-field claude-provider-default"><span>默认模型</span><select aria-label="Claude Provider 默认模型" value={draft.defaultModel} disabled={readOnly||busy||!draft.models.length} onChange={event=>change({defaultModel:event.target.value})}><option value="">使用第一个可用模型</option>{draft.models.map(model=><option key={model} value={model}>{model}</option>)}</select></label>
   </section>
   {(error||saved)&&<div className={`agent-management-operation ${error?'error':'success'}`} role={error?'alert':'status'}>{error?<CircleAlert size={13}/>:<Check size={13}/>}<span>{error||'Claude Provider 已保存'}</span></div>}

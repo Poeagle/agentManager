@@ -16,6 +16,15 @@ export function rememberInputSource(sessionId:string,clientId:string,source:{kin
 export function bindInputSourceMessage(sessionId:string,clientId:string,messageId:string) {
   getDb().prepare('UPDATE conversation_input_sources SET message_id=? WHERE session_id=? AND client_id=?').run(messageId,sessionId,clientId);
 }
+/** Managed adapters can expose the identity before their file boundary exists.
+ * Keep it on the same journal used by terminal input reconciliation. */
+export function rememberInitialConversationInput(sessionId:string,nativeId:string,clientId:string,messageId:string) {
+  const afterOffset=Number.MAX_SAFE_INTEGER;
+  getDb().prepare(`INSERT INTO conversation_input_links(session_id,native_id,client_id,message_id,after_offset)
+    VALUES(?,?,?,?,?) ON CONFLICT(session_id,native_id,client_id)
+    DO UPDATE SET message_id=excluded.message_id,after_offset=excluded.after_offset`
+  ).run(sessionId,nativeId,clientId,messageId,afterOffset);
+}
 
 function decorateInputSources(sessionId:string,messages:ConversationMessage[]):ConversationMessage[] {
   const lookup=getDb().prepare('SELECT kind,label FROM conversation_input_sources WHERE session_id=? AND (client_id=? OR message_id=?) LIMIT 1');
@@ -71,7 +80,11 @@ export function linkConversationInputs(sessionId:string,nativeId:string|null|und
     // A browser identity from a different submission is authoritative even if
     // two intentionally repeated prompts have identical content.
     const existing=message.client_id?known.get(sessionId,nativeId,message.client_id) as {message_id:string|null;after_offset:number}|undefined:undefined;
-    if(existing){if(!existing.message_id&&existing.after_offset<=message.sequence)bind.run(message.id,sessionId,nativeId,message.client_id);return message;}
+    if(existing){
+      if(!existing.message_id&&existing.after_offset<=message.sequence)bind.run(message.id,sessionId,nativeId,message.client_id);
+      if(existing.message_id!==message.id)return {...message,client_id:message.client_id,native_client_id:message.client_id};
+      return message;
+    }
     let row=find.get(sessionId,nativeId,message.id,inputHash(message.text),message.sequence) as {client_id:string;message_id:string|null}|undefined;
     if(!row){
       // Old fallback submissions journalled the native attachment format before

@@ -73,7 +73,7 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await form.getByLabel('Claude API Key').fill('fixture-secret');
  await form.getByLabel('Claude 上下文窗口').fill('200000');
  await form.getByLabel('Claude 最大输出 Token').fill('64000');
- await form.getByRole('button',{name:'探测模型'}).click();
+ await form.getByRole('button',{name:'探测模型目录'}).click();
  await expect(form.getByRole('checkbox',{name:'启用模型 claude-fable-5',exact:true})).toBeChecked();
  await expect(form.getByText('grok-4.5',{exact:true})).toHaveCount(0);
  await expect(form.getByText('opus',{exact:true})).toHaveCount(0);
@@ -100,6 +100,6 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
   new URL(request.url()).pathname==='/api/sessions'&&request.method()==='POST');
  await page.getByRole('button',{name:'新建会话'}).click();
  expect((await created).postDataJSON()).toMatchObject({
-  cli_type:'claude',environment_id:'claude-provider:xindu-real',
+  cli_type:'claude',environment_id:'claude-provider:xindu-real',client_id:expect.stringMatching(/^[a-f0-9]{32}$/),
  });
 });

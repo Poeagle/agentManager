@@ -16,6 +16,7 @@ import {
   deleteClaudeProvider,
   detectClaudeProviderModels,
   nativeClaudeProviderState,
+  verifyAndCreateClaudeProvider,
   updateNativeClaudeProvider,
   updateClaudeProvider,
   ensureNativeClaudeProvider,
@@ -30,6 +31,36 @@ afterEach(()=>{database.cleanup();vi.unstubAllGlobals();});
 const create=(id='gateway')=>createClaudeProvider({
  id,name:'Gateway',kind:'anthropic-compatible',apiKey:'secret-token',
  fields:{baseUrl:'https://gateway.example',models:['claude-a','claude-b'],defaultModel:'claude-a',contextWindow:'200000'},
+});
+it('verifies a manually entered model against Claude Messages before saving the provider',async()=>{
+  const response=(model:string,status=200)=>new Response(JSON.stringify(status===200?{model}:{error:{type:'not_found_error'}}),{status,headers:{'content-type':'application/json'}});
+  const fetchMock=vi.fn().mockResolvedValue(response('deepseek-chat'));
+  vi.stubGlobal('fetch',fetchMock);
+  await verifyAndCreateClaudeProvider({
+    id:'deepseek',apiKey:'secret',
+    fields:{baseUrl:'https://api.deepseek.com/anthropic',models:['deepseek-chat'],defaultModel:'deepseek-chat'},
+  });
+  expect(fetchMock).toHaveBeenCalledWith(
+    'https://api.deepseek.com/anthropic/v1/messages',
+    expect.objectContaining({method:'POST',body:expect.stringContaining('"model":"deepseek-chat"')}),
+  );
+  expect(claudeProviderForEnvironment('claude-provider:deepseek')).toMatchObject({models:['deepseek-chat'],defaultModel:'deepseek-chat'});
+});
+it('does not save a Claude Provider whose model cannot serve Anthropic Messages',async()=>{
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response('',{status:404})));
+  await expect(verifyAndCreateClaudeProvider({
+    id:'deepseek',apiKey:'secret',
+    fields:{baseUrl:'https://api.deepseek.com/anthropic',models:['deepseek-chat'],defaultModel:'deepseek-chat'},
+  })).rejects.toThrow('不能用于 Claude Code');
+  expect(readAgentManagement('claude').providers).toEqual([]);
+});
+it('keeps a valid configuration when an ambiguous provider preflight fails',async()=>{
+  vi.stubGlobal('fetch',vi.fn().mockRejectedValue(new Error('network timeout')));
+  await expect(claudeManagement({id:'claude',label:'Claude'} as any).createProvider({
+    id:'deepseek',apiKey:'secret',
+    fields:{baseUrl:'https://api.deepseek.com/anthropic',models:['deepseek-chat'],defaultModel:'deepseek-chat'},
+  })).rejects.toThrow('配置已保存，可稍后重新测试连接');
+  expect(claudeProviderForEnvironment('claude-provider:deepseek')).toMatchObject({models:['deepseek-chat']});
 });
 
 describe('Claude managed providers',()=>{

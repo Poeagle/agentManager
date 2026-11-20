@@ -93,7 +93,7 @@ describe('Codex environments UI',()=>{
   fireEvent.change(select,{target:{value:'claude-provider:xindu'}});
   fireEvent.click(screen.getByRole('button',{name:'新建会话'}));
   await waitFor(()=>expect(api.sessions.create).toHaveBeenCalledWith(expect.objectContaining({
-   cli_type:'claude',environment_id:'claude-provider:xindu',
+   cli_type:'claude',environment_id:'claude-provider:xindu',client_id:expect.stringMatching(/^[a-f0-9]{32}$/),
   })));
  });
  it('creates a Claude tab with the native Provider without an environment authorization error',async()=>{
@@ -104,7 +104,7 @@ describe('Codex environments UI',()=>{
   await waitFor(()=>expect(screen.getByRole('button',{name:'新建会话'})).toBeEnabled());
   fireEvent.click(screen.getByRole('button',{name:'新建会话'}));
   await waitFor(()=>expect(api.sessions.create).toHaveBeenCalledWith(expect.objectContaining({
-   cli_type:'claude',environment_id:'anthropic',
+   cli_type:'claude',environment_id:'anthropic',client_id:expect.stringMatching(/^[a-f0-9]{32}$/),
   })));
  });
 });
