@@ -15,7 +15,9 @@ import { environmentUserOverride } from '../environment-access.js';
 import { readManagedEnvironment, updateManagedEnvironment } from '../environment-store.js';
 
 const ID_RE = /^[a-z][a-z0-9_.-]{0,63}$/;
-const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/;
+/** Provider-native model IDs are opaque; brackets are used by some Claude
+ * compatible providers to select a context window (for example [1m]). */
+const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+\-[\]]{0,199}$/;
 const secretKey = (providerId: string) =>
   `agent_management_claude_provider_secret:${providerId}`;
 const secretPurpose = (providerId: string) => `claude-provider:${providerId}`;
@@ -37,6 +39,10 @@ export interface ClaudeProviderRuntime {
   authToken: string;
   models: string[];
   defaultModel: string | null;
+  haikuModel: string | null;
+  subagentModel: string | null;
+  effort: string | null;
+  autoCompactWindow: number | null;
   adaptiveThinking: boolean;
   contextWindow: number | null;
   maxOutputTokens: number | null;
@@ -59,12 +65,16 @@ export function claudeProviderEnvironment(
     ANTHROPIC_MODEL: selected,
     ANTHROPIC_DEFAULT_OPUS_MODEL: selected,
     ANTHROPIC_DEFAULT_SONNET_MODEL: selected,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: selected,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: provider.haikuModel || selected,
     // Claude Code may spawn Agent/workflow subagents with a separate model
     // selection. Bind those aliases to the exact session model as well, so a
     // Provider cannot silently route an internal turn to an incompatible model.
-    CLAUDE_CODE_SUBAGENT_MODEL: selected,
+    CLAUDE_CODE_SUBAGENT_MODEL: provider.subagentModel || selected,
     CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: selected,
+    ...(provider.effort ? { CLAUDE_CODE_EFFORT_LEVEL: provider.effort } : {}),
+    ...(provider.autoCompactWindow
+      ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(provider.autoCompactWindow) }
+      : {}),
     ...(capabilities
       ? {
           ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES: capabilities,
@@ -89,6 +99,26 @@ function stringField(
   return typeof provider.fields[key] === 'string'
     ? (provider.fields[key] as string)
     : fallback;
+}
+
+function claudeProviderOptions(provider: StoredProvider) {
+  const models = modelField(provider);
+  const model = (value: unknown) =>
+    typeof value === 'string' && models.includes(value.trim())
+      ? value.trim()
+      : null;
+  const effort = stringField(provider, 'effort').trim();
+  return {
+    haikuModel: model(provider.fields.haikuModel),
+    subagentModel: model(provider.fields.subagentModel),
+    effort: /^(?:low|medium|high|xhigh|max)$/.test(effort) ? effort : null,
+    autoCompactWindow: boundedNumber(
+      provider.fields.autoCompactWindow,
+      '自动压缩窗口',
+      1,
+      10_000_000,
+    ),
+  };
 }
 
 function modelField(provider: StoredProvider): string[] {
@@ -167,6 +197,10 @@ function nativeProviderState(): AgentProviderState {
       { key: 'envKey', label: 'API Key', type: 'password', value: '', configured, required: true, description: '保存后写回此 Provider 的配置；密钥不会回显。' },
       { key: 'models', label: '模型', type: 'string-list', value: models, required: true, description: '此 Provider 可用模型。' },
       { key: 'defaultModel', label: '默认模型', type: 'text', value: env.ANTHROPIC_MODEL || models[0] || '', description: '新建会话默认模型。' },
+      { key: 'haikuModel', label: 'Haiku 模型', type: 'text', value: env.ANTHROPIC_DEFAULT_HAIKU_MODEL || '', description: 'Claude Code 内部轻量请求使用此模型。' },
+      { key: 'subagentModel', label: '子 Agent 模型', type: 'text', value: env.CLAUDE_CODE_SUBAGENT_MODEL || '', description: 'Claude Code 子 Agent 使用此模型。' },
+      { key: 'effort', label: 'Effort 等级', type: 'text', value: env.CLAUDE_CODE_EFFORT_LEVEL || '', description: '通过 CLAUDE_CODE_EFFORT_LEVEL 传给 Claude Code。' },
+      { key: 'autoCompactWindow', label: '自动压缩窗口', type: 'text', value: env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '', description: '通过 CLAUDE_CODE_AUTO_COMPACT_WINDOW 传给 Claude Code。' },
       { key: 'adaptiveThinking', label: '自适应思考', type: 'toggle', value: adaptiveThinking, description: 'Claude 4.6 及更新模型应开启；旧模型或网关不支持时关闭。' },
       { key: 'contextWindow', label: '上下文窗口', type: 'text', value: env.CLAUDE_CODE_MAX_CONTEXT_TOKENS || '', placeholder: '可选，例如 200000' },
       { key: 'maxOutputTokens', label: '最大输出 Token', type: 'text', value: env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '', placeholder: '可选' },
@@ -263,6 +297,19 @@ export function updateNativeClaudeProvider(input: AgentProviderInput): void {
     typeof input.fields?.adaptiveThinking === 'boolean'
       ? input.fields.adaptiveThinking
       : models.some(modelSupportsAdaptiveThinking);
+  const optionalFields = Object.fromEntries(
+    [
+      ['haikuModel', 'ANTHROPIC_DEFAULT_HAIKU_MODEL'],
+      ['subagentModel', 'CLAUDE_CODE_SUBAGENT_MODEL'],
+      ['effort', 'CLAUDE_CODE_EFFORT_LEVEL'],
+      ['autoCompactWindow', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW'],
+    ].map(([key, envKey]) => [
+      key,
+      typeof input.fields?.[key] === 'string'
+        ? input.fields[key]
+        : env[envKey] || '',
+    ]),
+  );
   boundedNumber(contextWindow, '上下文窗口', 1, 10_000_000);
   boundedNumber(maxOutputTokens, '最大输出 Token', 1, 10_000_000);
   updateAgentManagement('claude',(current)=>({
@@ -271,7 +318,7 @@ export function updateNativeClaudeProvider(input: AgentProviderInput): void {
       ...current.providers.filter(provider=>provider.id!=='anthropic'),
       {
         id:'anthropic',name:'Anthropic',kind:'official',enabled:true,
-        fields:validateFields({baseUrl,models,defaultModel,adaptiveThinking,contextWindow,maxOutputTokens}),
+        fields:validateFields({baseUrl,models,defaultModel,adaptiveThinking,contextWindow,maxOutputTokens,...optionalFields}),
       },
     ],
   }));
@@ -369,6 +416,22 @@ function validateFields(
       });
     next.defaultModel = model;
   }
+  for (const [key, label] of [
+    ['haikuModel', 'Haiku 模型'],
+    ['subagentModel', '子 Agent 模型'],
+  ] as const) {
+    if (fields?.[key] === undefined) continue;
+    const model = typeof fields[key] === 'string' ? fields[key].trim() : '';
+    if (model && !MODEL_RE.test(model))
+      throw Object.assign(Error(`${label} ID 无效`), { statusCode: 400 });
+    next[key] = model;
+  }
+  if (fields?.effort !== undefined) {
+    const effort = typeof fields.effort === 'string' ? fields.effort.trim() : '';
+    if (effort && !/^(?:low|medium|high|xhigh|max)$/.test(effort))
+      throw Object.assign(Error('Effort 等级无效'), { statusCode: 400 });
+    next.effort = effort;
+  }
   if (fields?.adaptiveThinking !== undefined) {
     if (typeof fields.adaptiveThinking !== 'boolean')
       throw Object.assign(Error('自适应思考配置无效'), { statusCode: 400 });
@@ -377,6 +440,7 @@ function validateFields(
   for (const [key, label] of [
     ['contextWindow', '上下文窗口'],
     ['maxOutputTokens', '最大输出 Token'],
+    ['autoCompactWindow', '自动压缩窗口'],
   ] as const) {
     if (fields?.[key] !== undefined) {
       boundedNumber(fields[key], label, 1, 10_000_000);
@@ -429,6 +493,13 @@ export function claudeProviderState(
     models,
     defaultModel:
       stringField(provider, 'defaultModel') || models[0] || null,
+    providerOptions: {
+      haikuModel: stringField(provider, 'haikuModel') || null,
+      subagentModel: stringField(provider, 'subagentModel') || null,
+      effort: stringField(provider, 'effort') || null,
+      autoCompactWindow:
+        stringField(provider, 'autoCompactWindow') || null,
+    },
     fields: [
       {
         key: 'baseUrl',
@@ -463,6 +534,36 @@ export function claudeProviderState(
         description: '新建会话默认使用的模型。',
       },
       {
+        key: 'haikuModel',
+        label: 'Haiku 模型',
+        type: 'text',
+        value: stringField(provider, 'haikuModel'),
+        description: '可选。Claude Code 的内部轻量请求使用此模型；留空沿用默认模型。',
+      },
+      {
+        key: 'subagentModel',
+        label: '子 Agent 模型',
+        type: 'text',
+        value: stringField(provider, 'subagentModel'),
+        description: '可选。Claude Code 的子 Agent 使用此模型；留空沿用默认模型。',
+      },
+      {
+        key: 'effort',
+        label: 'Effort 等级',
+        type: 'text',
+        value: stringField(provider, 'effort'),
+        placeholder: '可选，例如 max',
+        description: '可选。通过 CLAUDE_CODE_EFFORT_LEVEL 传给此 Provider。',
+      },
+      {
+        key: 'autoCompactWindow',
+        label: '自动压缩窗口',
+        type: 'text',
+        value: stringField(provider, 'autoCompactWindow'),
+        placeholder: '可选，例如 786432',
+        description: '可选。通过 CLAUDE_CODE_AUTO_COMPACT_WINDOW 传给此 Provider。',
+      },
+      {
         key: 'adaptiveThinking',
         label: '自适应思考',
         type: 'toggle',
@@ -491,9 +592,7 @@ export function claudeProviderState(
   };
 }
 
-export function createClaudeProvider(
-  input: AgentProviderInput,
-): void {
+function validateNewClaudeProvider(input: AgentProviderInput) {
   const id = input.id?.trim() || '';
   if (!ID_RE.test(id))
     throw Object.assign(Error('Provider ID 无效'), { statusCode: 400 });
@@ -505,6 +604,13 @@ export function createClaudeProvider(
   const fields = validateFields(input.fields);
   if (!input.apiKey?.trim())
     throw Object.assign(Error('请填写 API Key'), { statusCode: 400 });
+  return { id, fields };
+}
+
+export function createClaudeProvider(
+  input: AgentProviderInput,
+): void {
+  const { id, fields } = validateNewClaudeProvider(input);
   updateAgentManagement('claude', (value) => ({
     ...value,
     providers: [
@@ -527,6 +633,41 @@ export function createClaudeProvider(
     }));
     throw error;
   }
+}
+
+/** Save only after the selected models successfully serve the Claude Messages
+ * protocol. A model-list entry alone does not make a gateway usable by Claude
+ * Code. Failed checks never create a provider or persist its secret. */
+export async function verifyAndCreateClaudeProvider(
+  input: AgentProviderInput,
+): Promise<void> {
+  const { id, fields } = validateNewClaudeProvider(input);
+  if (!Array.isArray(fields.models) || !fields.models.length)
+    throw Object.assign(Error('至少选择一个 Claude 模型'), { statusCode: 400 });
+  const runtime: ClaudeProviderRuntime = {
+    id,
+    name: input.name?.trim() || id,
+    baseUrl: String(fields.baseUrl),
+    authToken: String(input.apiKey).trim(),
+    models: fields.models,
+    defaultModel:
+      typeof fields.defaultModel === 'string' ? fields.defaultModel : null,
+    haikuModel:
+      typeof fields.haikuModel === 'string' ? fields.haikuModel : null,
+    subagentModel:
+      typeof fields.subagentModel === 'string' ? fields.subagentModel : null,
+    effort: typeof fields.effort === 'string' ? fields.effort : null,
+    autoCompactWindow:
+      typeof fields.autoCompactWindow === 'string'
+        ? Number(fields.autoCompactWindow)
+        : null,
+    adaptiveThinking: false,
+    contextWindow: null,
+    maxOutputTokens: null,
+  };
+  for (const model of runtime.models)
+    await verifyClaudeProviderModel(runtime, model);
+  createClaudeProvider(input);
 }
 
 export function updateClaudeProvider(
@@ -666,6 +807,7 @@ export function claudeRuntimeProvider(
     });
   const models = modelField(provider);
   const requested = stringField(provider, 'defaultModel');
+  const providerOptions = claudeProviderOptions(provider);
   return {
     id: provider.id,
     name: provider.name,
@@ -673,6 +815,7 @@ export function claudeRuntimeProvider(
     authToken,
     models,
     defaultModel: models.includes(requested) ? requested : models[0] || null,
+    ...providerOptions,
     adaptiveThinking: adaptiveThinkingField(provider, models),
     contextWindow: boundedNumber(
       provider.fields.contextWindow,
@@ -729,6 +872,10 @@ export function claudeProviderChoiceForEnvironment(
   baseUrl: string;
   models: string[];
   defaultModel: string | null;
+  haikuModel: string | null;
+  subagentModel: string | null;
+  effort: string | null;
+  autoCompactWindow: number | null;
   adaptiveThinking: boolean;
   contextWindow: number | null;
 } | null {
@@ -745,12 +892,14 @@ export function claudeProviderChoiceForEnvironment(
     });
   const models = modelField(provider);
   const requested = stringField(provider, 'defaultModel');
+  const providerOptions = claudeProviderOptions(provider);
   return {
     id: provider.id,
     name: provider.name,
     baseUrl: stringField(provider, 'baseUrl'),
     models,
     defaultModel: models.includes(requested) ? requested : models[0] || null,
+    ...providerOptions,
     adaptiveThinking: adaptiveThinkingField(provider, models),
     contextWindow: boundedNumber(
       provider.fields.contextWindow,
@@ -844,17 +993,41 @@ export async function detectClaudeProviderModels(
     endpoint ||= stringField(provider, 'baseUrl');
     apiKey ||= claudeProviderApiKey(provider.id);
   }
-  endpoint = validEndpoint(endpoint);
+  const baseUrl = validEndpoint(endpoint);
+  // The form accepts an Anthropic-compatible root or an OpenAI-style `/v1`
+  // root. Both mean the same provider; `/models` belongs at the API root.
+  endpoint = /\/v1$/i.test(baseUrl) ? baseUrl.slice(0, -3) : baseUrl;
   if (!apiKey.trim())
     throw Object.assign(Error('请先填写 API Key'), { statusCode: 400 });
-  const response = await fetch(`${endpoint}/models`, {
-    headers: {
-      Authorization: `Bearer ${apiKey.trim()}`,
-      'x-api-key': apiKey.trim(),
-      'anthropic-version': '2023-06-01',
-    },
-    signal: AbortSignal.timeout(20_000),
-  });
+  const headers = {
+    Authorization: `Bearer ${apiKey.trim()}`,
+    'x-api-key': apiKey.trim(),
+    'anthropic-version': '2023-06-01',
+  };
+  // A Claude-compatible root may expose its model catalog at the origin API
+  // root while reserving the `/anthropic` prefix for Messages.
+  const candidates = [endpoint];
+  const parsed = new URL(endpoint);
+  if (parsed.pathname !== '/' && parsed.pathname !== '')
+    candidates.push(parsed.origin);
+  let response: Response | null = null;
+  for (const candidate of candidates) {
+    const current = await fetch(`${candidate}/models`, {
+      headers,
+      signal: AbortSignal.timeout(20_000),
+    });
+    response = current;
+    if (current.ok || current.status !== 404) break;
+  }
+  if (!response)
+    throw Object.assign(Error('模型探测失败'), { statusCode: 502 });
+  if (response.status === 404)
+    throw Object.assign(
+      Error(
+        '此地址没有提供 /models 目录。Anthropic 兼容 Provider 可手工填写模型 ID，保存后会用 Messages 请求验证。',
+      ),
+      { statusCode: 409, code: 'model_catalog_unavailable' },
+    );
   if (!response.ok)
     throw Object.assign(Error(`模型探测失败 (${response.status})`), {
       statusCode: 502,
@@ -878,12 +1051,20 @@ export async function detectClaudeProviderModels(
   });
 }
 
+/** Resolve the URL the Claude Agent SDK will actually call. The configured
+ * value is a root, so a root that already contains `/v1` must not produce
+ * `/v1/v1/messages`. */
+export function claudeMessagesEndpoint(baseUrl: string): string {
+  const root = baseUrl.trim().replace(/\/+$/, '');
+  return /\/v1$/i.test(root) ? `${root}/messages` : `${root}/v1/messages`;
+}
+
 export async function verifyClaudeProviderModel(
   provider: ClaudeProviderRuntime,
   model: string,
 ): Promise<string> {
   assertClaudeSelectedModel(provider, model);
-  const response = await fetch(`${provider.baseUrl.replace(/\/+$/, "")}/v1/messages`, {
+  const response = await fetch(claudeMessagesEndpoint(provider.baseUrl), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -899,7 +1080,12 @@ export async function verifyClaudeProviderModel(
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok)
-    throw Error(`Provider 预检失败（HTTP ${response.status}）`);
+    throw Object.assign(
+      Error(
+        `Provider 的 Claude Messages 预检失败（HTTP ${response.status}）；当前模型 ${model} 不能用于 Claude Code，请检查模型是否支持 Anthropic Messages 协议。`,
+      ),
+      { statusCode: 409, code: 'model_protocol_unavailable' },
+    );
   const body = await response.json() as { model?: unknown };
   if (typeof body.model !== "string" || !body.model)
     throw Error("Provider 响应未包含实际模型，不能确认所选模型");

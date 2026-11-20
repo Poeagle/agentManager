@@ -4,7 +4,7 @@ import {mkdirSync,writeFileSync,appendFileSync,statSync} from 'node:fs';
 import {join} from 'node:path';
 import {createTestDatabase} from './helpers/database.js';
 import {getDb} from '../src/db/index.js';
-import {rememberConversationInput,linkConversationInputs,boundConversationInputs,rememberInputSource,bindInputSourceMessage} from '../src/services/conversation-input-links.js';
+import {rememberConversationInput,linkConversationInputs,boundConversationInputs,rememberInputSource,bindInputSourceMessage,rememberInitialConversationInput} from '../src/services/conversation-input-links.js';
 import {rememberConversationAttachments,formatConversationInput,nativeConversationInput} from '../src/services/conversation-attachments.js';
 import type {ConversationMessage} from '../src/services/conversation-reader.js';
 import {snapshotConversation,activateFreshConversation,restoreConversationSnapshot} from '../src/services/conversation-history.js';
@@ -40,6 +40,12 @@ it('restores a terminal input client ID through line ending normalization and la
   const echo=message('native-one',boundary),result=linkConversationInputs('s',native,[message('older',0),echo]);
   expect(result[0].client_id).toBeUndefined();expect(result[1].client_id).toBe('client-one');expect(linkConversationInputs('s',native,[echo])[0].client_id).toBe('client-one');
   expect(linkConversationInputs('other',native,[echo])[0].client_id).toBeUndefined();expect(linkConversationInputs('s','different-native',[echo])[0].client_id).toBeUndefined();
+});
+it('links a managed initial input before its transcript file exists',()=>{
+  rememberInitialConversationInput('s','native-first','browser-first','message-first');
+  expect(linkConversationInputs('s','native-first',[message('message-first',0,'first')])[0]).toMatchObject({
+    client_id:'browser-first',
+  });
 });
 it('binds intentionally repeated inputs one for one without assigning an ID to an unrelated later repeat',async()=>{
   const first=statSync(file).size;await rememberConversationInput('s',binding,'one','same');appendFileSync(file,'native record one\n');

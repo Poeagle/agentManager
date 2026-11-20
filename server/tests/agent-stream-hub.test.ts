@@ -112,6 +112,33 @@ describe("shared native stream", () => {
     );
     expect(source.observe).toHaveBeenCalledTimes(2);
   });
+  it("keeps Claude target Provider engines isolated even when native IDs and owners match", () => {
+    source.scope = context =>
+      context.session.agent_environment_id || context.projectPath || "";
+    const encryptedScope = sharedAgentStream(source);
+    const first = vi.fn(), second = vi.fn();
+    encryptedScope.observe(
+      {
+        ...context,
+        session: {
+          ...context.session,
+          agent_environment_id: "claude-provider:deepseek",
+        },
+      },
+      first,
+    );
+    encryptedScope.observe(
+      {
+        ...context,
+        session: {
+          ...context.session,
+          agent_environment_id: "claude-provider:other",
+        },
+      },
+      second,
+    );
+    expect(source.observe).toHaveBeenCalledTimes(2);
+  });
   it("recovers failed initialization with backoff and never submits or recreates a native turn", async () => {
     const failedStop = vi.fn(),
       calls: AgentStreamFrame[] = [];

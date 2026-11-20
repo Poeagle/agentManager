@@ -119,6 +119,7 @@ describe('session creation project identity', () => {
     });
     expect(sessionManager.spawnSession).toHaveBeenCalledWith(
       sessionId, projectPath, 'Reply exactly OK.', 120, 40, 'claude',
+      undefined,
     );
   });
 

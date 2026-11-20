@@ -17,7 +17,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk',()=>({
   };},
 }));
 
-import {ensureClaudeRuntime,releaseClaudeRuntime} from '../src/services/agents/claude/sdk-runtime.js';
+import {claudeRuntime,ensureClaudeRuntime,releaseClaudeRuntime} from '../src/services/agents/claude/sdk-runtime.js';
 import {conversationMessageId} from '../src/services/conversation-reader.js';
 import {parseClaudeMessage} from '../src/services/agents/claude/history.js';
 
@@ -66,7 +66,7 @@ describe('Claude Agent SDK runtime',()=>{
     sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-a',effort:''},false,{
       id:'gateway',name:'Gateway',baseUrl:'https://gateway.example',authToken:'private-token',
-      models:['claude-a','claude-b'],defaultModel:'claude-a',adaptiveThinking:true,contextWindow:200000,maxOutputTokens:64000,
+      models:['claude-a','claude-b'],defaultModel:'claude-a',haikuModel:null,subagentModel:null,effort:null,autoCompactWindow:null,adaptiveThinking:true,contextWindow:200000,maxOutputTokens:64000,
     });
     await runtime.submit('provider-bound');
     await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
@@ -97,7 +97,7 @@ describe('Claude Agent SDK runtime',()=>{
     sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-sonnet-5-5',effort:''},false,{
       id:'anthropic',name:'Anthropic',baseUrl:'https://xindu.xyz',authToken:'private-token',
-      models:['claude-sonnet-5-5'],defaultModel:'claude-sonnet-5-5',adaptiveThinking:true,
+      models:['claude-sonnet-5-5'],defaultModel:'claude-sonnet-5-5',haikuModel:null,subagentModel:null,effort:null,autoCompactWindow:null,adaptiveThinking:true,
       contextWindow:1000000,maxOutputTokens:null,
     });
     await runtime.submit('介绍你自己');
@@ -112,11 +112,11 @@ describe('Claude Agent SDK runtime',()=>{
     const other='019ff001-1212-7212-8212-121212121299';
     const first=ensureClaudeRuntime(session,'/tmp',undefined,{model:'provider-a-model',effort:''},false,{
       id:'provider-a',name:'Provider A',baseUrl:'https://a.example',authToken:'token-a',
-      models:['provider-a-model'],defaultModel:'provider-a-model',adaptiveThinking:false,contextWindow:null,maxOutputTokens:null,
+      models:['provider-a-model'],defaultModel:'provider-a-model',haikuModel:null,subagentModel:null,effort:null,autoCompactWindow:null,adaptiveThinking:false,contextWindow:null,maxOutputTokens:null,
     });
     const second=ensureClaudeRuntime(other,'/tmp',undefined,{model:'provider-b-model',effort:''},false,{
       id:'provider-b',name:'Provider B',baseUrl:'https://b.example',authToken:'token-b',
-      models:['provider-b-model'],defaultModel:'provider-b-model',adaptiveThinking:false,contextWindow:null,maxOutputTokens:null,
+      models:['provider-b-model'],defaultModel:'provider-b-model',haikuModel:null,subagentModel:null,effort:null,autoCompactWindow:null,adaptiveThinking:false,contextWindow:null,maxOutputTokens:null,
     });
     await Promise.all([first.submit('A'),second.submit('B')]);
     await vi.waitFor(()=>expect(sdk.queries).toHaveLength(2));
@@ -124,14 +124,14 @@ describe('Claude Agent SDK runtime',()=>{
       expect.objectContaining({model:'provider-a-model',env:expect.objectContaining({ANTHROPIC_BASE_URL:'https://a.example',ANTHROPIC_AUTH_TOKEN:'token-a',ANTHROPIC_MODEL:'provider-a-model'})}),
       expect.objectContaining({model:'provider-b-model',env:expect.objectContaining({ANTHROPIC_BASE_URL:'https://b.example',ANTHROPIC_AUTH_TOKEN:'token-b',ANTHROPIC_MODEL:'provider-b-model'})}),
     ]));
-    expect(()=>first.configure({id:'provider-b',name:'Provider B',baseUrl:'https://b.example',authToken:'token-b',models:['provider-b-model'],defaultModel:'provider-b-model',adaptiveThinking:false,contextWindow:null,maxOutputTokens:null})).toThrow('另一个 Provider');
+    expect(()=>first.configure({id:'provider-b',name:'Provider B',baseUrl:'https://b.example',authToken:'token-b',models:['provider-b-model'],defaultModel:'provider-b-model',haikuModel:null,subagentModel:null,effort:null,autoCompactWindow:null,adaptiveThinking:false,contextWindow:null,maxOutputTokens:null})).toThrow('另一个 Provider');
     releaseClaudeRuntime(other);
   });
   it('maps every Claude model alias to the concrete model selected for this request',async()=>{
     sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-fable-5',effort:''},false,{
       id:'anthropic',name:'Anthropic',baseUrl:'https://xindu.xyz',authToken:'private-token',
-      models:['claude-fable-5','opus','sonnet','haiku'],defaultModel:'claude-fable-5',contextWindow:null,maxOutputTokens:null,
+      models:['claude-fable-5','opus','sonnet','haiku'],defaultModel:'claude-fable-5',haikuModel:null,subagentModel:null,effort:null,autoCompactWindow:null,contextWindow:null,maxOutputTokens:null,
     });
     await runtime.submit('reply ok');
     await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
@@ -143,7 +143,7 @@ describe('Claude Agent SDK runtime',()=>{
   it('rejects an explicit model that is not part of the selected provider catalog',async()=>{
     const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'catalog-model',effort:''},false,{
       id:'provider',name:'Provider',baseUrl:'https://provider.example',authToken:'token',
-      models:['catalog-model'],defaultModel:'catalog-model',contextWindow:null,maxOutputTokens:null,
+      models:['catalog-model'],defaultModel:'catalog-model',haikuModel:null,subagentModel:null,effort:null,autoCompactWindow:null,contextWindow:null,maxOutputTokens:null,
     });
     expect(()=>runtime.setModel({model:'other-model',effort:''})).toThrow('不属于当前 Provider');
     releaseClaudeRuntime(session);
@@ -152,7 +152,7 @@ describe('Claude Agent SDK runtime',()=>{
     sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-legacy',effort:''},true,{
       id:'provider',name:'Provider',baseUrl:'https://provider.example',authToken:'token',
-      models:['claude-current'],defaultModel:'claude-current',contextWindow:null,maxOutputTokens:null,
+      models:['claude-current'],defaultModel:'claude-current',haikuModel:null,subagentModel:null,effort:null,autoCompactWindow:null,contextWindow:null,maxOutputTokens:null,
     });
     await runtime.submit('Restore legacy');
     await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
@@ -165,7 +165,7 @@ describe('Claude Agent SDK runtime',()=>{
     ];
     const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-opus-4-8',effort:''},false,{
       id:'anthropic',name:'Anthropic',baseUrl:'https://xindu.xyz',authToken:'private-token',
-      models:['claude-opus-4-8'],defaultModel:'claude-opus-4-8',contextWindow:null,maxOutputTokens:null,
+      models:['claude-opus-4-8'],defaultModel:'claude-opus-4-8',haikuModel:null,subagentModel:null,effort:null,autoCompactWindow:null,contextWindow:null,maxOutputTokens:null,
     });
     await runtime.submit('Use the selected model');
     await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
@@ -173,6 +173,20 @@ describe('Claude Agent SDK runtime',()=>{
       text:expect.stringContaining('grok-4.6'),
       error:{code:'model_mismatch',will_retry:false},
     });
+  });
+  it('accepts a declared Haiku model as the same Provider routing choice',async()=>{
+    sdk.messages=[
+      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'deepseek-normal',model:'deepseek-flash',content:[{type:'text',text:'OK.'}]}},
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'deepseek-flash[1m]',effort:''},false,{
+      id:'deepseek',name:'DeepSeek',baseUrl:'https://api.deepseek.com/anthropic',authToken:'token',
+      models:['deepseek-flash[1m]','deepseek-flash'],defaultModel:'deepseek-flash[1m]',
+      haikuModel:'deepseek-flash',subagentModel:'deepseek-flash',effort:'max',autoCompactWindow:786432,adaptiveThinking:false,contextWindow:null,maxOutputTokens:null,
+    });
+    await runtime.submit('Use identity');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.snapshot().messages.some(message=>message.error?.code==='model_mismatch')).toBe(false);
   });
   it('runs manual compaction as a dedicated Claude SDK query and maps native status',async()=>{
     sdk.messages=[
@@ -210,6 +224,19 @@ describe('Claude Agent SDK runtime',()=>{
     const native=await sdk.queries[0].prompt[Symbol.asyncIterator]().next();expect(native.value.uuid).toBe(userId);
     const history=parseClaudeMessage(Buffer.from(JSON.stringify({type:'user',uuid:userId,message:{role:'user',content:'scheduled'},timestamp:'2026-11-01T00:00:00Z'})));
     expect(history?.itemId).toBe(userId);expect(conversationMessageId('',history!.message.role,history!.itemId)).toBe(live.id);
+  });
+  it('uses one user identity for the first Claude Code input from launch through durable history',async()=>{
+    const {createTestDatabase}=await import('./helpers/database.js');const database=createTestDatabase();
+    let nativeId:string|undefined;
+    try{
+      const {claudeAdapter}=await import('../src/services/agents/claude/adapter.js');
+      const launch=await claudeAdapter.launch.prepare({session:{id:'first-claude'},projectPath:database.dir} as any,'你好，介绍你自己',undefined,false,'browser-first');
+      nativeId=launch.nativeId;
+      const live=await vi.waitFor(()=>{const message=claudeRuntime(nativeId!)?.snapshot().messages.find(item=>item.role==='user');expect(message).toBeTruthy();return message!;});
+      expect(live.client_id).toBe('browser-first');expect(launch.initialMessageId).toBe(live.id);
+      sdk.messages=[{type:'user',uuid:'019ff001-1212-7212-8212-121212121250',session_id:nativeId,parent_tool_use_id:null,message:{role:'user',content:'你好，介绍你自己'}}];
+      await vi.waitFor(()=>expect(claudeRuntime(nativeId!)?.snapshot().messages.find(item=>item.role==='user')).toMatchObject({client_id:'browser-first',native_client_id:'browser-first'}));
+    }finally{if(nativeId)releaseClaudeRuntime(nativeId);database.cleanup();}
   });
   it('stops only the matching active turn',async()=>{
     let resolve!:(value:any)=>void;sdk.messages=[new Promise(done=>{resolve=done;})];

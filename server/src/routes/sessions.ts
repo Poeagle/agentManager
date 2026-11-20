@@ -498,9 +498,11 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       mode?: 'session' | 'terminal';
       cli_type?: string;
       environment_id?: string;
+      client_id?: string;
     };
   }>('/sessions', async (req, reply) => {
-    const { project_path, task, project_id, mode, cli_type } = req.body as any;
+    const { project_path, task, project_id, mode, cli_type, client_id } = req.body as any;
+    if(client_id!==undefined&&(typeof client_id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(client_id)))return reply.status(400).send({error:'Invalid client_id'});
     const cliType = getAgent(cli_type||'claude').descriptor.id;
     if (mode !== undefined && mode !== 'session' && mode !== 'terminal') return reply.status(400).send({ error: 'mode must be session or terminal' });
     const environmentId=(req.body as {environment_id?:unknown}).environment_id;
@@ -544,11 +546,21 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const initialTask = task ?? '';
 
     const session = sessionManager.createSession(canonicalProjectPath, initialTask, resolvedProjectId, cliType, req.user!.id, 'session');
+    // The first managed Claude input predates its JSONL file. Preserve the
+    // browser identity now so durable history can merge its echo immediately.
+    if(client_id&&initialTask.trim()&&cliType==='claude'&&getAgent(cliType).input.supportsInitialClientIdentity) {
+      await (await import('../services/conversation-input-links.js')).rememberConversationInput(
+        session.id,
+        {...session,cli_type:'claude',project_path:canonicalProjectPath},
+        client_id,
+        initialTask,
+      ).catch(()=>{});
+    }
     const storedEnvironmentId=typeof environmentId==='string'
       ? getAgent(cliType).environment?.storageId?.(environmentId)||environmentId
       : undefined;
     if(storedEnvironmentId)getDb().prepare('UPDATE sessions SET agent_environment_id=? WHERE id=?').run(storedEnvironmentId,session.id);
-    if(getAgent(cliType).descriptor.sessionHost==='managed')await sessionManager.spawnSession(session.id,canonicalProjectPath,initialTask,120,40,cliType);
+    if(getAgent(cliType).descriptor.sessionHost==='managed')await sessionManager.spawnSession(session.id,canonicalProjectPath,initialTask,120,40,cliType,client_id);
     else registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task: initialTask, mode: 'session', projectId: resolvedProjectId, cliType });
 
     return {ok:true,session:sessionManager.getSession(session.id)};

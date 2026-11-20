@@ -8,14 +8,14 @@ const startedAt='2026-11-15T00:00:00Z',now=Date.parse(startedAt)+12000;
 const tool={id:'one',label:'Run command · npm test',status:'running' as const,started_at:startedAt,completed_at:null,duration_ms:null,input_preview:'npm test -- --run',result_preview:'First output'};
 it('renders standard metadata and one collapsed tool, waits after completion, and resets disclosure for the next tool',()=>{
   const props={number:7,startedAt,now,statistics:null,connected:true};
-  const view=render(<ConversationProgressPending {...props} tool={tool}/>);
+  const view=render(<ConversationProgressPending {...props} tool={tool} agentName="Claude"/>);
   expect(screen.getByLabelText('进展序号 7')).toBeVisible();expect(document.querySelector('time')).toHaveAttribute('datetime',startedAt);
   expect(document.querySelector('.session-chat-metadata-row')).toHaveTextContent('Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr :');expect(screen.getByText('Elapsed: 12s')).toBeVisible();
   const summary=document.querySelector('summary')!;expect(summary).toHaveTextContent('npm test');expect(screen.getByText('First output')).not.toBeVisible();
   fireEvent.click(summary);expect(screen.getByText('First output')).toBeVisible();expect(screen.getByText('npm test -- --run')).toBeVisible();expect(document.querySelector('.session-chat-live-tool-details')).toHaveTextContent('First output');expect(document.querySelector('.session-chat-live-tool-details')).not.toHaveTextContent('npm test');
-  view.rerender(<ConversationProgressPending {...props} tool={{...tool,status:'completed',result_preview:'Tests passed'}}/>);
+  view.rerender(<ConversationProgressPending {...props} tool={{...tool,status:'completed',result_preview:'Tests passed'}} agentName="Claude"/>);
   expect(summary).toHaveTextContent('Waiting');expect(summary).toHaveTextContent('npm test');expect(screen.getByText('Tests passed')).toBeVisible();
-  view.rerender(<ConversationProgressPending {...props} tool={{...tool,id:'two',label:'Run command · npm run build',input_preview:'npm run build',result_preview:'Compiling'}}/>);
+  view.rerender(<ConversationProgressPending {...props} tool={{...tool,id:'two',label:'Run command · npm run build',input_preview:'npm run build',result_preview:'Compiling'}} agentName="Claude"/>);
   expect(document.querySelectorAll('details')).toHaveLength(1);expect(document.querySelector('details')).not.toHaveAttribute('open');expect(document.querySelector('summary')).toHaveTextContent('npm run build');expect(screen.queryByText('Tests passed')).not.toBeInTheDocument();
 });
 const previous:ConversationProgressSegment={id:'segment',start_at:startedAt,end_at:null,end_reason:null,elapsed_ms:null,tokens:{total_tokens:1000},requests:1,tool_calls:2,tool_rounds:1,complete:true};
@@ -47,25 +47,36 @@ it('uses the first native step after an insertion without a baseline from the pr
 
 it('keeps a 100-character command summary in the header while expanded content contains only live results',()=>{
   const command='echo '+ '界'.repeat(100)+' tail';
-  const view=render(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} connected tool={{...tool,input_preview:command}}/>);
+  const view=render(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} connected tool={{...tool,input_preview:command}} agentName="Claude"/>);
   const label=document.querySelector('.session-chat-live-tool-label')!;
   expect(label.textContent).toBe('echo '+ '界'.repeat(95)+'…');expect(label).toHaveAttribute('title',command);
   expect(document.querySelector('.session-chat-tool-input')).toBeNull();
   fireEvent.click(document.querySelector('summary')!);expect(document.querySelector('.session-chat-live-tool-details')).toHaveTextContent('First output');expect(document.querySelector('.session-chat-live-tool-details')).not.toHaveTextContent('echo');
-  view.rerender(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} connected tool={{...tool,input_preview:command,status:'completed',result_preview:'Final result'}}/>);
+  view.rerender(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} connected tool={{...tool,input_preview:command,status:'completed',result_preview:'Final result'}} agentName="Claude"/>);
   expect(label.textContent).toBe('echo '+ '界'.repeat(95)+'…');expect(document.querySelector('summary')).toHaveTextContent('Waiting');expect(screen.getByText('Final result')).toBeVisible();
 });
 it('flattens multiline commands and leaves short commands intact',()=>{
-  render(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} connected tool={{...tool,input_preview:'echo one\n  echo two'}}/>);
+  render(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} connected tool={{...tool,input_preview:'echo one\n  echo two'}} agentName="Claude"/>);
   expect(document.querySelector('.session-chat-live-tool-label')).toHaveTextContent('echo one echo two');expect(document.querySelector('.session-chat-live-tool-label')).not.toHaveTextContent('…');
+});
+it('refreshes one live thinking row in place instead of stacking request snapshots',()=>{
+  const props={number:7,startedAt,now,statistics:null,connected:true,agentName:'Claude',tool};
+  const view=render(<ConversationProgressPending {...props} thinking="Reading the repository structure."/>);
+  expect(screen.getAllByText('Claude 正在思考')).toHaveLength(1);
+  expect(screen.getByText('Reading the repository structure.')).toBeVisible();
+  expect(document.querySelector('.session-chat-thinking-caret')).toHaveAttribute('aria-hidden','true');
+  view.rerender(<ConversationProgressPending {...props} thinking="Tests are running. I will check the output."/>);
+  expect(screen.getAllByText('Claude 正在思考')).toHaveLength(1);
+  expect(screen.queryByText('Reading the repository structure.')).not.toBeInTheDocument();
+  expect(screen.getByText('Tests are running. I will check the output.')).toBeVisible();
 });
 it('hides unavailable elapsed time instead of displaying an empty timing placeholder',()=>{
  const props={number:7,now,statistics:null,connected:true};
- const view=render(<ConversationProgressPending {...props} startedAt={null}/>);
+ const view=render(<ConversationProgressPending {...props} startedAt={null} agentName="Claude"/>);
  expect(document.querySelector('.session-chat-message-duration')).toBeNull();expect(screen.queryByText(/Elapsed:/)).toBeNull();
- view.rerender(<ConversationProgressPending {...props} startedAt="invalid"/>);
+ view.rerender(<ConversationProgressPending {...props} startedAt="invalid" agentName="Claude"/>);
  expect(document.querySelector('.session-chat-message-duration')).toBeNull();
- view.rerender(<ConversationProgressPending {...props} startedAt={startedAt}/>);
+ view.rerender(<ConversationProgressPending {...props} startedAt={startedAt} agentName="Claude"/>);
  expect(screen.getByText('Elapsed: 12s')).toBeVisible();
 });
 

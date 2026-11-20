@@ -1611,8 +1611,14 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
   const creator = getDb().prepare('SELECT created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as { created_by_user_id: string | null } | undefined;
   const adapter=getAgent(cliType),shared=adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(creator?.created_by_user_id,projectPath):null;
   const context=sessionAgentContext({...getSession(sessionId)!,cli_type:cliType,agent_id:cliType},{projectPath,sharedAccess:!creator?.created_by_user_id||isAdmin(creator.created_by_user_id)});
-  const launch=await adapter.launch.prepare(context,task,shared?.instructions,false,initialClientId),streamSocket=launch.streamSocket;
-  if(initialClientId&&launch.initialMessageId)(await import('./conversation-input-links.js')).bindInputSourceMessage(sessionId,initialClientId,launch.initialMessageId);
+  const canPreserveInitialIdentity=!!initialClientId&&!!adapter.input.supportsInitialClientIdentity;
+  const launch=await adapter.launch.prepare(context,task,shared?.instructions,false,canPreserveInitialIdentity?initialClientId:undefined),streamSocket=launch.streamSocket;
+  const boundInitialMessageId=launch.initialMessageId??(canPreserveInitialIdentity?adapter.input.messageId?.(initialClientId):undefined);
+  if(initialClientId&&boundInitialMessageId){
+    const links=await import('./conversation-input-links.js');
+    links.bindInputSourceMessage(sessionId,initialClientId,boundInitialMessageId);
+    if(launch.nativeId)links.rememberInitialConversationInput(sessionId,launch.nativeId,initialClientId,boundInitialMessageId);
+  }
   if(launch.nativeId)storeAgentNativeId({...context.session,id:sessionId},launch.nativeId);
   const preSpawnFiles=launch.preSpawnFiles;
   if(adapter.descriptor.sessionHost==='managed'){

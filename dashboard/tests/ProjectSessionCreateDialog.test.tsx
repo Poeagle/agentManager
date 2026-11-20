@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProjectSessionCreateDialog } from '../src/components/ProjectSessionCreateDialog';
@@ -49,5 +49,21 @@ describe('shared project creation dialog', () => {
       const submit=screen.getByRole('button',{name:'新建会话'});await waitFor(()=>expect(submit).toBeEnabled());await user.click(submit);
       await waitFor(() => expect(api.sessions.create).toHaveBeenCalledWith({ project_id: 'p1', project_path: project.path, mode: 'terminal' }));
     } finally { mounted.dispose(); }
+  });
+  it('passes one stable initial identity to Claude and not to Codex', async () => {
+    const p: Project = {...project,tool_access:{can_session:true,can_terminal:false,session_clients:['codex','claude']}};
+    vi.spyOn(api.claudeEnvironments,'list').mockResolvedValueOnce({environments:[
+      {id:'claude-provider:anthropic',name:'Anthropic',kind:'native',enabled:true},
+    ]} as any);
+    const client = new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
+    const view=render(<QueryClientProvider client={client}><ProjectSessionCreateDialog project={p} onClose={vi.fn()} onSessionCreated={vi.fn()}/></QueryClientProvider>);
+    try {
+      await waitFor(()=>expect(screen.getByRole('radio',{name:'Claude'})).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('radio',{name:'Claude'}));
+      await waitFor(()=>expect(screen.getByRole('combobox',{name:'新会话 Claude Provider'})).toHaveValue('claude-provider:anthropic'));
+      await waitFor(()=>expect(screen.getByRole('button',{name:'新建会话'})).toBeEnabled());
+      fireEvent.click(screen.getByRole('button',{name:'新建会话'}));
+      await waitFor(()=>expect(api.sessions.create).toHaveBeenCalledWith(expect.objectContaining({cli_type:'claude',client_id:expect.stringMatching(/^[a-f0-9]{32}$/)})));
+    } finally {view.unmount();client.clear();}
   });
 });
