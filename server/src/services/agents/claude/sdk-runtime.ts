@@ -237,7 +237,25 @@ class ClaudeRuntime {
   snapshot(): AgentStreamSnapshot {
     return {
       type: "snapshot",
-      messages: this.messages.slice(-128),
+      messages: this.messages
+        .slice(-128)
+        .flatMap((message) => {
+          if (message.role !== "assistant" || !message.content_blocks?.length)
+            return [message];
+          const tools = message.content_blocks.filter(
+            (block) => block.type === "tool_use",
+          );
+          if (!tools.length) return [message];
+          const visible = message.content_blocks.filter(
+            (block) => block.type !== "tool_use",
+          );
+          return message.text.trim() || visible.length
+            ? [{
+                ...message,
+                content_blocks: visible.length ? visible : undefined,
+              }]
+            : [];
+        }),
       interactions: [],
       activities: [...this.liveActivities.values()],
       compaction: this.compaction,

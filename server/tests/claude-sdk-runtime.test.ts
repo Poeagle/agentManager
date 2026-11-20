@@ -399,7 +399,6 @@ describe('Claude Agent SDK runtime',()=>{
     expect(final.activities).toEqual([expect.objectContaining({id:'tool-1',label:'读取文件 · /tmp/demo.ts',status:'completed'})]);
     expect(assistants[0].content_blocks).toEqual([
       {type:'text',index:0,text:'我先读取。'},
-      {type:'tool_use',index:1,id:'tool-1',name:'Read',input:{file_path:'/tmp/demo.ts'},status:'completed',result:'ok'},
     ]);
   });
   it('keeps Claude thinking blocks separate from answer text while streaming',async()=>{
@@ -442,14 +441,11 @@ describe('Claude Agent SDK runtime',()=>{
     stop();
     const assistants=frames.at(-1).messages.filter((message:any)=>message.role==='assistant');
     expect(assistants).toHaveLength(1);
-    expect(frames.some(frame=>frame.messages.some((message:any)=>message.content_blocks?.some((block:any)=>block.type==='tool_use'&&block.id==='tool-late'&&block.status==='running'&&block.input.command==='pwd')))).toBe(true);
+    expect(frames.some(frame=>frame.activities.some((activity:any)=>activity.id==='tool-late'&&activity.status==='running'&&activity.input_preview==='pwd'))).toBe(true);
     expect(assistants[0]).toMatchObject({
       id:conversationMessageId('','assistant','late-native-message'),
       text:'检查中',
-      content_blocks:[
-        {type:'text',index:0,text:'检查中'},
-        {type:'tool_use',index:1,id:'tool-late',name:'Bash',input:{command:'pwd'},status:'completed',result:'/tmp/demo'},
-      ],
+      content_blocks:[{type:'text',index:0,text:'检查中'}],
     });
     expect(frames.some(frame=>frame.activities.some((activity:any)=>activity.id==='tool-late'&&activity.status==='running'&&activity.after_message_id===conversationMessageId('','assistant','late-native-message')))).toBe(true);
     expect(frames.at(-1)?.activities).toEqual([
@@ -475,6 +471,7 @@ describe('Claude Agent SDK runtime',()=>{
     const activities=runtime.snapshot().activities;
     expect(activities).toHaveLength(2);
     expect(new Set(activities.map(activity=>activity.after_message_id)).size).toBe(1);
+    expect(runtime.snapshot().messages.filter(message=>message.role==='assistant'&&message.content_blocks?.some(block=>block.type==='tool_use'))).toEqual([]);
   });
   it('uses the completed assistant event when no partial text was emitted',async()=>{
     sdk.messages=[
@@ -508,7 +505,6 @@ describe('Claude Agent SDK runtime',()=>{
     await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
     const assistants=runtime.snapshot().messages.filter(message=>message.role==='assistant');
     expect(assistants.map(message=>({id:message.id,phase:message.phase,tools:message.content_blocks?.filter(block=>block.type==='tool_use').map(block=>block.name)}))).toEqual([
-      {id:conversationMessageId('','assistant','tool-round'),phase:'commentary',tools:['Read']},
       {id:conversationMessageId('','assistant','answer-round'),phase:'final',tools:[]},
     ]);
   });

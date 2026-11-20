@@ -7,7 +7,7 @@ export function ConversationToolCall({block}:{block:Extract<NonNullable<Conversa
   const status=block.status==='running'?'运行中':block.status==='failed'?'失败':'完成';
   const indicator=block.status==='running'?<LoaderCircle size={13} className="animate-spin"/>:block.status==='failed'?<AlertCircle size={13}/>:<CheckCircle2 size={13}/>;
   const ToolIcon=block.name==='Bash'?SquareTerminal:block.name==='Glob'||block.name==='Grep'?Search:SquareTerminal;
-  return <ConversationCard className="session-chat-tool" open={block.status==='running'} status={block.status} summary={<><ToolIcon size={13}/><strong>{block.name}</strong><span>{status}</span>{indicator}<ChevronDown size={13} className="session-chat-tool-chevron"/></>}>
+  return <ConversationCard className="session-chat-tool" status={block.status} summary={<><ToolIcon size={13}/><strong>{block.name}</strong><span>{status}</span>{indicator}<ChevronDown size={13} className="session-chat-tool-chevron"/></>}>
     {!!args&&args!=='{}'&&<pre className="session-chat-tool-input">{args}</pre>}
     {block.result!==undefined&&<pre className="session-chat-tool-result">{block.result||'(无输出)'}</pre>}
   </ConversationCard>;

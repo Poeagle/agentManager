@@ -21,11 +21,24 @@ it('uses the shared tool disclosure and reveals input and result on demand',()=>
   expect(screen.getByText('# Project')).toBeVisible();
 });
 
-it('opens a running tool without changing the completed tool structure',()=>{
+it('keeps running tools collapsed like every other tool row',()=>{
   const {container}=render(<ConversationToolCall block={{...block,status:'running',result:undefined}}/>);
   const card=container.querySelector('details');
   expect(card).toHaveClass('session-chat-tool');
-  expect(card).toHaveAttribute('open');
+  expect(card).not.toHaveAttribute('open');
   expect(screen.getByText('运行中')).toBeVisible();
+  expect(card.querySelector('.session-chat-tool-input')).not.toBeVisible();
   expect(screen.queryByText('正在调用工具')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText('Read'));
+  expect(card).toHaveAttribute('open');
+  expect(screen.getByText(/"file_path": "\/project\/README.md"/)).toBeVisible();
+});
+
+it.each(['running','completed','failed'] as const)('keeps %s tool rows in the same single-line disclosure shape', status=>{
+  const {container}=render(<ConversationToolCall block={{...block,status,result:status==='running'?undefined:'output'}}/>);
+  const card=container.querySelector('details')!;
+  expect(card).not.toHaveAttribute('open');
+  expect(card.querySelector('.session-chat-tool-input')).not.toBeVisible();
+  const result=card.querySelector('.session-chat-tool-result');
+  if(result)expect(result).not.toBeVisible();
 });

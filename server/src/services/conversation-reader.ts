@@ -346,50 +346,22 @@ function projectToolResults(messages: IndexedMessage[]): IndexedMessage[] {
       : message,
   );
 }
-/** Tool calls and thinking are progress, never part of the user-visible
- * conclusion. Normalize every adapter's projected assistant message here so
- * the shared renderer does not depend on a provider's block layout. */
+/** Tool calls are live progress, never public conversation content. Normalize
+ * every adapter's projected assistant message here so persisted history has
+ * the same shape as the live message stream. */
 function projectProgressBlocks(messages: IndexedMessage[]): IndexedMessage[] {
-  return messages
-    .filter((message) => message.recordType !== "progress_projection")
-    .flatMap((message) => {
-      if (message.role !== "assistant" || !message.content_blocks?.length) {
-        return [message];
-      }
-      const progress = message.content_blocks.filter(
-        (block) => block.type === "tool_use" || block.type === "thinking",
-      );
-      const textBlocks = message.content_blocks.filter(
-        (block): block is Extract<typeof block, { type: "text" }> =>
-          block.type === "text" && block.text.trim().length > 0,
-      );
-      if (!progress.length) return [message];
-      const publicMessage: IndexedMessage = {
-        ...message,
-        text: textBlocks
-          .sort((left, right) => left.index - right.index)
-          .map((block) => block.text)
-          .join("\n"),
-        content_blocks: textBlocks.length ? textBlocks : undefined,
-      };
-      const progressMessage: IndexedMessage = {
-        ...message,
-        id: conversationMessageId(
-          message.turn_id || "",
-          "assistant",
-          `progress:${message.itemId || message.offset}`,
-        ),
-        text: "",
-        phase: "commentary",
-        content_blocks: progress,
-        sourceRole: undefined,
-        toolResult: undefined,
-        recordType: "progress_projection",
-      };
-      return textBlocks.length
-        ? [progressMessage, publicMessage]
-        : [progressMessage];
-    });
+  return messages.flatMap((message) => {
+    if (message.role !== "assistant" || !message.content_blocks?.length)
+      return [message];
+    const visible = message.content_blocks.filter(
+      (block) => block.type === "text" || block.type === "thinking",
+    );
+    if (visible.length === message.content_blocks.length) return [message];
+    return [{
+      ...message,
+      content_blocks: visible.length ? visible : undefined,
+    }];
+  });
 }
 function compactTurnMessages(messages: IndexedMessage[]): IndexedMessage[] {
   const result: IndexedMessage[] = [];
@@ -424,33 +396,6 @@ function compactTurnMessages(messages: IndexedMessage[]): IndexedMessage[] {
       }
     }
     result.push(message);
-  }
-  return result;
-}
-function coalesceTextOnlyAssistant(messages: IndexedMessage[]): IndexedMessage[] {
-  const result = [...messages];
-  for (let index = result.length - 3; index >= 0; index--) {
-    const progress = result[index],
-      textOnly = result[index + 2];
-    if (
-      progress.recordType !== "progress_projection" ||
-      progress.role !== "assistant" ||
-      result[index + 1].role !== "user" ||
-      textOnly.role !== "assistant" ||
-      (!!textOnly.turn_id && !!progress.turn_id && textOnly.turn_id !== progress.turn_id) ||
-      !textOnly.content_blocks?.length ||
-      textOnly.content_blocks.some((block) => block.type !== "text")
-    )
-      continue;
-    const text = textOnly.content_blocks
-      .filter(
-        (block): block is Extract<typeof block, { type: "text" }> =>
-          block.type === "text",
-      )
-      .map((block) => block.text)
-      .join("\n");
-    result[index] = { ...progress, text };
-    result[index + 2] = { ...textOnly, text: "" };
   }
   return result;
 }
@@ -824,14 +769,12 @@ export async function readConversation(
         );
         const bind = (messages: IndexedMessage[]) =>
           projectProgressBlocks(
-            coalesceTextOnlyAssistant(
-              compactTurnMessages(
-                projectToolResults(
-                  dedupe(
-                    bindQuestionCalls(
-                      bindTurnBoundaries(messages, index!.turnBoundaries),
-                      index!.questionCalls,
-                    ),
+            compactTurnMessages(
+              projectToolResults(
+                dedupe(
+                  bindQuestionCalls(
+                    bindTurnBoundaries(messages, index!.turnBoundaries),
+                    index!.questionCalls,
                   ),
                 ),
               ),

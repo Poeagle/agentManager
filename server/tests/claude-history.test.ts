@@ -146,23 +146,11 @@ describe("Claude durable conversation projection", () => {
     expect(page.messages.map((message) => message.text)).toEqual([
       "检查项目",
       "开始检查。",
-      "开始检查。",
     ]);
     expect(page.messages[1].content_blocks).toEqual([
-      {
-        type: "tool_use",
-        index: 1,
-        id: "tool-1",
-        name: "Bash",
-        input: { command: "pwd" },
-        status: "completed",
-        result: "/workspace",
-      },
-    ]);
-    expect(page.messages[2].content_blocks).toEqual([
       { type: "text", index: 0, text: "开始检查。" },
     ]);
-    expect(page.messages[2].id).toBe(
+    expect(page.messages[1].id).toBe(
       conversationMessageId("", "assistant", "assistant-message"),
     );
     appendFileSync(

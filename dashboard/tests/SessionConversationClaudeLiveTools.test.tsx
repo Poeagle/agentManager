@@ -42,6 +42,8 @@ it('refreshes one latest Claude activity slot instead of stacking duplicate tool
   const slot=await screen.findByRole('status',{name:'正在执行的进展 2'});
   expect(slot.querySelectorAll('.session-chat-live-tool')).toHaveLength(1);
   expect(slot).toHaveTextContent('npm test');
+  expect(slot.querySelector('.session-chat-live-tool')).not.toHaveAttribute('open','');
+  expect(slot.querySelector('.session-chat-live-tool-details')).not.toBeVisible();
   act(()=>Socket.latest.emit({type:'snapshot',messages:[prompt,round],activities:[tool,{...tool,result_preview:'Tests passed'}],busy:true,stage:'tools',turn_id:'turn',started_at:stamp}));
   expect(slot.querySelectorAll('.session-chat-live-tool')).toHaveLength(1);
   expect(slot).toHaveTextContent('Tests passed');
