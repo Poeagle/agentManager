@@ -14,6 +14,10 @@ export const formatSessionNumber = (value: number | null | undefined) =>
   value == null ? '—' : value.toLocaleString('zh-CN');
 const percent = (value: number | null) => value == null ? '—' : `${value.toFixed(1)}%`;
 
+function cache(input: number | null | undefined, hit: number | null | undefined) {
+  return input != null && hit != null && input > 0 && hit >= 0 && hit <= input ? 100 * hit / input : null;
+}
+
 function ConversationValuesTable({label, rows}: {label: string; rows: ConversationDetailRow[]}) {
   return <TableFrame label={label} header={<><th scope="col">指标</th><th scope="col">值</th></>} className="conversation-details-table conversation-values-table">
     {rows.map(row => <tr key={row.label}>
@@ -33,8 +37,12 @@ export function ConversationDetailsPanel({usage, model, state, statusTitle, meta
   const recent = metadata ? metadata.latest?.tokens : usage?.last;
   const total = metadata ? metadata.totals?.tokens : usage?.total;
   const countersConsistent = !metadata?.reasons.includes('counter_mismatch');
-  const recentCache = countersConsistent ? recordedCachePercent(recent) : null;
-  const totalCache = countersConsistent ? recordedCachePercent(total) : null;
+  const recentCache = !countersConsistent ? null : metadata
+    ? recordedCachePercent(recent)
+    : cache(recent?.input_tokens, recent?.cached_input_tokens);
+  const totalCache = !countersConsistent ? null : metadata
+    ? recordedCachePercent(total)
+    : cache(total?.input_tokens, total?.cached_input_tokens);
   const context = usage?.window && usage.last.total_tokens != null ? 100 * usage.last.total_tokens / usage.window : null;
   const counts = formatSessionNumber;
   const metrics = [

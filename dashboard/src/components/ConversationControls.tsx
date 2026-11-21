@@ -16,6 +16,8 @@ import {ConversationCacheHistory,ConversationUsageHistory} from './ConversationU
 const effortNames:Record<string,string>={none:'无',minimal:'最低',low:'低',medium:'中',high:'高',xhigh:'更高',max:'最高',ultra:'极高'};
 const compact=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(value);
 const choiceKey=(value:{provider?:string;model:string})=>value.provider?JSON.stringify([value.provider,value.model]):value.model;
+const cacheRateFromCounters=(input:number|null|undefined,cache:number|null|undefined)=>
+  input!=null&&cache!=null&&input>0&&cache>=0&&cache<=input?100*cache/input:null;
 const permissionsEn:Record<string,string>={'danger-full-access':'Full access','workspace-write':'Workspace write','read-only':'Read only'};
 const tokenMetricDescriptions:Record<string,string>={Total:'会话累计 Token，包含重复上下文',Input:'累计未缓存输入 Token',Cache:'累计命中缓存的输入 Token',Reasoning:'累计推理 Token，包含在输出中',Output:'累计输出 Token，包含推理 Token'};
 export function ConversationControls({sessionId,active,busy=false,compacting=false,onCompact,onBrief,briefDisabled=false,onNewConversation,toolbarTarget,metadata}:{toolbarTarget?:HTMLElement|null;sessionId:string;active:boolean;busy?:boolean;compacting?:boolean;onCompact?:()=>Promise<void>;onBrief?:()=>void;briefDisabled?:boolean;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<unknown>;metadata?:SessionMetadata|null}) {
@@ -60,7 +62,8 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const countersConsistent=!summary?.reasons.includes('counter_mismatch');
   const tokenMetrics=cumulative?([['Total',cumulative.total_tokens],['Input',countersConsistent?uncachedInputTokens(cumulative):null],['Cache',cumulative.cached_input_tokens],['Reasoning',cumulative.reasoning_output_tokens],['Output',cumulative.output_tokens]] as Array<[string,number|null|undefined]>).filter((entry):entry is [string,number]=>entry[1]!=null):[];
   const recordedRate=countersConsistent?recordedCachePercent(cumulative):null;
-  const cacheRate=recordedRate===null?null:Number(recordedRate.toFixed(1));
+  const usageRate=cacheRateFromCounters(cumulative?.input_tokens,cumulative?.cached_input_tokens);
+  const cacheRate=summary?(recordedRate===null?null:Number(recordedRate.toFixed(1))):usageRate===null?null:Number(usageRate.toFixed(1));
   const cacheColor=cacheRate===null?'var(--text-muted)':quotaColor(cacheRate);
   const context=usage?.window&&usage.last.total_tokens!=null?Math.min(100,Math.round(100*usage.last.total_tokens/usage.window)):null;
   const currentEnvironment=environments.data?.environments.find(e=>e.id===environments.data?.current);
