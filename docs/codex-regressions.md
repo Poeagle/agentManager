@@ -1,4 +1,4 @@
-# Codex 问题与回归用例
+# Agent 对话与 Codex 账号回归用例
 
 每个已确认问题保留独立命名的回归用例，描述触发条件和可观察结果；修复前应能失败，
 修复后通过。不要以修改断言、跳过用例或仅记录一次手工成功代替修复。
@@ -29,6 +29,10 @@ npm run test:regression:accounts
 | 历史发生实际重写 | 更换 generation，移除失效内容并重新读取基线 | [codex-account-files.test.ts](../server/tests/codex-account-files.test.ts) 的 actual transcript rewrite 用例 |
 | 断网、半开连接、增量序号缺口 | 重新获取基线，保留草稿，不重发用户输入 | [SessionConversationSend.test.tsx](../dashboard/tests/SessionConversationSend.test.tsx) 的 browser resume / stream gap；[conversation-reconnect.spec.ts](../e2e/conversation-reconnect.spec.ts) |
 | 切换原始终端/对话视图，或刷新页面 | 已有气泡内容与顺序保持一致 | [conversation-order.spec.ts](../e2e/conversation-order.spec.ts)；[conversation-history-replacement.spec.ts](../e2e/conversation-history-replacement.spec.ts) |
+| 多个 Progress Item、工具还在运行、追问插入 | 及时显示工具和已确认用量，按输入边界汇总 Item、轮次和调用数 | [ConversationProgressPending.test.tsx](../dashboard/tests/ConversationProgressPending.test.tsx)；[SessionConversationSend.test.tsx](../dashboard/tests/SessionConversationSend.test.tsx)；[conversation-activity.spec.ts](../e2e/conversation-activity.spec.ts)；[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) |
+| 缓存率或实际命中的输入 Token 变动 | 已确认的缓存率可见，达到阈值的实际缓存损失只显示一次提醒，刷新后保留 | [conversation-streaming.spec.ts](../e2e/conversation-streaming.spec.ts)；[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) |
+| Claude 先收到思考、后收到带同一原生 ID 的 Final | 回复期间保持执行状态，Final 和用量各结算一次，刷新后一致 | [claude-sdk-runtime.test.ts](../server/tests/claude-sdk-runtime.test.ts)；[session-statistics.test.ts](../server/tests/session-statistics.test.ts)；[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) |
+| 回执延迟、历史回填或原生记录尚未写完 | 两个 Agent 使用同一套底栏状态，收到完整记录后及时清除提示 | [ConversationControls.test.tsx](../dashboard/tests/ConversationControls.test.tsx)；[session-statistics.test.ts](../server/tests/session-statistics.test.ts)；[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) |
 
 ## 账号与 Provider
 

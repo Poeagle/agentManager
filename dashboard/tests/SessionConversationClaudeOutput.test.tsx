@@ -2,6 +2,7 @@ import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {beforeEach,expect,it,vi} from 'vitest';
 import {api,type ConversationPage,type Session} from '../src/lib/api';
+import {sessionAgent} from '../src/lib/agents';
 import {SessionConversation} from '../src/components/SessionConversation';
 type ConvMessage=NonNullable<ConversationPage['messages']>[number];
 
@@ -56,6 +57,34 @@ function readConversationDom(agentLabel:string){
     finalText:screen.getByText('The project is ready.').textContent,
   };
 }
+it.each(['claude','codex'] as const)('leaves live Progress when %s publishes a settled Final',async agent=>{
+  const descriptor=sessionAgent({cli_type:agent});
+  const bound={...session,cli_type:agent,agent: {...descriptor,capabilities:{...descriptor.capabilities,stopTurn:true}},
+    native_session_id:'claude-native',codex_session_id:agent==='codex'?'claude-native':null,
+    claude_session_id:agent==='claude'?'claude-native':null} as Session;
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  render(<QueryClientProvider client={client}><SessionConversation session={bound} active onRaw={()=>{}}/></QueryClientProvider>);
+  await waitFor(()=>expect(Socket.latest?.onmessage).toBeTruthy());
+  const timestamp=new Date().toISOString();
+  const messages=[
+    {id:'user',role:'user',text:'Inspect',timestamp},
+    {id:'round',role:'assistant',turn_id:'turn',phase:'commentary',text:'Reading the repository.',timestamp},
+  ];
+  const activity={id:'read',label:'读取文件 · README.md',input_preview:'README.md',status:'running',started_at:timestamp,
+    completed_at:null,duration_ms:null,turn_id:'turn',after_message_id:'round'};
+  act(()=>Socket.latest.emit({type:'snapshot',busy:true,turn_id:'turn',started_at:timestamp,stage:'tools',messages,activities:[activity]}));
+  const live=await screen.findByRole('status',{name:'正在执行的进展 2'});
+  expect(within(live).getByText('README.md')).toBeVisible();
+  expect(screen.getByRole('button',{name:'停止当前执行'})).toBeInTheDocument();
+  act(()=>Socket.latest.emit({type:'snapshot',busy:false,turn_id:'turn',stage:'idle',
+    started_at:timestamp,completed_at:timestamp,activities:[{...activity,status:'completed',completed_at:timestamp}],
+    messages:[...messages,{id:'final',role:'assistant',turn_id:'turn',phase:'final',text:'The repository is ready.',timestamp}]}));
+  expect(await screen.findByText('The repository is ready.')).toBeVisible();
+  expect(screen.queryByRole('status',{name:'正在执行的进展 2'})).not.toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'停止当前执行'})).not.toBeInTheDocument();
+  expect(screen.getByTestId('conversation-activity-line')).toHaveTextContent('Ready for your next message');
+  client.clear();
+});
 it('renders identical tool and thinking structure for Claude and Codex',async()=>{
   const messages=[
     {id:'user',role:'user',text:'Inspect the project',timestamp:'2026-11-19T23:45:45.000Z'},

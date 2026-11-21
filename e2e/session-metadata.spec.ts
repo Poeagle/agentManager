@@ -507,12 +507,13 @@ test('waits for actual usage after commentary and counts a reasoning-only reques
   await expect(header).toHaveText('等待用量回执');
   await expect(item).toHaveText('等待用量回执');
   const footer=page.getByLabel('Session information').filter({visible:true});
-  await expect(footer.getByText('等待用量回执',{exact:true})).toBeVisible();
+  // This fixture has no live terminal, so its unresolved receipt is partial.
+  await expect(footer.getByText('记录不完整',{exact:true})).toBeVisible();
   appendFileSync(session.log,record(24.121,'token_usage_record',{turn_id:turn,response_id:'visible-receipt',
     usage:{total_tokens:281353,input_tokens:279734,cached_input_tokens:278784,output_tokens:1619,reasoning_output_tokens:1500}}));
   await expect(item).toHaveAttribute('title',/Total 281,353;/);
   await expect(header).toContainText('1 round | 0 calls');
-  await expect(footer.getByText('等待用量回执',{exact:true})).toHaveCount(0);
+  await expect(footer.getByText(/记录不完整|等待用量|正在回填/)).toHaveCount(0);
   const progressTime=group.locator('summary').getByLabel('进展时间').locator('time');
   await expect(progressTime).toHaveAttribute('datetime',at(24.121));
   appendFileSync(session.log,record(30,'token_usage_record',{turn_id:turn,response_id:'reasoning-receipt',
