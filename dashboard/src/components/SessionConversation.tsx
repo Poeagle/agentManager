@@ -52,7 +52,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowDown,
@@ -637,6 +637,7 @@ export function SessionConversation({
   const sendGuard=useConversationSendGuard(session.id,active,compaction,onNewConversation?(expectedNativeId,preference,environmentId)=>expectedNativeId?(environmentId?onNewConversation(preference,expectedNativeId,environmentId):onNewConversation(preference,expectedNativeId)):onNewConversation():undefined);
   const permissions = usePermissions();
   const queryClient = useQueryClient();
+  const liveUsageQuery=useQuery<ConversationUsageUpdate|null>({queryKey:["conversation-usage",session.id],queryFn:async()=>null,enabled:false});
   const canRead = hasPermission(permissions.data, "agent_api");
   const canSend = hasPermission(permissions.data, "agent_api", "write");
   const canAttach = agentSupports(session, "attachments");
@@ -2119,6 +2120,9 @@ export function SessionConversation({
   const progressTimingVisible=busy&&!reconnectable&&!ended&&!waiting&&!activeError&&!compaction.state&&(!!pendingGroupId||tail?.kind==='progress');
   const hideFooterExecutionStatus=liveState==='connected'&&!reconnectable&&!compaction.state&&(showLiveProgress||progressTimingVisible);
   const pendingStatistics=withObservedToolCounts(pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||tail?.kind==='progress'||!!pendingSegment)?progressStatistics:null,tail?.kind==='progress'?tailMessage?.statistics?.segment:undefined,tail?.kind==='progress',tailMessage),slotActivities.length,liveTurn||'');
+  const latestUsage=liveUsageQuery.data;
+  const pendingLiveUsage=latestUsage&&latestUsage.native_id===agentNativeId(session)&&liveProgress.started_at&&
+    Date.parse(latestUsage.observed_at)>=Date.parse(liveProgress.started_at)?latestUsage:null;
   const streamingIndex=displayed.findIndex(message=>message.id===streamingId);
   const streamingPrevious=streamingIndex>=0?displayed.slice(0,streamingIndex).filter(message=>!isWaitingConversationInput(message)).at(-1):undefined;
   const streamingStatistics=streamingIndex>=0&&progressStatistics?.turn_id===liveTurn&&progressStatistics?.revision==null?
@@ -2407,7 +2411,9 @@ export function SessionConversation({
                     step?.after_sequence!=null&&step.after_sequence===last.sequence:
                     !!pendingSegment||!continuingAfterFollowup);
                 const part=activeGroup&&liveMatches?live:saved;
-                const summary=withObservedToolCounts(part?{...part,turn_id:last?.turn_id||liveTurn||'',sequence:0}:progressGroupStatistics(group.messages,final),pending?slotActivities.length:0,liveTurn||'');
+                const summarySegment=activeGroup&&liveMatches?live:savedMessage?undefined:saved??undefined;
+                const groupedStatistics=progressGroupStatistics(group.messages,final,summarySegment);
+                const summary=withObservedToolCounts(groupedStatistics?{...groupedStatistics,turn_id:last?.turn_id||liveTurn||'',sequence:0}:null,pending?slotActivities.length:0,liveTurn||'');
                 const execution=part?.unassigned;
                 const executionStats=execution?{...execution,sequence:0,turn_id:last?.turn_id||liveTurn||'',interval:execution}:null;
                 const thinking=latestProgressThinking(group.messages);
@@ -2418,7 +2424,7 @@ export function SessionConversation({
                     showStatistics={!notificationView}
                     agent={sessionAgent(session)}
                     agentName={agentName}
-                    count={visibleProgress.length+Number(!!execution)}
+                    count={visibleProgress.length+Number(pending||!notificationView&&!!execution)}
                     active={activeGroup}
                     timestamp={part?.last_request_at??part?.end_at??part?.start_at??
                       (last?.streaming?null:last?.timestamp)??(pending?liveProgress.started_at:null)}
@@ -2451,7 +2457,7 @@ export function SessionConversation({
                     {pending&&<ConversationProgressPending number={visibleProgress.length+1} tool={latestSlotActivity}
                       thinking={thinking} agentName={agentName}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
-                      statistics={executionStats??(progressStatistics?.revision==null?pendingStatistics:null)} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
+                      statistics={pendingStatistics??(liveMatches?executionStats:null)} liveUsage={pendingLiveUsage} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
                     {!pending&&!notificationView&&executionStats&&<div className="session-chat-progress-entry">
                       <span className="session-chat-progress-number" aria-label={`进展序号 ${visibleProgress.length+1}`}>{visibleProgress.length+1}</span>
                       <div className="session-chat-message-meta">

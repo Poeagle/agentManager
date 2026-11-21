@@ -56,6 +56,15 @@ it('groups adjacent progress items across statistics segments until the next use
  expect(groups.map(group=>group.kind==='progress'?group.messages.map(message=>message.id):group.message.id))
   .toEqual([['first','second'],'followup',['third']]);
 });
+it('preserves the position of confirmed user input when later Items still carry the previous Progress ID',()=>{
+ const item=(id:string,sequence:number)=>({id,sequence,role:'assistant' as const,phase:'commentary' as const,text:id,timestamp:null,
+   statistics:{sequence,turn_id:'turn',progress_id:'old-scope',tokens:null,requests:1,tool_calls:0,tool_rounds:0,complete:true}});
+ const input={id:'attachment',sequence:20,role:'user' as const,text:'Review this file',timestamp:null};
+ const groups=groupConversationProgress([item('before',10),input,item('after',30),item('next',40)]);
+ expect(groups.map(group=>group.kind==='progress'?group.messages.map(message=>message.id):group.message.id)).toEqual([
+   ['before'],'attachment',['after','next'],
+ ]);
+});
 it('uses the group segment when recorded and falls back to cumulative native turn usage',()=>{
  const segment={id:'segment',start_at:null,end_at:null,elapsed_ms:null,end_reason:null,tokens:{total_tokens:300},requests:1,tool_calls:2,tool_rounds:1,complete:true};
  const messages=[
@@ -64,6 +73,17 @@ it('uses the group segment when recorded and falls back to cumulative native tur
  ];
  expect(progressGroupStatistics(messages)).toMatchObject({turn_id:'user',tokens:{total_tokens:300},requests:1,tool_calls:2,tool_rounds:1,interval:{shared_messages:1}});
  expect(progressGroupStatistics(messages.map(message=>({...message,statistics:{...message.statistics!,segment:undefined}})))).toMatchObject({turn_id:'user',tokens:{total_tokens:300},requests:2,tool_calls:4,tool_rounds:2});
+});
+it('sums distinct Item segments once and replaces a segment with its live snapshot',()=>{
+ const segment=(id:string,total:number,requests:number,calls:number)=>({id,start_at:'2026-01-01T00:00:00Z',end_at:'2026-01-01T00:00:05Z',elapsed_ms:5000,end_reason:'completed' as const,tokens:{total_tokens:total},requests,tool_calls:calls,tool_rounds:requests,complete:true,cost:{unit:'credits',amount:total/100,complete:true,basis:'api',rate_date:'2026-01-01'}});
+ const first=segment('first',100,1,2),second=segment('second',300,2,3);
+ const messages=[
+  {id:'one',role:'assistant' as const,phase:'commentary' as const,text:'one',timestamp:null,statistics:{sequence:1,turn_id:'turn',tokens:first.tokens,requests:1,tool_calls:2,tool_rounds:1,complete:true,segment:first}},
+  {id:'one-update',role:'assistant' as const,phase:'commentary' as const,text:'updated',timestamp:null,statistics:{sequence:2,turn_id:'turn',tokens:first.tokens,requests:1,tool_calls:2,tool_rounds:1,complete:true,segment:first}},
+  {id:'two',role:'assistant' as const,phase:'commentary' as const,text:'two',timestamp:null,statistics:{sequence:3,turn_id:'turn',tokens:second.tokens,requests:2,tool_calls:3,tool_rounds:2,complete:true,segment:second}},
+ ];
+ const current=segment('second',350,3,4);
+ expect(progressGroupStatistics(messages,null,current)).toMatchObject({tokens:{total_tokens:450},requests:4,tool_calls:6,tool_rounds:4,cost:{amount:4.5},segment:{id:'second',tokens:{total_tokens:450},elapsed_ms:10000}});
 });
 const rules='# AGENTS.md instructions for /project\n\n<INSTRUCTIONS>\n# 项目治理\n自动规则\n</INSTRUCTIONS>';
 describe('native automatic context',()=>{

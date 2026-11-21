@@ -80,6 +80,14 @@ it('hides unavailable elapsed time instead of displaying an empty timing placeho
  expect(screen.getByText('Elapsed: 12s')).toBeVisible();
 });
 
+it('shows the latest native request token snapshot in the active Item',()=>{
+ const liveUsage={native_id:'native',observed_at:startedAt,usage:{total:{total_tokens:9000},last:{total_tokens:2400,input_tokens:2200,cached_input_tokens:2100,reasoning_output_tokens:100,output_tokens:200},window:40000}};
+ const view=render(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} liveUsage={liveUsage} connected tool={tool} agentName="Codex"/>);
+ expect(screen.getByText(/Latest request · 2.4K tokens · input 2.2K · cache 2.1K · output 200/)).toBeVisible();
+ view.rerender(<ConversationProgressPending number={7} startedAt={startedAt} now={now} statistics={null} liveUsage={liveUsage} connected tool={tool} agentName="Codex" showStatistics={false}/>);
+ expect(screen.queryByText(/Latest request/)).not.toBeInTheDocument();
+});
+
 it('uses activity snapshots only as a fallback and never double-counts a tool already assigned to a recorded request',()=>{
  const fallback=withObservedToolCounts(null,2,'turn');expect(fallback).toMatchObject({tool_calls:2,tool_rounds:1,complete:false,tokens:null});
  const step={...live,sequence:0,segment_id:'segment',tokens:null,tool_calls:0,tool_rounds:0};expect(withObservedToolCounts(step,2,'turn')).toBe(step);
