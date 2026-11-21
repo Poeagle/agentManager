@@ -53,7 +53,8 @@ export function isEmptyProgress(message:ConversationMessage) {
 export function groupConversationProgress(messages:TimelineMessage[]):ConversationGroup[] {
   const groups:ConversationGroup[]=[];
   const waitingInputs:ConversationGroup[]=[];
-  const byProgressId=new Map<string,Extract<ConversationGroup,{kind:'progress'}>>();
+  const byProgressId=new Map<string,{group:Extract<ConversationGroup,{kind:'progress'}>;input:ConversationMessage|undefined}>();
+  let lastInput:ConversationMessage|undefined;
   let progressClosed=false;
   for(const message of messages) {
     if (isWaitingConversationInput(message)) {
@@ -79,7 +80,11 @@ export function groupConversationProgress(messages:TimelineMessage[]):Conversati
     }
     if(progressMessage) {
       const scope=message.statistics?.progress_id;
-      const owner=scope?byProgressId.get(scope):undefined;
+      const recorded=scope?byProgressId.get(scope):undefined;
+      const afterInput=lastInput&&(message.sequence!=null&&lastInput.sequence!=null
+        ?message.sequence>lastInput.sequence
+        :Date.parse(message.timestamp??'')>=Date.parse(lastInput.timestamp??''));
+      const owner=recorded&&(recorded.input===lastInput||!afterInput)?recorded.group:undefined;
       if(owner&&owner!==previous) {
         owner.messages.push(message);
         continue;
@@ -88,26 +93,89 @@ export function groupConversationProgress(messages:TimelineMessage[]):Conversati
       const group=owner??adjacent??{kind:'progress' as const,id:message.id,messages:[]};
       group.messages.push(message);
       if(!owner&&!adjacent)groups.push(group);
-      if(scope&&!owner)byProgressId.set(scope,group);
+      if(scope&&!owner)byProgressId.set(scope,{group,input:lastInput});
       progressClosed=!!(message.phase==='final'||message.phase==='error'||message.presentation==='compaction_summary'||message.async_questions?.length);
     }else {
       groups.push({kind:'message',id:message.id,message});
+      if(message.role==='user')lastInput=message;
       progressClosed=!(message.role==='assistant'&&message.phase==='error'&&message.error?.will_retry);
     }
   }
   return [...groups,...waitingInputs];
 }
 
-/** Select the most specific recorded usage for a presentation group. Segment
- * counters describe the current input interval; native turn totals remain a
- * valid fallback for adapters that cannot record segment timings. */
-export function progressGroupStatistics(messages:ConversationMessage[],final?:ConversationMessage|null):ConversationStatistics|null {
-  const recent=messages.slice().reverse();
-  for(const message of final?[...recent,final]:recent) {
+function aggregateCost(segments:ConversationProgressSegment[]):ConversationCostEstimate|null|undefined {
+  const costs=segments.map(segment=>segment.cost);
+  if(costs.every(cost=>cost===null))return null;
+  const estimates=costs.filter((cost):cost is ConversationCostEstimate=>!!cost);
+  const latest=estimates.at(-1);
+  if(!latest||estimates.some(cost=>cost.unit!==latest.unit||cost.basis!==latest.basis))return undefined;
+  const priced=estimates.filter(cost=>cost.amount!==null);
+  const breakdowns=priced.flatMap(cost=>cost.breakdown?[cost.breakdown]:[]);
+  const breakdown=breakdowns.length>0&&breakdowns.length===priced.length?{
+    input:breakdowns.reduce((sum,value)=>sum+value.input,0),
+    cache:breakdowns.reduce((sum,value)=>sum+value.cache,0),
+    output:breakdowns.reduce((sum,value)=>sum+value.output,0),
+    reasoning:breakdowns.every(value=>value.reasoning!==null)?breakdowns.reduce((sum,value)=>sum+value.reasoning!,0):null,
+  }:undefined;
+  const amount=priced.length?priced.reduce((sum,value)=>sum+value.amount!,0):null;
+  const complete=segments.every(segment=>!segment.requests||segment.cost?.complete===true);
+  return {...latest,amount,complete,breakdown};
+}
+
+function aggregateSegments(segments:ConversationProgressSegment[]):ConversationProgressSegment {
+  if(segments.length===1)return segments[0];
+  const tokenKeys=new Set(segments.flatMap(segment=>Object.keys(segment.tokens||{})));
+  const tokens=tokenKeys.size?Object.fromEntries([...tokenKeys].map(key=>[
+    key,segments.some(segment=>segment.tokens?.[key]!=null)
+      ?segments.reduce((sum,segment)=>sum+(segment.tokens?.[key]??0),0):null,
+  ])):null;
+  const reasons=[...new Set(segments.flatMap(segment=>segment.reasons||[]))];
+  const newest=segments.at(-1)!;
+  const complete=segments.every(segment=>segment.complete);
+  const coverage=segments.some(segment=>segment.coverage)
+    ?complete?'complete':segments.some(segment=>segment.coverage==='partial'||segment.coverage==='unavailable')?'partial':'pending'
+    :undefined;
+  const starts=segments.map(segment=>segment.start_at).filter((value):value is string=>!!value).sort();
+  const ends=segments.map(segment=>segment.end_at).filter((value):value is string=>!!value).sort();
+  return {
+    ...newest,
+    start_at:starts[0]??null,
+    end_at:segments.every(segment=>segment.end_at)?ends.at(-1)??null:null,
+    elapsed_ms:segments.every(segment=>segment.elapsed_ms!=null)
+      ?segments.reduce((sum,segment)=>sum+segment.elapsed_ms!,0):null,
+    tokens,
+    requests:segments.reduce((sum,segment)=>sum+segment.requests,0),
+    tool_calls:segments.reduce((sum,segment)=>sum+segment.tool_calls,0),
+    tool_rounds:segments.reduce((sum,segment)=>sum+segment.tool_rounds,0),
+    complete,coverage,
+    ...(reasons.length?{reasons}:{}),
+    cost:aggregateCost(segments),
+  };
+}
+
+/** Merge distinct recorded segments in a presentation group. Repeated message
+ * snapshots share a segment ID and count once. */
+export function progressGroupStatistics(messages:ConversationMessage[],final?:ConversationMessage|null,current?:ConversationProgressSegment):ConversationStatistics|null {
+  const segments=new Map<string,{segment:ConversationProgressSegment;revision:number}>();
+  for(const message of messages) {
     const statistics=message.statistics;
-    if(statistics?.segment)return {...statistics,...statistics.segment,sequence:0,turn_id:statistics.turn_id||final?.turn_id||message.turn_id||'',interval:{...statistics.segment,shared_messages:1}};
+    const segment=statistics?.segment;
+    const revision=statistics?.revision??0;
+    if(segment&&revision>=(segments.get(segment.id)?.revision??0))segments.set(segment.id,{segment,revision});
   }
-  for(const message of final?[final,...messages.slice().reverse()]:messages.slice().reverse())
+  const finalSegment=final?.statistics?.segment;
+  const finalRevision=final?.statistics?.revision??0;
+  if(finalSegment&&segments.has(finalSegment.id)&&finalRevision>=(segments.get(finalSegment.id)?.revision??0))segments.set(finalSegment.id,{segment:finalSegment,revision:finalRevision});
+  if(current)segments.set(current.id,{segment:current,revision:0});
+  if(segments.size) {
+    const segment=aggregateSegments([...segments.values()].map(value=>value.segment));
+    const interval={...segment,shared_messages:1};
+    const last=messages.at(-1);
+    return {...segment,sequence:0,turn_id:last?.statistics?.turn_id||final?.turn_id||last?.turn_id||'',interval,segment};
+  }
+  const recent=messages.slice().reverse();
+  for(const message of final?[...recent,final]:recent)
     if(message.statistics&&!message.statistics.interval?.coverage)return {...message.statistics,sequence:0};
   return null;
 }

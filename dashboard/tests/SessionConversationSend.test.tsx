@@ -380,7 +380,7 @@ describe('conversation send transaction', () => {
     const push=(messages:unknown[],activities:unknown[],stage='tools',busy=true)=>act(()=>Socket.latest.emit({type:'snapshot',messages,activities,busy,stage,turn_id:'turn',started_at:stamp}));
     push(prior,[tool]);
     const pending=await screen.findByRole('status',{name:'正在执行的进展 5'});
-    expect(pending.closest('.session-chat-progress')).toHaveTextContent('4 items');
+    expect(pending.closest('.session-chat-progress')).toHaveTextContent('5 items');
     expect(pending.querySelector('.session-chat-live-tool>summary')).toHaveTextContent('Run command · npm run build');
     expect(pending.querySelector('time')).toHaveAttribute('dateTime',stamp);expect(pending.querySelector('.session-chat-metadata-row')).toHaveTextContent('Input');
     expect(screen.getByTestId('conversation-activity-line')).not.toHaveTextContent('npm run build');
@@ -425,7 +425,7 @@ describe('conversation send transaction', () => {
     act(()=>Socket.latest.emit({type:'snapshot',messages:[prior,followup,empty,second],busy:true,stage:'tools',turn_id:'turn',
       activities:[{id:'tool',label:'Native-only tool',status:'running',turn_id:'turn',after_message_id:second.id}]}));
     const status=(await screen.findByRole('status',{name:'正在执行的进展 1'})).closest('.session-chat-progress')!.querySelector('summary')!;
-    expect(status).toHaveTextContent('0 items');
+    expect(status).toHaveTextContent('1 item');
     const statistics=status.querySelector('.session-chat-message-statistics')!;
     expect(statistics).toHaveTextContent('200 (—)｜—｜—｜—｜— · 1 round | 1 call');expect(statistics).not.toHaveTextContent('1.2K');
   });
@@ -446,6 +446,30 @@ describe('conversation send transaction', () => {
     const bubble=document.querySelector('[data-chat-message-id="streamed-step"]')!;expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('1.1K (3.21)｜');expect(bubble.querySelector('time')).toBeNull();
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{...progress,step:{...step,after_message_id:'wrong-boundary',tokens:{total_tokens:999999}}}}));
     expect(bubble.querySelector('.session-chat-message-statistics')).not.toHaveTextContent('1M');
+  });
+  it.each(['account:fixture','provider:fixture'])('updates the running Item and the whole Progress in %s',async(environment)=>{
+    await mount({...session,agent_environment_id:environment});
+    const stamp=new Date(Date.now()-5000).toISOString();
+    const cost=environment.startsWith('account:')?{unit:'credits',amount:1,complete:true}:null;
+    const counters=(total_tokens:number,requests:number,tool_calls:number)=>({tokens:{total_tokens},requests,tool_calls,tool_rounds:requests,complete:true,cost});
+    const scope=(id:string,total_tokens:number,requests:number,tool_calls:number)=>({...counters(total_tokens,requests,tool_calls),id,start_at:stamp,end_at:null,elapsed_ms:null,end_reason:null});
+    const first=scope('earlier',1000,1,1),second=scope('current',1700,2,2);
+    const messages=Array.from({length:3},(_,index)=>({id:`item-${index}`,role:'assistant',phase:'commentary',turn_id:'turn',text:`Progress ${index}`,timestamp:stamp}));
+    const emit=(frame:unknown)=>act(()=>Socket.latest.emit(frame));
+    emit({type:'snapshot',messages,activities:[{id:'command',label:'Run command · npm test',status:'running',turn_id:'turn',after_message_id:'item-2'}],busy:true,stage:'tools',turn_id:'turn',started_at:stamp});
+    emit({type:'statistics',native_id:'native',statistics:messages.map((message,index)=>({sequence:index+1,revision:1,message_id:message.id,turn_id:'turn',progress_id:index<2?first.id:second.id,segment:index<2?first:scope(second.id,1200,1,1)}))});
+    const pending=await screen.findByRole('status',{name:'正在执行的进展 4'});
+    emit({type:'usage',native_id:'native',observed_at:new Date().toISOString(),usage:{total:{total_tokens:2700},last:{total_tokens:500,input_tokens:400,cached_input_tokens:300,output_tokens:100},window:40000}});
+    expect(await within(pending).findByText(/Latest request · 500 tokens/)).toBeVisible();
+    emit({type:'progress_statistics',native_id:'native',progress:{...second,turn_id:'turn',revision:2,segment:second,
+      step:{...counters(500,1,1),shared_messages:1,segment_id:second.id,after_message_id:'item-2',after_sequence:3,start_at:stamp}}});
+    expect(pending.querySelector('.session-chat-metadata-row')).toHaveTextContent(/500.*1 round \| 1 call/);
+    const header=pending.closest('.session-chat-progress')!.querySelector('summary')!;
+    expect(header).toHaveTextContent('4 items');
+    expect(header.querySelector('.session-chat-message-statistics')).toHaveAttribute('title',expect.stringContaining('Total 2,700;'));
+    expect(header).toHaveTextContent('3 rounds | 3 calls');
+    expect(header.textContent?.includes('Est. Cr')).toBe(cost!==null);
+    expect(pending).toHaveTextContent('npm test');
   });
   it('updates the active progress total without mixing other native sessions',async()=>{
     await mount();const item={id:'progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'working',timestamp:null};
