@@ -120,6 +120,43 @@ describe('persisted session statistics',()=>{
     ]);
   });
 
+  it.each(['unlinked','ambiguous'])('compares a new turn with the previous request when its input baseline was %s',async boundary=>{
+    const previous=tokens(230_594,230_400,49);
+    const current=tokens(199_270,3_712,310);
+    const inputs=boundary==='ambiguous'?user(0,'initial')+user(0,'superseding'):'';
+    await writeFile(file,event(0,'task_started',{turn_id:'previous'})+
+      inputs+answer(1,'previous-final','final_answer')+receipt(2,'previous','previous',previous)+
+      event(3,'task_complete',{turn_id:'previous'})+
+      event(4,'task_started',{turn_id:'current'})+user(5,'current-input')+
+      answer(6,'current-final','final_answer')+receipt(7,'current','current',current)+
+      event(8,'task_complete',{turn_id:'current'}));
+    await updateSessionFacts(codex,file);
+
+    const details=readSessionMetadataDetails(codex,true)!;
+    expect(details.summary.cache_drop_count).toBe(1);
+    expect(details.cache_drops).toMatchObject([{
+      interval_kind:'input',
+      previous:{request_id:'previous',input_id:boundary==='ambiguous'?nativeItemId('user','superseding'):null,cached_input_tokens:230_400},
+      current:{request_id:'current',input_id:nativeItemId('user','current-input'),cached_input_tokens:3_712},
+    }]);
+  });
+
+  it.each(['account:fixture','provider:fixture'])('uses the active native turn for response echoes and tools in %s',async environment=>{
+    const context=agentContext({...codex.session,agent_environment_id:environment});
+    const progress=(at:number,id:string)=>event(at,'item_completed',{turn_id:'turn',item:{type:'AgentMessage',id,phase:'commentary',content:[{type:'Text',text:id}]}})+
+      row(at,'response_item',{type:'message',role:'assistant',id,phase:'commentary',content:[{type:'output_text',text:id}],internal_chat_message_metadata_passthrough:{turn_id:'model-side-id'}});
+    const call=row(3,'response_item',{type:'function_call',call_id:'command',internal_chat_message_metadata_passthrough:{turn_id:'other-model-side-id'}});
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'before')+progress(2,'first')+call+receipt(4,'first','turn',tokens(230_594,230_400))+
+      user(5,'insert')+progress(6,'second')+receipt(7,'second','turn',tokens(199_270,3_712))+event(8,'task_complete',{turn_id:'turn'}));
+    await updateSessionFacts(context,file);
+
+    const [first,second]=readChangedSessionStatistics(context,0);
+    expect(first).toMatchObject({turn_id:'turn',interval:{requests:1,tool_calls:1},segment:{end_at:stamp(5),end_reason:'input'}});
+    expect(second).toMatchObject({turn_id:'turn',interval:{requests:1,tool_calls:0},segment:{start_at:stamp(5)}});
+    expect(first.progress_id).not.toBe(second.progress_id);
+    expect(readSessionMetadata(context)).toMatchObject({reasons:[],totals:{requests:2,tool_calls:1}});
+  });
+
   it('compares hits even when new input exceeds the entire preceding input',async()=>{
     await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'same-input')+
       answer(2,'progress','commentary')+receipt(3,'before','turn',tokens(40_000,39_000))+

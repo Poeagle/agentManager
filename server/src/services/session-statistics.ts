@@ -19,7 +19,7 @@ const RECORD_MAX = 16 * 1024 * 1024;
 const CHUNK = 256 * 1024;
 const BATCH = 8 * 1024 * 1024;
 const RECORDS = 4000;
-const CHECKPOINT_PROJECTION_VERSION = 5;
+const CHECKPOINT_PROJECTION_VERSION = 6;
 const checkpointVersion = (codec: AgentSessionFactsPort) => codec.revision * 100 + CHECKPOINT_PROJECTION_VERSION;
 
 interface SourceRow {
