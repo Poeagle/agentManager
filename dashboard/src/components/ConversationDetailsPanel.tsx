@@ -14,10 +14,6 @@ export const formatSessionNumber = (value: number | null | undefined) =>
   value == null ? '—' : value.toLocaleString('zh-CN');
 const percent = (value: number | null) => value == null ? '—' : `${value.toFixed(1)}%`;
 
-function cache(input: number | null | undefined, hit: number | null | undefined) {
-  return input != null && hit != null && input > 0 && hit >= 0 && hit <= input ? 100 * hit / input : null;
-}
-
 function ConversationValuesTable({label, rows}: {label: string; rows: ConversationDetailRow[]}) {
   return <TableFrame label={label} header={<><th scope="col">指标</th><th scope="col">值</th></>} className="conversation-details-table conversation-values-table">
     {rows.map(row => <tr key={row.label}>
@@ -36,16 +32,14 @@ export function ConversationDetailsPanel({usage, model, state, statusTitle, meta
 }) {
   const recent = metadata ? metadata.latest?.tokens : usage?.last;
   const total = metadata ? metadata.totals?.tokens : usage?.total;
-  const inputCoverage = !metadata?.reasons.some(reason => reason === 'missing_usage' || reason === 'counter_mismatch');
-  const recentCache = metadata ? recordedCachePercent(recent) : cache(recent?.input_tokens, recent?.cached_input_tokens);
-  const totalCache = metadata
-    ? inputCoverage ? recordedCachePercent(total) : null
-    : cache(total?.input_tokens, total?.cached_input_tokens);
+  const countersConsistent = !metadata?.reasons.includes('counter_mismatch');
+  const recentCache = countersConsistent ? recordedCachePercent(recent) : null;
+  const totalCache = countersConsistent ? recordedCachePercent(total) : null;
   const context = usage?.window && usage.last.total_tokens != null ? 100 * usage.last.total_tokens / usage.window : null;
   const counts = formatSessionNumber;
   const metrics = [
     {label: '总量 Token', recent: counts(recent?.total_tokens), total: counts(total?.total_tokens)},
-    {label: '未缓存输入', recent: counts(uncachedInputTokens(recent)), total: counts(inputCoverage ? uncachedInputTokens(total) : null)},
+    {label: '未缓存输入', recent: counts(uncachedInputTokens(recent)), total: counts(countersConsistent ? uncachedInputTokens(total) : null)},
     {label: '缓存命中输入', recent: counts(recent?.cached_input_tokens), total: counts(total?.cached_input_tokens)},
     {label: '输出 Token', recent: counts(recent?.output_tokens), total: counts(total?.output_tokens)},
     {label: '推理输出', recent: counts(recent?.reasoning_output_tokens), total: counts(total?.reasoning_output_tokens), title: '包含在输出 Token 中'},

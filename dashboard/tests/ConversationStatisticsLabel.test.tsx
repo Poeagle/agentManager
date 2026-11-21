@@ -37,6 +37,18 @@ describe('English message metadata',()=>{
   render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,tokens,cost:{amount:3.21,unit:'credits',complete:true,rate_date:'2026-11-14'}}}}/>);
   expect(label()).toHaveTextContent('10.2K (3.21)｜1｜10K (99.99%)｜50｜200');expect(screen.getByText('99.99%')).toHaveAttribute('class','session-chat-cache-hit');expect(label()).toHaveAttribute('title',expect.stringContaining('Input 1 (uncached); Cache 9,999; total input 10,000'));expect(label()).toHaveAttribute('title',expect.stringContaining('included in Output'));
  });
+ it('shows the recorded cache rate for incomplete usage when total and output determine input',()=>{
+  const tokens={total_tokens:1000,input_tokens:null,cached_input_tokens:800,reasoning_output_tokens:20,output_tokens:100};
+  render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,coverage:'partial',reasons:['missing_usage'],complete:false,tokens}}}/>);
+  expect(label()).toHaveTextContent('1K (—)｜100｜800 (88.89%)｜20｜100');
+  expect(label()).toHaveAttribute('title',expect.stringContaining('total input 900; cache hit 88.89%'));
+  expect(label()).toHaveAttribute('title',expect.stringContaining('有请求未上报完整用量'));
+ });
+ it('keeps cache ratios unknown when native counters conflict',()=>{
+  const tokens={total_tokens:1000,input_tokens:900,cached_input_tokens:800,reasoning_output_tokens:20,output_tokens:100};
+  render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,reasons:['counter_mismatch'],complete:false,tokens}}}/>);
+  expect(label()).toHaveTextContent('1K (—)｜—｜800 (—)｜20｜100');
+ });
  it('shows credit breakdown beside each token category',()=>{
   const tokens={total_tokens:1100,input_tokens:1000,cached_input_tokens:900,reasoning_output_tokens:20,output_tokens:100};
   render(<ConversationStatisticsLabel statistics={{...base,tokens,cost:{amount:3,unit:'credits',complete:true,breakdown:{input:1,cache:0.5,reasoning:0.3,output:1.5}}}}/>);
