@@ -225,6 +225,36 @@ describe('Claude Agent SDK runtime',()=>{
     const history=parseClaudeMessage(Buffer.from(JSON.stringify({type:'user',uuid:userId,message:{role:'user',content:'scheduled'},timestamp:'2026-11-01T00:00:00Z'})));
     expect(history?.itemId).toBe(userId);expect(conversationMessageId('',history!.message.role,history!.itemId)).toBe(live.id);
   });
+  it('settles one brief submission when the native UUID echo has a different browser identity',async()=>{
+    const clientId='5d8a188787520799de08474941aeee20';
+    let deliverEcho!: (message: unknown) => void;
+    sdk.messages=[
+      new Promise(resolve=>{deliverEcho=resolve;}),
+      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'assistant-brief',role:'assistant',stop_reason:'end_turn',content:[{type:'text',text:'brief answer'}]}},
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('brief input',clientId);
+    await vi.waitFor(()=>expect(sdk.queries).toHaveLength(1));
+    const nativeInput=await sdk.queries[0].prompt[Symbol.asyncIterator]().next();
+    const nativeUser=nativeInput.value.uuid!;
+    const frames:any[]=[];runtime.observe(frame=>frames.push(frame));
+    expect(frames[0].messages.filter((message:any)=>message.role==='user')).toMatchObject([
+      {id:conversationMessageId('','user',nativeUser),client_id:clientId,native_client_id:clientId},
+    ]);
+    deliverEcho({type:'user',uuid:nativeUser,session_id:session,parent_tool_use_id:null,message:{role:'user',content:'brief input'}});
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    for(const frame of frames.slice(-1)){
+      const users=frame.messages.filter((message:any)=>message.role==='user');
+      expect(users).toHaveLength(1);
+      expect(users[0]).toMatchObject({
+        id:conversationMessageId('','user',nativeUser),
+        client_id:clientId,
+        native_client_id:clientId,
+        text:'brief input',
+      });
+    }
+  });
   it('uses one user identity for the first Claude Code input from launch through durable history',async()=>{
     const {createTestDatabase}=await import('./helpers/database.js');const database=createTestDatabase();
     let nativeId:string|undefined;
