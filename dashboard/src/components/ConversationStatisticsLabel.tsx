@@ -1,7 +1,7 @@
 import {Fragment} from 'react';
 import type {ConversationMessage,ConversationStatistics} from '../lib/api';
 import {formatConversationTimestamp} from '../lib/conversation-timing';
-import {coverageReason,intervalCoverageText,recordedCachePercent,uncachedInputTokens} from '../lib/session-metadata';
+import {coverageReason,intervalCoverageText,recordedCachePercent,totalInputTokens,uncachedInputTokens} from '../lib/session-metadata';
 const number=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(value);
 const valid=(value:number|null|undefined)=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
 /** Every displayed field belongs to the same recorded interval. Cache hit is a
@@ -17,10 +17,10 @@ export function ConversationStatisticsLabel({statistics,interval=false,progress=
   return <span className="session-chat-message-statistics session-chat-statistics-coverage"
     title="原生用量回执到达后自动更新。">{coverageLabel}</span>;
  }
- const totalInput=valid(tokens?.input_tokens),cached=valid(tokens?.cached_input_tokens),output=valid(tokens?.output_tokens);
- const inputsKnown=!value?.reasons?.some(reason=>reason==='missing_usage'||reason==='counter_mismatch');
- const input=inputsKnown?uncachedInputTokens(tokens):null;
- const hit=!inputsKnown?null:coverage?recordedCachePercent(tokens):totalInput!==null&&totalInput>0&&cached!==null&&cached<=totalInput?cached/totalInput*100:null;
+ const totalInput=valid(totalInputTokens(tokens)),cached=valid(tokens?.cached_input_tokens),output=valid(tokens?.output_tokens);
+ const cacheCountersConsistent=!value?.reasons?.includes('counter_mismatch');
+ const input=cacheCountersConsistent?uncachedInputTokens(tokens):null;
+ const hit=cacheCountersConsistent?recordedCachePercent(tokens):null;
  const hitText=hit===null?'—':new Intl.NumberFormat('en',{maximumFractionDigits:2}).format(hit)+'%';
  const partialPrefix=!coverage&&!complete?'≥':'';
  const count=(n:number|null|undefined)=>valid(n)===null||!complete&&!value?.requests&&n===0?'—':partialPrefix+n;

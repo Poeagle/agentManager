@@ -130,17 +130,27 @@ export function creditsLabel(cost: ConversationCostEstimate | null | undefined) 
 }
 
 export function uncachedInputTokens(tokens: Record<string, number | null> | null | undefined): number | null {
-  const {input_tokens:input,cached_input_tokens:cached}=tokens??{};
+  const input = totalInputTokens(tokens);
+  const cached = tokens?.cached_input_tokens;
   if (input===0&&cached==null) return 0;
   if (input==null||cached==null||!Number.isSafeInteger(input)||!Number.isSafeInteger(cached)||cached<0||cached>input) return null;
   return input-cached;
 }
 
+export function totalInputTokens(tokens: Record<string, number | null> | null | undefined): number | null {
+  const input=tokens?.input_tokens;
+  if(input!=null&&Number.isSafeInteger(input)&&input>=0)return input;
+  const total=tokens?.total_tokens,output=tokens?.output_tokens;
+  if(total==null||output==null||!Number.isSafeInteger(total)||!Number.isSafeInteger(output)||total<output)return null;
+  return total-output;
+}
+
 export function recordedCachePercent(tokens: Record<string, number | null> | null | undefined): number | null {
-  const {input_tokens:input,cached_input_tokens:hit,output_tokens:output,total_tokens:total,reasoning_output_tokens:reasoning}=tokens??{};
-  if (input==null||hit==null||output==null||total==null||
-      ![input,hit,output,total].every(value=>Number.isSafeInteger(value)&&value>=0)||
-      input===0||hit>input||input+output!==total||reasoning!=null&&(reasoning<0||reasoning>output)) return null;
+  const input=totalInputTokens(tokens),hit=tokens?.cached_input_tokens,output=tokens?.output_tokens;
+  const total=tokens?.total_tokens,reasoning=tokens?.reasoning_output_tokens;
+  if (input==null||hit==null||output==null||
+      ![input,hit,output].every(value=>Number.isSafeInteger(value)&&value>=0)||
+      input===0||hit>input||total!=null&&input+output!==total||reasoning!=null&&(reasoning<0||reasoning>output)) return null;
   return 100*hit/input;
 }
 

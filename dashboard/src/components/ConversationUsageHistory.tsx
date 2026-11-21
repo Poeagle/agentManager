@@ -199,9 +199,9 @@ function UsageRow({scope,row,depth}: {
   const reference=row.usage?.shared_reference;
   const usage=reference?null:row.usage;
   const tokens=usage?.tokens;
-  const inputKnown=!usage?.reasons?.some(reason=>reason==='missing_usage'||reason==='counter_mismatch');
-  const uncached=inputKnown?uncachedInputTokens(tokens):null;
-  const cacheRate=inputKnown?recordedCachePercent(tokens):null;
+  const cacheCountersConsistent=!usage?.reasons?.includes('counter_mismatch');
+  const uncached=cacheCountersConsistent?uncachedInputTokens(tokens):null;
+  const cacheRate=cacheCountersConsistent?recordedCachePercent(tokens):null;
   const coverage=usage&&!usage.complete ? intervalCoverageText(usage.coverage??'partial',usage.reasons) : null;
   const waitingForCounts=usage?.coverage==='pending'&&!usage.requests;
   const count=(value:number)=>number(waitingForCounts&&value===0?null:value);

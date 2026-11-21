@@ -57,12 +57,10 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const summary=metadata&&metadata.native_id===data?.native_id?metadata:null;
   const cumulative=summary?summary.totals?.tokens:usage?.total;
   const credits=summary?.totals?.cost;
-  const inputCoverage=!summary?.reasons.some(reason=>reason==='missing_usage'||reason==='counter_mismatch');
-  const tokenMetrics=cumulative?([['Total',cumulative.total_tokens],['Input',inputCoverage?uncachedInputTokens(cumulative):null],['Cache',cumulative.cached_input_tokens],['Reasoning',cumulative.reasoning_output_tokens],['Output',cumulative.output_tokens]] as Array<[string,number|null|undefined]>).filter((entry):entry is [string,number]=>entry[1]!=null):[];
-  const cacheInput=cumulative?.input_tokens,cacheHit=cumulative?.cached_input_tokens;
-  const recordedRate=inputCoverage?recordedCachePercent(cumulative):null;
-  const cacheRate=summary?(recordedRate===null?null:Number(recordedRate.toFixed(1)))
-    :cacheInput!=null&&cacheInput>0&&cacheHit!=null&&cacheHit>=0&&cacheHit<=cacheInput?Number((100*cacheHit/cacheInput).toFixed(1)):null;
+  const countersConsistent=!summary?.reasons.includes('counter_mismatch');
+  const tokenMetrics=cumulative?([['Total',cumulative.total_tokens],['Input',countersConsistent?uncachedInputTokens(cumulative):null],['Cache',cumulative.cached_input_tokens],['Reasoning',cumulative.reasoning_output_tokens],['Output',cumulative.output_tokens]] as Array<[string,number|null|undefined]>).filter((entry):entry is [string,number]=>entry[1]!=null):[];
+  const recordedRate=countersConsistent?recordedCachePercent(cumulative):null;
+  const cacheRate=recordedRate===null?null:Number(recordedRate.toFixed(1));
   const cacheColor=cacheRate===null?'var(--text-muted)':quotaColor(cacheRate);
   const context=usage?.window&&usage.last.total_tokens!=null?Math.min(100,Math.round(100*usage.last.total_tokens/usage.window)):null;
   const currentEnvironment=environments.data?.environments.find(e=>e.id===environments.data?.current);
