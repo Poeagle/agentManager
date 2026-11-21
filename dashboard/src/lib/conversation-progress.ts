@@ -54,7 +54,6 @@ export function groupConversationProgress(messages:TimelineMessage[]):Conversati
   const groups:ConversationGroup[]=[];
   const waitingInputs:ConversationGroup[]=[];
   const byProgressId=new Map<string,Extract<ConversationGroup,{kind:'progress'}>>();
-  const groupScope=new Map<ConversationGroup,string>();
   let progressClosed=false;
   for(const message of messages) {
     if (isWaitingConversationInput(message)) {
@@ -89,7 +88,7 @@ export function groupConversationProgress(messages:TimelineMessage[]):Conversati
       const group=owner??adjacent??{kind:'progress' as const,id:message.id,messages:[]};
       group.messages.push(message);
       if(!owner&&!adjacent)groups.push(group);
-      if(scope&&!owner){byProgressId.set(scope,group);groupScope.set(group,scope);}
+      if(scope&&!owner)byProgressId.set(scope,group);
       progressClosed=!!(message.phase==='final'||message.phase==='error'||message.presentation==='compaction_summary'||message.async_questions?.length);
     }else {
       groups.push({kind:'message',id:message.id,message});
