@@ -208,6 +208,30 @@ test('Claude uses the same session details and persists request facts before rem
   } finally {db.close();}
 });
 
+test('settles a split Claude Final as soon as its visible text arrives and restores usage on reload',async({page})=>{
+  const session=await setup(page,'claude','completed');
+  const entry=(seconds:number,type:string,uuid:string,message:object)=>
+    JSON.stringify({timestamp:at(seconds),type,uuid,message})+'\n';
+  const usage={input_tokens:4,cache_creation_input_tokens:563,cache_read_input_tokens:22321,output_tokens:694};
+  const response={role:'assistant',id:'claude-final',model:'claude-fixture',stop_reason:'end_turn',usage};
+  writeFileSync(session.log,entry(1,'user','input',{role:'user',content:'Read the receipt'})+
+    entry(2,'assistant','thought',{...response,content:[{type:'thinking',thinking:'Check the receipt'}]}));
+  await page.goto('/');
+  await expect(session.chat.getByText('Read the receipt',{exact:true})).toBeVisible();
+  const body={...response,content:[{type:'text',text:'The receipt is complete.'}]};
+  appendFileSync(session.log,entry(3,'assistant','answer',body)+entry(4,'assistant','answer-echo',body));
+  const final=session.chat.locator('[data-phase="final"]').filter({hasText:'The receipt is complete.'});
+  const statistics=final.locator('.session-chat-message-statistics');
+  await expect(final).toHaveCount(1);
+  await expect(statistics).toHaveAttribute('title',/Total 23,582;/);
+  await expect(statistics).toContainText('1 round | 0 calls');
+  await expect(statistics).not.toContainText('记录不完整');
+  await expect(statistics).toContainText('97.52%');
+  await page.reload();
+  await expect(final).toHaveCount(1);
+  await expect(statistics).toHaveAttribute('title',/Total 23,582;/);
+});
+
 test('loads exact earlier intervals and pages through the corresponding lifecycle records',async({page,request:anonymous})=>{
   const session=await setup(page,'codex','completed');
   const turns=Array.from({length:28},(_,i)=>{
@@ -482,10 +506,14 @@ test('waits for actual usage after commentary and counts a reasoning-only reques
   const item=group.locator('.session-chat-progress-entry .session-chat-message-statistics').first();
   await expect(header).toHaveText('等待用量回执');
   await expect(item).toHaveText('等待用量回执');
+  const footer=page.getByLabel('Session information').filter({visible:true});
+  // This fixture has no live terminal, so its unresolved receipt is partial.
+  await expect(footer.getByText('记录不完整',{exact:true})).toBeVisible();
   appendFileSync(session.log,record(24.121,'token_usage_record',{turn_id:turn,response_id:'visible-receipt',
     usage:{total_tokens:281353,input_tokens:279734,cached_input_tokens:278784,output_tokens:1619,reasoning_output_tokens:1500}}));
   await expect(item).toHaveAttribute('title',/Total 281,353;/);
   await expect(header).toContainText('1 round | 0 calls');
+  await expect(footer.getByText(/记录不完整|等待用量|正在回填/)).toHaveCount(0);
   const progressTime=group.locator('summary').getByLabel('进展时间').locator('time');
   await expect(progressTime).toHaveAttribute('datetime',at(24.121));
   appendFileSync(session.log,record(30,'token_usage_record',{turn_id:turn,response_id:'reasoning-receipt',

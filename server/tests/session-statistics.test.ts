@@ -46,6 +46,24 @@ beforeEach(async()=>{
 afterEach(async()=>{await stopSessionStatistics();vi.restoreAllMocks();vi.unstubAllEnvs();fixture.cleanup();});
 
 describe('persisted session statistics',()=>{
+  it('shows pending usage only while an active Codex request has unaccounted work',async()=>{
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'input'));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)).toMatchObject({status:'complete',reasons:[]});
+
+    await appendFile(file,answer(2,'update','commentary')+tool(3,'one')+tool(4,'two'));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)).toMatchObject({status:'pending',reasons:[]});
+
+    await appendFile(file,receipt(5,'received','turn',tokens(5000,4200)));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)).toMatchObject({status:'complete',reasons:[],totals:{requests:1,tool_calls:2,tokens:{total_tokens:5020}}});
+    expect(readSessionProgress(codex)?.segment?.end_reason).toBeNull();
+    const {generation,revision}=readSessionMetadata(codex)!;
+    getDb().prepare("UPDATE session_statistics_sources SET summary=json_set(summary,'$.status','pending')").run();
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)).toMatchObject({generation,revision,status:'complete',reasons:[],totals:{requests:1,tool_calls:2}});
+  });
   it('reconciles primary receipts, tool rounds, completed intervals, and cache changes across restart',async()=>{
     const first=tokens(10_000,9_000), second=tokens(11_000,0), third=tokens(12_000,10_000);
     await writeFile(file,
@@ -311,6 +329,9 @@ describe('persisted session statistics',()=>{
     await updateSessionFacts(codex,file);
     expect(readChangedSessionStatistics(codex,0)[0].interval).toMatchObject({coverage:'pending',tokens:null});
     expect(readSessionMetadata(codex)?.reasons).toContain('incomplete_record');
+    expect(readSessionMetadata({...codex,session:{...codex.session,status:'completed'}})).toMatchObject({
+      status:'pending',reasons:['incomplete_record'],
+    });
     await appendFile(file,'\n'+event(4,'task_complete',{turn_id:'a'}));
     await updateSessionFacts(codex,file);
     const before=readSessionMetadata(codex);
@@ -363,6 +384,35 @@ describe('persisted session statistics',()=>{
       tokens:{input_tokens:30000,cached_input_tokens:17600,output_tokens:40,reasoning_output_tokens:null,total_tokens:30040}},
       user_inputs:2,completed_turns:2,cache_drop_count:1});
     expect(readChangedSessionStatistics(claude,0)[1].conclusion).toMatchObject({requests:2,tool_calls:2,tool_rounds:1});
+  });
+
+  it('settles a Claude Final once when thinking and text share a terminal receipt across scans',async()=>{
+    const input=(at:number,uuid:string)=>JSON.stringify({timestamp:stamp(at),type:'user',uuid,message:{role:'user',content:'Question'}})+'\n';
+    const usage={input_tokens:4,cache_creation_input_tokens:563,cache_read_input_tokens:22321,output_tokens:694};
+    const assistant=(at:number,id:string,uuid:string,parentUuid:string,content:object[],counts:object|null)=>
+      JSON.stringify({timestamp:stamp(at),type:'assistant',uuid,parentUuid,message:{id,role:'assistant',model:'claude-test',stop_reason:'end_turn',content,usage:counts}})+'\n';
+
+    await writeFile(file,input(1,'first')+assistant(2,'final','thought','first',[{type:'thinking',thinking:'Consider'}],usage));
+    await updateSessionFacts(claude,file);
+    expect(readChangedSessionStatistics(claude,0)).toEqual([]);
+    expect(readSessionMetadata(claude)).toMatchObject({completed_turns:0});
+
+    await appendFile(file,assistant(3,'final','body','thought',[{type:'text',text:'Answer'}],null));
+    await updateSessionFacts(claude,file);
+    const [final]=readChangedSessionStatistics(claude,0);
+    expect(final).toMatchObject({turn_id:'first',item_at:stamp(3),interval:{requests:1,coverage:'complete',tokens:{total_tokens:23582}},
+      conclusion:{requests:1,coverage:'complete',start_at:stamp(1),end_at:stamp(3),tokens:{total_tokens:23582}}});
+    expect(final.message_id).toBe(nativeItemId('assistant','final'));
+
+    await appendFile(file,assistant(4,'final','body-echo','body',[{type:'text',text:'Answer'}],usage)+
+      input(5,'second')+assistant(6,'other','other-body','second',[{type:'text',text:'Other answer'}],null));
+    await updateSessionFacts(claude,file);
+    const rows=readChangedSessionStatistics(claude,0);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual(final);
+    expect(rows[1]).toMatchObject({turn_id:'second',interval:{coverage:'partial',reasons:['missing_usage'],requests:1,tokens:{total_tokens:null}},
+      conclusion:{coverage:'partial',requests:1}});
+    expect(readSessionMetadata(claude)).toMatchObject({completed_turns:2,totals:{requests:2,tokens:{total_tokens:23582}}});
   });
 
   it('keeps pending and completed statistics scoped to the native environment of the binding',async()=>{

@@ -515,7 +515,9 @@ export function projectSummary(
   state: SessionProjectionState, nativeId: string, revision: number, observedAt: string | null,
   extra: SessionCoverageReason[],
 ): SessionMetadata {
-  const waiting = !!state.turn && !state.turn.ended;
+  const turn = state.turn;
+  const waiting = !!turn && !turn.ended &&
+    (turn.items.length > 0 || turn.tools.length > 0 || turn.activeItems.length > 0);
   const missing = [...state.suspended, ...(state.turn?.ended ? [state.turn] : [])]
     .some(turn => turn.items.length > 0 || turn.tools.length > 0);
   const reasons = [...new Set([...state.reasons, ...extra, ...(missing ? ['missing_usage' as const] : [])])];

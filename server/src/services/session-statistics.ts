@@ -360,10 +360,15 @@ export function readSessionMetadata(context: AgentContext, available = true): Se
   const source = sourceFor(context);
   if (!source) return null;
   const row = rowFor(source);
-  const saved = row ? readJson<SessionMetadata>(row.summary) : projectSummary(newProjection(), source.id, 0, null,
+  let saved = row ? readJson<SessionMetadata>(row.summary) : projectSummary(newProjection(), source.id, 0, null,
     [available ? 'backfill' : 'source_unavailable']);
+  // Older summaries marked every open turn pending, even after its receipt.
+  if (row?.codec_version === checkpointVersion(source.codec) && saved.status === 'pending' && !saved.reasons.length) {
+    const projection = readJson<SessionProjectionState>(row.projection_state);
+    saved = {...projectSummary(projection, source.id, row.revision, saved.observed_at, []), generation: saved.generation};
+  }
   if (available) {
-    if (saved.status === 'pending' && !saved.reasons.includes('backfill') &&
+    if (saved.status === 'pending' && !saved.reasons.length &&
         ['cancelled','failed','completed'].includes(context.session.status ?? ''))
       return {...saved, status:'partial', reasons:[...new Set([...saved.reasons,'ambiguous_boundary' as const])]};
     return saved;

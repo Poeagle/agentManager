@@ -10,7 +10,7 @@ import {Dialog} from './Dialog';
 import {ConversationDetailsPanel} from './ConversationDetailsPanel';
 import {ConversationContextUsage} from './ConversationContextUsage';
 import {quotaColor} from '../lib/quota-color';
-import {coverageReason,coverageText,creditsLabel,recordedCachePercent,uncachedInputTokens,type SessionMetadata} from '../lib/session-metadata';
+import {coverageReason,intervalCoverageText,creditsLabel,recordedCachePercent,uncachedInputTokens,type SessionMetadata} from '../lib/session-metadata';
 import {ConversationCacheHistory,ConversationUsageHistory} from './ConversationUsageHistory';
 
 const effortNames:Record<string,string>={none:'无',minimal:'最低',low:'低',medium:'中',high:'高',xhigh:'更高',max:'最高',ultra:'极高'};
@@ -118,7 +118,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
           {data.engine_version&&<span title="Running engine version">Engine {data.engine_version}</span>}
           {tokenMetrics.length>0&&<span aria-label="Cumulative token usage">Tokens {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{name}</span></Fragment>)} : {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{compact(value)}</span></Fragment>)}</span>}
           {credits?.amount!=null&&<span className="session-chat-estimated-cost conversation-total-credits" title={`按原生请求的模型和速度估算 · 费率 ${credits.rate_date??'未知'}${credits.complete?'':' · * 费率或用量覆盖不完整'}`}>Est. Cr {creditsLabel(credits)}</span>}
-          {summary&&summary.status!=='complete'&&<span title={summary.reasons.map(reason=>coverageReason[reason]).join('、')}>{coverageText[summary.status]}</span>}
+          {summary&&summary.status!=='complete'&&<span title={summary.reasons.map(reason=>coverageReason[reason]).join('、')||undefined}>{intervalCoverageText(summary.status,summary.reasons)}</span>}
         </span>
         {(error&&!newOpen||notice)&&<span className="conversation-control-message" role={error&&!newOpen?'alert':'status'} title={error&&!newOpen?error:notice}>{error&&!newOpen?error:notice}</span>}
         <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>Details</button>
