@@ -101,6 +101,12 @@ describe('compact conversation controls',()=>{
   expect(within(view.container).getByText('/project')).toBeVisible();
   view.unmount();expect(slot).toBeEmptyDOMElement();slot.remove();
  });
+ it('offers brief compaction alongside existing session controls and disables it while busy',async()=>{
+  const brief=vi.fn(),view=render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active onBrief={brief} onNewConversation={async()=>{}}/></QueryClientProvider>);
+  fireEvent.click(await screen.findByRole('button',{name:'简要压缩'}));expect(brief).toHaveBeenCalledOnce();
+  view.rerender(<QueryClientProvider client={client}><ConversationControls sessionId="s" active busy onBrief={brief} onNewConversation={async()=>{}}/></QueryClientProvider>);
+  expect(screen.getByRole('button',{name:'简要压缩'})).toBeDisabled();
+ });
  it('updates usage immediately without an extra controls request and ignores an older metadata refresh',async()=>{
   mount();await screen.findByText('Context 40K | 30%');const calls=vi.mocked(api.agent.controls).mock.calls.length;
   await act(async()=>{client.setQueryData(['conversation-usage','s'],{native_id:'native',observed_at:'2026-11-02T03:20:55Z',usage:{last:{total_tokens:2400,input_tokens:2000,cached_input_tokens:1900,output_tokens:400},total:{total_tokens:402400,input_tokens:400000,cached_input_tokens:380000},window:40000}});});

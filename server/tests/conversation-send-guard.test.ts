@@ -6,6 +6,7 @@ import {authHook,createUser,createSession,setProjectToolAccess} from '../src/aut
 import {getDb} from '../src/db/index.js';
 import {settingsRoutes} from '../src/routes/settings.js';
 import {agentRoutes} from '../src/routes/agent.js';
+import {sessionRoutes} from '../src/routes/sessions.js';
 import {getAgent} from '../src/services/agents/index.js';
 const codexAdapter=getAgent('codex');
 import {DEFAULT_SEND_GUARD,SEND_GUARD_KEY} from '../src/services/send-guard-policy.js';
@@ -21,10 +22,16 @@ beforeEach(async()=>{
  vi.spyOn(codexAdapter.telemetry,'read').mockResolvedValue({usage:{total:{total_tokens:2000},last:{total_tokens:800},window:1000},observed_at:new Date().toISOString()});
  vi.spyOn(codexAdapter.runtime,'read').mockResolvedValue({source:'fixture',session_id:'native',state:'idle',last_turn_ended_at:new Date(Date.now()-40*60000).toISOString(),last_activity_at:new Date(Date.now()-40*60000).toISOString(),observed_at:new Date().toISOString(),reason:'fixture'});
  vi.spyOn(manager,'isSessionActive').mockReturnValue(true);vi.spyOn(stream,'submitStreamingCodexInput').mockResolvedValue(true);vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/fixture/socket');
- app=Fastify();await app.register(websocket);app.addHook('onRequest',authHook);await app.register(settingsRoutes,{prefix:'/api'});await app.register(agentRoutes,{prefix:'/api'});await app.ready();
+ app=Fastify();await app.register(websocket);app.addHook('onRequest',authHook);await app.register(settingsRoutes,{prefix:'/api'});await app.register(agentRoutes,{prefix:'/api'});await app.register(sessionRoutes,{prefix:'/api'});await app.ready();
 });
 afterEach(async()=>{await app.close();vi.restoreAllMocks();vi.unstubAllEnvs();cleanup();});
 const input={input:'hello',source:'conversation',client_id:'client'};
+it('rejects invalid or stale expected identities on the internal new-conversation route',async()=>{
+ const invalid=await app.inject({method:'POST',url:'/api/sessions/s/new-conversation',headers:{cookie},payload:{expected_native_id:[]}});
+ expect(invalid.statusCode).toBe(400);
+ const stale=await app.inject({method:'POST',url:'/api/sessions/s/new-conversation',headers:{cookie},payload:{expected_native_id:'other'}});
+ expect(stale.statusCode).toBe(409);expect(stale.json().error).toContain('原生会话已变化');expect(manager.getSession('s')?.codex_session_id).toBe('native');
+});
 it('requires confirmation before dispatch and binds tokens to the exact user/native/policy/payload',async()=>{
  const check=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});expect(check.statusCode).toBe(200);expect(check.json()).toMatchObject({needs_confirmation:true,context_percent:80,can_compact:true,can_new:true});expect(stream.submitStreamingCodexInput).not.toHaveBeenCalled();
  const denied=await app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:input});expect(denied.statusCode).toBe(409);expect(denied.json()).toMatchObject({submission:'rejected',send_guard:{needs_confirmation:true}});expect(stream.submitStreamingCodexInput).not.toHaveBeenCalled();

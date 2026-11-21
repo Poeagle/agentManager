@@ -5,6 +5,7 @@ import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {api,ApiError,type ConversationPage,type SendGuardCheck,type Session} from '../src/lib/api';
 import {composerKey,loadComposer} from '../src/lib/batch-composer';
 import {SessionConversation} from '../src/components/SessionConversation';
+import {parseBriefContext} from '../src/lib/conversation-brief-context';
 
 vi.mock('../src/lib/permissions',()=>({usePermissions:()=>({data:{},isPending:false}),hasPermission:()=>true}));
 vi.mock('../src/components/ConversationControls',()=>({ConversationControls:()=>null}));
@@ -22,13 +23,13 @@ const source={id:'source',project_id:'p',status:'running',cli_type:'codex',codex
 const other={...source,id:'other',codex_session_id:'other-native'};
 const check:SendGuardCheck={needs_confirmation:true,matched:true,enabled:true,context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,last_completed_at:null,observed_at:null,native_id:'source-native',checked_at:'',can_compact:true,can_new:false,token:'before'};
 const clients:QueryClient[]=[];
-function Harness(){
+function Harness({onNew}:{onNew?:()=>Promise<string|void>}){
   const [selected,setSelected]=useState('source');
-  return <><button onClick={()=>setSelected('source')}>源会话</button><button onClick={()=>setSelected('other')}>其他会话</button>{[source,other].map(session=><section key={session.id} data-testid={session.id} style={{display:selected===session.id?'block':'none'}}><SessionConversation session={session} active={selected===session.id} onRaw={()=>{}}/></section>)}</>;
+  return <><button onClick={()=>setSelected('source')}>源会话</button><button onClick={()=>setSelected('other')}>其他会话</button>{[source,other].map(session=><section key={session.id} data-testid={session.id} style={{display:selected===session.id?'block':'none'}}><SessionConversation session={session} active={selected===session.id} onRaw={()=>{}} onNewConversation={session.id==='source'?onNew:undefined}/></section>)}</>;
 }
-async function mount(){
+async function mount(onNew?:()=>Promise<string|void>){
   const client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});clients.push(client);
-  const view=render(<QueryClientProvider client={client}><Harness/></QueryClientProvider>);
+  const view=render(<QueryClientProvider client={client}><Harness onNew={onNew}/></QueryClientProvider>);
   await waitFor(()=>expect(Socket.sessions.get('source')?.onmessage).toBeTruthy());
   act(()=>Socket.sessions.get('source')!.emit({type:'snapshot',messages:[],busy:false,stage:'idle'}));
   return view;
@@ -67,6 +68,18 @@ it.each([false,true])('automatically sends the original payload in the backgroun
   else expect(loadComposer(composerKey('local','source')).draft).toBe('');
   fireEvent.click(screen.getByRole('button',{name:'源会话',exact:true}));
   expect(api.agent.sendInput).toHaveBeenCalledOnce();
+});
+
+it('sends brief history only to the original tab after the user switches sessions',async()=>{
+  vi.mocked(api.agent.conversation).mockImplementation(async(id,query)=>({session_id:id,messages:query?.limit?[{id:'old',role:'user',text:'旧任务',timestamp:null}]:[],statistics:[],has_more:false,reset:false,available:true,generation:id,native_id:`${id}-native`,session_active:true,session_status:'running',runtime:{state:'idle'},interaction:null}) as unknown as ConversationPage);
+  let checks=0;vi.mocked(api.agent.checkSend).mockImplementation(async id=>id==='source'?++checks===1?{...check,can_new:true}:{...check,native_id:'fresh-native',needs_confirmation:false,token:'brief-after'}:{...check,needs_confirmation:false,native_id:'other-native',token:'other'});
+  let release!:(id:string)=>void;const onNew=vi.fn(()=>new Promise<string>(resolve=>{release=resolve;}));
+  await mount(onNew);input('原会话的新需求');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));fireEvent.click(await screen.findByRole('button',{name:'简要压缩后发送'}));
+  await waitFor(()=>expect(onNew).toHaveBeenCalledOnce());fireEvent.click(screen.getByRole('button',{name:'其他会话',exact:true}));
+  await waitFor(()=>expect(Socket.sessions.get('other')?.onmessage).toBeTruthy());input('其他会话的草稿');await act(async()=>release('fresh-native'));
+  await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledOnce());
+  const call=vi.mocked(api.agent.sendInput).mock.calls[0];expect(call[0]).toBe('source');expect(parseBriefContext(call[1])?.input).toBe('原会话的新需求');expect(call[5]).toBe('brief-after');
+  expect(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveTextContent('其他会话的草稿');
 });
 
 it('keeps the source subscription until a background submission is acknowledged',async()=>{

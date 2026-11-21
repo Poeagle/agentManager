@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, ApiError, type ConversationPage, type ConversationStatistics, type Session } from '../src/lib/api';
 import { SessionConversation } from '../src/components/SessionConversation';
 import * as metadata from '../src/components/ConversationStatisticsLabel';
+import {parseBriefContext} from '../src/lib/conversation-brief-context';
 
 vi.mock('../src/lib/permissions', () => ({ usePermissions: () => ({ data: {}, isPending: false }), hasPermission: () => true }));
 vi.mock('../src/lib/use-conversation-compaction', () => ({ useConversationCompaction: () => ({ state: null, running: false, start: vi.fn(), usage: vi.fn(), observe: vi.fn(), disconnected: vi.fn() }) }));
@@ -25,10 +26,10 @@ const session = { id: 'send-session', project_id: 'project', status: 'running', 
 function deferred<T>() { let resolve!: (value: T) => void, reject!: (reason: Error) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 type SendResult = Awaited<ReturnType<typeof api.agent.sendInput>>;
 function input(value: string) { const editor = screen.getByRole('textbox', { name: '发送给当前 Agent 的消息' }); editor.textContent = value; fireEvent.input(editor); return editor; }
-async function mount(target:Session=session) {
+async function mount(target:Session=session,onNewConversation?:(preference?:import('../src/lib/api').AgentModelPreference,expectedNativeId?:string)=>Promise<string|void>) {
   Socket.latest=undefined as unknown as Socket;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  const view=render(<QueryClientProvider client={client}><SessionConversation session={target} active onRaw={() => {}} /></QueryClientProvider>);
+  const view=render(<QueryClientProvider client={client}><SessionConversation session={target} active onRaw={() => {}} onNewConversation={onNewConversation}/></QueryClientProvider>);
   await waitFor(() => expect(Socket.latest?.onmessage).toBeTruthy());
   act(() => Socket.latest.emit({ type: 'snapshot', messages: [], busy: false, stage: 'idle' }));
   await waitFor(() => expect(screen.getByText('Event stream connected')).toBeInTheDocument());
@@ -158,6 +159,62 @@ describe('conversation send transaction', () => {
     const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);await mount();input('protected draft');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
     const dialog=await screen.findByRole('dialog',{name:'发送前检查'});expect(submit).not.toHaveBeenCalled();expect(loadComposer(composerKey('local',session.id)).draft).toBe('protected draft');
     fireEvent.click(within(dialog).getByRole('button',{name:'原样发送'}));await waitFor(()=>expect(submit).toHaveBeenCalledOnce());expect(submit.mock.calls[0][1]).toBe('protected draft');expect(submit.mock.calls[0][5]).toBe('confirmed');
+  });
+  it('sends a brief history and current draft once, then presents the history as an expandable first card',async()=>{
+    const guard={needs_confirmation:true,matched:true,enabled:true,token:'before',native_id:'native',context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,last_completed_at:null,observed_at:null,checked_at:'',can_compact:true,can_new:true};
+    vi.mocked(api.agent.checkSend).mockResolvedValueOnce(guard).mockResolvedValueOnce({...guard,native_id:'fresh',token:'after'});
+    vi.mocked(api.agent.conversation).mockImplementation(async(_id,query)=>({
+      session_id:session.id,messages:query?.limit?[{id:'old-user',role:'user',text:'旧需求',timestamp:null},{id:'old-final',role:'assistant',phase:'final',text:'旧结论',timestamp:null}]:[],
+      statistics:[],has_more:false,reset:false,available:true,generation:'generation',native_id:'native',session_active:true,session_status:'running',runtime:{state:'idle'},interaction:null,
+    }) as ConversationPage);
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult),newSession=vi.fn().mockResolvedValue('fresh');
+    await mount(session,newSession);input('这次的新需求');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+    fireEvent.click(within(await screen.findByRole('dialog',{name:'发送前检查'})).getByRole('button',{name:'简要压缩后发送'}));
+    await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
+    expect(newSession).toHaveBeenCalledExactlyOnceWith(undefined,'native');
+    const sent=submit.mock.calls[0][1],brief=parseBriefContext(sent)!;
+    expect(brief.input).toBe('这次的新需求');expect(brief.context.turns[0]).toEqual({input:'旧需求',conclusion:'旧结论'});
+    expect(submit.mock.calls[0][5]).toBe('after');
+    const card=await screen.findByRole('button',{name:/简要压缩/});expect(screen.getByText('这次的新需求')).toBeVisible();
+    expect(screen.queryByText('旧需求')).not.toBeInTheDocument();fireEvent.click(card);
+    const details=screen.getByRole('dialog',{name:'简要压缩详情'});expect(within(details).getByText('旧需求')).toBeVisible();expect(within(details).getByText('旧结论')).toBeVisible();
+  });
+  it('preserves batch boundaries when brief history is prepended',async()=>{
+    const guard={needs_confirmation:true,matched:true,enabled:true,token:'before',native_id:'native',context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,last_completed_at:null,observed_at:null,checked_at:'',can_compact:true,can_new:true};
+    vi.mocked(api.agent.checkSend).mockResolvedValueOnce(guard).mockResolvedValueOnce({...guard,native_id:'fresh',token:'after'});
+    vi.mocked(api.agent.conversation).mockImplementation(async(_id,query)=>({
+      session_id:session.id,messages:query?.limit?[{id:'old',role:'user',text:'上一轮',timestamp:null}]:[],statistics:[],has_more:false,reset:false,available:true,generation:'generation',native_id:'native',session_active:true,session_status:'running',runtime:{state:'idle'},interaction:null,
+    }) as ConversationPage);
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);
+    await mount(session,vi.fn().mockResolvedValue('fresh'));fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
+    input('one');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));input('two');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
+    fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));fireEvent.click(within(await screen.findByRole('dialog',{name:'发送前检查'})).getByRole('button',{name:'简要压缩后发送'}));
+    await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
+    const sent=submit.mock.calls[0][1],brief=parseBriefContext(sent)!;
+    expect(brief.input).toBe('one\n\ntwo');expect(submit.mock.calls[0][4]).toEqual([{length:brief.prefixLength+3,attachments:0},{length:3,attachments:0}]);
+    fireEvent.click(await screen.findByRole('button',{name:/批量消息/}));
+    const batch=screen.getByRole('dialog',{name:'批量消息 · 2 条'});expect(within(batch).getByLabelText('第 1 条消息')).toHaveTextContent('one');expect(within(batch).getByLabelText('第 1 条消息')).not.toHaveTextContent('上一轮');
+  });
+  it('retains brief history with a rejected draft across reload and attaches it on retry',async()=>{
+    const guard={needs_confirmation:true,matched:true,enabled:true,token:'before',native_id:'native',context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,last_completed_at:null,observed_at:null,checked_at:'',can_compact:true,can_new:true};
+    vi.mocked(api.agent.checkSend).mockResolvedValueOnce(guard).mockResolvedValueOnce({...guard,native_id:'fresh',token:'after'}).mockResolvedValue({...guard,needs_confirmation:false,native_id:'fresh',token:'retry'});
+    vi.mocked(api.agent.conversation).mockImplementation(async(_id,query)=>({
+      session_id:session.id,messages:query?.limit?[{id:'old',role:'user',text:'旧需求',timestamp:null}]:[],statistics:[],has_more:false,reset:false,available:true,generation:'generation',native_id:'native',session_active:true,session_status:'running',runtime:{state:'idle'},interaction:null,
+    }) as ConversationPage);
+    const submit=vi.spyOn(api.agent,'sendInput').mockRejectedValueOnce(new ApiError('not accepted',409,'rejected')).mockResolvedValue({status:'submitted'} as SendResult);
+    const view=await mount(session,vi.fn().mockResolvedValue('fresh'));input('需要保留的草稿');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+    fireEvent.click(within(await screen.findByRole('dialog',{name:'发送前检查'})).getByRole('button',{name:'简要压缩后发送'}));
+    expect(await screen.findByText('简要历史已保留，将与原草稿一起发送。')).toBeVisible();
+    await waitFor(()=>expect(submit).toHaveBeenCalledOnce());await waitFor(()=>expect(loadComposer(composerKey('local',session.id)).draft).toBe('需要保留的草稿'));
+    const first=submit.mock.calls[0][1],saved=loadComposer(composerKey('local',session.id)).briefContext;
+    expect(saved?.nativeId).toBe('fresh');expect(parseBriefContext(first)?.input).toBe('需要保留的草稿');
+    view.unmount();vi.mocked(api.agent.conversation).mockResolvedValue({session_id:session.id,messages:[],statistics:[],has_more:false,reset:false,available:true,generation:'new',native_id:'fresh',session_active:true,session_status:'running',runtime:{state:'idle'},interaction:null} as unknown as ConversationPage);
+    await mount({...session,codex_session_id:'fresh',native_session_id:'fresh'});
+    input('另一条输入');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('当前内容与简要历史关联的原草稿不同');expect(submit).toHaveBeenCalledOnce();
+    input('需要保留的草稿');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+    await waitFor(()=>expect(submit).toHaveBeenCalledTimes(2));expect(submit.mock.calls[1][1]).toBe(first);
+    await waitFor(()=>expect(loadComposer(composerKey('local',session.id)).briefContext).toBeUndefined());
   });
   it('cancels a batch warning and restores it after remount without dispatching',async()=>{
     vi.mocked(api.agent.checkSend).mockResolvedValue({needs_confirmation:true,token:'confirmed',context_tokens:800,context_window:1000,context_percent:80,idle_minutes:null,observed_at:null,can_compact:false,can_new:false} as any);

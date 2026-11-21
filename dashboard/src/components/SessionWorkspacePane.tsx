@@ -13,7 +13,7 @@ import type {ConversationFocus} from '../lib/notifications';
 export function SessionWorkspacePane({session,userId,active,renderTerminal,onResume,onReload,onNewConversation,onClose,resuming,resumeFailed,controlsHost,projectPath,onOpenFile,focusTarget}: {
   session:Session;userId:string;active:boolean;
   renderTerminal:(visible:boolean,suspend:boolean,onReady:()=>void)=>ReactNode;
-  onResume?:()=>void;onReload?:()=>Promise<void>;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<void>;onClose?:()=>void;resuming?:boolean;resumeFailed?:boolean;
+  onResume?:()=>void;onReload?:()=>Promise<void>;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference,expectedNativeId?:string)=>Promise<string|void>;onClose?:()=>void;resuming?:boolean;resumeFailed?:boolean;
   controlsHost?:HTMLElement|null;
   projectPath?:string;onOpenFile?:(path:string)=>void;
   focusTarget?:ConversationFocus|null;

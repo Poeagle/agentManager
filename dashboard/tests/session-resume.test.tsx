@@ -96,6 +96,13 @@ describe('manual session resume feedback', () => {
     expect(result.current.states[managed.id].phase).toBe('ready');
     expect(api.sessions.newConversation).toHaveBeenCalledWith(managed.id,{model:'claude-sonnet-5-5',effort:''});
   });
+  it('returns the newly created native identity and forwards the expected source identity',async()=>{
+    const next={...managed,task:'新会话',native_session_id:'created-native',claude_session_id:'created-native'};
+    vi.mocked(api.sessions.newConversation).mockResolvedValue({ok:true,session:next} as any);
+    const {result}=setup();let native:string|undefined;
+    await act(async()=>{native=await result.current.newConversation(managed.id,undefined,'source-native');});
+    expect(native).toBe('created-native');expect(api.sessions.newConversation).toHaveBeenCalledWith(managed.id,undefined,'source-native');
+  });
 
   it('exposes request errors and allows an explicit retry', async () => {
     vi.mocked(api.sessions.resume).mockRejectedValueOnce(new Error('Project path not found'));

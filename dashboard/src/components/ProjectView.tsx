@@ -1663,7 +1663,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         projectPath={projectPath} onOpenFile={handleOpenInExplorer}
                         renderTerminal={renderTerminal} resuming={resuming} resumeFailed={resumeState?.phase==='error'}
                         onResume={canResume || resuming ? () => { void sessionResume.resume(term.id); } : undefined}
-                        onNewConversation={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async(preference)=>{await sessionResume.newConversation(term.id,preference);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
+                        onNewConversation={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async(preference,expectedNativeId)=>{const nativeId=await sessionResume.newConversation(term.id,preference,expectedNativeId);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));return nativeId;}:undefined}
                         onReload={agentSupports(endedSession,'newConversation')&&agentNativeId(endedSession)?async()=>{await sessionResume.reload(term.id);setTerminalConnectionVersions(current=>({...current,[term.id]:(current[term.id]??0)+1}));}:undefined}
                         onClose={isEnded ? () => closeEndedSession(term.id) : undefined}
                       /> : <RestoreSessionRecord sessionId={term.id} projectId={projectId} onRestore={restoreRecord}/>)}

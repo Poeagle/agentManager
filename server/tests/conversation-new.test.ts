@@ -23,6 +23,27 @@ const saved={useTmux:config.useTmux,useDtach:config.useDtach},native='019ff001-3
 beforeEach(()=>{vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});vi.clearAllMocks();const db=createTestDatabase();cleanup=db.cleanup;config.useTmux=false;config.useDtach=false;vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/fake');getDb().prepare("INSERT INTO projects(id,name,path) VALUES('new-project','New',?)").run(db.dir);getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id) VALUES('new-test','new-project','Do not submit old task','running','session','codex',?)").run(native);getDb().prepare("INSERT INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments) VALUES('new-test','attachment','k','text','[]')").run();getDb().prepare("INSERT INTO pty_output(session_id,seq,data) VALUES('new-test',1,'old output')").run();});
 afterEach(async()=>{await killSession('new-test');vi.clearAllTimers();vi.useRealTimers();vi.unstubAllEnvs();Object.assign(config,saved);cleanup();});
 describe('fresh conversation in the same tab',()=>{
+ it('rejects a stale native identity before touching the current conversation',async()=>{
+  const result=await newSessionConversation('new-test',undefined,undefined,'replaced-native');
+  expect(result.ok).toBe(false);expect(result.error).toContain('原生会话已变化');
+  expect(prepareCodexReload).not.toHaveBeenCalled();expect(prepareFreshCodexConversation).not.toHaveBeenCalled();expect(fork).not.toHaveBeenCalled();
+  expect(getSession('new-test')?.codex_session_id).toBe(native);
+ });
+ it('does not replace an expected conversation that started running after the send check',async()=>{
+  const runtime=vi.spyOn(getAgent('codex').runtime,'read').mockResolvedValue({state:'running'} as any);
+  try{
+   const result=await newSessionConversation('new-test',undefined,undefined,native);
+   expect(result.ok).toBe(false);expect(result.error).toContain('尚未结束');expect(prepareCodexReload).not.toHaveBeenCalled();expect(fork).not.toHaveBeenCalled();
+   expect(getSession('new-test')?.codex_session_id).toBe(native);
+  }finally{runtime.mockRestore();}
+ });
+ it('creates a fresh conversation when the expected identity is still idle',async()=>{
+  const runtime=vi.spyOn(getAgent('codex').runtime,'read').mockResolvedValue({state:'idle'} as any);
+  try{
+   const result=await newSessionConversation('new-test',undefined,undefined,native);
+   expect(result.ok).toBe(true);expect(getSession('new-test')?.codex_session_id).not.toBe(native);expect(prepareFreshCodexConversation).toHaveBeenCalledOnce();
+  }finally{runtime.mockRestore();}
+ });
  it('preserves history and attachments under a history row, replaces only native id and resumes without submitting old task',async()=>{
   const result=await newSessionConversation('new-test');expect(result.ok).toBe(true);expect(getSession('new-test')).toMatchObject({id:'new-test',codex_session_id:'019ff001-3333-7333-8333-333333333333',status:'running'});expect(getSession(result.history_id!)).toMatchObject({codex_session_id:native,status:'cancelled',pid:null});expect(getDb().prepare('SELECT session_id FROM conversation_attachments').get()).toEqual({session_id:result.history_id});expect(getDb().prepare('SELECT data FROM pty_output WHERE session_id=?').get(result.history_id)).toEqual({data:'old output'});expect(releaseCodexConversation).toHaveBeenCalledWith(native);const worker=vi.mocked(fork).mock.results[0].value as any;expect(worker.send).toHaveBeenCalledWith(expect.objectContaining({resumeSessionId:'019ff001-3333-7333-8333-333333333333'}));expect(fork).toHaveBeenCalledTimes(1);
  });

@@ -2952,12 +2952,17 @@ export function compactSessionConversation(sessionId:string):Promise<SessionRelo
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
 }
 
-export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference,replacement?:{environmentId:string;prepare:(context:import('./agents/types.js').AgentContext)=>Promise<string>}):Promise<SessionReloadResult&{history_id?:string}> {
+export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference,replacement?:{environmentId:string;prepare:(context:import('./agents/types.js').AgentContext)=>Promise<string>},expectedNativeId?:string):Promise<SessionReloadResult&{history_id?:string}> {
   if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'});
   return runSessionLifecycle(sessionId,async()=>{
     const session=getSession(sessionId);
     if(!session||!nativeConversationId(session))return {ok:false,error:'请先连接原生会话'};
+    if(expectedNativeId&&nativeConversationId(session)!==expectedNativeId)return {ok:false,error:'原生会话已变化，请重新检查后再新开'};
     const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:!session.created_by_user_id||isAdmin(session.created_by_user_id)});
+    if(expectedNativeId){
+      try{const runtime=await adapter.runtime.read(context);if(!runtime||!['idle','interrupted','failed'].includes(runtime.state))return {ok:false,error:'原会话尚未结束，请等待当前任务完成后再新开'};}
+      catch{return {ok:false,error:'无法确认原会话状态，请稍后再试'};}
+    }
     const project=getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined;
     if(!project?.path)return {ok:false,error:'找不到项目目录，原会话已保留'};
     const recordNew=beginSessionAction(context,replacement?'environment':'new');

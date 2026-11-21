@@ -32,8 +32,10 @@ import { ConversationControls } from "./ConversationControls";
 import { ConversationCacheDrop, MetadataTime } from "./ConversationCacheDrop";
 import {mergeCacheTimeline,unassignedUsageDescription,unassignedUsageLabel,type CacheTimeline,type SessionCacheDrop,type SessionMetadata} from '../lib/session-metadata';
 import { ConversationAutomaticContext } from "./ConversationAutomaticContext";
+import { ConversationBriefContext } from "./ConversationBriefContext";
 import { ConversationDialogCard } from "./ConversationDialogCard";
 import { automaticConversationContext } from "../lib/conversation-context";
+import { parseBriefContext, prependBriefPayload } from "../lib/conversation-brief-context";
 import {
   ConversationInteraction,
   ConversationAsyncQuestion,
@@ -73,6 +75,7 @@ import {
   type ConversationUsageUpdate,
   type ConversationStatistics,
   type Session,
+  type SendGuardPayload,
 } from "../lib/api";
 import {
   decodeQuestionReply,
@@ -261,12 +264,18 @@ const Bubble = memo(function Bubble({
   const visibleText = questionReplyDisplayText(message);
   const waitingInput = isWaitingConversationInput(message);
   const observedAt = compact ? message.statistics?.item_at ?? message.timestamp : message.timestamp;
-  const parsed =
+  const rawParsed =
     message.role === "user"
       ? message.attachments
         ? { text: visibleText, attachments: message.attachments }
         : parseConversationInput(visibleText)
       : { text: message.text, attachments: [] };
+  const brief = message.role === 'user' ? parseBriefContext(rawParsed.text) : null;
+  const parsed = brief ? {text: brief.input, attachments: rawParsed.attachments.map(item => ({...item,
+    ...(item.offset === undefined ? {} : {offset: Math.max(0, item.offset - brief.prefixLength)})}))} : rawParsed;
+  const displayBatch = message.batch?.map((part,index) => brief && index === 0 ? {...part,
+    text: part.text.slice(brief.prefixLength), attachments: part.attachments.map(item => ({...item,
+      ...(item.offset === undefined ? {} : {offset: Math.max(0, item.offset - brief.prefixLength)})}))} : part);
   async function copy() {
     const copyText =
       parsed.text +
@@ -487,7 +496,8 @@ const Bubble = memo(function Bubble({
         </div>
       </article>
     );
-  return (
+  return <>
+    {brief&&<ConversationBriefContext context={brief.context} messageId={message.id} active={active} projectId={projectId} projectPath={projectPath} onNavigate={onNavigate}/>}
     <article
       className={`session-chat-message ${message.role}`}
       data-phase={message.phase}
@@ -515,7 +525,7 @@ const Bubble = memo(function Bubble({
         {message.role === "user" ? (
           <>
             <div className="session-chat-user-text">
-              {message.batch?.length?<ConversationBatchCard sentAt={message.timestamp} parts={message.batch} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>:<ConversationMessageAttachments
+              {displayBatch?.length?<ConversationBatchCard sentAt={message.timestamp} parts={displayBatch} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>:<ConversationMessageAttachments
                 text={
                   parsed.attachments.length &&
                   !parsed.attachments.some((item) => item.offset !== undefined)
@@ -580,7 +590,7 @@ const Bubble = memo(function Bubble({
         )}
       </div>
     </article>
-  );
+  </>;
 });
 
 export function SessionConversation({
@@ -606,7 +616,8 @@ export function SessionConversation({
   onResume?: () => void;
   onNewConversation?: (
     preference?: import("../lib/api").AgentModelPreference,
-  ) => Promise<void>;
+    expectedNativeId?: string,
+  ) => Promise<string|void>;
   onClose?: () => void;
   resuming?: boolean;
   resumeFailed?: boolean;
@@ -622,7 +633,7 @@ export function SessionConversation({
     session.id,
     agentNativeId(session),
   );
-  const sendGuard=useConversationSendGuard(session.id,active,compaction,onNewConversation?()=>onNewConversation():undefined);
+  const sendGuard=useConversationSendGuard(session.id,active,compaction,onNewConversation?(expectedNativeId)=>expectedNativeId?onNewConversation(undefined,expectedNativeId):onNewConversation():undefined);
   const permissions = usePermissions();
   const queryClient = useQueryClient();
   const canRead = hasPermission(permissions.data, "agent_api");
@@ -844,11 +855,11 @@ export function SessionConversation({
     if(!canSend||sendGuard.blocking||sendingRef.current||composerRef.current.value.pending?.entryIds.includes(entry.id))return;
     persistComposer({entries:composerRef.current.value.entries.filter(e=>e.id!==entry.id)});
   }
-  async function sendBatch(){
+  async function sendBatch(brief=false){
     const value=composerRef.current.value;
     if(value.pending||!value.entries.length)return;
     const combined=combinedBatch(value.entries);
-    try{await send(combined.text,combined.attachments,true);}catch{/* Durable batch remains available for reconciliation. */}
+    try{await send(combined.text,combined.attachments,true,brief);}catch{/* Durable batch remains available for reconciliation. */}
   }
   function submitWithShortcut(){
     if(!active)return;
@@ -1686,10 +1697,13 @@ export function SessionConversation({
     questionReply?: string,
     questionAttachments: ConversationAttachment[] = [],
     fromBatch = false,
+    brief = false,
   ) {
     const fromQuestion = questionReply !== undefined;
     const sendStorageKey=composerRef.current.key;
-    const text = questionReply ?? draftRef.current;
+    const draftText = questionReply ?? draftRef.current;
+    const text = brief && !fromQuestion && !draftText.trim() && !attachments.hasDraft()
+      ? '请阅读以上历史记录，等待我的下一条需求。' : draftText;
     const positions = attachmentPositions.current?.();
     const attached = fromQuestion
       ? questionAttachments
@@ -1742,19 +1756,33 @@ export function SessionConversation({
     }
     const guardVersion=draftVersion.current,guardEntries=JSON.stringify(composerRef.current.value.entries.map(e=>e.id));
     let guardToken:string|undefined,sendNativeId=agentNativeId(session);
+    let sendPayload:SendGuardPayload={input:text,attachments:attached,...fromBatch?{batch:composerRef.current.value.entries.map(e=>({length:e.text.length,attachments:e.attachments.length}))}:{}};
+    const inputIdentity=JSON.stringify(sendPayload);
+    const savedBrief=(!fromQuestion||fromBatch)?composerRef.current.value.briefContext:undefined;
+    if(savedBrief){
+      if(savedBrief.nativeId!==(page?.native_id??agentNativeId(session))){setSendError('待发送的简要历史属于另一个对话，请返回原对话或移除简要历史。');return;}
+      if(savedBrief.inputIdentity!==inputIdentity){setSendError('当前内容与简要历史关联的原草稿不同，请恢复原草稿或移除简要历史。');return;}
+      try{sendPayload=prependBriefPayload(sendPayload,savedBrief.prefix);}catch(failure){setSendError(failure instanceof Error?failure.message:'简要历史不可用');return;}
+    }
     if(!fromQuestion||fromBatch){
-      try{const confirmation=await sendGuard.confirm({input:text,attachments:attached,...fromBatch?{batch:composerRef.current.value.entries.map(e=>({length:e.text.length,attachments:e.attachments.length}))}:{}});if(confirmation===null)return;guardToken=confirmation.token;sendNativeId=confirmation.nativeId??sendNativeId;}
+      try{const confirmation=await sendGuard.confirm(sendPayload,brief?'brief':undefined);if(confirmation===null)return;guardToken=confirmation.token;sendNativeId=confirmation.nativeId??sendNativeId;sendPayload=confirmation.payload;}
       catch(failure){setSendError(failure instanceof Error?failure.message:'发送前检查失败，草稿已保留');return;}
     }
     if(!fromQuestion&&draftVersion.current!==guardVersion||fromBatch&&guardEntries!==JSON.stringify(composerRef.current.value.entries.map(e=>e.id))){setSendError('输入内容已变化，请重新发送以检查最新草稿。');return;}
     sendingRef.current = true;
     setSending(true);
     setSendError("");
+    const sendText=sendPayload.input,sendAttachments=sendPayload.attachments??[];
+    const prefixLength=sendText.length-text.length;
+    const sentBrief=parseBriefContext(sendText);
+    if(sentBrief&&sendNativeId&&prefixLength>0&&!persistComposer({briefContext:{prefix:sendText.slice(0,prefixLength),nativeId:sendNativeId,inputIdentity}})){
+      sendingRef.current=false;setSending(false);setSendError('简要历史保存失败，草稿已保留；请检查浏览器存储后从原会话重试。');return;
+    }
     const fingerprint = JSON.stringify([
       fromBatch,
       sendNativeId,
-      text,
-      attached,
+      sendText,
+      sendAttachments,
     ]);
     const clientId =
       submissionIdentity.current?.fingerprint === fingerprint
@@ -1764,15 +1792,18 @@ export function SessionConversation({
       sendingRef.current=false;setSending(false);return;
     }
     submissionIdentity.current = { fingerprint, id: clientId };
-    const parsedReply = decodeQuestionReply(text);
+    const parsedReply = decodeQuestionReply(sendText);
     const timestamp = new Date(estimatedServerNow()).toISOString(),
       visibleText =
         parsedReply?.text ??
-        (text.trim() ? text : attached.length ? "请查看附件。" : text),
+        (sendText.trim() ? sendText : sendAttachments.length ? "请查看附件。" : sendText),
       attachedIds = fromQuestion
         ? []
         : attachments.items.map((item) => item.id);
-    const batchParts=fromBatch?composerRef.current.value.entries.map(({text,attachments})=>({text,attachments})):undefined;
+    const batchParts=fromBatch?composerRef.current.value.entries.map(({text:partText,attachments},index)=>({
+      text:index===0&&prefixLength>0?sendText.slice(0,prefixLength)+partText:partText,
+      attachments:index===0&&prefixLength>0?attachments.map(item=>({...item,...(item.offset===undefined?{}:{offset:item.offset+prefixLength})})):attachments,
+    })):undefined;
     const version = draftVersion.current;
     const savedAttachments = fromQuestion
       ? []
@@ -1792,7 +1823,7 @@ export function SessionConversation({
           client_id: clientId,
           role: "user",
           text: visibleText,
-          attachments: attached,
+          attachments: sendAttachments,
           ...(batchParts?{batch:batchParts}:{}),
           timestamp,
           ...(parsedReply ? { question_replies: parsedReply.answers } : {}),
@@ -1820,6 +1851,7 @@ export function SessionConversation({
     requestAnimationFrame(scrollBottom);
     function acknowledged(status: string) {
       if(fromBatch&&composerRef.current.key===sendStorageKey){const pending=composerRef.current.value.pending;if(pending?.id===clientId)persistComposer({pending:null,entries:composerRef.current.value.entries.filter(e=>!pending.entryIds.includes(e.id))});}
+      if(sentBrief&&composerRef.current.key===sendStorageKey&&composerRef.current.value.briefContext?.prefix===sendText.slice(0,prefixLength))persistComposer({briefContext:undefined});
       submissionIdentity.current = null;
       const settle=(previous:TimelineMessage[])=>previous.some(matchesPending)
         ? previous.map((item) =>
@@ -1852,9 +1884,9 @@ export function SessionConversation({
     try {
       const response = accepted
         ? { status: accepted.queued ? "queued" : "submitted" }
-        : await (guardToken?api.agent.sendInput(session.id,text,clientId,attached,batchParts?.map(p=>({length:p.text.length,attachments:p.attachments.length})),guardToken):batchParts?api.agent.sendInput(session.id,text,clientId,attached,batchParts.map(p=>({length:p.text.length,attachments:p.attachments.length}))):attached.length
-            ? api.agent.sendInput(session.id, text, clientId, attached)
-            : api.agent.sendInput(session.id, text, clientId));
+        : await (guardToken?api.agent.sendInput(session.id,sendText,clientId,sendAttachments,sendPayload.batch,guardToken):batchParts?api.agent.sendInput(session.id,sendText,clientId,sendAttachments,sendPayload.batch):sendAttachments.length
+            ? api.agent.sendInput(session.id, sendText, clientId, sendAttachments)
+            : api.agent.sendInput(session.id, sendText, clientId));
       acknowledged(response.status);
     } catch (failure) {
       // A successful native echo is stronger evidence than a late HTTP error.
@@ -2670,6 +2702,7 @@ export function SessionConversation({
           {ignoreError && <p role="alert">{ignoreError}</p>}
           {sendGuard.notice}
           {stopError&&<p role="alert" className="session-chat-error">{stopError}</p>}
+          {composer.briefContext&&<div className="session-chat-guard-status" role="status"><span>简要历史已保留，将与原草稿一起发送。</span><button type="button" disabled={sending||sendGuard.blocking} onClick={()=>persistComposer({briefContext:undefined})}>移除简要历史</button></div>}
           {sendError && (
             <p role="alert" className="session-chat-error">
               {sendError}
@@ -2854,6 +2887,11 @@ export function SessionConversation({
                 busy={busy || sending || resuming || sendGuard.blocking}
                 compacting={compaction.running}
                 onCompact={compaction.start}
+                onBrief={onNewConversation?()=>{
+                  if(composerRef.current.value.mode==='batch'&&!draftRef.current.trim()&&!attachments.hasDraft()&&composerRef.current.value.entries.length)void sendBatch(true);
+                  else void send(undefined,[],false,true);
+                }:undefined}
+                briefDisabled={!canSend||!page?.session_active||ended||waiting||attachments.uploading||attachments.failed||!!composer.pending||!!composer.briefContext}
                 onNewConversation={onNewConversation}
                 metadata={currentMetadata?.summary}
               />

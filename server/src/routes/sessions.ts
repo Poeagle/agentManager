@@ -322,12 +322,14 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return {...result,session:sessionManager.getSession(session.id)};
   });
 
-  for(const action of ['compact','new-conversation'] as const)app.post<{Params:{id:string};Body?:{preference?:import('../services/agents/types.js').ModelPreference}}>(`/sessions/:id/${action}`,async(req,reply)=>{
+  for(const action of ['compact','new-conversation'] as const)app.post<{Params:{id:string};Body?:{preference?:import('../services/agents/types.js').ModelPreference;expected_native_id?:unknown}}>(`/sessions/:id/${action}`,async(req,reply)=>{
     const session=sessionManager.getSession(req.params.id);
     if(!session||session.created_by_user_id!==req.user!.id||!canAccessSessionByRow(req.user!.id,session))return reply.code(404).send({error:'Session not found'});
     if(!requirePermission(req,reply,'agent_api','write'))return reply;
     if(req.user!.role!=='admin')return reply.code(403).send({error:'当前账号不可操作共享 Codex 服务'});
-    const result=await (action==='compact'?sessionManager.compactSessionConversation(session.id):sessionManager.newSessionConversation(session.id,req.body?.preference));
+    const expected=req.body?.expected_native_id;
+    if(expected!==undefined&&(typeof expected!=='string'||!expected||expected.length>2048))return reply.code(400).send({error:'Invalid expected_native_id'});
+    const result=await (action==='compact'?sessionManager.compactSessionConversation(session.id):sessionManager.newSessionConversation(session.id,req.body?.preference,undefined,expected as string|undefined));
     if(!result.ok)return reply.code(result.submission==='unknown'?503:409).send({error:result.error,...result.submission?{submission:result.submission}:{}});
     return {...result,session:sessionManager.getSession(session.id)};
   });

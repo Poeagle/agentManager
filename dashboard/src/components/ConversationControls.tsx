@@ -4,7 +4,7 @@ import {ConversationEnvironmentSelector} from './ConversationEnvironmentSelector
 import type {AgentFeature} from '../lib/agents';
 import {useEffect,useId,useLayoutEffect,useRef,useState,type KeyboardEvent} from 'react';
 import {useQuery,useQueryClient} from '@tanstack/react-query';
-import {ChevronDown,Info,RefreshCw,Minimize2,Plus,Loader2,Zap} from 'lucide-react';
+import {ChevronDown,Info,RefreshCw,Minimize2,Plus,Loader2,Zap,Layers3} from 'lucide-react';
 import {api,type ConversationControlsData,type ConversationUsageUpdate} from '../lib/api';
 import {Dialog} from './Dialog';
 import {ConversationDetailsPanel} from './ConversationDetailsPanel';
@@ -18,7 +18,7 @@ const compact=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',max
 const choiceKey=(value:{provider?:string;model:string})=>value.provider?JSON.stringify([value.provider,value.model]):value.model;
 const permissionsEn:Record<string,string>={'danger-full-access':'Full access','workspace-write':'Workspace write','read-only':'Read only'};
 const tokenMetricDescriptions:Record<string,string>={Total:'会话累计 Token，包含重复上下文',Input:'累计未缓存输入 Token',Cache:'累计命中缓存的输入 Token',Reasoning:'累计推理 Token，包含在输出中',Output:'累计输出 Token，包含推理 Token'};
-export function ConversationControls({sessionId,active,busy=false,compacting=false,onCompact,onNewConversation,toolbarTarget,metadata}:{toolbarTarget?:HTMLElement|null;sessionId:string;active:boolean;busy?:boolean;compacting?:boolean;onCompact?:()=>Promise<void>;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<void>;metadata?:SessionMetadata|null}) {
+export function ConversationControls({sessionId,active,busy=false,compacting=false,onCompact,onBrief,briefDisabled=false,onNewConversation,toolbarTarget,metadata}:{toolbarTarget?:HTMLElement|null;sessionId:string;active:boolean;busy?:boolean;compacting?:boolean;onCompact?:()=>Promise<void>;onBrief?:()=>void;briefDisabled?:boolean;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<unknown>;metadata?:SessionMetadata|null}) {
   const queryClient=useQueryClient(),[expanded,setExpanded]=useState(false),[saving,setSaving]=useState(false),[applied,setApplied]=useState(false),[error,setError]=useState('');
   const [operation,setOperation]=useState<'compact'|'new'|null>(null),[newOpen,setNewOpen]=useState(false),[notice,setNotice]=useState('');
   const [freshPreference,setFreshPreference]=useState<import('../lib/api').AgentModelPreference>();
@@ -97,6 +97,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         {data.pending&&<span className="conversation-control-pending">{data.pending_status==='submitted'?'已提交，等待原生模型确认':'恢复或重载时应用'} {data.pending_status!=='submitted'&&<button type="button" disabled={saving} onClick={()=>void save(data.pending)}>应用</button>}<button type="button" disabled={saving} onClick={()=>void save(null)}>取消</button></span>}
         {applied&&!data.pending&&<span className="conversation-control-pending" role="status">已应用</span>}
         {canEdit('compact')&&<button type="button" disabled={busy||compacting||saving||!!operation} title={compactReason} onClick={()=>void perform('compact')}>{compacting||operation==='compact'?<Loader2 size={12} className="animate-spin"/>:<Minimize2 size={12}/>} {compacting||operation==='compact'?'压缩中…':'压缩'}</button>}
+        {onBrief&&<button type="button" disabled={!canEdit('newConversation')||busy||compacting||saving||!!operation||briefDisabled} title="整理已有对话并在新会话中发送" onClick={onBrief}><Layers3 size={12}/>简要压缩</button>}
         {onNewConversation&&<button type="button" disabled={!canEdit('newConversation')||saving||!!operation} title="在当前标签页新开会话，保留旧记录并停止旧会话" onClick={()=>{let rawDraft=false;window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId,respond:(value:boolean)=>{rawDraft ||= value;}}}));if(rawDraft){setError('原始终端还有未发送内容，请先发送或清空。');return;}setError('');setFreshPreference(model?{model:model.model,effort:selected.effort,provider:model.provider}:undefined);setNewOpen(true);}}><Plus size={12}/>{operation==='new'?'新开中…':'新开'}</button>}
   </div>:null;
   return <div className="conversation-controls-wrap">

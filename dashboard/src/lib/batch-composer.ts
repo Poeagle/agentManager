@@ -1,6 +1,6 @@
 import type {ConversationAttachment} from './conversation-attachments';
 export interface BatchEntry {createdAt?:string;id:string;text:string;attachments:ConversationAttachment[]}
-export interface ComposerState {mode:'immediate'|'batch';draft:string;draftAttachments?:ConversationAttachment[];entries:BatchEntry[];pending:{id:string;entryIds:string[];nativeId:string|null}|null}
+export interface ComposerState {mode:'immediate'|'batch';draft:string;draftAttachments?:ConversationAttachment[];entries:BatchEntry[];pending:{id:string;entryIds:string[];nativeId:string|null}|null;briefContext?:{prefix:string;nativeId:string;inputIdentity:string}}
 export const emptyComposer=():ComposerState=>({mode:'immediate',draft:'',entries:[],pending:null});
 export const composerKey=(userId:string|undefined,sessionId:string)=>`agentmanager-composer:${JSON.stringify([userId||'anonymous',sessionId])}`;
 export function loadComposer(key:string):ComposerState {
@@ -9,6 +9,7 @@ export function loadComposer(key:string):ComposerState {
  if(!value||!['immediate','batch'].includes(value.mode)||typeof value.draft!=='string'||!Array.isArray(value.entries)||value.entries.some(e=>typeof e.id!=='string'||typeof e.text!=='string'||!Array.isArray(e.attachments)))throw Error('保存的草稿无法读取，请保留浏览器数据');
  if(value.draftAttachments!==undefined&&(!Array.isArray(value.draftAttachments)||value.draftAttachments.length>8||value.draftAttachments.some(a=>!a||!['image','file'].includes(a.kind)||typeof a.name!=='string'||typeof a.path!=='string')))throw Error('保存的草稿附件无法读取');
  if(value.pending!==null&&(!value.pending||typeof value.pending.id!=='string'||!Array.isArray(value.pending.entryIds)||value.pending.entryIds.some(id=>typeof id!=='string')))throw Error('保存的发送状态无法读取');
+ if(value.briefContext!==undefined&&(!value.briefContext||typeof value.briefContext.prefix!=='string'||value.briefContext.prefix.length>32768||typeof value.briefContext.nativeId!=='string'||!value.briefContext.nativeId||value.briefContext.nativeId.length>2048||typeof value.briefContext.inputIdentity!=='string'||value.briefContext.inputIdentity.length>262144))throw Error('保存的简要历史无法读取');
  return value;
 }
 export function saveComposer(key:string,value:ComposerState){localStorage.setItem(key,JSON.stringify(value));}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api, type Session } from './api';
+import {agentNativeId} from './agents';
 
 export interface SessionResumeState {
   action?:'resume'|'reload'|'new';
@@ -24,7 +25,7 @@ export function useSessionResume(projectId: string) {
     return () => { for (const timer of timers.values()) clearTimeout(timer); };
   }, []);
 
-  const run = useCallback(async (sessionId: string,action:'resume'|'reload'|'new',preference?:import('./api').AgentModelPreference) => {
+  const run = useCallback(async (sessionId: string,action:'resume'|'reload'|'new',preference?:import('./api').AgentModelPreference,expectedNativeId?:string) => {
     // A ref guards double clicks before React has painted the disabled button.
     if (pending.current.has(sessionId)) return;
     pending.current.add(sessionId);
@@ -36,7 +37,7 @@ export function useSessionResume(projectId: string) {
     const startedAt = Date.now();
     setStates((current) => ({ ...current, [sessionId]: { phase: 'starting', startedAt,action } }));
     try {
-      const result = await (action==='new'?api.sessions.newConversation(sessionId,preference):action==='reload'?api.sessions.reload(sessionId):api.sessions.resume(sessionId));
+      const result = await (action==='new'?(expectedNativeId?api.sessions.newConversation(sessionId,preference,expectedNativeId):api.sessions.newConversation(sessionId,preference)):action==='reload'?api.sessions.reload(sessionId):api.sessions.resume(sessionId));
       const {session}=result;
       replacing.current.delete(sessionId);
       // Both queries feed ProjectView; an old ended row must not override the
@@ -56,6 +57,7 @@ export function useSessionResume(projectId: string) {
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
       void queryClient.invalidateQueries({ queryKey: ['project-sessions', projectId] });
       void queryClient.invalidateQueries({queryKey:['conversation-controls',sessionId]});
+      return session;
     } catch (error) {
       replacing.current.delete(sessionId);
       pending.current.delete(sessionId);
@@ -122,6 +124,8 @@ export function useSessionResume(projectId: string) {
 
   const resume=useCallback((id:string)=>run(id,'resume'),[run]);
   const reload=useCallback((id:string)=>run(id,'reload'),[run]);
-  const newConversation=useCallback((id:string,preference?:import('./api').AgentModelPreference)=>run(id,'new',preference),[run]);
+  const newConversation=useCallback(async(id:string,preference?:import('./api').AgentModelPreference,expectedNativeId?:string)=>{
+    const session=await run(id,'new',preference,expectedNativeId);return session?agentNativeId(session)??undefined:undefined;
+  },[run]);
   return { states, resume,reload,newConversation, terminalReady, terminalExited, terminalFailed, forget };
 }
