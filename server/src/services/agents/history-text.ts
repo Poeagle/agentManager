@@ -39,8 +39,13 @@ export function textCollector(messageLimit: number) {
                 last.phase = phase;
             return;
         }
-        if (role === 'user')
-            taskReference = /\[Platform task reference: ([A-Za-z0-9_-]+)\]/.exec(text)?.[1] || 'native:' + createHash('sha256').update(JSON.stringify([timestamp || null, text])).digest('hex').slice(0, 40);
+        if (role === 'user') {
+            // The latest reference belongs to this input; a brief history can
+            // legitimately contain references from earlier scheduled turns.
+            let reference: string | undefined;
+            for (const match of text.matchAll(/\[Platform task reference: ([A-Za-z0-9_-]+)\]/g)) reference = match[1];
+            taskReference = reference || 'native:' + createHash('sha256').update(JSON.stringify([timestamp || null, text])).digest('hex').slice(0, 40);
+        }
         messages.push({ role, phase, text: clipped(text, messageLimit), timestamp: typeof timestamp === 'string' ? timestamp : null, task_reference: taskReference });
     };
     return { messages, append };

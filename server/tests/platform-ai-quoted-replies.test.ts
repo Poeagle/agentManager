@@ -10,12 +10,15 @@ import {setBotTransport} from '../src/services/platform-ai/channel-runtime.js';
 import {enqueueNotice,getConversation,receiveMessage,trackTask,claimMessage} from '../src/services/platform-ai/store.js';
 import {notificationReplyTarget,quotedReplyRoute as resolveQuotedReplyRoute,replyTurnKey,prepareReplyNotification} from '../src/services/platform-ai/quoted-replies.js';
 import {textCollector} from '../src/services/agents/history-text.js';
+import {parseBriefContext} from '../src/shared/conversation-brief.js';
 import {PlatformAiWorker} from '../src/services/platform-ai/worker.js';
 import {saveProjectNotification} from '../src/services/platform-ai/project-notifications.js';
 
 let cleanup:()=>void,app:ReturnType<typeof Fastify>,worker:PlatformAiWorker,user:string,other:string,channel:ReturnType<typeof saveChannel>,conversation:string;
 let inputs:Array<{id:string;body:any}>,delivered:string[],currentRef:Record<string,string>,promptType:string|null,inputStatus:number,inputReceipt:'submitted'|'queued';
 let finalText:string|null,beforeDisplay:(()=>void)|null;
+let guardRejection:boolean,canNew:boolean,historyAvailable:boolean,newCalls:number,historyCalls:number,newStatus:number,freshInputStatus:number;
+let beforeHistory:(()=>void)|null,beforeFreshCheck:(()=>void)|null,historyNative:string,checkNative:string,freshWarning:string|undefined,freshNeedsConfirmation:boolean;
 beforeEach(async()=>{
  ({cleanup}=createTestDatabase());user=createUser({username:'owner',password:'password1',role:'admin'}).id;other=createUser({username:'other',password:'password1',role:'admin'}).id;
  getDb().prepare("INSERT INTO projects(id,name,path,owner_id) VALUES('p','Project','/fixture',?)").run(user);
@@ -27,12 +30,35 @@ beforeEach(async()=>{
  conversation=receiveMessage({userId:user,channelId:channel.id,externalUserId:'wx-owner',chatId:'wx-owner',messageId:'initial',content:'hello'}).conversation_id;
  getDb().prepare("UPDATE platform_ai_messages SET status='done'").run();
  inputs=[];delivered=[];currentRef={a:'turn-a',b:'turn-b'};promptType=null;inputStatus=202;inputReceipt='submitted';finalText=null;beforeDisplay=null;
+ guardRejection=false;canNew=true;historyAvailable=true;newCalls=0;historyCalls=0;newStatus=200;freshInputStatus=202;
+ beforeHistory=null;beforeFreshCheck=null;historyNative='native-a';checkNative='fresh-a';freshWarning=undefined;freshNeedsConfirmation=false;
  app=Fastify();app.addHook('onRequest',authHook);
  app.get<{Params:{id:string}}>('/api/sessions/:id',req=>({session:getDb().prepare('SELECT * FROM sessions WHERE id=?').get(req.params.id)}));
  app.get<{Params:{id:string}}>('/api/sessions/:id/agent-messages',req=>({messages:[{role:'user',phase:'user',timestamp:'2026-11-17T00:00:00Z',text:'request',task_reference:currentRef[req.params.id]},...finalText?[{role:'assistant',phase:'final',text:finalText,timestamp:'2026-11-17T00:00:01Z',task_reference:currentRef[req.params.id]}]:[]]}));
  app.get('/api/sessions/:id/display',()=>{beforeDisplay?.();return {cursor:0,processState:'idle',promptType};});
  app.get('/api/sessions/:id/completed-turn',()=>({turns:[]}));
- app.post<{Params:{id:string};Body:any}>('/api/sessions/:id/input',(req,reply)=>{inputs.push({id:req.params.id,body:req.body});return reply.code(inputStatus).send(inputStatus===202?{status:inputReceipt}:{error:'fixture failure'});});
+ app.post<{Params:{id:string};Body:any}>('/api/sessions/:id/input',(req,reply)=>{
+  inputs.push({id:req.params.id,body:req.body});
+  if(guardRejection&&req.body.expected_native_id==='native-a')return reply.code(409).send({error:'发送保护',submission:'rejected',send_guard:{needs_confirmation:true,can_new:canNew,native_id:'native-a'}});
+  const status=req.body.expected_native_id==='fresh-a'?freshInputStatus:inputStatus;
+  return reply.code(status).send(status===202?{status:inputReceipt}:{error:'fixture failure'});
+ });
+ app.get<{Params:{id:string}}>('/api/sessions/:id/conversation',req=>{
+  historyCalls++;beforeHistory?.();
+  return {session_id:req.params.id,native_id:historyNative,available:historyAvailable,generation:'one',reset:false,has_more:false,messages:[
+   {id:'u1',role:'user',text:'旧需求\n\n[Platform task reference: scheduled-old]',timestamp:null},
+   {id:'a1',role:'assistant',phase:'final',text:'旧结论',timestamp:null},
+  ]};
+ });
+ app.post<{Params:{id:string};Body:any}>('/api/sessions/:id/new-conversation',(req,reply)=>{
+  newCalls++;
+  if(req.body.expected_native_id!=='native-'+req.params.id)return reply.code(409).send({error:'stale',submission:'rejected'});
+  if(newStatus!==200)return reply.code(newStatus).send({error:'new failed',submission:newStatus===503?'unknown':'rejected'});
+  getDb().prepare('UPDATE sessions SET codex_session_id=? WHERE id=?').run('fresh-'+req.params.id,req.params.id);
+  return {ok:true,session:getDb().prepare('SELECT * FROM sessions WHERE id=?').get(req.params.id),...(freshWarning?{warning:freshWarning}:{})};
+ });
+ app.post('/api/sessions/:id/input-check',()=>{beforeFreshCheck?.();return {native_id:checkNative,needs_confirmation:freshNeedsConfirmation,token:'fresh-token'};});
+ app.post('/api/sessions/:id/paste-image',()=>({path:'/fixture/paste.png'}));
  await app.ready();worker=new PlatformAiWorker(app);
  setBotTransport(channel.id,{status:{state:'connected',message:'fixture',updated_at:''},deliver:async(_chat,content)=>{delivered.push(content);}});
  vi.stubGlobal('fetch',vi.fn(()=>{throw Error('Model must not run for a quoted reply');}));
@@ -145,6 +171,85 @@ describe('quoted notification quick replies',()=>{
   expect(response()).toContain('已提交');expect(fetch).not.toHaveBeenCalled();
   expect(getDb().prepare("SELECT source_ref FROM platform_ai_tasks WHERE session_id='a' AND status='running'").get()).toEqual({source_ref:'quoted_'+received.message_id});
   expect((getDb().prepare('SELECT context FROM platform_ai_conversations WHERE id=?').get(conversation) as {context:string}).context).toBe('[]');
+ });
+ it('briefly compacts after an explicitly rejected guard and tracks the reply in the fresh native conversation',async()=>{
+  const quoted=await notice();guardRejection=true;
+  const received=reply(quoted,'继续处理');await process();
+  expect(inputs).toHaveLength(2);expect(newCalls).toBe(1);expect(historyCalls).toBe(1);
+  expect(inputs[0].body.expected_native_id).toBe('native-a');
+  expect(inputs[1].body).toMatchObject({expected_native_id:'fresh-a',guard_token:'fresh-token',client_id:'quoted_'+received.message_id});
+  const brief=parseBriefContext(inputs[1].body.input)!;
+  expect(brief.context.turns).toEqual([{input:'旧需求\n\n[Platform task reference: scheduled-old]',conclusion:'旧结论'}]);
+  expect(brief.input).toBe('继续处理\n\n[Platform task reference: quoted_'+received.message_id+']');
+  const history=textCollector(8000);history.append('user','user',inputs[1].body.input,new Date().toISOString());history.append('assistant','final','done',new Date().toISOString());
+  expect(history.messages[1].task_reference).toBe('quoted_'+received.message_id);
+  expect(getDb().prepare("SELECT source_ref,cursor FROM platform_ai_tasks WHERE session_id='a' AND status='running'").get()).toEqual({source_ref:'quoted_'+received.message_id,cursor:0});
+  expect(response()).toContain('简要压缩');expect(fetch).not.toHaveBeenCalled();
+  getDb().prepare("UPDATE platform_ai_messages SET status='queued' WHERE id=?").run(received.message_id);
+  await process();expect(inputs).toHaveLength(2);expect(newCalls).toBe(1);
+  const task=getDb().prepare("SELECT * FROM platform_ai_tasks WHERE session_id='a' AND status='running'").get() as any;
+  currentRef.a='quoted_'+received.message_id;finalText='新的答复。';
+  await worker.observe(task,readAiConfig());await process();
+  const next=delivered.at(-1)!;expect(next).toContain('新的答复。');
+  finalText=null;reply(next,'再继续','next-reply');await process();
+  expect(inputs).toHaveLength(3);expect(inputs[2].body.expected_native_id).toBe('fresh-a');
+ });
+ it('does not treat an unrelated 409 as a send guard',async()=>{
+  const quoted=await notice();inputStatus=409;reply(quoted);await process();
+  expect(inputs).toHaveLength(1);expect(newCalls).toBe(0);expect(historyCalls).toBe(0);expect(response()).toContain('未投递');
+ });
+ it('notifies the user if the old conversation release could not be confirmed',async()=>{
+  const quoted=await notice();guardRejection=true;freshWarning='旧会话后台终端回收未确认';const received=reply(quoted);await process();await process();
+  expect(inputs).toHaveLength(2);
+  expect(getDb().prepare('SELECT content FROM platform_ai_outbox WHERE dedupe_key=?').get('reply:'+received.message_id)).toMatchObject({content:expect.stringContaining(freshWarning)});
+ });
+ it('keeps a quoted image in the new request after automatic brief compaction',async()=>{
+  const quoted=await notice();guardRejection=true;const received=reply(quoted,'参考图片');
+  getDb().prepare("INSERT INTO platform_ai_attachments(id,message_id,status,mime,bytes,data) VALUES('image',?,'ready','image/png',8,?)").run(received.message_id,Buffer.from([137,80,78,71,13,10,26,10]));
+  await process();expect(inputs).toHaveLength(2);
+  const current=parseBriefContext(inputs[1].body.input)!.input;
+  expect(current).toContain('参考图片');expect(current).toContain('/fixture/paste.png');
+  expect(current.endsWith(`[Platform task reference: quoted_${received.message_id}]`)).toBe(true);
+ });
+ it('does not replace a conversation when the guard says a fresh one is unavailable',async()=>{
+  const quoted=await notice();guardRejection=true;canNew=false;reply(quoted);await process();
+  expect(inputs).toHaveLength(1);expect(historyCalls).toBe(0);expect(newCalls).toBe(0);expect(response()).toContain('尚不能新开');
+ });
+ it.each(['missing-history','different-native','changed-turn','revoked-binding','new-interaction'])('does not replace a conversation after %s',async kind=>{
+  const quoted=await notice();guardRejection=true;
+  if(kind==='missing-history')historyAvailable=false;
+  if(kind==='different-native')historyNative='another-native';
+  if(kind==='changed-turn')beforeHistory=()=>{currentRef.a='another-turn';};
+  if(kind==='revoked-binding')beforeHistory=()=>{getDb().prepare("DELETE FROM platform_ai_bindings WHERE external_user_id='wx-owner'").run();};
+  if(kind==='new-interaction')beforeHistory=()=>{promptType='confirmation';};
+  reply(quoted);await process();
+  expect(inputs).toHaveLength(1);expect(newCalls).toBe(0);expect(response()).toContain('未投递');
+ });
+ it.each([409,503])('does not send the reply when fresh conversation creation returns %s',async status=>{
+  const quoted=await notice();guardRejection=true;newStatus=status;const received=reply(quoted);await process();
+  expect(inputs).toHaveLength(1);expect(newCalls).toBe(1);expect(response()).toContain('未投递');
+  getDb().prepare("UPDATE platform_ai_messages SET status='queued' WHERE id=?").run(received.message_id);await process();
+  expect(inputs).toHaveLength(1);expect(newCalls).toBe(1);
+ });
+ it('does not send when the fresh conversation changes before its check',async()=>{
+  const quoted=await notice();guardRejection=true;checkNative='another-native';reply(quoted);await process();
+  expect(inputs).toHaveLength(1);expect(newCalls).toBe(1);expect(response()).toContain('未投递');
+ });
+ it('does not repeatedly replace a fresh conversation that also triggers protection',async()=>{
+  const quoted=await notice();guardRejection=true;freshNeedsConfirmation=true;reply(quoted);await process();
+  expect(inputs).toHaveLength(1);expect(newCalls).toBe(1);expect(response()).toContain('未投递');
+ });
+ it.each(['native','binding'])('does not send if %s changes during the fresh send check',async kind=>{
+  const quoted=await notice();guardRejection=true;
+  beforeFreshCheck=()=>{if(kind==='native')getDb().prepare("UPDATE sessions SET codex_session_id='other' WHERE id='a'").run();else getDb().prepare("DELETE FROM platform_ai_bindings WHERE external_user_id='wx-owner'").run();};
+  reply(quoted);await process();expect(inputs).toHaveLength(1);expect(newCalls).toBe(1);expect(response()).toContain('未投递');
+ });
+ it('does not replay an uncertain submission after automatic brief compaction',async()=>{
+  const quoted=await notice();guardRejection=true;freshInputStatus=503;const received=reply(quoted);await process();
+  expect(inputs).toHaveLength(2);expect(response()).toContain('投递结果待核对');
+  expect(getDb().prepare("SELECT status,source_ref FROM platform_ai_tasks WHERE session_id='a' AND status='uncertain'").get()).toEqual({status:'uncertain',source_ref:'quoted_'+received.message_id});
+  getDb().prepare("UPDATE platform_ai_messages SET status='queued' WHERE id=?").run(received.message_id);await process();
+  expect(inputs).toHaveLength(2);expect(newCalls).toBe(1);
  });
  it('notifies the Agent follow-up and lets the next quoted notification reach the same tab',async()=>{
   const original=await notice(),received=reply(original);await process();

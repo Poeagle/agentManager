@@ -14,6 +14,7 @@ import {platformApi,PlatformApiError,copyImagesToSession} from './tools.js';
 import {messageAttachments,ownedImage,prepareImages} from './attachments.js';
 import {formatTaskNotification,trackTask,type Conversation,type InboxMessage} from './store.js';
 import {notificationInputBoundary,settleNotificationsForInput,markNotificationsRead} from '../notifications.js';
+import {prepareBriefSend} from '../../shared/conversation-brief.js';
 
 const token = customAlphabet('23456789abcdefghjkmnpqrstuvwxyz',12);
 export const quotedReplyOperationId=(messageId:string)=>'quoted_'+messageId;
@@ -110,9 +111,9 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
     }
   };
   assertSource();
-  const checkSession=()=>{
+  const checkSession=(expectedNativeId=route.native_id)=>{
     const session=getSession(route.session_id);
-    if(!session||nativeConversationId(session)!==route.native_id||(session.agent_environment_id||'native')!==route.environment_id)throw new ChannelError('标签页已更换对话或账号，旧通知不能继续回复，请引用最新通知。',409,true);
+    if(!session||nativeConversationId(session)!==expectedNativeId||(session.agent_environment_id||'native')!==route.environment_id)throw new ChannelError('标签页已更换对话或账号，旧通知不能继续回复，请引用最新通知。',409,true);
     if(session.created_by_user_id!==conversation.user_id||!userCanUseSessionTool(conversation.user_id,session.id,agentForSession(session).descriptor.id,session.mode==='terminal'?'terminal':'session'))throw new ChannelError('当前账号已无权向该标签页发送消息。',403,true);
     return session;
   };
@@ -143,27 +144,78 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
   const source=getDb().prepare("SELECT json_extract(reply_context,'$.personal_notification_id') AS id FROM platform_ai_outbox WHERE id=?").get(route.notice_id) as {id:number|null}|undefined;
   const exactId=source?.id&&getDb().prepare('SELECT 1 FROM notifications WHERE id=? AND user_id=? AND session_id=? AND native_id=?').get(source.id,conversation.user_id,session.id,route.native_id)?source.id:null;
   getDb().prepare("INSERT INTO platform_ai_operations(id,message_id,tool_name,arguments,status) VALUES(?,?, 'quoted_reply',?,'started')").run(operationId,message.id,JSON.stringify({session_id:session.id,route_id:route.id}));
-  let result:string,acceptedOrUnknown=false,quietSuccess=false;
+  const notificationSession=session;
+  let result:string,acceptedOrUnknown=false,quietSuccess=false,autoBrief=false,trackCursor=Number(display.cursor)||0;
+  let briefWarning:string|undefined;
+  let inputOutcome:'unattempted'|'unknown'|'rejected'|'accepted'='unattempted';
+  const inputMayHaveBeenAccepted=()=>inputOutcome==='accepted'||inputOutcome==='unknown';
+  const inputUrl=`/api/sessions/${encodeURIComponent(session.id)}/input`;
+  // The current operation reference must remain the final marker, even when
+  // older messages in the brief history contain their own task references.
+  const input=message.content+imagePrompt+`\n\n[Platform task reference: ${operationId}]`;
+  const submit=async(body:Record<string,unknown>)=>{
+    inputOutcome='unknown';
+    try{const sent=await platformApi(app,conversation.user_id,'POST',inputUrl,body);inputOutcome='accepted';return sent;}
+    catch(error){if(error instanceof PlatformApiError&&error.statusCode<500)inputOutcome='rejected';throw error;}
+  };
   try {
-    const sent=await platformApi(app,conversation.user_id,'POST',`/api/sessions/${encodeURIComponent(session.id)}/input`,{input:message.content+`\n\n[Platform task reference: ${operationId}]`+imagePrompt,source:'conversation',client_id:'quoted_'+message.id,expected_native_id:route.native_id,expected_environment_id:route.environment_id});
+    const body={input,source:'conversation',client_id:'quoted_'+message.id,expected_native_id:route.native_id,expected_environment_id:route.environment_id};
+    let sent;
+    try{sent=await submit(body);}
+    catch(error){
+      // A generic 409 may mean stale identity, revoked access, or a busy
+      // operation. Only a confirmed guard rejection proves input was not sent.
+      if(!(error instanceof PlatformApiError&&error.statusCode===409&&error.submission==='rejected'
+        &&error.sendGuard?.needs_confirmation&&error.sendGuard.native_id===route.native_id))throw error;
+      if(!error.sendGuard.can_new)throw new PlatformApiError('已触发发送保护，但当前会话尚不能新开，请在平台处理后重试',409,'rejected');
+      const prepared=await prepareBriefSend(session.id,route.native_id,{input},async query=>{
+        if(signal?.aborted)throw Error('引用回复处理已暂停');
+        const params=new URLSearchParams(query);
+        return platformApi(app,conversation.user_id,'GET',`/api/sessions/${encodeURIComponent(session.id)}/conversation?${params}`);
+      });
+      assertAuthorized();assertSource();session=checkSession();
+      const current=await platformApi(app,conversation.user_id,'GET',`/api/sessions/${encodeURIComponent(session.id)}/agent-messages`);
+      const last=[...(current.messages||[])].reverse().find((m:AgentTextMessage)=>m.role==='user');
+      if(replyTurnKey(last)!==route.turn_key)throw new PlatformApiError('标签页已经进入其他任务轮次，请引用最新通知',409,'rejected');
+      const currentDisplay=await platformApi(app,conversation.user_id,'GET',`/api/sessions/${encodeURIComponent(session.id)}/display?lines=1`);
+      if(getTracker(session.id)?.state.isPermission||['confirmation','choice'].includes(currentDisplay.promptType))
+        throw new PlatformApiError('该标签页正在等待授权或交互选择，请在网页处理',409,'rejected');
+      if(signal?.aborted)throw Error('引用回复处理已暂停');
+      assertAuthorized();assertSource();session=checkSession();
+      const fresh=await platformApi(app,conversation.user_id,'POST',`/api/sessions/${encodeURIComponent(session.id)}/new-conversation`,{expected_native_id:route.native_id});
+      if(typeof fresh.warning==='string'&&fresh.warning)briefWarning=fresh.warning.slice(0,300);
+      const freshId=fresh.session&&nativeConversationId(fresh.session);
+      if(!freshId||freshId===route.native_id)throw Error('新会话身份尚未确认，请在平台检查');
+      session=checkSession(freshId);trackCursor=0;
+      assertAuthorized();assertSource();
+      if(signal?.aborted)throw Error('引用回复处理已暂停');
+      const check=await platformApi(app,conversation.user_id,'POST',`/api/sessions/${encodeURIComponent(session.id)}/input-check`,{input:prepared.input});
+      if(check.native_id!==freshId||check.needs_confirmation||typeof check.token!=='string')throw new PlatformApiError('新会话状态已变化，请在平台检查',409,'rejected');
+      assertAuthorized();assertSource();session=checkSession(freshId);
+      if(signal?.aborted)throw Error('引用回复处理已暂停');
+      sent=await submit({...body,input:prepared.input,expected_native_id:freshId,guard_token:check.token});
+      autoBrief=true;
+    }
     acceptedOrUnknown=true;
     if(!['submitted','queued'].includes(sent.status))throw Error('Unknown input receipt');
     quietSuccess=true;
     const label=sessionPresenter(conversation.user_id)(session);
-    result=`${sent.status==='queued'?'已排队提交':'已提交'}到「${[label.project_name,label.tab_name].filter(Boolean).join(' / ')}」，等待 Agent 处理。`;
+    result=`${autoBrief?'已简要压缩并':''}${sent.status==='queued'?'已排队提交':'已提交'}到「${[label.project_name,label.tab_name].filter(Boolean).join(' / ')}」，等待 Agent 处理。`;
   }catch(error){
-    acceptedOrUnknown=!(error instanceof PlatformApiError&&error.statusCode<500);
-    result=error instanceof PlatformApiError&&error.statusCode<500?`未投递：${error.message}。请处理后重新回复通知。`:'投递结果待核对，为避免重复执行不会自动重发，请查看原标签页。';
+    acceptedOrUnknown=inputMayHaveBeenAccepted();
+    const reason=error instanceof Error?error.message:'自动处理失败';
+    result=acceptedOrUnknown?'投递结果待核对，为避免重复执行不会自动重发，请查看原标签页。':`未投递：${reason}。请到平台核对后重新回复。`;
   }
   if(quietSuccess){
-    try {settleNotificationsForInput(session,conversation.user_id,boundary);if(exactId)markNotificationsRead(conversation.user_id,[exactId]);}
+    try {settleNotificationsForInput(notificationSession,conversation.user_id,boundary);if(exactId)markNotificationsRead(conversation.user_id,[exactId]);}
     catch {quietSuccess=false;result+=' 网页通知状态未能更新，请在原标签页核对。';}
   }
+  if(briefWarning){quietSuccess=false;result+=' '+briefWarning;}
   if(acceptedOrUnknown){
     try{getDb().transaction(()=>{
       const previous=sourceTaskId?getDb().prepare('SELECT requirement FROM platform_ai_tasks WHERE id=?').get(sourceTaskId) as {requirement:string}|undefined:undefined;
       if(sourceTaskId)getDb().prepare("UPDATE platform_ai_tasks SET status='superseded',updated_at=datetime('now') WHERE id=? AND status IN ('running','blocked','uncertain')").run(sourceTaskId);
-      const task=trackTask(conversation,session.id,((previous?.requirement||'')+'\n\n用户回复：'+message.content).slice(-24000),Number(display.cursor)||0,operationId);
+      const task=trackTask(conversation,session.id,((previous?.requirement||'')+'\n\n用户回复：'+message.content).slice(-24000),trackCursor,operationId);
       if(result.startsWith('投递结果待核对'))getDb().prepare("UPDATE platform_ai_tasks SET status='uncertain' WHERE id=?").run(task.id);
     })();}catch{quietSuccess=false;result+=' 任务跟踪未能更新，请到原标签页核对后续结果。';}
   }

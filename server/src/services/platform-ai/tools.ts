@@ -73,7 +73,8 @@ export function platformCatalog(app?: FastifyInstance) {
 
 /** Reuse real route authorization. The one-call cookie never reaches an LLM or network. */
 export class PlatformApiError extends Error {
-  constructor(message: string, public statusCode: number) { super(message); }
+  constructor(message: string, public statusCode: number, public submission?: string,
+    public sendGuard?: {needs_confirmation: boolean; can_new: boolean; native_id: string | null}) { super(message); }
 }
 
 export async function platformApi(app: FastifyInstance, userId: string, method: string, url: string, body?: Record<string, unknown>): Promise<any> {
@@ -84,9 +85,18 @@ export async function platformApi(app: FastifyInstance, userId: string, method: 
     const response = await app.inject({ method: method as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url,
       headers: { cookie: `${sessionCookieName()}=${cookie}` }, ...(body ? { payload: body } : {}) });
     if (response.statusCode >= 400) {
-      let detail = '';
-      try { detail = response.json().error || ''; } catch { /* avoid logging raw HTML/bodies */ }
-      throw new PlatformApiError(`平台接口失败 (${response.statusCode})${detail ? ': ' + String(detail).slice(0, 300) : ''}`, response.statusCode);
+      let detail = '', submission: string | undefined;
+      let sendGuard: PlatformApiError['sendGuard'];
+      try {
+        const body = response.json();
+        detail = body.error || '';
+        if (typeof body.submission === 'string') submission = body.submission;
+        const guard = body.send_guard;
+        if (guard && typeof guard.needs_confirmation === 'boolean' && typeof guard.can_new === 'boolean'
+          && (typeof guard.native_id === 'string' || guard.native_id === null))
+          sendGuard = {needs_confirmation: guard.needs_confirmation, can_new: guard.can_new, native_id: guard.native_id};
+      } catch { /* avoid logging raw HTML/bodies */ }
+      throw new PlatformApiError(`平台接口失败 (${response.statusCode})${detail ? ': ' + String(detail).slice(0, 300) : ''}`, response.statusCode, submission, sendGuard);
     }
     return response.json();
   } finally { destroySession(cookie); }
