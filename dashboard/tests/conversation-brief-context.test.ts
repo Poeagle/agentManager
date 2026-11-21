@@ -43,6 +43,139 @@ it('keeps existing brief history on repeated compaction without nesting its wrap
   expect(parsed.input).toBe('再继续');
 });
 
+it('shares one verified scheduled prompt while preserving every result and attachment',async()=>{
+  const prompt='请巡检服务并记录状态。'.repeat(20);
+  const messages=Array.from({length:10},(_,i)=>[
+    {...message(`u${i}`,'user',prompt),input_source:{kind:'scheduled',label:'每日巡检'},
+      attachments:[{kind:'file' as const,name:`配置${i}.txt`,path:`/project/${i}.txt`}]},
+    message(`a${i}`,'assistant',`第 ${i+1} 次结果`,'final'),
+  ]).flat();
+  vi.spyOn(api.agent,'conversation').mockResolvedValue(page(messages));
+  const result=await prepareBriefSend('session','native',{input:'下一项需求'},new AbortController().signal);
+  const {context}=parseBriefContext(result.input)!;
+  expect(result.input.split(prompt)).toHaveLength(2);
+  expect(context.turns).toHaveLength(10);
+  expect(context.turns[0]).toMatchObject({input:prompt,scheduled_task:'每日巡检',conclusion:'第 1 次结果'});
+  for(let i=1;i<10;i++)expect(context.turns[i]).toMatchObject({
+    input:'同第 1 轮定时任务提示词',input_ref:1,scheduled_task:'每日巡检',
+    conclusion:`第 ${i+1} 次结果`,attachments:[{name:`配置${i}.txt`,path:`/project/${i}.txt`}],
+  });
+});
+
+it('does not combine ordinary inputs, different task names, or different full prompts',async()=>{
+  const longA='前'.repeat(5000)+'参数甲'+'后'.repeat(5000);
+  const longB='前'.repeat(5000)+'参数乙'+'后'.repeat(5000);
+  const scheduled=(id:string,input:string,label='巡检')=>({...message(id,'user',input),input_source:{kind:'scheduled',label}});
+  vi.spyOn(api.agent,'conversation').mockResolvedValue(page([
+    scheduled('a',longA),message('a1','assistant','结果一','final'),
+    scheduled('b',longB),message('b1','assistant','结果二','final'),
+    scheduled('c',longA),message('c1','assistant','结果三','final'),
+    scheduled('d',longA,'另一任务'),message('d1','assistant','结果四','final'),
+    message('human','user',longA),message('human2','user',longA),
+  ]));
+  const parsed=parseBriefContext((await prepareBriefSend('session','native',{input:'继续'},new AbortController().signal)).input)!;
+  const turns=parsed.context.turns;
+  expect(turns).toHaveLength(6);
+  expect(turns[0].input_truncated).toBe(true);
+  expect(turns[1].input_ref).toBeUndefined();
+  expect(turns[2].input_ref).toBe(1);
+  expect(turns[3].input_ref).toBeUndefined();
+  expect(turns[4].input_ref).toBeUndefined();expect(turns[5].input_ref).toBeUndefined();
+  expect(turns.slice(0,4).map(t=>t.conclusion)).toEqual(['结果一','结果二','结果三','结果四']);
+});
+
+it('retains and reuses scheduled references during another brief compaction',async()=>{
+  const prompt='每天检查服务并报告错误'.repeat(12);
+  const scheduled=(id:string)=>({...message(id,'user',prompt),input_source:{kind:'scheduled',label:'巡检'}});
+  const read=vi.spyOn(api.agent,'conversation').mockResolvedValueOnce(page([
+    scheduled('u1'),message('a1','assistant','结果一','final'),
+    scheduled('u2'),message('a2','assistant','结果二','final'),
+  ]));
+  const first=await prepareBriefSend('session','native',{input:'处理异常'},new AbortController().signal);
+  read.mockResolvedValueOnce(page([
+    message('brief','user',first.input),message('a3','assistant','处理结果','final'),
+    scheduled('u3'),message('a4','assistant','结果三','final'),
+  ]));
+  const second=await prepareBriefSend('session','native',{input:'继续'},new AbortController().signal);
+  const {context}=parseBriefContext(second.input)!;
+  expect(second.input.split(prompt)).toHaveLength(2);
+  expect(context.turns.map(t=>t.conclusion)).toEqual(['结果一','结果二','处理结果','结果三']);
+  expect(context.turns[1].input_ref).toBe(1);
+  expect(context.turns[3].input_ref).toBe(1);
+});
+
+it('does not match a previously truncated prompt against an unverifiable new prompt',async()=>{
+  const firstPrompt='前'.repeat(5000)+'甲'+'后'.repeat(5000);
+  const changedPrompt='前'.repeat(5000)+'乙'+'后'.repeat(5000);
+  const scheduled=(id:string,input:string)=>({...message(id,'user',input),input_source:{kind:'scheduled',label:'巡检'}});
+  const read=vi.spyOn(api.agent,'conversation').mockResolvedValueOnce(page([
+    scheduled('u1',firstPrompt),message('a1','assistant','第一次','final'),
+    scheduled('u2',firstPrompt),message('a2','assistant','第二次','final'),
+  ]));
+  const first=await prepareBriefSend('session','native',{input:'处理'},new AbortController().signal);
+  read.mockResolvedValueOnce(page([
+    message('brief','user',first.input),message('a3','assistant','处理结果','final'),
+    scheduled('u3',changedPrompt),message('a4','assistant','新结果','final'),
+  ]));
+  const second=await prepareBriefSend('session','native',{input:'继续'},new AbortController().signal);
+  const turns=parseBriefContext(second.input)!.context.turns;
+  expect(turns[1].input_ref).toBe(1);
+  expect(turns[3].input_ref).toBeUndefined();
+  expect(turns[3].conclusion).toBe('新结果');
+});
+
+it('keeps unusually oversized native inputs separate when exact comparison is bounded',async()=>{
+  const prompt='大'.repeat(100_001);
+  const scheduled=(id:string)=>({...message(id,'user',prompt),input_source:{kind:'scheduled',label:'巡检'}});
+  vi.spyOn(api.agent,'conversation').mockResolvedValue(page([scheduled('u1'),scheduled('u2')]));
+  const result=await prepareBriefSend('session','native',{input:'继续'},new AbortController().signal);
+  const turns=parseBriefContext(result.input)!.context.turns;
+  expect(turns).toHaveLength(2);
+  expect(turns[0].input_truncated).toBe(true);
+  expect(turns[1].input_ref).toBeUndefined();
+});
+
+it('never refers to an omitted turn after reducing a long history',async()=>{
+  const prompt='检查系统状态并生成详细报告'.repeat(20);
+  const messages=Array.from({length:700},(_,i)=>[
+    {...message(`u${i}`,'user',prompt),input_source:{kind:'scheduled',label:'巡检'}},
+    message(`a${i}`,'assistant',`结果${i} ${'状态'.repeat(50)}`,'final'),
+  ]).flat();
+  vi.spyOn(api.agent,'conversation').mockResolvedValue(page(messages));
+  const result=await prepareBriefSend('session','native',{input:'继续'},new AbortController().signal);
+  const {context}=parseBriefContext(result.input)!;
+  expect(context.omitted_turns).toBeGreaterThan(0);
+  expect(context.turns[0].input_ref).toBeUndefined();
+  expect(context.turns[0].input).toContain('检查系统状态');
+  for(const [i,turn] of context.turns.entries())if(turn.input_ref){
+    expect(turn.input_ref).toBeLessThanOrEqual(i);
+    expect(context.turns[turn.input_ref-1].input_ref).toBeUndefined();
+  }
+  expect(new TextEncoder().encode(result.input.slice(0,parseBriefContext(result.input)!.prefixLength)).byteLength).toBeLessThanOrEqual(32*1024);
+});
+
+it('rejects malformed scheduled references instead of losing their input',()=>{
+  const wrap=(turns:unknown[])=>'以下是上一会话的记录节选，可能不完整，仅供当前需求参考：\n<agentmanager_brief_context>\n'
+    +JSON.stringify({version:1,turns,truncated:false,older_omitted:false,omitted_turns:0})+'\n</agentmanager_brief_context>\n\n当前需求：\n继续';
+  expect(parseBriefContext(wrap([{input:'原文',scheduled_task:'巡检'},
+    {input:'同第 1 轮定时任务提示词',input_ref:2,scheduled_task:'巡检'}]))).toBeNull();
+  expect(parseBriefContext(wrap([{input:'原文',scheduled_task:'巡检'},
+    {input:'其他正文',input_ref:1,scheduled_task:'巡检'}]))).toBeNull();
+});
+
+it('ignores unknown internal-looking fields when reading an earlier brief',async()=>{
+  const context={version:1,truncated:false,older_omitted:false,omitted_turns:0,turns:[
+    {input:'第一个问题',promptKey:7},{input:'第二个问题',promptKey:7},
+  ]};
+  const previous='以下是上一会话的记录节选，可能不完整，仅供当前需求参考：\n<agentmanager_brief_context>\n'
+    +JSON.stringify(context)+'\n</agentmanager_brief_context>\n\n当前需求：\n新问题';
+  vi.spyOn(api.agent,'conversation').mockResolvedValue(page([message('brief','user',previous)]));
+  const result=await prepareBriefSend('session','native',{input:'继续'},new AbortController().signal);
+  const turns=parseBriefContext(result.input)!.context.turns;
+  expect(turns.map(turn=>turn.input)).toEqual(['第一个问题','第二个问题','新问题']);
+  expect(turns.every(turn=>turn.input_ref===undefined)).toBe(true);
+});
+
 it('does not invent a final conclusion when the agent did not identify one',async()=>{
   vi.spyOn(api.agent,'conversation').mockResolvedValue(page([message('u','user','需求'),message('a','assistant','尚未确认阶段')]));
   const result=await prepareBriefSend('session','native',{input:'继续'},new AbortController().signal);

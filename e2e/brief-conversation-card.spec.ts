@@ -11,7 +11,10 @@ test('restores the brief-history card and current request after a reload',async(
  const {project}=await(await page.request.post('/api/projects',{data:{name:'Brief context',path}})).json();
  const {session}=await(await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:path,mode:'terminal'}})).json();
  const native='019ff001-abcd-7abc-8abc-abcdefabcd01',file=join(directory,`rollout-${native}.jsonl`);
- const context={version:1,turns:[{input:'上一轮需求',progress:'确认了问题',conclusion:'上一轮结论'}],truncated:false,older_omitted:false,omitted_turns:0};
+ const context={version:1,turns:[
+  {input:'上一轮需求',scheduled_task:'每日巡检',progress:'确认了问题',conclusion:'上一轮结论'},
+  {input:'同第 1 轮定时任务提示词',input_ref:1,scheduled_task:'每日巡检',conclusion:'本次结论'},
+ ],truncated:false,older_omitted:false,omitted_turns:0};
  const text='以下是上一会话的记录节选，可能不完整，仅供当前需求参考：\n<agentmanager_brief_context>\n'+JSON.stringify(context)+'\n</agentmanager_brief_context>\n\n当前需求：\n继续新的工作';
  writeFileSync(file,JSON.stringify({type:'response_item',timestamp:'2026-11-21T04:00:00Z',payload:{type:'message',id:'brief-user',role:'user',content:[{type:'input_text',text}]}})+'\n');
  const require=createRequire(import.meta.url),Database=require('../server/node_modules/better-sqlite3'),db=new Database(join(root,'agentmanager.db'));
@@ -23,7 +26,7 @@ test('restores the brief-history card and current request after a reload',async(
   await page.goto('/');
   const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});
   const card=chat.locator('[data-context-kind="brief_compaction"] button');
-  await expect(card).toBeVisible();await expect(card).toContainText('1 轮');
+  await expect(card).toBeVisible();await expect(card).toContainText('2 轮');
   await expect(chat.getByText('继续新的工作',{exact:true})).toBeVisible();
   await expect(chat.getByText('上一轮需求',{exact:true})).toHaveCount(0);
   await card.click();
@@ -31,6 +34,8 @@ test('restores the brief-history card and current request after a reload',async(
   await expect(dialog.getByText('上一轮需求',{exact:true})).toBeVisible();
   await expect(dialog.getByText('确认了问题',{exact:true})).toBeVisible();
   await expect(dialog.getByText('上一轮结论',{exact:true})).toBeVisible();
+  await expect(dialog.getByText('同第 1 轮定时任务提示词',{exact:true})).toBeVisible();
+  await expect(dialog.getByText('本次结论',{exact:true})).toBeVisible();
   await page.screenshot({path:testInfo.outputPath('brief-details-desktop.png')});
   await page.keyboard.press('Escape');
   await page.reload();await expect(card).toBeVisible();

@@ -6,6 +6,7 @@ export interface BriefMessage {
   id: string; role: 'user' | 'assistant'; text: string; timestamp: string | null;
   phase?: 'commentary' | 'final' | 'error'; presentation?: 'compaction_summary';
   queued?: boolean; streaming?: boolean; attachments?: BriefAttachment[];
+  input_source?: {kind: string; label: string};
 }
 export interface BriefPage {
   session_id: string; native_id: string | null; available: boolean; generation: string | null;
@@ -15,6 +16,10 @@ export type BriefHistoryReader = (query: {limit: string; before?: string}) => Pr
 
 export interface BriefTurn {
   input: string;
+  /** A repeated scheduled prompt refers to an earlier, retained turn (1-based). */
+  input_ref?: number;
+  input_truncated?: boolean;
+  scheduled_task?: string;
   progress?: string;
   conclusion?: string;
   attachments?: Array<{kind: 'image' | 'file'; name: string; path: string}>;
@@ -34,6 +39,7 @@ const MAX_INPUT_BYTES = 64 * 1024;
 const MAX_PAGES = 12;
 const MAX_FIELD_CHARS = 8192;
 const MAX_PROGRESS_CHARS = 320;
+const MAX_PROMPT_KEYS_BYTES = 8 * 1024 * 1024;
 const encoder = new TextEncoder();
 const bytes = (value: string) => encoder.encode(value).byteLength;
 
@@ -56,7 +62,12 @@ export function parseBriefContext(text: string): {context: BriefContext; input: 
     if (context.version !== 1 || !Array.isArray(context.turns) || context.turns.length > 1000 ||
         typeof context.truncated !== 'boolean' || typeof context.older_omitted !== 'boolean' ||
         !Number.isSafeInteger(context.omitted_turns) || context.omitted_turns < 0 ||
-        context.turns.some(turn => !turn || typeof turn.input !== 'string' ||
+        context.turns.some((turn, index) => !turn || typeof turn.input !== 'string' ||
+          (turn.scheduled_task !== undefined && (typeof turn.scheduled_task !== 'string' || !turn.scheduled_task || turn.scheduled_task.length > 120)) ||
+          (turn.input_truncated !== undefined && typeof turn.input_truncated !== 'boolean') ||
+          (turn.input_ref !== undefined && (!Number.isSafeInteger(turn.input_ref) || turn.input_ref < 1 || turn.input_ref > index ||
+            !turn.scheduled_task || context.turns[turn.input_ref - 1]?.scheduled_task !== turn.scheduled_task ||
+            context.turns[turn.input_ref - 1]?.input_ref !== undefined || turn.input !== `同第 ${turn.input_ref} 轮定时任务提示词`)) ||
           (turn.progress !== undefined && typeof turn.progress !== 'string') ||
           (turn.conclusion !== undefined && typeof turn.conclusion !== 'string') ||
           (turn.attachments !== undefined && (!Array.isArray(turn.attachments) || turn.attachments.length > 8 ||
@@ -77,15 +88,32 @@ export function prependBriefPayload(payload: BriefPayload, prefix: string): Brie
   };
 }
 
-function historyTurns(messages: BriefMessage[]): {turns: BriefTurn[]; truncated: boolean; olderOmitted: boolean} {
-  const turns: BriefTurn[] = [];
-  let current: BriefTurn | undefined, truncated = false, olderOmitted = false;
+type CollectedMessage = BriefMessage & {promptKey?: number; inputClipped?: boolean};
+type CollectedTurn = BriefTurn & {promptKey?: number};
+
+function historyTurns(messages: CollectedMessage[], promptKey: (label: string, input: string) => number | undefined,
+  freshKey: () => number): {turns: CollectedTurn[]; truncated: boolean; olderOmitted: boolean} {
+  const turns: CollectedTurn[] = [];
+  let current: CollectedTurn | undefined, truncated = false, olderOmitted = false;
   for (const message of messages) {
     if (message.queued || message.streaming || message.phase === 'error') continue;
     if (message.role === 'user') {
       const prior = parseBriefContext(message.text);
       if (prior) {
-        turns.push(...prior.context.turns);
+        const previous: CollectedTurn[] = [];
+        for (const turn of prior.context.turns) {
+          const original = turn.input_ref ? previous[turn.input_ref - 1] : undefined;
+          const input = original?.input ?? turn.input;
+          const inputTruncated = original?.input_truncated || turn.input_truncated;
+          const key = original?.promptKey ?? (turn.scheduled_task
+            ? inputTruncated ? freshKey() : promptKey(turn.scheduled_task, input)
+            : undefined);
+          previous.push({input, ...(turn.scheduled_task ? {scheduled_task: turn.scheduled_task} : {}),
+            ...(inputTruncated ? {input_truncated: true} : {}), ...(key === undefined ? {} : {promptKey: key}),
+            ...(turn.progress ? {progress: turn.progress} : {}), ...(turn.conclusion ? {conclusion: turn.conclusion} : {}),
+            ...(turn.attachments?.length ? {attachments: turn.attachments} : {})});
+        }
+        turns.push(...previous);
         truncated ||= prior.context.truncated;
         olderOmitted ||= prior.context.older_omitted || prior.context.omitted_turns > 0;
       }
@@ -97,7 +125,12 @@ function historyTurns(messages: BriefMessage[]): {turns: BriefTurn[]; truncated:
       if (!input.trim() && !attachments?.length) continue;
       const clipped = excerpt(input, MAX_FIELD_CHARS);
       truncated ||= clipped !== input;
-      current = {input: clipped, ...(attachments?.length ? {attachments} : {})};
+      const label = message.input_source?.kind === 'scheduled' && message.input_source.label && message.input_source.label.length <= 120
+        ? message.input_source.label : undefined;
+      current = {input: clipped, ...(label ? {scheduled_task: label} : {}),
+        ...(label && (message.inputClipped || clipped !== input) ? {input_truncated: true} : {}),
+        ...(message.promptKey === undefined ? {} : {promptKey: message.promptKey}),
+        ...(attachments?.length ? {attachments} : {})};
       turns.push(current);
     } else if (current && message.text.trim()) {
       if (message.phase !== 'final' || message.presentation === 'compaction_summary') {
@@ -114,13 +147,14 @@ function historyTurns(messages: BriefMessage[]): {turns: BriefTurn[]; truncated:
   return {turns, truncated, olderOmitted};
 }
 
-function makePrefix(turns: BriefTurn[], inheritedTruncation: boolean, olderOmitted: boolean, draft: string): string {
+function makePrefix(turns: CollectedTurn[], inheritedTruncation: boolean, olderOmitted: boolean, draft: string): string {
   const budget = Math.min(MAX_CONTEXT_BYTES, MAX_INPUT_BYTES - bytes(draft));
   if (budget < 512) throw Error('当前草稿过长，无法携带简要历史；请缩短草稿后重试。');
   let omitted = 0;
   const render = (limit: number) => {
     let truncated = inheritedTruncation;
-    const selected = turns.slice(omitted).map(turn => {
+    const prompts = new Map<number, number>();
+    const selected = turns.slice(omitted).map((turn, index) => {
       const input = excerpt(turn.input, limit), conclusion = turn.conclusion === undefined ? undefined : excerpt(turn.conclusion, limit);
       const progress = turn.progress === undefined ? undefined : excerpt(turn.progress, Math.min(limit, MAX_PROGRESS_CHARS));
       truncated ||= input !== turn.input || conclusion !== turn.conclusion || progress !== turn.progress;
@@ -129,7 +163,13 @@ function makePrefix(turns: BriefTurn[], inheritedTruncation: boolean, olderOmitt
         truncated ||= name !== item.name || path !== item.path;
         return {...item,name,path};
       });
-      return {input, ...(progress ? {progress} : {}), ...(conclusion ? {conclusion} : {}), ...(attachments?.length ? {attachments} : {})};
+      const inputRef = turn.promptKey === undefined ? undefined : prompts.get(turn.promptKey);
+      if (turn.promptKey !== undefined && inputRef === undefined) prompts.set(turn.promptKey, index + 1);
+      return {input: inputRef === undefined ? input : `同第 ${inputRef} 轮定时任务提示词`,
+        ...(inputRef === undefined ? {} : {input_ref: inputRef}),
+        ...(turn.scheduled_task ? {scheduled_task: turn.scheduled_task} : {}),
+        ...(turn.scheduled_task && inputRef === undefined && (turn.input_truncated || input !== turn.input) ? {input_truncated: true} : {}),
+        ...(progress ? {progress} : {}), ...(conclusion ? {conclusion} : {}), ...(attachments?.length ? {attachments} : {})};
     });
     const context: BriefContext = {version: 1, turns: selected, truncated, older_omitted: olderOmitted, omitted_turns: omitted};
     return START + JSON.stringify(context) + END;
@@ -157,7 +197,24 @@ function makePrefix(turns: BriefTurn[], inheritedTruncation: boolean, olderOmitt
 /** Read existing paginated history only. Never start an Agent turn to summarize. */
 export async function prepareBriefSend(sessionId: string, nativeId: string, payload: BriefPayload, readPage: BriefHistoryReader): Promise<BriefPayload> {
   let before: string | undefined, generation: string | null | undefined, olderOmitted = false, collectedTruncation = false;
-  const pages: BriefMessage[][] = [], cursors = new Set<string>();
+  const pages: CollectedMessage[][] = [], cursors = new Set<string>();
+  // Compare the original text before clipping, with a bounded exact-match index.
+  // When it fills, keep remaining prompts independently rather than guessing.
+  const promptKeys = new Map<string, number>();
+  let nextKey = 0, promptKeysBytes = 0;
+  const freshKey = () => ++nextKey;
+  const promptKey = (label: string, input: string): number | undefined => {
+    // Scheduled task creation already caps prompts at 100,000 characters.
+    if (input.length > 100_000) return undefined;
+    const key = JSON.stringify([label, input]);
+    const known = promptKeys.get(key);
+    if (known !== undefined) return known;
+    const size = bytes(key);
+    if (promptKeysBytes + size > MAX_PROMPT_KEYS_BYTES) return undefined;
+    const id = freshKey();
+    promptKeys.set(key, id); promptKeysBytes += size;
+    return id;
+  };
   for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber++) {
     const page = await readPage({limit: '80', ...(before ? {before} : {})});
     if (!page.available || page.native_id !== nativeId || page.session_id !== sessionId)
@@ -167,15 +224,21 @@ export async function prepareBriefSend(sessionId: string, nativeId: string, payl
     generation = page.generation;
     // Keep bounded excerpts in memory even when individual native messages are large.
     pages.push(page.messages.map(message => {
-      const text = parseBriefContext(message.text) ? message.text : excerpt(message.text, MAX_FIELD_CHARS * 2);
+      const prior = parseBriefContext(message.text);
+      const text = prior ? message.text : excerpt(message.text, MAX_FIELD_CHARS * 2);
       if (text !== message.text && (message.role === 'user' || message.phase !== 'commentary')) collectedTruncation = true;
       const attachments = message.attachments?.slice(0, 8).map(({kind,name,path}) => {
         const shortName=excerpt(name,255),shortPath=excerpt(path,1024);
         collectedTruncation ||= shortName!==name||shortPath!==path;
         return {kind,name:shortName,path:shortPath};
       });
+      const label = message.role === 'user' && !prior && message.input_source?.kind === 'scheduled' &&
+        message.input_source.label && message.input_source.label.length <= 120 ? message.input_source.label : undefined;
+      const key = label ? promptKey(label, message.text) : undefined;
       return {id:message.id,role:message.role,timestamp:message.timestamp,text,phase:message.phase,
-        presentation:message.presentation,queued:message.queued,streaming:message.streaming,attachments};
+        presentation:message.presentation,queued:message.queued,streaming:message.streaming,attachments,
+        ...(label ? {input_source:{kind:'scheduled',label}, inputClipped:text !== message.text} : {}),
+        ...(key === undefined ? {} : {promptKey:key})};
     }));
     if (!page.has_more) break;
     const next = page.messages[0]?.id;
@@ -184,7 +247,7 @@ export async function prepareBriefSend(sessionId: string, nativeId: string, payl
     before = next;
     if (pageNumber === MAX_PAGES - 1) olderOmitted = true;
   }
-  const history = historyTurns(pages.reverse().flat());
+  const history = historyTurns(pages.reverse().flat(), promptKey, freshKey);
   if (!history.turns.length) throw Error('没有可用的对话记录，简要压缩未执行。');
   const prefix = makePrefix(history.turns, history.truncated || collectedTruncation, olderOmitted || history.olderOmitted, payload.input);
   return prependBriefPayload(payload, prefix);

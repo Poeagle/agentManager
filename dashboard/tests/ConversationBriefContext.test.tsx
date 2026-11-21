@@ -22,3 +22,21 @@ it('opens a compact card with readable turns and an explicit truncation notice',
   expect(within(dialog).getByText(/完整记录仍可在原会话中查看/)).toBeVisible();
   await user.keyboard('{Escape}');expect(screen.queryByRole('dialog')).toBeNull();expect(trigger).toHaveFocus();
 });
+
+it('shows scheduled runs and their shared prompt reference as separate turns',async()=>{
+  const user=userEvent.setup();
+  render(<ConversationBriefContext messageId="brief" active projectId={null} onNavigate={()=>{}} context={{
+    version:1,truncated:false,older_omitted:false,omitted_turns:0,turns:[
+      {input:'巡检服务',scheduled_task:'每日巡检',conclusion:'第一次结果'},
+      {input:'同第 1 轮定时任务提示词',input_ref:1,scheduled_task:'每日巡检',conclusion:'第二次结果'},
+    ],
+  }}/>);
+  await user.click(screen.getByRole('button',{name:/简要压缩/}));
+  const dialog=screen.getByRole('dialog',{name:'简要压缩详情'});
+  expect(within(dialog).getByText('第 1 轮 · 定时任务：每日巡检')).toBeVisible();
+  expect(within(dialog).getByText('第 2 轮 · 定时任务：每日巡检')).toBeVisible();
+  expect(within(dialog).getByText('巡检服务')).toBeVisible();
+  expect(within(dialog).getByText('同第 1 轮定时任务提示词')).toBeVisible();
+  expect(within(dialog).getByText('第一次结果')).toBeVisible();
+  expect(within(dialog).getByText('第二次结果')).toBeVisible();
+});
