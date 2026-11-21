@@ -27,6 +27,13 @@ const cache = new Map<string, {
 }>();
 const sessionModelKey = (sessionId: string) =>
     `claude_session_model:${sessionId}`;
+export function captureClaudeFreshRollback(context: AgentContext): () => void {
+    const sessionId=context.session.id;
+    if(!sessionId)return ()=>{};
+    const key=sessionModelKey(sessionId),row=getDb().prepare('SELECT value FROM settings WHERE key=?').get(key) as {value:string}|undefined;
+    return ()=>{if(row)getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,row.value);
+      else getDb().prepare('DELETE FROM settings WHERE key=?').run(key);};
+}
 export function readClaudeSessionModelPreference(
     context: AgentContext,
 ): ModelPreference | null {

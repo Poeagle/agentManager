@@ -427,7 +427,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(automatic ? { automatic: true } : {}),
       }),
-    newConversation:(id:string,preference?:AgentModelPreference,expectedNativeId?:string)=>fetchJSON<{ok:boolean;session:Session;history_id:string;warning?:string}>(`/sessions/${encodeURIComponent(id)}/new-conversation`,{method:'POST',body:JSON.stringify({preference,expected_native_id:expectedNativeId})}),
+    newConversation:(id:string,preference?:AgentModelPreference,expectedNativeId?:string,environmentId?:string)=>fetchJSON<{ok:boolean;session:Session;history_id:string;warning?:string}>(`/sessions/${encodeURIComponent(id)}/new-conversation`,{method:'POST',body:JSON.stringify({preference,expected_native_id:expectedNativeId,environment_id:environmentId})}),
     compactConversation:(id:string)=>fetchJSON<{ok:boolean}>(`/sessions/${encodeURIComponent(id)}/compact`,{method:'POST'}),
     reload:(id:string)=>fetchJSON<{ok:boolean;session:Session;client_version?:string}>(`/sessions/${encodeURIComponent(id)}/reload`,{method:'POST'}),
     // Permanently delete an ended session from history (record + events + JSONL).

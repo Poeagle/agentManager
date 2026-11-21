@@ -26,6 +26,7 @@ import {sharedResourceLaunch} from './shared-resources/store.js';
 
 import {snapshotConversation,activateFreshConversation,restoreConversationSnapshot} from './conversation-history.js';
 import {beginSessionAction,flushSessionFactsBeforeDelete, recordSessionBinding} from './session-statistics.js';
+import {assertEnvironmentUse,canControlEnvironment} from './agents/environment-access.js';
 
 
 import {cliTypeFromArgv,nativeConversationId} from './session-identity.js';
@@ -2952,13 +2953,23 @@ export function compactSessionConversation(sessionId:string):Promise<SessionRelo
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
 }
 
-export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference,replacement?:{environmentId:string;prepare:(context:import('./agents/types.js').AgentContext)=>Promise<string>},expectedNativeId?:string):Promise<SessionReloadResult&{history_id?:string}> {
+export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference,replacement?:{environmentId:string;prepare:(context:import('./agents/types.js').AgentContext)=>Promise<string>},expectedNativeId?:string,targetEnvironmentId?:string):Promise<SessionReloadResult&{history_id?:string}> {
   if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'});
   return runSessionLifecycle(sessionId,async()=>{
     const session=getSession(sessionId);
     if(!session||!nativeConversationId(session))return {ok:false,error:'请先连接原生会话'};
     if(expectedNativeId&&nativeConversationId(session)!==expectedNativeId)return {ok:false,error:'原生会话已变化，请重新检查后再新开'};
     const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:!session.created_by_user_id||isAdmin(session.created_by_user_id)});
+    const environmentChange=targetEnvironmentId!==undefined && targetEnvironmentId!==(session.agent_environment_id||'native');
+    const checkTarget=()=>{
+      if(!targetEnvironmentId||!session.created_by_user_id)throw Error('无法确认目标账号权限');
+      assertEnvironmentUse(adapter.descriptor.id,targetEnvironmentId,session.created_by_user_id);
+      if(!canControlEnvironment(targetEnvironmentId,session.created_by_user_id,adapter.descriptor.id))throw Error('无权控制目标账号');
+    };
+    if(environmentChange){
+      if(!expectedNativeId||!adapter.lifecycle.prepareFreshInEnvironment)return {ok:false,error:'此 Agent 不支持在目标账号创建独立会话'};
+      try{checkTarget();}catch(error){return {ok:false,error:error instanceof Error?error.message:'目标账号不可用'};}
+    }
     if(expectedNativeId){
       try{const runtime=await adapter.runtime.read(context);if(!runtime||!['idle','interrupted','failed'].includes(runtime.state))return {ok:false,error:'原会话尚未结束，请等待当前任务完成后再新开'};}
       catch{return {ok:false,error:'无法确认原会话状态，请稍后再试'};}
@@ -2966,16 +2977,27 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
     const project=getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined;
     if(!project?.path)return {ok:false,error:'找不到项目目录，原会话已保留'};
     const recordNew=beginSessionAction(context,replacement?'environment':'new');
-    let fresh:string|undefined,history:string|undefined,activated=false,stopped=false;
+    let fresh:string|undefined,history:string|undefined,activated=false,stopped=false,restoreFresh:(()=>void)|undefined;
     const binding=(id:string)=>adapter.lifecycle.bind(context,id);
     try {
+      restoreFresh=adapter.lifecycle.freshRollback?.(context);
       await adapter.lifecycle.preflight(context);
-      if(preference&&!replacement){
+      if(preference&&!replacement&&!environmentChange){
         if(!(adapter.lifecycle.supportsFreshModel ?? (await adapter.controls.read(context)).supports_fresh_model))throw Error('此 Agent 尚不支持为新会话指定模型');
         preference=await adapter.controls.validate(context,preference);
       }
       const instructions=adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(session.created_by_user_id, project.path)?.instructions:undefined;
-      fresh=replacement?await replacement.prepare({...context,projectPath:project.path}):await adapter.lifecycle.prepareFresh({...context,projectPath:project.path},instructions,preference);
+      fresh=replacement?await replacement.prepare({...context,projectPath:project.path}):environmentChange
+        ?await adapter.lifecycle.prepareFreshInEnvironment!({...context,projectPath:project.path},targetEnvironmentId!,instructions,preference)
+        :await adapter.lifecycle.prepareFresh({...context,projectPath:project.path},instructions,preference);
+      if(environmentChange)checkTarget();
+      if(expectedNativeId){
+        const currentSession=getSession(sessionId);
+        if(!currentSession||nativeConversationId(currentSession)!==expectedNativeId||
+          (currentSession.agent_environment_id||'native')!==(session.agent_environment_id||'native'))throw Error('原会话已变化，未发送简要历史');
+        const runtime=await adapter.runtime.read(context);
+        if(!runtime||!['idle','interrupted','failed'].includes(runtime.state))throw Error('准备期间原会话开始运行，未发送简要历史');
+      }
       if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');
       history=snapshotConversation(sessionId);
       const worker=activeSessions.get(sessionId)?.worker;
@@ -2991,6 +3013,7 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
       getDb().prepare('DELETE FROM session_snapshots WHERE session_id=?').run(sessionId);
       getDb().transaction(()=>{
         activateFreshConversation(sessionId,history!,fresh!);
+        if(environmentChange)getDb().prepare('UPDATE sessions SET agent_environment_id=? WHERE id=?').run(targetEnvironmentId==='native'?null:targetEnvironmentId,sessionId);
         if(replacement){
           if(replacement.environmentId)getDb().prepare('UPDATE sessions SET agent_environment_id=?,task=?,created_at=? WHERE id=?').run(replacement.environmentId,session.task,session.created_at,sessionId);
           else getDb().prepare('UPDATE sessions SET agent_environment_id=NULL,task=?,created_at=? WHERE id=?').run(session.task,session.created_at,sessionId);
@@ -3014,6 +3037,7 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
       return {ok:true,history_id:history,...warning?{warning}:{}};
     } catch(error) {
       recordNew('unknown');
+      try{restoreFresh?.();}catch{/* Preserve the original failure. */}
       if(history){
         if(activated){
           const failedWorker=activeSessions.get(sessionId)?.worker;
@@ -3030,7 +3054,7 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
         // concurrent Close. Never undo an explicit user cancellation.
         if(stopped&&!cancelledSessionLifecycles.has(sessionId))await resumeCrashedSessionUnlocked(getSession(sessionId)!,project.path,true).catch(()=>{});
       }
-      if(fresh)await adapter.lifecycle.release({...context,nativeId:fresh}).catch(()=>{});
+      if(fresh)await ((environmentChange||expectedNativeId)&&adapter.lifecycle.discardFresh?adapter.lifecycle.discardFresh({...context,nativeId:fresh}):adapter.lifecycle.release({...context,nativeId:fresh})).catch(()=>{});
       return {ok:false,error:error instanceof Error?error.message:'新开失败，原会话历史已保留'};
     }
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));

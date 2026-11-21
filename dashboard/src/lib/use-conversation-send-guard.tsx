@@ -1,13 +1,14 @@
 import '../components/SettingsPanel.css';
 import {useCallback,useEffect,useRef,useState} from 'react';
-import {api,ApiError,type SendGuardCheck,type SendGuardPayload} from './api';
+import {api,ApiError,type SendGuardCheck,type SendGuardPayload,type AgentModelPreference} from './api';
 import type {CompactionPresentation} from './use-conversation-compaction';
 import {estimatedServerNow,formatDisplayTimestamp} from './display-clock';
 import {Dialog} from '../components/Dialog';
 import {parseBriefContext,prepareBriefSend} from './conversation-brief-context';
+import {BriefOptions} from '../components/ConversationBriefOptions';
 interface Confirmation {token:string;nativeId:string|null;payload:SendGuardPayload}
-interface Pending {sessionId:string;payload:SendGuardPayload;resolve:(result:Confirmation|null)=>void;reject:(error:unknown)=>void;controller:AbortController;check:SendGuardCheck|null;phase:'checking'|'choice'|'preparing'|'compacting'|'new'|'unknown';detached?:boolean;brief?:boolean;error?:string;startedAt?:number}
-export function useConversationSendGuard(sessionId:string,active:boolean,compaction:{state:CompactionPresentation|null;start:()=>Promise<void>},onNew?:(expectedNativeId?:string)=>Promise<string|void>){
+interface Pending {sessionId:string;payload:SendGuardPayload;resolve:(result:Confirmation|null)=>void;reject:(error:unknown)=>void;controller:AbortController;check:SendGuardCheck|null;phase:'checking'|'choice'|'select'|'preparing'|'compacting'|'new'|'unknown';detached?:boolean;brief?:boolean;error?:string;startedAt?:number}
+export function useConversationSendGuard(sessionId:string,active:boolean,compaction:{state:CompactionPresentation|null;start:()=>Promise<void>},onNew?:(expectedNativeId?:string,preference?:AgentModelPreference,environmentId?:string)=>Promise<string|void>){
  const current=useRef<Pending|null>(null),[view,setView]=useState<Pending|null>(null);
  const publish=useCallback((p:Pending)=>{if(current.current===p)setView({...p});},[]);
  const finish=useCallback((p:Pending,token:string|null)=>{if(current.current!==p)return;current.current=null;setView(null);p.controller.abort();p.resolve(token===null?null:{token,nativeId:p.check?.native_id??null,payload:p.payload});},[]);
@@ -24,9 +25,10 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
   });
  }
  const recheck=useCallback(async(p:Pending,fresh=false,expectedFreshId?:string)=>{if(current.current!==p)return;const timeout=setTimeout(()=>p.controller.abort(),15000);try{const check=await api.agent.checkSend(sessionId,p.payload,p.controller.signal);if(p.detached&&!fresh&&check.native_id!==p.check?.native_id)throw Error('原生会话已变化，消息尚未发送，草稿已保留');if(fresh&&(!check.native_id||check.native_id===p.check?.native_id||expectedFreshId&&check.native_id!==expectedFreshId))throw Error('新会话身份尚未确认，消息未发送，请关闭后核对会话状态。');p.check=check;finish(p,check.token);}catch(error){if(current.current===p){p.phase='unknown';p.error=error instanceof Error?error.message:'会话状态未确认，消息尚未发送，草稿已保留';publish(p);}}finally{clearTimeout(timeout);}},[sessionId,finish,publish]);
- async function choose(action:'continue'|'compact'|'new'|'brief'){
+ async function choose(action:'continue'|'compact'|'new'|'brief',options?:{preference?:AgentModelPreference;environmentId?:string}){
   const p=current.current;if(!p||p.phase!=='choice'||!p.check)return;
   if(action==='continue'){finish(p,p.check.token);return;}
+  if(action==='brief'&&!options){p.phase='select';publish(p);return;}
   const originalPayload=p.payload,originalNativeId=p.check.native_id;
   p.detached=action==='compact';p.brief=action==='brief';p.phase=action==='compact'?'compacting':action==='brief'?'preparing':'new';p.error=undefined;p.startedAt=estimatedServerNow();publish(p);
   try{
@@ -38,7 +40,7 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
      if(current.current!==p||p.phase!=='preparing')return;
      p.detached=true;p.phase='new';publish(p);
     }
-    const freshId=action==='brief'?await onNew?.(originalNativeId??undefined):await onNew?.();
+    const freshId=action==='brief'?(options?.preference||options?.environmentId?await onNew?.(originalNativeId??undefined,options.preference,options.environmentId):await onNew?.(originalNativeId??undefined)):await onNew?.();
     if(current.current===p&&p.phase==='new'){
      if(p.brief&&!freshId)throw Error('新会话身份尚未确认，消息尚未发送，草稿已保留。');
      if(p.brief){p.phase='checking';publish(p);}await recheck(p,true,p.brief?freshId||undefined:undefined);
@@ -65,7 +67,7 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
  useEffect(()=>()=>{const p=current.current;current.current=null;if(p){p.controller.abort();p.resolve(null);}},[sessionId]);
  const check=view?.sessionId===sessionId?view.check:null;
  const notice=view?.detached&&check?<div className="session-chat-guard-status" role={view.error?'alert':'status'}><span>{view.error|| (view.brief?(view.phase==='checking'?'新会话已创建，正在检查后发送…':'正在创建新会话，确认完成后发送简要历史。'):(view.phase==='checking'?'压缩完成，正在检查后发送…':'正在压缩，确认完成后自动发送。'))}</span><button type="button" onClick={()=>{if(current.current)finish(current.current,null);}}>{view.error?'关闭提示':'取消后续发送'}</button></div>:null;
- const dialog=view&&!view.detached&&check?<Dialog title="发送前检查" size="lg" busy={view.phase==='new'} onClose={()=>{if(current.current)finish(current.current,null);}}>
+ const dialog=view&&!view.detached&&check?(view.phase==='select'?<BriefOptions sessionId={sessionId} onCancel={()=>{if(current.current)finish(current.current,null);}} onConfirm={options=>{const p=current.current;if(p&&p.phase==='select'){p.phase='choice';void choose('brief',options);}}}/>:<Dialog title="发送前检查" size="lg" busy={view.phase==='new'} onClose={()=>{if(current.current)finish(current.current,null);}}>
   <p className="text-sm" style={{color:'var(--text-secondary)'}}>{check.matched===null?'部分会话用量或闲置状态无法核实。':check.matched?'当前会话达到平台设置的上下文提醒条件。':''}请选择如何发送；草稿会保留到实际提交。</p>
   <dl className="my-4 grid grid-cols-2 gap-x-6 gap-y-2 text-xs"><dt>当前上下文 / 窗口</dt><dd>{check.context_tokens??'未知'} / {check.context_window??'未知'} Token</dd><dt>窗口占用</dt><dd>{check.context_percent===null?'未知':`${check.context_percent.toFixed(1)}%`}</dd><dt>上轮结束后闲置</dt><dd>{check.idle_minutes===null?'未知':`${Math.floor(check.idle_minutes)} 分钟`}</dd><dt>用量采集时间</dt><dd>{formatDisplayTimestamp(check.observed_at)}</dd></dl>
   <p className="text-xs" style={{color:'var(--text-muted)'}}>这是发送风险提醒，缓存是否仍可复用无法由闲置时间准确判断。</p>
@@ -74,6 +76,6 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
   {view.error&&<p role="alert" className="my-3 text-xs" style={{color:'var(--error)'}}>{view.error}</p>}
   <div className="mt-4 flex flex-wrap justify-end gap-2"><button className="settings-panel-button" disabled={view.phase==='new'} onClick={()=>{if(current.current)finish(current.current,null);}}>取消</button><button className="settings-panel-button" disabled={view.phase!=='choice'||!check.can_new||!onNew} onClick={()=>void choose('new')}>新开后发送</button><button className="settings-panel-button" title="整理已有输入、结论和少量过程，在新会话中发送" disabled={view.phase!=='choice'||!check.can_new||!onNew||!!parseBriefContext(view.payload.input)} onClick={()=>void choose('brief')}>简要压缩后发送</button><button className="settings-panel-button" disabled={view.phase!=='choice'||!check.can_compact} onClick={()=>void choose('compact')}>压缩后发送</button><button className="settings-panel-button settings-panel-button--primary" disabled={view.phase!=='choice'} onClick={()=>void choose('continue')}>原样发送</button></div>
   {(!check.can_compact||!check.can_new)&&<p className="mt-2 text-xs" style={{color:'var(--text-muted)'}}>压缩和新开沿用现有会话权限，并要求当前轮次已结束。</p>}
- </Dialog>:null;
+ </Dialog>):null;
  return {confirm,background:!!view&&view.sessionId===sessionId&&!!view.detached&&['compacting','new','checking'].includes(view.phase),blocking:!!view&&view.sessionId===sessionId,checking:view?.sessionId===sessionId&&view.phase==='checking',dialog,notice};
 }

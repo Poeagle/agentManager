@@ -75,4 +75,23 @@ describe('Claude feature implementation without starting a CLI',()=>{
   database.cleanup();
   database=undefined;
  });
+ it('restores the prior model setting if preparing a fresh conversation fails',async()=>{
+  database=createTestDatabase();
+  const {captureClaudeFreshRollback,saveClaudeSessionModelPreference,readClaudeSessionModelPreference}=await import('../src/services/agents/claude/controls.js');
+  saveClaudeSessionModelPreference(context,{model:'old-model',effort:''});
+  const rollback=captureClaudeFreshRollback(context);
+  saveClaudeSessionModelPreference(context,{model:'new-model',effort:''});rollback();
+  expect(readClaudeSessionModelPreference(context)?.model).toBe('old-model');
+ });
+ it('prepares a fresh Claude session using the selected target provider and model',async()=>{
+  database=createTestDatabase();
+  const {createClaudeProvider}=await import('../src/services/agents/claude/providers.js');
+  createClaudeProvider({id:'brief-target',name:'Brief target',kind:'anthropic-compatible',apiKey:'fixture-secret',fields:{baseUrl:'https://fixture.invalid',models:['model-a','model-b'],defaultModel:'model-a'}});
+  const {getAgent}=await import('../src/services/agents/index.js');
+  const lifecycle=getAgent('claude').lifecycle;
+  await expect(lifecycle.prepareFreshInEnvironment!(context,'claude-provider:brief-target',undefined,{model:'missing',effort:''})).rejects.toThrow('目标账号不支持所选模型');
+  const fresh=await lifecycle.prepareFreshInEnvironment!(context,'claude-provider:brief-target',undefined,{model:'model-b',effort:''});
+  try{expect(fresh).not.toBe(native);expect((await import('../src/services/agents/claude/controls.js')).readClaudeSessionModelPreference(context)).toMatchObject({model:'model-b'});}
+  finally{releaseClaudeRuntime(fresh);}
+ });
 });

@@ -31,6 +31,10 @@ it('rejects invalid or stale expected identities on the internal new-conversatio
  expect(invalid.statusCode).toBe(400);
  const stale=await app.inject({method:'POST',url:'/api/sessions/s/new-conversation',headers:{cookie},payload:{expected_native_id:'other'}});
  expect(stale.statusCode).toBe(409);expect(stale.json().error).toContain('原生会话已变化');expect(manager.getSession('s')?.codex_session_id).toBe('native');
+ const missing=await app.inject({method:'POST',url:'/api/sessions/s/new-conversation',headers:{cookie},payload:{environment_id:'native'}});
+ expect(missing.statusCode).toBe(400);
+ const denied=await app.inject({method:'POST',url:'/api/sessions/s/new-conversation',headers:{cookie},payload:{environment_id:'account:missing',expected_native_id:'native'}});
+ expect(denied.statusCode).toBe(409);expect(manager.getSession('s')?.codex_session_id).toBe('native');
 });
 it('requires confirmation before dispatch and binds tokens to the exact user/native/policy/payload',async()=>{
  const check=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});expect(check.statusCode).toBe(200);expect(check.json()).toMatchObject({needs_confirmation:true,context_percent:80,can_compact:true,can_new:true});expect(stream.submitStreamingCodexInput).not.toHaveBeenCalled();

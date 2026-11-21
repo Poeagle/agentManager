@@ -714,6 +714,11 @@ export interface AgentLifecyclePort {
     instructions?: string,
     preference?: ModelPreference,
   ): Promise<string>;
+  /** Prepare an empty conversation in another authorized environment. */
+  prepareFreshInEnvironment?(context: AgentContext, environmentId: string, instructions?: string, preference?: ModelPreference): Promise<string>;
+  discardFresh?(context: AgentContext): Promise<void>;
+  /** Capture adapter-owned mutable state before preparing a replacement. */
+  freshRollback?(context: AgentContext): () => void;
   release(context: AgentContext): Promise<void>;
   interrupt(context: AgentContext): Promise<void>;
   stopTurn(context: AgentContext, turnId: string): Promise<boolean>;

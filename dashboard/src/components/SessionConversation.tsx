@@ -617,6 +617,7 @@ export function SessionConversation({
   onNewConversation?: (
     preference?: import("../lib/api").AgentModelPreference,
     expectedNativeId?: string,
+    environmentId?: string,
   ) => Promise<string|void>;
   onClose?: () => void;
   resuming?: boolean;
@@ -633,7 +634,7 @@ export function SessionConversation({
     session.id,
     agentNativeId(session),
   );
-  const sendGuard=useConversationSendGuard(session.id,active,compaction,onNewConversation?(expectedNativeId)=>expectedNativeId?onNewConversation(undefined,expectedNativeId):onNewConversation():undefined);
+  const sendGuard=useConversationSendGuard(session.id,active,compaction,onNewConversation?(expectedNativeId,preference,environmentId)=>expectedNativeId?(environmentId?onNewConversation(preference,expectedNativeId,environmentId):onNewConversation(preference,expectedNativeId)):onNewConversation():undefined);
   const permissions = usePermissions();
   const queryClient = useQueryClient();
   const canRead = hasPermission(permissions.data, "agent_api");

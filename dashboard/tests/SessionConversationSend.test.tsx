@@ -169,7 +169,7 @@ describe('conversation send transaction', () => {
     }) as ConversationPage);
     const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult),newSession=vi.fn().mockResolvedValue('fresh');
     await mount(session,newSession);input('这次的新需求');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-    fireEvent.click(within(await screen.findByRole('dialog',{name:'发送前检查'})).getByRole('button',{name:'简要压缩后发送'}));
+    fireEvent.click(within(await screen.findByRole('dialog',{name:'发送前检查'})).getByRole('button',{name:'简要压缩后发送'}));fireEvent.click(await screen.findByRole('button',{name:'开始简要压缩'}));
     await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
     expect(newSession).toHaveBeenCalledExactlyOnceWith(undefined,'native');
     const sent=submit.mock.calls[0][1],brief=parseBriefContext(sent)!;
@@ -188,7 +188,7 @@ describe('conversation send transaction', () => {
     const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);
     await mount(session,vi.fn().mockResolvedValue('fresh'));fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
     input('one');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));input('two');fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
-    fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));fireEvent.click(within(await screen.findByRole('dialog',{name:'发送前检查'})).getByRole('button',{name:'简要压缩后发送'}));
+    fireEvent.click(screen.getByRole('button',{name:'发送批量内容'}));fireEvent.click(within(await screen.findByRole('dialog',{name:'发送前检查'})).getByRole('button',{name:'简要压缩后发送'}));fireEvent.click(await screen.findByRole('button',{name:'开始简要压缩'}));
     await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
     const sent=submit.mock.calls[0][1],brief=parseBriefContext(sent)!;
     expect(brief.input).toBe('one\n\ntwo');expect(submit.mock.calls[0][4]).toEqual([{length:brief.prefixLength+3,attachments:0},{length:3,attachments:0}]);
@@ -203,7 +203,7 @@ describe('conversation send transaction', () => {
     }) as ConversationPage);
     const submit=vi.spyOn(api.agent,'sendInput').mockRejectedValueOnce(new ApiError('not accepted',409,'rejected')).mockResolvedValue({status:'submitted'} as SendResult);
     const view=await mount(session,vi.fn().mockResolvedValue('fresh'));input('需要保留的草稿');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-    fireEvent.click(within(await screen.findByRole('dialog',{name:'发送前检查'})).getByRole('button',{name:'简要压缩后发送'}));
+    fireEvent.click(within(await screen.findByRole('dialog',{name:'发送前检查'})).getByRole('button',{name:'简要压缩后发送'}));fireEvent.click(await screen.findByRole('button',{name:'开始简要压缩'}));
     expect(await screen.findByText('简要历史已保留，将与原草稿一起发送。')).toBeVisible();
     await waitFor(()=>expect(submit).toHaveBeenCalledOnce());await waitFor(()=>expect(loadComposer(composerKey('local',session.id)).draft).toBe('需要保留的草稿'));
     const first=submit.mock.calls[0][1],saved=loadComposer(composerKey('local',session.id)).briefContext;

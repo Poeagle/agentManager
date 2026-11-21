@@ -74,7 +74,7 @@ it('sends brief history only to the original tab after the user switches session
   vi.mocked(api.agent.conversation).mockImplementation(async(id,query)=>({session_id:id,messages:query?.limit?[{id:'old',role:'user',text:'旧任务',timestamp:null}]:[],statistics:[],has_more:false,reset:false,available:true,generation:id,native_id:`${id}-native`,session_active:true,session_status:'running',runtime:{state:'idle'},interaction:null}) as unknown as ConversationPage);
   let checks=0;vi.mocked(api.agent.checkSend).mockImplementation(async id=>id==='source'?++checks===1?{...check,can_new:true}:{...check,native_id:'fresh-native',needs_confirmation:false,token:'brief-after'}:{...check,needs_confirmation:false,native_id:'other-native',token:'other'});
   let release!:(id:string)=>void;const onNew=vi.fn(()=>new Promise<string>(resolve=>{release=resolve;}));
-  await mount(onNew);input('原会话的新需求');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));fireEvent.click(await screen.findByRole('button',{name:'简要压缩后发送'}));
+  await mount(onNew);input('原会话的新需求');fireEvent.click(screen.getByRole('button',{name:'发送消息'}));fireEvent.click(await screen.findByRole('button',{name:'简要压缩后发送'}));fireEvent.click(await screen.findByRole('button',{name:'开始简要压缩'}));
   await waitFor(()=>expect(onNew).toHaveBeenCalledOnce());fireEvent.click(screen.getByRole('button',{name:'其他会话',exact:true}));
   await waitFor(()=>expect(Socket.sessions.get('other')?.onmessage).toBeTruthy());input('其他会话的草稿');await act(async()=>release('fresh-native'));
   await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledOnce());

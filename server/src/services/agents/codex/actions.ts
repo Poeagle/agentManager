@@ -1,5 +1,5 @@
 import {submissionFailure,AgentSubmissionError} from '../submission.js';
-import {runInCodexEngine,engineForProvider,currentCodexEngine} from './engine-context.js';
+import {runInCodexEngine,engineForProvider,currentCodexEngine,type CodexEngine} from './engine-context.js';
 import {validateModelPreference,readCodexModels} from './controls.js';
 import type {ModelPreference} from '../types.js';
 import {withCodexConnection,rememberStreamingSharedResources,persistIdleCodexThread} from './stream.js';
@@ -19,7 +19,7 @@ export async function compactCodexConversation(threadId:string) {
 
 /** Persist an otherwise empty thread without generating a reply. The native
  * client cannot resume an empty thread until its rollout has been flushed. */
-export async function prepareFreshCodexConversation(threadId:string,cwd:string,sharedInstructions?:string,preference?:ModelPreference) {
+export async function prepareFreshCodexConversation(threadId:string,cwd:string,sharedInstructions?:string,preference?:ModelPreference,environmentEngine?:CodexEngine) {
   return withCodexConnection(async request=>{
     const current=await request('thread/read',{threadId});
     if(!current.thread)throw Error('原生会话不存在，历史已保留');
@@ -29,6 +29,10 @@ export async function prepareFreshCodexConversation(threadId:string,cwd:string,s
     const engine=currentCodexEngine();
     return runInCodexEngine(!engine.provider&&typeof current.thread.modelProvider==='string'&&current.thread.modelProvider?{...engine,provider:current.thread.modelProvider}:engine,async()=>{
     const model=async()=>{
+      if(environmentEngine){
+        const requested=preference||{model:current.thread.model,effort:current.thread.reasoningEffort||''};
+        return runInCodexEngine(environmentEngine,()=>validateModelPreference(requested,true));
+      }
       if(preference)return validateModelPreference(preference);
       if(!(await readCodexModels()).some(m=>m.model===current.thread.model&&(!m.provider||m.provider===current.thread.modelProvider)))
         throw Error('原模型当前不可用，请先选择新会话的模型');
@@ -39,7 +43,7 @@ export async function prepareFreshCodexConversation(threadId:string,cwd:string,s
     const sandbox=({readOnly:'read-only',workspaceWrite:'workspace-write',dangerFullAccess:'danger-full-access'} as Record<string,string>)[settings.sandbox?.type];
     if(!['read-only','workspace-write','danger-full-access'].includes(sandbox)||!settings.approvalPolicy)throw Error('无法确认原会话权限，原会话已保留');
     if(sandbox==='read-only'&&settings.sandbox.networkAccess===true)throw Error('此只读会话有自定义网络权限，请在原始终端新开会话');
-    const targetEngine=engineForProvider(chosen?.provider||current.thread.modelProvider);
+    const targetEngine=environmentEngine||engineForProvider(chosen?.provider||current.thread.modelProvider);
     const create=async(target:typeof request)=>{
     const result=await target('thread/start',{
       cwd,model:chosen?.model||current.thread.model,modelProvider:chosen?.provider||current.thread.modelProvider,

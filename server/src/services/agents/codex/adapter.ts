@@ -85,6 +85,14 @@ export const codexAdapter: AgentAdapter = {
         preflight: async (context) => context.nativeId?inCodexThread(context.nativeId,async()=>(await import('./version.js')).prepareCodexReload(!!context.sharedAccess && !!currentCodexEngine().socket)):(await import('./version.js')).prepareCodexReload(!!context.sharedAccess && !!currentCodexEngine().socket),
         compact: async (context) => inCodexThread(requireNative(context),async()=>(await import('./actions.js')).compactCodexConversation(requireNative(context))),
         prepareFresh: async (context, instructions, preference) => inCodexThread(requireNative(context),async()=>(await import('./actions.js')).prepareFreshCodexConversation(requireNative(context), context.projectPath!, instructions,preference)),
+        prepareFreshInEnvironment: async (context, environmentId, instructions, preference) => {
+            const environments=await import('./environments.js');
+            const target=environments.getCodexEnvironment(environmentId);
+            if(target.kind==='account')await (await import('./account-transport.js')).checkAccountProject(environments.environmentConnection(target),context.projectPath!);
+            const engine=await environments.engineForEnvironment(environmentId);
+            return inCodexThread(requireNative(context),async()=>(await import('./actions.js')).prepareFreshCodexConversation(requireNative(context),context.projectPath!,instructions,preference,engine));
+        },
+        discardFresh: async context => inCodexThread(requireNative(context),async()=>{await (await import('./stream.js')).withCodexConnection(request=>request('thread/archive',{threadId:requireNative(context)}));}),
         stopTurn: async (context, turnId) => inCodexThread(requireNative(context),async()=>{if(!currentCodexEngine().socket)throw Object.assign(Error('此会话未连接支持停止的原生服务'),{statusCode:409});return (await import('./stream.js')).stopStreamingCodexTurn(requireNative(context),turnId);}),
         release: async (context) => inCodexThread(requireNative(context),async()=>(await import('./actions.js')).releaseCodexConversation(requireNative(context))),
         interrupt: async (context) => { if (context.nativeId && process.env.AGENTMANAGER_CODEX_STREAM_SOCKET)

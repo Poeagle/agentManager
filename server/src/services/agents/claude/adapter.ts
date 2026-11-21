@@ -28,6 +28,7 @@ import {
   readClaudeTelemetry,
   confirmedClaudeControls,
   readClaudeSessionModelPreference,
+  captureClaudeFreshRollback,
 } from "./controls.js";
 import { claudeManagement } from "./management.js";
 import { managedModelPreference } from "../management-store.js";
@@ -192,6 +193,7 @@ export const claudeAdapter: AgentDefinition = {
     observe: asyncObserve,
   },
   lifecycle: {
+    freshRollback: context => captureClaudeFreshRollback(context),
     supportsFreshModel: true,
     bind: async () => {},
     preflight: async (context) => {
@@ -204,6 +206,11 @@ export const claudeAdapter: AgentDefinition = {
     compact: compactClaudeConversation,
     prepareFresh: async (context,instructions,preference) => {
       if(!context.projectPath)throw Error("Claude managed session is missing project context");
+      if(!preference){
+        const current=await (await import('./controls.js')).readClaudeControls(context);
+        if(!current.model)throw Error('无法确认当前模型，请选择新会话模型');
+        preference={model:current.model,effort:''};
+      }
       const nativeId=randomUUID();
       let provider=(await import("./providers.js")).claudeRuntimeProvider(context.session,context.environmentAccess);
       if(!provider&&!context.session.agent_environment_id)provider=(await import("./providers.js")).claudeNativeRuntimeProvider(context.environmentAccess);
@@ -214,6 +221,16 @@ export const claudeAdapter: AgentDefinition = {
           provider?{model:runtimeModel(provider,preference),effort:""}:preference,
         );
       return nativeId;
+    },
+    prepareFreshInEnvironment: async (context,environmentId,instructions,preference) => {
+      const target={...context,session:{...context.session,agent_environment_id:environmentId}};
+      const controls=await import('./controls.js');
+      const current=await controls.readClaudeControls(context);
+      const chosen=preference||{model:current.model,effort:''};
+      if(!chosen.model)throw Error('无法确认当前模型，请选择目标模型');
+      const providers=await import('./providers.js');
+      if(!providers.claudeProviderModelsForEnvironment(environmentId).includes(chosen.model))throw Error('目标账号不支持所选模型，请重新选择');
+      return claudeAdapter.lifecycle!.prepareFresh!(target,instructions,{model:chosen.model,effort:''});
     },
     release: async (context) => {
       if (context.nativeId)

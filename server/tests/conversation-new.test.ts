@@ -18,6 +18,7 @@ import {prepareFreshCodexConversation,releaseCodexConversation,compactCodexConve
 import {prepareCodexReload} from '../src/services/agents/codex/version.js';
 import {readConversationControls,validateModelPreference} from '../src/services/agents/codex/controls.js';
 import {getAgent} from '../src/services/agents/index.js';
+import {createUser} from '../src/auth.js';
 let cleanup:()=>void;
 const saved={useTmux:config.useTmux,useDtach:config.useDtach},native='019ff001-3434-7434-8434-343434343434';
 beforeEach(()=>{vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});vi.clearAllMocks();const db=createTestDatabase();cleanup=db.cleanup;config.useTmux=false;config.useDtach=false;vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/fake');getDb().prepare("INSERT INTO projects(id,name,path) VALUES('new-project','New',?)").run(db.dir);getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id) VALUES('new-test','new-project','Do not submit old task','running','session','codex',?)").run(native);getDb().prepare("INSERT INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments) VALUES('new-test','attachment','k','text','[]')").run();getDb().prepare("INSERT INTO pty_output(session_id,seq,data) VALUES('new-test',1,'old output')").run();});
@@ -44,6 +45,13 @@ describe('fresh conversation in the same tab',()=>{
    expect(result.ok).toBe(true);expect(getSession('new-test')?.codex_session_id).not.toBe(native);expect(prepareFreshCodexConversation).toHaveBeenCalledOnce();
   }finally{runtime.mockRestore();}
  });
+ it('rejects a changed source environment even if its native ID is unchanged',async()=>{
+  const adapter=getAgent('codex'),runtime=vi.spyOn(adapter.runtime,'read').mockResolvedValue({state:'idle'} as any);
+  const discard=vi.spyOn(adapter.lifecycle,'discardFresh').mockResolvedValue();
+  vi.mocked(prepareFreshCodexConversation).mockImplementationOnce(async()=>{getDb().prepare("UPDATE sessions SET agent_environment_id='other' WHERE id='new-test'").run();return '019ff001-3333-7333-8333-333333333333';});
+  try{const result=await newSessionConversation('new-test',undefined,undefined,native);expect(result).toMatchObject({ok:false,error:'原会话已变化，未发送简要历史'});expect(discard).toHaveBeenCalledOnce();expect(fork).not.toHaveBeenCalled();}
+  finally{getDb().prepare("UPDATE sessions SET agent_environment_id=NULL WHERE id='new-test'").run();runtime.mockRestore();discard.mockRestore();}
+ });
  it('preserves history and attachments under a history row, replaces only native id and resumes without submitting old task',async()=>{
   const result=await newSessionConversation('new-test');expect(result.ok).toBe(true);expect(getSession('new-test')).toMatchObject({id:'new-test',codex_session_id:'019ff001-3333-7333-8333-333333333333',status:'running'});expect(getSession(result.history_id!)).toMatchObject({codex_session_id:native,status:'cancelled',pid:null});expect(getDb().prepare('SELECT session_id FROM conversation_attachments').get()).toEqual({session_id:result.history_id});expect(getDb().prepare('SELECT data FROM pty_output WHERE session_id=?').get(result.history_id)).toEqual({data:'old output'});expect(releaseCodexConversation).toHaveBeenCalledWith(native);const worker=vi.mocked(fork).mock.results[0].value as any;expect(worker.send).toHaveBeenCalledWith(expect.objectContaining({resumeSessionId:'019ff001-3333-7333-8333-333333333333'}));expect(fork).toHaveBeenCalledTimes(1);
  });
@@ -55,6 +63,12 @@ describe('fresh conversation in the same tab',()=>{
   expect(getDb().prepare('SELECT value FROM user_ui_state WHERE key=?').get(`session-control:${result.history_id}`)).toMatchObject({value:JSON.stringify({model:'old-model',effort:'high',provider:'old-provider'})});
  });
  it('retains the running conversation when preparation fails',async()=>{vi.mocked(prepareFreshCodexConversation).mockRejectedValueOnce(Error('prepare failed'));expect(await newSessionConversation('new-test')).toMatchObject({ok:false,error:'prepare failed'});expect(getSession('new-test')).toMatchObject({status:'running',codex_session_id:native});expect(fork).not.toHaveBeenCalled();expect(getDb().prepare('SELECT count(*) n FROM sessions').get()).toEqual({n:1});});
+ it('restores adapter-owned settings when preparing the new conversation fails',async()=>{
+  const lifecycle=getAgent('codex').lifecycle,previous=lifecycle.freshRollback,restore=vi.fn();
+  lifecycle.freshRollback=()=>restore;vi.mocked(prepareFreshCodexConversation).mockRejectedValueOnce(Error('prepare failed'));
+  try{expect((await newSessionConversation('new-test')).ok).toBe(false);expect(restore).toHaveBeenCalledOnce();}
+  finally{lifecycle.freshRollback=previous;}
+ });
  it('validates a fresh model without loading the full session controls view',async()=>{
   const preference={model:'fixture-model',effort:'high'};
   const result=await newSessionConversation('new-test',preference);expect(result.ok).toBe(true);expect(readConversationControls).not.toHaveBeenCalled();expect(validateModelPreference).toHaveBeenCalledWith(preference,true);expect(vi.mocked(prepareFreshCodexConversation).mock.calls[0][3]).toEqual(preference);
@@ -90,4 +104,63 @@ describe('environment replacement lifecycle',()=>{
   expect(getDb().prepare('SELECT session_id FROM conversation_attachments').all()).toEqual([{session_id:'new-test'}]);
   expect(getDb().prepare('SELECT count(*) n FROM sessions').get()).toEqual({n:1});
  });
+});
+
+it('creates an empty conversation in the selected account without copying old attachments',async()=>{
+ const user=createUser({username:'brief-owner',password:'password1',role:'admin'}).id;
+ getDb().prepare('UPDATE sessions SET created_by_user_id=? WHERE id=?').run(user,'new-test');
+ getDb().prepare("INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES('account:brief','codex','Brief','account',1,?, '[]')").run(JSON.stringify({username:'fixture',port:22,identityFile:'',codexCommand:'codex',codexHome:''}));
+ const adapter=getAgent('codex'),runtime=vi.spyOn(adapter.runtime,'read').mockResolvedValue({state:'idle'} as any);
+ const prepare=vi.spyOn(adapter.lifecycle,'prepareFreshInEnvironment').mockResolvedValue('019ff001-4444-7444-8444-444444444444');
+ try{
+  const preference={model:'fixture-model',effort:'high'};
+  const result=await newSessionConversation('new-test',preference,undefined,native,'account:brief');
+  expect(result).toMatchObject({ok:true});expect(prepare).toHaveBeenCalledOnce();
+  expect(prepare.mock.calls[0][1]).toBe('account:brief');expect(prepare.mock.calls[0][3]).toEqual(preference);
+  expect(getSession('new-test')?.agent_environment_id).toBe('account:brief');
+  expect(getSession(result.history_id!)?.agent_environment_id).toBeNull();
+  expect(getDb().prepare('SELECT session_id FROM conversation_attachments').all()).toEqual([{session_id:result.history_id}]);
+ }finally{runtime.mockRestore();prepare.mockRestore();}
+});
+
+it('rejects an unauthorized target account before preparing a conversation',async()=>{
+ const user=createUser({username:'brief-member',password:'password1'}).id;
+ getDb().prepare('UPDATE sessions SET created_by_user_id=? WHERE id=?').run(user,'new-test');
+ getDb().prepare("INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES('account:private','codex','Private','account',1,'{}','[]')").run();
+ const prepare=vi.spyOn(getAgent('codex').lifecycle,'prepareFreshInEnvironment');
+ try{
+  const result=await newSessionConversation('new-test',undefined,undefined,native,'account:private');
+  expect(result.ok).toBe(false);expect(prepare).not.toHaveBeenCalled();
+  expect(getSession('new-test')).toMatchObject({codex_session_id:native,agent_environment_id:null});
+ }finally{prepare.mockRestore();}
+});
+
+it('restores the source binding and discards the target if target startup fails',async()=>{
+ const user=createUser({username:'brief-rollback',password:'password1',role:'admin'}).id;
+ getDb().prepare('UPDATE sessions SET created_by_user_id=? WHERE id=?').run(user,'new-test');
+ getDb().prepare("INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES('account:rollback','codex','Rollback','account',1,?, '[]')").run(JSON.stringify({username:'fixture',port:22,identityFile:'',codexCommand:'codex',codexHome:''}));
+ const adapter=getAgent('codex'),runtime=vi.spyOn(adapter.runtime,'read').mockResolvedValue({state:'idle'} as any);
+ const prepare=vi.spyOn(adapter.lifecycle,'prepareFreshInEnvironment').mockResolvedValue('019ff001-4444-7444-8444-444444444444');
+ const discard=vi.spyOn(adapter.lifecycle,'discardFresh').mockResolvedValue();
+ vi.mocked(fork).mockImplementationOnce(()=>{throw Error('target startup failed');});
+ try{
+  const result=await newSessionConversation('new-test',undefined,undefined,native,'account:rollback');
+  expect(result.ok).toBe(false);expect(discard).toHaveBeenCalledOnce();
+  expect(getSession('new-test')).toMatchObject({codex_session_id:native,agent_environment_id:null});
+  expect(getDb().prepare('SELECT session_id FROM conversation_attachments').all()).toEqual([{session_id:'new-test'}]);
+ }finally{runtime.mockRestore();prepare.mockRestore();discard.mockRestore();}
+});
+
+it('does not replace a conversation that starts running while the target is prepared',async()=>{
+ const user=createUser({username:'brief-race',password:'password1',role:'admin'}).id;
+ getDb().prepare('UPDATE sessions SET created_by_user_id=? WHERE id=?').run(user,'new-test');
+ getDb().prepare("INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES('account:race','codex','Race','account',1,?, '[]')").run(JSON.stringify({username:'fixture',port:22,identityFile:'',codexCommand:'codex',codexHome:''}));
+ const adapter=getAgent('codex'),runtime=vi.spyOn(adapter.runtime,'read').mockResolvedValueOnce({state:'idle'} as any).mockResolvedValueOnce({state:'running'} as any);
+ const prepare=vi.spyOn(adapter.lifecycle,'prepareFreshInEnvironment').mockResolvedValue('019ff001-4444-7444-8444-444444444444');
+ const discard=vi.spyOn(adapter.lifecycle,'discardFresh').mockResolvedValue();
+ try{
+  const result=await newSessionConversation('new-test',undefined,undefined,native,'account:race');
+  expect(result).toMatchObject({ok:false,error:'准备期间原会话开始运行，未发送简要历史'});
+  expect(discard).toHaveBeenCalledOnce();expect(getSession('new-test')?.codex_session_id).toBe(native);expect(fork).not.toHaveBeenCalled();
+ }finally{runtime.mockRestore();prepare.mockRestore();discard.mockRestore();}
 });

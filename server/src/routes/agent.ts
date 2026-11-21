@@ -111,7 +111,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.18.0',
+    version:'3.19.0',
     updatedAt:'2026-11-21',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -427,6 +427,9 @@ export function getAgentApiContract() {
         description: 'Return a concise, low-token summary of the logged-in user\'s active sessions.',
       },
       {category:'Session control',method:'POST',path:'/api/sessions/:id/input-check',description:'Read-only sending-risk preflight for an accessible session. Accepts input, attachments and batch; returns needs_confirmation, nullable context/idle metrics, can_compact/can_new and a confirmation token. Does not start a turn. Admin-configured AND/OR rules are also checked by conversation input.'},
+      {category:'Session control',method:'POST',path:'/api/sessions/:id/new-conversation',description:'Create a fresh native conversation in the same tab and preserve the old history. The session owner must have agent write permission and be an administrator. Optional environment_id selects an authorized target environment and requires expected_native_id to match an idle source conversation. Unsupported targets are rejected.',
+        request:{preference:{type:'object',required:false,description:'Optional model, effort, provider and service_tier preference; the current model is used when omitted.'},expected_native_id:{type:'string',required:false,description:'Expected source native conversation identity; required when environment_id is supplied.'},environment_id:{type:'string',required:false,description:'Authorized target Agent environment; omitted uses the current environment.'}},
+        response:{session:'Fresh platform session with a new native identity',history_id:'Preserved previous session ID'}},
       {
         category: 'Session control',
         method: 'WS',

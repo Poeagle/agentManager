@@ -85,6 +85,16 @@ test('model controls use native capabilities and a docked file stays readable wh
   await input.fill('批量发送后自动收起');await input.press('Enter');await expect(divider).toHaveAttribute('aria-valuenow',String(wider));
   await batch.getByRole('button',{name:'发送批量内容',exact:true}).click();await expect.poll(()=>inputs.length).toBe(4);await expect(batch).toHaveCount(0);await expect(mode).toHaveValue('batch');
   await mode.selectOption('immediate');
+  await page.route(`**/api/sessions/${session.id}/input-check`,route=>route.fulfill({json:{enabled:true,needs_confirmation:false,matched:false,native_id:native,can_new:true,can_compact:true,token:'fixture',context_tokens:1000,context_window:40000,context_percent:2.5,idle_minutes:0,observed_at:null}}));
+  await input.fill('尚未发送的草稿');await page.getByRole('button',{name:'简要压缩',exact:true}).click();
+  const brief=page.getByRole('dialog',{name:'简要压缩设置'});await expect(brief).toBeVisible();
+  await expect(brief.getByRole('combobox',{name:'简要压缩账号'})).toHaveValue('');
+  await expect(brief.getByRole('combobox',{name:'简要压缩模型'})).toHaveValue('');
+  await expect(brief.getByRole('option',{name:'Model B'})).toBeAttached();
+  await brief.getByRole('combobox',{name:'简要压缩模型'}).selectOption(modelKey('model-b'));
+  await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await brief.getByRole('button',{name:'取消'}).click();await expect(input).toHaveText('尚未发送的草稿');
+  await page.setViewportSize({width:1280,height:720});await page.unroute(`**/api/sessions/${session.id}/input-check`);
   await page.getByRole('button',{name:'新开',exact:true}).click();await expect(page.getByRole('dialog',{name:'在当前标签页新开会话'})).toContainText('旧会话的后台终端会回收');await page.getByRole('button',{name:'取消',exact:true}).click();await expect(input).toBeVisible();
   // Browser replacement contract; runtime preparation/rollback is exercised by
   // conversation-new.test.ts against the real manager lifecycle.
