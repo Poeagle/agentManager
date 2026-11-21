@@ -85,8 +85,7 @@ export function groupConversationProgress(messages:TimelineMessage[]):Conversati
         owner.messages.push(message);
         continue;
       }
-      const priorScope=previous&&groupScope.get(previous);
-      const adjacent=previous?.kind==='progress'&&!progressClosed&&(!scope||!priorScope||scope===priorScope)?previous:undefined;
+      const adjacent=previous?.kind==='progress'&&!progressClosed?previous:undefined;
       const group=owner??adjacent??{kind:'progress' as const,id:message.id,messages:[]};
       group.messages.push(message);
       if(!owner&&!adjacent)groups.push(group);
