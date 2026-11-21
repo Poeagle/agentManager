@@ -59,6 +59,10 @@ describe('persisted session statistics',()=>{
     await updateSessionFacts(codex,file);
     expect(readSessionMetadata(codex)).toMatchObject({status:'complete',reasons:[],totals:{requests:1,tool_calls:2,tokens:{total_tokens:5020}}});
     expect(readSessionProgress(codex)?.segment?.end_reason).toBeNull();
+    const {generation,revision}=readSessionMetadata(codex)!;
+    getDb().prepare("UPDATE session_statistics_sources SET summary=json_set(summary,'$.status','pending')").run();
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)).toMatchObject({generation,revision,status:'complete',reasons:[],totals:{requests:1,tool_calls:2}});
   });
   it('reconciles primary receipts, tool rounds, completed intervals, and cache changes across restart',async()=>{
     const first=tokens(10_000,9_000), second=tokens(11_000,0), third=tokens(12_000,10_000);
@@ -325,6 +329,9 @@ describe('persisted session statistics',()=>{
     await updateSessionFacts(codex,file);
     expect(readChangedSessionStatistics(codex,0)[0].interval).toMatchObject({coverage:'pending',tokens:null});
     expect(readSessionMetadata(codex)?.reasons).toContain('incomplete_record');
+    expect(readSessionMetadata({...codex,session:{...codex.session,status:'completed'}})).toMatchObject({
+      status:'pending',reasons:['incomplete_record'],
+    });
     await appendFile(file,'\n'+event(4,'task_complete',{turn_id:'a'}));
     await updateSessionFacts(codex,file);
     const before=readSessionMetadata(codex);
