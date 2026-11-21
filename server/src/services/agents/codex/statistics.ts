@@ -89,7 +89,8 @@ function consume(state:State,line:Buffer,sequence:number){
   const p=record.payload;if(!p)return;
   const settings=recordedPricingSettings(record);
   if(settings){if('model' in settings)state.model=typeof settings.model==='string'?settings.model.slice(0,120):null;if('service_tier' in settings)state.tier=typeof settings.service_tier==='string'?settings.service_tier.slice(0,120):null;}
-  const id=p.turn_id||p.internal_chat_message_metadata_passthrough?.turn_id||(record.type==='response_item'?state.turn?.id:undefined);
+  const responseTurn=record.type==='response_item'?state.turn:undefined;
+  const id=p.turn_id||(responseTurn?.complete?responseTurn.id:undefined)||p.internal_chat_message_metadata_passthrough?.turn_id||responseTurn?.id;
   if(record.type==='event_msg'&&p.type==='task_started'&&typeof id==='string'){
     if(state.conclusion.initial)state.conclusion.start ||= timestamp(record.timestamp);
     if(state.turn?.id!==id){closeSegment(state,null);finish(state,false);state.turn=turn(id,true);state.segment=segment(sequence,timestamp(record.timestamp),true);}

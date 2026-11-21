@@ -317,8 +317,11 @@ export class SessionStatisticsProjection {
     const structuralChange = previous && current && (compaction || cacheDimensionChanges(previous,current).length > 0);
     const sameInput = current?.input_id != null && current.input_id === previous?.input_id;
     let drop: SessionCacheDrop | null = null;
-    if (current && previous && (structuralChange || sameInput)) {
-      const distinctInputs = firstInputSample && !input.ambiguous && previous.input_id && previous.input_id !== current.input_id;
+    const startsKnownInput = firstInputSample && !input.ambiguous;
+    const crossesTurn = turn?.verified && previous?.turn_id && current?.turn_id && previous.turn_id !== current.turn_id;
+    const fallback = startsKnownInput && crossesTurn && !state.previousInputSample;
+    if (current && previous && (structuralChange || sameInput || fallback)) {
+      const distinctInputs = startsKnownInput && !sameInput && (previous.input_id || fallback);
       drop = detectCacheDrop(previous,current,distinctInputs ? 'input' : 'request',compaction);
     }
     if (!drop && !structuralChange && current && firstInputSample && !input.ambiguous && state.previousInputSample) {

@@ -100,8 +100,13 @@ export const codexSessionFacts: AgentSessionFactsPort = {
       facts.push({kind: 'gap', reason: 'unreadable_record'});
       return result();
     }
-    const declaredTurn = factString(payload?.turn_id ?? payload?.internal_chat_message_metadata_passthrough?.turn_id);
-    const turn = (declaredTurn === context.nativeId ? null : declaredTurn) ?? state.turn;
+    const declaredTurn = factString(payload?.turn_id);
+    const responseTurn = factString(payload?.internal_chat_message_metadata_passthrough?.turn_id);
+    // A response echo can carry a model-side ID while the lifecycle and usage
+    // records still identify the same active app-server turn.
+    const turn = (declaredTurn === context.nativeId ? null : declaredTurn) ??
+      (kind === 'response_item' && state.started ? state.turn : null) ??
+      (responseTurn === context.nativeId ? null : responseTurn) ?? state.turn;
     if (kind === 'session_meta') {
       const id = factString(payload.id);
       const inherited = !!id && !!context.nativeId && id !== context.nativeId;
