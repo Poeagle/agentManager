@@ -348,6 +348,65 @@ describe('Claude Agent SDK runtime',()=>{
       streaming:false,
     });
   });
+  it('keeps the turn active when an end_turn thinking block precedes the final text',async()=>{
+    let publishFinal!:(value:unknown)=>void;
+    const completed={type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null};
+    const message={id:'split-final',role:'assistant',stop_reason:'end_turn'};
+    sdk.messages=[
+      {...completed,message:{...message,content:[{type:'thinking',thinking:'Checking'}]}},
+      new Promise(resolve=>{publishFinal=resolve;}),
+      new Promise(()=>{}),
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Complete split response');
+    await vi.waitFor(()=>expect(runtime.snapshot().messages.some(item=>item.content_blocks?.some(block=>block.type==='thinking'))).toBe(true));
+    expect(runtime.snapshot().busy).toBe(true);
+    expect(runtime.snapshot().messages.some(item=>item.phase==='final')).toBe(false);
+    publishFinal({...completed,message:{...message,content:[{type:'text',text:'Split reply complete.'}]}});
+    await vi.waitFor(()=>expect(runtime.snapshot()).toMatchObject({busy:false,stage:'idle'}));
+    expect(runtime.snapshot().messages.filter(item=>item.phase==='final')).toMatchObject([{
+      text:'Split reply complete.',streaming:false,
+      content_blocks:[{type:'thinking',text:'Checking'},{type:'text',text:'Split reply complete.'}],
+    }]);
+  });
+  it('settles a thinking-only response at the SDK result without promoting earlier progress to Final',async()=>{
+    const reply=(id:string,content:unknown[],stop_reason:string)=>({
+      type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,
+      message:{id,role:'assistant',content,stop_reason},
+    });
+    sdk.messages=[
+      reply('progress',[{type:'text',text:'Checking files.'},{type:'tool_use',id:'read',name:'Read',input:{}}],'tool_use'),
+      reply('thinking',[{type:'thinking',thinking:'Checking the result'}],'end_turn'),
+      {type:'result',subtype:'success',uuid:assistant,session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Complete without a visible reply');
+    await vi.waitFor(()=>expect(runtime.snapshot()).toMatchObject({busy:false,stage:'idle'}));
+    expect(runtime.snapshot().messages.find(item=>item.text==='Checking files.')?.phase).toBe('commentary');
+    expect(runtime.snapshot().messages.some(item=>item.phase==='final')).toBe(false);
+  });
+  it('matches a follow-up echo arriving before the first user echo even when both inputs repeat the same text',async()=>{
+    let echoFollowup!:(message:unknown)=>void;
+    let echoFirst!:(message:unknown)=>void;
+    sdk.messages=[new Promise(resolve=>{echoFollowup=resolve;}),new Promise(resolve=>{echoFirst=resolve;})];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Continue','browser-first');
+    await vi.waitFor(()=>expect(sdk.queries).toHaveLength(1));
+    const input=sdk.queries[0].prompt[Symbol.asyncIterator]();
+    const first=(await input.next()).value;
+    await runtime.submit('Continue','browser-followup');
+    const followup=(await input.next()).value;
+    echoFollowup(followup);
+    await vi.waitFor(()=>expect(runtime.snapshot().messages.filter(item=>item.role==='user')).toMatchObject([
+      {id:conversationMessageId('','user',first.uuid),client_id:'browser-first'},
+      {id:conversationMessageId('','user',followup.uuid),client_id:'browser-followup',turn_id:followup.uuid},
+    ]));
+    echoFirst(first);
+    await vi.waitFor(()=>expect(runtime.snapshot().busy).toBe(false));
+    expect(runtime.snapshot().messages.filter(item=>item.role==='user').map(item=>item.id)).toEqual([
+      conversationMessageId('','user',first.uuid),conversationMessageId('','user',followup.uuid),
+    ]);
+  });
   it('inserts a running follow-up into the current query and continues after interrupt',async()=>{
     let release!:(value:any)=>void;sdk.messages=[new Promise(done=>{release=done;})];
     const runtime=ensureClaudeRuntime(session,'/tmp');

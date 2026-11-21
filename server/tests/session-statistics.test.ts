@@ -365,6 +365,35 @@ describe('persisted session statistics',()=>{
     expect(readChangedSessionStatistics(claude,0)[1].conclusion).toMatchObject({requests:2,tool_calls:2,tool_rounds:1});
   });
 
+  it('settles a Claude Final once when thinking and text share a terminal receipt across scans',async()=>{
+    const input=(at:number,uuid:string)=>JSON.stringify({timestamp:stamp(at),type:'user',uuid,message:{role:'user',content:'Question'}})+'\n';
+    const usage={input_tokens:4,cache_creation_input_tokens:563,cache_read_input_tokens:22321,output_tokens:694};
+    const assistant=(at:number,id:string,uuid:string,parentUuid:string,content:object[],counts:object|null)=>
+      JSON.stringify({timestamp:stamp(at),type:'assistant',uuid,parentUuid,message:{id,role:'assistant',model:'claude-test',stop_reason:'end_turn',content,usage:counts}})+'\n';
+
+    await writeFile(file,input(1,'first')+assistant(2,'final','thought','first',[{type:'thinking',thinking:'Consider'}],usage));
+    await updateSessionFacts(claude,file);
+    expect(readChangedSessionStatistics(claude,0)).toEqual([]);
+    expect(readSessionMetadata(claude)).toMatchObject({completed_turns:0});
+
+    await appendFile(file,assistant(3,'final','body','thought',[{type:'text',text:'Answer'}],null));
+    await updateSessionFacts(claude,file);
+    const [final]=readChangedSessionStatistics(claude,0);
+    expect(final).toMatchObject({turn_id:'first',item_at:stamp(3),interval:{requests:1,coverage:'complete',tokens:{total_tokens:23582}},
+      conclusion:{requests:1,coverage:'complete',start_at:stamp(1),end_at:stamp(3),tokens:{total_tokens:23582}}});
+    expect(final.message_id).toBe(nativeItemId('assistant','final'));
+
+    await appendFile(file,assistant(4,'final','body-echo','body',[{type:'text',text:'Answer'}],usage)+
+      input(5,'second')+assistant(6,'other','other-body','second',[{type:'text',text:'Other answer'}],null));
+    await updateSessionFacts(claude,file);
+    const rows=readChangedSessionStatistics(claude,0);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual(final);
+    expect(rows[1]).toMatchObject({turn_id:'second',interval:{coverage:'partial',reasons:['missing_usage'],requests:1,tokens:{total_tokens:null}},
+      conclusion:{coverage:'partial',requests:1}});
+    expect(readSessionMetadata(claude)).toMatchObject({completed_turns:2,totals:{requests:2,tokens:{total_tokens:23582}}});
+  });
+
   it('keeps pending and completed statistics scoped to the native environment of the binding',async()=>{
     await writeFile(file,event(0,'task_started',{turn_id:'a'})+user(1,'one')+answer(2,'final','final_answer')+receipt(3,'id','a',tokens(5000,1000)));
     await updateSessionFacts(codex,file);

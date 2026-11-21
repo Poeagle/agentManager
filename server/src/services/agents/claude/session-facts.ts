@@ -16,6 +16,7 @@ interface Assistant {
   tokens: NativeRequestFact['tokens'];
   tools: string[];
   visible: boolean;
+  outcome?: 'completed' | 'unknown';
   incomplete?: boolean;
 }
 interface ClaudeFactsState {
@@ -24,6 +25,7 @@ interface ClaudeFactsState {
   model: string | null;
   speed: string | null;
   assistant?: Assistant;
+  lastSettledAssistant?: string;
 }
 
 const count = (value: unknown): number | null =>
@@ -47,7 +49,7 @@ export function claudeRequestUsage(usage: Record<string, unknown> | null | undef
 }
 
 export const claudeSessionFacts: AgentSessionFactsPort = {
-  revision: 1,
+  revision: 2,
   async *discover() {
     const bindings = getDb().prepare(`SELECT DISTINCT COALESCE(native_session_id,claude_session_id) AS id,
       agent_environment_id AS environment FROM sessions WHERE COALESCE(agent_id,cli_type)='claude'
@@ -75,6 +77,8 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
       const group = state.assistant;
       if (!group) return;
       delete state.assistant;
+      state.lastSettledAssistant = group.id;
+      if (group.outcome) phase = group.outcome === 'completed' ? 'final' : 'progress';
       const declared = factString(context.session.agent_environment_id);
       const dimensions = {model: group.model, speed: group.speed, environment: declared, account: null};
       if (state.model && group.model && state.model !== group.model)
@@ -92,6 +96,10 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
       facts.push({kind: 'request', request: {
         id: group.id, at: group.at, turn_id: group.turn, tokens: group.tokens, dimensions, cost: null, evidence: 'request',
       }});
+      if (group.outcome) {
+        facts.push({kind: 'end', turn_id: group.turn, at: group.at, outcome: group.outcome});
+        if (state.turn === group.turn) state.turn = null;
+      }
     }
 
     const blocks: Array<Record<string, unknown>> = Array.isArray(message?.content)
@@ -138,6 +146,7 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
         facts.push({kind: 'gap', reason: 'missing_usage'});
         return result();
       }
+      if (id === state.lastSettledAssistant) return result();
       if (state.assistant && state.assistant.id !== id) settle();
       const turn = state.turn ?? factString(record.parentUuid) ?? factId('turn', context.nativeId, offset);
       const tools = blocks.filter(block => block.type === 'tool_use' || block.type === 'server_tool_use');
@@ -154,15 +163,12 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
         else if (!current.tools.includes(key)) current.tools.push(key);
       }
       state.assistant = current;
-      if (message.stop_reason === 'end_turn') {
-        settle('final');
-        facts.push({kind: 'end', turn_id: turn, at, outcome: 'completed'});
-        state.turn = null;
-      } else if (message.stop_reason && message.stop_reason !== 'tool_use' && message.stop_reason !== 'pause_turn') {
-        settle('progress');
-        facts.push({kind: 'end', turn_id: turn, at, outcome: 'unknown'});
-        state.turn = null;
-      }
+      if (message.stop_reason === 'end_turn') current.outcome = 'completed';
+      else if (message.stop_reason && message.stop_reason !== 'tool_use' && message.stop_reason !== 'pause_turn')
+        current.outcome = 'unknown';
+      // Claude copies the stop reason and usage onto each content block.
+      // An initial thinking block can arrive before the visible final text.
+      if (current.outcome && current.visible) settle();
       return result();
     }
     if (record.type === 'system' && record.subtype === 'compact_boundary') {
@@ -172,7 +178,7 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
     if (record.type === 'result' && state.turn) {
       const outcome = record.subtype === 'success' && !record.is_error ? 'completed' : 'unknown';
       settle(outcome === 'completed' && !state.assistant?.tools.length ? 'final' : 'unknown');
-      facts.push({kind: 'end', turn_id: state.turn, at, outcome});
+      if (state.turn) facts.push({kind: 'end', turn_id: state.turn, at, outcome});
       state.turn = null;
     }
     return result();

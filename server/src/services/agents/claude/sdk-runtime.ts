@@ -46,6 +46,12 @@ type AssistantEnvelope = {
   sawText: boolean;
 };
 
+function matchesSubmittedInput(item: Pending, message: SDKUserMessage): boolean {
+  const echoedClientId = (message as SDKUserMessage & { client_id?: string }).client_id;
+  return item.nativeUuid === message.uuid || item.userId === message.uuid ||
+    (!!echoedClientId && item.clientId === echoedClientId);
+}
+
 function textContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -668,8 +674,19 @@ class ClaudeRuntime {
   ) {
     if (!envelope.nativeId && nativeId) this.bindNativeId(envelope, nativeId);
     const blocks = Array.isArray(content) ? content : [];
-    for (let index = 0; index < blocks.length; index++) {
-      const block = blocks[index] as any;
+    for (const [position, block] of blocks.entries()) {
+      let index = position;
+      const atPosition = envelope.blocks.get(position);
+      // The SDK can report one completed block at a time, each at position 0.
+      // Look for the streamed block before allocating a slot for new content.
+      if (atPosition && atPosition.type !== block?.type) {
+        const matching = [...envelope.blocks.values()].find((existing) =>
+          (existing.type === "tool_use" && block?.type === "tool_use" && existing.id === block.id) ||
+          (existing.type === "thinking" && block?.type === "thinking" && existing.text === block.thinking) ||
+          (existing.type === "text" && block?.type === "text" && existing.text === block.text),
+        );
+        index = matching?.index ?? Math.max(...envelope.blocks.keys()) + 1;
+      }
       if (block?.type === "tool_use") {
         this.startTool(envelope, index, block.id, block.name, block.input);
         continue;
@@ -828,11 +845,9 @@ class ClaudeRuntime {
       }
       const nativeText = textContent(message.message.content);
       const submitted = this.submitted.find(
-        (item) =>
-          (!item.clientGenerated && item.nativeUuid === message.uuid) ||
-          message.uuid === item.nativeUuid ||
-          message.uuid === item.userId ||
-          (item === this.submitted[0] && nativeText === item.text),
+        (item) => matchesSubmittedInput(item, message),
+      ) ?? this.submitted.find((item, index) =>
+        index === 0 && item.clientGenerated && nativeText === item.text,
       );
       if (submitted) {
         this.submitted.splice(this.submitted.indexOf(submitted), 1);
@@ -946,15 +961,23 @@ class ClaudeRuntime {
       const nativeId =
         typeof message.message.id === "string" ? message.message.id : undefined;
       this.recordObservedModel(message.message.model);
-      const envelope =
+      let envelope =
         (nativeId
           ? this.completedAssistants.find(
               (candidate) => candidate.nativeId === nativeId,
             )
           : undefined) ??
-        this.currentAssistant ??
-        this.completedAssistants.shift() ??
-        this.beginAssistant();
+        (this.currentAssistant &&
+          (!nativeId || !this.currentAssistant.nativeId || this.currentAssistant.nativeId === nativeId)
+          ? this.currentAssistant : undefined);
+      if (!envelope) {
+        const streamed = this.completedAssistants.find((candidate) => !nativeId || !candidate.nativeId);
+        if (streamed) envelope = streamed;
+        else {
+          this.finishAssistantEnvelope();
+          envelope = this.beginAssistant();
+        }
+      }
       this.mergeCompletedAssistant(
         envelope,
         nativeId,
@@ -1039,7 +1062,8 @@ class ClaudeRuntime {
     return (
       message.type === "assistant" &&
       message.parent_tool_use_id === null &&
-      message.message.stop_reason === "end_turn"
+      message.message.stop_reason === "end_turn" &&
+      !!textContent(message.message.content).trim()
     );
   }
 
@@ -1051,7 +1075,6 @@ class ClaudeRuntime {
     const nativeMessageId = conversationMessageId("", "user", nativeId);
     const index = this.messages.findIndex(message => message.id === optimisticId);
     if (index < 0) return;
-    if (this.messages[index].id === nativeMessageId) return;
     const existing = this.messages.findIndex(
       (message) => message.id === nativeMessageId,
     );
@@ -1064,6 +1087,12 @@ class ClaudeRuntime {
     if (existing >= 0 && existing !== index) this.messages[existing] = message;
     else this.messages[index] = message;
     if (existing >= 0 && existing !== index) this.messages.splice(index, 1);
+    for (const [activityId, activity] of this.liveActivities) {
+      if (activity.after_message_id === optimisticId) {
+        this.liveActivities.set(activityId, { ...activity, after_message_id: nativeMessageId });
+      }
+    }
+    if (this.progressBoundary === optimisticId) this.progressBoundary = nativeMessageId;
     this.publish();
   }
 
@@ -1164,9 +1193,11 @@ class ClaudeRuntime {
     let completedSuccessfully = false;
     try {
       for await (const message of conversation) {
+        const followup = message.type === "user" && this.submitted.some((item) => matchesSubmittedInput(item, message));
         const current =
           message.type === "user" &&
           !message.parent_tool_use_id &&
+          !followup &&
           !this.currentNativeUserSeen &&
           (
             !this.currentInputUuid ||
@@ -1259,22 +1290,10 @@ class ClaudeRuntime {
       const message = this.messages.find((item) => item.id === id);
       return message && message.role === "assistant" ? [message] : [];
     });
-    let finalMessage: AgentMessage | undefined;
-    if (success) {
-      for (let index = assistants.length - 1; index >= 0; index--) {
-        const message = assistants[index];
-        if (
-          message.phase !== "error" &&
-          !!message.text.trim() &&
-          message.content_blocks?.some(
-            (block) => block.type === "text" && !!block.text.trim(),
-          ) === true
-        ) {
-          finalMessage = message;
-          break;
-        }
-      }
-    }
+    const last = assistants.at(-1);
+    const finalMessage = success && last?.phase !== "error" && last?.content_blocks?.some(
+      (block) => block.type === "text" && !!block.text.trim(),
+    ) ? last : undefined;
     for (const message of assistants) {
       if (message.phase === "error") {
         this.upsert({ ...message, streaming: false });
