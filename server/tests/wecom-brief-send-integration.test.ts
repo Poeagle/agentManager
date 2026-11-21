@@ -20,6 +20,7 @@ let cleanup:(()=>void)|undefined,app:ReturnType<typeof Fastify>|undefined;
 afterEach(async()=>{await app?.close();vi.restoreAllMocks();vi.unstubAllEnvs();cleanup?.();});
 
 it('uses the real guard and input routes when a WeCom quote needs a fresh brief conversation',async()=>{
+ const scheduledPrompt='检查服务状态并报告发现的问题。'.repeat(12);
  const fixture=createTestDatabase();cleanup=fixture.cleanup;
  const user=createUser({username:'owner',password:'password1',role:'admin'}).id;
  getDb().prepare("INSERT INTO projects(id,name,path,owner_id) VALUES('p','Project',?,?)").run(fixture.dir,user);
@@ -53,9 +54,9 @@ it('uses the real guard and input routes when a WeCom quote needs a fresh brief 
  vi.spyOn(conversationReader,'readConversation').mockImplementation(async source=>({available:true,generation:'one',has_more:false,reset:false,messages:source.codex_session_id==='native-fresh'?[{
   id:'fresh-input',role:'user',text:submit.mock.calls[0][1],timestamp:null,client_id:'quoted_'+incoming.message_id,
  }]:[
-  {id:'scheduled-input-1',role:'user',text:'检查服务状态',timestamp:null,client_id:'scheduled-1'},
+  {id:'scheduled-input-1',role:'user',text:scheduledPrompt,timestamp:null,client_id:'scheduled-1'},
   {id:'scheduled-final-1',role:'assistant',phase:'final',text:'第一次结果',timestamp:null},
-  {id:'scheduled-input-2',role:'user',text:'检查服务状态',timestamp:null,client_id:'scheduled-2'},
+  {id:'scheduled-input-2',role:'user',text:scheduledPrompt,timestamp:null,client_id:'scheduled-2'},
   {id:'scheduled-final-2',role:'assistant',phase:'final',text:'第二次结果',timestamp:null},
   {id:'old-input',role:'user',text:'原需求',timestamp:null},
   {id:'old-final',role:'assistant',phase:'final',text:'原结论',timestamp:null},
@@ -69,7 +70,7 @@ it('uses the real guard and input routes when a WeCom quote needs a fresh brief 
  expect(submit.mock.calls[0][0].nativeId).toBe('native-fresh');
  const brief=parseBriefContext(submit.mock.calls[0][1])!;
  expect(brief.context.turns).toEqual([
-  {input:'检查服务状态',scheduled_task:'巡检',conclusion:'第一次结果'},
+  {input:scheduledPrompt,scheduled_task:'巡检',conclusion:'第一次结果'},
   {input:'同第 1 轮定时任务提示词',input_ref:1,scheduled_task:'巡检',conclusion:'第二次结果'},
   {input:'原需求',conclusion:'原结论'},
  ]);

@@ -55,11 +55,32 @@ it('shares one verified scheduled prompt while preserving every result and attac
   const {context}=parseBriefContext(result.input)!;
   expect(result.input.split(prompt)).toHaveLength(2);
   expect(context.turns).toHaveLength(10);
+  const plainTurns=Array.from({length:10},(_,i)=>({input:prompt,conclusion:`第 ${i+1} 次结果`,
+    attachments:[{kind:'file',name:`配置${i}.txt`,path:`/project/${i}.txt`}]}));
+  expect(new TextEncoder().encode(JSON.stringify(context)).byteLength)
+    .toBeLessThan(new TextEncoder().encode(JSON.stringify({...context,turns:plainTurns})).byteLength);
   expect(context.turns[0]).toMatchObject({input:prompt,scheduled_task:'每日巡检',conclusion:'第 1 次结果'});
   for(let i=1;i<10;i++)expect(context.turns[i]).toMatchObject({
     input:'同第 1 轮定时任务提示词',input_ref:1,scheduled_task:'每日巡检',
     conclusion:`第 ${i+1} 次结果`,attachments:[{name:`配置${i}.txt`,path:`/project/${i}.txt`}],
   });
+});
+
+it('keeps very short scheduled prompts when references would increase the input size',async()=>{
+  const prompt='检查';
+  const messages=Array.from({length:10},(_,i)=>[
+    {...message(`u${i}`,'user',prompt),input_source:{kind:'scheduled',label:'巡检'}},
+    message(`a${i}`,'assistant',`结果${i}`,'final'),
+  ]).flat();
+  vi.spyOn(api.agent,'conversation').mockResolvedValue(page(messages));
+  const result=await prepareBriefSend('session','native',{input:'继续'},new AbortController().signal);
+  const {context}=parseBriefContext(result.input)!;
+  expect(context.turns.map(turn=>turn.input)).toEqual(Array(10).fill(prompt));
+  expect(context.turns.every(turn=>turn.input_ref===undefined && turn.scheduled_task===undefined)).toBe(true);
+  const plain={version:1,turns:Array.from({length:10},(_,i)=>({input:prompt,conclusion:`结果${i}`})),truncated:false,older_omitted:false,omitted_turns:0};
+  const expected='以下是上一会话的记录节选，可能不完整，仅供当前需求参考：\n<agentmanager_brief_context>\n'
+    +JSON.stringify(plain)+'\n</agentmanager_brief_context>\n\n当前需求：\n继续';
+  expect(new TextEncoder().encode(result.input).byteLength).toBe(new TextEncoder().encode(expected).byteLength);
 });
 
 it('does not combine ordinary inputs, different task names, or different full prompts',async()=>{
@@ -131,7 +152,7 @@ it('keeps unusually oversized native inputs separate when exact comparison is bo
   const result=await prepareBriefSend('session','native',{input:'继续'},new AbortController().signal);
   const turns=parseBriefContext(result.input)!.context.turns;
   expect(turns).toHaveLength(2);
-  expect(turns[0].input_truncated).toBe(true);
+  expect(parseBriefContext(result.input)!.context.truncated).toBe(true);
   expect(turns[1].input_ref).toBeUndefined();
 });
 

@@ -153,8 +153,8 @@ function makePrefix(turns: CollectedTurn[], inheritedTruncation: boolean, olderO
   let omitted = 0;
   const render = (limit: number) => {
     let truncated = inheritedTruncation;
-    const prompts = new Map<number, number>();
-    const selected = turns.slice(omitted).map((turn, index) => {
+    const prompts = new Map<number, number>(), differences = new Map<number, number>();
+    const candidates = turns.slice(omitted).map((turn, index) => {
       const input = excerpt(turn.input, limit), conclusion = turn.conclusion === undefined ? undefined : excerpt(turn.conclusion, limit);
       const progress = turn.progress === undefined ? undefined : excerpt(turn.progress, Math.min(limit, MAX_PROGRESS_CHARS));
       truncated ||= input !== turn.input || conclusion !== turn.conclusion || progress !== turn.progress;
@@ -163,14 +163,22 @@ function makePrefix(turns: CollectedTurn[], inheritedTruncation: boolean, olderO
         truncated ||= name !== item.name || path !== item.path;
         return {...item,name,path};
       });
-      const inputRef = turn.promptKey === undefined ? undefined : prompts.get(turn.promptKey);
-      if (turn.promptKey !== undefined && inputRef === undefined) prompts.set(turn.promptKey, index + 1);
-      return {input: inputRef === undefined ? input : `同第 ${inputRef} 轮定时任务提示词`,
+      const plain = {input, ...(progress ? {progress} : {}), ...(conclusion ? {conclusion} : {}), ...(attachments?.length ? {attachments} : {})};
+      const key = turn.scheduled_task ? turn.promptKey : undefined;
+      if (key === undefined) return {plain};
+      const inputRef = prompts.get(key);
+      if (inputRef === undefined) prompts.set(key, index + 1);
+      const shared = {input: inputRef === undefined ? input : `同第 ${inputRef} 轮定时任务提示词`,
         ...(inputRef === undefined ? {} : {input_ref: inputRef}),
-        ...(turn.scheduled_task ? {scheduled_task: turn.scheduled_task} : {}),
-        ...(turn.scheduled_task && inputRef === undefined && (turn.input_truncated || input !== turn.input) ? {input_truncated: true} : {}),
+        scheduled_task: turn.scheduled_task,
+        ...(inputRef === undefined && (turn.input_truncated || input !== turn.input) ? {input_truncated: true} : {}),
         ...(progress ? {progress} : {}), ...(conclusion ? {conclusion} : {}), ...(attachments?.length ? {attachments} : {})};
+      differences.set(key, (differences.get(key) || 0) + bytes(JSON.stringify(shared)) - bytes(JSON.stringify(plain)));
+      return {plain, shared, key};
     });
+    // A reference and its provenance also consume input. Use them only when
+    // the entire group becomes smaller, and keep every run in either form.
+    const selected = candidates.map(item => item.key !== undefined && (differences.get(item.key) || 0) < 0 ? item.shared! : item.plain);
     const context: BriefContext = {version: 1, turns: selected, truncated, older_omitted: olderOmitted, omitted_turns: omitted};
     return START + JSON.stringify(context) + END;
   };
