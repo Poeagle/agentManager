@@ -44,6 +44,18 @@ it('keeps a late native Item with its original Progress even after a confirmed u
  expect(groups.map(group=>group.kind==='progress'?group.messages.map(message=>message.id):group.message.id))
    .toEqual([['earlier','late'],'steer',['new']]);
 });
+it('groups adjacent progress items across statistics segments until the next user input',()=>{
+ const item=(id:string,progress_id:string)=>({id,role:'assistant' as const,phase:'commentary' as const,
+   text:id,timestamp:null,statistics:{sequence:1,turn_id:'turn',progress_id,
+     tokens:null,requests:1,tool_calls:0,tool_rounds:0,complete:true}});
+ const groups=groupConversationProgress([
+  item('first','segment-one'),item('second','segment-two'),
+  {id:'followup',role:'user' as const,text:'Continue',timestamp:null},
+  item('third','segment-three'),
+ ]);
+ expect(groups.map(group=>group.kind==='progress'?group.messages.map(message=>message.id):group.message.id))
+  .toEqual([['first','second'],'followup',['third']]);
+});
 it('uses the group segment when recorded and falls back to cumulative native turn usage',()=>{
  const segment={id:'segment',start_at:null,end_at:null,elapsed_ms:null,end_reason:null,tokens:{total_tokens:300},requests:1,tool_calls:2,tool_rounds:1,complete:true};
  const messages=[
