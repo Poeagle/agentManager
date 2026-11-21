@@ -46,6 +46,20 @@ beforeEach(async()=>{
 afterEach(async()=>{await stopSessionStatistics();vi.restoreAllMocks();vi.unstubAllEnvs();fixture.cleanup();});
 
 describe('persisted session statistics',()=>{
+  it('shows pending usage only while an active Codex request has unaccounted work',async()=>{
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'input'));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)).toMatchObject({status:'complete',reasons:[]});
+
+    await appendFile(file,answer(2,'update','commentary')+tool(3,'one')+tool(4,'two'));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)).toMatchObject({status:'pending',reasons:[]});
+
+    await appendFile(file,receipt(5,'received','turn',tokens(5000,4200)));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)).toMatchObject({status:'complete',reasons:[],totals:{requests:1,tool_calls:2,tokens:{total_tokens:5020}}});
+    expect(readSessionProgress(codex)?.segment?.end_reason).toBeNull();
+  });
   it('reconciles primary receipts, tool rounds, completed intervals, and cache changes across restart',async()=>{
     const first=tokens(10_000,9_000), second=tokens(11_000,0), third=tokens(12_000,10_000);
     await writeFile(file,

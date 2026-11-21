@@ -1,5 +1,5 @@
 import type { ConversationControlsData } from '../lib/api';
-import { coverageReason, coverageText, creditsLabel, recordedCachePercent, uncachedInputTokens, type SessionMetadata } from '../lib/session-metadata';
+import { coverageReason, intervalCoverageText, creditsLabel, recordedCachePercent, uncachedInputTokens, type SessionMetadata } from '../lib/session-metadata';
 import { TableFrame } from './table/DataTable';
 import './ConversationDetailsPanel.css';
 
@@ -64,7 +64,7 @@ export function ConversationDetailsPanel({usage, model, state, statusTitle, meta
     {label: '模型请求（Round）', value: counts(metadata?.totals?.requests)},
     {label: '用户输入 / 已完成问答', value: metadata ? `${counts(metadata.user_inputs)} / ${counts(metadata.completed_turns)}` : '—'},
     {label: '工具调用（Call）', value: counts(metadata?.totals?.tool_calls)},
-    {label: '记录覆盖', value: metadata ? coverageText[metadata.status] : null,
+    {label: '记录覆盖', value: metadata ? intervalCoverageText(metadata.status,metadata.reasons) : null,
       title: metadata?.reasons.map(reason => coverageReason[reason]).join('、') || undefined},
   ];
   return <div className="conversation-details-overview">

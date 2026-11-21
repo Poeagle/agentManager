@@ -106,13 +106,17 @@ export interface SessionUsageIntervalPage {
 }
 
 export const coverageText: Record<StatisticsCoverage, string> = {
-  complete: '完整', pending: '等待用量或回填', partial: '记录不完整', unavailable: '来源不可用',
+  complete: '完整', pending: '等待用量回执', partial: '记录不完整', unavailable: '来源不可用',
 };
 export const unassignedUsageLabel = '执行用量（已计入本段）';
 export const unassignedUsageDescription = '这行汇总本段进展里没有对应消息行的用量，例如模型继续调用工具或推理。';
 
 export function intervalCoverageText(coverage: StatisticsCoverage, reasons: StatisticsReason[] = []): string {
-  return coverage === 'pending' && !reasons.includes('backfill') ? '等待用量回执' : coverageText[coverage];
+  if (coverage === 'pending') {
+    if (reasons.includes('backfill')) return '正在回填历史用量';
+    if (reasons.includes('incomplete_record')) return '等待原生记录写入完成';
+  }
+  return coverageText[coverage];
 }
 
 export const coverageReason: Record<StatisticsReason, string> = {
