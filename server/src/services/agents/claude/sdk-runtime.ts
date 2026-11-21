@@ -345,13 +345,18 @@ class ClaudeRuntime {
     attachments: ConversationAttachment[] = [],
     userId?: string,
   ): Promise<boolean | "queued"> {
+    const uuid = clientId &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId)
+      ? clientId
+      : undefined;
+    const resolvedUserId = userId ?? uuid ?? randomUUID();
     const pending: Pending = {
       text,
       clientId,
       attachments,
-      userId: userId || randomUUID(),
-      clientGenerated: !userId,
-      nativeUuid: userId ? userId : undefined,
+      userId: resolvedUserId,
+      clientGenerated: !userId && !uuid,
+      nativeUuid: userId ?? uuid ?? resolvedUserId,
     };
     if (this.busy && this.input && this.active) {
       // Claude can continue the same streaming query after interrupt(); the
@@ -413,7 +418,18 @@ class ClaudeRuntime {
       this.publish();
       return "queued";
     }
+    this.upsert({
+      id: conversationMessageId("", "user", pending.userId),
+      role: "user",
+      text: pending.text.trim() || "请查看附件。",
+      timestamp: new Date().toISOString(),
+      turn_id: pending.userId,
+      client_id: pending.clientId,
+      queued: false,
+      streaming: false,
+    });
     if (userId) pending.nativeUuid = userId;
+    this.publish();
     this.start(pending);
     return true;
   }
@@ -1033,8 +1049,9 @@ class ClaudeRuntime {
     linked.nativeLinked = true;
     const optimisticId = conversationMessageId("", "user", pending.userId);
     const nativeMessageId = conversationMessageId("", "user", nativeId);
-    const index = this.messages.findIndex((message) => message.id === optimisticId);
-    if (index < 0 || optimisticId === nativeMessageId) return;
+    const index = this.messages.findIndex(message => message.id === optimisticId);
+    if (index < 0) return;
+    if (this.messages[index].id === nativeMessageId) return;
     const existing = this.messages.findIndex(
       (message) => message.id === nativeMessageId,
     );
@@ -1085,12 +1102,15 @@ class ClaudeRuntime {
     this.currentAssistant = null;
     this.completedAssistants = [];
     this.upsert({
-      id: conversationMessageId("", "user", pending.userId),
+      id: conversationMessageId("", "user", pending.nativeUuid ?? pending.userId),
       role: "user",
       text: pending.text.trim() || "请查看附件。",
       timestamp: this.startedAt,
       turn_id: pending.userId,
       client_id: pending.clientId,
+      ...(pending.nativeUuid === pending.userId && pending.clientId && pending.clientId !== pending.userId
+        ? { native_client_id: pending.clientId }
+        : {}),
       queued: false,
       streaming: false,
     });

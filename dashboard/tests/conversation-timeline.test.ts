@@ -109,4 +109,12 @@ describe('deterministic conversation timeline',()=>{
     expect(ids(settled)).toEqual(['native-user']);
     expect(settled[0]).toMatchObject({client_id:'browser-id',native_client_id:'browser-id',sequence:10});
   });
+  it('settles a Claude live user message when refresh supplies its native identity',()=>{
+    const live=message('native-user','user',{text:'brief input',turn_id:'native-user',client_id:'browser-id',native_client_id:'browser-id'});
+    const history=message('native-user','user',{text:'brief input',turn_id:'native-user',sequence:10});
+    const settled=mergeConversationTimeline([live],[history]);
+    expect(ids(settled)).toEqual(['native-user']);
+    expect(settled[0]).toMatchObject({client_id:'browser-id',native_client_id:'browser-id',sequence:10});
+    expect(mergeConversationTimeline(settled,[message('second-send','user',{text:'brief input',turn_id:'second-send',sequence:30})])).toHaveLength(2);
+  });
 });
