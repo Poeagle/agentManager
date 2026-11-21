@@ -47,7 +47,7 @@ describe('English message metadata',()=>{
  it('keeps cache ratios unknown when native counters conflict',()=>{
   const tokens={total_tokens:1000,input_tokens:900,cached_input_tokens:800,reasoning_output_tokens:20,output_tokens:100};
   render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,reasons:['counter_mismatch'],complete:false,tokens}}}/>);
-  expect(label()).toHaveTextContent('1K (—)｜—｜800 (—)｜20｜100');
+  expect(label()).toHaveTextContent('≥1K (—)｜—｜≥800 (—)｜≥20｜≥100');
  });
  it('shows credit breakdown beside each token category',()=>{
   const tokens={total_tokens:1100,input_tokens:1000,cached_input_tokens:900,reasoning_output_tokens:20,output_tokens:100};
