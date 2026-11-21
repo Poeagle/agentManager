@@ -4,12 +4,29 @@ import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {beforeEach,afterEach,describe,expect,it,vi} from 'vitest';
 import {ConversationControls} from '../src/components/ConversationControls';
 import {api,type ConversationControlsData} from '../src/lib/api';
+import type {SessionMetadata} from '../src/lib/session-metadata';
 vi.mock('../src/lib/api',()=>({api:{codexEnvironments:{forSession:vi.fn(async()=>({current:'provider:provider-a',environments:[{id:'provider:provider-a',kind:'provider',provider:'provider-a',name:'A',auth_mode:'account',can_control:true},{id:'provider:provider-b',kind:'provider',provider:'provider-b',name:'B',can_control:true}]})),sessionPreflight:vi.fn(async()=>({ok:true,checks:[{stage:'models',ok:true,message:'available'}],models:[{model:'model-b',name:'B',provider:'provider-b',efforts:[{value:'low'}],defaultEffort:'low'}]})),transfer:vi.fn(async()=>({ok:true}))},agent:{controls:vi.fn(),setControls:vi.fn(),contextBreakdown:vi.fn(),conversationMetadata:vi.fn(async()=>({metadata:null})),conversationUsageIntervals:vi.fn(async()=>({intervals:null}))},sessions:{compactConversation:vi.fn().mockResolvedValue({ok:true})}}}));
 let client:QueryClient,data:ConversationControlsData;
 beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}});data={agent:sessionAgent({cli_type:'codex'}),engine_version:'0.166.0',git:{branch:'main',changes:2},state:'active',model:'model-a',effort:'high',provider:'openai',cwd:'/project',cli_version:'0.test',permission:'workspace-write',approval:'never',service_tier:null,usage:{total:{total_tokens:400000},last:{total_tokens:12000,input_tokens:11000,cached_input_tokens:9000,output_tokens:1000},window:40000},limits:[{used_percent:25,minutes:10080,resets_at:1900000000}],models:[{model:'model-a',name:'Model A',description:'默认',efforts:[{value:'high',description:''}],defaultEffort:'high'},{model:'model-b',name:'Model B',description:'另一模型',efforts:[{value:'low',description:''},{value:'medium',description:''}],defaultEffort:'low'}],can_edit:true,loaded:true,pending:null,warning:null,native_id:'native',checked_at:'2026-10-31T02:00:00Z',usage_observed_at:'2026-10-31T01:59:00Z'};vi.mocked(api.agent.controls).mockImplementation(async()=>data);vi.mocked(api.agent.setControls).mockImplementation(async(_id,value)=>({ok:true,pending:null,...value}));});
 afterEach(()=>client.clear());
 const mount=()=>render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active/></QueryClientProvider>);
 describe('compact conversation controls',()=>{
+ it.each(['codex','claude'])('shows the actual usage status and clears it after settlement for %s',async agent=>{
+  data={...data,agent:sessionAgent({cli_type:agent})};
+  const pending:SessionMetadata={native_id:'native',revision:1,observed_at:null,status:'pending',reasons:[],
+    totals:{tokens:{input_tokens:100,cached_input_tokens:90,output_tokens:10,total_tokens:110},requests:1,tool_calls:0,tool_rounds:0,cost:null},
+    latest:null,user_inputs:1,completed_turns:0,cache_drop_count:0};
+  const view=(metadata:SessionMetadata)=><QueryClientProvider client={client}><ConversationControls sessionId="s" active metadata={metadata}/></QueryClientProvider>;
+  const {rerender}=render(view(pending));
+  expect(await screen.findByText('等待用量回执')).toBeVisible();
+  expect(screen.getByLabelText('Cumulative token usage')).toHaveTextContent('110');
+  rerender(view({...pending,reasons:['backfill']}));
+  expect(screen.getByText('正在回填历史用量')).toBeVisible();
+  rerender(view({...pending,reasons:['incomplete_record']}));
+  expect(screen.getByText('等待原生记录写入完成')).toBeVisible();
+  rerender(view({...pending,status:'complete'}));
+  expect(screen.queryByText(/等待用量|正在回填|等待原生记录/)).toBeNull();
+ });
  it('retains all cumulative token metrics while displaying window capacity only in Context',async()=>{
   data={...data,usage:{total:{total_tokens:330800000,input_tokens:330200000,cached_input_tokens:327800000,reasoning_output_tokens:286200,output_tokens:627600},last:{total_tokens:104500},window:475000}};
   mount();expect(await screen.findByText('Context 475K | 22%')).toBeVisible();
