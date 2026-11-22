@@ -96,6 +96,35 @@ it('does not save a Claude Provider whose model cannot serve Anthropic Messages'
   })).rejects.toThrow('不能用于 Claude Code');
   expect(readAgentManagement('claude').providers).toEqual([]);
 });
+it('checks selected models in order and stops after a conclusive protocol rejection',async()=>{
+  const selectedResponse=(model:string)=>new Response(JSON.stringify({model}),{status:200,headers:{'content-type':'application/json'}});
+  const fetchMock=vi.fn()
+    .mockResolvedValueOnce(selectedResponse('claude-fable-5'))
+    .mockResolvedValueOnce(selectedResponse('claude-haiku-4-5'))
+    .mockResolvedValueOnce(new Response('',{status:400}));
+  vi.stubGlobal('fetch',fetchMock);
+  await expect(verifyAndCreateClaudeProvider({
+    id:'selected',apiKey:'secret',
+    fields:{baseUrl:'https://selected.example',models:['claude-fable-5','claude-haiku-4-5','claude-opus-5-5'],defaultModel:'claude-haiku-4-5'},
+  })).rejects.toThrow('当前模型 claude-opus-5-5 不能用于 Claude Code');
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(readAgentManagement('claude').providers).toEqual([]);
+});
+it('checks every selected model without preflighting the wider detected catalog',async()=>{
+  const fetchMock=vi.fn(async(_url:string,init?:RequestInit)=>{
+    const model=JSON.parse(String(init?.body)).model as string;
+    return new Response(JSON.stringify({model}),{status:200,headers:{'content-type':'application/json'}});
+  });
+  vi.stubGlobal('fetch',fetchMock);
+  await verifyAndCreateClaudeProvider({
+    id:'selected',apiKey:'secret',
+    fields:{baseUrl:'https://selected.example',models:['claude-fable-5','claude-haiku-4-5','claude-sonnet-5-5'],defaultModel:'claude-haiku-4-5'},
+  });
+  expect(fetchMock.mock.calls.map(([,init])=>JSON.parse(String(init?.body)).model)).toEqual([
+    'claude-fable-5','claude-haiku-4-5','claude-sonnet-5-5',
+  ]);
+  expect(readAgentManagement('claude').providers[0]).toMatchObject({fields:{models:['claude-fable-5','claude-haiku-4-5','claude-sonnet-5-5'],defaultModel:'claude-haiku-4-5'}});
+});
 it('keeps a valid configuration when an ambiguous provider preflight fails',async()=>{
   vi.stubGlobal('fetch',vi.fn().mockRejectedValue(new Error('network timeout')));
   await expect(claudeManagement({id:'claude',label:'Claude'} as any).createProvider({

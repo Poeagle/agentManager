@@ -699,8 +699,20 @@ export async function verifyAndCreateClaudeProvider(
     contextWindow: null,
     maxOutputTokens: null,
   };
-  for (const model of runtime.models)
-    await verifyClaudeProviderModel(runtime, model);
+  // Check every explicitly selected model, but stop after the provider
+  // conclusively rejects the Messages protocol so later attempts cannot turn
+  // one rejection into repeated upstream calls.
+  let preflightFailure: unknown;
+  for (const model of runtime.models) {
+    try {
+      await verifyClaudeProviderModel(runtime, model);
+    } catch (error) {
+      if ((error as { code?: string })?.code === 'model_protocol_unavailable')
+        throw error;
+      preflightFailure ??= error;
+    }
+  }
+  if (preflightFailure) throw preflightFailure;
   createClaudeProvider(input);
 }
 
