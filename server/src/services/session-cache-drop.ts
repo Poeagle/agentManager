@@ -8,13 +8,12 @@ export function cacheSample(
   if (!consistentUsage(request.tokens)) return null;
   const {input_tokens, cached_input_tokens} = request.tokens!;
   if (input_tokens! <= 0) return null;
+  const writes = request.cache_write_tokens;
   return {
     ...request.dimensions, input_id: input?.id ?? null, input_at: input?.at ?? null, turn_id: request.turn_id,
     request_id: request.id, request_at: request.at, input_tokens: input_tokens!,
     cached_input_tokens: cached_input_tokens!, hit_rate: cached_input_tokens! / input_tokens!,
-    ...(request.cache_write_input_tokens !== undefined ? {
-      uncached_input_tokens: input_tokens! - cached_input_tokens! - request.cache_write_input_tokens,
-    } : {}),
+    ...(writes ? {uncached_input_tokens: input_tokens! - cached_input_tokens! - writes[0] - writes[1], cache_write_tokens:writes} : {}),
   };
 }
 
@@ -46,15 +45,21 @@ export function detectCacheDrop(
   };
 }
 
-/** Apply the current request's prices to both samples' read-side input. */
+/** Apply the current request's prices to both samples' input tokens. */
 export function cacheDropExtraCost(drop: SessionCacheDrop, request: NativeRequestFact): SessionCacheDrop['extra_cost'] {
   const pricing = request.cache_input_pricing;
   const previousUncached = drop.previous.uncached_input_tokens;
   const currentUncached = drop.current.uncached_input_tokens;
-  if (!pricing || !request.cost?.complete || previousUncached == null || currentUncached == null ||
+  const beforeWrites = drop.previous.cache_write_tokens;
+  const afterWrites = drop.current.cache_write_tokens;
+  if (!pricing || !request.cost?.complete || !beforeWrites || !afterWrites || previousUncached == null || currentUncached == null ||
       previousUncached < 0 || currentUncached < 0) return undefined;
   const uncachedDelta = currentUncached - previousUncached;
   const cachedDelta = drop.current.cached_input_tokens - drop.previous.cached_input_tokens;
-  const amount = uncachedDelta * pricing.uncached_per_token + cachedDelta * pricing.cached_per_token;
+  const shortWriteDelta = afterWrites[0] - beforeWrites[0];
+  const longWriteDelta = afterWrites[1] - beforeWrites[1];
+  if ((shortWriteDelta && pricing.write_5m_per_token == null) || (longWriteDelta && pricing.write_1h_per_token == null)) return undefined;
+  const amount = uncachedDelta * pricing.uncached_per_token + cachedDelta * pricing.cached_per_token +
+    shortWriteDelta * (pricing.write_5m_per_token ?? 0) + longWriteDelta * (pricing.write_1h_per_token ?? 0);
   return Number.isFinite(amount) ? {amount,unit:request.cost.unit} : undefined;
 }
