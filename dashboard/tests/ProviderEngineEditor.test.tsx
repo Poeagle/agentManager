@@ -124,6 +124,15 @@ it('shows model capabilities read-only until the explicit model edit action',asy
  fireEvent.click(screen.getByRole('button',{name:'保存并重启 Engine'}));
  await waitFor(()=>expect(api.agentManagement.updateModelConfigs).toHaveBeenCalledWith('codex',[expect.objectContaining({model:'model-a',contextWindow:300000})]));
 });
+it('shows official image support even when stored model capability metadata is incomplete',async()=>{
+ configs=configs.map(config=>({...config,inputModalities:[],supportsImages:null}));
+ vi.mocked(api.agentManagement.modelConfigs).mockImplementation(async()=>({models:configs}));
+ vi.mocked(api.agentManagement.modelCatalog).mockImplementation(async()=>({models:provider.models.map(model=>({vendor:'Anthropic',model,providers:[provider.name],
+  context_window:200000,input_modalities:['text','image'],api_pricing:{currency:'USD',source:'official',reference_only:true,bands:[{rates:{input:2,cached:0.2,output:8}}]}}))}));
+ mount();fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});
+ await within(table).findByText('model-a');
+ expect(within(table).getByRole('row',{name:/model-a/})).toHaveTextContent('支持');
+});
 it('discards detected models whenever the endpoint or key changes, including late responses',async()=>{
  mount();fireEvent.click(await screen.findByRole('button',{name:'新增 Provider'}));
  expect(screen.getByRole('dialog',{name:'新增 Provider'})).toBeVisible();

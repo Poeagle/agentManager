@@ -26,6 +26,21 @@ const openaiChangelog='https://developers.openai.com/api/docs/changelog.md';
 const claudeFull='https://platform.claude.com/llms-full.txt';
 // Anthropic launch announcement and the public Claude API pricing table.
 const sonnet55:Tariff={release_date:'2026-09-28',bands:[{rates:{input:2,cached:0.1,output:10,cache_write_5m:2.5,cache_write_1h:4}}]};
+// Anthropic's public model catalog identifies these text-generation families
+// as accepting image input. Keep this scoped to confirmed IDs; unknown gateway
+// aliases must remain unknown rather than being guessed from a vendor prefix.
+const claudeVisionModels=new Set([
+ 'claude-fable-5','claude-fable-5-1','claude-fable-5-2',
+ 'claude-haiku-4-5','claude-haiku-4-5-20251001','claude-haiku-5-5',
+ 'claude-opus-4-5','claude-opus-4-5-20251101','claude-opus-4-6','claude-opus-4-7','claude-opus-4-8',
+ 'claude-opus-5','claude-opus-5-5',
+ 'claude-sonnet-4-5','claude-sonnet-4-5-20250929','claude-sonnet-4-6','claude-sonnet-5','claude-sonnet-5-5',
+]);
+export function confirmedClaudeInputModalities(model:string):string[]|undefined {
+ const normalized=model.replace(/\[1m\]$/i,'');
+ const id=normalized.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/,'');
+ return claudeVisionModels.has(normalized)||claudeVisionModels.has(id)?['text','image']:undefined;
+}
 const calendarSources:Record<number,string>={2026:'https://www.beijing.gov.cn/zhengce/zhengcefagui/202511/t20251104_4258873.html',2027:'https://www.shache.gov.cn/scx/c118335/202611/6dbd74b2ceba40f886c7decc9a81e527.shtml'};
 const catalogs=Object.keys(pricingSources) as Catalog[];
 const current=new Map<Catalog,Snapshot[]>();
@@ -45,7 +60,8 @@ export function publicApiModel(catalog:TokenCatalog,model:string){
  const models=pricingSnapshot(catalog)?.data.models;
  const id=apiModelId(catalog,model);
  const tariff=models&&Object.hasOwn(models,id)?models[id]:catalog==='claude'&&id==='claude-sonnet-5-5'?sonnet55:undefined;
- return tariff?{release_date:tariff.release_date??(catalog==='claude'&&id==='claude-sonnet-5-5'?sonnet55.release_date:undefined),context_window:tariff.context_window,input_modalities:tariff.input_modalities,api_pricing:{currency:'USD',source:pricingSources[catalog],bands:tariff.bands} satisfies ModelPricing}:undefined;
+ const modalities=catalog==='claude'?(tariff?.input_modalities??confirmedClaudeInputModalities(id)):tariff?.input_modalities;
+ return tariff?{release_date:tariff.release_date??(catalog==='claude'&&id==='claude-sonnet-5-5'?sonnet55.release_date:undefined),context_window:tariff.context_window,input_modalities:modalities,api_pricing:{currency:'USD',source:pricingSources[catalog],bands:tariff.bands} satisfies ModelPricing}:undefined;
 }
 
 export function apiTariffAt(catalog:TokenCatalog,model:string,at:number){

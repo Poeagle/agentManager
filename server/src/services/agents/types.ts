@@ -105,7 +105,7 @@ export interface AgentModelConfig extends AgentModelMetadata {
   maxContextWindow: number | null;
   effectiveContextWindowPercent: number | null;
   inputModalities: string[];
-  supportsImages: boolean;
+  supportsImages: boolean | null;
   sourceFile: string | null;
 }
 export interface AgentModelConfigUpdate {
@@ -114,7 +114,7 @@ export interface AgentModelConfigUpdate {
   contextWindow?: number | null;
   maxContextWindow?: number | null;
   effectiveContextWindowPercent?: number | null;
-  supportsImages?: boolean;
+  supportsImages?: boolean | null;
 }
 export interface AgentProviderState {
   id: string;

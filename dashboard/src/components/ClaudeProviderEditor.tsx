@@ -25,7 +25,9 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
  const byProbe=new Map(probed.map(model=>[model.model,model]));
  const modelRows=[...new Set([...detected,...draft.models])].map(model=>{
   const saved=byModel.get(model),probe=byProbe.get(model);
-  return {model,name:probe?.name??saved?.name,metadata:{...saved,...probe},context:probe?.context_window??saved?.contextWindow,images:probe?.input_modalities?.includes('image')??saved?.supportsImages};
+  const metadata={...saved,...probe};
+  return {model,name:probe?.name??saved?.name,metadata,context:probe?.context_window??saved?.contextWindow,
+    images:probe?.input_modalities?.length?probe.input_modalities.includes('image'):metadata.input_modalities?.length?metadata.input_modalities.includes('image'):saved?.supportsImages??null};
  });
  const original=provider?fromProvider(provider):empty();
  const dirty=JSON.stringify(draft)!==JSON.stringify(original)||!!confirmDelete||!!Object.keys(modelCapabilitiesPayload(probed)).length;

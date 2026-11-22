@@ -283,7 +283,7 @@ export interface AgentModelConfig extends AgentModelMetadata {
   maxContextWindow: number | null;
   effectiveContextWindowPercent: number | null;
   inputModalities: string[];
-  supportsImages: boolean;
+  supportsImages: boolean | null;
   sourceFile: string | null;
 }
 
@@ -809,7 +809,7 @@ export const api = {
       fetchJSON<{ models: AgentModelConfig[] }>(`/agent-management/${encodeURIComponent(agentId)}/model-configs`),
     updateModelConfigs: (agentId: string, models: Array<{
       provider?: string; model: string; contextWindow?: number | null; maxContextWindow?: number | null;
-      effectiveContextWindowPercent?: number | null; supportsImages?: boolean;
+      effectiveContextWindowPercent?: number | null; supportsImages?: boolean | null;
     }>) => fetchJSON<{ models: AgentModelConfig[] }>(`/agent-management/${encodeURIComponent(agentId)}/model-configs`, {
       method: 'PUT', body: JSON.stringify({ models }),
     }),
