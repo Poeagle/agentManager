@@ -111,6 +111,15 @@ it('omits account quota and estimated allocation columns for API engines',async(
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="api" name="API" groupId="group" apiOverview={<span>API</span>} onClose={()=>{}}/></QueryClientProvider>);
  const row=(await screen.findByText('/api')).closest('tr')!;expect(within(row).getAllByRole('cell')).toHaveLength(9);expect(within(row).getAllByTitle('预估耗费未知：缺少可核验费率或必需 Token 数据')).toHaveLength(6);expect(row.lastElementChild).toHaveTextContent('10 (—)');expect(screen.queryByRole('columnheader',{name:'预估 Token 费用'})).toBeNull();expect(screen.getByRole('table',{name:'用量统计'})).not.toHaveAttribute('style');for(const label of ['耗用积分 | 额度','耗用额度','预估积分','占比'])expect(screen.queryByRole('columnheader',{name:label})).toBeNull();
 });
+it('shows a provider-multiplied API estimate instead of an unknown marker',async()=>{
+ const tokens={input_tokens:1000000,cached_input_tokens:500000,output_tokens:100000,total_tokens:1100000};
+ const api_cost={amount:0.455,coverage:{covered:1,total:1},breakdown:{input:0.25,cache:0.005,output:0.2,reasoning:0}};
+ vi.mocked(fetchJSON).mockResolvedValue({usage:{initialized:true,partial:false,timezone:'Asia/Shanghai',api_pricing:{currency:'CNY',today:{...api_cost,date:'2026-11-23',partial:false}},rows:[{date:'2026-11-23',cwd:'/api-multiplier',tokens,api_cost,models:[{model:'deepseek-v4.1-flash',tokens,api_cost}]}]}} as any);
+ render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="api-multiplier" name="API" groupId="group" apiOverview={<span>API</span>} onClose={()=>{}}/></QueryClientProvider>);
+ const row=(await screen.findByText('/api-multiplier')).closest('tr')!;
+ expect(within(row).getAllByTitle('预估耗费 (CNY)').map(element=>element.textContent?.trim())).toEqual(['(0.26)','(<0.01)','(0.25)','(0.00)','(0.20)','(0.46)']);
+ expect(within(row).queryAllByTitle('预估耗费未知：缺少可核验费率或必需 Token 数据')).toHaveLength(0);
+});
 it('hides the historical reconciliation warning while keeping data available',async()=>{
  const tokens={input_tokens:10,cached_input_tokens:0,output_tokens:0,total_tokens:10};
  vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:true,error:'历史缓存无法完整核对（部分历史请求无法从原始文件中找到），已保留旧数据；部分估算可能使用旧规则',timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/retained',tokens,models:[{model:'model',tokens}]}]}}:{account:{},resets:null} as any);
