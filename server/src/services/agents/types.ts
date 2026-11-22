@@ -401,7 +401,9 @@ export interface AgentModel {
   }>;
   defaultEffort: string;
 }
-export interface AgentCostEstimate {amount:number|null;unit:string;complete:boolean;rate_date?:string;basis?:string;breakdown?:{input:number;cache:number;output:number;reasoning:number|null}}
+/** Input is uncached; reasoning is already included in output. */
+export interface TokenCostBreakdown {input:number;cache:number;output:number;reasoning:number|null}
+export interface AgentCostEstimate {amount:number|null;unit:string;complete:boolean;rate_date?:string;basis?:string;breakdown?:TokenCostBreakdown}
 export interface AgentStatisticsInterval {
   shared_reference?: boolean;
   unassigned?: AgentStatisticsInterval;

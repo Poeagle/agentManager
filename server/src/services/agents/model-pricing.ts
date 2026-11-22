@@ -41,14 +41,23 @@ export function estimatePublicApiCost(catalog:'openai'|'claude',model:string|nul
  const rate=tariff.bands[0].rates;
  const [write5,write60]=cacheWrites??[0,0];
  if(tokens.input_tokens==null||write5&&rate.cache_write_5m==null||write60&&rate.cache_write_1h==null)return null;
- const amount=tokenPrice({...tokens,input_tokens:tokens.input_tokens-write5-write60},rate);
- return amount===null?null:amount+(write5*(rate.cache_write_5m??0)+write60*(rate.cache_write_1h??0))/1e6;
+ const breakdown=tokenPriceBreakdown({...tokens,input_tokens:tokens.input_tokens-write5-write60},rate);
+ if(!breakdown)return null;
+ breakdown.input+=(write5*(rate.cache_write_5m??0)+write60*(rate.cache_write_1h??0))/1e6;
+ return {amount:breakdown.input+breakdown.cache+breakdown.output,breakdown};
+}
+
+export function tokenPriceBreakdown(tokens:Record<string,number|null>,rates:TokenRates){
+ const {input_tokens:input,cached_input_tokens:cached,output_tokens:output}=tokens;
+ if(input==null||cached==null||output==null||![input,cached,output].every(value=>Number.isSafeInteger(value)&&value>=0)||cached>input||cached>0&&rates.cached===null)return null;
+ const reasoning=tokens.reasoning_output_tokens;
+ return {input:(input-cached)*rates.input/1e6,cache:cached*(rates.cached??0)/1e6,output:output*rates.output/1e6,
+  reasoning:reasoning!=null&&Number.isSafeInteger(reasoning)&&reasoning>=0&&reasoning<=output?reasoning*rates.output/1e6:null};
 }
 
 export function tokenPrice(tokens:Record<string,number|null>,rates:TokenRates):number|null{
- const {input_tokens:input,cached_input_tokens:cached,output_tokens:output}=tokens;
- if(input==null||cached==null||output==null||![input,cached,output].every(value=>Number.isSafeInteger(value)&&value>=0)||cached>input||cached>0&&rates.cached===null)return null;
- return ((input-cached)*rates.input+cached*(rates.cached??0)+output*rates.output)/1000000;
+ const cost=tokenPriceBreakdown(tokens,rates);
+ return cost?cost.input+cost.cache+cost.output:null;
 }
 
 const cells=(line:string)=>line.trim().slice(1,-1).split('|').map(value=>value.trim());

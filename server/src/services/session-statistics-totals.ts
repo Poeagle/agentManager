@@ -53,8 +53,9 @@ export function countRequest(total: StatisticsCounter, request: NativeRequestFac
   if (!cost) return;
   total.cost.applicable++;
   if (!cost.complete) total.cost.incomplete++;
+  if(!total.cost.unit){total.cost.unit=cost.unit;total.cost.basis=cost.basis;}
   if (cost.amount === null) return;
-  if(total.cost.unit&&(total.cost.unit!==cost.unit||total.cost.basis!==cost.basis)){
+  if(total.cost.priced&&(total.cost.unit!==cost.unit||total.cost.basis!==cost.basis)){
     total.cost.incompatible=(total.cost.incompatible??0)+1;
     return;
   }

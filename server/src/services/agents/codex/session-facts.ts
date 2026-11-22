@@ -8,7 +8,7 @@ import { consistentUsage, factId, factString, factTime, nativeItemId, parsedUsag
 import { recordedPricingSettings } from './statistics-settings.js';
 import { codexMessagePhase, codexUserText } from './text.js';
 import { conversationImagePaths } from '../../conversation-attachments.js';
-import { costSnapshot, emptyCostTotals, recordCost } from './statistics-cost.js';
+import { codexApiEstimate, codexApiPricing, costSnapshot, emptyCostTotals, recordCost } from './statistics-cost.js';
 
 interface Input {
   id: string;
@@ -21,6 +21,7 @@ interface Input {
 }
 interface CodexFactsState {
   dimensions: RequestDimensions;
+  provider?: string|null;
   turn: string | null;
   started: boolean;
   inherited: boolean;
@@ -29,7 +30,7 @@ interface CodexFactsState {
   previousTotal: ReturnType<typeof parsedUsage>;
   primarySinceCount: boolean;
   recentReceipts: string[];
-  requestContexts: Array<{turn: string; dimensions: RequestDimensions}>;
+  requestContexts: Array<{turn: string; dimensions: RequestDimensions; provider?:string|null}>;
   lastInput?: Input;
   pendingInput?: Input;
 }
@@ -42,7 +43,7 @@ const itemText = (content: unknown, types: string[]) => Array.isArray(content)
   : '';
 
 export const codexSessionFacts: AgentSessionFactsPort = {
-  revision: 3,
+  revision: 4,
   async *discover() {
     const { allCodexEnvironments } = await import('./environments.js');
     const { localHome } = await import('./account-files.js');
@@ -122,6 +123,7 @@ export const codexSessionFacts: AgentSessionFactsPort = {
       if (state.dimensions.account && nextDimensions.account && state.dimensions.account !== nextDimensions.account)
         facts.push({kind: 'lifecycle', event: {action: 'account', state: 'completed', at, dimensions: nextDimensions}});
       state.dimensions = nextDimensions;
+      state.provider = null;
       if (!inherited) facts.push({kind: 'lifecycle', id: factId('create', id), event: {
         action: 'create', state: 'completed', at: factTime(payload.timestamp) ?? at,
         related_native_id: factString(payload.history_base?.thread_id ?? payload.forked_from_id) ?? undefined,
@@ -129,6 +131,7 @@ export const codexSessionFacts: AgentSessionFactsPort = {
     }
     const settings = recordedPricingSettings(record);
     if (settings) {
+      if (Object.hasOwn(settings,'model_provider')) state.provider=factString(settings.model_provider,120);
       const next = {...state.dimensions};
       if (Object.hasOwn(settings, 'model')) next.model = factString(settings.model, 120);
       if (Object.hasOwn(settings, 'service_tier')) next.speed = factString(settings.service_tier, 120) ?? 'default';
@@ -295,13 +298,17 @@ function receipt(
   if (Object.hasOwn(payload, 'service_tier')) dimensions.speed = factString(payload.service_tier,120) ?? 'default';
   const total = emptyCostTotals();
   const credits = !context.session.agent_environment_id?.startsWith('provider:');
-  if (credits && tokens && consistentUsage(tokens)) recordCost(total, dimensions.model, dimensions.speed, tokens);
-  return {id, turn_id: turn, at, tokens, evidence, dimensions, ...(inherited ? {inherited} : {}), cost: credits ? costSnapshot(total) : null};
+  const pricedTokens=tokens&&consistentUsage(tokens)?tokens:null;
+  if (credits && pricedTokens) recordCost(total, dimensions.model, dimensions.speed, pricedTokens);
+  const pricing=!credits&&!inherited?codexApiPricing(context.session.agent_environment_id):null;
+  const provider=Object.hasOwn(payload,'model_provider')?factString(payload.model_provider,120):requestContext?requestContext.provider??null:state.provider??null;
+  const cost=pricing?codexApiEstimate(pricing,provider,dimensions.model,dimensions.speed,at,pricedTokens):credits?costSnapshot(total):null;
+  return {id, turn_id: turn, at, tokens, evidence, dimensions, ...(inherited ? {inherited} : {}), cost};
 }
 
 function captureRequestContext(state: CodexFactsState, turn: string) {
   if(state.requestContexts.some(candidate=>candidate.turn===turn))return;
-  state.requestContexts.push({turn,dimensions:{...state.dimensions}});
+  state.requestContexts.push({turn,dimensions:{...state.dimensions},provider:state.provider});
   if(state.requestContexts.length>8)state.requestContexts.shift();
 }
 

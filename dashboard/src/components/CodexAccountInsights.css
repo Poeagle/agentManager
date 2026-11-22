@@ -144,3 +144,4 @@
 .ci-observation .ci-source{flex:0 0 auto;overflow:visible;text-overflow:clip;}
 
 .ci-usage-cost{white-space:nowrap;}
+.ci-token-cost{white-space:nowrap;color:var(--text-secondary);}

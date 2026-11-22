@@ -53,8 +53,10 @@ it('persists validated versions, preserves the previous tariff on bad documents 
  const first=epoch('2026-11-23T01:00:00Z'),second=first+3600000;
  await refreshModelPricing(fetcher,undefined,first);
  expect(estimateUsageCredits('gpt-6.2-sol','fast',tokens)).toBe(102.5);
- expect(estimatePublicApiCost('openai','gpt-6.2-sol',new Date(first).toISOString(),tokens)).toBe(2.05);
- expect(estimatePublicApiCost('claude','claude-sonnet-5-5',new Date(first).toISOString(),tokens,[100_000,100_000])).toBeCloseTo(2.3);
+ expect(estimatePublicApiCost('openai','gpt-6.2-sol',new Date(first).toISOString(),tokens)).toMatchObject({amount:2.05,breakdown:{input:1,cache:0.05,output:1,reasoning:null}});
+ const claudeCost=estimatePublicApiCost('claude','claude-sonnet-5-5',new Date(first).toISOString(),tokens,[100_000,100_000]);
+ expect(claudeCost?.amount).toBeCloseTo(2.3);
+ expect(claudeCost?.breakdown).toMatchObject({input:1.25,cache:0.05,output:1,reasoning:null});
  documents[pricingSources.deepseek]=deepseek(4);
  await refreshModelPricing(fetcher,undefined,second);
  documents[pricingSources.deepseek]='upstream error';

@@ -2,6 +2,7 @@ import {Fragment} from 'react';
 import type {ConversationMessage,ConversationStatistics} from '../lib/api';
 import {formatConversationTimestamp} from '../lib/conversation-timing';
 import {coverageReason,intervalCoverageText,recordedCachePercent,totalInputTokens,uncachedInputTokens} from '../lib/session-metadata';
+import {formatEstimatedTokenCost} from './estimated-token-cost';
 const number=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(value);
 const valid=(value:number|null|undefined)=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
 /** Every displayed field belongs to the same recorded interval. Cache hit is a
@@ -36,10 +37,11 @@ export function ConversationStatisticsLabel({statistics,interval=false,progress=
   'Rounds count recorded model requests. Calls count native tool calls. One request issuing three tools is 1 round | 3 calls.',
   includeCost?`Estimated ${cost?.unit??'credits'}: ${costValue??'unknown'}. ${cost?.rate_date?`Rate date ${cost.rate_date}. `:''}${costValue===null?'Pricing is unavailable until usage and applicable rates are recorded. ':''}* marks incomplete usage or pricing coverage. ${cost?.basis==='api'?'Based on recorded requests and public API tariffs.':'Subscription reference based on each request’s model and speed.'}`:'Pricing unavailable for this engine.',
  ].filter(Boolean).join(' ');
- const amount=(n:number|null|undefined)=>{const v=valid(n);return v===null?'—':`${v>0&&v<.001?'<0.001':new Intl.NumberFormat('en',{maximumFractionDigits:3}).format(v)}${cost?.complete&&complete?'':'*'}`;};
- const credit=(n:number|null|undefined,label:string)=> <span className="session-chat-estimated-cost" title={label}>{amount(n)}</span>;
+ const unit=cost?.unit??'credits';
+ const estimate=(n:number|null|undefined,label:string)=> <span className="session-chat-estimated-cost" title={`Estimated ${label} (${unit})`}>{formatEstimatedTokenCost(n,unit,!cost?.complete||!complete)}</span>;
  const breakdown=cost?.breakdown;
- const values=[<Fragment key="total">{formatted(tokens?.total_tokens)}{includeCost&&<> ({credit(costValue,'Estimated total credits')})</>}</Fragment>,<Fragment key="input">{formatted(input)}{breakdown&&<> ({credit(breakdown.input,'Estimated uncached input credits')})</>}</Fragment>,<Fragment key="cache">{formatted(cached)}{cached!==null&&<> ({breakdown&&<>{credit(breakdown.cache,'Estimated cached input credits')} | </>}<span className="session-chat-cache-hit" title={`Cache hit rate = cached input / input: ${hitText}${!complete?' (recorded requests only)':''}`} style={{color:hit===null?'var(--text-muted)':`hsl(${Math.round(hit*1.4)} 60% var(--cache-hit-lightness, 32%))`}}>{hitText}</span>)</>}</Fragment>,<Fragment key="reasoning">{formatted(tokens?.reasoning_output_tokens)}{breakdown&&<> ({credit(breakdown.reasoning,'Estimated reasoning credits, included in output')})</>}</Fragment>,<Fragment key="output">{formatted(output)}{breakdown&&<> ({credit(breakdown.output,'Estimated output credits, including reasoning')})</>}</Fragment>];
+ const fieldEstimates=!!cost&&!!tokens;
+ const values=[<Fragment key="total">{formatted(tokens?.total_tokens)}{includeCost&&<> ({estimate(costValue,'total')})</>}</Fragment>,<Fragment key="input">{formatted(input)}{fieldEstimates&&<> ({estimate(breakdown?.input,'uncached input')})</>}</Fragment>,<Fragment key="cache">{formatted(cached)}{(cached!==null||fieldEstimates)&&<> ({fieldEstimates&&estimate(breakdown?.cache,'cached input')}{cached!==null&&<>{fieldEstimates&&' | '}<span className="session-chat-cache-hit" title={`Cache hit rate = cached input / input: ${hitText}${!complete?' (recorded requests only)':''}`} style={{color:hit===null?'var(--text-muted)':`hsl(${Math.round(hit*1.4)} 60% var(--cache-hit-lightness, 32%))`}}>{hitText}</span></>})</>}</Fragment>,<Fragment key="reasoning">{formatted(tokens?.reasoning_output_tokens)}{fieldEstimates&&<> ({estimate(breakdown?.reasoning,'reasoning, included in output')})</>}</Fragment>,<Fragment key="output">{formatted(output)}{fieldEstimates&&<> ({estimate(breakdown?.output,'output, including reasoning')})</>}</Fragment>];
  return <span className="session-chat-message-statistics" title={title}>
   {coverage&&coverage!=='complete'&&<span className="session-chat-statistics-coverage">{coverageLabel} · </span>}
   {shared&&<span>Shared request · </span>}

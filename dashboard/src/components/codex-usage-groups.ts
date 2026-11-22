@@ -1,16 +1,29 @@
 import {usageDateRange,usageRangeLabel,type UsageDateRange} from './usage-date-range';
-export type ApiCost={amount:number|null;coverage:{covered:number;total:number}};
-export type Metrics={tokens:Record<string,number|null>;estimated_credits?:number|null;actual_quota?:number|null;credit_coverage?:{covered:number;total:number}|null;api_cost?:ApiCost};
+import type {ConversationCostEstimate} from '../lib/api';
+type Breakdown=NonNullable<ConversationCostEstimate['breakdown']>;
+export type ApiCost={amount:number|null;coverage:{covered:number;total:number};breakdown?:Breakdown};
+export type Metrics={tokens:Record<string,number|null>;estimated_credits?:number|null;actual_quota?:number|null;credit_coverage?:{covered:number;total:number}|null;cost_breakdown?:Breakdown;api_cost?:ApiCost};
 export type ModelUsage=Metrics&{model:string|null};
 export type UsageRow=Metrics&{date:string;hour?:string|null;cwd:string;project_name?:string;models?:ModelUsage[]};
 export type Dimension='hour'|'day'|'week'|'month'|'total'|'project'|'model';
 export const dimensionLabels:Record<Dimension,string>={hour:'小时',day:'日',week:'周',month:'月',total:'总量',project:'项目',model:'模型'};
 export type UsageGroup={key:string;label:string;title?:string;detail?:string;kind:'date'|'project'|'model';metrics:Metrics;children:UsageGroup[];missingModels:boolean};
 type Leaf={date:string;hour?:string|null;cwd:string;project:string;model:string|null;missing:boolean;metrics:Metrics};
+function aggregateBreakdown<T>(priced:T[],read:(value:T)=>Breakdown|undefined):Breakdown|undefined{
+ if(!priced.length)return undefined;
+ const sum:Breakdown={input:0,cache:0,output:0,reasoning:0};
+ for(const row of priced){
+  const b=read(row);if(!b)return undefined;
+  sum.input+=b.input;sum.cache+=b.cache;sum.output+=b.output;
+  sum.reasoning=sum.reasoning===null||b.reasoning===null?null:sum.reasoning+b.reasoning;
+ }
+ return sum;
+}
 export function aggregateMetrics(rows:Metrics[]):Metrics{
  const fields=new Set(rows.flatMap(r=>Object.keys(r.tokens)));
  const tokens=Object.fromEntries([...fields].map(k=>[k,rows.some(r=>r.tokens[k]==null)?null:rows.reduce((n,r)=>n+r.tokens[k]!,0)]));
  const known=rows.filter(r=>r.estimated_credits!=null);
+ const cost_breakdown=aggregateBreakdown(known,r=>r.cost_breakdown);
  const api_cost=rows.reduce<ApiCost|undefined>((cost,row)=>{
   if(!row.api_cost)return cost;
   const {amount,coverage}=row.api_cost;
@@ -20,7 +33,8 @@ export function aggregateMetrics(rows:Metrics[]):Metrics{
   cost.coverage.total+=coverage.total;
   return cost;
  },undefined);
- return {tokens,actual_quota:rows.some(r=>r.actual_quota!=null)?rows.reduce((n,r)=>n+(r.actual_quota??0),0):null,estimated_credits:known.length?known.reduce((n,r)=>n+r.estimated_credits!,0):null,credit_coverage:{covered:rows.reduce((n,r)=>n+(r.credit_coverage?.covered??(r.estimated_credits!=null?1:0)),0),total:rows.reduce((n,r)=>n+(r.credit_coverage?.total??1),0)},...api_cost?{api_cost}:{}};
+ if(api_cost)api_cost.breakdown=aggregateBreakdown(rows.filter(r=>r.api_cost?.amount!=null),r=>r.api_cost?.breakdown);
+ return {tokens,actual_quota:rows.some(r=>r.actual_quota!=null)?rows.reduce((n,r)=>n+(r.actual_quota??0),0):null,estimated_credits:known.length?known.reduce((n,r)=>n+r.estimated_credits!,0):null,credit_coverage:{covered:rows.reduce((n,r)=>n+(r.credit_coverage?.covered??(r.estimated_credits!=null?1:0)),0),total:rows.reduce((n,r)=>n+(r.credit_coverage?.total??1),0)},...cost_breakdown?{cost_breakdown}:{},...api_cost?{api_cost}:{}};
 }
 /** Keep counters and denominators consistent with the records visible in the UI. */
 export function estimatableUsageRows(rows:UsageRow[]):UsageRow[]{

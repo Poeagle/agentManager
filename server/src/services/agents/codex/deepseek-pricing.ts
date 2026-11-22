@@ -1,4 +1,4 @@
-import {pricingSnapshot,publishedHolidays,tokenPrice} from '../model-pricing.js';
+import {pricingSnapshot,publishedHolidays,tokenPriceBreakdown} from '../model-pricing.js';
 
 export const deepseekOrigin='https://api.deepseek.com';
 const timezone='Asia/Shanghai';
@@ -57,7 +57,7 @@ export function deepseekDay(epoch:number){return beijingTime(epoch).toISOString(
 
 // Bound estimates to the verified pricing period. Earlier model IDs could route to a different tariff.
 const verifiedFrom=Date.parse('2026-11-18T12:00:00+08:00');
-export function estimateDeepseekCost(model:string|null,epoch:number,tokens:Record<string,number|null>):number|null{
+export function estimateDeepseekBreakdown(model:string|null,epoch:number,tokens:Record<string,number|null>){
  if(!Number.isFinite(epoch)||epoch<verifiedFrom)return null;
  const tariff=modelTariff(model,epoch);
  if(!tariff)return null;
@@ -67,5 +67,10 @@ export function estimateDeepseekCost(model:string|null,epoch:number,tokens:Recor
  if(duringPeakHours&&!holidays)return null;
  const date=at.toISOString().slice(5,10);
  const peak=duringPeakHours&&!holidays?.some(([start,end])=>date>=start&&date<=end);
- return tokenPrice(tokens,peak?tariff.peak:tariff.off_peak);
+ return tokenPriceBreakdown(tokens,peak?tariff.peak:tariff.off_peak);
+}
+
+export function estimateDeepseekCost(model:string|null,epoch:number,tokens:Record<string,number|null>):number|null{
+ const cost=estimateDeepseekBreakdown(model,epoch,tokens);
+ return cost?cost.input+cost.cache+cost.output:null;
 }

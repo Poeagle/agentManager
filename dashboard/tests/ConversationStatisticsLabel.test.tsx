@@ -23,6 +23,11 @@ describe('English message metadata',()=>{
   expect(document.querySelector('.session-chat-estimated-cost')).toHaveTextContent('—');expect(label()).not.toHaveTextContent('100');
   expect(label()).toHaveAttribute('title',expect.stringContaining('Pricing is unavailable'));
  });
+ it('uses the same parentheses for every token count with API currency',()=>{
+  const tokens={total_tokens:120,input_tokens:100,cached_input_tokens:60,reasoning_output_tokens:5,output_tokens:20};
+  render(<ConversationStatisticsLabel statistics={{...base,tokens,cost:{amount:0.03,unit:'CNY',basis:'api',complete:true,breakdown:{input:0.01,cache:0.002,reasoning:0.001,output:0.018}}}}/>);
+  expect(label()).toHaveTextContent('120 (¥0.03)｜40 (¥0.01)｜60 (¥0.002 | 60%)｜5 (¥0.001)｜20 (¥0.018)');
+ });
  it('does not split or duplicate a shared model request',()=>{
   render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,shared_messages:2}}}/>);expect(label()).toHaveTextContent('Shared request');expect(label()).toHaveAttribute('title',expect.stringContaining('2 updates share the same model request'));expect(label()).toHaveAttribute('title',expect.stringContaining('200 tokens'));
  });
@@ -35,7 +40,7 @@ describe('English message metadata',()=>{
  it('shows cache hit percentage beside cached input and provides exact counters and pricing in the tooltip',()=>{
   const tokens={total_tokens:10200,input_tokens:10000,cached_input_tokens:9999,reasoning_output_tokens:50,output_tokens:200};
   render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,tokens,cost:{amount:3.21,unit:'credits',complete:true,rate_date:'2026-11-14'}}}}/>);
-  expect(label()).toHaveTextContent('10.2K (3.21)｜1｜10K (99.99%)｜50｜200');expect(screen.getByText('99.99%')).toHaveAttribute('class','session-chat-cache-hit');expect(label()).toHaveAttribute('title',expect.stringContaining('Input 1 (uncached); Cache 9,999; total input 10,000'));expect(label()).toHaveAttribute('title',expect.stringContaining('included in Output'));
+  expect(label()).toHaveTextContent('10.2K (3.21)｜1 (—)｜10K (— | 99.99%)｜50 (—)｜200 (—)');expect(screen.getByText('99.99%')).toHaveAttribute('class','session-chat-cache-hit');expect(label()).toHaveAttribute('title',expect.stringContaining('Input 1 (uncached); Cache 9,999; total input 10,000'));expect(label()).toHaveAttribute('title',expect.stringContaining('included in Output'));
  });
  it('shows the recorded cache rate for incomplete usage when total and output determine input',()=>{
   const tokens={total_tokens:1000,input_tokens:null,cached_input_tokens:800,reasoning_output_tokens:20,output_tokens:100};

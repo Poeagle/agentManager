@@ -15,9 +15,10 @@ import {localHome} from './account-files.js';
 import {accountCommandInput,localCommandInput} from './account-transport.js';
 import {USAGE_EVENT_LIMIT,USAGE_SCAN} from './usage-scanner.js';
 import {tokenFields} from '../../conversation-usage.js';
-import {creditRateDate,estimateUsageCredits} from './usage-credits.js';
+import {creditRateDate,estimateUsageCredits,estimateUsageBreakdown} from './usage-credits.js';
 import {createHash} from 'node:crypto';
-import {deepseekDay,deepseekOrigin,estimateDeepseekCost} from './deepseek-pricing.js';
+import {deepseekDay,deepseekOrigin,estimateDeepseekBreakdown} from './deepseek-pricing.js';
+import type {TokenCostBreakdown} from '../types.js';
 import {initUsageProvenance,usageOrigins} from './usage-provenance.js';
 import {realpathSync} from 'fs';
 import {resolve,join} from 'path';
@@ -235,6 +236,10 @@ function allocatedQuota(id:string,range?:{start:string|null;end:string|null;gaps
 function quotaByModel(allocation:Map<string,number>,day:string,cwd:string,model:string|null,hour?:string|null){
  return allocation.get(JSON.stringify([day,hour??null,cwd,model]))??null;
 }
+function addBreakdown(a:TokenCostBreakdown|undefined,b:TokenCostBreakdown):TokenCostBreakdown{
+ return a?{input:a.input+b.input,cache:a.cache+b.cache,output:a.output+b.output,reasoning:a.reasoning===null||b.reasoning===null?null:a.reasoning+b.reasoning}:{...b};
+}
+type ModelUsage={model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number};cost_breakdown?:TokenCostBreakdown;api_cost?:ApiCost};
 export function cachedAccountUsage(id:string){
  const db=getDb(),timezone=usageStoredTimezone(id),timezone_pending=timezone!==usageTimezone()?usageTimezone():null;
  const environment=getCodexEnvironment(id),basis=environment.kind==='provider'?'credits':'subscription',unassigned=unassignedUsage(id,basis);
@@ -250,12 +255,13 @@ export function cachedAccountUsage(id:string){
  const groups=new Map<string,Record<string,any>>();for(const row of breakdown){const key=JSON.stringify([row.day,row.cwd]);let group=groups.get(key);if(!group){group={day:row.day,cwd:row.cwd,...Object.fromEntries(tokenFields.map(k=>[k,row[k]??null]))};groups.set(key,group);}else for(const k of tokenFields)group[k]=group[k]==null||row[k]==null?null:group[k]+row[k];}
  const rows=[...groups.values()].sort((a,b)=>b.day.localeCompare(a.day)||a.cwd.localeCompare(b.cwd)).slice(0,5001);
  const estimates=new Map<string,{value:number;covered:number;requests:number}>();
- const models=new Map<string,Map<string,{model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number}}>>();
+ const models=new Map<string,Map<string,ModelUsage>>();
  for(const row of breakdown){
   const key=JSON.stringify([row.day,row.cwd]),group=estimates.get(key)||{value:0,covered:0,requests:0};const value=estimateUsageCredits(row.model,row.tier,row,basis);group.requests+=row.requests;if(value!==null){group.value+=value;group.covered+=row.requests;}estimates.set(key,group);
-  const byModel=models.get(key)||new Map(),modelKey=JSON.stringify(row.model),model=byModel.get(modelKey)||{model:row.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0}};
+  const byModel=models.get(key)||new Map<string,ModelUsage>(),modelKey=JSON.stringify(row.model);
+  const model:ModelUsage=byModel.get(modelKey)||{model:row.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0}};
   for(const field of tokenFields)model.tokens[field]=model.tokens[field]===null||row[field]===null?null:model.tokens[field]!+row[field];
-  model.credit_coverage.total+=row.requests;if(value!==null){model.estimated_credits=(model.estimated_credits??0)+value;model.credit_coverage.covered+=row.requests;}
+  model.credit_coverage.total+=row.requests;if(value!==null){model.estimated_credits=(model.estimated_credits??0)+value;model.credit_coverage.covered+=row.requests;const cost=estimateUsageBreakdown(row.model,row.tier,row,basis);if(cost)model.cost_breakdown=addBreakdown(model.cost_breakdown,cost);}
   byModel.set(modelKey,model);models.set(key,byModel);
  }
  const quota_range:{start:string|null;end:string|null}={start:null,end:null},quota_hours:Array<{hour:string;quota:number}>=[],allocation=allocatedQuota(id,quota_range,quota_hours,timezone);
@@ -300,13 +306,14 @@ export async function backfillUsageHours(id:string):Promise<void>{
   finally{controllers.delete('hourly:'+id);}
  })();hourlyPending.set(id,task);try{await task;}finally{hourlyPending.delete(id);}
 }
-type ApiCost={amount:number|null;coverage:{covered:number;total:number}};
+type ApiCost={amount:number|null;coverage:{covered:number;total:number};breakdown?:TokenCostBreakdown};
 const deepseekGroup=createHash('sha256').update(deepseekOrigin).digest('hex');
 const emptyApiCost=():ApiCost=>({amount:null,coverage:{covered:0,total:0}});
 function addApiCost(target:ApiCost,source:ApiCost){
  target.coverage.total+=source.coverage.total;
  target.coverage.covered+=source.coverage.covered;
  if(source.amount!==null)target.amount=(target.amount??0)+source.amount;
+ if(source.breakdown)target.breakdown=addBreakdown(target.breakdown,source.breakdown);
 }
 /** Combine per-request snapshots using their content fingerprints. Conflicting
  * copies are excluded and marked partial rather than counted twice. */
@@ -365,7 +372,6 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
  const retained={tokens:Object.fromEntries(tokenFields.map(k=>[k,0])) as Record<string,number|null>,requests:0,estimated_credits:null as number|null};
  for(const event of unassignedEvents.values())if(event){const counters=JSON.parse(event.tokens);retained.requests++;for(const k of tokenFields)retained.tokens[k]=retained.tokens[k]===null||counters[k]===null?null:retained.tokens[k]!+counters[k];const amount=estimateUsageCredits(event.model,event.tier,counters,basis);if(amount!==null)retained.estimated_credits=(retained.estimated_credits??0)+amount;}
  const directoryFor=usageDirectoryPresenter();
- type ModelUsage={model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number};api_cost?:ApiCost};
  const grouped=new Map<string,{date:string;hour?:string|null;cwd:string;tokens:Record<string,number|null>;requests:number;models:Map<string,ModelUsage>;api_cost?:ApiCost}>();
  let unknownTodayTime=false;
  for(const [requestId,event] of events){
@@ -374,11 +380,12 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   const tokens=JSON.parse(event.tokens);const requests=tokens.requests??1;row.requests+=requests;
   const modelKey=JSON.stringify(event.model);let model=row.models.get(modelKey);
   if(!model){model={model:event.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0}};row.models.set(modelKey,model);}
-  model.credit_coverage.total+=requests;const estimate=estimateUsageCredits(event.model,event.tier,tokens,basis);if(estimate!==null){model.estimated_credits=(model.estimated_credits??0)+estimate;model.credit_coverage.covered+=requests;}
+  model.credit_coverage.total+=requests;const estimate=estimateUsageCredits(event.model,event.tier,tokens,basis);if(estimate!==null){model.estimated_credits=(model.estimated_credits??0)+estimate;model.credit_coverage.covered+=requests;const cost=estimateUsageBreakdown(event.model,event.tier,tokens,basis);if(cost)model.cost_breakdown=addBreakdown(model.cost_breakdown,cost);}
   if(official){
    const at=Date.parse(event.at??''),timeKnown=Number.isFinite(at)&&!ambiguousTimes.has(requestId);
-   const amount=requests===1&&timeKnown?estimateDeepseekCost(event.model,at,tokens):null;
-   const cost={amount,coverage:{covered:amount===null?0:requests,total:requests}};
+   const breakdown=requests===1&&timeKnown?estimateDeepseekBreakdown(event.model,at,tokens):null;
+   const amount=breakdown?breakdown.input+breakdown.cache+breakdown.output:null;
+   const cost={amount,coverage:{covered:amount===null?0:requests,total:requests},...breakdown?{breakdown}:{}};
    addApiCost(model.api_cost??=emptyApiCost(),cost);
    addApiCost(row.api_cost??=emptyApiCost(),cost);
    if(timeKnown&&deepseekDay(at)===todayDate)addApiCost(today,cost);

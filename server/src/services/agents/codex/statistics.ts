@@ -1,6 +1,6 @@
 import {open} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
-import {emptyCostTotals,recordCost,costDifference,costSnapshot,type CostTotals} from './statistics-cost.js';
+import {codexApiEstimate,emptyCostTotals,recordCost,costDifference,costSnapshot,type CostTotals,type CodexPricing} from './statistics-cost.js';
 import {precedingPricingSettings,recordedPricingSettings} from './statistics-settings.js';
 import {codexMessagePhase} from './text.js';
 import {publicTokenCounters,tokenFields} from '../../conversation-usage.js';
@@ -14,7 +14,7 @@ interface Segment {cost:CostTotals;id:string;start:string|null;end:string|null;c
 interface Turn {cost:CostTotals;checkpoint?:{cost:CostTotals;tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:number;rounds:number};intervalIntact?:boolean;id:string;complete:boolean;tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:Set<string>;rounds:number;pendingTools:boolean;waiting:Array<{sequence:number;message_id?:string;final:boolean;timestamp:string|null;hash?:string;implicit?:boolean;segment:Segment|null}>}
 interface Conclusion {cost:CostTotals;tokens:ReturnType<typeof publicTokenCounters>;requests:number;calls:number;rounds:number;complete:boolean;start:string|null;initial:boolean}
 interface StepBase {intact:boolean;segmentId:string;tokens:Turn['tokens'];cost:CostTotals;requests:number;calls:number;rounds:number;afterId:string|null;afterSequence:number|null;start:string|null}
-interface State {model:string|null;tier:string|null;stepBase?:StepBase;offset:number;inode:number;mtime:number;partial:Buffer;turn:Turn|null;conclusion:Conclusion;fingerprint:string|null;stats:Map<number,ConversationStatistics>;segment:Segment|null}
+interface State {model:string|null;tier:string|null;provider:string|null;pricing?:CodexPricing;stepBase?:StepBase;offset:number;inode:number;mtime:number;partial:Buffer;turn:Turn|null;conclusion:Conclusion;fingerprint:string|null;stats:Map<number,ConversationStatistics>;segment:Segment|null}
 const cache=new Map<string,State>(),WINDOW=2*1024*1024;
 const callTypes=new Set(['function_call','custom_tool_call','tool_search_call','web_search_call','local_shell_call']);
 const zeroTokens=()=>Object.fromEntries(tokenFields.map(field=>[field,0])) as Turn['tokens'];
@@ -88,7 +88,7 @@ function consume(state:State,line:Buffer,sequence:number){
   let record:any;try{record=JSON.parse(line.toString());}catch{incomplete(state);return;}
   const p=record.payload;if(!p)return;
   const settings=recordedPricingSettings(record);
-  if(settings){if('model' in settings)state.model=typeof settings.model==='string'?settings.model.slice(0,120):null;if('service_tier' in settings)state.tier=typeof settings.service_tier==='string'?settings.service_tier.slice(0,120):null;}
+  if(settings){if('model' in settings)state.model=typeof settings.model==='string'?settings.model.slice(0,120):null;if('service_tier' in settings)state.tier=typeof settings.service_tier==='string'?settings.service_tier.slice(0,120):null;if('model_provider' in settings||record.type==='session_meta')state.provider=typeof settings.model_provider==='string'?settings.model_provider.slice(0,120):null;}
   const responseTurn=record.type==='response_item'?state.turn:undefined;
   const id=p.turn_id||(responseTurn?.complete?responseTurn.id:undefined)||p.internal_chat_message_metadata_passthrough?.turn_id||responseTurn?.id;
   if(record.type==='event_msg'&&p.type==='task_started'&&typeof id==='string'){
@@ -144,17 +144,18 @@ function consume(state:State,line:Buffer,sequence:number){
     const fingerprint=JSON.stringify(total);if(fingerprint===state.fingerprint)return;
     state.fingerprint=fingerprint;
     const current=state.turn;if(!current)return;
+    const api=state.pricing?codexApiEstimate(state.pricing,state.provider,state.model,state.tier,timestamp(record.timestamp),last):undefined;
     const part=state.segment;
     if(part&&!part.closed){
       if(part.skipUsage){part.skipUsage=false;part.complete=false;}
       else {
         if(state.stepBase?.segmentId!==part.id)state.stepBase={intact:part.complete,segmentId:part.id,tokens:zeroTokens(),cost:emptyCostTotals(),requests:0,calls:0,rounds:0,afterId:null,afterSequence:null,start:part.start};
-        part.requests++;recordCost(part.cost,state.model,state.tier,last);
+        part.requests++;recordCost(part.cost,state.model,state.tier,last,api);
         for(const field of tokenFields){part.tokens[field]=part.tokens[field]===null||last[field]===null?null:part.tokens[field]!+last[field]!;const step=state.stepBase;step.tokens[field]=step.tokens[field]===null||last[field]===null?null:step.tokens[field]!+last[field]!;}
       }
       part.pendingTools=false;
     }
-    current.requests++;state.conclusion.requests++;current.pendingTools=false;recordCost(current.cost,state.model,state.tier,last);recordCost(state.conclusion.cost,state.model,state.tier,last);
+    current.requests++;state.conclusion.requests++;current.pendingTools=false;recordCost(current.cost,state.model,state.tier,last,api);recordCost(state.conclusion.cost,state.model,state.tier,last,api);
     for(const field of tokenFields){current.tokens[field]=current.tokens[field]===null||last[field]===null?null:current.tokens[field]!+last[field]!;state.conclusion.tokens[field]=state.conclusion.tokens[field]===null||last[field]===null?null:state.conclusion.tokens[field]!+last[field]!;}
     // Keep the exact answer pending until task_complete can identify it.
     const tail=current.waiting.at(-1);
@@ -174,12 +175,14 @@ function consume(state:State,line:Buffer,sequence:number){
 function projectCost<T extends object>(value:T,enabled:boolean):T{if(enabled)return value;const result:any={...value,cost:null};for(const key of ['interval','segment','conclusion','step'])if((value as any)[key])result[key]={...(value as any)[key],cost:null};return result;}
 /** One bounded cold read, then append-only reads shared by HTTP and existing
  * file notifications. Missing turn starts produce explicitly partial counts. */
-export async function readConversationStatistics(path:string,withCredits=true):Promise<ConversationStatistics[]> {
+export async function readConversationStatistics(path:string,withCredits=true,pricing?:CodexPricing):Promise<ConversationStatistics[]> {
   const handle=await open(path,'r');
   try {
     const info=await handle.stat();let state=cache.get(path),skipFirst=false;
+    if(state?.pricing?.unit!==pricing?.unit||state?.pricing?.provider!==pricing?.provider)state=undefined;
+    withCredits ||= !!pricing;
     if(state&&state.inode===info.ino&&state.offset===info.size&&state.mtime===info.mtimeMs)return [...state.stats.values()].map(item=>projectCost(item,withCredits));
-    if(!state||state.inode!==info.ino||info.size<state.offset||info.size===state.offset&&info.mtimeMs!==state.mtime){state={model:null,tier:null,offset:Math.max(0,info.size-WINDOW),inode:info.ino,mtime:info.mtimeMs,partial:Buffer.alloc(0),turn:null,conclusion:conclusion(null,info.size<=WINDOW,info.size<=WINDOW),fingerprint:null,stats:new Map(),segment:null};
+    if(!state||state.inode!==info.ino||info.size<state.offset||info.size===state.offset&&info.mtimeMs!==state.mtime){state={model:null,tier:null,provider:null,pricing,offset:Math.max(0,info.size-WINDOW),inode:info.ino,mtime:info.mtimeMs,partial:Buffer.alloc(0),turn:null,conclusion:conclusion(null,info.size<=WINDOW,info.size<=WINDOW),fingerprint:null,stats:new Map(),segment:null};
       skipFirst=state.offset>0;
       if(skipFirst)Object.assign(state,await precedingPricingSettings(handle,state.offset));
       // Do not expose an unseeded cache to concurrent HTTP/file observers.
@@ -197,8 +200,8 @@ export async function readConversationStatistics(path:string,withCredits=true):P
 }
 
 /** The current conclusion interval is incrementally maintained by the same parser. */
-export async function readConversationProgress(path:string,withCredits=true):Promise<import('../types.js').AgentProgressStatistics|null> {
-  await readConversationStatistics(path);
+export async function readConversationProgress(path:string,withCredits=true,pricing?:CodexPricing):Promise<import('../types.js').AgentProgressStatistics|null> {
+  await readConversationStatistics(path,withCredits,pricing);
   const state=cache.get(path),current=state?.turn,summary=state?.conclusion;
   if(!current||!summary)return null;
   const part=state.segment,base=part&&state.stepBase?.segmentId===part.id?state.stepBase:undefined;
@@ -206,5 +209,5 @@ export async function readConversationProgress(path:string,withCredits=true):Pro
   const step=part&&!part.closed?{segment_id:part.id,after_message_id:base?.afterId??null,after_sequence:base?.afterSequence??null,start_at:base?.start??part.start,
     tokens:requests&&base?{...base.tokens}:null,
     cost:costSnapshot(costDifference(part.cost,base?.cost)),requests,tool_calls:part.calls-(base?.calls??0),tool_rounds:part.rounds-(base?.rounds??0),complete:base?base.intact:part.complete,shared_messages:1}:undefined;
-  return projectCost({cost:costSnapshot(summary.cost),turn_id:current.id,tokens:summary.requests?{...summary.tokens}:null,requests:summary.requests,tool_calls:summary.calls,tool_rounds:summary.rounds,complete:summary.complete,...part?{segment:segmentSnapshot(part)}:{},...step?{step}:{}},withCredits);
+  return projectCost({cost:costSnapshot(summary.cost),turn_id:current.id,tokens:summary.requests?{...summary.tokens}:null,requests:summary.requests,tool_calls:summary.calls,tool_rounds:summary.rounds,complete:summary.complete,...part?{segment:segmentSnapshot(part)}:{},...step?{step}:{}},withCredits||!!pricing);
 }

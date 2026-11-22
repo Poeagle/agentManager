@@ -262,8 +262,12 @@ it('estimates official DeepSeek usage per request before grouping and skips unkn
  respond([],{events:[peak]});await collectAccountUsage('provider:b');
  respond([],{events:[peak]});await collectAccountUsage('provider:proxy');
  const report=cachedGroupUsage(['provider:a','provider:b']);
- expect(report).toMatchObject({api_pricing:{currency:'CNY',today:{coverage:{covered:3,total:4},partial:true}},rows:[{requests:4,api_cost:{coverage:{covered:3,total:4}},models:expect.arrayContaining([{model:'deepseek-flash',tokens:expect.any(Object),estimated_credits:null,credit_coverage:{covered:0,total:3},actual_quota:null,api_cost:{amount:2.73,coverage:{covered:2,total:3}}}])}]});
- expect(report.rows[0]).toHaveProperty('api_cost.amount',10.08);
+ expect(report).toMatchObject({api_pricing:{currency:'CNY',today:{coverage:{covered:3,total:4},partial:true}},rows:[{requests:4,api_cost:{coverage:{covered:3,total:4}}}]});
+ const flash=report.rows[0].models.find(model=>model.model==='deepseek-flash')!;
+ expect(flash.api_cost).toMatchObject({amount:2.73,coverage:{covered:2,total:3},breakdown:{input:1.5,cache:0.03}});
+ expect(flash.api_cost?.breakdown?.output).toBeCloseTo(1.2,10);
+ expect(flash.api_cost?.breakdown?.reasoning).toBeCloseTo(0.6,10);
+ expect(report.rows[0].api_cost?.amount).toBeCloseTo(10.08,10);
  expect(cachedGroupUsage(['provider:proxy'])).not.toHaveProperty('api_pricing');
 });
 it('retains upstream group consumption when sessions disappear and bridges legacy fingerprint aliases safely',async()=>{

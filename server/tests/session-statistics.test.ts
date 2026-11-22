@@ -8,6 +8,7 @@ import { beginSessionAction, collectSessionStatisticsInventory, readChangedSessi
   readSessionProgress, readSessionUsageIntervals, stopSessionStatistics, updateSessionFacts, type SessionUsagePageQuery } from '../src/services/session-statistics.js';
 import type { AgentStatisticsInterval } from '../src/services/agents/types.js';
 import { createTestDatabase } from './helpers/database.js';
+import { updateAgentManagement } from '../src/services/agents/management-store.js';
 
 const base = Date.parse('2026-11-20T09:00:00Z');
 const stamp = (seconds: number) => new Date(base + seconds * 1000).toISOString();
@@ -46,6 +47,24 @@ beforeEach(async()=>{
 afterEach(async()=>{await stopSessionStatistics();vi.restoreAllMocks();vi.unstubAllEnvs();fixture.cleanup();});
 
 describe('persisted session statistics',()=>{
+  it('projects official API costs onto live Items, Progress and Finals, and persists them',async()=>{
+    updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'ds',name:'DS',kind:'responses',enabled:true,fields:{baseUrl:'https://api.deepseek.com/v1',models:['deepseek-flash']}}]}));
+    const api=agentContext({...codex.session,agent_environment_id:'provider:ds'});
+    const usage=tokens(1_000_000,500_000,100_000);
+    const expected={unit:'CNY',amount:1.82,breakdown:{input:1,cache:0.02,output:0.8,reasoning:0.00004}};
+    await writeFile(file,row(0,'session_meta',{id:'codex-session',model_provider:'ds'})+
+      event(1,'task_started',{turn_id:'a'})+row(2,'turn_context',{turn_id:'a',model:'deepseek-flash'})+
+      user(3,'input')+answer(4,'progress','commentary')+receipt(5,'r1','a',usage)+legacy(6,usage.total_tokens,usage));
+    await updateSessionFacts(api,file);
+    expect(readSessionProgress(api)?.segment?.cost).toMatchObject(expected);
+    expect(readChangedSessionStatistics(api,0)[0].interval?.cost).toMatchObject(expected);
+    await appendFile(file,answer(7,'final','final_answer')+receipt(8,'r2','a',usage)+event(9,'task_complete',{turn_id:'a'}));
+    await updateSessionFacts(api,file);
+    const saved=readSessionUsageIntervals(api);
+    expect(saved?.rows[0].usage?.cost).toMatchObject({unit:'CNY',amount:3.64,breakdown:{input:2,cache:0.04,output:1.6}});
+    closeDb();initDb();
+    expect(readSessionUsageIntervals(api)).toEqual(saved);
+  });
   it('shows pending usage only while an active Codex request has unaccounted work',async()=>{
     await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'input'));
     await updateSessionFacts(codex,file);

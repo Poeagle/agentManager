@@ -53,7 +53,7 @@ export function claudeRequestUsage(usage: Record<string, unknown> | null | undef
 }
 
 export const claudeSessionFacts: AgentSessionFactsPort = {
-  revision: 4,
+  revision: 5,
   async *discover() {
     const bindings = getDb().prepare(`SELECT DISTINCT COALESCE(native_session_id,claude_session_id) AS id,
       agent_environment_id AS environment FROM sessions WHERE COALESCE(agent_id,cli_type)='claude'
@@ -99,9 +99,9 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
       for (const id of group.tools) facts.push({kind: 'tool', id, turn_id: group.turn});
       const provider=declared?readClaudeRuntimeProvider(context.session,context.environmentAccess):null;
       const official=provider&&/^https:\/\/api\.anthropic\.com\/*$/.test(provider.baseUrl);
-      const amount=official&&group.cacheWrites&&(!group.speed||group.speed==='standard')?estimatePublicApiCost('claude',group.model,group.at,group.tokens,group.cacheWrites):null;
+      const estimate=official&&group.cacheWrites&&(!group.speed||group.speed==='standard')?estimatePublicApiCost('claude',group.model,group.at,group.tokens,group.cacheWrites):null;
       facts.push({kind: 'request', source_offset: group.offset, request: {
-        id: group.id, at: group.at, turn_id: group.turn, tokens: group.tokens, dimensions, cost: official?{unit:'USD',basis:'api',amount,complete:amount!==null}:null, evidence: 'request',
+        id: group.id, at: group.at, turn_id: group.turn, tokens: group.tokens, dimensions, cost: official?{unit:'USD',basis:'api',amount:estimate?.amount??null,breakdown:estimate?.breakdown,complete:estimate!==null}:null, evidence: 'request',
       }});
       for (const id of group.endedTools ?? []) facts.push({kind: 'tool_end', id, turn_id: group.turn});
       if (group.outcome) {

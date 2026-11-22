@@ -49,8 +49,16 @@ export const codexAdapter: AgentAdapter = {
     telemetry: { read: async (context) => inCodexThread(requireNative(context),async()=> (await import('./controls.js')).readConversationTelemetry(requireNative(context))),contextBreakdown:async context=>inCodexThread(requireNative(context),async()=>(await import('./context-breakdown.js')).readCodexContextBreakdown(context)) },
     statistics: {
         facts: codexSessionFacts,
-        read: async (context, path) => (await import('./statistics.js')).readConversationStatistics(path,!context.session.agent_environment_id?.startsWith('provider:')),
-        readProgress: async (context,path) => (await import('./statistics.js')).readConversationProgress(path,!context.session.agent_environment_id?.startsWith('provider:')),
+        read: async (context, path) => {
+            const environment=context.session.agent_environment_id;
+            const {codexApiPricing}=await import('./statistics-cost.js');
+            return (await import('./statistics.js')).readConversationStatistics(path,!environment?.startsWith('provider:'),codexApiPricing(environment)??undefined);
+        },
+        readProgress: async (context,path) => {
+            const environment=context.session.agent_environment_id;
+            const {codexApiPricing}=await import('./statistics-cost.js');
+            return (await import('./statistics.js')).readConversationProgress(path,!environment?.startsWith('provider:'),codexApiPricing(environment)??undefined);
+        },
     },
     quota: { read: async (force) => (await import('./quota.js')).readCodexWeeklyQuota({ force }) },
     retry: { retryable:retryableConversationError,inspect: async (id) => inCodexThread(id,async()=>(await import('./retry.js')).inspectCodexRetry(id)), start: async (id, failed, client) => inCodexThread(id,async()=>(await import('./retry.js')).startRetryTurn(id, failed, client)) },
