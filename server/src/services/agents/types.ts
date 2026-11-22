@@ -241,6 +241,8 @@ export interface AgentManagementPort {
       efforts?: Array<{ value: string; description: string }>;
     }>
   >;
+  refreshProviderBilling?(providerId?:string):Promise<void>;
+  refreshProviderModels?(providerId?:string):Promise<Array<{providerId:string;models:Array<AgentModelMetadata&{model:string;name:string;description?:string;efforts?:Array<{value:string;description:string}>;defaultEffort?:string}>}>>;
   readModelConfigs?(): Promise<AgentModelConfig[]>;
   updateModelConfigs?(
     updates: AgentModelConfigUpdate[],
@@ -388,6 +390,7 @@ export interface AgentModelMetadata {
   release_date?:string|null;
   api_pricing?:import('./model-pricing.js').ModelPricing;
   provider_pricing?:import('./model-pricing.js').ModelPricing;
+  provider_billing?:import('./provider-pricing.js').ProviderBillingMetadata;
   official_context_window?:number;
   context_window?:number|null;
   input_modalities?:string[];

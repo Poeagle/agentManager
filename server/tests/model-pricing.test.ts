@@ -1,6 +1,6 @@
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
-import {initModelPricing,parseHolidayNotice,pricingSnapshot,pricingSources,refreshModelPricing,estimatePublicApiCost} from '../src/services/agents/model-pricing.js';
+import {initModelPricing,parseHolidayNotice,pricingSnapshot,pricingSources,refreshModelPricing,estimatePublicApiCost,parseOfficialPricing} from '../src/services/agents/model-pricing.js';
 import {deepseekModelPricing,estimateDeepseekCost} from '../src/services/agents/deepseek-pricing.js';
 import {estimateUsageCredits,estimateUsageUsd} from '../src/services/agents/codex/usage-credits.js';
 import {estimateProviderApiCost,modelRate,providerModelMetadata,saveModelRates} from '../src/services/agents/provider-pricing.js';
@@ -28,10 +28,29 @@ it.each([
 
 it('provides official release dates and tariffs only for known models on the official URL',()=>{
  expect(deepseekModelPricing('https://api.deepseek.com/v1/',model)).toMatchObject({release_date:'2026-10-17',api_pricing:{currency:'CNY',peak:{input:2},off_peak:{input:1}}});
+ expect(deepseekModelPricing('https://api.deepseek.com','deepseek-v4.1-flash')).toMatchObject({release_date:'2026-10-17',context_window:1_000_000,api_pricing:{peak:{input:2}}});
  expect(deepseekModelPricing('https://api.deepseek.com','deepseek-v4-pro')).toMatchObject({release_date:'2026-08-13',api_pricing:{peak:{input:9}}});
  for(const url of ['https://api.deepseek.com.proxy.test','http://api.deepseek.com','https://api.deepseek.com@proxy.test','https://api.deepseek.com/gateway','https://proxy.test/v1'])expect(deepseekModelPricing(url,model)).toBeNull();
  expect(deepseekModelPricing('https://api.deepseek.com','unknown-model')).toBeNull();
  expect(estimateDeepseekCost(model,epoch('2026-11-23T01:00:00Z'),{...tokens,cached_input_tokens:null})).toBeNull();
+});
+
+it('parses DeepSeek canonical model IDs, context lengths, and documented legacy aliases',()=>{
+ const source=`| 模型 | 模型 | 模型 | deepseek-flash(1) | deepseek-v4-pro |
+| 模型版本 | 模型版本 | 模型版本 | DeepSeek-V4.1-Flash-1017 | DeepSeek-V4-Pro-0813 |
+| 上下文长度 | 上下文长度 | 上下文长度 | 1M | 1M |
+| 价格(2) | 输入（缓存命中） | 高峰时段 | 0.04元 | 0.30元 |
+| 价格(2) | 输入（缓存命中） | 空闲时段 | 0.02元 | 0.15元 |
+| 价格(2) | 输入（缓存未命中） | 高峰时段 | 2元 | 9元 |
+| 价格(2) | 输入（缓存未命中） | 空闲时段 | 1元 | 4.5元 |
+| 价格(2) | 百万tokens输出 | 高峰时段 | 8元 | 27元 |
+| 价格(2) | 百万tokens输出 | 空闲时段 | 4元 | 13.5元 |
+北京时间周一至周五（不含中国法定节假日）9:00 - 12:00、14:00 - 18:00 为高峰时段。
+旧模型名 \`deepseek-v4.1-flash\` 按 Flash 价格计费。`;
+ const data=parseOfficialPricing('deepseek',source);
+ expect(data.models['deepseek-flash']).toMatchObject({context_window:1_000_000,release_date:'2026-10-17'});
+ expect(data.models['deepseek-v4.1-flash']).toBe(data.models['deepseek-flash']);
+ expect(data.models['deepseek-v4-pro']).toMatchObject({context_window:1_000_000,release_date:'2026-08-13'});
 });
 
 const deepseek=(input:number)=>`| 模型 | 模型 | 模型 | deepseek-flash(1) |
@@ -165,6 +184,10 @@ it('syncs official model metadata and applies provider rates before the manual m
  const fetcher:typeof fetch=async url=>new Response(documents[String(url)]??'',{status:Object.hasOwn(documents,String(url))?200:404});
  await refreshModelPricing(fetcher,undefined,now);
  const official='https://api.openai.com/v1',gateway='https://gateway.example/v1',router='https://openrouter.ai/api/v1';
+ expect(pricingSnapshot('openai')?.data.models[model]).toMatchObject({bands:[
+  {label:'≤ 272K 输入 Token',min_input_tokens:0,rates:{input:2,cached:0.1,output:10}},
+  {label:'> 272K 输入 Token',min_input_tokens:272001,rates:{input:4,cached:0.2,output:15}},
+ ]});
  const fields:StoredProvider['fields']={baseUrl:gateway,modelRateMultipliers:[`${model}=1.2`,`${routerModel}=1.5`]};
  saveModelRates(fields,undefined,now);
  const usage=(input_tokens:number)=>({input_tokens,cached_input_tokens:0,output_tokens:1000});

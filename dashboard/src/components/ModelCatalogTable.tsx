@@ -22,8 +22,8 @@ export function ProviderModelActions({selected,total,disabled,detecting,onDetect
  </div></div>;
 }
 
-export function ModelCatalogTable<Row extends ModelCatalogRow>({rows,selected,defaultModel,locked,loading,error,onRetry,onSelectedChange,onDefaultChange,renderContext,renderImages,extraColumns=[],renderExtra}: {
- rows:Row[];selected:string[];defaultModel:string;locked?:boolean;loading?:boolean;error?:string;onRetry?:()=>void;
+export function ModelCatalogTable<Row extends ModelCatalogRow>({rows,selected,defaultModel,providerMultiplier,locked,loading,error,onRetry,onSelectedChange,onDefaultChange,renderContext,renderImages,extraColumns=[],renderExtra}: {
+ rows:Row[];selected:string[];defaultModel:string;providerMultiplier?:number;locked?:boolean;loading?:boolean;error?:string;onRetry?:()=>void;
  onSelectedChange:(models:string[])=>void;onDefaultChange:(model:string)=>void;
  renderContext?:(row:Row)=>ReactNode;renderImages?:(row:Row)=>ReactNode;
  extraColumns?:TableColumn<Row>[];renderExtra?:(row:Row)=>ReactNode;
@@ -55,7 +55,7 @@ export function ModelCatalogTable<Row extends ModelCatalogRow>({rows,selected,de
     <td>{renderContext?.(row)??row.context?.toLocaleString()??'未提供'}{officialWindow!=null&&officialWindow!==row.context&&<small className="provider-model-subtitle">官方 {officialWindow.toLocaleString()}</small>}</td>
     <td>{renderImages?.(row)??(row.images==null?modelImageLabel(row.metadata?.input_modalities):row.images?'支持':'不支持')}</td>
     <td>{row.metadata?.release_date??'未提供'}</td>
-    <td><ModelPricing pricing={row.metadata?.api_pricing}/></td><td>{row.metadata?.provider_pricing?<ModelPricing pricing={row.metadata.provider_pricing}/>: '—'}</td><td>{modelMultiplierLabel(row.metadata)}</td>
+    <td><ModelPricing pricing={row.metadata?.api_pricing}/></td><td>{row.metadata?.provider_pricing?<ModelPricing pricing={row.metadata.provider_pricing}/>: '—'}</td><td>{modelMultiplierLabel(row.metadata,providerMultiplier)}</td>
     {renderExtra?.(row)}
    </tr>;
   })}

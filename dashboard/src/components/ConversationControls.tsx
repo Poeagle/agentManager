@@ -135,6 +135,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         <dt>{apiPricing?.reference_only&&!referenceCredits?'官方 API 参考价':'计费标准'}</dt><dd><ModelPricing pricing={apiPricing} credits={referenceCredits}/></dd>
         {model.provider_pricing&&<><dt>第三方 API 费率</dt><dd><ModelPricing pricing={model.provider_pricing}/></dd></>}
         {apiPricing?.reference_only&&!referenceCredits&&<><dt>服务商倍率</dt><dd>{modelMultiplierLabel(model)}</dd></>}
+        {model.provider_billing?.source==='sub2api'&&model.provider_billing.peakEnabled&&<><dt>峰时倍率</dt><dd>{model.provider_billing.peakMultiplier}× · {model.provider_billing.peakStart}–{model.provider_billing.peakEnd} {model.provider_billing.timeZone}</dd></>}
         {providerMultiplier!=null&&<><dt>折算单价</dt><dd><ModelPricing pricing={apiPricing} multiplier={providerMultiplier}/></dd></>}
         <dt>上下文长度</dt><dd>{modelContext!=null?`${modelContext.toLocaleString()} tokens`:'未提供'}</dd>
         {model.official_context_window!=null&&model.official_context_window!==modelContext&&<><dt>官方上下文</dt><dd>{model.official_context_window.toLocaleString()} tokens</dd></>}

@@ -52,12 +52,19 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
   void client.invalidateQueries({queryKey:['conversation-controls']});
   void client.invalidateQueries({queryKey:['session-environments']});
  };
- const save=useMutation<{state:AgentManagementState},Error,void>({mutationFn:()=>{
+ const save=useMutation<{state:AgentManagementState},Error,void>({mutationFn:async()=>{
   if(!provider&&!draft.id.trim())throw Error('请填写 Provider ID');
   if(!draft.baseUrl.trim())throw Error('请填写 API 地址');
   if(!provider&&!draft.apiKey.trim())throw Error('请填写 API Key');
-  if(!draft.models.length)throw Error('请至少选择一个模型');
-  const fields={baseUrl:draft.baseUrl.trim(),models:draft.models,defaultModel:draft.defaultModel||draft.models[0]||'',haikuModel:draft.haikuModel.trim(),subagentModel:draft.subagentModel.trim(),effort:draft.effort.trim(),autoCompactWindow:draft.autoCompactWindow.trim(),contextWindow:draft.contextWindow.trim(),maxOutputTokens:draft.maxOutputTokens.trim(),...modelCapabilitiesPayload(probed)};
+  const discovery=await api.agentManagement.detectModels('claude',{endpoint:draft.baseUrl.trim(),apiKey:draft.apiKey.trim()||undefined,providerId:provider?.id})
+   .catch(error=>{if(provider||!draft.models.length)throw error;return {models:[]};});
+  if(provider&&!discovery.models.length)throw Error('Provider 未返回可用模型，当前配置未保存');
+  const discovered=discovery.models.length?discovery.models.map(model=>model.model):draft.models;
+  if(!discovered.length)throw Error('至少探测或手工添加一个模型');
+  const overlap=(provider?.models??[]).filter(model=>discovered.includes(model));
+  const models=provider&&overlap.length?overlap:discovered;
+  const defaultModel=provider?.defaultModel&&models.includes(provider.defaultModel)?provider.defaultModel:models[0]||'';
+  const fields={baseUrl:draft.baseUrl.trim(),models,defaultModel,haikuModel:draft.haikuModel.trim(),subagentModel:draft.subagentModel.trim(),effort:draft.effort.trim(),autoCompactWindow:draft.autoCompactWindow.trim(),contextWindow:draft.contextWindow.trim(),maxOutputTokens:draft.maxOutputTokens.trim(),...modelCapabilitiesPayload(discovery.models)};
   const input={name:draft.name.trim()||draft.id.trim(),kind:provider?.kind||'anthropic-compatible',enabled:provider?.enabled??true,...draft.apiKey.trim()?{apiKey:draft.apiKey.trim()}:{},fields};
   return provider?api.agentManagement.updateProvider('claude',provider.id,input):api.agentManagement.createProvider('claude',{...input,id:draft.id.trim()});
  },onSuccess:result=>{updateState(result);refreshSessionControls();setSaved(true);setError('');onDirtyChange?.(false);onSaved(provider?.id||draft.id.trim());},onError:(failure:Error)=>setError(failure.message)});
@@ -91,7 +98,7 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
    </div>
    </ProviderAdvancedSettings>
   </section>
-  <section className="provider-models" aria-label="Provider 模型配置">
+ {!provider&&<section className="provider-models" aria-label="Provider 模型配置">
    <ProviderModelActions selected={draft.models.length} total={modelRows.length} detecting={detect.isPending}
     disabled={readOnly||busy||!draft.baseUrl.trim()||(!provider&&!draft.apiKey.trim())} onDetect={()=>{setError('');detect.mutate();}}/>
    <ModelCatalogTable rows={modelRows} selected={draft.models} defaultModel={draft.defaultModel} locked={readOnly||busy}
@@ -103,7 +110,7 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
      <button type="button" className="agent-management-button" disabled={busy||!manualModel.trim()} onClick={addManualModel}>添加</button>
     </div></ProviderAdvancedSettings>}
    </div>
-  </section>
+  </section>}
   {(error||saved)&&<div className={`agent-management-operation ${error?'error':'success'}`} role={error?'alert':'status'}>{error?<CircleAlert size={13}/>:<Check size={13}/>}<span>{error||'Claude Provider 已保存'}</span></div>}
   <footer className="claude-provider-editor-actions">
    {provider&&!readOnly&&provider.id!=='anthropic'&&<div>{confirmDelete?<><span>确定彻底删除？</span><button type="button" className="agent-management-button agent-management-button-danger" disabled={busy} onClick={()=>remove.mutate()}>{remove.isPending?<Loader2 size={13} className="animate-spin"/>:<Trash2 size={13}/>}确认删除</button><button type="button" className="agent-management-button" disabled={busy} onClick={()=>setConfirmDelete(false)}>取消</button></>:<button type="button" className="agent-management-button" disabled={busy} onClick={()=>toggle.mutate(!provider.enabled)}>{toggle.isPending?<Loader2 size={13} className="animate-spin"/>:null}{provider.enabled?'停用':'启用'}</button>}<button type="button" className="agent-management-button" disabled={busy} onClick={()=>setConfirmDelete(true)}><Trash2 size={13}/>删除</button></div>}

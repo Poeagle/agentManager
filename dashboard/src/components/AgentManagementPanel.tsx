@@ -1,5 +1,6 @@
 import {ProviderDeleteDialog} from './ProviderDeleteDialog';
-import {ProviderModelTable} from './ProviderModelTable';
+import {AgentModelInformation} from './AgentModelInformation';
+import {ProviderModelsExpansion} from './ProviderModelsExpansion';
 import {ModelCatalogTable,ProviderModelActions} from './ModelCatalogTable';
 import {modelCapabilitiesPayload} from './ModelPricing';
 import {ProviderAdvancedSettings,ProviderConnectionFields} from './ProviderConnectionFields';
@@ -8,7 +9,7 @@ import {CodexAccountProvider} from './CodexAccountProvider';
 import {BalanceSummary,useEngineBalance} from './CodexEngineBalance';
 import {CodexAccountProviderEditor} from './CodexAccountProviderEditor';
 import {ClaudeProviderEditor} from './ClaudeProviderEditor';
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
@@ -37,7 +38,7 @@ import {
 } from "../lib/api";
 import { ClaudeIcon, CodexIcon } from "./CliIcons";
 import { Dialog } from "./Dialog";
-import { DataTable } from './table/DataTable';
+import { DataTable,TableDetailRow,TableExpandButton } from './table/DataTable';
 import { TableActionButton, TableActions } from './table/TableActions';
 import { useTableModel, type TableColumn } from './table/use-table-model';
 import "./AgentManagementPanel.css";
@@ -652,7 +653,7 @@ function ProviderEditor({
   const [saved, setSaved] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [runtimeOpen,setRuntimeOpen]=useState(false),[filesOpen,setFilesOpen]=useState(false);
-  const [modelsDirty,setModelsDirty]=useState(false),[modelsSaving,setModelsSaving]=useState(false);
+  const [modelsSaving]=useState(false);
   const [engineOperation, setEngineOperation] = useState<{
     busy: boolean;
     message: string;
@@ -702,9 +703,9 @@ function ProviderEditor({
     dirtyRef.current(
       provider.fields.some(
         (field) => fields[field.key] !== original[field.key],
-      ) || displayName!==provider.name || saveApiKey || JSON.stringify(selectedModels)!==JSON.stringify(provider.models) || modelsDirty || modelsSaving,
+      ) || displayName!==provider.name || saveApiKey || JSON.stringify(selectedModels)!==JSON.stringify(provider.models),
     );
-  }, [fields, provider.fields, provider.models, provider.name, displayName,saveApiKey,selectedModels,modelsDirty,modelsSaving]);
+  }, [fields, provider.fields, provider.models, provider.name, displayName,saveApiKey,selectedModels]);
   const beginEngineOperation = (message: string) => {
     setError("");
     setEngineOperation({
@@ -728,15 +729,24 @@ function ProviderEditor({
     }));
   };
   const update = useMutation({
-    mutationFn: (patches?:Parameters<typeof api.agentManagement.updateModelConfigs>[1]) => {
+    mutationFn: async (patches?:Parameters<typeof api.agentManagement.updateModelConfigs>[1]) => {
       beginEngineOperation("正在校验 Provider 配置…");
+      const discovery=provider.id==='native'?{models:detected}:await api.agentManagement.detectModels(agentId,{
+        providerId:provider.id,endpoint:fields.baseUrl,apiKey:saveApiKey?fields.envKey:undefined,
+      });
+      if(provider.id!=='native'&&!discovery.models.length)throw Error('Provider 未返回可用模型，当前配置未保存');
+      const discoveredModels=discovery.models.map(model=>model.model);
+      const retained=selectedModels.filter(model=>discoveredModels.includes(model));
+      const nextModels=provider.id==='native'?selectedModels:retained.length?retained:discoveredModels;
+      const configuredDefault=fields.defaultModel||provider.defaultModel||'';
+      const nextDefault=nextModels.includes(configuredDefault)?configuredDefault:nextModels[0]||'';
       const edited=new Map(patches?.map(patch=>[patch.model,patch]));
-      const observations=detected.map(model=>{
+      const observations=discovery.models.map(model=>{
         const patch=edited.get(model.model);
         return {...model,context_window:patch?.contextWindow===undefined?model.context_window:undefined,
           input_modalities:patch?.supportsImages===undefined?model.input_modalities:undefined};
       });
-      return api.agentManagement.updateProviderStream(agentId, provider.id, {
+      const result=await api.agentManagement.updateProviderStream(agentId, provider.id, {
         ...(provider.id!=='native'&&displayName.trim()!==provider.name?{name:displayName.trim()} : {}),
         ...(provider.fields.some((field) => field.key === "envKey") &&
         saveApiKey
@@ -748,7 +758,9 @@ function ProviderEditor({
             field.key === "envKey"
               ? ""
               : field.key === "models"
-                ? selectedModels
+                ? nextModels
+                : field.key === 'defaultModel'
+                  ? nextDefault
                 : field.type === "string-list"
                   ? field.key === "launchArgs"
                     ? splitArgumentLines(fields[field.key] || "")
@@ -757,8 +769,9 @@ function ProviderEditor({
           ]),
         ),...modelCapabilitiesPayload(observations)},
       }, recordEngineProgress);
+      return {result,nextModels,nextDefault};
     },
-    onSuccess: (result) => {
+    onSuccess: ({result,nextModels,nextDefault}) => {
       queryClient.setQueryData(
         ["agent-provider", agentId, provider.id],
         result.provider,
@@ -772,6 +785,8 @@ function ProviderEditor({
       });
       setSaved(true);
       setSaveApiKey(false);
+      setSelectedModels(nextModels);
+      setFields(current=>({...current,defaultModel:nextDefault}));
       setEngineOperation((current) => ({
         ...current,
         busy: false,
@@ -869,9 +884,11 @@ function ProviderEditor({
       return {...result,endpoint};
     },
     onSuccess: (result) => {
-      setSelectedModels((previous) => [
-        ...new Set([...previous, ...result.models.map((item) => item.model)]),
-      ]);
+      const discovered=result.models.map(item=>item.model);
+      const overlap=provider.models.filter(model=>discovered.includes(model));
+      const next=overlap.length?overlap:discovered;
+      setSelectedModels(next);
+      setFields(current=>({...current,defaultModel:next.includes(current.defaultModel)?current.defaultModel:next[0]||''}));
       void queryClient.invalidateQueries({
         queryKey: ["agent-management", agentId],
       });
@@ -885,24 +902,6 @@ function ProviderEditor({
   useEffect(() => { onBusyChange(busy); }, [busy, onBusyChange]);
   const detected = detect.data?.endpoint===fields.baseUrl?detect.data?.models??[]:[];
   const files = (liveProvider.configFiles||[]).filter(file=>file.exists&&file.writable!==false&&!file.sensitive);
-  const saveProvider=async (patches:Parameters<typeof api.agentManagement.updateModelConfigs>[1])=>{
-    let written=false;
-    try{
-      if(patches.length){
-        beginEngineOperation('正在写入模型参数…');
-        const result=await api.agentManagement.updateModelConfigs(agentId,patches);
-        queryClient.setQueryData(['agent-model-configs',agentId,provider.id],result);
-        written=true;
-      }
-      await update.mutateAsync(patches);
-      await queryClient.invalidateQueries({queryKey:['agent-model-configs',agentId,provider.id]});
-    }catch(failure){
-      const message=(written?'模型参数已写入，Engine 配置保存或重启失败：':'')+(failure instanceof Error?failure.message:'保存失败');
-      setError(message);setEngineOperation(current=>({...current,busy:false,success:false,error:message}));
-      throw failure;
-    }
-  };
-
   return (
     <div className="agent-management-provider-detail provider-editor">
       <header className="agent-management-detail-heading">
@@ -1100,18 +1099,7 @@ function ProviderEditor({
           </ProviderAdvancedSettings>}
           {nativeApi&&<p className="agent-management-hint">API 地址和凭据由本机 Codex 配置管理；可在下方配置文件中编辑可公开的配置。</p>}
       </section>
-      {nativeApi&&nativeDetails.data?.details&&<ProviderModelTable key="native-models" agentId={agentId} providerId="native"
-        options={[...nativeDetails.data.details.models.map(model=>({...model,name:model.name||model.model})),...detected]}
-        selected={nativeDetails.data.details.models.map(model=>model.model)} defaultModel={nativeDetails.data.details.settings.model||''} readOnly={readOnly} selectionReadOnly
-        busy={update.isPending||engineOperation.busy} detecting={detect.isPending} canSave={!usage.busy&&usage.verified}
-        onSelectedChange={()=>{}} onDefaultChange={()=>{}} onDetect={()=>detect.mutate()} onSave={saveProvider} onDirtyChange={setModelsDirty} onBusyChange={setModelsSaving}/>}
-      {provider.id!=='native'?<ProviderModelTable key={provider.id} agentId={agentId} providerId={provider.id}
-        options={[...provider.models.map(model=>({model,name:model})),...detected]}
-        selected={selectedModels} defaultModel={fields.defaultModel||''} readOnly={readOnly}
-        busy={update.isPending||engineOperation.busy||remove.isPending} detecting={detect.isPending}
-        canSave={!usage.busy&&usage.verified&&(provider.id==='native'||selectedModels.length>0)}
-        onSelectedChange={setSelectedModels} onDefaultChange={model=>setFields(current=>({...current,defaultModel:model}))}
-        onDetect={()=>detect.mutate()} onSave={saveProvider} onDirtyChange={setModelsDirty} onBusyChange={setModelsSaving}/>:!readOnly&&!nativeApi&&<div className="agent-management-actions"><button type="button" className="agent-management-button" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate(undefined)}><Save size={13}/>保存并重启 Engine</button></div>}
+      {!readOnly&&!nativeApi&&<div className="agent-management-actions"><button type="button" className="agent-management-button agent-management-button-primary" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate(undefined)}><Save size={13}/>保存并探测模型</button></div>}
       {files.length>0&&<section className="agent-management-section provider-files"><button type="button" className="agent-management-button" aria-expanded={filesOpen} onClick={()=>setFilesOpen(!filesOpen)}><ChevronRight size={13} style={{transform:filesOpen?'rotate(90deg)':undefined}}/>配置文件 ({files.length})</button>{filesOpen&&<ConfigFiles agentId={agentId} files={files} readOnly={readOnly} onDirtyChange={onFileDirtyChange}/>}</section>}
       {deleteOpen && (
         <ProviderDeleteDialog
@@ -1287,11 +1275,14 @@ const providerColumns: TableColumn<ProviderRow>[] = [
   {key:'balance',title:'余额',value:()=>null,interactive:false},
 ];
 
-function ProviderTableRow({row, readOnly, onOpen, onError}: {
+function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, onChanged}: {
   row: ProviderRow;
   readOnly: boolean;
+  expanded:boolean;
+  onToggle:()=>void;
   onOpen: () => void;
   onError: (message: string) => void;
+  onChanged:(state:AgentManagementState)=>void;
 }) {
   const client = useQueryClient();
   const provider = row.provider;
@@ -1319,7 +1310,8 @@ function ProviderTableRow({row, readOnly, onOpen, onError}: {
   });
   const enabled = provider?.enabled ?? row.environment?.enabled;
   const status = rowStatus(row, provider);
-  return <tr>
+  return <Fragment><tr>
+    <td><TableExpandButton expanded={expanded} label={`Provider ${row.name} 的模型`} onClick={onToggle}/></td>
     <td><strong title={provider?.name ?? row.name}>{provider?.name ?? row.name}</strong></td>
     <td><span className="agent-provider-agent"><AgentIcon id={row.state.agent.id}/>{row.state.agent.label}</span></td>
     <td>{row.auth}</td>
@@ -1330,7 +1322,7 @@ function ProviderTableRow({row, readOnly, onOpen, onError}: {
       {!provider.models.includes(provider.defaultModel??'')&&<option value={provider.defaultModel??''} disabled>{provider.defaultModel||'请选择'}</option>}
       {provider.models.map(model=><option key={model} value={model}>{model}</option>)}
     </select> : provider?.defaultModel ? <code>{provider.defaultModel}</code> : '—'}</td>
-    <td>{rateField&&!readOnly ? <form className="agent-provider-rate" onSubmit={event=>{
+    <td>{rateField&&!rateField.readOnly&&!readOnly ? <form className="agent-provider-rate" onSubmit={event=>{
       event.preventDefault();
       if(!save.isPending&&draftRate!==null&&draftRate.trim()!==rate)save.mutate({providerRateMultiplier:draftRate.trim()});
     }}>
@@ -1339,7 +1331,7 @@ function ProviderTableRow({row, readOnly, onOpen, onError}: {
         onChange={event=>setDraftRate(event.target.value)} onKeyDown={event=>{if(event.key==='Escape')setDraftRate(null);}}/>
       {draftRate!==null&&draftRate.trim()!==rate&&<button type="submit" className="agent-management-button" disabled={save.isPending}
         aria-label={`保存 ${row.name} 倍率`} title={`保存 ${row.name} 倍率`}><Check size={12}/></button>}
-    </form> : rate ? `${rate}×` : '—'}</td>
+    </form> : rate ? `${rate}×` : provider?.kind==='native'||provider?.kind==='official'||row.environment?.auth_mode==='account'?'1×':'—'}</td>
     <td><span className="agent-provider-status" title={enabled ? provider?.statusText : undefined}>
       <span className={`agent-management-dot ${enabled ? statusTone(provider?.status ?? (row.environment?.auth_mode ? 'ready' : 'unknown')) : 'unknown'}`} />{status}
     </span></td>
@@ -1347,7 +1339,10 @@ function ProviderTableRow({row, readOnly, onOpen, onError}: {
     <td><TableActions><TableActionButton onClick={onOpen} disabled={save.isPending} aria-label={`${readOnly ? '查看' : '编辑'} ${provider?.name ?? row.name}${row.state.agent.label ? ` · ${row.state.agent.label}` : ''}`}>
       {readOnly ? '查看' : <><Pencil size={12}/>编辑</>}
     </TableActionButton></TableActions></td>
-  </tr>;
+  </tr>
+  {expanded&&<TableDetailRow columnCount={providerColumns.length+2}>
+    {provider?<ProviderModelsExpansion agentId={agentId} provider={provider} readOnly={readOnly} onChanged={onChanged}/>:<div className="provider-model-expansion-empty">此账号模型由 Agent 原生配置管理</div>}
+  </TableDetailRow>}</Fragment>;
 }
 
 type ProviderDialog = {type:'add'; agentId:string; kind:'api'|'account'} |
@@ -1355,6 +1350,8 @@ type ProviderDialog = {type:'add'; agentId:string; kind:'api'|'account'} |
 
 export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
   const client = useQueryClient();
+  const [settingsPage,setSettingsPage] = useState<'providers'|'models'>('providers');
+  const [expandedProviders,setExpandedProviders] = useState<Set<string>>(()=>new Set());
   const [dialog, setDialog] = useState<ProviderDialog | null>(null);
   const [dirty, setDirty] = useState(false);
   const [fileDirty, setFileDirty] = useState(false);
@@ -1436,6 +1433,12 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
     setDialog({...dialog,accountDetails:!dialog.accountDetails});
   };
   return <div className="agent-management-page">
+    <div className="agent-management-tabs" role="tablist" aria-label="Agent 配置页面">
+      <button type="button" role="tab" aria-selected={settingsPage==='providers'} onClick={()=>setSettingsPage('providers')}>Provider</button>
+      <button type="button" role="tab" aria-selected={settingsPage==='models'} onClick={()=>setSettingsPage('models')}>模型资料</button>
+    </div>
+    {settingsPage==='models'&&<AgentModelInformation active/>}
+    {settingsPage==='providers'&&<>
     <div className="agent-provider-toolbar">
       <span aria-live="polite">{table.rows.length} 个 Provider</span>
       <div>
@@ -1452,10 +1455,12 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
       <TableActionButton onClick={()=>void accounts.refetch()}>重试</TableActionButton>
     </div>}
     {rowError&&<div className="agent-management-error-box" role="alert"><CircleAlert size={14}/>{rowError}</div>}
-    <DataTable label="Agent Provider" model={table} actions minWidth={930} className="agent-provider-table"
+    <DataTable label="Agent Provider" model={table} actions expandable minWidth={930} className="agent-provider-table"
       loading={catalog.isPending} error={catalog.isError ? catalog.error.message : undefined} onRetry={refresh}
       empty={!table.rows.length} emptyMessage={rows.length ? '没有符合筛选条件的 Provider' : '暂无 Provider'}>
-      {table.rows.map(row=><ProviderTableRow key={row.key} row={row} readOnly={readOnly} onError={setRowError}
+      {table.rows.map(row=><ProviderTableRow key={row.key} row={row} readOnly={readOnly} expanded={expandedProviders.has(row.key)}
+        onToggle={()=>setExpandedProviders(current=>{const next=new Set(current);if(next.has(row.key))next.delete(row.key);else next.add(row.key);return next;})}
+        onChanged={state=>client.setQueryData(['agent-management',state.agent.id],{state})} onError={setRowError}
         onOpen={()=>setDialog({type:'edit',row,accountDetails:readOnly})}/>)}
     </DataTable>
     {dialog && <Dialog appearance="manager" className="agent-provider-dialog" title={title} size="image" width={1160}
@@ -1489,5 +1494,6 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
       </>}
       </div>
     </Dialog>}
+    </>}
   </div>;
 }

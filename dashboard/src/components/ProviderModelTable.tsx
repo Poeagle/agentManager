@@ -9,14 +9,15 @@ type ModelOption=Pick<DetectedAgentModel,'model'|'name'>&AgentModelMetadata;
 type ModelPatch=Pick<AgentModelConfig,'provider'|'model'>&Partial<Pick<AgentModelConfig,'contextWindow'|'maxContextWindow'|'effectiveContextWindowPercent'|'supportsImages'>>;
 type ModelRow=ModelCatalogRow&{config?:AgentModelConfig};
 /** A single catalog view owns selection, default model and capability drafts. */
-export function ProviderModelTable({agentId,providerId,options,selected,defaultModel,readOnly,selectionReadOnly=false,busy,detecting,canSave,onSelectedChange,onDefaultChange,onDetect,onSave,onDirtyChange,onBusyChange}:{
- agentId:string;providerId:string;options:ModelOption[];selected:string[];defaultModel:string;readOnly:boolean;selectionReadOnly?:boolean;busy:boolean;detecting:boolean;canSave:boolean;
+export function ProviderModelTable({agentId,providerId,options,selected,defaultModel,providerMultiplier,readOnly,selectionReadOnly=false,busy,detecting,canSave,onSelectedChange,onDefaultChange,onDetect,onSave,onDirtyChange,onBusyChange}:{
+ agentId:string;providerId:string;options:ModelOption[];selected:string[];defaultModel:string;providerMultiplier?:number;readOnly:boolean;selectionReadOnly?:boolean;busy:boolean;detecting:boolean;canSave:boolean;
  onSelectedChange:(models:string[])=>void;onDefaultChange:(model:string)=>void;onDetect:()=>void;onSave:(patches:ModelPatch[])=>Promise<void>;onDirtyChange:(dirty:boolean)=>void;onBusyChange:(busy:boolean)=>void;
 }){
  const query=useQuery({queryKey:['agent-model-configs',agentId,providerId],queryFn:()=>api.agentManagement.modelConfigs(agentId),retry:false,refetchInterval:300000});
  const [patches,setPatches]=useState<Record<string,Partial<ModelPatch>>>({});
  const [advanced,setAdvanced]=useState(false);
- const configs=(query.data?.models||[]).filter(m=>m.provider===providerId||providerId==='native'&&(!m.provider||m.provider==='wanzhao'));
+ const configs=(query.data?.models||[]).filter(m=>(m.provider===providerId||providerId==='native'&&(!m.provider||m.provider==='wanzhao'))&&
+  (selected.includes(m.model)||options.some(option=>option.model===m.model)));
  const byModel=new Map(options.map(m=>[m.model,m]));
  const models=[...new Set([...selected,...options.map(m=>m.model),...configs.map(m=>m.model)])];
  const rows:ModelRow[]=models.map(model=>{
@@ -24,7 +25,7 @@ export function ProviderModelTable({agentId,providerId,options,selected,defaultM
   const name=option?.name&&option.name!==model?option.name:config?.name||model;
   const metadata=option?.context_window||option?.input_modalities||option?.api_pricing?option:config??option;
   const context=option?.context_window,inputs=option?.input_modalities;
-  const editable=config?.sourceFile?{...config,
+  const editable=config?{...config,
    ...(context?{contextWindow:context,maxContextWindow:context}:{}),
    ...(inputs?.length?{supportsImages:inputs.includes('image')}:{}),...patches[model],
   }:undefined;
@@ -45,7 +46,7 @@ export function ProviderModelTable({agentId,providerId,options,selected,defaultM
    {rows.some(row=>row.config)&&<button type="button" className="agent-management-button" aria-expanded={advanced} onClick={()=>setAdvanced(value=>!value)}>窗口参数</button>}
    {!readOnly&&<button type="submit" className="agent-management-button agent-management-button-primary" disabled={locked||detecting||!canSave}><Save size={13}/>{save.isPending?'保存中…':'保存并重启 Engine'}</button>}
   </ProviderModelActions>
-  <ModelCatalogTable rows={rows} selected={selected} defaultModel={defaultModel} locked={locked||selectionReadOnly} loading={query.isPending} error={query.isError?query.error.message:undefined} onRetry={()=>void query.refetch()}
+   <ModelCatalogTable rows={rows} selected={selected} defaultModel={defaultModel} providerMultiplier={providerMultiplier} locked={locked||selectionReadOnly} loading={query.isPending} error={query.isError?query.error.message:undefined} onRetry={()=>void query.refetch()}
    onSelectedChange={onSelectedChange} onDefaultChange={onDefaultChange}
    renderContext={row=>numberField(row,'contextWindow','上下文长度')??null}
    renderImages={row=>row.config?<input type="checkbox" aria-label={`${row.model} 图片输入`} checked={row.config.supportsImages} disabled={locked||!selected.includes(row.model)} onChange={event=>edit(row.model,{supportsImages:event.target.checked})}/>:null}

@@ -3,6 +3,7 @@ import {startAccountUsage,stopAccountUsage} from './services/agents/codex/accoun
 import {collectSessionStatisticsInventory,stopSessionStatistics} from './services/session-statistics.js';
 import {startEngineBalance,stopEngineBalance} from './services/agents/codex/engine-balance.js';
 import {startModelPricing,stopModelPricing} from './services/agents/model-pricing.js';
+import {startProviderBillingSync,stopProviderBillingSync} from './services/agents/provider-billing-sync.js';
 import { installApiFallback } from './http-fallback.js';
 // Increase libuv thread pool for async execFile / fs operations
 process.env.UV_THREADPOOL_SIZE = '16';
@@ -107,6 +108,7 @@ async function start() {
   startAccountUsage(collectSessionStatisticsInventory);
   startEngineBalance();
   startModelPricing();
+  startProviderBillingSync();
   serverResourceSampler.start();
   memorySessionReaper.start();
 
@@ -328,7 +330,7 @@ async function shutdown(exitCode = 0): Promise<void> {
       recordFailure('PTY flush', new Error('queued terminal output could not be persisted after retries'));
     }
   } catch (error) { recordFailure('PTY flush', error); }
-  try { await Promise.all([stopAccountUsage(),stopEngineBalance(),stopModelPricing()]);stopScheduledTaskScheduler(); } catch (error) { recordFailure('scheduler stop', error); }
+  try { await Promise.all([stopAccountUsage(),stopEngineBalance(),stopModelPricing(),stopProviderBillingSync()]);stopScheduledTaskScheduler(); } catch (error) { recordFailure('scheduler stop', error); }
   try { killAllSessions(); } catch (error) { recordFailure('session detach', error); }
   try { detachManagedAgents();for(const descriptor of agentDescriptors())await getAgent(descriptor.id).quota.shutdown?.(); } catch (error) { recordFailure('quota reader stop', error); }
   if (closeServer) await closeServer;
