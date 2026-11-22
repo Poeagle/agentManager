@@ -37,3 +37,9 @@
 .provider-files>button{margin-bottom:8px;}
 @media(max-width:1050px){.provider-editor .agent-management-engine-form{grid-template-columns:repeat(2,minmax(0,1fr));}}
 @media(max-width:640px){.provider-editor .agent-management-engine-form{grid-template-columns:1fr;}.provider-editor .agent-management-engine-form .agent-management-field-baseUrl{grid-column:auto;}}
+.agent-management-uninitialized-guide{display:flex;flex-direction:column;gap:16px;padding:20px;background:var(--surface-secondary,#f8fafc);border:1px solid var(--border);border-radius:8px;margin:12px 0;}
+.agent-management-uninitialized-title{margin:0;font-size:14px;font-weight:600;color:var(--text-primary);}
+.agent-management-uninitialized-description{margin:0;font-size:13px;color:var(--text-secondary);}
+.agent-management-uninitialized-options{display:flex;flex-direction:column;gap:6px;}
+.agent-management-uninitialized-options button{justify-content:flex-start;gap:8px;}
+.agent-management-uninitialized-hint{margin:0;font-size:11px;color:var(--text-secondary);padding-left:28px;}

@@ -1283,17 +1283,17 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       if (input?.endpoint) {
         const endpoint = new URL(input.endpoint);
         if (!['http:', 'https:'].includes(endpoint.protocol)) throw Object.assign(Error('Responses API 地址无效'), { statusCode: 400 });
-        const apiKey = input.apiKey?.trim() || (input.providerId ? providerApiKey(input.providerId) : '');
+        const apiKey = input.apiKey?.trim() || (input.providerId && input.providerId !== 'native' ? providerApiKey(input.providerId) : '');
         if (!apiKey) throw Object.assign(Error('请先输入 API Key'), { statusCode: 400 });
         return probeProviderModels(endpoint.toString(), apiKey);
       }
       if(input?.providerId==='native'){
         const native=nativeCodexConnectionConfig();
 
-        // 未初始化：提示用户配置认证方式
+        // 未初始化：不能探测，提示用户先配置
         if (native.authMode === 'uninitialized') {
           throw Object.assign(
-            Error('原生 Codex 尚未初始化，请选择账号登录或配置 API Key'),
+            Error('原生 Codex 尚未初始化，请填写 API 地址和 Key 后点击"探测模型"'),
             { statusCode: 409 }
           );
         }
