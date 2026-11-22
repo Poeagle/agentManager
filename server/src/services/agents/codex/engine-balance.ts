@@ -99,6 +99,7 @@ export async function collectEngineBalance(id:string):Promise<void>{
  })();pending.set(id,task);try{await task;}finally{pending.delete(id);}
 }
 export function cachedEngineBalance(id:string):Cached{
+ initEngineBalance();
  const row=getDb().prepare('SELECT data FROM codex_engine_balance WHERE id=? AND identity=?').get(id,sourceIdentity(id)) as {data:string}|undefined;
  if(!row)return {auth_mode:null,status:'unavailable',error:'auth_unknown'};
  const data:Cached=JSON.parse(row.data);

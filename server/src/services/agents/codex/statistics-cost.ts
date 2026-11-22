@@ -4,9 +4,11 @@ import {apiPricingCurrency,estimateProviderApiCost} from '../provider-pricing.js
 import {usdReferenceRateDate,estimateUsageUsd,estimateUsageUsdBreakdown} from './usage-credits.js';
 
 export type CodexPricing={unit:'CNY'|'USD';provider:string;fields:StoredProvider['fields']};
-export function codexApiPricing(environment:string|null|undefined):CodexPricing|null{
- if(!environment?.startsWith('provider:'))return null;
- const id=environment.slice('provider:'.length);
+export type CodexAuthMode='api'|'account'|null;
+export function codexApiPricing(environment:string|null|undefined,authMode:CodexAuthMode=environment==='native'?'account':null):CodexPricing|null{
+ if(environment==='native'&&authMode!=='api')return null;
+ if(!environment?.startsWith('provider:')&&environment!=='native')return null;
+ const id=environment==='native'?'native':environment.slice('provider:'.length);
  const provider=readAgentManagement('codex').providers.find(entry=>entry.id===id);
  if(!provider)return null;
  const base=provider.fields.baseUrl;
@@ -15,7 +17,7 @@ export function codexApiPricing(environment:string|null|undefined):CodexPricing|
 }
 export function codexApiEstimate(pricing:CodexPricing,provider:string|null,model:string|null,tier:string|null,at:string|null,tokens:Record<string,number|null>|null):AgentCostEstimate{
  let breakdown:TokenCostBreakdown|null=null;
- if(tokens&&at&&provider===pricing.provider){
+ if(tokens&&at&&(provider===pricing.provider||pricing.provider==='native')){
   if(!tier||tier==='default'||tier==='standard'){
    const estimate=estimateProviderApiCost(pricing.fields.baseUrl,pricing.fields,model,at,tokens);
    if(estimate?.unit===pricing.unit)breakdown=estimate.breakdown;

@@ -182,6 +182,16 @@ it('uses a single gateway rate for every fallback model at the time of the recei
  expect(()=>saveModelRates({...shared,providerRateMultiplier:'0'},shared,third)).toThrow('Provider 计费倍率');
 });
 
+it('prices native Codex only when its runtime authentication is API mode',async()=>{
+ await refreshModelPricing(async url=>String(url)===pricingSources.openai?new Response('### Standard pricing data\n| gpt-6.2-sol | $2 | $10 | $0.10 |'):new Response(null,{status:404}));
+ const fields:StoredProvider['fields']={baseUrl:'https://gateway.example/v1',models:['gpt-6.2-sol'],providerRateMultiplier:'0.12',modelRateMultipliers:[]};
+ updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'native',name:'Native',kind:'native',enabled:true,fields}]}));
+ const at='2026-11-23T01:30:00.000Z';
+ expect(codexApiPricing('native','account')).toBeNull();
+ const pricing=codexApiPricing('native','api');expect(pricing).toMatchObject({provider:'native',unit:'USD'});
+ expect(codexApiEstimate(pricing!,'xindu','gpt-6.2-sol','default',at,tokens).amount).toBeCloseTo(0.246,10);
+});
+
 it('keeps Sub2API billing automatic until an explicit manual multiplier replaces it',()=>{
  const baseUrl='https://xindu.xyz/v1',at=epoch('2026-11-23T01:00:00Z');
  const automatic:StoredProvider['fields']={baseUrl,providerRateMultiplier:'0.42',providerRateSource:'sub2api',

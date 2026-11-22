@@ -12,6 +12,7 @@ import { cacheInputPricing } from '../cache-read-pricing.js';
 import { estimateUsageBreakdown } from './usage-credits.js';
 import { conversationImagePaths } from '../../conversation-attachments.js';
 import { codexApiEstimate, codexApiPricing, costSnapshot, emptyCostTotals, recordCost } from './statistics-cost.js';
+import { cachedEngineBalance } from './engine-balance.js';
 
 interface Input {
   id: string;
@@ -334,10 +335,13 @@ function receipt(
   if (Object.hasOwn(payload, 'model')) dimensions.model = factString(payload.model,120);
   if (Object.hasOwn(payload, 'service_tier')) dimensions.speed = factString(payload.service_tier,120) ?? 'default';
   const total = emptyCostTotals();
-  const credits = !context.session.agent_environment_id?.startsWith('provider:');
+  const environment = context.session.agent_environment_id;
+  const nativeAuth = environment === 'native' ? cachedEngineBalance('native').auth_mode : null;
+  const apiMode = environment?.startsWith('provider:') || nativeAuth === 'api';
+  const credits = !apiMode;
   const pricedTokens=tokens&&consistentUsage(tokens)?tokens:null;
   if (credits && pricedTokens) recordCost(total, dimensions.model, dimensions.speed, pricedTokens);
-  const pricing=!credits&&!inherited?codexApiPricing(context.session.agent_environment_id):null;
+  const pricing=!credits&&!inherited?codexApiPricing(environment,nativeAuth):null;
   const provider=Object.hasOwn(payload,'model_provider')?factString(payload.model_provider,120):requestContext?requestContext.provider??null:state.provider??null;
   const cost=pricing?codexApiEstimate(pricing,provider,dimensions.model,dimensions.speed,at,pricedTokens):credits?costSnapshot(total):null;
   const inputPricing=cost?.complete ? cacheInputPricing(pricedTokens,usage=>pricing
