@@ -44,6 +44,7 @@ it('recognizes only confirmed Claude text-generation families as image-capable',
  expect(confirmedClaudeInputModalities('claude-sonnet-5-5[1m]')).toEqual(['text','image']);
  expect(confirmedClaudeInputModalities('private-gateway-model')).toBeUndefined();
  expect(confirmedClaudeContextWindow('claude-fable-5')).toBe(1_000_000);
+ expect(confirmedClaudeContextWindow('claude-haiku-5-5')).toBe(1_000_000);
  expect(confirmedClaudeContextWindow('claude-opus-4-8')).toBe(1_000_000);
  expect(confirmedClaudeContextWindow('claude-sonnet-5-5[1m]')).toBe(1_000_000);
  expect(confirmedClaudeContextWindow('private-gateway-model')).toBeUndefined();

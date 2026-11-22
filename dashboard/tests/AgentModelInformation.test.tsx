@@ -57,6 +57,23 @@ it('keeps missing official prices explicit instead of displaying a fabricated va
  client.clear();
 });
 
+it('shows bundled catalog models that have no configured provider',async()=>{
+ vi.mocked(api.agentManagement.modelCatalog).mockResolvedValue({models:[{
+  vendor:'Google',model:'gemini-4-neon',providers:[],release_date:'2026-11-18',
+  official_context_window:1_048_576,context_window:1_048_576,input_modalities:['text','image','video','audio','pdf'],
+  api_pricing:{currency:'USD',source:'official',bands:[{rates:{input:3,cached:0.15,output:15}}]},
+ }]});
+ const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+ render(<QueryClientProvider client={client}><AgentModelInformation/></QueryClientProvider>);
+ const table=await screen.findByRole('table',{name:'模型资料'});
+ const row=await within(table).findByRole('row',{name:/gemini-4-neon/});
+ expect(row).toHaveTextContent('2026-11-18');
+ expect(row).toHaveTextContent('1,048,576');
+ expect(row).toHaveTextContent('USD 3.00');
+ expect(screen.getByTitle('官方模型资料')).toBeInTheDocument();
+ client.clear();
+});
+
 it('shows verified Claude context and release metadata from the official catalog',async()=>{
  vi.mocked(api.agentManagement.modelCatalog).mockResolvedValue({models:[{
   vendor:'Anthropic',model:'claude-sonnet-5-5',providers:['Anthropic'],release_date:'2026-09-28',

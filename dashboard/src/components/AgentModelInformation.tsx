@@ -49,10 +49,10 @@ export function AgentModelInformation({active=true}:{active?:boolean}){
   </div>
   <DataTable label="模型资料" model={table} minWidth={1040} className="agent-model-information-table"
    loading={query.isPending} error={query.isError?query.error.message:undefined} onRetry={()=>void query.refetch()}
-   empty={!table.rows.length} emptyMessage="当前 Provider 尚未配置模型">
+   empty={!table.rows.length} emptyMessage="暂无模型资料">
    {table.rows.map(row=><tr key={`${row.vendor}:${row.model}`}>
     <td>{row.vendor}</td>
-    <td title={row.providers.join('、')}><code>{row.model}</code></td>
+    <td title={row.providers.length?row.providers.join('、'):'官方模型资料'}><code>{row.model}</code></td>
     <td>{releaseDate(row)}</td>
     <td>{row.official_context_window??row.context_window?Number(row.official_context_window??row.context_window).toLocaleString('en-US'):'未提供'}</td>
     <td>{pricingValues(row.api_pricing,'input',row.reference_credits)}</td>

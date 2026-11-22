@@ -1,7 +1,7 @@
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
 import {initModelPricing,pricingSources,refreshModelPricing} from '../src/services/agents/model-pricing.js';
-import {buildAgentModelCatalog} from '../src/services/agents/model-catalog.js';
+import {buildAgentModelCatalog,loadStaticModelCatalog,mergeCatalogEntries,type AgentModelCatalogEntry} from '../src/services/agents/model-catalog.js';
 import type {AgentProviderState} from '../src/services/agents/types.js';
 
 let fixture:ReturnType<typeof createTestDatabase>;
@@ -80,6 +80,52 @@ it('keeps the confirmed Claude image capabilities across the current Provider mo
  ]);
  expect(models).toHaveLength(modelIds.length);
  expect(models.find(row=>row.model==='claude-sonnet-5-5')).toMatchObject({context_window:1_000_000,official_context_window:1_000_000});
+ expect(models.find(row=>row.model==='claude-haiku-5-5')?.official_context_window).toBe(1_000_000);
  expect(models.find(row=>row.model==='claude-opus-4-5-20251101')?.official_context_window).toBeUndefined();
  expect(models.filter(row=>!row.input_modalities?.includes('image')).map(row=>[row.model,row.input_modalities])).toEqual([]);
+});
+
+it('loads the bundled official catalog without inventing a configured Provider',async()=>{
+ const models=await loadStaticModelCatalog();
+ const gpt=models.find(row=>row.model==='gpt-6.2-sol');
+ expect(gpt).toMatchObject({
+  vendor:'OpenAI',providers:[],release_date:'2026-11-17',official_context_window:1_050_000,context_window:1_050_000,
+  input_modalities:['text','image'],api_pricing:{currency:'USD',reference_only:false},
+ });
+ expect(gpt?.api_pricing?.bands?.map(band=>band.rates)).toEqual([
+  {input:2,cached:0.1,output:10},
+  {input:4,cached:0.2,output:15},
+ ]);
+ expect(models.find(row=>row.model==='claude-haiku-5-5')).toMatchObject({
+  vendor:'Anthropic',release_date:'2026-10-07',official_context_window:1_000_000,
+ });
+ expect(models.find(row=>row.model==='grok-4.7')).toMatchObject({official_context_window:500_000,release_date:'2026-09-21'});
+ expect(models.find(row=>row.model==='deepseek-flash')?.api_pricing).toMatchObject({
+  currency:'CNY',peak:{input:2,cached:0.04,output:8},off_peak:{input:1,cached:0.02,output:4},
+ });
+ expect(models.find(row=>row.model==='deepseek-v4.1-flash')).toBeUndefined();
+});
+
+it('lets a configured Provider add its name and fresher official tariff to a bundled record',()=>{
+ const baseline:AgentModelCatalogEntry={
+  vendor:'OpenAI',model:'gpt-6.2-sol',providers:[],release_date:'2026-11-17',
+  official_context_window:1_050_000,context_window:1_050_000,
+  api_pricing:{currency:'USD',source:'static',reference_only:false,bands:[{rates:{input:2,cached:0.1,output:10}}]},
+ };
+ const dynamic:AgentModelCatalogEntry={
+  vendor:'OpenAI',model:'gpt-6.2-sol',providers:['OpenAI API'],
+  api_pricing:{currency:'USD',source:'fresh',reference_only:false,bands:[{rates:{input:3,cached:0.3,output:12}}]},
+ };
+ const merged=mergeCatalogEntries(baseline,dynamic);
+ expect(merged).toMatchObject({
+  vendor:'OpenAI',model:'gpt-6.2-sol',providers:['OpenAI API'],release_date:'2026-11-17',
+  official_context_window:1_050_000,context_window:1_050_000,api_pricing:{source:'fresh'},
+ });
+ const referenceOnly=mergeCatalogEntries(baseline,{...dynamic,api_pricing:{...dynamic.api_pricing!,source:'gateway',reference_only:true}});
+ expect(referenceOnly.api_pricing?.source).toBe('static');
+ const configured=mergeCatalogEntries(baseline,{...dynamic,context_window:500_000});
+ expect(configured).toMatchObject({official_context_window:1_050_000,context_window:500_000});
+ const noBaseline=mergeCatalogEntries({...baseline,official_context_window:undefined,context_window:undefined},{...dynamic,context_window:500_000});
+ expect(noBaseline.official_context_window).toBeUndefined();
+ expect(noBaseline.context_window).toBe(500_000);
 });

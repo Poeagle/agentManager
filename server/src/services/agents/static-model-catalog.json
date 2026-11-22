@@ -1,0 +1,558 @@
+{
+  "version": "2.0.0",
+  "last_updated": "2026-11-22",
+  "models": [
+    {
+      "vendor": "OpenAI",
+      "model": "gpt-6.2-sol",
+      "catalog": "openai",
+      "release_date": "2026-11-17",
+      "context_window": 1050000,
+      "input_modalities": ["text", "image"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://developers.openai.com/api/docs/pricing.md",
+        "bands": [
+          {
+            "label": "≤ 272K 输入 Token",
+            "min_input_tokens": 0,
+            "rates": {
+              "input": 2,
+              "cached": 0.1,
+              "output": 10
+            }
+          },
+          {
+            "label": "> 272K 输入 Token",
+            "min_input_tokens": 272001,
+            "rates": {
+              "input": 4,
+              "cached": 0.2,
+              "output": 15
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "OpenAI",
+      "model": "gpt-6.2-astra",
+      "catalog": "openai",
+      "release_date": "2026-11-17",
+      "context_window": 1050000,
+      "input_modalities": ["text", "image"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://developers.openai.com/api/docs/pricing.md",
+        "bands": [
+          {
+            "label": "≤ 272K 输入 Token",
+            "min_input_tokens": 0,
+            "rates": {
+              "input": 8,
+              "cached": 0.4,
+              "output": 40
+            }
+          },
+          {
+            "label": "> 272K 输入 Token",
+            "min_input_tokens": 272001,
+            "rates": {
+              "input": 16,
+              "cached": 0.8,
+              "output": 60
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "OpenAI",
+      "model": "gpt-6.1-sol",
+      "catalog": "openai",
+      "release_date": "2026-09-29",
+      "context_window": 1050000,
+      "input_modalities": ["text", "image"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://developers.openai.com/api/docs/pricing.md",
+        "bands": [
+          {
+            "label": "≤ 272K 输入 Token",
+            "min_input_tokens": 0,
+            "rates": {
+              "input": 2,
+              "cached": 0.1,
+              "output": 10
+            }
+          },
+          {
+            "label": "> 272K 输入 Token",
+            "min_input_tokens": 272001,
+            "rates": {
+              "input": 4,
+              "cached": 0.2,
+              "output": 15
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "OpenAI",
+      "model": "gpt-6.1-terra",
+      "catalog": "openai",
+      "release_date": "2026-10-26",
+      "context_window": 1050000,
+      "input_modalities": ["text", "image"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://developers.openai.com/api/docs/pricing.md",
+        "bands": [
+          {
+            "label": "≤ 272K 输入 Token",
+            "min_input_tokens": 0,
+            "rates": {
+              "input": 1,
+              "cached": 0.05,
+              "output": 5
+            }
+          },
+          {
+            "label": "> 272K 输入 Token",
+            "min_input_tokens": 272001,
+            "rates": {
+              "input": 2,
+              "cached": 0.1,
+              "output": 7.5
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Anthropic",
+      "model": "claude-fable-5-2",
+      "catalog": "claude",
+      "release_date": "2026-11-09",
+      "context_window": 1000000,
+      "input_modalities": ["text", "image"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing.md",
+        "bands": [
+          {
+            "rates": {
+              "input": 8,
+              "cached": 0.2,
+              "output": 40,
+              "cache_write_5m": 10,
+              "cache_write_1h": 16
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Anthropic",
+      "model": "claude-opus-5-5",
+      "catalog": "claude",
+      "release_date": "2026-09-22",
+      "context_window": 1000000,
+      "input_modalities": ["text", "image"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing.md",
+        "bands": [
+          {
+            "rates": {
+              "input": 4,
+              "cached": 0.2,
+              "output": 20,
+              "cache_write_5m": 5,
+              "cache_write_1h": 8
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Anthropic",
+      "model": "claude-sonnet-5-5",
+      "catalog": "claude",
+      "release_date": "2026-09-28",
+      "context_window": 1000000,
+      "input_modalities": ["text", "image"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing.md",
+        "bands": [
+          {
+            "rates": {
+              "input": 2,
+              "cached": 0.1,
+              "output": 10,
+              "cache_write_5m": 2.5,
+              "cache_write_1h": 4
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Anthropic",
+      "model": "claude-haiku-5-5",
+      "catalog": "claude",
+      "release_date": "2026-10-07",
+      "context_window": 1000000,
+      "input_modalities": ["text", "image"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing.md",
+        "bands": [
+          {
+            "label": "≤ 100K 输入 Token",
+            "min_input_tokens": 0,
+            "rates": {
+              "input": 0.1,
+              "cached": 0.01,
+              "output": 0.5,
+              "cache_write_5m": 0.125,
+              "cache_write_1h": 0.2
+            }
+          },
+          {
+            "label": "> 100K 输入 Token",
+            "min_input_tokens": 100001,
+            "rates": {
+              "input": 0.5,
+              "cached": 0.05,
+              "output": 2.5,
+              "cache_write_5m": 0.625,
+              "cache_write_1h": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Anthropic",
+      "model": "claude-opus-5",
+      "catalog": "claude",
+      "release_date": "2026-07-24",
+      "context_window": 1000000,
+      "input_modalities": ["text", "image"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing.md",
+        "bands": [
+          {
+            "rates": {
+              "input": 5,
+              "cached": 0.5,
+              "output": 25,
+              "cache_write_5m": 6.25,
+              "cache_write_1h": 10
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Anthropic",
+      "model": "claude-sonnet-5",
+      "catalog": "claude",
+      "release_date": "2026-06-30",
+      "context_window": 1000000,
+      "input_modalities": ["text", "image"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing.md",
+        "bands": [
+          {
+            "rates": {
+              "input": 2,
+              "cached": 0.2,
+              "output": 10,
+              "cache_write_5m": 2.5,
+              "cache_write_1h": 4
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "DeepSeek",
+      "model": "deepseek-flash",
+      "catalog": "deepseek",
+      "release_date": "2026-10-17",
+      "context_window": 1000000,
+      "input_modalities": ["text"],
+      "pricing": {
+        "currency": "CNY",
+        "source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing.md",
+        "timezone": "Asia/Shanghai",
+        "peak_hours": [[9, 12], [14, 18]],
+        "peak": {
+          "input": 2,
+          "cached": 0.04,
+          "output": 8
+        },
+        "off_peak": {
+          "input": 1,
+          "cached": 0.02,
+          "output": 4
+        }
+      }
+    },
+    {
+      "vendor": "DeepSeek",
+      "model": "deepseek-v4-pro",
+      "catalog": "deepseek",
+      "release_date": "2026-08-13",
+      "context_window": 1000000,
+      "input_modalities": ["text"],
+      "pricing": {
+        "currency": "CNY",
+        "source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing.md",
+        "timezone": "Asia/Shanghai",
+        "peak_hours": [[9, 12], [14, 18]],
+        "peak": {
+          "input": 9,
+          "cached": 0.3,
+          "output": 27
+        },
+        "off_peak": {
+          "input": 4.5,
+          "cached": 0.15,
+          "output": 13.5
+        }
+      }
+    },
+    {
+      "vendor": "Moonshot",
+      "model": "kimi-k3.1-pro",
+      "catalog": "kimi",
+      "release_date": "2026-10-23",
+      "context_window": 1048576,
+      "input_modalities": ["text", "image", "video"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://platform.kimi.ai/docs/pricing/chat",
+        "bands": [
+          {
+            "rates": {
+              "input": 2,
+              "cached": 0.2,
+              "output": 10,
+              "cache_write_5m": 2,
+              "cache_write_1h": 4
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Moonshot",
+      "model": "kimi-k3",
+      "catalog": "kimi",
+      "release_date": "2026-07-16",
+      "context_window": 1048576,
+      "input_modalities": ["text", "image", "video"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://platform.kimi.ai/docs/pricing/chat",
+        "bands": [
+          {
+            "rates": {
+              "input": 3,
+              "cached": 0.3,
+              "output": 15,
+              "cache_write_5m": 3,
+              "cache_write_1h": 6
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "xAI",
+      "model": "grok-4.7",
+      "catalog": "xai",
+      "release_date": "2026-09-21",
+      "context_window": 500000,
+      "input_modalities": ["text", "image"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://docs.x.ai/developers/pricing.md",
+        "bands": [
+          {
+            "label": "≤ 200K 输入 Token",
+            "min_input_tokens": 0,
+            "rates": {
+              "input": 2,
+              "cached": 0.5,
+              "output": 6
+            }
+          },
+          {
+            "label": "> 200K 输入 Token",
+            "min_input_tokens": 200000,
+            "rates": {
+              "input": 4,
+              "cached": 1,
+              "output": 12
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Google",
+      "model": "gemini-4-carbon",
+      "catalog": "gemini",
+      "release_date": "2026-11-10",
+      "context_window": 1048576,
+      "input_modalities": ["text", "image", "video", "audio", "pdf"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://aistudio.google.com/docs/pricing.md",
+        "bands": [
+          {
+            "rates": {
+              "input": 2,
+              "cached": 0.1,
+              "output": 10
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Google",
+      "model": "gemini-4-argon",
+      "catalog": "gemini",
+      "release_date": "2026-10-13",
+      "context_window": 1048576,
+      "input_modalities": ["text", "image", "video", "audio", "pdf"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://aistudio.google.com/docs/pricing.md",
+        "bands": [
+          {
+            "rates": {
+              "input": 2,
+              "cached": 0.1,
+              "output": 10
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Google",
+      "model": "gemini-4-neon",
+      "catalog": "gemini",
+      "release_date": "2026-11-18",
+      "context_window": 1048576,
+      "input_modalities": ["text", "image", "video", "audio", "pdf"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://aistudio.google.com/docs/pricing.md",
+        "bands": [
+          {
+            "rates": {
+              "input": 3,
+              "cached": 0.15,
+              "output": 15
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Google",
+      "model": "gemini-4-hydrogen",
+      "catalog": "gemini",
+      "release_date": "2026-11-12",
+      "context_window": 1048576,
+      "input_modalities": ["text", "image", "video", "audio", "pdf"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://aistudio.google.com/docs/pricing.md",
+        "bands": [
+          {
+            "rates": {
+              "input": 1.5,
+              "cached": 0.075,
+              "output": 7.5
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Google",
+      "model": "gemini-3.5-flash-lite",
+      "catalog": "gemini",
+      "release_date": "2026-07-21",
+      "context_window": 1048576,
+      "input_modalities": ["text", "image", "video", "audio", "pdf"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://aistudio.google.com/docs/pricing.md",
+        "bands": [
+          {
+            "rates": {
+              "input": 0.3,
+              "cached": 0.03,
+              "output": 2.5
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Z.ai",
+      "model": "glm-5.3",
+      "catalog": "glm",
+      "release_date": "2026-08-18",
+      "context_window": 1048576,
+      "input_modalities": ["text"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://docs.z.ai/guides/overview/pricing.md",
+        "bands": [
+          {
+            "rates": {
+              "input": 1.4,
+              "cached": 0.26,
+              "output": 4.4
+            }
+          }
+        ]
+      }
+    },
+    {
+      "vendor": "Z.ai",
+      "model": "glm-5.3-flash",
+      "catalog": "glm",
+      "release_date": "2026-08-26",
+      "context_window": 1048576,
+      "input_modalities": ["text", "image", "video", "pdf"],
+      "pricing": {
+        "currency": "USD",
+        "source": "https://docs.z.ai/guides/overview/pricing.md",
+        "bands": [
+          {
+            "rates": {
+              "input": 0.15,
+              "cached": 0.03,
+              "output": 0.5
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

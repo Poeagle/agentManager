@@ -94,6 +94,22 @@ describe('agent management routes', () => {
     await app?.close(); unregister?.(); database?.cleanup(); rmSync(root, { recursive: true, force: true });
   });
 
+  it('returns the bundled official model catalog without configured Provider models', async () => {
+    const response = await app.inject({ url: '/api/agent-management/model-catalog', headers: admin });
+    expect(response.statusCode).toBe(200);
+    const models = response.json().models as Array<{ vendor: string; model: string; providers: string[]; official_context_window?: number; api_pricing?: { currency: string } }>;
+    expect(models.find(model => model.model === 'gpt-6.2-sol')).toMatchObject({
+      vendor: 'OpenAI', providers: [], official_context_window: 1_050_000, api_pricing: { currency: 'USD' },
+    });
+    expect(models.find(model => model.model === 'claude-haiku-5-5')).toMatchObject({
+      vendor: 'Anthropic', providers: [], official_context_window: 1_000_000,
+    });
+    expect(models.find(model => model.model === 'deepseek-flash')).toMatchObject({
+      vendor: 'DeepSeek', providers: [], api_pricing: { currency: 'CNY' },
+    });
+    expect(models.some(model => model.model === 'deepseek-v4.1-flash')).toBe(false);
+  });
+
   it('allows members to inspect but not edit Agent files', async () => {
     expect((await app.inject({ url: '/api/agent-management', headers: member })).statusCode).toBe(200);
     const read = await app.inject({ method: 'POST', url: '/api/agent-management/management_fixture/config-file', headers: member,
