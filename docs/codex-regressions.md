@@ -30,6 +30,7 @@ npm run test:regression:accounts
 | 断网、半开连接、增量序号缺口 | 重新获取基线，保留草稿，不重发用户输入 | [SessionConversationSend.test.tsx](../dashboard/tests/SessionConversationSend.test.tsx) 的 browser resume / stream gap；[conversation-reconnect.spec.ts](../e2e/conversation-reconnect.spec.ts) |
 | 切换原始终端/对话视图，或刷新页面 | 已有气泡内容与顺序保持一致 | [conversation-order.spec.ts](../e2e/conversation-order.spec.ts)；[conversation-history-replacement.spec.ts](../e2e/conversation-history-replacement.spec.ts) |
 | 多个 Progress Item、工具还在运行、追问插入 | 及时显示工具和已确认用量，按输入边界汇总 Item、轮次和调用数 | [ConversationProgressPending.test.tsx](../dashboard/tests/ConversationProgressPending.test.tsx)；[SessionConversationSend.test.tsx](../dashboard/tests/SessionConversationSend.test.tsx)；[conversation-activity.spec.ts](../e2e/conversation-activity.spec.ts)；[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) |
+| API 原生回执跨过已接受的追问、迟到或重复投递 | 相邻 Progress 的 Token、费用、Round 和 Call 各自等于段内明细。Final 与所有区间合计一致，实时和重开后归属一致 | [session-statistics.test.ts](../server/tests/session-statistics.test.ts) 的 adjacent Progress groups 用例、[conversation-context.test.ts](../dashboard/tests/conversation-context.test.ts) 的 native segment spans 用例、[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) 的 live Codex API Progress 用例 |
 | 缓存率或实际命中的输入 Token 变动 | 已确认的缓存率可见，达到阈值的实际缓存损失只显示一次提醒，刷新后保留 | [conversation-streaming.spec.ts](../e2e/conversation-streaming.spec.ts)；[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) |
 | Claude 先收到思考、后收到带同一原生 ID 的 Final | 回复期间保持执行状态，Final 和用量各结算一次，刷新后一致 | [claude-sdk-runtime.test.ts](../server/tests/claude-sdk-runtime.test.ts)；[session-statistics.test.ts](../server/tests/session-statistics.test.ts)；[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) |
 | 回执延迟、历史回填或原生记录尚未写完 | 两个 Agent 使用同一套底栏状态，收到完整记录后及时清除提示 | [ConversationControls.test.tsx](../dashboard/tests/ConversationControls.test.tsx)；[session-statistics.test.ts](../server/tests/session-statistics.test.ts)；[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) |
@@ -45,6 +46,8 @@ npm run test:regression:accounts
 
 | 问题 / 触发条件 | 预期结果 | 自动化用例 |
 |---|---|---|
+| 账号与 API 用量格式不一致，或网关倍率变更 | 时间、项目、模型行逐项附估算。倍率匹配确切模型和请求时间，缺证据时保持未知 | [CodexAccountInsights.test.tsx](../dashboard/tests/CodexAccountInsights.test.tsx)、[usage-periods.spec.ts](../e2e/usage-periods.spec.ts)、[model-pricing.test.ts](../server/tests/model-pricing.test.ts) |
+| Claude 官方模型经兼容网关接入 | 悬停显示发布日期、官方参考价和已配置倍率。编辑与重开 Provider 保留倍率 | [claude-agent.test.ts](../server/tests/claude-agent.test.ts)、[ConversationControls.test.tsx](../dashboard/tests/ConversationControls.test.tsx)、[claude-provider-flow.spec.ts](../e2e/claude-provider-flow.spec.ts) |
 | 两个登录账号都使用 openai Provider | 以环境 ID 路由，不能串到另一个账号 | [codex-environments.test.ts](../server/tests/codex-environments.test.ts) 的 two OpenAI accounts 用例 |
 | 普通用户未获授权，或管理员不在授权列表 | 普通用户不可见且直接请求拒绝；管理员默认有权配置和使用 | [codex-environments.test.ts](../server/tests/codex-environments.test.ts) 的 private accounts / direct REST / administrators 用例；[codex-environments.spec.ts](../e2e/codex-environments.spec.ts) |
 | 收回使用权限 | 已连接页面/终端关闭，不回退到别的账号 | [codex-environments.test.ts](../server/tests/codex-environments.test.ts) 的 revokes existing tabs 用例 |

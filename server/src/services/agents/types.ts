@@ -97,7 +97,7 @@ export interface AgentConfigFileResult {
   format: string;
   restarted?: boolean;
 }
-export interface AgentModelConfig {
+export interface AgentModelConfig extends AgentModelMetadata {
   provider?: string;
   model: string;
   name: string;
@@ -233,7 +233,7 @@ export interface AgentManagementPort {
     onProgress?: AgentOperationReporter,
   ): Promise<AgentManagementState>;
   detectModels?(input?: AgentModelDetectionInput): Promise<
-    Array<{
+    Array<AgentModelMetadata & {
       provider?: string;
       model: string;
       name: string;
@@ -319,6 +319,7 @@ export interface AgentMessage {
     before_tokens: number | null;
     after_tokens: number | null;
     duration_ms: number | null;
+    replaces_message_id?: string;
   };
   error?: {
     code?: string;
@@ -383,12 +384,18 @@ export interface AgentRuntime {
     turn_id?: string;
   }>;
 }
-export interface AgentModel {
+export interface AgentModelMetadata {
   release_date?:string|null;
   api_pricing?:import('./model-pricing.js').ModelPricing;
+  provider_pricing?:import('./model-pricing.js').ModelPricing;
+  official_context_window?:number;
+  context_window?:number|null;
+  input_modalities?:string[];
+  reference_credits?:{input:number;cached:number;output:number;as_of:string}|null;
+}
+export interface AgentModel extends AgentModelMetadata {
   default_service_tier?: string | null;
   service_tiers?: Array<{ id: string; name: string; description: string }>;
-  context_window?: number | null;
   max_output_tokens?: number | null;
   input_modalities?: string[];
   provider?: string;
@@ -514,6 +521,8 @@ export interface AgentHistoryRecord {
   };
   presentation?: "compaction_summary";
   compaction?: AgentMessage["compaction"];
+  /** Exact body used to bind a preceding native summary echo to its card. */
+  compactionEchoText?: string;
   contentBlocks?: AgentMessage["content_blocks"];
   failure?: AgentMessage | null;
   itemId?: string;

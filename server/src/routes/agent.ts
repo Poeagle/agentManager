@@ -111,7 +111,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.20.0',
+    version:'3.24.0',
     updatedAt:'2026-11-22',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -249,8 +249,8 @@ export function getAgentApiContract() {
       },
       {
         category: 'Sessions', method: 'GET', path: '/api/sessions/:id/controls',
-        description: 'Read the accessible session model, runtime controls and available models. Optional ?refresh=true refreshes native data. Model release date, capabilities, reference Credits and official public API tariffs are optional.',
-        response: {models: 'AgentModel[]; optional api_pricing includes currency, official source, and Token prices per million for each documented pricing band.'},
+        description: 'Read the accessible session model, runtime controls and available models. Optional ?refresh=true refreshes native data. Model metadata can include release_date, context_window, official_context_window, input_modalities, reference_credits, official api_pricing and separately available provider_pricing. A manually configured provider_multiplier applies to the official tariff fallback.',
+        response: {models: 'AgentModel[]; optional api_pricing and provider_pricing include currency, source, and prices per million Tokens for each documented band. api_pricing.reference_only identifies an official reference tariff for a subscription or gateway. api_pricing.provider_multiplier is the manual multiplier for the official tariff fallback.'},
         errors: { 400: 'Invalid refresh flag', 404: 'Session not found or not accessible', 409: 'Session has no native identity' },
       },
       {
@@ -261,7 +261,7 @@ export function getAgentApiContract() {
       },
       {
         category: 'Sessions', method: 'GET', path: '/api/sessions/:id/conversation/metadata',
-        description: 'Read verified session totals, model and speed totals, lifecycle records and decreases in recorded cached input tokens. Pass event_before or cache_before from next_event or next_cache_drop for earlier records. The status and reasons report missing or pending evidence. Credits are request-based estimates.',
+        description: 'Read verified session totals, model and speed totals, lifecycle records and decreases in recorded cached input tokens. Optional extra_cost gives the signed net change in uncached and cache-read input cost, using the current request tariff. Pass event_before or cache_before from next_event or next_cache_drop for earlier records. The status and reasons report missing or pending evidence. Credits are request-based estimates.',
         response: {metadata:'SessionMetadataDetails | null'},
         errors: {400:'Invalid cursor',404:'Session not found or not accessible'},
       },
@@ -431,12 +431,12 @@ export function getAgentApiContract() {
       {category:'Session control',method:'POST',path:'/api/sessions/:id/new-conversation',description:'Create a fresh native conversation in the same tab and preserve the old history. The session owner must have agent write permission and be an administrator. Optional environment_id selects an authorized target environment and requires expected_native_id to match an idle source conversation. Unsupported targets are rejected.',
         request:{preference:{type:'object',required:false,description:'Optional model, effort, provider and service_tier preference; the current model is used when omitted.'},expected_native_id:{type:'string',required:false,description:'Expected source native conversation identity; required when environment_id is supplied.'},environment_id:{type:'string',required:false,description:'Authorized target Agent environment; omitted uses the current environment.'}},
         response:{session:'Fresh platform session with a new native identity',history_id:'Preserved previous session ID'}},
-      {category:'Session control',method:'GET',path:'/api/sessions/:id/conversation',description:'Read paginated conversation history. User messages may carry verified project attachment references. Claude assistant messages may carry visible thinking fragments under the same native message identity as the answer. Claude API errors carry phase=error, including error.code=rate_limit for an upstream 429.'},
+      {category:'Session control',method:'GET',path:'/api/sessions/:id/conversation',description:'Read paginated conversation history. Compaction summary cards may identify an earlier internal assistant echo through compaction.replaces_message_id. User messages may carry verified project attachment references. Claude assistant messages may carry visible thinking fragments under the same native message identity as the answer. Claude API errors carry phase=error, including error.code=rate_limit for an upstream 429.'},
       {
         category: 'Session control',
         method: 'WS',
         path: '/api/sessions/:id/conversation/stream',
-        description: 'Cookie-authenticated conversation stream. Optional UI-only activities carry turn_id, after_message_id, an optional request_message_id, and bounded, redacted input_preview and result_preview. User messages may include batch and verified input_source. Statistics carry Item and Final intervals and optional progress segment and cost estimate. cost.breakdown reports uncached input, cache hits, output and nullable reasoning in cost.unit (credits or currency). Reasoning is included in output. The dashboard displays Round as requests and Call as tool_calls. Progress segments may carry last_request_at. Asynchronous assistant updates are commentary and do not close a Final interval. Claude API errors carry phase=error, including error.code=rate_limit for an upstream 429. progress_statistics.step identifies the open Item interval through segment_id, after_message_id, after_sequence and start_at. session_metadata carries the persisted native_id, generation and revision with session totals and cache_drops. Cache drops can carry the public message_id of the owning item. Coverage marks pending and partial intervals. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
+        description: 'Cookie-authenticated conversation stream. Optional UI-only activities carry turn_id, after_message_id, an optional request_message_id, and bounded, redacted input_preview and result_preview. User messages may include batch and verified input_source. Statistics carry Item and Final intervals and optional progress segment and cost estimate. cost.breakdown reports uncached input, cache hits, output and nullable reasoning in cost.unit (credits or currency). Reasoning is included in output. The dashboard displays Round as requests and Call as tool_calls. Progress segments may carry last_request_at. Asynchronous assistant updates are commentary and do not close a Final interval. A history frame can deliver a durable compaction summary card during a live turn. Its optional compaction.replaces_message_id supersedes the earlier assistant echo. Claude API errors carry phase=error, including error.code=rate_limit for an upstream 429. progress_statistics.step identifies the open Item interval through segment_id, after_message_id, after_sequence and start_at. session_metadata carries the persisted native_id, generation and revision with session totals and cache_drops. Cache drops can carry the public message_id of the owning item and an optional signed extra_cost with amount and unit. Coverage marks pending and partial intervals. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
       },
       {
         category: 'Session control',
@@ -1167,6 +1167,10 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const stopProgress=adapter.history.file?observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},frame=>{
       if(frame.type==='progress_statistics'||frame.type==='statistics'||frame.type==='session_metadata')send(frame);
       else if(frame.type==='history'){
+        if(!stopFile) {
+          const summaries=frame.messages.filter(message=>message.compaction?.replaces_message_id);
+          if(summaries.length)send({...frame,reset:false,messages:summaries});
+        }
         const messages=boundConversationInputs(id,nativeId,frame.messages);
         if(messages.length)send({type:'input_reconciliation',native_id:nativeId,messages:decorateConversationAttachments(id,messages)});
       }

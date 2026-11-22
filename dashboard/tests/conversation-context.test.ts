@@ -2,7 +2,7 @@ import {describe,it,expect} from 'vitest';
 import {automaticConversationContext,automaticContextMarkdown} from '../src/lib/conversation-context';
 import {conversationTimings} from '../src/lib/conversation-timing';
 import {conversationOutline} from '../src/components/ConversationReadingTools';
-import {groupConversationProgress,progressGroupStatistics} from '../src/lib/conversation-progress';
+import {groupConversationProgress,progressGroupStatistics,splitProgressSegments} from '../src/lib/conversation-progress';
 it('collapses only consecutive retry errors from the same known turn while preserving the latest state',()=>{
  const retry=(id:string,turn_id:string|undefined,code:string|undefined,will_retry=true)=>({id,role:'assistant' as const,phase:'error' as const,text:id,timestamp:null,turn_id,error:{code,will_retry}});
  const first=retry('first','one','network'),second=retry('second','one','network'),final=retry('final','one','network',false);
@@ -64,6 +64,26 @@ it('preserves the position of confirmed user input when later Items still carry 
  expect(groups.map(group=>group.kind==='progress'?group.messages.map(message=>message.id):group.message.id)).toEqual([
    ['before'],'attachment',['after','next'],
  ]);
+});
+it('counts each receipt and its API cost once when one native segment spans two visible Progress groups',()=>{
+ const usage=(total:number,amount:number,requests=1)=>({tokens:{total_tokens:total},requests,tool_calls:0,tool_rounds:0,complete:true,shared_messages:1,cost:{unit:'USD',basis:'api',amount,complete:true}});
+ const segment={id:'native-segment',start_at:null,end_at:null,elapsed_ms:null,end_reason:null};
+ const item=(id:string,sequence:number,interval:ReturnType<typeof usage>,snapshot:ReturnType<typeof usage>)=>({
+  id,sequence,role:'assistant' as const,phase:'commentary' as const,text:id,timestamp:null,
+  statistics:{...snapshot,sequence,revision:sequence,turn_id:'turn',progress_id:segment.id,interval,segment:{...segment,...snapshot}},
+ });
+ const first=item('before',10,usage(200,0.02),usage(300,0.03,2));
+ const last=item('after',30,usage(400,0.04),usage(650,0.065,3));
+ const groups=groupConversationProgress([{...first,statistics:{...first.statistics,segment:{...first.statistics.segment,unassigned:usage(100,0.01)}}},
+  {id:'steer',sequence:20,role:'user',text:'Continue',timestamp:null},
+  {...last,statistics:{...last.statistics,segment:{...last.statistics.segment,unassigned:usage(50,0.005)}}},
+ ]);
+ const split=splitProgressSegments(groups);
+ const progress=groups.flatMap(group=>group.kind==='progress'?[progressGroupStatistics(group.messages,null,undefined,split.get(group.id))]:[]);
+ expect(progress[0]).toMatchObject({requests:1,tokens:{total_tokens:200},cost:{amount:0.02}});
+ expect(progress[0]?.segment?.unassigned).toBeUndefined();
+ expect(progress[1]).toMatchObject({requests:2,tokens:{total_tokens:450},segment:{unassigned:{tokens:{total_tokens:50}}}});
+ expect(progress[1]?.cost?.amount).toBeCloseTo(0.045);
 });
 it('uses the group segment when recorded and falls back to cumulative native turn usage',()=>{
  const segment={id:'segment',start_at:null,end_at:null,elapsed_ms:null,end_reason:null,tokens:{total_tokens:300},requests:1,tool_calls:2,tool_rounds:1,complete:true};

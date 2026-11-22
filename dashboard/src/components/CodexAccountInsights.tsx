@@ -49,7 +49,7 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
  const usage=useQuery({queryKey:groupId?['codex-group-insights',groupId,hourly]:['codex-insights',id,hourly],queryFn:()=>fetchJSON<{usage:Usage;sources?:Array<{environment:string;history:string[];cache:string}>}>((groupId?'/codex/balance-groups/'+encodeURIComponent(groupId)+'/insights':base+'/insights')+(hourly?'?granularity=hour':'')),retry:false,refetchInterval:300000});
  const resets=useQuery({queryKey:['codex-reset-credits',id],queryFn:()=>fetchJSON<Resets>(base+'/reset-credits'),retry:false,refetchInterval:300000,staleTime:300000,enabled:!apiMode});
  const data=usage.data?.usage;
- const pricing=(data as (Usage&{api_pricing?:{currency:string;today:ApiCost&{date:string;partial:boolean}}})|undefined)?.api_pricing;
+ const pricing=(data as (Usage&{api_pricing?:{currency:string;timezone?:string;today:ApiCost&{date:string;partial:boolean}}})|undefined)?.api_pricing;
  const unit=apiMode?pricing?.currency:'USD';
  const timezone=data?.timezone||Intl.DateTimeFormat().resolvedOptions().timeZone;
  const collectionTime=(value:string)=>new Intl.DateTimeFormat('zh-CN',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date(value));
@@ -77,7 +77,7 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
     <section><span className="ci-token-summary">Token {summaryMetrics.map(({label,key},index)=><Fragment key={key}>{index>0&&'｜'}<span title={usageFieldDescriptions[key]}>{label}</span></Fragment>)}：{summaryMetrics.map(({key,count,cost},index)=><Fragment key={key}>{index>0&&'｜'}<span title={`${numeric(count)} Token · 预估金额 ${cost}`}>{compact(count??null)} ({cost})</span></Fragment>)}</span><span className="ci-cache-rate" title="筛选范围内缓存输入除以输入 Token；输入为零或数据缺失时未知" aria-label={`缓存率 ${cacheRate===null?'未知':`${cacheRate.toFixed(1)}%`}`}><span aria-hidden="true"/>缓存率 <strong>{cacheRate===null?'—':`${cacheRate.toFixed(1)}%`}</strong></span></section>
    </div><button className="ci-button ci-refresh-action" title="重新读取后台缓存，不触发采集" onClick={refresh} disabled={usage.isFetching||resets.isFetching}><RefreshCw size={14}/>刷新缓存</button></div>:undefined}>
   <div className="codex-insights">
-   {apiMode?<>{apiOverview}{pricing&&<p className="ci-observation">今日预估 Token 费用（北京时间 {pricing.today.date}） <strong>{formatApiCost(pricing.today.amount,pricing.currency)}</strong>{pricing.today.partial&&' · 部分统计'}</p>}</>:<>
+   {apiMode?<>{apiOverview}{pricing&&<p className="ci-observation">今日预估 Token 费用（{pricing.timezone==='Asia/Shanghai'||!pricing.timezone?'北京时间':pricing.timezone} {pricing.today.date}） <strong>{formatApiCost(pricing.today.amount,pricing.currency)}</strong>{pricing.today.partial&&' · 部分统计'}</p>}</>:<>
    {resets.data?.error&&<p className="ci-notice" role="status">{resets.data.error}</p>}
    {tab==='cards'&&tabs}
 </>}
@@ -109,7 +109,7 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
      {shown.map((node,index)=><Group key={node.key} node={node} amountTotal={byPeriod?amountTotals.get(node.key)??null:rangeTotal} depth={0} apiMode={apiMode} currency={pricing?.currency} defaultOpen={currentPage===0&&index===0} expansion={expansion} setExpansion={setExpansion}/>)}
     </TableFrame>
     <div className="ci-pagination"><span>{groups.length} 个{byPeriod?periodName:dimensionLabels[dimension]} · {new Set(rows.map(row=>JSON.stringify([row.date,row.cwd]))).size} 条日期｜项目记录</span><button className="ci-button" disabled={currentPage===0} onClick={()=>setPage(currentPage-1)}>上一页</button><span>{currentPage+1} ｜ {pages}</span><button className="ci-button" disabled={currentPage+1>=pages} onClick={()=>setPage(currentPage+1)}>下一页</button></div>
-    {apiMode?<p className="ci-footnote">日期按本地时间，周从周一开始；周、月扩展为完整自然周期，总量严格按所选日期统计。余额与实际扣费来自上游；Token 来自本地历史。</p>:<p className="ci-footnote">括号内为预估金额除以额度百分点，无法计算时显示 —。耗用额度以周额度百分点显示，只覆盖成功采样且能分配的区间；按所选周期内参考金额分配，读数未变化时显示 0，重置、采样中断及费率未知时不计入；其他未采集客户端的耗用或历史缺失也可能影响分配。宽表可横向滚动查看完整列。缓存命中率 = 缓存输入 ÷ 输入 Token；各汇总层按 Token 加权，输入为零或字段缺失时不计算。周从本地周一开始；周、月按日期选择扩展到完整自然周期，总量及其他维度严格按起止日期统计；占比以实际统计范围内{byPeriod?`对应${periodName}`:'全部范围'}全部项目及模型的预估金额为分母，搜索与字段筛选不改变分母。金额按 {data?.usd_rate_date||'当前'} 官方 Credits 费率除以 25 换算为 API 等值 USD，速度档位使用 Credits/PAYG 倍率；这是用量参考，不是订阅账单。未记录速度时按 Standard 估算，带 * 为部分覆盖；未知模型费率或 Token 字段缺失时显示 —。<a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noreferrer">费率依据</a></p>}
+    {apiMode?<p className="ci-footnote">日期按本地时间，周从周一开始；周、月扩展为完整自然周期，总量严格按所选日期统计。余额与实际扣费来自上游；Token 来自本地历史。</p>:<p className="ci-footnote">金额按 {data?.usd_rate_date||'当前'} 官方 Credits 费率除以 25 换算为 API 等值 USD，速度档位使用 Credits/PAYG 倍率；这是用量参考，不是订阅账单。未记录速度时按 Standard 估算，带 * 为部分覆盖；未知模型费率或 Token 字段缺失时显示 —。占比以实际统计范围内{byPeriod?`对应${periodName}`:'全部范围'}全部项目及模型的预估金额为分母，搜索与字段筛选不改变分母。额度分配仍以 Credits 估算加权。<a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noreferrer">费率依据</a></p>}
    </section>}
   </div>
  </Dialog>;
@@ -117,12 +117,11 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
 function UsageCostCell({rows}:{rows:Metrics[]}){return <td className="ci-usage-cost" data-field-description={usageFieldDescriptions.cost} title={partialMoney(rows)?'部分模型或 Token 字段缺失，仅计入可估算记录；括号内为预估金额除以额度百分点':usageFieldDescriptions.cost}>{usageCostText(rows)}</td>;}
 const formatApiCost=(amount:number|null|undefined,currency:string)=>amount==null?'未提供':amount.toLocaleString(undefined,{style:'currency',currency,minimumFractionDigits:2,maximumFractionDigits:2});
 function ApiCostCell({cost,currency}:{cost?:ApiCost;currency:string}){
- return <td className="ci-usage-cost" title={cost?`已估算 ${cost.coverage.covered} / ${cost.coverage.total} 次请求`:'没有可核验的模型费率或完整 Token 用量'}>{formatApiCost(cost?.amount,currency)}{cost&&cost.coverage.covered<cost.coverage.total?' *':''}</td>;
+ return <td className="ci-usage-cost" title={cost?`已估算 ${cost.coverage.covered} / ${cost.coverage.total} 次请求`:undefined}>{formatApiCost(cost?.amount,currency)}{cost&&cost.coverage.covered<cost.coverage.total?' *':''}</td>;
 }
 function tokenMetrics(row:Metrics,apiMode:boolean,currency?:string){
  const tokens=row.tokens,unit=apiMode?currency:'USD',breakdown=apiMode?row.api_cost?.breakdown:row.usd_breakdown;
- const coverage=apiMode?row.api_cost?.coverage:row.usd_coverage;
- const totalCost=apiMode?row.api_cost?.amount:row.estimated_usd;
+ const coverage=apiMode?row.api_cost?.coverage:row.usd_coverage,totalCost=apiMode?row.api_cost?.amount:row.estimated_usd;
  const part=(key:string,count:number|null|undefined,amount:number|null|undefined)=>({key,count,cost:formatEstimatedTokenCost(amount,unit??'USD',!!coverage&&coverage.covered<coverage.total)});
  const input=tokens.input_tokens,cache=tokens.cached_input_tokens;
  return [part('input',input,breakdown?breakdown.input+breakdown.cache:null),part('cached',cache,breakdown?.cache),

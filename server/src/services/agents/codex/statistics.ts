@@ -188,6 +188,7 @@ export async function readConversationStatistics(path:string,withCredits=true,pr
       // Do not expose an unseeded cache to concurrent HTTP/file observers.
       cache.set(path,state);if(cache.size>32)cache.delete(cache.keys().next().value!);
     }
+    state.pricing=pricing;
     while(state.offset<info.size){
       const buffer=Buffer.alloc(Math.min(WINDOW,info.size-state.offset)),{bytesRead}=await handle.read(buffer,0,buffer.length,state.offset);if(!bytesRead)break;
       const base=state.offset-state.partial.length,data=Buffer.concat([state.partial,buffer.subarray(0,bytesRead)]);let start=skipFirst?data.indexOf(10)+1:0;if(skipFirst&&!start){state.offset+=bytesRead;continue;}skipFirst=false;

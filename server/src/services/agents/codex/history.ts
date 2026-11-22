@@ -4,6 +4,7 @@ import { conversationErrorMessage } from '../../conversation-error.js';
 import { conversationImagePaths } from '../../conversation-attachments.js';
 import type { AgentHistoryRecord } from '../types.js';
 import { decodeCodexText } from './text.js';
+import { codexCompactionSummaryBody } from './compaction.js';
 import { codexReasoningParts, codexReasoningText } from './reasoning.js';
 const MAX_RECORD = 512 * 1024;
 export function codexTurnBoundary(record: Buffer): {kind:'start'|'end';turnId:string} | null {
@@ -127,6 +128,7 @@ export function parseCodexMessage(line: Buffer, questionCallId?: string, context
                     after_tokens: finiteTokenCount(entry.payload.post_compaction_token_count),
                     duration_ms: finiteTokenCount(entry.payload.duration_ms),
                 },
+                compactionEchoText: codexCompactionSummaryBody(entry.payload)?.slice(0, 128 * 1024),
                 itemId: nativeId,
                 turnId: undefined,
                 recordType: 'compaction_summary',

@@ -70,6 +70,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const modelEnvironment=(!model?.provider||model.provider===data?.provider)?currentEnvironment:environments.data?.environments.find(e=>e.provider===model?.provider);
   const referenceCredits=modelEnvironment?.auth_mode==='account'?model?.reference_credits:null;
   const apiPricing=model?.api_pricing;
+  const providerMultiplier=apiPricing?.provider_multiplier;
   const modelContext=model?.context_window??(model?.model===data?.model&&(!model?.provider||model.provider===data?.provider)?usage?.window:null);
   useLayoutEffect(()=>{const node=tooltipRef.current;if(!node||!modelInfo)return;const rect=node.getBoundingClientRect();if(rect.bottom>window.innerHeight-8){node.style.bottom='auto';node.style.top=`${Math.max(8,window.innerHeight-8-rect.height)}px`;}if(rect.top<8){node.style.bottom='auto';node.style.top='8px';}},[modelInfo,model]);
   const fastTier=model?.service_tiers?.find(tier=>tier.name.trim().toLowerCase()==='fast');
@@ -130,16 +131,12 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
       <strong>{modelLabel(model)}</strong>
       <dl>
         <dt>发布时间</dt><dd>{model.release_date||'未提供'}</dd>
-        <dt>计费标准</dt><dd>{apiPricing?.peak&&apiPricing.off_peak?<>
-          {apiPricing.currency} / 百万 Token<br/><small>缓存命中 · 未命中 · 输出</small><br/>
-          高峰 {apiPricing.peak.cached} · {apiPricing.peak.input} · {apiPricing.peak.output}<br/>
-          空闲 {apiPricing.off_peak.cached} · {apiPricing.off_peak.input} · {apiPricing.off_peak.output}<br/>
-          <small>北京时间工作日 {apiPricing.peak_hours?.map(hours=>hours.map(hour=>`${String(hour).padStart(2,'0')}:00`).join('–')).join('、')}，节假日除外</small>
-        </>:apiPricing?.bands?.length?<>
-          {apiPricing.currency} / 百万 Token
-          {apiPricing.bands.map(({label,rates},i)=><div key={label??i}>{label&&<small>{label}<br/></small>}输入 {rates.input} · 缓存命中 {rates.cached??'未提供'} · 输出 {rates.output}{rates.cache_write_5m!==undefined&&<><br/><small>缓存写入 5 分钟 {rates.cache_write_5m} · 1 小时 {rates.cache_write_1h}</small></>}</div>)}
-        </>:referenceCredits?<>Credits 每百万 Token：输入 {referenceCredits.input} · 缓存 {referenceCredits.cached} · 输出 {referenceCredits.output}<br/><small>参考费率 {referenceCredits.as_of}，非实际账单</small></>:'未提供'}</dd>
+        <dt>{apiPricing?.reference_only&&!referenceCredits?'官方 API 参考价':'计费标准'}</dt><dd><ModelPricing pricing={apiPricing} credits={referenceCredits}/></dd>
+        {model.provider_pricing&&<><dt>第三方 API 费率</dt><dd><ModelPricing pricing={model.provider_pricing}/></dd></>}
+        {apiPricing?.reference_only&&!referenceCredits&&<><dt>服务商倍率</dt><dd>{modelMultiplierLabel(model)}</dd></>}
+        {providerMultiplier!=null&&<><dt>折算单价</dt><dd><ModelPricing pricing={apiPricing} multiplier={providerMultiplier}/></dd></>}
         <dt>上下文长度</dt><dd>{modelContext!=null?`${modelContext.toLocaleString()} tokens`:'未提供'}</dd>
+        {model.official_context_window!=null&&model.official_context_window!==modelContext&&<><dt>官方上下文</dt><dd>{model.official_context_window.toLocaleString()} tokens</dd></>}
         {model.max_output_tokens!=null&&<><dt>最大输出</dt><dd>{model.max_output_tokens.toLocaleString()} tokens</dd></>}
         {model.description&&<><dt>模型说明</dt><dd>{model.description}</dd></>}
         <dt>输入类型</dt><dd>{model.input_modalities?.length?model.input_modalities.join('、'):'未提供'}</dd>
@@ -229,3 +226,4 @@ function ControlDetails({sessionId,metadata,data,onClose,onRefresh,refreshing}:{
     </section>)}
   </Dialog>;
 }
+import {ModelPricing,modelMultiplierLabel} from './ModelPricing';

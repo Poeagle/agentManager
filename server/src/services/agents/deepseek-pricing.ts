@@ -1,4 +1,4 @@
-import {pricingSnapshot,publishedHolidays,tokenPriceBreakdown} from '../model-pricing.js';
+import {pricingSnapshot,publishedHolidays,tokenPriceBreakdown} from './model-pricing.js';
 
 export const deepseekOrigin='https://api.deepseek.com';
 const timezone='Asia/Shanghai';
@@ -17,7 +17,7 @@ export function isOfficialDeepSeek(baseUrl:unknown):boolean {
  if(typeof baseUrl!=='string')return false;
  try{
   const url=new URL(baseUrl);
-  return url.origin===deepseekOrigin&&!url.username&&!url.password&&!url.search&&!url.hash&&['','/v1'].includes(url.pathname.replace(/\/+$/,''));
+  return url.origin===deepseekOrigin&&!url.username&&!url.password&&!url.search&&!url.hash&&['','/v1','/anthropic'].includes(url.pathname.replace(/\/+$/,''));
  }catch{return false;}
 }
 
@@ -45,6 +45,10 @@ function initialTariff(model:string|null){
 
 export function deepseekModelPricing(baseUrl:unknown,model:string){
  if(!isOfficialDeepSeek(baseUrl))return null;
+ return deepseekCatalogModel(model);
+}
+
+export function deepseekCatalogModel(model:string){
  const tariff=modelTariff(model);
  if(!tariff)return null;
  const {release_date,peak,off_peak,peak_hours}=tariff;

@@ -157,6 +157,23 @@ describe('public conversation pages',()=>{
     expect(messages.filter(message=>message.text==='后续回答只显示一次。')).toHaveLength(1);
     expect(messages.at(-1)).toMatchObject({text:'后续回答只显示一次。',phase:'final'});
   });
+  it('replaces a wrapped provider compaction echo with its distinct card, including for an existing cursor',async()=>{
+    const body='压缩摘要正文';
+    const wrapper='Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:';
+    const item=(id:string,text:string)=>line('response_item',{type:'message',role:'assistant',phase:'final_answer',id,content:[{type:'output_text',text}]});
+    writeFileSync(file,user('旧问题')+item('same-text-real-answer',body)+user('继续')+item('rewrite-item',body));
+    const echo=(await readConversation(binding)).messages.at(-1)!;
+    const summary=wrapper+'\n'+body;
+    appendFileSync(file,line('token_usage_record',{response_id:'rewrite-response'})+line('compacted',{
+      compaction_response_id:'rewrite-response',message:summary,
+      replacement_history:[{type:'message',role:'user',id:'rewrite-card',content:[{type:'input_text',text:summary}]}],
+    }));
+    const delta=await readConversation(binding,{after:echo.id});
+    expect(delta).toMatchObject({reset:false,messages:[{presentation:'compaction_summary',phase:'commentary',
+      text:summary,compaction:{replaces_message_id:echo.id}}]});
+    expect(delta.messages).toHaveLength(1);
+    expect((await readConversation(binding)).messages.map(message=>message.text)).toEqual(['旧问题',body,'继续',summary]);
+  });
   it('rebuilds Codex history from replacement_history and renders its summary only as a summary card',async()=>{
     const staleUser=line('response_item',{type:'message',id:'stale-user',role:'user',content:[{type:'input_text',text:'旧问题'}]});
     const staleAnswer=line('response_item',{type:'message',id:'stale-answer',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:'旧结论'}]});

@@ -93,6 +93,21 @@ describe('compact conversation controls',()=>{
   fireEvent.blur(select);expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
  });
 
+ it('shows the Claude release date, reference tariff and configured gateway multiplier',async()=>{
+  const model='claude-sonnet-5-5[1m]';
+  data={...data,model,models:[{...data.models[0],model,name:model,release_date:'2026-09-28',
+    api_pricing:{currency:'USD',reference_only:true,provider_multiplier:1.2,source:'https://platform.claude.com/docs/en/about-claude/pricing',
+      bands:[{rates:{input:2,cached:0.1,output:10,cache_write_5m:2.5,cache_write_1h:4}}]}}]};
+  mount();fireEvent.focus(await screen.findByRole('combobox',{name:'选择模型'}));
+  const tooltip=screen.getByRole('tooltip');
+  expect(tooltip).toHaveTextContent('2026-09-28');
+  expect(tooltip).toHaveTextContent('官方 API 参考价');
+  expect(tooltip).toHaveTextContent('输入 2 · 缓存命中 0.1 · 输出 10');
+  expect(tooltip).toHaveTextContent('缓存写入 5 分钟 2.5 · 1 小时 4');
+  expect(tooltip).toHaveTextContent('服务商倍率1.2×');
+  expect(tooltip).toHaveTextContent('输入 2.4 · 缓存命中 0.12 · 输出 12');
+ });
+
  it('removes the provider prefix only for API engines while retaining account labels',async()=>{
   data={...data,provider:'provider-a',models:[{...data.models[0],provider:'provider-a',name:'DeepSeek V4.1 Flash'},{...data.models[1],provider:'provider-b'}]};
   vi.mocked(api.codexEnvironments.forSession).mockResolvedValueOnce({current:'provider:provider-a',environments:[{id:'provider:provider-a',name:'API',kind:'provider',provider:'provider-a',auth_mode:'api',enabled:true,allowed_user_ids:null,can_control:true},{id:'provider:provider-b',name:'Account',kind:'provider',provider:'provider-b',auth_mode:'account',enabled:true,allowed_user_ids:null,can_control:true}]});

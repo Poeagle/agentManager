@@ -1,24 +1,25 @@
 import type {AgentCostEstimate,TokenCostBreakdown} from '../types.js';
-import {readAgentManagement} from '../management-store.js';
-import {estimatePublicApiCost} from '../model-pricing.js';
-import {estimateDeepseekBreakdown,isOfficialDeepSeek} from './deepseek-pricing.js';
+import {readAgentManagement,type StoredProvider} from '../management-store.js';
+import {apiPricingCurrency,estimateProviderApiCost} from '../provider-pricing.js';
 import {usdReferenceRateDate,estimateUsageUsd,estimateUsageUsdBreakdown} from './usage-credits.js';
 
-export type CodexPricing={unit:'CNY'|'USD';provider:string};
+export type CodexPricing={unit:'CNY'|'USD';provider:string;fields:StoredProvider['fields']};
 export function codexApiPricing(environment:string|null|undefined):CodexPricing|null{
  if(!environment?.startsWith('provider:'))return null;
  const id=environment.slice('provider:'.length);
  const provider=readAgentManagement('codex').providers.find(entry=>entry.id===id);
  if(!provider)return null;
  const base=provider.fields.baseUrl;
- if(isOfficialDeepSeek(base))return {unit:'CNY',provider:id};
- return typeof base==='string'&&/^https:\/\/api\.openai\.com(?:\/v1)?\/*$/.test(base)?{unit:'USD',provider:id}:null;
+ if(typeof base!=='string'||!base)return null;
+ return {unit:apiPricingCurrency(base,provider.fields.models),provider:id,fields:provider.fields};
 }
 export function codexApiEstimate(pricing:CodexPricing,provider:string|null,model:string|null,tier:string|null,at:string|null,tokens:Record<string,number|null>|null):AgentCostEstimate{
  let breakdown:TokenCostBreakdown|null=null;
  if(tokens&&at&&provider===pricing.provider){
-  if(pricing.unit==='CNY')breakdown=estimateDeepseekBreakdown(model,Date.parse(at),tokens);
-  else if(!tier||tier==='default'||tier==='standard')breakdown=estimatePublicApiCost('openai',model,at,tokens)?.breakdown??null;
+  if(!tier||tier==='default'||tier==='standard'){
+   const estimate=estimateProviderApiCost(pricing.fields.baseUrl,pricing.fields,model,at,tokens);
+   if(estimate?.unit===pricing.unit)breakdown=estimate.breakdown;
+  }
  }
  return {unit:pricing.unit,basis:'api',amount:breakdown?breakdown.input+breakdown.cache+breakdown.output:null,complete:breakdown!==null,...breakdown?{breakdown}:{}};
 }

@@ -54,6 +54,7 @@ export interface SessionCacheDrop {
   interval_kind?: 'input' | 'request';
   compaction_at?: string | null;
   decrease_pp: number;
+  extra_cost?: {amount: number; unit: string};
   factors: CacheDropFactor[];
   confirmed_cause: {label: string; evidence: string} | null;
 }
@@ -152,6 +153,10 @@ export function totalInputTokens(tokens: Record<string, number | null> | null | 
   const total=tokens?.total_tokens,output=tokens?.output_tokens;
   if(total==null||output==null||!Number.isSafeInteger(total)||!Number.isSafeInteger(output)||total<output)return null;
   return total-output;
+}
+
+export function cacheHitColor(percent: number | null): string {
+  return percent === null ? 'var(--text-muted)' : `hsl(${Math.round(percent * 1.4)} 60% var(--cache-hit-lightness, 32%))`;
 }
 
 export function recordedCachePercent(tokens: Record<string, number | null> | null | undefined): number | null {

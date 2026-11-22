@@ -15,6 +15,16 @@
 .provider-model-table .data-table td:nth-child(-n+2){text-align:center;}
 .provider-model-table input:is([type=checkbox],[type=radio]){width:14px;height:14px;vertical-align:middle;accent-color:var(--accent);}
 .provider-model-table code{font-size:11px;}
+.provider-model-subtitle{display:block;color:var(--text-secondary);font-size:11px;}
+.provider-connection-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:8px 12px;}
+.provider-advanced-settings{min-width:0;margin-top:8px;color:var(--text-secondary);font-size:12px;}
+.provider-advanced-settings summary{width:fit-content;cursor:pointer;padding:3px 0;color:var(--text-primary);}
+.provider-advanced-settings[open]>:not(summary){margin-top:6px;}
+.provider-model-settings{display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px 18px;}
+.provider-model-settings .provider-advanced-settings{flex:0 1 240px;margin:0;}
+.provider-manual-model{display:flex;gap:6px;}
+.provider-manual-model input{flex:1;min-width:0;}
+.claude-provider-editor .agent-management-engine-settings{margin:0;padding:0;border:0;background:transparent;}
 .provider-model-number{display:flex;align-items:center;gap:3px;}
 .provider-model-table .provider-model-number input{width:100%;min-width:0;height:28px;min-height:28px;padding:3px 6px;font:12px/20px ui-monospace,monospace;font-variant-numeric:tabular-nums;}
 .provider-runtime{display:grid;grid-template-columns:100px minmax(0,1fr);gap:10px;margin:0;font-size:12px;}

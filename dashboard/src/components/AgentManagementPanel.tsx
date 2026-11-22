@@ -1,5 +1,8 @@
 import {ProviderDeleteDialog} from './ProviderDeleteDialog';
 import {ProviderModelTable} from './ProviderModelTable';
+import {ModelCatalogTable,ProviderModelActions} from './ModelCatalogTable';
+import {modelCapabilitiesPayload} from './ModelPricing';
+import {ProviderAdvancedSettings,ProviderConnectionFields,ProviderRateSettings} from './ProviderConnectionFields';
 import {useProviderUsage} from '../lib/use-provider-usage';
 import {CodexAccountProvider} from './CodexAccountProvider';
 import {BalanceSummary,useEngineBalance} from './CodexEngineBalance';
@@ -19,7 +22,6 @@ import {
   Plus,
   RefreshCw,
   Save,
-  Search,
   ShieldCheck,
   Trash2,
 } from "lucide-react";
@@ -630,6 +632,7 @@ function ProviderEditor({
   });
 
   const provider = initialProvider;
+  const [displayName,setDisplayName]=useState(provider.name);
   const liveProvider = useQuery(liveProviderQuery(agentId, provider)).data;
   const initial = () =>
     Object.fromEntries(
@@ -673,6 +676,7 @@ function ProviderEditor({
     if(initializedSignature.current===providerSignature)return;
     initializedSignature.current=providerSignature;
     setFields(initial());
+    setDisplayName(provider.name);
     setError("");
     setSaved(false);
     setSaveApiKey(false);
@@ -698,9 +702,9 @@ function ProviderEditor({
     dirtyRef.current(
       provider.fields.some(
         (field) => fields[field.key] !== original[field.key],
-      ) || saveApiKey || JSON.stringify(selectedModels)!==JSON.stringify(provider.models) || modelsDirty || modelsSaving,
+      ) || displayName!==provider.name || saveApiKey || JSON.stringify(selectedModels)!==JSON.stringify(provider.models) || modelsDirty || modelsSaving,
     );
-  }, [fields, provider.fields, provider.models, saveApiKey,selectedModels,modelsDirty,modelsSaving]);
+  }, [fields, provider.fields, provider.models, provider.name, displayName,saveApiKey,selectedModels,modelsDirty,modelsSaving]);
   const beginEngineOperation = (message: string) => {
     setError("");
     setEngineOperation({
@@ -724,14 +728,21 @@ function ProviderEditor({
     }));
   };
   const update = useMutation({
-    mutationFn: () => {
+    mutationFn: (patches?:Parameters<typeof api.agentManagement.updateModelConfigs>[1]) => {
       beginEngineOperation("正在校验 Provider 配置…");
+      const edited=new Map(patches?.map(patch=>[patch.model,patch]));
+      const observations=detected.map(model=>{
+        const patch=edited.get(model.model);
+        return {...model,context_window:patch?.contextWindow===undefined?model.context_window:undefined,
+          input_modalities:patch?.supportsImages===undefined?model.input_modalities:undefined};
+      });
       return api.agentManagement.updateProviderStream(agentId, provider.id, {
+        ...(provider.id!=='native'&&displayName.trim()!==provider.name?{name:displayName.trim()} : {}),
         ...(provider.fields.some((field) => field.key === "envKey") &&
         saveApiKey
           ? { apiKey: fields.envKey || "" }
           : {}),
-        fields: Object.fromEntries(
+        fields: {...Object.fromEntries(
           provider.fields.map((field) => [
             field.key,
             field.key === "envKey"
@@ -744,7 +755,7 @@ function ProviderEditor({
                     : splitLines(fields[field.key] || "")
                   : fields[field.key] || "",
           ]),
-        ),
+        ),...modelCapabilitiesPayload(observations)},
       }, recordEngineProgress);
     },
     onSuccess: (result) => {
@@ -844,8 +855,9 @@ function ProviderEditor({
     onError: (failure: Error) => setError(failure.message),
   });
   const detect = useMutation({
-    mutationFn: () =>
-      api.agentManagement.detectModels(agentId, {
+    mutationFn: async () => {
+      const endpoint=fields.baseUrl;
+      const result=await api.agentManagement.detectModels(agentId, {
         providerId: provider.id,
         ...(provider.id !== "native" && provider.managed
           ? {
@@ -853,7 +865,9 @@ function ProviderEditor({
               apiKey: saveApiKey ? fields.envKey : undefined,
             }
           : {}),
-      }),
+      });
+      return {...result,endpoint};
+    },
     onSuccess: (result) => {
       setSelectedModels((previous) => [
         ...new Set([...previous, ...result.models.map((item) => item.model)]),
@@ -869,7 +883,7 @@ function ProviderEditor({
   });
   const busy = engineOperation.busy || modelsSaving || update.isPending || detect.isPending || remove.isPending || rename.isPending;
   useEffect(() => { onBusyChange(busy); }, [busy, onBusyChange]);
-  const detected = detect.data?.models || [];
+  const detected = detect.data?.endpoint===fields.baseUrl?detect.data?.models??[]:[];
   const files = (liveProvider.configFiles||[]).filter(file=>file.exists&&file.writable!==false&&!file.sensitive);
   const saveProvider=async (patches:Parameters<typeof api.agentManagement.updateModelConfigs>[1])=>{
     let written=false;
@@ -880,7 +894,7 @@ function ProviderEditor({
         queryClient.setQueryData(['agent-model-configs',agentId,provider.id],result);
         written=true;
       }
-      await update.mutateAsync();
+      await update.mutateAsync(patches);
       await queryClient.invalidateQueries({queryKey:['agent-model-configs',agentId,provider.id]});
     }catch(failure){
       const message=(written?'模型参数已写入，Engine 配置保存或重启失败：':'')+(failure instanceof Error?failure.message:'保存失败');
@@ -897,7 +911,7 @@ function ProviderEditor({
           <p>{liveProvider.statusText}</p>
         </div>
         <div className="agent-management-status-row">
-          {!readOnly && <button type="button" className="agent-management-button" disabled={busy} onClick={()=>{setRenameValue(liveProvider.name);setRenameError('');setRenameOpen(true);}}>重命名</button>}
+          {provider.id==='native'&&!readOnly && <button type="button" className="agent-management-button" disabled={busy} onClick={()=>{setRenameValue(liveProvider.name);setRenameError('');setRenameOpen(true);}}>重命名</button>}
           <span
             className={`agent-management-pill ${statusTone(liveProvider.status)}`}
             title={liveProvider.statusText}
@@ -1046,12 +1060,23 @@ function ProviderEditor({
           </ol>
         )}
 
-          <div className="agent-management-form agent-management-engine-form">
+          {provider.id!=='native'&&<ProviderConnectionFields name={displayName} endpoint={fields.baseUrl||''} apiKey={fields.envKey||''}
+            endpointLabel="Responses API 地址" configured={provider.fields.some(field=>field.key==='envKey'&&field.configured)} disabled={readOnly||busy}
+            onChange={(field,value)=>{
+              if(field==='name'){setDisplayName(value);return;}
+              if(field==='apiKey')setSaveApiKey(true);
+              detect.reset();
+              setFields(current=>({...current,[field==='endpoint'?'baseUrl':'envKey']:value}));
+            }}/>}
+          {nativeApi&&<div className="agent-management-form agent-management-engine-form">
             {nativeApi&&<><label className="agent-management-field agent-management-field-baseUrl"><span>Responses API 地址</span><input aria-label="Responses API 地址" value={nativeDetails.data?.details.settings.base_url||''} readOnly placeholder={nativeDetails.isPending?'正在读取…':'未提供'} /></label><label className="agent-management-field"><span>API Key</span><input aria-label="API Key 状态" readOnly value={nativeBalance.data?.error==='missing_key'?'未配置':nativeBalance.data?.status==='available'||nativeBalance.data?.error==='unauthorized'||nativeBalance.data?.status==='unsupported'?'已配置':'未确认'} /></label><label className="agent-management-field"><span>CODEX_HOME</span><input aria-label="CODEX_HOME" readOnly value={nativeDetails.data?.details.home||provider.codexHome||''} /></label></>}
+          </div>}
+          {provider.fields.some(field=>!['models','defaultModel','modelRateMultipliers','baseUrl','envKey'].includes(field.key))&&<ProviderAdvancedSettings label="Codex 设置">
+           <div className="agent-management-form agent-management-engine-form">
             {provider.fields
               .filter(
                 (field) =>
-                  field.key !== "models" && field.key !== "defaultModel",
+                  !['models','defaultModel','modelRateMultipliers','baseUrl','envKey'].includes(field.key),
               )
               .map((field) => (
                 <FieldEditor
@@ -1071,11 +1096,14 @@ function ProviderEditor({
                   }}
                 />
               ))}
-          </div>
+           </div>
+          </ProviderAdvancedSettings>}
+          {provider.fields.some(field=>field.key==='modelRateMultipliers')&&<ProviderRateSettings value={fields.modelRateMultipliers||''} disabled={readOnly||busy}
+            onChange={modelRateMultipliers=>setFields(current=>({...current,modelRateMultipliers}))}/>}
           {nativeApi&&<p className="agent-management-hint">API 地址和凭据由本机 Codex 配置管理；可在下方配置文件中编辑可公开的配置。</p>}
       </section>
       {nativeApi&&nativeDetails.data?.details&&<ProviderModelTable key="native-models" agentId={agentId} providerId="native"
-        options={[...nativeDetails.data.details.models.map(model=>({model:model.model,name:model.name||model.model})),...detected]}
+        options={[...nativeDetails.data.details.models.map(model=>({...model,name:model.name||model.model})),...detected]}
         selected={nativeDetails.data.details.models.map(model=>model.model)} defaultModel={nativeDetails.data.details.settings.model||''} readOnly={readOnly} selectionReadOnly
         busy={update.isPending||engineOperation.busy} detecting={detect.isPending} canSave={!usage.busy&&usage.verified}
         onSelectedChange={()=>{}} onDefaultChange={()=>{}} onDetect={()=>detect.mutate()} onSave={saveProvider} onDirtyChange={setModelsDirty} onBusyChange={setModelsSaving}/>}
@@ -1085,7 +1113,7 @@ function ProviderEditor({
         busy={update.isPending||engineOperation.busy||remove.isPending} detecting={detect.isPending}
         canSave={!usage.busy&&usage.verified&&(provider.id==='native'||selectedModels.length>0)}
         onSelectedChange={setSelectedModels} onDefaultChange={model=>setFields(current=>({...current,defaultModel:model}))}
-        onDetect={()=>detect.mutate()} onSave={saveProvider} onDirtyChange={setModelsDirty} onBusyChange={setModelsSaving}/>:!readOnly&&!nativeApi&&<div className="agent-management-actions"><button type="button" className="agent-management-button" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate()}><Save size={13}/>保存并重启 Engine</button></div>}
+        onDetect={()=>detect.mutate()} onSave={saveProvider} onDirtyChange={setModelsDirty} onBusyChange={setModelsSaving}/>:!readOnly&&!nativeApi&&<div className="agent-management-actions"><button type="button" className="agent-management-button" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate(undefined)}><Save size={13}/>保存并重启 Engine</button></div>}
       {files.length>0&&<section className="agent-management-section provider-files"><button type="button" className="agent-management-button" aria-expanded={filesOpen} onClick={()=>setFilesOpen(!filesOpen)}><ChevronRight size={13} style={{transform:filesOpen?'rotate(90deg)':undefined}}/>配置文件 ({files.length})</button>{filesOpen&&<ConfigFiles agentId={agentId} files={files} readOnly={readOnly} onDirtyChange={onFileDirtyChange}/>}</section>}
       {deleteOpen && (
         <ProviderDeleteDialog
@@ -1121,6 +1149,7 @@ function AddCodexProvider({
   const [models, setModels] = useState<DetectedAgentModel[]>([]);
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
+  const [modelRateMultipliers, setModelRateMultipliers] = useState("");
   const probeVersion=useRef(0);
   const probeRequestVersion=useRef(0);
   const clearProbe=()=>{probeVersion.current++;setModels([]);setSelectedModels([]);setDefaultModel('');};
@@ -1132,7 +1161,8 @@ function AddCodexProvider({
         baseUrl ||
         apiKey ||
         selectedModels.length ||
-        defaultModel
+        defaultModel ||
+        modelRateMultipliers
       ),
     );
   }, [
@@ -1140,6 +1170,7 @@ function AddCodexProvider({
     baseUrl,
     defaultModel,
     id,
+    modelRateMultipliers,
     name,
     onEditingChange,
     selectedModels.length,
@@ -1170,6 +1201,8 @@ function AddCodexProvider({
           envKey: "AGENTMANAGER_PROVIDER_API_KEY",
           models: selectedModels,
           defaultModel,
+          modelRateMultipliers: splitLines(modelRateMultipliers),
+          ...modelCapabilitiesPayload(models),
           codexHome: `~/.codex-agentmanager/${id}`,
         },
       }),
@@ -1192,120 +1225,22 @@ function AddCodexProvider({
       event.preventDefault();
       if (canCreate) create.mutate();
     }}>
-      <div className="agent-management-form">
-        <label className="agent-management-field">
-          <span>Provider ID</span>
-          <input
-            aria-label="Provider ID"
-            value={id}
-            placeholder="例如 xindu"
-            onChange={(event) =>
-              setId(
-                event.target.value.toLowerCase().replace(/[^a-z0-9_.-]/g, ""),
-              )
-            }
-          />
-        </label>
-        <label className="agent-management-field">
-          <span>显示名称</span>
-          <input
-            aria-label="显示名称"
-            value={name}
-            placeholder="例如 Xindu"
-            onChange={(event) => setName(event.target.value)}
-          />
-        </label>
-        <label className="agent-management-field">
-          <span>Responses API 地址</span>
-          <input
-            aria-label="Responses API 地址"
-            value={baseUrl}
-            placeholder="https://example.com/v1"
-            onChange={(event) => {
-              setBaseUrl(event.target.value);
-              clearProbe();
-            }}
-          />
-        </label>
-        <label className="agent-management-field">
-          <span>API Key</span>
-          <input
-            aria-label="API Key"
-            type="password"
-            autoComplete="new-password"
-            value={apiKey}
-            placeholder="输入该 Provider 的 API Key"
-            onChange={(event) => {setApiKey(event.target.value);clearProbe();}}
-          />
-        </label>
-        <div className="agent-management-field agent-management-model-picker">
-          <span>模型</span>
-          <button
-            type="button"
-            className="agent-management-button"
-            disabled={detect.isPending || !baseUrl || !apiKey}
-            onClick={() => {probeRequestVersion.current=probeVersion.current;detect.mutate();}}
-          >
-            {detect.isPending ? (
-              <Loader2 size={13} className="animate-spin" />
-            ) : (
-              <Search size={13} />
-            )}
-            探测模型
-          </button>
-          {models.length > 0 ? (
-            <div className="agent-management-model-options">
-              {models.map((item) => (
-                <label key={item.model}>
-                  <input
-                    type="checkbox"
-                    checked={selectedModels.includes(item.model)}
-                    onChange={(event) =>
-                      setSelectedModels((current) =>
-                        event.target.checked
-                          ? [...current, item.model]
-                          : current.filter((model) => model !== item.model),
-                      )
-                    }
-                  />
-                  <span>{item.name}</span>
-                  <code>{item.model}</code>
-                </label>
-              ))}
-            </div>
-          ) : (
-            <small>先填写地址和 API Key，再探测该 Provider 自己的模型。</small>
-          )}
-          <OperationStatus
-            busy={detect.isPending}
-            message="正在探测 Provider 模型…"
-            successMessage="Provider 模型探测完成"
-            error={detect.isError&&probeRequestVersion.current===probeVersion.current ? detect.error : undefined}
-            success={detect.isSuccess&&detect.data?.version===probeVersion.current}
-          />
-        </div>
-        <label className="agent-management-field">
-          <span>默认模型</span>
-          <select
-            aria-label="默认模型"
-            value={defaultModel}
-            onChange={(event) => setDefaultModel(event.target.value)}
-          >
-            <option value="">使用所选模型中的第一个</option>
-            {models
-              .filter((item) => selectedModels.includes(item.model))
-              .map((item) => (
-                <option key={item.model} value={item.model}>
-                  {item.name}
-                </option>
-              ))}
-          </select>
-        </label>
-      </div>
-      <p className="agent-management-hint">
-        API Key 会加密保存在本机，仅注入此 Provider 的
-        Engine。创建后可在详情中继续编辑 config.toml。
-      </p>
+      <ProviderConnectionFields id={id} name={name} endpoint={baseUrl} apiKey={apiKey} endpointLabel="Responses API 地址" disabled={readOnly||create.isPending}
+        onChange={(field,value)=>{
+          if(field==='id')setId(value);
+          if(field==='name')setName(value);
+          if(field==='endpoint'){setBaseUrl(value);clearProbe();}
+          if(field==='apiKey'){setApiKey(value);clearProbe();}
+        }}/>
+      <section className="provider-models" aria-label="Provider 模型配置">
+        <ProviderModelActions selected={selectedModels.length} total={models.length} detecting={detect.isPending} disabled={readOnly||create.isPending||!baseUrl||!apiKey}
+          onDetect={()=>{probeRequestVersion.current=probeVersion.current;detect.mutate();}}/>
+        <ModelCatalogTable rows={models.map(model=>({model:model.model,name:model.name,metadata:model,context:model.context_window}))}
+          selected={selectedModels} defaultModel={defaultModel} locked={readOnly||busy} loading={detect.isPending}
+          onSelectedChange={setSelectedModels} onDefaultChange={setDefaultModel}/>
+        <ProviderRateSettings value={modelRateMultipliers} onChange={setModelRateMultipliers} disabled={readOnly||busy}/>
+        {detect.isError&&probeRequestVersion.current===probeVersion.current&&<OperationStatus busy={false} message="正在探测 Provider 模型…" error={detect.error}/>}
+      </section>
       <OperationStatus
         busy={create.isPending}
         message="正在创建 Provider、保存密钥并启动 Engine…"

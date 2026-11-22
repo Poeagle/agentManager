@@ -23,6 +23,16 @@ describe('ConversationProjection exact identity',()=>{
     expect(projection.accept({type:'history',runtime:{},messages:[message('native-item','已完成',{phase:'final',sequence:42})]})).toBeNull();
   });
 
+  it('projects a durable summary card and ignores a subsequent replay of its internal echo',()=>{
+    const projection=new ConversationProjection();
+    const echo=message('internal','摘要',{phase:'final'});
+    projection.accept(snapshot([echo]));
+    const summary=message('card','压缩后的摘要',{presentation:'compaction_summary',sequence:20,
+      compaction:{before_tokens:100,after_tokens:50,duration_ms:null,replaces_message_id:echo.id}});
+    expect(projection.accept({type:'history',runtime:{},messages:[summary]})).toMatchObject({messages:[summary]});
+    expect(projection.accept(snapshot([echo]))).toMatchObject({messages:[summary]});
+  });
+
   it('never merges distinct native items merely because their text matches',()=>{
     const projection=new ConversationProjection();
     projection.accept(snapshot([message('first','相同回答',{streaming:false})]));

@@ -146,8 +146,8 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   appendFileSync(session.log,second(0));
   const incident=session.chat.locator('[data-cache-drop-id]');
   await expect(incident).toHaveCount(1);
-  await expect(incident).toContainText('11K / 10K (90.91%)');
-  await expect(incident).toContainText('10K / 0 (0.0%)');
+  await expect(incident).toContainText('11K ｜ 10K (90.91%)');
+  await expect(incident).toContainText('10K ｜ 0 (0.0%)');
   await expect(incident).toContainText('2026-11-20');
   const estimatedAmount=session.chat.locator('.conversation-total-credits');
   await expect(estimatedAmount).toHaveText(/^Est\. \$[\d,]+\.\d\d(?:\*)?$/);
@@ -373,6 +373,49 @@ test('keeps the shown Item counts and usage within their Progress across consecu
   await expect(items).toHaveCount(2);
 });
 
+test('reconciles live Codex API Progress costs when a shared response crosses an accepted input',async({page})=>{
+  const session=await setup(page,'codex','detached');
+  const turn='crossing-api-turn';
+  writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId}));
+  let emit:((frame:unknown)=>void)|undefined;
+  await page.routeWebSocket('**/conversation/stream*',socket=>{emit=frame=>socket.send(JSON.stringify(frame));});
+  await page.goto('/');
+  await expect.poll(()=>!!emit).toBe(true);
+  const usage=(total:number,amount:number,requests=1,calls=0)=>({tokens:{total_tokens:total},requests,tool_calls:calls,
+    tool_rounds:calls?1:0,complete:true,coverage:'complete',shared_messages:1,cost:{unit:'USD',basis:'api',amount,complete:true}});
+  const before=usage(21500,0.2),shared=usage(84800,0.6,3,7),firstLive=usage(42000,0.3,1,1);
+  const old={id:'old',start_at:at(1),end_at:at(4),end_reason:'input',elapsed_ms:3000};
+  const current={id:'current',start_at:at(4),end_at:null,end_reason:null,elapsed_ms:null};
+  const interval=(value:ReturnType<typeof usage>,sequence:number,scope:string,segment?:object)=>({
+    ...value,interval:value,progress_id:scope,segment,sequence,revision:sequence,turn_id:turn,
+  });
+  const messages=[
+    {id:'start',role:'user',turn_id:turn,text:'Start',timestamp:at(1),sequence:1},
+    {id:'before',role:'assistant',phase:'commentary',turn_id:turn,text:'Check the first scope',timestamp:at(2),sequence:2,
+      statistics:interval(before,2,old.id,{...old,...usage(69900,0.5,3,5),unassigned:usage(48400,0.3,2,5)})},
+    {id:'steer',role:'user',turn_id:turn,text:'Add a second scope',timestamp:at(4),sequence:4},
+    {id:'after',role:'assistant',phase:'commentary',turn_id:turn,text:'Continue from the shared response',timestamp:at(5),sequence:5,
+      statistics:interval(shared,5,old.id,{...old,...usage(106300,0.8,4,7)})},
+  ];
+  emit!({type:'snapshot',messages,turn_id:turn,busy:true,stage:'tools',started_at:at(1),activities:[{
+    id:'tool',turn_id:turn,after_message_id:'after',label:'Search',status:'running',started_at:at(6),
+  }]});
+  emit!({type:'progress_statistics',native_id:session.nativeId,progress:{...firstLive,turn_id:turn,revision:6,
+    segment:{...current,...firstLive,unassigned:firstLive},step:{...firstLive,segment_id:current.id,after_message_id:null,after_sequence:null,start_at:at(4)},
+  }});
+  const oldGroup=session.chat.getByRole('region',{name:'Codex 进展'}).filter({hasText:'Check the first scope'});
+  const active=session.chat.getByRole('region',{name:'Codex 进展'}).filter({hasText:'Continue from the shared response'});
+  const header=(group:typeof active)=>group.locator('summary .session-chat-message-statistics').first();
+  await expect(header(oldGroup)).toHaveAttribute('title',/Total 21,500;/);
+  await expect(header(oldGroup)).toContainText('21.5K ($0.20)');
+  await expect(oldGroup.getByText(executionUsageLabel)).toHaveCount(0);
+  await expect(header(active)).toHaveAttribute('title',/Total 126,800;/);
+  await expect(header(active)).toContainText('126.8K ($0.90)');
+  const step=active.getByRole('status',{name:'正在执行的进展 2'});
+  await expect(step).toContainText('42K ($0.30)');
+  await expect(step).toContainText('1 round | 1 call');
+});
+
 test('uses adjacent cached-input counts and ignores a ratio drop caused by new input tokens',async({page})=>{
   const session=await setup(page,'codex','detached');
   const turn='actual-hit-counts';
@@ -396,8 +439,8 @@ test('uses adjacent cached-input counts and ignores a ratio drop caused by new i
   await expect(incident).toHaveCount(1);
   await expect(incident).toContainText('82.26%');
   await expect(incident).toContainText('90.1%');
-  await expect(incident).toContainText('减少 696 Token');
-  await expect(incident).toContainText('请求间隔 2.484秒');
+  await expect(incident).toContainText('Elapsed: 2.484s');
+  await expect(incident).toContainText('额外费用未知');
   await page.reload();
   await expect(incident).toHaveCount(1);
   await page.getByRole('button',{name:'Details',exact:true}).click();
@@ -424,8 +467,8 @@ test('shows one cache drop next to an in-turn compaction and keeps it after relo
   await expect(incident).toHaveCount(1);
   await expect(incident).toContainText('99.65%');
   await expect(incident).toContainText('42.72%');
-  await expect(incident).toContainText('请求间隔 4.954秒');
-  await expect(incident.locator('time')).toHaveText('2026-11-20 17:01:00');
+  await expect(incident).toContainText('Elapsed: 4.954s');
+  await expect(incident.locator('time')).toHaveText(['2026-11-20 17:01:00', '2026-11-20 17:00:55']);
   expect(await summary.evaluate(node=>node.closest('[data-context-kind="compaction_summary"]')?.nextElementSibling?.matches('[data-cache-drop-id]'))).toBe(true);
   await page.getByRole('button',{name:'Details',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'会话详情',exact:true});
@@ -439,6 +482,38 @@ test('shows one cache drop next to an in-turn compaction and keeps it after relo
   const history=await read(page,session.api+'/conversation');
   expect(history.cache_drops).toHaveLength(1);
   expect(history.cache_drops[0]).toMatchObject({elapsed_ms:4954,compaction_at:at(55.363),interval_kind:'request'});
+});
+
+test('reconciles a live provider compaction echo into its card and reports one post-compaction cache drop',async({page})=>{
+  const session=await setup(page,'codex','detached');
+  const turn='provider-compact',body='仅在压缩卡片里可见的摘要';
+  const wrapper='Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:';
+  writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+
+    event(1,'task_started',{turn_id:turn})+message(2,'input','user','继续任务')+
+    message(3,'before','assistant','压缩前进展','commentary')+request(4,turn,'before',346988,346752));
+  await page.goto('/');
+  await expect(session.chat.getByText('继续任务',{exact:true})).toBeVisible();
+  const rewrite=record(59,'response_item',{type:'message',id:'rewrite-item',role:'assistant',phase:'final_answer',
+    content:[{type:'output_text',text:body}],internal_chat_message_metadata_passthrough:{content_item_kinds:['unknown']}});
+  appendFileSync(session.log,rewrite+request(60,turn,'rewrite-response',345318,3968));
+  const echo=session.chat.locator('[data-phase=final]').filter({hasText:body});
+  await expect(echo).toHaveCount(1);
+  const summary=wrapper+'\n'+body;
+  appendFileSync(session.log,record(60.001,'compacted',{message:summary,compaction_response_id:'rewrite-response',
+    replacement_history:[{type:'message',role:'user',id:'summary-card',content:[{type:'input_text',text:summary}]}]})+
+    message(67,'after','assistant','压缩后继续','commentary')+request(68,turn,'after',29384,15744));
+  const card=session.chat.getByRole('button',{name:/Conversation summary/});
+  const drop=session.chat.locator('[data-cache-drop-id]');
+  for (const reload of [false,true]) {
+    if (reload) await page.reload();
+    await expect(card).toHaveCount(1);
+    await expect(echo).toHaveCount(0);
+    await expect(drop).toHaveCount(1);
+    await expect(drop).toContainText('99.93%');
+    await expect(drop).toContainText('53.58%');
+  }
+  await card.click();
+  await expect(page.getByRole('dialog',{name:'Conversation summary'})).toContainText(body);
 });
 
 test('shows the manual compaction cache drop once its first ordinary request arrives',async({page})=>{
@@ -569,44 +644,76 @@ test('waits for actual usage after commentary and counts a reasoning-only reques
   await expect(progressTime).toHaveAttribute('datetime',at(30));
 });
 
-test('groups cache drops by Progress in time order and puts a Final drop before its answer',async({page})=>{
+test('shows dated cache drops under each Progress header before its Items and before the Final answer',async({page})=>{
   const session=await setup(page,'codex','detached');
   const turn='cache-items';
   writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+
-    event(1,'task_started',{turn_id:turn})+message(2,'input','user','核对缓存下降条目')+
+    event(1,'task_started',{turn_id:turn})+record(1.5,'turn_context',{turn_id:turn,model:'gpt-6.1-sol'})+
+    message(2,'input','user','核对缓存下降条目')+
     message(3,'baseline','assistant','建立缓存基线','commentary')+request(4,turn,'r1',10000,9800));
   await page.goto('/');
   await expect(session.chat.getByText('建立缓存基线')).toBeAttached();
   appendFileSync(session.log,message(6,'first-drop','assistant','第一处下降','commentary')+request(7,turn,'r2',10000,1000));
-  await expect(session.chat.locator('[data-cache-drop-id]')).toHaveCount(1);
+  const progress=session.chat.getByRole('region',{name:'codex 进展'});
+  const notice=progress.getByRole('group',{name:'缓存命中输入减少'});
+  await expect(notice).toHaveCount(1);
+  await expect(notice.first()).toBeVisible();
   appendFileSync(session.log,
     message(8,'restored','assistant','缓存恢复','commentary')+request(9,turn,'r3',11000,10600)+
     message(10,'second-drop','assistant','第二处下降','commentary')+request(11,turn,'r4',11000,500)+
     message(12,'final','assistant','核对完成','final_answer')+request(13,turn,'r5',11000,100)+
     event(14,'task_complete',{turn_id:turn}));
   const verify=async()=>{
-    const progress=session.chat.getByRole('region',{name:'codex 进展'});
-    const notice=session.chat.locator('.session-chat-progress-cache-notices [data-cache-drop-id]');
+    const before = (left:Element,right:Element) => !!(left.compareDocumentPosition(right)&Node.DOCUMENT_POSITION_FOLLOWING);
+    const toggle=progress.locator('.session-chat-progress-toggle');
+    const firstItem=progress.locator('.session-chat-progress-entry').first();
     await expect(session.chat.locator('[data-cache-drop-id]')).toHaveCount(3);
     await expect(notice).toHaveCount(2);
-    await expect(notice.nth(0).locator('time')).toHaveAttribute('datetime',at(7));
-    await expect(notice.nth(1).locator('time')).toHaveAttribute('datetime',at(11));
-    const before = (left:Element,right:Element) => !!(left.compareDocumentPosition(right)&Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(await notice.last().evaluate(before,await progress.elementHandle())).toBe(true);
-    const toggle=progress.locator('.session-chat-progress-toggle');
-    if(await toggle.getAttribute('aria-expanded')==='true')await toggle.click();
+    await expect(notice.nth(0).locator('time').first()).toHaveAttribute('datetime',at(7));
+    await expect(notice.nth(1).locator('time').first()).toHaveAttribute('datetime',at(11));
+    if(await toggle.getAttribute('aria-expanded')==='true') await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded','false');
+    await expect(firstItem).toBeHidden();
     await expect(notice.last()).toBeVisible();
+    expect(await toggle.evaluate(before,await notice.first().elementHandle())).toBe(true);
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded','true');
+    await expect(firstItem).toBeVisible();
+    await expect(notice).toHaveCount(2);
+    expect(await toggle.evaluate(before,await notice.first().elementHandle())).toBe(true);
+    expect(await notice.last().evaluate(before,await firstItem.elementHandle())).toBe(true);
+
     const final=session.chat.locator('[data-phase="final"]').filter({hasText:'核对完成'});
     const finalNotice=final.locator('[data-cache-drop-id]');
-    await expect(finalNotice.locator('time')).toHaveAttribute('datetime',at(13));
+    await expect(finalNotice.locator('time').first()).toHaveAttribute('datetime',at(13));
     expect(await finalNotice.evaluate(before,await final.getByText('核对完成',{exact:true}).elementHandle())).toBe(true);
-    await expect(notice.first().locator('button')).toHaveCount(0);
-    await expect(notice.first().locator('strong')).toHaveCSS('color', 'rgb(220, 38, 38)');
-    await expect(notice.first()).toHaveCSS('color', 'rgb(129, 133, 140)');
-    await expect(notice.first()).toHaveCSS('font-size', '13px');
-    await expect(notice.first()).toHaveCSS('white-space', 'nowrap');
+
+    const firstNotice=notice.first();
+    await expect(firstNotice.locator('button')).toHaveCount(0);
+    await expect(firstNotice.locator('time').first()).toHaveText('2026-11-20 17:00:07');
+    await expect(firstNotice.locator('time').first()).toHaveCSS('color', 'rgb(220, 38, 38)');
+    await expect(firstNotice).toHaveText(/2026-11-20 17:00:07\s*10K ｜ 1K \(10\.0%\)\s*←\s*2026-11-20 17:00:04\s*10K ｜ 9\.8K \(98\.0%\)\s*Elapsed: 3s/);
+    await expect(firstNotice.locator('time').last()).toHaveAttribute('datetime',at(4));
+    await expect(firstNotice.locator('time').last()).toHaveCSS('color', 'rgb(220, 38, 38)');
+    await expect(firstNotice).toContainText('预估多耗 $0.42');
+    const cacheRates=firstNotice.locator('.session-chat-cache-hit');
+    await expect(cacheRates.first()).toHaveCSS('color','rgb(131, 55, 33)');
+    await expect(cacheRates.last()).toHaveCSS('color','rgb(33, 131, 60)');
+    await expect(firstNotice).toHaveCSS('font-size', '11px');
+    await expect(firstNotice).toHaveCSS('white-space', 'nowrap');
   };
   await verify();
   await page.reload();
   await verify();
+  await progress.evaluate(node=>{node.style.maxWidth='320px';});
+  const narrowNotice=notice.first();
+  const layout=await narrowNotice.evaluate(row=>({
+    width:row.clientWidth,
+    scrollWidth:row.scrollWidth,
+    dateTop:row.querySelector('time')?.getBoundingClientRect().top,
+    elapsedTop:row.lastElementChild?.getBoundingClientRect().top,
+  }));
+  expect(layout.width).toBeLessThanOrEqual(320);
+  expect(layout.scrollWidth).toBeGreaterThan(layout.width);
+  expect(layout.dateTop).toBe(layout.elapsedTop);
 });

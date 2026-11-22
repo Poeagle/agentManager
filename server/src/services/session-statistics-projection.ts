@@ -4,7 +4,7 @@ import type {
   SessionCoverageReason, SessionLifecycleFact, SessionMetadata, SessionModelTotals,
 } from './agents/session-facts.js';
 import type { AgentProgressSegment, AgentProgressStatistics, AgentStatistics } from './agents/types.js';
-import { cacheDimensionChanges, cacheSample, detectCacheDrop } from './session-cache-drop.js';
+import { cacheDimensionChanges, cacheDropExtraCost, cacheSample, detectCacheDrop } from './session-cache-drop.js';
 import { copyCounter, countRequest, counterReasons, emptyCounter, recordedInterval, usageTotals, type StatisticsCounter } from './session-statistics-totals.js';
 
 type Item = Extract<NativeSessionFact, { kind: 'item' }> & { offset: number };
@@ -329,6 +329,8 @@ export class SessionStatisticsProjection {
     }
     if (drop) {
       if (messageId) drop.message_id = messageId;
+      const extraCost = cacheDropExtraCost(drop,request);
+      if (extraCost) drop.extra_cost = extraCost;
       // An unlabelled receipt can be the context rewrite itself. The next
       // receipt or closing event proves enough to settle the comparison.
       if (sameInput && !structuralChange && !conversationalResponse)
@@ -523,13 +525,14 @@ export function projectSummary(
     .some(turn => turn.items.length > 0 || turn.tools.length > 0);
   const reasons = [...new Set([...state.reasons, ...extra, ...(missing ? ['missing_usage' as const] : [])])];
   const hasSource = state.first || state.latest || state.inputs > 0 || observedAt;
+  const latest = state.latest && (({cache_input_pricing: _pricing, cache_write_input_tokens: _writes, ...request}) => request)(state.latest);
   const pending = extra.includes('backfill') || (waiting && !reasons.length) || extra.includes('incomplete_record');
   const partial = reasons.some(reason => reason !== 'backfill' && reason !== 'incomplete_record');
   return {
     native_id: nativeId, revision, observed_at: observedAt,
     status: !hasSource && extra.includes('source_unavailable') ? 'unavailable' : partial ? 'partial' : pending ? 'pending' : 'complete',
     reasons, totals: hasSource ? usageTotals(state.total, undefined, reasons.length > 0 || waiting) : null,
-    latest: state.latest, user_inputs: hasSource ? state.inputs : null, completed_turns: hasSource ? state.answers : null,
+    latest, user_inputs: hasSource ? state.inputs : null, completed_turns: hasSource ? state.answers : null,
     cache_drop_count: state.anomalyCount,
   };
 }
