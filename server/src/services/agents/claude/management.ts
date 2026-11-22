@@ -26,6 +26,7 @@ import {
 } from './providers.js';
 import { readAgentManagement } from '../management-store.js';
 import { providerModelMetadata } from '../provider-pricing.js';
+import { confirmedClaudeContextWindow } from '../model-pricing.js';
 import { storedModelCapabilities } from '../model-capabilities.js';
 import {refreshStoredProviderBilling} from '../provider-billing.js';
 
@@ -181,7 +182,7 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
           const capabilities=storedModelCapabilities(fields?.modelCapabilities);
           const observed=Object.hasOwn(capabilities,model)?capabilities[model]:undefined;
           const confirmed=metadata.input_modalities;
-          return {...metadata,provider:provider.id,model,name:model,contextWindow:window??observed?.context_window??metadata.context_window??null,
+          return {...metadata,provider:provider.id,model,name:model,contextWindow:window??observed?.context_window??metadata.context_window??confirmedClaudeContextWindow(model)??null,
             maxContextWindow:null,effectiveContextWindowPercent:null,inputModalities:confirmed??observed?.input_modalities??[],
             supportsImages:confirmed?.length?confirmed.includes('image'):observed?.input_modalities?.length?observed.input_modalities.includes('image'):null,sourceFile:null};
         });

@@ -69,5 +69,7 @@ it('keeps the confirmed Claude image capabilities across the current Provider mo
     maxContextWindow:null,effectiveContextWindowPercent:null,inputModalities:[],supportsImages:false,sourceFile:null}))},
  ]);
  expect(models).toHaveLength(modelIds.length);
+ expect(models.find(row=>row.model==='claude-sonnet-5-5')).toMatchObject({context_window:1_000_000,official_context_window:1_000_000});
+ expect(models.find(row=>row.model==='claude-opus-4-5-20251101')?.official_context_window).toBeUndefined();
  expect(models.filter(row=>!row.input_modalities?.includes('image')).map(row=>[row.model,row.input_modalities])).toEqual([]);
 });
