@@ -62,6 +62,17 @@ it('reuses the configured key, probes without re-entry, and replaces stale alias
  expect(api.agentManagement.detectModels).toHaveBeenCalledWith('claude',{endpoint:'https://gateway.example',apiKey:undefined,providerId:'gateway'});
  expect(vi.mocked(api.agentManagement.updateProvider).mock.calls[0][2]).not.toHaveProperty('apiKey');
 });
+it('saves only the models checked in the model table',async()=>{
+ provider={...provider,models:['claude-fable-5','claude-haiku-4-5','claude-opus-5-5','claude-sonnet-5-5'],defaultModel:'claude-sonnet-5-5'};
+ vi.mocked(api.agentManagement.detectModels).mockResolvedValue({models:provider.models.map(model=>({model,name:model,description:'',efforts:[],defaultEffort:''}))});
+ vi.mocked(api.agentManagement.updateProvider).mockResolvedValue({state:{agent:{id:'claude',label:'Claude'},providers:[provider]} as any});
+ mount();
+ fireEvent.click(screen.getByRole('button',{name:'编辑模型'}));
+ fireEvent.click(screen.getByRole('checkbox',{name:'启用 claude-fable-5'}));
+ fireEvent.click(screen.getByRole('checkbox',{name:'启用 claude-haiku-4-5'}));
+ fireEvent.click(screen.getByRole('button',{name:'保存 Provider'}));
+ await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('claude','gateway',expect.objectContaining({fields:expect.objectContaining({models:['claude-opus-5-5','claude-sonnet-5-5'],defaultModel:'claude-sonnet-5-5'})})));
+});
 it('creates a Provider from one page and uses a fixed primary action',async()=>{
  vi.mocked(api.agentManagement.detectModels).mockResolvedValue({models:[{model:'claude-a',name:'Claude A',description:'',efforts:[],defaultEffort:'',context_window:500000,input_modalities:['text','image']}]});
  vi.mocked(api.agentManagement.createProvider).mockResolvedValue({state:{agent:{id:'claude',label:'Claude'},providers:[provider]} as any});

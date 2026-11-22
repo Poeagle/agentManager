@@ -39,7 +39,7 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
   setDraft(previous=>{
     const selected=previous.models.filter(model=>models.includes(model));
     const next=selected.length?selected:models;
-    return {...previous,models:next,defaultModel:models.includes(previous.defaultModel)?previous.defaultModel:next[0]||''};
+    return {...previous,models:next,defaultModel:next.includes(previous.defaultModel)?previous.defaultModel:next[0]||''};
   });
   onDirtyChange?.(true);
  },onError:(failure:Error)=>setError(failure.message)});
@@ -63,9 +63,11 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
   if(provider&&!discovery.models.length)throw Error('Provider 未返回可用模型，当前配置未保存');
   const discovered=discovery.models.length?discovery.models.map(model=>model.model):draft.models;
   if(!discovered.length)throw Error('至少探测或手工添加一个模型');
-  const overlap=(provider?.models??[]).filter(model=>discovered.includes(model));
-  const models=provider&&overlap.length?overlap:discovered;
-  const defaultModel=provider?.defaultModel&&models.includes(provider.defaultModel)?provider.defaultModel:models[0]||'';
+  // Detection refreshes the catalog; the checked rows are the user's explicit
+  // selection and must be the only models persisted or preflighted.
+  const models=[...new Set(draft.models.filter(model=>discovered.includes(model)))];
+  if(!models.length)throw Error('请至少勾选一个探测返回的模型');
+  const defaultModel=draft.defaultModel&&models.includes(draft.defaultModel)?draft.defaultModel:models[0];
   const fields={baseUrl:draft.baseUrl.trim(),models,defaultModel,haikuModel:draft.haikuModel.trim(),subagentModel:draft.subagentModel.trim(),effort:draft.effort.trim(),autoCompactWindow:draft.autoCompactWindow.trim(),contextWindow:draft.contextWindow.trim(),maxOutputTokens:draft.maxOutputTokens.trim(),...(provider?.fields.some(item=>item.key==='providerRateMultiplier')?{providerRateMultiplier:draft.providerRateMultiplier.trim()}:{}),...modelCapabilitiesPayload(discovery.models)};
   const input={name:draft.name.trim()||draft.id.trim(),kind:provider?.kind||'anthropic-compatible',enabled:provider?.enabled??true,...draft.apiKey.trim()?{apiKey:draft.apiKey.trim()}:{},fields};
   return provider?api.agentManagement.updateProvider('claude',provider.id,input):api.agentManagement.createProvider('claude',{...input,id:draft.id.trim()});
