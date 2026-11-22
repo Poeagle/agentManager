@@ -70,6 +70,34 @@ async function setup(page: Page, agent: 'codex' | 'claude', status: 'detached' |
   return {nativeId,id,log,api:'/api/sessions/'+id,chat:page.getByRole('region',{name:'会话对话'}).filter({visible:true})};
 }
 
+test('restores split Claude thinking after reload and uses secondary text colors in both themes',async({page})=>{
+  const session=await setup(page,'claude','completed');
+  const line=(seconds:number,uuid:string,type:string,fields:object)=>JSON.stringify({uuid,type,timestamp:at(seconds),message:{role:type,...fields}})+'\n';
+  writeFileSync(session.log,
+    line(1,'user','user',{content:'核对项目'})+
+    line(2,'reasoning','assistant',{id:'answer',stop_reason:'end_turn',content:[{type:'thinking',thinking:'先核对文件。\n\n再看输出。'}]})+
+    line(3,'answer','assistant',{id:'answer',stop_reason:'end_turn',content:[{type:'text',text:'检查完成。'}]}));
+  await page.goto('/');
+  const final=session.chat.locator('.session-chat-message[data-phase="final"]');
+  const summary=final.getByLabel('Claude 的思考过程');
+  const answer=final.getByText('检查完成。',{exact:true});
+  await expect(summary).toBeVisible();
+  await expect(answer).toBeVisible();
+  expect((await summary.boundingBox())!.y).toBeLessThan((await answer.boundingBox())!.y);
+  await expect(summary).toHaveCSS('color','rgb(129, 133, 140)');
+  await summary.click();
+  const body=final.locator('.session-chat-thinking-body');
+  await expect(body).toBeVisible();
+  expect(await body.textContent()).toBe('先核对文件。\n再看输出。');
+  await expect(body).toHaveCSS('color','rgb(129, 133, 140)');
+  await page.reload();
+  await expect(summary).toBeVisible();
+  await expect(body).toBeHidden();
+  await page.evaluate(()=>{document.documentElement.dataset.theme='midnight';});
+  await expect(summary).toHaveCSS('color','rgb(173, 178, 184)');
+  await expect(answer).not.toHaveCSS('color','rgb(173, 178, 184)');
+});
+
 test('shows the same persisted Codex estimates, request intervals and dated cache incident after live append and reconnect',async({page},testInfo)=>{
   const session=await setup(page,'codex','detached');
   const prefix=record(0,'session_meta',{id:session.nativeId,cwd:join(root,session.id)})+
@@ -218,11 +246,13 @@ test('settles a split Claude Final as soon as its visible text arrives and resto
     entry(2,'assistant','thought',{...response,content:[{type:'thinking',thinking:'Check the receipt'}]}));
   await page.goto('/');
   await expect(session.chat.getByText('Read the receipt',{exact:true})).toBeVisible();
+  await expect(session.chat.getByLabel('Claude 进展').getByLabel('Claude 的思考过程')).toBeAttached();
   const body={...response,content:[{type:'text',text:'The receipt is complete.'}]};
   appendFileSync(session.log,entry(3,'assistant','answer',body)+entry(4,'assistant','answer-echo',body));
   const final=session.chat.locator('[data-phase="final"]').filter({hasText:'The receipt is complete.'});
   const statistics=final.locator('.session-chat-message-statistics');
   await expect(final).toHaveCount(1);
+  await expect(final.getByLabel('Claude 的思考过程')).toBeVisible();
   await expect(statistics).toHaveAttribute('title',/Total 23,582;/);
   await expect(statistics).toContainText('1 round | 0 calls');
   await expect(statistics).not.toContainText('记录不完整');

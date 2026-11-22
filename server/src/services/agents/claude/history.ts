@@ -97,11 +97,15 @@ export function parseClaudeMessage(line: Buffer, _questionCallId?: string, optio
   }
   const images = entry.type === 'user' && message.role === 'user' && Array.isArray(content)
     ? content.filter(block => block?.type === 'image') : [];
+  const contentBlocks = entry.type === 'assistant' && message.role === 'assistant'
+    ? claudeContentBlocks(content) : undefined;
+  const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : null;
   const extracted = decodeClaudeText([entry], 128 * 1024).find(
     (item) => item.role === "user" || item.role === "assistant",
   ) ?? (images.length && (!entry.origin?.kind || entry.origin.kind === 'human') ? {
-    role: 'user' as const, phase: 'user' as const, text: '请查看附件。',
-    timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null,
+    role: 'user' as const, phase: 'user' as const, text: '请查看附件。', timestamp,
+  } : contentBlocks?.some(block => block.type === 'thinking') ? {
+    role: 'assistant' as const, phase: 'commentary' as const, text: '', timestamp,
   } : null);
   if (!extracted) return null;
   if (
@@ -134,8 +138,6 @@ export function parseClaudeMessage(line: Buffer, _questionCallId?: string, optio
       : typeof entry.uuid === "string"
         ? entry.uuid
         : undefined;
-  const contentBlocks =
-    extracted.role === "assistant" ? claudeContentBlocks(content) : undefined;
   const usage = extracted.role === "assistant" ? claudeUsage(message.usage) : null;
   const imageDigests = options?.attachmentDigests && images.length && images.length <= 8 && images.every(
     block => block.source?.type === 'base64' && typeof block.source.data === 'string' && block.source.data.length > 0,
@@ -214,6 +216,8 @@ function claudeContentBlocks(
     (block, index): NonNullable<AgentMessage["content_blocks"]> => {
       if (block?.type === "text" && typeof block.text === "string")
         return [{ type: "text", index, text: block.text }];
+      if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim())
+        return [{ type: "thinking", index, text: block.thinking }];
       if (block?.type === "tool_use" && typeof block.id === "string")
         return [
           {

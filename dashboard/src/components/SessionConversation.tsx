@@ -119,6 +119,7 @@ import {
   type ConversationActivity,
 } from "./ConversationActivityLine";
 import { ConversationProgressPending } from "./ConversationProgressPending";
+import { conversationHistoryCursor } from '../../../server/src/shared/conversation-history-cursor';
 import { ConversationThinking } from "./ConversationThinking";
 import { ConversationToolCall } from "./ConversationToolCall";
 import { useDisplayClock, estimatedServerNow, formatDisplayTimestamp } from "../lib/display-clock";
@@ -1125,12 +1126,12 @@ export function SessionConversation({
             );
           });
           setHasMore(result.has_more);
-          cursor.current = result.messages.at(-1)?.id;
+          cursor.current = conversationHistoryCursor(result.messages);
         } else if (result.messages.length) {
           setMessages((previous) =>
             mergeConversationTimeline(previous, result.messages),
           );
-          cursor.current = result.messages.at(-1)?.id;
+          cursor.current = conversationHistoryCursor(result.messages) ?? cursor.current;
         }
         if (result.messages.length) {
           if (pinned.current)
@@ -1635,7 +1636,7 @@ export function SessionConversation({
       );
       setHasMore(result.has_more);
       setError("");
-      if (!cursor.current) cursor.current = result.messages.at(-1)?.id;
+      if (!cursor.current) cursor.current = conversationHistoryCursor(result.messages);
       requestAnimationFrame(() => {
         if (list.current)
           list.current.scrollTop =

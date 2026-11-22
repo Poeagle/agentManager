@@ -1,3 +1,4 @@
+import {conversationHistoryCursor} from '../shared/conversation-history-cursor.js';
 import {agentForSession,agentContext} from './agents/index.js';
 import {watchNativeFile} from './agents/file-watch.js';
 import {nativeConversationFile,type PromptContextSession} from './prompt-context.js';
@@ -23,10 +24,11 @@ export function observeConversationFile(binding:PromptContextSession,emit:(frame
  function send(frame:Frame){latest.set(frame.type,frame);for(const listener of listeners)listener(frame);}
  function changed(){if(closed)return;again=true;if(!reading&&!timer)timer=setTimeout(()=>void refresh(),50);}
  async function refresh(){timer=undefined;if(closed)return;reading=true;again=false;
+  const previousCursor=cursor;
   try{const page=await readConversation(binding,cursor?{after:cursor,limit:20}:{limit:8}),runtime=await adapter.runtime.read(context);if(closed)return;
    const {observed_at,...facts}=runtime,fingerprint=JSON.stringify(facts);
    if(page.reset||page.messages.length||lastRuntime!==fingerprint){send({type:'history',messages:page.messages,runtime,...(page.reset?{reset:true}:{})});lastRuntime=fingerprint;}
-   cursor=page.messages.at(-1)?.id||(page.reset?undefined:cursor);
+   cursor=conversationHistoryCursor(page.messages)||(page.reset?undefined:cursor);
    if(context.nativeId){
     const metadata=page.metadata;
     const changed=metadata ? readChangedSessionStatistics(context, page.reset?0:metadataRevision) : page.statistics||[];
@@ -48,7 +50,7 @@ export function observeConversationFile(binding:PromptContextSession,emit:(frame
     const telemetry=await adapter.telemetry.read(context);if(closed)return;const usage=JSON.stringify(telemetry.usage);
     if(telemetry.usage&&telemetry.observed_at&&lastUsage!==usage){send({type:'usage',native_id:context.nativeId,usage:telemetry.usage,observed_at:telemetry.observed_at});lastUsage=usage;}
    }
-   if(page.messages.length===20)again=true;
+   if(page.messages.length===20&&cursor!==previousCursor)again=true;
   }catch{/* Recovered observers or subsequent native events retry. */}
   finally{reading=false;if(again)changed();}
  }
