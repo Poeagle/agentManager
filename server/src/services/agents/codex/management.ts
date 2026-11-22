@@ -288,6 +288,7 @@ export function nativeCodexConnectionConfig():{
   envKey:string;
   apiKeyConfigured:boolean;
   apiMode:boolean;
+  authMode: 'account' | 'api' | 'uninitialized';
 } {
   const config=existsSync(configPath())?readFileSync(configPath(),'utf8'):'';
   const providerId=config.match(/^\s*model_provider\s*=\s*"([^"]+)"/m)?.[1]||'';
@@ -308,16 +309,29 @@ export function nativeCodexConnectionConfig():{
   const section=sectionStart<0?'':config.slice(sectionStart);
   const baseUrl=section.match(/^\s*base_url\s*=\s*"([^"]+)"/m)?.[1]||'';
   const envKey=section.match(/^\s*env_key\s*=\s*"([^"]+)"/m)?.[1]||'';
-  const apiKeyConfigured=providerApiKeyConfigured('native')
-    || existsSync(join(dirname(configPath()),'auth.json'));
+  const hasAccountAuth = existsSync(join(dirname(configPath()),'auth.json'));
+  const hasApiKeyInDb = providerApiKeyConfigured('native');
+  const isApiMode = !!envKey && !!baseUrl && hasApiKeyInDb;
+
+  // 认证模式：account（账号登录）、api（API Key）、uninitialized（未初始化）
+  let authMode: 'account' | 'api' | 'uninitialized';
+  if (hasAccountAuth) {
+    authMode = 'account';
+  } else if (isApiMode) {
+    authMode = 'api';
+  } else {
+    authMode = 'uninitialized';
+  }
+
   return {
     baseUrl,
     models,
     defaultModel:model,
     providerId,
     envKey,
-    apiKeyConfigured,
-    apiMode:!!envKey&&!!baseUrl,
+    apiKeyConfigured: hasAccountAuth || hasApiKeyInDb,
+    apiMode: isApiMode,
+    authMode,
   };
 }
 
@@ -496,9 +510,9 @@ function nativeProviders(): AgentProviderState[] {
     status: engine.status,
     statusText: engine.statusText,
     authentication: {
-      status: existsSync(join(codexHome, 'auth.json')) ? 'authenticated' : 'unknown',
-      method: nativeSettings.apiMode ? 'API Key' : 'Codex 登录或原生 Provider',
-      mode: nativeSettings.apiMode ? 'api' : 'unknown',
+      status: existsSync(join(codexHome, 'auth.json')) ? 'authenticated' : nativeSettings.authMode === 'api' ? 'authenticated' : 'unknown',
+      method: nativeSettings.authMode === 'api' ? 'API Key' : nativeSettings.authMode === 'account' ? 'Codex 账号' : '待初始化',
+      mode: nativeSettings.authMode,
     },
     models: nativeSettings.models,
     defaultModel: nativeSettings.defaultModel,
@@ -1275,12 +1289,36 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       }
       if(input?.providerId==='native'){
         const native=nativeCodexConnectionConfig();
-        if(native.apiMode){
-          const apiKey=providerApiKey('native')||(native.envKey?process.env[native.envKey]||'':'');
-          if(!apiKey)throw Object.assign(Error('API Key 尚未配置，请先完成 Provider 初始化'),{statusCode:409});
-          return probeProviderModels(native.baseUrl,apiKey);
+
+        // 未初始化：提示用户配置认证方式
+        if (native.authMode === 'uninitialized') {
+          throw Object.assign(
+            Error('原生 Codex 尚未初始化，请选择账号登录或配置 API Key'),
+            { statusCode: 409 }
+          );
         }
-        if(!native.apiKeyConfigured)throw Object.assign(Error('原生 Codex 尚未初始化，请选择账号登录或配置 API Key'),{statusCode:409});
+
+        // API 模式：必须从上游 API 探测，失败时明确报错
+        if (native.authMode === 'api') {
+          const apiKey = providerApiKey('native') || (native.envKey ? process.env[native.envKey] || '' : '');
+          if (!apiKey) {
+            throw Object.assign(
+              Error('API Key 读取失败，请重新配置 API 连接'),
+              { statusCode: 409 }
+            );
+          }
+          try {
+            return await probeProviderModels(native.baseUrl, apiKey);
+          } catch (error) {
+            throw Object.assign(
+              Error(`探测上游模型失败: ${error instanceof Error ? error.message : String(error)}`),
+              { statusCode: 502 }
+            );
+          }
+        }
+
+        // 账号模式：读取本地 Engine 模型目录（Engine 从 OpenAI 同步）
+        // 继续执行到 readEngineModelsForProvider
       }
       const { readEngineModelsForProvider } = await import('./controls.js');
       return readEngineModelsForProvider(input?.providerId, true);
