@@ -52,7 +52,13 @@ export interface ClaudeProviderRuntime {
   billingFields?: Pick<StoredProvider['fields'],'modelRateVersions'|'modelCapabilities'>;
 }
 
-/** The SDK model aliases all resolve to the session's exact model. */
+const proxyEnvironmentKeys = [
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+  'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+] as const;
+
+/** The SDK replaces the child environment when custom Provider settings are
+ * supplied. Carry deployment proxy settings into that environment explicitly. */
 export function claudeProviderEnvironment(
   provider: ClaudeProviderRuntime | null,
   model?: string,
@@ -63,7 +69,7 @@ export function claudeProviderEnvironment(
   const capabilities = provider.adaptiveThinking
     ? 'adaptive_thinking'
     : undefined;
-  return {
+  const environment: Record<string, string> = {
     ANTHROPIC_BASE_URL: provider.baseUrl,
     ANTHROPIC_AUTH_TOKEN: provider.authToken,
     ANTHROPIC_API_KEY: '',
@@ -94,6 +100,11 @@ export function claudeProviderEnvironment(
       ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(provider.maxOutputTokens) }
       : {}),
   };
+  for (const key of proxyEnvironmentKeys) {
+    const value = process.env[key];
+    if (value !== undefined) environment[key] = value;
+  }
+  return environment;
 }
 
 function stringField(

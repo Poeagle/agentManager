@@ -370,6 +370,8 @@ function asyncObserve(
       provider,
     );
     if (!closed) stop = runtime.observe(emit);
+  }).catch(() => {
+    if (!closed) emit({type:"unavailable",reason:"Claude 实时连接初始化失败，请检查会话的 Provider 和模型配置。"});
   });
   return Object.assign(
     () => {

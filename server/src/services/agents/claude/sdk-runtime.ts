@@ -791,6 +791,20 @@ class ClaudeRuntime {
 
   private consume(message: SDKMessage, currentTurnUser = false) {
     this.lastActivity = new Date().toISOString();
+    if (message.type === "system" && message.subtype === "api_retry") {
+      const status = message.error_status;
+      const detail = message.no_response
+        ? "Provider 未及时返回响应"
+        : status === null ? "无法连接 Provider" : `Provider 请求失败（HTTP ${status}）`;
+      this.upsertError(
+        `api-retry:${this.turnId}`,
+        `${detail}，Claude 正在重试（${message.attempt}/${message.max_retries}）。`,
+        status === null ? "provider_connection_failed" : claudeErrorCode(String(status), message.error),
+        true,
+      );
+      this.publish();
+      return;
+    }
     if (message.type === "system" && message.subtype === "status") {
       if (message.status === "compacting") {
         this.compaction = {
@@ -1060,20 +1074,20 @@ class ClaudeRuntime {
         message.terminal_reason === 'aborted_tools' || message.terminal_reason === 'aborted_streaming'
       )) return;
       const code = claudeErrorCode(detail);
-      if (this.messages.some(item => item.turn_id === this.turnId && item.phase === 'error' && (
+      if (this.messages.some(item => item.turn_id === this.turnId && item.phase === 'error' && !item.error?.will_retry && (
         !detail || item.text === detail || (code && item.error?.code === code)
       ))) return;
       this.upsertError(message.uuid, detail || (diagnostic ? 'Claude 提前结束了本轮，未生成最终回复。' : 'Claude 执行失败'), code);
     }
   }
 
-  private upsertError(nativeId: string, text: string, code?: string) {
+  private upsertError(nativeId: string, text: string, code?: string, willRetry = false) {
     const id = conversationMessageId('', 'assistant', nativeId);
     this.upsert({
       id, role: 'assistant', text,
       timestamp: new Date().toISOString(), turn_id: this.turnId || undefined,
       phase: 'error', streaming: false, content_blocks: [],
-      error: { ...(code ? {code} : {}), will_retry: false },
+      error: { ...(code ? {code} : {}), will_retry: willRetry },
     });
     this.assistantIds.add(id);
   }
@@ -1168,49 +1182,49 @@ class ClaudeRuntime {
     const sessionId = this.id;
     const input = new ClaudeInputStream();
     this.input = input;
-    if (!pending.nativeUuid)
-      pending.nativeUuid = randomUUID() as Pending["nativeUuid"];
-    const currentInput = await userMessage(pending, sessionId, pending.priority);
-    input.push(currentInput);
-    const resume = this.resumeOnNextQuery;
-    this.resumeOnNextQuery = true;
-    const providerEnvironment = this.provider
-      ? (await import("./providers.js")).claudeProviderEnvironment(
-          this.provider,
-          this.model,
-        )
-      : undefined;
-    const options: Options = {
-      cwd: this.cwd,
-      includePartialMessages: true,
-      abortController: abort,
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      settingSources: ["user", "project", "local"],
-      tools: { type: "preset", preset: "claude_code" },
-      persistSession: true,
-      ...(providerEnvironment ? { env: providerEnvironment } : {}),
-      ...(this.provider?.adaptiveThinking
-        ? { thinking: { type: "adaptive" as const } }
-        : {}),
-      ...(this.instructions
-        ? {
-            systemPrompt: {
-              type: "preset",
-              preset: "claude_code",
-              append: this.instructions,
-            },
-          }
-        : {}),
-      ...(this.model ? { model: this.model } : {}),
-      ...(resume ? { resume: this.id } : { sessionId: this.id }),
-    };
-    this.currentInputUuid = currentInput.uuid;
-    const conversation = query({ prompt: input, options });
-    this.active = conversation;
     let completed = false;
     let completedSuccessfully = false;
     try {
+      if (!pending.nativeUuid)
+        pending.nativeUuid = randomUUID() as Pending["nativeUuid"];
+      const currentInput = await userMessage(pending, sessionId, pending.priority);
+      input.push(currentInput);
+      const resume = this.resumeOnNextQuery;
+      const providerEnvironment = this.provider
+        ? (await import("./providers.js")).claudeProviderEnvironment(
+            this.provider,
+            this.model,
+          )
+        : undefined;
+      const options: Options = {
+        cwd: this.cwd,
+        includePartialMessages: true,
+        abortController: abort,
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        settingSources: ["user", "project", "local"],
+        tools: { type: "preset", preset: "claude_code" },
+        persistSession: true,
+        ...(providerEnvironment ? { env: providerEnvironment } : {}),
+        ...(this.provider?.adaptiveThinking
+          ? { thinking: { type: "adaptive" as const } }
+          : {}),
+        ...(this.instructions
+          ? {
+              systemPrompt: {
+                type: "preset",
+                preset: "claude_code",
+                append: this.instructions,
+              },
+            }
+          : {}),
+        ...(this.model ? { model: this.model } : {}),
+        ...(resume ? { resume: this.id } : { sessionId: this.id }),
+      };
+      this.currentInputUuid = currentInput.uuid;
+      const conversation = query({ prompt: input, options });
+      this.resumeOnNextQuery = true;
+      this.active = conversation;
       for await (const message of conversation) {
         // An SDK result for interrupted work can arrive before the input
         // already queued in this same query starts. Leave it on that stream.
@@ -1250,20 +1264,7 @@ class ClaudeRuntime {
     } catch (error) {
       if (!abort.signal.aborted) {
         const text = error instanceof Error ? error.message : "Claude 连接失败";
-        this.upsert({
-          id: conversationMessageId(
-            this.turnId || "claude",
-            "assistant",
-            `error:${this.turnId}`,
-          ),
-          role: "assistant",
-          text,
-          timestamp: new Date().toISOString(),
-          turn_id: this.turnId || undefined,
-          phase: "error",
-          streaming: false,
-          error: { will_retry: false },
-        });
+        this.upsertError(`error:${this.turnId}`, text, claudeErrorCode(text));
       }
     } finally {
       if (this.pendingModelMismatch && this.model) {
