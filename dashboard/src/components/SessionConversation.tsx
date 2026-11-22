@@ -226,7 +226,6 @@ const Bubble = memo(function Bubble({
   onCancelRetry,
   onCancelQueued,
   compact = false,
-  showThinking = true,
   showStatistics = true,
   agent,
   agentName,
@@ -249,7 +248,6 @@ const Bubble = memo(function Bubble({
   message: ConversationMessage;
   streaming: boolean;
   compact?: boolean;
-  showThinking?: boolean;
   showStatistics?:boolean;
   agent: AgentDescriptor;
   agentName: string;
@@ -406,17 +404,16 @@ const Bubble = memo(function Bubble({
         active={active}
       />
     );
-  const contentBlocks =
-    message.content_blocks?.filter(
-      (block) =>
-        block.type === "tool_use" ||
-        (showThinking && block.type === "thinking") ||
-        block.text.length > 0,
-    ) || [];
+  const thinkingBlocks = message.content_blocks?.filter(block => block.type === "thinking" && block.text.trim()) ?? [];
+  const contentBlocks = message.content_blocks?.filter(
+    block => block.type !== "thinking" && (block.type === "tool_use" || block.text.length > 0),
+  ) ?? [];
+  const lastBlock = message.content_blocks?.at(-1);
   if (
     message.role === "assistant" &&
     !message.text &&
     !contentBlocks.length &&
+    !thinkingBlocks.length &&
     !streaming
   )
     return null;
@@ -547,19 +544,20 @@ const Bubble = memo(function Bubble({
             {!headerMetadata && (
               <div className="session-chat-metadata-row">{metadata}</div>
             )}
+            {thinkingBlocks.map(block => block.type === "thinking" && (
+              <ConversationThinking
+                key={block.index}
+                agentName={agentName}
+                text={block.text}
+                streaming={streaming && lastBlock === block}
+              />
+            ))}
             {contentBlocks.length ? (
               contentBlocks.map((block, index) =>
                 block.type === "tool_use" ? (
                   <ConversationToolCall
                     key={`${message.id}:tool:${block.id}`}
                     block={block}
-                  />
-                ) : block.type === "thinking" ? (
-                  <ConversationThinking
-                    key={`${message.id}:thinking:${block.index}`}
-                    agentName={agentName}
-                    text={block.text}
-                    streaming={streaming}
                   />
                 ) : (
                   <ConversationMarkdown
@@ -2268,7 +2266,6 @@ export function SessionConversation({
     message: ConversationMessage,
     compact = false,
     stableKey = message.id,
-    showThinking = true,
   ) =>
     message.role==='user'&&!message.queued&&!(message as TimelineMessage).optimistic&&!message.attachments?.length&&message.question_replies?.length&&message.question_replies.every(reply=>visibleQuestionAnswers.get(reply.question_id)===reply.answer) ? null :
     message.async_questions?.length ? (
@@ -2306,7 +2303,6 @@ export function SessionConversation({
             : undefined
         }
         compact={compact}
-        showThinking={showThinking}
         showStatistics={!notificationView}
         durationLabel={timings.get(message.id)?.label}
         agent={sessionAgent(session)}
@@ -2440,6 +2436,8 @@ export function SessionConversation({
                     progressScope="segment"
                     progress={summary}
                   >
+                    {thinking && <ConversationThinking agentName={agentName} text={thinking.text}
+                      streaming={thinking.atTail && activeGroup && thinking.messageId === streamingId}/>}
                     {visibleProgress.map((message, index) => (
                       <div
                         key={message.id}
@@ -2452,12 +2450,10 @@ export function SessionConversation({
                         >
                           {index + 1}
                         </span>
-                        {bubble(message, true, message.id, false)}
+                        {bubble(message, true, message.id)}
                       </div>
                     ))}
-                    {!pending&&thinking&&<ConversationThinking agentName={agentName} text={thinking} streaming={activeGroup}/>}
                     {pending&&<ConversationProgressPending number={visibleProgress.length+1} tool={latestSlotActivity}
-                      thinking={thinking} agentName={agentName}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
                       statistics={pendingStatistics??(liveMatches?executionStats:null)} liveUsage={pendingLiveUsage} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
                     {!pending&&!notificationView&&executionStats&&<div className="session-chat-progress-entry">

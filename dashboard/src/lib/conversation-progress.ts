@@ -180,13 +180,14 @@ export function progressGroupStatistics(messages:ConversationMessage[],final?:Co
   return null;
 }
 
-/** Claude sends a separate thinking block for each model request in one
- * native turn. Progress is a platform-level execution view, so expose only the
- * newest reasoning snapshot there and replace it as new updates arrive. */
-export function latestProgressThinking(messages:ConversationMessage[]):string|null {
-  for(const message of messages.slice().reverse()) {
-    for(const block of message.content_blocks?.slice().reverse()||[]) {
-      if(block.type==='thinking'&&block.text.trim())return block.text;
+/** Each Progress group shows the newest reasoning block available in that group. */
+export function latestProgressThinking(messages: ConversationMessage[]) {
+  for (const message of messages.slice().reverse()) {
+    const blocks = message.content_blocks ?? [];
+    for (const block of blocks.slice().reverse()) {
+      if (block.type === 'thinking' && block.text.trim()) {
+        return {text: block.text, messageId: message.id, atTail: message === messages.at(-1) && block === blocks.at(-1)};
+      }
     }
   }
   return null;
