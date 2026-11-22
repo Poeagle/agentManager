@@ -10,7 +10,7 @@ import { sessionRoutes } from '../src/routes/sessions.js';
 import { consumePendingSpawn } from '../src/services/session-manager.js';
 import * as sessionManager from '../src/services/session-manager.js';
 import { createTestDatabase } from './helpers/database.js';
-import { updateNativeClaudeProvider } from '../src/services/agents/claude/providers.js';
+import { nativeClaudeProviderState, updateNativeClaudeProvider } from '../src/services/agents/claude/providers.js';
 
 describe('session creation project identity', () => {
   let app: FastifyInstance;
@@ -95,8 +95,16 @@ describe('session creation project identity', () => {
     });
   });
 
-  it('normalizes the native Claude Provider before a managed session starts', async () => {
-    updateNativeClaudeProvider({apiKey:'fixture-native-token',fields:{baseUrl:'https://native.example',models:['sonnet']}});
+  it.each([
+    {title:'replaces a stale environment default',env:{ANTHROPIC_MODEL:'opus'},models:['sonnet'],defaultModel:'sonnet'},
+    {title:'keeps an explicitly selected default',env:{ANTHROPIC_MODEL:'opus'},models:['sonnet','opus'],defaultModel:'sonnet',selected:'sonnet'},
+    {title:'retains a matching environment default',env:{ANTHROPIC_MODEL:'sonnet'},models:['sonnet','opus'],defaultModel:'sonnet'},
+  ])('normalizes the native Claude Provider before a managed session starts: $title', async ({env:environment,models,defaultModel,selected}) => {
+    vi.stubEnv('ANTHROPIC_MODEL',environment.ANTHROPIC_MODEL);
+    updateNativeClaudeProvider({apiKey:'fixture-native-token',fields:{baseUrl:'https://native.example',models,...selected?{defaultModel:selected}:{}}});
+    const provider=nativeClaudeProviderState();
+    expect(provider.models).toEqual(models);
+    expect(provider.defaultModel).toBe(defaultModel);
     vi.spyOn(sessionManager, 'spawnSession').mockResolvedValue(undefined);
     const response = await app.inject({
       method: 'POST',

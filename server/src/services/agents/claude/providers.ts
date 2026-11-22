@@ -305,7 +305,9 @@ export function updateNativeClaudeProvider(input: AgentProviderInput): void {
   const defaultModel =
     typeof input.fields?.defaultModel === 'string'
       ? input.fields.defaultModel.trim()
-      : env.ANTHROPIC_MODEL || models[0] || '';
+      : !input.fields?.models && env.ANTHROPIC_MODEL && models.includes(env.ANTHROPIC_MODEL)
+        ? env.ANTHROPIC_MODEL
+        : models[0] || '';
   if (!baseUrl) throw Object.assign(Error('请填写 API 地址'), { statusCode: 400 });
   if (!models.length) throw Object.assign(Error('至少选择一个 Claude 模型'), { statusCode: 400 });
   if (defaultModel && !models.includes(defaultModel))
