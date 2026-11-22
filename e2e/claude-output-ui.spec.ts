@@ -118,6 +118,28 @@ for(const agent of ['claude','codex'] as const)test(`renders ${agent} streaming 
   await final.locator('.session-chat-tool summary').click();
   await expect(page.getByText('# Project')).toBeVisible();
   await page.screenshot({path:testInfo.outputPath(`${agent}-output.png`),fullPage:true});
+  if(agent==='claude'){
+    const started_at=new Date().toISOString();
+    const input={id:'retry-user',role:'user',text:'Check the provider',timestamp:started_at,turn_id:'retry-turn'};
+    const error={id:'retry-error',role:'assistant',phase:'error',timestamp:started_at,turn_id:'retry-turn',
+      error:{code:'provider_connection_failed',will_retry:true}};
+    const snapshot={type:'snapshot',turn_id:'retry-turn',started_at,activities:[]};
+    push({...snapshot,busy:true,stage:'waiting',messages:[input,{...error,text:'无法连接 Provider，Claude 正在重试（1/3）。'}]});
+    const retryCard=page.getByRole('alert').filter({hasText:'执行遇到错误，正在自动重试'});
+    await expect(retryCard).toBeVisible();
+    await expect(retryCard).toContainText('1/3');
+    push({...snapshot,busy:true,stage:'waiting',messages:[input,{...error,text:'无法连接 Provider，Claude 正在重试（2/3）。'}]});
+    await expect(retryCard).toHaveCount(1);
+    await expect(retryCard).toContainText('2/3');
+    push({...snapshot,busy:false,stage:'idle',completed_at:new Date().toISOString(),messages:[input,
+      {...error,text:'无法连接 Provider，Claude 正在重试（2/3）。'},
+      {...error,id:'retry-exhausted',text:"Can't reach the API server (ENOTFOUND)",error:{...error.error,will_retry:false}},
+    ]});
+    const failure=page.getByRole('alert').filter({hasText:'本轮执行出错'});
+    await expect(failure).toContainText('ENOTFOUND');
+    await expect(failure).toContainText('请检查网络、代理和 Provider 地址');
+    await expect(retryCard).toHaveCount(0);
+  }
 });
 
 test('collapses Claude progress across native records and shows its recorded usage',async({page},testInfo)=>{

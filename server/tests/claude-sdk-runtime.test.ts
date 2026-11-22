@@ -1,8 +1,9 @@
 import {afterEach,describe,expect,it,vi} from 'vitest';
 
-const sdk=vi.hoisted(()=>({messages:[] as any[],queries:[] as any[],interrupts:0}));
+const sdk=vi.hoisted(()=>({messages:[] as any[],queries:[] as any[],interrupts:0,launchError:undefined as Error|undefined}));
 vi.mock('@anthropic-ai/claude-agent-sdk',()=>({
   query:(request:any)=>{
+    if(sdk.launchError)throw sdk.launchError;
     const handle={
       ...request,
       interrupt:async()=>{sdk.interrupts++;},
@@ -26,7 +27,7 @@ const assistant='019ff001-1212-7212-8212-121212121213';
 let uuid=0;
 const stream=(event:any)=>({type:'stream_event',uuid:`019ff001-1212-7212-8212-${String(++uuid).padStart(12,'0')}`,session_id:session,parent_tool_use_id:null,event});
 
-afterEach(()=>{releaseClaudeRuntime(session);sdk.queries=[];sdk.messages=[];sdk.interrupts=0;uuid=0;});
+afterEach(()=>{releaseClaudeRuntime(session);sdk.queries=[];sdk.messages=[];sdk.interrupts=0;sdk.launchError=undefined;uuid=0;vi.unstubAllEnvs();});
 
 describe('Claude Agent SDK runtime',()=>{
   it('classifies insufficient balance and unavailable models as terminal errors',async()=>{
@@ -79,6 +80,40 @@ describe('Claude Agent SDK runtime',()=>{
       expect.objectContaining({id:persisted?.failure?.id,text,phase:'error',error:{code:'rate_limit',will_retry:false}}),
     ]);
   });
+  it.each(['success','error_during_execution'])('reports native API retries while waiting and settles on %s',async(subtype)=>{
+    let finish!:(value:unknown)=>void;
+    sdk.messages=[
+      {type:'system',subtype:'api_retry',uuid:'retry-dns',session_id:session,attempt:1,max_retries:3,error_status:null,error:'unknown'},
+      {type:'system',subtype:'api_retry',uuid:'retry-again',session_id:session,attempt:2,max_retries:3,error_status:null,error:'unknown'},
+      new Promise(resolve=>{finish=resolve;}),
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Send once');
+    await vi.waitFor(()=>expect(runtime.snapshot().messages.filter(item=>item.phase==='error')).toEqual([
+      expect.objectContaining({turn_id:runtime.snapshot().turn_id,text:expect.stringContaining('2/3'),error:{code:'provider_connection_failed',will_retry:true}}),
+    ]));
+    expect(runtime.snapshot().busy).toBe(true);
+    finish(subtype==='success'
+      ? {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'answer',stop_reason:'end_turn',content:[{type:'text',text:'Recovered'}]}}
+      : {type:'result',subtype,uuid:assistant,session_id:session,errors:["Can't reach the API server (ENOTFOUND)"]});
+    await vi.waitFor(()=>expect(runtime.snapshot().busy).toBe(false));
+    expect(runtime.snapshot().messages.at(-1)).toMatchObject(subtype==='success'
+      ? {phase:'final',text:'Recovered'}
+      : {phase:'error',text:expect.stringContaining('ENOTFOUND'),error:{code:'provider_connection_failed',will_retry:false}});
+    expect(sdk.queries).toHaveLength(1);
+  });
+  it('surfaces a synchronous SDK launch failure and releases the runtime',async()=>{
+    sdk.launchError=Error('SDK launch failed');
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('First request');
+    await vi.waitFor(()=>expect(runtime.snapshot().busy).toBe(false));
+    expect(runtime.snapshot().messages.at(-1)).toMatchObject({phase:'error',text:'SDK launch failed'});
+    sdk.launchError=undefined;
+    sdk.messages=[{type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'answer',stop_reason:'end_turn',content:[{type:'text',text:'Recovered'}]}}];
+    await runtime.submit('Next request');
+    await vi.waitFor(()=>expect(runtime.snapshot().messages.at(-1)).toMatchObject({phase:'final',text:'Recovered'}));
+    expect(sdk.queries[0].options.sessionId).toBe(session);
+  });
   it('continues an already submitted follow-up after a tool interruption diagnostic',async()=>{
     let deliverInitial!:(value:unknown)=>void;
     let deliverDiagnostic!:(value:unknown)=>void;
@@ -106,7 +141,13 @@ describe('Claude Agent SDK runtime',()=>{
     ]);
     expect(sdk.queries).toHaveLength(1);
   });
-  it('injects only the bound Provider credentials and model into the SDK process',async()=>{
+  it('retains deployment proxy settings alongside the bound Provider credentials and model',async()=>{
+    vi.stubEnv('HTTPS_PROXY','http://127.0.0.1:4567');
+    vi.stubEnv('http_proxy','http://127.0.0.1:4568');
+    vi.stubEnv('NO_PROXY','localhost');
+    vi.stubEnv('ANTHROPIC_BASE_URL','https://other.example');
+    vi.stubEnv('ANTHROPIC_AUTH_TOKEN','other-token');
+    vi.stubEnv('ANTHROPIC_CUSTOM_HEADERS','X-Other-Token: other-token');
     sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-a',effort:''},false,{
       id:'gateway',name:'Gateway',baseUrl:'https://gateway.example',authToken:'private-token',
@@ -119,6 +160,9 @@ describe('Claude Agent SDK runtime',()=>{
       model:'claude-a',
       thinking:{type:'adaptive'},
       env:{
+        HTTPS_PROXY:'http://127.0.0.1:4567',
+        http_proxy:'http://127.0.0.1:4568',
+        NO_PROXY:'localhost',
         ANTHROPIC_BASE_URL:'https://gateway.example',
         ANTHROPIC_AUTH_TOKEN:'private-token',
         ANTHROPIC_API_KEY:'',
@@ -135,7 +179,21 @@ describe('Claude Agent SDK runtime',()=>{
         CLAUDE_CODE_MAX_OUTPUT_TOKENS:'64000',
       },
     });
+    expect(sdk.queries[0].options.env).not.toHaveProperty('ANTHROPIC_CUSTOM_HEADERS');
     expect(runtime.selectedModel()).toBe('claude-a');
+  });
+  it('reports observer setup failure without rejecting outside the conversation',async()=>{
+    const {createTestDatabase}=await import('./helpers/database.js');
+    const database=createTestDatabase();
+    const {getAgent,agentContext}=await import('../src/services/agents/index.js');
+    const context=agentContext({claude_session_id:session,agent_environment_id:'claude-provider:missing'},
+      {projectPath:database.dir});
+    const emit=vi.fn();
+    const stop=getAgent('claude').stream.observe(context,emit);
+    try{
+      await vi.waitFor(()=>expect(emit).toHaveBeenCalledWith(expect.objectContaining({type:'unavailable'})));
+      expect(sdk.queries).toHaveLength(0);
+    }finally{stop();database.cleanup();}
   });
   it('uses an updated Provider key on the next request in the same session',async()=>{
     const {createTestDatabase}=await import('./helpers/database.js');
