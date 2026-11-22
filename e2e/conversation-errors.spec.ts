@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {join} from 'node:path';
 
-test('native failures appear live, stop busy indicators and survive history reconciliation and reload',async({page},testInfo)=>{
+test('native retries recover on live tool activity and terminal failures survive reconciliation and reload',async({page},testInfo)=>{
   const status=await(await page.request.get('/api/auth/status')).json();
   expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
   const root=join(process.cwd(),'.test-data/e2e'),path=join(root,'error-project');mkdirSync(path,{recursive:true});
@@ -28,8 +28,17 @@ test('native failures appear live, stop busy indicators and survive history reco
   const text='Selected model is at capacity. Please try a different model.';
   const errorId=createHash('sha256').update(JSON.stringify([turn,'error','server_overloaded',text])).digest('hex').slice(0,32);
   const failure={id:errorId,role:'assistant',phase:'error',text,turn_id:turn,timestamp:time,streaming:false,error:{code:'server_overloaded',will_retry:false}};
+  push(JSON.stringify({type:'snapshot',messages:[{...failure,error:{...failure.error,will_retry:true}}],busy:true,stage:'waiting',turn_id:turn}));
+  const alert=chat.getByRole('alert');
+  await expect(alert).toContainText('执行遇到错误，正在自动重试');
+  push(JSON.stringify({type:'patch',upserts:[],deltas:[],state:{busy:true,stage:'tools',turn_id:turn,activities:[{
+    id:'resumed-tool',label:'Run command · resume work',status:'running',turn_id:turn,
+    after_message_id:errorId,started_at:'2026-10-30T07:30:02Z',
+  }]}}));
+  await expect(chat.getByText('Run command · resume work',{exact:true})).toBeVisible();
+  await expect(alert).toContainText('重试已结束');
   push(JSON.stringify({type:'snapshot',messages:[failure],busy:false,stage:'idle',turn_id:turn}));
-  const alert=chat.getByRole('alert');await expect(alert).toContainText(text);await expect(alert).toContainText('当前模型繁忙');await expect(alert.locator('time')).toBeVisible();
+  await expect(alert).toContainText(text);await expect(alert).toContainText('当前模型繁忙');await expect(alert.locator('time')).toBeVisible();
   await expect(chat.getByText('In progress',{exact:true})).toHaveCount(0);await expect(chat.locator('.session-chat-caret')).toHaveCount(0);
   appendFileSync(log,entry({type:'task_complete',turn_id:turn,last_agent_message:null,error:{message:text,codex_error_info:'server_overloaded',additionalDetails:'PRIVATE DETAILS'}}));
   await expect.poll(async()=>{const result=await(await page.request.get(`/api/sessions/${session.id}/conversation`)).json();return result.messages.at(-1)?.phase;}).toBe('error');

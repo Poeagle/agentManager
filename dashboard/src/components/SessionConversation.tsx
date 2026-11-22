@@ -132,6 +132,16 @@ interface LiveProgress {
   activities?: ConversationActivity[];
   stage: "waiting" | "tools" | "answering" | "finishing" | "idle";
 }
+
+function activityAfterRetry(activity: ConversationActivity, notice: ConversationMessage) {
+  if (activity.turn_id !== notice.turn_id) return false;
+  const started = Date.parse(activity.started_at ?? "");
+  const failed = Date.parse(notice.timestamp ?? "");
+  if (Number.isFinite(started) && Number.isFinite(failed) && started !== failed)
+    return started > failed;
+  return activity.after_message_id === notice.id;
+}
+
 interface FailedDraft {
   clientId: string;
   fingerprint: string;
@@ -1037,8 +1047,20 @@ export function SessionConversation({
       latestUser.timestamp &&
       Date.parse(latestAssistant.timestamp) >= Date.parse(latestUser.timestamp),
   );
+  // A tool can start after a native retry without adding a transcript message.
+  // Compare starts so an older tool finishing during the retry cannot clear it.
+  const resumedAfterRetry =
+    latestAssistant?.phase === "error" &&
+    latestAssistant.error?.will_retry &&
+    latestAssistant.turn_id &&
+    latestAssistant.turn_id === liveProgress.turn_id &&
+    liveProgress.stage !== "waiting" &&
+    liveProgress.activities?.some((activity) => activityAfterRetry(activity, latestAssistant))
+      ? latestAssistant
+      : null;
   const activeError =
     latestAssistant?.phase === "error" &&
+    !resumedAfterRetry &&
     (liveState !== "connected" ||
       !liveProgress.turn_id ||
       !latestAssistant.turn_id ||
@@ -2118,6 +2140,7 @@ export function SessionConversation({
     .filter(message=>isEmptyProgress(message)&&message.turn_id===liveTurn).map(message=>message.id));
   const slotActivities=latestActivities.filter(item=>{
     if(item.turn_id&&item.turn_id!==liveTurn)return false;
+    if(tailMessage?.id===resumedAfterRetry?.id&&resumedAfterRetry&&activityAfterRetry(item,resumedAfterRetry))return true;
     const startedAt=item.started_at?Date.parse(item.started_at):NaN;
     if(item.request_message_id&&item.status==='running'&&item.turn_id===liveTurn&&
       (!Number.isFinite(startedAt)||!Number.isFinite(inputTime)||startedAt>=inputTime))return true;

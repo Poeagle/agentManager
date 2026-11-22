@@ -621,6 +621,46 @@ describe('conversation send transaction', () => {
     act(()=>first.emit({type:'snapshot',messages:[{...item,text:'部分输出继续'}],busy:true,stage:'answering'}));
     await waitFor(()=>expect(screen.getByText('Streaming')).toBeInTheDocument());expect(screen.getByText('部分输出继续')).toBeInTheDocument();
   });
+  it('ends a native retry when the same turn starts tools without emitting another message', async () => {
+    await mount();
+    const socket = Socket.latest;
+    const turn = 'retry-turn';
+    const retry = {
+      id: 'native-retry', role: 'assistant', phase: 'error', text: 'Reconnecting... 1/5', turn_id: turn,
+      timestamp: '2026-11-22T07:34:50Z', error: { will_retry: true },
+    };
+    const earlierTool = {
+      id: 'earlier-tool', label: 'Run command · earlier', status: 'completed', turn_id: turn,
+      started_at: '2026-11-22T07:34:45Z', completed_at: '2026-11-22T07:34:51Z',
+    };
+    const retryState = { busy: true, stage: 'waiting', turn_id: turn, activities: [earlierTool] };
+    const snapshot = (target: Socket, state: object) => act(() => target.emit({ type: 'snapshot', messages: [retry], ...state }));
+    snapshot(socket, retryState);
+    expect(await screen.findByRole('alert')).toHaveTextContent('正在自动重试');
+    snapshot(socket, { ...retryState, stage: 'tools' });
+    expect(screen.getByRole('alert')).toHaveTextContent('正在自动重试');
+
+    const resumedTool = {
+      id: 'resumed-tool', label: 'Run command · resume check', status: 'running', turn_id: turn,
+      started_at: '2026-11-22T07:35:19Z', after_message_id: earlierTool.id,
+    };
+    const resumed = { ...retryState, stage: 'tools', activities: [earlierTool, resumedTool] };
+    act(() => socket.emit({ type: 'patch', upserts: [], deltas: [], state: resumed }));
+    expect(await screen.findByText(resumedTool.label)).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('重试已结束');
+
+    socket.readyState = 0;
+    act(() => window.dispatchEvent(new Event('online')));
+    const replacement = Socket.latest;
+    expect(replacement).not.toBe(socket);
+    snapshot(replacement, resumed);
+    expect(await screen.findByText(resumedTool.label)).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('重试已结束');
+
+    act(() => replacement.emit({ type: 'snapshot', ...resumed, messages: [{ ...retry, error: { will_retry: false } }] }));
+    expect(screen.getByRole('alert')).toHaveTextContent('本轮执行出错');
+    expect(screen.queryByText(resumedTool.label)).not.toBeInTheDocument();
+  });
   it('does not show waiting or a stop control after a final reply arrives before a stale busy frame',async()=>{
     await mount();
     const stamp=new Date(Date.now()-4000).toISOString();
