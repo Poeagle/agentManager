@@ -50,6 +50,7 @@ import {
   useMemo,
   useRef,
   useState,
+  Fragment,
   type ReactNode,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -237,8 +238,10 @@ const Bubble = memo(function Bubble({
   durationLabel,
   onRaw,
   active,
+  beforeAnswer,
 }: {
   active: boolean;
+  beforeAnswer?: ReactNode;
   allowRaw?: boolean;
   durationLabel?: string;
   retrying?: boolean;
@@ -547,6 +550,7 @@ const Bubble = memo(function Bubble({
             )}
             {thinking && <ConversationThinking agentName={agentName} text={thinking.body} previewText={thinking.text}
               streaming={streaming && !message.text && lastBlock?.type === 'thinking'}/>}
+            {beforeAnswer}
             {contentBlocks.length ? (
               contentBlocks.map((block, index) =>
                 block.type === "tool_use" ? (
@@ -2282,6 +2286,7 @@ export function SessionConversation({
     message: ConversationMessage,
     compact = false,
     stableKey = message.id,
+    beforeAnswer?: ReactNode,
   ) =>
     message.role==='user'&&!message.queued&&!(message as TimelineMessage).optimistic&&!message.attachments?.length&&message.question_replies?.length&&message.question_replies.every(reply=>visibleQuestionAnswers.get(reply.question_id)===reply.answer) ? null :
     message.async_questions?.length ? (
@@ -2299,6 +2304,7 @@ export function SessionConversation({
       <Bubble
         key={stableKey}
         active={active}
+        beforeAnswer={beforeAnswer}
         message={message.id===streamingId&&streamingStatistics?{...message,statistics:streamingStatistics}:message}
         streaming={message.id === streamingId}
         retrying={
@@ -2356,7 +2362,7 @@ export function SessionConversation({
     const next = items.find(item => Date.parse(item.statistics?.item_at ?? item.timestamp ?? '') >= at);
     const pending = input === latestUser?.id ? pendingCacheAnchor : null;
     const owner = drop.message_id && visibleIds.has(drop.message_id) ? drop.message_id : null;
-    const anchor = compact ?? owner ?? next?.id ?? pending ?? items.at(-1)?.id ?? input;
+    const anchor = owner ?? compact ?? next?.id ?? pending ?? items.at(-1)?.id ?? input;
     if (!anchor) continue;
     const list = dropsByMessage.get(anchor) ?? [];
     list.push(drop);
@@ -2421,6 +2427,9 @@ export function SessionConversation({
                   const thinking = finalThinking(groups[groupIndex-1],group.message);
                   const message = withPrecedingThinking(group.message, thinking);
                   const notices = cacheNotices([...thinking.map(item => item.id), message.id]);
+                  if (message.phase === 'final' && !message.async_questions?.length) {
+                    return bubble(message, false, group.id, notices.length ? notices : undefined);
+                  }
                   return notices.length ? <div key={group.id}>
                     {bubble(message,false,group.id)}
                     {notices}
@@ -2463,15 +2472,20 @@ export function SessionConversation({
                 const {steps,trailing}=progressSteps(messages);
                 const lastThought=trailing.at(-1);
                 if (lastThought && !pending) {
-                  steps.push({key:trailing[0].id,message:withPrecedingThinking(lastThought,trailing.slice(0,-1)),sourceIds:trailing.map(item=>item.id)});
+                  steps.push({key:trailing[0].id,message:withPrecedingThinking(lastThought,trailing.slice(0,-1))});
                 }
                 const pendingThinking=pending ? progressThinking(trailing) : null;
                 const showExecution=!pending&&!notificationView&&!!executionStats&&
                   (steps.length>0||!final||executionStats.tool_calls>0);
                 if (!steps.length&&!pending&&!showExecution) return null;
+                const notices = cacheNotices([
+                  ...messages.map(message => message.id),
+                  ...(pending && pendingCacheAnchor ? [pendingCacheAnchor] : []),
+                ]);
                 return (
+                  <Fragment key={`progress-${group.id}`}>
+                    {notices.length > 0 && <div className="session-chat-progress-cache-notices">{notices}</div>}
                   <ProgressSection
-                    key={`progress-${group.id}`}
                     showStatistics={!notificationView}
                     agent={sessionAgent(session)}
                     agentName={agentName}
@@ -2489,7 +2503,7 @@ export function SessionConversation({
                     progressScope="segment"
                     progress={summary}
                   >
-                    {steps.map(({key,message,sourceIds}, index) => (
+                    {steps.map(({key,message}, index) => (
                       <div
                         key={key}
                         className="session-chat-progress-entry"
@@ -2502,16 +2516,13 @@ export function SessionConversation({
                           {index + 1}
                         </span>
                         {bubble(message, true, key)}
-                        {cacheNotices(sourceIds)}
                       </div>
                     ))}
                     {pending&&<ConversationProgressPending number={steps.length+1} tool={latestSlotActivity}
                       thinking={pendingThinking && <ConversationThinking agentName={agentName} text={pendingThinking.body} previewText={pendingThinking.text}
                         streaming={lastThought?.id===streamingId}/>}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
-                      statistics={pendingStatistics??(liveMatches?executionStats:null)} liveUsage={pendingLiveUsage} now={now} connected={liveState==='connected'} showStatistics={!notificationView}>
-                      {cacheNotices([...trailing.map(item => item.id), ...(pendingCacheAnchor ? [pendingCacheAnchor] : [])])}
-                    </ConversationProgressPending>}
+                      statistics={pendingStatistics??(liveMatches?executionStats:null)} liveUsage={pendingLiveUsage} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
                     {showExecution&&executionStats&&<div className="session-chat-progress-entry">
                       <span className="session-chat-progress-number" aria-label={`进展序号 ${steps.length+1}`}>{steps.length+1}</span>
                       <div className="session-chat-message-meta">
@@ -2520,6 +2531,7 @@ export function SessionConversation({
                       </div>
                     </div>}
                   </ProgressSection>
+                  </Fragment>
                 );
               })}
               {waitingForText && !showLiveProgress && (!continuingAfterFollowup || sending) && (

@@ -370,7 +370,7 @@ Claude 的同一请求可能将思考和正文分行写入 JSONL，并在每行�
 
 统计适配器可在原生压缩完成事实中关联执行压缩的请求。Codex 从原生压缩记录读取该关联。平台保留压缩请求的用量，并比较压缩前后普通请求的缓存命中输入 Token。命中输入减少时触发提示，命中率用于对照。
 
-前端用 Round 表示 `requests`，用 Call 表示 `tool_calls`。接口的 `tool_rounds` 表示产生过工具调用的模型响应数。Codex 的异步说明在实时和历史中映射为进展。Codex 的缺省速度按 Standard 解析，有记录的 Fast 等档位按请求所属的有效设置解析。多个 Item 共享一个响应时仅一个 Item 记录用量。相同 native ID 的实时与历史消息按适配器提供的稳定身份关联。`progress_statistics.step` 可提供活动 Item 的原生区间。同一轮内压缩后用相邻请求检测缓存下降。缓存异常以用量记录所属的消息为锚点，在该条目下显示；已确认由压缩触发的异常随对应压缩记录显示。Code-mode 中只有包裹工具对平台可见时，统计计为该工具调用。详细规则见 [会话元信息与统计](session-metadata-requirements.md)。
+前端用 Round 表示 `requests`，用 Call 表示 `tool_calls`。接口的 `tool_rounds` 表示产生过工具调用的模型响应数。Codex 的异步说明在实时和历史中映射为进展。Codex 的缺省速度按 Standard 解析，有记录的 Fast 等档位按请求所属的有效设置解析。多个 Item 共享一个响应时仅一个 Item 记录用量。相同 native ID 的实时与历史消息按适配器提供的稳定身份关联。`progress_statistics.step` 可提供活动 Item 的原生区间。同一轮内压缩后用相邻请求检测缓存下降。缓存异常以用量记录所属的消息为锚点，同一组 Progress 的异常按时间显示在组标题前。Final 的异常显示在正文前。由压缩触发的异常在对应请求条目可见时随该条目显示，否则随压缩记录显示。Code-mode 中只有包裹工具对平台可见时，统计计为该工具调用。详细规则见 [会话元信息与统计](session-metadata-requirements.md)。
 
 企业微信通知引用回复通过现有平台权限和输入接口直接提交，调度模型不参与路由。
 `POST /api/sessions/:id/input` 的可选 `expected_native_id`、`expected_environment_id` 将输入绑定到预期原生会话和账号环境，服务端在接收及排队实际发送前均检查；绑定变化返回 `409` 和 `submission=rejected`。标识保持不透明，不限定某个 Agent 的格式；既有调用不传这些字段时保持兼容。通知路由仅使用 Agent 中立的原生绑定与公开消息，不访问适配器内部状态。

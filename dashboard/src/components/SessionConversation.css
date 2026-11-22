@@ -54,6 +54,7 @@
 :root[data-theme="light"] .session-chat-thinking-block,.conversation-cache-notice {--thinking-text:#81858c;--thinking-hover:#61666b;}
 .conversation-cache-notice {display:flex;align-items:center;gap:6px;min-height:24px;max-width:100%;overflow-x:auto;white-space:nowrap;scrollbar-width:thin;}
 .conversation-cache-notice > * {flex:none;}
+.session-chat-progress-cache-notices {margin-bottom:-6px;}
 .conversation-cache-notice strong {color:var(--error);font-weight:400;}
 .session-chat-thinking-block > summary {display:flex;align-items:center;gap:6px;min-width:0;min-height:24px;list-style:none;cursor:pointer;color:inherit;}
 .session-chat-thinking-block > summary:hover {color:var(--thinking-hover);}

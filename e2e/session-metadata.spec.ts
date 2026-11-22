@@ -442,7 +442,7 @@ test('shows the manual compaction cache drop once its first ordinary request arr
   await expect(incident).toHaveCount(1);
   await expect(incident).toContainText('99.76%');
   await expect(incident).toContainText('42.16%');
-  expect(await summary.evaluate(node=>node.closest('[data-context-kind="compaction_summary"]')?.nextElementSibling?.matches('[data-cache-drop-id]'))).toBe(true);
+  await expect(session.chat.locator('[data-phase=final]').filter({hasText:'压缩后答复'}).locator('[data-cache-drop-id]')).toHaveCount(1);
   await page.reload();
   await expect(incident).toHaveCount(1);
   await page.getByRole('button',{name:'Details',exact:true}).click();
@@ -548,7 +548,7 @@ test('waits for actual usage after commentary and counts a reasoning-only reques
   await expect(progressTime).toHaveAttribute('datetime',at(30));
 });
 
-test('keeps independent cache drops under their own progress items after reload',async({page})=>{
+test('groups cache drops by Progress in time order and puts a Final drop before its answer',async({page})=>{
   const session=await setup(page,'codex','detached');
   const turn='cache-items';
   writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+
@@ -561,17 +561,24 @@ test('keeps independent cache drops under their own progress items after reload'
   appendFileSync(session.log,
     message(8,'restored','assistant','缓存恢复','commentary')+request(9,turn,'r3',11000,10600)+
     message(10,'second-drop','assistant','第二处下降','commentary')+request(11,turn,'r4',11000,500)+
-    message(12,'final','assistant','核对完成','final_answer')+request(13,turn,'r5',11000,500)+
+    message(12,'final','assistant','核对完成','final_answer')+request(13,turn,'r5',11000,100)+
     event(14,'task_complete',{turn_id:turn}));
   const verify=async()=>{
     const progress=session.chat.getByRole('region',{name:'codex 进展'});
-    const toggle=progress.locator('.session-chat-progress-toggle');
-    if(await toggle.getAttribute('aria-expanded')==='false')await toggle.click();
-    const notice=progress.locator('[data-cache-drop-id]');
-    await expect(session.chat.locator('[data-cache-drop-id]')).toHaveCount(2);
+    const notice=session.chat.locator('.session-chat-progress-cache-notices [data-cache-drop-id]');
+    await expect(session.chat.locator('[data-cache-drop-id]')).toHaveCount(3);
     await expect(notice).toHaveCount(2);
-    await expect(notice.nth(0).locator('..')).toContainText('第一处下降');
-    await expect(notice.nth(1).locator('..')).toContainText('第二处下降');
+    await expect(notice.nth(0).locator('time')).toHaveAttribute('datetime',at(7));
+    await expect(notice.nth(1).locator('time')).toHaveAttribute('datetime',at(11));
+    const before = (left:Element,right:Element) => !!(left.compareDocumentPosition(right)&Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(await notice.last().evaluate(before,await progress.elementHandle())).toBe(true);
+    const toggle=progress.locator('.session-chat-progress-toggle');
+    if(await toggle.getAttribute('aria-expanded')==='true')await toggle.click();
+    await expect(notice.last()).toBeVisible();
+    const final=session.chat.locator('[data-phase="final"]').filter({hasText:'核对完成'});
+    const finalNotice=final.locator('[data-cache-drop-id]');
+    await expect(finalNotice.locator('time')).toHaveAttribute('datetime',at(13));
+    expect(await finalNotice.evaluate(before,await final.getByText('核对完成',{exact:true}).elementHandle())).toBe(true);
     await expect(notice.first().locator('button')).toHaveCount(0);
     await expect(notice.first().locator('strong')).toHaveCSS('color', 'rgb(220, 38, 38)');
     await expect(notice.first()).toHaveCSS('color', 'rgb(129, 133, 140)');
