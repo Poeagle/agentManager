@@ -493,6 +493,28 @@ function bindQuestionCalls(
   }
   return messages;
 }
+/** An adapter can emit visible reasoning and answer fragments with one native
+ * message identity. Keep the answer record's lifecycle and all reasoning. */
+function reconcileNativeReasoning(previous: IndexedMessage, message: IndexedMessage): IndexedMessage {
+  if (message.role !== 'assistant' || message.recordType !== 'native_message' ||
+      previous.recordType !== 'native_message' || !message.itemId || previous.itemId !== message.itemId ||
+      previous.phase === 'error') return message;
+  const reasoning = [...(previous.content_blocks ?? []), ...(message.content_blocks ?? [])]
+    .flatMap(block => block.type === 'thinking' ? [block.text] : []);
+  if (!reasoning.length) return message;
+  const primary = message.text.trim() || !previous.text.trim() ? message : previous;
+  const blocks = primary.content_blocks?.filter(block => block.type !== 'thinking') ?? [];
+  if (!blocks.length && primary.text) blocks.push({type:'text',text:primary.text,index:0});
+  let index = blocks.reduce((max, block) => Math.max(max, block.index), -1) + 1;
+  return {
+    ...primary,
+    content_blocks: [
+      ...blocks,
+      ...Array.from(new Set(reasoning), text => ({type:'thinking' as const, text, index:index++})),
+    ],
+  };
+}
+
 function dedupe(messages: IndexedMessage[]): IndexedMessage[] {
   const result: IndexedMessage[] = [];
   const indexes = new Map<string, number>();
@@ -528,7 +550,7 @@ function dedupe(messages: IndexedMessage[]): IndexedMessage[] {
       indexes.set(message.id, result.length);
       result.push(message);
     } else if (priority(message) >= priority(result[existing]))
-      result[existing] = message;
+      result[existing] = reconcileNativeReasoning(result[existing], message);
   }
 
   const turns: IndexedMessage[][] = [];

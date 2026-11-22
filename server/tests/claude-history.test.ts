@@ -92,6 +92,36 @@ describe("Claude history identity", () => {
 });
 
 describe("Claude durable conversation projection", () => {
+  it('keeps split reasoning with the same answer across incremental reads and cold history', async () => {
+    paths.directory = mkdtempSync(join(tmpdir(), 'claude-reasoning-'));
+    const native = '019ff001-1212-7212-8212-121212121212';
+    const binding = {cli_type:'claude' as const, claude_session_id:native, codex_session_id:null, project_path:'/fixture'};
+    const log = join(paths.directory, `${native}.jsonl`);
+    const coldNative = '019ff001-1212-7212-8212-121212121213';
+    const coldLog = join(paths.directory, `${coldNative}.jsonl`);
+    const thinking = JSON.stringify({type:'assistant',uuid:'thought-record',parentUuid:'user-turn',message:{
+      role:'assistant',id:'same-answer',stop_reason:'end_turn',content:[
+        {type:'thinking',thinking:'核对第一项。',signature:'private-signature'},
+        {type:'redacted_thinking',data:'private-encrypted-content'},
+      ],
+    }})+'\n';
+    const answer = record('text-record', 'same-answer', '已完成。');
+    writeFileSync(log, thinking);
+    const pending = (await readConversation(binding)).messages[0];
+    expect(pending).toMatchObject({phase:'commentary',text:'',content_blocks:[{type:'thinking',text:'核对第一项。'}]});
+
+    const textOnly = record('other-record','other-answer','只有正文。');
+    appendFileSync(log, Buffer.concat([answer, Buffer.from(thinking), textOnly]));
+    writeFileSync(coldLog, Buffer.concat([Buffer.from(thinking), answer, Buffer.from(thinking), textOnly]));
+    for (const page of [await readConversation(binding), await readConversation({...binding,claude_session_id:coldNative})]) {
+      expect(page.messages).toHaveLength(2);
+      expect(page.messages[0]).toMatchObject({id:pending.id,phase:'final',text:'已完成。',content_blocks:[
+        {type:'text',text:'已完成。'}, {type:'thinking',text:'核对第一项。'},
+      ]});
+      expect(page.messages[1].content_blocks).toEqual([{type:'text',index:0,text:'只有正文。'}]);
+      expect(JSON.stringify(page)).not.toMatch(/private-signature|private-encrypted-content/);
+    }
+  });
   it('restores embedded screenshots into brief context without matching by repeated text alone', async () => {
     const fixture=createTestDatabase();
     try {
