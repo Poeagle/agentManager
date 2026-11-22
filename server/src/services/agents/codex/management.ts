@@ -311,13 +311,18 @@ export function nativeCodexConnectionConfig():{
   const envKey=section.match(/^\s*env_key\s*=\s*"([^"]+)"/m)?.[1]||'';
   const hasAccountAuth = existsSync(join(dirname(configPath()),'auth.json'));
   const hasApiKeyInDb = providerApiKeyConfigured('native');
-  const isApiMode = !!envKey && !!baseUrl && hasApiKeyInDb;
+  // 认证模式判断：只看配置文件，不看数据库 Key 是否可解密
+  // - 有 auth.json → account
+  // - 有 base_url + env_key → api（即使 Key 解密失败，用户也能看到 API 界面并重新输入）
+  // - 都没有 → uninitialized
+  const isApiConfigured = !!envKey && !!baseUrl;
+  const isApiMode = isApiConfigured && hasApiKeyInDb;
 
   // 认证模式：account（账号登录）、api（API Key）、uninitialized（未初始化）
   let authMode: 'account' | 'api' | 'uninitialized';
   if (hasAccountAuth) {
     authMode = 'account';
-  } else if (isApiMode) {
+  } else if (isApiConfigured) {
     authMode = 'api';
   } else {
     authMode = 'uninitialized';
