@@ -370,15 +370,52 @@ function updateNativeProviderCatalog(settings:{models:string[];defaultModel:stri
   const parsed=JSON.parse(readFileSync(catalog,'utf8')) as {models?:Array<Record<string,unknown>>};
   const existing=new Map((parsed.models||[]).flatMap(item=>
     typeof item.slug==='string'?[[item.slug,item] as const]:[]));
-  parsed.models=settings.models.map(model=>existing.get(model)||{
-    slug:model,
-    display_name:model,
-    description:`${model} via ${settings.baseUrl}`,
-    visibility:'list',
-    supported_in_api:true,
-    priority:settings.models.indexOf(model),
+  const template=[...existing.values()].find(model=>
+    typeof model.supported_reasoning_levels!=='undefined'&&typeof model.default_reasoning_level!=='undefined'
+  );
+  parsed.models=settings.models.map((model,index)=>{
+    const previous=existing.get(model);
+    return {
+      ...(template||nativeCatalogModelTemplate(model,settings.baseUrl)),
+      ...previous,
+      ...(previous?{}:{slug:model,display_name:model,description:`${model} via ${settings.baseUrl}`}),
+      priority:index,
+    };
   });
   writeFileSync(catalog,JSON.stringify(parsed,null,2)+'\n',{encoding:'utf8',mode:0o600});
+}
+
+function nativeCatalogModelTemplate(model:string,baseUrl:string):Record<string,unknown> {
+  return {
+    slug:model,
+    display_name:model,
+    description:`${model} via ${baseUrl}`,
+    default_reasoning_level:'medium',
+    supported_reasoning_levels:[
+      {effort:'low',description:'Fast responses'},
+      {effort:'medium',description:'Balanced reasoning'},
+      {effort:'high',description:'Greater reasoning depth'},
+    ],
+    shell_type:'shell_command',
+    visibility:'list',
+    supported_in_api:true,
+    priority:0,
+    upgrade:null,
+    context_window:200000,
+    max_context_window:200000,
+    support_verbosity:true,
+    default_verbosity:'low',
+    truncation_policy:{mode:'tokens',limit:10_000},
+    comp_hash:'3000',
+    effective_context_window_percent:95,
+    experimental_supported_tools:[],
+    input_modalities:['text'],
+    supports_search_tool:true,
+    supports_image_detail_original:true,
+    use_responses_lite:false,
+    tool_mode:null,
+    multi_agent_version:'v2',
+  };
 }
 
 function updateInferredNativeCatalog(settings:{models:string[];defaultModel:string;baseUrl:string}):void {
@@ -386,13 +423,17 @@ function updateInferredNativeCatalog(settings:{models:string[];defaultModel:stri
   const existing=existsSync(inferred)?JSON.parse(readFileSync(inferred,'utf8')) as {models?:Array<Record<string,unknown>>}:{models:[]};
   const byModel=new Map((existing.models||[]).flatMap(item=>
     typeof item.slug==='string'?[[item.slug,item] as const]:[]));
-  existing.models=settings.models.map(model=>byModel.get(model)||{
-    slug:model,
-    display_name:model,
-    description:`${model} via ${settings.baseUrl}`,
-    visibility:'list',
-    supported_in_api:true,
-    priority:settings.models.indexOf(model),
+  const template=(existing.models||[]).find(model=>
+    typeof model.supported_reasoning_levels!=='undefined'&&typeof model.default_reasoning_level!=='undefined'
+  );
+  existing.models=settings.models.map((model,index)=>{
+    const previous=byModel.get(model);
+    return {
+      ...(template||nativeCatalogModelTemplate(model,settings.baseUrl)),
+      ...previous,
+      ...(previous?{}:{slug:model,display_name:model,description:`${model} via ${settings.baseUrl}`}),
+      priority:index,
+    };
   });
   writeFileSync(inferred,JSON.stringify(existing,null,2)+'\n',{encoding:'utf8',mode:0o600});
 }

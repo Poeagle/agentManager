@@ -300,7 +300,18 @@ describe('native Codex Provider connection editing', () => {
    expect(config).toContain('env_key = "AGENTMANAGER_CODEX_API_KEY"');
    expect(config).not.toContain('sk-native-secret');
    expect(JSON.parse(readFileSync(catalog,'utf8')).models.map((model:{slug:string})=>model.slug)).toEqual(['model-a','model-b']);
-   expect(JSON.parse(readFileSync(catalog,'utf8')).models[0].display_name).toBe('Old A');
+   expect(JSON.parse(readFileSync(catalog,'utf8')).models[0]).toMatchObject({
+    slug:'model-a',
+    display_name:'Old A',
+    context_window:100000,
+    default_reasoning_level:'medium',
+    supported_reasoning_levels:expect.arrayContaining([expect.objectContaining({effort:'high'})]),
+   });
+   expect(JSON.parse(readFileSync(catalog,'utf8')).models[1]).toMatchObject({
+    slug:'model-b',
+    default_reasoning_level:'medium',
+    supported_reasoning_levels:expect.arrayContaining([expect.objectContaining({effort:'high'})]),
+   });
    const stored=getDb().prepare('SELECT value FROM settings WHERE key=?')
     .get('agent_management_codex_provider_secret:native') as {value:string};
    expect(stored.value).not.toContain('sk-native-secret');
