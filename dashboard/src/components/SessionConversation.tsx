@@ -50,7 +50,6 @@ import {
   useMemo,
   useRef,
   useState,
-  Fragment,
   type ReactNode,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -166,8 +165,9 @@ function ProgressSection({
   progressPhase,
   turnDuration,
   showStatistics=true,
+  cacheNotices,
   children,
-}: ProgressSummaryProps & {children: ReactNode}) {
+}: ProgressSummaryProps & {cacheNotices?: ReactNode; children: ReactNode}) {
   const [preference, setPreference] = useState<boolean | null>(null);
   const open = preference ?? active;
   return (
@@ -188,8 +188,12 @@ function ProgressSection({
           <ProgressSummary agent={agent} agentName={agentName} count={count} active={active} timestamp={timestamp} progress={progress} progressScope={progressScope} completed={completed} interrupted={interrupted} stepDuration={stepDuration} stepRunning={stepRunning} phaseSeconds={phaseSeconds} progressPhase={progressPhase} turnDuration={turnDuration} showStatistics={showStatistics}/>
           <ChevronDown size={14} className="session-chat-progress-chevron" />
         </summary>
-        <div className="session-chat-progress-content">{children}</div>
+        <div className="session-chat-progress-content">
+          {open && cacheNotices}
+          {children}
+        </div>
       </details>
+      {!open && cacheNotices}
     </section>
   );
 }
@@ -2491,9 +2495,9 @@ export function SessionConversation({
                   ...(pending && pendingCacheAnchor ? [pendingCacheAnchor] : []),
                 ]);
                 return (
-                  <Fragment key={`progress-${group.id}`}>
-                    {notices.length > 0 && <div className="session-chat-progress-cache-notices">{notices}</div>}
                   <ProgressSection
+                    key={`progress-${group.id}`}
+                    cacheNotices={notices.length > 0 && <div className="session-chat-progress-cache-notices">{notices}</div>}
                     showStatistics={!notificationView}
                     agent={sessionAgent(session)}
                     agentName={agentName}
@@ -2539,7 +2543,6 @@ export function SessionConversation({
                       </div>
                     </div>}
                   </ProgressSection>
-                  </Fragment>
                 );
               })}
               {waitingForText && !showLiveProgress && (!continuingAfterFollowup || sending) && (

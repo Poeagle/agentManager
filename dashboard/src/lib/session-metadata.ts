@@ -150,6 +150,10 @@ export function totalInputTokens(tokens: Record<string, number | null> | null | 
   return total-output;
 }
 
+export function cacheHitColor(percent: number | null): string {
+  return percent === null ? 'var(--text-muted)' : `hsl(${Math.round(percent * 1.4)} 60% var(--cache-hit-lightness, 32%))`;
+}
+
 export function recordedCachePercent(tokens: Record<string, number | null> | null | undefined): number | null {
   const input=totalInputTokens(tokens),hit=tokens?.cached_input_tokens,output=tokens?.output_tokens;
   const total=tokens?.total_tokens,reasoning=tokens?.reasoning_output_tokens;

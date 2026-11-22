@@ -125,8 +125,8 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   appendFileSync(session.log,second(0));
   const incident=session.chat.locator('[data-cache-drop-id]');
   await expect(incident).toHaveCount(1);
-  await expect(incident).toContainText('11K / 10K (90.91%)');
-  await expect(incident).toContainText('10K / 0 (0.0%)');
+  await expect(incident).toContainText('11K ｜ 10K (90.91%)');
+  await expect(incident).toContainText('10K ｜ 0 (0.0%)');
   await expect(incident).toContainText('2026-11-20');
   const credits=session.chat.locator('.conversation-total-credits');
   await expect(credits).toHaveText(/^Est\. Cr [\d,]+\.\d$/);
@@ -418,8 +418,7 @@ test('uses adjacent cached-input counts and ignores a ratio drop caused by new i
   await expect(incident).toHaveCount(1);
   await expect(incident).toContainText('82.26%');
   await expect(incident).toContainText('90.1%');
-  await expect(incident).toContainText('减少 696 Token');
-  await expect(incident).toContainText('请求间隔 2.484秒');
+  await expect(incident).toContainText('Elapsed: 2.484s');
   await page.reload();
   await expect(incident).toHaveCount(1);
   await page.getByRole('button',{name:'Details',exact:true}).click();
@@ -446,7 +445,7 @@ test('shows one cache drop next to an in-turn compaction and keeps it after relo
   await expect(incident).toHaveCount(1);
   await expect(incident).toContainText('99.65%');
   await expect(incident).toContainText('42.72%');
-  await expect(incident).toContainText('请求间隔 4.954秒');
+  await expect(incident).toContainText('Elapsed: 4.954s');
   await expect(incident.locator('time')).toHaveText('2026-11-20 17:01:00');
   expect(await summary.evaluate(node=>node.closest('[data-context-kind="compaction_summary"]')?.nextElementSibling?.matches('[data-cache-drop-id]'))).toBe(true);
   await page.getByRole('button',{name:'Details',exact:true}).click();
@@ -591,7 +590,7 @@ test('waits for actual usage after commentary and counts a reasoning-only reques
   await expect(progressTime).toHaveAttribute('datetime',at(30));
 });
 
-test('groups cache drops by Progress in time order and puts a Final drop before its answer',async({page})=>{
+test('shows dated cache drops under each Progress header before its Items and before the Final answer',async({page})=>{
   const session=await setup(page,'codex','detached');
   const turn='cache-items';
   writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+
@@ -600,35 +599,65 @@ test('groups cache drops by Progress in time order and puts a Final drop before 
   await page.goto('/');
   await expect(session.chat.getByText('建立缓存基线')).toBeAttached();
   appendFileSync(session.log,message(6,'first-drop','assistant','第一处下降','commentary')+request(7,turn,'r2',10000,1000));
-  await expect(session.chat.locator('[data-cache-drop-id]')).toHaveCount(1);
+  const progress=session.chat.getByRole('region',{name:'codex 进展'});
+  const notice=progress.getByRole('group',{name:'缓存命中输入减少'});
+  await expect(notice).toHaveCount(1);
+  await expect(notice.first()).toBeVisible();
   appendFileSync(session.log,
     message(8,'restored','assistant','缓存恢复','commentary')+request(9,turn,'r3',11000,10600)+
     message(10,'second-drop','assistant','第二处下降','commentary')+request(11,turn,'r4',11000,500)+
     message(12,'final','assistant','核对完成','final_answer')+request(13,turn,'r5',11000,100)+
     event(14,'task_complete',{turn_id:turn}));
   const verify=async()=>{
-    const progress=session.chat.getByRole('region',{name:'codex 进展'});
-    const notice=session.chat.locator('.session-chat-progress-cache-notices [data-cache-drop-id]');
+    const before = (left:Element,right:Element) => !!(left.compareDocumentPosition(right)&Node.DOCUMENT_POSITION_FOLLOWING);
+    const toggle=progress.locator('.session-chat-progress-toggle');
+    const firstItem=progress.locator('.session-chat-progress-entry').first();
     await expect(session.chat.locator('[data-cache-drop-id]')).toHaveCount(3);
     await expect(notice).toHaveCount(2);
     await expect(notice.nth(0).locator('time')).toHaveAttribute('datetime',at(7));
     await expect(notice.nth(1).locator('time')).toHaveAttribute('datetime',at(11));
-    const before = (left:Element,right:Element) => !!(left.compareDocumentPosition(right)&Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(await notice.last().evaluate(before,await progress.elementHandle())).toBe(true);
-    const toggle=progress.locator('.session-chat-progress-toggle');
-    if(await toggle.getAttribute('aria-expanded')==='true')await toggle.click();
+    if(await toggle.getAttribute('aria-expanded')==='true') await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded','false');
+    await expect(firstItem).toBeHidden();
     await expect(notice.last()).toBeVisible();
+    expect(await toggle.evaluate(before,await notice.first().elementHandle())).toBe(true);
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded','true');
+    await expect(firstItem).toBeVisible();
+    await expect(notice).toHaveCount(2);
+    expect(await toggle.evaluate(before,await notice.first().elementHandle())).toBe(true);
+    expect(await notice.last().evaluate(before,await firstItem.elementHandle())).toBe(true);
+
     const final=session.chat.locator('[data-phase="final"]').filter({hasText:'核对完成'});
     const finalNotice=final.locator('[data-cache-drop-id]');
     await expect(finalNotice.locator('time')).toHaveAttribute('datetime',at(13));
     expect(await finalNotice.evaluate(before,await final.getByText('核对完成',{exact:true}).elementHandle())).toBe(true);
-    await expect(notice.first().locator('button')).toHaveCount(0);
-    await expect(notice.first().locator('strong')).toHaveCSS('color', 'rgb(220, 38, 38)');
-    await expect(notice.first()).toHaveCSS('color', 'rgb(129, 133, 140)');
-    await expect(notice.first()).toHaveCSS('font-size', '13px');
-    await expect(notice.first()).toHaveCSS('white-space', 'nowrap');
+
+    const firstNotice=notice.first();
+    await expect(firstNotice.locator('button')).toHaveCount(0);
+    await expect(firstNotice.locator('time')).toHaveText('2026-11-20 17:00:07');
+    await expect(firstNotice.locator('time')).toHaveCSS('color', 'rgb(220, 38, 38)');
+    await expect(firstNotice).toContainText('10K ｜ 9.8K (98.0%)');
+    await expect(firstNotice).toContainText('10K ｜ 1K (10.0%)');
+    await expect(firstNotice).toContainText('Elapsed: 3s');
+    const cacheRates=firstNotice.locator('.session-chat-cache-hit');
+    await expect(cacheRates.first()).toHaveCSS('color','rgb(33, 131, 60)');
+    await expect(cacheRates.last()).toHaveCSS('color','rgb(131, 55, 33)');
+    await expect(firstNotice).toHaveCSS('font-size', '11px');
+    await expect(firstNotice).toHaveCSS('white-space', 'nowrap');
   };
   await verify();
   await page.reload();
   await verify();
+  await progress.evaluate(node=>{node.style.maxWidth='320px';});
+  const narrowNotice=notice.first();
+  const layout=await narrowNotice.evaluate(row=>({
+    width:row.clientWidth,
+    scrollWidth:row.scrollWidth,
+    dateTop:row.querySelector('time')?.getBoundingClientRect().top,
+    elapsedTop:row.lastElementChild?.getBoundingClientRect().top,
+  }));
+  expect(layout.width).toBeLessThanOrEqual(320);
+  expect(layout.scrollWidth).toBeGreaterThan(layout.width);
+  expect(layout.dateTop).toBe(layout.elapsedTop);
 });

@@ -1,5 +1,4 @@
-import { AlertTriangle } from 'lucide-react';
-import type { CacheDropFactor, SessionCacheDrop, SessionCacheSample } from '../lib/session-metadata';
+import { cacheHitColor, type CacheDropFactor, type SessionCacheDrop, type SessionCacheSample } from '../lib/session-metadata';
 import { formatElapsed } from '../lib/conversation-timing';
 import { TableFrame, TableStateRow } from './table/DataTable';
 
@@ -20,11 +19,12 @@ export function MetadataTime({at}: {at: string | null | undefined}) {
   return at && Number.isFinite(Date.parse(at)) ? <time dateTime={at} title={at}>{date.format(new Date(at))}</time> : <span>时间未知</span>;
 }
 
-function SampleTokens({sample}: {sample: SessionCacheSample}) {
+function SampleTokens({sample, inline = false}: {sample: SessionCacheSample; inline?: boolean}) {
   const label = '总输入 ' + sample.input_tokens.toLocaleString() + ' Token，缓存命中 ' +
     sample.cached_input_tokens.toLocaleString() + ' Token，命中率 ' + rate(sample.hit_rate);
   return <span title={label} aria-label={label} className="conversation-cache-sample">
-    {compact.format(sample.input_tokens)} / {compact.format(sample.cached_input_tokens)} ({rate(sample.hit_rate)})
+    {compact.format(sample.input_tokens)}{inline ? ' ｜ ' : ' / '}{compact.format(sample.cached_input_tokens)} (
+    {inline ? <span className="session-chat-cache-hit" style={{color:cacheHitColor(sample.hit_rate * 100)}}>{rate(sample.hit_rate)}</span> : rate(sample.hit_rate)})
   </span>;
 }
 
@@ -65,11 +65,10 @@ export function CacheDropTable({drops, loading, error, onRetry}: {
 }
 
 export function ConversationCacheDrop({drop}: {drop: SessionCacheDrop}) {
-  return <div className="conversation-cache-notice" data-cache-drop-id={drop.id}>
-    <AlertTriangle size={14} aria-hidden="true" /><strong>缓存命中输入减少</strong>
-    <SampleTokens sample={drop.previous} /><span aria-hidden="true">→</span><SampleTokens sample={drop.current} />
-    <span>减少 {(drop.previous.cached_input_tokens - drop.current.cached_input_tokens).toLocaleString('zh-CN')} Token</span>
-    <span>{dropInterval(drop)}</span>
+  const elapsed = drop.elapsed_ms === null ? '—' : `${drop.elapsed_ms / 1000}s`;
+  return <div className="conversation-cache-notice" data-cache-drop-id={drop.id} role="group" aria-label="缓存命中输入减少">
     <MetadataTime at={drop.at} />
+    <SampleTokens sample={drop.previous} inline /><span aria-hidden="true">→</span><SampleTokens sample={drop.current} inline />
+    <span title={dropInterval(drop)}>Elapsed: {elapsed}</span>
   </div>;
 }
