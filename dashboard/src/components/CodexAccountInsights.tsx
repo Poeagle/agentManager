@@ -133,7 +133,7 @@ function MetricCells({row,creditTotal,apiMode,currency}:{row:Metrics;creditTotal
  const unit=apiMode?currency:'credits',amount=row.estimated_credits??null;
  const {input_tokens:input,cached_input_tokens:cached}=row.tokens;
  const metrics=tokenMetrics(row,unit);
- const cell=({key,count,cost}:ReturnType<typeof tokenMetrics>[number])=><td key={key} data-field-description={usageFieldDescriptions[key]}>{cellNumber(count)}{unit&&<span className="ci-token-cost" title={`预估耗费 (${unit==='credits'?'Credits':unit})`}> ({cost})</span>}</td>;
+ const cell=({key,count,cost}:ReturnType<typeof tokenMetrics>[number])=><td key={key} data-field-description={usageFieldDescriptions[key]}>{cellNumber(count)}<span className="ci-token-cost" title={unit?`预估耗费 (${unit==='credits'?'Credits':unit})`:'预估耗费未知'}> ({cost})</span></td>;
  return <>{metrics.slice(0,3).map(cell)}<td data-field-description={usageFieldDescriptions.hit}>{input!=null&&cached!=null&&cached<=input&&input>0?`${(cached/input*100).toFixed(1)}%`:''}</td>{metrics.slice(3).map(cell)}{!apiMode&&<><UsageCostCell rows={[row]}/><td data-field-description={usageFieldDescriptions.share}>{creditTotal&&amount!==null?`${(amount/creditTotal*100).toFixed(1)}%`:''}</td></>}</>;
 }
 function Group({node,creditTotal,depth,apiMode,currency,defaultOpen=false,expansion,setExpansion}:{node:UsageGroup;creditTotal:number|null;depth:number;apiMode:boolean;currency?:string;defaultOpen?:boolean;expansion:Record<string,boolean>;setExpansion:React.Dispatch<React.SetStateAction<Record<string,boolean>>>}){

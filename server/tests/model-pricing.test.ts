@@ -64,7 +64,7 @@ it('persists validated versions, preserves the previous tariff on bad documents 
  initModelPricing();
  expect(pricingSnapshot('deepseek')?.checked).toBe(second);
  expect(estimateDeepseekCost(model,first,tokens)).toBe(1.82);
- expect(estimateDeepseekCost(model,second,tokens)).toBe(2.82);
+ expect(estimateDeepseekCost(model,second,tokens)).toBeCloseTo(2.82,10);
 });
 
 it('parses full holiday ranges without treating compensatory workdays as holidays',()=>{

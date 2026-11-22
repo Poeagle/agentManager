@@ -98,7 +98,7 @@ it('omits account quota and estimated allocation columns for API engines',async(
  const tokens={input_tokens:10,cached_input_tokens:0,output_tokens:0,total_tokens:10};
  vi.mocked(fetchJSON).mockResolvedValue({usage:{initialized:true,partial:false,timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/api',tokens,models:[{model:'api-model',tokens}]}]}} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="api" name="API" groupId="group" apiOverview={<span>API</span>} onClose={()=>{}}/></QueryClientProvider>);
- const row=(await screen.findByText('/api')).closest('tr')!;expect(within(row).getAllByRole('cell')).toHaveLength(9);for(const label of ['耗用积分 | 额度','耗用额度','预估积分','占比'])expect(screen.queryByRole('columnheader',{name:label})).toBeNull();
+ const row=(await screen.findByText('/api')).closest('tr')!;expect(within(row).getAllByRole('cell')).toHaveLength(9);expect(within(row).getAllByTitle('预估耗费未知')).toHaveLength(6);expect(row.lastElementChild).toHaveTextContent('10 (—)');for(const label of ['耗用积分 | 额度','耗用额度','预估积分','占比'])expect(screen.queryByRole('columnheader',{name:label})).toBeNull();
 });
 it('hides the historical reconciliation warning while keeping data available',async()=>{
  const tokens={input_tokens:10,cached_input_tokens:0,output_tokens:0,total_tokens:10};
