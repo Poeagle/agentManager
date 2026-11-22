@@ -12,10 +12,12 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  const {project}=await(await page.request.post('/api/projects',{
   data:{name:'Claude Provider flow',path:projectPath},
  })).json();
+ let createdState:unknown;
+ await page.route('**/api/agent-management/claude',route=>createdState?route.fulfill({json:{state:createdState}}):route.continue());
  await page.route('**/api/agent-management/claude/providers',async route=>{
   if(route.request().method()!=='POST')return route.continue();
   const body=route.request().postDataJSON();
-  return route.fulfill({json:{state:{
+  createdState={
    agent:{id:'claude',label:'Claude'},
    providers:[{
     id:body.id,name:body.name,kind:'anthropic-compatible',enabled:true,managed:true,
@@ -31,7 +33,8 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
      {key:'maxOutputTokens',label:'最大输出 Token',type:'text',value:body.fields.maxOutputTokens},
     ],
    }],
-  }}});
+  };
+  return route.fulfill({json:{state:createdState}});
  });
  await page.route('**/api/agent-management/claude/detect-models',route=>route.fulfill({
   json:{models:[
@@ -64,8 +67,13 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await page.goto('/');
  await page.getByTitle('My account').click();
  await page.getByRole('button',{name:'Agent 配置'}).click();
- await page.locator('.agent-management-agents').getByRole('button',{name:/Claude/}).click();
- await page.getByRole('button',{name:'添加 Provider',exact:true}).click();
+ const providers=page.getByRole('table',{name:'Agent Provider'});
+ await expect(providers).toBeVisible();
+ await expect(providers.getByText('Codex',{exact:true}).first()).toBeVisible();
+ await expect(providers.getByText('Claude',{exact:true}).first()).toBeVisible();
+ await page.getByRole('button',{name:'新增 Provider',exact:true}).click();
+ const add=page.getByRole('dialog',{name:'新增 Provider'});
+ await add.getByRole('combobox',{name:'Agent',exact:true}).selectOption('claude');
  const form=page.getByRole('form',{name:'Claude Provider 配置'});
  await form.getByLabel('Claude Provider ID').fill('xindu-real');
  await form.getByLabel('Claude Provider 名称').fill('Xindu Real');
@@ -79,7 +87,22 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await expect(form.getByText('opus',{exact:true})).toHaveCount(0);
  await form.getByLabel('Claude Provider 默认模型').selectOption('claude-fable-5-1');
  await form.getByRole('button',{name:'添加 Provider'}).click();
- await expect(page.getByRole('form',{name:'Claude Provider 配置'}).getByRole('heading',{name:'Xindu Real'})).toBeVisible();
+ await expect(add).toHaveCount(0);
+ const row=providers.getByRole('row').filter({hasText:'Xindu Real'});
+ await expect(row).toContainText('claude-fable-5-1');
+ await row.getByRole('button',{name:/编辑 Xindu Real/}).click();
+ const edit=page.getByRole('dialog',{name:'编辑 Provider · Xindu Real'});
+ await expect(edit.getByLabel('Claude API 地址')).toHaveValue('https://xindu.example');
+ await edit.getByRole('button',{name:'关闭编辑 Provider · Xindu Real'}).click();
+ await expect(row.getByRole('button',{name:/编辑 Xindu Real/})).toBeFocused();
+ await page.setViewportSize({width:390,height:844});
+ await row.getByRole('button',{name:/编辑 Xindu Real/}).click();
+ const narrow=await edit.boundingBox();
+ expect(narrow?.x).toBeGreaterThan(0);
+ expect(narrow!.x+narrow!.width).toBeLessThan(390);
+ await expect(edit.getByRole('button',{name:'保存 Provider'})).toBeDisabled();
+ await edit.getByRole('button',{name:'关闭编辑 Provider · Xindu Real'}).click();
+ await page.setViewportSize({width:1440,height:1000});
  await testInfo.attach('claude-provider-form',{
   body:await page.screenshot({fullPage:true}),contentType:'image/png',
  });

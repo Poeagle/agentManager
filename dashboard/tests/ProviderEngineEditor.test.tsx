@@ -17,38 +17,44 @@ beforeEach(()=>{
 });
 afterEach(()=>{client.clear();vi.restoreAllMocks();});
 const mount=(readOnly=false)=>render(<QueryClientProvider client={client}><AgentManagementPanel readOnly={readOnly}/></QueryClientProvider>);
+const open=async (name='Fixture API',readOnly=false)=>{
+ mount(readOnly);
+ fireEvent.click(await screen.findByRole('button',{name:`${readOnly?'查看':'编辑'} ${name} · Codex`}));
+ return screen.findByRole('dialog',{name:`${readOnly?'查看':'编辑'} Provider · ${name}`});
+};
 it('shows the native API engine in the Provider layout using runtime settings',async()=>{
  provider={...provider,id:'native',name:'Native API',kind:'native',fields:[{key:'command',label:'启动命令',type:'text',value:'codex'}]};state={...state,providers:[provider]};
  vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[{id:'native',name:'Native API',kind:'native',enabled:true,auth_mode:'api',allowed_user_ids:null}],users:[]});
  vi.mocked(api.codexEnvironments.details).mockResolvedValue({details:{id:'native',checked_at:'',home:'/fixture/.codex',executable:'codex',version:null,engine:{state:'connected',pid:1},authentication:{status:'authenticated',type:'apiKey',email:null,plan:null},config:{path:null,exists:true,notice:null},settings:{model:'model-a',base_url:'https://fixture.invalid/v1'},models:[{model:'model-a',name:'Model A'}]}});
  vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({auth_mode:'api',status:'available',amount:5,currency:'USD'}))));
- mount();expect(await screen.findByRole('textbox',{name:'Responses API 地址'})).toHaveValue('https://fixture.invalid/v1');
+ await open('Native API');expect(await screen.findByRole('textbox',{name:'Responses API 地址'})).toHaveValue('https://fixture.invalid/v1');
  expect(await screen.findByRole('table',{name:'Provider 模型'})).toHaveTextContent('model-a');expect(screen.queryByText('CODEX 登录账号')).not.toBeInTheDocument();vi.unstubAllGlobals();
 });
 it('shows one editable model table with detection above it and keeps runtime details on demand',async()=>{
- mount();const table=await screen.findByRole('table',{name:'Provider 模型'});await within(table).findByRole('checkbox',{name:'启用 model-a'});
- expect(screen.getAllByRole('table')).toHaveLength(1);expect(screen.getAllByRole('button',{name:'保存并重启 Engine',exact:true})).toHaveLength(1);expect(screen.queryByText('已保存模型')).toBeNull();expect(screen.queryByRole('combobox',{name:'默认模型'})).toBeNull();expect(screen.queryByText('实际启动命令')).toBeNull();expect(screen.queryByText('密钥安全保存')).toBeNull();
+ const dialog=await open();const table=await within(dialog).findByRole('table',{name:'Provider 模型'});await within(table).findByRole('checkbox',{name:'启用 model-a'});
+ expect(within(dialog).getAllByRole('table')).toHaveLength(1);expect(screen.getAllByRole('button',{name:'保存并重启 Engine',exact:true})).toHaveLength(1);expect(screen.queryByText('已保存模型')).toBeNull();expect(screen.queryByRole('combobox',{name:'默认模型'})).toBeNull();expect(screen.queryByText('实际启动命令')).toBeNull();expect(screen.queryByText('密钥安全保存')).toBeNull();
  const detect=screen.getByRole('button',{name:'探测模型'});expect(detect.compareDocumentPosition(table)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();expect(within(table).getByRole('radio',{name:'默认模型 model-a'})).toBeChecked();expect(screen.getByText('Model 1')).toBeVisible();
  fireEvent.click(screen.getByRole('button',{name:'运行信息'}));expect(screen.getByRole('dialog',{name:'Engine 运行信息'})).toHaveTextContent('codex app-server --fixture');
 });
 it('preserves connection and parameter drafts when discovery refreshes metadata and saves all changes with one restart',async()=>{
- mount();await screen.findByRole('spinbutton',{name:'model-a 上下文长度'});fireEvent.change(screen.getByRole('textbox',{name:'Responses API 地址'}),{target:{value:'https://new.invalid/v1'}});fireEvent.change(screen.getByRole('spinbutton',{name:'model-a 上下文长度'}),{target:{value:'300000'}});
+ await open();await screen.findByRole('spinbutton',{name:'model-a 上下文长度'});fireEvent.change(screen.getByRole('textbox',{name:'Responses API 地址'}),{target:{value:'https://new.invalid/v1'}});fireEvent.change(screen.getByRole('spinbutton',{name:'model-a 上下文长度'}),{target:{value:'300000'}});
  vi.mocked(api.agentManagement.detectModels).mockResolvedValueOnce({models:[{model:'new-model',name:'New',description:'',efforts:[],defaultEffort:''}]});fireEvent.click(screen.getByRole('button',{name:'探测模型'}));expect(await screen.findByRole('checkbox',{name:'启用 new-model'})).toBeChecked();expect(screen.getByRole('textbox',{name:'Responses API 地址'})).toHaveValue('https://new.invalid/v1');expect(screen.getByRole('spinbutton',{name:'model-a 上下文长度'})).toHaveValue(300000);
  fireEvent.click(screen.getByRole('radio',{name:'默认模型 model-b'}));fireEvent.click(screen.getByRole('button',{name:'保存并重启 Engine'}));await waitFor(()=>expect(api.agentManagement.updateProviderStream).toHaveBeenCalledTimes(1));expect(api.agentManagement.updateModelConfigs).toHaveBeenCalledTimes(1);expect(api.agentManagement.updateModelConfigs).toHaveBeenCalledWith('codex',[expect.objectContaining({model:'model-a',contextWindow:300000})]);expect(api.agentManagement.updateProviderStream).toHaveBeenCalledWith('codex','fixture',expect.objectContaining({fields:expect.objectContaining({baseUrl:'https://new.invalid/v1',models:['model-a','model-b','new-model'],defaultModel:'model-b'})}),expect.any(Function));
 });
 it('reports partial completion, preserves drafts and avoids a restart when writing parameters fails',async()=>{
- mount();await screen.findByRole('spinbutton',{name:'model-a 上下文长度'});fireEvent.change(screen.getByRole('spinbutton',{name:'model-a 上下文长度'}),{target:{value:'300000'}});vi.mocked(api.agentManagement.updateProviderStream).mockRejectedValueOnce(Error('Engine 未就绪'));fireEvent.click(screen.getByRole('button',{name:'保存并重启 Engine'}));expect(await screen.findByRole('alert')).toHaveTextContent('模型参数已写入，Engine 配置保存或重启失败');expect(screen.getByRole('spinbutton',{name:'model-a 上下文长度'})).toHaveValue(300000);
+ await open();await screen.findByRole('spinbutton',{name:'model-a 上下文长度'});fireEvent.change(screen.getByRole('spinbutton',{name:'model-a 上下文长度'}),{target:{value:'300000'}});vi.mocked(api.agentManagement.updateProviderStream).mockRejectedValueOnce(Error('Engine 未就绪'));fireEvent.click(screen.getByRole('button',{name:'保存并重启 Engine'}));expect(await screen.findByRole('alert')).toHaveTextContent('模型参数已写入，Engine 配置保存或重启失败');expect(screen.getByRole('spinbutton',{name:'model-a 上下文长度'})).toHaveValue(300000);
  vi.mocked(api.agentManagement.updateModelConfigs).mockRejectedValueOnce(Error('文件写入失败'));vi.mocked(api.agentManagement.updateProviderStream).mockClear();fireEvent.click(screen.getByRole('button',{name:'保存并重启 Engine'}));await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('文件写入失败'));expect(api.agentManagement.updateProviderStream).not.toHaveBeenCalled();
 });
 it('tracks selection-only edits and falls back to a selected default when a model is disabled',async()=>{
- vi.spyOn(window,'confirm').mockReturnValue(false);mount();await screen.findByRole('checkbox',{name:'启用 model-a'});fireEvent.click(screen.getByRole('checkbox',{name:'启用 model-a'}));expect(screen.getByRole('radio',{name:'默认模型 model-b'})).toBeChecked();fireEvent.click(screen.getByRole('button',{name:'添加 Provider'}));expect(window.confirm).toHaveBeenCalled();expect(screen.getByRole('table',{name:'Provider 模型'})).toBeVisible();
+ vi.spyOn(window,'confirm').mockReturnValue(false);await open();await screen.findByRole('checkbox',{name:'启用 model-a'});fireEvent.click(screen.getByRole('checkbox',{name:'启用 model-a'}));expect(screen.getByRole('radio',{name:'默认模型 model-b'})).toBeChecked();fireEvent.click(screen.getByRole('button',{name:'关闭编辑 Provider · Fixture API'}));expect(window.confirm).toHaveBeenCalled();expect(screen.getByRole('table',{name:'Provider 模型'})).toBeVisible();
 });
 it('isolates model settings by Provider and keeps all editing disabled in read-only mode',async()=>{
- configs.push({...configs[0],provider:'other',model:'private-other'});mount(true);const table=await screen.findByRole('table',{name:'Provider 模型'});await within(table).findByRole('checkbox',{name:'启用 model-a'});expect(screen.queryByText('private-other')).toBeNull();for(const input of table.querySelectorAll('input'))expect(input).toBeDisabled();expect(screen.queryByRole('button',{name:'保存并重启 Engine'})).toBeNull();expect(screen.getByRole('button',{name:'探测模型'})).toBeDisabled();
+ configs.push({...configs[0],provider:'other',model:'private-other'});await open('Fixture API',true);const table=await screen.findByRole('table',{name:'Provider 模型'});await within(table).findByRole('checkbox',{name:'启用 model-a'});expect(screen.queryByText('private-other')).toBeNull();for(const input of table.querySelectorAll('input'))expect(input).toBeDisabled();expect(screen.queryByRole('button',{name:'保存并重启 Engine'})).toBeNull();expect(screen.getByRole('button',{name:'探测模型'})).toBeDisabled();
  await act(async()=>{});
 });
 it('discards detected models whenever the endpoint or key changes, including late responses',async()=>{
- mount();await screen.findByRole('table',{name:'Provider 模型'});fireEvent.click(screen.getByRole('button',{name:'添加 Provider'}));
+ mount();fireEvent.click(await screen.findByRole('button',{name:'新增 Provider'}));
+ expect(screen.getByRole('dialog',{name:'新增 Provider'})).toBeVisible();
  fireEvent.change(screen.getByLabelText('Provider ID'),{target:{value:'new'}});fireEvent.change(screen.getByLabelText('Responses API 地址'),{target:{value:'https://first.invalid/v1'}});fireEvent.change(screen.getByLabelText('API Key'),{target:{value:'fixture'}});
  let finish!:(value:any)=>void;vi.mocked(api.agentManagement.detectModels).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));fireEvent.click(screen.getByRole('button',{name:'探测模型'}));await waitFor(()=>expect(api.agentManagement.detectModels).toHaveBeenCalled());
  fireEvent.change(screen.getByLabelText('Responses API 地址'),{target:{value:'https://second.invalid/v1'}});await act(async()=>finish({models:[{model:'stale',name:'Stale',description:'',efforts:[],defaultEffort:''}]}));expect(screen.queryByText('Stale')).toBeNull();expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeDisabled();

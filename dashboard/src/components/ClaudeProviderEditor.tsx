@@ -1,4 +1,4 @@
-import {useState} from 'react';
+import {useEffect,useState} from 'react';
 import {useMutation,useQueryClient} from '@tanstack/react-query';
 import {Check,CircleAlert,Loader2,Plus,Save,Search,Trash2} from 'lucide-react';
 import {api,type AgentManagementState,type AgentProviderState} from '../lib/api';
@@ -10,7 +10,7 @@ const fromProvider=(provider:AgentProviderState):Draft=>({id:provider.id,name:pr
 const statusLabel:Record<string,string>={ready:'正常',warning:'需配置',error:'异常',unavailable:'不可用',unknown:'待检测'};
 const statusTone=(status:string)=>status==='ready'?'ready':status==='error'?'error':status==='warning'?'warning':'unknown';
 
-export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirtyChange}:{provider?:AgentProviderState;readOnly:boolean;onSaved:(id?:string)=>void;onCancel?:()=>void;onDirtyChange?:(dirty:boolean)=>void}){
+export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirtyChange,onBusyChange,inDialog=false}:{provider?:AgentProviderState;readOnly:boolean;onSaved:(id?:string)=>void;onCancel?:()=>void;onDirtyChange?:(dirty:boolean)=>void;onBusyChange?:(busy:boolean)=>void;inDialog?:boolean}){
  const client=useQueryClient(),[draft,setDraft]=useState<Draft>(()=>provider?fromProvider(provider):empty());
  const [detected,setDetected]=useState<string[]>(provider?.models||[]),[manualModel,setManualModel]=useState(''),[error,setError]=useState(''),[saved,setSaved]=useState(false),[confirmDelete,setConfirmDelete]=useState(false);
  const original=provider?fromProvider(provider):empty();
@@ -50,12 +50,13 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
  const remove=useMutation({mutationFn:()=>api.agentManagement.deleteProvider('claude',provider!.id),onSuccess:result=>{updateState(result);setConfirmDelete(false);onDirtyChange?.(false);onSaved(undefined);},onError:(failure:Error)=>setError(failure.message)});
  const toggle=useMutation({mutationFn:(enabled:boolean)=>api.agentManagement.providerAction('claude',provider!.id,enabled?'enable':'disable'),onSuccess:updateState,onError:(failure:Error)=>setError(failure.message)});
  const busy=save.isPending||remove.isPending||toggle.isPending||detect.isPending;
+ useEffect(()=>{onBusyChange?.(busy);},[busy,onBusyChange]);
  return <form className="claude-provider-editor" aria-label="Claude Provider 配置" onSubmit={event=>{event.preventDefault();if(!readOnly&&!busy){setError('');save.mutate();}}}>
   {onCancel&&<button type="button" className="agent-management-button claude-provider-back" disabled={busy} onClick={onCancel}>返回详情</button>}
-  <header className="claude-provider-editor-heading">
+  {!inDialog&&<header className="claude-provider-editor-heading">
    <div><div className="flex items-center gap-2"><h3>{provider?provider.name:'添加提供商'}</h3>{provider&&<span className={`agent-management-pill ${statusTone(provider.status)}`}>{statusLabel[provider.status]||provider.status}</span>}</div><p>{provider?provider.statusText:'配置 Anthropic 兼容提供商；密钥只加密保存在本机。'}</p></div>
    <div className="agent-management-status-row">{!readOnly&&provider&&<button type="button" className="agent-management-button" disabled={busy||!dirty} onClick={()=>{setError('');save.mutate();}}>{save.isPending?<Loader2 size={13} className="animate-spin"/>:<Save size={13}/>}保存</button>}</div>
-  </header>
+  </header>}
   <section className="agent-management-section agent-management-engine-settings">
    <div className="agent-management-section-title"><h4>连接配置</h4><span className="agent-management-section-badge">{provider?.authentication.status==='authenticated'?'API 凭据已配置':'API 凭据未配置'}</span></div>
    <div className="agent-management-form agent-management-engine-form">
@@ -80,7 +81,7 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
   {(error||saved)&&<div className={`agent-management-operation ${error?'error':'success'}`} role={error?'alert':'status'}>{error?<CircleAlert size={13}/>:<Check size={13}/>}<span>{error||'Claude Provider 已保存'}</span></div>}
   <footer className="claude-provider-editor-actions">
    {provider&&!readOnly&&provider.id!=='anthropic'&&<div>{confirmDelete?<><span>确定彻底删除？</span><button type="button" className="agent-management-button agent-management-button-danger" disabled={busy} onClick={()=>remove.mutate()}>{remove.isPending?<Loader2 size={13} className="animate-spin"/>:<Trash2 size={13}/>}确认删除</button><button type="button" className="agent-management-button" disabled={busy} onClick={()=>setConfirmDelete(false)}>取消</button></>:<button type="button" className="agent-management-button" disabled={busy} onClick={()=>toggle.mutate(!provider.enabled)}>{toggle.isPending?<Loader2 size={13} className="animate-spin"/>:null}{provider.enabled?'停用':'启用'}</button>}<button type="button" className="agent-management-button" disabled={busy} onClick={()=>setConfirmDelete(true)}><Trash2 size={13}/>删除</button></div>}
-   <span>{dirty?'有未保存修改':provider?'配置已保存':''}</span>
+   {dirty&&<span>有未保存修改</span>}
    {!readOnly&&<button type="submit" className="agent-management-button agent-management-button-primary" disabled={busy||detect.isPending||!provider&&(!draft.id.trim()||!draft.baseUrl.trim()||!draft.apiKey.trim()||!draft.models.length)||!!provider&&!dirty}>{save.isPending?<Loader2 size={13} className="animate-spin"/>:provider?<Save size={13}/>:<Plus size={13}/>} {provider?'保存 Provider':'添加 Provider'}</button>}
   </footer>
  </form>;

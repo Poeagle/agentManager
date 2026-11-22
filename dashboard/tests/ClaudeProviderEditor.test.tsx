@@ -85,7 +85,8 @@ it('uses the same editable Provider form for the native Anthropic environment',a
  const state={agent:{id:'claude',label:'Claude'},providers:[native],defaults:[],providerManagement:{create:true},installation:{status:'ready',executable:'/fixture/claude',version:'1.0',latestVersion:null,updateAvailable:false,installCommand:'',updateCommand:''},authentication:{status:'unknown',method:'fixture',detail:'原生配置'},environment:[],configFiles:[],diagnostics:[],actions:[],applySemantics:{settings:'new_session',providers:'new_session',detail:'fixture'},checkedAt:new Date().toISOString()} as any;
  vi.mocked(api.agentManagement.list).mockResolvedValue({agents:[{agent:state.agent,state}]} as any);vi.mocked(api.agentManagement.get).mockResolvedValue({state});
  render(<QueryClientProvider client={client}><AgentManagementPanel/></QueryClientProvider>);
- expect(await screen.findByRole('heading',{name:'Anthropic'})).toBeVisible();
+ fireEvent.click(await screen.findByRole('button',{name:'编辑 Anthropic · Claude'}));
+ expect(await screen.findByRole('dialog',{name:'编辑 Provider · Anthropic'})).toBeVisible();
  expect(screen.getByLabelText('Claude API 地址')).toHaveValue('https://gateway.example');
  expect(screen.getByLabelText('Claude API Key')).toHaveValue('');
  expect(screen.getByLabelText('Claude Provider 默认模型')).toHaveValue('opus');

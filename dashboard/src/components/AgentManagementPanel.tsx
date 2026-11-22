@@ -5,14 +5,15 @@ import {CodexAccountProvider} from './CodexAccountProvider';
 import {BalanceSummary,useEngineBalance} from './CodexEngineBalance';
 import {CodexAccountProviderEditor} from './CodexAccountProviderEditor';
 import {ClaudeProviderEditor} from './ClaudeProviderEditor';
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   Check,
   ChevronRight,
   CircleAlert,
   FileCode2,
+  Pencil,
   Info,
   Loader2,
   Plus,
@@ -30,9 +31,13 @@ import {
   type AgentProviderState,
   type DetectedAgentModel,
   type AgentOperationProgress,
+  type CodexEnvironment,
 } from "../lib/api";
 import { ClaudeIcon, CodexIcon } from "./CliIcons";
 import { Dialog } from "./Dialog";
+import { DataTable } from './table/DataTable';
+import { TableActionButton, TableActions } from './table/TableActions';
+import { useTableModel, type TableColumn } from './table/use-table-model';
 import "./AgentManagementPanel.css";
 import "./ProviderModelTable.css";
 
@@ -569,77 +574,17 @@ function ConfigFiles({
   );
 }
 
-function ProviderCard({
-  state,
-  selected,
-  onSelect,
-  authMode,
-  balanceId,
-}: {
-  state: AgentProviderState;
-  selected: boolean;
-  onSelect: () => void;
-  authMode?:'account'|'api'|null;
-  balanceId?:string;
-}) {
-  return (
-    <button
-      type="button"
-      className="agent-management-provider"
-      title={`${state.name}：${state.statusText}。点击查看并管理此 Engine。`}
-      aria-current={selected ? "true" : undefined}
-      onClick={onSelect}
-    >
-      <span className={`agent-management-dot ${statusTone(state.status)}`} />
-      <span className="agent-management-provider-copy">
-        <strong>{state.name}</strong>
-        <small>
-          {authMode==='api'?'API':authMode==='account'?'账号':'认证待检测'} · {state.statusText}
-        </small>
-        {balanceId&&authMode==='api'&&<small>余额：<BalanceSummary id={balanceId}/></small>}
-      </span>
-      <ChevronRight size={14} />
-    </button>
-  );
-}
-
-function LiveProviderCard({
-  agentId,
-  state,
-  selected,
-  onSelect,
-  authMode,
-  balanceId,
-}: {
-  agentId: string;
-  state: AgentProviderState;
-  selected: boolean;
-  onSelect: () => void;
-  authMode?:'account'|'api'|null;
-  balanceId?:string;
-}) {
-  const query = useQuery({
-    queryKey: ["agent-provider", agentId, state.id],
-    queryFn: async () =>
-      (await api.agentManagement.provider(agentId, state.id)).provider,
-    initialData: state,
+function liveProviderQuery(agentId: string, provider: AgentProviderState) {
+  return {
+    queryKey: ['agent-provider', agentId, provider.id],
+    queryFn: async () => (await api.agentManagement.provider(agentId, provider.id)).provider,
+    initialData: provider,
     initialDataUpdatedAt: 0,
     staleTime: 5_000,
-    refetchInterval: (query) =>
-      query.state.data?.status === "ready" ? false : 3_000,
+    refetchInterval: (query: {state: {data?: AgentProviderState}}) => query.state.data?.status === 'ready' ? false as const : 3_000,
     refetchIntervalInBackground: false,
-  });
-  return (
-    <ProviderCard
-      state={query.data}
-      selected={selected}
-      onSelect={onSelect}
-      authMode={authMode}
-      balanceId={balanceId}
-    />
-  );
+  };
 }
-
 
 function ProviderEditor({
   agentId,
@@ -648,7 +593,8 @@ function ProviderEditor({
   readOnly,
   onDirtyChange,
   onFileDirtyChange,
-  onCloseEditor,
+  onBusyChange,
+  onRemoved,
   nativeApi = false,
 }: {
   agentId: string;
@@ -657,7 +603,8 @@ function ProviderEditor({
   readOnly: boolean;
   onDirtyChange: (dirty: boolean) => void;
   onFileDirtyChange: (dirty: boolean) => void;
-  onCloseEditor?: () => void;
+  onBusyChange: (busy: boolean) => void;
+  onRemoved: () => void;
   nativeApi?: boolean;
 }) {
   const queryClient = useQueryClient();
@@ -682,20 +629,8 @@ function ProviderEditor({
     onError:(failure:Error)=>setRenameError(failure.message),
   });
 
-  const providerQuery = useQuery({
-    queryKey: ["agent-provider", agentId, initialProvider.id],
-    queryFn: async () =>
-      (await api.agentManagement.provider(agentId, initialProvider.id))
-        .provider,
-    initialData: initialProvider,
-    initialDataUpdatedAt: 0,
-    staleTime: 5_000,
-    refetchInterval: (query) =>
-      query.state.data?.status === "ready" ? false : 3_000,
-    refetchIntervalInBackground: false,
-  });
   const provider = initialProvider;
-  const liveProvider = providerQuery.data;
+  const liveProvider = useQuery(liveProviderQuery(agentId, provider)).data;
   const initial = () =>
     Object.fromEntries(
       provider.fields.map((field) => [
@@ -904,6 +839,7 @@ function ProviderEditor({
         queryKey: ["conversation-controls"],
       });
       setDeleteOpen(false);
+      onRemoved();
     },
     onError: (failure: Error) => setError(failure.message),
   });
@@ -931,6 +867,8 @@ function ProviderEditor({
     },
     onError: (failure: Error) => setError(failure.message),
   });
+  const busy = engineOperation.busy || modelsSaving || update.isPending || detect.isPending || remove.isPending || rename.isPending;
+  useEffect(() => { onBusyChange(busy); }, [busy, onBusyChange]);
   const detected = detect.data?.models || [];
   const files = (liveProvider.configFiles||[]).filter(file=>file.exists&&file.writable!==false&&!file.sensitive);
   const saveProvider=async (patches:Parameters<typeof api.agentManagement.updateModelConfigs>[1])=>{
@@ -953,14 +891,13 @@ function ProviderEditor({
 
   return (
     <div className="agent-management-provider-detail provider-editor">
-      {onCloseEditor&&<button type="button" className="agent-management-button" onClick={onCloseEditor}>返回详情</button>}
       <header className="agent-management-detail-heading">
         <div>
-          <div className="flex items-center gap-2"><h3>{liveProvider.name}</h3><button type="button" className="agent-management-button" disabled={readOnly||modelsSaving||rename.isPending} onClick={()=>{setRenameValue(liveProvider.name);setRenameError('');setRenameOpen(true);}}>重命名</button></div>
           {renameOpen&&<Dialog appearance="manager" title="重命名 Provider" busy={rename.isPending} onClose={()=>setRenameOpen(false)}><form onSubmit={event=>{event.preventDefault();if(renameValue.trim())rename.mutate(renameValue.trim());}}><label className="agent-management-field"><span>名称</span><input autoFocus aria-label="Provider 名称" maxLength={100} value={renameValue} onChange={event=>setRenameValue(event.target.value)} /></label>{renameError&&<p role="alert">{renameError}</p>}<footer className="mt-4 flex justify-end gap-2"><button type="button" className="agent-management-button" onClick={()=>setRenameOpen(false)}>取消</button><button type="submit" className="agent-management-button" disabled={rename.isPending||!renameValue.trim()}>保存</button></footer></form></Dialog>}
           <p>{liveProvider.statusText}</p>
         </div>
         <div className="agent-management-status-row">
+          {!readOnly && <button type="button" className="agent-management-button" disabled={busy} onClick={()=>{setRenameValue(liveProvider.name);setRenameError('');setRenameOpen(true);}}>重命名</button>}
           <span
             className={`agent-management-pill ${statusTone(liveProvider.status)}`}
             title={liveProvider.statusText}
@@ -1168,11 +1105,13 @@ function AddCodexProvider({
   readOnly,
   onClose,
   onEditingChange,
+  onBusyChange,
 }: {
   agentId: string;
   readOnly: boolean;
   onClose: () => void;
   onEditingChange: (dirty: boolean) => void;
+  onBusyChange: (busy: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const [id, setId] = useState("");
@@ -1245,21 +1184,14 @@ function AddCodexProvider({
       onClose();
     },
   });
+  const busy = create.isPending || detect.isPending;
+  useEffect(() => { onBusyChange(busy); }, [busy, onBusyChange]);
+  const canCreate = !readOnly && !busy && !!(id && baseUrl && apiKey && selectedModels.length);
   return (
-    <div className="agent-management-add-provider">
-      <div className="agent-management-add-provider-heading">
-        <div>
-          <h4>添加 Codex Provider</h4>
-          <p>每个 Provider 使用独立 CODEX_HOME、配置文件和 Engine socket。</p>
-        </div>
-        <button
-          type="button"
-          className="agent-management-button"
-          onClick={onClose}
-        >
-          收起
-        </button>
-      </div>
+    <form className="agent-management-add-provider" onSubmit={event => {
+      event.preventDefault();
+      if (canCreate) create.mutate();
+    }}>
       <div className="agent-management-form">
         <label className="agent-management-field">
           <span>Provider ID</span>
@@ -1383,18 +1315,9 @@ function AddCodexProvider({
       />
       <div className="agent-management-actions">
         <button
-          type="button"
+          type="submit"
           className="agent-management-button agent-management-button-primary"
-          disabled={
-            readOnly ||
-            create.isPending ||
-            detect.isPending ||
-            !id ||
-            !baseUrl ||
-            !apiKey ||
-            !selectedModels.length
-          }
-          onClick={() => create.mutate()}
+          disabled={!canCreate}
         >
           {create.isPending ? (
             <Loader2 size={13} className="animate-spin" />
@@ -1404,303 +1327,197 @@ function AddCodexProvider({
           添加 Provider
         </button>
       </div>
-    </div>
+    </form>
   );
 }
 
-function CodexWorkspace({
-  agentId,
-  state,
-  readOnly,
-  onDirtyChange,
-  onFileDirtyChange,
-}: {
-  agentId: string;
+interface ProviderRow {
+  key: string;
   state: AgentManagementState;
+  name: string;
+  connection: string | undefined;
+  auth: string;
+  balanceId?: string;
+  provider?: AgentProviderState;
+  environment?: CodexEnvironment;
+}
+
+function rowStatus(row: ProviderRow, provider = row.provider) {
+  if (!(provider?.enabled ?? row.environment?.enabled)) return '已停用';
+  if (provider) return statusLabel[provider.status];
+  return row.environment?.auth_mode ? '已启用' : '认证待检测';
+}
+
+const providerColumns: TableColumn<ProviderRow>[] = [
+  {key:'name',title:'Provider',value:row=>row.name},
+  {key:'agent',title:'Agent',value:row=>row.state.agent.label},
+  {key:'auth',title:'接入方式',value:row=>row.auth},
+  {key:'connection',title:'连接',value:row=>row.connection},
+  {key:'model',title:'默认模型',value:row=>row.provider?.defaultModel},
+  {key:'status',title:'状态',value:row=>rowStatus(row)},
+  {key:'balance',title:'余额',value:()=>null,interactive:false},
+];
+
+function ProviderTableRow({row, readOnly, onOpen}: {
+  row: ProviderRow;
   readOnly: boolean;
-  onDirtyChange: (dirty: boolean) => void;
-  onFileDirtyChange: (dirty: boolean) => void;
+  onOpen: () => void;
 }) {
-  const accounts=useQuery({queryKey:['codex-environment-management'],queryFn:()=>api.codexEnvironments.management(),retry:false,enabled:!readOnly,refetchInterval:query=>query.state.data?.environments.some(e=>e.enabled&&!e.auth_mode)?10000:false});
-  const [newKind,setNewKind]=useState<'api'|'account'>('api');
-  const accountProviders=accounts.data?.environments.filter(e=>e.kind==='account')||[];
-  const nativeEnvironment=accounts.data?.environments.find(e=>e.id==='native');
-  const defaultProvider =
-    state.providers.find(
-      (provider) => provider.managed && provider.status === "ready",
-    ) ||
-    state.providers.find((provider) => provider.managed) ||
-    state.providers[0];
-  const [selectedProviderId, setSelectedProviderId] = useState(
-    defaultProvider?.id || "",
-  );
-  const [adding, setAdding] = useState(false);
-  const [nativeEditing,setNativeEditing]=useState(false);
-  const [providerDirty, setProviderDirty] = useState(false);
+  const provider = row.provider;
+  const enabled = provider?.enabled ?? row.environment?.enabled;
+  const status = rowStatus(row, provider);
+  return <tr>
+    <td><strong title={provider?.name ?? row.name}>{provider?.name ?? row.name}</strong></td>
+    <td><span className="agent-provider-agent"><AgentIcon id={row.state.agent.id}/>{row.state.agent.label}</span></td>
+    <td>{row.auth}</td>
+    <td title={row.connection}>{row.connection || '—'}</td>
+    <td title={provider?.defaultModel ?? undefined}>{provider?.defaultModel ? <code>{provider.defaultModel}</code> : '—'}</td>
+    <td><span className="agent-provider-status" title={enabled ? provider?.statusText : undefined}>
+      <span className={`agent-management-dot ${enabled ? statusTone(provider?.status ?? (row.environment?.auth_mode ? 'ready' : 'unknown')) : 'unknown'}`} />{status}
+    </span></td>
+    <td className="agent-provider-balance">{!readOnly && row.balanceId && enabled ? <BalanceSummary id={row.balanceId}/> : '—'}</td>
+    <td><TableActions><TableActionButton onClick={onOpen} aria-label={`${readOnly ? '查看' : '编辑'} ${provider?.name ?? row.name}${row.state.agent.label ? ` · ${row.state.agent.label}` : ''}`}>
+      {readOnly ? '查看' : <><Pencil size={12}/>编辑</>}
+    </TableActionButton></TableActions></td>
+  </tr>;
+}
+
+type ProviderDialog = {type:'add'; agentId:string; kind:'api'|'account'} |
+  {type:'edit'; row:ProviderRow; accountDetails:boolean};
+
+export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
+  const client = useQueryClient();
+  const [dialog, setDialog] = useState<ProviderDialog | null>(null);
+  const [dirty, setDirty] = useState(false);
   const [fileDirty, setFileDirty] = useState(false);
-  const selected =
-    state.providers.find((provider) => provider.id === selectedProviderId) ||
-    state.providers[0];
-  const selectedAccount=accountProviders.find(e=>e.id===selectedProviderId);
-  const providerDirtyChange = useCallback((dirty: boolean) => {
-    setProviderDirty(dirty);
-  }, []);
-  const fileDirtyChange = useCallback((dirty: boolean) => {
-    setFileDirty(dirty);
-  }, []);
-  useEffect(() => {
-    onDirtyChange(providerDirty);
-  }, [onDirtyChange, providerDirty]);
-  useEffect(() => {
-    onFileDirtyChange(fileDirty);
-  }, [fileDirty, onFileDirtyChange]);
-  const switchProvider = (providerId: string) => {
-    if (providerId === selectedProviderId && !adding) return;
-    if ((providerDirty || fileDirty) &&
-      !window.confirm("当前 Provider 配置有未保存的修改，确定丢弃吗？")) return;
-    setSelectedProviderId(providerId);
-    setNativeEditing(false);
-    setAdding(false);
-    setProviderDirty(false);
+  const [busy, setBusy] = useState(false);
+  const dialogStart = useRef<HTMLDivElement>(null);
+  const catalog = useQuery({queryKey:['agent-management-list'],queryFn:api.agentManagement.list});
+  const agents = catalog.data?.agents ?? [];
+  const activeAgent = dialog?.type === 'edit' ? dialog.row.state.agent.id : dialog?.agentId;
+  const states = useQueries({queries:agents.map(({agent}) => ({
+    queryKey:['agent-management',agent.id],
+    queryFn:()=>api.agentManagement.get(agent.id),
+    enabled:dialog?.type === 'edit' && activeAgent === agent.id,
+  }))});
+  const accounts = useQuery({
+    queryKey:['codex-environment-management'],
+    queryFn:()=>api.codexEnvironments.management(),
+    enabled:!readOnly && agents.some(item=>item.agent.id==='codex'),
+    retry:false,
+    refetchInterval:query=>query.state.data?.environments.some(environment=>environment.enabled&&!environment.auth_mode) ? 10_000 : false,
+  });
+  const environments = accounts.data?.environments ?? [];
+  const native = environments.find(environment=>environment.id==='native');
+  const allStates = agents.map(({state},index)=>states[index].data?.state ?? state);
+  const codex = allStates.find(state=>state.agent.id==='codex');
+  const liveProviders = useQueries({queries:(codex?.providers ?? []).map(provider=>liveProviderQuery('codex',provider))});
+  const providerStates = new Map(liveProviders.flatMap(query=>query.data ? [[query.data.id,query.data] as const] : []));
+  const rows: ProviderRow[] = allStates.flatMap(state=>{
+    const codex = state.agent.id==='codex';
+    const providers: ProviderRow[] = state.providers.map(provider=>{
+      const environment = codex ? environments.find(item=>item.id===(provider.id==='native'?'native':`provider:${provider.id}`)) : undefined;
+      const mode = environment?.auth_mode ?? (provider.managed && !['native','official'].includes(provider.kind) ? 'api' : null);
+      const liveProvider = codex ? providerStates.get(provider.id) ?? provider : provider;
+      return {
+        key:`${state.agent.id}:${provider.id}`, state, provider:liveProvider, environment, name:liveProvider.name,
+        connection:valueText(liveProvider.fields.find(field=>field.key==='baseUrl')?.value),
+        auth:mode==='api'?'API Key':mode==='account'?'账号':provider.kind==='native'||provider.kind==='official'?'原生':'待检测',
+        balanceId:codex && mode==='api' ? environment?.id ?? `provider:${provider.id}` : undefined,
+      };
+    });
+    if (codex) for (const environment of environments.filter(item=>item.kind==='account')) providers.push({
+      key:`codex:${environment.id}`,state,environment,name:environment.name,connection:environment.connection?.username,
+      auth:environment.auth_mode==='api'?'API Key':environment.auth_mode==='account'?'账号':'SSH',
+      balanceId:environment.auth_mode==='api'?environment.id:undefined,
+    });
+    return providers;
+  });
+  const table = useTableModel(rows, providerColumns);
+  const creatable = allStates.filter(state=>state.providerManagement?.create);
+  const confirmDiscard = () => !dirty && !fileDirty || window.confirm('有未保存的 Provider 修改，确定丢弃吗？');
+  const finish = () => {
+    setDialog(null);
+    setDirty(false);
     setFileDirty(false);
+    setBusy(false);
   };
-  const toggleAdding = () => {
-    if (adding) {
-      setAdding(false);
-      setProviderDirty(false);
-      onDirtyChange(false);
-      return;
-    }
-    if (
-      (providerDirty || fileDirty) &&
-      !window.confirm("当前配置有未保存的修改，确定放弃并添加 Provider 吗？")
-    )
-      return;
-    setAdding(true);
-    setProviderDirty(false);
-    setFileDirty(false);
-    onDirtyChange(false);
-    onFileDirtyChange(false);
-  };
-  return (
-    <div className="agent-management-codex">
-      <aside className="agent-management-provider-list">
-        <div className="agent-management-provider-list-heading">
-          <span>模型服务</span>
-          {state.providerManagement.create && !readOnly && (
-            <button
-              type="button"
-              aria-label="添加 Provider"
-              onClick={toggleAdding}
-            >
-              <Plus size={14} />
-            </button>
-          )}
-        </div>
-        {state.providers.map((provider) => (
-          <LiveProviderCard
-            key={provider.id}
-            agentId={agentId}
-            state={provider}
-            authMode={accounts.data?.environments.find(e=>e.id===(provider.id==='native'?'native':'provider:'+provider.id))?.auth_mode}
-            balanceId={!readOnly?(provider.id==='native'?'native':'provider:'+provider.id):undefined}
-            selected={provider.id === (selectedAccount?.id || selected?.id)}
-            onSelect={() => switchProvider(provider.id)}
-          />
-        ))}
-        {accountProviders.map(e=><button key={e.id} type="button" className="agent-management-provider" title={`${e.name}：本机用户 ${e.connection?.username}，${e.enabled?'已启用':'已停用'}`} aria-current={selectedAccount?.id===e.id?'true':undefined} onClick={()=>switchProvider(e.id)}><span className={`agent-management-dot ${e.enabled?'ready':'unknown'}`}/><span className="agent-management-provider-copy"><strong>{e.name}</strong><small>{e.auth_mode==='api'?'API':e.auth_mode==='account'?'账号':'认证待检测'} · {e.connection?.username}</small><small>{e.enabled?'已启用':'已停用'} · {e.connection?.authMethod==='password'?'SSH 密码':'SSH 密钥'}</small>{e.auth_mode==='api'&&!readOnly&&<small>余额：<BalanceSummary id={e.id}/></small>}</span><ChevronRight size={14}/></button>)}
-      </aside>
-      <div className="agent-management-provider-content">
-        {adding ? (
-          <div><label className="agent-management-field"><span>接入类型</span><select aria-label="Provider 接入类型" value={newKind} onChange={e=>{if((providerDirty||fileDirty)&&!window.confirm('放弃当前未保存修改并切换接入类型吗？'))return;setNewKind(e.target.value as 'api'|'account');setProviderDirty(false);setFileDirty(false);}}><option value="api">API Key 接入</option><option value="account">Codex 登录账号</option></select></label>
-          {newKind==='account'?<CodexAccountProviderEditor onDirtyChange={providerDirtyChange} onSaved={e=>{setSelectedProviderId(e.id);setAdding(false);setProviderDirty(false);}}/>:<AddCodexProvider agentId={agentId} readOnly={readOnly} onEditingChange={providerDirtyChange} onClose={()=>{setAdding(false);setProviderDirty(false);onDirtyChange(false);}}/>}</div>
-        ) : selectedAccount ? (
-          <CodexAccountProvider key={selectedAccount.id} environment={selectedAccount} readOnly={readOnly} onDirtyChange={providerDirtyChange}/>
-        ) : selected?.id === 'native' && !nativeEditing && nativeEnvironment?.auth_mode!=='api' ? (
-          <CodexAccountProvider key="native" environment={nativeEnvironment?{...nativeEnvironment,name:selected.name}:{id:'native',name:selected.name,kind:'native',enabled:selected.enabled,allowed_user_ids:null}} readOnly={readOnly} onDirtyChange={providerDirtyChange} nativeInfo={selected} onNativeEdit={()=>setNativeEditing(true)}/>
-        ) : selected ? (
-          <ProviderEditor
-            agentId={agentId}
-            provider={selected}
-            defaults={state.defaults}
-            readOnly={readOnly}
-            onDirtyChange={providerDirtyChange}
-            onFileDirtyChange={fileDirtyChange}
-            nativeApi={selected.id==='native'&&nativeEnvironment?.auth_mode==='api'}
-            onCloseEditor={selected.id==='native'?()=>{if((providerDirty||fileDirty)&&!window.confirm('当前配置有未保存的修改，确定返回吗？'))return;setProviderDirty(false);setFileDirty(false);setNativeEditing(false);}:undefined}
-          />
-        ) : (
-          <div className="agent-management-empty">尚未配置 Provider。</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ClaudeWorkspace({
-  state,
-  readOnly,
-}: {
-  state: AgentManagementState;
-  readOnly: boolean;
-  onDirtyChange: (dirty: boolean) => void;
-}) {
-  const provider = state.providers[0];
-  const [selectedProviderId,setSelectedProviderId]=useState(provider?.id||'');
-  return (
-    <div className="agent-management-claude">
-      <div className="agent-management-codex claude-provider-workspace">
-       <aside className="agent-management-provider-list">
-        <div className="agent-management-provider-list-heading"><span>提供商</span>{!readOnly&&<button type="button" aria-label="添加 Provider" onClick={()=>setSelectedProviderId('__new__')}><Plus size={14}/></button>}</div>
-          {state.providers.map(item=><button key={item.id} type="button" className="agent-management-provider" aria-current={selectedProviderId===item.id?'true':undefined} onClick={()=>setSelectedProviderId(item.id)}><span className={`agent-management-dot ${statusTone(item.status)}`}/><span className="agent-management-provider-copy"><strong>{item.name}</strong><small>{item.managed?item.authentication.status==='authenticated'?'API Key 已配置':'缺少 API Key':'由 Claude Code 原生管理'}</small><small>{item.statusText}</small></span><ChevronRight size={14}/></button>)}
-       </aside>
-       <div className="agent-management-provider-content">
-        {(() => {
-          const selectedProvider=state.providers.find(item=>item.id===selectedProviderId);
-          if(selectedProviderId==='__new__')return <ClaudeProviderEditor readOnly={readOnly} onCancel={()=>setSelectedProviderId(provider?.id||'')} onSaved={id=>setSelectedProviderId(id||'')}/>;
-          if(selectedProvider)return <ClaudeProviderEditor key={selectedProvider.id} provider={selectedProvider} readOnly={readOnly} onCancel={()=>setSelectedProviderId(provider?.id||'')} onSaved={id=>setSelectedProviderId(id||'')}/>;
-          return <div className="agent-management-empty">选择一个提供商以查看配置。</div>;
-        })()}
-       </div>
-      </div>
-    </div>
-  );
-}
-
-function useAgentState(agentId: string) {
-  return useQuery({
-    queryKey: ["agent-management", agentId],
-    queryFn: () => api.agentManagement.get(agentId),
-    enabled: !!agentId,
-    select: (result) => result.state,
-  });
-}
-
-export function AgentManagementPanel({
-  readOnly = false,
-}: {
-  readOnly?: boolean;
-}) {
-  const queryClient = useQueryClient();
-  const accountCatalog = useQuery({
-    queryKey: ['codex-environment-management'],
-    queryFn: () => api.codexEnvironments.management(),
-    enabled: false,
-  });
-  const catalog = useQuery({
-    queryKey: ["agent-management-list"],
-    queryFn: () => api.agentManagement.list(),
-  });
-  const [agentId, setAgentId] = useState("");
-  const [providerDirty, setProviderDirty] = useState(false);
-  const [fileDirty, setFileDirty] = useState(false);
-  const dirty = providerDirty || fileDirty;
-  const setProviderDirtyStable = useCallback(
-    (dirty: boolean) => setProviderDirty(dirty),
-    [],
-  );
-  const setFileDirtyStable = useCallback(
-    (dirty: boolean) => setFileDirty(dirty),
-    [],
-  );
-  const confirmDiscard = () =>
-    !dirty || window.confirm("当前 Agent 配置有未保存的修改，确定丢弃吗？");
-  useEffect(() => {
-    if (!dirty) return;
-    const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [dirty]);
-  const agents = catalog.data?.agents || [];
-  const selectedId = agentId || agents[0]?.agent.id || "";
-  const stateQuery = useAgentState(selectedId);
+  const close = () => { if (!busy && confirmDiscard()) finish(); };
+  useEffect(()=>{
+    if (!dirty && !fileDirty) return;
+    const protect = (event:BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload',protect);
+    return ()=>window.removeEventListener('beforeunload',protect);
+  },[dirty,fileDirty]);
   const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ["agent-management-list"] });
-    if (selectedId)
-      void queryClient.invalidateQueries({
-        queryKey: ["agent-management", selectedId],
-      });
-    if (selectedId)
-      void queryClient.invalidateQueries({
-        queryKey: ["agent-provider", selectedId],
-      });
+    void catalog.refetch();
+    if (!readOnly && agents.some(item=>item.agent.id==='codex')) void accounts.refetch();
+    states.forEach(query=>{ if (query.data) void query.refetch(); });
+    void client.invalidateQueries({queryKey:['agent-provider']});
+    void client.invalidateQueries({queryKey:['codex-engine-balance']});
   };
-  const agent = agents.find((item) => item.agent.id === selectedId);
-  const state =
-    stateQuery.data || (agent?.state as AgentManagementState | undefined);
-  return (
-    <div className="agent-management-page">
-      <div className="agent-management-workbench">
-        <div className="agent-management-agents">
-          {agents.map((item) => (
-            <button
-              type="button"
-              key={item.agent.id}
-              className="agent-management-agent-tab"
-              aria-current={item.agent.id === selectedId ? "true" : undefined}
-              onClick={() => {
-                if (item.agent.id === selectedId || confirmDiscard())
-                  setAgentId(item.agent.id);
-              }}
-            >
-              <AgentIcon id={item.agent.id} />
-              <span>{item.agent.label}</span>
-              <small>
-                {item.agent.id === "codex"
-                  ? `${((item.state as any).providers?.length || 0) + (accountCatalog.data?.environments.filter(e=>e.kind==='account').length || 0)} 个 Provider`
-                  : `${((item.state as any).providers?.length || 0)} 个 Provider`}
-              </small>
-            </button>
-          ))}
-          <button
-            type="button"
-            className="agent-management-button agent-management-refresh"
-            onClick={refresh}
-            disabled={catalog.isFetching}
-          >
-            <RefreshCw
-              size={13}
-              className={catalog.isFetching ? "animate-spin" : ""}
-            />
-            重新检测
-          </button>
-        </div>
-        {catalog.isPending ? (
-          <div className="agent-management-loading">
-            <Loader2 size={16} className="animate-spin" />
-            读取 Agent 配置…
-          </div>
-        ) : catalog.isError ? (
-          <div className="agent-management-error-box">
-            <CircleAlert size={16} />
-            {catalog.error.message}
-          </div>
-        ) : !state ? (
-          <div className="agent-management-empty">暂无可用 Agent。</div>
-        ) : stateQuery.isError ? (
-          <div className="agent-management-error-box">
-            <CircleAlert size={16} />
-            {stateQuery.error.message}
-          </div>
-        ) : selectedId === "codex" ? (
-          <CodexWorkspace
-            agentId={selectedId}
-            state={state as AgentManagementState}
-            readOnly={readOnly}
-            onDirtyChange={setProviderDirtyStable}
-            onFileDirtyChange={setFileDirtyStable}
-          />
-        ) : (
-          <ClaudeWorkspace
-            state={state as AgentManagementState}
-            readOnly={readOnly}
-            onDirtyChange={setProviderDirtyStable}
-          />
-        )}
+  const editRow = dialog?.type === 'edit' ? rows.find(row=>row.key===dialog.row.key) ?? dialog.row : null;
+  const editProvider = editRow?.state.providers.find(provider=>provider.id===editRow.provider?.id);
+  const editEnvironment = editRow?.environment;
+  const title = editRow ? `${readOnly ? '查看' : '编辑'} Provider · ${editRow.name}` : '新增 Provider';
+  const toggleDetails = () => {
+    if (dialog?.type !== 'edit' || busy || !confirmDiscard()) return;
+    setDirty(false);
+    setFileDirty(false);
+    setDialog({...dialog,accountDetails:!dialog.accountDetails});
+  };
+  return <div className="agent-management-page">
+    <div className="agent-provider-toolbar">
+      <span aria-live="polite">{table.rows.length} 个 Provider</span>
+      <div>
+        <button type="button" className="agent-management-button" onClick={refresh} disabled={catalog.isFetching || accounts.isFetching}>
+          <RefreshCw size={13} className={catalog.isFetching || accounts.isFetching ? 'animate-spin' : undefined}/>重新检测
+        </button>
+        {!readOnly && !!creatable.length && <button type="button" className="agent-management-button agent-management-button-primary" onClick={()=>setDialog({type:'add',agentId:creatable[0].agent.id,kind:'api'})}>
+          <Plus size={14}/>新增 Provider
+        </button>}
       </div>
     </div>
-  );
+    {accounts.isError && !readOnly && <div className="agent-management-error-box" role="alert">
+      <CircleAlert size={14}/>读取 Codex 账号 Provider 失败
+      <TableActionButton onClick={()=>void accounts.refetch()}>重试</TableActionButton>
+    </div>}
+    <DataTable label="Agent Provider" model={table} actions minWidth={850} className="agent-provider-table"
+      loading={catalog.isPending} error={catalog.isError ? catalog.error.message : undefined} onRetry={refresh}
+      empty={!table.rows.length} emptyMessage={rows.length ? '没有符合筛选条件的 Provider' : '暂无 Provider'}>
+      {table.rows.map(row=><ProviderTableRow key={row.key} row={row} readOnly={readOnly}
+        onOpen={()=>setDialog({type:'edit',row,accountDetails:readOnly})}/>)}
+    </DataTable>
+    {dialog && <Dialog appearance="manager" className="agent-provider-dialog" title={title} size="image" width={1160}
+      maxWidth="calc(100vw - 32px)" busy={busy} onClose={close} initialFocus={dialogStart}
+      actions={dialog.type==='edit' && editRow?.state.agent.id==='codex' &&
+        (editEnvironment?.kind==='account'||editProvider?.id==='native') && !dialog.accountDetails &&
+        <button type="button" className="agent-management-button" disabled={busy} onClick={toggleDetails}>账号详情</button>}>
+      <div ref={dialogStart} tabIndex={-1} className="agent-provider-dialog-content">
+      {dialog.type==='add' ? <>
+        <div className="agent-provider-dialog-options">
+          <label className="agent-management-field"><span>Agent</span><select value={dialog.agentId} disabled={busy} onChange={event=>{
+            if (confirmDiscard()) { setDirty(false); setDialog({type:'add',agentId:event.target.value,kind:'api'}); }
+          }}>{creatable.map(state=><option key={state.agent.id} value={state.agent.id}>{state.agent.label}</option>)}</select></label>
+          {dialog.agentId==='codex' && <label className="agent-management-field"><span>接入类型</span><select aria-label="Provider 接入类型" value={dialog.kind} disabled={busy} onChange={event=>{
+            if (confirmDiscard()) { setDirty(false); setDialog({...dialog,kind:event.target.value as 'api'|'account'}); }
+          }}><option value="api">API Key</option><option value="account">Codex 登录账号</option></select></label>}
+        </div>
+        {dialog.agentId==='claude' ? <ClaudeProviderEditor readOnly={readOnly} inDialog onSaved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
+          : dialog.kind==='account' ? <CodexAccountProviderEditor inDialog onSaved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
+          : <AddCodexProvider key={dialog.agentId} agentId={dialog.agentId} readOnly={readOnly} onClose={finish} onEditingChange={setDirty} onBusyChange={setBusy}/>}
+      </> : editRow && <>
+        {editRow.state.agent.id==='claude' && editProvider ?
+          <ClaudeProviderEditor key={editRow.key} provider={editProvider} readOnly={readOnly} inDialog onSaved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
+          : dialog.accountDetails && (editEnvironment?.kind==='account' || editProvider?.id==='native') ?
+            <CodexAccountProvider key={editRow.key} environment={editEnvironment ?? {id:'native',name:editRow.name,kind:'native',enabled:editProvider!.enabled,allowed_user_ids:null}} readOnly={readOnly} onDirtyChange={setFileDirty} nativeInfo={editProvider} onNativeEdit={toggleDetails}/>
+          : editEnvironment?.kind==='account' ?
+            <CodexAccountProviderEditor key={editRow.key} environment={editEnvironment} readOnly={readOnly} inDialog onSaved={finish} onRemoved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
+          : editProvider && <ProviderEditor key={editRow.key} agentId={editRow.state.agent.id} provider={editProvider}
+            defaults={editRow.state.defaults ?? []} nativeApi={editProvider.id==='native' && native?.auth_mode==='api'} readOnly={readOnly}
+            onDirtyChange={setDirty} onFileDirtyChange={setFileDirty} onBusyChange={setBusy} onRemoved={finish}/>}
+      </>}
+      </div>
+    </Dialog>}
+  </div>;
 }

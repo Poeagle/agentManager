@@ -1,17 +1,20 @@
 import {useEffect,useId,useState} from 'react';
 import {useQuery,useQueryClient} from '@tanstack/react-query';
-import {KeyRound,Loader2,PlugZap,Save,Server,ShieldCheck,TerminalSquare,Trash2,UserRound} from 'lucide-react';
+import {KeyRound,Loader2,PlugZap,Save,Server,TerminalSquare,Trash2,UserRound} from 'lucide-react';
 import {api,type CodexEnvironment,type EnvironmentCheck} from '../lib/api';
 import {useProviderUsage} from '../lib/use-provider-usage';
 import {EnvironmentChecks} from './CodexEnvironmentPanel';
 import {ProviderDeleteDialog} from './ProviderDeleteDialog';
 
-export function CodexAccountProviderEditor({environment,onSaved,onDirtyChange,onCancel,readOnly=false}: {
+export function CodexAccountProviderEditor({environment,onSaved,onDirtyChange,onCancel,onBusyChange,onRemoved,inDialog=false,readOnly=false}: {
   environment?:CodexEnvironment;
   onSaved:(environment:CodexEnvironment)=>void;
   onDirtyChange?:(dirty:boolean)=>void;
   readOnly?:boolean;
   onCancel?:()=>void;
+  onBusyChange?:(busy:boolean)=>void;
+  onRemoved?:()=>void;
+  inDialog?:boolean;
 }) {
   const client=useQueryClient();
   const projects=useQuery({queryKey:['projects'],queryFn:()=>api.projects.list(),retry:false});
@@ -42,6 +45,8 @@ export function CodexAccountProviderEditor({environment,onSaved,onDirtyChange,on
     onDirtyChange?.(name!==(environment?.name||'')||username!==(original?.username||'')||port!==(original?.port||22)||auth!==(original?.authMethod||'password')||!!password||key!==(original?.identityFile||'')||command!==(original?.codexCommand||'codex')||home!==(original?.codexHome||'')||enabled!==(environment?.enabled??true));
   },[name,username,port,auth,password,key,command,home,enabled,environment,original,onDirtyChange]);
 
+  useEffect(()=>{onBusyChange?.(!!working||removeConfirm);},[working,removeConfirm,onBusyChange]);
+
   async function check() {
     if(!ready||working)return;
     setWorking('check');setError('');setChecks([]);setModels([]);
@@ -66,15 +71,17 @@ export function CodexAccountProviderEditor({environment,onSaved,onDirtyChange,on
     await api.codexEnvironments.remove(environment!.id);
     onDirtyChange?.(false);
     await Promise.all(['codex-environment-management','session-environments','codex-environments'].map(key=>client.invalidateQueries({queryKey:[key]})));
+    setRemoveConfirm(false);
+    onRemoved?.();
   }
 
   return <section className="agent-management-provider-detail codex-account-editor" aria-label="Codex 账号 Provider">
-    <header className="codex-account-heading">
+    {!inDialog&&<header className="codex-account-heading">
       <div className="codex-account-heading-icon"><UserRound size={21}/></div>
       <div className="codex-account-heading-copy"><span className="agent-management-eyebrow">CODEX 登录账号</span><h3>{environment?.name||'新增账号 Provider'}</h3><p>使用本机系统用户已经登录的 Codex，执行身份与账号保持一致。</p></div>
       <span className={`agent-management-pill ${enabled?'ready':''}`}>{enabled?'已启用':'已停用'}</span>
-    </header>
-    <div className="codex-account-summary"><span><Server size={13}/>127.0.0.1 · 本机</span><span><UserRound size={13}/>{username||'待设置系统用户'}</span><span><ShieldCheck size={13}/>管理员默认拥有全部权限</span></div>
+    </header>}
+
 
     <form onSubmit={event=>{event.preventDefault();void save();}} onChange={()=>{setChecks([]);setModels([]);}}>
       <fieldset className="codex-account-card" disabled={readOnly||!!working}>

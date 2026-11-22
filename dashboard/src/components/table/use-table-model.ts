@@ -5,6 +5,7 @@ export interface TableColumn<T> {
   key: string;
   title: string;
   description?: string;
+  interactive?: boolean;
   value: (row: T) => TableValue;
   kind?: 'text' | 'number' | 'date';
   filterMode?: 'range' | 'text';
