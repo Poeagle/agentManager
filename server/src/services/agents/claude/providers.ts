@@ -13,6 +13,7 @@ import type {
 } from '../types.js';
 import { environmentUserOverride } from '../environment-access.js';
 import { readManagedEnvironment, updateManagedEnvironment } from '../environment-store.js';
+import {modelRateField,saveModelRates} from '../provider-pricing.js';
 
 const ID_RE = /^[a-z][a-z0-9_.-]{0,63}$/;
 /** Provider-native model IDs are opaque; brackets are used by some Claude
@@ -46,6 +47,7 @@ export interface ClaudeProviderRuntime {
   adaptiveThinking: boolean;
   contextWindow: number | null;
   maxOutputTokens: number | null;
+  billingFields?: Pick<StoredProvider['fields'],'modelRateVersions'>;
 }
 
 /** The SDK model aliases all resolve to the session's exact model. */
@@ -447,6 +449,7 @@ function validateFields(
       next[key] = fields[key] as string;
     }
   }
+  saveModelRates(next,current?.fields);
   return next;
 }
 
@@ -533,6 +536,7 @@ export function claudeProviderState(
         value: stringField(provider, 'defaultModel') || models[0] || '',
         description: '新建会话默认使用的模型。',
       },
+      modelRateField(provider.fields),
       {
         key: 'haikuModel',
         label: 'Haiku 模型',
@@ -813,6 +817,7 @@ export function claudeRuntimeProvider(
     name: provider.name,
     baseUrl,
     authToken,
+    billingFields: {modelRateVersions:provider.fields.modelRateVersions??null},
     models,
     defaultModel: models.includes(requested) ? requested : models[0] || null,
     ...providerOptions,

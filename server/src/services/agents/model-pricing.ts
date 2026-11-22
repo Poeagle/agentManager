@@ -2,7 +2,7 @@ import {getDb} from '../../db/index.js';
 
 export type TokenRates={input:number;cached:number|null;output:number;cache_write_5m?:number;cache_write_1h?:number};
 export type PricingBand={label?:string;rates:TokenRates};
-export type ModelPricing={currency:string;source:string;reference_only?:boolean;bands?:PricingBand[];peak?:TokenRates;off_peak?:TokenRates;timezone?:string;peak_hours?:number[][]};
+export type ModelPricing={currency:string;source:string;reference_only?:boolean;provider_multiplier?:number;bands?:PricingBand[];peak?:TokenRates;off_peak?:TokenRates;timezone?:string;peak_hours?:number[][]};
 export type Tariff={bands:PricingBand[];release_date?:string;version?:string};
 export type PricingData={models:Record<string,Tariff>;peak_hours?:number[][];speeds?:Record<string,Record<string,{subscription:number;credits:number;after?:{at:number;credits:number}}>>};
 type Snapshot={from:number;checked:number;data:PricingData};

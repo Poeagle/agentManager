@@ -1,10 +1,12 @@
 import type {AgentCostEstimate,TokenCostBreakdown} from '../types.js';
-import {readAgentManagement} from '../management-store.js';
+import {readAgentManagement,type StoredProvider} from '../management-store.js';
 import {estimatePublicApiCost} from '../model-pricing.js';
+import {estimateProviderApiCost} from '../provider-pricing.js';
 import {estimateDeepseekBreakdown,isOfficialDeepSeek} from './deepseek-pricing.js';
 import {creditRateDate,estimateUsageCredits,estimateUsageBreakdown} from './usage-credits.js';
 
-export type CodexPricing={unit:'CNY'|'USD';provider:string};
+export type CodexPricing={unit:'CNY'|'USD';provider:string;gatewayFields?:StoredProvider['fields']};
+export const isOfficialOpenAi=(base:unknown)=>typeof base==='string'&&/^https:\/\/api\.openai\.com(?:\/v1)?\/*$/.test(base);
 export function codexApiPricing(environment:string|null|undefined):CodexPricing|null{
  if(!environment?.startsWith('provider:'))return null;
  const id=environment.slice('provider:'.length);
@@ -12,13 +14,17 @@ export function codexApiPricing(environment:string|null|undefined):CodexPricing|
  if(!provider)return null;
  const base=provider.fields.baseUrl;
  if(isOfficialDeepSeek(base))return {unit:'CNY',provider:id};
- return typeof base==='string'&&/^https:\/\/api\.openai\.com(?:\/v1)?\/*$/.test(base)?{unit:'USD',provider:id}:null;
+ if(isOfficialOpenAi(base))return {unit:'USD',provider:id};
+ return provider.fields.modelRateVersions?{unit:'USD',provider:id,gatewayFields:provider.fields}:null;
 }
 export function codexApiEstimate(pricing:CodexPricing,provider:string|null,model:string|null,tier:string|null,at:string|null,tokens:Record<string,number|null>|null):AgentCostEstimate{
  let breakdown:TokenCostBreakdown|null=null;
  if(tokens&&at&&provider===pricing.provider){
   if(pricing.unit==='CNY')breakdown=estimateDeepseekBreakdown(model,Date.parse(at),tokens);
-  else if(!tier||tier==='default'||tier==='standard')breakdown=estimatePublicApiCost('openai',model,at,tokens)?.breakdown??null;
+  else if(!tier||tier==='default'||tier==='standard'){
+   const estimate=pricing.gatewayFields?estimateProviderApiCost('openai',pricing.gatewayFields,model,at,tokens):estimatePublicApiCost('openai',model,at,tokens);
+   breakdown=estimate?.breakdown??null;
+  }
  }
  return {unit:pricing.unit,basis:'api',amount:breakdown?breakdown.input+breakdown.cache+breakdown.output:null,complete:breakdown!==null,...breakdown?{breakdown}:{}};
 }

@@ -18,6 +18,7 @@ import {tokenFields} from '../../conversation-usage.js';
 import {creditRateDate,estimateUsageCredits,estimateUsageBreakdown} from './usage-credits.js';
 import {createHash} from 'node:crypto';
 import {deepseekDay,deepseekOrigin,estimateDeepseekBreakdown} from './deepseek-pricing.js';
+import {codexApiEstimate,codexApiPricing} from './statistics-cost.js';
 import type {TokenCostBreakdown} from '../types.js';
 import {initUsageProvenance,usageOrigins} from './usage-provenance.js';
 import {realpathSync} from 'fs';
@@ -320,6 +321,8 @@ function addApiCost(target:ApiCost,source:ApiCost){
 export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',single=false){
  type GroupEvent={day:string;hour:string|null;at?:string|null;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string};
  const official=!single&&ids.length>0&&ids.every(id=>balanceGroup(id)===deepseekGroup);
+ const apiProviders=new Map(ids.map(id=>[id.slice('provider:'.length),codexApiPricing(id)]));
+ const currency=official?'CNY':!single&&[...apiProviders.values()].some(pricing=>pricing?.unit==='USD')?'USD':null;
  const today=emptyApiCost(),todayDate=deepseekDay(Date.now()),ambiguousTimes=new Set<string>();
  const basis=single&&getCodexEnvironment(ids[0]).kind!=='provider'?'subscription':'credits';
  let storage:ReturnType<typeof databaseStorage>|ReturnType<typeof csvStorage>=databaseStorage();
@@ -330,7 +333,7 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   const {hour:a,at:leftAt,...left}=current,{hour:b,at:rightAt,...right}=event;
   if(JSON.stringify(left)!==JSON.stringify(right)||a&&b&&a!==b){events.set(key,null);partial=true;return;}
   current.hour??=b;
-  if(official&&leftAt&&rightAt&&Date.parse(leftAt)!==Date.parse(rightAt))ambiguousTimes.add(key);
+  if(currency&&leftAt&&rightAt&&Date.parse(leftAt)!==Date.parse(rightAt))ambiguousTimes.add(key);
   current.at??=rightAt;
  };
  const all=allCodexEnvironments().filter(e=>e.enabled);
@@ -381,9 +384,11 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   const modelKey=JSON.stringify(event.model);let model=row.models.get(modelKey);
   if(!model){model={model:event.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0}};row.models.set(modelKey,model);}
   model.credit_coverage.total+=requests;const estimate=estimateUsageCredits(event.model,event.tier,tokens,basis);if(estimate!==null){model.estimated_credits=(model.estimated_credits??0)+estimate;model.credit_coverage.covered+=requests;const cost=estimateUsageBreakdown(event.model,event.tier,tokens,basis);if(cost)model.cost_breakdown=addBreakdown(model.cost_breakdown,cost);}
-  if(official){
+  if(currency){
    const at=Date.parse(event.at??''),timeKnown=Number.isFinite(at)&&!ambiguousTimes.has(requestId);
-   const breakdown=requests===1&&timeKnown?estimateDeepseekBreakdown(event.model,at,tokens):null;
+   const pricing=event.provider?apiProviders.get(event.provider):null;
+   const breakdown=requests===1&&timeKnown?(official?estimateDeepseekBreakdown(event.model,at,tokens)
+    :pricing?.unit===currency?codexApiEstimate(pricing,event.provider,event.model,event.tier,event.at??null,tokens).breakdown:null):null;
    const amount=breakdown?breakdown.input+breakdown.cache+breakdown.output:null;
    const cost={amount,coverage:{covered:amount===null?0:requests,total:requests},...breakdown?{breakdown}:{}};
    addApiCost(model.api_cost??=emptyApiCost(),cost);
@@ -407,7 +412,7 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
  const hourTotals=new Map(quota_hours.map(h=>[h.hour,h.quota])),hourCredits=new Map<string,number>();for(const r of grouped.values())for(const m of r.models.values())if(r.hour&&m.estimated_credits!==null)hourCredits.set(r.hour,(hourCredits.get(r.hour)??0)+m.estimated_credits);
  if(single&&granularity==='hour'){allocation.clear();for(const r of grouped.values()){const total=r.hour?hourTotals.get(r.hour):undefined,denominator=r.hour?hourCredits.get(r.hour):undefined;if(total!==undefined&&denominator)for(const m of r.models.values())if(m.estimated_credits!==null)allocation.set(JSON.stringify([r.date,r.hour,r.cwd,m.model]),total*m.estimated_credits/denominator);}}
 
- const api_pricing=official?{currency:'CNY',today:{...today,date:todayDate,partial:partial||unknownTodayTime||today.coverage.covered<today.coverage.total}}:undefined;
+ const api_pricing=currency?{currency,today:{...today,date:todayDate,partial:partial||unknownTodayTime||today.coverage.covered<today.coverage.total}}:undefined;
  return {storage,initialized:checked.length>0,checked_at:checked.sort()[0]??null,quota_range,quota_hours,timezone,unassigned:single?unassignedUsage(ids[0],basis):retained.requests?retained:null,credit_rate_date:creditRateDate(),partial,...api_pricing?{api_pricing}:{},error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()].map(model=>({...model,actual_quota:quotaByModel(allocation,row.date,row.cwd,model.model,row.hour)})),known=entries.filter(m=>m.estimated_credits!==null);return {...row,...directoryFor(row.cwd),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
 }
 /** Re-read with the current rule version, replacing only a proven superset of

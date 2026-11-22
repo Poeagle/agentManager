@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { estimatePublicApiCost } from '../model-pricing.js';
 import { readClaudeRuntimeProvider } from './providers.js';
+import {estimateProviderApiCost} from '../provider-pricing.js';
 
 interface Assistant {
   id: string;
@@ -99,9 +100,12 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
       for (const id of group.tools) facts.push({kind: 'tool', id, turn_id: group.turn});
       const provider=declared?readClaudeRuntimeProvider(context.session,context.environmentAccess):null;
       const official=provider&&/^https:\/\/api\.anthropic\.com\/*$/.test(provider.baseUrl);
-      const estimate=official&&group.cacheWrites&&(!group.speed||group.speed==='standard')?estimatePublicApiCost('claude',group.model,group.at,group.tokens,group.cacheWrites):null;
+      const billable=official||provider?.billingFields?.modelRateVersions;
+      const estimate=billable&&group.cacheWrites&&(!group.speed||group.speed==='standard')?
+        (official?estimatePublicApiCost('claude',group.model,group.at,group.tokens,group.cacheWrites):
+          estimateProviderApiCost('claude',provider?.billingFields,group.model,group.at,group.tokens,group.cacheWrites)):null;
       facts.push({kind: 'request', source_offset: group.offset, request: {
-        id: group.id, at: group.at, turn_id: group.turn, tokens: group.tokens, dimensions, cost: official?{unit:'USD',basis:'api',amount:estimate?.amount??null,breakdown:estimate?.breakdown,complete:estimate!==null}:null, evidence: 'request',
+        id: group.id, at: group.at, turn_id: group.turn, tokens: group.tokens, dimensions, cost: billable?{unit:'USD',basis:'api',amount:estimate?.amount??null,breakdown:estimate?.breakdown,complete:estimate!==null}:null, evidence: 'request',
       }});
       for (const id of group.endedTools ?? []) facts.push({kind: 'tool_end', id, turn_id: group.turn});
       if (group.outcome) {

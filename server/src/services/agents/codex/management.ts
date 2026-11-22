@@ -20,6 +20,7 @@ import type {
 import { findExecutable, firstVersion, runCli } from '../management-cli.js';
 import { expandHome } from '../management-common.js';
 import { managedLaunchCommand, openAgentSecret, readAgentManagement, sealAgentSecret, updateAgentManagement, writeAgentManagement, type StoredProvider } from '../management-store.js';
+import {modelRateField,saveModelRates} from '../provider-pricing.js';
 import { configuredCodexEngines } from './engine-context.js';
 import { clearManagedCodexRuntimeSocket, managedCodexSocket, managedCodexRuntimeSocket, setManagedCodexRuntimeSocket } from './provider-config.js';
 import {
@@ -348,6 +349,7 @@ function managedProviderState(provider: StoredProvider): AgentProviderState {
         description: storedApiKey ? '密钥加密保存在本机平台凭据。' : environmentApiKey ? '由独立 Engine 的启动环境提供。' : '密钥加密保存到本机平台凭据，仅用于启动该 Provider。' },
       { key: 'codexHome', label: '独立 CODEX_HOME', type: 'text', value: codexHome },
       { key: 'models', label: '模型', type: 'string-list', value: listField(provider, 'models'), required: true },
+      modelRateField(provider.fields),
       { key: 'defaultModel', label: '默认模型', type: 'text', value: stringField(provider, 'defaultModel') },
       {
         key: 'command',
@@ -382,6 +384,8 @@ function validateProvider(input: AgentProviderInput, prior?: StoredProvider): St
   if (envKey && !/^[A-Z_][A-Z0-9_]*$/.test(envKey)) throw Object.assign(Error('API Key 环境变量名无效'), { statusCode: 400 });
   const command = normalizeEngineCommand(fields.command, 'codex');
   const launchArgs = normalizeEngineArgs(fields.launchArgs);
+  fields.baseUrl=baseUrl;
+  saveModelRates(fields,prior?.fields);
   return {
     id,
     name: input.name?.trim() || prior?.name || id,
@@ -819,6 +823,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
           { key: 'envKey', label: 'API Key 环境变量', type: 'text', description: '只保存环境变量名，不保存密钥内容。' },
           { key: 'codexHome', label: '独立 CODEX_HOME', type: 'text', placeholder: '~/.codex-agentmanager/provider-id' },
           { key: 'models', label: '模型', type: 'string-list', required: true, placeholder: '每行一个模型 ID' },
+          modelRateField(),
           { key: 'defaultModel', label: '默认模型', type: 'text' },
         ],
       },
