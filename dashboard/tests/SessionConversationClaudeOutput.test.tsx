@@ -53,7 +53,7 @@ function readConversationDom(agentLabel:string){
     toolClass:tool.className,
     toolSummary:tool.querySelector('summary')?.textContent?.replace(/\s+/g,' ').trim(),
     hasCompactTool:!!progress.querySelector('.session-chat-tool-compact'),
-    progressContent:progress.textContent?.replace(/^(?:Claude|codex)/,'').replaceAll(/(?:Claude|codex) 的思考过程/g,'思考过程').replace(/\s+/g,' ').trim(),
+    progressContent:progress.textContent?.replace(/^(?:Claude|codex)/,'').replace(/\s+/g,' ').trim(),
     finalText:screen.getByText('The project is ready.').textContent,
   };
 }
@@ -109,38 +109,42 @@ it('renders identical tool and thinking structure for Claude and Codex',async()=
   expect(claude.progressContent).toContain('Read');
   expect(claude.finalText).toBe('The project is ready.');
 });
-it('projects multiple Claude request snapshots into one latest live thinking row',async()=>{
-  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
-  render(<QueryClientProvider client={client}><SessionConversation session={session} active onRaw={()=>{}}/></QueryClientProvider>);
-  await waitFor(()=>expect(Socket.latest?.onmessage).toBeTruthy());
+it.each(['claude','codex'] as const)('puts the latest %s thinking on one row before progress and preserves its disclosure as text arrives',async agent=>{
+  const current={...session,cli_type:agent,codex_session_id:agent==='codex'?'claude-native':null,claude_session_id:agent==='claude'?'claude-native':null};
   const stamp='2026-11-19T23:45:45.000Z';
-  const snapshot=(rounds:Array<[string,string]>,busy:boolean)=>act(()=>Socket.latest.emit({
-    type:'snapshot',busy,turn_id:'turn',stage:busy?'tools':'idle',
-    messages:[
-      {id:'user',role:'user',text:'Inspect the project',timestamp:stamp},
-      ...rounds.map(([id,thinking],index)=>({
-        id,role:'assistant',turn_id:'turn',phase:'commentary',text:'',timestamp:stamp,
-        content_blocks:[
-          {type:'thinking',index:0,text:thinking},
-          {type:'tool_use',index:1,id:`tool-${index}`,name:'Read',input:{file_path:`/p/file-${index}`},status:'completed',result:'ok'},
-        ],
-      })),
-    ],
+  const messages:ConvMessage[]=[
+    {id:'user',role:'user',text:'Inspect the project',timestamp:stamp},
+    {id:'older',role:'assistant',turn_id:'thinking-turn',phase:'commentary',text:'Earlier progress',timestamp:stamp,
+      content_blocks:[{type:'thinking',index:0,text:'Previous reasoning.'}]},
+  ];
+  await renderSnapshot(current,messages);
+  const push=(thinking:string,text='',busy=true)=>act(()=>Socket.latest.emit({
+    type:'snapshot',busy,turn_id:'thinking-turn',stage:busy?'answering':'idle',messages:[...messages,{
+      id:'current',role:'assistant',turn_id:'thinking-turn',phase:'commentary',streaming:busy,text,timestamp:stamp,
+      content_blocks:[{type:'thinking',index:0,text:thinking},...(text?[{type:'text',index:1,text}]:[])],
+    }],
   }));
-  snapshot([['round-1','First request reasoning.']],true);
-  const progress=await screen.findByLabelText('Claude 进展');
-  expect(within(progress).getAllByText('Claude 正在思考')).toHaveLength(1);
-  expect(within(progress).getByText('First request reasoning.')).toBeVisible();
-  snapshot([['round-1','First request reasoning.'],['round-2','Second request reasoning.'],['round-3','Third request reasoning.']],true);
-  expect(within(progress).getAllByText('Claude 正在思考')).toHaveLength(1);
-  expect(within(progress).queryByText('First request reasoning.')).not.toBeInTheDocument();
-  expect(within(progress).queryByText('Second request reasoning.')).not.toBeInTheDocument();
-  expect(within(progress).getByText('Third request reasoning.')).toBeVisible();
-  expect(within(progress).getAllByText('Read')).toHaveLength(3);
-  snapshot([['round-1','First request reasoning.'],['round-2','Second request reasoning.'],['round-3','Third request reasoning.'],['round-4','Fourth request reasoning.']],false);
-  expect(within(progress).getAllByText('Claude 的思考过程')).toHaveLength(1);
-  expect(within(progress).queryByText('Third request reasoning.')).not.toBeInTheDocument();
-  expect(within(progress).getByText('Fourth request reasoning.').closest('details')).not.toHaveAttribute('open');
+  const name=agent==='claude'?'Claude':'codex';
+  push('Checking files.\n\nReview');
+  const progress=await screen.findByLabelText(`${name} 进展`);
+  const reasoning=within(progress).getByLabelText(`${name} 正在思考`);
+  const row=reasoning.closest('details')!;
+  const preview=row.querySelector('.session-chat-thinking-preview');
+  expect(preview).toHaveTextContent('Review');
+  expect(row).not.toHaveAttribute('open');
+  expect(row.parentElement?.firstElementChild).toBe(row);
+  expect(within(progress).queryByText('Previous reasoning.')).not.toBeInTheDocument();
+
+  push('Checking files.\n\nReviewing the output.');
+  expect(within(progress).getByLabelText(`${name} 正在思考`)).toBe(reasoning);
+  expect(preview).toHaveTextContent('Reviewing the output.');
+  fireEvent.click(reasoning);
+  expect(row).toHaveAttribute('open');
+  expect(row.querySelector('.session-chat-thinking-body')?.textContent).toBe('Checking files.\nReviewing the output.');
+  push('Checking files.\n\nReviewing the output.','Response starts here.');
+  expect(within(progress).getByLabelText(`${name} 的思考过程`)).toBe(reasoning);
+  expect(row).toHaveAttribute('open');
+  expect(within(progress).getByText('Response starts here.')).toBeVisible();
 });
 it('does not reserve numbered items for Claude thinking-only request snapshots',async()=>{
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
@@ -171,7 +175,7 @@ it('does not reserve numbered items for Claude thinking-only request snapshots',
   expect(entries[0].querySelector('.session-chat-progress-number')).toHaveTextContent('1');
   expect(entries[1].querySelector('.session-chat-progress-number')).toHaveTextContent('2');
   expect(within(progress).getByLabelText('进展序号 2')).toBeInTheDocument();
-  expect(within(progress).getByText('Second private reasoning.')).toBeVisible();
+  expect(within(progress).getByText('Second private reasoning.',{selector:'.session-chat-thinking-preview'})).toBeVisible();
   expect(progress.querySelector('summary')).toHaveTextContent('2 items');
 });
 it('renders Claude through the same conversation structure as every other agent',async()=>{
@@ -183,17 +187,18 @@ it('renders Claude through the same conversation structure as every other agent'
     messages:[
       {id:'user',role:'user',text:'Inspect the project',timestamp:new Date().toISOString()},
       {id:'assistant',role:'assistant',text:'The project is ready.',timestamp:new Date(Date.now()+5000).toISOString(),turn_id:'turn',phase:'final',usage:{input_tokens:120,cached_input_tokens:80,output_tokens:30,total_tokens:150},content_blocks:[
-        {type:'thinking',index:0,text:'I should inspect the repository first.'},
+        {type:'text',index:0,text:'The project is ready.'},
         {type:'tool_use',index:1,id:'tool-1',name:'Read',input:{file_path:'/p/README.md'},status:'completed',result:'# Project'},
-        {type:'text',index:2,text:'The project is ready.'},
+        {type:'thinking',index:2,text:'I should inspect the repository first.'},
       ]},
     ],
   }));
-  const thinking=screen.getByText('Claude 的思考过程').closest('details')!;
+  const thinking=screen.getByLabelText('Claude 的思考过程').closest('details')!;
   expect(thinking).not.toHaveAttribute('open');
-  fireEvent.click(screen.getByText('Claude 的思考过程'));
+  expect(thinking.parentElement?.firstElementChild).toBe(thinking);
+  fireEvent.click(screen.getByLabelText('Claude 的思考过程'));
   expect(thinking).toHaveAttribute('open');
-  expect(screen.getByText('I should inspect the repository first.')).toBeVisible();
+  expect(within(thinking).getByText('I should inspect the repository first.',{selector:'.session-chat-thinking-body'})).toBeVisible();
   expect(screen.getByText('Read')).toBeVisible();
   expect(screen.getByText('Read')).toBeVisible();
   expect(screen.getByText('The project is ready.')).toBeVisible();
