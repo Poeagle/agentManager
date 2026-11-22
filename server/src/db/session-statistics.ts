@@ -73,6 +73,7 @@ export function migrateSessionStatistics(db: Database.Database) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS session_statistics_drops_timeline ON session_statistics_cache_drops(source, occurred_at DESC, position DESC, id);
     CREATE INDEX IF NOT EXISTS session_statistics_drops_input ON session_statistics_cache_drops(source, input_id);
+    CREATE INDEX IF NOT EXISTS session_statistics_drops_source_input ON session_statistics_cache_drops(source, json_extract(fact, '$.current.input_id'));
     CREATE TABLE IF NOT EXISTS session_statistics_events (
       source TEXT NOT NULL,
       id TEXT NOT NULL,

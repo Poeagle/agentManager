@@ -102,10 +102,6 @@
 }
 .conversation-details-note { margin: 6px 0; color: var(--text-secondary); font-size: 12px; }
 .conversation-cache-sample { white-space: nowrap; font-variant-numeric: tabular-nums; }
-.conversation-cache-card { margin: 0 0 8px; max-width: 100%; }
-.conversation-cache-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; }
-.conversation-cache-summary svg { color: var(--warning, #d97706); }
-.conversation-cache-summary time { color: var(--text-secondary); font-size: 11px; }
 .conversation-total-credits { white-space: nowrap; }
 
 @media (max-width: 720px) {

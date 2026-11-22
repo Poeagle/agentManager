@@ -207,11 +207,11 @@ export function progressThinking(messages: ConversationMessage[]) {
 /** A standalone thinking item belongs to the next visible output in its turn.
  * Keep its row identity while that output is still streaming separately. */
 export function progressSteps(messages: ConversationMessage[]) {
-  const steps: Array<{key:string;message:ConversationMessage}> = [];
+  const steps: Array<{key:string;message:ConversationMessage;sourceIds:string[]}> = [];
   let trailing: ConversationMessage[] = [];
   const flush = () => {
     const last = trailing.at(-1);
-    if (last) steps.push({key:trailing[0].id,message:withPrecedingThinking(last,trailing.slice(0,-1))});
+    if (last) steps.push({key:trailing[0].id,message:withPrecedingThinking(last,trailing.slice(0,-1)),sourceIds:trailing.map(item=>item.id)});
     trailing = [];
   };
   for (const message of messages) {
@@ -219,7 +219,7 @@ export function progressSteps(messages: ConversationMessage[]) {
     if (isThinkingOnly(message)) {
       trailing.push(message);
     } else {
-      steps.push({key:trailing[0]?.id ?? message.id,message:withPrecedingThinking(message,trailing)});
+      steps.push({key:trailing[0]?.id ?? message.id,message:withPrecedingThinking(message,trailing),sourceIds:[...trailing.map(item=>item.id),message.id]});
       trailing = [];
     }
   }

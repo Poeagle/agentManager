@@ -159,6 +159,32 @@ describe('persisted session statistics',()=>{
     }]);
   });
 
+  it('reports the adjacent cache drop on an image input as soon as its first receipt arrives',async()=>{
+    const turn='current', path='/fixture/upload.png';
+    await writeFile(file,event(0,'task_started',{turn_id:'previous'})+user(1,'previous-input')+
+      answer(2,'previous-progress','commentary')+receipt(3,'previous-first','previous',tokens(218_192,202_384))+
+      answer(4,'previous-final','final_answer')+receipt(5,'previous-last','previous',tokens(260_952,244_900))+
+      event(6,'task_complete',{turn_id:'previous'})+event(7,'task_started',{turn_id:turn})+
+      row(8,'response_item',{type:'message',id:'rendered-input',role:'user',content:[
+        {type:'input_text',text:'Check the screenshot'},
+        {type:'input_text',text:`<image name=[Image #1] path="${path}">`},
+        {type:'input_image',image_url:'data:image/png;base64,AA=='},
+        {type:'input_text',text:'</image>'},
+      ]})+event(8.1,'item_completed',{turn_id:turn,item:{type:'UserMessage',id:'terminal-input',content:[
+        {type:'text',text:'Check the screenshot'},{type:'local_image',path},
+      ]}})+answer(9,'current-progress','commentary')+tool(10,'current-tool'));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)).toMatchObject({user_inputs:2,cache_drop_count:0});
+    await appendFile(file,receipt(11,'current-first',turn,tokens(253_826,10_937)));
+    await updateSessionFacts(codex,file);
+    const messageId=nativeItemId('assistant','current-progress');
+    expect(readSessionCacheDrops(codex,[messageId])).toMatchObject([{
+      message_id:messageId,at:stamp(11),interval_kind:'input',
+      previous:{request_id:'previous-last',cached_input_tokens:244_900},
+      current:{request_id:'current-first',cached_input_tokens:10_937},
+    }]);
+  });
+
   it.each(['account:fixture','provider:fixture'])('uses the active native turn for response echoes and tools in %s',async environment=>{
     const context=agentContext({...codex.session,agent_environment_id:environment});
     const progress=(at:number,id:string)=>event(at,'item_completed',{turn_id:'turn',item:{type:'AgentMessage',id,phase:'commentary',content:[{type:'Text',text:id}]}})+

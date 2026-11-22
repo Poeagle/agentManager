@@ -305,7 +305,7 @@ export class SessionStatisticsProjection {
       this.recordCacheDrop(pending.drop, pending.offset);
   }
 
-  private sampleCache(turn: Turn | undefined, request: NativeRequestFact, offset: number) {
+  private sampleCache(turn: Turn | undefined, request: NativeRequestFact, offset: number, messageId?: string) {
     const state = this.state;
     if (request.id === state.compactionRequestId) return;
     const input = turn?.groupInput === turn?.input?.id ? turn?.input : undefined;
@@ -319,15 +319,16 @@ export class SessionStatisticsProjection {
     let drop: SessionCacheDrop | null = null;
     const startsKnownInput = firstInputSample && !input.ambiguous;
     const crossesTurn = turn?.verified && previous?.turn_id && current?.turn_id && previous.turn_id !== current.turn_id;
-    const fallback = startsKnownInput && crossesTurn && !state.previousInputSample;
-    if (current && previous && (structuralChange || sameInput || fallback)) {
-      const distinctInputs = startsKnownInput && !sameInput && (previous.input_id || fallback);
+    const newInput = startsKnownInput && crossesTurn;
+    if (current && previous && (structuralChange || sameInput || newInput)) {
+      const distinctInputs = startsKnownInput && !sameInput && (previous.input_id || newInput);
       drop = detectCacheDrop(previous,current,distinctInputs ? 'input' : 'request',compaction);
     }
     if (!drop && !structuralChange && current && firstInputSample && !input.ambiguous && state.previousInputSample) {
       drop = detectCacheDrop(state.previousInputSample,current,'input');
     }
     if (drop) {
+      if (messageId) drop.message_id = messageId;
       // An unlabelled receipt can be the context rewrite itself. The next
       // receipt or closing event proves enough to settle the comparison.
       if (sameInput && !structuralChange && !conversationalResponse)
@@ -358,6 +359,7 @@ export class SessionStatisticsProjection {
       turn.items.some(item => item.offset < state.item!.offset!);
     const beforeRequest = this.point(request.at);
     const items = turn?.items ?? [];
+    const owner = items.find(item => item.phase !== 'final') ?? items[0];
     const toolsInRequest = turn?.tools.length ?? 0;
     const progress = turn && (turn.heldProgress ?? turn.progress);
     const ownsProgress = !!progress && (!items.length || items.some(item=>item.phase!=='final'));
@@ -369,7 +371,7 @@ export class SessionStatisticsProjection {
     countRequest(state.total, request, toolsInRequest);
     this.sink.model(request, toolsInRequest);
     state.latest = request;
-    if (!late) this.sampleCache(turn,request,offset);
+    if (!late) this.sampleCache(turn, request, offset, owner?.id);
     if (!turn) return;
     const input = turn.input;
     turn.tools = [];
@@ -391,7 +393,6 @@ export class SessionStatisticsProjection {
       ownsProgress?previousItem?.counter:beforeRequest.counter,items.length,
       late ? ['ambiguous_boundary'] : turn.verified ? [] : ['missing_start']);
     const finals = items.filter(item => item.phase === 'final');
-    const owner=items.find(item=>item.phase!=='final')??items[0];
     for (const item of items) {
       this.sink.saveItem({
         ...recordedInterval(state.total, turn.start.counter, 1, turn.verified ? [] : ['missing_start']),

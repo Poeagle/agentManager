@@ -123,7 +123,7 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   await expect.poll(()=>connections).toBeGreaterThan(0);
   expect(await session.chat.locator('[data-cache-drop-id]').count()).toBe(0);
   appendFileSync(session.log,second(0));
-  const incident=session.chat.getByRole('button',{name:/缓存命中输入减少/});
+  const incident=session.chat.locator('[data-cache-drop-id]');
   await expect(incident).toHaveCount(1);
   await expect(incident).toContainText('11K / 10K (90.91%)');
   await expect(incident).toContainText('10K / 0 (0.0%)');
@@ -133,11 +133,7 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   await expect(credits).toHaveCSS('color','rgb(126, 34, 206)');
   const final=session.chat.locator('[data-phase=final]').filter({hasText:'第二问答复'});
   await expect(final.locator('.session-chat-message-statistics')).toContainText('1 round | 0 calls');
-  await incident.click();
-  const card=page.getByRole('dialog',{name:'缓存命中输入减少',exact:true});
-  await expect(card).toContainText('模型变化、速度变化、上下文压缩、输入间隔较长');
-  await expect(card.getByRole('table').locator('time')).toHaveText('2026-11-20 17:16:35');
-  await page.keyboard.press('Escape');
+  await expect(incident.locator('button')).toHaveCount(0);
   await page.getByRole('button',{name:'Details',exact:true}).click();
   const details=page.getByRole('dialog',{name:'会话详情',exact:true});
   await expect(details.getByRole('tab',{name:'概览'})).toBeFocused();
@@ -365,7 +361,7 @@ test('uses adjacent cached-input counts and ignores a ratio drop caused by new i
     request(4,turn,'before',36873,36480));
   await page.goto('/');
   await expect(session.chat.getByText('核对同一轮缓存',{exact:true})).toBeVisible();
-  const incident=session.chat.getByRole('button',{name:/缓存命中输入减少/});
+  const incident=session.chat.locator('[data-cache-drop-id]');
   appendFileSync(session.log,record(7,'response_item',{type:'function_call',call_id:'growth'})+
     request(7.516,turn,'growth',44658,36736));
   const metadataUrl=session.api+'/conversation/metadata';
@@ -400,7 +396,7 @@ test('shows one cache drop next to an in-turn compaction and keeps it after relo
   await page.goto('/');
   const summary=session.chat.getByRole('button',{name:/Conversation summary/});
   await expect(summary).toBeVisible();
-  const incident=session.chat.getByRole('button',{name:/缓存命中输入减少/});
+  const incident=session.chat.locator('[data-cache-drop-id]');
   await expect(incident).toHaveCount(0);
   const after=request(60.309,turn,'after',32061,13696);
   appendFileSync(session.log,after+after);
@@ -410,11 +406,6 @@ test('shows one cache drop next to an in-turn compaction and keeps it after relo
   await expect(incident).toContainText('请求间隔 4.954秒');
   await expect(incident.locator('time')).toHaveText('2026-11-20 17:01:00');
   expect(await summary.evaluate(node=>node.closest('[data-context-kind="compaction_summary"]')?.nextElementSibling?.matches('[data-cache-drop-id]'))).toBe(true);
-  await incident.click();
-  const card=page.getByRole('dialog',{name:'缓存命中输入减少',exact:true});
-  await expect(card.getByRole('cell',{name:'上下文压缩',exact:true})).toBeVisible();
-  await expect(card.locator('time')).toHaveText('2026-11-20 17:01:00');
-  await page.keyboard.press('Escape');
   await page.getByRole('button',{name:'Details',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'会话详情',exact:true});
   await dialog.getByRole('tab',{name:'缓存异常'}).click();
@@ -441,7 +432,7 @@ test('shows the manual compaction cache drop once its first ordinary request arr
     })+event(61.517,'task_complete',{turn_id:'manual'}));
   await page.goto('/');
   const summary=session.chat.getByRole('button',{name:/Conversation summary/});
-  const incident=session.chat.getByRole('button',{name:/缓存命中输入减少/});
+  const incident=session.chat.locator('[data-cache-drop-id]');
   await expect(summary).toBeVisible();
   await expect(incident).toHaveCount(0);
   const after=request(77.877,'next','after',32483,13696);
@@ -555,4 +546,39 @@ test('waits for actual usage after commentary and counts a reasoning-only reques
   await expect(header).toHaveAttribute('title',/Total 565,499;/);
   await expect(header).toContainText('2 rounds | 0 calls');
   await expect(progressTime).toHaveAttribute('datetime',at(30));
+});
+
+test('keeps independent cache drops under their own progress items after reload',async({page})=>{
+  const session=await setup(page,'codex','detached');
+  const turn='cache-items';
+  writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+
+    event(1,'task_started',{turn_id:turn})+message(2,'input','user','核对缓存下降条目')+
+    message(3,'baseline','assistant','建立缓存基线','commentary')+request(4,turn,'r1',10000,9800));
+  await page.goto('/');
+  await expect(session.chat.getByText('建立缓存基线')).toBeAttached();
+  appendFileSync(session.log,message(6,'first-drop','assistant','第一处下降','commentary')+request(7,turn,'r2',10000,1000));
+  await expect(session.chat.locator('[data-cache-drop-id]')).toHaveCount(1);
+  appendFileSync(session.log,
+    message(8,'restored','assistant','缓存恢复','commentary')+request(9,turn,'r3',11000,10600)+
+    message(10,'second-drop','assistant','第二处下降','commentary')+request(11,turn,'r4',11000,500)+
+    message(12,'final','assistant','核对完成','final_answer')+request(13,turn,'r5',11000,500)+
+    event(14,'task_complete',{turn_id:turn}));
+  const verify=async()=>{
+    const progress=session.chat.getByRole('region',{name:'codex 进展'});
+    const toggle=progress.locator('.session-chat-progress-toggle');
+    if(await toggle.getAttribute('aria-expanded')==='false')await toggle.click();
+    const notice=progress.locator('[data-cache-drop-id]');
+    await expect(session.chat.locator('[data-cache-drop-id]')).toHaveCount(2);
+    await expect(notice).toHaveCount(2);
+    await expect(notice.nth(0).locator('..')).toContainText('第一处下降');
+    await expect(notice.nth(1).locator('..')).toContainText('第二处下降');
+    await expect(notice.first().locator('button')).toHaveCount(0);
+    await expect(notice.first().locator('strong')).toHaveCSS('color', 'rgb(220, 38, 38)');
+    await expect(notice.first()).toHaveCSS('color', 'rgb(129, 133, 140)');
+    await expect(notice.first()).toHaveCSS('font-size', '13px');
+    await expect(notice.first()).toHaveCSS('white-space', 'nowrap');
+  };
+  await verify();
+  await page.reload();
+  await verify();
 });

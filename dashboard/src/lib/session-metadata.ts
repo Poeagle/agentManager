@@ -46,6 +46,7 @@ export interface SessionCacheSample extends SessionDimensions {
 export type CacheDropFactor = 'input_gap' | 'model' | 'speed' | 'environment' | 'account' | 'compact' | 'input_size';
 export interface SessionCacheDrop {
   id: string;
+  message_id?: string;
   at: string;
   previous: SessionCacheSample;
   current: SessionCacheSample;

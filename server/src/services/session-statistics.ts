@@ -19,7 +19,7 @@ const RECORD_MAX = 16 * 1024 * 1024;
 const CHUNK = 256 * 1024;
 const BATCH = 8 * 1024 * 1024;
 const RECORDS = 4000;
-const CHECKPOINT_PROJECTION_VERSION = 6;
+const CHECKPOINT_PROJECTION_VERSION = 7;
 const checkpointVersion = (codec: AgentSessionFactsPort) => codec.revision * 100 + CHECKPOINT_PROJECTION_VERSION;
 
 interface SourceRow {
@@ -181,7 +181,7 @@ function projectionSink(source: Source, revision: number, generation: string): P
     saveItem: stat => { saveItem.run(key, stat.message_id, stat.sequence, revision, json({...stat, revision})); },
     event: (fact, offset) => !!event.run(key, fact.id, fact.at, offset, 'native', json(fact)).changes,
     anomaly: (fact, offset) => {
-      const anchor = fact.compaction_at ? 'compact:'+fact.compaction_at : fact.current.input_id ?? '';
+      const anchor = fact.compaction_at ? 'compact:'+fact.compaction_at : fact.message_id ?? fact.current.input_id ?? '';
       anomaly.run(key, fact.id, anchor, fact.at, offset, json(fact));
     },
     model(fact, tools) {
@@ -512,15 +512,24 @@ export function readSessionUsageIntervals(context: AgentContext, {parent,before}
   return {...page,rows,next_before:results.length>50 ? json([last.position,last.item_id,last.kind]) : null};
 }
 
-export function readSessionCacheDrops(context: AgentContext, inputIds: string[], compactionTimes: string[] = []): SessionCacheDrop[] {
+export function readSessionCacheDrops(context: AgentContext, messageIds: string[], compactionTimes: string[] = [], inputIds: string[] = []): SessionCacheDrop[] {
   const source = sourceFor(context);
   if (!source) return [];
   const query = source.db.prepare('SELECT fact FROM session_statistics_cache_drops WHERE source=? AND input_id=?');
-  const anchors = new Set([...inputIds,...compactionTimes.flatMap(at => {
+  const anchors = new Set([...messageIds,...compactionTimes.flatMap(at => {
     const timestamp = factTime(at);
     return timestamp ? ['compact:'+timestamp] : [];
   })]);
-  return [...anchors].flatMap(id => (query.all(source.key, id) as {fact: string}[]).map(row => readJson<SessionCacheDrop>(row.fact)));
+  const byInput = source.db.prepare(`SELECT fact FROM session_statistics_cache_drops WHERE source=?
+    AND json_extract(fact, '$.current.input_id')=?`);
+  const drops = new Map<string, SessionCacheDrop>();
+  const rows = [...Array.from(anchors, id => query.all(source.key, id)),
+    ...inputIds.map(id => byInput.all(source.key, id))].flat() as {fact: string}[];
+  for (const row of rows) {
+    const drop = readJson<SessionCacheDrop>(row.fact);
+    drops.set(drop.id, drop);
+  }
+  return [...drops.values()];
 }
 
 export function readRecentSessionCacheDrops(context: AgentContext): SessionCacheDrop[] {

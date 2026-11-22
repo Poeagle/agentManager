@@ -6,12 +6,14 @@ import { realpath } from 'node:fs/promises';
 import type { AgentSessionFactsPort, NativeFactLocation, NativeRequestFact, NativeSessionFact, RequestDimensions } from '../session-facts.js';
 import { consistentUsage, factId, factString, factTime, nativeItemId, parsedUsage, recordType } from '../session-fact-values.js';
 import { recordedPricingSettings } from './statistics-settings.js';
-import { codexMessagePhase } from './text.js';
+import { codexMessagePhase, codexUserText } from './text.js';
+import { conversationImagePaths } from '../../conversation-attachments.js';
 import { costSnapshot, emptyCostTotals, recordCost } from './statistics-cost.js';
 
 interface Input {
   id: string;
   digest: string | null;
+  imageDigest?: string;
   turn: string;
   at: string | null;
   source: 'response_item' | 'item_completed' | 'user_message';
@@ -40,7 +42,7 @@ const itemText = (content: unknown, types: string[]) => Array.isArray(content)
   : '';
 
 export const codexSessionFacts: AgentSessionFactsPort = {
-  revision: 2,
+  revision: 3,
   async *discover() {
     const { allCodexEnvironments } = await import('./environments.js');
     const { localHome } = await import('./account-files.js');
@@ -161,15 +163,21 @@ export const codexSessionFacts: AgentSessionFactsPort = {
     if (turn && (type === 'user_message' || userItem && (state.started || type === 'item_completed'))) {
       const source = userItem ? kind === 'response_item' ? 'response_item' : 'item_completed' : 'user_message';
       const native = factString(userItem ? item.id : payload.item_id);
+      const content = item?.content;
+      const imagePaths = conversationImagePaths(source === 'item_completed' && Array.isArray(content)
+        ? content.map(part => part?.type === 'local_image' ? {...part, type: 'localImage'} : part) : content);
       const input: Input = {
         id: native ? nativeItemId('user', native) : createHash('sha256').update(offset+':user').digest('hex').slice(0,32),
-        digest: textDigest(userItem ? itemText(item.content, ['text', 'Text', 'input_text']) : payload.message),
+        digest: textDigest(source === 'response_item' ? codexUserText(content) :
+          userItem ? itemText(content, ['text', 'Text', 'input_text']) : payload.message),
+        ...(imagePaths.length ? {imageDigest: factId(imagePaths)} : {}),
         turn, at, source,
         clientId: factString(item?.client_id ?? item?.clientId ?? payload.client_id) ?? undefined,
       };
       const other = state.pendingInput ?? state.lastInput;
-      const echo = other?.turn === turn && (other.id === input.id ||
-        other.source !== input.source && other.digest !== null && other.digest === input.digest);
+      const matchingImages = !other?.imageDigest || !input.imageDigest || other.imageDigest === input.imageDigest;
+      const echo = other?.turn === turn && (other.id === input.id || other.source !== input.source && matchingImages &&
+        other.digest === input.digest && (input.digest !== null || !!input.imageDigest && input.imageDigest === other.imageDigest));
       if (echo && state.pendingInput && native) {
         state.pendingInput = undefined;
         pushInput(state, facts, input);

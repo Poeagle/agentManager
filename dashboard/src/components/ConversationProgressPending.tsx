@@ -7,7 +7,7 @@ import {ConversationCard} from './ConversationCard';
 import {ConversationStatisticsLabel} from './ConversationStatisticsLabel';
 import {englishActivity,type ConversationActivity} from './ConversationActivityLine';
 
-export function ConversationProgressPending({number,tool,startedAt,statistics,liveUsage,now,connected,showStatistics=true,thinking}:{number:number;tool?:ConversationActivity;startedAt:string|null;statistics:ConversationStatistics|null;liveUsage?:ConversationUsageUpdate|null;now:number;connected:boolean;showStatistics?:boolean;thinking?:ReactNode}) {
+export function ConversationProgressPending({number,tool,startedAt,statistics,liveUsage,now,connected,showStatistics=true,thinking,children}:{number:number;tool?:ConversationActivity;startedAt:string|null;statistics:ConversationStatistics|null;liveUsage?:ConversationUsageUpdate|null;now:number;connected:boolean;showStatistics?:boolean;thinking?:ReactNode;children?:ReactNode}) {
   useDisplayClock();
   const elapsed=elapsedBetween(startedAt,now);
   const command=tool?(tool.input_preview||englishActivity(tool.label)).replace(/\s+/g,' ').trim():'';
@@ -33,5 +33,6 @@ export function ConversationProgressPending({number,tool,startedAt,statistics,li
         <pre className="session-chat-tool-result">{tool.result_preview??(tool.status==='running'?'Waiting for output…':'No result available')}</pre>
       </div>
     </ConversationCard>:<div className="session-chat-progress-execution"><Loader2 size={12} className={connected?'animate-spin':undefined}/><span>{connected?'Waiting for update…':'Reconnecting…'}</span></div>}
+    {children}
   </div>;
 }

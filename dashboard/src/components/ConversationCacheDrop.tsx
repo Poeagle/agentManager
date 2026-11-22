@@ -1,7 +1,6 @@
 import { AlertTriangle } from 'lucide-react';
 import type { CacheDropFactor, SessionCacheDrop, SessionCacheSample } from '../lib/session-metadata';
 import { formatElapsed } from '../lib/conversation-timing';
-import { ConversationDialogCard } from './ConversationDialogCard';
 import { TableFrame, TableStateRow } from './table/DataTable';
 
 const compact = new Intl.NumberFormat('en', {notation:'compact', maximumFractionDigits: 1});
@@ -65,19 +64,12 @@ export function CacheDropTable({drops, loading, error, onRetry}: {
   </TableFrame>;
 }
 
-export function ConversationCacheDrop({drop, active}: {drop: SessionCacheDrop; active: boolean}) {
-  return <div className="conversation-cache-card" data-cache-drop-id={drop.id}>
-    <ConversationDialogCard title="缓存命中输入减少" active={active} summary={
-      <span className="conversation-cache-summary">
-        <AlertTriangle size={14} aria-hidden="true" />
-        <strong>缓存命中输入减少</strong>
-        <SampleTokens sample={drop.previous} /><span aria-hidden="true">→</span><SampleTokens sample={drop.current} />
-        <span>减少 {(drop.previous.cached_input_tokens - drop.current.cached_input_tokens).toLocaleString('zh-CN')} Token</span>
-        <span>{dropInterval(drop)}</span>
-        <MetadataTime at={drop.at} />
-      </span>
-    }>
-      <CacheDropTable drops={[drop]} />
-    </ConversationDialogCard>
+export function ConversationCacheDrop({drop}: {drop: SessionCacheDrop}) {
+  return <div className="conversation-cache-notice" data-cache-drop-id={drop.id}>
+    <AlertTriangle size={14} aria-hidden="true" /><strong>缓存命中输入减少</strong>
+    <SampleTokens sample={drop.previous} /><span aria-hidden="true">→</span><SampleTokens sample={drop.current} />
+    <span>减少 {(drop.previous.cached_input_tokens - drop.current.cached_input_tokens).toLocaleString('zh-CN')} Token</span>
+    <span>{dropInterval(drop)}</span>
+    <MetadataTime at={drop.at} />
   </div>;
 }
