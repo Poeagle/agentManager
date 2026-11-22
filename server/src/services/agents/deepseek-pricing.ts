@@ -45,7 +45,7 @@ function initialTariff(model:string|null){
  }
 }
 
-function canonicalDeepSeekModel(model:string|null){
+export function canonicalDeepSeekModel(model:string|null){
  if(model==='deepseek-v4.1-flash')return 'deepseek-flash';
  return model;
 }
@@ -59,7 +59,7 @@ export function deepseekCatalogModel(model:string){
  const tariff=modelTariff(model);
  if(!tariff)return null;
  const {release_date,peak,off_peak,peak_hours}=tariff;
- return {release_date:release_date??null,context_window:tariff.context_window,api_pricing:{currency:'CNY' as const,peak,off_peak,timezone,peak_hours,source}};
+ return {canonical_model:canonicalDeepSeekModel(model)??undefined,release_date:release_date??null,context_window:tariff.context_window,api_pricing:{currency:'CNY' as const,peak,off_peak,timezone,peak_hours,source}};
 }
 
 // The timestamp in the ledger is an observed response timestamp. Beijing uses UTC+08.

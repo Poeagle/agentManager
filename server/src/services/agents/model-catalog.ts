@@ -1,6 +1,6 @@
 import {agentDescriptors,getAgent} from './index.js';
 import {providerModelMetadata} from './provider-pricing.js';
-import {confirmedClaudeInputModalities} from './model-pricing.js';
+import {confirmedClaudeContextWindow,confirmedClaudeInputModalities} from './model-pricing.js';
 import type {AgentModelConfig,AgentModelMetadata,AgentProviderState} from './types.js';
 
 export interface AgentModelCatalogEntry extends AgentModelMetadata {
@@ -13,6 +13,10 @@ export interface AgentModelCatalogEntry extends AgentModelMetadata {
  * official model record unless the platform can verify official metadata. */
 export function hasOfficialModelMetadata(model:AgentModelMetadata):boolean {
  return model.api_pricing!=null||model.reference_credits!=null;
+}
+
+function canonicalModelName(model:string,metadata:AgentModelMetadata):string {
+ return metadata.canonical_model??model;
 }
 
 function modelVendor(model:string):string{
@@ -38,9 +42,12 @@ function mergeMetadata(current:AgentModelMetadata|undefined,next:AgentModelMetad
  const merged:AgentModelMetadata={
   ...current,
   ...next,
+  canonical_model:current.canonical_model??next.canonical_model,
   release_date:current.release_date??next.release_date,
   official_context_window:current.official_context_window??next.official_context_window,
-  context_window:nextOfficial||currentOfficial?next.context_window??current.context_window:current.context_window??next.context_window,
+  context_window:next.official_context_window!=null?next.context_window
+   :current.official_context_window!=null?current.context_window
+   :current.context_window??next.context_window,
   input_modalities:currentOfficial?current.input_modalities
    :nextOfficial&&next.input_modalities?.length?next.input_modalities
    :next.input_modalities?.length?next.input_modalities
@@ -61,18 +68,21 @@ export function buildAgentModelCatalog(sources:Array<{agent:string;providers:Age
   const configs=(source.modelConfigs??[]).filter(matchesProvider);
   const modelIds=[...new Set([...provider.models,...configs.map(item=>item.model)])];
   for(const model of modelIds){
-   const vendor=modelVendor(model),key=`${vendor}\u0000${model}`;
    const config=configs.find(item=>item.model===model);
    const providerMetadata=providerModelMetadata(model,baseUrl,fields);
    const confirmedInputs=confirmedClaudeInputModalities(model);
+   const confirmedWindow=confirmedClaudeContextWindow(model);
    if(confirmedInputs&&!providerMetadata.input_modalities?.length)providerMetadata.input_modalities=confirmedInputs;
+   if(confirmedWindow&&!providerMetadata.official_context_window)providerMetadata.official_context_window=confirmedWindow;
+   if(confirmedWindow&&!providerMetadata.context_window)providerMetadata.context_window=confirmedWindow;
    const metadata=mergeMetadata(config,providerMetadata);
    if(!hasOfficialModelMetadata(metadata)&&!confirmedClaudeInputModalities(model))continue;
+   const canonical=canonicalModelName(model,metadata),vendor=modelVendor(canonical),key=`${vendor}\u0000${canonical}`;
    const current=entries.get(key);
    if(current){
     Object.assign(current,mergeMetadata(current,metadata));
     if(!current.providers.includes(provider.name))current.providers.push(provider.name);
-   }else entries.set(key,{vendor,model,providers:[provider.name],...metadata});
+   }else entries.set(key,{...metadata,vendor,model:canonical,providers:[provider.name]});
   }
  }
  return [...entries.values()].sort((a,b)=>a.vendor.localeCompare(b.vendor)||a.model.localeCompare(b.model));

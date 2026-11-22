@@ -391,6 +391,7 @@ export interface AgentModelMetadata {
   api_pricing?:import('./model-pricing.js').ModelPricing;
   provider_pricing?:import('./model-pricing.js').ModelPricing;
   provider_billing?:import('./provider-pricing.js').ProviderBillingMetadata;
+  canonical_model?:string;
   official_context_window?:number;
   context_window?:number|null;
   input_modalities?:string[];

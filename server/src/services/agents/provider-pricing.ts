@@ -1,5 +1,5 @@
 import type {StoredProvider} from './management-store.js';
-import {apiTariffAt,estimatePublicApiCost,publicApiModel,type PublicApiCatalog} from './model-pricing.js';
+import {apiTariffAt,confirmedClaudeMetadata,estimatePublicApiCost,publicApiModel,type PublicApiCatalog} from './model-pricing.js';
 import {deepseekCatalogModel,estimateDeepseekBreakdown,isOfficialDeepSeek} from './deepseek-pricing.js';
 import type {AgentModelMetadata} from './types.js';
 import {storedModelCapabilities,parseModelCapabilities} from './model-capabilities.js';
@@ -167,6 +167,7 @@ function openRouterEndpoint(base:unknown){
 export function providerModelMetadata(model:string,base:unknown,fields?:Fields):AgentModelMetadata {
   const id=officialModelId(model),catalog=modelApiCatalog(id);
   const info=catalog?publicApiModel(catalog,id):deepseekCatalogModel(id);
+  const confirmed=catalog==='claude'?confirmedClaudeMetadata(model):undefined;
   const official=!!catalog&&catalog===officialApiCatalog(base)||isOfficialDeepSeek(base);
   const provider=openRouterEndpoint(base)?publicApiModel('openrouter',model):undefined;
   const stored=storedModelCapabilities(fields?.modelCapabilities);
@@ -174,7 +175,8 @@ export function providerModelMetadata(model:string,base:unknown,fields?:Fields):
   const officialWindow=info&&'context_window' in info?info.context_window as number|undefined:undefined;
   const officialInputs=info&&'input_modalities' in info?info.input_modalities as string[]|undefined:undefined;
   return {
-    release_date:info?.release_date,
+    canonical_model:info&&'canonical_model' in info?info.canonical_model as string|undefined:undefined,
+    release_date:confirmed?.release_date??info?.release_date,
     official_context_window:officialWindow,
     context_window:capabilities?.context_window??provider?.context_window??officialWindow,
     input_modalities:capabilities?.input_modalities??provider?.input_modalities??officialInputs,

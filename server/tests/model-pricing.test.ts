@@ -7,7 +7,7 @@ import {estimateProviderApiCost,modelRate,providerModelMetadata,providerRateFiel
 import {codexApiEstimate,codexApiPricing} from '../src/services/agents/codex/statistics-cost.js';
 import {updateAgentManagement,type StoredProvider} from '../src/services/agents/management-store.js';
 import {probeProviderModels} from '../src/services/agents/codex/management.js';
-import {confirmedClaudeInputModalities} from '../src/services/agents/model-pricing.js';
+import {confirmedClaudeContextWindow,confirmedClaudeInputModalities,parseClaudeModelDates} from '../src/services/agents/model-pricing.js';
 
 let fixture:ReturnType<typeof createTestDatabase>;
 beforeEach(()=>{fixture=createTestDatabase();initModelPricing();});
@@ -27,6 +27,15 @@ it.each([
  expect(estimateDeepseekCost(model,epoch(at),tokens)).toBe(expected);
 });
 
+it('identifies the current official ID for a documented DeepSeek legacy model alias',()=>{
+ expect(deepseekModelPricing('https://api.deepseek.com','deepseek-v4.1-flash')).toMatchObject({
+  canonical_model:'deepseek-flash',release_date:'2026-10-17',
+ });
+ expect(deepseekModelPricing('https://api.deepseek.com','deepseek-flash')).toMatchObject({
+  canonical_model:'deepseek-flash',release_date:'2026-10-17',
+ });
+});
+
 it('recognizes only confirmed Claude text-generation families as image-capable',()=>{
  expect(confirmedClaudeInputModalities('claude-fable-5')).toEqual(['text','image']);
  expect(confirmedClaudeInputModalities('claude-opus-4-5-20251101')).toEqual(['text','image']);
@@ -34,6 +43,17 @@ it('recognizes only confirmed Claude text-generation families as image-capable',
  expect(confirmedClaudeInputModalities('claude-sonnet-4-5-20250929')).toEqual(['text','image']);
  expect(confirmedClaudeInputModalities('claude-sonnet-5-5[1m]')).toEqual(['text','image']);
  expect(confirmedClaudeInputModalities('private-gateway-model')).toBeUndefined();
+ expect(confirmedClaudeContextWindow('claude-fable-5')).toBe(1_000_000);
+ expect(confirmedClaudeContextWindow('claude-opus-4-8')).toBe(1_000_000);
+ expect(confirmedClaudeContextWindow('claude-sonnet-5-5[1m]')).toBe(1_000_000);
+ expect(confirmedClaudeContextWindow('private-gateway-model')).toBeUndefined();
+});
+
+it('maps Claude release dates only from an explicit model title and page date',()=>{
+ const dates=parseClaudeModelDates('<span><time dateTime="2026-09-28">Sep 28</time></span><h3>Claude Sonnet 5.5</h3>'+
+  '<div><time dateTime="2026-06-30">Jun 30</time></div><h3>Claude Sonnet 5</h3>'+
+  '<div><time dateTime="2026-01-01">Jan 1</time></div><h3>Announcement without model</h3>');
+ expect(Object.fromEntries(dates)).toEqual({'claude-sonnet-5-5':'2026-09-28','claude-sonnet-5':'2026-06-30'});
 });
 
 it('provides official release dates and tariffs only for known models on the official URL',()=>{

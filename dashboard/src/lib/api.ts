@@ -270,6 +270,7 @@ export interface AgentModelMetadata {
   api_pricing?:AgentModelPricing;
   provider_pricing?:AgentModelPricing;
   provider_billing?:{source:'sub2api';observedAt:string;resolvedRate:number;peakEnabled:boolean;peakMultiplier?:number;peakStart?:string;peakEnd?:string;timeZone?:string};
+  canonical_model?:string;
   context_window?:number|null;
   input_modalities?:string[];
   official_context_window?:number;
