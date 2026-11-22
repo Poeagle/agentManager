@@ -59,6 +59,17 @@ it('opens native API settings even while environment authentication is pending',
  expect(within(dialog).getByLabelText('API Key')).toBeVisible();
  expect(within(dialog).queryByText('账号与运行状态')).not.toBeInTheDocument();
 });
+it('keeps a native Codex account in the account details instead of the API form',async()=>{
+ provider={...provider,id:'native',name:'Native Account',kind:'native',models:['model-a'],defaultModel:'model-a',codexHome:'/fixture/.codex',fields:[
+  {key:'baseUrl',label:'Responses API 地址',type:'text',value:'',required:true},
+  {key:'envKey',label:'API Key',type:'password',value:'',configured:false},
+ ]};state={...state,providers:[provider]};
+ vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[{id:'native',name:'Native Account',kind:'native',enabled:true,auth_mode:'account',allowed_user_ids:null}],users:[]});
+ vi.mocked(api.codexEnvironments.details).mockResolvedValue({details:{id:'native',checked_at:'',home:'/fixture/.codex',executable:'codex',version:'0.test',engine:{state:'connected',pid:1},authentication:{status:'authenticated',type:'chatgpt',email:'account@example.invalid',plan:'plus'},config:{path:'/fixture/.codex/config.toml',exists:true,notice:null},settings:{model:'model-a'},models:[{model:'model-a',name:'Model A'}]}});
+ const dialog=await open('Native Account');
+ expect(within(dialog).queryByRole('button',{name:'保存连接配置并重启 Engine'})).not.toBeInTheDocument();
+ expect(within(dialog).queryByRole('textbox',{name:'Responses API 地址'})).not.toBeInTheDocument();
+});
 it('edits native Codex connection settings without exposing the stored API key',async()=>{
  provider={...createFixture().provider,id:'native',name:'Native API',kind:'native',models:['model-a'],defaultModel:'model-a',codexHome:'/fixture/.codex',fields:[
   {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},

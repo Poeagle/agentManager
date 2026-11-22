@@ -283,6 +283,7 @@ describe('native Codex Provider connection editing', () => {
    'wire_api = "responses"',
    '',
   ].join('\n'));
+  writeFileSync(join(home,'auth.json'),'{"OPENAI_API_KEY":"fixture-account-credential"}\n',{mode:0o600});
   writeFileSync(catalog,JSON.stringify({models:[
    {slug:'model-a',display_name:'Old A',context_window:100000},
   ]}));
@@ -299,6 +300,7 @@ describe('native Codex Provider connection editing', () => {
    expect(config).toContain('base_url = "https://new.example/v1"');
    expect(config).toContain('env_key = "AGENTMANAGER_CODEX_API_KEY"');
    expect(config).not.toContain('sk-native-secret');
+   expect(readFileSync(join(home,'auth.json'),'utf8')).toBe('{"OPENAI_API_KEY":"fixture-account-credential"}\n');
    expect(JSON.parse(readFileSync(catalog,'utf8')).models.map((model:{slug:string})=>model.slug)).toEqual(['model-a','model-b']);
    expect(JSON.parse(readFileSync(catalog,'utf8')).models[0]).toMatchObject({
     slug:'model-a',
