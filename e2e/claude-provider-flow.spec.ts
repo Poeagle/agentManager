@@ -12,13 +12,13 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  const {project}=await(await page.request.post('/api/projects',{
   data:{name:'Claude Provider flow',path:projectPath},
  })).json();
- let createdState:unknown;
+ let createdState:{agent:{id:string;label:string};providers:Array<{fields:Array<{key:string;value:unknown}>}>}|undefined;
  await page.route('**/api/agent-management/claude',route=>createdState?route.fulfill({json:{state:createdState}}):route.continue());
  await page.route('**/api/agent-management/claude/providers',async route=>{
   if(route.request().method()!=='POST')return route.continue();
   const body=route.request().postDataJSON();
   expect(JSON.parse(body.fields.modelCapabilities)).toMatchObject({'claude-fable-5-1':{context_window:500000,input_modalities:['text','image']}});
-  createdState={
+  const state={
    agent:{id:'claude',label:'Claude'},
    providers:[{
     id:body.id,name:body.name,kind:'anthropic-compatible',enabled:true,managed:true,
@@ -32,10 +32,18 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
      {key:'defaultModel',label:'默认模型',type:'text',value:body.fields.defaultModel},
      {key:'contextWindow',label:'上下文窗口',type:'text',value:body.fields.contextWindow},
      {key:'maxOutputTokens',label:'最大输出 Token',type:'text',value:body.fields.maxOutputTokens},
-     {key:'modelRateMultipliers',label:'模型计费倍率',type:'string-list',value:body.fields.modelRateMultipliers},
+     {key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text',value:''},
     ],
    }],
   };
+  createdState=state;
+  return route.fulfill({json:{state}});
+ });
+ await page.route('**/api/agent-management/claude/providers/xindu-real',route=>{
+  if(route.request().method()!=='PUT')return route.continue();
+  const body=route.request().postDataJSON();
+  expect(body).toEqual({fields:{providerRateMultiplier:'1.2'}});
+  createdState!.providers[0].fields.find(field=>field.key==='providerRateMultiplier')!.value=body.fields.providerRateMultiplier;
   return route.fulfill({json:{state:createdState}});
  });
  await page.route('**/api/agent-management/claude/detect-models',route=>route.fulfill({
@@ -96,16 +104,18 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await expect(form.getByText('grok-4.5',{exact:true})).toHaveCount(0);
  await expect(form.getByText('opus',{exact:true})).toHaveCount(0);
  await form.getByRole('radio',{name:'默认模型 claude-fable-5-1'}).check();
- await form.getByText('手填计费倍率',{exact:true}).click();
- await form.getByLabel('Claude 模型计费倍率').fill('claude-fable-5-1=1.2');
  await form.getByRole('button',{name:'添加 Provider'}).click();
  await expect(add).toHaveCount(0);
  const row=providers.getByRole('row').filter({hasText:'Xindu Real'});
- await expect(row).toContainText('claude-fable-5-1');
+ await expect(row.getByRole('combobox',{name:'Xindu Real 默认模型'})).toHaveValue('claude-fable-5-1');
+ const rate=row.getByRole('textbox',{name:'Xindu Real 计费倍率'});
+ await rate.fill('1.2');
+ await row.getByRole('button',{name:'保存 Xindu Real 倍率'}).click();
+ await expect(rate).toBeEnabled();
+ await expect(rate).toHaveValue('1.2');
  await row.getByRole('button',{name:/编辑 Xindu Real/}).click();
  const edit=page.getByRole('dialog',{name:'编辑 Provider · Xindu Real'});
  await expect(edit.getByLabel('Claude API 地址')).toHaveValue('https://xindu.example');
- await expect(edit.getByLabel('Claude 模型计费倍率')).toHaveValue('claude-fable-5-1=1.2');
  const modelRow=edit.getByRole('table',{name:'Provider 模型'}).getByRole('row').filter({hasText:'claude-fable-5-1'});
  await expect(modelRow).toContainText('2026-09-01');
  await expect(modelRow).toContainText('1,000,000');

@@ -2,7 +2,7 @@ import {ProviderDeleteDialog} from './ProviderDeleteDialog';
 import {ProviderModelTable} from './ProviderModelTable';
 import {ModelCatalogTable,ProviderModelActions} from './ModelCatalogTable';
 import {modelCapabilitiesPayload} from './ModelPricing';
-import {ProviderAdvancedSettings,ProviderConnectionFields,ProviderRateSettings} from './ProviderConnectionFields';
+import {ProviderAdvancedSettings,ProviderConnectionFields} from './ProviderConnectionFields';
 import {useProviderUsage} from '../lib/use-provider-usage';
 import {CodexAccountProvider} from './CodexAccountProvider';
 import {BalanceSummary,useEngineBalance} from './CodexEngineBalance';
@@ -743,7 +743,7 @@ function ProviderEditor({
           ? { apiKey: fields.envKey || "" }
           : {}),
         fields: {...Object.fromEntries(
-          provider.fields.map((field) => [
+          provider.fields.filter(field=>field.key!=='providerRateMultiplier').map((field) => [
             field.key,
             field.key === "envKey"
               ? ""
@@ -1071,12 +1071,12 @@ function ProviderEditor({
           {nativeApi&&<div className="agent-management-form agent-management-engine-form">
             {nativeApi&&<><label className="agent-management-field agent-management-field-baseUrl"><span>Responses API 地址</span><input aria-label="Responses API 地址" value={nativeDetails.data?.details.settings.base_url||''} readOnly placeholder={nativeDetails.isPending?'正在读取…':'未提供'} /></label><label className="agent-management-field"><span>API Key</span><input aria-label="API Key 状态" readOnly value={nativeBalance.data?.error==='missing_key'?'未配置':nativeBalance.data?.status==='available'||nativeBalance.data?.error==='unauthorized'||nativeBalance.data?.status==='unsupported'?'已配置':'未确认'} /></label><label className="agent-management-field"><span>CODEX_HOME</span><input aria-label="CODEX_HOME" readOnly value={nativeDetails.data?.details.home||provider.codexHome||''} /></label></>}
           </div>}
-          {provider.fields.some(field=>!['models','defaultModel','modelRateMultipliers','baseUrl','envKey'].includes(field.key))&&<ProviderAdvancedSettings label="Codex 设置">
+          {provider.fields.some(field=>!['models','defaultModel','providerRateMultiplier','baseUrl','envKey'].includes(field.key))&&<ProviderAdvancedSettings label="Codex 设置">
            <div className="agent-management-form agent-management-engine-form">
             {provider.fields
               .filter(
                 (field) =>
-                  !['models','defaultModel','modelRateMultipliers','baseUrl','envKey'].includes(field.key),
+                  !['models','defaultModel','providerRateMultiplier','baseUrl','envKey'].includes(field.key),
               )
               .map((field) => (
                 <FieldEditor
@@ -1098,8 +1098,6 @@ function ProviderEditor({
               ))}
            </div>
           </ProviderAdvancedSettings>}
-          {provider.fields.some(field=>field.key==='modelRateMultipliers')&&<ProviderRateSettings value={fields.modelRateMultipliers||''} disabled={readOnly||busy}
-            onChange={modelRateMultipliers=>setFields(current=>({...current,modelRateMultipliers}))}/>}
           {nativeApi&&<p className="agent-management-hint">API 地址和凭据由本机 Codex 配置管理；可在下方配置文件中编辑可公开的配置。</p>}
       </section>
       {nativeApi&&nativeDetails.data?.details&&<ProviderModelTable key="native-models" agentId={agentId} providerId="native"
@@ -1149,7 +1147,6 @@ function AddCodexProvider({
   const [models, setModels] = useState<DetectedAgentModel[]>([]);
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
-  const [modelRateMultipliers, setModelRateMultipliers] = useState("");
   const probeVersion=useRef(0);
   const probeRequestVersion=useRef(0);
   const clearProbe=()=>{probeVersion.current++;setModels([]);setSelectedModels([]);setDefaultModel('');};
@@ -1161,8 +1158,7 @@ function AddCodexProvider({
         baseUrl ||
         apiKey ||
         selectedModels.length ||
-        defaultModel ||
-        modelRateMultipliers
+        defaultModel
       ),
     );
   }, [
@@ -1170,7 +1166,6 @@ function AddCodexProvider({
     baseUrl,
     defaultModel,
     id,
-    modelRateMultipliers,
     name,
     onEditingChange,
     selectedModels.length,
@@ -1201,7 +1196,6 @@ function AddCodexProvider({
           envKey: "AGENTMANAGER_PROVIDER_API_KEY",
           models: selectedModels,
           defaultModel,
-          modelRateMultipliers: splitLines(modelRateMultipliers),
           ...modelCapabilitiesPayload(models),
           codexHome: `~/.codex-agentmanager/${id}`,
         },
@@ -1238,7 +1232,6 @@ function AddCodexProvider({
         <ModelCatalogTable rows={models.map(model=>({model:model.model,name:model.name,metadata:model,context:model.context_window}))}
           selected={selectedModels} defaultModel={defaultModel} locked={readOnly||busy} loading={detect.isPending}
           onSelectedChange={setSelectedModels} onDefaultChange={setDefaultModel}/>
-        <ProviderRateSettings value={modelRateMultipliers} onChange={setModelRateMultipliers} disabled={readOnly||busy}/>
         {detect.isError&&probeRequestVersion.current===probeVersion.current&&<OperationStatus busy={false} message="正在探测 Provider 模型…" error={detect.error}/>}
       </section>
       <OperationStatus
@@ -1289,16 +1282,41 @@ const providerColumns: TableColumn<ProviderRow>[] = [
   {key:'auth',title:'接入方式',value:row=>row.auth},
   {key:'connection',title:'连接',value:row=>row.connection},
   {key:'model',title:'默认模型',value:row=>row.provider?.defaultModel},
+  {key:'rate',title:'倍率',kind:'number',value:row=>valueText(row.provider?.fields.find(field=>field.key==='providerRateMultiplier')?.value)||null},
   {key:'status',title:'状态',value:row=>rowStatus(row)},
   {key:'balance',title:'余额',value:()=>null,interactive:false},
 ];
 
-function ProviderTableRow({row, readOnly, onOpen}: {
+function ProviderTableRow({row, readOnly, onOpen, onError}: {
   row: ProviderRow;
   readOnly: boolean;
   onOpen: () => void;
+  onError: (message: string) => void;
 }) {
+  const client = useQueryClient();
   const provider = row.provider;
+  const agentId = row.state.agent.id;
+  const [draftRate, setDraftRate] = useState<string|null>(null);
+  const rateField = provider?.fields.find(field=>field.key==='providerRateMultiplier');
+  const rate = valueText(rateField?.value);
+  const canSelectModel = !readOnly && provider !== undefined && provider.fields.some(field=>field.key==='defaultModel') && provider.models.length > 0;
+  const save = useMutation({
+    mutationFn: (fields:Record<string,string>)=>api.agentManagement.updateProvider(agentId,provider!.id,{fields}),
+    onMutate: ()=>onError(''),
+    onSuccess: async (result, fields)=>{
+      client.setQueryData(['agent-management',agentId],result);
+      const updated = result.state.providers.find(item=>item.id===provider?.id);
+      if(updated)client.setQueryData(['agent-provider',agentId,updated.id],updated);
+      if('providerRateMultiplier' in fields)setDraftRate(null);
+      await Promise.all([
+        client.invalidateQueries({queryKey:['agent-management-list']}),
+        client.invalidateQueries({queryKey:['agent-model-configs',agentId]}),
+        client.invalidateQueries({queryKey:['conversation-controls']}),
+        client.invalidateQueries({queryKey:['session-environments']}),
+      ]);
+    },
+    onError: (error:Error)=>onError(`${row.name} · ${error.message}`),
+  });
   const enabled = provider?.enabled ?? row.environment?.enabled;
   const status = rowStatus(row, provider);
   return <tr>
@@ -1306,12 +1324,27 @@ function ProviderTableRow({row, readOnly, onOpen}: {
     <td><span className="agent-provider-agent"><AgentIcon id={row.state.agent.id}/>{row.state.agent.label}</span></td>
     <td>{row.auth}</td>
     <td title={row.connection}>{row.connection || '—'}</td>
-    <td title={provider?.defaultModel ?? undefined}>{provider?.defaultModel ? <code>{provider.defaultModel}</code> : '—'}</td>
+    <td title={provider?.defaultModel ?? undefined}>{canSelectModel ? <select className="agent-provider-inline-control"
+      aria-label={`${row.name} 默认模型`} value={provider.defaultModel ?? ''} disabled={save.isPending}
+      onChange={event=>save.mutate({defaultModel:event.target.value})}>
+      {!provider.models.includes(provider.defaultModel??'')&&<option value={provider.defaultModel??''} disabled>{provider.defaultModel||'请选择'}</option>}
+      {provider.models.map(model=><option key={model} value={model}>{model}</option>)}
+    </select> : provider?.defaultModel ? <code>{provider.defaultModel}</code> : '—'}</td>
+    <td>{rateField&&!readOnly ? <form className="agent-provider-rate" onSubmit={event=>{
+      event.preventDefault();
+      if(!save.isPending&&draftRate!==null&&draftRate.trim()!==rate)save.mutate({providerRateMultiplier:draftRate.trim()});
+    }}>
+      <input className="agent-provider-inline-control" aria-label={`${row.name} 计费倍率`} title={rateField.description}
+        inputMode="decimal" placeholder="—" value={draftRate??rate} disabled={save.isPending}
+        onChange={event=>setDraftRate(event.target.value)} onKeyDown={event=>{if(event.key==='Escape')setDraftRate(null);}}/>
+      {draftRate!==null&&draftRate.trim()!==rate&&<button type="submit" className="agent-management-button" disabled={save.isPending}
+        aria-label={`保存 ${row.name} 倍率`} title={`保存 ${row.name} 倍率`}><Check size={12}/></button>}
+    </form> : rate ? `${rate}×` : '—'}</td>
     <td><span className="agent-provider-status" title={enabled ? provider?.statusText : undefined}>
       <span className={`agent-management-dot ${enabled ? statusTone(provider?.status ?? (row.environment?.auth_mode ? 'ready' : 'unknown')) : 'unknown'}`} />{status}
     </span></td>
     <td className="agent-provider-balance">{!readOnly && row.balanceId && enabled ? <BalanceSummary id={row.balanceId}/> : '—'}</td>
-    <td><TableActions><TableActionButton onClick={onOpen} aria-label={`${readOnly ? '查看' : '编辑'} ${provider?.name ?? row.name}${row.state.agent.label ? ` · ${row.state.agent.label}` : ''}`}>
+    <td><TableActions><TableActionButton onClick={onOpen} disabled={save.isPending} aria-label={`${readOnly ? '查看' : '编辑'} ${provider?.name ?? row.name}${row.state.agent.label ? ` · ${row.state.agent.label}` : ''}`}>
       {readOnly ? '查看' : <><Pencil size={12}/>编辑</>}
     </TableActionButton></TableActions></td>
   </tr>;
@@ -1326,6 +1359,7 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
   const [dirty, setDirty] = useState(false);
   const [fileDirty, setFileDirty] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [rowError, setRowError] = useState('');
   const dialogStart = useRef<HTMLDivElement>(null);
   const catalog = useQuery({queryKey:['agent-management-list'],queryFn:api.agentManagement.list});
   const agents = catalog.data?.agents ?? [];
@@ -1417,10 +1451,11 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
       <CircleAlert size={14}/>读取 Codex 账号 Provider 失败
       <TableActionButton onClick={()=>void accounts.refetch()}>重试</TableActionButton>
     </div>}
-    <DataTable label="Agent Provider" model={table} actions minWidth={850} className="agent-provider-table"
+    {rowError&&<div className="agent-management-error-box" role="alert"><CircleAlert size={14}/>{rowError}</div>}
+    <DataTable label="Agent Provider" model={table} actions minWidth={930} className="agent-provider-table"
       loading={catalog.isPending} error={catalog.isError ? catalog.error.message : undefined} onRetry={refresh}
       empty={!table.rows.length} emptyMessage={rows.length ? '没有符合筛选条件的 Provider' : '暂无 Provider'}>
-      {table.rows.map(row=><ProviderTableRow key={row.key} row={row} readOnly={readOnly}
+      {table.rows.map(row=><ProviderTableRow key={row.key} row={row} readOnly={readOnly} onError={setRowError}
         onOpen={()=>setDialog({type:'edit',row,accountDetails:readOnly})}/>)}
     </DataTable>
     {dialog && <Dialog appearance="manager" className="agent-provider-dialog" title={title} size="image" width={1160}

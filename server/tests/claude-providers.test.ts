@@ -5,6 +5,7 @@ import {createUser} from '../src/auth.js';
 import {readAgentManagement,updateAgentManagement} from '../src/services/agents/management-store.js';
 import {claudeManagement} from '../src/services/agents/claude/management.js';
 import {capabilities} from '../src/services/agents/types.js';
+import {modelRate} from '../src/services/agents/provider-pricing.js';
 import {
   canUseClaudeEnvironment,
   claudeEnvironmentName,
@@ -138,6 +139,18 @@ describe('Claude managed providers',()=>{
   expect(nativeClaudeProviderState()).toMatchObject({status:'ready',authentication:{status:'authenticated'}});
   expect(claudeProviderForEnvironment('claude-provider:anthropic')).toMatchObject({authToken:'native-token',defaultModel:'claude-fable-5'});
   expect(ensureNativeClaudeProvider()).toBeUndefined();
+ });
+ it('applies row edits to the stored native gateway without replacing its credentials or settings',()=>{
+  updateNativeClaudeProvider({apiKey:'native-token',fields:{
+   baseUrl:'https://native.example',models:['claude-a','claude-b'],defaultModel:'claude-a',contextWindow:'1000000',
+  }});
+  updateNativeClaudeProvider({fields:{providerRateMultiplier:'1.2'}});
+  updateNativeClaudeProvider({fields:{defaultModel:'claude-b'}});
+  expect(()=>updateNativeClaudeProvider({fields:{defaultModel:'other-model'}})).toThrow('默认模型必须来自已选模型');
+  const provider=claudeProviderForEnvironment('claude-provider:anthropic')!;
+  expect(provider).toMatchObject({authToken:'native-token',baseUrl:'https://native.example',contextWindow:1000000,defaultModel:'claude-b'});
+  expect(modelRate(provider.billingFields,'claude-a')).toBe(1.2);
+  expect(modelRate(provider.billingFields,'claude-b')).toBe(1.2);
  });
  it('stores independent encrypted endpoints and resolves only the bound provider',()=>{
   create();

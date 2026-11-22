@@ -3,15 +3,14 @@ import {useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
 import {Check,CircleAlert,Loader2,Plus,Save,Trash2} from 'lucide-react';
 import {api,type AgentManagementState,type AgentModelMetadata,type AgentProviderState} from '../lib/api';
 import {modelCapabilitiesPayload} from './ModelPricing';
-import {ProviderAdvancedSettings,ProviderConnectionFields,ProviderRateSettings} from './ProviderConnectionFields';
+import {ProviderAdvancedSettings,ProviderConnectionFields} from './ProviderConnectionFields';
 import {ModelCatalogTable,ProviderModelActions} from './ModelCatalogTable';
 
-type Draft={id:string;name:string;baseUrl:string;apiKey:string;models:string[];defaultModel:string;haikuModel:string;subagentModel:string;effort:string;autoCompactWindow:string;contextWindow:string;maxOutputTokens:string;modelRateMultipliers:string};
-const empty=():Draft=>({id:'',name:'',baseUrl:'',apiKey:'',models:[],defaultModel:'',haikuModel:'',subagentModel:'',effort:'',autoCompactWindow:'',contextWindow:'',maxOutputTokens:'',modelRateMultipliers:''});
+type Draft={id:string;name:string;baseUrl:string;apiKey:string;models:string[];defaultModel:string;haikuModel:string;subagentModel:string;effort:string;autoCompactWindow:string;contextWindow:string;maxOutputTokens:string};
+const empty=():Draft=>({id:'',name:'',baseUrl:'',apiKey:'',models:[],defaultModel:'',haikuModel:'',subagentModel:'',effort:'',autoCompactWindow:'',contextWindow:'',maxOutputTokens:''});
 const field=(provider:AgentProviderState,key:string)=>String(provider.fields.find(item=>item.key===key)?.value??'');
 const fromProvider=(provider:AgentProviderState):Draft=>{
- const multipliers=provider.fields.find(item=>item.key==='modelRateMultipliers')?.value;
- return {id:provider.id,name:provider.name,baseUrl:field(provider,'baseUrl'),apiKey:'',models:provider.models,defaultModel:provider.defaultModel||'',haikuModel:field(provider,'haikuModel'),subagentModel:field(provider,'subagentModel'),effort:field(provider,'effort'),autoCompactWindow:field(provider,'autoCompactWindow'),contextWindow:field(provider,'contextWindow'),maxOutputTokens:field(provider,'maxOutputTokens'),modelRateMultipliers:Array.isArray(multipliers)?multipliers.join('\n'):''};
+ return {id:provider.id,name:provider.name,baseUrl:field(provider,'baseUrl'),apiKey:'',models:provider.models,defaultModel:provider.defaultModel||'',haikuModel:field(provider,'haikuModel'),subagentModel:field(provider,'subagentModel'),effort:field(provider,'effort'),autoCompactWindow:field(provider,'autoCompactWindow'),contextWindow:field(provider,'contextWindow'),maxOutputTokens:field(provider,'maxOutputTokens')};
 };
 const statusLabel:Record<string,string>={ready:'正常',warning:'需配置',error:'异常',unavailable:'不可用',unknown:'待检测'};
 const statusTone=(status:string)=>status==='ready'?'ready':status==='error'?'error':status==='warning'?'warning':'unknown';
@@ -58,7 +57,7 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
   if(!draft.baseUrl.trim())throw Error('请填写 API 地址');
   if(!provider&&!draft.apiKey.trim())throw Error('请填写 API Key');
   if(!draft.models.length)throw Error('请至少选择一个模型');
-  const fields={baseUrl:draft.baseUrl.trim(),models:draft.models,defaultModel:draft.defaultModel||draft.models[0]||'',haikuModel:draft.haikuModel.trim(),subagentModel:draft.subagentModel.trim(),effort:draft.effort.trim(),autoCompactWindow:draft.autoCompactWindow.trim(),contextWindow:draft.contextWindow.trim(),maxOutputTokens:draft.maxOutputTokens.trim(),modelRateMultipliers:draft.modelRateMultipliers.split('\n').map(line=>line.trim()).filter(Boolean),...modelCapabilitiesPayload(probed)};
+  const fields={baseUrl:draft.baseUrl.trim(),models:draft.models,defaultModel:draft.defaultModel||draft.models[0]||'',haikuModel:draft.haikuModel.trim(),subagentModel:draft.subagentModel.trim(),effort:draft.effort.trim(),autoCompactWindow:draft.autoCompactWindow.trim(),contextWindow:draft.contextWindow.trim(),maxOutputTokens:draft.maxOutputTokens.trim(),...modelCapabilitiesPayload(probed)};
   const input={name:draft.name.trim()||draft.id.trim(),kind:provider?.kind||'anthropic-compatible',enabled:provider?.enabled??true,...draft.apiKey.trim()?{apiKey:draft.apiKey.trim()}:{},fields};
   return provider?api.agentManagement.updateProvider('claude',provider.id,input):api.agentManagement.createProvider('claude',{...input,id:draft.id.trim()});
  },onSuccess:result=>{updateState(result);refreshSessionControls();setSaved(true);setError('');onDirtyChange?.(false);onSaved(provider?.id||draft.id.trim());},onError:(failure:Error)=>setError(failure.message)});
@@ -103,7 +102,6 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
      <input aria-label="手工添加 Claude 模型" value={manualModel} placeholder="模型 ID" disabled={busy} onChange={event=>setManualModel(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();addManualModel();}}}/>
      <button type="button" className="agent-management-button" disabled={busy||!manualModel.trim()} onClick={addManualModel}>添加</button>
     </div></ProviderAdvancedSettings>}
-    <ProviderRateSettings label="Claude 模型计费倍率" value={draft.modelRateMultipliers} disabled={readOnly||busy} onChange={modelRateMultipliers=>change({modelRateMultipliers})}/>
    </div>
   </section>
   {(error||saved)&&<div className={`agent-management-operation ${error?'error':'success'}`} role={error?'alert':'status'}>{error?<CircleAlert size={13}/>:<Check size={13}/>}<span>{error||'Claude Provider 已保存'}</span></div>}
