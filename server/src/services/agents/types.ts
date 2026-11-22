@@ -127,7 +127,7 @@ export interface AgentProviderState {
   authentication: {
     status: "authenticated" | "missing" | "unknown";
     method: string;
-    mode?: "api" | "account" | "unknown";
+    mode?: "api" | "account" | "unknown" | "uninitialized";
   };
   models: string[];
   defaultModel: string | null;

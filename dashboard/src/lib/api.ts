@@ -180,7 +180,7 @@ export interface AgentProviderState {
   managed: boolean;
   status: 'ready' | 'warning' | 'error' | 'unavailable' | 'unknown';
   statusText: string;
-  authentication: { status: 'authenticated' | 'missing' | 'unknown'; method: string; mode?: 'api'|'account'|'unknown' };
+  authentication: { status: 'authenticated' | 'missing' | 'unknown'; method: string; mode?: 'api'|'account'|'unknown'|'uninitialized' };
   models: string[];
   defaultModel: string | null;
   providerOptions?: Record<string, string | number | null>;
