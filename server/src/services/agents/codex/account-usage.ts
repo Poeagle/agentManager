@@ -320,17 +320,22 @@ function officialApiEstimates(id:string,timezone:string,rows:Array<Record<string
 }
 type ModelUsage={model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number};estimated_usd:number|null;usd_coverage:{covered:number;total:number};usd_breakdown?:TokenCostBreakdown;cost_breakdown?:TokenCostBreakdown;api_cost?:ApiCost};
 function accountApiEstimate(id:string,model:string|null,at:string|null,tokens:Record<string,number|null>|null){
- if(!id.startsWith('provider:'))return null;
- const pricing=codexApiPricing(id);
+ const authMode=id==='native'?cachedEngineBalance(id).auth_mode:null;
+ if(!id.startsWith('provider:')&&authMode!=='api')return null;
+ const pricing=codexApiPricing(id,authMode);
  if(!pricing||!at||!model||!tokens)return null;
  return codexApiEstimate(pricing,pricing.provider,model,null,at,tokens);
 }
 function accountRequestEventEstimates(id:string,days:Set<string>){
  const groups=new Map<string,ApiCost>(),models=new Map<string,ApiCost>();
- if(!id.startsWith('provider:')||!days.size)return {groups,models};
- const pricing=codexApiPricing(id),providerId=pricing?.provider;
+ const authMode=id==='native'?cachedEngineBalance(id).auth_mode:null;
+ if(!id.startsWith('provider:')&&authMode!=='api'||!days.size)return {groups,models};
+ const pricing=codexApiPricing(id,authMode),providerId=pricing?.provider;
  if(!pricing||!providerId)return {groups,models};
- const events=getDb().prepare('SELECT day,cwd,model,at,tokens FROM codex_usage_dedup_events WHERE account=? AND provider=? AND COALESCE(json_extract(tokens,\'$._timezone\'),\'UTC\')=COALESCE((SELECT timezone FROM codex_usage_ledger WHERE account=?),\'UTC\') ORDER BY at LIMIT ?').all(id,providerId,id,USAGE_EVENT_LIMIT+1) as Array<{day:string;cwd:string;model:string|null;at:string|null;tokens:string}>;
+ const query=id==='native'
+  ?getDb().prepare('SELECT day,cwd,model,at,tokens FROM codex_usage_dedup_events WHERE account=? AND COALESCE(json_extract(tokens,\'$._timezone\'),\'UTC\')=COALESCE((SELECT timezone FROM codex_usage_ledger WHERE account=?),\'UTC\') ORDER BY at LIMIT ?')
+  :getDb().prepare('SELECT day,cwd,model,at,tokens FROM codex_usage_dedup_events WHERE account=? AND provider=? AND COALESCE(json_extract(tokens,\'$._timezone\'),\'UTC\')=COALESCE((SELECT timezone FROM codex_usage_ledger WHERE account=?),\'UTC\') ORDER BY at LIMIT ?');
+ const events=(id==='native'?query.all(id,id,USAGE_EVENT_LIMIT+1):query.all(id,providerId,id,USAGE_EVENT_LIMIT+1)) as Array<{day:string;cwd:string;model:string|null;at:string|null;tokens:string}>;
  if(events.length>USAGE_EVENT_LIMIT)return {groups,models};
  for(const event of events){
   if(!days.has(event.day))continue;
@@ -438,7 +443,10 @@ function addApiCost(target:ApiCost,source:ApiCost){
 export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',single=false){
  type GroupEvent={day:string;hour:string|null;at?:string|null;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string};
  const official=!single&&ids.length>0&&ids.every(id=>balanceGroup(id)===deepseekGroup);
- const apiProviders=new Map(ids.map(id=>[id.slice('provider:'.length),codexApiPricing(id)]));
+ const apiProviders=new Map(ids.map(id=>{
+  const authMode=id==='native'?cachedEngineBalance(id).auth_mode:null;
+  return [id==='native'?'native':id.slice('provider:'.length),codexApiPricing(id,authMode)] as const;
+ }));
  const providerCurrency=[...apiProviders.values()].find(pricing=>pricing?.unit==='USD')?.unit??[...apiProviders.values()].find(pricing=>pricing?.unit==='CNY')?.unit??null;
  const currency=official?'CNY':providerCurrency;
  const timezone=usageTimezone(),billingTimezone=official?'Asia/Shanghai':timezone;

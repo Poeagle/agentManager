@@ -52,12 +52,16 @@ export const codexAdapter: AgentAdapter = {
         read: async (context, path) => {
             const environment=context.session.agent_environment_id;
             const {codexApiPricing}=await import('./statistics-cost.js');
-            return (await import('./statistics.js')).readConversationStatistics(path,!environment?.startsWith('provider:'),codexApiPricing(environment)??undefined);
+            const authMode=environment==='native'?(await import('./engine-balance.js')).cachedEngineBalance('native').auth_mode:null;
+            const apiMode=environment?.startsWith('provider:')||authMode==='api';
+            return (await import('./statistics.js')).readConversationStatistics(path,!apiMode,codexApiPricing(environment,authMode)??undefined);
         },
         readProgress: async (context,path) => {
             const environment=context.session.agent_environment_id;
             const {codexApiPricing}=await import('./statistics-cost.js');
-            return (await import('./statistics.js')).readConversationProgress(path,!environment?.startsWith('provider:'),codexApiPricing(environment)??undefined);
+            const authMode=environment==='native'?(await import('./engine-balance.js')).cachedEngineBalance('native').auth_mode:null;
+            const apiMode=environment?.startsWith('provider:')||authMode==='api';
+            return (await import('./statistics.js')).readConversationProgress(path,!apiMode,codexApiPricing(environment,authMode)??undefined);
         },
     },
     quota: { read: async (force) => (await import('./quota.js')).readCodexWeeklyQuota({ force }) },
