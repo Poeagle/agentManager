@@ -16,9 +16,9 @@ import {accountCommandInput,localCommandInput} from './account-transport.js';
 import {USAGE_EVENT_LIMIT,USAGE_SCAN} from './usage-scanner.js';
 import {tokenFields} from '../../conversation-usage.js';
 import {creditRateDate,usdReferenceRateDate,estimateUsageCredits,estimateUsageBreakdown,estimateUsageUsd,estimateUsageUsdBreakdown} from './usage-credits.js';
-import {estimatePublicApiCost,pricingSnapshot,publicApiModel} from '../model-pricing.js';
+import {estimatePublicApiCost,pricingSnapshot,publicApiModel,type PublicApiCatalog} from '../model-pricing.js';
 import {createHash} from 'node:crypto';
-import {deepseekDay,deepseekOrigin,estimateDeepseekBreakdown} from '../deepseek-pricing.js';
+import {deepseekCatalogModel,deepseekDay,deepseekOrigin,estimateDeepseekBreakdown} from '../deepseek-pricing.js';
 import {codexApiEstimate,codexApiPricing} from './statistics-cost.js';
 import type {TokenCostBreakdown} from '../types.js';
 import {initUsageProvenance,usageOrigins} from './usage-provenance.js';
@@ -247,6 +247,33 @@ function addOfficialApiEstimate(target:OfficialApiEstimate,cost:NonNullable<Retu
  target.breakdown={input:target.breakdown.input+cost.breakdown.input,cache:target.breakdown.cache+cost.breakdown.cache,
   output:target.breakdown.output+cost.breakdown.output,reasoning:target.breakdown.reasoning===null||cost.breakdown.reasoning===null?null:target.breakdown.reasoning+cost.breakdown.reasoning};
 }
+type OfficialApiCatalog=PublicApiCatalog|'deepseek';
+function officialApiCatalog(model:string|null):OfficialApiCatalog|null{
+ if(!model)return null;
+ const id=model.toLowerCase().split('/').at(-1)??model.toLowerCase();
+ if(id.startsWith('gpt-'))return 'openai';
+ if(id.startsWith('claude-'))return 'claude';
+ if(id.startsWith('deepseek-'))return 'deepseek';
+ if(id.startsWith('grok-'))return 'xai';
+ if(id.startsWith('gemini-'))return 'gemini';
+ if(id.startsWith('kimi-'))return 'kimi';
+ if(id.startsWith('glm-'))return 'glm';
+ return null;
+}
+function officialApiCost(catalog:OfficialApiCatalog,model:string|null,at:string,tokens:Record<string,number|null>){
+ if(catalog==='deepseek'){
+  const breakdown=estimateDeepseekBreakdown(model,Date.parse(at),tokens);
+  return breakdown?{amount:breakdown.input+breakdown.cache+breakdown.output,breakdown}:null;
+ }
+ return estimatePublicApiCost(catalog,model,at,tokens);
+}
+function officialApiBands(catalog:OfficialApiCatalog,model:string){
+ if(catalog==='deepseek'){
+  const peak=deepseekCatalogModel(model)?.api_pricing?.peak;
+  return peak?[{rates:peak,min_input_tokens:undefined}]:undefined;
+ }
+ return publicApiModel(catalog,model)?.api_pricing.bands;
+}
 function officialApiEstimates(id:string,timezone:string,rows:Array<Record<string,any>>,directoryFor:(path:string)=>{cwd:string}){
  const estimates=new Map<string,OfficialApiEstimate>(),tieredModels=new Set<string>(),rateAt=new Date().toISOString();
  const key=(day:string,cwd:string,model:string|null)=>JSON.stringify([day,cwd,model]);
@@ -254,13 +281,13 @@ function officialApiEstimates(id:string,timezone:string,rows:Array<Record<string
  for(const row of rows){
   const estimateKey=key(row.day,row.cwd,row.model),estimate=estimates.get(estimateKey)??blank();
   estimate.coverage.total+=row.requests;
-  estimate.breakdown.reasoning=estimate.breakdown.reasoning===null?null:estimate.breakdown.reasoning;
-  const bands=row.model?publicApiModel('openai',row.model)?.api_pricing.bands:undefined;
+  const catalog=officialApiCatalog(row.model),bands=row.model&&catalog?officialApiBands(catalog,row.model):undefined;
   if(bands?.length===1){
-   const cost=estimatePublicApiCost('openai',row.model,rateAt,row);
+   // A single-band tariff is safe for the already grouped counters.
+   const cost=catalog?officialApiCost(catalog,row.model,row.at??rateAt,row):null;
    if(cost)addOfficialApiEstimate(estimate,cost,row.requests);
    else estimate.breakdown.reasoning=null;
-  }else if(bands?.length&&bands.every(band=>band.min_input_tokens!=null))tieredModels.add(row.model);
+  }else if(catalog&&(catalog==='deepseek'||bands?.length&&bands.every(band=>band.min_input_tokens!=null)))tieredModels.add(row.model!);
   else estimate.breakdown.reasoning=null;
   estimates.set(estimateKey,estimate);
  }
@@ -274,13 +301,18 @@ function officialApiEstimates(id:string,timezone:string,rows:Array<Record<string
    const tokens=JSON.parse(event.tokens) as Record<string,number|null>&{_timezone?:string};
    if((tokens._timezone??'UTC')!==timezone)continue;
    const cwd=directoryFor(event.cwd).cwd;
+   const catalog=officialApiCatalog(event.model);
    const estimate=estimates.get(key(event.day,cwd,event.model));
-   const cost=estimatePublicApiCost('openai',event.model,rateAt,tokens);
+   const cost=catalog?officialApiCost(catalog,event.model,rateAt,tokens):null;
    if(estimate&&cost)addOfficialApiEstimate(estimate,cost,1);
    else if(estimate)estimate.breakdown.reasoning=null;
   }
  }
- const checked=pricingSnapshot('openai')?.checked;
+ const catalogs=new Set(rows.flatMap(row=>{const catalog=officialApiCatalog(row.model);return catalog?[catalog]:[];}));
+ const checked=[...catalogs].reduce<number|undefined>((latest,catalog)=>{
+   const time=pricingSnapshot(catalog)?.checked;
+   return time!==undefined&&(latest===undefined||time>latest)?time:latest;
+  },undefined);
  return {estimates,detailsIncomplete,rateDate:checked?new Date(checked).toISOString().slice(0,10):undefined};
 }
 type ModelUsage={model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number};estimated_usd:number|null;usd_coverage:{covered:number;total:number};usd_breakdown?:TokenCostBreakdown;cost_breakdown?:TokenCostBreakdown;api_cost?:ApiCost};
