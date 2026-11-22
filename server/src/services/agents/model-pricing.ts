@@ -62,8 +62,7 @@ export function apiTariffAt(catalog:TokenCatalog,model:string,at:number){
  const newer=next&&Object.hasOwn(next.data.models,id)?next.data.models[id]:undefined;
  const boundary=newer?.bands[1]?.min_input_tokens;
  if(newer?.bands.length!==2||newer.bands[0].min_input_tokens!==0||boundary===undefined||!Number.isSafeInteger(boundary)||boundary<=0)return tariff;
- const sameBands=tariff.bands.every((band,index)=>band.label===newer.bands[index].label &&
-   JSON.stringify(band.rates)===JSON.stringify(newer.bands[index].rates));
+ const sameBands=tariff.bands.every((band,index)=>JSON.stringify(band.rates)===JSON.stringify(newer.bands[index].rates));
  if(!sameBands)return tariff;
  const [standard,long]=tariff.bands;
  return {...tariff,bands:[{...standard,min_input_tokens:0},{...long,min_input_tokens:boundary}]};
@@ -144,7 +143,7 @@ function parseOpenAI(text:string):PricingData{
   const rate=rates(decimals(input??''),decimals(cached??''),decimals(output??''));
   const long=rates(decimals(longInput??''),decimals(longCache??''),decimals(longOutput??''));
   const boundary=threshold?Number(threshold)*1000+1:undefined;
-  if(rate)models[model]={bands:long?[{label:'短上下文',rates:rate,min_input_tokens:boundary===undefined?undefined:0},{label:'长上下文',rates:long,min_input_tokens:boundary}]:[{rates:rate}]};
+  if(rate)models[model]={bands:long?[{label:threshold?`≤ ${threshold}K 输入 Token`:'短上下文',rates:rate,min_input_tokens:boundary===undefined?undefined:0},{label:threshold?`> ${threshold}K 输入 Token`:'长上下文',rates:long,min_input_tokens:boundary}]:[{rates:rate}]};
  }
  return {models};
 }
@@ -266,8 +265,9 @@ function parseClaude(text:string):PricingData{
 }
 
 function parseDeepseek(text:string):PricingData{
- const matrix=rows(text),header=matrix.find(row=>row[0]==='模型'&&row.slice(3).every(value=>/^deepseek-[\w-]+(?:\(\d+\))?$/.test(value)));
+ const matrix=rows(text),header=matrix.find(row=>row[0]==='模型'&&row.slice(3).every(value=>/^deepseek-[\w.-]+(?:\(\d+\))?$/.test(value)));
  const versions=matrix.find(row=>row[0]==='模型版本');
+ const contexts=matrix.find(row=>row[0]==='上下文长度');
  const schedule=/北京时间周一至周五（不含中国法定节假日）(\d+):00\s*-\s*(\d+):00、(\d+):00\s*-\s*(\d+):00 为高峰时段/.exec(text);
  if(!header||header.length<4||!versions||!schedule)throw Error('Missing DeepSeek model or billing schedule');
  const peak_hours=[schedule.slice(1,3).map(Number),schedule.slice(3,5).map(Number)];
@@ -283,10 +283,12 @@ function parseDeepseek(text:string):PricingData{
   });
   const id=label.replace(/\(\d+\)$/,''),version=versions[column];
   const release_date=({'DeepSeek-V4.1-Flash-1017':'2026-10-17','DeepSeek-V4-Pro-0813':'2026-08-13'} as Record<string,string>)[version];
-  models[id]={bands,version,release_date};
+  const context=contexts?.[column]?.match(/([\d.]+)\s*([kKmM]?)/);
+  const context_window=context?Number(context[1])*(context[2]?.toLowerCase()==='m'?1_000_000:context[2]?.toLowerCase()==='k'?1_000:1):undefined;
+  models[id]={bands,version,release_date,context_window};
  }
  const aliasLine=text.split('\n').find(line=>line.includes('旧模型名')&&line.includes('按 Flash 价格计费'));
- if(aliasLine&&models['deepseek-flash'])for(const [,alias] of aliasLine.matchAll(/`(deepseek-[\w-]+)`/g))models[alias]??=models['deepseek-flash'];
+ if(aliasLine&&models['deepseek-flash'])for(const [,alias] of aliasLine.matchAll(/`(deepseek-[\w.-]+)`/g))models[alias]??=models['deepseek-flash'];
  return {models,peak_hours};
 }
 

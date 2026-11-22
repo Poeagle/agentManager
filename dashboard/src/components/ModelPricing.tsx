@@ -23,8 +23,10 @@ export function ModelPricing({pricing,credits,multiplier=1}: {
   </div>;
 }
 
-export function modelMultiplierLabel(model?:AgentModelMetadata) {
+export function modelMultiplierLabel(model?:AgentModelMetadata,providerMultiplier?:number) {
   const multiplier=model?.api_pricing?.provider_multiplier;
+  if(model?.reference_credits||model?.api_pricing?.reference_only===false)return '1×';
+  if(multiplier==null&&providerMultiplier!=null)return `${providerMultiplier.toLocaleString()}×`;
   return multiplier!=null?`${multiplier.toLocaleString()}×`:model?.api_pricing?.reference_only&&!model.provider_pricing?'未填写':'—';
 }
 

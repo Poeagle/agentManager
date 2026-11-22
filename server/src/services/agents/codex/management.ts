@@ -21,6 +21,7 @@ import { findExecutable, firstVersion, runCli } from '../management-cli.js';
 import { expandHome } from '../management-common.js';
 import { managedLaunchCommand, openAgentSecret, readAgentManagement, sealAgentSecret, updateAgentManagement, writeAgentManagement, type StoredProvider } from '../management-store.js';
 import {detectedModelMetadata,providerRateFields,providerModelMetadata,saveModelRates} from '../provider-pricing.js';
+import {refreshStoredProviderBilling} from '../provider-billing.js';
 import {saveModelCapabilities,storedModelCapabilities} from '../model-capabilities.js';
 import { configuredCodexEngines } from './engine-context.js';
 import { clearManagedCodexRuntimeSocket, managedCodexSocket, managedCodexRuntimeSocket, setManagedCodexRuntimeSocket } from './provider-config.js';
@@ -1002,6 +1003,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       const { readEngineModelsForProvider } = await import('./controls.js');
       return readEngineModelsForProvider(input?.providerId, true);
     },
+    refreshProviderBilling:async providerId=>refreshStoredProviderBilling('codex',provider=>providerApiKey(provider.id),{providerId}),
     readModelConfigs: async () => {
       const providers=readAgentManagement('codex').providers;
       const native=await readModelSettings('native');

@@ -24,8 +24,9 @@ export function isOfficialDeepSeek(baseUrl:unknown):boolean {
 function modelTariff(model:string|null,at=Infinity){
  const synced=pricingSnapshot('deepseek',at)?.data;
  if(synced){
-  const tariff=model&&Object.hasOwn(synced.models,model)?synced.models[model]:null;
-  return tariff&&{release_date:tariff.release_date,peak:tariff.bands[0].rates,off_peak:tariff.bands[1].rates,peak_hours:synced.peak_hours??peakHours};
+  const id=canonicalDeepSeekModel(model);
+  const tariff=id&&Object.hasOwn(synced.models,id)?synced.models[id]:null;
+  return tariff&&{release_date:tariff.release_date,context_window:tariff.context_window,peak:tariff.bands[0].rates,off_peak:tariff.bands[1].rates,peak_hours:synced.peak_hours??peakHours};
  }
  const preset=initialTariff(model);
  if(!preset)return null;
@@ -34,13 +35,19 @@ function modelTariff(model:string|null,at=Infinity){
 }
 
 function initialTariff(model:string|null){
+ model=canonicalDeepSeekModel(model);
  switch(model){
   case 'deepseek-flash':case 'deepseek-v4-flash':case 'deepseek-v4-flash-vision-exp':
-   return {release_date:'2026-10-17',peak:peakFlash};
+   return {release_date:'2026-10-17',context_window:1_000_000,peak:peakFlash};
   case 'deepseek-v4-pro':
-   return {release_date:'2026-08-13',peak:peakPro};
+   return {release_date:'2026-08-13',context_window:1_000_000,peak:peakPro};
   default:return null;
  }
+}
+
+function canonicalDeepSeekModel(model:string|null){
+ if(model==='deepseek-v4.1-flash')return 'deepseek-flash';
+ return model;
 }
 
 export function deepseekModelPricing(baseUrl:unknown,model:string){
@@ -52,7 +59,7 @@ export function deepseekCatalogModel(model:string){
  const tariff=modelTariff(model);
  if(!tariff)return null;
  const {release_date,peak,off_peak,peak_hours}=tariff;
- return {release_date:release_date??null,api_pricing:{currency:'CNY' as const,peak,off_peak,timezone,peak_hours,source}};
+ return {release_date:release_date??null,context_window:tariff.context_window,api_pricing:{currency:'CNY' as const,peak,off_peak,timezone,peak_hours,source}};
 }
 
 // The timestamp in the ledger is an observed response timestamp. Beijing uses UTC+08.

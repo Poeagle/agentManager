@@ -9,6 +9,7 @@ import {withTerminalInput} from '../services/agents/terminal-input.js';
 import {observeAgentConversation} from '../services/agents/host.js';
 import {readModelPreference,saveModelPreference,modelPreferenceSubmittedAt} from '../services/agents/model-preferences.js';
 import {agentForSession,agentDescriptors,getAgent} from '../services/agents/index.js';
+import {readAgentModelCatalog} from '../services/agents/model-catalog.js';
 import {sessionAgentContext,readAgentRuntime,presentAgentSession} from '../services/agents/session.js';
 import {nativeConversationId} from '../services/session-identity.js';
 import {rememberConversationInput,linkConversationInputs,boundConversationInputs} from '../services/conversation-input-links.js';
@@ -646,6 +647,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       state:await getAgent(agent.id).management.inspect(false).catch(error=>({error:error instanceof Error?error.message:'无法读取 Agent 配置'})),
     })));
     return {agents:management};
+  });
+  app.get('/agent-management/model-catalog',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','read'))return;
+    try{return {models:await readAgentModelCatalog()};}
+    catch(error){return reply.code(500).send({error:error instanceof Error?error.message:'读取模型资料失败'});}
   });
   app.get<{Params:{agentId:string}}>('/agent-management/:agentId',async(req,reply)=>{
     if(!requirePermission(req,reply,'settings','read'))return;

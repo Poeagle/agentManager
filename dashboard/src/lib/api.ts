@@ -269,6 +269,7 @@ export interface AgentModelMetadata {
   release_date?:string|null;
   api_pricing?:AgentModelPricing;
   provider_pricing?:AgentModelPricing;
+  provider_billing?:{source:'sub2api';observedAt:string;resolvedRate:number;peakEnabled:boolean;peakMultiplier?:number;peakStart?:string;peakEnd?:string;timeZone?:string};
   context_window?:number|null;
   input_modalities?:string[];
   official_context_window?:number;
@@ -763,6 +764,7 @@ export const api = {
   },
   agentManagement: {
     list: () => fetchJSON<{ agents: Array<{ agent: AgentDescriptor; state: AgentManagementState }> }>('/agent-management'),
+    modelCatalog: () => fetchJSON<{ models: Array<AgentModelMetadata & { vendor:string; model:string; providers:string[] }> }>('/agent-management/model-catalog'),
     get: (agentId: string) => fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}`),
     provider: (agentId: string, providerId: string) =>
       fetchJSON<{ provider: AgentProviderState }>(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}`),

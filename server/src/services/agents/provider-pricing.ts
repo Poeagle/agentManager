@@ -5,13 +5,21 @@ import type {AgentModelMetadata} from './types.js';
 import {storedModelCapabilities,parseModelCapabilities} from './model-capabilities.js';
 
 type Fields = StoredProvider['fields'];
-type RateVersion = {at:number;rates:Record<string,number>;providerRate?:number|null};
+export interface ProviderBillingSnapshot {
+ source:'sub2api';observedAt:number;resolvedRate:number;effectiveRate:number;peakEnabled:boolean;
+ peakMultiplier?:number;peakStart?:string;peakEnd?:string;timeZone?:string;
+}
+export interface ProviderBillingMetadata extends Omit<ProviderBillingSnapshot,'observedAt'|'effectiveRate'>{observedAt:string;}
+type RateVersion = {at:number;rates:Record<string,number>;providerRate?:number|null;providerBilling?:ProviderBillingSnapshot};
 
 export function providerRateFields(base:unknown,fields?:Fields) {
-  if(!base||officialApiCatalog(base)||isOfficialDeepSeek(base))return [];
+  if(!base)return [];
+  if(officialApiCatalog(base)||isOfficialDeepSeek(base))return [{key:'providerRateMultiplier',label:'官方倍率',type:'text' as const,
+    value:'1',readOnly:true,description:'官方 API 按官方费率计价。'}];
   return [{key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text' as const,
+    ...(fields?.providerRateSource==='sub2api'?{readOnly:true,label:'Provider 自动倍率'}:{}),
     value:typeof fields?.providerRateMultiplier==='string'?fields.providerRateMultiplier:'',
-    description:'第三方未提供模型费率时，用此倍率折算官方参考价。'}];
+    description:fields?.providerRateSource==='sub2api'?'从 Sub2API 账单接口按小时获取，费用按请求时段倍率估算。':'第三方未提供模型费率时，用此倍率折算官方参考价。'}];
 }
 
 function versions(fields?:Fields):RateVersion[] {
@@ -22,8 +30,12 @@ export function saveModelRates(next:Fields, previous?:Fields, now=Date.now()) {
   delete next.modelRateVersions;
   const sameEndpoint=next.baseUrl===previous?.baseUrl;
   const history=sameEndpoint?versions(previous):[];
+  if(!sameEndpoint){delete next.providerRateSource;delete next.providerBillingSnapshot;}
   if(previous&&!sameEndpoint&&next.providerRateMultiplier===previous.providerRateMultiplier)
     delete next.providerRateMultiplier;
+  if(sameEndpoint&&previous?.providerRateSource==='sub2api'&&next.providerRateMultiplier!==previous.providerRateMultiplier){
+    delete next.providerRateSource;delete next.providerBillingSnapshot;
+  }
   let providerRate:number|null|undefined;
   const raw=next.providerRateMultiplier;
   if(raw!==undefined){
@@ -52,12 +64,62 @@ export function saveModelRates(next:Fields, previous?:Fields, now=Date.now()) {
   if(history.length)next.modelRateVersions=JSON.stringify(history.slice(0,128));
 }
 
+export function saveProviderBillingSnapshot(next:Fields,previous:Fields,snapshot:ProviderBillingSnapshot){
+ const history=versions(previous),at=snapshot.observedAt;
+ const stored:ProviderBillingSnapshot={source:'sub2api',observedAt:at,resolvedRate:snapshot.resolvedRate,effectiveRate:snapshot.effectiveRate,peakEnabled:snapshot.peakEnabled,
+  ...(snapshot.peakEnabled?{peakMultiplier:snapshot.peakMultiplier,peakStart:snapshot.peakStart,peakEnd:snapshot.peakEnd,timeZone:snapshot.timeZone}:{})};
+ const first=history[0];
+ if(first?.providerRate!==snapshot.resolvedRate||JSON.stringify(first.providerBilling?{...first.providerBilling,observedAt:0}:null)!==JSON.stringify({...stored,observedAt:0}))
+  history.unshift({at,rates:first?.rates??{},providerRate:snapshot.resolvedRate,providerBilling:stored});
+ next.providerRateMultiplier=String(snapshot.resolvedRate);
+ next.providerRateSource='sub2api';
+ next.providerBillingSnapshot=JSON.stringify(stored);
+ next.modelRateVersions=JSON.stringify(history.slice(0,128));
+}
+
+export function providerBillingSnapshot(fields?:Fields):ProviderBillingSnapshot|undefined{
+ if(fields?.providerRateSource!=='sub2api'||typeof fields.providerBillingSnapshot!=='string')return;
+ try{const value=JSON.parse(fields.providerBillingSnapshot) as ProviderBillingSnapshot;return value.source==='sub2api'?value:undefined;}catch{return;}
+}
+
+export function providerBillingMetadata(fields?:Fields):ProviderBillingMetadata|undefined{
+ const snapshot=providerBillingSnapshot(fields);if(!snapshot)return;
+ const {observedAt,effectiveRate,...rest}=snapshot;
+ return {...rest,observedAt:new Date(observedAt).toISOString()};
+}
+
 export function modelRate(fields:Fields|undefined,model:string|null,at=Infinity):number|undefined {
   if(!model)return undefined;
   const version=versions(fields).find(version=>version.at<=at);
   if(version?.providerRate!==undefined)return version.providerRate??undefined;
   const rates=version?.rates;
   return rates&&Object.hasOwn(rates,model)?rates[model]:undefined;
+}
+
+function rateVersion(fields:Fields|undefined,model:string|null,at:number){
+ if(!model)return;
+ const version=versions(fields).find(item=>item.at<=at);
+ if(version?.providerRate!==undefined)return version;
+ return version?.rates&&Object.hasOwn(version.rates,model)?version:undefined;
+}
+
+function isPeak(timestamp:number,snapshot:ProviderBillingSnapshot){
+ if(!snapshot.peakEnabled||!snapshot.timeZone||!snapshot.peakStart||!snapshot.peakEnd)return false;
+ let local:string;
+ try{local=new Intl.DateTimeFormat('en-GB',{timeZone:snapshot.timeZone,hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(timestamp);}catch{return false;}
+ return local>=snapshot.peakStart&&local<snapshot.peakEnd;
+}
+
+export function providerMultiplier(fields:Fields|undefined,model:string|null,at=Infinity){
+ const version=rateVersion(fields,model,at);
+ if(!version)return;
+ if(version.providerRate!==undefined){
+  const base=version.providerRate??undefined;
+  if(base===undefined)return;
+  const billing=version.providerBilling;
+  return {rate:base,source:billing?.source??'manual' as const,billing};
+ }
+ return {rate:version.rates[model!]!,source:'manual' as const};
 }
 
 const catalogOrigins:Record<string,PublicApiCatalog>={
@@ -111,8 +173,9 @@ export function providerModelMetadata(model:string,base:unknown,fields?:Fields):
     official_context_window:officialWindow,
     context_window:capabilities?.context_window??provider?.context_window??officialWindow,
     input_modalities:capabilities?.input_modalities??provider?.input_modalities??officialInputs,
-    api_pricing:info?{...info.api_pricing,reference_only:!official,provider_multiplier:official||provider?undefined:modelRate(fields,model)}:undefined,
+    api_pricing:info?{...info.api_pricing,reference_only:!official,provider_multiplier:official?1:provider?undefined:modelRate(fields,model)}:undefined,
     provider_pricing:provider?.api_pricing,
+    provider_billing:providerBillingMetadata(fields),
   };
 }
 
@@ -138,7 +201,11 @@ export function estimateProviderApiCost(base:unknown,fields:Fields|undefined,mod
     catalog&&!useDeepseek?estimatePublicApiCost(catalog,id,at,tokens,cacheWrites):null;
   const breakdown=useDeepseek?(cacheWrites?.some(Boolean)?null:estimateDeepseekBreakdown(id,epoch,tokens)):estimate?.breakdown;
   if(!breakdown)return null;
-  const multiplier=official||deepseek||useProvider?1:modelRate(fields,model,epoch)??1;
+  const version=rateVersion(fields,model,epoch);
+  const providerRate=version?.providerRate;
+  const schedule=version?.providerBilling;
+  const peak=providerRate!==undefined&&providerRate!==null&&schedule&&isPeak(epoch,schedule)?schedule.peakMultiplier??1:1;
+  const multiplier=official||deepseek||useProvider?1:(providerRate??(version?.rates&&Object.hasOwn(version.rates,model)?version.rates[model]:undefined)??1)*peak;
   const {input,cache,output,reasoning}=breakdown;
   return {unit:useDeepseek?'CNY' as const:'USD' as const,amount:(input+cache+output)*multiplier,breakdown:{input:input*multiplier,cache:cache*multiplier,
     output:output*multiplier,reasoning:reasoning===null?null:reasoning*multiplier}};

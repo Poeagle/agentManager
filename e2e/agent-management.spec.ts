@@ -13,6 +13,14 @@ test('shows Agent-specific settings for Codex and Claude', async ({ page }) => {
   }
   await page.route('**/api/agent-management**', async route => {
     const path = new URL(route.request().url()).pathname;
+    if (path === '/api/agent-management/model-catalog') return route.fulfill({ json: { models: [{
+      vendor: 'OpenAI', model: 'gpt-6.2-sol', providers: ['xindu'], release_date: '2026-11-17', context_window: 1_050_000,
+      api_pricing: { currency: 'USD', source: 'official', bands: [
+        { label: '≤ 272K 输入 Token', min_input_tokens: 0, rates: { input: 2, cached: 0.1, output: 10 } },
+        { label: '> 272K 输入 Token', min_input_tokens: 272_001, rates: { input: 4, cached: 0.2, output: 15 } },
+      ] },
+    }] } });
+    if (path.endsWith('/model-configs')) return route.fulfill({ json: { models: [] } });
     if (path.endsWith('/detect-models')) return route.fulfill({ json: { models: [] } });
     if (path === '/api/agent-management/codex') return route.fulfill({ json: { state: stateFor('codex') } });
     if (path === '/api/agent-management/claude') return route.fulfill({ json: { state: stateFor('claude') } });
@@ -22,12 +30,24 @@ test('shows Agent-specific settings for Codex and Claude', async ({ page }) => {
   await page.getByTitle('My account').click();
   await page.getByRole('button', { name: 'Agent 配置' }).click();
   await expect(page.locator('.manager-section-heading')).toHaveText('Agent 配置');
-  await expect(page.getByRole('button', { name: /^xindu\b/ })).toBeVisible();
-  await expect(page.getByText('deepseek-v4.1-flash').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: '编辑 xindu · Codex' })).toBeVisible();
+  await page.getByRole('button', { name: '展开Provider xindu 的模型' }).click();
+  const modelTable = page.getByRole('table', { name: 'Provider 模型' });
+  await expect(modelTable.getByText('deepseek-v4.1-flash')).toBeVisible();
+  await page.getByRole('button', { name: '编辑 xindu · Codex' }).click();
   await page.getByRole('button', {name:'配置文件 (1)'}).click();
   await expect(page.getByText('/Users/ymchen/.codex-xindu/config.toml')).toBeVisible();
   await page.screenshot({ path: 'test-results/agent-management-codex.png', fullPage: true });
-  await page.getByRole('button', { name: /Claude/ }).click();
+  await page.getByRole('button', { name: '关闭编辑 Provider · xindu' }).click();
+  await page.getByRole('tab', { name: '模型资料' }).click();
+  const catalog = page.getByRole('table', { name: '模型资料' });
+  const gptRow = catalog.getByRole('row', { name: /gpt-6\.2-sol/ });
+  await expect(gptRow).toContainText('≤ 272K 输入 Token USD 2.00');
+  await expect(gptRow).toContainText('> 272K 输入 Token USD 4.00');
+  await expect(gptRow).toContainText('> 272K 输入 Token USD 15.00');
+  await expect(gptRow).toContainText('> 272K 输入 Token USD 0.20');
+  await page.getByRole('tab', { name: 'Provider' }).click();
+  await page.getByRole('button', { name: '编辑 Anthropic · Claude' }).click();
   await expect(page.getByRole('textbox',{name:'Claude Provider 名称'})).toHaveValue('Anthropic');
   await expect(page.getByRole('textbox',{name:'Claude API 地址'})).toBeVisible();
   await page.screenshot({ path: 'test-results/agent-management-claude.png', fullPage: true });

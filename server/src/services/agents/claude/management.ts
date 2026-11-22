@@ -10,6 +10,7 @@ import {
   claudeEnvironmentName,
   claudeRuntimeProvider,
   claudeProviderState,
+  claudeProviderApiKey,
   createClaudeProvider,
   deleteClaudeProvider,
   detectClaudeProviderModels,
@@ -25,6 +26,7 @@ import {
 } from './providers.js';
 import { readAgentManagement } from '../management-store.js';
 import { providerModelMetadata } from '../provider-pricing.js';
+import {refreshStoredProviderBilling} from '../provider-billing.js';
 
 const CLAUDE_ENVIRONMENT: Array<{name:string;description:string;secret?:boolean}> = [
   { name: 'ANTHROPIC_AUTH_TOKEN', description: 'Claude 网关或 Anthropic API 认证令牌', secret: true },
@@ -166,6 +168,7 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
   return {
     ...base,
     inspect,
+    refreshProviderBilling:async providerId=>refreshStoredProviderBilling('claude',provider=>claudeProviderApiKey(provider.id),{providerId}),
     readModelConfigs:async()=>{
       const stored=readAgentManagement('claude').providers;
       return [nativeClaudeProviderState(),...stored.filter(provider=>provider.id!=='anthropic').map(provider=>claudeProviderState(provider,{resolveSecret:false}))].flatMap(provider=>{
