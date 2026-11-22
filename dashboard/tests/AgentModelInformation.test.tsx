@@ -56,3 +56,19 @@ it('keeps missing official prices explicit instead of displaying a fabricated va
  expect(row).toHaveTextContent('未提供');
  client.clear();
 });
+
+it('shows verified Claude context and release metadata from the official catalog',async()=>{
+ vi.mocked(api.agentManagement.modelCatalog).mockResolvedValue({models:[{
+  vendor:'Anthropic',model:'claude-sonnet-5-5',providers:['Anthropic'],release_date:'2026-09-28',
+  official_context_window:1_000_000,context_window:1_000_000,input_modalities:['text','image'],
+  api_pricing:{currency:'USD',source:'official',bands:[{rates:{input:2,cached:0.1,output:10}}]},
+ }]});
+ const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+ render(<QueryClientProvider client={client}><AgentModelInformation/></QueryClientProvider>);
+ const table=await screen.findByRole('table',{name:'模型资料'});
+ const row=await within(table).findByRole('row',{name:/claude-sonnet-5-5/});
+ expect(row).toHaveTextContent('2026-09-28');
+ expect(row).toHaveTextContent('1,000,000');
+ expect(row).toHaveTextContent('USD 2.00');
+ client.clear();
+});

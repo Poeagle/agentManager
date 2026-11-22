@@ -1,5 +1,6 @@
 import {getDb} from '../../db/index.js';
 import {parseModelCapabilities,type ModelCapabilities} from './model-capabilities.js';
+import type {AgentModelMetadata} from './types.js';
 
 export type TokenRates={input:number;cached:number|null;output:number;cache_write_5m?:number;cache_write_1h?:number};
 export type PricingBand={label?:string;min_input_tokens?:number;rates:TokenRates};
@@ -24,6 +25,7 @@ export const pricingSources={
 };
 const openaiChangelog='https://developers.openai.com/api/docs/changelog.md';
 const claudeFull='https://platform.claude.com/llms-full.txt';
+const claudeModelPages=['https://www.anthropic.com/claude/mythos','https://www.anthropic.com/claude/opus','https://www.anthropic.com/claude/sonnet','https://www.anthropic.com/claude/haiku'];
 // Anthropic launch announcement and the public Claude API pricing table.
 const sonnet55:Tariff={release_date:'2026-09-28',bands:[{rates:{input:2,cached:0.1,output:10,cache_write_5m:2.5,cache_write_1h:4}}]};
 // Anthropic's public model catalog identifies these text-generation families
@@ -40,6 +42,36 @@ export function confirmedClaudeInputModalities(model:string):string[]|undefined 
  const normalized=model.replace(/\[1m\]$/i,'');
  const id=normalized.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/,'');
  return claudeVisionModels.has(normalized)||claudeVisionModels.has(id)?['text','image']:undefined;
+}
+const claudeOneMillionModels=new Set([
+ 'claude-fable-5','claude-fable-5-1','claude-fable-5-2',
+ 'claude-opus-5','claude-opus-5-5','claude-opus-4-8',
+ 'claude-sonnet-5','claude-sonnet-5-5',
+]);
+export function confirmedClaudeContextWindow(model:string):number|undefined {
+ const normalized=model.replace(/\[1m\]$/i,'');
+ const id=normalized.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/,'');
+ return claudeOneMillionModels.has(normalized)||claudeOneMillionModels.has(id)?1_000_000:undefined;
+}
+const claudeMetadata=new Map<string,AgentModelMetadata>();
+export function confirmedClaudeMetadata(model:string):AgentModelMetadata|undefined {
+ const normalized=model.replace(/\[1m\]$/i,'');
+ return claudeMetadata.get(normalized)??claudeMetadata.get(normalized.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/,''));
+}
+function claudeModelId(title:string):string|undefined {
+ const normalized=title.trim().replace(/\s+/g,' ').replace(/^Introducing /,'');
+ const match=/^Claude (Fable|Mythos|Opus|Sonnet|Haiku) (\d+(?:\.\d+)?)$/i.exec(normalized);
+ if(!match)return;
+ return `claude-${match[1].toLowerCase()}-${match[2].replace('.','-')}`;
+}
+export function parseClaudeModelDates(html:string):Map<string,string> {
+ const dates=new Map<string,string>();
+ const pattern=/<time\b[^>]*\bdateTime="(\d{4}-\d{2}-\d{2})"[^>]*>[^<]*<\/time>[\s\S]{0,300}?<h[1-6]\b[^>]*>([^<]+)<\/h[1-6]>/g;
+ for(const [,date,title] of html.matchAll(pattern)){
+  const model=claudeModelId(title);
+  if(model&&!dates.has(model))dates.set(model,date);
+ }
+ return dates;
 }
 const calendarSources:Record<number,string>={2026:'https://www.beijing.gov.cn/zhengce/zhengcefagui/202511/t20251104_4258873.html',2027:'https://www.shache.gov.cn/scx/c118335/202611/6dbd74b2ceba40f886c7decc9a81e527.shtml'};
 const catalogs=Object.keys(pricingSources) as Catalog[];
@@ -365,6 +397,14 @@ export async function refreshModelPricing(fetcher=fetch,signal=new AbortControll
      }catch{/* Model details can be unavailable even when the price table is current. */}
     }));
    }
+   if(catalog==='claude'){
+    await Promise.all(claudeModelPages.map(async page=>{
+     try{
+      for(const [model,date] of parseClaudeModelDates(await download(page,fetcher,signal,undefined,true,4*1024*1024)))claudeMetadata.set(model,{release_date:date});
+     }catch{/* A missing announcement page leaves the last confirmed dates. */}
+    }));
+    if(claudeMetadata.size)getDb().prepare("INSERT INTO settings(key,value) VALUES('agent_claude_model_metadata',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(Object.fromEntries(claudeMetadata)));
+   }
    if(!Object.keys(data.models).length||signal.aborted)return;
    const db=getDb(),serialized=JSON.stringify(data);
    db.transaction(()=>{
@@ -404,6 +444,10 @@ export function initModelPricing(){
  getDb().exec('CREATE TABLE IF NOT EXISTS agent_model_pricing (catalog TEXT NOT NULL, valid_from INTEGER NOT NULL, retrieved INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(catalog,valid_from))');
  getDb().exec('CREATE TABLE IF NOT EXISTS agent_model_pricing_calendars (year INTEGER PRIMARY KEY, source TEXT NOT NULL, retrieved INTEGER NOT NULL, data TEXT NOT NULL)');
  for(const catalog of catalogs)load(catalog);
+ const stored=getDb().prepare("SELECT value FROM settings WHERE key='agent_claude_model_metadata'").get() as {value:string}|undefined;
+ if(stored?.value)try{
+  for(const [model,metadata] of Object.entries(JSON.parse(stored.value) as Record<string,AgentModelMetadata>))claudeMetadata.set(model,metadata);
+ }catch{/* Ignore malformed cache. */}
  calendars.clear();
  for(const row of getDb().prepare('SELECT year,data FROM agent_model_pricing_calendars').all() as Array<{year:number;data:string}>)calendars.set(row.year,JSON.parse(row.data));
 }
