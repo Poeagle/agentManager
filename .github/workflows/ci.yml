@@ -26,10 +26,7 @@ jobs:
             dashboard/package-lock.json
 
       - name: Install dependencies
-        run: |
-          npm ci
-          npm --prefix server ci
-          npm --prefix dashboard ci
+        run: npm run install:all
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium

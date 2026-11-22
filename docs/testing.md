@@ -21,11 +21,7 @@ generated agent data and the browser entrypoint), including currently untested
 files. The enforced percentages are repository-wide regression floors, not a
 claim that only a hand-picked subset has high coverage.
 
-The first local E2E run may require:
-
-```bash
-npx playwright install chromium
-```
+`npm run install:all` installs the three lockfile dependency trees with development dependencies. `npm run test:e2e` installs missing local test dependencies and the Chromium version required by the locked Playwright package. The browser cache is reused on later runs. CI installs the Linux browser system libraries before running the same test command.
 
 ## Layers
 
