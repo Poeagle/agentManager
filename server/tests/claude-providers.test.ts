@@ -175,6 +175,7 @@ describe('Claude managed providers',()=>{
   }});
   updateNativeClaudeProvider({fields:{providerRateMultiplier:'1.2'}});
   updateNativeClaudeProvider({fields:{defaultModel:'claude-b'}});
+ expect(claudeManagementProviderState('anthropic')?.fields.find(field=>field.key==='providerRateMultiplier')).toMatchObject({value:'1.2'});
   expect(()=>updateNativeClaudeProvider({fields:{defaultModel:'other-model'}})).toThrow('默认模型必须来自已选模型');
   const provider=claudeProviderForEnvironment('claude-provider:anthropic')!;
   expect(provider).toMatchObject({authToken:'native-token',baseUrl:'https://native.example',contextWindow:1000000,defaultModel:'claude-b'});

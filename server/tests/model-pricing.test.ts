@@ -3,7 +3,7 @@ import {createTestDatabase} from './helpers/database.js';
 import {initModelPricing,parseHolidayNotice,pricingSnapshot,pricingSources,refreshModelPricing,estimatePublicApiCost,parseOfficialPricing} from '../src/services/agents/model-pricing.js';
 import {deepseekModelPricing,estimateDeepseekCost} from '../src/services/agents/deepseek-pricing.js';
 import {estimateUsageCredits,estimateUsageUsd} from '../src/services/agents/codex/usage-credits.js';
-import {estimateProviderApiCost,modelRate,providerModelMetadata,saveModelRates} from '../src/services/agents/provider-pricing.js';
+import {estimateProviderApiCost,modelRate,providerModelMetadata,providerRateFields,saveModelRates} from '../src/services/agents/provider-pricing.js';
 import {codexApiEstimate,codexApiPricing} from '../src/services/agents/codex/statistics-cost.js';
 import {updateAgentManagement,type StoredProvider} from '../src/services/agents/management-store.js';
 import {probeProviderModels} from '../src/services/agents/codex/management.js';
@@ -179,6 +179,24 @@ it('uses a single gateway rate for every fallback model at the time of the recei
  expect(modelRate(cleared,model,third)).toBeUndefined();
  expect(modelRate(cleared,model,second)).toBe(1.2);
  expect(()=>saveModelRates({...shared,providerRateMultiplier:'0'},shared,third)).toThrow('Provider 计费倍率');
+});
+
+it('keeps Sub2API billing automatic until an explicit manual multiplier replaces it',()=>{
+ const baseUrl='https://xindu.xyz/v1',at=epoch('2026-11-23T01:00:00Z');
+ const automatic:StoredProvider['fields']={baseUrl,providerRateMultiplier:'0.42',providerRateSource:'sub2api',
+  providerBillingSnapshot:JSON.stringify({source:'sub2api',observedAt:at,resolvedRate:0.42,effectiveRate:0.42,peakEnabled:false})};
+ const same=structuredClone(automatic);
+ saveModelRates(same,automatic,at+1000);
+ expect(same).toMatchObject({providerRateMultiplier:'0.42',providerRateSource:'sub2api'});
+ expect(providerRateFields(baseUrl,same)[0]).toMatchObject({label:'Provider 自动倍率（可手动覆盖）'});
+
+ const manual={...automatic,providerRateMultiplier:'0.75'};
+ saveModelRates(manual,automatic,at+2000);
+ expect(manual).toMatchObject({providerRateMultiplier:'0.75',modelRateVersions:expect.any(String)});
+ expect(manual.providerRateSource).toBeUndefined();
+ expect(manual.providerBillingSnapshot).toBeUndefined();
+ expect(modelRate(manual,model,at+2000)).toBe(0.75);
+ expect(providerRateFields(baseUrl,manual)[0]).not.toHaveProperty('readOnly');
 });
 
 it.each([false,true])('recovers historical context thresholds only when both tariff tiers match (price changed: %s)',async(changed)=>{

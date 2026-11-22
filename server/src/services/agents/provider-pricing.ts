@@ -17,9 +17,9 @@ export function providerRateFields(base:unknown,fields?:Fields) {
   if(officialApiCatalog(base)||isOfficialDeepSeek(base))return [{key:'providerRateMultiplier',label:'官方倍率',type:'text' as const,
     value:'1',readOnly:true,description:'官方 API 按官方费率计价。'}];
   return [{key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text' as const,
-    ...(fields?.providerRateSource==='sub2api'?{readOnly:true,label:'Provider 自动倍率'}:{}),
+    ...(fields?.providerRateSource==='sub2api'?{label:'Provider 自动倍率（可手动覆盖）'}:{}),
     value:typeof fields?.providerRateMultiplier==='string'?fields.providerRateMultiplier:'',
-    description:fields?.providerRateSource==='sub2api'?'从 Sub2API 账单接口按小时获取，费用按请求时段倍率估算。':'第三方未提供模型费率时，用此倍率折算官方参考价。'}];
+    description:fields?.providerRateSource==='sub2api'?'当前值从 Sub2API 账单接口获取；手动修改后改用手填倍率，自动同步不再覆盖。':'第三方未提供模型费率时，用此倍率折算官方参考价。'}];
 }
 
 function versions(fields?:Fields):RateVersion[] {
@@ -35,6 +35,11 @@ export function saveModelRates(next:Fields, previous?:Fields, now=Date.now()) {
     delete next.providerRateMultiplier;
   if(sameEndpoint&&previous?.providerRateSource==='sub2api'&&next.providerRateMultiplier!==previous.providerRateMultiplier){
     delete next.providerRateSource;delete next.providerBillingSnapshot;
+  }
+  if(previous?.providerRateSource==='sub2api'&&next.providerRateMultiplier===previous.providerRateMultiplier){
+    next.providerRateSource='sub2api';
+    if(typeof previous.providerBillingSnapshot==='string')
+      next.providerBillingSnapshot=previous.providerBillingSnapshot;
   }
   let providerRate:number|null|undefined;
   const raw=next.providerRateMultiplier;

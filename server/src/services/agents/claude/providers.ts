@@ -736,7 +736,7 @@ export function updateClaudeProvider(
             name: input.name?.trim() || provider.name,
             kind: input.kind?.trim() || provider.kind,
             enabled: input.enabled ?? provider.enabled,
-            fields,
+            fields: {...fields,...input.apiKey?.trim()?{envKey:'ANTHROPIC_AUTH_TOKEN'}:{}},
           }
         : provider,
     ),
