@@ -884,10 +884,10 @@ function ProviderEditor({
       const endpoint=fields.baseUrl;
       const result=await api.agentManagement.detectModels(agentId, {
         providerId: provider.id,
-        ...(provider.id !== "native" && provider.managed
+        ...((provider.id !== "native" && provider.managed) || (provider.id === "native" && provider.authentication.mode === 'uninitialized')
           ? {
               endpoint: fields.baseUrl,
-              apiKey: saveApiKey ? fields.envKey : undefined,
+              apiKey: fields.envKey || undefined,
             }
           : {}),
       });
@@ -898,7 +898,7 @@ function ProviderEditor({
       const overlap=provider.models.filter(model=>discovered.includes(model));
       const next=overlap.length?overlap:discovered;
       setSelectedModels(next);
-      setFields(current=>({...current,defaultModel:next.includes(current.defaultModel)?current.defaultModel:next[0]||''}));
+      setFields(current=>({...current,models:discovered.join('\n'),defaultModel:next.includes(current.defaultModel)?current.defaultModel:next[0]||''}));
       void queryClient.invalidateQueries({
         queryKey: ["agent-management", agentId],
       });
@@ -1019,7 +1019,28 @@ function ProviderEditor({
       <section className="agent-management-section agent-management-engine-settings">
         {!readOnly&&<p className="codex-account-description">钱包余额：<BalanceSummary id={provider.id==='native'?'native':'provider:'+provider.id}/></p>}
         <div className="agent-management-section-title"><h4>连接配置</h4><button type="button" className="agent-management-button" onClick={()=>setRuntimeOpen(true)}><FileCode2 size={13}/>运行信息</button></div>
-        <OperationStatus
+        {provider.id==='native'&&provider.authentication.mode==='uninitialized'&&!readOnly&&<div className="agent-management-uninitialized-guide">
+          <p className="agent-management-uninitialized-title">原生 Codex Provider 尚未初始化</p>
+          <p className="agent-management-uninitialized-description">请选择认证方式以开始配置：</p>
+          <div className="agent-management-uninitialized-options">
+            <button type="button" className="agent-management-button agent-management-button-primary" onClick={()=>{
+              setFields(current=>({...current,baseUrl:'',envKey:'',models:'',defaultModel:''}));
+              setSaveApiKey(true);
+            }}>
+              <ShieldCheck size={16}/>
+              配置 API Key
+            </button>
+            <p className="agent-management-uninitialized-hint">使用第三方兼容端点（如 OpenAI 兼容服务）</p>
+          </div>
+          <div className="agent-management-uninitialized-options">
+            <button type="button" className="agent-management-button" disabled>
+              <Activity size={16}/>
+              账号登录（即将支持）
+            </button>
+            <p className="agent-management-uninitialized-hint">使用官方 Codex 或 ChatGPT 账号</p>
+          </div>
+        </div>}
+        {provider.id!=='native'||provider.authentication.mode!=='uninitialized'||readOnly?<OperationStatus
           busy={
             modelsSaving || detect.isPending ||
             update.isPending ||
@@ -1054,7 +1075,7 @@ function ProviderEditor({
           }
           progress={engineOperation.busy ? engineOperation.progress : undefined}
           success={saved || detect.isSuccess || engineOperation.success}
-        />
+        />:null}
         {engineOperation.steps.length > 0 && (
           <ol
             className="agent-management-operation-steps"
@@ -1083,6 +1104,22 @@ function ProviderEditor({
             <label className="agent-management-field"><span>CODEX_HOME<InfoTip text="原生 Provider 共用当前进程的 Codex 目录；切换目录请新建独立 API Provider。" /></span><input aria-label="CODEX_HOME" value={nativeDetails.data?.details.home||provider.codexHome||''} readOnly /></label>
             <label className="agent-management-field"><span>模型<b aria-label="必填">*</b><InfoTip text="每行一个模型 ID；保存时同步 Codex 模型目录。" /></span><textarea aria-label="模型" rows={3} value={fields.models||''} disabled={readOnly||busy} onChange={event=>setFields(current=>({...current,models:event.target.value}))}/></label>
             <label className="agent-management-field"><span>默认模型<InfoTip text="新会话默认模型；必须来自上方模型列表。" /></span><input aria-label="默认模型" value={fields.defaultModel||''} disabled={readOnly||busy} onChange={event=>setFields(current=>({...current,defaultModel:event.target.value}))}/></label>
+          </div>}
+          {provider.id==='native'&&provider.authentication.mode==='uninitialized'&&!readOnly&&saveApiKey&&<div className="agent-management-form agent-management-engine-form">
+            <label className="agent-management-field agent-management-field-baseUrl"><span>Responses API 地址<b aria-label="必填">*</b><InfoTip text="保存到 Codex config.toml 当前 Provider；重启 Engine 后生效。" /></span><input aria-label="Responses API 地址" inputMode="url" value={fields.baseUrl||''} disabled={readOnly||busy} placeholder="https://api.example.com/v1" onChange={event=>setFields(current=>({...current,baseUrl:event.target.value}))}/></label>
+            <label className="agent-management-field"><span>API Key<b aria-label="必填">*</b><InfoTip text="平台加密保存，不写入 config.toml 或前端回显；重启 Engine 后生效。" /></span><input aria-label="API Key" type="password" autoComplete="new-password" value={fields.envKey||''} disabled={readOnly||busy} placeholder="输入 API Key" onChange={event=>{setFields(current=>({...current,envKey:event.target.value}));}}/></label>
+            <label className="agent-management-field"><span>模型<b aria-label="必填">*</b><InfoTip text="每行一个模型 ID；探测完成后自动填充。" /></span><textarea aria-label="模型" rows={3} value={fields.models||''} disabled={readOnly||busy||detect.isPending} placeholder="探测完成后显示" onChange={event=>setFields(current=>({...current,models:event.target.value}))}/></label>
+            <label className="agent-management-field"><span>默认模型<InfoTip text="新会话默认模型；必须来自上方模型列表。" /></span><input aria-label="默认模型" value={fields.defaultModel||''} disabled={readOnly||busy||detect.isPending} placeholder="探测完成后显示" onChange={event=>setFields(current=>({...current,defaultModel:event.target.value}))}/></label>
+            <div className="agent-management-actions">
+              <button type="button" className="agent-management-button agent-management-button-primary" disabled={!fields.baseUrl||!fields.envKey||detect.isPending||busy} onClick={()=>detect.mutate()}>
+                <ShieldCheck size={13}/>
+                探测模型
+              </button>
+              <button type="button" className="agent-management-button agent-management-button-primary" disabled={update.isPending||engineOperation.busy||!fields.baseUrl||!fields.envKey||!fields.models||!fields.defaultModel} onClick={()=>update.mutate(undefined)}>
+                <Save size={13}/>
+                保存并初始化 Engine
+              </button>
+            </div>
           </div>}
           {provider.fields.some(field=>!['models','defaultModel','baseUrl','envKey'].includes(field.key))&&<ProviderAdvancedSettings label="Codex 设置">
            <div className="agent-management-form agent-management-engine-form">
