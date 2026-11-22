@@ -55,7 +55,7 @@ export function ProviderModelsExpansion({agentId,provider,readOnly,onChanged}:{a
    const patch=capabilityPatches.find(item=>item.model===model.model);
    return {...model,
     ...(patch?.contextWindow!==undefined?{context_window:patch.contextWindow??undefined}:{}),
-    ...(patch?.supportsImages!==undefined?{input_modalities:patch.supportsImages?['text','image']:['text']}:{}),
+    ...(patch?.supportsImages!==undefined?(patch.supportsImages===null?{input_modalities:undefined}:{input_modalities:patch.supportsImages?['text','image']:['text']}):{}),
    };
   });
   const result=await api.agentManagement.updateProvider(agentId,provider.id,{fields:{models:selected,defaultModel:defaultModel||selected[0]||'',...modelCapabilitiesPayload(capabilities)}});

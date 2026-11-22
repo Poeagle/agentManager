@@ -3,14 +3,13 @@ import {Loader2,Search} from 'lucide-react';
 import type {AgentModelMetadata} from '../lib/api';
 import {DataTable} from './table/DataTable';
 import {useTableModel,type TableColumn} from './table/use-table-model';
-import {modelImageLabel} from './ModelPricing';
 
 export interface ModelCatalogRow {
  model:string;
  name?:string;
  metadata?:AgentModelMetadata;
  context?:number|null;
- images?:boolean;
+ images?:boolean|null;
 }
 
 export function ProviderModelActions({selected,total,disabled,detecting,onDetect,children}: {
@@ -47,7 +46,7 @@ export function ModelCatalogTable<Row extends ModelCatalogRow>({rows,selected,lo
     }}/></td>}
     <td><code>{row.model}</code>{row.name&&row.name!==row.model&&<small className="provider-model-subtitle">{row.name}</small>}</td>
     <td>{renderContext?.(row)??row.context?.toLocaleString()??'未提供'}{officialWindow!=null&&officialWindow!==row.context&&<small className="provider-model-subtitle">官方 {officialWindow.toLocaleString()}</small>}</td>
-    <td>{renderImages?.(row)??(row.images==null?modelImageLabel(row.metadata?.input_modalities):row.images?'支持':'不支持')}</td>
+    <td>{renderImages?.(row)??(row.images===true?'支持':row.images===false?'不支持':'未提供')}</td>
     <td>{row.metadata?.release_date??'未提供'}</td>
     {renderExtra?.(row)}
    </tr>;

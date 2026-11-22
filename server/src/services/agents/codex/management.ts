@@ -153,7 +153,7 @@ async function readModelSettings(providerId:string,fields?:StoredProvider['field
     const details=providerModelMetadata(model,fields?.baseUrl,fields);
     return {...details,...(byModel.get(model)??{
       model,provider:providerId,name:model,contextWindow:null,maxContextWindow:null,effectiveContextWindowPercent:null,
-      inputModalities:[],supportsImages:false,sourceFile:null,
+      inputModalities:[],supportsImages:null,sourceFile:null,
     })};
   });
 }
@@ -173,7 +173,9 @@ async function updateModelConfigsForProvider(providerId: string, updates: AgentM
       const catalogKey = key === 'contextWindow' ? 'context_window' : key === 'maxContextWindow' ? 'max_context_window' : 'effective_context_window_percent';
       if (value !== undefined) next[catalogKey] = value;
     }
-    if (update.supportsImages !== undefined) {
+    if (update.supportsImages === null) {
+      delete next.input_modalities;
+    } else if (update.supportsImages !== undefined) {
       const modalities = Array.isArray(next.input_modalities) ? next.input_modalities.filter((value): value is string => typeof value === 'string' && value !== 'image') : ['text'];
       next.input_modalities = update.supportsImages ? [...new Set([...modalities, 'image'])] : modalities;
     }

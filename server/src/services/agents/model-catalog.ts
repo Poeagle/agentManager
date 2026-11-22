@@ -1,5 +1,6 @@
 import {agentDescriptors,getAgent} from './index.js';
 import {providerModelMetadata} from './provider-pricing.js';
+import {confirmedClaudeInputModalities} from './model-pricing.js';
 import type {AgentModelConfig,AgentModelMetadata,AgentProviderState} from './types.js';
 
 export interface AgentModelCatalogEntry extends AgentModelMetadata {
@@ -32,17 +33,23 @@ function fieldValue(provider:AgentProviderState,key:string):unknown{
 
 function mergeMetadata(current:AgentModelMetadata|undefined,next:AgentModelMetadata):AgentModelMetadata{
  if(!current)return next;
- return {
+ const currentOfficial=current.api_pricing?.reference_only===false;
+ const nextOfficial=next.api_pricing?.reference_only===false;
+ const merged:AgentModelMetadata={
   ...current,
   ...next,
   release_date:current.release_date??next.release_date,
   official_context_window:current.official_context_window??next.official_context_window,
-  context_window:current.context_window??next.context_window,
-  input_modalities:current.input_modalities??next.input_modalities,
+  context_window:nextOfficial||currentOfficial?next.context_window??current.context_window:current.context_window??next.context_window,
+  input_modalities:currentOfficial?current.input_modalities
+   :nextOfficial&&next.input_modalities?.length?next.input_modalities
+   :next.input_modalities?.length?next.input_modalities
+   :current.input_modalities,
   api_pricing:current.api_pricing??next.api_pricing,
   provider_pricing:current.provider_pricing??next.provider_pricing,
   reference_credits:current.reference_credits??next.reference_credits,
  };
+ return merged;
 }
 
 export function buildAgentModelCatalog(sources:Array<{agent:string;providers:AgentProviderState[];modelConfigs?:AgentModelConfig[]}>):AgentModelCatalogEntry[]{
@@ -56,8 +63,11 @@ export function buildAgentModelCatalog(sources:Array<{agent:string;providers:Age
   for(const model of modelIds){
    const vendor=modelVendor(model),key=`${vendor}\u0000${model}`;
    const config=configs.find(item=>item.model===model);
-   const metadata=mergeMetadata(config,providerModelMetadata(model,baseUrl,fields));
-   if(!hasOfficialModelMetadata(metadata))continue;
+   const providerMetadata=providerModelMetadata(model,baseUrl,fields);
+   const confirmedInputs=confirmedClaudeInputModalities(model);
+   if(confirmedInputs&&!providerMetadata.input_modalities?.length)providerMetadata.input_modalities=confirmedInputs;
+   const metadata=mergeMetadata(config,providerMetadata);
+   if(!hasOfficialModelMetadata(metadata)&&!confirmedClaudeInputModalities(model))continue;
    const current=entries.get(key);
    if(current){
     Object.assign(current,mergeMetadata(current,metadata));

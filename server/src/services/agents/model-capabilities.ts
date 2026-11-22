@@ -16,7 +16,7 @@ export function parseModelCapabilities(value: unknown): ModelCapabilities {
   );
   const inputs = row.input_modalities ?? object(row.architecture).input_modalities;
   const image = object(object(row.capabilities).image_input).supported;
-  const modalities = Array.isArray(inputs) && inputs.length > 0 && inputs.length <= 12 && inputs.every(
+  const modalities = Array.isArray(inputs) && inputs.length <= 12 && inputs.every(
     input => typeof input === 'string' && /^[a-z][a-z_]{0,29}$/.test(input),
   ) ? [...new Set<string>(inputs)] : typeof image === 'boolean' ? image ? ['text','image'] : ['text'] : undefined;
   return {...window ? {context_window:window} : {}, ...modalities ? {input_modalities:modalities} : {}};

@@ -29,7 +29,9 @@ export function ProviderModelTable({agentId,providerId,options,selected,readOnly
    ...(context?{contextWindow:context,maxContextWindow:context}:{}),
    ...(inputs?.length?{supportsImages:inputs.includes('image')}:{}),...patches[model],
   }:undefined;
-  return {model,name,metadata,config:editable,context:editable?.contextWindow??metadata?.context_window,images:editable?.supportsImages};
+  const confirmedImages=metadata?.input_modalities?.length?metadata.input_modalities.includes('image'):undefined;
+  return {model,name,metadata,config:editable,context:editable?.contextWindow??metadata?.context_window,
+    images:inputs?.length?inputs.includes('image'):confirmedImages??editable?.supportsImages??null};
  });
  const save=useMutation({mutationFn:()=>onSave(configs.filter(c=>patches[c.model]).map(c=>({provider:c.provider,model:c.model,...patches[c.model]}))),onSuccess:()=>setPatches({})});
  const locked=readOnly||busy||save.isPending;
@@ -50,7 +52,12 @@ export function ProviderModelTable({agentId,providerId,options,selected,readOnly
    <ModelCatalogTable rows={rows} selected={selected} locked={displayLocked} loading={query.isPending} error={query.isError?query.error.message:undefined} onRetry={()=>void query.refetch()}
    onSelectedChange={!readOnly&&!selectionReadOnly?onSelectedChange:undefined}
    renderContext={row=>(editing&&row.config?numberField(row,'contextWindow','上下文长度'):undefined)??row.context?.toLocaleString()??'未提供'}
-   renderImages={row=>editing&&row.config?<input type="checkbox" aria-label={`${row.model} 图片输入`} checked={row.config.supportsImages} disabled={locked||!selected.includes(row.model)} onChange={event=>edit(row.model,{supportsImages:event.target.checked})}/>:row.images==null?'未提供':row.images?'支持':'不支持'}/>
+   renderImages={row=>editing&&row.config?<span className="provider-model-image-control">
+    <input type="checkbox" aria-label={`${row.model} 图片输入`} checked={row.config.supportsImages===true}
+      disabled={locked||!selected.includes(row.model)}
+      onChange={event=>edit(row.model,{supportsImages:event.target.checked})}/>
+    {row.config.supportsImages==null?'未知':row.config.supportsImages?'支持':'不支持'}
+   </span>:row.images==null?'未提供':row.images?'支持':'不支持'}/>
   {editing&&<p className="provider-models-note">上下文和图片能力来自探测结果；保存后重启 Engine 生效。默认模型会随所选模型自动维护。</p>}
  </form>;
 }

@@ -7,6 +7,7 @@ import {estimateProviderApiCost,modelRate,providerModelMetadata,saveModelRates} 
 import {codexApiEstimate,codexApiPricing} from '../src/services/agents/codex/statistics-cost.js';
 import {updateAgentManagement,type StoredProvider} from '../src/services/agents/management-store.js';
 import {probeProviderModels} from '../src/services/agents/codex/management.js';
+import {confirmedClaudeInputModalities} from '../src/services/agents/model-pricing.js';
 
 let fixture:ReturnType<typeof createTestDatabase>;
 beforeEach(()=>{fixture=createTestDatabase();initModelPricing();});
@@ -24,6 +25,15 @@ it.each([
  ['2028-02-21T10:00:00+08:00',null],['2026-11-17T10:00:00+08:00',null],
 ])('prices a request observed at %s by its Beijing billing period',(at,expected)=>{
  expect(estimateDeepseekCost(model,epoch(at),tokens)).toBe(expected);
+});
+
+it('recognizes only confirmed Claude text-generation families as image-capable',()=>{
+ expect(confirmedClaudeInputModalities('claude-fable-5')).toEqual(['text','image']);
+ expect(confirmedClaudeInputModalities('claude-opus-4-5-20251101')).toEqual(['text','image']);
+ expect(confirmedClaudeInputModalities('claude-opus-4-8')).toEqual(['text','image']);
+ expect(confirmedClaudeInputModalities('claude-sonnet-4-5-20250929')).toEqual(['text','image']);
+ expect(confirmedClaudeInputModalities('claude-sonnet-5-5[1m]')).toEqual(['text','image']);
+ expect(confirmedClaudeInputModalities('private-gateway-model')).toBeUndefined();
 });
 
 it('provides official release dates and tariffs only for known models on the official URL',()=>{
