@@ -6,7 +6,7 @@ export function formatEstimatedTokenCost(amount:number|null|undefined,unit:strin
  if(amount==null||!Number.isFinite(amount)||amount<0)return '—';
  const isCredits=unit==='credits';
  const currency=isCredits?'USD':unit;
- const prefix=currency==='CNY'?'¥':currency==='USD'?'$':`${currency} `;
+ const prefix=currency==='USD'||currency==='CNY'?'':`${currency} `;
  const valueInCurrency=isCredits?amount/CREDITS_PER_USD:amount;
  const value=valueInCurrency>0&&valueInCurrency<0.01?`<${prefix}0.01`:`${prefix}${money.format(valueInCurrency)}`;
  return value+(partial?'*':'');

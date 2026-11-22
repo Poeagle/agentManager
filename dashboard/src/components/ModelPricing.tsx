@@ -1,12 +1,14 @@
 import type {AgentModelMetadata,AgentModelPricing} from '../lib/api';
 
+const CREDITS_PER_USD=25;
+
 export function ModelPricing({pricing,credits,multiplier=1}: {
   pricing?:AgentModelPricing;
   credits?:AgentModelMetadata['reference_credits'];
   multiplier?:number;
 }) {
   const amount=(rate:number|null|undefined)=>rate==null?'未提供':(rate*multiplier).toLocaleString('en-US',{maximumFractionDigits:8});
-  if(credits)return <>Credits 每百万 Token<br/>输入 {credits.input} · 缓存 {credits.cached} · 输出 {credits.output}<br/><small>参考费率 {credits.as_of}，非实际账单</small></>;
+  if(credits)return <>USD 等值 / 百万 Token<br/>输入 {amount(credits.input/CREDITS_PER_USD)} · 缓存 {amount(credits.cached/CREDITS_PER_USD)} · 输出 {amount(credits.output/CREDITS_PER_USD)}<br/><small>参考费率 {credits.as_of}，非实际账单</small></>;
   if(!pricing)return <>未提供</>;
   if(pricing.peak&&pricing.off_peak)return <span title={pricing.source}>
     {pricing.currency} / 百万 Token<br/><small>缓存命中 · 未命中 · 输出</small><br/>

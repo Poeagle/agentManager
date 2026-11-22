@@ -105,7 +105,7 @@
 }
 .schedule-condition-panel[data-layout=expression] .rule-clause > .rule-row {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px 6px;
   min-width: 0;
@@ -136,7 +136,7 @@
 }
 .schedule-condition-panel[data-layout=expression][data-nested=true] > .rule-conditions > .rule-clause {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 2px 6px;
   max-width: 100%;
@@ -153,5 +153,29 @@
 .schedule-condition-panel[data-layout=expression][data-nested=true] > .rule-conditions > .rule-clause > .rule-connector::after { display: none; }
 .schedule-condition-panel[data-layout=expression] .rule-row > select { width: min(100%, 150px); }
 .schedule-condition-panel[data-layout=expression] .rule-row input[type=number] { width: 72px; padding-inline: 7px; }
-.schedule-condition-panel[data-layout=expression] .rule-row > .rule-remove { margin-left: auto; }
+.schedule-condition-panel[data-layout=expression] .rule-row > .rule-remove {
+  flex: 0 0 28px;
+  margin-left: 0;
+}
+.schedule-condition-panel[data-layout=expression] .rule-row > label {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+.schedule-condition-panel[data-layout=expression] .rule-row > select,
+.schedule-condition-panel[data-layout=expression] .rule-row input[type=number] {
+  flex: 0 1 auto;
+}
+.schedule-condition-panel[data-layout=expression] .rule-clause > .rule-connector {
+  flex: 0 0 auto;
+  margin: 0;
+}
 .schedule-condition-panel[data-layout=expression] > .rule-help { margin-top: 5px; font-size: 11px; line-height: 16px; }
+
+@media(max-width:600px) {
+  .schedule-condition-panel[data-layout=expression] .rule-clause > .rule-row,
+  .schedule-condition-panel[data-layout=expression][data-nested=true] > .rule-conditions > .rule-clause {
+    flex-wrap: wrap;
+  }
+}

@@ -38,7 +38,9 @@
 .ci-collection-progress progress{width:64px;flex-shrink:0;}
 .ci-notice{padding:6px 10px;margin:0 0 8px;background:var(--bg-secondary);border-left:3px solid #d99a24;color:var(--text-secondary);font-size:12px;line-height:18px;}
 .ci-table-scroll{overflow:auto;max-height:58vh;}
+.ci-usage-table-scroll{overflow-x:hidden;}
 .ci-table{width:100%;table-layout:fixed;min-width:720px;}
+.ci-usage-table{min-width:0;}
 .ci-table th{position:sticky;top:0;z-index:1;text-align:left;border-bottom:1px solid var(--border);}
 .ci-table tr:last-child td{border-bottom:0;}
 .ci-usage-table th:nth-child(n+3),.ci-usage-table td:nth-child(n+3){text-align:right;font-variant-numeric:tabular-nums;}
@@ -111,10 +113,12 @@
 .ci-usage-table .ci-group-title{white-space:normal;overflow-wrap:anywhere;}
 .manager-ui .ci-usage-table>tbody>tr:not(.table-detail-row)>td.ci-directory-cell{white-space:normal;overflow-wrap:anywhere;}
 @media(max-width:800px){.ci-token-summary{white-space:normal;overflow-wrap:anywhere;}.ci-toolbar .ci-tabs{width:100%;}}
+@media(max-width:800px){.ci-usage-table{min-width:720px;}.ci-usage-table-scroll{overflow-x:auto;}}
 .manager-ui .ci-usage-table th,.manager-ui .ci-usage-table td,.manager-ui .ci-usage-table th:nth-child(n+3),.manager-ui .ci-usage-table td:nth-child(n+3){text-align:center;}
 .ci-usage-table .smart-table-heading,.ci-usage-table .ci-group-label{justify-content:center;}
 .ci-usage-table .smart-table-heading{gap:0;}
 .ci-usage-table .smart-table-filter{padding:1px;}
+.ci-usage-cost{white-space:nowrap;}
 .manager-ui .ci-header-details,.manager-ui .ci-header-details :is(span,strong,small,button,p){font-family:inherit;font-size:12px;font-weight:400;line-height:20px;}
 .manager-ui .ci-toolbar :is(input,select,button){box-sizing:border-box;height:28px;min-height:28px;font-family:inherit;font-size:12px;line-height:20px;}
 .manager-dialog header:has(.ci-header-details){padding:3px 8px;gap:4px;}

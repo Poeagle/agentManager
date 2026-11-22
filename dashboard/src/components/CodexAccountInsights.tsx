@@ -14,7 +14,6 @@ type Usage={storage?:{kind:'csv'|'database';path:string};quota_hours?:Array<{hou
 type Resets={collection_started_at?:string|null;checked_at?:string|null;error?:string|null;stale?:boolean;pending?:boolean;account:{email:string|null;plan:string|null};windows?:Array<{usedPercent:number;windowDurationMins:number|null;resetsAt:number|null}>;resets:{availableCount:number;credits:Array<{expiresAt:number|null;grantedAt:number|null;status:string|null}>|null}|null};
 const numeric=(n:number|null|undefined)=>n==null?'—':n.toLocaleString(undefined,{maximumFractionDigits:2});
 const compact=(n:number|null)=>n===null?'—':new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:1}).format(n);
-const cellNumber=(n:number|null|undefined)=>n==null?'':numeric(n);
 const quotaNumber=(n:number|null)=>n===null?'':n.toLocaleString(undefined,{maximumFractionDigits:4});
 const time=(value:number|null)=>value===null?'未提供':new Date(value*1000).toLocaleString();
 const sum=(rows:Metrics[],field:string):number|null=>!rows.length||rows.some(r=>r.tokens[field]==null)?null:rows.reduce((s,r)=>s+r.tokens[field]!,0);
@@ -29,16 +28,6 @@ function usageCostText(rows:Metrics[]){
  return `${amount===null?'—':formatApiCost(amount,'USD')+(partialMoney(rows)?' *':'')} | ${quota===null?'—':quotaNumber(quota)} (${ratio!==null&&Number.isFinite(ratio)?numeric(ratio):'—'})`;
 }
 
-// Reserve numeric columns from the longest formatted value, including descendants.
-// Text columns have independent bounds; narrow screens scroll the whole table.
-function usageColumnWidths(nodes:UsageGroup[],apiMode:boolean,currency?:string){
- // Keep headings, controls and full formatted numbers visible.
- const widths=[70,82,94,70,70,70,70,170,64];
- function visit(items:UsageGroup[]){for(const node of items){
-  const metrics=tokenMetrics(node.metrics,apiMode,currency);
-  [...metrics.slice(0,3),null,...metrics.slice(3)].forEach((metric,i)=>{if(metric)widths[i]=Math.max(widths[i],(cellNumber(metric.count).length+(currency?metric.cost.length+3:0))*7+16);});widths[7]=Math.max(widths[7],usageCostText([node.metrics]).length*7+14);visit(node.children);
- }}visit(nodes);return widths;
-}
 export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:string;name:string;onClose:()=>void;groupId?:string;apiOverview?:React.ReactNode}){
  const apiMode=!!groupId;
  const [expansion,setExpansion]=useState<Record<string,boolean>>({});
@@ -50,7 +39,6 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
  const resets=useQuery({queryKey:['codex-reset-credits',id],queryFn:()=>fetchJSON<Resets>(base+'/reset-credits'),retry:false,refetchInterval:300000,staleTime:300000,enabled:!apiMode});
  const data=usage.data?.usage;
  const pricing=(data as (Usage&{api_pricing?:{currency:string;timezone?:string;today:ApiCost&{date:string;partial:boolean}}})|undefined)?.api_pricing;
- const unit=apiMode?pricing?.currency:'USD';
  const timezone=data?.timezone||Intl.DateTimeFormat().resolvedOptions().timeZone;
  const collectionTime=(value:string)=>new Intl.DateTimeFormat('zh-CN',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date(value));
  const zoneLabel=data?.timezone_pending?`原缓存 ${timezone} · 本地日期重建中`:`本地时间（${timezone}）`;
@@ -66,12 +54,19 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
   return [5,0,1,3,4].map((index,i)=>({...metrics[index],label:['总量','输入','缓存','推理','输出'][i]}));
  },[rows,apiMode,pricing?.currency]);
  const rangeTotal=estimatedMoney(datedRows),byPeriod=['hour','day','week','month','total'].includes(dimension);
- const columnWidths=useMemo(()=>{const widths=usageColumnWidths(groups,apiMode,unit);return apiMode?widths.slice(0,7):widths;},[groups,apiMode,unit]);
  const displayTable=apiMode?{...table,columns:table.columns.filter(column=>!['cost','share'].includes(column.key))}:table;
+ const tokenColumnCount=displayTable.columns.filter(column=>!['label','cwd','cost','share'].includes(column.key)).length;
  const periodName=dimension==='total'?'范围':dimension==='hour'?'小时':dimension==='day'?'日期':dimension==='week'?'周期':'月份';
  const cards=resets.data?.resets;
  const refresh=()=>{void usage.refetch();if(!apiMode)void resets.refetch();};
  const tabs=<nav className="ci-tabs" aria-label="账号详情栏目"><button aria-selected={tab==='usage'} onClick={()=>setTab('usage')}>每日项目用量</button><button aria-selected={tab==='cards'} onClick={()=>setTab('cards')}>重置卡{cards?` (${cards.availableCount})`:''}</button></nav>;
+ const usageColumns=<colgroup>
+  <col style={{width:'12%'}}/><col style={{width:'8%'}}/>
+  {displayTable.columns.slice(2).map(column=>{
+   const width=column.key==='cost'?'15%':column.key==='share'?'5%':`${60/tokenColumnCount}%`;
+   return <col key={column.key} style={{width}}/>;
+  })}
+ </colgroup>;
  return <Dialog appearance="manager" title={`${name} ${apiMode?'上游':'账号'}详情`} size="image" width={1450} maxWidth="96vw" onClose={onClose} actions={!apiMode?<div className="ci-header-details"><div className="ci-identity"><span>{resets.data?.account.email||name}</span><span className="ci-tag">{resets.data?.account.plan||'套餐未提供'}</span></div><div className="ci-overview ci-overview-account">
     <section>{resets.data?.windows?.length?resets.data.windows.map((w,i)=><div className="ci-quota" key={i}><span>{w.windowDurationMins===10080?'周额度':w.windowDurationMins?`${w.windowDurationMins/60} 小时`:'额度'}</span><strong>剩余 {numeric(Math.max(0,100-w.usedPercent))}%</strong><small title="当前额度窗口的下次重置时刻；不是采样统计的起止时间">重置 {time(w.resetsAt)}</small></div>):<p>{resets.isPending?'正在读取…':'额度暂不可用'}</p>}</section>
     <section><span className="ci-token-summary">Token {summaryMetrics.map(({label,key},index)=><Fragment key={key}>{index>0&&'｜'}<span title={usageFieldDescriptions[key]}>{label}</span></Fragment>)}：{summaryMetrics.map(({key,count,cost},index)=><Fragment key={key}>{index>0&&'｜'}<span title={`${numeric(count)} Token · 预估金额 ${cost}`}>{compact(count??null)} ({cost})</span></Fragment>)}</span><span className="ci-cache-rate" title="筛选范围内缓存输入除以输入 Token；输入为零或数据缺失时未知" aria-label={`缓存率 ${cacheRate===null?'未知':`${cacheRate.toFixed(1)}%`}`}><span aria-hidden="true"/>缓存率 <strong>{cacheRate===null?'—':`${cacheRate.toFixed(1)}%`}</strong></span></section>
@@ -104,21 +99,18 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
       {(reportRange.from||reportRange.to)&&<span className="ci-report-range" title={dimension==='week'?'日期选择扩展为完整自然周（周一至周日）':dimension==='month'?'日期选择扩展为完整自然月':'严格按所选起止日期统计，包含起止当天'}>统计范围：{usageRangeLabel(reportRange)}</span>}
     </div>
     {rows.some(row=>!row.models?.length)&&<p className="ci-notice" role="status">部分项目的模型明细未返回，请刷新；若仍未恢复，请检查后台服务版本。</p>}
-    <TableFrame label="用量统计" className="ci-table-scroll" tableClassName="ci-table ci-usage-table" style={{minWidth:485+columnWidths.reduce((s,w)=>s+w,0)+(pricing?160:0)}} columns={<colgroup><col style={{width:230}}/><col style={{width:255}}/>{columnWidths.map((width,k)=><col key={k} style={{width}}/>)}{pricing&&<col style={{width:160}}/>}</colgroup>} header={<><TableHeaders model={displayTable}/>{pricing&&<th scope="col">预估 Token 费用</th>}</>}>
-     {!groups.length&&<TableStateRow columnCount={displayTable.columns.length+(pricing?1:0)}>{usage.isPending?'正在读取缓存…':'所选范围暂无用量记录'}</TableStateRow>}
+    <TableFrame label="用量统计" className="ci-table-scroll ci-usage-table-scroll" tableClassName="ci-table ci-usage-table" columns={usageColumns} header={<TableHeaders model={displayTable}/> }>
+     {!groups.length&&<TableStateRow columnCount={displayTable.columns.length}>{usage.isPending?'正在读取缓存…':'所选范围暂无用量记录'}</TableStateRow>}
      {shown.map((node,index)=><Group key={node.key} node={node} amountTotal={byPeriod?amountTotals.get(node.key)??null:rangeTotal} depth={0} apiMode={apiMode} currency={pricing?.currency} defaultOpen={currentPage===0&&index===0} expansion={expansion} setExpansion={setExpansion}/>)}
     </TableFrame>
     <div className="ci-pagination"><span>{groups.length} 个{byPeriod?periodName:dimensionLabels[dimension]} · {new Set(rows.map(row=>JSON.stringify([row.date,row.cwd]))).size} 条日期｜项目记录</span><button className="ci-button" disabled={currentPage===0} onClick={()=>setPage(currentPage-1)}>上一页</button><span>{currentPage+1} ｜ {pages}</span><button className="ci-button" disabled={currentPage+1>=pages} onClick={()=>setPage(currentPage+1)}>下一页</button></div>
-    {apiMode?<p className="ci-footnote">日期按本地时间，周从周一开始；周、月扩展为完整自然周期，总量严格按所选日期统计。余额与实际扣费来自上游；Token 来自本地历史。</p>:<p className="ci-footnote">金额按 {data?.usd_rate_date||'当前'} 官方 Credits 费率除以 25 换算为 API 等值 USD，速度档位使用 Credits/PAYG 倍率；这是用量参考，不是订阅账单。未记录速度时按 Standard 估算，带 * 为部分覆盖；未知模型费率或 Token 字段缺失时显示 —。占比以实际统计范围内{byPeriod?`对应${periodName}`:'全部范围'}全部项目及模型的预估金额为分母，搜索与字段筛选不改变分母。额度分配仍以 Credits 估算加权。<a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noreferrer">费率依据</a></p>}
+    {apiMode?<p className="ci-footnote">日期按本地时间，周从周一开始；周、月扩展为完整自然周期，总量严格按所选日期统计。余额与实际扣费来自上游；Token 来自本地历史。</p>:<p className="ci-footnote">金额按 {data?.usd_rate_date||'当前'} 官方模型费率、速度档位及 Token 用量估算为 USD 等值；这是用量参考，不是实际账单。未记录速度时按 Standard 估算，带 * 为部分覆盖；未知模型费率或 Token 字段缺失时显示 —。占比以实际统计范围内{byPeriod?`对应${periodName}`:'全部范围'}全部项目及模型的预估金额为分母，搜索与字段筛选不改变分母。<a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noreferrer">费率依据</a></p>}
    </section>}
   </div>
  </Dialog>;
 }
 function UsageCostCell({rows}:{rows:Metrics[]}){return <td className="ci-usage-cost" data-field-description={usageFieldDescriptions.cost} title={partialMoney(rows)?'部分模型或 Token 字段缺失，仅计入可估算记录；括号内为预估金额除以额度百分点':usageFieldDescriptions.cost}>{usageCostText(rows)}</td>;}
-const formatApiCost=(amount:number|null|undefined,currency:string)=>amount==null?'未提供':amount.toLocaleString(undefined,{style:'currency',currency,minimumFractionDigits:2,maximumFractionDigits:2});
-function ApiCostCell({cost,currency}:{cost?:ApiCost;currency:string}){
- return <td className="ci-usage-cost" title={cost?`已估算 ${cost.coverage.covered} / ${cost.coverage.total} 次请求`:undefined}>{formatApiCost(cost?.amount,currency)}{cost&&cost.coverage.covered<cost.coverage.total?' *':''}</td>;
-}
+const formatApiCost=(amount:number|null|undefined,currency:string)=>amount==null?'未提供':`${currency==='USD'||currency==='CNY'?'':`${currency} `}${amount.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 function tokenMetrics(row:Metrics,apiMode:boolean,currency?:string){
  const tokens=row.tokens,unit=apiMode?currency:'USD',breakdown=apiMode?row.api_cost?.breakdown:row.usd_breakdown;
  const coverage=apiMode?row.api_cost?.coverage:row.usd_coverage,totalCost=apiMode?row.api_cost?.amount:row.estimated_usd;
@@ -133,11 +125,11 @@ function MetricCells({row,amountTotal,apiMode,currency}:{row:Metrics;amountTotal
  const unit=apiMode?currency:'USD',amount=apiMode?row.api_cost?.amount??null:row.estimated_usd??null;
  const {input_tokens:input,cached_input_tokens:cached}=row.tokens;
  const metrics=tokenMetrics(row,apiMode,currency);
- const cell=({key,count,cost}:ReturnType<typeof tokenMetrics>[number])=><td key={key} data-field-description={usageFieldDescriptions[key]}>{cellNumber(count)}<span className="ci-token-cost" title={unit?`预估耗费 (${unit})`:'预估耗费未知：缺少可核验费率或必需 Token 数据'}> ({cost})</span></td>;
+ const cell=({key,count,cost}:ReturnType<typeof tokenMetrics>[number])=><td key={key} data-field-description={usageFieldDescriptions[key]} title={count==null?undefined:`${count.toLocaleString()} Token`}>{count==null?'':compact(count)}<span className="ci-token-cost" title={unit?`预估耗费 (${unit})`:'预估耗费未知：缺少可核验费率或必需 Token 数据'}> ({cost})</span></td>;
  return <>{metrics.slice(0,3).map(cell)}<td data-field-description={usageFieldDescriptions.hit}>{input!=null&&cached!=null&&cached<=input&&input>0?`${(cached/input*100).toFixed(1)}%`:''}</td>{metrics.slice(3).map(cell)}{!apiMode&&<><UsageCostCell rows={[row]}/><td data-field-description={usageFieldDescriptions.share}>{amountTotal&&amount!==null?`${(amount/amountTotal*100).toFixed(1)}%`:''}</td></>}</>;
 }
 function Group({node,amountTotal,depth,apiMode,currency,defaultOpen=false,expansion,setExpansion}:{node:UsageGroup;amountTotal:number|null;depth:number;apiMode:boolean;currency?:string;defaultOpen?:boolean;expansion:Record<string,boolean>;setExpansion:React.Dispatch<React.SetStateAction<Record<string,boolean>>>}){
  const open=expansion[node.key]??defaultOpen,childKind=node.children[0]?.kind;
  const count=node.missingModels&&childKind==='model'?'模型明细不可用':node.children.length?`${node.children.length} ${childKind==='project'?'项目':childKind==='model'?'模型':'日期'}`:'';
- return <><tr className={depth===0?'ci-day':node.kind==='model'?'ci-model':'ci-project'}><td data-field-description={usageFieldDescriptions.label}><div className="ci-group-label" style={{paddingLeft:depth*20}}>{node.children.length>0?<button className="ci-model-toggle" aria-label={`${open?'收起':'展开'} ${node.label}${node.kind==='project'&&childKind==='model'?' 模型':''}`} aria-expanded={open} onClick={()=>setExpansion(p=>({...p,[node.key]:!open}))}><ChevronRight size={13} style={{transform:open?'rotate(90deg)':undefined}}/></button>:<span className="ci-model-toggle-spacer" aria-hidden="true"/>}{node.kind==='project'?<Folder size={14}/>:node.kind==='model'?<Cpu size={14}/>:null}<span className="ci-group-title" title={node.title||node.label}>{node.label}</span>{count&&<span className="ci-count">{count}</span>}</div></td><td data-field-description={usageFieldDescriptions.cwd} className="ci-directory-cell" title={node.kind==='project'?node.detail:undefined}>{node.kind==='project'?node.detail||'':null}</td><MetricCells row={node.metrics} amountTotal={amountTotal} apiMode={apiMode} currency={currency}/>{currency&&<ApiCostCell cost={node.metrics.api_cost} currency={currency}/>}</tr>{open&&node.children.map(child=><Group key={child.key} node={child} amountTotal={amountTotal} depth={depth+1} apiMode={apiMode} currency={currency} expansion={expansion} setExpansion={setExpansion}/>)}</>;
+ return <><tr className={depth===0?'ci-day':node.kind==='model'?'ci-model':'ci-project'}><td data-field-description={usageFieldDescriptions.label}><div className="ci-group-label" style={{paddingLeft:depth*20}}>{node.children.length>0?<button className="ci-model-toggle" aria-label={`${open?'收起':'展开'} ${node.label}${node.kind==='project'&&childKind==='model'?' 模型':''}`} aria-expanded={open} onClick={()=>setExpansion(p=>({...p,[node.key]:!open}))}><ChevronRight size={13} style={{transform:open?'rotate(90deg)':undefined}}/></button>:<span className="ci-model-toggle-spacer" aria-hidden="true"/>}{node.kind==='project'?<Folder size={14}/>:node.kind==='model'?<Cpu size={14}/>:null}<span className="ci-group-title" title={node.title||node.label}>{node.label}</span>{count&&<span className="ci-count">{count}</span>}</div></td><td data-field-description={usageFieldDescriptions.cwd} className="ci-directory-cell" title={node.kind==='project'?node.detail:undefined}>{node.kind==='project'?node.detail||'':null}</td><MetricCells row={node.metrics} amountTotal={amountTotal} apiMode={apiMode} currency={currency}/></tr>{open&&node.children.map(child=><Group key={child.key} node={child} amountTotal={amountTotal} depth={depth+1} apiMode={apiMode} currency={currency} expansion={expansion} setExpansion={setExpansion}/>)}</>;
 }

@@ -84,12 +84,12 @@ describe('compact conversation controls',()=>{
   mount();const select=await screen.findByRole('combobox',{name:'选择模型'});fireEvent.mouseEnter(select.closest('label')!);
   const tooltip=screen.getByRole('tooltip');expect(tooltip).toHaveTextContent('2026-10-17');expect(tooltip).toHaveTextContent(/高峰.*0.04.*2.*8/);expect(tooltip).toHaveTextContent(/空闲.*0.02.*1.*4/);expect(tooltip).toHaveTextContent(/09:00.*12:00.*14:00.*18:00/);
  });
- it('shows selected account model details on focus and distinguishes reference credits',async()=>{
+ it('shows selected account model details and USD-equivalent reference pricing on focus',async()=>{
   data.models[0]={...data.models[0],context_window:128000,input_modalities:['text','image'],release_date:'2026-01-01',reference_credits:{input:25,cached:1.25,output:125,as_of:'2026-11-11'}};
   vi.mocked(api.codexEnvironments.forSession).mockResolvedValueOnce({current:'native',environments:[{id:'native',name:'Account',kind:'native',auth_mode:'account',enabled:true,allowed_user_ids:null}]} as any);
   mount();const select=await screen.findByRole('combobox',{name:'选择模型'});await waitFor(()=>expect(api.codexEnvironments.forSession).toHaveBeenCalled());
   fireEvent.focus(select);const tooltip=screen.getByRole('tooltip');
-  expect(tooltip).toHaveTextContent('2026-01-01');expect(tooltip).toHaveTextContent('128,000 tokens');expect(tooltip).toHaveTextContent('text、image');expect(tooltip).toHaveTextContent('Credits 每百万 Token');expect(tooltip).toHaveTextContent('非实际账单');
+  expect(tooltip).toHaveTextContent('2026-01-01');expect(tooltip).toHaveTextContent('128,000 tokens');expect(tooltip).toHaveTextContent('text、image');expect(tooltip).toHaveTextContent('USD 等值 / 百万 Token');expect(tooltip).toHaveTextContent('输入 1 · 缓存 0.05 · 输出 5');expect(tooltip).toHaveTextContent('非实际账单');expect(tooltip).not.toHaveTextContent('Credits');
   fireEvent.blur(select);expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
  });
 
@@ -197,9 +197,9 @@ describe('compact conversation controls',()=>{
   mount();const model=await screen.findByRole('combobox',{name:'选择模型'});fireEvent.change(model,{target:{value:'model-b'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenCalledWith('s',{model:'model-b',effort:'low'}));expect(await screen.findByText('已应用')).toBeVisible();expect(screen.getByRole('combobox',{name:'选择推理强度'})).toHaveValue('low');expect(screen.queryByText('下轮生效')).not.toBeInTheDocument();fireEvent.change(screen.getByRole('combobox',{name:'选择推理强度'}),{target:{value:'medium'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenLastCalledWith('s',{model:'model-b',effort:'medium'}));expect(model).toHaveValue('model-b');
  });
  it.each([
-  ['USD','预估金额','$0.01'],
-  ['CNY','预估金额','¥0.01'],
-  ['credits','预估金额','<$0.01'],
+  ['USD','预估金额','0.01'],
+  ['CNY','预估金额','0.01'],
+  ['credits','预估金额','<0.01'],
  ])('uses the recorded %s unit in the conversation footer and usage tables',async(unit,heading,amount)=>{
   const cost={unit,amount:0.012345,complete:true};
   const totals={tokens:{total_tokens:5010},requests:1,tool_rounds:0,tool_calls:0,cost};

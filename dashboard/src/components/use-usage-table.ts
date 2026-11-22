@@ -4,7 +4,7 @@ import {useMemo,useState} from 'react';
 import {useTableModel,type TableColumn,type TableModel} from './table/use-table-model';
 import {groupUsage,type Dimension,type Metrics,type UsageGroup,type UsageRow} from './codex-usage-groups';
 
-export const usageFieldDescriptions:Record<string,string>={'label':'按所选维度分组；日期使用平台本地时区，项目按工作目录区分。','cwd':'可解析的软链接别名按真实工作目录合并；显示平台登记目录或真实目录，原始路径仍保留在日志和 CSV 中。','input':'各请求的输入 Token 累加，包含缓存输入和重复上下文。','cached':'输入 Token 中命中缓存的部分。','uncached':'输入减去缓存输入；缺失或数值异常时显示未知。','hit':'缓存输入除以输入；汇总时先相加再计算。','output':'输出 Token 累加；推理 Token 包含在输出中。','total':'原生日志中记录的总 Token 累加。','actual':'周额度已用百分比的采样变化，按所选周期订阅参考值分配；只覆盖可采集且可分配的区间；数据不完整时按已有记录分配，可能存在偏差。读数未变时为零，但不能证明没有耗用。数值单位为百分点。','cost':'将 Codex Credits 按 25 Credits = 1 USD 换算为 API 等值金额，不代表订阅账单；只覆盖已知模型费率。','share':'该项预估金额占实际统计范围内同周期全部项目和模型预估金额的比例；搜索和字段筛选不改变分母。'};
+export const usageFieldDescriptions:Record<string,string>={'label':'按所选维度分组；日期使用平台本地时区，项目按工作目录区分。','cwd':'可解析的软链接别名按真实工作目录合并；显示平台登记目录或真实目录，原始路径仍保留在日志和 CSV 中。','input':'各请求的输入 Token 累加，包含缓存输入和重复上下文。','cached':'输入 Token 中命中缓存的部分。','uncached':'输入减去缓存输入；缺失或数值异常时显示未知。','hit':'缓存输入除以输入；汇总时先相加再计算。','output':'输出 Token 累加；推理 Token 包含在输出中。','total':'原生日志中记录的总 Token 累加。','actual':'周额度已用百分比的采样变化，按所选周期订阅参考值分配；只覆盖可采集且可分配的区间；数据不完整时按已有记录分配，可能存在偏差。读数未变时为零，但不能证明没有耗用。数值单位为百分点。','cost':'根据官方模型费率、速度档位和 Token 用量估算 USD 等值金额；不代表实际账单，只覆盖已知模型费率。','share':'该项预估金额占实际统计范围内同周期全部项目和模型预估金额的比例；搜索和字段筛选不改变分母。'};
 usageFieldDescriptions.cost+=` ${usageFieldDescriptions.actual} 括号内为预估金额除以采样额度；额度为零或字段缺失时不计算。此列按预估金额排序和筛选。`;
 usageFieldDescriptions.reasoning='推理 Token 和对应的预估耗费已计入输出。';
 type Leaf=UsageRow&{modelName:string|null;missing:boolean};
