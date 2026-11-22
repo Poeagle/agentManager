@@ -10,6 +10,7 @@ npm test                 # server + dashboard unit/integration tests
 npm run test:coverage    # same tests with enforced coverage thresholds
 npm run test:e2e         # Chromium end-to-end tests
 npm run test:all         # coverage + production builds + E2E
+npm run test:regression:conversation  # targeted Claude and Codex conversation regressions
 ```
 
 Use `npm --prefix server run test:watch` or

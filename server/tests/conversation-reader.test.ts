@@ -8,6 +8,9 @@ import {authHook,createSession,createUser} from '../src/auth.js';
 import {getDb} from '../src/db/index.js';
 import {agentRoutes} from '../src/routes/agent.js';
 import {conversationMessageId,readConversation} from '../src/services/conversation-reader.js';
+import {projectAttachmentDirectory} from '../src/services/attachment-storage.js';
+import {nativeConversationInput,rememberConversationAttachments} from '../src/services/conversation-attachments.js';
+import {parseBriefContext,prepareBriefSend} from '../src/shared/conversation-brief.js';
 
 const id='019ff001-6666-7666-8666-666666666666';
 let app:FastifyInstance,cleanup:()=>void,file:string,cookie:string,dbDirPath:string;
@@ -324,6 +327,32 @@ describe('public conversation pages',()=>{
     const next=Buffer.from(image('appended'));appendFileSync(file,next.subarray(0,next.length-50));expect((await readConversation(binding,{after:first.messages.at(-1)!.id})).messages).toEqual([]);
     appendFileSync(file,next.subarray(next.length-50));appendFileSync(file,final('第二份图像答复'));
     expect((await readConversation(binding,{after:first.messages.at(-1)!.id})).messages.map(message=>message.text)).toEqual(['图片问题 appended','第二份图像答复']);
+  });
+  it('keeps a Codex screenshot reference from native history in brief context',async()=>{
+    const projectPath=join(dbDirPath,'project');
+    mkdirSync(projectPath);
+    getDb().prepare("UPDATE projects SET path=? WHERE id='p'").run(projectPath);
+    vi.stubEnv('AGENTMANAGER_ATTACHMENTS_DIR',join(dbDirPath,'attachments'));
+    const bytes=Buffer.from('fixture screenshot');
+    const image={kind:'image' as const,name:'screen.png',path:join(projectAttachmentDirectory(projectPath,true),'screen.png')};
+    writeFileSync(image.path,bytes);
+    rememberConversationAttachments('chat','screen-input','See the screenshot',[image],true);
+    writeFileSync(file,line('response_item',{type:'message',id:'screen-message',role:'user',content:[
+      {type:'input_text',text:nativeConversationInput('See the screenshot',[image])[0].text},
+      {type:'input_text',text:`<image name=[Image #1] path="${image.path}">`},
+      {type:'input_image',image_url:`data:image/png;base64,${bytes.toString('base64')}`},
+      {type:'input_text',text:'</image>'},
+    ]}));
+    const result=await prepareBriefSend('chat',id,{input:'Continue'},async()=>{
+      const page=await app.inject({url:'/api/sessions/chat/conversation',headers:{cookie}});
+      expect(page.statusCode).toBe(200);
+      return page.json();
+    });
+    expect(parseBriefContext(result.input)?.context.turns).toEqual([
+      expect.objectContaining({input:'See the screenshot',attachments:[image]}),
+    ]);
+    expect(result.input).not.toContain(bytes.toString('base64'));
+    expect(result.attachments).toBeUndefined();
   });
   it('pages old messages on demand without tool output displacing conversation',async()=>{
     writeFileSync(file,Array.from({length:80},(_,i)=>user(`q${i}`)+final(`a${i}`)).join(''));

@@ -93,6 +93,7 @@ test('restores split Claude thinking after reload and uses secondary text colors
   await page.reload();
   await expect(summary).toBeVisible();
   await expect(body).toBeHidden();
+  await page.mouse.move(0,0);
   await page.evaluate(()=>{document.documentElement.dataset.theme='midnight';});
   await expect(summary).toHaveCSS('color','rgb(173, 178, 184)');
   await expect(answer).not.toHaveCSS('color','rgb(173, 178, 184)');

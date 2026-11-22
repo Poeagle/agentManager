@@ -137,6 +137,33 @@ describe('Claude Agent SDK runtime',()=>{
     });
     expect(runtime.selectedModel()).toBe('claude-a');
   });
+  it('uses an updated Provider key on the next request in the same session',async()=>{
+    const {createTestDatabase}=await import('./helpers/database.js');
+    const database=createTestDatabase();
+    try{
+      const {agentContext,getAgent}=await import('../src/services/agents/index.js');
+      const {createClaudeProvider,updateClaudeProvider}=await import('../src/services/agents/claude/providers.js');
+      createClaudeProvider({id:'gateway',apiKey:'fixture-old-key',fields:{
+        baseUrl:'https://gateway.example',models:['claude-a'],defaultModel:'claude-a',
+      }});
+      const context=agentContext({claude_session_id:session,agent_environment_id:'claude-provider:gateway'},
+        {projectPath:database.dir});
+      const input=getAgent('claude').input;
+      sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
+      expect(await input.submit(context,'First request')).toBe(true);
+      await vi.waitFor(()=>expect(claudeRuntime(session)?.runtime().state).toBe('idle'));
+      expect(sdk.queries[0].options.env.ANTHROPIC_AUTH_TOKEN).toBe('fixture-old-key');
+
+      updateClaudeProvider('gateway',{apiKey:'fixture-new-key',fields:{}});
+      expect(await input.submit(context,'Next request')).toBe(true);
+      await vi.waitFor(()=>expect(sdk.queries).toHaveLength(2));
+      await vi.waitFor(()=>expect(claudeRuntime(session)?.runtime().state).toBe('idle'));
+      expect(sdk.queries[1].options).toMatchObject({resume:session,env:{ANTHROPIC_AUTH_TOKEN:'fixture-new-key'}});
+    }finally{
+      releaseClaudeRuntime(session);
+      database.cleanup();
+    }
+  });
   it('uses adaptive thinking for claude-sonnet-5-5 provider requests',async()=>{
     sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-sonnet-5-5',effort:''},false,{

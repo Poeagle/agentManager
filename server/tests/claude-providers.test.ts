@@ -154,7 +154,7 @@ describe('Claude managed providers',()=>{
   expect(claudeProviderModelsForEnvironment('claude-provider:gateway')).toEqual(['claude-a','claude-b']);
   expect(canUseClaudeEnvironment(id,owner.id)).toBe(true);
   expect(canUseClaudeEnvironment('',owner.id)).toBe(true);
-  updateNativeClaudeProvider({apiKey:'fixture-native-token',fields:{baseUrl:'https://native.example',models:['sonnet']}});
+  updateNativeClaudeProvider({apiKey:'fixture-native-token',fields:{baseUrl:'https://native.example',models:['sonnet'],defaultModel:'sonnet'}});
   expect(canUseClaudeEnvironment('anthropic',owner.id)).toBe(true);
   expect(claudeEnvironmentId('anthropic')).toBe('claude-provider:anthropic');
   expect(claudeEnvironmentId('claude-provider:gateway')).toBe('claude-provider:gateway');

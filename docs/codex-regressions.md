@@ -33,6 +33,13 @@ npm run test:regression:accounts
 | 缓存率或实际命中的输入 Token 变动 | 已确认的缓存率可见，达到阈值的实际缓存损失只显示一次提醒，刷新后保留 | [conversation-streaming.spec.ts](../e2e/conversation-streaming.spec.ts)；[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) |
 | Claude 先收到思考、后收到带同一原生 ID 的 Final | 回复期间保持执行状态，Final 和用量各结算一次，刷新后一致 | [claude-sdk-runtime.test.ts](../server/tests/claude-sdk-runtime.test.ts)；[session-statistics.test.ts](../server/tests/session-statistics.test.ts)；[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) |
 | 回执延迟、历史回填或原生记录尚未写完 | 两个 Agent 使用同一套底栏状态，收到完整记录后及时清除提示 | [ConversationControls.test.tsx](../dashboard/tests/ConversationControls.test.tsx)；[session-statistics.test.ts](../server/tests/session-statistics.test.ts)；[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) |
+| Claude 或 Codex 的历史输入含截图 | 简要压缩保留附件引用，刷新后仍可打开预览 | [claude-history.test.ts](../server/tests/claude-history.test.ts)、[conversation-reader.test.ts](../server/tests/conversation-reader.test.ts)、[brief-conversation-card.spec.ts](../e2e/brief-conversation-card.spec.ts) |
+| 对话收到可展示的思考内容 | Claude 和 Codex 共用一行预览，位于正文之前，展开后去掉空行，亮色和暗色主题都采用次级文字颜色 | [SessionConversationClaudeOutput.test.tsx](../dashboard/tests/SessionConversationClaudeOutput.test.tsx)、[claude-output-ui.spec.ts](../e2e/claude-output-ui.spec.ts)（使用平台事件夹具） |
+| Claude 上游限流或 Codex 模型容量不足 | 以错误消息进入对话，刷新后仍是同一条错误 | [claude-sdk-runtime.test.ts](../server/tests/claude-sdk-runtime.test.ts)、[conversation-errors.spec.ts](../e2e/conversation-errors.spec.ts) |
+| Claude 工具中断时已提交跟进消息 | 跟进仍能完成，诊断信息不会替代最终回复 | [claude-sdk-runtime.test.ts](../server/tests/claude-sdk-runtime.test.ts) |
+| Claude Provider 保存新密钥 | 同一会话的下一次请求使用新密钥 | [claude-sdk-runtime.test.ts](../server/tests/claude-sdk-runtime.test.ts) |
+
+Codex 思考样式用例从平台事件开始。当前原生 Codex 适配器未将思考摘要映射为会话展示事件。
 
 ## 账号与 Provider
 

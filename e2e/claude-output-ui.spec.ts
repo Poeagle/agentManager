@@ -1,20 +1,22 @@
 import {expect,test} from '@playwright/test';
 
-test('renders Claude streaming thinking and tool output in the transcript',async({page},testInfo)=>{
+for(const agent of ['claude','codex'] as const)test(`renders ${agent} streaming thinking and tool output in the transcript`,async({page},testInfo)=>{
+  const agentLabel=agent==='claude'?'Claude':'codex';
+  const sessionId=`${agent}-output-ui`;
   const status=await(await page.request.get('/api/auth/status')).json();
   expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{
     data:{username:'e2e-admin',password:'test-password'},
   })).ok()).toBeTruthy();
-  const projectPath=`${process.cwd()}/.test-data/e2e/claude-output-ui`;
+  const projectPath=`${process.cwd()}/.test-data/e2e/${sessionId}`;
   const {mkdirSync}=await import('node:fs');
   mkdirSync(projectPath,{recursive:true});
   const {project}=await(await page.request.post('/api/projects',{
-    data:{name:'Claude output UI',path:projectPath},
+    data:{name:`${agentLabel} output UI`,path:projectPath},
   })).json();
   const session={
-    id:'claude-output-ui',project_id:project.id,task:'',status:'running',mode:'session',
-    cli_type:'claude',agent_id:'claude',native_session_id:'019ff001-7777-7777-8777-777777777777',
-    agent_environment_id:'claude-provider:anthropic',pid:null,created_at:new Date().toISOString(),
+    id:sessionId,project_id:project.id,task:'',status:'running',mode:'session',
+    cli_type:agent,agent_id:agent,native_session_id:'019ff001-7777-7777-8777-777777777777',
+    agent_environment_id:agent==='claude'?'claude-provider:anthropic':'native',pid:null,created_at:new Date().toISOString(),
   };
   let socket:import('@playwright/test').WebSocketRoute|null=null,push:any;
   await page.routeWebSocket('**/conversation/stream*',route=>{
@@ -28,7 +30,7 @@ test('renders Claude streaming thinking and tool output in the transcript',async
     if(url.pathname===`/api/sessions/${session.id}`&&route.request().method()==='GET')return route.fulfill({json:{session}});
     return route.continue();
   });
-  await page.route('**/api/sessions/claude-output-ui/conversation**',route=>route.fulfill({json:{
+  await page.route(`**/api/sessions/${sessionId}/conversation**`,route=>route.fulfill({json:{
     messages:[
       {id:'u',role:'user',text:'Inspect the project',timestamp:new Date().toISOString()},
       {id:'a',role:'assistant',text:'Inspection complete.',timestamp:new Date().toISOString(),
@@ -42,7 +44,7 @@ test('renders Claude streaming thinking and tool output in the transcript',async
     native_id:session.native_session_id,session_active:true,session_status:'running',
     runtime:{state:'idle'},interaction:null,
   }}));
-  await page.route('**/api/sessions/claude-output-ui/controls**',route=>route.fulfill({json:{
+  await page.route(`**/api/sessions/${sessionId}/controls**`,route=>route.fulfill({json:{
     supports_fresh_model:true,model:'claude-fable-5',effort:'',provider:'anthropic',cwd:projectPath,
     state:'idle',permission:'bypassPermissions',usage:{total:{total_tokens:150,input_tokens:120,cached_input_tokens:80,output_tokens:30},last:{total_tokens:150,input_tokens:120,cached_input_tokens:80,output_tokens:30},window:200000},limits:[],
     models:[{model:'claude-fable-5',name:'claude-fable-5',description:'Anthropic · Provider 模型',context_window:200000,max_output_tokens:64000,input_modalities:['text','image'],efforts:[{value:'',description:'由原生客户端决定'}],defaultEffort:''}],loaded:true,
@@ -53,7 +55,7 @@ test('renders Claude streaming thinking and tool output in the transcript',async
     projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`,
   }}});
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{
-    terminalInstances:[{id:session.id,label:'Claude output'}],activeTerminalId:session.id,
+    terminalInstances:[{id:session.id,label:`${agentLabel} output`}],activeTerminalId:session.id,
     explorerInstances:[],hiddenSessionIds:[],
   }}});
   await page.setViewportSize({width:1100,height:900});
@@ -70,8 +72,8 @@ test('renders Claude streaming thinking and tool output in the transcript',async
       {type:'tool_use',index:0,id:'tool-live',name:'Read',input:{file_path:'README.md'},status:'running',result:''},
     ]},
   ],activities:[],busy:true,turn_id:'turn',started_at:stamp,stage:'tools'});
-  const live=page.getByLabel('Claude 进展').last();
-  await expect(live.getByLabel('Claude 的思考过程')).toBeVisible();
+  const live=page.getByLabel(`${agentLabel} 进展`).last();
+  await expect(live.getByLabel(`${agentLabel} 的思考过程`)).toBeVisible();
   await expect(live.locator('.session-chat-thinking-preview')).toHaveText('I am checking the current files.');
   await expect(live.getByText('Read',{exact:true})).toBeVisible();
   push({type:'snapshot',messages:[
@@ -87,8 +89,8 @@ test('renders Claude streaming thinking and tool output in the transcript',async
   await expect(page.getByRole('button',{name:'停止当前执行'})).toHaveCount(0);
   await expect(page.getByText(/esc to interrupt/)).toHaveCount(0);
   const final=page.locator('.session-chat-message.assistant[data-phase="final"]');
-  await expect(final.getByLabel('Claude 的思考过程')).toBeAttached();
-  await expect(page.getByLabel('Claude 正在思考')).toHaveCount(0);
+  await expect(final.getByLabel(`${agentLabel} 的思考过程`)).toBeAttached();
+  await expect(page.getByLabel(`${agentLabel} 正在思考`)).toHaveCount(0);
   await expect(page.locator('.session-chat-tool summary').last()).toContainText('Read');
   await expect(page.getByText('final',{exact:true})).toBeVisible();
   await expect(page.locator('.session-chat-tool-compact')).toHaveCount(0);
@@ -98,14 +100,24 @@ test('renders Claude streaming thinking and tool output in the transcript',async
   await expect(final).toBeVisible();
   await expect(page.getByText('final',{exact:true})).toBeVisible();
   await expect(page.getByText('# Project')).not.toBeVisible();
+  const summary=final.getByLabel(`${agentLabel} 的思考过程`);
+  const answer=final.getByText('Inspection complete.',{exact:true});
+  expect((await summary.boundingBox())!.y).toBeLessThan((await answer.boundingBox())!.y);
+  await expect(summary).toHaveCSS('color','rgb(129, 133, 140)');
   const reasoningBody=final.locator('.session-chat-thinking-body');
   await expect(reasoningBody).not.toBeVisible();
-  await final.getByLabel('Claude 的思考过程').click();
+  await final.getByLabel(`${agentLabel} 的思考过程`).click();
   await expect(reasoningBody).toBeVisible();
   expect(await reasoningBody.textContent()).toBe('I should read the README before changing anything.\nThen verify the project.');
+  await expect(reasoningBody).toHaveCSS('color','rgb(129, 133, 140)');
+  await page.mouse.move(0,0);
+  await page.evaluate(()=>{document.documentElement.dataset.theme='midnight';});
+  await expect(summary).toHaveCSS('color','rgb(173, 178, 184)');
+  await expect(reasoningBody).toHaveCSS('color','rgb(173, 178, 184)');
+  await expect(answer).not.toHaveCSS('color','rgb(173, 178, 184)');
   await final.locator('.session-chat-tool summary').click();
   await expect(page.getByText('# Project')).toBeVisible();
-  await page.screenshot({path:testInfo.outputPath('claude-output.png'),fullPage:true});
+  await page.screenshot({path:testInfo.outputPath(`${agent}-output.png`),fullPage:true});
 });
 
 test('collapses Claude progress across native records and shows its recorded usage',async({page},testInfo)=>{
