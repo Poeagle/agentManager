@@ -49,7 +49,7 @@ export interface NativeRequestFact {
   cost: AgentCostEstimate | null;
 }
 
-export type NativeSessionFact =
+export type NativeSessionFact = (
   | { kind: 'start'; turn_id: string; at: string | null }
   | { kind: 'input'; id: string; turn_id: string; at: string | null; client_id?: string }
   | { kind: 'item_start'; id: string; turn_id: string }
@@ -59,7 +59,8 @@ export type NativeSessionFact =
   | { kind: 'request'; request: NativeRequestFact }
   | { kind: 'end'; turn_id: string; at: string | null; outcome: 'completed' | 'interrupted' | 'unknown'; final_digest?: string }
   | { kind: 'lifecycle'; event: Omit<SessionLifecycleFact, 'id' | 'evidence'>; id?: string; related_request_id?: string }
-  | { kind: 'gap'; reason: SessionCoverageReason; affectsUsage?: boolean };
+  | { kind: 'gap'; reason: SessionCoverageReason; affectsUsage?: boolean }
+) & { source_offset?: number };
 
 export interface NativeFactLocation {
   offset: number;

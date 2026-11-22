@@ -267,7 +267,7 @@ async function scan(source: Source, context: AgentContext, path: string): Promis
         }
         const decoded = codec.decode(parsed, {offset: record.offset, at: factTime(parsed.timestamp), context}, adapterState);
         adapterState = decoded.state;
-        for (const fact of decoded.facts) projection.accept(fact, record.offset);
+        for (const fact of decoded.facts) projection.accept(fact, fact.source_offset ?? record.offset);
       }
       sink.flush();
       if (state.replacingSource && batch.caughtUp) {

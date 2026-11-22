@@ -3,6 +3,8 @@ export interface ConversationActivity {
   started_at: string | null; completed_at: string | null; duration_ms: number | null;
   /** Presentation boundary, never a persisted assistant message. */
   after_message_id?: string | null; turn_id?: string | null;
+  /** Public ID of the model response that issued this tool when available. */
+  request_message_id?: string;
   result_preview?: string;
   input_preview?: string;
 }

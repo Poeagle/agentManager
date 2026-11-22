@@ -301,7 +301,7 @@ const Bubble = memo(function Bubble({
     }
   }
   const metadata =
-    compact && (streaming || message.streaming) ? (
+    compact && streaming ? (
       <span className="session-chat-message-meta">
         <span className="session-chat-progress-updating">Streaming</span>
         {showStatistics&&<ConversationStatisticsLabel statistics={message.statistics??null} interval/>}
@@ -2105,6 +2105,8 @@ export function SessionConversation({
   const slotActivities=latestActivities.filter(item=>{
     if(item.turn_id&&item.turn_id!==liveTurn)return false;
     const startedAt=item.started_at?Date.parse(item.started_at):NaN;
+    if(item.request_message_id&&item.status==='running'&&item.turn_id===liveTurn&&
+      (!Number.isFinite(startedAt)||!Number.isFinite(inputTime)||startedAt>=inputTime))return true;
     if(Object.hasOwn(item,'after_message_id')){
       const anchor=item.after_message_id;
       if(anchor&&(anchor===slotBoundary||hiddenBoundaries.has(anchor)||
@@ -2130,7 +2132,10 @@ export function SessionConversation({
   }
   const progressTimingVisible=busy&&!reconnectable&&!ended&&!waiting&&!activeError&&!compaction.state&&(!!pendingGroupId||tail?.kind==='progress');
   const hideFooterExecutionStatus=liveState==='connected'&&!reconnectable&&!compaction.state&&(showLiveProgress||progressTimingVisible);
-  const pendingStatistics=withObservedToolCounts(pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||tail?.kind==='progress'||!!pendingSegment)?progressStatistics:null,tail?.kind==='progress'?slotMessage?.statistics?.segment:undefined,tail?.kind==='progress',slotMessage),slotActivities.length,liveTurn||'');
+  const requestCount = (activities: ConversationActivity[]) => new Set(activities.flatMap(item => item.request_message_id ? [item.request_message_id] : [])).size;
+  const observedTurnActivities = latestActivities.filter(item => item.request_message_id && item.turn_id === liveTurn &&
+    (!Number.isFinite(inputTime) || !item.started_at || Date.parse(item.started_at) >= inputTime));
+  const pendingStatistics=withObservedToolCounts(pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||tail?.kind==='progress'||!!pendingSegment)?progressStatistics:null,tail?.kind==='progress'?slotMessage?.statistics?.segment:undefined,tail?.kind==='progress',slotMessage),slotActivities.length,liveTurn||'',requestCount(slotActivities));
   const latestUsage=liveUsageQuery.data;
   const pendingLiveUsage=latestUsage&&latestUsage.native_id===agentNativeId(session)&&liveProgress.started_at&&
     Date.parse(latestUsage.observed_at)>=Date.parse(liveProgress.started_at)?latestUsage:null;
@@ -2423,7 +2428,10 @@ export function SessionConversation({
                 const part=activeGroup&&liveMatches?live:saved;
                 const summarySegment=activeGroup&&liveMatches?live:savedMessage?undefined:saved??undefined;
                 const groupedStatistics=progressGroupStatistics(group.messages,final,summarySegment);
-                const summary=withObservedToolCounts(groupedStatistics?{...groupedStatistics,turn_id:last?.turn_id||liveTurn||'',sequence:0}:null,pending?slotActivities.length:0,liveTurn||'');
+                const activities = activeGroup ? observedTurnActivities.filter(item => !part?.start_at ||
+                  !item.started_at || Date.parse(item.started_at) >= Date.parse(part.start_at)) : [];
+                const summary=withObservedToolCounts(groupedStatistics?{...groupedStatistics,turn_id:last?.turn_id||liveTurn||'',sequence:0}:null,
+                  activities.length || (pending ? slotActivities.length : 0),liveTurn||'',requestCount(activities));
                 const execution=part?.unassigned;
                 const executionStats=execution?{...execution,sequence:0,turn_id:last?.turn_id||liveTurn||'',interval:execution}:null;
                 const finalParts=final ? finalThinking(group,final) : [];

@@ -177,7 +177,6 @@ class ClaudeRuntime {
   /** Latest native activity by ID; tool updates replace this state rather than
    * accumulating another visible item. */
   private liveActivities = new Map<string, AgentActivity>();
-  private progressBoundary: string | null = null;
   private input: ClaudeInputStream | null = null;
   /** Follow-ups accepted into the same SDK query for native ordering and echo correlation. */
   private submitted: Pending[] = [];
@@ -527,6 +526,15 @@ class ClaudeRuntime {
     } else this.messages[index] = { ...old, id: newId };
     this.assistantIds.delete(oldId);
     this.assistantIds.add(newId);
+    for (const [id, activity] of this.liveActivities) {
+      if (activity.after_message_id === oldId || activity.request_message_id === oldId) {
+        this.liveActivities.set(id, {
+          ...activity,
+          after_message_id: activity.after_message_id === oldId ? newId : activity.after_message_id,
+          request_message_id: activity.request_message_id === oldId ? newId : activity.request_message_id,
+        });
+      }
+    }
   }
 
   private beginAssistant(): AssistantEnvelope {
@@ -557,7 +565,7 @@ class ClaudeRuntime {
       index,
       text: previous + text,
     });
-    const message = this.assistant(this.textBlock(envelope, index));
+    const message = this.assistant(this.textBlock(envelope));
     this.upsert({
       ...message,
       content_blocks: [...envelope.blocks.values()].sort(
@@ -570,11 +578,22 @@ class ClaudeRuntime {
   private finishAssistantEnvelope() {
     const envelope = this.currentAssistant;
     if (!envelope) return;
+    this.settleAssistant(envelope);
     this.completedAssistants.push(envelope);
     this.currentAssistant = null;
   }
 
-  private textBlock(envelope: AssistantEnvelope, index: number) {
+  private settleAssistant(envelope: AssistantEnvelope, final = false) {
+    const id = conversationMessageId("", "assistant", this.textBlock(envelope));
+    const message = this.messages.find((item) => item.id === id);
+    if (!message) return;
+    const phase = final && message.text.trim() ? "final" : message.phase;
+    if (message.streaming || phase !== message.phase) {
+      this.upsert({ ...message, streaming: false, phase });
+    }
+  }
+
+  private textBlock(envelope: AssistantEnvelope) {
     if (envelope.nativeId) return envelope.nativeId;
     return `turn:${this.turnId || "claude"}:assistant:${envelope.ordinal}`;
   }
@@ -600,6 +619,7 @@ class ClaudeRuntime {
     const previous = [...envelope.blocks.values()].find(
       (block) => block.type === "tool_use" && block.id === id,
     );
+    if (previous) index = previous.index;
     const mergedInput = {
       ...(previous?.type === "tool_use" && previous.input && typeof previous.input === "object" ? previous.input : {}),
       ...(input && typeof input === "object" ? input : {}),
@@ -611,18 +631,18 @@ class ClaudeRuntime {
       id,
       name,
       input: mergedInput,
-      status:
-        previous?.type === "tool_use" ? previous.status : ("running" as const),
+      status: old?.status ?? "running",
     });
     envelope.inputDeltas.delete(index);
-    const message = this.assistant(this.textBlock(envelope, index));
+    const message = this.assistant(this.textBlock(envelope));
     this.upsert({
       ...message,
       content_blocks: [...envelope.blocks.values()].sort(
         (a, b) => a.index - b.index,
       ),
     });
-    this.stage = "tools";
+    this.settleAssistant(envelope);
+    if (!old || old.status === "running") this.stage = "tools";
     this.publishActivity(envelope, id, name, mergedInput);
   }
 
@@ -639,6 +659,10 @@ class ClaudeRuntime {
     const detail =
       name === "Bash" ? value.command :
       value.file_path ?? value.path ?? value.pattern ?? value.query ?? value.description;
+    const boundary = this.messages.slice().reverse().find((message) =>
+      message.turn_id === this.turnId && message.role === "assistant" && !!message.text.trim(),
+    );
+    const requestId = conversationMessageId("", "assistant", this.textBlock(envelope));
     this.liveActivities.set(id, {
       id,
       status: "running",
@@ -646,9 +670,8 @@ class ClaudeRuntime {
       completed_at: null,
       duration_ms: null,
       turn_id: this.turnId,
-      after_message_id: this.progressBoundary ??= this.assistant(
-        this.textBlock(envelope, Math.max(0, envelope.blocks.size - 1)),
-      ).id,
+      after_message_id: boundary?.id ?? requestId,
+      request_message_id: requestId,
       ...previous,
       label: toolLabel(name, input),
       ...(typeof detail === "string" && detail.trim()
@@ -669,7 +692,8 @@ class ClaudeRuntime {
       const atPosition = envelope.blocks.get(position);
       // The SDK can report one completed block at a time, each at position 0.
       // Look for the streamed block before allocating a slot for new content.
-      if (atPosition && atPosition.type !== block?.type) {
+      if (atPosition && (atPosition.type !== block?.type ||
+        atPosition.type === "tool_use" && atPosition.id !== block.id)) {
         const matching = [...envelope.blocks.values()].find((existing) =>
           (existing.type === "tool_use" && block?.type === "tool_use" && existing.id === block.id) ||
           (existing.type === "thinking" && block?.type === "thinking" && existing.text === block.thinking) ||
@@ -853,6 +877,12 @@ class ClaudeRuntime {
           envelope.nativeId = event.message.id;
       } else if (event?.type === "message_stop") {
         this.finishAssistantEnvelope();
+      } else if (event?.type === "message_delta" && event.delta?.stop_reason === "end_turn" &&
+        this.currentAssistant && message.parent_tool_use_id == null) {
+        this.settleAssistant(this.currentAssistant, true);
+      } else if (event?.type === "content_block_stop" && this.currentAssistant) {
+        const block = this.currentAssistant.blocks.get(event.index);
+        if (block?.type === "text" || block?.type === "thinking") this.settleAssistant(this.currentAssistant);
       } else if (
         event?.type === "content_block_start" &&
         event.content_block?.type === "thinking" &&
@@ -905,7 +935,7 @@ class ClaudeRuntime {
               };
               envelope.blocks.set(event.index, { ...tool, input });
               const target = this.assistant(
-                this.textBlock(envelope, event.index),
+                this.textBlock(envelope),
               );
               this.upsert({
                 ...target,
@@ -976,6 +1006,10 @@ class ClaudeRuntime {
         nativeId,
         message.message.content,
       );
+      const visibleText = !!textContent(message.message.content).trim();
+      if (visibleText || envelope !== this.currentAssistant) {
+        this.settleAssistant(envelope, visibleText && message.message.stop_reason === "end_turn");
+      }
       this.publish();
       return;
     }
@@ -1079,14 +1113,13 @@ class ClaudeRuntime {
         this.liveActivities.set(activityId, { ...activity, after_message_id: nativeMessageId });
       }
     }
-    if (this.progressBoundary === optimisticId) this.progressBoundary = nativeMessageId;
     this.publish();
   }
 
   private appendText(envelope: AssistantEnvelope, index: number, text: string) {
     envelope.sawText = true;
     this.stage = "answering";
-    const current = this.assistant(this.textBlock(envelope, index));
+    const current = this.assistant(this.textBlock(envelope));
     const old = envelope.blocks.get(index),
       previous = old?.type === "text" ? old.text : "";
     envelope.blocks.set(index, { type: "text", index, text: previous + text });
@@ -1113,7 +1146,6 @@ class ClaudeRuntime {
     this.assistantIds.clear();
     this.activities.clear();
     this.liveActivities.clear();
-    this.progressBoundary = null;
     this.assistantOrdinal = 0;
     this.currentAssistant = null;
     this.completedAssistants = [];

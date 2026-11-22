@@ -18,6 +18,7 @@ interface Assistant {
   tokens: NativeRequestFact['tokens'];
   cacheWrites?: readonly [number,number] | null;
   tools: string[];
+  endedTools?: string[];
   visible: boolean;
   outcome?: 'completed' | 'unknown';
   incomplete?: boolean;
@@ -52,7 +53,7 @@ export function claudeRequestUsage(usage: Record<string, unknown> | null | undef
 }
 
 export const claudeSessionFacts: AgentSessionFactsPort = {
-  revision: 2,
+  revision: 4,
   async *discover() {
     const bindings = getDb().prepare(`SELECT DISTINCT COALESCE(native_session_id,claude_session_id) AS id,
       agent_environment_id AS environment FROM sessions WHERE COALESCE(agent_id,cli_type)='claude'
@@ -93,15 +94,16 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
       if (group.incomplete) facts.push({kind: 'gap', reason: 'missing_usage'});
       if (group.visible) facts.push({
         kind: 'item', id: nativeItemId('assistant', group.id), turn_id: group.turn, at: group.at,
-        phase: phase === 'unknown' && group.tools.length ? 'progress' : phase,
+        phase: phase === 'unknown' && group.tools.length ? 'progress' : phase, source_offset: group.offset,
       });
       for (const id of group.tools) facts.push({kind: 'tool', id, turn_id: group.turn});
       const provider=declared?readClaudeRuntimeProvider(context.session,context.environmentAccess):null;
       const official=provider&&/^https:\/\/api\.anthropic\.com\/*$/.test(provider.baseUrl);
       const amount=official&&group.cacheWrites&&(!group.speed||group.speed==='standard')?estimatePublicApiCost('claude',group.model,group.at,group.tokens,group.cacheWrites):null;
-      facts.push({kind: 'request', request: {
+      facts.push({kind: 'request', source_offset: group.offset, request: {
         id: group.id, at: group.at, turn_id: group.turn, tokens: group.tokens, dimensions, cost: official?{unit:'USD',basis:'api',amount,complete:amount!==null}:null, evidence: 'request',
       }});
+      for (const id of group.endedTools ?? []) facts.push({kind: 'tool_end', id, turn_id: group.turn});
       if (group.outcome) {
         facts.push({kind: 'end', turn_id: group.turn, at: group.at, outcome: group.outcome});
         if (state.turn === group.turn) state.turn = null;
@@ -114,10 +116,15 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
       if (message?.role !== 'user') return result();
       const toolResults = blocks.filter(block => block.type === 'tool_result');
       if (toolResults.length) {
-        settle('progress');
+        // Fast tools can return before Claude writes the remaining sibling blocks.
+        // Keep collecting the same assistant ID until a new request begins.
         for (const block of toolResults) {
           const id = factString(block.tool_use_id);
-          if (id && state.turn) facts.push({kind: 'tool_end', id, turn_id: state.turn});
+          if (!id || !state.turn) continue;
+          if (state.assistant?.tools.includes(id)) {
+            const ended = state.assistant.endedTools ??= [];
+            if (!ended.includes(id)) ended.push(id);
+          } else facts.push({kind: 'tool_end', id, turn_id: state.turn});
         }
         return result();
       }

@@ -677,6 +677,40 @@ describe('Claude Agent SDK runtime',()=>{
     expect(started.messages.some((message:any)=>message.id===started.activities[0].after_message_id)).toBe(false);
     expect(runtime.snapshot().messages.filter(message=>message.role==='assistant'&&message.content_blocks?.some(block=>block.type==='tool_use'))).toEqual([]);
   });
+  it('settles successive commentary blocks and moves the answer to Final before the result',async()=>{
+    const message=(id:string,text:string,stop_reason:string)=>({type:'assistant',uuid:assistant,session_id:session,
+      parent_tool_use_id:null,message:{id,stop_reason,content:[{type:'text',text}]}});
+    const result=(id:string)=>({type:'user',uuid:assistant,session_id:session,parent_tool_use_id:id,
+      message:{content:[{type:'tool_result',tool_use_id:id,content:'Found'}]}});
+    const start=(id:string)=>stream({type:'message_start',message:{id}});
+    const text=(value:string)=>stream({type:'content_block_start',index:0,content_block:{type:'text',text:value}});
+    const tool=(index:number,id:string)=>stream({type:'content_block_start',index,
+      content_block:{type:'tool_use',id,name:'WebSearch',input:{query:id}}});
+    sdk.messages=[start('first-request'),text('First progress'),stream({type:'content_block_stop',index:0}),
+      tool(1,'first-search'),message('first-request','First progress','tool_use'),result('first-search'),
+      start('second-request'),text('Second progress'),tool(1,'search-a'),result('search-a'),tool(2,'search-b'),
+      message('second-request','Second progress','tool_use'),
+      start('answer'),text('Final answer'),stream({type:'message_delta',delta:{stop_reason:'end_turn'}}),
+      stream({type:'message_stop'}),{type:'result',subtype:'success',uuid:assistant,session_id:session}];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    const frames:ReturnType<typeof runtime.snapshot>[]=[];
+    const stop=runtime.observe(frame=>frames.push(frame));
+    await runtime.submit('Check sources');
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    stop();
+    const second=frames.find(frame=>frame.activities.some(activity=>activity.id==='search-b'))!;
+    expect(second.messages.filter(item=>item.role==='assistant')).toMatchObject([
+      {text:'First progress',phase:'commentary',streaming:false},
+      {text:'Second progress',phase:'commentary',streaming:false},
+    ]);
+    const secondId=conversationMessageId('','assistant','second-request');
+    expect(second.activities.slice(-2)).toMatchObject([
+      {id:'search-a',status:'completed',after_message_id:secondId,request_message_id:secondId},
+      {id:'search-b',status:'running',after_message_id:secondId,request_message_id:secondId},
+    ]);
+    expect(frames.find(frame=>frame.busy&&frame.messages.some(item=>item.phase==='final'))?.messages.at(-1))
+      .toMatchObject({text:'Final answer',phase:'final',streaming:false});
+  });
   it('uses the completed assistant event when no partial text was emitted',async()=>{
     sdk.messages=[
       stream({type:'message_start',message:{id:'api-message-one'}}),

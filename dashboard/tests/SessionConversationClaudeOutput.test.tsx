@@ -96,6 +96,29 @@ it('shows a live Claude tool whose tool-only assistant message is omitted from t
   expect(within(pending).getByText('README.md')).toBeVisible();
   view.unmount();
 });
+it('keeps live tool counts visible before the usage receipt and renders native Final before idle',async()=>{
+  const timestamp=new Date().toISOString();
+  const messages=[{id:'input',role:'user',turn_id:'turn',text:'Check',timestamp},
+    {id:'first',role:'assistant',turn_id:'turn',phase:'commentary',text:'First progress',timestamp,streaming:true},
+    {id:'second',role:'assistant',turn_id:'turn',phase:'commentary',text:'Second progress',timestamp,streaming:true}] as ConvMessage[];
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  const view=render(<QueryClientProvider client={client}><SessionConversation session={session} active onRaw={()=>{}}/></QueryClientProvider>);
+  await waitFor(()=>expect(Socket.latest?.onmessage).toBeTruthy());
+  const activity=(id:string)=>({id,label:'搜索 · '+id,input_preview:id,status:'running',started_at:timestamp,
+    completed_at:null,duration_ms:null,turn_id:'turn',after_message_id:'first',request_message_id:'request-2'});
+  act(()=>Socket.latest.emit({type:'snapshot',busy:true,turn_id:'turn',started_at:timestamp,stage:'tools',messages,
+    activities:[activity('Search A'),activity('Search B'),activity('Search B')]}));
+  const pending=await screen.findByRole('status',{name:'正在执行的进展 3'});
+  expect(within(pending).getByText('Search B')).toBeVisible();
+  expect(pending.querySelector('.session-chat-tool-counts')).toHaveTextContent('1 round | 2 calls');
+  expect(screen.queryByText('Streaming',{exact:true})).not.toBeInTheDocument();
+  act(()=>Socket.latest.emit({type:'snapshot',busy:true,turn_id:'turn',started_at:timestamp,stage:'answering',
+    messages:[...messages.map(message=>({...message,streaming:false})),
+      {id:'answer',role:'assistant',turn_id:'turn',phase:'final',text:'Final response',timestamp}],activities:[]}));
+  expect(screen.getByText('Final response').closest('[data-phase]')).toHaveAttribute('data-phase','final');
+  expect(screen.queryByRole('status',{name:'正在执行的进展 3'})).not.toBeInTheDocument();
+  view.unmount();
+});
 it('renders identical tool and thinking structure for Claude and Codex',async()=>{
   const messages=[
     {id:'user',role:'user',text:'Inspect the project',timestamp:'2026-11-19T23:45:45.000Z'},

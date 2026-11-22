@@ -243,10 +243,27 @@ export function withPrecedingThinking(message: ConversationMessage, preceding: C
   return {...message,content_blocks:[...blocks,...(message.content_blocks ?? [])]};
 }
 
-export function withObservedToolCounts(statistics:ConversationStatistics|null,count:number,turnId:string):ConversationStatistics|null {
- if(statistics&&(statistics.coverage||statistics.interval?.coverage))return statistics;
- if(!count||statistics&&('segment_id' in statistics||statistics.tool_calls>=count))return statistics;
- const value=statistics?.interval??statistics;
- const interval={...value,tokens:value?.tokens??null,requests:value?.requests??0,tool_calls:Math.max(value?.tool_calls??0,count),tool_rounds:Math.max(value?.tool_rounds??0,1),complete:false,shared_messages:1};
- return {...statistics,...interval,sequence:0,turn_id:turnId,interval};
+export function withObservedToolCounts(
+  statistics: ConversationStatistics | null,
+  count: number,
+  turnId: string,
+  observedRequests = 0,
+): ConversationStatistics | null {
+  if (!count || !observedRequests && statistics &&
+    (statistics.coverage || statistics.interval?.coverage || 'segment_id' in statistics || statistics.tool_calls >= count)) return statistics;
+  const value = statistics?.interval ?? statistics;
+  const requests = Math.max(value?.requests ?? 0, observedRequests);
+  const calls = Math.max(value?.tool_calls ?? 0, count);
+  if (value && requests === value.requests && calls === value.tool_calls) return statistics;
+  const interval = {
+    ...value,
+    tokens: value?.tokens ?? null,
+    requests,
+    tool_calls: calls,
+    tool_rounds: Math.max(value?.tool_rounds ?? 0, observedRequests || 1),
+    complete: false,
+    ...(observedRequests ? { coverage: value?.coverage === 'partial' ? 'partial' as const : 'pending' as const } : {}),
+    shared_messages: statistics?.interval?.shared_messages ?? 1,
+  };
+  return { ...statistics, ...interval, sequence: 0, turn_id: turnId, interval };
 }

@@ -375,15 +375,17 @@ describe('persisted session statistics',()=>{
       assistant(2,'a',[{type:'text',text:'progress'}],usage,null)+
       assistant(3,'a',[{type:'tool_use',id:'tool-1'},{type:'tool_use',id:'tool-2'}],{...usage,output_tokens:20},'tool_use')+
       human(4,'tool-result',[{type:'tool_result',tool_use_id:'tool-1'}])+
+      assistant(4.1,'a',[{type:'tool_use',id:'tool-3'}],{...usage,output_tokens:20},'tool_use')+
+      human(4.2,'second-result',[{type:'tool_result',tool_use_id:'tool-3'}])+
       assistant(5,'b',[{type:'text',text:'Final'}],usage,'end_turn')+
       human(6,'two','Second')+
       assistant(8,'c',[{type:'text',text:'Other final'}],{...usage,input_tokens:9800,cache_read_input_tokens:0},'end_turn'));
     await updateSessionFacts(claude,file);
     const details=readSessionMetadataDetails(claude,true)!;
-    expect(details.summary).toMatchObject({status:'complete',totals:{requests:3,tool_calls:2,tool_rounds:1,cost:null,
+    expect(details.summary).toMatchObject({status:'complete',totals:{requests:3,tool_calls:3,tool_rounds:1,cost:null,
       tokens:{input_tokens:30000,cached_input_tokens:17600,output_tokens:40,reasoning_output_tokens:null,total_tokens:30040}},
       user_inputs:2,completed_turns:2,cache_drop_count:1});
-    expect(readChangedSessionStatistics(claude,0)[1].conclusion).toMatchObject({requests:2,tool_calls:2,tool_rounds:1});
+    expect(readChangedSessionStatistics(claude,0)[1].conclusion).toMatchObject({requests:2,tool_calls:3,tool_rounds:1});
   });
 
   it('settles a Claude Final once when thinking and text share a terminal receipt across scans',async()=>{
