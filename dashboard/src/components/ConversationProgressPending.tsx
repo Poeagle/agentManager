@@ -1,3 +1,4 @@
+import type {ReactNode} from 'react';
 import {ChevronRight,Loader2} from 'lucide-react';
 import type {ConversationStatistics,ConversationUsageUpdate} from '../lib/api';
 import {elapsedBetween,formatConversationTimestamp,formatElapsedEnglish} from '../lib/conversation-timing';
@@ -6,7 +7,7 @@ import {ConversationCard} from './ConversationCard';
 import {ConversationStatisticsLabel} from './ConversationStatisticsLabel';
 import {englishActivity,type ConversationActivity} from './ConversationActivityLine';
 
-export function ConversationProgressPending({number,tool,startedAt,statistics,liveUsage,now,connected,showStatistics=true}:{number:number;tool?:ConversationActivity;startedAt:string|null;statistics:ConversationStatistics|null;liveUsage?:ConversationUsageUpdate|null;now:number;connected:boolean;showStatistics?:boolean}) {
+export function ConversationProgressPending({number,tool,startedAt,statistics,liveUsage,now,connected,showStatistics=true,thinking}:{number:number;tool?:ConversationActivity;startedAt:string|null;statistics:ConversationStatistics|null;liveUsage?:ConversationUsageUpdate|null;now:number;connected:boolean;showStatistics?:boolean;thinking?:ReactNode}) {
   useDisplayClock();
   const elapsed=elapsedBetween(startedAt,now);
   const command=tool?(tool.input_preview||englishActivity(tool.label)).replace(/\s+/g,' ').trim():'';
@@ -26,6 +27,7 @@ export function ConversationProgressPending({number,tool,startedAt,statistics,li
       </span>}
       {showStatistics&&elapsed!==null&&<span className="session-chat-message-duration" title="Elapsed time since this progress update started">Elapsed: {formatElapsedEnglish(elapsed)}</span>}
     </span></div>
+    {thinking}
     {tool?<ConversationCard key={tool.id} className="session-chat-live-tool" status={tool.status} summary={<><ChevronRight size={12} className="session-chat-live-tool-arrow"/><span className="session-chat-live-tool-label" title={command}>{summary}</span>{tool.status==='running'?<Loader2 size={12} className="animate-spin"/>:<span className="session-chat-live-tool-state">Waiting…</span>}</>}>
       <div className="session-chat-live-tool-details">
         <pre className="session-chat-tool-result">{tool.result_preview??(tool.status==='running'?'Waiting for output…':'No result available')}</pre>

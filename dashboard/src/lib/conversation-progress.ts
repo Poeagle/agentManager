@@ -185,36 +185,62 @@ export function isThinkingOnly(message:ConversationMessage) {
     message.content_blocks.every(block=>block.type==='thinking');
 }
 
-/** The preview follows the latest reasoning. The disclosure keeps earlier
- * parts of the same Progress group, including those before a tool call. */
+/** Keep the preview and expanded reasoning bounded to the current step. */
 export function progressThinking(messages: ConversationMessage[]) {
   const parts: string[] = [];
-  let latest: {text:string;messageId:string;atTail:boolean}|undefined;
+  let latest: string|undefined;
   let remaining = 64 * 1024;
   for (const message of messages.slice().reverse()) {
     const blocks = message.content_blocks ?? [];
     for (const block of blocks.slice().reverse()) {
       if (block.type !== 'thinking' || !block.text.trim()) continue;
-      latest ??= {text:block.text,messageId:message.id,atTail:message===messages.at(-1)&&block===blocks.at(-1)};
+      latest ??= block.text;
       parts.push(block.text.slice(-remaining));
       remaining -= Math.min(remaining,block.text.length+1);
       if (!remaining) break;
     }
     if (!remaining) break;
   }
-  return latest ? {...latest,body:parts.reverse().join('\n')} : null;
+  return latest ? {text:latest,body:parts.reverse().join('\n')} : null;
 }
 
-/** Keep tool calls and commentary text on their numbered items, while all
- * request-level reasoning moves to one platform-level row. Thinking-only
- * requests do not occupy empty numbered rows. The blocks stay in durable
- * messages for reconciliation and are not discarded. */
-export function withoutProgressThinking(messages:ConversationMessage[]):ConversationMessage[] {
-  return messages.flatMap(message=>{
-    const content_blocks=message.content_blocks?.filter(block=>block.type!=='thinking');
-    if(!message.text.trim()&&!content_blocks?.some(block=>block.type==='tool_use'||block.text.trim()))return [];
-    return [{...message,...(content_blocks?{content_blocks}:{})}];
-  });
+/** A standalone thinking item belongs to the next visible output in its turn.
+ * Keep its row identity while that output is still streaming separately. */
+export function progressSteps(messages: ConversationMessage[]) {
+  const steps: Array<{key:string;message:ConversationMessage}> = [];
+  let trailing: ConversationMessage[] = [];
+  const flush = () => {
+    const last = trailing.at(-1);
+    if (last) steps.push({key:trailing[0].id,message:withPrecedingThinking(last,trailing.slice(0,-1))});
+    trailing = [];
+  };
+  for (const message of messages) {
+    if (trailing.length && trailing[0].turn_id !== message.turn_id) flush();
+    if (isThinkingOnly(message)) {
+      trailing.push(message);
+    } else {
+      steps.push({key:trailing[0]?.id ?? message.id,message:withPrecedingThinking(message,trailing)});
+      trailing = [];
+    }
+  }
+  return {steps,trailing};
+}
+
+export function finalThinking(group: ConversationGroup | undefined, final: ConversationMessage) {
+  if (group?.kind !== 'progress' || final.phase !== 'final' || final.async_questions?.length) return [];
+  let index = group.messages.length;
+  while (index > 0) {
+    const message = group.messages[index-1];
+    if (!isThinkingOnly(message) || message.turn_id !== final.turn_id) break;
+    index--;
+  }
+  return group.messages.slice(index);
+}
+
+export function withPrecedingThinking(message: ConversationMessage, preceding: ConversationMessage[]): ConversationMessage {
+  if (!preceding.length) return message;
+  const blocks = preceding.flatMap(item => item.content_blocks ?? []);
+  return {...message,content_blocks:[...blocks,...(message.content_blocks ?? [])]};
 }
 
 export function withObservedToolCounts(statistics:ConversationStatistics|null,count:number,turnId:string):ConversationStatistics|null {

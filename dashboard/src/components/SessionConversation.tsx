@@ -105,7 +105,7 @@ import {
   waitingInputKey,
   type TimelineMessage,
 } from "../lib/conversation-timeline";
-import { groupConversationProgress, isEmptyProgress, isThinkingOnly, progressThinking, mergeConversationStatistics, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts, withoutProgressThinking } from "../lib/conversation-progress";
+import { finalThinking, groupConversationProgress, isEmptyProgress, isThinkingOnly, progressSteps, progressThinking, mergeConversationStatistics, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts, withPrecedingThinking } from "../lib/conversation-progress";
 import {
   conversationTimings,
   elapsedBetween,
@@ -165,14 +165,12 @@ function ProgressSection({
   progressPhase,
   turnDuration,
   showStatistics=true,
-  thinking,
   children,
-}: ProgressSummaryProps & {thinking?: ReactNode;children: ReactNode}) {
+}: ProgressSummaryProps & {children: ReactNode}) {
   const [preference, setPreference] = useState<boolean | null>(null);
   const open = preference ?? active;
   return (
     <section className="session-chat-progress" aria-label={`${agentName} 进展`}>
-      {thinking && <div>{thinking}</div>}
       <details
         className="session-chat-progress-disclosure"
         open={open}
@@ -407,7 +405,7 @@ const Bubble = memo(function Bubble({
         active={active}
       />
     );
-  const thinkingBlocks = message.content_blocks?.filter(block => block.type === "thinking" && block.text.trim()) ?? [];
+  const thinking = progressThinking([message]);
   const contentBlocks = message.content_blocks?.filter(
     block => block.type !== "thinking" && (block.type === "tool_use" || block.text.length > 0),
   ) ?? [];
@@ -416,7 +414,7 @@ const Bubble = memo(function Bubble({
     message.role === "assistant" &&
     !message.text &&
     !contentBlocks.length &&
-    !thinkingBlocks.length &&
+    !thinking &&
     !streaming
   )
     return null;
@@ -547,14 +545,8 @@ const Bubble = memo(function Bubble({
             {!headerMetadata && (
               <div className="session-chat-metadata-row">{metadata}</div>
             )}
-            {thinkingBlocks.map(block => block.type === "thinking" && (
-              <ConversationThinking
-                key={block.index}
-                agentName={agentName}
-                text={block.text}
-                streaming={streaming && lastBlock === block}
-              />
-            ))}
+            {thinking && <ConversationThinking agentName={agentName} text={thinking.body} previewText={thinking.text}
+              streaming={streaming && !message.text && lastBlock?.type === 'thinking'}/>}
             {contentBlocks.length ? (
               contentBlocks.map((block, index) =>
                 block.type === "tool_use" ? (
@@ -575,7 +567,7 @@ const Bubble = memo(function Bubble({
                   />
                 ),
               )
-            ) : (
+            ) : message.text ? (
               <ConversationMarkdown
                 content={message.text}
                 messageId={message.id}
@@ -585,10 +577,10 @@ const Bubble = memo(function Bubble({
                 onOpenFile={onOpenFile}
                 onNavigate={onNavigate}
               />
-            )}
+            ) : null}
           </>
         )}
-        {streaming && (
+        {streaming && !isThinkingOnly(message) && (
           <span className="session-chat-caret" aria-label="正在输出" />
         )}
       </div>
@@ -2385,11 +2377,12 @@ export function SessionConversation({
               )}
               {groups.map((group, groupIndex) => {
                 if(group.kind === "message") {
-                  const drops=dropsByMessage.get(group.message.id);
+                  const message=withPrecedingThinking(group.message,finalThinking(groups[groupIndex-1],group.message));
+                  const drops=dropsByMessage.get(message.id);
                   return drops?.length ? <div key={group.id}>
-                    {bubble(group.message,false,group.id)}
+                    {bubble(message,false,group.id)}
                     {drops.map(drop=><ConversationCacheDrop key={drop.id} drop={drop} active={active}/>)}
-                  </div> : bubble(group.message,false,group.id);
+                  </div> : bubble(message,false,group.id);
                 }
                 const last=[...group.messages].reverse().find(message=>!isThinkingOnly(message))??group.messages.at(-1),next=groups[groupIndex+1];
                 const pending=group.id===pendingGroupId;
@@ -2420,15 +2413,24 @@ export function SessionConversation({
                 const summary=withObservedToolCounts(groupedStatistics?{...groupedStatistics,turn_id:last?.turn_id||liveTurn||'',sequence:0}:null,pending?slotActivities.length:0,liveTurn||'');
                 const execution=part?.unassigned;
                 const executionStats=execution?{...execution,sequence:0,turn_id:last?.turn_id||liveTurn||'',interval:execution}:null;
-                const thinking=progressThinking(group.messages);
-                const visibleProgress=withoutProgressThinking(group.messages);
+                const finalParts=final ? finalThinking(group,final) : [];
+                const messages=group.messages.slice(0,group.messages.length-finalParts.length);
+                const {steps,trailing}=progressSteps(messages);
+                const lastThought=trailing.at(-1);
+                if (lastThought && !pending) {
+                  steps.push({key:trailing[0].id,message:withPrecedingThinking(lastThought,trailing.slice(0,-1))});
+                }
+                const pendingThinking=pending ? progressThinking(trailing) : null;
+                const showExecution=!pending&&!notificationView&&!!executionStats&&
+                  (steps.length>0||!final||executionStats.tool_calls>0);
+                if (!steps.length&&!pending&&!showExecution) return null;
                 return (
                   <ProgressSection
                     key={`progress-${group.id}`}
                     showStatistics={!notificationView}
                     agent={sessionAgent(session)}
                     agentName={agentName}
-                    count={visibleProgress.length+Number(pending||!notificationView&&!!execution)}
+                    count={steps.length+Number(pending||showExecution)}
                     active={activeGroup}
                     timestamp={part?.last_request_at??part?.end_at??part?.start_at??
                       (last?.streaming?null:last?.timestamp)??(pending?liveProgress.started_at:null)}
@@ -2441,12 +2443,10 @@ export function SessionConversation({
                     interrupted={part?.end_reason==='interrupted'}
                     progressScope="segment"
                     progress={summary}
-                    thinking={thinking && <ConversationThinking agentName={agentName} text={thinking.body} previewText={thinking.text}
-                      streaming={thinking.atTail && activeGroup && thinking.messageId === streamingId}/>}
                   >
-                    {visibleProgress.map((message, index) => (
+                    {steps.map(({key,message}, index) => (
                       <div
-                        key={message.id}
+                        key={key}
                         className="session-chat-progress-entry"
                         data-active={message.id === streamingId}
                       >
@@ -2456,14 +2456,16 @@ export function SessionConversation({
                         >
                           {index + 1}
                         </span>
-                        {bubble(message, true, message.id)}
+                        {bubble(message, true, key)}
                       </div>
                     ))}
-                    {pending&&<ConversationProgressPending number={visibleProgress.length+1} tool={latestSlotActivity}
+                    {pending&&<ConversationProgressPending number={steps.length+1} tool={latestSlotActivity}
+                      thinking={pendingThinking && <ConversationThinking agentName={agentName} text={pendingThinking.body} previewText={pendingThinking.text}
+                        streaming={lastThought?.id===streamingId}/>}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
                       statistics={pendingStatistics??(liveMatches?executionStats:null)} liveUsage={pendingLiveUsage} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
-                    {!pending&&!notificationView&&executionStats&&<div className="session-chat-progress-entry">
-                      <span className="session-chat-progress-number" aria-label={`进展序号 ${visibleProgress.length+1}`}>{visibleProgress.length+1}</span>
+                    {showExecution&&executionStats&&<div className="session-chat-progress-entry">
+                      <span className="session-chat-progress-number" aria-label={`进展序号 ${steps.length+1}`}>{steps.length+1}</span>
                       <div className="session-chat-message-meta">
                         <span title={unassignedUsageDescription}>{unassignedUsageLabel}</span>
                         <ConversationStatisticsLabel interval statistics={executionStats}/>

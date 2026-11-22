@@ -109,7 +109,7 @@ it('renders identical tool and thinking structure for Claude and Codex',async()=
   expect(claude.progressContent).toContain('Read');
   expect(claude.finalText).toBe('The project is ready.');
 });
-it.each(['claude','codex'] as const)('puts the latest %s thinking on one row before progress and preserves its disclosure as text arrives',async agent=>{
+it.each(['claude','codex'] as const)('keeps %s thinking inside its numbered step as the step text arrives',async agent=>{
   const current={...session,cli_type:agent,codex_session_id:agent==='codex'?'claude-native':null,claude_session_id:agent==='claude'?'claude-native':null};
   const stamp='2026-11-19T23:45:45.000Z';
   const messages:ConvMessage[]=[
@@ -132,19 +132,21 @@ it.each(['claude','codex'] as const)('puts the latest %s thinking on one row bef
   const preview=row.querySelector('.session-chat-thinking-preview');
   expect(preview).toHaveTextContent('Review');
   expect(row).not.toHaveAttribute('open');
-  expect(row.parentElement?.firstElementChild).toBe(row);
-  expect(within(progress).queryByText('Previous reasoning.')).not.toBeInTheDocument();
+  const step=reasoning.closest('.session-chat-progress-entry')! as HTMLElement;
+  expect(within(step).getByLabelText('进展序号 2')).toBeVisible();
+  expect(within(step).queryByText('Previous reasoning.')).not.toBeInTheDocument();
+  expect(within(progress).getByLabelText('进展序号 1').closest('.session-chat-progress-entry')).toHaveTextContent('Previous reasoning.');
 
   push('Checking files.\n\nReviewing the output.');
   expect(within(progress).getByLabelText(`${name} 正在思考`)).toBe(reasoning);
   expect(preview).toHaveTextContent('Reviewing the output.');
   fireEvent.click(reasoning);
   expect(row).toHaveAttribute('open');
-  expect(row.querySelector('.session-chat-thinking-body')?.textContent).toBe('Previous reasoning.\nChecking files.\nReviewing the output.');
+  expect(row.querySelector('.session-chat-thinking-body')?.textContent).toBe('Checking files.\nReviewing the output.');
   push('Checking files.\n\nReviewing the output.','Response starts here.');
-  expect(within(progress).getByLabelText(`${name} 的思考过程`)).toBe(reasoning);
+  expect(within(step).getByLabelText(`${name} 的思考过程`)).toBe(reasoning);
   expect(row).toHaveAttribute('open');
-  expect(within(progress).getByText('Response starts here.')).toBeVisible();
+  expect(within(step).getByText('Response starts here.')).toBeVisible();
 });
 it('does not reserve numbered items for Claude thinking-only request snapshots',async()=>{
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
@@ -175,8 +177,27 @@ it('does not reserve numbered items for Claude thinking-only request snapshots',
   expect(entries[0].querySelector('.session-chat-progress-number')).toHaveTextContent('1');
   expect(entries[1].querySelector('.session-chat-progress-number')).toHaveTextContent('2');
   expect(within(progress).getByLabelText('进展序号 2')).toBeInTheDocument();
-  expect(within(progress).getByText('Second private reasoning.',{selector:'.session-chat-thinking-preview'})).toBeVisible();
+  expect(entries[0].querySelector('.session-chat-thinking-preview')).toHaveTextContent('First private reasoning.');
+  expect(entries[1].querySelector('.session-chat-thinking-preview')).toHaveTextContent('Second private reasoning.');
   expect(progress.querySelector('.session-chat-progress-toggle')).toHaveTextContent('2 items');
+});
+it.each(['claude','codex'] as const)('places separate %s reasoning inside Final for a direct answer',async agent=>{
+  const current={...session,cli_type:agent,codex_session_id:agent==='codex'?'codex-native':null,claude_session_id:agent==='claude'?'claude-native':null};
+  const timestamp='2026-11-19T23:45:45.000Z';
+  const {container}=await renderSnapshot(current,[
+    {id:'user',role:'user',text:'Answer directly',timestamp},
+    {id:'thought',role:'assistant',turn_id:'turn',phase:'commentary',text:'',timestamp,
+      content_blocks:[{type:'thinking',index:0,text:'Direct reasoning.'}]},
+    {id:'answer',role:'assistant',turn_id:'turn',phase:'final',text:'Direct answer.',timestamp},
+  ]);
+  const final=container.querySelector('[data-phase="final"]')!;
+  const heading=final.querySelector('.session-chat-agent')!;
+  const thinking=final.querySelector('.session-chat-thinking-block')!;
+  const answer=within(final as HTMLElement).getByText('Direct answer.');
+  expect(thinking).toHaveTextContent('Direct reasoning.');
+  expect(heading.compareDocumentPosition(thinking)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(thinking.compareDocumentPosition(answer)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(container.querySelector('.session-chat-progress')).toBeNull();
 });
 it('renders Claude through the same conversation structure as every other agent',async()=>{
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});

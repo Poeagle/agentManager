@@ -198,7 +198,7 @@ test('collapses Claude progress across native records and shows its recorded usa
   await page.screenshot({path:testInfo.outputPath('claude-progress-statistics.png'),fullPage:true});
 });
 
-test('refreshes one live Claude thinking row across request items',async({page},testInfo)=>{
+test('refreshes the active Claude thinking row within its request item',async({page},testInfo)=>{
   const status=await(await page.request.get('/api/auth/status')).json();
   expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{
     data:{username:'e2e-admin',password:'test-password'},
@@ -263,9 +263,11 @@ test('refreshes one live Claude thinking row across request items',async({page},
   const send=(thinking:string,answer?:string)=>push!({type:'snapshot',messages:rounds(thinking,answer),activities:[],busy:true,turn_id:'turn',started_at:stamp,stage:'answering'});
   send('First paragraph.\n\nRunning');
   const progress=page.getByLabel('Claude 进展').last();
-  const row=progress.locator('.session-chat-thinking-block');
+  const steps=progress.locator('.session-chat-progress-entry');
+  await expect(steps.first().locator('.session-chat-thinking-preview')).toHaveText('Reading the first files.');
+  const row=steps.nth(1).locator('.session-chat-thinking-block');
   const preview=row.locator('.session-chat-thinking-preview');
-  await expect(row).toHaveCount(1);
+  await expect(progress.locator('.session-chat-thinking-block')).toHaveCount(2);
   await expect(progress.getByLabel('Claude 正在思考')).toBeVisible();
   await expect(preview).toHaveText('Running');
   await expect(preview).toHaveCSS('white-space','nowrap');
@@ -275,11 +277,11 @@ test('refreshes one live Claude thinking row across request items',async({page},
   await expect(preview).toHaveText(summary);
   expect((await preview.boundingBox())!.height).toBe(height);
   expect(await preview.evaluate(el=>el.scrollLeft)).toBeGreaterThan(0);
-  expect(await row.evaluate(el=>el.parentElement?.firstElementChild===el)).toBe(true);
+  expect(await row.evaluate(el=>el.previousElementSibling?.classList.contains('session-chat-metadata-row'))).toBe(true);
   await expect(row.locator('.session-chat-thinking-caret')).toBeVisible();
   send('First paragraph.\n\n'+summary,'The checks passed.');
-  await expect(progress.getByLabel('Claude 的思考过程')).toBeVisible();
-  await expect(progress.getByText('The checks passed.')).toBeVisible();
+  await expect(row.getByLabel('Claude 的思考过程')).toBeVisible();
+  await expect(steps.nth(1).getByText('The checks passed.')).toBeVisible();
   await expect(row.locator('.session-chat-thinking-caret')).toHaveCount(0);
   await page.screenshot({path:testInfo.outputPath('claude-thinking-live-row.png'),fullPage:true});
 });
@@ -339,7 +341,7 @@ test('does not show empty numbers for Claude thinking-only request items',async(
   const progress=page.getByLabel('Claude 进展').last();
   await expect(progress.locator('.session-chat-progress-entry:not(.session-chat-progress-pending)')).toHaveCount(2);
   await expect(progress.locator('.session-chat-progress-entry:not(.session-chat-progress-pending) .session-chat-progress-number')).toHaveText(['1','2']);
-  await expect(progress.locator('.session-chat-thinking-preview')).toHaveText('Private reasoning two.');
+  await expect(progress.locator('.session-chat-thinking-preview')).toHaveText(['Private reasoning one.','Private reasoning two.']);
   await expect(progress.locator(':scope > details > summary')).toContainText('2 items');
   await page.screenshot({path:testInfo.outputPath('claude-thinking-compact-items.png'),fullPage:true});
 });
