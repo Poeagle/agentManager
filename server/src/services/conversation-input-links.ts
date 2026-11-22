@@ -18,7 +18,7 @@ export function bindInputSourceMessage(sessionId:string,clientId:string,messageI
 }
 /** Managed adapters can expose the identity before their file boundary exists.
  * Keep it on the same journal used by terminal input reconciliation. */
-export function rememberInitialConversationInput(sessionId:string,nativeId:string,clientId:string,messageId:string) {
+export function rememberConversationInputMessage(sessionId:string,nativeId:string,clientId:string,messageId:string) {
   const afterOffset=Number.MAX_SAFE_INTEGER;
   getDb().prepare(`INSERT INTO conversation_input_links(session_id,native_id,client_id,message_id,input_hash,after_offset)
     VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,native_id,client_id)
@@ -57,6 +57,7 @@ export async function rememberConversationInput(sessionId:string,binding:PromptC
   db.prepare(`DELETE FROM conversation_input_links WHERE session_id=? AND rowid NOT IN
     (SELECT rowid FROM conversation_input_links WHERE session_id=? ORDER BY rowid DESC LIMIT 256)
     AND NOT EXISTS (SELECT 1 FROM conversation_batches b WHERE b.session_id=conversation_input_links.session_id AND b.client_id=conversation_input_links.client_id)
+    AND NOT EXISTS (SELECT 1 FROM conversation_attachments a WHERE a.session_id=conversation_input_links.session_id AND a.client_id=conversation_input_links.client_id)
     AND NOT EXISTS (SELECT 1 FROM conversation_input_sources s WHERE s.session_id=conversation_input_links.session_id AND s.client_id=conversation_input_links.client_id)`).run(sessionId,sessionId);
   return true;
 }

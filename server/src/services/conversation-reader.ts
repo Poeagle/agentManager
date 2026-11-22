@@ -10,7 +10,7 @@ import {
   type PromptContextSession,
 } from "./prompt-context.js";
 import type { CliType } from "./session-identity.js";
-import { type ConversationAttachment } from "./conversation-attachments.js";
+import { recoverConversationImageAttachments, type ConversationAttachment } from "./conversation-attachments.js";
 
 import type { AgentStatistics as ConversationStatistics } from "./agents/types.js";
 
@@ -121,9 +121,11 @@ function publicMessage(
   kind: CliType,
   questionCallId?: string,
   projectionIndex?: number,
+  attachmentDigests?: boolean,
 ) {
   return getAgent(kind).history.file!.project(line, questionCallId, {
     replacementIndex: projectionIndex,
+    attachmentDigests,
   });
 }
 
@@ -629,7 +631,7 @@ function dedupe(messages: IndexedMessage[]): IndexedMessage[] {
 /** A bounded incremental byte index. Cached metadata never contains message
  * bodies or tool output; only the requested page's public text is read. */
 export async function readConversation(
-  session: PromptContextSession,
+  session: PromptContextSession & {id?: string},
   query: { after?: string; before?: string; limit?: number } = {},
 ) {
   const adapter = agentForSession(session);
@@ -893,12 +895,17 @@ export async function readConversation(
             file.kind,
             item.questionCallId,
             item.projectionIndex,
+            !!session.id && !!context.projectPath,
           );
-          if (parsed)
+          if (parsed) {
+            const restored = parsed.imageDigests && session.id && context.projectPath
+              ? await recoverConversationImageAttachments(session.id, context.nativeId, item.id, context.projectPath, parsed.message.text, parsed.imageDigests)
+              : undefined;
             messages.push({
               id: item.id,
               role: item.role,
-              text: parsed.message.text,
+              text: restored?.text ?? parsed.message.text,
+              ...(restored ? { attachments: restored.attachments } : {}),
               timestamp: item.timestamp,
               turn_id: item.turn_id,
               ...(item.client_id ? { client_id: item.client_id } : {}),
@@ -932,6 +939,7 @@ export async function readConversation(
                 ? { image_paths: parsed.imagePaths }
                 : {}),
             });
+          }
         }
         const first = selected[0];
         return {

@@ -27,6 +27,7 @@ import type {
 } from "../types.js";
 import type { AgentCompaction, AgentStreamSnapshot } from "../events.js";
 import type { ClaudeProviderRuntime } from "./providers.js";
+import { claudeErrorCode, isClaudeExecutionDiagnostic } from "./errors.js";
 
 type Listener = (frame: AgentStreamSnapshot) => void;
 type Pending = {
@@ -960,6 +961,12 @@ class ClaudeRuntime {
       }
       const nativeId =
         typeof message.message.id === "string" ? message.message.id : undefined;
+      if (message.error) {
+        const text = textContent(message.message.content).trim().slice(0, 8000) || 'Claude 执行失败';
+        this.upsertError(nativeId || message.uuid, text, claudeErrorCode(text, message.error));
+        this.publish();
+        return;
+      }
       this.recordObservedModel(message.message.model);
       let envelope =
         (nativeId
@@ -1025,42 +1032,36 @@ class ClaudeRuntime {
       return;
     }
     if (message.type === "result") {
-      if (message.subtype !== "success") {
-        const text =
-          "errors" in message && message.errors.length
-            ? message.errors.join("\n")
-            : "Claude 执行失败";
-        const code = /insufficient_balance|insufficient balance/i.test(text)
-          ? "insufficient_balance"
-          : /\b503\b|no available accounts|service unavailable|api_error/i.test(text)
-            ? "provider_unavailable"
-            : /\b400\b|invalid_request_error|requires adaptive thinking/i.test(text)
-              ? "invalid_request"
-            : /selected model.*(?:does not exist|may not exist|access)/i.test(text)
-              ? "model_unavailable"
-              : undefined;
-        this.upsert({
-          id: conversationMessageId(
-            this.turnId || "claude",
-            "assistant",
-            message.uuid,
-          ),
-          role: "assistant",
-          text,
-          timestamp: new Date().toISOString(),
-          turn_id: this.turnId || undefined,
-          phase: "error",
-          presentation: undefined,
-          streaming: false,
-          error: { ...(code ? { code } : {}), will_retry: false },
-        });
-      }
+      if (message.subtype === 'success') return;
+      const errors = message.errors ?? [];
+      const detail = errors.filter(error => !isClaudeExecutionDiagnostic(error)).join('\n').trim();
+      const diagnostic = errors.some(isClaudeExecutionDiagnostic);
+      if (!detail && diagnostic && (
+        message.terminal_reason === 'aborted_tools' || message.terminal_reason === 'aborted_streaming'
+      )) return;
+      const code = claudeErrorCode(detail);
+      if (this.messages.some(item => item.turn_id === this.turnId && item.phase === 'error' && (
+        !detail || item.text === detail || (code && item.error?.code === code)
+      ))) return;
+      this.upsertError(message.uuid, detail || (diagnostic ? 'Claude 提前结束了本轮，未生成最终回复。' : 'Claude 执行失败'), code);
     }
+  }
+
+  private upsertError(nativeId: string, text: string, code?: string) {
+    const id = conversationMessageId('', 'assistant', nativeId);
+    this.upsert({
+      id, role: 'assistant', text,
+      timestamp: new Date().toISOString(), turn_id: this.turnId || undefined,
+      phase: 'error', streaming: false, content_blocks: [],
+      error: { ...(code ? {code} : {}), will_retry: false },
+    });
+    this.assistantIds.add(id);
   }
 
   private completedNativeTurn(message: SDKMessage) {
     return (
       message.type === "assistant" &&
+      !message.error &&
       message.parent_tool_use_id === null &&
       message.message.stop_reason === "end_turn" &&
       !!textContent(message.message.content).trim()
@@ -1193,6 +1194,12 @@ class ClaudeRuntime {
     let completedSuccessfully = false;
     try {
       for await (const message of conversation) {
+        // An SDK result for interrupted work can arrive before the input
+        // already queued in this same query starts. Leave it on that stream.
+        if (this.submitted.length && message.type === 'result' && message.subtype === 'error_during_execution' &&
+            message.errors?.length && message.errors.every(isClaudeExecutionDiagnostic) &&
+            (message.terminal_reason === 'aborted_tools' || message.terminal_reason === 'aborted_streaming' ||
+             message.errors.some(error => error.startsWith('[ede_diagnostic] result_type=user ') && error.endsWith(' stop_reason=tool_use')))) continue;
         const followup = message.type === "user" && this.submitted.some((item) => matchesSubmittedInput(item, message));
         const current =
           message.type === "user" &&

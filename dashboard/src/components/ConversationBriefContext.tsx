@@ -2,6 +2,7 @@ import {Layers3} from 'lucide-react';
 import type {BriefContext} from '../lib/conversation-brief-context';
 import {ConversationDialogCard} from './ConversationDialogCard';
 import {ConversationMarkdown} from './ConversationMarkdown';
+import {ConversationMessageAttachments} from './ConversationAttachments';
 
 export function ConversationBriefContext({context,messageId,active,projectId,projectPath,onNavigate}: {
   context: BriefContext; messageId: string; active: boolean; projectId: string | null;
@@ -21,7 +22,10 @@ export function ConversationBriefContext({context,messageId,active,projectId,pro
           {context.turns.map((turn,index)=><li key={index}>
             <h3>第 {index+1} 轮{turn.scheduled_task ? ` · 定时任务：${turn.scheduled_task}` : ''}</h3>
             <div className="conversation-brief-section"><strong>用户输入</strong><ConversationMarkdown content={turn.input || '（附件）'} messageId={`${messageId}-brief-${index}-input`} projectId={projectId} projectPath={projectPath} onNavigate={onNavigate}/></div>
-            {!!turn.attachments?.length&&<div className="conversation-brief-section"><strong>附件引用</strong><ul>{turn.attachments.map((item,i)=><li key={i}>{item.name} <code>{item.path}</code></li>)}</ul></div>}
+            {!!turn.attachments?.length&&<div className="conversation-brief-section"><strong>历史附件</strong>
+              {projectId ? <ConversationMessageAttachments items={turn.attachments} projectId={projectId} projectPath={projectPath}/> :
+                <ul>{turn.attachments.map((item,i)=><li key={i}>{item.name} <code>{item.path}</code></li>)}</ul>}
+            </div>}
             {turn.progress&&<div className="conversation-brief-section"><strong>过程</strong><ConversationMarkdown content={turn.progress} messageId={`${messageId}-brief-${index}-progress`} projectId={projectId} projectPath={projectPath} onNavigate={onNavigate}/></div>}
             {turn.conclusion&&<div className="conversation-brief-section"><strong>结论</strong><ConversationMarkdown content={turn.conclusion} messageId={`${messageId}-brief-${index}-conclusion`} projectId={projectId} projectPath={projectPath} onNavigate={onNavigate}/></div>}
           </li>)}
