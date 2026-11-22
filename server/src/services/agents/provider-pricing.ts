@@ -180,7 +180,7 @@ export function providerModelMetadata(model:string,base:unknown,fields?:Fields):
     official_context_window:officialWindow,
     context_window:capabilities?.context_window??provider?.context_window??officialWindow,
     input_modalities:capabilities?.input_modalities??provider?.input_modalities??officialInputs,
-    api_pricing:info?{...info.api_pricing,reference_only:!official,provider_multiplier:official?1:provider?undefined:modelRate(fields,model)}:undefined,
+    api_pricing:info?{...info.api_pricing,reference_only:!official,provider_multiplier:official?1:provider?undefined:modelRate(fields,model)??(fields?.providerRateMultiplier?Number(fields.providerRateMultiplier):undefined)}:undefined,
     provider_pricing:provider?.api_pricing,
     provider_billing:providerBillingMetadata(fields),
   };
@@ -212,7 +212,8 @@ export function estimateProviderApiCost(base:unknown,fields:Fields|undefined,mod
   const providerRate=version?.providerRate;
   const schedule=version?.providerBilling;
   const peak=providerRate!==undefined&&providerRate!==null&&schedule&&isPeak(epoch,schedule)?schedule.peakMultiplier??1:1;
-  const multiplier=official||deepseek||useProvider?1:(providerRate??(version?.rates&&Object.hasOwn(version.rates,model)?version.rates[model]:undefined)??1)*peak;
+  const fallbackRate=official||deepseek||useProvider?1:providerRate??(version?.rates&&Object.hasOwn(version.rates,model)?version.rates[model]:undefined)??(fields?.providerRateMultiplier?Number(fields.providerRateMultiplier):undefined)??1;
+  const multiplier=fallbackRate*peak;
   const {input,cache,output,reasoning}=breakdown;
   return {unit:useDeepseek?'CNY' as const:'USD' as const,amount:(input+cache+output)*multiplier,breakdown:{input:input*multiplier,cache:cache*multiplier,
     output:output*multiplier,reasoning:reasoning===null?null:reasoning*multiplier}};
