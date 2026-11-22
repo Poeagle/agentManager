@@ -93,10 +93,10 @@ describe('compact conversation controls',()=>{
   fireEvent.blur(select);expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
  });
 
- it('shows the Claude release date and marks its public tariff as a reference at a gateway',async()=>{
+ it('shows the Claude release date, reference tariff and configured gateway multiplier',async()=>{
   const model='claude-sonnet-5-5[1m]';
   data={...data,model,models:[{...data.models[0],model,name:model,release_date:'2026-09-28',
-    api_pricing:{currency:'USD',reference_only:true,source:'https://platform.claude.com/docs/en/about-claude/pricing',
+    api_pricing:{currency:'USD',reference_only:true,provider_multiplier:1.2,source:'https://platform.claude.com/docs/en/about-claude/pricing',
       bands:[{rates:{input:2,cached:0.1,output:10,cache_write_5m:2.5,cache_write_1h:4}}]}}]};
   mount();fireEvent.focus(await screen.findByRole('combobox',{name:'选择模型'}));
   const tooltip=screen.getByRole('tooltip');
@@ -104,6 +104,8 @@ describe('compact conversation controls',()=>{
   expect(tooltip).toHaveTextContent('官方 API 参考价');
   expect(tooltip).toHaveTextContent('输入 2 · 缓存命中 0.1 · 输出 10');
   expect(tooltip).toHaveTextContent('缓存写入 5 分钟 2.5 · 1 小时 4');
+  expect(tooltip).toHaveTextContent('服务商倍率1.2×');
+  expect(tooltip).toHaveTextContent('输入 2.4 · 缓存命中 0.12 · 输出 12');
  });
 
  it('removes the provider prefix only for API engines while retaining account labels',async()=>{

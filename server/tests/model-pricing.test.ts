@@ -3,6 +3,9 @@ import {createTestDatabase} from './helpers/database.js';
 import {initModelPricing,parseHolidayNotice,pricingSnapshot,pricingSources,refreshModelPricing,estimatePublicApiCost} from '../src/services/agents/model-pricing.js';
 import {deepseekModelPricing,estimateDeepseekCost} from '../src/services/agents/codex/deepseek-pricing.js';
 import {estimateUsageCredits} from '../src/services/agents/codex/usage-credits.js';
+import {estimateProviderApiCost,modelRate,saveModelRates} from '../src/services/agents/provider-pricing.js';
+import {codexApiEstimate,codexApiPricing} from '../src/services/agents/codex/statistics-cost.js';
+import {updateAgentManagement,type StoredProvider} from '../src/services/agents/management-store.js';
 
 let fixture:ReturnType<typeof createTestDatabase>;
 beforeEach(()=>{fixture=createTestDatabase();initModelPricing();});
@@ -71,4 +74,36 @@ it('parses full holiday ranges without treating compensatory workdays as holiday
  const notice='<title>国务院办公厅关于2027年部分节假日安排的通知</title><b>一、</b>元旦：1月1日（周五）至3日（周日）放假。二、春节：2月5日至2月13日放假。三、清明节：4月3日至5日放假。四、劳动节：5月1日至5日放假。五、端午节：6月9日放假。六、中秋节：9月15日放假。七、国庆节：10月1日至7日放假，10月9日上班。';
  expect(parseHolidayNotice(2027,notice)).toEqual([['01-01','01-03'],['02-05','02-13'],['04-03','04-05'],['05-01','05-05'],['06-09','06-09'],['09-15','09-15'],['10-01','10-07']]);
  expect(()=>parseHolidayNotice(2028,notice)).toThrow();
+});
+
+it('prices only the exact gateway model and applies the rate effective at the receipt time',async()=>{
+ const model='gpt-6.2-sol';
+ const ratesAt=epoch('2026-11-23T01:00:00Z');
+ const first=ratesAt+1000,second=first+1000;
+ const receiptAt=(at:number)=>new Date(at).toISOString();
+ const baseUrl='https://gateway.example/v1';
+ const fetcher=vi.fn<typeof fetch>(async url=>String(url)===pricingSources.openai?new Response(
+   '### Standard pricing data\n| gpt-6.2-sol | $2 | $10 | $0.10 |'):new Response(null,{status:404}));
+ await refreshModelPricing(fetcher,undefined,ratesAt);
+ const fields:StoredProvider['fields']={baseUrl,modelRateMultipliers:[`${model}=1.2`]};
+ saveModelRates(fields,undefined,first);
+ const updated={...fields,modelRateMultipliers:[`${model}=1.5`]};
+ saveModelRates(updated,fields,second);
+ expect(modelRate(updated,model)).toBe(1.5);
+ expect(estimateProviderApiCost('openai',updated,model,receiptAt(first-1),tokens)).toBeNull();
+ expect(estimateProviderApiCost('openai',updated,'unknown-model',receiptAt(first),tokens)).toBeNull();
+ const estimate=estimateProviderApiCost('openai',updated,model,receiptAt(first),tokens);
+ expect(estimate?.amount).toBeCloseTo(2.46,10);
+ expect(estimate?.breakdown).toEqual({input:1.2,cache:0.06,output:1.2,reasoning:null});
+ expect(estimateProviderApiCost('openai',updated,model,receiptAt(second),tokens)?.amount).toBeCloseTo(3.075,10);
+ updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'gateway',name:'Gateway',kind:'responses',enabled:true,fields:updated}]}));
+ const binding=codexApiPricing('provider:gateway')!;
+ expect(codexApiEstimate(binding,'gateway',model,'default',receiptAt(first),tokens).amount).toBeCloseTo(2.46,10);
+ expect(codexApiEstimate(binding,'other',model,'default',receiptAt(first),tokens).amount).toBeNull();
+ expect(codexApiEstimate(binding,'gateway',model,'priority',receiptAt(first),tokens).amount).toBeNull();
+ expect(()=>saveModelRates({baseUrl,modelRateMultipliers:[`${model}=0`]},updated,second+1)).toThrow('模型计费倍率');
+ const removed={...updated,modelRateMultipliers:[]};
+ saveModelRates(removed,updated,second+1);
+ expect(modelRate(removed,model)).toBeUndefined();
+ expect(modelRate(removed,model,first)).toBe(1.2);
 });

@@ -323,10 +323,12 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
  const official=!single&&ids.length>0&&ids.every(id=>balanceGroup(id)===deepseekGroup);
  const apiProviders=new Map(ids.map(id=>[id.slice('provider:'.length),codexApiPricing(id)]));
  const currency=official?'CNY':!single&&[...apiProviders.values()].some(pricing=>pricing?.unit==='USD')?'USD':null;
- const today=emptyApiCost(),todayDate=deepseekDay(Date.now()),ambiguousTimes=new Set<string>();
+ const timezone=usageTimezone(),billingTimezone=official?'Asia/Shanghai':timezone;
+ const billingDay=(at:number)=>official?deepseekDay(at):usageDay(at,timezone);
+ const today=emptyApiCost(),todayDate=billingDay(Date.now()),ambiguousTimes=new Set<string>();
  const basis=single&&getCodexEnvironment(ids[0]).kind!=='provider'?'subscription':'credits';
  let storage:ReturnType<typeof databaseStorage>|ReturnType<typeof csvStorage>=databaseStorage();
- const db=getDb(),events=new Map<string,GroupEvent|null>(),legacy:Array<{key:string;event:GroupEvent;unassigned?:boolean}>=[],aliases=new Map<string,string|null>();let partial=false,processed=0;const checked:string[]=[],timezone=usageTimezone(),unassignedEvents=new Map<string,GroupEvent|null>();
+ const db=getDb(),events=new Map<string,GroupEvent|null>(),legacy:Array<{key:string;event:GroupEvent;unassigned?:boolean}>=[],aliases=new Map<string,string|null>();let partial=false,processed=0;const checked:string[]=[],unassignedEvents=new Map<string,GroupEvent|null>();
  const merge=(key:string,event:GroupEvent)=>{
   if(!events.has(key)){events.set(key,event);return;}
   const current=events.get(key);if(!current)return;
@@ -393,10 +395,10 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
    const cost={amount,coverage:{covered:amount===null?0:requests,total:requests},...breakdown?{breakdown}:{}};
    addApiCost(model.api_cost??=emptyApiCost(),cost);
    addApiCost(row.api_cost??=emptyApiCost(),cost);
-   if(timeKnown&&deepseekDay(at)===todayDate)addApiCost(today,cost);
+   if(timeKnown&&billingDay(at)===todayDate)addApiCost(today,cost);
    if(!timeKnown&&Math.abs(Date.parse(event.day)-Date.parse(todayDate))<=86400000){
     unknownTodayTime=true;
-    if(timezone==='Asia/Shanghai'&&event.day===todayDate)addApiCost(today,cost);
+    if(timezone===billingTimezone&&event.day===todayDate)addApiCost(today,cost);
    }
   }
   for(const field of tokenFields){row.tokens[field]=row.tokens[field]===null||tokens[field]===null?null:row.tokens[field]!+tokens[field];model.tokens[field]=model.tokens[field]===null||tokens[field]===null?null:model.tokens[field]!+tokens[field];}
@@ -412,7 +414,7 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
  const hourTotals=new Map(quota_hours.map(h=>[h.hour,h.quota])),hourCredits=new Map<string,number>();for(const r of grouped.values())for(const m of r.models.values())if(r.hour&&m.estimated_credits!==null)hourCredits.set(r.hour,(hourCredits.get(r.hour)??0)+m.estimated_credits);
  if(single&&granularity==='hour'){allocation.clear();for(const r of grouped.values()){const total=r.hour?hourTotals.get(r.hour):undefined,denominator=r.hour?hourCredits.get(r.hour):undefined;if(total!==undefined&&denominator)for(const m of r.models.values())if(m.estimated_credits!==null)allocation.set(JSON.stringify([r.date,r.hour,r.cwd,m.model]),total*m.estimated_credits/denominator);}}
 
- const api_pricing=currency?{currency,today:{...today,date:todayDate,partial:partial||unknownTodayTime||today.coverage.covered<today.coverage.total}}:undefined;
+ const api_pricing=currency?{currency,timezone:billingTimezone,today:{...today,date:todayDate,partial:partial||unknownTodayTime||today.coverage.covered<today.coverage.total}}:undefined;
  return {storage,initialized:checked.length>0,checked_at:checked.sort()[0]??null,quota_range,quota_hours,timezone,unassigned:single?unassignedUsage(ids[0],basis):retained.requests?retained:null,credit_rate_date:creditRateDate(),partial,...api_pricing?{api_pricing}:{},error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()].map(model=>({...model,actual_quota:quotaByModel(allocation,row.date,row.cwd,model.model,row.hour)})),known=entries.filter(m=>m.estimated_credits!==null);return {...row,...directoryFor(row.cwd),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
 }
 /** Re-read with the current rule version, replacing only a proven superset of

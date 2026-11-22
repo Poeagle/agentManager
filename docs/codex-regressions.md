@@ -46,6 +46,8 @@ npm run test:regression:accounts
 
 | 问题 / 触发条件 | 预期结果 | 自动化用例 |
 |---|---|---|
+| 账号与 API 用量格式不一致，或网关倍率变更 | 时间、项目、模型行逐项附估算。倍率匹配确切模型和请求时间，缺证据时保持未知 | [CodexAccountInsights.test.tsx](../dashboard/tests/CodexAccountInsights.test.tsx)、[usage-periods.spec.ts](../e2e/usage-periods.spec.ts)、[model-pricing.test.ts](../server/tests/model-pricing.test.ts) |
+| Claude 官方模型经兼容网关接入 | 悬停显示发布日期、官方参考价和已配置倍率。编辑与重开 Provider 保留倍率 | [claude-agent.test.ts](../server/tests/claude-agent.test.ts)、[ConversationControls.test.tsx](../dashboard/tests/ConversationControls.test.tsx)、[claude-provider-flow.spec.ts](../e2e/claude-provider-flow.spec.ts) |
 | 两个登录账号都使用 openai Provider | 以环境 ID 路由，不能串到另一个账号 | [codex-environments.test.ts](../server/tests/codex-environments.test.ts) 的 two OpenAI accounts 用例 |
 | 普通用户未获授权，或管理员不在授权列表 | 普通用户不可见且直接请求拒绝；管理员默认有权配置和使用 | [codex-environments.test.ts](../server/tests/codex-environments.test.ts) 的 private accounts / direct REST / administrators 用例；[codex-environments.spec.ts](../e2e/codex-environments.spec.ts) |
 | 收回使用权限 | 已连接页面/终端关闭，不回退到别的账号 | [codex-environments.test.ts](../server/tests/codex-environments.test.ts) 的 revokes existing tabs 用例 |

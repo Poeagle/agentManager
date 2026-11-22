@@ -198,6 +198,7 @@ function nativeProviderState(): AgentProviderState {
       { key: 'baseUrl', label: 'API 地址', type: 'text', value: baseUrl, required: true, description: '此 Provider 的 Anthropic 兼容网关根地址。' },
       { key: 'envKey', label: 'API Key', type: 'password', value: '', configured, required: true, description: '保存后写回此 Provider 的配置；密钥不会回显。' },
       { key: 'models', label: '模型', type: 'string-list', value: models, required: true, description: '此 Provider 可用模型。' },
+      modelRateField(),
       { key: 'defaultModel', label: '默认模型', type: 'text', value: env.ANTHROPIC_MODEL || models[0] || '', description: '新建会话默认模型。' },
       { key: 'haikuModel', label: 'Haiku 模型', type: 'text', value: env.ANTHROPIC_DEFAULT_HAIKU_MODEL || '', description: 'Claude Code 内部轻量请求使用此模型。' },
       { key: 'subagentModel', label: '子 Agent 模型', type: 'text', value: env.CLAUDE_CODE_SUBAGENT_MODEL || '', description: 'Claude Code 子 Agent 使用此模型。' },
@@ -320,7 +321,9 @@ export function updateNativeClaudeProvider(input: AgentProviderInput): void {
       ...current.providers.filter(provider=>provider.id!=='anthropic'),
       {
         id:'anthropic',name:'Anthropic',kind:'official',enabled:true,
-        fields:validateFields({baseUrl,models,defaultModel,adaptiveThinking,contextWindow,maxOutputTokens,...optionalFields}),
+        fields:validateFields({baseUrl,models,defaultModel,adaptiveThinking,contextWindow,maxOutputTokens,...optionalFields,
+          ...(input.fields?.modelRateMultipliers!==undefined?{modelRateMultipliers:input.fields.modelRateMultipliers}:{})},
+          current.providers.find(provider=>provider.id==='anthropic')),
       },
     ],
   }));

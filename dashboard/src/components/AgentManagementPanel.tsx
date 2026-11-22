@@ -1121,6 +1121,7 @@ function AddCodexProvider({
   const [models, setModels] = useState<DetectedAgentModel[]>([]);
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
+  const [modelRateMultipliers, setModelRateMultipliers] = useState("");
   const probeVersion=useRef(0);
   const probeRequestVersion=useRef(0);
   const clearProbe=()=>{probeVersion.current++;setModels([]);setSelectedModels([]);setDefaultModel('');};
@@ -1132,7 +1133,8 @@ function AddCodexProvider({
         baseUrl ||
         apiKey ||
         selectedModels.length ||
-        defaultModel
+        defaultModel ||
+        modelRateMultipliers
       ),
     );
   }, [
@@ -1140,6 +1142,7 @@ function AddCodexProvider({
     baseUrl,
     defaultModel,
     id,
+    modelRateMultipliers,
     name,
     onEditingChange,
     selectedModels.length,
@@ -1170,6 +1173,7 @@ function AddCodexProvider({
           envKey: "AGENTMANAGER_PROVIDER_API_KEY",
           models: selectedModels,
           defaultModel,
+          modelRateMultipliers: splitLines(modelRateMultipliers),
           codexHome: `~/.codex-agentmanager/${id}`,
         },
       }),
@@ -1237,6 +1241,10 @@ function AddCodexProvider({
             placeholder="输入该 Provider 的 API Key"
             onChange={(event) => {setApiKey(event.target.value);clearProbe();}}
           />
+        </label>
+        <label className="agent-management-field">
+          <span>模型计费倍率</span>
+          <textarea aria-label="模型计费倍率" rows={2} value={modelRateMultipliers} placeholder="gpt-6.2-sol=1.2" disabled={readOnly||busy} onChange={event=>setModelRateMultipliers(event.target.value)}/>
         </label>
         <div className="agent-management-field agent-management-model-picker">
           <span>模型</span>

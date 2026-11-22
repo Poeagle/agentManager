@@ -31,6 +31,7 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
      {key:'defaultModel',label:'默认模型',type:'text',value:body.fields.defaultModel},
      {key:'contextWindow',label:'上下文窗口',type:'text',value:body.fields.contextWindow},
      {key:'maxOutputTokens',label:'最大输出 Token',type:'text',value:body.fields.maxOutputTokens},
+     {key:'modelRateMultipliers',label:'模型计费倍率',type:'string-list',value:body.fields.modelRateMultipliers},
     ],
    }],
   };
@@ -86,6 +87,7 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await expect(form.getByText('grok-4.5',{exact:true})).toHaveCount(0);
  await expect(form.getByText('opus',{exact:true})).toHaveCount(0);
  await form.getByLabel('Claude Provider 默认模型').selectOption('claude-fable-5-1');
+ await form.getByLabel('Claude 模型计费倍率').fill('claude-fable-5-1=1.2');
  await form.getByRole('button',{name:'添加 Provider'}).click();
  await expect(add).toHaveCount(0);
  const row=providers.getByRole('row').filter({hasText:'Xindu Real'});
@@ -93,6 +95,7 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await row.getByRole('button',{name:/编辑 Xindu Real/}).click();
  const edit=page.getByRole('dialog',{name:'编辑 Provider · Xindu Real'});
  await expect(edit.getByLabel('Claude API 地址')).toHaveValue('https://xindu.example');
+ await expect(edit.getByLabel('Claude 模型计费倍率')).toHaveValue('claude-fable-5-1=1.2');
  await edit.getByRole('button',{name:'关闭编辑 Provider · Xindu Real'}).click();
  await expect(row.getByRole('button',{name:/编辑 Xindu Real/})).toBeFocused();
  await page.setViewportSize({width:390,height:844});

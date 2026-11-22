@@ -49,7 +49,7 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
  const usage=useQuery({queryKey:groupId?['codex-group-insights',groupId,hourly]:['codex-insights',id,hourly],queryFn:()=>fetchJSON<{usage:Usage;sources?:Array<{environment:string;history:string[];cache:string}>}>((groupId?'/codex/balance-groups/'+encodeURIComponent(groupId)+'/insights':base+'/insights')+(hourly?'?granularity=hour':'')),retry:false,refetchInterval:300000});
  const resets=useQuery({queryKey:['codex-reset-credits',id],queryFn:()=>fetchJSON<Resets>(base+'/reset-credits'),retry:false,refetchInterval:300000,staleTime:300000,enabled:!apiMode});
  const data=usage.data?.usage;
- const pricing=(data as (Usage&{api_pricing?:{currency:string;today:ApiCost&{date:string;partial:boolean}}})|undefined)?.api_pricing;
+ const pricing=(data as (Usage&{api_pricing?:{currency:string;timezone?:string;today:ApiCost&{date:string;partial:boolean}}})|undefined)?.api_pricing;
  const unit=apiMode?pricing?.currency:'credits';
  const timezone=data?.timezone||Intl.DateTimeFormat().resolvedOptions().timeZone;
  const collectionTime=(value:string)=>new Intl.DateTimeFormat('zh-CN',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date(value));
@@ -77,7 +77,7 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
     <section><span className="ci-token-summary">Token {summaryMetrics.map(({label,key},index)=><Fragment key={key}>{index>0&&'｜'}<span title={usageFieldDescriptions[key]}>{label}</span></Fragment>)}：{summaryMetrics.map(({key,count,cost},index)=><Fragment key={key}>{index>0&&'｜'}<span title={`${numeric(count)} Token · 预估 Credits ${cost}`}>{compact(count??null)} ({cost})</span></Fragment>)}</span><span className="ci-cache-rate" title="筛选范围内缓存输入除以输入 Token；输入为零或数据缺失时未知" aria-label={`缓存率 ${cacheRate===null?'未知':`${cacheRate.toFixed(1)}%`}`}><span aria-hidden="true"/>缓存率 <strong>{cacheRate===null?'—':`${cacheRate.toFixed(1)}%`}</strong></span></section>
    </div><button className="ci-button ci-refresh-action" title="重新读取后台缓存，不触发采集" onClick={refresh} disabled={usage.isFetching||resets.isFetching}><RefreshCw size={14}/>刷新缓存</button></div>:undefined}>
   <div className="codex-insights">
-   {apiMode?<>{apiOverview}{pricing&&<p className="ci-observation">今日预估 Token 费用（北京时间 {pricing.today.date}） <strong>{formatApiCost(pricing.today.amount,pricing.currency)}</strong>{pricing.today.partial&&' · 部分统计'}</p>}</>:<>
+   {apiMode?<>{apiOverview}{pricing&&<p className="ci-observation">今日预估 Token 费用（{pricing.timezone==='Asia/Shanghai'||!pricing.timezone?'北京时间':pricing.timezone} {pricing.today.date}） <strong>{formatApiCost(pricing.today.amount,pricing.currency)}</strong>{pricing.today.partial&&' · 部分统计'}</p>}</>:<>
    {resets.data?.error&&<p className="ci-notice" role="status">{resets.data.error}</p>}
    {tab==='cards'&&tabs}
 </>}

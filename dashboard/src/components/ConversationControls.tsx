@@ -70,6 +70,8 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const modelEnvironment=(!model?.provider||model.provider===data?.provider)?currentEnvironment:environments.data?.environments.find(e=>e.provider===model?.provider);
   const referenceCredits=modelEnvironment?.auth_mode==='account'?model?.reference_credits:null;
   const apiPricing=model?.api_pricing;
+  const providerMultiplier=apiPricing?.provider_multiplier;
+  const standardRates=apiPricing?.bands?.length===1?apiPricing.bands[0].rates:undefined;
   const modelContext=model?.context_window??(model?.model===data?.model&&(!model?.provider||model.provider===data?.provider)?usage?.window:null);
   useLayoutEffect(()=>{const node=tooltipRef.current;if(!node||!modelInfo)return;const rect=node.getBoundingClientRect();if(rect.bottom>window.innerHeight-8){node.style.bottom='auto';node.style.top=`${Math.max(8,window.innerHeight-8-rect.height)}px`;}if(rect.top<8){node.style.bottom='auto';node.style.top='8px';}},[modelInfo,model]);
   const fastTier=model?.service_tiers?.find(tier=>tier.name.trim().toLowerCase()==='fast');
@@ -139,7 +141,10 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
           {apiPricing.currency} / 百万 Token
           {apiPricing.bands.map(({label,rates},i)=><div key={label??i}>{label&&<small>{label}<br/></small>}输入 {rates.input} · 缓存命中 {rates.cached??'未提供'} · 输出 {rates.output}{rates.cache_write_5m!==undefined&&<><br/><small>缓存写入 5 分钟 {rates.cache_write_5m} · 1 小时 {rates.cache_write_1h}</small></>}</div>)}
         </>:referenceCredits?<>Credits 每百万 Token：输入 {referenceCredits.input} · 缓存 {referenceCredits.cached} · 输出 {referenceCredits.output}<br/><small>参考费率 {referenceCredits.as_of}，非实际账单</small></>:'未提供'}</dd>
-        {apiPricing?.reference_only&&<><dt>服务商倍率</dt><dd>{apiPricing.provider_multiplier==null?'未提供':`${apiPricing.provider_multiplier.toLocaleString()}×`}</dd></>}
+        {apiPricing?.reference_only&&<><dt>服务商倍率</dt><dd>{providerMultiplier==null?'未提供':`${providerMultiplier.toLocaleString()}×`}</dd></>}
+        {providerMultiplier!=null&&standardRates&&<><dt>折算单价</dt><dd>{apiPricing?.currency} / 百万 Token<br/>
+          {([['输入',standardRates.input],['缓存命中',standardRates.cached],['输出',standardRates.output],['缓存写入 5 分钟',standardRates.cache_write_5m],['缓存写入 1 小时',standardRates.cache_write_1h]] as const)
+            .flatMap(([label,rate])=>rate==null?[]:[`${label} ${(rate*providerMultiplier).toLocaleString(undefined,{maximumFractionDigits:6})}`]).join(' · ')}</dd></>}
         <dt>上下文长度</dt><dd>{modelContext!=null?`${modelContext.toLocaleString()} tokens`:'未提供'}</dd>
         {model.max_output_tokens!=null&&<><dt>最大输出</dt><dd>{model.max_output_tokens.toLocaleString()} tokens</dd></>}
         {model.description&&<><dt>模型说明</dt><dd>{model.description}</dd></>}

@@ -9,6 +9,7 @@ import type { AgentContext, AgentControls, AgentRuntime, ModelPreference } from 
 import { managedEnv } from '../environment-store.js';
 import { readClaudeRuntimeProvider } from './providers.js';
 import { claudeReleaseDate, publicApiPricing } from '../model-pricing.js';
+import { modelRate } from '../provider-pricing.js';
 const cache = new Map<string, {
     size: number;
     inode: number;
@@ -203,7 +204,7 @@ export async function readClaudeControls(context: AgentContext): Promise<AgentCo
     for(const model of models){
         model.release_date=claudeReleaseDate(model.model);
         const pricing=publicApiPricing('claude',model.model);
-        if(pricing)model.api_pricing={...pricing,reference_only:!officialApi};
+        if(pricing)model.api_pricing={...pricing,reference_only:!officialApi,provider_multiplier:officialApi?undefined:modelRate(provider?.billingFields,model.model)};
     }
     const persisted=readClaudeSessionModelPreference(context);
     const selected=persisted&&(!provider||provider.models.includes(persisted.model))?persisted.model:runtime?.selectedModel()||provider?.defaultModel||value.model;

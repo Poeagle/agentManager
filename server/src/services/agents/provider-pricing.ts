@@ -16,7 +16,8 @@ function versions(fields?:Fields):RateVersion[] {
 
 export function saveModelRates(next:Fields, previous?:Fields, now=Date.now()) {
   delete next.modelRateVersions;
-  const history=next.baseUrl===previous?.baseUrl?versions(previous):[];
+  const sameEndpoint=next.baseUrl===previous?.baseUrl;
+  const history=sameEndpoint?versions(previous):[];
   const value=next.modelRateMultipliers??[];
   const invalid=()=>Object.assign(Error('模型计费倍率格式应为 模型ID=倍率，模型不得重复'),{statusCode:400});
   if(!Array.isArray(value)||value.length>256)throw invalid();
@@ -28,7 +29,7 @@ export function saveModelRates(next:Fields, previous?:Fields, now=Date.now()) {
   }
   const entries=[...rates].sort(([a],[b])=>a.localeCompare(b));
   const normalized=entries.map(([model,rate])=>`${model}=${rate}`);
-  if(JSON.stringify(normalized)!==JSON.stringify(previous?.modelRateMultipliers??[])||!history.length&&entries.length){
+  if(JSON.stringify(normalized)!==JSON.stringify(sameEndpoint?previous?.modelRateMultipliers??[]:[])){
     history.unshift({at:now,rates:Object.fromEntries(entries)});
   }
   next.modelRateMultipliers=normalized;
