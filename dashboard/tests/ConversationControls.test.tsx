@@ -78,6 +78,12 @@ describe('compact conversation controls',()=>{
   mount();const select=await screen.findByRole('combobox',{name:'选择模型'});await waitFor(()=>expect(api.codexEnvironments.forSession).toHaveBeenCalled());fireEvent.focus(select);
   const tooltip=screen.getByRole('tooltip');expect(tooltip).not.toHaveTextContent('Credits 每百万 Token');expect(tooltip).toHaveTextContent('计费标准未提供');expect(screen.queryByText(/Weekly remaining/)).not.toBeInTheDocument();
  });
+ it('shows the official API model release and peak/off-peak tariff on hover',async()=>{
+  data={...data,model:'deepseek-flash',models:[{...data.models[0],model:'deepseek-flash',name:'deepseek-flash',release_date:'2026-10-17',api_pricing:{currency:'CNY',peak:{cached:0.04,input:2,output:8},off_peak:{cached:0.02,input:1,output:4},timezone:'Asia/Shanghai',peak_hours:[[9,12],[14,18]],source:'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/'}}]};
+  vi.mocked(api.codexEnvironments.forSession).mockResolvedValueOnce({current:'provider:a',environments:[{id:'provider:a',name:'API',kind:'provider',auth_mode:'api',enabled:true,allowed_user_ids:null}]} as any);
+  mount();const select=await screen.findByRole('combobox',{name:'选择模型'});fireEvent.mouseEnter(select.closest('label')!);
+  const tooltip=screen.getByRole('tooltip');expect(tooltip).toHaveTextContent('2026-10-17');expect(tooltip).toHaveTextContent(/高峰.*0.04.*2.*8/);expect(tooltip).toHaveTextContent(/空闲.*0.02.*1.*4/);expect(tooltip).toHaveTextContent(/09:00.*12:00.*14:00.*18:00/);
+ });
  it('shows selected account model details on focus and distinguishes reference credits',async()=>{
   data.models[0]={...data.models[0],context_window:128000,input_modalities:['text','image'],release_date:'2026-01-01',reference_credits:{input:25,cached:1.25,output:125,as_of:'2026-11-11'}};
   vi.mocked(api.codexEnvironments.forSession).mockResolvedValueOnce({current:'native',environments:[{id:'native',name:'Account',kind:'native',auth_mode:'account',enabled:true,allowed_user_ids:null}]} as any);

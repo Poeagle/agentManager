@@ -15,7 +15,9 @@ import {localHome} from './account-files.js';
 import {accountCommandInput,localCommandInput} from './account-transport.js';
 import {USAGE_EVENT_LIMIT,USAGE_SCAN} from './usage-scanner.js';
 import {tokenFields} from '../../conversation-usage.js';
-import {CREDIT_RATE_DATE,estimateUsageCredits} from './usage-credits.js';
+import {creditRateDate,estimateUsageCredits} from './usage-credits.js';
+import {createHash} from 'node:crypto';
+import {deepseekDay,deepseekOrigin,estimateDeepseekCost} from './deepseek-pricing.js';
 import {initUsageProvenance,usageOrigins} from './usage-provenance.js';
 import {realpathSync} from 'fs';
 import {resolve,join} from 'path';
@@ -237,8 +239,8 @@ export function cachedAccountUsage(id:string){
  const db=getDb(),timezone=usageStoredTimezone(id),timezone_pending=timezone!==usageTimezone()?usageTimezone():null;
  const environment=getCodexEnvironment(id),basis=environment.kind==='provider'?'credits':'subscription',unassigned=unassignedUsage(id,basis);
  const source=db.prepare('SELECT identity FROM codex_usage_sources WHERE account=?').get(id) as {identity:string}|undefined;
- if(source&&source.identity!==usageIdentity(getCodexEnvironment(id)))return {storage:databaseStorage(),initialized:false,checked_at:null,error:null,partial:true,progress:null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:[]};
- if(environment.kind==='provider'&&(!usageHome(environment)||providerHistoryIsShared(id,usageHome(environment))))return {storage:databaseStorage(),initialized:false,checked_at:null,error:'历史目录与其他 Engine 共用或无法确认，未统计以避免重复',partial:true,progress:null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:[]};
+ if(source&&source.identity!==usageIdentity(getCodexEnvironment(id)))return {storage:databaseStorage(),initialized:false,checked_at:null,error:null,partial:true,progress:null,timezone,credit_rate_date:creditRateDate(),rows:[]};
+ if(environment.kind==='provider'&&(!usageHome(environment)||providerHistoryIsShared(id,usageHome(environment))))return {storage:databaseStorage(),initialized:false,checked_at:null,error:'历史目录与其他 Engine 共用或无法确认，未统计以避免重复',partial:true,progress:null,timezone,credit_rate_date:creditRateDate(),rows:[]};
  const status=db.prepare('SELECT checked_at,error,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;error:string|null;partial:number}|undefined;
  const rule=db.prepare('SELECT version,state,reason FROM codex_usage_rule_versions WHERE account=?').get(id) as {version:number;state:string;reason:string|null}|undefined;
  const ruleWarning=!rule||rule.version!==USAGE_RULE_VERSION?'统计规则已更新，历史缓存等待校验':rule.state==='blocked'?`历史缓存无法完整核对（${rule.reason||'原因未知'}），已保留旧数据；部分估算可能使用旧规则`:rule.state==='ready_partial'?'历史部分记录不可读取；已核对的数据已按新规则更新':rule.state==='pending'?'正在校验统计规则和历史缓存':null;
@@ -262,7 +264,7 @@ export function cachedAccountUsage(id:string){
 
  const progress=db.prepare('SELECT data FROM codex_usage_progress WHERE account=?').get(id) as {data:string}|undefined;
  const initialized=!!db.prepare('SELECT account FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
- return {storage:fileBreakdown!==null?csvStorage(id):databaseStorage(),initialized,checked_at:status?.checked_at??null,quota_range,quota_hours,error:ruleWarning??status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:!!ruleWarning||status?.partial!==0||rows.length>5000||!!timezone_pending||!!unassigned,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:CREDIT_RATE_DATE,rows:rows.slice(0,5000).map(row=>{
+ return {storage:fileBreakdown!==null?csvStorage(id):databaseStorage(),initialized,checked_at:status?.checked_at??null,quota_range,quota_hours,error:ruleWarning??status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:!!ruleWarning||status?.partial!==0||rows.length>5000||!!timezone_pending||!!unassigned,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:creditRateDate(),rows:rows.slice(0,5000).map(row=>{
 
   const estimate=estimates.get(JSON.stringify([row.day,row.cwd]));
   return {date:row.day,...directoryFor(row.cwd),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null,models:[...(models.get(JSON.stringify([row.day,row.cwd]))?.values()||[])].map(model=>({...model,actual_quota:quotaByModel(allocation,row.day,row.cwd,model.model)})).sort((a,b)=>(b.tokens.total_tokens??0)-(a.tokens.total_tokens??0))};
@@ -298,14 +300,32 @@ export async function backfillUsageHours(id:string):Promise<void>{
   finally{controllers.delete('hourly:'+id);}
  })();hourlyPending.set(id,task);try{await task;}finally{hourlyPending.delete(id);}
 }
+type ApiCost={amount:number|null;coverage:{covered:number;total:number}};
+const deepseekGroup=createHash('sha256').update(deepseekOrigin).digest('hex');
+const emptyApiCost=():ApiCost=>({amount:null,coverage:{covered:0,total:0}});
+function addApiCost(target:ApiCost,source:ApiCost){
+ target.coverage.total+=source.coverage.total;
+ target.coverage.covered+=source.coverage.covered;
+ if(source.amount!==null)target.amount=(target.amount??0)+source.amount;
+}
 /** Combine per-request snapshots using their content fingerprints. Conflicting
  * copies are excluded and marked partial rather than counted twice. */
 export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',single=false){
- type GroupEvent={day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string};
+ type GroupEvent={day:string;hour:string|null;at?:string|null;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string};
+ const official=!single&&ids.length>0&&ids.every(id=>balanceGroup(id)===deepseekGroup);
+ const today=emptyApiCost(),todayDate=deepseekDay(Date.now()),ambiguousTimes=new Set<string>();
  const basis=single&&getCodexEnvironment(ids[0]).kind!=='provider'?'subscription':'credits';
  let storage:ReturnType<typeof databaseStorage>|ReturnType<typeof csvStorage>=databaseStorage();
  const db=getDb(),events=new Map<string,GroupEvent|null>(),legacy:Array<{key:string;event:GroupEvent;unassigned?:boolean}>=[],aliases=new Map<string,string|null>();let partial=false,processed=0;const checked:string[]=[],timezone=usageTimezone(),unassignedEvents=new Map<string,GroupEvent|null>();
- const merge=(key:string,event:GroupEvent)=>{if(!events.has(key)){events.set(key,event);return;}const current=events.get(key);if(!current)return;const {hour:a,...left}=current,{hour:b,...right}=event;if(JSON.stringify(left)!==JSON.stringify(right)||a&&b&&a!==b){events.set(key,null);partial=true;}else if(!a&&b)current.hour=b;};
+ const merge=(key:string,event:GroupEvent)=>{
+  if(!events.has(key)){events.set(key,event);return;}
+  const current=events.get(key);if(!current)return;
+  const {hour:a,at:leftAt,...left}=current,{hour:b,at:rightAt,...right}=event;
+  if(JSON.stringify(left)!==JSON.stringify(right)||a&&b&&a!==b){events.set(key,null);partial=true;return;}
+  current.hour??=b;
+  if(official&&leftAt&&rightAt&&Date.parse(leftAt)!==Date.parse(rightAt))ambiguousTimes.add(key);
+  current.at??=rightAt;
+ };
  const all=allCodexEnvironments().filter(e=>e.enabled);
  const canonical=(path:string)=>{try{return realpathSync(path);}catch{return resolve(path);}};
  const homeFor=(e:ReturnType<typeof getCodexEnvironment>)=>e.kind==='account'?(e.connection?.codexHome||((e.connection?.username===userInfo().username)?join(homedir(),'.codex'):'')):usageHome(e);
@@ -318,7 +338,7 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   if(!snapshot.initialized||!ready?.ready||snapshot.timezone!==timezone){partial=true;continue;}if(snapshot.partial)partial=true;if(snapshot.checked_at)checked.push(snapshot.checked_at);
   const fileRows=single&&snapshot.checked_at?csvHourlyEvents(id,snapshot.checked_at,timezone):null;
   if(fileRows!==null)storage=csvStorage(id);
-  const rows=fileRows??db.prepare(`SELECT event_key,day,hour,cwd,model,tier,provider,tokens FROM codex_usage_dedup_events WHERE account=? LIMIT ${USAGE_EVENT_LIMIT+1}`).all(id) as Array<{event_key:string;day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;provider:string|null;tokens:string}>;
+  const rows=fileRows??db.prepare(`SELECT event_key,day,hour,at,cwd,model,tier,provider,tokens FROM codex_usage_dedup_events WHERE account=? LIMIT ${USAGE_EVENT_LIMIT+1}`).all(id) as Array<GroupEvent&{event_key:string}>;
   if(rows.length>USAGE_EVENT_LIMIT){partial=true;continue;}
   for(const {event_key,...raw} of rows){
    if(!single&&!raw.provider){partial=true;continue;}if(!single&&raw.provider!==providerId)continue;
@@ -339,20 +359,34 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   const alias=aliases.get(key);if(alias===null){partial=true;continue;}const resolved=alias??key;
   if(!unassigned){merge(resolved,event);continue;}
   const recovered=events.get(resolved);
-  if(recovered&&JSON.stringify({...recovered,day:'',hour:null})===JSON.stringify({...event,day:'',hour:null}))continue;
+  if(recovered&&JSON.stringify({...recovered,day:'',hour:null,at:null})===JSON.stringify({...event,day:'',hour:null,at:null}))continue;
   partial=true;if(!unassignedEvents.has(resolved))unassignedEvents.set(resolved,event);else if(JSON.stringify(unassignedEvents.get(resolved))!==JSON.stringify(event))unassignedEvents.set(resolved,null);
  }
  const retained={tokens:Object.fromEntries(tokenFields.map(k=>[k,0])) as Record<string,number|null>,requests:0,estimated_credits:null as number|null};
  for(const event of unassignedEvents.values())if(event){const counters=JSON.parse(event.tokens);retained.requests++;for(const k of tokenFields)retained.tokens[k]=retained.tokens[k]===null||counters[k]===null?null:retained.tokens[k]!+counters[k];const amount=estimateUsageCredits(event.model,event.tier,counters,basis);if(amount!==null)retained.estimated_credits=(retained.estimated_credits??0)+amount;}
  const directoryFor=usageDirectoryPresenter();
- const grouped=new Map<string,{date:string;hour?:string|null;cwd:string;tokens:Record<string,number|null>;requests:number;models:Map<string,{model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number}}>}>();
- for(const event of events.values()){
+ type ModelUsage={model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number};api_cost?:ApiCost};
+ const grouped=new Map<string,{date:string;hour?:string|null;cwd:string;tokens:Record<string,number|null>;requests:number;models:Map<string,ModelUsage>;api_cost?:ApiCost}>();
+ let unknownTodayTime=false;
+ for(const [requestId,event] of events){
   if(!event)continue;const cwd=directoryFor(event.cwd).cwd,hour=granularity==='hour'?event.hour:null;if(granularity==='hour'&&!hour)partial=true;const key=JSON.stringify([event.day,hour,cwd]);let row=grouped.get(key);
   if(!row){row={date:event.day,...granularity==='hour'?{hour}:{},cwd,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),requests:0,models:new Map()};grouped.set(key,row);}
   const tokens=JSON.parse(event.tokens);const requests=tokens.requests??1;row.requests+=requests;
   const modelKey=JSON.stringify(event.model);let model=row.models.get(modelKey);
   if(!model){model={model:event.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0}};row.models.set(modelKey,model);}
   model.credit_coverage.total+=requests;const estimate=estimateUsageCredits(event.model,event.tier,tokens,basis);if(estimate!==null){model.estimated_credits=(model.estimated_credits??0)+estimate;model.credit_coverage.covered+=requests;}
+  if(official){
+   const at=Date.parse(event.at??''),timeKnown=Number.isFinite(at)&&!ambiguousTimes.has(requestId);
+   const amount=requests===1&&timeKnown?estimateDeepseekCost(event.model,at,tokens):null;
+   const cost={amount,coverage:{covered:amount===null?0:requests,total:requests}};
+   addApiCost(model.api_cost??=emptyApiCost(),cost);
+   addApiCost(row.api_cost??=emptyApiCost(),cost);
+   if(timeKnown&&deepseekDay(at)===todayDate)addApiCost(today,cost);
+   if(!timeKnown&&Math.abs(Date.parse(event.day)-Date.parse(todayDate))<=86400000){
+    unknownTodayTime=true;
+    if(timezone==='Asia/Shanghai'&&event.day===todayDate)addApiCost(today,cost);
+   }
+  }
   for(const field of tokenFields){row.tokens[field]=row.tokens[field]===null||tokens[field]===null?null:row.tokens[field]!+tokens[field];model.tokens[field]=model.tokens[field]===null||tokens[field]===null?null:model.tokens[field]!+tokens[field];}
  }
  if(grouped.size>5000)partial=true;
@@ -366,7 +400,8 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
  const hourTotals=new Map(quota_hours.map(h=>[h.hour,h.quota])),hourCredits=new Map<string,number>();for(const r of grouped.values())for(const m of r.models.values())if(r.hour&&m.estimated_credits!==null)hourCredits.set(r.hour,(hourCredits.get(r.hour)??0)+m.estimated_credits);
  if(single&&granularity==='hour'){allocation.clear();for(const r of grouped.values()){const total=r.hour?hourTotals.get(r.hour):undefined,denominator=r.hour?hourCredits.get(r.hour):undefined;if(total!==undefined&&denominator)for(const m of r.models.values())if(m.estimated_credits!==null)allocation.set(JSON.stringify([r.date,r.hour,r.cwd,m.model]),total*m.estimated_credits/denominator);}}
 
- return {storage,initialized:checked.length>0,checked_at:checked.sort()[0]??null,quota_range,quota_hours,timezone,unassigned:single?unassignedUsage(ids[0],basis):retained.requests?retained:null,credit_rate_date:CREDIT_RATE_DATE,partial,error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()].map(model=>({...model,actual_quota:quotaByModel(allocation,row.date,row.cwd,model.model,row.hour)})),known=entries.filter(m=>m.estimated_credits!==null);return {...row,...directoryFor(row.cwd),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
+ const api_pricing=official?{currency:'CNY',today:{...today,date:todayDate,partial:partial||unknownTodayTime||today.coverage.covered<today.coverage.total}}:undefined;
+ return {storage,initialized:checked.length>0,checked_at:checked.sort()[0]??null,quota_range,quota_hours,timezone,unassigned:single?unassignedUsage(ids[0],basis):retained.requests?retained:null,credit_rate_date:creditRateDate(),partial,...api_pricing?{api_pricing}:{},error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()].map(model=>({...model,actual_quota:quotaByModel(allocation,row.date,row.cwd,model.model,row.hour)})),known=entries.filter(m=>m.estimated_credits!==null);return {...row,...directoryFor(row.cwd),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
 }
 /** Re-read with the current rule version, replacing only a proven superset of
  * the existing cache. A failed check retains all old data and retries later. */

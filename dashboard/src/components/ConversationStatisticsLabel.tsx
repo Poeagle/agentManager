@@ -26,7 +26,7 @@ export function ConversationStatisticsLabel({statistics,interval=false,progress=
  const count=(n:number|null|undefined)=>valid(n)===null||!complete&&!value?.requests&&n===0?'—':partialPrefix+n;
  const formatted=(value:number|null|undefined)=>{const n=valid(value);return n===null?'—':partialPrefix+number(n);};
  const cost=value?.cost,includeCost=cost!==null,costValue=valid(cost?.amount);
- const costLabel=cost?.unit==='USD'?'Est. $':cost&&cost.unit!=='credits'?'Est. cost':'Est. Cr';
+ const costLabel=cost?.unit==='USD'?'Est. $':cost?.unit==='CNY'?'Est. ¥':cost&&cost.unit!=='credits'?'Est. cost':'Est. Cr';
  const exact=(value:number|null|undefined)=>valid(value)===null?'unknown':new Intl.NumberFormat('en').format(value!);
  const title=[
   summary?'Usage between completed Final boundaries.':progress?'Usage for the Items in this Progress.':part?'Usage for this Item.':'Cumulative usage for this native turn (legacy snapshot).',
@@ -34,7 +34,7 @@ export function ConversationStatisticsLabel({statistics,interval=false,progress=
   shared?`${part?.shared_messages} updates share the same model request. Per-update usage cannot be split reliably; this request group used ${tokens?.total_tokens==null?'unknown':number(tokens.total_tokens)} tokens.`:'',
   coverage&&coverage!=='complete'?coverageLabel+'。'+(value?.reasons??[]).map(reason=>coverageReason[reason]).join('、'):!complete?'Partial recorded interval: ≥ marks a lower bound.':'',
   'Rounds count recorded model requests. Calls count native tool calls. One request issuing three tools is 1 round | 3 calls.',
-  includeCost?`Estimated ${cost?.unit??'credits'}: ${costValue??'unknown'}; rate date ${cost?.rate_date??'unknown'}. ${costValue===null?'Pricing is unavailable until usage and supported model/speed settings are recorded. ':''}Input credits exclude cached input; reasoning credits are included in output credits. Per-request model and speed are used before aggregation. * marks incomplete usage or pricing coverage. Subscription-reference estimates are not an invoice. API pricing is separate.`:'No credit estimate applies to this engine.',
+  includeCost?`Estimated ${cost?.unit??'credits'}: ${costValue??'unknown'}. ${cost?.rate_date?`Rate date ${cost.rate_date}. `:''}${costValue===null?'Pricing is unavailable until usage and applicable rates are recorded. ':''}* marks incomplete usage or pricing coverage. ${cost?.basis==='api'?'Based on recorded requests and public API tariffs.':'Subscription reference based on each request’s model and speed.'}`:'Pricing unavailable for this engine.',
  ].filter(Boolean).join(' ');
  const amount=(n:number|null|undefined)=>{const v=valid(n);return v===null?'—':`${v>0&&v<.001?'<0.001':new Intl.NumberFormat('en',{maximumFractionDigits:3}).format(v)}${cost?.complete&&complete?'':'*'}`;};
  const credit=(n:number|null|undefined,label:string)=> <span className="session-chat-estimated-cost" title={label}>{amount(n)}</span>;

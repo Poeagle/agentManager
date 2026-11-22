@@ -6,7 +6,9 @@ import type {ModelPreference} from '../types.js';
 import {open,readFile,stat} from 'fs/promises';
 import {join} from 'path';
 import {homedir} from 'os';
-import {CREDIT_RATES,CREDIT_RATE_DATE} from './usage-credits.js';
+import {creditRate} from './usage-credits.js';
+import {deepseekModelPricing} from './deepseek-pricing.js';
+import {publicApiPricing,type ModelPricing} from '../model-pricing.js';
 
 import {findCodexRollout} from '../../prompt-context.js';
 import {withCodexConnection} from './stream.js';
@@ -17,7 +19,7 @@ import {publicTokenCounters} from '../../conversation-usage.js';
 import {safeGitEnv} from '../../git-config.js';
 const execute=promisify(execFile);
 
-export interface ModelChoice {release_date?:string|null;context_window?:number|null;input_modalities?:string[];reference_credits?:{input:number;cached:number;output:number;as_of:string}|null;default_service_tier?:string|null;service_tiers?:Array<{id:string;name:string;description:string}>;provider?:string;model:string;name:string;description:string;efforts:Array<{value:string;description:string}>;defaultEffort:string}
+export interface ModelChoice {release_date?:string|null;api_pricing?:ModelPricing;context_window?:number|null;input_modalities?:string[];reference_credits?:{input:number;cached:number;output:number;as_of:string}|null;default_service_tier?:string|null;service_tiers?:Array<{id:string;name:string;description:string}>;provider?:string;model:string;name:string;description:string;efforts:Array<{value:string;description:string}>;defaultEffort:string}
 export type {ModelPreference} from '../types.js';
 const finite=(n:unknown):number|null=>typeof n==='number'&&Number.isFinite(n)&&n>=0?n:null;
 const tokens=publicTokenCounters;
@@ -108,6 +110,7 @@ async function readEngineModels(force=false):Promise<ModelChoice[]> {
     rememberCodexProvider(config.model_provider);
     const provider=engine.provider??config.model_provider;
     if(engine.provider&&config.model_provider&&engine.provider!==config.model_provider)throw Error(`模型服务 ${engine.provider} 的引擎实际配置为 ${config.model_provider}，请修正独立引擎配置`);
+    const upstream=typeof provider==='string'?config.model_providers?.[provider]?.base_url:undefined;
     const metadata=await metadataPromise;
     const data:ModelChoice[]=[];let cursor:string|undefined;
     for(let i=0;i<4;i++) {
@@ -117,8 +120,15 @@ async function readEngineModels(force=false):Promise<ModelChoice[]> {
         if(item.hidden||typeof item.model!=='string'||typeof item.displayName!=='string'||!Array.isArray(item.supportedReasoningEfforts))continue;
         const efforts=item.supportedReasoningEfforts.filter((e:any)=>typeof e.reasoningEffort==='string').map((e:any)=>({value:e.reasoningEffort,description:typeof e.description==='string'?e.description:''}));
         const info=metadata.find(m=>m&&typeof m==='object'&&m.slug===item.model);const contextWindow=info?.context_window??item.contextWindow;
-        const modalities=info?.input_modalities??item.inputModalities;const rate=Object.hasOwn(CREDIT_RATES,item.model)?CREDIT_RATES[item.model]:undefined;
+        const modalities=info?.input_modalities??item.inputModalities,credit=creditRate(item.model);
+        const rate=credit?.rates.cached!=null?[credit.rates.input,credit.rates.cached,credit.rates.output]:null;
+        const CREDIT_RATE_DATE=credit?.as_of??'';
         if(efforts.length)data.push({context_window:typeof contextWindow==='number'&&Number.isSafeInteger(contextWindow)&&contextWindow>0?contextWindow:null,input_modalities:Array.isArray(modalities)?modalities.filter((v:unknown):v is string=>typeof v==='string'&&v.length<=50).slice(0,10):[],release_date:typeof (info?.release_date??item.releaseDate)==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(info?.release_date??item.releaseDate)?(info?.release_date??item.releaseDate):null,reference_credits:rate?{input:rate[0],cached:rate[1],output:rate[2],as_of:CREDIT_RATE_DATE}:null,...typeof provider==='string'?{provider}:{},model:item.model,name:item.displayName,default_service_tier:typeof item.defaultServiceTier==='string'?item.defaultServiceTier:null,service_tiers:(Array.isArray(item.serviceTiers)?item.serviceTiers:[]).filter((tier:any)=>typeof tier.id==='string'&&typeof tier.name==='string').map((tier:any)=>({id:tier.id,name:tier.name,description:typeof tier.description==='string'?tier.description:''})),description:typeof item.description==='string'?item.description:'',efforts,defaultEffort:item.defaultReasoningEffort});
+        if(efforts.length){
+          const official=deepseekModelPricing(upstream,item.model);
+          const openai=typeof upstream==='string'&&/^https:\/\/api\.openai\.com(?:\/v1)?\/*$/.test(upstream)?publicApiPricing('openai',item.model):undefined;
+          Object.assign(data[data.length-1],official??(openai?{api_pricing:openai}:null));
+        }
       }
       if(!response.nextCursor)break;cursor=response.nextCursor;
     }

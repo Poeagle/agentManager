@@ -33,3 +33,17 @@ it('does not turn an unsafe upstream URL into a link',async()=>{
  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});const view=render(<QueryClientProvider client={client}><CodexEngineBalanceGroup group="group" members={[{id:'native',name:'Host'}]}/></QueryClientProvider>);
  fireEvent.click(await screen.findByRole('button',{name:'查看 Host 上游余额详情'}));const dialog=await screen.findByRole('dialog',{name:'Host 上游详情'});expect(within(dialog).queryByRole('link',{name:'javascript:alert(1)'})).not.toBeInTheDocument();expect(dialog).toHaveTextContent('未提供');view.unmount();client.clear();
 });
+it('shows the Beijing daily estimate and coverage alongside the official wallet',async()=>{
+ const api_cost={amount:2.73,coverage:{covered:2,total:3}};
+ vi.mocked(fetchJSON).mockImplementation(async url=>String(url).endsWith('/balance')?{auth_mode:'api',status:'available',amount:12.34,currency:'CNY',origin:'https://api.deepseek.com'} as any:{usage:{initialized:true,partial:false,timezone:'Asia/Shanghai',api_pricing:{currency:'CNY',today:{...api_cost,date:'2026-11-22',partial:true}},rows:[{date:'2026-11-22',cwd:'/project',tokens:{total_tokens:1100000},api_cost,models:[{model:'deepseek-flash',tokens:{total_tokens:1100000},api_cost}]}]}} as any);
+ const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+ const view=render(<QueryClientProvider client={client}><CodexEngineBalanceGroup group="deepseek" members={[{id:'provider:ds',name:'ds'}]}/></QueryClientProvider>);
+ fireEvent.click(await screen.findByRole('button',{name:'查看 ds 上游余额详情'}));
+ const dialog=screen.getByRole('dialog',{name:'ds 上游详情'});
+ const daily=await within(dialog).findByText('今日预估 Token 费用（北京时间 2026-11-22）', {exact:false});
+ expect(daily).toHaveTextContent(/2\.73.*部分统计/);
+ const table=within(dialog).getByRole('table',{name:'用量统计'});
+ expect(within(table).getByRole('columnheader',{name:'预估 Token 费用'})).toBeVisible();
+ expect(within(table).getAllByTitle('已估算 2 / 3 次请求')[0]).toHaveTextContent(/2\.73.*\*/);
+ view.unmount();client.clear();vi.restoreAllMocks();
+});

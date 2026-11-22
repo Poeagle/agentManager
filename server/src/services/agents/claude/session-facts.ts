@@ -5,6 +5,8 @@ import { NATIVE_SESSION_ID_RE } from '../native-identifiers.js';
 import { getDb } from '../../../db/index.js';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
+import { estimatePublicApiCost } from '../model-pricing.js';
+import { readClaudeRuntimeProvider } from './providers.js';
 
 interface Assistant {
   id: string;
@@ -14,6 +16,7 @@ interface Assistant {
   model: string | null;
   speed: string | null;
   tokens: NativeRequestFact['tokens'];
+  cacheWrites?: readonly [number,number] | null;
   tools: string[];
   visible: boolean;
   outcome?: 'completed' | 'unknown';
@@ -93,8 +96,11 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
         phase: phase === 'unknown' && group.tools.length ? 'progress' : phase,
       });
       for (const id of group.tools) facts.push({kind: 'tool', id, turn_id: group.turn});
+      const provider=declared?readClaudeRuntimeProvider(context.session,context.environmentAccess):null;
+      const official=provider&&/^https:\/\/api\.anthropic\.com\/*$/.test(provider.baseUrl);
+      const amount=official&&group.cacheWrites&&(!group.speed||group.speed==='standard')?estimatePublicApiCost('claude',group.model,group.at,group.tokens,group.cacheWrites):null;
       facts.push({kind: 'request', request: {
-        id: group.id, at: group.at, turn_id: group.turn, tokens: group.tokens, dimensions, cost: null, evidence: 'request',
+        id: group.id, at: group.at, turn_id: group.turn, tokens: group.tokens, dimensions, cost: official?{unit:'USD',basis:'api',amount,complete:amount!==null}:null, evidence: 'request',
       }});
       if (group.outcome) {
         facts.push({kind: 'end', turn_id: group.turn, at: group.at, outcome: group.outcome});
@@ -156,7 +162,14 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
       current.visible ||= visible;
       current.model = factString(message.model, 120) ?? current.model;
       current.speed = factString(message.usage?.service_tier ?? message.service_tier, 120) ?? current.speed;
-      current.tokens = claudeRequestUsage(message.usage) ?? current.tokens;
+      const usage=claudeRequestUsage(message.usage);
+      if(usage){
+        current.tokens=usage;
+        const writes=message.usage.cache_creation_input_tokens??0;
+        const short=count(message.usage.cache_creation?.ephemeral_5m_input_tokens);
+        const long=count(message.usage.cache_creation?.ephemeral_1h_input_tokens);
+        current.cacheWrites=writes===0?[0,0]:short!==null&&long!==null&&short+long===writes?[short,long]:null;
+      }
       for (const block of tools) {
         const key = factString(block.id);
         if (!key) current.incomplete = true;

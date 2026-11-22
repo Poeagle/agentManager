@@ -13,6 +13,10 @@ interface CostCounter {
   reasoning: number;
   missingReasoning: number;
   rateDate?: string;
+  unit?: string;
+  basis?: string;
+  incompatible?: number;
+  missingBreakdown?: number;
 }
 
 export interface StatisticsCounter {
@@ -47,10 +51,15 @@ export function countRequest(total: StatisticsCounter, request: NativeRequestFac
   }
   const cost = request.cost;
   if (!cost) return;
-  // Currently the credit-capable adapter supplies a single, reference rate basis.
   total.cost.applicable++;
   if (!cost.complete) total.cost.incomplete++;
   if (cost.amount === null) return;
+  if(total.cost.unit&&(total.cost.unit!==cost.unit||total.cost.basis!==cost.basis)){
+    total.cost.incompatible=(total.cost.incompatible??0)+1;
+    return;
+  }
+  total.cost.unit=cost.unit;
+  total.cost.basis=cost.basis;
   total.cost.priced++;
   total.cost.amount += cost.amount;
   total.cost.rateDate = cost.rate_date;
@@ -61,6 +70,7 @@ export function countRequest(total: StatisticsCounter, request: NativeRequestFac
     total.cost.reasoning += cost.breakdown.reasoning ?? 0;
   }
   if (cost.breakdown?.reasoning == null) total.cost.missingReasoning++;
+  if (!cost.breakdown) total.cost.missingBreakdown=(total.cost.missingBreakdown??0)+1;
 }
 
 export function counterReasons(end: StatisticsCounter, start = emptyCounter()): SessionCoverageReason[] {
@@ -73,14 +83,14 @@ export function usageTotals(end: StatisticsCounter, start = emptyCounter(), part
     const sum = end.values[index] - start.values[index];
     return [field, end.known[index] > start.known[index] && Number.isSafeInteger(sum) ? sum : null];
   })) as SessionTokens : null;
-  const priced = end.cost.priced - start.cost.priced;
+  const priced = (end.cost.incompatible??0)===(start.cost.incompatible??0)?end.cost.priced-start.cost.priced:0;
   const cost: AgentCostEstimate | null = end.cost.applicable === start.cost.applicable ? null : {
-    unit: 'credits',
-    basis: 'subscription',
+    unit: end.cost.unit??'credits',
+    basis: end.cost.basis,
     rate_date: end.cost.rateDate,
     amount: priced ? end.cost.amount - start.cost.amount : null,
     complete: !partial && priced === requests && end.cost.incomplete === start.cost.incomplete,
-    ...(priced ? {breakdown: {
+    ...(priced&&(end.cost.missingBreakdown??0)===(start.cost.missingBreakdown??0) ? {breakdown: {
       input: end.cost.input - start.cost.input, cache: end.cost.cache - start.cost.cache,
       output: end.cost.output - start.cost.output,
       reasoning: end.cost.missingReasoning === start.cost.missingReasoning ? end.cost.reasoning - start.cost.reasoning : null,

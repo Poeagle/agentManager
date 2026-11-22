@@ -1,5 +1,6 @@
 import {usageDateRange,usageRangeLabel,type UsageDateRange} from './usage-date-range';
-export type Metrics={tokens:Record<string,number|null>;estimated_credits?:number|null;actual_quota?:number|null;credit_coverage?:{covered:number;total:number}|null};
+export type ApiCost={amount:number|null;coverage:{covered:number;total:number}};
+export type Metrics={tokens:Record<string,number|null>;estimated_credits?:number|null;actual_quota?:number|null;credit_coverage?:{covered:number;total:number}|null;api_cost?:ApiCost};
 export type ModelUsage=Metrics&{model:string|null};
 export type UsageRow=Metrics&{date:string;hour?:string|null;cwd:string;project_name?:string;models?:ModelUsage[]};
 export type Dimension='hour'|'day'|'week'|'month'|'total'|'project'|'model';
@@ -10,7 +11,16 @@ export function aggregateMetrics(rows:Metrics[]):Metrics{
  const fields=new Set(rows.flatMap(r=>Object.keys(r.tokens)));
  const tokens=Object.fromEntries([...fields].map(k=>[k,rows.some(r=>r.tokens[k]==null)?null:rows.reduce((n,r)=>n+r.tokens[k]!,0)]));
  const known=rows.filter(r=>r.estimated_credits!=null);
- return {tokens,actual_quota:rows.some(r=>r.actual_quota!=null)?rows.reduce((n,r)=>n+(r.actual_quota??0),0):null,estimated_credits:known.length?known.reduce((n,r)=>n+r.estimated_credits!,0):null,credit_coverage:{covered:rows.reduce((n,r)=>n+(r.credit_coverage?.covered??(r.estimated_credits!=null?1:0)),0),total:rows.reduce((n,r)=>n+(r.credit_coverage?.total??1),0)}};
+ const api_cost=rows.reduce<ApiCost|undefined>((cost,row)=>{
+  if(!row.api_cost)return cost;
+  const {amount,coverage}=row.api_cost;
+  if(!cost)return {amount,coverage:{...coverage}};
+  if(amount!==null)cost.amount=(cost.amount??0)+amount;
+  cost.coverage.covered+=coverage.covered;
+  cost.coverage.total+=coverage.total;
+  return cost;
+ },undefined);
+ return {tokens,actual_quota:rows.some(r=>r.actual_quota!=null)?rows.reduce((n,r)=>n+(r.actual_quota??0),0):null,estimated_credits:known.length?known.reduce((n,r)=>n+r.estimated_credits!,0):null,credit_coverage:{covered:rows.reduce((n,r)=>n+(r.credit_coverage?.covered??(r.estimated_credits!=null?1:0)),0),total:rows.reduce((n,r)=>n+(r.credit_coverage?.total??1),0)},...api_cost?{api_cost}:{}};
 }
 /** Keep counters and denominators consistent with the records visible in the UI. */
 export function estimatableUsageRows(rows:UsageRow[]):UsageRow[]{

@@ -248,6 +248,24 @@ it('merges distinct provider histories while counting a copied session event onl
  const conflict={...event,tokens:{...tokens,total_tokens:15}};respond([row],{events:[conflict,{...event,key:'b'.repeat(64)}]});await collectAccountUsage('provider:b');
  expect(cachedGroupUsage(['provider:a','provider:b'])).toMatchObject({partial:true,rows:[{requests:1,tokens:{total_tokens:10}}]});
 });
+it('estimates official DeepSeek usage per request before grouping and skips unknown usage',async()=>{
+ vi.useFakeTimers();vi.stubEnv('TZ','Asia/Shanghai');vi.setSystemTime(new Date('2026-11-19T12:00:00Z'));
+ const origin='https://api.deepseek.com',groupKey=createHash('sha256').update(origin).digest('hex');
+ const provider=(id:string)=>({id,name:id,kind:'responses',enabled:true,fields:{codexHome:'/tmp/deepseek-cost-'+id,models:['deepseek-flash'],baseUrl:id==='proxy'?'https://example.invalid':origin}});
+ updateAgentManagement('codex',()=>({defaults:{},providers:['a','b','proxy'].map(provider)}));
+ vi.spyOn(engineBalance,'cachedEngineBalance').mockImplementation(id=>({auth_mode:'api',status:'available',groupKey:id==='provider:proxy'?'proxy':groupKey,origin:id==='provider:proxy'?'https://example.invalid':origin,providerId:'ds'}));
+ const usage={input_tokens:1000000,cached_input_tokens:500000,output_tokens:100000,total_tokens:1100000,reasoning_output_tokens:50000};
+ const event=(key:string,at:string|null,model='deepseek-flash')=>({key:key.repeat(64),day:'2026-11-19',at,cwd:'/project',model,tier:null,provider:'ds',tokens:usage});
+ const peak=event('a','2026-11-19T01:00:00Z'),offPeak=event('b','2026-11-19T04:00:00Z');
+ respond([],{events:[peak,offPeak,event('c',null),event('d','2026-11-19T01:00:00Z','deepseek-v4-pro')]});
+ await collectAccountUsage('provider:a');
+ respond([],{events:[peak]});await collectAccountUsage('provider:b');
+ respond([],{events:[peak]});await collectAccountUsage('provider:proxy');
+ const report=cachedGroupUsage(['provider:a','provider:b']);
+ expect(report).toMatchObject({api_pricing:{currency:'CNY',today:{coverage:{covered:3,total:4},partial:true}},rows:[{requests:4,api_cost:{coverage:{covered:3,total:4}},models:expect.arrayContaining([{model:'deepseek-flash',tokens:expect.any(Object),estimated_credits:null,credit_coverage:{covered:0,total:3},actual_quota:null,api_cost:{amount:2.73,coverage:{covered:2,total:3}}}])}]});
+ expect(report.rows[0]).toHaveProperty('api_cost.amount',10.08);
+ expect(cachedGroupUsage(['provider:proxy'])).not.toHaveProperty('api_pricing');
+});
 it('retains upstream group consumption when sessions disappear and bridges legacy fingerprint aliases safely',async()=>{
  vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
  const provider=(id:string)=>({id,name:id,kind:'responses',enabled:true,fields:{codexHome:'/tmp/group-retain-'+id,models:['m'],baseUrl:'https://example.invalid/v1'}});

@@ -8,6 +8,7 @@ import type { AgentCompaction } from '../events.js';
 import type { AgentContext, AgentControls, AgentRuntime, ModelPreference } from '../types.js';
 import { managedEnv } from '../environment-store.js';
 import { readClaudeRuntimeProvider } from './providers.js';
+import { publicApiPricing } from '../model-pricing.js';
 const cache = new Map<string, {
     size: number;
     inode: number;
@@ -193,11 +194,13 @@ export async function readClaudeControls(context: AgentContext): Promise<AgentCo
     }
     const seen = new Set<string>();
     const providerModels=provider?.models||[];
-    const models = [...providerModels, ...(provider?[]:aliases)]
+    const models:AgentControls['models'] = [...providerModels, ...(provider?[]:aliases)]
         .filter(model => !seen.has(model) && (seen.add(model), true))
         .map(model => ({ model, name: model, description: provider ? `${provider.name} · Provider 模型` : aliases.includes(model) ? 'Claude 原生模型别名' : '网关配置的模型', context_window:provider?.contextWindow??null, max_output_tokens:provider?.maxOutputTokens??null, input_modalities:['text','image'], efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' }));
     if (!provider&&value.model && !models.some(model => model.model === value.model))
         models.unshift({ model: value.model, name: value.model, description: '当前原生模型', context_window:null, max_output_tokens:null, input_modalities:['text','image'], efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' });
+    if(!provider||/^https:\/\/api\.anthropic\.com\/*$/.test(provider.baseUrl))
+        for(const model of models)model.api_pricing=publicApiPricing('claude',model.model);
     const persisted=readClaudeSessionModelPreference(context);
     const selected=persisted&&(!provider||provider.models.includes(persisted.model))?persisted.model:runtime?.selectedModel()||provider?.defaultModel||value.model;
     return { supports_fresh_model:true, model_observed_at: value.modelAt, model: selected, effort: '', provider: provider?.id||'anthropic', cwd: context.projectPath, cli_version: null, engine_version: null, installed_cli_version: null, git: null, state: loaded ? runtime!.runtime().state : 'notLoaded', permission: 'bypassPermissions', approval: null, service_tier: null, usage: value.usage, limits: [], usage_observed_at: value.last, models, loaded, warning: loaded ? null : 'Claude managed runtime is not connected; durable history remains available.', native_id: context.nativeId || '', checked_at: new Date().toISOString() };

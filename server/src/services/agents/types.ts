@@ -384,6 +384,8 @@ export interface AgentRuntime {
   }>;
 }
 export interface AgentModel {
+  release_date?:string|null;
+  api_pricing?:import('./model-pricing.js').ModelPricing;
   default_service_tier?: string | null;
   service_tiers?: Array<{ id: string; name: string; description: string }>;
   context_window?: number | null;
