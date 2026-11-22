@@ -210,7 +210,7 @@ async function externalProviders(): Promise<AgentProviderState[]> {
   if (discovered.length) writeAgentManagement('codex', { ...stored, providers: [...stored.providers, ...discovered] });
   return Promise.all(stored.providers.flatMap(provider => {
     const engine = routes.find(item => item.provider === provider.id);
-    if (!engine) return [];
+    if (!engine || provider.id === 'native') return [];
     return [socketPid(engine.socket).then(pid => {
       const recovered = recoverRuntimeProviderState(provider.id);
       if (recovered) return {
@@ -1017,7 +1017,10 @@ async function stopProvider(providerId: string): Promise<void> {
 }
 
 export async function restoreManagedCodexProviders(): Promise<void> {
-  for (const provider of readAgentManagement('codex').providers.filter(item => item.enabled)) {
+  // The native Provider's Engine is owned by ensureNativeCodexEngine(); starting
+  // a second stored-Provider Engine for the same id used to create a duplicate
+  // Provider row and a second socket under a different CODEX_HOME.
+  for (const provider of readAgentManagement('codex').providers.filter(item => item.enabled && item.id !== 'native')) {
     const catalogChanged = await ensureManagedProviderCatalog(provider).catch(() => false);
     const engine = configuredCodexEngines().find(item => item.provider === provider.id);
     if (engine && discoverProviderSocketBySocket(engine.socket)) {
@@ -1089,6 +1092,18 @@ export async function inspectManagedCodexProvider(providerId: string): Promise<A
   return managedProviderState(provider);
 }
 
+/** Merge Provider views without repeating an id. The platform-managed native
+ * view is listed first, so a stale stored record for the same id can no longer
+ * render as a duplicate row that edits a different Engine. */
+export function uniqueProviderStates(states: AgentProviderState[]): AgentProviderState[] {
+  const seen = new Set<string>();
+  return states.filter(state => {
+    if (seen.has(state.id)) return false;
+    seen.add(state.id);
+    return true;
+  });
+}
+
 export function renameCodexProvider(providerId: string, nameInput: string): void {
   const name = nameInput.trim();
   if (!name || name.length > 100) throw Object.assign(Error('名称须为 1–100 个字符'), { statusCode: 400 });
@@ -1133,7 +1148,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
           { value: 'high', label: 'High' }, { value: 'xhigh', label: 'XHigh' },
         ] },
       ],
-      providers: [...nativeProviders(), ...external, ...stored.providers.filter(provider => !configuredCodexEngines().some(engine => engine.provider === provider.id)).map(managedProviderState)],
+      providers: uniqueProviderStates([...nativeProviders(), ...external, ...stored.providers.filter(provider => !configuredCodexEngines().some(engine => engine.provider === provider.id)).map(managedProviderState)]),
       configFiles: [
         { path: configPath(), exists: existsSync(configPath()), format: 'TOML', description: 'Codex 原生配置', writable: true },
         { path: join(dirname(configPath()), 'model-catalog.json'), exists: existsSync(join(dirname(configPath()), 'model-catalog.json')), format: 'JSON', description: 'Codex 原生模型目录', writable: true },
