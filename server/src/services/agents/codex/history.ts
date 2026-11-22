@@ -4,6 +4,7 @@ import { conversationErrorMessage } from '../../conversation-error.js';
 import { conversationImagePaths } from '../../conversation-attachments.js';
 import type { AgentHistoryRecord } from '../types.js';
 import { decodeCodexText } from './text.js';
+import { codexReasoningParts, codexReasoningText } from './reasoning.js';
 const MAX_RECORD = 512 * 1024;
 export function codexTurnBoundary(record: Buffer): {kind:'start'|'end';turnId:string} | null {
     if (record.length > MAX_RECORD || !/"type"\s*:\s*"(?:task_started|task_complete|turn_aborted|turn_context)"/.test(record.subarray(0,400).toString('utf8'))) return null;
@@ -57,7 +58,7 @@ export function parseCodexMessage(line: Buffer, questionCallId?: string, context
             const entry = parsedRecords.get(line) ?? JSON.parse(line.toString('utf8'));
             if (entry.type === 'compacted') parsedRecords.set(line, entry);
             const item = entry.type === 'compacted' && entry.payload?.replacement_history?.[context.replacementIndex];
-            if (!item || typeof item !== 'object') return null;
+            if (!item || typeof item !== 'object' || item.type === 'reasoning') return null;
             if (item.type === 'compaction' && typeof item.encrypted_content === 'string' && item.encrypted_content && !(typeof entry.payload?.message === 'string' && entry.payload.message.trim())) {
                 return {
                     message: {role: 'assistant', phase: 'commentary', text: '压缩内容由 Codex 加密保存，无法显示摘要正文。', timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null},
@@ -102,14 +103,15 @@ export function parseCodexMessage(line: Buffer, questionCallId?: string, context
     let text = line.toString('utf8');
     if (line.length > MAX_RECORD)
         text = text.replace(/"image_url"\s*:\s*"data:[^"]*"/g, '"image_url":""');
-    // Do not parse or retain tool results/reasoning. The extractor also checks
-    // the actual JSON structure so quoted records in tool output cannot leak.
+    // Only project explicit plaintext reasoning items and public messages.
+    // The extractor still checks the JSON structure after this header filter.
     const header = text.slice(0, 400);
     const completedItem = /"type"\s*:\s*"item_completed"/.test(header);
     const agentItem = completedItem && /"type"\s*:\s*"AgentMessage"/.test(header);
     const userItem = completedItem && /"type"\s*:\s*"UserMessage"/.test(header);
+    const reasoningItem = /"type"\s*:\s*"reasoning"/.test(header);
     const compactionSummary = /"type"\s*:\s*"compacted"/.test(header);
-    if (!compactionSummary && !agentItem && !userItem && !/"(?:type|role)"\s*:\s*"(?:user|assistant|message|user_message|agent_message|task_complete|error)"/.test(text.slice(0, 400)))
+    if (!compactionSummary && !reasoningItem && !agentItem && !userItem && !/"(?:type|role)"\s*:\s*"(?:user|assistant|message|user_message|agent_message|task_complete|error)"/.test(text.slice(0, 400)))
         return null;
     try {
         const entry = parsedRecords.get(line) ?? JSON.parse(text);
@@ -135,6 +137,17 @@ export function parseCodexMessage(line: Buffer, questionCallId?: string, context
         // Some native event echoes incorrectly store the thread UUID as turn_id.
         // Discard that alias so lifecycle boundaries supply the real turn.
         const turnId = declared === context?.nativeId ? undefined : declared;
+        if (entry.type === 'response_item' && entry.payload?.type === 'reasoning') {
+            const {id, summary, content} = entry.payload;
+            if (typeof id !== 'string' || !id || id.length > 200) return null;
+            const reasoning = codexReasoningText(codexReasoningParts(summary, 'summary_text'), codexReasoningParts(content, 'reasoning_text'));
+            if (!reasoning) return null;
+            return {
+                message: {role:'assistant', phase:'commentary', text:'', timestamp:typeof entry.timestamp === 'string' ? entry.timestamp : null},
+                contentBlocks: [{type:'thinking', index:0, text:reasoning}],
+                itemId:id, turnId:typeof turnId === 'string' ? turnId : undefined, recordType:'reasoning', imagePaths:[],
+            };
+        }
         const failure = entry.type === 'event_msg' && ['task_complete', 'error'].includes(entry.payload?.type)
             ? conversationErrorMessage(typeof turnId === 'string' ? turnId : `event:${entry.timestamp}`, entry.payload.error ?? (entry.payload.type === 'error' ? entry.payload : null), entry.payload.will_retry === true || entry.payload.willRetry === true, typeof entry.timestamp === 'string' ? entry.timestamp : null) : null;
         const asyncItem = entry.type === 'event_msg' && entry.payload?.type === 'item_completed' && entry.payload.item?.type === 'AgentMessage' ? entry.payload.item

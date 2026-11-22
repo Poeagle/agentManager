@@ -289,6 +289,29 @@ describe('public conversation pages',()=>{
     expect(result.body).not.toContain('PRIVATE');expect((await readConversation(binding)).messages[2].id).toBe(messages[2].id);
     expect((await readConversation(binding,{after:messages[1].id})).messages).toHaveLength(1);
   });
+  it('projects native Codex reasoning as commentary and keeps the legacy final response',async()=>{
+    const turn='reasoning-turn',first='reasoning-a',last='reasoning-b';
+    const reasoning=(payload:object)=>line('response_item',{type:'reasoning',encrypted_content:'fixture-opaque',...payload});
+    writeFileSync(file,line('event_msg',{type:'task_started',turn_id:turn})+user('检查文件')+
+      reasoning({id:first,summary:[],content:[{type:'reasoning_text',text:'先检查文件'}]})+
+      reasoning({id:'opaque-only',summary:[],content:null}));
+    const firstPage=await readConversation(binding);
+    const firstThought={id:conversationMessageId(turn,'assistant',first),phase:'commentary',text:'',turn_id:turn,
+      content_blocks:[{type:'thinking',index:0,text:'先检查文件'}]};
+    expect(firstPage.messages).toHaveLength(2);
+    expect(firstPage.messages[1]).toMatchObject(firstThought);
+    appendFileSync(file,reasoning({id:last,summary:[{type:'summary_text',text:'核对结果'}],
+      content:[{type:'reasoning_text',text:'fixture-shadowed'}]})+line('event_msg',{
+        type:'task_complete',turn_id:turn,last_agent_message:'已检查。',
+      }));
+    const delta=await readConversation(binding,{after:firstThought.id});
+    expect(delta.messages).toMatchObject([
+      {id:conversationMessageId(turn,'assistant',last),phase:'commentary',text:'',
+        content_blocks:[{type:'thinking',index:0,text:'核对结果'}]},
+      {phase:'final',text:'已检查。'},
+    ]);
+    expect(JSON.stringify(delta.messages)).not.toMatch(/fixture-opaque|fixture-shadowed/);
+  });
   it('uses durable response items instead of lifecycle text mirrors while excluding tool records',async()=>{
     writeFileSync(file,user('修复问题')
       +line('response_item',{type:'message',role:'user',content:[{type:'input_text',text:'修复问题'}]})

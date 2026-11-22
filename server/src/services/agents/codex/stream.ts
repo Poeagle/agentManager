@@ -16,6 +16,7 @@ import {conversationErrorMessage} from '../../conversation-error.js';
 import {activityResultPreview,conversationActivity,type ConversationActivity} from '../../conversation-activity.js';
 import {nativeUsageFrame} from '../../conversation-usage.js';
 import {codexMessagePhase} from './text.js';
+import {CODEX_REASONING_LIMIT,CODEX_REASONING_PARTS,codexReasoningParts,codexReasoningText} from './reasoning.js';
 import {getDb} from '../../../db/index.js';
 import {setLiveCodexRuntime,clearLiveCodexRuntime,rememberLiveCodexInput,liveCodexInput,rememberCodexQuestionReply,syncQueuedCodexQuestionReplies} from './runtime-signals.js';
 import type {CodexState} from './runtime.js';
@@ -32,6 +33,8 @@ export function publicCodexRpcMessage(value:string):string {
 }
 export class CodexRpcError extends Error {readonly submission='rejected';constructor(readonly nativeMessage:string){super(publicCodexRpcMessage(nativeMessage));}}
 type CodexRequest = (method:string,params:unknown)=>Promise<any>;
+type ReasoningParts={summary:string[];content:string[]};
+type StreamItem={message:ConversationMessage;phase:string|null;reasoning?:ReasoningParts};
 
 export async function withCodexConnection<T>(action:(request:CodexRequest,server:{userAgent:string|null})=>Promise<T>):Promise<T> {
   const path=currentCodexEngine().socket;
@@ -207,7 +210,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     || join(process.env.CODEX_HOME||join(homedir(),'.codex'),'app-server-control','app-server-control.sock');
   const socket=new WebSocket(`ws+unix://${path}:/`,{maxPayload:2*1024*1024,handshakeTimeout:4000});
   const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
-  const items=new Map<string,{message:ConversationMessage;phase:string|null}>();
+  const items=new Map<string,StreamItem>();
   const activities=new Map<string,ConversationActivity>();
   const interactions=new Map<string,{card:ConversationInteraction;nativeId:number|string;params:any}>();
   let next=0,closed=false,busy=false;
@@ -221,6 +224,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
   let lastUsageFingerprint:string|undefined;
   let full=true,lastState='';const publicItems=new Map<string,string>();const dirty=new Set<string>(),deltas=new Map<string,{id:string;offset:number;text:string}>();
   const activityOutputs=new WeakMap<ConversationActivity,string>();
+  const visible=(message:ConversationMessage)=>!!(message.text.length||message.content_blocks?.length);
   function snapshot() {
     clearTimeout(flush);
     flush=undefined;
@@ -228,9 +232,9 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(closed)return;
     const state={interactions:[...interactions.values()].map(entry=>entry.card),activities:[...activities.values()],compaction,busy,connected:true as const,turn_id:turnId,started_at:startedAt,completed_at:completedAt,stage};
     const fingerprint=JSON.stringify(state);
-    if(!options.incremental||full){emit({type:'snapshot',...state,messages:[...items.values()].filter(item=>item.message.text.length>0).map(item=>item.message)});full=false;}
+    if(!options.incremental||full){emit({type:'snapshot',...state,messages:[...items.values()].map(item=>item.message).filter(visible)});full=false;}
     else{
-      const upserts=[...dirty].map(id=>items.get(publicItems.get(id)!)?.message).filter((message):message is ConversationMessage=>!!message&&message.text.length>0);
+      const upserts=[...dirty].map(id=>items.get(publicItems.get(id)!)?.message).filter((message):message is ConversationMessage=>!!message&&visible(message));
       const appended=[...deltas.values()].filter(delta=>!dirty.has(delta.id));
       if(upserts.length||appended.length||lastState!==fingerprint)emit({type:'patch',upserts,deltas:appended,...lastState!==fingerprint?{state}:{}});
     }
@@ -274,7 +278,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     const activity=conversationActivity(item,completed,previous,baseline?null:Date.now());
     if(!activity)return;
     activity.turn_id=turnId;
-    activity.after_message_id=previous && Object.hasOwn(previous,'after_message_id')?previous.after_message_id:[...items.values()].at(-1)?.message.id??null;
+    activity.after_message_id=previous && Object.hasOwn(previous,'after_message_id')?previous.after_message_id:[...items.values()].reverse().find(entry=>!entry.reasoning)?.message.id??null;
     if(item.type==='contextCompaction')compaction={...activity};
     activities.set(activity.id,activity);
     if(activities.size>8)activities.delete(activities.keys().next().value!);
@@ -297,7 +301,46 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     }catch{/* Older native servers may not expose queued submissions. */}
     }while(queueAgain&&!closed);}finally{queueReading=false;}
   }
+  function storeItem(nativeId:string,item:StreamItem) {
+    const publicId=item.message.id;
+    items.set(nativeId,item);dirty.add(publicId);publicItems.set(publicId,nativeId);
+    if(items.size>256){const oldest=[...items.entries()].find(([,value])=>!value.message.streaming)??items.entries().next().value;if(oldest){items.delete(oldest[0]);publicItems.delete(oldest[1].message.id);dirty.delete(oldest[1].message.id);deltas.delete(oldest[1].message.id);}}
+    changed();
+  }
+  function publishReasoning(nativeId:string,turnId:string,parts:ReasoningParts,streaming:boolean,timestamp?:number|null) {
+    const previous=items.get(nativeId)?.message;
+    const text=codexReasoningText(parts.summary,parts.content);
+    storeItem(nativeId,{phase:'commentary',reasoning:parts,message:{
+      id:conversationMessageId(turnId,'assistant',nativeId),role:'assistant',turn_id:turnId,phase:'commentary',text:'',
+      timestamp:previous?.timestamp??(timestamp===null?null:new Date(timestamp??Date.now()).toISOString()),streaming,
+      ...(text?{content_blocks:[{type:'thinking',index:0,text}]}:{}),
+    }});
+  }
+  function acceptReasoningDelta(data:any,kind:keyof ReasoningParts) {
+    const index=kind==='summary'?data.summaryIndex:data.contentIndex;
+    const id=data.itemId;
+    if(typeof id!=='string'||!id||id.length>200||typeof data.delta!=='string'||!data.delta||
+      !Number.isInteger(index)||index<0||index>=CODEX_REASONING_PARTS||!busy||data.turnId!==turnId||!turnId)return;
+    const previous=items.get(id);
+    if(previous&&(!previous.reasoning||!previous.message.streaming))return;
+    const parts=previous?.reasoning??{summary:[],content:[]};
+    const group=parts[kind];
+    const remaining=CODEX_REASONING_LIMIT-group.reduce((sum,part)=>sum+part.length,0);
+    if(!remaining)return;
+    group[index]=(group[index]??'')+data.delta.slice(0,remaining);
+    stage='answering';
+    publishReasoning(id,turnId,parts,true);
+  }
   function acceptItem(item:any,turnId:string,streaming:boolean,timestamp?:number|null) {
+    if(item?.type==='reasoning'&&typeof item.id==='string'&&item.id&&item.id.length<=200&&typeof turnId==='string'){
+      const previous=items.get(item.id)?.reasoning;
+      const summary=codexReasoningParts(item.summary),content=codexReasoningParts(item.content);
+      publishReasoning(item.id,turnId,{
+        summary:summary.some(part=>part.trim())?summary:previous?.summary??[],
+        content:content.some(part=>part.trim())?content:previous?.content??[],
+      },streaming,timestamp);
+      return;
+    }
     if(!['agentMessage','userMessage'].includes(item?.type)||typeof item.id!=='string'||typeof turnId!=='string') return;
     const role=item.type==='userMessage'?'user':'assistant';
     const previous=items.get(item.id);
@@ -309,7 +352,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     const phase=codexMessagePhase(item.phase,item.delivery);
     const nativePhase=phase==='unknown'?previous?.phase??null:phase;
     const questions=role==='assistant'?conversationAsyncQuestions(item):undefined;
-    items.set(item.id,{phase:nativePhase,message:{
+    storeItem(item.id,{phase:nativePhase,message:{
       id:conversationMessageId(turnId,role,item.id),role,turn_id:turnId,
       ...(role==='assistant'?{phase:questions||nativePhase==='final'?'final' as const:'commentary' as const}:{}),
       ...(reply?{question_replies:reply.answers}:{}),
@@ -319,14 +362,11 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       text:text.slice(0,128*1024),timestamp:role==='assistant'&&!streaming?(timestamp===null?null:new Date(timestamp??Date.now()).toISOString()):previous?.message.timestamp || (timestamp===null?null:new Date(timestamp??Date.now()).toISOString()),streaming:role==='assistant' && streaming,
     }});
     if(role==='user'&&typeof item.clientId==='string')rememberLiveCodexInput(threadId,runtimeSource,busy?turnId:null,item.clientId);
-    const publicId=conversationMessageId(turnId,role,item.id);dirty.add(publicId);publicItems.set(publicId,item.id);
-    if(items.size>256){const oldest=[...items.entries()].find(([,value])=>!value.message.streaming);if(oldest){items.delete(oldest[0]);publicItems.delete(oldest[1].message.id);dirty.delete(oldest[1].message.id);deltas.delete(oldest[1].message.id);}}
-    changed();
   }
   function finalizeImplicitAssistant() {
     // A normal turn completion is the lifecycle proof for releases that omit
     // `phase` on the last AgentMessage. Explicit commentary remains progress.
-    const last=[...items.entries()].reverse().find(([,value])=>value.message.role==='assistant'&&value.message.phase!=='error');
+    const last=[...items.entries()].reverse().find(([,value])=>value.message.role==='assistant'&&value.message.phase!=='error'&&!value.reasoning);
     if(!last||last[1].phase!==null)return;
     items.set(last[0],{phase:'final',message:{...last[1].message,phase:'final'}});
     dirty.add(last[1].message.id);
@@ -364,7 +404,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
             // during the baseline read; known live items were excluded above.
             acceptActivity(item.type==='contextCompaction'&&(turn.items||[]).length===1&&typeof turn.startedAt==='number'?{...item,startedAtMs:turn.startedAt*1000}:item,['completed','failed','declined'].includes(item.status) || typeof item.completedAtMs==='number' || item.type==='contextCompaction'&&item!==(turn.items||[]).at(-1),true);
           }
-          const streaming=!newer&&item===(turn.items||[]).at(-1) && item.type==='agentMessage' && !item.completedAtMs;
+          const streaming=!newer&&item===(turn.items||[]).at(-1) && ['agentMessage','reasoning'].includes(item.type) && !item.completedAtMs;
           acceptItem(item,turn.id,streaming,!streaming&&item.type==='agentMessage'?(typeof item.completedAtMs==='number'?item.completedAtMs:null):typeof item.startedAtMs==='number'?item.startedAtMs:typeof item.completedAtMs==='number'?item.completedAtMs:null);
           if(newer)continue;
           if(item.type==='agentMessage' && item.text?.length) stage=streaming?'answering':codexMessagePhase(item.phase,item.delivery)==='final'?'finishing':'tools';
@@ -374,7 +414,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
         if(turn.error&&!newer)reportError(turn.id,turn.error,false,typeof turn.completedAt==='number'?new Date(turn.completedAt*1000).toISOString():null);
         // The baseline is an ordered prefix; fresh events may already have
         // inserted later items while the request was in flight.
-        const ordered=new Map<string,{message:ConversationMessage;phase:string|null}>();
+        const ordered=new Map<string,StreamItem>();
         for(const item of turn.items||[]) {const value=items.get(item.id);if(value)ordered.set(item.id,value);}
         for(const [id,value] of items)if(!ordered.has(id))ordered.set(id,value);
         items.clear();for(const [id,value] of ordered)items.set(id,value);
@@ -385,7 +425,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     } catch {if(!closed){unavailable(true);socket.close();}}
   }
   socket.on('open',()=>{
-    void request('initialize',{clientInfo:{name:'octoally-conversation',version:'1.0.0'},capabilities:{experimentalApi:true,optOutNotificationMethods:['item/fileChange/outputDelta','item/reasoning/textDelta','item/reasoning/summaryTextDelta','item/reasoning/summaryPartAdded']}}).then(()=>{
+    void request('initialize',{clientInfo:{name:'octoally-conversation',version:'1.0.0'},capabilities:{experimentalApi:true,optOutNotificationMethods:['item/fileChange/outputDelta','item/reasoning/summaryPartAdded']}}).then(()=>{
       if(closed) return;socket.send(JSON.stringify({method:'initialized'}));return attach();
     }).catch(()=>{unavailable(true);socket.close();});
   });
@@ -422,8 +462,11 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
     if(frame.method==='serverRequest/resolved') {interactions.delete(JSON.stringify(data.requestId));changed();return;}
     const card=nativeInteraction(frame,threadId);
     if(card) {if(!interactions.has(card.id))interactions.set(card.id,{card,nativeId:frame.id,params:data});changed();return;}
-    if(!['turn/started','item/started','item/completed','item/agentMessage/delta','turn/completed','error'].includes(frame.method))return;
+    if(!['turn/started','item/started','item/completed','item/agentMessage/delta','item/reasoning/textDelta','item/reasoning/summaryTextDelta','turn/completed','error'].includes(frame.method))return;
     revision++;
+    if(frame.method==='item/reasoning/textDelta'||frame.method==='item/reasoning/summaryTextDelta'){
+      acceptReasoningDelta(data,frame.method==='item/reasoning/summaryTextDelta'?'summary':'content');return;
+    }
     if(frame.method==='turn/started') {
       // A queued next turn can start before the text batch is emitted. Flush
       // the prior turn first so its accepted user message cannot disappear.
@@ -434,6 +477,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       stage='waiting';changed(true);
     }
     else if(frame.method==='item/started'||frame.method==='item/completed') {
+      if(data.item?.type==='reasoning'&&(!busy||data.turnId!==turnId))return;
       if(data.item?.type==='contextCompaction'&&frame.method==='item/started'){busy=true;stage='tools';}
       acceptActivity({...data.item,...(typeof data.startedAtMs==='number'?{startedAtMs:data.startedAtMs}:{}),...(typeof data.completedAtMs==='number'?{completedAtMs:data.completedAtMs}:{})},frame.method==='item/completed');
       acceptItem(data.item,data.turnId,frame.method==='item/started',frame.method==='item/completed'?(data.completedAtMs??data.item?.completedAtMs??Date.now()):(data.startedAtMs??data.item?.startedAtMs));

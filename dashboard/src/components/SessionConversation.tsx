@@ -105,7 +105,7 @@ import {
   waitingInputKey,
   type TimelineMessage,
 } from "../lib/conversation-timeline";
-import { groupConversationProgress, isEmptyProgress, latestProgressThinking, mergeConversationStatistics, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts, withoutProgressThinking } from "../lib/conversation-progress";
+import { groupConversationProgress, isEmptyProgress, isThinkingOnly, progressThinking, mergeConversationStatistics, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts, withoutProgressThinking } from "../lib/conversation-progress";
 import {
   conversationTimings,
   elapsedBetween,
@@ -165,12 +165,14 @@ function ProgressSection({
   progressPhase,
   turnDuration,
   showStatistics=true,
+  thinking,
   children,
-}: ProgressSummaryProps & {children: ReactNode}) {
+}: ProgressSummaryProps & {thinking?: ReactNode;children: ReactNode}) {
   const [preference, setPreference] = useState<boolean | null>(null);
   const open = preference ?? active;
   return (
     <section className="session-chat-progress" aria-label={`${agentName} 进展`}>
+      {thinking && <div>{thinking}</div>}
       <details
         className="session-chat-progress-disclosure"
         open={open}
@@ -2099,14 +2101,17 @@ export function SessionConversation({
   const latestActivities=Array.from(
     progressActivities.reduce((items,item)=>items.set(item.id,item),new Map<string,ConversationActivity>()).values(),
   );
-  const slotBoundary=tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?null:tailMessage?.id??null;
+  const slotMessage=tailMessage&&isThinkingOnly(tailMessage)
+    ? displayed.slice(0,displayed.indexOf(tailMessage)).reverse().find(message=>!isThinkingOnly(message)&&!isWaitingConversationInput(message))
+    : tailMessage;
+  const slotBoundary=slotMessage?.turn_id&&slotMessage.turn_id!==liveTurn?null:slotMessage?.id??null;
   const hiddenBoundaries=new Set(displayed.slice(tailMessage?displayed.indexOf(tailMessage)+1:0)
     .filter(message=>isEmptyProgress(message)&&message.turn_id===liveTurn).map(message=>message.id));
   const slotActivities=latestActivities.filter(item=>{
     if(item.turn_id&&item.turn_id!==liveTurn)return false;
     if(Object.hasOwn(item,'after_message_id'))return item.after_message_id===slotBoundary||
-      !!item.after_message_id&&hiddenBoundaries.has(item.after_message_id)||item.after_message_id===null&&tailMessage?.role==='user'&&
-      !!item.started_at&&!!tailMessage.timestamp&&Date.parse(item.started_at)>=Date.parse(tailMessage.timestamp);
+      !!item.after_message_id&&hiddenBoundaries.has(item.after_message_id)||item.after_message_id===null&&slotMessage?.role==='user'&&
+      !!item.started_at&&!!slotMessage.timestamp&&Date.parse(item.started_at)>=Date.parse(slotMessage.timestamp);
     // Older adapters can supply real timing instead of an explicit boundary.
     if(!tailMessage)return true;
     return !!item.started_at&&!!tailMessage.timestamp&&Date.parse(item.started_at)>Date.parse(tailMessage.timestamp);
@@ -2120,7 +2125,7 @@ export function SessionConversation({
   }
   const progressTimingVisible=busy&&!reconnectable&&!ended&&!waiting&&!activeError&&!compaction.state&&(!!pendingGroupId||tail?.kind==='progress');
   const hideFooterExecutionStatus=liveState==='connected'&&!reconnectable&&!compaction.state&&(showLiveProgress||progressTimingVisible);
-  const pendingStatistics=withObservedToolCounts(pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||tail?.kind==='progress'||!!pendingSegment)?progressStatistics:null,tail?.kind==='progress'?tailMessage?.statistics?.segment:undefined,tail?.kind==='progress',tailMessage),slotActivities.length,liveTurn||'');
+  const pendingStatistics=withObservedToolCounts(pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||tail?.kind==='progress'||!!pendingSegment)?progressStatistics:null,tail?.kind==='progress'?slotMessage?.statistics?.segment:undefined,tail?.kind==='progress',slotMessage),slotActivities.length,liveTurn||'');
   const latestUsage=liveUsageQuery.data;
   const pendingLiveUsage=latestUsage&&latestUsage.native_id===agentNativeId(session)&&liveProgress.started_at&&
     Date.parse(latestUsage.observed_at)>=Date.parse(liveProgress.started_at)?latestUsage:null;
@@ -2386,7 +2391,7 @@ export function SessionConversation({
                     {drops.map(drop=><ConversationCacheDrop key={drop.id} drop={drop} active={active}/>)}
                   </div> : bubble(group.message,false,group.id);
                 }
-                const last=group.messages.at(-1),next=groups[groupIndex+1];
+                const last=[...group.messages].reverse().find(message=>!isThinkingOnly(message))??group.messages.at(-1),next=groups[groupIndex+1];
                 const pending=group.id===pendingGroupId;
                 const nextMessage=next?.kind==='message'?next.message:undefined;
                 const final=nextMessage?.role==='assistant'&&nextMessage.phase==='final'&&!nextMessage.async_questions?.length?nextMessage:null;
@@ -2415,7 +2420,7 @@ export function SessionConversation({
                 const summary=withObservedToolCounts(groupedStatistics?{...groupedStatistics,turn_id:last?.turn_id||liveTurn||'',sequence:0}:null,pending?slotActivities.length:0,liveTurn||'');
                 const execution=part?.unassigned;
                 const executionStats=execution?{...execution,sequence:0,turn_id:last?.turn_id||liveTurn||'',interval:execution}:null;
-                const thinking=latestProgressThinking(group.messages);
+                const thinking=progressThinking(group.messages);
                 const visibleProgress=withoutProgressThinking(group.messages);
                 return (
                   <ProgressSection
@@ -2436,9 +2441,9 @@ export function SessionConversation({
                     interrupted={part?.end_reason==='interrupted'}
                     progressScope="segment"
                     progress={summary}
-                  >
-                    {thinking && <ConversationThinking agentName={agentName} text={thinking.text}
+                    thinking={thinking && <ConversationThinking agentName={agentName} text={thinking.body} previewText={thinking.text}
                       streaming={thinking.atTail && activeGroup && thinking.messageId === streamingId}/>}
+                  >
                     {visibleProgress.map((message, index) => (
                       <div
                         key={message.id}

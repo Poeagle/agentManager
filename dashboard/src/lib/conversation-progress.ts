@@ -180,17 +180,29 @@ export function progressGroupStatistics(messages:ConversationMessage[],final?:Co
   return null;
 }
 
-/** Each Progress group shows the newest reasoning block available in that group. */
-export function latestProgressThinking(messages: ConversationMessage[]) {
+export function isThinkingOnly(message:ConversationMessage) {
+  return message.role==='assistant' && !message.text.trim() && !!message.content_blocks?.length &&
+    message.content_blocks.every(block=>block.type==='thinking');
+}
+
+/** The preview follows the latest reasoning. The disclosure keeps earlier
+ * parts of the same Progress group, including those before a tool call. */
+export function progressThinking(messages: ConversationMessage[]) {
+  const parts: string[] = [];
+  let latest: {text:string;messageId:string;atTail:boolean}|undefined;
+  let remaining = 64 * 1024;
   for (const message of messages.slice().reverse()) {
     const blocks = message.content_blocks ?? [];
     for (const block of blocks.slice().reverse()) {
-      if (block.type === 'thinking' && block.text.trim()) {
-        return {text: block.text, messageId: message.id, atTail: message === messages.at(-1) && block === blocks.at(-1)};
-      }
+      if (block.type !== 'thinking' || !block.text.trim()) continue;
+      latest ??= {text:block.text,messageId:message.id,atTail:message===messages.at(-1)&&block===blocks.at(-1)};
+      parts.push(block.text.slice(-remaining));
+      remaining -= Math.min(remaining,block.text.length+1);
+      if (!remaining) break;
     }
+    if (!remaining) break;
   }
-  return null;
+  return latest ? {...latest,body:parts.reverse().join('\n')} : null;
 }
 
 /** Keep tool calls and commentary text on their numbered items, while all

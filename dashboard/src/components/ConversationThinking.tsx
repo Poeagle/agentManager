@@ -5,14 +5,17 @@ export function ConversationThinking({
   agentName,
   text,
   streaming,
+  previewText = text,
 }: {
   agentName: string;
   text: string;
   streaming: boolean;
+  previewText?: string;
 }) {
   const preview = useRef<HTMLSpanElement>(null);
   const body = text.trim().replace(/\r\n?/g, "\n").replace(/\n(?:[^\S\n]*\n)+/g, "\n");
-  const line = streaming ? body.slice(body.lastIndexOf("\n") + 1) : body.split("\n", 1)[0];
+  const previewBody = previewText.trim().replace(/\r\n?/g, "\n");
+  const line = streaming ? previewBody.slice(previewBody.lastIndexOf("\n") + 1) : previewBody.split("\n", 1)[0];
   const summary = line.replaceAll("**", "").trim();
   const label = streaming ? `${agentName} 正在思考` : `${agentName} 的思考过程`;
   useLayoutEffect(() => {

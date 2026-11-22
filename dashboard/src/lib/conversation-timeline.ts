@@ -85,7 +85,11 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
           streaming:message.streaming??(message.sequence!==undefined?false:old.streaming),optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
         continue;
       }
-      result[index]={...old,...message,client_id:message.client_id||old.client_id||message.native_client_id||old.native_client_id,native_client_id:message.native_client_id||old.native_client_id||message.client_id||old.client_id,streaming:message.streaming??(message.sequence!==undefined?false:old.streaming),optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
+      const previousThinking = old.content_blocks?.length === 1 ? old.content_blocks[0] : undefined;
+      const nextThinking = message.content_blocks?.length === 1 ? message.content_blocks[0] : undefined;
+      const keepLongerThinking = !old.text && !message.text && previousThinking?.type === 'thinking' &&
+        nextThinking?.type === 'thinking' && previousThinking.text.startsWith(nextThinking.text);
+      result[index]={...old,...message,...keepLongerThinking?{content_blocks:old.content_blocks}:{},client_id:message.client_id||old.client_id||message.native_client_id||old.native_client_id,native_client_id:message.native_client_id||old.native_client_id||message.client_id||old.client_id,streaming:message.streaming??(message.sequence!==undefined?false:old.streaming),optimistic:message.queued?old.optimistic:undefined,queued:message.queued??false};
       continue;
     }
     const nextId=incoming.slice(position+1).map(item=>item.id).find(id=>result.some(item=>item.id===id));

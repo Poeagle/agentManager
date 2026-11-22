@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import type {
   AgentContext,
+  AgentMessage,
   AgentConnection,
   AgentStreamPort,
   AgentStreamSeed,
@@ -31,6 +32,8 @@ type Entry = {
 };
 const MAX_MESSAGES = 128,
   MAX_TEXT = 256 * 1024;
+const messageSize = (message: AgentMessage) => message.text.length +
+  (message.content_blocks?.reduce((sum, block) => sum + (block.type === 'thinking' ? block.text.length : 0), 0) ?? 0);
 /** One native subscription per provider, native conversation and credential scope.
  * User-specific authorization and reminder preferences stay at the API boundary. */
 export function sharedAgentStream(source: AgentStreamPort): AgentStreamPort {
@@ -51,7 +54,7 @@ export function sharedAgentStream(source: AgentStreamPort): AgentStreamPort {
     );
     let bytes = snapshot.messages
       .filter((message) => keep.has(message.id))
-      .reduce((sum, message) => sum + message.text.length, 0);
+      .reduce((sum, message) => sum + messageSize(message), 0);
     for (
       let i = snapshot.messages.length - 1;
       i >= 0 && keep.size < MAX_MESSAGES;
@@ -59,9 +62,10 @@ export function sharedAgentStream(source: AgentStreamPort): AgentStreamPort {
     ) {
       const message = snapshot.messages[i];
       if (keep.has(message.id)) continue;
-      if (bytes + message.text.length > MAX_TEXT && keep.size) break;
+      const size = messageSize(message);
+      if (bytes + size > MAX_TEXT && keep.size) break;
       keep.add(message.id);
-      bytes += message.text.length;
+      bytes += size;
     }
     return {
       ...snapshot,

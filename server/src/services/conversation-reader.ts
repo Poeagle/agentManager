@@ -599,6 +599,7 @@ function dedupe(messages: IndexedMessage[]): IndexedMessage[] {
         if (
           message.role !== "assistant" ||
           message.recordType === "async_question" ||
+          message.recordType === "reasoning" ||
           message.phase === "error"
         )
           continue;

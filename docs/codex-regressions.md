@@ -38,8 +38,7 @@ npm run test:regression:accounts
 | Claude 上游限流或 Codex 模型容量不足 | 以错误消息进入对话，刷新后仍是同一条错误 | [claude-sdk-runtime.test.ts](../server/tests/claude-sdk-runtime.test.ts)、[conversation-errors.spec.ts](../e2e/conversation-errors.spec.ts) |
 | Claude 工具中断时已提交跟进消息 | 跟进仍能完成，诊断信息不会替代最终回复 | [claude-sdk-runtime.test.ts](../server/tests/claude-sdk-runtime.test.ts) |
 | Claude Provider 保存新密钥 | 同一会话的下一次请求使用新密钥 | [claude-sdk-runtime.test.ts](../server/tests/claude-sdk-runtime.test.ts) |
-
-Codex 思考样式用例从平台事件开始。当前原生 Codex 适配器未将思考摘要映射为会话展示事件。
+| Codex Engine 在工具前后返回思考文本 | 一行流式更新预览，展开能读到同一段进展的思考；结论到达、进展折叠和刷新后仍可查看 | [codex-reasoning.spec.ts](../e2e/codex-reasoning.spec.ts)、[conversation-reader.test.ts](../server/tests/conversation-reader.test.ts) |
 
 ## 账号与 Provider
 

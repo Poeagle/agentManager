@@ -49,11 +49,11 @@ function readConversationDom(agentLabel:string){
   const tool=within(progress).getByText('Read').closest('details')!;
   return {
     progressClass:progress.className,
-    progressHeading:progress.querySelector('summary')?.textContent?.replace(/^(?:Claude|codex)/,'').replace(/\s+/g,' ').trim(),
+    progressHeading:progress.querySelector('.session-chat-progress-toggle')?.textContent?.replace(/^(?:Claude|codex)/,'').replace(/\s+/g,' ').trim(),
     toolClass:tool.className,
     toolSummary:tool.querySelector('summary')?.textContent?.replace(/\s+/g,' ').trim(),
     hasCompactTool:!!progress.querySelector('.session-chat-tool-compact'),
-    progressContent:progress.textContent?.replace(/^(?:Claude|codex)/,'').replace(/\s+/g,' ').trim(),
+    progressContent:progress.textContent?.replace(/(?:Claude|codex)(?=progress)/,'').replace(/\s+/g,' ').trim(),
     finalText:screen.getByText('The project is ready.').textContent,
   };
 }
@@ -140,7 +140,7 @@ it.each(['claude','codex'] as const)('puts the latest %s thinking on one row bef
   expect(preview).toHaveTextContent('Reviewing the output.');
   fireEvent.click(reasoning);
   expect(row).toHaveAttribute('open');
-  expect(row.querySelector('.session-chat-thinking-body')?.textContent).toBe('Checking files.\nReviewing the output.');
+  expect(row.querySelector('.session-chat-thinking-body')?.textContent).toBe('Previous reasoning.\nChecking files.\nReviewing the output.');
   push('Checking files.\n\nReviewing the output.','Response starts here.');
   expect(within(progress).getByLabelText(`${name} 的思考过程`)).toBe(reasoning);
   expect(row).toHaveAttribute('open');
@@ -176,7 +176,7 @@ it('does not reserve numbered items for Claude thinking-only request snapshots',
   expect(entries[1].querySelector('.session-chat-progress-number')).toHaveTextContent('2');
   expect(within(progress).getByLabelText('进展序号 2')).toBeInTheDocument();
   expect(within(progress).getByText('Second private reasoning.',{selector:'.session-chat-thinking-preview'})).toBeVisible();
-  expect(progress.querySelector('summary')).toHaveTextContent('2 items');
+  expect(progress.querySelector('.session-chat-progress-toggle')).toHaveTextContent('2 items');
 });
 it('renders Claude through the same conversation structure as every other agent',async()=>{
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
@@ -268,7 +268,7 @@ it('groups Claude progress across native record turns and shows recorded usage w
   render(<QueryClientProvider client={client}><SessionConversation session={session} active onRaw={()=>{}}/></QueryClientProvider>);
   await waitFor(()=>expect(Socket.latest?.onmessage).toBeTruthy());
   const progress=await screen.findByLabelText('Claude 进展');
-  const header=progress.querySelector('summary')!;
+  const header=progress.querySelector('.session-chat-progress-toggle')!;
   expect(header).toHaveTextContent('3 items');
   const statistics=header.querySelector('.session-chat-message-statistics');
   expect(statistics).toHaveTextContent('4.2K (—)｜—｜—｜—｜400 · 3 rounds | 5 calls');
