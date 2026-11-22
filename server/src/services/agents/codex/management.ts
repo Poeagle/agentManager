@@ -363,7 +363,7 @@ function writeNativeConfigAtomically(content:string):void {
   }
 }
 
-function updateNativeProviderCatalog(settings:{models:string[];defaultModel:string;baseUrl:string}):void {
+async function updateNativeProviderCatalog(settings:{models:string[];defaultModel:string;baseUrl:string}):Promise<void> {
   const config=existsSync(configPath())?readFileSync(configPath(),'utf8'):'';
   const catalog=catalogPathFromConfig(config);
   if(!catalog||!existsSync(catalog))return;
@@ -372,11 +372,14 @@ function updateNativeProviderCatalog(settings:{models:string[];defaultModel:stri
     typeof item.slug==='string'?[[item.slug,item] as const]:[]));
   const template=[...existing.values()].find(model=>
     typeof model.supported_reasoning_levels!=='undefined'&&typeof model.default_reasoning_level!=='undefined'
+    && (typeof model.base_instructions==='string'||model.model_messages&&typeof model.model_messages==='object')
   );
+  const instructions=await catalogInstructions();
   parsed.models=settings.models.map((model,index)=>{
     const previous=existing.get(model);
     return {
       ...(template||nativeCatalogModelTemplate(model,settings.baseUrl)),
+      ...instructions,
       ...previous,
       ...(previous?{}:{slug:model,display_name:model,description:`${model} via ${settings.baseUrl}`}),
       priority:index,
@@ -418,18 +421,21 @@ function nativeCatalogModelTemplate(model:string,baseUrl:string):Record<string,u
   };
 }
 
-function updateInferredNativeCatalog(settings:{models:string[];defaultModel:string;baseUrl:string}):void {
+async function updateInferredNativeCatalog(settings:{models:string[];defaultModel:string;baseUrl:string}):Promise<void> {
   const inferred=join(dirname(configPath()),'model-catalog.json');
   const existing=existsSync(inferred)?JSON.parse(readFileSync(inferred,'utf8')) as {models?:Array<Record<string,unknown>>}:{models:[]};
   const byModel=new Map((existing.models||[]).flatMap(item=>
     typeof item.slug==='string'?[[item.slug,item] as const]:[]));
   const template=(existing.models||[]).find(model=>
     typeof model.supported_reasoning_levels!=='undefined'&&typeof model.default_reasoning_level!=='undefined'
+    && (typeof model.base_instructions==='string'||model.model_messages&&typeof model.model_messages==='object')
   );
+  const instructions=await catalogInstructions();
   existing.models=settings.models.map((model,index)=>{
     const previous=byModel.get(model);
     return {
       ...(template||nativeCatalogModelTemplate(model,settings.baseUrl)),
+      ...instructions,
       ...previous,
       ...(previous?{}:{slug:model,display_name:model,description:`${model} via ${settings.baseUrl}`}),
       priority:index,
@@ -456,7 +462,7 @@ function validateNativeConnection(input:AgentProviderInput,current:ReturnType<ty
   return {baseUrl,models,defaultModel:defaultModel||models[0]};
 }
 
-function updateNativeConnection(input:AgentProviderInput):{restartRequired:boolean} {
+async function updateNativeConnection(input:AgentProviderInput):Promise<{restartRequired:boolean}> {
   const current=nativeCodexConnectionConfig();
   const next=validateNativeConnection(input,current);
   const connectionChanged=(input.fields?.baseUrl!==undefined&&next.baseUrl!==current.baseUrl)||input.apiKey!==undefined;
@@ -470,8 +476,8 @@ function updateNativeConnection(input:AgentProviderInput):{restartRequired:boole
   if(!catalog)config=replaceTomlRootString(config,'model_catalog_json',join(dirname(configPath()),'model-catalog.json'));
   writeNativeConfigAtomically(config);
   saveProviderApiKey('native',input.apiKey);
-  if(catalog)updateNativeProviderCatalog({...next});
-  else updateInferredNativeCatalog({...next});
+  if(catalog)await updateNativeProviderCatalog({...next});
+  else await updateInferredNativeCatalog({...next});
   return {restartRequired:connectionChanged};
 }
 
@@ -1191,7 +1197,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         let restartRequired=true;
         if(input.fields?.baseUrl!==undefined||input.fields?.models!==undefined||input.fields?.defaultModel!==undefined||input.apiKey!==undefined) {
           report?.({ stage: 'save', message: '写入 Codex 连接配置与加密凭据', progress: 20 });
-          restartRequired=updateNativeConnection(input).restartRequired;
+          restartRequired=(await updateNativeConnection(input)).restartRequired;
         }
         updateNativeEngineConfig(input);
         report?.({ stage: 'save', message: '保存原生 Engine 启动配置', progress: 25 });
