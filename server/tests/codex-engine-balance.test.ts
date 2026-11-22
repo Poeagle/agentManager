@@ -1,6 +1,6 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {randomUUID} from 'crypto';
-import {mkdtempSync,rmSync} from 'fs';
+import {mkdtempSync,rmSync,writeFileSync} from 'fs';
 import {tmpdir} from 'os';
 import {join} from 'path';
 import {createTestDatabase} from './helpers/database.js';
@@ -51,5 +51,29 @@ describe('engine balance snapshots',()=>{
   vi.mocked(stream.withCodexConnection).mockImplementation(async callback=>callback(vi.fn(async(method:string)=>method==='account/read'?{account:{type:'chatgpt'}}:{config:{model_provider:'one',model_providers:{one:{env_key:'FIXTURE_WALLET_KEY'}}}}) as any));
   vi.stubGlobal('fetch',vi.fn(async()=>new Response('{"balance":8}')));await collectEngineBalance('provider:one');
   expect(cachedEngineBalance('provider:one')).toMatchObject({auth_mode:'api',status:'available',amount:8});
+ });
+ it('recognizes a native API provider from config when runtime authentication is unavailable',async()=>{
+  writeFileSync(join(home,'config.toml'),[
+   'model_provider = "fixture"',
+   'model = "fixture-model"',
+   '[model_providers.fixture]',
+   'name = "Fixture"',
+   'base_url = "https://xindu.xyz/v1"',
+   'env_key = "FIXTURE_WALLET_KEY"',
+   '',
+  ].join('\n'));
+  vi.mocked(stream.withCodexConnection).mockRejectedValue(Error('Engine unavailable'));
+  process.env.FIXTURE_WALLET_KEY=randomUUID();
+  const fetch=vi.fn(async()=>new Response('{"balance":15}'));
+  vi.stubGlobal('fetch',fetch);
+  await collectEngineBalance('native');
+  expect(cachedEngineBalance('native')).toMatchObject({
+   auth_mode:'api',
+   providerId:'fixture',
+   origin:'https://xindu.xyz',
+   status:'available',
+   amount:15,
+  });
+  expect(fetch).toHaveBeenCalledTimes(1);
  });
 });

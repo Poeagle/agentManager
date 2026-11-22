@@ -1430,7 +1430,9 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
     refetchInterval:query=>query.state.data?.environments.some(environment=>environment.enabled&&!environment.auth_mode) ? 10_000 : false,
   });
   const environments = accounts.data?.environments ?? [];
-  const native = environments.find(environment=>environment.id==='native');
+  const nativeApiConfigured = (provider?:AgentProviderState) => provider?.id==='native'
+    && (provider.authentication.mode==='api' || provider.fields.some(field=>field.key==='envKey'&&field.configured)
+    && !!valueText(provider.fields.find(field=>field.key==='baseUrl')?.value));
   const allStates = agents.map(({state},index)=>states[index].data?.state ?? state);
   const codex = allStates.find(state=>state.agent.id==='codex');
   const liveProviders = useQueries({queries:(codex?.providers ?? []).map(provider=>liveProviderQuery('codex',provider))});
@@ -1439,12 +1441,12 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
     const codex = state.agent.id==='codex';
     const providers: ProviderRow[] = state.providers.map(provider=>{
       const environment = codex ? environments.find(item=>item.id===(provider.id==='native'?'native':`provider:${provider.id}`)) : undefined;
-      const mode = environment?.auth_mode ?? (provider.managed && !['native','official'].includes(provider.kind) ? 'api' : null);
       const liveProvider = codex ? providerStates.get(provider.id) ?? provider : provider;
+      const mode = environment?.auth_mode ?? (nativeApiConfigured(liveProvider) || provider.managed && !['native','official'].includes(provider.kind) ? 'api' : null);
       return {
         key:`${state.agent.id}:${provider.id}`, state, provider:liveProvider, environment, name:liveProvider.name,
         connection:valueText(liveProvider.fields.find(field=>field.key==='baseUrl')?.value),
-        auth:mode==='api'?'API Key':mode==='account'?'账号':provider.kind==='native'||provider.kind==='official'?'原生':'待检测',
+        auth:mode==='api'?'API Key':mode==='account'?'账号':liveProvider.authentication.mode==='api'?'API Key':provider.kind==='native'||provider.kind==='official'?'原生':'待检测',
         balanceId:codex && mode==='api' ? environment?.id ?? `provider:${provider.id}` : undefined,
       };
     });
@@ -1481,6 +1483,7 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
   const editRow = dialog?.type === 'edit' ? rows.find(row=>row.key===dialog.row.key) ?? dialog.row : null;
   const editProvider = editRow?.state.providers.find(provider=>provider.id===editRow.provider?.id);
   const editEnvironment = editRow?.environment;
+  const editNativeApi = editProvider?.id==='native' && (editEnvironment?.auth_mode==='api' || nativeApiConfigured(editProvider));
   const title = editRow ? `${readOnly ? '查看' : '编辑'} Provider · ${editRow.name}` : '新增 Provider';
   const toggleDetails = () => {
     if (dialog?.type !== 'edit' || busy || !confirmDiscard()) return;
@@ -1523,7 +1526,7 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
       maxWidth="calc(100vw - 32px)" busy={busy} onClose={close} initialFocus={dialogStart}
       actions={dialog.type==='edit' && editRow?.state.agent.id==='codex' &&
         (editEnvironment?.kind==='account'||editProvider?.id==='native') && !dialog.accountDetails &&
-        <button type="button" className="agent-management-button" disabled={busy} onClick={toggleDetails}>账号详情</button>}>
+        <button type="button" className="agent-management-button" disabled={busy} onClick={toggleDetails}>{editNativeApi?'账号详情':'配置界面'}</button>}>
       <div ref={dialogStart} tabIndex={-1} className="agent-provider-dialog-content">
       {dialog.type==='add' ? <>
         <div className="agent-provider-dialog-options">
@@ -1540,12 +1543,12 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
       </> : editRow && <>
         {editRow.state.agent.id==='claude' && editProvider ?
           <ClaudeProviderEditor key={editRow.key} provider={editProvider} readOnly={readOnly} inDialog onSaved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
-          : dialog.accountDetails && (editEnvironment?.kind==='account' || editProvider?.id==='native') ?
+          : dialog.accountDetails && (editEnvironment?.kind==='account' || editProvider?.id==='native' && !editNativeApi) ?
             <CodexAccountProvider key={editRow.key} environment={editEnvironment ?? {id:'native',name:editRow.name,kind:'native',enabled:editProvider!.enabled,allowed_user_ids:null}} readOnly={readOnly} onDirtyChange={setFileDirty} nativeInfo={editProvider} onNativeEdit={toggleDetails}/>
           : editEnvironment?.kind==='account' ?
             <CodexAccountProviderEditor key={editRow.key} environment={editEnvironment} readOnly={readOnly} inDialog onSaved={finish} onRemoved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
           : editProvider && <ProviderEditor key={editRow.key} agentId={editRow.state.agent.id} provider={editProvider}
-            defaults={editRow.state.defaults ?? []} nativeApi={editProvider.id==='native' && native?.auth_mode==='api'} readOnly={readOnly}
+            defaults={editRow.state.defaults ?? []} nativeApi={editNativeApi} readOnly={readOnly}
             onDirtyChange={setDirty} onFileDirtyChange={setFileDirty} onBusyChange={setBusy} onRemoved={finish}/>}
       </>}
       </div>
