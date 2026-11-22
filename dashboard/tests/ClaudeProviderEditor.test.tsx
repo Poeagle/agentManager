@@ -16,6 +16,7 @@ beforeEach(()=>{
   {key:'envKey',label:'API Key',type:'password',value:'',configured:true},
   {key:'models',label:'模型',type:'string-list',value:['claude-a','claude-b']},
   {key:'defaultModel',label:'默认模型',type:'text',value:'claude-a'},
+  {key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text',value:'1.2'},
   {key:'contextWindow',label:'上下文窗口',type:'text',value:'200000'},
   {key:'maxOutputTokens',label:'最大输出 Token',type:'text',value:''},
   {key:'haikuModel',label:'Haiku 模型',type:'text',value:''},
@@ -31,13 +32,14 @@ it('saves model-specific Claude Code routing controls',async()=>{
   mount();
   expect(screen.getByLabelText('Claude Haiku 模型')).not.toBeVisible();
   fireEvent.click(screen.getByText('Claude Code 设置',{exact:true}));
+  fireEvent.change(screen.getByLabelText('Provider 计费倍率'),{target:{value:'1.3'}});
   fireEvent.change(screen.getByLabelText('Claude Haiku 模型'),{target:{value:'deepseek-flash'}});
   fireEvent.change(screen.getByLabelText('Claude 子 Agent 模型'),{target:{value:'deepseek-flash'}});
   fireEvent.change(screen.getByLabelText('Claude Effort 等级'),{target:{value:'max'}});
   fireEvent.change(screen.getByLabelText('Claude 自动压缩窗口'),{target:{value:'786432'}});
   fireEvent.click(screen.getByRole('button',{name:'保存 Provider'}));
   await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('claude','gateway',expect.objectContaining({fields:expect.objectContaining({
-    haikuModel:'deepseek-flash',subagentModel:'deepseek-flash',effort:'max',autoCompactWindow:'786432',
+    providerRateMultiplier:'1.3',haikuModel:'deepseek-flash',subagentModel:'deepseek-flash',effort:'max',autoCompactWindow:'786432',
   })})));
 });
 it('keeps a configured key masked and saves only a replacement value',async()=>{
@@ -47,14 +49,18 @@ it('keeps a configured key masked and saves only a replacement value',async()=>{
  await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('claude','gateway',expect.objectContaining({name:'Gateway updated'})));
  expect(vi.mocked(api.agentManagement.updateProvider).mock.calls[0][2]).not.toHaveProperty('apiKey');
 });
-it('replaces stale aliases with only the gateway discovery result',async()=>{
+it('reuses the configured key, probes without re-entry, and replaces stale aliases',async()=>{
  provider={...provider,models:['grok-4.5','opus','sonnet','haiku'],defaultModel:'opus'};
  vi.mocked(api.agentManagement.detectModels).mockResolvedValue({models:[{model:'claude-fable-5',name:'Claude Fable',description:''},{model:'claude-fable-5-1',name:'Claude Fable 1',description:''}]});
  vi.mocked(api.agentManagement.updateProvider).mockResolvedValue({state:{agent:{id:'claude',label:'Claude'},providers:[provider]} as any});
- mount();fireEvent.change(screen.getByLabelText('Claude API Key'),{target:{value:'new-token'}});fireEvent.click(screen.getByRole('button',{name:'保存 Provider'}));
+ mount();
+ fireEvent.click(screen.getByRole('button',{name:'探测模型'}));
+ await screen.findByText('Claude Fable');
+ fireEvent.click(screen.getByRole('button',{name:'保存 Provider'}));
  await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('claude','gateway',expect.objectContaining({fields:expect.objectContaining({models:['claude-fable-5','claude-fable-5-1'],defaultModel:'claude-fable-5'})})));
- expect(screen.queryByRole('table',{name:'Provider 模型'})).not.toBeInTheDocument();
- expect(api.agentManagement.detectModels).toHaveBeenCalledWith('claude',{endpoint:'https://gateway.example',apiKey:'new-token',providerId:'gateway'});
+ expect(screen.getByRole('table',{name:'Provider 模型'})).toBeVisible();
+ expect(api.agentManagement.detectModels).toHaveBeenCalledWith('claude',{endpoint:'https://gateway.example',apiKey:undefined,providerId:'gateway'});
+ expect(vi.mocked(api.agentManagement.updateProvider).mock.calls[0][2]).not.toHaveProperty('apiKey');
 });
 it('creates a Provider from one page and uses a fixed primary action',async()=>{
  vi.mocked(api.agentManagement.detectModels).mockResolvedValue({models:[{model:'claude-a',name:'Claude A',description:'',efforts:[],defaultEffort:'',context_window:500000,input_modalities:['text','image']}]});
@@ -74,9 +80,10 @@ it('adds a manually entered model when the provider has no catalog endpoint',asy
  render(<QueryClientProvider client={client}><ClaudeProviderEditor readOnly={false} onSaved={vi.fn()}/></QueryClientProvider>);
  fireEvent.change(screen.getByLabelText('Claude Provider ID'),{target:{value:'deepseek'}});fireEvent.change(screen.getByLabelText('Claude API 地址'),{target:{value:'https://api.deepseek.com/anthropic'}});fireEvent.change(screen.getByLabelText('Claude API Key'),{target:{value:'secret'}});fireEvent.click(screen.getByRole('button',{name:'探测模型'}));
  expect(await screen.findByText(/没有提供 \/models 目录/)).toBeVisible();
+ fireEvent.click(screen.getByRole('button',{name:'填写模型'}));
  fireEvent.click(screen.getByText('手工添加模型',{exact:true}));
  fireEvent.change(screen.getByLabelText('手工添加 Claude 模型'),{target:{value:'deepseek-chat'}});fireEvent.click(screen.getByRole('button',{name:'添加'}));
- expect(screen.getByRole('radio',{name:'默认模型 deepseek-chat'})).toBeChecked();expect(screen.getByRole('button',{name:'添加 Provider'})).toBeEnabled();
+ expect(screen.getByRole('checkbox',{name:'启用 deepseek-chat'})).toBeChecked();expect(screen.getByRole('button',{name:'添加 Provider'})).toBeEnabled();
  fireEvent.click(screen.getByRole('button',{name:'添加 Provider'}));await waitFor(()=>expect(api.agentManagement.createProvider).toHaveBeenCalledWith('claude',expect.objectContaining({id:'deepseek',fields:expect.objectContaining({models:['deepseek-chat'],defaultModel:'deepseek-chat'})})));
 });
 it('confirms destructive deletion instead of deleting on first click',async()=>{
@@ -96,7 +103,7 @@ it('uses the same editable Provider form for the native Anthropic environment',a
  expect(await screen.findByRole('dialog',{name:'编辑 Provider · Anthropic'})).toBeVisible();
  expect(screen.getByLabelText('Claude API 地址')).toHaveValue('https://gateway.example');
  expect(screen.getByLabelText('Claude API Key')).toHaveValue('');
- expect(screen.queryByRole('table',{name:'Provider 模型'})).not.toBeInTheDocument();
+ expect(screen.getByRole('table',{name:'Provider 模型'})).toBeVisible();
  expect(screen.getByRole('button',{name:'保存 Provider'})).toBeDisabled();
  expect(screen.queryByRole('button',{name:'删除'})).toBeNull();
  expect(screen.queryByRole('button',{name:'停用'})).toBeNull();

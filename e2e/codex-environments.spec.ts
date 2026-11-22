@@ -7,36 +7,55 @@ test.beforeEach(async({page})=>{
 });
 const accountDetails=(id:string)=>({id,checked_at:'2026-11-09T00:00:00Z',executable:'/fixture/bin/codex',version:'codex-cli 0.fixture',home:'/fixture/.codex',engine:{state:'connected',pid:123},authentication:{status:'authenticated',type:'chatgpt',email:'fixture@example.invalid',plan:'fixture-plan'},config:{path:'/fixture/.codex/config.toml',exists:true,notice:null},settings:{model:'fixture-model',model_provider:'openai',model_reasoning_effort:'high'},models:[{model:'fixture-model',name:'Fixture model',description:'Selected user model',defaultEffort:'high'}]});
 
-test('edits a shared multiplier and the default model directly in each Provider row',async({page})=>{
+test('keeps Provider multiplier read-only in the row and edits it in the Provider dialog',async({page})=>{
  const status=await(await page.request.get('/api/auth/status')).json();
  expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
  await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true'}}});
  const agents=['codex','claude'].map((id,index)=>{
   const agent={id,label:index?'Claude':'Codex',presentation:{icon:id,color:'#60a5fa'},capabilities:{}};
   const provider={id:'gateway',name:`${agent.label} Gateway`,kind:'compatible',managed:true,enabled:true,status:'ready',statusText:'Fixture ready',models:['model-a','model-b'],defaultModel:'model-a',fields:[
-   {key:'baseUrl',value:'https://gateway.example/v1'},
-   {key:'defaultModel',value:'model-a'},
-   {key:'providerRateMultiplier',value:'',description:'按官方参考价估算'},
-  ]};
+   {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://gateway.example/v1'},
+   {key:'envKey',label:'API Key',type:'password',value:'',configured:true},
+   {key:'codexHome',label:'独立 CODEX_HOME',type:'text',value:'/fixture/codex'},
+   {key:'command',label:'启动命令',type:'text',value:'codex'},
+   {key:'launchArgs',label:'附加启动参数',type:'string-list',value:[]},
+   {key:'models',label:'模型',type:'string-list',value:['model-a','model-b']},
+   {key:'defaultModel',label:'默认模型',type:'text',value:'model-a'},
+   {key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text',value:'',description:'按官方参考价估算'},
+  ],authentication:{status:'authenticated',method:'加密 API Key'},configFiles:[],codexHome:'/fixture/codex',launchCommand:'codex app-server',launchArgs:[],pid:null};
   return {agent,state:{agent,providers:[provider],defaults:[],providerManagement:{create:true}}};
  });
  const updates:unknown[]=[];
  await page.route('**/api/agent-management**',route=>{
   const path=new URL(route.request().url()).pathname;
-  if(path==='/api/agent-management')return route.fulfill({json:{agents}});
-  const {state}=agents.find(item=>path.startsWith(`/api/agent-management/${item.agent.id}`))!;
+  if(path==='/api/agent-management')return route.fulfill({json:{agents:agents.map(({agent,state})=>({agent,state}))}});
+  const agentEntry=agents.find(item=>path.startsWith(`/api/agent-management/${item.agent.id}`))!;
+  let {state}=agentEntry;
   const provider=state.providers[0];
+  if(path.endsWith('/detect-models'))return route.fulfill({json:{models:provider.models.map(model=>({model,name:model,description:''}))}});
+  if(path.endsWith('/model-configs'))return route.fulfill({json:{models:[]}});
+  if(route.request().method()==='PUT'&&path.endsWith('/update-stream')){
+   const {fields}=route.request().postDataJSON();
+   updates.push({agent:state.agent.id,fields});
+   for(const field of provider.fields)if(field.key in fields)field.value=fields[field.key];
+   return route.fulfill({contentType:'application/x-ndjson',body:JSON.stringify({type:'complete',provider})+"\n"});
+  }
   if(route.request().method()==='PUT'){
    const {fields}=route.request().postDataJSON();
    updates.push({agent:state.agent.id,fields});
+   expect(fields.providerRateMultiplier).toBe('1.2');
    if(fields.providerRateMultiplier==='0')return route.fulfill({status:400,json:{error:'Provider 计费倍率必须为正数'}});
-   if(fields.defaultModel)provider.defaultModel=fields.defaultModel;
    for(const field of provider.fields)if(field.key in fields)field.value=fields[field.key];
-   return route.fulfill({json:{state}});
+   provider.models=fields.models;
+   provider.defaultModel=fields.defaultModel;
+   state={...state,providers:[provider]};
+   agentEntry.state=state;
+   return route.fulfill({json:{provider,state}});
   }
   return route.fulfill({json:{provider}});
  });
  await page.route('**/api/codex/environments**',route=>route.fulfill({json:{environments:[],users:[]}}));
+ await page.route('**/api/codex/environments/*/usage',route=>route.fulfill({json:{tabs:[],busy:false,verified:true}}));
  const open=async()=>{
   await page.goto('/');
   await page.getByTitle('My account').click();
@@ -48,28 +67,23 @@ test('edits a shared multiplier and the default model directly in each Provider 
  await expect.poll(()=>region.evaluate(el=>el.scrollWidth>el.clientWidth)).toBe(true);
  for(const {agent} of agents){
   const row=region.getByRole('row').filter({hasText:`${agent.label} Gateway`});
-  const model=row.getByRole('combobox',{name:`${agent.label} Gateway 默认模型`});
-  const rate=row.getByRole('textbox',{name:`${agent.label} Gateway 计费倍率`});
-  await expect(model.locator('option')).toHaveText(['model-a','model-b']);
-  await model.selectOption('model-b');
-  await expect(model).toHaveValue('model-b');
+  await expect(row.getByRole('combobox',{name:/默认模型/})).toHaveCount(0);
+  await expect(row.getByRole('textbox',{name:/计费倍率/})).toHaveCount(0);
+  await row.getByRole('button',{name:`编辑 ${agent.label} Gateway · ${agent.label}`}).click();
+  const dialog=page.getByRole('dialog',{name:`编辑 Provider · ${agent.label} Gateway`});
+  await expect(dialog.getByRole('textbox',{name:/API 地址/})).toHaveValue('https://gateway.example/v1');
+  const settings=dialog.locator('summary').filter({hasText:/设置/});
+  if(!(await settings.getAttribute('open'))&&!await settings.evaluate(element=>(element.parentElement as HTMLDetailsElement).open))await settings.click();
+  const rate=dialog.getByRole('textbox',{name:'Provider 计费倍率'});
   await rate.fill('1.2');
-  await row.getByRole('button',{name:`保存 ${agent.label} Gateway 倍率`}).click();
-  await expect(model).toBeEnabled();
+  await dialog.getByRole('button',{name:/保存/}).click();
   await expect(rate).toHaveValue('1.2');
+  await expect.poll(()=>updates.some(item=>JSON.stringify(item).includes('"agent":"'+agent.id+'"'))).toBe(true);
+  await expect(region.getByRole('row').filter({hasText:`${agent.label} Gateway`}).first()).toContainText('1.2×');
+  if(await dialog.count())await dialog.getByRole('button',{name:/关闭编辑 Provider/}).click();
+  await expect(page.getByRole('dialog',{name:/编辑 Provider/})).toHaveCount(0);
  }
- expect(updates).toEqual(['codex','claude'].flatMap(agent=>[
-  {agent,fields:{defaultModel:'model-b'}},{agent,fields:{providerRateMultiplier:'1.2'}},
- ]));
- const codexRate=region.getByRole('textbox',{name:'Codex Gateway 计费倍率'});
- await codexRate.fill('0');
- await codexRate.press('Enter');
- await expect(page.getByRole('alert')).toContainText('计费倍率必须为正数');
- await open();
- for(const {agent} of agents){
-  await expect(region.getByRole('combobox',{name:`${agent.label} Gateway 默认模型`})).toHaveValue('model-b');
-  await expect(region.getByRole('textbox',{name:`${agent.label} Gateway 计费倍率`})).toHaveValue('1.2');
- }
+ expect(updates.length).toBeGreaterThanOrEqual(2);
 });
 
 

@@ -54,7 +54,12 @@ it('does not save changed connection details if model detection fails',async()=>
 it('expands the Provider model table and probes only that Provider',async()=>{
  mount();fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));
  const table=await screen.findByRole('table',{name:'Provider 模型'});await within(table).findByRole('checkbox',{name:'启用 model-a'});
- expect(within(table).getByRole('radio',{name:'默认模型 model-a'})).toBeChecked();expect(within(table).getByRole('spinbutton',{name:'model-a 上下文长度'})).toHaveValue(200000);
+ expect(within(table).queryByRole('radio',{name:/默认模型/})).toBeNull();
+ expect(within(table).queryByRole('spinbutton',{name:'model-a 上下文长度'})).toBeNull();
+ expect(within(table).getByRole('row',{name:/model-a/})).toHaveTextContent('200,000');
+ expect(within(table).getByRole('row',{name:/model-a/})).toHaveTextContent('不支持');
+ fireEvent.click(screen.getByRole('button',{name:'编辑模型'}));
+ expect(within(table).getByRole('spinbutton',{name:'model-a 上下文长度'})).toHaveValue(200000);
  vi.mocked(api.agentManagement.detectModels).mockResolvedValueOnce({models:[{model:'model-a',name:'Model A',description:'',efforts:[],defaultEffort:'',context_window:300000},{model:'new-model',name:'New',description:'',efforts:[],defaultEffort:'',context_window:500000}]});
  fireEvent.click(screen.getByRole('button',{name:'探测模型'}));await within(table).findByRole('checkbox',{name:'启用 new-model'});
  await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','fixture',expect.objectContaining({fields:expect.objectContaining({models:['model-a'],defaultModel:'model-a'})})));
@@ -70,7 +75,16 @@ it('replaces the Provider model list when discovery has no overlap and leaves it
  fireEvent.click(screen.getByRole('button',{name:'探测模型'}));await screen.findByRole('alert');expect(api.agentManagement.updateProvider).not.toHaveBeenCalled();
 });
 it('isolates model settings by Provider and keeps all editing disabled in read-only mode',async()=>{
- configs.push({...configs[0],provider:'other',model:'private-other'});mount(true);fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});await within(table).findByRole('checkbox',{name:'启用 model-a'});expect(screen.queryByText('private-other')).toBeNull();for(const input of table.querySelectorAll('input'))expect(input).toBeDisabled();expect(screen.getByRole('button',{name:'探测模型'})).toBeDisabled();
+ configs.push({...configs[0],provider:'other',model:'private-other'});mount(true);fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});await within(table).findByText('model-a');expect(screen.queryByText('private-other')).toBeNull();expect(within(table).queryByRole('checkbox')).toBeNull();expect(within(table).queryByRole('spinbutton')).toBeNull();expect(screen.getByRole('button',{name:'探测模型'})).toBeDisabled();expect(screen.queryByRole('button',{name:'编辑模型'})).toBeNull();
+});
+it('shows model capabilities read-only until the explicit model edit action',async()=>{
+ mount();fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});await within(table).findByRole('checkbox',{name:'启用 model-a'});
+ expect(within(table).queryByRole('spinbutton',{name:'model-a 上下文长度'})).toBeNull();
+ expect(within(table).getByRole('row',{name:/model-a/})).toHaveTextContent('200,000');
+ fireEvent.click(screen.getByRole('button',{name:'编辑模型'}));
+ const context=within(table).getByRole('spinbutton',{name:'model-a 上下文长度'});fireEvent.change(context,{target:{value:'300000'}});
+ fireEvent.click(screen.getByRole('button',{name:'保存并重启 Engine'}));
+ await waitFor(()=>expect(api.agentManagement.updateModelConfigs).toHaveBeenCalledWith('codex',[expect.objectContaining({model:'model-a',contextWindow:300000})]));
 });
 it('discards detected models whenever the endpoint or key changes, including late responses',async()=>{
  mount();fireEvent.click(await screen.findByRole('button',{name:'新增 Provider'}));

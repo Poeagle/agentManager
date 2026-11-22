@@ -58,25 +58,12 @@
 }
 .agent-provider-status .agent-management-dot { flex: none; }
 .agent-provider-table .agent-provider-balance { font-variant-numeric: tabular-nums; }
+.agent-provider-rate-readonly { text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap; }
+.agent-provider-table .data-table td,.agent-provider-table .data-table th { vertical-align:middle; }
 .provider-model-expansion { min-width:0; }
 .provider-model-expansion .provider-models { margin:0; padding:0; border:0; }
 .provider-model-expansion .provider-models-toolbar h4 { display:none; }
 .provider-model-expansion-empty { padding:8px 0; color:var(--text-secondary); font-size:12px; }
-.agent-provider-inline-control {
-  box-sizing: border-box;
-  max-width: 100%;
-  min-width: 0;
-  height: 23px;
-  padding: 0 4px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font: inherit;
-}
-.agent-provider-rate { display: flex; align-items: center; gap: 4px; }
-.agent-provider-rate input { width: 60px; font-variant-numeric: tabular-nums; }
-.agent-provider-rate .agent-management-button { min-height: 23px; flex: none; padding: 0 3px; }
 .agent-provider-table .table-actions { justify-content: center; }
 .agent-provider-dialog-options {
   display: grid;

@@ -6,11 +6,11 @@ import {modelCapabilitiesPayload} from './ModelPricing';
 import {ProviderAdvancedSettings,ProviderConnectionFields} from './ProviderConnectionFields';
 import {ModelCatalogTable,ProviderModelActions} from './ModelCatalogTable';
 
-type Draft={id:string;name:string;baseUrl:string;apiKey:string;models:string[];defaultModel:string;haikuModel:string;subagentModel:string;effort:string;autoCompactWindow:string;contextWindow:string;maxOutputTokens:string};
-const empty=():Draft=>({id:'',name:'',baseUrl:'',apiKey:'',models:[],defaultModel:'',haikuModel:'',subagentModel:'',effort:'',autoCompactWindow:'',contextWindow:'',maxOutputTokens:''});
+type Draft={id:string;name:string;baseUrl:string;apiKey:string;models:string[];defaultModel:string;haikuModel:string;subagentModel:string;effort:string;autoCompactWindow:string;contextWindow:string;maxOutputTokens:string;providerRateMultiplier:string};
+const empty=():Draft=>({id:'',name:'',baseUrl:'',apiKey:'',models:[],defaultModel:'',haikuModel:'',subagentModel:'',effort:'',autoCompactWindow:'',contextWindow:'',maxOutputTokens:'',providerRateMultiplier:''});
 const field=(provider:AgentProviderState,key:string)=>String(provider.fields.find(item=>item.key===key)?.value??'');
 const fromProvider=(provider:AgentProviderState):Draft=>{
- return {id:provider.id,name:provider.name,baseUrl:field(provider,'baseUrl'),apiKey:'',models:provider.models,defaultModel:provider.defaultModel||'',haikuModel:field(provider,'haikuModel'),subagentModel:field(provider,'subagentModel'),effort:field(provider,'effort'),autoCompactWindow:field(provider,'autoCompactWindow'),contextWindow:field(provider,'contextWindow'),maxOutputTokens:field(provider,'maxOutputTokens')};
+ return {id:provider.id,name:provider.name,baseUrl:field(provider,'baseUrl'),apiKey:'',models:provider.models,defaultModel:provider.defaultModel||'',haikuModel:field(provider,'haikuModel'),subagentModel:field(provider,'subagentModel'),effort:field(provider,'effort'),autoCompactWindow:field(provider,'autoCompactWindow'),contextWindow:field(provider,'contextWindow'),maxOutputTokens:field(provider,'maxOutputTokens'),providerRateMultiplier:field(provider,'providerRateMultiplier')};
 };
 const statusLabel:Record<string,string>={ready:'正常',warning:'需配置',error:'异常',unavailable:'不可用',unknown:'待检测'};
 const statusTone=(status:string)=>status==='ready'?'ready':status==='error'?'error':status==='warning'?'warning':'unknown';
@@ -19,12 +19,13 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
  const client=useQueryClient(),[draft,setDraft]=useState<Draft>(()=>provider?fromProvider(provider):empty());
  const [detected,setDetected]=useState<string[]>(provider?.models||[]),[manualModel,setManualModel]=useState(''),[error,setError]=useState(''),[saved,setSaved]=useState(false),[confirmDelete,setConfirmDelete]=useState(false);
  const [probed,setProbed]=useState<Array<AgentModelMetadata & {model:string;name?:string}>>([]);
+ const [editingModels,setEditingModels]=useState(false);
  const configs=useQuery({queryKey:['agent-model-configs','claude',provider?.id],queryFn:()=>api.agentManagement.modelConfigs('claude'),enabled:!!provider,retry:false,refetchInterval:300000});
  const byModel=new Map(provider&&draft.baseUrl.trim()===field(provider,'baseUrl')?configs.data?.models.filter(model=>model.provider===provider.id).map(model=>[model.model,model]):[]);
  const byProbe=new Map(probed.map(model=>[model.model,model]));
  const modelRows=[...new Set([...detected,...draft.models])].map(model=>{
   const saved=byModel.get(model),probe=byProbe.get(model);
-  return {model,name:probe?.name??saved?.name,metadata:{...saved,...probe},context:probe?.context_window??saved?.contextWindow};
+  return {model,name:probe?.name??saved?.name,metadata:{...saved,...probe},context:probe?.context_window??saved?.contextWindow,images:probe?.input_modalities?.includes('image')??saved?.supportsImages};
  });
  const original=provider?fromProvider(provider):empty();
  const dirty=JSON.stringify(draft)!==JSON.stringify(original)||!!confirmDelete||!!Object.keys(modelCapabilitiesPayload(probed)).length;
@@ -34,6 +35,7 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
   const models=[...new Set(result.models.map(item=>item.model))];
   setDetected(models);
   setProbed(result.models);
+  setEditingModels(false);
   setDraft(previous=>{
     const selected=previous.models.filter(model=>models.includes(model));
     const next=selected.length?selected:models;
@@ -64,14 +66,16 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
   const overlap=(provider?.models??[]).filter(model=>discovered.includes(model));
   const models=provider&&overlap.length?overlap:discovered;
   const defaultModel=provider?.defaultModel&&models.includes(provider.defaultModel)?provider.defaultModel:models[0]||'';
-  const fields={baseUrl:draft.baseUrl.trim(),models,defaultModel,haikuModel:draft.haikuModel.trim(),subagentModel:draft.subagentModel.trim(),effort:draft.effort.trim(),autoCompactWindow:draft.autoCompactWindow.trim(),contextWindow:draft.contextWindow.trim(),maxOutputTokens:draft.maxOutputTokens.trim(),...modelCapabilitiesPayload(discovery.models)};
+  const fields={baseUrl:draft.baseUrl.trim(),models,defaultModel,haikuModel:draft.haikuModel.trim(),subagentModel:draft.subagentModel.trim(),effort:draft.effort.trim(),autoCompactWindow:draft.autoCompactWindow.trim(),contextWindow:draft.contextWindow.trim(),maxOutputTokens:draft.maxOutputTokens.trim(),...(provider?.fields.some(item=>item.key==='providerRateMultiplier')?{providerRateMultiplier:draft.providerRateMultiplier.trim()}:{}),...modelCapabilitiesPayload(discovery.models)};
   const input={name:draft.name.trim()||draft.id.trim(),kind:provider?.kind||'anthropic-compatible',enabled:provider?.enabled??true,...draft.apiKey.trim()?{apiKey:draft.apiKey.trim()}:{},fields};
   return provider?api.agentManagement.updateProvider('claude',provider.id,input):api.agentManagement.createProvider('claude',{...input,id:draft.id.trim()});
- },onSuccess:result=>{updateState(result);refreshSessionControls();setSaved(true);setError('');onDirtyChange?.(false);onSaved(provider?.id||draft.id.trim());},onError:(failure:Error)=>setError(failure.message)});
+ },onSuccess:result=>{updateState(result);refreshSessionControls();setSaved(true);setError('');setEditingModels(false);onDirtyChange?.(false);onSaved(provider?.id||draft.id.trim());},onError:(failure:Error)=>setError(failure.message)});
  const remove=useMutation({mutationFn:()=>api.agentManagement.deleteProvider('claude',provider!.id),onSuccess:result=>{updateState(result);setConfirmDelete(false);onDirtyChange?.(false);onSaved(undefined);},onError:(failure:Error)=>setError(failure.message)});
  const toggle=useMutation({mutationFn:(enabled:boolean)=>api.agentManagement.providerAction('claude',provider!.id,enabled?'enable':'disable'),onSuccess:updateState,onError:(failure:Error)=>setError(failure.message)});
  const busy=save.isPending||remove.isPending||toggle.isPending||detect.isPending;
  useEffect(()=>{onBusyChange?.(busy);},[busy,onBusyChange]);
+ const detectDisabled=readOnly||busy||!draft.baseUrl.trim();
+ const displayLocked=readOnly||busy||!editingModels;
  return <form className="claude-provider-editor" aria-label="Claude Provider 配置" onSubmit={event=>{event.preventDefault();if(!readOnly&&!busy){setError('');save.mutate();}}}>
   {onCancel&&<button type="button" className="agent-management-button claude-provider-back" disabled={busy} onClick={onCancel}>返回详情</button>}
   {!inDialog&&<header className="claude-provider-editor-heading">
@@ -89,6 +93,7 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
     }}/>
    <ProviderAdvancedSettings label="Claude Code 设置">
    <div className="agent-management-form agent-management-engine-form">
+    {provider?.fields.some(item=>item.key==='providerRateMultiplier')&&<label className="agent-management-field"><span>Provider 计费倍率</span><input aria-label="Provider 计费倍率" inputMode="decimal" value={draft.providerRateMultiplier} placeholder="按官方参考价折算，留空使用原价" disabled={readOnly||busy} onChange={event=>change({providerRateMultiplier:event.target.value})}/></label>}
     <label className="agent-management-field"><span>Haiku 模型</span><input aria-label="Claude Haiku 模型" value={draft.haikuModel} placeholder="可选，例如 deepseek-flash" disabled={readOnly||busy} onChange={event=>change({haikuModel:event.target.value})}/></label>
     <label className="agent-management-field"><span>子 Agent 模型</span><input aria-label="Claude 子 Agent 模型" value={draft.subagentModel} placeholder="可选，例如 deepseek-flash" disabled={readOnly||busy} onChange={event=>change({subagentModel:event.target.value})}/></label>
     <label className="agent-management-field"><span>Effort 等级</span><input aria-label="Claude Effort 等级" value={draft.effort} placeholder="可选，例如 max" disabled={readOnly||busy} onChange={event=>change({effort:event.target.value})}/></label>
@@ -98,18 +103,23 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
    </div>
    </ProviderAdvancedSettings>
   </section>
- {!provider&&<section className="provider-models" aria-label="Provider 模型配置">
+ {(!provider||editingModels||!!modelRows.length)&&<section className="provider-models" aria-label="Provider 模型配置">
    <ProviderModelActions selected={draft.models.length} total={modelRows.length} detecting={detect.isPending}
-    disabled={readOnly||busy||!draft.baseUrl.trim()||(!provider&&!draft.apiKey.trim())} onDetect={()=>{setError('');detect.mutate();}}/>
-   <ModelCatalogTable rows={modelRows} selected={draft.models} defaultModel={draft.defaultModel} locked={readOnly||busy}
+    disabled={detectDisabled} onDetect={()=>{setError('');detect.mutate();}}>
+    {!readOnly&&!editingModels&&!!modelRows.length&&<button type="button" className="agent-management-button" onClick={()=>setEditingModels(true)}>编辑模型</button>}
+    {!readOnly&&!editingModels&&!modelRows.length&&<button type="button" className="agent-management-button" onClick={()=>{setEditingModels(true);setProbed([]);}}>填写模型</button>}
+    {editingModels&&<button type="button" className="agent-management-button" onClick={()=>{setEditingModels(false);setProbed([]);}}>取消</button>}
+   </ProviderModelActions>
+   <ModelCatalogTable rows={modelRows} selected={draft.models} locked={displayLocked}
     loading={!!provider&&configs.isPending&&!modelRows.length} error={!modelRows.length&&configs.isError?configs.error.message:undefined} onRetry={()=>void configs.refetch()}
-    onSelectedChange={models=>change({models})} onDefaultChange={defaultModel=>change({defaultModel})}/>
-   <div className="provider-model-settings">
-    {!readOnly&&<ProviderAdvancedSettings label="手工添加模型"><div className="provider-manual-model">
+    onSelectedChange={models=>change({models,defaultModel:models.includes(draft.defaultModel)?draft.defaultModel:models[0]||''})}/>
+   {editingModels&&<p className="provider-models-note">上下文和图片能力来自探测结果，或在重新探测后自动更新。默认模型随所选模型自动维护。</p>}
+   {editingModels&&!readOnly&&<div className="provider-model-settings">
+    <ProviderAdvancedSettings label="手工添加模型"><div className="provider-manual-model">
      <input aria-label="手工添加 Claude 模型" value={manualModel} placeholder="模型 ID" disabled={busy} onChange={event=>setManualModel(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();addManualModel();}}}/>
      <button type="button" className="agent-management-button" disabled={busy||!manualModel.trim()} onClick={addManualModel}>添加</button>
-    </div></ProviderAdvancedSettings>}
-   </div>
+    </div></ProviderAdvancedSettings>
+   </div>}
   </section>}
   {(error||saved)&&<div className={`agent-management-operation ${error?'error':'success'}`} role={error?'alert':'status'}>{error?<CircleAlert size={13}/>:<Check size={13}/>}<span>{error||'Claude Provider 已保存'}</span></div>}
   <footer className="claude-provider-editor-actions">

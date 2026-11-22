@@ -42,8 +42,9 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await page.route('**/api/agent-management/claude/providers/xindu-real',route=>{
   if(route.request().method()!=='PUT')return route.continue();
   const body=route.request().postDataJSON();
-  expect(body).toEqual({fields:{providerRateMultiplier:'1.2'}});
-  createdState!.providers[0].fields.find(field=>field.key==='providerRateMultiplier')!.value=body.fields.providerRateMultiplier;
+  const rate=body.fields.providerRateMultiplier;
+  if(rate!==undefined){expect(rate).toBe('1.2');createdState!.providers[0].fields.find(field=>field.key==='providerRateMultiplier')!.value=rate;}
+  if(body.fields.modelCapabilities)JSON.parse(body.fields.modelCapabilities);
   return route.fulfill({json:{state:createdState}});
  });
  await page.route('**/api/agent-management/claude/detect-models',route=>route.fulfill({
@@ -103,27 +104,39 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await expect(form.getByRole('row',{name:/claude-fable-5-1/}).getByRole('cell',{name:'支持',exact:true})).toBeVisible();
  await expect(form.getByText('grok-4.5',{exact:true})).toHaveCount(0);
  await expect(form.getByText('opus',{exact:true})).toHaveCount(0);
- await form.getByRole('radio',{name:'默认模型 claude-fable-5-1'}).check();
+ await form.getByRole('checkbox',{name:'启用 claude-fable-5-1'}).check();
  await form.getByRole('button',{name:'添加 Provider'}).click();
  await expect(add).toHaveCount(0);
  const row=providers.getByRole('row').filter({hasText:'Xindu Real'});
- await expect(row.getByRole('combobox',{name:'Xindu Real 默认模型'})).toHaveValue('claude-fable-5-1');
- const rate=row.getByRole('textbox',{name:'Xindu Real 计费倍率'});
- await rate.fill('1.2');
- await row.getByRole('button',{name:'保存 Xindu Real 倍率'}).click();
- await expect(rate).toBeEnabled();
- await expect(rate).toHaveValue('1.2');
+ await expect(row).toContainText('—');
+ await row.getByRole('button',{name:/展开Provider Xindu Real 的模型/}).click();
+ const nested=page.getByRole('table',{name:'Provider 模型'});
+ const modelEditor=page.getByRole('form',{name:'Provider 模型配置'});
+ await expect(nested.getByRole('checkbox',{name:'启用 claude-fable-5-1'})).toBeChecked();
+ await modelEditor.getByRole('button',{name:'编辑模型'}).click();
+ await nested.getByRole('spinbutton',{name:'claude-fable-5-1 上下文长度'}).fill('500001');
+ await modelEditor.getByRole('button',{name:'保存并重启 Engine'}).click();
  await row.getByRole('button',{name:/编辑 Xindu Real/}).click();
  const edit=page.getByRole('dialog',{name:'编辑 Provider · Xindu Real'});
  await expect(edit.getByLabel('Claude API 地址')).toHaveValue('https://xindu.example');
- const modelRow=edit.getByRole('table',{name:'Provider 模型'}).getByRole('row').filter({hasText:'claude-fable-5-1'});
+ await edit.getByText('Claude Code 设置',{exact:true}).click();
+ const rate=edit.getByRole('textbox',{name:'Provider 计费倍率'});
+ await rate.fill('1.2');
+ const profileSaveResponse=page.waitForResponse(response=>
+  new URL(response.url()).pathname==='/api/agent-management/claude/providers/xindu-real'
+  &&response.request().method()==='PUT'&&response.ok());
+ await edit.getByRole('button',{name:'保存 Provider'}).click();
+ await profileSaveResponse;
+ await expect(edit).toHaveCount(0);
+ await expect(row).toContainText('1.2×');
+ await row.getByRole('button',{name:/编辑 Xindu Real/}).click();
+ const reopened=page.getByRole('dialog',{name:'编辑 Provider · Xindu Real'});
+ const modelRow=reopened.getByRole('table',{name:'Provider 模型'}).getByRole('row').filter({hasText:'claude-fable-5-1'});
  await expect(modelRow).toContainText('2026-09-01');
  await expect(modelRow).toContainText('1,000,000');
  await expect(modelRow).toContainText('500,000');
  await expect(modelRow.getByRole('cell',{name:'支持',exact:true})).toBeVisible();
- await expect(modelRow).toContainText('输入 8 · 缓存命中 0.8 · 输出 40');
- await expect(modelRow).toContainText('1.2×');
- await edit.getByRole('button',{name:'关闭编辑 Provider · Xindu Real'}).click();
+ await reopened.getByRole('button',{name:'关闭编辑 Provider · Xindu Real'}).click();
  await expect(row.getByRole('button',{name:/编辑 Xindu Real/})).toBeFocused();
  await page.setViewportSize({width:390,height:844});
  await row.getByRole('button',{name:/编辑 Xindu Real/}).click();

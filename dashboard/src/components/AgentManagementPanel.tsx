@@ -753,7 +753,7 @@ function ProviderEditor({
           ? { apiKey: fields.envKey || "" }
           : {}),
         fields: {...Object.fromEntries(
-          provider.fields.filter(field=>field.key!=='providerRateMultiplier').map((field) => [
+          provider.fields.map((field) => [
             field.key,
             field.key === "envKey"
               ? ""
@@ -806,6 +806,13 @@ function ProviderEditor({
       }));
     },
   });
+  const saveProvider = async () => {
+    try {
+      await update.mutateAsync(undefined);
+    } catch {
+      // The mutation keeps the concrete error in OperationStatus.
+    }
+  };
   const changeEngineState = async (
     operation: "start" | "stop" | "restart",
   ) => {
@@ -1070,12 +1077,12 @@ function ProviderEditor({
           {nativeApi&&<div className="agent-management-form agent-management-engine-form">
             {nativeApi&&<><label className="agent-management-field agent-management-field-baseUrl"><span>Responses API 地址</span><input aria-label="Responses API 地址" value={nativeDetails.data?.details.settings.base_url||''} readOnly placeholder={nativeDetails.isPending?'正在读取…':'未提供'} /></label><label className="agent-management-field"><span>API Key</span><input aria-label="API Key 状态" readOnly value={nativeBalance.data?.error==='missing_key'?'未配置':nativeBalance.data?.status==='available'||nativeBalance.data?.error==='unauthorized'||nativeBalance.data?.status==='unsupported'?'已配置':'未确认'} /></label><label className="agent-management-field"><span>CODEX_HOME</span><input aria-label="CODEX_HOME" readOnly value={nativeDetails.data?.details.home||provider.codexHome||''} /></label></>}
           </div>}
-          {provider.fields.some(field=>!['models','defaultModel','providerRateMultiplier','baseUrl','envKey'].includes(field.key))&&<ProviderAdvancedSettings label="Codex 设置">
+          {provider.fields.some(field=>!['models','defaultModel','baseUrl','envKey'].includes(field.key))&&<ProviderAdvancedSettings label="Codex 设置">
            <div className="agent-management-form agent-management-engine-form">
             {provider.fields
               .filter(
                 (field) =>
-                  !['models','defaultModel','providerRateMultiplier','baseUrl','envKey'].includes(field.key),
+                  !['models','defaultModel','baseUrl','envKey'].includes(field.key),
               )
               .map((field) => (
                 <FieldEditor
@@ -1099,7 +1106,7 @@ function ProviderEditor({
           </ProviderAdvancedSettings>}
           {nativeApi&&<p className="agent-management-hint">API 地址和凭据由本机 Codex 配置管理；可在下方配置文件中编辑可公开的配置。</p>}
       </section>
-      {!readOnly&&!nativeApi&&<div className="agent-management-actions"><button type="button" className="agent-management-button agent-management-button-primary" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate(undefined)}><Save size={13}/>保存并探测模型</button></div>}
+      {!readOnly&&!nativeApi&&<div className="agent-management-actions"><button type="button" className="agent-management-button agent-management-button-primary" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>void saveProvider()}><Save size={13}/>保存并探测模型</button></div>}
       {files.length>0&&<section className="agent-management-section provider-files"><button type="button" className="agent-management-button" aria-expanded={filesOpen} onClick={()=>setFilesOpen(!filesOpen)}><ChevronRight size={13} style={{transform:filesOpen?'rotate(90deg)':undefined}}/>配置文件 ({files.length})</button>{filesOpen&&<ConfigFiles agentId={agentId} files={files} readOnly={readOnly} onDirtyChange={onFileDirtyChange}/>}</section>}
       {deleteOpen && (
         <ProviderDeleteDialog
@@ -1218,8 +1225,8 @@ function AddCodexProvider({
         <ProviderModelActions selected={selectedModels.length} total={models.length} detecting={detect.isPending} disabled={readOnly||create.isPending||!baseUrl||!apiKey}
           onDetect={()=>{probeRequestVersion.current=probeVersion.current;detect.mutate();}}/>
         <ModelCatalogTable rows={models.map(model=>({model:model.model,name:model.name,metadata:model,context:model.context_window}))}
-          selected={selectedModels} defaultModel={defaultModel} locked={readOnly||busy} loading={detect.isPending}
-          onSelectedChange={setSelectedModels} onDefaultChange={setDefaultModel}/>
+          selected={selectedModels} locked={readOnly||busy} loading={detect.isPending}
+          onSelectedChange={models=>{setSelectedModels(models);setDefaultModel(current=>models.includes(current)?current:models[0]||'');}}/>
         {detect.isError&&probeRequestVersion.current===probeVersion.current&&<OperationStatus busy={false} message="正在探测 Provider 模型…" error={detect.error}/>}
       </section>
       <OperationStatus
@@ -1269,7 +1276,6 @@ const providerColumns: TableColumn<ProviderRow>[] = [
   {key:'agent',title:'Agent',value:row=>row.state.agent.label},
   {key:'auth',title:'接入方式',value:row=>row.auth},
   {key:'connection',title:'连接',value:row=>row.connection},
-  {key:'model',title:'默认模型',value:row=>row.provider?.defaultModel},
   {key:'rate',title:'倍率',kind:'number',value:row=>valueText(row.provider?.fields.find(field=>field.key==='providerRateMultiplier')?.value)||null},
   {key:'status',title:'状态',value:row=>rowStatus(row)},
   {key:'balance',title:'余额',value:()=>null,interactive:false},
@@ -1287,18 +1293,15 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
   const client = useQueryClient();
   const provider = row.provider;
   const agentId = row.state.agent.id;
-  const [draftRate, setDraftRate] = useState<string|null>(null);
   const rateField = provider?.fields.find(field=>field.key==='providerRateMultiplier');
   const rate = valueText(rateField?.value);
-  const canSelectModel = !readOnly && provider !== undefined && provider.fields.some(field=>field.key==='defaultModel') && provider.models.length > 0;
   const save = useMutation({
     mutationFn: (fields:Record<string,string>)=>api.agentManagement.updateProvider(agentId,provider!.id,{fields}),
     onMutate: ()=>onError(''),
-    onSuccess: async (result, fields)=>{
+    onSuccess: async (result)=>{
       client.setQueryData(['agent-management',agentId],result);
       const updated = result.state.providers.find(item=>item.id===provider?.id);
       if(updated)client.setQueryData(['agent-provider',agentId,updated.id],updated);
-      if('providerRateMultiplier' in fields)setDraftRate(null);
       await Promise.all([
         client.invalidateQueries({queryKey:['agent-management-list']}),
         client.invalidateQueries({queryKey:['agent-model-configs',agentId]}),
@@ -1316,22 +1319,7 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
     <td><span className="agent-provider-agent"><AgentIcon id={row.state.agent.id}/>{row.state.agent.label}</span></td>
     <td>{row.auth}</td>
     <td title={row.connection}>{row.connection || '—'}</td>
-    <td title={provider?.defaultModel ?? undefined}>{canSelectModel ? <select className="agent-provider-inline-control"
-      aria-label={`${row.name} 默认模型`} value={provider.defaultModel ?? ''} disabled={save.isPending}
-      onChange={event=>save.mutate({defaultModel:event.target.value})}>
-      {!provider.models.includes(provider.defaultModel??'')&&<option value={provider.defaultModel??''} disabled>{provider.defaultModel||'请选择'}</option>}
-      {provider.models.map(model=><option key={model} value={model}>{model}</option>)}
-    </select> : provider?.defaultModel ? <code>{provider.defaultModel}</code> : '—'}</td>
-    <td>{rateField&&!rateField.readOnly&&!readOnly ? <form className="agent-provider-rate" onSubmit={event=>{
-      event.preventDefault();
-      if(!save.isPending&&draftRate!==null&&draftRate.trim()!==rate)save.mutate({providerRateMultiplier:draftRate.trim()});
-    }}>
-      <input className="agent-provider-inline-control" aria-label={`${row.name} 计费倍率`} title={rateField.description}
-        inputMode="decimal" placeholder="—" value={draftRate??rate} disabled={save.isPending}
-        onChange={event=>setDraftRate(event.target.value)} onKeyDown={event=>{if(event.key==='Escape')setDraftRate(null);}}/>
-      {draftRate!==null&&draftRate.trim()!==rate&&<button type="submit" className="agent-management-button" disabled={save.isPending}
-        aria-label={`保存 ${row.name} 倍率`} title={`保存 ${row.name} 倍率`}><Check size={12}/></button>}
-    </form> : rate ? `${rate}×` : provider?.kind==='native'||provider?.kind==='official'||row.environment?.auth_mode==='account'?'1×':'—'}</td>
+    <td className="agent-provider-rate-readonly">{rate ? `${rate}×` : provider?.kind==='native'||provider?.kind==='official'||row.environment?.auth_mode==='account'?'1×':'—'}</td>
     <td><span className="agent-provider-status" title={enabled ? provider?.statusText : undefined}>
       <span className={`agent-management-dot ${enabled ? statusTone(provider?.status ?? (row.environment?.auth_mode ? 'ready' : 'unknown')) : 'unknown'}`} />{status}
     </span></td>

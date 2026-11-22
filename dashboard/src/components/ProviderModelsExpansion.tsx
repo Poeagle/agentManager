@@ -25,8 +25,6 @@ export function ProviderModelsExpansion({agentId,provider,readOnly,onChanged}:{a
   return {model,name:observation?.name??model,...metadata,...observation};
   });
  },[catalog,detected,provider.models]);
- const rate=Number(provider.fields.find(field=>field.key==='providerRateMultiplier')?.value);
- const providerMultiplier=Number.isFinite(rate)&&rate>0?rate:undefined;
  const updateState=(state:AgentManagementState)=>{
   client.setQueryData(['agent-management',agentId],{state});
   onChanged(state);
@@ -65,9 +63,9 @@ export function ProviderModelsExpansion({agentId,provider,readOnly,onChanged}:{a
  }});
  const busy=detect.isPending||save.isPending;
  return <div className="provider-model-expansion">
-  {provider?<ProviderModelTable agentId={agentId} providerId={provider.id} options={options} selected={selected} defaultModel={defaultModel} providerMultiplier={providerMultiplier}
+  {provider?<ProviderModelTable agentId={agentId} providerId={provider.id} options={options} selected={selected}
    readOnly={readOnly} busy={busy} detecting={detect.isPending} canSave={!readOnly&&!busy&&(dirty||selected.join('\0')!==provider.models.join('\0')||defaultModel!==(provider.defaultModel??''))}
-   onSelectedChange={models=>setSelected(models)} onDefaultChange={model=>setDefaultModel(model)} onDetect={()=>detect.mutate()}
+   onSelectedChange={models=>{setSelected(models);setDefaultModel(model=>models.includes(model)?model:models[0]||'');}} onDetect={()=>detect.mutate()}
    onSave={patches=>save.mutateAsync(patches)} onDirtyChange={setDirty} onBusyChange={()=>{}}/>
    :<div className="provider-model-expansion-empty">暂无模型</div>}
   {detect.isError&&<p className="agent-management-error-box" role="alert"><CircleAlert size={13}/>{detect.error.message}</p>}
