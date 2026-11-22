@@ -57,6 +57,14 @@ function nativeProviderApiKey(): string {
   }
 }
 
+/** The native Engine's CODEX_HOME config may name either variable: the native
+ * connection editor writes AGENTMANAGER_CODEX_API_KEY, while Provider config
+ * files write AGENTMANAGER_PROVIDER_API_KEY. Expose the same key under both so a
+ * saved Provider form cannot leave the Engine unable to resolve its own key. */
+export function nativeEngineApiKeyEnv(apiKey: string): NodeJS.ProcessEnv {
+  return apiKey ? { AGENTMANAGER_CODEX_API_KEY: apiKey, AGENTMANAGER_PROVIDER_API_KEY: apiKey } : {};
+}
+
 function readMetadata(): EngineMetadata | null {
   try {
     const value = JSON.parse(readFileSync(metadataPath(), 'utf8')) as Partial<EngineMetadata>;
@@ -255,7 +263,7 @@ async function launchEngine(report?: AgentOperationReporter): Promise<NativeCode
     env: {
       ...process.env,
       CODEX_HOME: process.env.CODEX_HOME?.trim() || join(homedir(), '.codex'),
-      ...(apiKey?{AGENTMANAGER_CODEX_API_KEY:apiKey}:{}),
+      ...nativeEngineApiKeyEnv(apiKey),
     },
     detached: true,
     stdio: ['ignore', log, log],
