@@ -3,10 +3,10 @@ import {render,screen,waitFor,fireEvent} from '@testing-library/react';
 import {afterEach,expect,it,vi} from 'vitest';
 import {AgentQuotaIndicators} from '../src/components/AgentQuotaIndicator';
 import {api} from '../src/lib/api';
-vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,codexEnvironments:{list:vi.fn(),quota:vi.fn()},agentQuota:{read:vi.fn()}}};});
+vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,codexEnvironments:{list:vi.fn(),quota:vi.fn()},agentQuota:{read:vi.fn()},agentManagement:{get:vi.fn()}}};});
 const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
 afterEach(()=>{client.clear();vi.clearAllMocks();});
-const mount=(isAdmin=true)=>render(<QueryClientProvider client={client}><AgentQuotaIndicators isAdmin={isAdmin}/></QueryClientProvider>);
+const mount=(isAdmin=true,canReadSettings=false)=>render(<QueryClientProvider client={client}><AgentQuotaIndicators isAdmin={isAdmin} canReadSettings={canReadSettings}/></QueryClientProvider>);
 it('keeps member quota visible while exposing no clickable card or refresh controls',async()=>{
  vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[{id:'member',name:'成员账号',kind:'account',auth_mode:'account',enabled:true,allowed_user_ids:null}]});
  vi.mocked(api.codexEnvironments.quota).mockResolvedValue({quota:{usedPercent:25,remainingPercent:75,windowDurationMins:10080,resetsAt:null,planType:null,checkedAt:'2026-11-09T00:00:00Z'}});
@@ -48,4 +48,25 @@ it('updates the header name immediately after the environment list is invalidate
  vi.mocked(api.codexEnvironments.quota).mockResolvedValue({quota:{usedPercent:25,remainingPercent:75,windowDurationMins:10080,resetsAt:null,planType:null,checkedAt:'2026-11-09T00:00:00Z'}});
  mount();expect(await screen.findByLabelText('codex · 旧名称 周额度剩余 75%')).toBeVisible();
  await client.invalidateQueries({queryKey:['codex-environments']});expect(await screen.findByLabelText('codex · 新名称 周额度剩余 75%')).toBeVisible();expect(screen.queryByLabelText('codex · 旧名称 周额度剩余 75%')).not.toBeInTheDocument();
+});
+
+it('shows the Claude Code OAuth account beside existing quota chips without treating an API Key as an account',async()=>{
+ vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[]});
+ const claudeAuth = (method:string) => ({state:{authentication:{status:'authenticated',method}}}) as Awaited<ReturnType<typeof api.agentManagement.get>>;
+ vi.mocked(api.agentManagement.get).mockResolvedValueOnce(claudeAuth('oauth_token')).mockResolvedValueOnce(claudeAuth('api_key'));
+ mount(true,true);
+ expect(await screen.findByText('Claude Code · 账号')).toBeVisible();
+ expect(screen.getByText('已登录')).toBeVisible();
+ expect(api.agentManagement.get).toHaveBeenCalledExactlyOnceWith('claude');
+ expect(api.agentQuota.read).not.toHaveBeenCalled();
+ await client.invalidateQueries({queryKey:['agent-management','claude']});
+ await waitFor(()=>expect(screen.queryByText('Claude Code · 账号')).not.toBeInTheDocument());
+});
+
+it('leaves the Claude native login status private when settings access is unavailable',async()=>{
+ vi.mocked(api.codexEnvironments.list).mockResolvedValue({environments:[]});
+ mount(false);
+ await waitFor(()=>expect(api.codexEnvironments.list).toHaveBeenCalled());
+ expect(api.agentManagement.get).not.toHaveBeenCalled();
+ expect(screen.queryByText('Claude Code · 账号')).not.toBeInTheDocument();
 });
