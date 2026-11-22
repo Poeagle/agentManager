@@ -1,4 +1,4 @@
-import type {ConversationCostEstimate,ConversationMessage,ConversationProgressStatistics,ConversationProgressSegment,ConversationStatistics} from './api';
+import type {ConversationCostEstimate,ConversationInterval,ConversationMessage,ConversationProgressStatistics,ConversationProgressSegment,ConversationStatistics} from './api';
 import {isWaitingConversationInput, type TimelineMessage} from './conversation-timeline';
 
 export function mergeConversationStatistics(previous:ConversationStatistics[],incoming:ConversationStatistics[]):ConversationStatistics[] {
@@ -104,7 +104,9 @@ export function groupConversationProgress(messages:TimelineMessage[]):Conversati
   return [...groups,...waitingInputs];
 }
 
-function aggregateCost(segments:ConversationProgressSegment[]):ConversationCostEstimate|null|undefined {
+type Usage = Pick<ConversationInterval,'tokens'|'requests'|'tool_calls'|'tool_rounds'|'complete'|'coverage'|'reasons'|'cost'>;
+
+function aggregateCost(segments:Usage[]):ConversationCostEstimate|null|undefined {
   const costs=segments.map(segment=>segment.cost);
   if(costs.every(cost=>cost===null))return null;
   const estimates=costs.filter((cost):cost is ConversationCostEstimate=>!!cost);
@@ -123,27 +125,18 @@ function aggregateCost(segments:ConversationProgressSegment[]):ConversationCostE
   return {...latest,amount,complete,breakdown};
 }
 
-function aggregateSegments(segments:ConversationProgressSegment[]):ConversationProgressSegment {
-  if(segments.length===1)return segments[0];
+function aggregateUsage(segments:Usage[]):Usage {
   const tokenKeys=new Set(segments.flatMap(segment=>Object.keys(segment.tokens||{})));
   const tokens=tokenKeys.size?Object.fromEntries([...tokenKeys].map(key=>[
     key,segments.some(segment=>segment.tokens?.[key]!=null)
       ?segments.reduce((sum,segment)=>sum+(segment.tokens?.[key]??0),0):null,
   ])):null;
   const reasons=[...new Set(segments.flatMap(segment=>segment.reasons||[]))];
-  const newest=segments.at(-1)!;
   const complete=segments.every(segment=>segment.complete);
   const coverage=segments.some(segment=>segment.coverage)
     ?complete?'complete':segments.some(segment=>segment.coverage==='partial'||segment.coverage==='unavailable')?'partial':'pending'
     :undefined;
-  const starts=segments.map(segment=>segment.start_at).filter((value):value is string=>!!value).sort();
-  const ends=segments.map(segment=>segment.end_at).filter((value):value is string=>!!value).sort();
   return {
-    ...newest,
-    start_at:starts[0]??null,
-    end_at:segments.every(segment=>segment.end_at)?ends.at(-1)??null:null,
-    elapsed_ms:segments.every(segment=>segment.elapsed_ms!=null)
-      ?segments.reduce((sum,segment)=>sum+segment.elapsed_ms!,0):null,
     tokens,
     requests:segments.reduce((sum,segment)=>sum+segment.requests,0),
     tool_calls:segments.reduce((sum,segment)=>sum+segment.tool_calls,0),
@@ -154,9 +147,61 @@ function aggregateSegments(segments:ConversationProgressSegment[]):ConversationP
   };
 }
 
+function aggregateSegments(segments:ConversationProgressSegment[]):ConversationProgressSegment {
+  if(segments.length===1)return segments[0];
+  const starts=segments.map(segment=>segment.start_at).filter((value):value is string=>!!value).sort();
+  const ends=segments.map(segment=>segment.end_at).filter((value):value is string=>!!value).sort();
+  const tails=segments.flatMap(segment=>segment.unassigned?[segment.unassigned]:[]);
+  return {
+    ...segments.at(-1)!,
+    ...aggregateUsage(segments),
+    start_at:starts[0]??null,
+    end_at:segments.every(segment=>segment.end_at)?ends.at(-1)??null:null,
+    elapsed_ms:segments.every(segment=>segment.elapsed_ms!=null)
+      ?segments.reduce((sum,segment)=>sum+segment.elapsed_ms!,0):null,
+    unassigned:tails.length?{...aggregateUsage(tails),shared_messages:1}:undefined,
+  };
+}
+
+/** An accepted input keeps its transcript position even when a shared native
+ * response finishes across that boundary. Each group uses its own Item usage. */
+export function splitProgressSegments(groups:ConversationGroup[]) {
+  const scopes=new Map<string,{
+    members:Map<string,ConversationInterval[]>;
+    latest?:{owner:string;revision:number;segment:ConversationProgressSegment};
+  }>();
+  for(const group of groups) {
+    if(group.kind!=='progress')continue;
+    for(const message of group.messages) {
+      const stats=message.statistics;
+      const id=stats?.progress_id??stats?.segment?.id;
+      if(!stats||!id)continue;
+      const scope=scopes.get(id)??{members:new Map<string,ConversationInterval[]>()};
+      scopes.set(id,scope);
+      const intervals=scope.members.get(group.id)??[];
+      scope.members.set(group.id,intervals);
+      if(stats.interval)intervals.push(stats.interval);
+      if(stats.segment&&(stats.revision??0)>=(scope.latest?.revision??0))
+        scope.latest={owner:group.id,revision:stats.revision??0,segment:stats.segment};
+    }
+  }
+  const result=new Map<string,Map<string,ConversationProgressSegment>>();
+  for(const [id,{members,latest}] of scopes) {
+    if(!latest||members.size<2)continue;
+    for(const [owner,intervals] of members) {
+      const unassigned=owner===latest.owner?latest.segment.unassigned:undefined;
+      const usage=aggregateUsage(unassigned?[...intervals,unassigned]:intervals);
+      const segments=result.get(owner)??new Map<string,ConversationProgressSegment>();
+      result.set(owner,segments);
+      segments.set(id,{...latest.segment,...usage,unassigned,elapsed_ms:null});
+    }
+  }
+  return result;
+}
+
 /** Merge distinct recorded segments in a presentation group. Repeated message
  * snapshots share a segment ID and count once. */
-export function progressGroupStatistics(messages:ConversationMessage[],final?:ConversationMessage|null,current?:ConversationProgressSegment):ConversationStatistics|null {
+export function progressGroupStatistics(messages:ConversationMessage[],final?:ConversationMessage|null,current?:ConversationProgressSegment,split?:Map<string,ConversationProgressSegment>):ConversationStatistics|null {
   const segments=new Map<string,{segment:ConversationProgressSegment;revision:number}>();
   for(const message of messages) {
     const statistics=message.statistics;
@@ -168,6 +213,7 @@ export function progressGroupStatistics(messages:ConversationMessage[],final?:Co
   const finalRevision=final?.statistics?.revision??0;
   if(finalSegment&&segments.has(finalSegment.id)&&finalRevision>=(segments.get(finalSegment.id)?.revision??0))segments.set(finalSegment.id,{segment:finalSegment,revision:finalRevision});
   if(current)segments.set(current.id,{segment:current,revision:0});
+  for(const [id,segment] of split??[])segments.set(id,{segment,revision:0});
   if(segments.size) {
     const segment=aggregateSegments([...segments.values()].map(value=>value.segment));
     const interval={...segment,shared_messages:1};

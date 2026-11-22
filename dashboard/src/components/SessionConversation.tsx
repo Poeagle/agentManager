@@ -106,7 +106,7 @@ import {
   waitingInputKey,
   type TimelineMessage,
 } from "../lib/conversation-timeline";
-import { finalThinking, groupConversationProgress, isEmptyProgress, isThinkingOnly, progressSteps, progressThinking, mergeConversationStatistics, pendingProgressStatistics, progressGroupStatistics, withObservedToolCounts, withPrecedingThinking } from "../lib/conversation-progress";
+import { finalThinking, groupConversationProgress, isEmptyProgress, isThinkingOnly, progressSteps, progressThinking, mergeConversationStatistics, pendingProgressStatistics, progressGroupStatistics, splitProgressSegments, withObservedToolCounts, withPrecedingThinking } from "../lib/conversation-progress";
 import {
   conversationTimings,
   elapsedBetween,
@@ -2075,9 +2075,15 @@ export function SessionConversation({
         )
       : null;
   const groups = groupConversationProgress(displayed);
+  const splitSegments = splitProgressSegments(groups);
   const displayedLastUser=displayed.reduce((index,message,current)=>message.role==='user'&&!isWaitingConversationInput(message)&&!automaticConversationContext(message.text)?current:index,-1);
   const previousSegment=[...displayed.slice(0,Math.max(0,displayedLastUser))].reverse().find(message=>message.role==='assistant'&&message.statistics?.segment)?.statistics?.segment;
-  const pendingSegment=continuingAfterFollowup&&previousSegment&&progressStatistics?.segment&&previousSegment.id!==progressStatistics.segment.id&&progressStatistics.turn_id===liveProgress.turn_id?progressStatistics.segment:null;
+  const liveSegment=progressStatistics?.turn_id===liveProgress.turn_id?progressStatistics?.segment:undefined;
+  const liveStep=progressStatistics?.step;
+  const inputBoundary=displayed[displayedLastUser]?.timestamp;
+  const firstStepAfterInput=!!liveSegment&&liveStep?.segment_id===liveSegment.id&&liveStep.after_message_id===null&&liveStep.after_sequence===null&&
+    !!inputBoundary&&!!liveSegment.start_at&&Date.parse(liveSegment.start_at)>=Date.parse(inputBoundary);
+  const pendingSegment=liveSegment&&(firstStepAfterInput||continuingAfterFollowup&&previousSegment&&previousSegment.id!==liveSegment.id)?liveSegment:null;
   // This slot is presentation only: native messages remain the sole history.
   // Queued input must not close the running segment before it is accepted.
   const tailIndex=groups.reduce((index,group,current)=>group.kind==='progress'||!isWaitingConversationInput(group.message)?current:index,-1);
@@ -2139,7 +2145,9 @@ export function SessionConversation({
   const requestCount = (activities: ConversationActivity[]) => new Set(activities.flatMap(item => item.request_message_id ? [item.request_message_id] : [])).size;
   const observedTurnActivities = latestActivities.filter(item => item.request_message_id && item.turn_id === liveTurn &&
     (!Number.isFinite(inputTime) || !item.started_at || Date.parse(item.started_at) >= inputTime));
-  const pendingStatistics=withObservedToolCounts(pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||tail?.kind==='progress'||!!pendingSegment)?progressStatistics:null,tail?.kind==='progress'?slotMessage?.statistics?.segment:undefined,tail?.kind==='progress',slotMessage),slotActivities.length,liveTurn||'',requestCount(slotActivities));
+  const pendingHasPrevious=tail?.kind==='progress'&&!firstStepAfterInput;
+  const recordedPending=pendingProgressStatistics(progressStatistics?.turn_id===liveTurn&&(!continuingAfterFollowup||tail?.kind==='progress'||!!pendingSegment)?progressStatistics:null,
+    pendingHasPrevious?slotMessage?.statistics?.segment:undefined,pendingHasPrevious,slotMessage);
   const latestUsage=liveUsageQuery.data;
   const pendingLiveUsage=latestUsage&&latestUsage.native_id===agentNativeId(session)&&liveProgress.started_at&&
     Date.parse(latestUsage.observed_at)>=Date.parse(liveProgress.started_at)?latestUsage:null;
@@ -2455,17 +2463,17 @@ export function SessionConversation({
                   message.id===step.after_message_id||(step.after_sequence!=null&&message.sequence===step.after_sequence));
                 const liveIsCurrent=progressStatistics?.revision==null||progressStatistics.revision>=(savedMessage?.statistics?.revision??0);
                 const liveMatches=progressStatistics?.turn_id===(last?.statistics?.turn_id||last?.turn_id||liveTurn)&&live&&
-                  liveIsCurrent&&(savedScope?live.id===savedScope&&boundaryMatches:last?step?.after_message_id===last.id||
+                  liveIsCurrent&&(activeGroup&&firstStepAfterInput|| (savedScope?live.id===savedScope&&boundaryMatches:last?step?.after_message_id===last.id||
                     step?.after_sequence!=null&&step.after_sequence===last.sequence:
-                    !!pendingSegment||!continuingAfterFollowup);
+                    !!pendingSegment||!continuingAfterFollowup));
                 const part=activeGroup&&liveMatches?live:saved;
                 const summarySegment=activeGroup&&liveMatches?live:savedMessage?undefined:saved??undefined;
-                const groupedStatistics=progressGroupStatistics(group.messages,final,summarySegment);
+                const groupedStatistics=progressGroupStatistics(group.messages,final,summarySegment,splitSegments.get(group.id));
                 const activities = activeGroup ? observedTurnActivities.filter(item => !part?.start_at ||
                   !item.started_at || Date.parse(item.started_at) >= Date.parse(part.start_at)) : [];
                 const summary=withObservedToolCounts(groupedStatistics?{...groupedStatistics,turn_id:last?.turn_id||liveTurn||'',sequence:0}:null,
                   activities.length || (pending ? slotActivities.length : 0),liveTurn||'',requestCount(activities));
-                const execution=part?.unassigned;
+                const execution=groupedStatistics?.segment?.unassigned;
                 const executionStats=execution?{...execution,sequence:0,turn_id:last?.turn_id||liveTurn||'',interval:execution}:null;
                 const finalParts=final ? finalThinking(group,final) : [];
                 const messages=group.messages.slice(0,group.messages.length-finalParts.length);
@@ -2522,7 +2530,7 @@ export function SessionConversation({
                       thinking={pendingThinking && <ConversationThinking agentName={agentName} text={pendingThinking.body} previewText={pendingThinking.text}
                         streaming={lastThought?.id===streamingId}/>}
                       startedAt={tailMessage?.turn_id&&tailMessage.turn_id!==liveTurn?liveProgress.started_at:tailMessage?.timestamp||liveProgress.started_at}
-                      statistics={pendingStatistics??(liveMatches?executionStats:null)} liveUsage={pendingLiveUsage} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
+                      statistics={withObservedToolCounts(recordedPending??(liveMatches?executionStats:null),slotActivities.length,liveTurn||'',requestCount(slotActivities))} liveUsage={pendingLiveUsage} now={now} connected={liveState==='connected'} showStatistics={!notificationView}/>}
                     {showExecution&&executionStats&&<div className="session-chat-progress-entry">
                       <span className="session-chat-progress-number" aria-label={`进展序号 ${steps.length+1}`}>{steps.length+1}</span>
                       <div className="session-chat-message-meta">

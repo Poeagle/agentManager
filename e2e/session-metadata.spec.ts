@@ -352,6 +352,49 @@ test('keeps the shown Item counts and usage within their Progress across consecu
   await expect(items).toHaveCount(2);
 });
 
+test('reconciles live Codex API Progress costs when a shared response crosses an accepted input',async({page})=>{
+  const session=await setup(page,'codex','detached');
+  const turn='crossing-api-turn';
+  writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId}));
+  let emit:((frame:unknown)=>void)|undefined;
+  await page.routeWebSocket('**/conversation/stream*',socket=>{emit=frame=>socket.send(JSON.stringify(frame));});
+  await page.goto('/');
+  await expect.poll(()=>!!emit).toBe(true);
+  const usage=(total:number,amount:number,requests=1,calls=0)=>({tokens:{total_tokens:total},requests,tool_calls:calls,
+    tool_rounds:calls?1:0,complete:true,coverage:'complete',shared_messages:1,cost:{unit:'USD',basis:'api',amount,complete:true}});
+  const before=usage(21500,0.2),shared=usage(84800,0.6,3,7),firstLive=usage(42000,0.3,1,1);
+  const old={id:'old',start_at:at(1),end_at:at(4),end_reason:'input',elapsed_ms:3000};
+  const current={id:'current',start_at:at(4),end_at:null,end_reason:null,elapsed_ms:null};
+  const interval=(value:ReturnType<typeof usage>,sequence:number,scope:string,segment?:object)=>({
+    ...value,interval:value,progress_id:scope,segment,sequence,revision:sequence,turn_id:turn,
+  });
+  const messages=[
+    {id:'start',role:'user',turn_id:turn,text:'Start',timestamp:at(1),sequence:1},
+    {id:'before',role:'assistant',phase:'commentary',turn_id:turn,text:'Check the first scope',timestamp:at(2),sequence:2,
+      statistics:interval(before,2,old.id,{...old,...usage(69900,0.5,3,5),unassigned:usage(48400,0.3,2,5)})},
+    {id:'steer',role:'user',turn_id:turn,text:'Add a second scope',timestamp:at(4),sequence:4},
+    {id:'after',role:'assistant',phase:'commentary',turn_id:turn,text:'Continue from the shared response',timestamp:at(5),sequence:5,
+      statistics:interval(shared,5,old.id,{...old,...usage(106300,0.8,4,7)})},
+  ];
+  emit!({type:'snapshot',messages,turn_id:turn,busy:true,stage:'tools',started_at:at(1),activities:[{
+    id:'tool',turn_id:turn,after_message_id:'after',label:'Search',status:'running',started_at:at(6),
+  }]});
+  emit!({type:'progress_statistics',native_id:session.nativeId,progress:{...firstLive,turn_id:turn,revision:6,
+    segment:{...current,...firstLive,unassigned:firstLive},step:{...firstLive,segment_id:current.id,after_message_id:null,after_sequence:null,start_at:at(4)},
+  }});
+  const oldGroup=session.chat.getByRole('region',{name:'Codex 进展'}).filter({hasText:'Check the first scope'});
+  const active=session.chat.getByRole('region',{name:'Codex 进展'}).filter({hasText:'Continue from the shared response'});
+  const header=(group:typeof active)=>group.locator('summary .session-chat-message-statistics').first();
+  await expect(header(oldGroup)).toHaveAttribute('title',/Total 21,500;/);
+  await expect(header(oldGroup)).toContainText('21.5K ($0.2)');
+  await expect(oldGroup.getByText(executionUsageLabel)).toHaveCount(0);
+  await expect(header(active)).toHaveAttribute('title',/Total 126,800;/);
+  await expect(header(active)).toContainText('126.8K ($0.9)');
+  const step=active.getByRole('status',{name:'正在执行的进展 2'});
+  await expect(step).toContainText('42K ($0.3)');
+  await expect(step).toContainText('1 round | 1 call');
+});
+
 test('uses adjacent cached-input counts and ignores a ratio drop caused by new input tokens',async({page})=>{
   const session=await setup(page,'codex','detached');
   const turn='actual-hit-counts';
