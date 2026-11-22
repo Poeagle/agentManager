@@ -109,7 +109,8 @@ export function mergeConversationTimeline(previous:TimelineMessage[],incoming:Co
     const keep=oldItem.optimistic&&!item.optimistic?index:!oldItem.optimistic&&item.optimistic?old:item.sequence!==undefined&&oldItem.sequence===undefined?index:old;
     remove.add(keep===old?index:old);for(const id of identities)byClient.set(id,keep);
   });
-  const settled=result.filter((_item,index)=>!remove.has(index));
+  const superseded = new Set(result.flatMap(item => item.compaction?.replaces_message_id ? [item.compaction.replaces_message_id] : []));
+  const settled=result.filter((item,index)=>!remove.has(index) && !superseded.has(item.id));
   // Live events can arrive before their durable sequence. Once history supplies
   // sequence numbers, repair the relative order of those known identities.
   // Keep unsequenced optimistic/live entries in their existing slots.

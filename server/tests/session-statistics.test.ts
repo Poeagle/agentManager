@@ -289,6 +289,37 @@ describe('persisted session statistics',()=>{
     expect(readSessionMetadata(codex)).toMatchObject({cache_drop_count:1,totals:{requests:3}});
   });
 
+  it('counts a provider rewrite receipt once without settling a Final or publishing a second cache drop',async()=>{
+    const wrapper='Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:';
+    const turn='turn';
+    const rewriteItem=row(56,'response_item',{type:'message',role:'assistant',id:'rewrite-item',phase:'final_answer',
+      content:[{type:'output_text',text:'Internal summary'}],internal_chat_message_metadata_passthrough:{content_item_kinds:['unknown']}});
+    await writeFile(file,event(0,'task_started',{turn_id:turn})+user(1,'input')+
+      answer(2,'progress','commentary')+receipt(3,'before',turn,tokens(346988,346752,1333))+
+      rewriteItem+receipt(59.166,'rewrite',turn,tokens(345318,3968,1971))+legacy(59.167,0,tokens(345318,3968,1971)));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)?.cache_drop_count).toBe(0);
+    closeDb();initDb();
+    await appendFile(file,row(59.170,'compacted',{compaction_response_id:'rewrite',message:wrapper+'\nInternal summary'})+
+      answer(67,'post-progress','commentary')+receipt(67.667,'after',turn,tokens(29384,15744,329)));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)).toMatchObject({cache_drop_count:1,completed_turns:0,totals:{requests:3}});
+    expect(readSessionMetadataDetails(codex,true)?.cache_drops).toMatchObject([
+      {compaction_at:stamp(59.170),previous:{request_id:'before',cached_input_tokens:346752},
+        current:{request_id:'after',cached_input_tokens:15744}},
+    ]);
+    expect(readChangedSessionStatistics(codex,0)).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({message_id:nativeItemId('assistant','rewrite-item')}),
+    ]));
+    const realFinal = rewriteItem.replace('rewrite-item','actual-final').replace(stamp(56),stamp(68));
+    await appendFile(file,realFinal+receipt(69,'final',turn,tokens(30000,16000))+event(70,'task_complete',{turn_id:turn}));
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadata(codex)).toMatchObject({cache_drop_count:1,completed_turns:1,totals:{requests:4}});
+    expect(readChangedSessionStatistics(codex,0)).toEqual(expect.arrayContaining([
+      expect.objectContaining({message_id:nativeItemId('assistant','actual-final'),conclusion:expect.anything()}),
+    ]));
+  });
+
   it('uses the adjacent native receipts at a compaction in the middle of one input',async()=>{
     const before=tokens(450_070,448_512),after=tokens(32_061,13_696);
     await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'one')+

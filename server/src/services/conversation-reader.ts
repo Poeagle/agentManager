@@ -29,6 +29,7 @@ interface IndexedMessage extends Omit<ConversationMessage, "phase"> {
   questionSignature?: string;
   questionCallId?: string;
   projectionIndex?: number;
+  compactionEchoText?: string;
   statistics?: ConversationStatistics;
   resetBefore?: boolean;
   sourceRole?: "tool_result";
@@ -212,6 +213,7 @@ function scan(
       usage: parsed.usage,
       ...(parsed.presentation ? { presentation: parsed.presentation } : {}),
       ...(compacted ? { compaction: compacted } : {}),
+      ...(parsed.compactionEchoText ? {compactionEchoText: parsed.compactionEchoText} : {}),
       ...(parsed.asyncQuestions
         ? { questionSignature: questionSignature(parsed.asyncQuestions) }
         : {}),
@@ -313,6 +315,21 @@ function appendScanned(
     messages.push(message);
   }
 }
+function reconcileCompactionEchoes(messages: IndexedMessage[]): IndexedMessage[] {
+  const result: IndexedMessage[] = [];
+  for (const message of messages) {
+    const previous = result.at(-1);
+    if (message.compaction && message.compactionEchoText && previous?.recordType === 'native_message' &&
+        previous.role === 'assistant' && previous.phase === 'final' && previous.nativeItem &&
+        previous.text.replace(/\r\n/g, '\n') === message.compactionEchoText && previous.id !== message.id) {
+      result.pop();
+      message.compaction = {...message.compaction, replaces_message_id: previous.id};
+    }
+    result.push(message);
+  }
+  return result;
+}
+
 function projectToolResults(messages: IndexedMessage[]): IndexedMessage[] {
   const visible = messages.filter(
     (message) => message.sourceRole !== "tool_result",
@@ -803,7 +820,7 @@ export async function readConversation(
               projectToolResults(
                 dedupe(
                   bindQuestionCalls(
-                    bindTurnBoundaries(messages, index!.turnBoundaries),
+                    bindTurnBoundaries(reconcileCompactionEchoes(messages), index!.turnBoundaries),
                     index!.questionCalls,
                   ),
                 ),
@@ -870,11 +887,11 @@ export async function readConversation(
           const after = index.messages.findIndex(
             (message) => message.id === query.after,
           );
-          reset ||= after < 0;
-          selected =
-            after < 0
-              ? index.messages.slice(-limit)
-              : index.messages.slice(after + 1, after + 1 + limit);
+          const next = after >= 0 ? after + 1 : index.messages.findIndex(
+            message => message.compaction?.replaces_message_id === query.after,
+          );
+          reset ||= next < 0;
+          selected = next < 0 ? index.messages.slice(-limit) : index.messages.slice(next, next + limit);
         } else {
           selected = index.messages.slice(
             Math.max(0, before - limit),

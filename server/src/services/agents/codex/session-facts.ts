@@ -7,6 +7,7 @@ import type { AgentSessionFactsPort, NativeFactLocation, NativeRequestFact, Nati
 import { consistentUsage, factId, factString, factTime, nativeItemId, parsedUsage, recordType } from '../session-fact-values.js';
 import { recordedPricingSettings } from './statistics-settings.js';
 import { codexMessagePhase, codexUserText } from './text.js';
+import { codexCompactionSummaryBody } from './compaction.js';
 import { conversationImagePaths } from '../../conversation-attachments.js';
 import { codexApiEstimate, codexApiPricing, costSnapshot, emptyCostTotals, recordCost } from './statistics-cost.js';
 
@@ -33,6 +34,10 @@ interface CodexFactsState {
   requestContexts: Array<{turn: string; dimensions: RequestDimensions; provider?:string|null}>;
   lastInput?: Input;
   pendingInput?: Input;
+  pendingFinal?: {
+    item: Extract<NativeSessionFact, {kind: 'item'}>;
+    receipt?: Extract<NativeSessionFact, {kind: 'request'}>;
+  };
 }
 
 const tools = new Set(['function_call', 'custom_tool_call', 'tool_search_call', 'web_search_call', 'local_shell_call']);
@@ -43,7 +48,7 @@ const itemText = (content: unknown, types: string[]) => Array.isArray(content)
   : '';
 
 export const codexSessionFacts: AgentSessionFactsPort = {
-  revision: 4,
+  revision: 5,
   async *discover() {
     const { allCodexEnvironments } = await import('./environments.js');
     const { localHome } = await import('./account-files.js');
@@ -102,6 +107,21 @@ export const codexSessionFacts: AgentSessionFactsPort = {
       kind === 'session_meta' || kind === 'turn_context') && (!payload || typeof payload !== 'object')) {
       facts.push({kind: 'gap', reason: 'unreadable_record'});
       return result();
+    }
+    // These releases serialize both a real Final and a context rewrite as a
+    // final response item, followed by its receipt and a token-count echo.
+    // The next lifecycle record determines which kind of output was written.
+    const pending = state.pendingFinal;
+    const compactionId = kind === 'compacted' ? factString(payload?.compaction_response_id) : null;
+    const summary = compactionId ? codexCompactionSummaryBody(payload) : undefined;
+    const internalReceipt = pending?.receipt && pending.receipt.request.id === compactionId && summary &&
+      textDigest(summary) === pending.item.digest ? pending.receipt : undefined;
+    if (pending && type !== 'token_count' && (kind !== 'token_usage_record' || pending.receipt)) {
+      if (!internalReceipt) {
+        facts.push(pending.item);
+        if (pending.receipt) facts.push(pending.receipt);
+      }
+      delete state.pendingFinal;
     }
     const declaredTurn = factString(payload?.turn_id);
     const responseTurn = factString(payload?.internal_chat_message_metadata_passthrough?.turn_id);
@@ -201,14 +221,19 @@ export const codexSessionFacts: AgentSessionFactsPort = {
       flushInput(state, facts);
       captureRequestContext(state, turn);
       const native = factString(item.id);
-      const digest = textDigest(itemText(item.content, ['text', 'Text', 'output_text']));
+      const digest = textDigest(itemText(item.content, ['text', 'Text', 'output_text']).replace(/\r\n/g, '\n'));
       const phase = codexMessagePhase(item.phase, item.delivery);
       const final = phase === 'final' && !item.questions?.length && !!digest;
-      if (digest || native) facts.push({
-        kind: 'item', id: native ? nativeItemId('assistant', native) : factId('item', context.nativeId, offset),
-        turn_id: turn, at, phase: final ? 'final' : phase === 'commentary' || (item.phase && item.phase !== 'unknown') ? 'progress' : 'unknown',
-        ...(digest ? {digest} : {}),
-      });
+      if (digest || native) {
+        const fact: Extract<NativeSessionFact, {kind: 'item'}> = {
+          kind: 'item', id: native ? nativeItemId('assistant', native) : factId('item', context.nativeId, offset),
+          turn_id: turn, at, phase: final ? 'final' : phase === 'commentary' || (item.phase && item.phase !== 'unknown') ? 'progress' : 'unknown',
+          ...(digest ? {digest} : {}),
+        };
+        if (final && kind === 'response_item' && Array.isArray(item.internal_chat_message_metadata_passthrough?.content_item_kinds))
+          state.pendingFinal = {item: {...fact, source_offset: offset}};
+        else facts.push(fact);
+      }
       return result();
     }
     if (turn && kind === 'response_item' && tools.has(payload.type)) {
@@ -233,7 +258,16 @@ export const codexSessionFacts: AgentSessionFactsPort = {
         if (state.recentReceipts.length>64)state.recentReceipts.shift();
         state.primarySinceCount = true;
         const tokens = parsedUsage(payload.usage);
-        facts.push({kind: 'request', request: receipt(id, tokens, 'request', turn, location, state, record.ordinal, payload)});
+        const fact: Extract<NativeSessionFact, {kind: 'request'}> = {
+          kind: 'request', request: receipt(id, tokens, 'request', turn, location, state, record.ordinal, payload),
+        };
+        if (state.pendingFinal && state.pendingFinal.item.turn_id === turn)
+          state.pendingFinal.receipt = {...fact, source_offset: offset};
+        else {
+          if (state.pendingFinal) facts.push(state.pendingFinal.item);
+          delete state.pendingFinal;
+          facts.push(fact);
+        }
       }
     }
     if (type === 'token_count' && payload.info) {
@@ -265,6 +299,7 @@ export const codexSessionFacts: AgentSessionFactsPort = {
       facts.push({kind: 'lifecycle', id: compactionRequest ?? factString(payload?.window_id) ?? undefined,
         ...(compactionRequest ? {related_request_id: compactionRequest} : {}),
         event: {action: 'compact', state: action, at, turn_id: turn}});
+      if (internalReceipt) facts.push(internalReceipt);
     }
     if (turn && (type === 'task_complete' || type === 'turn_aborted')) {
       flushInput(state, facts);

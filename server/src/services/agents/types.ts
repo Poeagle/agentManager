@@ -319,6 +319,7 @@ export interface AgentMessage {
     before_tokens: number | null;
     after_tokens: number | null;
     duration_ms: number | null;
+    replaces_message_id?: string;
   };
   error?: {
     code?: string;
@@ -514,6 +515,8 @@ export interface AgentHistoryRecord {
   };
   presentation?: "compaction_summary";
   compaction?: AgentMessage["compaction"];
+  /** Exact body used to bind a preceding native summary echo to its card. */
+  compactionEchoText?: string;
   contentBlocks?: AgentMessage["content_blocks"];
   failure?: AgentMessage | null;
   itemId?: string;

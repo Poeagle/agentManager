@@ -15,11 +15,21 @@ type MessageFrame = AgentStreamFrame|DurableConversationFrame;
 export class ConversationProjection {
   private messages:AgentMessage[]=[];
   private byId=new Map<string,number>();
+  private superseded = new Set<string>();
   private runtimeFingerprint='';
 
   private merge(incoming:AgentMessage[]){
+    for (const message of incoming) {
+      const replacedId = message.compaction?.replaces_message_id;
+      if (!replacedId || this.superseded.has(replacedId)) continue;
+      this.superseded.add(replacedId);
+      if (!this.byId.has(replacedId)) continue;
+      this.messages = this.messages.filter(item => item.id !== replacedId);
+      this.byId = new Map(this.messages.map((item, index) => [item.id, index]));
+    }
     const changed:AgentMessage[]=[];
     for(const message of incoming){
+      if(this.superseded.has(message.id))continue;
       const index=this.byId.get(message.id);
       if(index===undefined){
         this.byId.set(message.id,this.messages.length);

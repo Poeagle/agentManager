@@ -462,6 +462,38 @@ test('shows one cache drop next to an in-turn compaction and keeps it after relo
   expect(history.cache_drops[0]).toMatchObject({elapsed_ms:4954,compaction_at:at(55.363),interval_kind:'request'});
 });
 
+test('reconciles a live provider compaction echo into its card and reports one post-compaction cache drop',async({page})=>{
+  const session=await setup(page,'codex','detached');
+  const turn='provider-compact',body='仅在压缩卡片里可见的摘要';
+  const wrapper='Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:';
+  writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+
+    event(1,'task_started',{turn_id:turn})+message(2,'input','user','继续任务')+
+    message(3,'before','assistant','压缩前进展','commentary')+request(4,turn,'before',346988,346752));
+  await page.goto('/');
+  await expect(session.chat.getByText('继续任务',{exact:true})).toBeVisible();
+  const rewrite=record(59,'response_item',{type:'message',id:'rewrite-item',role:'assistant',phase:'final_answer',
+    content:[{type:'output_text',text:body}],internal_chat_message_metadata_passthrough:{content_item_kinds:['unknown']}});
+  appendFileSync(session.log,rewrite+request(60,turn,'rewrite-response',345318,3968));
+  const echo=session.chat.locator('[data-phase=final]').filter({hasText:body});
+  await expect(echo).toHaveCount(1);
+  const summary=wrapper+'\n'+body;
+  appendFileSync(session.log,record(60.001,'compacted',{message:summary,compaction_response_id:'rewrite-response',
+    replacement_history:[{type:'message',role:'user',id:'summary-card',content:[{type:'input_text',text:summary}]}]})+
+    message(67,'after','assistant','压缩后继续','commentary')+request(68,turn,'after',29384,15744));
+  const card=session.chat.getByRole('button',{name:/Conversation summary/});
+  const drop=session.chat.locator('[data-cache-drop-id]');
+  for (const reload of [false,true]) {
+    if (reload) await page.reload();
+    await expect(card).toHaveCount(1);
+    await expect(echo).toHaveCount(0);
+    await expect(drop).toHaveCount(1);
+    await expect(drop).toContainText('99.93%');
+    await expect(drop).toContainText('53.58%');
+  }
+  await card.click();
+  await expect(page.getByRole('dialog',{name:'Conversation summary'})).toContainText(body);
+});
+
 test('shows the manual compaction cache drop once its first ordinary request arrives',async({page})=>{
   const session=await setup(page,'codex','detached');
   writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+
