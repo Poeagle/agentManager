@@ -649,6 +649,9 @@ function ProviderEditor({
   const [selectedModels, setSelectedModels] = useState<string[]>(
     provider.models,
   );
+  const availableModels = provider.id === "native"
+    ? splitLines(fields.models || "")
+    : selectedModels;
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -737,7 +740,7 @@ function ProviderEditor({
       if(provider.id!=='native'&&!discovery.models.length)throw Error('Provider 未返回可用模型，当前配置未保存');
       const discoveredModels=discovery.models.map(model=>model.model);
       const retained=selectedModels.filter(model=>discoveredModels.includes(model));
-      const nextModels=provider.id==='native'?selectedModels:retained.length?retained:discoveredModels;
+      const nextModels=provider.id==='native'?availableModels:retained.length?retained:discoveredModels;
       const configuredDefault=fields.defaultModel||provider.defaultModel||'';
       const nextDefault=nextModels.includes(configuredDefault)?configuredDefault:nextModels[0]||'';
       const edited=new Map(patches?.map(patch=>[patch.model,patch]));
@@ -753,7 +756,7 @@ function ProviderEditor({
           ? { apiKey: fields.envKey || "" }
           : {}),
         fields: {...Object.fromEntries(
-          provider.fields.map((field) => [
+          provider.fields.filter(field=>field.key!=='providerRateMultiplier').map((field) => [
             field.key,
             field.key === "envKey"
               ? ""
@@ -1075,7 +1078,11 @@ function ProviderEditor({
               setFields(current=>({...current,[field==='endpoint'?'baseUrl':'envKey']:value}));
             }}/>}
           {nativeApi&&<div className="agent-management-form agent-management-engine-form">
-            {nativeApi&&<><label className="agent-management-field agent-management-field-baseUrl"><span>Responses API 地址</span><input aria-label="Responses API 地址" value={nativeDetails.data?.details.settings.base_url||''} readOnly placeholder={nativeDetails.isPending?'正在读取…':'未提供'} /></label><label className="agent-management-field"><span>API Key</span><input aria-label="API Key 状态" readOnly value={nativeBalance.data?.error==='missing_key'?'未配置':nativeBalance.data?.status==='available'||nativeBalance.data?.error==='unauthorized'||nativeBalance.data?.status==='unsupported'?'已配置':'未确认'} /></label><label className="agent-management-field"><span>CODEX_HOME</span><input aria-label="CODEX_HOME" readOnly value={nativeDetails.data?.details.home||provider.codexHome||''} /></label></>}
+            <label className="agent-management-field agent-management-field-baseUrl"><span>Responses API 地址<b aria-label="必填">*</b><InfoTip text="保存到 Codex config.toml 当前 Provider；重启 Engine 后生效。" /></span><input aria-label="Responses API 地址" inputMode="url" value={fields.baseUrl||''} disabled={readOnly||busy} placeholder="https://api.example.com/v1" onChange={event=>setFields(current=>({...current,baseUrl:event.target.value}))}/></label>
+            <label className="agent-management-field"><span>API Key{nativeBalance.data?.error!=='missing_key'&&<small className="agent-management-configured">已配置</small>}<InfoTip text="平台加密保存，不写入 config.toml 或前端回显；重启 Engine 后生效。" /></span><input aria-label="API Key" type="password" autoComplete="new-password" value={fields.envKey||''} disabled={readOnly||busy} placeholder={nativeBalance.data?.error==='missing_key'?'输入 API Key':'留空保持当前凭据'} onChange={event=>{setSaveApiKey(!!event.target.value);setFields(current=>({...current,envKey:event.target.value}));}}/></label>
+            <label className="agent-management-field"><span>CODEX_HOME<InfoTip text="原生 Provider 共用当前进程的 Codex 目录；切换目录请新建独立 API Provider。" /></span><input aria-label="CODEX_HOME" value={nativeDetails.data?.details.home||provider.codexHome||''} readOnly /></label>
+            <label className="agent-management-field"><span>模型<b aria-label="必填">*</b><InfoTip text="每行一个模型 ID；保存时同步 Codex 模型目录。" /></span><textarea aria-label="模型" rows={3} value={fields.models||''} disabled={readOnly||busy} onChange={event=>setFields(current=>({...current,models:event.target.value}))}/></label>
+            <label className="agent-management-field"><span>默认模型<InfoTip text="新会话默认模型；必须来自上方模型列表。" /></span><input aria-label="默认模型" value={fields.defaultModel||''} disabled={readOnly||busy} onChange={event=>setFields(current=>({...current,defaultModel:event.target.value}))}/></label>
           </div>}
           {provider.fields.some(field=>!['models','defaultModel','baseUrl','envKey'].includes(field.key))&&<ProviderAdvancedSettings label="Codex 设置">
            <div className="agent-management-form agent-management-engine-form">
@@ -1104,7 +1111,8 @@ function ProviderEditor({
               ))}
            </div>
           </ProviderAdvancedSettings>}
-          {nativeApi&&<p className="agent-management-hint">API 地址和凭据由本机 Codex 配置管理；可在下方配置文件中编辑可公开的配置。</p>}
+          {nativeApi&&!readOnly&&<div className="agent-management-actions"><button type="button" className="agent-management-button agent-management-button-primary" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate(undefined)}><Save size={13}/>保存连接配置并重启 Engine</button></div>}
+          {nativeApi&&<p className="agent-management-hint">保存前会校验模型并确认 Provider 没有运行中的任务；配置写入 Codex，Engine 重启后生效。</p>}
       </section>
       {!readOnly&&!nativeApi&&<div className="agent-management-actions"><button type="button" className="agent-management-button agent-management-button-primary" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>void saveProvider()}><Save size={13}/>保存并探测模型</button></div>}
       {files.length>0&&<section className="agent-management-section provider-files"><button type="button" className="agent-management-button" aria-expanded={filesOpen} onClick={()=>setFilesOpen(!filesOpen)}><ChevronRight size={13} style={{transform:filesOpen?'rotate(90deg)':undefined}}/>配置文件 ({files.length})</button>{filesOpen&&<ConfigFiles agentId={agentId} files={files} readOnly={readOnly} onDirtyChange={onFileDirtyChange}/>}</section>}

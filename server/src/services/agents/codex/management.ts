@@ -1,5 +1,5 @@
 import {assertEnvironmentIdle,assertEnvironmentUnused} from './environment-usage.js';
-import { existsSync, mkdirSync, unlinkSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, unlinkSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { readFile, rm, writeFile } from 'fs/promises';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
@@ -258,22 +258,178 @@ function engineForStoredProvider(providerId: string) {
   return configuredCodexEngines().find(engine => engine.provider === providerId);
 }
 
+function nativeProviderName(): string {
+  const defaults=readAgentManagement('codex').defaults;
+  return typeof defaults.nativeDisplayName==='string'&&defaults.nativeDisplayName.trim()
+    ? defaults.nativeDisplayName.trim()
+    : 'OpenAI / Codex 原生';
+}
+
+function tomlString(value:string):string {
+  return JSON.stringify(value);
+}
+
+function tomlKey(value:string):string {
+  return /^[A-Za-z0-9_-]+$/.test(value) ? value : tomlString(value);
+}
+
+/** Read the native Provider through Codex's own config rather than duplicate
+ * connection state in AgentManager. */
+function nativeConnectionSettings():{
+  baseUrl:string;
+  models:string[];
+  defaultModel:string|null;
+  providerId:string;
+  apiKeyConfigured:boolean;
+} {
+  const config=existsSync(configPath())?readFileSync(configPath(),'utf8'):'';
+  const providerId=config.match(/^\s*model_provider\s*=\s*"([^"]+)"/m)?.[1]||'';
+  const model=config.match(/^\s*model\s*=\s*"([^"]+)"/m)?.[1]||null;
+  const catalogFile=catalogPathFromConfig(config);
+  let models:string[]=[];
+  if(catalogFile&&existsSync(catalogFile))try{
+    const parsed=JSON.parse(readFileSync(catalogFile,'utf8')) as {models?:unknown};
+    if(Array.isArray(parsed.models))models=parsed.models.flatMap(item=>{
+      if(!item||typeof item!=='object'||Array.isArray(item))return [];
+      const slug=(item as Record<string,unknown>).slug;
+      return typeof slug==='string'&&slug.trim()?[slug.trim()]:[];
+    });
+  }catch{/* Preserve config; an unreadable optional catalog is reported as empty. */}
+  if(model&&!models.includes(model))models.push(model);
+  const providerPattern=new RegExp(`^\\s*\\[model_providers\\.${providerId.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\]\\s*$`,'m');
+  const sectionStart=providerId?config.search(providerPattern):-1;
+  const section=sectionStart<0?'':config.slice(sectionStart);
+  const baseUrl=section.match(/^\s*base_url\s*=\s*"([^"]+)"/m)?.[1]||'';
+  const apiKeyConfigured=!!providerApiKey('native')
+    || existsSync(join(dirname(configPath()),'auth.json'));
+  return {baseUrl,models,defaultModel:model,providerId,apiKeyConfigured};
+}
+
+function replaceTomlRootString(config:string,key:string,value:string):string {
+  const pattern=new RegExp(`^(\\s*${key}\\s*=\\s*)"(?:[^"\\\\]|\\\\.)*"`,'m');
+  const line=`${key} = ${tomlString(value)}`;
+  if(pattern.test(config))return config.replace(pattern,line);
+  const firstTable=config.search(/^\s*\[/m);
+  return firstTable<0
+    ? `${config}${config&&!config.endsWith('\n')?'\n':''}${line}\n`
+    : `${config.slice(0,firstTable)}${line}\n${config.slice(firstTable)}`;
+}
+
+function replaceTomlProviderField(config:string,providerId:string,field:string,value:string):string {
+  const providerKey=tomlKey(providerId);
+  const sectionPattern=new RegExp(`^\\s*\\[model_providers\\.${providerKey}\\]\\s*$`,'m');
+  const match=sectionPattern.exec(config);
+  const line=`${field} = ${tomlString(value)}`;
+  if(!match)return `${config}${config&&!config.endsWith('\n')?'\n':''}\n[model_providers.${providerKey}]\n${line}\n`;
+  const start=match.index;
+  const bodyStart=start+match[0].length;
+  const rest=config.slice(bodyStart);
+  const nextSection=rest.search(/^\s*\[/m);
+  const bodyEnd=nextSection<0?config.length:bodyStart+nextSection;
+  const body=config.slice(bodyStart,bodyEnd);
+  const fieldPattern=new RegExp(`^\\s*${field}\\s*=\\s*.*$`,'m');
+  const nextBody=fieldPattern.test(body)
+    ? body.replace(fieldPattern,line)
+    : `${body}${body&&!body.endsWith('\n')?'\n':''}${line}\n`;
+  return config.slice(0,bodyStart)+nextBody+config.slice(bodyEnd);
+}
+
+function writeNativeConfigAtomically(content:string):void {
+  const path=configPath();
+  mkdirSync(dirname(path),{recursive:true,mode:0o700});
+  const temporary=`${path}.agentmanager-${process.pid}-${Date.now()}.tmp`;
+  try{
+    writeFileSync(temporary,content,{encoding:'utf8',mode:0o600});
+    renameSync(temporary,path);
+  }catch(error){
+    try{unlinkSync(temporary);}catch{/* no temporary file was created */}
+    throw error;
+  }
+}
+
+function updateNativeProviderCatalog(settings:{models:string[];defaultModel:string;baseUrl:string}):void {
+  const config=existsSync(configPath())?readFileSync(configPath(),'utf8'):'';
+  const catalog=catalogPathFromConfig(config);
+  if(!catalog||!existsSync(catalog))return;
+  const parsed=JSON.parse(readFileSync(catalog,'utf8')) as {models?:Array<Record<string,unknown>>};
+  const existing=new Map((parsed.models||[]).flatMap(item=>
+    typeof item.slug==='string'?[[item.slug,item] as const]:[]));
+  parsed.models=settings.models.map(model=>existing.get(model)||{
+    slug:model,
+    display_name:model,
+    description:`${model} via ${settings.baseUrl}`,
+    visibility:'list',
+    supported_in_api:true,
+    priority:settings.models.indexOf(model),
+  });
+  writeFileSync(catalog,JSON.stringify(parsed,null,2)+'\n',{encoding:'utf8',mode:0o600});
+}
+
+function updateInferredNativeCatalog(settings:{models:string[];defaultModel:string;baseUrl:string}):void {
+  const inferred=join(dirname(configPath()),'model-catalog.json');
+  const existing=existsSync(inferred)?JSON.parse(readFileSync(inferred,'utf8')) as {models?:Array<Record<string,unknown>>}:{models:[]};
+  const byModel=new Map((existing.models||[]).flatMap(item=>
+    typeof item.slug==='string'?[[item.slug,item] as const]:[]));
+  existing.models=settings.models.map(model=>byModel.get(model)||{
+    slug:model,
+    display_name:model,
+    description:`${model} via ${settings.baseUrl}`,
+    visibility:'list',
+    supported_in_api:true,
+    priority:settings.models.indexOf(model),
+  });
+  writeFileSync(inferred,JSON.stringify(existing,null,2)+'\n',{encoding:'utf8',mode:0o600});
+}
+
+function validateNativeConnection(input:AgentProviderInput):{
+  baseUrl:string;
+  models:string[];
+  defaultModel:string;
+} {
+  const baseUrl=typeof input.fields?.baseUrl==='string'?input.fields.baseUrl.trim():'';
+  const models=Array.isArray(input.fields?.models)
+    ? [...new Set(input.fields.models.filter((value):value is string=>typeof value==='string'&&!!value.trim()).map(value=>value.trim()))].slice(0,100)
+    : [];
+  const defaultModel=typeof input.fields?.defaultModel==='string'?input.fields.defaultModel.trim():'';
+  if(!/^https?:\/\/\S+$/.test(baseUrl))throw Object.assign(Error('Responses API 地址无效'),{statusCode:400});
+  if(!models.length)throw Object.assign(Error('至少配置一个模型'),{statusCode:400});
+  if(defaultModel&&!models.includes(defaultModel))throw Object.assign(Error('默认模型必须来自已选模型'),{statusCode:400});
+  return {baseUrl,models,defaultModel:defaultModel||models[0]};
+}
+
+function updateNativeConnection(input:AgentProviderInput):void {
+  const next=validateNativeConnection(input);
+  let config=existsSync(configPath())?readFileSync(configPath(),'utf8'):'';
+  const providerId=config.match(/^\s*model_provider\s*=\s*"([^"]+)"/m)?.[1]||'';
+  if(!providerId)throw Object.assign(Error('Codex config.toml 尚未配置 model_provider，无法保存连接设置'),{statusCode:409});
+  const catalog=catalogPathFromConfig(config);
+  config=replaceTomlRootString(config,'model',next.defaultModel);
+  config=replaceTomlProviderField(config,providerId,'base_url',next.baseUrl);
+  config=replaceTomlProviderField(config,providerId,'env_key','AGENTMANAGER_CODEX_API_KEY');
+  if(!catalog)config=replaceTomlRootString(config,'model_catalog_json',join(dirname(configPath()),'model-catalog.json'));
+  writeNativeConfigAtomically(config);
+  saveProviderApiKey('native',input.apiKey);
+  if(catalog)updateNativeProviderCatalog({...next});
+  else updateInferredNativeCatalog({...next});
+}
+
 function nativeProviders(): AgentProviderState[] {
   const engine = inspectNativeCodexEngine();
   const codexHome = join(dirname(configPath()));
   const launchConfig = nativeEngineConfig();
   const launch = nativeEngineLaunchDescription();
+  const nativeSettings=nativeConnectionSettings();
   return [{
     id: 'native',
-    name: typeof readAgentManagement('codex').defaults.nativeDisplayName === 'string' ? String(readAgentManagement('codex').defaults.nativeDisplayName) : 'OpenAI / Codex 原生',
+    name: nativeProviderName(),
     kind: 'native',
     enabled: true,
     managed: true,
     status: engine.status,
     statusText: engine.statusText,
     authentication: { status: existsSync(join(codexHome, 'auth.json')) ? 'authenticated' : 'unknown', method: 'Codex 登录或原生 Provider' },
-    models: [],
-    defaultModel: null,
+    models: nativeSettings.models,
+    defaultModel: nativeSettings.defaultModel,
     socket: engine.socket,
     pid: engine.pid,
     codexHome,
@@ -282,6 +438,46 @@ function nativeProviders(): AgentProviderState[] {
     configFiles: [{path:configPath(),exists:existsSync(configPath()),format:'TOML',description:'Codex 原生配置',writable:true,purpose:'当前原生环境实际读取的 Provider、模型与启动设置。'},
       ...(()=>{try{const path=catalogPathFromConfig(readFileSync(configPath(),'utf8'));return path&&existsSync(path)?[{path,exists:true,format:'JSON',description:'当前启用的模型能力目录',writable:true,purpose:'由当前 config.toml 的 model_catalog_json 实际引用。'}]:[];}catch{return [];}})()],
     fields: [
+      {
+        key: 'baseUrl',
+        label: 'Responses API 地址',
+        type: 'text',
+        value: nativeSettings.baseUrl,
+        required: true,
+        description: '保存到 Codex config.toml 当前 Provider；重启 Engine 后生效。',
+      },
+      {
+        key: 'envKey',
+        label: 'API Key',
+        type: 'password',
+        value: '',
+        configured: !!nativeSettings.apiKeyConfigured,
+        placeholder: nativeSettings.apiKeyConfigured ? '已安全保存；输入新值可替换' : '输入 API Key',
+        description: '平台加密保存，不写入 config.toml 或前端回显；重启 Engine 后生效。',
+      },
+      {
+        key: 'codexHome',
+        label: 'CODEX_HOME',
+        type: 'text',
+        value: codexHome,
+        readOnly: true,
+        description: '原生 Provider 共用 AgentManager 当前 CODEX_HOME；独立目录请使用 API Provider。',
+      },
+      {
+        key: 'models',
+        label: '模型',
+        type: 'string-list',
+        value: nativeSettings.models,
+        required: true,
+        description: '每行一个模型 ID；模型目录与 Codex 配置同步更新。',
+      },
+      {
+        key: 'defaultModel',
+        label: '默认模型',
+        type: 'text',
+        value: nativeSettings.defaultModel || '',
+        description: '新会话默认模型；必须来自上方已配置模型。',
+      },
       {
         key: 'command',
         label: '启动命令',
@@ -926,6 +1122,10 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       await assertEnvironmentIdle(providerId==='native'?'native':'provider:'+providerId);
       if (providerId === 'native') {
         report?.({ stage: 'validate', message: '校验 Engine 启动命令与附加参数', progress: 10 });
+        if(input.fields?.baseUrl!==undefined||input.fields?.models!==undefined||input.fields?.defaultModel!==undefined||input.apiKey!==undefined) {
+          report?.({ stage: 'save', message: '写入 Codex 连接配置与加密凭据', progress: 20 });
+          updateNativeConnection(input);
+        }
         updateNativeEngineConfig(input);
         report?.({ stage: 'save', message: '保存原生 Engine 启动配置', progress: 25 });
         await restartNativeCodexEngine(progress => report?.({ ...progress, progress: 25 + progress.progress * 0.75 }));

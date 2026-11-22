@@ -6,6 +6,8 @@ import WebSocket from 'ws';
 import { config } from '../../../config.js';
 import { findExecutable } from '../management-cli.js';
 import type { AgentOperationReporter } from '../types.js';
+import { getDb } from '../../../db/index.js';
+import { openAgentSecret } from '../management-store.js';
 import { nativeEngineConfig } from './native-engine-config.js';
 import { durableProcessCommand, processAlive, resolveUnixSocketPath, terminateDetachedProcess } from './process-lifecycle.js';
 
@@ -43,6 +45,16 @@ function metadataPath(): string {
 
 function logPath(): string {
   return join(engineDirectory(), 'engine.log');
+}
+
+function nativeProviderApiKey(): string {
+  try {
+    const row=getDb().prepare('SELECT value FROM settings WHERE key=?')
+      .get('agent_management_codex_provider_secret:native') as {value:string}|undefined;
+    return row?.value?openAgentSecret(row.value,'codex-provider:native'):'';
+  } catch {
+    return '';
+  }
 }
 
 function readMetadata(): EngineMetadata | null {
@@ -237,11 +249,13 @@ async function launchEngine(report?: AgentOperationReporter): Promise<NativeCode
   ];
   report?.({ stage: 'spawn', message: '启动 Codex app-server', progress: 50 });
   const launchCommand = durableProcessCommand(executable, args);
+  const apiKey=nativeProviderApiKey();
   const child = spawn(launchCommand.command, launchCommand.args, {
     cwd: homedir(),
     env: {
       ...process.env,
       CODEX_HOME: process.env.CODEX_HOME?.trim() || join(homedir(), '.codex'),
+      ...(apiKey?{AGENTMANAGER_CODEX_API_KEY:apiKey}:{}),
     },
     detached: true,
     stdio: ['ignore', log, log],

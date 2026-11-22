@@ -5,11 +5,14 @@ import {AgentManagementPanel} from '../src/components/AgentManagementPanel';
 import {api,type AgentManagementState,type AgentProviderState,type AgentModelConfig} from '../src/lib/api';
 vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,agentManagement:{...actual.api.agentManagement,list:vi.fn(),get:vi.fn(),provider:vi.fn(),modelCatalog:vi.fn(),modelConfigs:vi.fn(),updateModelConfigs:vi.fn(),updateProvider:vi.fn(),updateProviderStream:vi.fn(),detectModels:vi.fn()},codexEnvironments:{...actual.api.codexEnvironments,management:vi.fn(),usage:vi.fn(),details:vi.fn(),configFiles:vi.fn(async()=>({files:[]})),quota:vi.fn(async()=>({quota:null,reason:'not_applicable'}))}}};});
 let client:QueryClient,provider:AgentProviderState,state:AgentManagementState,configs:AgentModelConfig[];
+const createFixture=()=>({
+ provider:{id:'fixture',name:'Fixture API',kind:'responses',enabled:true,managed:true,status:'ready',statusText:'Engine 运行中 · PID 123',authentication:{status:'authenticated',method:'加密 API Key'},models:['model-a','model-b'],defaultModel:'model-a',codexHome:'/fixture/codex',pid:123,launchCommand:'codex app-server --fixture',configFiles:[{path:'/fixture/config.toml',exists:true,format:'TOML',writable:true}],fields:[{key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},{key:'envKey',label:'API Key',type:'password',value:'',configured:true,description:'密钥安全保存'},{key:'codexHome',label:'独立 CODEX_HOME',type:'text',value:'/fixture/codex'},{key:'command',label:'启动命令',type:'text',value:'codex'},{key:'launchArgs',label:'附加启动参数',type:'string-list',value:[]},{key:'models',label:'模型',type:'string-list',value:['model-a','model-b']},{key:'defaultModel',label:'默认模型',type:'text',value:'model-a'}]} as AgentProviderState,
+ configs:['model-a','model-b'].map((model,i)=>({provider:'fixture',model,name:`Model ${i+1}`,contextWindow:200000,maxContextWindow:200000,effectiveContextWindowPercent:95,inputModalities:['text'],supportsImages:false,sourceFile:'/fixture/models.json'})) as AgentModelConfig[],
+});
 beforeEach(()=>{
  vi.clearAllMocks();client=new QueryClient({defaultOptions:{queries:{retry:false}}});
- provider={id:'fixture',name:'Fixture API',kind:'responses',enabled:true,managed:true,status:'ready',statusText:'Engine 运行中 · PID 123',authentication:{status:'authenticated',method:'加密 API Key'},models:['model-a','model-b'],defaultModel:'model-a',codexHome:'/fixture/codex',pid:123,launchCommand:'codex app-server --fixture',configFiles:[{path:'/fixture/config.toml',exists:true,format:'TOML',writable:true}],fields:[{key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},{key:'envKey',label:'API Key',type:'password',value:'',configured:true,description:'密钥安全保存'},{key:'codexHome',label:'独立 CODEX_HOME',type:'text',value:'/fixture/codex'},{key:'command',label:'启动命令',type:'text',value:'codex'},{key:'launchArgs',label:'附加启动参数',type:'string-list',value:[]},{key:'models',label:'模型',type:'string-list',value:['model-a','model-b']},{key:'defaultModel',label:'默认模型',type:'text',value:'model-a'}]};
+ const fixture=createFixture();provider=fixture.provider;configs=fixture.configs;
  state={agent:{id:'codex',label:'Codex'},providers:[provider],defaults:[],providerManagement:{create:true}} as AgentManagementState;
- configs=['model-a','model-b'].map((model,i)=>({provider:'fixture',model,name:`Model ${i+1}`,contextWindow:200000,maxContextWindow:200000,effectiveContextWindowPercent:95,inputModalities:['text'],supportsImages:false,sourceFile:'/fixture/models.json'}));
  vi.mocked(api.agentManagement.list).mockImplementation(async()=>({agents:[{agent:state.agent,state}]} as any));vi.mocked(api.agentManagement.get).mockImplementation(async()=>({state}));vi.mocked(api.agentManagement.provider).mockImplementation(async()=>({provider}));vi.mocked(api.agentManagement.modelConfigs).mockImplementation(async()=>({models:configs}));
  vi.mocked(api.agentManagement.modelCatalog).mockImplementation(async()=>({models:provider.models.map(model=>({vendor:'OpenAI',model,providers:[provider.name],context_window:200000,api_pricing:{currency:'USD',source:'official',reference_only:true,bands:[{rates:{input:2,cached:0.2,output:8}}]}}))}));
  vi.mocked(api.agentManagement.updateModelConfigs).mockImplementation(async(_id,patches)=>{configs=configs.map(c=>({...c,...patches.find(p=>p.model===c.model)}));return {models:configs};});
@@ -26,12 +29,47 @@ const open=async (name='Fixture API',readOnly=false)=>{
  return screen.findByRole('dialog',{name:`${readOnly?'查看':'编辑'} Provider · ${name}`});
 };
 it('shows the native API engine in the Provider layout using runtime settings',async()=>{
- provider={...provider,id:'native',name:'Native API',kind:'native',fields:[{key:'command',label:'启动命令',type:'text',value:'codex'}]};state={...state,providers:[provider]};
+ provider={...provider,id:'native',name:'Native API',kind:'native',fields:[
+  {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1'},
+  {key:'envKey',label:'API Key',type:'password',value:'',configured:true},
+  {key:'codexHome',label:'CODEX_HOME',type:'text',value:'/fixture/.codex',readOnly:true},
+  {key:'models',label:'模型',type:'string-list',value:['model-a']},
+  {key:'defaultModel',label:'默认模型',type:'text',value:'model-a'},
+  {key:'command',label:'启动命令',type:'text',value:'codex'},
+ ]};state={...state,providers:[provider]};
  vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[{id:'native',name:'Native API',kind:'native',enabled:true,auth_mode:'api',allowed_user_ids:null}],users:[]});
  vi.mocked(api.codexEnvironments.details).mockResolvedValue({details:{id:'native',checked_at:'',home:'/fixture/.codex',executable:'codex',version:null,engine:{state:'connected',pid:1},authentication:{status:'authenticated',type:'apiKey',email:null,plan:null},config:{path:null,exists:true,notice:null},settings:{model:'model-a',base_url:'https://fixture.invalid/v1'},models:[{model:'model-a',name:'Model A'}]}});
  vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({auth_mode:'api',status:'available',amount:5,currency:'USD'}))));
  await open('Native API');expect(await screen.findByRole('textbox',{name:'Responses API 地址'})).toHaveValue('https://fixture.invalid/v1');
  expect(screen.queryByRole('table',{name:'Provider 模型'})).not.toBeInTheDocument();expect(screen.queryByText('CODEX 登录账号')).not.toBeInTheDocument();vi.unstubAllGlobals();
+});
+it('edits native Codex connection settings without exposing the stored API key',async()=>{
+ provider={...createFixture().provider,id:'native',name:'Native API',kind:'native',models:['model-a'],defaultModel:'model-a',codexHome:'/fixture/.codex',fields:[
+  {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},
+  {key:'envKey',label:'API Key',type:'password',value:'',configured:true},
+  {key:'codexHome',label:'CODEX_HOME',type:'text',value:'/fixture/.codex',readOnly:true},
+  {key:'models',label:'模型',type:'string-list',value:['model-a'],required:true},
+  {key:'defaultModel',label:'默认模型',type:'text',value:'model-a'},
+  {key:'command',label:'启动命令',type:'text',value:'codex'},
+ ]};state={...state,providers:[provider]};
+ vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[{id:'native',name:'Native API',kind:'native',enabled:true,auth_mode:'api',allowed_user_ids:null}],users:[]});
+ vi.mocked(api.codexEnvironments.details).mockResolvedValue({details:{id:'native',checked_at:'',home:'/fixture/.codex',executable:'codex',version:null,engine:{state:'connected',pid:1},authentication:{status:'authenticated',type:'apiKey',email:null,plan:null},config:{path:null,exists:true,notice:null},settings:{model:'model-a',base_url:'https://fixture.invalid/v1'},models:[{model:'model-a',name:'Model A'}]}});
+ vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({auth_mode:'api',status:'available',amount:5,currency:'USD'}))));
+ const dialog=await open('Native API');
+ const endpoint=within(dialog).getByRole('textbox',{name:'Responses API 地址'});
+ const key=within(dialog).getByLabelText('API Key');
+ expect(endpoint).not.toHaveAttribute('readonly');expect(key).toHaveValue('');
+ fireEvent.change(endpoint,{target:{value:'https://replacement.invalid/v1'}});
+ fireEvent.change(key,{target:{value:'sk-replacement-secret'}});
+ const modelsEditor=within(dialog).getAllByLabelText('模型').at(-1)!;
+ fireEvent.change(modelsEditor,{target:{value:'model-b'}});
+ fireEvent.change(within(dialog).getAllByRole('textbox',{name:'默认模型'}).at(-1)!,{target:{value:'model-b'}});
+ fireEvent.click(within(dialog).getByRole('button',{name:'保存连接配置并重启 Engine'}));
+ await waitFor(()=>expect(api.agentManagement.updateProviderStream).toHaveBeenCalledWith('codex','native',expect.objectContaining({
+  apiKey:'sk-replacement-secret',
+  fields:expect.objectContaining({baseUrl:'https://replacement.invalid/v1',models:['model-b'],defaultModel:'model-b'}),
+ }),expect.any(Function)));
+ vi.unstubAllGlobals();
 });
 it('keeps model rows out of Provider editing and places them under the Provider parent row',async()=>{
  const dialog=await open();expect(within(dialog).queryByRole('table',{name:'Provider 模型'})).not.toBeInTheDocument();expect(within(dialog).getByRole('textbox',{name:'Responses API 地址'})).toHaveValue('https://fixture.invalid/v1');

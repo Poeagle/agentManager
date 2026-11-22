@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { openAgentSecret, readAgentManagement, sealAgentSecret, updateAgentManagement } from '../src/services/agents/management-store.js';
-import { ensureManagedProviderCatalog, removeManagedProviderStorage, renameCodexProvider } from '../src/services/agents/codex/management.js';
+import { codexManagement, ensureManagedProviderCatalog, removeManagedProviderStorage, renameCodexProvider } from '../src/services/agents/codex/management.js';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { authHook, createSession, createUser, hashApiKey } from '../src/auth.js';
@@ -247,5 +247,59 @@ describe('Codex provider display names', () => {
    const state=readAgentManagement('codex');expect(state.defaults.nativeDisplayName).toBe('本机');expect(state.providers[0]).toMatchObject({id:'one',name:'新名称',fields:{models:['m']}});
    expect(()=>renameCodexProvider('one','  ')).toThrow();expect(()=>renameCodexProvider('missing','x')).toThrow();
   } finally { db.cleanup(); }
+ });
+});
+
+describe('native Codex Provider connection editing', () => {
+ it('writes connection settings through the Provider form and keeps the key encrypted', async () => {
+  const database=createTestDatabase();
+  const home=join(database.dir,'native-codex');
+  mkdirSync(home,{recursive:true});
+  const catalog=join(home,'model-catalog.json');
+  writeFileSync(join(home,'config.toml'),[
+   'model_provider = "wanzhao"',
+   'model = "model-a"',
+   `model_catalog_json = ${JSON.stringify(catalog)}`,
+   '',
+   '[model_providers.wanzhao]',
+   'name = "Wanzhao"',
+   'base_url = "https://old.example/v1"',
+   'wire_api = "responses"',
+   '',
+  ].join('\n'));
+  writeFileSync(catalog,JSON.stringify({models:[
+   {slug:'model-a',display_name:'Old A',context_window:100000},
+  ]}));
+  const previous=process.env.CODEX_HOME;
+  vi.stubEnv('CODEX_HOME',home);
+  try{
+   const management=codexManagement({id:'codex',label:'Codex'} as any);
+   const state=await management.updateProvider('native',{
+    apiKey:'sk-native-secret',
+    fields:{baseUrl:'https://new.example/v1',models:['model-a','model-b'],defaultModel:'model-b'},
+   });
+   const config=readFileSync(join(home,'config.toml'),'utf8');
+   expect(config).toContain('model = "model-b"');
+   expect(config).toContain('base_url = "https://new.example/v1"');
+   expect(config).toContain('env_key = "AGENTMANAGER_CODEX_API_KEY"');
+   expect(config).not.toContain('sk-native-secret');
+   expect(JSON.parse(readFileSync(catalog,'utf8')).models.map((model:{slug:string})=>model.slug)).toEqual(['model-a','model-b']);
+   expect(JSON.parse(readFileSync(catalog,'utf8')).models[0].display_name).toBe('Old A');
+   const stored=getDb().prepare('SELECT value FROM settings WHERE key=?')
+    .get('agent_management_codex_provider_secret:native') as {value:string};
+   expect(stored.value).not.toContain('sk-native-secret');
+   expect(openAgentSecret(stored.value,'codex-provider:native')).toBe('sk-native-secret');
+   expect(state.providers.find(provider=>provider.id==='native')).toMatchObject({
+    defaultModel:'model-b',
+    models:['model-a','model-b'],
+    fields:expect.arrayContaining([
+     expect.objectContaining({key:'baseUrl',value:'https://new.example/v1'}),
+     expect.objectContaining({key:'envKey',value:'',configured:true}),
+    ]),
+   });
+  }finally{
+   if(previous===undefined)vi.unstubAllEnvs();else vi.stubEnv('CODEX_HOME',previous);
+   database.cleanup();
+  }
  });
 });
