@@ -70,9 +70,9 @@ export function ConversationCacheDrop({drop}: {drop: SessionCacheDrop}) {
   const extra = drop.extra_cost;
   const extraAmount = extra ? formatEstimatedTokenCost(Math.abs(extra.amount),extra.unit,false) : null;
   const extraLabel = extra
-    ? `${extra.amount < 0 ? '预估节省' : '预估多耗'} ${extraAmount}${extra.unit === 'credits' ? ' Credits' : ''}`
+    ? `${extra.amount < 0 ? '预估节省' : '预估多耗'} ${extraAmount}`
     : '额外费用未知';
-  const extraTitle = extra ? '两笔请求的未缓存输入费用差，加上缓存命中输入费用差，均按本次费率计算' : '缺少可用的费率或用量，无法估算';
+  const extraTitle = extra ? '未缓存输入、缓存读取和缓存写入的费用净差，均按本次费率计算' : '缺少可用的费率或用量，无法估算';
   return <div className="conversation-cache-notice" data-cache-drop-id={drop.id} role="group" aria-label="缓存命中输入减少">
     <MetadataTime at={drop.current.request_at ?? drop.at} />
     <SampleTokens sample={drop.current} inline />

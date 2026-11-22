@@ -112,6 +112,26 @@ it('prices only the exact gateway model and applies the rate effective at the re
  expect(modelRate(removed,model,first)).toBe(1.2);
 });
 
+it('uses a single gateway rate for every fallback model at the time of the receipt',()=>{
+ const baseUrl='https://gateway.example/v1';
+ const first=epoch('2026-11-23T01:00:00Z'), second=first+1000, third=second+1000;
+ const legacy:StoredProvider['fields']={baseUrl,modelRateMultipliers:[`${model}=1.5`]};
+ saveModelRates(legacy,undefined,first);
+ const shared={...legacy,providerRateMultiplier:'1.2'};
+ saveModelRates(shared,legacy,second);
+ expect(modelRate(shared,model,second-1)).toBe(1.5);
+ expect(modelRate(shared,model,second)).toBe(1.2);
+ expect(modelRate(shared,'another-model',second)).toBe(1.2);
+ expect(providerModelMetadata(model,baseUrl,shared).api_pricing?.provider_multiplier).toBe(1.2);
+ expect(estimateProviderApiCost(baseUrl,shared,model,new Date(second).toISOString(),tokens)?.amount).toBeCloseTo(1.82*1.2);
+ expect(estimateProviderApiCost('https://api.deepseek.com',shared,model,new Date(second).toISOString(),tokens)?.amount).toBeCloseTo(1.82);
+ const cleared={...shared,providerRateMultiplier:''};
+ saveModelRates(cleared,shared,third);
+ expect(modelRate(cleared,model,third)).toBeUndefined();
+ expect(modelRate(cleared,model,second)).toBe(1.2);
+ expect(()=>saveModelRates({...shared,providerRateMultiplier:'0'},shared,third)).toThrow('Provider 计费倍率');
+});
+
 it.each([false,true])('recovers historical context thresholds only when both tariff tiers match (price changed: %s)',async(changed)=>{
  const before=epoch('2026-11-22T05:17:43Z');
  const request='2026-11-22T06:28:14.688Z';
@@ -155,6 +175,10 @@ it('syncs official model metadata and applies provider rates before the manual m
  expect(estimateProviderApiCost(official,fields,model,at,usage(272001))?.amount).toBeCloseTo(1.103004);
  expect(estimateProviderApiCost(gateway,fields,model,at,usage(272001))?.amount).toBeCloseTo(1.103004*1.2);
  expect(estimateProviderApiCost(router,fields,routerModel,at,usage(272001))?.amount).toBeCloseTo(0.825003);
+ const routerFields={baseUrl:router,providerRateMultiplier:'2'};
+ saveModelRates(routerFields,undefined,now);
+ expect(estimateProviderApiCost(router,routerFields,routerModel,at,usage(272001))?.amount).toBeCloseTo(0.825003);
+ expect(providerModelMetadata(routerModel,router,routerFields).api_pricing?.provider_multiplier).toBeUndefined();
  expect(estimateProviderApiCost('https://openrouter.ai.example/api/v1',fields,routerModel,at,usage(272001))?.amount).toBeCloseTo(1.103004*1.5);
  expect(providerModelMetadata('grok-4.7',gateway)).toMatchObject({release_date:'2026-09-21',official_context_window:500000});
  expect(estimateProviderApiCost('https://api.x.ai/v1',undefined,'grok-4.7',at,usage(199999))?.amount).toBeCloseTo(0.405998);

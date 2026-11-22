@@ -340,11 +340,11 @@ function receipt(
   const pricing=!credits&&!inherited?codexApiPricing(context.session.agent_environment_id):null;
   const provider=Object.hasOwn(payload,'model_provider')?factString(payload.model_provider,120):requestContext?requestContext.provider??null:state.provider??null;
   const cost=pricing?codexApiEstimate(pricing,provider,dimensions.model,dimensions.speed,at,pricedTokens):credits?costSnapshot(total):null;
-  const inputPricing=cost?.complete ? cacheInputPricing(pricedTokens,0,usage=>pricing
+  const inputPricing=cost?.complete ? cacheInputPricing(pricedTokens,usage=>pricing
     ? codexApiEstimate(pricing,provider,dimensions.model,dimensions.speed,at,usage).breakdown
     : credits ? estimateUsageBreakdown(dimensions.model,dimensions.speed,usage,'subscription') : null) : undefined;
   return {id, turn_id: turn, at, tokens, evidence, dimensions, ...(inherited ? {inherited} : {}), cost,
-    cache_write_input_tokens:0, ...(inputPricing ? {cache_input_pricing:inputPricing} : {})};
+    cache_write_tokens:[0,0], ...(inputPricing ? {cache_input_pricing:inputPricing} : {})};
 }
 
 function captureRequestContext(state: CodexFactsState, turn: string) {

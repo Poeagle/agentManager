@@ -8,7 +8,8 @@ it('shows currency estimates to two decimal places and marks sub-cent amounts',(
  expect(formatEstimatedTokenCost(0.004,'CNY',false)).toBe('<¥0.01');
 });
 
-it('keeps Credits precision unchanged and leaves unknown prices unknown',()=>{
- expect(formatEstimatedTokenCost(0.004,'credits',false)).toBe('0.004');
+it('converts Credits to USD and leaves unknown prices unknown',()=>{
+ expect(formatEstimatedTokenCost(25,'credits',false)).toBe('$1.00');
+ expect(formatEstimatedTokenCost(0.004,'credits',false)).toBe('<$0.01');
  expect(formatEstimatedTokenCost(null,'USD',false)).toBe('—');
 });

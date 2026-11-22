@@ -16,9 +16,3 @@ export function ProviderConnectionFields({id,name,endpoint,apiKey,configured,dis
 export function ProviderAdvancedSettings({label,children}:{label:string;children:ReactNode}) {
   return <details className="provider-advanced-settings"><summary>{label}</summary>{children}</details>;
 }
-
-export function ProviderRateSettings({value,disabled,onChange,label='模型计费倍率'}:{value:string;disabled?:boolean;onChange:(value:string)=>void;label?:string}) {
-  return <ProviderAdvancedSettings label="手填计费倍率">
-    <label className="agent-management-field"><span>模型计费倍率</span><textarea aria-label={label} rows={2} value={value} placeholder="模型 ID=1.2" disabled={disabled} onChange={event=>onChange(event.target.value)}/></label>
-  </ProviderAdvancedSettings>;
-}

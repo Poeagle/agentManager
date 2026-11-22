@@ -13,7 +13,7 @@ import type {
 } from '../types.js';
 import { environmentUserOverride } from '../environment-access.js';
 import { readManagedEnvironment, updateManagedEnvironment } from '../environment-store.js';
-import {detectedModelMetadata,modelRateField,providerModelMetadata,saveModelRates} from '../provider-pricing.js';
+import {detectedModelMetadata,providerRateFields,providerModelMetadata,saveModelRates} from '../provider-pricing.js';
 import {saveModelCapabilities} from '../model-capabilities.js';
 import type {AgentModelMetadata} from '../types.js';
 
@@ -201,7 +201,7 @@ function nativeProviderState(): AgentProviderState {
       { key: 'baseUrl', label: 'API 地址', type: 'text', value: baseUrl, required: true, description: '此 Provider 的 Anthropic 兼容网关根地址。' },
       { key: 'envKey', label: 'API Key', type: 'password', value: '', configured, required: true, description: '保存后写回此 Provider 的配置；密钥不会回显。' },
       { key: 'models', label: '模型', type: 'string-list', value: models, required: true, description: '此 Provider 可用模型。' },
-      modelRateField(),
+      ...providerRateFields(baseUrl),
       { key: 'defaultModel', label: '默认模型', type: 'text', value: env.ANTHROPIC_MODEL || models[0] || '', description: '新建会话默认模型。' },
       { key: 'haikuModel', label: 'Haiku 模型', type: 'text', value: env.ANTHROPIC_DEFAULT_HAIKU_MODEL || '', description: 'Claude Code 内部轻量请求使用此模型。' },
       { key: 'subagentModel', label: '子 Agent 模型', type: 'text', value: env.CLAUDE_CODE_SUBAGENT_MODEL || '', description: 'Claude Code 子 Agent 使用此模型。' },
@@ -272,13 +272,21 @@ export function ensureNativeClaudeProvider(): void {
 }
 
 export function updateNativeClaudeProvider(input: AgentProviderInput): void {
+  const patch = input.fields;
+  if (patch && Object.keys(patch).every(key => key === 'defaultModel' || key === 'providerRateMultiplier')) {
+    ensureNativeClaudeProvider();
+    if (configuredProviders().some(provider => provider.id === 'anthropic')) {
+      updateClaudeProvider('anthropic', input);
+      return;
+    }
+  }
   const env = readManagedEnvironment();
   const models = Array.isArray(input.fields?.models)
     ? (input.fields!.models as unknown[]).filter(
         (model): model is string =>
           typeof model === 'string' && MODEL_RE.test(model.trim()),
       )
-    : [];
+    : nativeProviderState().models;
   const baseUrl =
     typeof input.fields?.baseUrl === 'string'
       ? validEndpoint(input.fields.baseUrl)
@@ -326,7 +334,8 @@ export function updateNativeClaudeProvider(input: AgentProviderInput): void {
         id:'anthropic',name:'Anthropic',kind:'official',enabled:true,
         fields:validateFields({baseUrl,models,defaultModel,adaptiveThinking,contextWindow,maxOutputTokens,...optionalFields,
           ...(input.fields?.modelCapabilities!==undefined?{modelCapabilities:input.fields.modelCapabilities}:{}),
-          ...(input.fields?.modelRateMultipliers!==undefined?{modelRateMultipliers:input.fields.modelRateMultipliers}:{})},
+          ...(input.fields?.modelRateMultipliers!==undefined?{modelRateMultipliers:input.fields.modelRateMultipliers}:{}),
+          ...(input.fields?.providerRateMultiplier!==undefined?{providerRateMultiplier:input.fields.providerRateMultiplier}:{})},
           current.providers.find(provider=>provider.id==='anthropic')),
       },
     ],
@@ -544,7 +553,7 @@ export function claudeProviderState(
         value: stringField(provider, 'defaultModel') || models[0] || '',
         description: '新建会话默认使用的模型。',
       },
-      modelRateField(provider.fields),
+      ...providerRateFields(address,provider.fields),
       {
         key: 'haikuModel',
         label: 'Haiku 模型',

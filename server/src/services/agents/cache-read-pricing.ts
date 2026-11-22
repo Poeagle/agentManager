@@ -1,20 +1,24 @@
-import type { CacheInputPricing, SessionTokens } from './session-facts.js';
+import type { CacheInputPricing, CacheWriteTokens, SessionTokens } from './session-facts.js';
 import type { TokenCostBreakdown } from './types.js';
 
-/** Keep the total input, output and cache writes fixed when pricing cache reads. */
+/** Price each input category using the current request's total input tier. */
 export function cacheInputPricing(
   tokens: SessionTokens | null,
-  cacheWrites: number,
-  price: (usage: SessionTokens) => TokenCostBreakdown | null | undefined,
+  price: (usage: SessionTokens, writes: CacheWriteTokens) => TokenCostBreakdown | null | undefined,
+  supportsWrites = false,
 ): CacheInputPricing | undefined {
-  if (tokens?.input_tokens == null) return undefined;
-  const eligibleInput = tokens.input_tokens - cacheWrites;
-  if (eligibleInput <= 0) return undefined;
-  const allUncached = price({...tokens,cached_input_tokens:0});
-  const allCached = price({...tokens,cached_input_tokens:eligibleInput});
+  const input = tokens?.input_tokens;
+  if (!tokens || input == null || input <= 0) return undefined;
+  const uncached = {...tokens,cached_input_tokens:0};
+  const allUncached = price(uncached,[0,0]);
+  const allCached = price({...tokens,cached_input_tokens:input},[0,0]);
   if (!allUncached || !allCached) return undefined;
+  const write5 = supportsWrites ? price(uncached,[input,0]) : null;
+  const write60 = supportsWrites ? price(uncached,[0,input]) : null;
   return {
-    uncached_per_token:(allUncached.input-allCached.input)/eligibleInput,
-    cached_per_token:allCached.cache/eligibleInput,
+    uncached_per_token:allUncached.input/input,
+    cached_per_token:allCached.cache/input,
+    ...(write5 ? {write_5m_per_token:write5.input/input} : {}),
+    ...(write60 ? {write_1h_per_token:write60.input/input} : {}),
   };
 }

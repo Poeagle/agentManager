@@ -2,10 +2,11 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api, type ConversationCostEstimate } from '../lib/api';
 import {
-  coverageReason, creditsLabel, intervalCoverageText, recordedCachePercent, uncachedInputTokens, unassignedUsageDescription, unassignedUsageLabel,
+  coverageReason, intervalCoverageText, recordedCachePercent, uncachedInputTokens, unassignedUsageDescription, unassignedUsageLabel,
   type SessionCacheDrop, type SessionMetadataDetails,
   type SessionUsageIntervalPage, type SessionUsageIntervalRow,
 } from '../lib/session-metadata';
+import { conversationCostHeading, formatConversationCost } from './estimated-token-cost';
 import { CacheDropTable, MetadataTime } from './ConversationCacheDrop';
 import { formatSessionNumber as number } from './ConversationDetailsPanel';
 import { TableDetailRow, TableExpandButton, TableFrame, TableStateRow } from './table/DataTable';
@@ -95,10 +96,11 @@ function usageByModel(models: SessionMetadataDetails['models']): ModelUsage[] {
     previous.tokens = tokens == null || previous.tokens == null ? null : previous.tokens + tokens;
     previous.requests += row.requests;
     previous.calls += row.tool_calls;
-    if (previous.cost || row.cost) {
-      const a = previous.cost?.amount, b = row.cost?.amount;
-      previous.cost = {unit: previous.cost?.unit ?? row.cost?.unit ?? 'USD', amount: a == null && b == null ? null : (a ?? 0) + (b ?? 0),
-        complete: previous.cost?.complete === true && row.cost?.complete === true};
+    if (previous.cost && row.cost) {
+      const { amount, unit, complete } = previous.cost;
+      const nextAmount = row.cost.amount;
+      previous.cost = {unit, amount: amount == null && nextAmount == null ? null : (amount ?? 0) + (nextAmount ?? 0),
+        complete: complete && row.cost.complete};
     }
   }
   return [...groups.values()].sort((a, b) => (b.tokens ?? -1) - (a.tokens ?? -1));
@@ -109,8 +111,9 @@ const requestCountColumns = [
   {label:'Call', title:'Agent 发出的原生工具调用次数。'},
 ];
 
-function ModelUsageTable({details, loading, error, onRetry}: {
+function ModelUsageTable({details, costHeading, loading, error, onRetry}: {
   details: SessionMetadataDetails | null;
+  costHeading: string;
   loading: boolean;
   error?: string;
   onRetry: () => void;
@@ -122,7 +125,7 @@ function ModelUsageTable({details, loading, error, onRetry}: {
       loading={loading} header={<>
         <th scope="col">模型</th><th scope="col">速度</th><th scope="col">总量 Token</th>
         {requestCountColumns.map(({label,title}) => <th key={label} scope="col" title={title}>{label}</th>)}
-        <th scope="col">预估金额</th>
+        <th scope="col">{costHeading}</th>
       </>}>
       {loading ? <TableStateRow columnCount={6} loading>加载中…</TableStateRow>
       : error ? <TableStateRow columnCount={6} error onRetry={onRetry}>{error}</TableStateRow>
@@ -131,7 +134,7 @@ function ModelUsageTable({details, loading, error, onRetry}: {
         <th scope="row">{row.model ?? '未知模型'}</th><td>{row.speed ?? '—'}</td>
         <td>{number(row.tokens)}</td><td>{number(row.requests)}</td>
         <td>{number(row.calls)}</td>
-        <td className={row.cost?.amount == null ? undefined : 'session-chat-estimated-cost'}>{row.cost?.amount == null ? '—' : creditsLabel(row.cost)}</td>
+        <td className={row.cost?.amount == null ? undefined : 'session-chat-estimated-cost'}>{row.cost?.amount == null ? '—' : formatConversationCost(row.cost)}</td>
       </tr>)}
     </TableFrame>
   </section>;
@@ -141,8 +144,8 @@ const intervalColumns: Array<{label: string; title?: string}> = [
   {label:'时间'}, {label:'总输入'}, {label:'缓存输入'}, {label:'未缓存输入'},
   {label:'缓存率'}, {label:'输出'}, {label:'总量'},
   ...requestCountColumns,
-  {label:'预估金额'},
 ];
+const intervalColumnCount = intervalColumns.length + 1;
 
 interface UsageScope {
   sessionId:string; nativeId:string; generation?:string; revision?:number; enabled:boolean;
@@ -174,15 +177,15 @@ function UsageLevel({scope,parent,depth=0}: {
   const rows = history.rows.filter(row => row.kind!=='open' && row.kind!=='unassigned' ||
     first?.rows.some(current => current.id===row.id));
   const loading = enabled && query.isFetching && !first;
-  if (loading) return <TableStateRow columnCount={intervalColumns.length} loading>加载中…</TableStateRow>;
-  if (query.isError && !first) return <TableStateRow columnCount={intervalColumns.length} error onRetry={()=>void query.refetch()}>无法读取区间用量</TableStateRow>;
-  if (!rows.length) return <TableStateRow columnCount={intervalColumns.length}>暂无区间用量记录</TableStateRow>;
+  if (loading) return <TableStateRow columnCount={intervalColumnCount} loading>加载中…</TableStateRow>;
+  if (query.isError && !first) return <TableStateRow columnCount={intervalColumnCount} error onRetry={()=>void query.refetch()}>无法读取区间用量</TableStateRow>;
+  if (!rows.length) return <TableStateRow columnCount={intervalColumnCount}>暂无区间用量记录</TableStateRow>;
   const finalReply = parent?.kind === 'final' ? rows.find(row => row.phase === 'final') : undefined;
   return <>
     {finalReply&&<UsageRow key={finalReply.id} scope={scope} row={finalReply} depth={depth}/>}
     {rows.filter(row=>row!==finalReply).map(row=><UsageRow key={row.id} scope={scope} row={row} depth={depth}/>)}
-    {history.error && <TableStateRow columnCount={intervalColumns.length} error>{history.error}</TableStateRow>}
-    {history.before && <TableDetailRow columnCount={intervalColumns.length}>
+    {history.error && <TableStateRow columnCount={intervalColumnCount} error>{history.error}</TableStateRow>}
+    {history.before && <TableDetailRow columnCount={intervalColumnCount}>
       <button className="session-chat-older" type="button" style={{marginInlineStart:14*depth}} disabled={history.loading} onClick={()=>void history.load()}>
         {history.loading ? '正在读取…' : parent ? '更多子项' : '更早的用量'}
       </button>
@@ -231,22 +234,27 @@ function UsageRow({scope,row,depth}: {
       </td>
       <td>{usage&&count(usage.requests)}</td>
       <td>{usage&&count(usage.tool_calls)}</td>
-      <td className={usage?.cost?.amount==null?undefined:'session-chat-estimated-cost'}>{usage&&(usage.cost?.amount==null?'—':creditsLabel(usage.cost))}</td>
+      <td className={usage?.cost?.amount==null?undefined:'session-chat-estimated-cost'}>{usage&&(usage.cost?.amount==null?'—':formatConversationCost(usage.cost))}</td>
     </tr>
     {expanded&&<UsageLevel scope={scope} parent={row} depth={depth+1}/>}
   </Fragment>;
 }
 
-export function ConversationUsageHistory({sessionId,nativeId,details,generation,revision,active,supported,loading,error,onRetry}: {
+export function ConversationUsageHistory({sessionId,nativeId,details,cost,billingMode,generation,revision,active,supported,loading,error,onRetry}: {
   sessionId:string; nativeId:string; details:SessionMetadataDetails|null; generation?:string; revision?:number;
+  cost?:ConversationCostEstimate|null; billingMode?:'api'|'account'|null;
   active:boolean; supported:boolean; loading:boolean; error?:string; onRetry:()=>void;
 }) {
+  const costHeading = conversationCostHeading(cost, billingMode);
   return <>
-    <ModelUsageTable details={details} loading={loading} error={error} onRetry={onRetry} />
+    <ModelUsageTable details={details} costHeading={costHeading} loading={loading} error={error} onRetry={onRetry} />
     <section className="conversation-metadata-section">
       <h4>逐区间用量</h4>
       <TableFrame label="逐区间用量" className="conversation-metadata-scroll conversation-interval-table" style={{minWidth:900}}
-        header={intervalColumns.map(({label,title})=><th key={label} scope="col" title={title}>{label}</th>)}>
+        header={<>
+          {intervalColumns.map(({label,title})=><th key={label} scope="col" title={title}>{label}</th>)}
+          <th scope="col">{costHeading}</th>
+        </>}>
         <UsageLevel key={JSON.stringify([nativeId,generation])} scope={{sessionId,nativeId,generation,revision,enabled:active&&supported}}/>
       </TableFrame>
     </section>

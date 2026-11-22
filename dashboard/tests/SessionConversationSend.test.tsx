@@ -459,12 +459,12 @@ describe('conversation send transaction', () => {
     const segment={id:'live-segment',start_at:stamp,end_at:null,end_reason:null,elapsed_ms:null,tokens:{total_tokens:10000,input_tokens:9000,cached_input_tokens:8000,reasoning_output_tokens:100,output_tokens:1000},requests:2,tool_calls:4,tool_rounds:3,complete:false};
     const step={segment_id:segment.id,after_message_id:prior.id,after_sequence:null,start_at:stamp,tokens:{total_tokens:1100,input_tokens:1000,cached_input_tokens:900,reasoning_output_tokens:50,output_tokens:100},requests:1,tool_calls:2,tool_rounds:1,complete:true,shared_messages:1,cost:{unit:'credits',amount:3.21,complete:true}};
     const progress={turn_id:'turn',...segment,segment,step};
-    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress}));const pendingStatistics=pending.querySelector('.session-chat-message-statistics')!;expect(pendingStatistics).toHaveTextContent('1.1K (3.21)｜100 (—)｜900 (— | 90%)｜50 (—)｜100 (—)');expect(pendingStatistics).toHaveTextContent('1 round | 2 calls');
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress}));const pendingStatistics=pending.querySelector('.session-chat-message-statistics')!;expect(pendingStatistics).toHaveTextContent('1.1K ($0.13)｜100 (—)｜900 (— | 90%)｜50 (—)｜100 (—)');expect(pendingStatistics).toHaveTextContent('1 round | 2 calls');
     act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:1,message_id:prior.id,turn_id:'turn',tokens:{total_tokens:200},requests:1,tool_calls:1,tool_rounds:1,complete:true,interval:{tokens:{total_tokens:200},requests:1,tool_calls:1,tool_rounds:1,complete:true,shared_messages:1}}]}));
-    expect(document.querySelector('[data-chat-message-id="prior-step"] .session-chat-message-statistics')).toHaveTextContent('200 (—)｜');expect(pendingStatistics).toHaveTextContent('1.1K (3.21)｜');
+    expect(document.querySelector('[data-chat-message-id="prior-step"] .session-chat-message-statistics')).toHaveTextContent('200 (—)｜');expect(pendingStatistics).toHaveTextContent('1.1K ($0.13)｜');
     const current={id:'streamed-step',role:'assistant',phase:'commentary',turn_id:'turn',text:'Current streamed text',timestamp:stamp,streaming:true};
     act(()=>Socket.latest.emit({type:'snapshot',messages:[prior,current],activities:[tool],busy:true,stage:'answering',turn_id:'turn',started_at:stamp}));
-    const bubble=document.querySelector('[data-chat-message-id="streamed-step"]')!;expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('1.1K (3.21)｜');expect(bubble.querySelector('time')).toBeNull();
+    const bubble=document.querySelector('[data-chat-message-id="streamed-step"]')!;expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('1.1K ($0.13)｜');expect(bubble.querySelector('time')).toBeNull();
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{...progress,step:{...step,after_message_id:'wrong-boundary',tokens:{total_tokens:999999}}}}));
     expect(bubble.querySelector('.session-chat-message-statistics')).not.toHaveTextContent('1M');
   });
@@ -489,7 +489,7 @@ describe('conversation send transaction', () => {
     expect(header).toHaveTextContent('4 items');
     expect(header.querySelector('.session-chat-message-statistics')).toHaveAttribute('title',expect.stringContaining('Total 2,700;'));
     expect(header).toHaveTextContent('3 rounds | 3 calls');
-    expect(header.textContent?.includes('Est. Cr')).toBe(cost!==null);
+    expect(header.textContent?.includes('Est. $')).toBe(cost!==null);
     expect(pending).toHaveTextContent('npm test');
   });
   it('updates the active progress total without mixing other native sessions',async()=>{
@@ -537,17 +537,17 @@ describe('conversation send transaction', () => {
     const group=screen.getByText(item.text).closest('.session-chat-progress')!;
     const heading=group.querySelector('summary .session-chat-message-statistics')!;
     expect(heading).toHaveAttribute('title',expect.stringContaining('Total 4,300,000;'));
-    expect(heading).toHaveTextContent('4.3M (14.03)');
+    expect(heading).toHaveTextContent('4.3M ($0.56)');
     expect(heading).toHaveTextContent('10 rounds | 10 calls');
-    expect(group.querySelector('[data-chat-message-id="local-first"] .session-chat-message-statistics')).toHaveTextContent('2.9M (10.532)');
-    expect(within(group as HTMLElement).getByRole('status',{name:'正在执行的进展 2'})).toHaveTextContent('1.4M (3.498)');
+    expect(group.querySelector('[data-chat-message-id="local-first"] .session-chat-message-statistics')).toHaveTextContent('2.9M ($0.42)');
+    expect(within(group as HTMLElement).getByRole('status',{name:'正在执行的进展 2'})).toHaveTextContent('1.4M ($0.14)');
     const settled={id:'local-next',role:'assistant',phase:'commentary',turn_id:'turn',text:'Second local Item',timestamp,
       statistics:{...workUsage,sequence:4,revision:3,turn_id:'turn',progress_id:'local',interval:workUsage,segment:total}};
     send({type:'snapshot',messages:[old,user,item,settled],activities:[],busy:true,stage:'waiting',turn_id:'turn'});
-    expect(heading).toHaveTextContent('4.3M (14.03)');
+    expect(heading).toHaveTextContent('4.3M ($0.56)');
     expect(group.querySelectorAll('.session-chat-progress-entry')).toHaveLength(2);
     expect(screen.queryByRole('status',{name:'正在执行的进展 2'})).not.toBeInTheDocument();
-    expect(group.querySelector('[data-chat-message-id="local-next"] .session-chat-message-statistics')).toHaveTextContent('1.4M (3.498)');
+    expect(group.querySelector('[data-chat-message-id="local-next"] .session-chat-message-statistics')).toHaveTextContent('1.4M ($0.14)');
   });
   it('restores completed progress totals and duration from recorded conclusion statistics',async()=>{
     const existing=await api.agent.conversation(session.id),item={id:'historical-progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'Earlier work',timestamp:'2026-01-01T00:00:05Z'},final={id:'historical-final',role:'assistant',turn_id:'turn',phase:'final',text:'Complete',timestamp:'2026-01-01T00:01:00Z'};
@@ -620,6 +620,46 @@ describe('conversation send transaction', () => {
     await waitFor(()=>expect(screen.queryByText('Streaming')).not.toBeInTheDocument());expect(screen.getByText('部分输出')).toBeInTheDocument();
     act(()=>first.emit({type:'snapshot',messages:[{...item,text:'部分输出继续'}],busy:true,stage:'answering'}));
     await waitFor(()=>expect(screen.getByText('Streaming')).toBeInTheDocument());expect(screen.getByText('部分输出继续')).toBeInTheDocument();
+  });
+  it('ends a native retry when the same turn starts tools without emitting another message', async () => {
+    await mount();
+    const socket = Socket.latest;
+    const turn = 'retry-turn';
+    const retry = {
+      id: 'native-retry', role: 'assistant', phase: 'error', text: 'Reconnecting... 1/5', turn_id: turn,
+      timestamp: '2026-11-22T07:34:50Z', error: { will_retry: true },
+    };
+    const earlierTool = {
+      id: 'earlier-tool', label: 'Run command · earlier', status: 'completed', turn_id: turn,
+      started_at: '2026-11-22T07:34:45Z', completed_at: '2026-11-22T07:34:51Z',
+    };
+    const retryState = { busy: true, stage: 'waiting', turn_id: turn, activities: [earlierTool] };
+    const snapshot = (target: Socket, state: object) => act(() => target.emit({ type: 'snapshot', messages: [retry], ...state }));
+    snapshot(socket, retryState);
+    expect(await screen.findByRole('alert')).toHaveTextContent('正在自动重试');
+    snapshot(socket, { ...retryState, stage: 'tools' });
+    expect(screen.getByRole('alert')).toHaveTextContent('正在自动重试');
+
+    const resumedTool = {
+      id: 'resumed-tool', label: 'Run command · resume check', status: 'running', turn_id: turn,
+      started_at: '2026-11-22T07:35:19Z', after_message_id: earlierTool.id,
+    };
+    const resumed = { ...retryState, stage: 'tools', activities: [earlierTool, resumedTool] };
+    act(() => socket.emit({ type: 'patch', upserts: [], deltas: [], state: resumed }));
+    expect(await screen.findByText(resumedTool.label)).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('重试已结束');
+
+    socket.readyState = 0;
+    act(() => window.dispatchEvent(new Event('online')));
+    const replacement = Socket.latest;
+    expect(replacement).not.toBe(socket);
+    snapshot(replacement, resumed);
+    expect(await screen.findByText(resumedTool.label)).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('重试已结束');
+
+    act(() => replacement.emit({ type: 'snapshot', ...resumed, messages: [{ ...retry, error: { will_retry: false } }] }));
+    expect(screen.getByRole('alert')).toHaveTextContent('本轮执行出错');
+    expect(screen.queryByText(resumedTool.label)).not.toBeInTheDocument();
   });
   it('does not show waiting or a stop control after a final reply arrives before a stale busy frame',async()=>{
     await mount();

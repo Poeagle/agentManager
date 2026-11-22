@@ -50,6 +50,21 @@
 }
 .agent-provider-status .agent-management-dot { flex: none; }
 .agent-provider-table .agent-provider-balance { font-variant-numeric: tabular-nums; }
+.agent-provider-inline-control {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  height: 23px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+}
+.agent-provider-rate { display: flex; align-items: center; gap: 4px; }
+.agent-provider-rate input { width: 60px; font-variant-numeric: tabular-nums; }
+.agent-provider-rate .agent-management-button { min-height: 23px; flex: none; padding: 0 3px; }
 .agent-provider-table .table-actions { justify-content: center; }
 .agent-provider-dialog-options {
   display: grid;

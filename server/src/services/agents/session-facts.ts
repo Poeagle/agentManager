@@ -37,9 +37,13 @@ export interface SessionLifecycleFact {
   execution?: SessionActivityContext;
 }
 
+export type CacheWriteTokens = readonly [fiveMinutes: number, oneHour: number];
+
 export interface CacheInputPricing {
   uncached_per_token: number;
   cached_per_token: number;
+  write_5m_per_token?: number;
+  write_1h_per_token?: number;
 }
 
 export interface NativeRequestFact {
@@ -53,7 +57,7 @@ export interface NativeRequestFact {
   inherited?: boolean;
   cost: AgentCostEstimate | null;
   cache_input_pricing?: CacheInputPricing;
-  cache_write_input_tokens?: number;
+  cache_write_tokens?: CacheWriteTokens;
 }
 
 export type NativeSessionFact = (
@@ -114,6 +118,7 @@ export interface SessionCacheSample extends RequestDimensions {
   cached_input_tokens: number;
   hit_rate: number;
   uncached_input_tokens?: number;
+  cache_write_tokens?: CacheWriteTokens;
 }
 export type CacheDropFactor = 'input_gap' | 'model' | 'speed' | 'environment' | 'account' | 'compact' | 'input_size';
 export interface SessionCacheDrop {
@@ -138,7 +143,7 @@ export interface SessionMetadata {
   status: SessionCoverage;
   reasons: SessionCoverageReason[];
   totals: SessionUsageTotals | null;
-  latest: Omit<NativeRequestFact, 'cache_input_pricing' | 'cache_write_input_tokens'> | null;
+  latest: Omit<NativeRequestFact, 'cache_input_pricing' | 'cache_write_tokens'> | null;
   user_inputs: number | null;
   completed_turns: number | null;
   cache_drop_count: number;

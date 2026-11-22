@@ -80,4 +80,31 @@ export function AgentQuotaIndicator({agent,read,label=agent.label,hideWhenNotApp
   );
 }
 
-export function AgentQuotaIndicators({agents,isAdmin=false}:{agents?:AgentDescriptor[];isAdmin?:boolean}){return <>{(agents??builtinAgentDescriptors()).filter(agent=>agent.capabilities.quota).map(agent=>agent.id==='codex'?<CodexAccountQuotaIndicators key={agent.id} agent={agent} isAdmin={isAdmin}/>:<AgentQuotaIndicator key={agent.id} agent={agent}/>)}</>;}
+function ClaudeAccountIndicator({agent}: {agent: AgentDescriptor}) {
+  const query = useQuery({
+    queryKey: ['agent-management', agent.id],
+    queryFn: () => api.agentManagement.get(agent.id),
+    select: result => result.state.authentication,
+    refetchInterval: QUOTA_REFRESH_MS,
+    staleTime: QUOTA_REFRESH_MS,
+    retry: false,
+  });
+  const authentication = query.data;
+  if (authentication?.status !== 'authenticated' || authentication.method !== 'oauth_token') return null;
+  return <span className="workspace-indicator workspace-header-chip workspace-quota flex h-6 shrink-0 items-center gap-1 rounded border px-1.5"
+    title="Claude Code 原生账号已登录，周额度暂无可用记录">
+    <span>Claude Code · 账号</span><strong>已登录</strong>
+  </span>;
+}
+
+export function AgentQuotaIndicators({agents,isAdmin=false,canReadSettings=false}: {
+  agents?: AgentDescriptor[]; isAdmin?: boolean; canReadSettings?: boolean;
+}) {
+  return <>{(agents ?? builtinAgentDescriptors()).map(agent => {
+    if (agent.capabilities.quota) return agent.id === 'codex'
+      ? <CodexAccountQuotaIndicators key={agent.id} agent={agent} isAdmin={isAdmin}/>
+      : <AgentQuotaIndicator key={agent.id} agent={agent}/>;
+    if (agent.id === 'claude' && canReadSettings) return <ClaudeAccountIndicator key={agent.id} agent={agent}/>;
+    return null;
+  })}</>;
+}

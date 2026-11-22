@@ -5,12 +5,13 @@ import type {AgentModelMetadata} from './types.js';
 import {storedModelCapabilities,parseModelCapabilities} from './model-capabilities.js';
 
 type Fields = StoredProvider['fields'];
-type RateVersion = {at:number;rates:Record<string,number>};
+type RateVersion = {at:number;rates:Record<string,number>;providerRate?:number|null};
 
-export function modelRateField(fields?:Fields) {
-  return {key:'modelRateMultipliers',label:'模型计费倍率',type:'string-list' as const,
-    value:Array.isArray(fields?.modelRateMultipliers)?fields.modelRateMultipliers:[],
-    placeholder:'claude-sonnet-5-5=1.2',description:'每行填写「模型 ID=倍率」。第三方费率无法读取时，用于折算官方参考价。'};
+export function providerRateFields(base:unknown,fields?:Fields) {
+  if(!base||officialApiCatalog(base)||isOfficialDeepSeek(base))return [];
+  return [{key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text' as const,
+    value:typeof fields?.providerRateMultiplier==='string'?fields.providerRateMultiplier:'',
+    description:'第三方未提供模型费率时，用此倍率折算官方参考价。'}];
 }
 
 function versions(fields?:Fields):RateVersion[] {
@@ -21,6 +22,18 @@ export function saveModelRates(next:Fields, previous?:Fields, now=Date.now()) {
   delete next.modelRateVersions;
   const sameEndpoint=next.baseUrl===previous?.baseUrl;
   const history=sameEndpoint?versions(previous):[];
+  if(previous&&!sameEndpoint&&next.providerRateMultiplier===previous.providerRateMultiplier)
+    delete next.providerRateMultiplier;
+  let providerRate:number|null|undefined;
+  const raw=next.providerRateMultiplier;
+  if(raw!==undefined){
+    if(typeof raw!=='string'||(raw!==''&&(!/^\d{1,4}(?:\.\d{1,6})?$/.test(raw)||Number(raw)<=0)))
+      throw Object.assign(Error('Provider 计费倍率必须为正数，最多 4 位整数和 6 位小数'),{statusCode:400});
+    providerRate=raw===''?null:Number(raw);
+    if(providerRate!==null&&(officialApiCatalog(next.baseUrl)||isOfficialDeepSeek(next.baseUrl)))
+      throw Object.assign(Error('官方 API 按官方费率计价'),{statusCode:400});
+    next.providerRateMultiplier=providerRate===null?'':String(providerRate);
+  }
   const value=next.modelRateMultipliers??[];
   const invalid=()=>Object.assign(Error('模型计费倍率格式应为 模型ID=倍率，模型不得重复'),{statusCode:400});
   if(!Array.isArray(value)||value.length>256)throw invalid();
@@ -32,8 +45,8 @@ export function saveModelRates(next:Fields, previous?:Fields, now=Date.now()) {
   }
   const entries=[...rates].sort(([a],[b])=>a.localeCompare(b));
   const normalized=entries.map(([model,rate])=>`${model}=${rate}`);
-  if(JSON.stringify(normalized)!==JSON.stringify(sameEndpoint?previous?.modelRateMultipliers??[]:[])){
-    history.unshift({at:now,rates:Object.fromEntries(entries)});
+  if(providerRate!==history[0]?.providerRate||JSON.stringify(normalized)!==JSON.stringify(sameEndpoint?previous?.modelRateMultipliers??[]:[])){
+    history.unshift({at:now,rates:Object.fromEntries(entries),providerRate});
   }
   next.modelRateMultipliers=normalized;
   if(history.length)next.modelRateVersions=JSON.stringify(history.slice(0,128));
@@ -41,7 +54,9 @@ export function saveModelRates(next:Fields, previous?:Fields, now=Date.now()) {
 
 export function modelRate(fields:Fields|undefined,model:string|null,at=Infinity):number|undefined {
   if(!model)return undefined;
-  const rates=versions(fields).find(version=>version.at<=at)?.rates;
+  const version=versions(fields).find(version=>version.at<=at);
+  if(version?.providerRate!==undefined)return version.providerRate??undefined;
+  const rates=version?.rates;
   return rates&&Object.hasOwn(rates,model)?rates[model]:undefined;
 }
 

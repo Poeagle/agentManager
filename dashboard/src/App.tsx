@@ -418,7 +418,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         </div>
         <div className="workspace-header-tools flex min-w-0 items-center overflow-x-auto [scrollbar-width:none] [&>*]:shrink-0">
           <NotificationCenter userId={authUser.id} projects={projects} onOpen={openNotification} onDetailChange={setNotificationDetailOpen}/>
-          <AgentQuotaIndicators agents={projectsData?.agents} isAdmin={authUser.role==='admin'}/>
+          <AgentQuotaIndicators agents={projectsData?.agents} isAdmin={authUser.role==='admin'} canReadSettings={hasPermission(permissionsQuery.data,'settings')}/>
           {hasPermission(permissionsQuery.data, 'monitor') && <ServerResourceIndicator />}
           <div className="workspace-account">
             <button

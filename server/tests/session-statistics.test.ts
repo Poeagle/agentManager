@@ -1,3 +1,4 @@
+import {createClaudeProvider} from '../src/services/agents/claude/providers.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -287,6 +288,28 @@ describe('persisted session statistics',()=>{
     expect(extra?.unit).toBe('CNY');
     expect(extra?.amount).toBeCloseTo(9000*(2-0.04)/1e6,12);
     expect(drops.find(drop=>drop.current.request_id==='fourth')?.extra_cost?.amount).toBeCloseTo((-500*2-3500*0.04)/1e6,12);
+  });
+
+  it.each([[22737,0,0.0541672],[0,22737,0.0882727]])('includes Claude cache writes at both TTLs',async(short,long,expected)=>{
+    initModelPricing();
+    const table='| Model | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |\n'+
+      '| Claude Sonnet 5.5 | $2 / MTok | $2.50 / MTok | $4 / MTok | $0.10 / MTok | $10 / MTok |';
+    await refreshModelPricing(async url=>String(url)===pricingSources.claude?new Response(table):new Response(null,{status:404}),undefined,base);
+    createClaudeProvider({id:'official-fixture',apiKey:'fixture-key',fields:{baseUrl:'https://api.anthropic.com',models:['claude-sonnet-5-5']}});
+    const context=agentContext({...claude.session,agent_environment_id:'claude-provider:official-fixture'});
+    const entry=(time:number,type:string,fields:object)=>JSON.stringify({timestamp:stamp(time),type,...fields})+'\n';
+    const human=(time:number,id:string)=>entry(time,'user',{uuid:id,message:{role:'user',content:'Question'}});
+    const reply=(time:number,id:string,cached:number,write5:number,write60:number,output:number)=>entry(time,'assistant',{
+      message:{id,role:'assistant',model:'claude-sonnet-5-5',stop_reason:'end_turn',content:[{type:'text',text:'Answer'}],usage:{
+        input_tokens:4,cache_read_input_tokens:cached,cache_creation_input_tokens:write5+write60,output_tokens:output,
+        cache_creation:{ephemeral_5m_input_tokens:write5,ephemeral_1h_input_tokens:write60},
+      }},
+    });
+    await writeFile(file,human(1,'first')+reply(2,'before',21953,192,0,577)+human(3,'second')+reply(4,'after',0,short,long,471));
+    await updateSessionFacts(context,file);
+    const [drop]=readSessionMetadataDetails(context,true)!.cache_drops;
+    expect(drop.extra_cost?.unit).toBe('USD');
+    expect(drop.extra_cost?.amount).toBeCloseTo(expected,12);
   });
 
   it('compares hits even when new input exceeds the entire preceding input',async()=>{

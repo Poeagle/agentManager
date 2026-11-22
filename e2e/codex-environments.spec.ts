@@ -7,6 +7,71 @@ test.beforeEach(async({page})=>{
 });
 const accountDetails=(id:string)=>({id,checked_at:'2026-11-09T00:00:00Z',executable:'/fixture/bin/codex',version:'codex-cli 0.fixture',home:'/fixture/.codex',engine:{state:'connected',pid:123},authentication:{status:'authenticated',type:'chatgpt',email:'fixture@example.invalid',plan:'fixture-plan'},config:{path:'/fixture/.codex/config.toml',exists:true,notice:null},settings:{model:'fixture-model',model_provider:'openai',model_reasoning_effort:'high'},models:[{model:'fixture-model',name:'Fixture model',description:'Selected user model',defaultEffort:'high'}]});
 
+test('edits a shared multiplier and the default model directly in each Provider row',async({page})=>{
+ const status=await(await page.request.get('/api/auth/status')).json();
+ expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
+ await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true'}}});
+ const agents=['codex','claude'].map((id,index)=>{
+  const agent={id,label:index?'Claude':'Codex',presentation:{icon:id,color:'#60a5fa'},capabilities:{}};
+  const provider={id:'gateway',name:`${agent.label} Gateway`,kind:'compatible',managed:true,enabled:true,status:'ready',statusText:'Fixture ready',models:['model-a','model-b'],defaultModel:'model-a',fields:[
+   {key:'baseUrl',value:'https://gateway.example/v1'},
+   {key:'defaultModel',value:'model-a'},
+   {key:'providerRateMultiplier',value:'',description:'按官方参考价估算'},
+  ]};
+  return {agent,state:{agent,providers:[provider],defaults:[],providerManagement:{create:true}}};
+ });
+ const updates:unknown[]=[];
+ await page.route('**/api/agent-management**',route=>{
+  const path=new URL(route.request().url()).pathname;
+  if(path==='/api/agent-management')return route.fulfill({json:{agents}});
+  const {state}=agents.find(item=>path.startsWith(`/api/agent-management/${item.agent.id}`))!;
+  const provider=state.providers[0];
+  if(route.request().method()==='PUT'){
+   const {fields}=route.request().postDataJSON();
+   updates.push({agent:state.agent.id,fields});
+   if(fields.providerRateMultiplier==='0')return route.fulfill({status:400,json:{error:'Provider 计费倍率必须为正数'}});
+   if(fields.defaultModel)provider.defaultModel=fields.defaultModel;
+   for(const field of provider.fields)if(field.key in fields)field.value=fields[field.key];
+   return route.fulfill({json:{state}});
+  }
+  return route.fulfill({json:{provider}});
+ });
+ await page.route('**/api/codex/environments**',route=>route.fulfill({json:{environments:[],users:[]}}));
+ const open=async()=>{
+  await page.goto('/');
+  await page.getByTitle('My account').click();
+  await page.getByRole('button',{name:'Agent 配置'}).click();
+ };
+ await page.setViewportSize({width:560,height:850});
+ await open();
+ const region=page.getByRole('region',{name:/Agent Provider，/});
+ await expect.poll(()=>region.evaluate(el=>el.scrollWidth>el.clientWidth)).toBe(true);
+ for(const {agent} of agents){
+  const row=region.getByRole('row').filter({hasText:`${agent.label} Gateway`});
+  const model=row.getByRole('combobox',{name:`${agent.label} Gateway 默认模型`});
+  const rate=row.getByRole('textbox',{name:`${agent.label} Gateway 计费倍率`});
+  await expect(model.locator('option')).toHaveText(['model-a','model-b']);
+  await model.selectOption('model-b');
+  await expect(model).toHaveValue('model-b');
+  await rate.fill('1.2');
+  await row.getByRole('button',{name:`保存 ${agent.label} Gateway 倍率`}).click();
+  await expect(model).toBeEnabled();
+  await expect(rate).toHaveValue('1.2');
+ }
+ expect(updates).toEqual(['codex','claude'].flatMap(agent=>[
+  {agent,fields:{defaultModel:'model-b'}},{agent,fields:{providerRateMultiplier:'1.2'}},
+ ]));
+ const codexRate=region.getByRole('textbox',{name:'Codex Gateway 计费倍率'});
+ await codexRate.fill('0');
+ await codexRate.press('Enter');
+ await expect(page.getByRole('alert')).toContainText('计费倍率必须为正数');
+ await open();
+ for(const {agent} of agents){
+  await expect(region.getByRole('combobox',{name:`${agent.label} Gateway 默认模型`})).toHaveValue('model-b');
+  await expect(region.getByRole('textbox',{name:`${agent.label} Gateway 计费倍率`})).toHaveValue('1.2');
+ }
+});
+
 
 test('configures a private same-machine account and enforces visibility in browser and API',async({page},testInfo)=>{
  const status=await (await page.request.get('/api/auth/status')).json();

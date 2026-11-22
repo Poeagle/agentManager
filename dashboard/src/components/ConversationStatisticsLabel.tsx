@@ -27,7 +27,8 @@ export function ConversationStatisticsLabel({statistics,interval=false,progress=
  const count=(n:number|null|undefined)=>valid(n)===null||!complete&&!value?.requests&&n===0?'—':partialPrefix+n;
  const formatted=(value:number|null|undefined)=>{const n=valid(value);return n===null?'—':partialPrefix+number(n);};
  const cost=value?.cost,unit=cost?.unit??'USD',includeCost=cost!==null,costValue=valid(cost?.amount);
- const costLabel=unit==='credits'?'Est. Cr':unit==='CNY'?'Est. ¥':unit==='USD'?'Est. $':'Est. cost';
+ const currency=unit==='credits'?'USD':unit;
+ const costLabel=currency==='CNY'?'Est. ¥':currency==='USD'?'Est. $':'Est. cost';
  const exact=(value:number|null|undefined)=>valid(value)===null?'unknown':new Intl.NumberFormat('en').format(value!);
  const title=[
   summary?'Usage between completed Final boundaries.':progress?'Usage for the Items in this Progress.':part?'Usage for this Item.':'Cumulative usage for this native turn (legacy snapshot).',
@@ -35,9 +36,9 @@ export function ConversationStatisticsLabel({statistics,interval=false,progress=
   shared?`${part?.shared_messages} updates share the same model request. Per-update usage cannot be split reliably; this request group used ${tokens?.total_tokens==null?'unknown':number(tokens.total_tokens)} tokens.`:'',
   coverage&&coverage!=='complete'?coverageLabel+'。'+(value?.reasons??[]).map(reason=>coverageReason[reason]).join('、'):!complete?'Partial recorded interval: ≥ marks a lower bound.':'',
   'Rounds count recorded model requests. Calls count native tool calls. One request issuing three tools is 1 round | 3 calls.',
-  includeCost?`Estimated ${cost?.unit??'credits'}: ${costValue??'unknown'}. ${cost?.rate_date?`Rate date ${cost.rate_date}. `:''}${costValue===null?'Pricing is unavailable until usage and applicable rates are recorded. ':''}* marks incomplete usage or pricing coverage. ${cost?.basis==='api'?'Based on recorded requests and public API tariffs.':cost?.basis==='public_usd_reference'?'Codex Credits converted at 25 Credits per USD; this is an API-equivalent estimate, not an account invoice.':'Subscription reference based on each request’s model and speed.'}`:'Pricing unavailable for this engine.',
+  includeCost?`Estimated ${currency}: ${costValue===null?'unknown':formatEstimatedTokenCost(costValue,unit,false)}. ${cost?.rate_date?`Rate date ${cost.rate_date}. `:''}${costValue===null?'Pricing is unavailable until usage and applicable rates are recorded. ':''}* marks incomplete usage or pricing coverage. ${cost?.basis==='api'?'Based on recorded requests and public API tariffs.':cost?.basis==='public_usd_reference'?'Codex Credits converted at 25 Credits per USD; this is an API-equivalent estimate, not an account invoice.':'Subscription reference based on each request’s model and speed.'}`:'Pricing unavailable for this engine.',
  ].filter(Boolean).join(' ');
- const estimate=(n:number|null|undefined,label:string)=> <span className="session-chat-estimated-cost" title={`Estimated ${label} (${unit})`}>{formatEstimatedTokenCost(n,unit,!cost?.complete||!complete)}</span>;
+ const estimate=(n:number|null|undefined,label:string)=> <span className="session-chat-estimated-cost" title={`Estimated ${label} (${currency})`}>{formatEstimatedTokenCost(n,unit,!cost?.complete||!complete)}</span>;
  const breakdown=cost?.breakdown;
  const fieldEstimates=!!cost&&!!tokens;
  const values=[<Fragment key="total">{formatted(tokens?.total_tokens)}{includeCost&&<> ({estimate(costValue,'total')})</>}</Fragment>,<Fragment key="input">{formatted(input)}{fieldEstimates&&<> ({estimate(breakdown?.input,'uncached input')})</>}</Fragment>,<Fragment key="cache">{formatted(cached)}{(cached!==null||fieldEstimates)&&<> ({fieldEstimates&&estimate(breakdown?.cache,'cached input')}{cached!==null&&<>{fieldEstimates&&' | '}<span className="session-chat-cache-hit" title={`Cache hit rate = cached input / input: ${hitText}${!complete?' (recorded requests only)':''}`} style={{color:cacheHitColor(hit)}}>{hitText}</span></>})</>}</Fragment>,<Fragment key="reasoning">{formatted(tokens?.reasoning_output_tokens)}{fieldEstimates&&<> ({estimate(breakdown?.reasoning,'reasoning, included in output')})</>}</Fragment>,<Fragment key="output">{formatted(output)}{fieldEstimates&&<> ({estimate(breakdown?.output,'output, including reasoning')})</>}</Fragment>];

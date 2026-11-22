@@ -129,16 +129,6 @@ export const coverageReason: Record<StatisticsReason, string> = {
   source_replaced: '历史来源已替换且部分原始用量缺失', inherited_history: '部分请求来自继承历史',
 };
 
-export function creditsLabel(cost: ConversationCostEstimate | null | undefined) {
-  if (cost?.amount == null) return '未提供';
-  if (cost.unit !== 'credits' && cost.amount > 0 && cost.amount < 0.01)
-    return `<${cost.unit==='CNY'?'¥':'$'}0.01${cost.complete?'':'*'}`;
-  const formatted = new Intl.NumberFormat('en', cost.unit === 'credits'
-    ? {minimumFractionDigits:1,maximumFractionDigits:1}
-    : {style:'currency',currency:cost.unit==='CNY'?'CNY':'USD',minimumFractionDigits:2,maximumFractionDigits:2}).format(cost.amount);
-  return formatted + (cost.complete ? '' : '*');
-}
-
 export function uncachedInputTokens(tokens: Record<string, number | null> | null | undefined): number | null {
   const input = totalInputTokens(tokens);
   const cached = tokens?.cached_input_tokens;

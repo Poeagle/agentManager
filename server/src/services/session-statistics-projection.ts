@@ -525,7 +525,7 @@ export function projectSummary(
     .some(turn => turn.items.length > 0 || turn.tools.length > 0);
   const reasons = [...new Set([...state.reasons, ...extra, ...(missing ? ['missing_usage' as const] : [])])];
   const hasSource = state.first || state.latest || state.inputs > 0 || observedAt;
-  const latest = state.latest && (({cache_input_pricing: _pricing, cache_write_input_tokens: _writes, ...request}) => request)(state.latest);
+  const latest = state.latest && (({cache_input_pricing: _pricing, cache_write_tokens: _writes, ...request}) => request)(state.latest);
   const pending = extra.includes('backfill') || (waiting && !reasons.length) || extra.includes('incomplete_record');
   const partial = reasons.some(reason => reason !== 'backfill' && reason !== 'incomplete_record');
   return {

@@ -10,8 +10,9 @@ import {Dialog} from './Dialog';
 import {ConversationDetailsPanel} from './ConversationDetailsPanel';
 import {ConversationContextUsage} from './ConversationContextUsage';
 import {quotaColor} from '../lib/quota-color';
-import {coverageReason,intervalCoverageText,creditsLabel,recordedCachePercent,uncachedInputTokens,type SessionMetadata} from '../lib/session-metadata';
+import {coverageReason,intervalCoverageText,recordedCachePercent,uncachedInputTokens,type SessionMetadata} from '../lib/session-metadata';
 import {ConversationCacheHistory,ConversationUsageHistory} from './ConversationUsageHistory';
+import {formatConversationCost} from './estimated-token-cost';
 
 const effortNames:Record<string,string>={none:'无',minimal:'最低',low:'低',medium:'中',high:'高',xhigh:'更高',max:'最高',ultra:'极高'};
 const compact=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(value);
@@ -58,7 +59,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
   const model=data?.models.find(m=>m.model===selected.model&&(!m.provider||!selected.provider||m.provider===selected.provider)),usage=data?.usage;
   const summary=metadata&&metadata.native_id===data?.native_id?metadata:null;
   const cumulative=summary?summary.totals?.tokens:usage?.total;
-  const credits=summary?.totals?.cost;
+  const cost=summary?.totals?.cost;
   const countersConsistent=!summary?.reasons.includes('counter_mismatch');
   const tokenMetrics=cumulative?([['Total',cumulative.total_tokens],['Input',countersConsistent?uncachedInputTokens(cumulative):null],['Cache',cumulative.cached_input_tokens],['Reasoning',cumulative.reasoning_output_tokens],['Output',cumulative.output_tokens]] as Array<[string,number|null|undefined]>).filter((entry):entry is [string,number]=>entry[1]!=null):[];
   const recordedRate=countersConsistent?recordedCachePercent(cumulative):null;
@@ -119,7 +120,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
           {data.approval&&<span title="Approval policy">Approval: {data.approval}</span>}
           {data.engine_version&&<span title="Running engine version">Engine {data.engine_version}</span>}
           {tokenMetrics.length>0&&<span aria-label="Cumulative token usage">Tokens {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{name}</span></Fragment>)} : {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{compact(value)}</span></Fragment>)}</span>}
-          {credits?.amount!=null&&<span className="session-chat-estimated-cost conversation-total-credits" title={`${credits.basis==='public_usd_reference'?'Codex Credits 按 25:1 换算为 USD API 等值金额，不代表订阅账单。 ':''}按原生请求的模型和速度估算 · 费率 ${credits.rate_date??'未知'}${credits.complete?'':' · * 费率或用量覆盖不完整'}`}>Est. {credits.unit==='credits'?`Cr ${creditsLabel(credits)}`:creditsLabel(credits)}</span>}
+          {cost?.amount!=null&&<span className="session-chat-estimated-cost conversation-total-credits" title={`${cost.unit==='credits'?'Codex Credits 按 25:1 换算为 API 等值 USD，不代表订阅账单。 ':''}按原生请求的模型和速度估算${cost.rate_date?` · 费率 ${cost.rate_date}`:''}${cost.complete?'':' · * 费率或用量覆盖不完整'}`}>Est. {formatConversationCost(cost)}</span>}
           {summary&&summary.status!=='complete'&&<span title={summary.reasons.map(reason=>coverageReason[reason]).join('、')||undefined}>{intervalCoverageText(summary.status,summary.reasons)}</span>}
         </span>
         {(error&&!newOpen||notice)&&<span className="conversation-control-message" role={error&&!newOpen?'alert':'status'} title={error&&!newOpen?error:notice}>{error&&!newOpen?error:notice}</span>}
@@ -151,7 +152,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
       {error&&<p role="alert" className="session-chat-error">{error}</p>}
       <footer className="mt-4 flex justify-end gap-3 text-sm"><button type="button" disabled={!!operation} onClick={()=>setNewOpen(false)}>取消</button><button type="button" disabled={!!operation||!!data?.supports_fresh_model&&!freshPreference} onClick={()=>void perform('new')}>{operation==='new'?'正在新开…':'停止旧会话并新开'}</button></footer>
     </Dialog>}
-    {expanded&&data&&<ControlDetails key={JSON.stringify([sessionId,data.native_id])} sessionId={sessionId} metadata={summary} data={{...data,state:data.loaded?(busy||compacting?'active':'idle'):data.state}} onClose={()=>setExpanded(false)} onRefresh={refresh} refreshing={query.isFetching}/>}
+    {expanded&&data&&<ControlDetails key={JSON.stringify([sessionId,data.native_id])} sessionId={sessionId} metadata={summary} billingMode={currentEnvironment?.auth_mode} data={{...data,state:data.loaded?(busy||compacting?'active':'idle'):data.state}} onClose={()=>setExpanded(false)} onRefresh={refresh} refreshing={query.isFetching}/>}
     {contextOpen&&active&&data?.native_id&&<ConversationContextUsage key={`${sessionId}:${data.native_id}`} sessionId={sessionId} nativeId={data.native_id} usage={data.usage} observedAt={data.usage_observed_at} model={data.model} onClose={()=>setContextOpen(false)}/>}
   </div>;
 }
@@ -162,7 +163,7 @@ const detailTabs = [
   {id:'usage',label:'会话详情'},
 ] as const;
 
-function ControlDetails({sessionId,metadata,data,onClose,onRefresh,refreshing}:{sessionId:string;metadata:SessionMetadata|null;data:ConversationControlsData;onClose:()=>void;onRefresh:()=>void;refreshing:boolean}) {
+function ControlDetails({sessionId,metadata,billingMode,data,onClose,onRefresh,refreshing}:{sessionId:string;metadata:SessionMetadata|null;billingMode?:'api'|'account'|null;data:ConversationControlsData;onClose:()=>void;onRefresh:()=>void;refreshing:boolean}) {
   const [tab,setTab]=useState<(typeof detailTabs)[number]['id']>('overview');
   const id=useId();
   const initialTab=useRef<HTMLButtonElement>(null);
@@ -186,10 +187,10 @@ function ControlDetails({sessionId,metadata,data,onClose,onRefresh,refreshing}:{
   const error=query.isError&&!details?'无法读取会话统计':undefined;
   const retry=()=>void query.refetch();
   const pages = {
-    overview: <ConversationDetailsPanel usage={data.usage} model={data.model} state={state} statusTitle={data.warning} metadata={summary}/>,
+    overview: <ConversationDetailsPanel usage={data.usage} model={data.model} state={state} statusTitle={data.warning} metadata={summary} billingMode={billingMode}/>,
     cache: <ConversationCacheHistory key={details?.summary.generation??data.native_id} sessionId={sessionId}
       details={details} loading={loading} error={error} onRetry={retry}/>,
-    usage: <ConversationUsageHistory sessionId={sessionId} nativeId={data.native_id} details={details}
+    usage: <ConversationUsageHistory sessionId={sessionId} nativeId={data.native_id} details={details} cost={summary?.totals?.cost} billingMode={billingMode}
       generation={summary?.generation} revision={summary?.revision}
       active={tab==='usage'} supported={supported} loading={loading} error={error} onRetry={retry}/>,
   };

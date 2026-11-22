@@ -11,10 +11,10 @@ describe('English message metadata',()=>{
  it('uses conclusion interval data instead of native turn totals',()=>{
   render(<ConversationStatisticsLabel statistics={{...base,interval,conclusion:{...interval,start_at:null,end_at:null,elapsed_ms:null}}}/>);expect(label()).not.toHaveTextContent('summary ·');expect(label()).toHaveTextContent('200 (—)｜');expect(label()).not.toHaveTextContent('1K');expect(label()).toHaveAttribute('title',expect.stringContaining('Usage between completed Final boundaries'));
  });
- it('omits redundant interval prefixes and colors only the Credit value and tool counts',()=>{
+ it('omits redundant interval prefixes and colors only the USD value and tool counts',()=>{
   render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,cost:{amount:1.267,unit:'credits',complete:true}}}}/>);
   expect(label().textContent).toMatch(/^Total｜/);expect(label()).not.toHaveTextContent('step ·');
-  expect(document.querySelector('.session-chat-estimated-cost')).toHaveTextContent('1.267');
+  expect(document.querySelector('.session-chat-estimated-cost')).toHaveTextContent('$0.05');
   expect(document.querySelector('.session-chat-tool-counts')).toHaveTextContent('1 round | 2 calls');
   expect(document.querySelector('.session-chat-estimated-cost')).not.toHaveTextContent('Est. Cr');
  });
@@ -40,7 +40,7 @@ describe('English message metadata',()=>{
  it('shows cache hit percentage beside cached input and provides exact counters and pricing in the tooltip',()=>{
   const tokens={total_tokens:10200,input_tokens:10000,cached_input_tokens:9999,reasoning_output_tokens:50,output_tokens:200};
   render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,tokens,cost:{amount:3.21,unit:'credits',complete:true,rate_date:'2026-11-14'}}}}/>);
-  expect(label()).toHaveTextContent('10.2K (3.21)｜1 (—)｜10K (— | 99.99%)｜50 (—)｜200 (—)');expect(screen.getByText('99.99%')).toHaveAttribute('class','session-chat-cache-hit');expect(label()).toHaveAttribute('title',expect.stringContaining('Input 1 (uncached); Cache 9,999; total input 10,000'));expect(label()).toHaveAttribute('title',expect.stringContaining('included in Output'));
+  expect(label()).toHaveTextContent('10.2K ($0.13)｜1 (—)｜10K (— | 99.99%)｜50 (—)｜200 (—)');expect(screen.getByText('99.99%')).toHaveAttribute('class','session-chat-cache-hit');expect(label()).toHaveAttribute('title',expect.stringContaining('Input 1 (uncached); Cache 9,999; total input 10,000'));expect(label()).toHaveAttribute('title',expect.stringContaining('included in Output'));
  });
  it('shows the recorded cache rate for incomplete usage when total and output determine input',()=>{
   const tokens={total_tokens:1000,input_tokens:null,cached_input_tokens:800,reasoning_output_tokens:20,output_tokens:100};
@@ -57,7 +57,7 @@ describe('English message metadata',()=>{
  it('shows credit breakdown beside each token category',()=>{
   const tokens={total_tokens:1100,input_tokens:1000,cached_input_tokens:900,reasoning_output_tokens:20,output_tokens:100};
   render(<ConversationStatisticsLabel statistics={{...base,tokens,cost:{amount:3,unit:'credits',complete:true,breakdown:{input:1,cache:0.5,reasoning:0.3,output:1.5}}}}/>);
-  expect(label()).toHaveTextContent('1.1K (3)｜100 (1)｜900 (0.5 | 90%)｜20 (0.3)｜100 (1.5)');
+  expect(label()).toHaveTextContent('1.1K ($0.12)｜100 ($0.04)｜900 ($0.02 | 90%)｜20 ($0.01)｜100 ($0.06)');
   expect(document.querySelectorAll('.session-chat-estimated-cost')).toHaveLength(5);
  });
  it('keeps zero-input and invalid cache ratios unknown and suppresses inapplicable Credit fields',()=>{
@@ -74,7 +74,7 @@ describe('English message metadata',()=>{
   expect(label()).toHaveAttribute('title',expect.stringContaining('total input 100'));
  });
  it('marks partial credit estimates and never rounds tiny positive estimates to zero',()=>{
-  render(<ConversationStatisticsLabel statistics={{...base,cost:{amount:.00001,unit:'credits',complete:false}}}/>);expect(label()).toHaveTextContent('<0.001*');
+  render(<ConversationStatisticsLabel statistics={{...base,cost:{amount:.00001,unit:'credits',complete:false}}}/>);expect(label()).toHaveTextContent('<$0.01*');
  });
  it('does not invent zero counters for unavailable statistics',()=>{
   render(<ConversationStatisticsLabel statistics={null} interval/>);expect(label()).toHaveTextContent('— rounds | — calls');expect(label()).not.toHaveTextContent('0 calls');
