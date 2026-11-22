@@ -22,8 +22,11 @@ export function managedCodexRuntimeSocket(providerId: string): string | null {
 }
 
 export function managedCodexEngines(): CodexEngine[] {
+  // The native Provider runs on the Engine owned by ensureNativeCodexEngine().
+  // Treating it as a stored-Provider Engine would spin up a second app-server
+  // on a different socket and reintroduce a duplicate Provider entry.
   return readAgentManagement('codex').providers
-    .filter(provider => provider.enabled)
+    .filter(provider => provider.enabled && provider.id !== 'native')
     .map(provider => ({
       provider: provider.id,
       socket: runtimeSockets.get(provider.id) || managedCodexSocket(provider.id),
