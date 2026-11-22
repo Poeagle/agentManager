@@ -1284,10 +1284,72 @@ const providerColumns: TableColumn<ProviderRow>[] = [
   {key:'agent',title:'Agent',value:row=>row.state.agent.label},
   {key:'auth',title:'接入方式',value:row=>row.auth},
   {key:'connection',title:'连接',value:row=>row.connection},
-  {key:'rate',title:'倍率',kind:'number',value:row=>valueText(row.provider?.fields.find(field=>field.key==='providerRateMultiplier')?.value)||null},
+  {key:'rate',title:'倍率',kind:'number',interactive:false,value:row=>providerRate(row.provider,row.environment)},
   {key:'status',title:'状态',value:row=>rowStatus(row)},
   {key:'balance',title:'余额',value:()=>null,interactive:false},
 ];
+
+function providerRate(provider?:AgentProviderState, environment?:CodexEnvironment) {
+  const field=provider?.fields.find(item=>item.key==='providerRateMultiplier');
+  const value=valueText(field?.value);
+  if(value)return Number(value);
+  return provider?.kind==='native'||provider?.kind==='official'||environment?.auth_mode==='account'?1:null;
+}
+
+function providerRateSource(provider?:AgentProviderState) {
+  const field=provider?.fields.find(item=>item.key==='providerRateMultiplier');
+  return field?.label.includes('自动')?'sub2api':field?.label.includes('可手动覆盖')?'sub2api':undefined;
+}
+
+function InlineProviderRate({row,readOnly,onError}:{row:ProviderRow;readOnly:boolean;onError:(message:string)=>void}) {
+  const client=useQueryClient();
+  const provider=row.provider,rate=providerRate(provider,row.environment),initialRate=useRef(rate);
+  const field=provider?.fields.find(item=>item.key==='providerRateMultiplier');
+  const editable=!!provider&&!field?.readOnly&&provider.kind!=='native'&&provider.kind!=='official'&&row.environment?.auth_mode!=='account';
+  const canWrite=!readOnly;
+  const [editing,setEditing]=useState(false);
+  const [draft,setDraft]=useState(rate==null?'':String(rate));
+  const [error,setError]=useState('');
+  const input=useRef<HTMLInputElement>(null);
+  useEffect(()=>{if(!editing)setDraft(rate==null?'':String(rate));},[editing,rate]);
+  useEffect(()=>{if(editing)input.current?.select();},[editing]);
+  useEffect(()=>{
+    if(rate!==initialRate.current){initialRate.current=rate;setEditing(false);setError('');}
+  },[rate]);
+  const save=useMutation<{state:AgentManagementState},Error,string>({
+    mutationFn:(value:string)=>api.agentManagement.updateProvider(row.state.agent.id,provider!.id,{fields:{providerRateMultiplier:value}}),
+    onMutate:()=>{setError('');onError('');},
+    onSuccess:async result=>{
+      const updated=result.state.providers.find(item=>item.id===provider?.id);
+      if(updated)client.setQueryData(['agent-provider',row.state.agent.id,updated.id],updated);
+      client.setQueryData(['agent-management',row.state.agent.id],{state:result.state});
+      await Promise.all(['agent-management-list','agent-model-configs','agent-model-catalog','conversation-controls','session-environments','conversation-usage-intervals','conversation-metadata-details'].map(key=>client.invalidateQueries({queryKey:[key]})));
+      setEditing(false);
+    },
+    onError:(failure:Error)=>{setError(failure.message);onError(`${row.name} · ${failure.message}`);},
+    onSettled:()=>{setEditing(false);},
+  });
+  if(!editable||!canWrite)return <td className="agent-provider-rate">{rate==null?'—':`${rate}×`}</td>;
+  const begin=()=>{initialRate.current=rate;setDraft(rate==null?'':String(rate));setError('');setEditing(true);};
+  const commit=()=>{
+    if(save.isPending)return;
+    const normalized=draft.trim();
+    if(normalized===String(rate??'')){setEditing(false);return;}
+    if(!/^\d{1,4}(?:\.\d{1,6})?$/.test(normalized)||Number(normalized)<=0){setError('请输入大于 0 的倍率，最多 6 位小数');return;}
+    save.mutate(normalized);
+  };
+  return <td className="agent-provider-rate"><div className="agent-provider-rate-inline">
+    {editing?<input ref={input} aria-label={`${row.name} 倍率`} inputMode="decimal" value={draft} disabled={save.isPending}
+      aria-invalid={!!error} title={error||'输入后按 Enter 保存，Esc 取消'}
+      onChange={event=>{setDraft(event.target.value.replace(/[^\d.]/g,''));setError('');}}
+      onBlur={commit}
+      onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();commit();}else if(event.key==='Escape'){event.preventDefault();setDraft(String(rate??''));setEditing(false);setError('');}}}/>:
+      <button type="button" className="agent-provider-rate-edit" aria-label={`${row.name} 倍率 ${rate==null?'未设置':`${rate}×`}，点击编辑`} disabled={save.isPending} onClick={begin} title={providerRateSource(provider)==='sub2api'?'当前为自动读取值；手动保存后将覆盖自动同步':field?.description}>
+        {save.isPending?<Loader2 size={12} className="animate-spin"/>:rate==null?'—':`${rate}×`}
+      </button>}
+    {error&&<span className="agent-provider-rate-error" role="alert">{error}</span>}
+  </div></td>;
+}
 
 function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, onChanged}: {
   row: ProviderRow;
@@ -1301,8 +1363,6 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
   const client = useQueryClient();
   const provider = row.provider;
   const agentId = row.state.agent.id;
-  const rateField = provider?.fields.find(field=>field.key==='providerRateMultiplier');
-  const rate = valueText(rateField?.value);
   const save = useMutation({
     mutationFn: (fields:Record<string,string>)=>api.agentManagement.updateProvider(agentId,provider!.id,{fields}),
     onMutate: ()=>onError(''),
@@ -1327,7 +1387,7 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
     <td><span className="agent-provider-agent"><AgentIcon id={row.state.agent.id}/>{row.state.agent.label}</span></td>
     <td>{row.auth}</td>
     <td title={row.connection}>{row.connection || '—'}</td>
-    <td className="agent-provider-rate-readonly">{rate ? `${rate}×` : provider?.kind==='native'||provider?.kind==='official'||row.environment?.auth_mode==='account'?'1×':'—'}</td>
+    <InlineProviderRate row={row} readOnly={readOnly} onError={onError}/>
     <td><span className="agent-provider-status" title={enabled ? provider?.statusText : undefined}>
       <span className={`agent-management-dot ${enabled ? statusTone(provider?.status ?? (row.environment?.auth_mode ? 'ready' : 'unknown')) : 'unknown'}`} />{status}
     </span></td>

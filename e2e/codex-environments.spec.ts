@@ -7,7 +7,7 @@ test.beforeEach(async({page})=>{
 });
 const accountDetails=(id:string)=>({id,checked_at:'2026-11-09T00:00:00Z',executable:'/fixture/bin/codex',version:'codex-cli 0.fixture',home:'/fixture/.codex',engine:{state:'connected',pid:123},authentication:{status:'authenticated',type:'chatgpt',email:'fixture@example.invalid',plan:'fixture-plan'},config:{path:'/fixture/.codex/config.toml',exists:true,notice:null},settings:{model:'fixture-model',model_provider:'openai',model_reasoning_effort:'high'},models:[{model:'fixture-model',name:'Fixture model',description:'Selected user model',defaultEffort:'high'}]});
 
-test('keeps Provider multiplier read-only in the row and edits it in the Provider dialog',async({page})=>{
+test('edits the Provider multiplier directly in the row and applies it immediately',async({page})=>{
  const status=await(await page.request.get('/api/auth/status')).json();
  expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
  await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true'}}});
@@ -21,7 +21,7 @@ test('keeps Provider multiplier read-only in the row and edits it in the Provide
    {key:'launchArgs',label:'附加启动参数',type:'string-list',value:[]},
    {key:'models',label:'模型',type:'string-list',value:['model-a','model-b']},
    {key:'defaultModel',label:'默认模型',type:'text',value:'model-a'},
-   {key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text',value:'',description:'按官方参考价估算'},
+   {key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text',value:index?'1':'0.25',description:'按官方参考价估算'},
   ],authentication:{status:'authenticated',method:'加密 API Key'},configFiles:[],codexHome:'/fixture/codex',launchCommand:'codex app-server',launchArgs:[],pid:null};
   return {agent,state:{agent,providers:[provider],defaults:[],providerManagement:{create:true}}};
  });
@@ -67,23 +67,17 @@ test('keeps Provider multiplier read-only in the row and edits it in the Provide
  await expect.poll(()=>region.evaluate(el=>el.scrollWidth>el.clientWidth)).toBe(true);
  for(const {agent} of agents){
   const row=region.getByRole('row').filter({hasText:`${agent.label} Gateway`});
-  await expect(row.getByRole('combobox',{name:/默认模型/})).toHaveCount(0);
-  await expect(row.getByRole('textbox',{name:/计费倍率/})).toHaveCount(0);
-  await row.getByRole('button',{name:`编辑 ${agent.label} Gateway · ${agent.label}`}).click();
-  const dialog=page.getByRole('dialog',{name:`编辑 Provider · ${agent.label} Gateway`});
-  await expect(dialog.getByRole('textbox',{name:/API 地址/})).toHaveValue('https://gateway.example/v1');
-  const settings=dialog.locator('summary').filter({hasText:/设置/});
-  if(!(await settings.getAttribute('open'))&&!await settings.evaluate(element=>(element.parentElement as HTMLDetailsElement).open))await settings.click();
-  const rate=dialog.getByRole('textbox',{name:'Provider 计费倍率'});
-  await rate.fill('1.2');
-  await dialog.getByRole('button',{name:/保存/}).click();
-  await expect(rate).toHaveValue('1.2');
+  const rate=row.getByRole('button',{name:new RegExp(`^${agent.label} Gateway 倍率`)});
+  await rate.click();
+  const input=row.getByRole('textbox',{name:`${agent.label} Gateway 倍率`});
+  await expect(input).toBeVisible();
+  await input.fill('1.2');
+  await input.press('Enter');
   await expect.poll(()=>updates.some(item=>JSON.stringify(item).includes('"agent":"'+agent.id+'"'))).toBe(true);
-  await expect(region.getByRole('row').filter({hasText:`${agent.label} Gateway`}).first()).toContainText('1.2×');
-  if(await dialog.count())await dialog.getByRole('button',{name:/关闭编辑 Provider/}).click();
-  await expect(page.getByRole('dialog',{name:/编辑 Provider/})).toHaveCount(0);
+  await expect(row.getByRole('button',{name:`${agent.label} Gateway 倍率 1.2×，点击编辑`})).toBeVisible();
+  expect(updates.at(-1)).toMatchObject({agent:agent.id,fields:{providerRateMultiplier:'1.2'}});
  }
- expect(updates.length).toBeGreaterThanOrEqual(2);
+ expect(updates.length).toBe(2);
 });
 
 
@@ -193,11 +187,8 @@ test('switches from account Providers to native and API Providers without becomi
  };
  for(const name of ['账号 A','原生测试 Provider','账号 B','API 测试 Provider','账号 A']) await close(await open(name));
  const gateway=await open('API 测试 Provider');
- const modelRow=gateway.getByRole('table',{name:'Provider 模型'}).getByRole('row').filter({hasText:'fixture-model'});
- await expect(modelRow).toContainText('2026-11-17');
- await expect(modelRow).toContainText('1,050,000');
- await expect(modelRow).toContainText('输入 2 · 缓存命中 0.1 · 输出 10');
- await expect(modelRow).toContainText('输入 3 · 缓存命中 0.2 · 输出 12');
+ await expect(gateway.getByRole('textbox',{name:'Responses API 地址'})).toBeVisible();
+ await expect(gateway.getByRole('table',{name:'Provider 模型'})).toHaveCount(0);
  await close(gateway);
  expect(unexpectedDialogs).toBe(0);
  const account=await open('账号 A');

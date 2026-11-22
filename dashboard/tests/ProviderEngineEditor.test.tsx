@@ -17,7 +17,7 @@ beforeEach(()=>{
  vi.mocked(api.agentManagement.modelCatalog).mockImplementation(async()=>({models:provider.models.map(model=>({vendor:'OpenAI',model,providers:[provider.name],context_window:200000,api_pricing:{currency:'USD',source:'official',reference_only:true,bands:[{rates:{input:2,cached:0.2,output:8}}]}}))}));
  vi.mocked(api.agentManagement.updateModelConfigs).mockImplementation(async(_id,patches)=>{configs=configs.map(c=>({...c,...patches.find(p=>p.model===c.model)}));return {models:configs};});
  vi.mocked(api.agentManagement.detectModels).mockResolvedValue({models:['model-a','model-b'].map(model=>({model,name:model,description:'',efforts:[],defaultEffort:'',context_window:200000,input_modalities:['text']}))});
- vi.mocked(api.agentManagement.updateProvider).mockImplementation(async(_agentId,_providerId,input)=>{provider={...provider,models:input.fields?.models as string[]??provider.models,defaultModel:String(input.fields?.defaultModel??provider.defaultModel),fields:provider.fields.map(field=>({...field,value:input.fields?.[field.key]??field.value}))};state={...state,providers:[provider]};return {state};});
+ vi.mocked(api.agentManagement.updateProvider).mockImplementation(async(_agentId,_providerId,input)=>{provider={...provider,models:input.fields?.models as string[]??provider.models,defaultModel:String(input.fields?.defaultModel??provider.defaultModel),fields:provider.fields.map(field=>({...field,value:input.fields?.[field.key]??field.value}))};state={...state,providers:[provider]};return {state} as any;});
  vi.mocked(api.agentManagement.updateProviderStream).mockImplementation(async(_id,_p,input)=>{provider={...provider,models:input.fields?.models as string[]||provider.models,fields:provider.fields.map(f=>({...f,value:input.fields?.[f.key]??f.value}))};state={...state,providers:[provider]};return {provider,state};});
  vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[],users:[]});vi.mocked(api.codexEnvironments.usage).mockResolvedValue({tabs:[],busy:false,verified:true});
 });
@@ -102,6 +102,24 @@ it('expands the Provider model table and probes only that Provider',async()=>{
  fireEvent.click(screen.getByRole('button',{name:'探测模型'}));await within(table).findByRole('checkbox',{name:'启用 new-model'});
  await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','fixture',expect.objectContaining({fields:expect.objectContaining({models:['model-a'],defaultModel:'model-a'})})));
  expect(within(table).getByRole('checkbox',{name:'启用 model-a'})).toBeChecked();expect(within(table).getByRole('checkbox',{name:'启用 new-model'})).not.toBeChecked();
+});
+it('edits and immediately refreshes the Provider multiplier in the parent row',async()=>{
+ provider={...provider,fields:[...provider.fields,{key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text',value:'1.2'}]};state={...state,providers:[provider]};
+ const invalidate=vi.spyOn(client,'invalidateQueries');
+ mount();const button=await screen.findByRole('button',{name:'Fixture API 倍率 1.2×，点击编辑'});
+ fireEvent.click(button);const input=screen.getByRole('textbox',{name:'Fixture API 倍率'});
+ expect(input).toHaveValue('1.2');fireEvent.change(input,{target:{value:'2.5'}});fireEvent.keyDown(input,{key:'Enter'});
+ await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','fixture',{fields:{providerRateMultiplier:'2.5'}}));
+ await waitFor(()=>expect(screen.getByRole('button',{name:'Fixture API 倍率 2.5×，点击编辑'})).toBeVisible());
+ expect(invalidate).toHaveBeenCalledWith({queryKey:['agent-model-configs']});
+ expect(invalidate).toHaveBeenCalledWith({queryKey:['conversation-usage-intervals']});
+});
+it('rejects an invalid inline multiplier without sending a partial update',async()=>{
+ provider={...provider,fields:[...provider.fields,{key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text',value:'1.2'}]};state={...state,providers:[provider]};
+ mount();fireEvent.click(await screen.findByRole('button',{name:'Fixture API 倍率 1.2×，点击编辑'}));
+ const input=screen.getByRole('textbox',{name:'Fixture API 倍率'});fireEvent.change(input,{target:{value:'0'}});fireEvent.keyDown(input,{key:'Enter'});
+ expect(await screen.findByRole('alert')).toHaveTextContent('请输入大于 0 的倍率');expect(api.agentManagement.updateProvider).not.toHaveBeenCalled();
+ fireEvent.keyDown(input,{key:'Escape'});expect(screen.getByRole('button',{name:'Fixture API 倍率 1.2×，点击编辑'})).toBeVisible();
 });
 it('replaces the Provider model list when discovery has no overlap and leaves it unchanged on probe failure',async()=>{
  mount();fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});

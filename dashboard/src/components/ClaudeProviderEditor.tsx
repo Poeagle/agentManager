@@ -9,6 +9,7 @@ import {ModelCatalogTable,ProviderModelActions} from './ModelCatalogTable';
 type Draft={id:string;name:string;baseUrl:string;apiKey:string;models:string[];defaultModel:string;haikuModel:string;subagentModel:string;effort:string;autoCompactWindow:string;contextWindow:string;maxOutputTokens:string;providerRateMultiplier:string};
 const empty=():Draft=>({id:'',name:'',baseUrl:'',apiKey:'',models:[],defaultModel:'',haikuModel:'',subagentModel:'',effort:'',autoCompactWindow:'',contextWindow:'',maxOutputTokens:'',providerRateMultiplier:''});
 const field=(provider:AgentProviderState,key:string)=>String(provider.fields.find(item=>item.key===key)?.value??'');
+const rateField=(provider:AgentProviderState)=>provider.fields.find(item=>item.key==='providerRateMultiplier');
 const fromProvider=(provider:AgentProviderState):Draft=>{
  return {id:provider.id,name:provider.name,baseUrl:field(provider,'baseUrl'),apiKey:'',models:provider.models,defaultModel:provider.defaultModel||'',haikuModel:field(provider,'haikuModel'),subagentModel:field(provider,'subagentModel'),effort:field(provider,'effort'),autoCompactWindow:field(provider,'autoCompactWindow'),contextWindow:field(provider,'contextWindow'),maxOutputTokens:field(provider,'maxOutputTokens'),providerRateMultiplier:field(provider,'providerRateMultiplier')};
 };
@@ -97,7 +98,7 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
     }}/>
    <ProviderAdvancedSettings label="Claude Code 设置">
    <div className="agent-management-form agent-management-engine-form">
-    {provider?.fields.some(item=>item.key==='providerRateMultiplier')&&<label className="agent-management-field"><span>Provider 计费倍率</span><input aria-label="Provider 计费倍率" inputMode="decimal" value={draft.providerRateMultiplier} placeholder="按官方参考价折算，留空使用原价" disabled={readOnly||busy} onChange={event=>change({providerRateMultiplier:event.target.value})}/></label>}
+    {provider&&rateField(provider)&&!rateField(provider)?.readOnly&&<label className="agent-management-field"><span>{rateField(provider)?.label}</span><input aria-label={rateField(provider)?.label} inputMode="decimal" value={draft.providerRateMultiplier} placeholder="按官方参考价折算，留空使用原价" disabled={readOnly||busy} onChange={event=>change({providerRateMultiplier:event.target.value})}/></label>}
     <label className="agent-management-field"><span>Haiku 模型</span><input aria-label="Claude Haiku 模型" value={draft.haikuModel} placeholder="可选，例如 deepseek-flash" disabled={readOnly||busy} onChange={event=>change({haikuModel:event.target.value})}/></label>
     <label className="agent-management-field"><span>子 Agent 模型</span><input aria-label="Claude 子 Agent 模型" value={draft.subagentModel} placeholder="可选，例如 deepseek-flash" disabled={readOnly||busy} onChange={event=>change({subagentModel:event.target.value})}/></label>
     <label className="agent-management-field"><span>Effort 等级</span><input aria-label="Claude Effort 等级" value={draft.effort} placeholder="可选，例如 max" disabled={readOnly||busy} onChange={event=>change({effort:event.target.value})}/></label>
