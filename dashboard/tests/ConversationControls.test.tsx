@@ -196,6 +196,31 @@ describe('compact conversation controls',()=>{
  it('applies model and effort immediately and shows the confirmed current settings',async()=>{
   mount();const model=await screen.findByRole('combobox',{name:'选择模型'});fireEvent.change(model,{target:{value:'model-b'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenCalledWith('s',{model:'model-b',effort:'low'}));expect(await screen.findByText('已应用')).toBeVisible();expect(screen.getByRole('combobox',{name:'选择推理强度'})).toHaveValue('low');expect(screen.queryByText('下轮生效')).not.toBeInTheDocument();fireEvent.change(screen.getByRole('combobox',{name:'选择推理强度'}),{target:{value:'medium'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenLastCalledWith('s',{model:'model-b',effort:'medium'}));expect(model).toHaveValue('model-b');
  });
+ it.each([
+  ['USD','预估金额','$0.012345'],
+  ['CNY','预估金额','¥0.012345'],
+  ['credits','预估积分','0.0'],
+ ])('uses the recorded %s unit in the conversation footer and usage tables',async(unit,heading,amount)=>{
+  const cost={unit,amount:0.012345,complete:true};
+  const totals={tokens:{total_tokens:5010},requests:1,tool_rounds:0,tool_calls:0,cost};
+  const metadata:SessionMetadata={native_id:'native',generation:'same',revision:1,observed_at:null,status:'complete',reasons:[],
+    totals,latest:null,user_inputs:1,completed_turns:1,cache_drop_count:0};
+  const model={...totals,model:'model-a',speed:'default',environment:null,account:null};
+  vi.mocked(api.agent.conversationMetadata).mockResolvedValueOnce({metadata:{summary:metadata,models:[model],events:[],cache_drops:[],next_event:null,next_cache_drop:null}});
+  vi.mocked(api.agent.conversationUsageIntervals).mockResolvedValueOnce({intervals:{native_id:'native',generation:'same',revision:1,
+    rows:[{id:'final',kind:'final',at:null,usage:{...totals,complete:true,shared_messages:1},expandable:false}],next_before:null}});
+  render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active metadata={metadata}/></QueryClientProvider>);
+  const footer=await screen.findByLabelText('Session information');
+  expect(footer).toHaveTextContent(`${unit==='credits'?'Est. Cr':'Est.'} ${amount}`);
+  fireEvent.click(screen.getByRole('button',{name:'Details'}));
+  expect(screen.getByRole('rowheader',{name:heading}).parentElement).toHaveTextContent(amount);
+  fireEvent.click(screen.getByRole('tab',{name:'会话详情'}));
+  for (const label of ['按模型用量','逐区间用量']) {
+    const table=within(screen.getByRole('table',{name:label}));
+    expect(table.getByRole('columnheader',{name:heading})).toBeVisible();
+    expect(await table.findByRole('cell',{name:amount,exact:true})).toBeVisible();
+  }
+ });
  it('removes the open interval on settlement while retaining loaded earlier Final rows',async()=>{
   let settled=false;
   const usage={coverage:'complete' as const,complete:true,tokens:{total_tokens:5010},requests:1,tool_rounds:0,tool_calls:0,shared_messages:1};
