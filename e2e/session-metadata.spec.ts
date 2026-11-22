@@ -446,7 +446,7 @@ test('shows one cache drop next to an in-turn compaction and keeps it after relo
   await expect(incident).toContainText('99.65%');
   await expect(incident).toContainText('42.72%');
   await expect(incident).toContainText('Elapsed: 4.954s');
-  await expect(incident.locator('time')).toHaveText('2026-11-20 17:01:00');
+  await expect(incident.locator('time')).toHaveText(['2026-11-20 17:01:00', '2026-11-20 17:00:55']);
   expect(await summary.evaluate(node=>node.closest('[data-context-kind="compaction_summary"]')?.nextElementSibling?.matches('[data-cache-drop-id]'))).toBe(true);
   await page.getByRole('button',{name:'Details',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'会话详情',exact:true});
@@ -646,8 +646,8 @@ test('shows dated cache drops under each Progress header before its Items and be
     const firstItem=progress.locator('.session-chat-progress-entry').first();
     await expect(session.chat.locator('[data-cache-drop-id]')).toHaveCount(3);
     await expect(notice).toHaveCount(2);
-    await expect(notice.nth(0).locator('time')).toHaveAttribute('datetime',at(7));
-    await expect(notice.nth(1).locator('time')).toHaveAttribute('datetime',at(11));
+    await expect(notice.nth(0).locator('time').first()).toHaveAttribute('datetime',at(7));
+    await expect(notice.nth(1).locator('time').first()).toHaveAttribute('datetime',at(11));
     if(await toggle.getAttribute('aria-expanded')==='true') await toggle.click();
     await expect(toggle).toHaveAttribute('aria-expanded','false');
     await expect(firstItem).toBeHidden();
@@ -662,19 +662,18 @@ test('shows dated cache drops under each Progress header before its Items and be
 
     const final=session.chat.locator('[data-phase="final"]').filter({hasText:'核对完成'});
     const finalNotice=final.locator('[data-cache-drop-id]');
-    await expect(finalNotice.locator('time')).toHaveAttribute('datetime',at(13));
+    await expect(finalNotice.locator('time').first()).toHaveAttribute('datetime',at(13));
     expect(await finalNotice.evaluate(before,await final.getByText('核对完成',{exact:true}).elementHandle())).toBe(true);
 
     const firstNotice=notice.first();
     await expect(firstNotice.locator('button')).toHaveCount(0);
-    await expect(firstNotice.locator('time')).toHaveText('2026-11-20 17:00:07');
-    await expect(firstNotice.locator('time')).toHaveCSS('color', 'rgb(220, 38, 38)');
-    await expect(firstNotice).toContainText('10K ｜ 9.8K (98.0%)');
-    await expect(firstNotice).toContainText('10K ｜ 1K (10.0%)');
-    await expect(firstNotice).toContainText('Elapsed: 3s');
+    await expect(firstNotice.locator('time').first()).toHaveText('2026-11-20 17:00:07');
+    await expect(firstNotice.locator('time').first()).toHaveCSS('color', 'rgb(220, 38, 38)');
+    await expect(firstNotice).toHaveText(/2026-11-20 17:00:07\s*10K ｜ 1K \(10\.0%\)\s*←\s*2026-11-20 17:00:04\s*10K ｜ 9\.8K \(98\.0%\)\s*Elapsed: 3s/);
+    await expect(firstNotice.locator('time').last()).toHaveAttribute('datetime',at(4));
     const cacheRates=firstNotice.locator('.session-chat-cache-hit');
-    await expect(cacheRates.first()).toHaveCSS('color','rgb(33, 131, 60)');
-    await expect(cacheRates.last()).toHaveCSS('color','rgb(131, 55, 33)');
+    await expect(cacheRates.first()).toHaveCSS('color','rgb(131, 55, 33)');
+    await expect(cacheRates.last()).toHaveCSS('color','rgb(33, 131, 60)');
     await expect(firstNotice).toHaveCSS('font-size', '11px');
     await expect(firstNotice).toHaveCSS('white-space', 'nowrap');
   };

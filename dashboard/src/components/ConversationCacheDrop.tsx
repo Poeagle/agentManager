@@ -67,8 +67,11 @@ export function CacheDropTable({drops, loading, error, onRetry}: {
 export function ConversationCacheDrop({drop}: {drop: SessionCacheDrop}) {
   const elapsed = drop.elapsed_ms === null ? '—' : `${drop.elapsed_ms / 1000}s`;
   return <div className="conversation-cache-notice" data-cache-drop-id={drop.id} role="group" aria-label="缓存命中输入减少">
-    <MetadataTime at={drop.at} />
-    <SampleTokens sample={drop.previous} inline /><span aria-hidden="true">→</span><SampleTokens sample={drop.current} inline />
+    <MetadataTime at={drop.current.request_at ?? drop.at} />
+    <SampleTokens sample={drop.current} inline />
+    <span aria-hidden="true">←</span>
+    <MetadataTime at={drop.previous.request_at} />
+    <SampleTokens sample={drop.previous} inline />
     <span title={dropInterval(drop)}>Elapsed: {elapsed}</span>
   </div>;
 }
