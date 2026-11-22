@@ -270,6 +270,8 @@ function officialApiCost(catalog:OfficialApiCatalog,model:string|null,at:string,
 function officialApiBands(catalog:OfficialApiCatalog,model:string){
  if(catalog==='deepseek'){
   const peak=deepseekCatalogModel(model)?.api_pricing?.peak;
+  // Aliases are canonicalized by the pricing helper itself. They do not need
+  // to exist as a duplicate key in the persisted tariff table.
   return peak?[{rates:peak,min_input_tokens:undefined}]:undefined;
  }
  return publicApiModel(catalog,model)?.api_pricing.bands;
@@ -287,7 +289,8 @@ function officialApiEstimates(id:string,timezone:string,rows:Array<Record<string
    const cost=catalog?officialApiCost(catalog,row.model,row.at??rateAt,row):null;
    if(cost)addOfficialApiEstimate(estimate,cost,row.requests);
    else estimate.breakdown.reasoning=null;
-  }else if(catalog&&(catalog==='deepseek'||bands?.length&&bands.every(band=>band.min_input_tokens!=null)))tieredModels.add(row.model!);
+  }else if(catalog==='deepseek'&&row.model)tieredModels.add(row.model);
+  else if(catalog&&bands?.length&&bands.every(band=>band.min_input_tokens!=null))tieredModels.add(row.model!);
   else estimate.breakdown.reasoning=null;
   estimates.set(estimateKey,estimate);
  }

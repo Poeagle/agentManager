@@ -359,9 +359,10 @@ Long context: >272K input tokens.`;
 });
 
 it.each([
- ['deepseek-v4.1-flash',1.82,2,8],
- ['claude-sonnet-5-5',2.05,2,10],
-])('prices %s through its own official API catalog',async(model,expected,input,output)=>{
+ ['deepseek-v4.1-flash',1.82,2,8,false],
+ ['deepseek-v4.1-flash',1.82,2,8,true],
+ ['claude-sonnet-5-5',2.05,2,10,false],
+])('prices %s through its own official API catalog (alias row: $alias)',async(model,expected,input,output,alias)=>{
  vi.useFakeTimers();vi.setSystemTime(new Date('2026-11-23T01:30:00Z'));
  initModelPricing();
  const openai='### Standard pricing data\n| gpt-6.2-sol | $2 | $10 | $0.10 | $2.50 | $5 | $4 | $15 | $0.20 |\n\nLong context: >272K input tokens.';
@@ -374,8 +375,8 @@ it.each([
 | 价格(2) | 百万tokens输出 | 高峰时段 | ${output}元 |
 | 价格(2) | 百万tokens输出 | 空闲时段 | ${output/2}元 |
 
-北京时间周一至周五（不含中国法定节假日）9:00 - 12:00、14:00 - 18:00 为高峰时段。
-旧模型名 \`deepseek-v4.1-flash\` 按 Flash 价格计费。`;
+北京时间周一至周五（不含中国法定节假日）9:00 - 12:00、14:00 - 18:00 为高峰时段。${alias?`
+旧模型名 \`deepseek-v4.1-flash\` 按 Flash 价格计费。`:''}`;
  const claude=`| Model | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |
 | Claude Sonnet 5.5 | $2 / MTok | $2.50 / MTok | $4 / MTok | $0.10 / MTok | $10 / MTok |`;
  const documents:Record<string,string>={[pricingSources.openai]:openai,[pricingSources.deepseek]:deepseek,[pricingSources.claude]:claude};
