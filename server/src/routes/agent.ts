@@ -111,7 +111,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.24.0',
+    version:'3.25.0',
     updatedAt:'2026-11-22',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -261,7 +261,7 @@ export function getAgentApiContract() {
       },
       {
         category: 'Sessions', method: 'GET', path: '/api/sessions/:id/conversation/metadata',
-        description: 'Read verified session totals, model and speed totals, lifecycle records and decreases in recorded cached input tokens. Optional extra_cost gives the signed net change in uncached and cache-read input cost, using the current request tariff. Pass event_before or cache_before from next_event or next_cache_drop for earlier records. The status and reasons report missing or pending evidence. Credits are request-based estimates.',
+        description: 'Read verified session totals, model and speed totals, lifecycle records and decreases in recorded cached input tokens. Optional extra_cost gives the signed net change in uncached input, cache reads and cache writes, using the current request tariff. Pass event_before or cache_before from next_event or next_cache_drop for earlier records. The status and reasons report missing or pending evidence. Credits are request-based estimates.',
         response: {metadata:'SessionMetadataDetails | null'},
         errors: {400:'Invalid cursor',404:'Session not found or not accessible'},
       },
