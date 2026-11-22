@@ -383,36 +383,41 @@ function updateInferredNativeCatalog(settings:{models:string[];defaultModel:stri
   writeFileSync(inferred,JSON.stringify(existing,null,2)+'\n',{encoding:'utf8',mode:0o600});
 }
 
-function validateNativeConnection(input:AgentProviderInput):{
+function validateNativeConnection(input:AgentProviderInput,current:ReturnType<typeof nativeConnectionSettings>):{
   baseUrl:string;
   models:string[];
   defaultModel:string;
 } {
-  const baseUrl=typeof input.fields?.baseUrl==='string'?input.fields.baseUrl.trim():'';
+  const baseUrl=typeof input.fields?.baseUrl==='string'?input.fields.baseUrl.trim():current.baseUrl.trim();
   const models=Array.isArray(input.fields?.models)
     ? [...new Set(input.fields.models.filter((value):value is string=>typeof value==='string'&&!!value.trim()).map(value=>value.trim()))].slice(0,100)
-    : [];
-  const defaultModel=typeof input.fields?.defaultModel==='string'?input.fields.defaultModel.trim():'';
+    : current.models;
+  const defaultModel=typeof input.fields?.defaultModel==='string'
+    ? input.fields.defaultModel.trim()
+    : current.defaultModel||'';
   if(!/^https?:\/\/\S+$/.test(baseUrl))throw Object.assign(Error('Responses API 地址无效'),{statusCode:400});
   if(!models.length)throw Object.assign(Error('至少配置一个模型'),{statusCode:400});
   if(defaultModel&&!models.includes(defaultModel))throw Object.assign(Error('默认模型必须来自已选模型'),{statusCode:400});
   return {baseUrl,models,defaultModel:defaultModel||models[0]};
 }
 
-function updateNativeConnection(input:AgentProviderInput):void {
-  const next=validateNativeConnection(input);
+function updateNativeConnection(input:AgentProviderInput):{restartRequired:boolean} {
+  const current=nativeConnectionSettings();
+  const next=validateNativeConnection(input,current);
+  const connectionChanged=(input.fields?.baseUrl!==undefined&&next.baseUrl!==current.baseUrl)||input.apiKey!==undefined;
   let config=existsSync(configPath())?readFileSync(configPath(),'utf8'):'';
   const providerId=config.match(/^\s*model_provider\s*=\s*"([^"]+)"/m)?.[1]||'';
   if(!providerId)throw Object.assign(Error('Codex config.toml 尚未配置 model_provider，无法保存连接设置'),{statusCode:409});
   const catalog=catalogPathFromConfig(config);
   config=replaceTomlRootString(config,'model',next.defaultModel);
   config=replaceTomlProviderField(config,providerId,'base_url',next.baseUrl);
-  config=replaceTomlProviderField(config,providerId,'env_key','AGENTMANAGER_CODEX_API_KEY');
+  if(connectionChanged)config=replaceTomlProviderField(config,providerId,'env_key','AGENTMANAGER_CODEX_API_KEY');
   if(!catalog)config=replaceTomlRootString(config,'model_catalog_json',join(dirname(configPath()),'model-catalog.json'));
   writeNativeConfigAtomically(config);
   saveProviderApiKey('native',input.apiKey);
   if(catalog)updateNativeProviderCatalog({...next});
   else updateInferredNativeCatalog({...next});
+  return {restartRequired:connectionChanged};
 }
 
 function nativeProviders(): AgentProviderState[] {
@@ -1124,13 +1129,14 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       await assertEnvironmentIdle(providerId==='native'?'native':'provider:'+providerId);
       if (providerId === 'native') {
         report?.({ stage: 'validate', message: '校验 Engine 启动命令与附加参数', progress: 10 });
+        let restartRequired=true;
         if(input.fields?.baseUrl!==undefined||input.fields?.models!==undefined||input.fields?.defaultModel!==undefined||input.apiKey!==undefined) {
           report?.({ stage: 'save', message: '写入 Codex 连接配置与加密凭据', progress: 20 });
-          updateNativeConnection(input);
+          restartRequired=updateNativeConnection(input).restartRequired;
         }
         updateNativeEngineConfig(input);
         report?.({ stage: 'save', message: '保存原生 Engine 启动配置', progress: 25 });
-        await restartNativeCodexEngine(progress => report?.({ ...progress, progress: 25 + progress.progress * 0.75 }));
+        if(restartRequired)await restartNativeCodexEngine(progress => report?.({ ...progress, progress: 25 + progress.progress * 0.75 }));
         return inspect(false);
       }
       let updated: StoredProvider | undefined;

@@ -302,4 +302,45 @@ describe('native Codex Provider connection editing', () => {
    database.cleanup();
   }
  });
+ it('updates only models from the model table without requiring a connection payload', async () => {
+  const database=createTestDatabase();
+  const home=join(database.dir,'native-models');
+  mkdirSync(home,{recursive:true});
+  const catalog=join(home,'model-catalog.json');
+  writeFileSync(join(home,'config.toml'),[
+   'model_provider = "wanzhao"',
+   'model = "model-a"',
+   `model_catalog_json = ${JSON.stringify(catalog)}`,
+   '',
+   '[model_providers.wanzhao]',
+   'name = "Wanzhao"',
+   'base_url = "https://existing.example/v1"',
+   'wire_api = "responses"',
+   '',
+  ].join('\n'));
+  writeFileSync(catalog,JSON.stringify({models:[
+   {slug:'model-a',display_name:'Model A',context_window:100000},
+   {slug:'model-b',display_name:'Model B',context_window:100000},
+  ]}));
+  vi.stubEnv('CODEX_HOME',home);
+  try{
+   const management=codexManagement({id:'codex',label:'Codex'} as any);
+   const state=await management.updateProvider('native',{
+    fields:{models:['model-a'],defaultModel:'model-a'},
+   });
+   const config=readFileSync(join(home,'config.toml'),'utf8');
+   expect(config).toContain('base_url = "https://existing.example/v1"');
+   expect(config).toContain('model = "model-a"');
+   expect(JSON.parse(readFileSync(catalog,'utf8')).models.map((model:{slug:string})=>model.slug)).toEqual(['model-a']);
+   expect(state.providers.find(provider=>provider.id==='native')).toMatchObject({
+    status:'ready',
+    fields:expect.arrayContaining([
+     expect.objectContaining({key:'baseUrl',value:'https://existing.example/v1'}),
+     expect.objectContaining({key:'models',value:['model-a']}),
+    ]),
+   });
+  }finally{
+   database.cleanup();
+  }
+ });
 });
