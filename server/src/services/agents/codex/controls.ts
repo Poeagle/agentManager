@@ -128,7 +128,11 @@ async function readEngineModels(force=false):Promise<ModelChoice[]> {
         if(efforts.length)data.push({context_window:typeof contextWindow==='number'&&Number.isSafeInteger(contextWindow)&&contextWindow>0?contextWindow:null,input_modalities:Array.isArray(modalities)?modalities.filter((v:unknown):v is string=>typeof v==='string'&&v.length<=50).slice(0,10):[],release_date:typeof (info?.release_date??item.releaseDate)==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(info?.release_date??item.releaseDate)?(info?.release_date??item.releaseDate):null,reference_credits:rate?{input:rate[0],cached:rate[1],output:rate[2],as_of:CREDIT_RATE_DATE}:null,...typeof provider==='string'?{provider}:{},model:item.model,name:item.displayName,default_service_tier:typeof item.defaultServiceTier==='string'?item.defaultServiceTier:null,service_tiers:(Array.isArray(item.serviceTiers)?item.serviceTiers:[]).filter((tier:any)=>typeof tier.id==='string'&&typeof tier.name==='string').map((tier:any)=>({id:tier.id,name:tier.name,description:typeof tier.description==='string'?tier.description:''})),description:typeof item.description==='string'?item.description:'',efforts,defaultEffort:item.defaultReasoningEffort});
         if(efforts.length){
           const choice=data[data.length-1],details=providerModelMetadata(item.model,upstream,gateway?.fields);
-          Object.assign(choice,details,{release_date:details.release_date??choice.release_date,context_window:choice.context_window??details.context_window});
+          Object.assign(choice,details,{
+            release_date:details.release_date??choice.release_date,
+            context_window:choice.context_window??details.context_window,
+            input_modalities:choice.input_modalities?.length?choice.input_modalities:details.input_modalities,
+          });
         }
       }
       if(!response.nextCursor)break;cursor=response.nextCursor;

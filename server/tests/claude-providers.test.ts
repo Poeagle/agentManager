@@ -251,7 +251,7 @@ it('falls back from a Claude prefix to its origin model catalog without naming a
   ? new Response('',{status:404})
   : new Response(JSON.stringify({data:[{id:'deepseek-flash[1m]'},{id:'deepseek-flash'}]}),{status:200,headers:{'content-type':'application/json'}}));
  vi.stubGlobal('fetch',fetchMock);
- expect(await detectClaudeProviderModels({endpoint:'https://api.deepseek.com/anthropic',apiKey:'token'})).toEqual([
+ expect(await detectClaudeProviderModels({endpoint:'https://api.deepseek.com/anthropic',apiKey:'token'})).toMatchObject([
   {model:'deepseek-flash[1m]',name:'deepseek-flash[1m]',description:'由 Claude 兼容网关返回'},
   {model:'deepseek-flash',name:'deepseek-flash',description:'由 Claude 兼容网关返回'},
  ]);

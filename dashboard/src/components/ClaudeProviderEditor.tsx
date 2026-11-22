@@ -1,10 +1,10 @@
 import {useEffect,useState} from 'react';
 import {useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
-import {Check,CircleAlert,Loader2,Plus,Save,Search,Trash2} from 'lucide-react';
+import {Check,CircleAlert,Loader2,Plus,Save,Trash2} from 'lucide-react';
 import {api,type AgentManagementState,type AgentModelMetadata,type AgentProviderState} from '../lib/api';
-import {ModelPricing,modelCapabilitiesPayload,modelImageLabel,modelMultiplierLabel} from './ModelPricing';
-import {DataTable} from './table/DataTable';
-import {useTableModel} from './table/use-table-model';
+import {modelCapabilitiesPayload} from './ModelPricing';
+import {ProviderAdvancedSettings,ProviderConnectionFields,ProviderRateSettings} from './ProviderConnectionFields';
+import {ModelCatalogTable,ProviderModelActions} from './ModelCatalogTable';
 
 type Draft={id:string;name:string;baseUrl:string;apiKey:string;models:string[];defaultModel:string;haikuModel:string;subagentModel:string;effort:string;autoCompactWindow:string;contextWindow:string;maxOutputTokens:string;modelRateMultipliers:string};
 const empty=():Draft=>({id:'',name:'',baseUrl:'',apiKey:'',models:[],defaultModel:'',haikuModel:'',subagentModel:'',effort:'',autoCompactWindow:'',contextWindow:'',maxOutputTokens:'',modelRateMultipliers:''});
@@ -19,27 +19,16 @@ const statusTone=(status:string)=>status==='ready'?'ready':status==='error'?'err
 export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirtyChange,onBusyChange,inDialog=false}:{provider?:AgentProviderState;readOnly:boolean;onSaved:(id?:string)=>void;onCancel?:()=>void;onDirtyChange?:(dirty:boolean)=>void;onBusyChange?:(busy:boolean)=>void;inDialog?:boolean}){
  const client=useQueryClient(),[draft,setDraft]=useState<Draft>(()=>provider?fromProvider(provider):empty());
  const [detected,setDetected]=useState<string[]>(provider?.models||[]),[manualModel,setManualModel]=useState(''),[error,setError]=useState(''),[saved,setSaved]=useState(false),[confirmDelete,setConfirmDelete]=useState(false);
- const [probed,setProbed]=useState<Array<AgentModelMetadata & {model:string}>>([]);
+ const [probed,setProbed]=useState<Array<AgentModelMetadata & {model:string;name?:string}>>([]);
  const configs=useQuery({queryKey:['agent-model-configs','claude',provider?.id],queryFn:()=>api.agentManagement.modelConfigs('claude'),enabled:!!provider,retry:false,refetchInterval:300000});
  const byModel=new Map(provider&&draft.baseUrl.trim()===field(provider,'baseUrl')?configs.data?.models.filter(model=>model.provider===provider.id).map(model=>[model.model,model]):[]);
  const byProbe=new Map(probed.map(model=>[model.model,model]));
  const modelRows=[...new Set([...detected,...draft.models])].map(model=>{
   const saved=byModel.get(model),probe=byProbe.get(model);
-  return {model,details:probe??saved,window:probe?.context_window??saved?.contextWindow,inputs:probe?.input_modalities??saved?.input_modalities};
+  return {model,name:probe?.name??saved?.name,metadata:{...saved,...probe},context:probe?.context_window??saved?.contextWindow};
  });
- const table=useTableModel(modelRows,[
-  {key:'enabled',title:'启用',value:row=>draft.models.includes(row.model)},
-  {key:'model',title:'模型 ID',value:row=>row.model},
-  {key:'release',title:'发布时间',value:row=>row.details?.release_date},
-  {key:'window',title:'官方上下文',value:row=>row.details?.official_context_window,kind:'number'},
-  {key:'context',title:'上下文长度',value:row=>row.window,kind:'number'},
-  {key:'images',title:'图片输入',value:row=>modelImageLabel(row.inputs)},
-  {key:'official',title:'官方计费标准',value:row=>row.details?.api_pricing?.currency},
-  {key:'provider',title:'第三方 API 费率',value:row=>row.details?.provider_pricing?.currency},
-  {key:'multiplier',title:'手填倍率',value:row=>row.details?.api_pricing?.provider_multiplier,kind:'number'},
- ]);
  const original=provider?fromProvider(provider):empty();
- const dirty=JSON.stringify(draft)!==JSON.stringify(original)||!!confirmDelete;
+ const dirty=JSON.stringify(draft)!==JSON.stringify(original)||!!confirmDelete||!!Object.keys(modelCapabilitiesPayload(probed)).length;
  const change=(patch:Partial<Draft>)=>{setSaved(false);setError('');onDirtyChange?.(true);setDraft(previous=>({...previous,...patch}));};
  const updateState=(result:{state:AgentManagementState})=>{client.setQueryData(['agent-management','claude'],result);void client.invalidateQueries({queryKey:['agent-management-list']});void client.invalidateQueries({queryKey:['session-environments']});};
  const detect=useMutation({mutationFn:()=>api.agentManagement.detectModels('claude',{endpoint:draft.baseUrl.trim(),apiKey:draft.apiKey.trim()||undefined,providerId:provider?.id}),onSuccess:result=>{
@@ -84,12 +73,16 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
    <div className="agent-management-status-row">{!readOnly&&provider&&<button type="button" className="agent-management-button" disabled={busy||!dirty} onClick={()=>{setError('');save.mutate();}}>{save.isPending?<Loader2 size={13} className="animate-spin"/>:<Save size={13}/>}保存</button>}</div>
   </header>}
   <section className="agent-management-section agent-management-engine-settings">
-   <div className="agent-management-section-title"><h4>连接配置</h4><span className="agent-management-section-badge">{provider?.authentication.status==='authenticated'?'API 凭据已配置':'API 凭据未配置'}</span></div>
+   <div className="agent-management-section-title"><h4>连接配置</h4></div>
+   <ProviderConnectionFields id={provider?undefined:draft.id} name={draft.name} endpoint={draft.baseUrl} apiKey={draft.apiKey}
+    labelPrefix="Claude " endpointHint="Anthropic 兼容 API 根地址" configured={provider?.authentication.status==='authenticated'} disabled={readOnly||busy}
+    onChange={(key,value)=>{
+     change({[key==='endpoint'?'baseUrl':key]:value});
+     if(key==='endpoint'){setDetected([]);setProbed([]);}
+     if(key==='apiKey')setProbed([]);
+    }}/>
+   <ProviderAdvancedSettings label="Claude Code 设置">
    <div className="agent-management-form agent-management-engine-form">
-    {!provider&&<label className="agent-management-field"><span>提供商 ID<b>*</b></span><input aria-label="Claude Provider ID" autoFocus value={draft.id} placeholder="例如 xindu" disabled={readOnly||busy} onChange={event=>change({id:event.target.value.toLowerCase().replace(/[^a-z0-9_.-]/g,'')})}/></label>}
-    <label className="agent-management-field"><span>显示名称</span><input aria-label="Claude Provider 名称" value={draft.name} placeholder="例如 Xindu" disabled={readOnly||busy} onChange={event=>change({name:event.target.value})}/></label>
-    <label className="agent-management-field agent-management-field-baseUrl"><span>API 地址<b>*</b></span><input aria-label="Claude API 地址" inputMode="url" value={draft.baseUrl} placeholder="https://gateway.example" disabled={readOnly||busy} onChange={event=>{change({baseUrl:event.target.value});setDetected([]);setProbed([]);}}/><small>Anthropic 兼容网关根地址，不要填写 `/v1/messages`。</small></label>
-    <label className="agent-management-field"><span>API Key{provider?.authentication.status==='authenticated'&&<small className="agent-management-configured">已配置</small>}{!provider&&<b>*</b>}</span><input aria-label="Claude API Key" type="password" autoComplete="new-password" value={draft.apiKey} placeholder={provider?.authentication.status==='authenticated'?'留空保持不变':'输入 API Key'} disabled={readOnly||busy} onChange={event=>change({apiKey:event.target.value})}/></label>
     <label className="agent-management-field"><span>Haiku 模型</span><input aria-label="Claude Haiku 模型" value={draft.haikuModel} placeholder="可选，例如 deepseek-flash" disabled={readOnly||busy} onChange={event=>change({haikuModel:event.target.value})}/></label>
     <label className="agent-management-field"><span>子 Agent 模型</span><input aria-label="Claude 子 Agent 模型" value={draft.subagentModel} placeholder="可选，例如 deepseek-flash" disabled={readOnly||busy} onChange={event=>change({subagentModel:event.target.value})}/></label>
     <label className="agent-management-field"><span>Effort 等级</span><input aria-label="Claude Effort 等级" value={draft.effort} placeholder="可选，例如 max" disabled={readOnly||busy} onChange={event=>change({effort:event.target.value})}/></label>
@@ -97,21 +90,21 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
     <label className="agent-management-field"><span>上下文窗口</span><input aria-label="Claude 上下文窗口" inputMode="numeric" value={draft.contextWindow} placeholder="可选，例如 200000" disabled={readOnly||busy} onChange={event=>change({contextWindow:event.target.value})}/></label>
     <label className="agent-management-field"><span>最大输出 Token</span><input aria-label="Claude 最大输出 Token" inputMode="numeric" value={draft.maxOutputTokens} placeholder="可选" disabled={readOnly||busy} onChange={event=>change({maxOutputTokens:event.target.value})}/></label>
    </div>
+   </ProviderAdvancedSettings>
   </section>
-  <section className="claude-provider-models agent-management-section" aria-labelledby="claude-provider-models-title">
-   <div className="claude-provider-models-heading"><div><h4 id="claude-provider-models-title">模型</h4><p>{detected.length?`已发现 ${detected.length} 个，勾选此 Provider 可用的模型。`:'此地址也可以手工填写模型 ID；保存时会用 Anthropic Messages 请求验证。'}</p></div><div className="agent-management-status-row"><button type="button" className="agent-management-button" disabled={readOnly||busy||!draft.baseUrl.trim()||(!provider&&!draft.apiKey.trim())} onClick={()=>{setError('');detect.mutate();}}>{detect.isPending?<Loader2 size={13} className="animate-spin"/>:<Search size={13}/>}探测模型目录</button></div></div>
-   <div className="agent-management-field claude-provider-manual-model"><label htmlFor="claude-provider-manual-model">模型 ID</label><div className="flex gap-2"><input id="claude-provider-manual-model" aria-label="手工添加 Claude 模型" value={manualModel} placeholder="例如 deepseek-flash[1m]" disabled={readOnly||busy} onChange={event=>setManualModel(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();addManualModel();}}}/><button type="button" className="agent-management-button" disabled={readOnly||busy||!manualModel.trim()} onClick={addManualModel}>添加</button></div><small>模型目录不可用时可直接填写；保存时会验证模型是否支持 Claude Code。</small></div>
-   <DataTable label="Provider 模型" model={table} className="provider-model-table" minWidth={1030} loading={!!provider&&configs.isPending} error={configs.isError?configs.error.message:undefined} onRetry={()=>void configs.refetch()} empty={!modelRows.length} emptyMessage="尚未添加模型">
-    {table.rows.map(({model,details,window,inputs})=><tr key={model}>
-     <td><input type="checkbox" aria-label={`启用模型 ${model}`} checked={draft.models.includes(model)} disabled={readOnly||busy} onChange={event=>{const models=event.target.checked?[...draft.models,model]:draft.models.filter(item=>item!==model);change({models,defaultModel:models.includes(draft.defaultModel)?draft.defaultModel:models[0]||''});}}/></td>
-     <td><code>{model}</code>{draft.defaultModel===model&&<small> · 默认</small>}</td>
-     <td>{details?.release_date??'未提供'}</td><td>{details?.official_context_window?.toLocaleString()??'未提供'}</td>
-     <td>{window?.toLocaleString()??'未提供'}</td><td>{modelImageLabel(inputs)}</td>
-     <td><ModelPricing pricing={details?.api_pricing}/></td><td>{details?.provider_pricing?<ModelPricing pricing={details.provider_pricing}/>: '—'}</td><td>{modelMultiplierLabel(details)}</td>
-    </tr>)}
-   </DataTable>
-   <label className="agent-management-field claude-provider-default"><span>默认模型</span><select aria-label="Claude Provider 默认模型" value={draft.defaultModel} disabled={readOnly||busy||!draft.models.length} onChange={event=>change({defaultModel:event.target.value})}><option value="">使用第一个可用模型</option>{draft.models.map(model=><option key={model} value={model}>{model}</option>)}</select></label>
-   <label className="agent-management-field"><span>模型计费倍率</span><textarea aria-label="Claude 模型计费倍率" rows={2} value={draft.modelRateMultipliers} placeholder="claude-sonnet-5-5=1.2" disabled={readOnly||busy} onChange={event=>change({modelRateMultipliers:event.target.value})}/></label>
+  <section className="provider-models" aria-label="Provider 模型配置">
+   <ProviderModelActions selected={draft.models.length} total={modelRows.length} detecting={detect.isPending}
+    disabled={readOnly||busy||!draft.baseUrl.trim()||(!provider&&!draft.apiKey.trim())} onDetect={()=>{setError('');detect.mutate();}}/>
+   <ModelCatalogTable rows={modelRows} selected={draft.models} defaultModel={draft.defaultModel} locked={readOnly||busy}
+    loading={!!provider&&configs.isPending&&!modelRows.length} error={!modelRows.length&&configs.isError?configs.error.message:undefined} onRetry={()=>void configs.refetch()}
+    onSelectedChange={models=>change({models})} onDefaultChange={defaultModel=>change({defaultModel})}/>
+   <div className="provider-model-settings">
+    {!readOnly&&<ProviderAdvancedSettings label="手工添加模型"><div className="provider-manual-model">
+     <input aria-label="手工添加 Claude 模型" value={manualModel} placeholder="模型 ID" disabled={busy} onChange={event=>setManualModel(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();addManualModel();}}}/>
+     <button type="button" className="agent-management-button" disabled={busy||!manualModel.trim()} onClick={addManualModel}>添加</button>
+    </div></ProviderAdvancedSettings>}
+    <ProviderRateSettings label="Claude 模型计费倍率" value={draft.modelRateMultipliers} disabled={readOnly||busy} onChange={modelRateMultipliers=>change({modelRateMultipliers})}/>
+   </div>
   </section>
   {(error||saved)&&<div className={`agent-management-operation ${error?'error':'success'}`} role={error?'alert':'status'}>{error?<CircleAlert size={13}/>:<Check size={13}/>}<span>{error||'Claude Provider 已保存'}</span></div>}
   <footer className="claude-provider-editor-actions">
