@@ -34,26 +34,72 @@
 .schedule-condition-panel .rule-subgroup > .rule-remove { width: 24px; }
 
 .schedule-condition-panel[data-layout=expression] {
-  padding: 10px;
+  padding: 7px 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
 }
-.schedule-condition-panel[data-layout=expression] > .rule-group-header { margin-bottom: 8px; }
+.schedule-condition-panel[data-layout=expression] > .rule-group-header { margin-bottom: 5px; }
+.schedule-condition-panel[data-layout=expression] > .rule-group-header h3 { font-size: 12px; line-height: 20px; }
+.schedule-condition-panel[data-layout=expression] > .rule-group-header .rule-group-actions { gap: 6px; }
 .schedule-condition-panel[data-layout=expression] > .rule-group-header select { width: auto; }
+.schedule-condition-panel[data-layout=expression] .rule-group-operator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.schedule-condition-panel[data-layout=expression] .rule-group-operator-summary {
+  color: var(--text-secondary);
+}
+.schedule-condition-panel[data-layout=expression] .rule-operator-toggle {
+  display: inline-flex;
+  min-width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-primary));
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+  cursor: pointer;
+}
+.schedule-condition-panel[data-layout=expression] .rule-operator-toggle:hover {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-primary));
+}
+.schedule-condition-panel[data-layout=expression] .rule-operator-toggle:focus-visible,
+.schedule-condition-panel[data-layout=expression] .rule-connector:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .schedule-condition-panel[data-layout=expression] > .rule-conditions > .rule-clause { margin-top: 0; }
 .schedule-condition-panel[data-layout=expression] .rule-connector {
   display: flex;
   align-items: center;
   gap: 8px;
   width: fit-content;
-  margin: 3px 0 3px 10px;
+  min-height: 18px;
+  margin: 2px 0 2px 6px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
   color: var(--accent);
   font-weight: 600;
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
 }
 .schedule-condition-panel[data-layout=expression] .rule-connector::before,
 .schedule-condition-panel[data-layout=expression] .rule-connector::after {
   content: '';
-  width: 10px;
+  width: 8px;
   height: 1px;
   background: var(--border);
 }
@@ -61,12 +107,12 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 4px 6px;
   min-width: 0;
 }
 .schedule-condition-panel[data-layout=expression][data-nested=false] > .rule-conditions > .rule-clause > .rule-row,
 .schedule-condition-panel[data-layout=expression] .rule-subgroup {
-  padding: 6px 8px;
+  padding: 4px 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-primary);
@@ -86,23 +132,26 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 8px;
+  gap: 2px 6px;
 }
 .schedule-condition-panel[data-layout=expression][data-nested=true] > .rule-conditions > .rule-clause {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 8px;
+  gap: 2px 6px;
   max-width: 100%;
 }
 .schedule-condition-panel[data-layout=expression][data-nested=true] > .rule-conditions > .rule-clause > .rule-connector {
-  padding: 1px 5px;
+  min-height: 20px;
+  padding: 0 4px;
   margin: 0;
   border: 1px solid var(--border);
   border-radius: 4px;
+  background: var(--bg-primary);
 }
 .schedule-condition-panel[data-layout=expression][data-nested=true] > .rule-conditions > .rule-clause > .rule-connector::before,
 .schedule-condition-panel[data-layout=expression][data-nested=true] > .rule-conditions > .rule-clause > .rule-connector::after { display: none; }
 .schedule-condition-panel[data-layout=expression] .rule-row > select { width: min(100%, 150px); }
 .schedule-condition-panel[data-layout=expression] .rule-row input[type=number] { width: 72px; padding-inline: 7px; }
 .schedule-condition-panel[data-layout=expression] .rule-row > .rule-remove { margin-left: auto; }
+.schedule-condition-panel[data-layout=expression] > .rule-help { margin-top: 5px; font-size: 11px; line-height: 16px; }
