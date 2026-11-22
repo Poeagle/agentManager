@@ -8,6 +8,8 @@ import {ensureClaudeRuntime,releaseClaudeRuntime} from '../src/services/agents/c
 import {readConversation} from '../src/services/conversation-reader.js';
 import type {AgentContext} from '../src/services/agents/types.js';
 import {createTestDatabase} from './helpers/database.js';
+import {initModelPricing,pricingSources,refreshModelPricing} from '../src/services/agents/model-pricing.js';
+import {createClaudeProvider} from '../src/services/agents/claude/providers.js';
 const paths=vi.hoisted(()=>({directory:''}));
 vi.mock('../src/services/agents/claude/archive.js',async()=>({...await vi.importActual('../src/services/agents/claude/archive.js'),resolveClaudeDir:()=>paths.directory}));
 const native='019ff001-1212-7212-8212-121212121212';
@@ -16,6 +18,16 @@ beforeEach(()=>{paths.directory=mkdtempSync(join(tmpdir(),'claude-adapter-'));co
 afterEach(()=>{releaseClaudeRuntime(native);database?.cleanup();database=undefined;vi.restoreAllMocks();rmSync(paths.directory,{recursive:true,force:true});});
 const record=(value:unknown)=>JSON.stringify(value)+'\n';
 describe('Claude feature implementation without starting a CLI',()=>{
+ it.each([['https://api.anthropic.com',false],['https://gateway.example',true]])('exposes official model information for %s with the correct pricing scope',async(baseUrl,referenceOnly)=>{
+  database=createTestDatabase();
+  initModelPricing();
+  const pricing='| Model | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |\n| Claude Sonnet 5.5 | $2 / MTok | $2.50 / MTok | $4 / MTok | $0.10 / MTok<sup>2</sup> | $10 / MTok |';
+  await refreshModelPricing(vi.fn(async url=>String(url)===pricingSources.claude?new Response(pricing):new Response(null,{status:404})));
+  createClaudeProvider({id:'fixture',apiKey:'fixture',fields:{baseUrl,models:['claude-sonnet-5-5[1m]','unlisted-model']}});
+  const controls=await readClaudeControls({...context,session:{...context.session,agent_environment_id:'claude-provider:fixture'}});
+  expect(controls.models[0]).toMatchObject({release_date:'2026-09-28',api_pricing:{reference_only:referenceOnly,currency:'USD',bands:[{rates:{input:2,cached:0.1,output:10,cache_write_5m:2.5,cache_write_1h:4}}]}});
+  expect(controls.models[1].api_pricing).toBeUndefined();
+ });
  it('reads real model and usage, handles partial records and native compaction completion without scanning processes for telemetry',async()=>{
   const live=vi.spyOn(manager,'getLiveWorkAgent').mockResolvedValue(null);
   const path=join(paths.directory,`${native}.jsonl`),timestamp='2026-11-04T01:00:00Z';

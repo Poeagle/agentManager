@@ -2,7 +2,7 @@ import {getDb} from '../../db/index.js';
 
 export type TokenRates={input:number;cached:number|null;output:number;cache_write_5m?:number;cache_write_1h?:number};
 export type PricingBand={label?:string;rates:TokenRates};
-export type ModelPricing={currency:string;source:string;bands?:PricingBand[];peak?:TokenRates;off_peak?:TokenRates;timezone?:string;peak_hours?:number[][]};
+export type ModelPricing={currency:string;source:string;reference_only?:boolean;bands?:PricingBand[];peak?:TokenRates;off_peak?:TokenRates;timezone?:string;peak_hours?:number[][]};
 export type Tariff={bands:PricingBand[];release_date?:string;version?:string};
 export type PricingData={models:Record<string,Tariff>;peak_hours?:number[][];speeds?:Record<string,Record<string,{subscription:number;credits:number;after?:{at:number;credits:number}}>>};
 type Snapshot={from:number;checked:number;data:PricingData};
@@ -15,6 +15,8 @@ export const pricingSources={
  deepseek:'https://api-docs.deepseek.com/zh-cn/quick_start/pricing.md',
 };
 const claudeFull='https://platform.claude.com/llms-full.txt';
+// Anthropic launch announcement and the public Claude API pricing table.
+const sonnet55={release_date:'2026-09-28',bands:[{rates:{input:2,cached:0.1,output:10,cache_write_5m:2.5,cache_write_1h:4}}]};
 const calendarSources:Record<number,string>={2026:'https://www.beijing.gov.cn/zhengce/zhengcefagui/202511/t20251104_4258873.html',2027:'https://www.shache.gov.cn/scx/c118335/202611/6dbd74b2ceba40f886c7decc9a81e527.shtml'};
 const catalogs=Object.keys(pricingSources) as Catalog[];
 const current=new Map<Catalog,Snapshot[]>();
@@ -26,16 +28,23 @@ export function pricingSnapshot(catalog:Catalog,at=Infinity):Snapshot|undefined{
  return current.get(catalog)?.find(snapshot=>snapshot.from<=at);
 }
 export function publishedHolidays(year:number){return calendars.get(year);}
+function apiModelId(catalog:'openai'|'claude',model:string){
+ const id=catalog==='claude'?model.replace(/\[1m\]$/i,''):model;
+ return id.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/,'');
+}
+export function claudeReleaseDate(model:string){
+ return apiModelId('claude',model)==='claude-sonnet-5-5'?sonnet55.release_date:undefined;
+}
 export function publicApiPricing(catalog:'openai'|'claude',model:string):ModelPricing|undefined{
  const models=pricingSnapshot(catalog)?.data.models;
- const id=model.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/,'');
- const tariff=models&&Object.hasOwn(models,id)?models[id]:undefined;
+ const id=apiModelId(catalog,model);
+ const tariff=models&&Object.hasOwn(models,id)?models[id]:catalog==='claude'&&id==='claude-sonnet-5-5'?sonnet55:undefined;
  return tariff?{currency:'USD',source:pricingSources[catalog],bands:tariff.bands}:undefined;
 }
 
 export function estimatePublicApiCost(catalog:'openai'|'claude',model:string|null,at:string|null,tokens:Record<string,number|null>|null,cacheWrites?:readonly [number,number]){
  const snapshot=at?pricingSnapshot(catalog,Date.parse(at)):undefined;
- const id=model?.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/,'');
+ const id=model?apiModelId(catalog,model):null;
  const tariff=snapshot&&id&&Object.hasOwn(snapshot.data.models,id)?snapshot.data.models[id]:null;
  if(!tariff||!tokens||tariff.bands.length!==1)return null;
  const rate=tariff.bands[0].rates;

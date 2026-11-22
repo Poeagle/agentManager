@@ -130,7 +130,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
       <strong>{modelLabel(model)}</strong>
       <dl>
         <dt>发布时间</dt><dd>{model.release_date||'未提供'}</dd>
-        <dt>计费标准</dt><dd>{apiPricing?.peak&&apiPricing.off_peak?<>
+        <dt>{apiPricing?.reference_only?'官方 API 参考价':'计费标准'}</dt><dd>{apiPricing?.peak&&apiPricing.off_peak?<>
           {apiPricing.currency} / 百万 Token<br/><small>缓存命中 · 未命中 · 输出</small><br/>
           高峰 {apiPricing.peak.cached} · {apiPricing.peak.input} · {apiPricing.peak.output}<br/>
           空闲 {apiPricing.off_peak.cached} · {apiPricing.off_peak.input} · {apiPricing.off_peak.output}<br/>
